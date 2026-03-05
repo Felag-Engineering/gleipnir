@@ -1,0 +1,209 @@
+# This file documents every field in the policy schema.
+# Worked examples follow the field reference.
+#
+# Conventions:
+#   required   — must be present, validator rejects if absent
+#   optional   — may be omitted, default noted where applicable
+#   multiline  — use YAML block scalar (|) for readability
+
+# ---------------------------------------------------------------------------
+# Metadata
+# ---------------------------------------------------------------------------
+
+# name: string — required
+#   Unique across all policies. Used in run list, notifications, and logs.
+name: string
+
+# description: string — optional
+#   Human-readable summary of what this policy does.
+description: string
+
+
+# ---------------------------------------------------------------------------
+# Trigger
+# ---------------------------------------------------------------------------
+#
+# Exactly one trigger block is required. The type field selects the trigger
+# variant and determines which additional fields are valid.
+
+trigger:
+
+  # type: webhook | cron | poll — required
+  type: webhook
+
+
+  # --- webhook ---
+  # No additional configuration. The webhook URL is derived from the policy
+  # ID and surfaced in the policy detail view:
+  #   POST /api/v1/webhooks/:policy_id
+  # The request body (any JSON) becomes the trigger payload, delivered to
+  # the agent as the first user message.
+
+
+  # --- cron ---
+  # schedule: string — required for cron
+  #   Standard 5-field cron expression. Evaluated by robfig/cron.
+  #   Examples: "0 * * * *" (hourly), "*/5 * * * *" (every 5 minutes)
+  schedule: "0 * * * *"
+
+
+  # --- poll ---
+  # interval: duration — required for poll
+  #   How often to make the HTTP request. Go time.ParseDuration format.
+  #   Valid units: s (seconds), m (minutes), h (hours).
+  #   Examples: 30s, 5m, 1h, 1h30m
+  interval: 5m
+
+  # request — required for poll
+  request:
+
+    # url: string — required
+    #   The HTTP endpoint to poll. Supports ${ENV_VAR} substitution.
+    url: "https://example.local/api/resource"
+
+    # method: GET | POST — required
+    method: GET
+
+    # headers: map[string]string — optional
+    #   HTTP headers to include in the request.
+    #   Values support ${ENV_VAR} substitution. The raw ${VAR_NAME} string
+    #   is stored in the YAML — substitution happens at run start, never
+    #   at save time. A missing env var at run start fails the run.
+    headers:
+      Authorization: "Bearer ${API_TOKEN}"
+      Accept: "application/json"
+
+    # body: string — optional, only valid for POST
+    #   Request body. Supports ${ENV_VAR} substitution.
+    body: '{"filter": "active"}'
+
+  # filter: string — required for poll
+  #   JSONPath expression evaluated against the JSON response body.
+  #   A run fires if the expression returns a non-empty result.
+  #   The matched result becomes the trigger payload delivered to the
+  #   agent as the first user message.
+  #   Examples:
+  #     "$.items[?(@.status == 'open')]"       — array of matching items
+  #     "$.alerts[?(@.severity == 'critical')]" — critical alerts only
+  #     "$.count"                               — fires if count is non-zero
+  filter: "$.items[?(@.status == 'open')]"
+
+
+# ---------------------------------------------------------------------------
+# Capabilities
+# ---------------------------------------------------------------------------
+#
+# Defines the agent's capability envelope for this policy. Tools not listed
+# here are not registered with the agent — they literally do not exist in
+# its tool list (ADR-001).
+#
+# Tool references use dot notation: server_name.tool_name
+#   - server_name: the name field of the registered MCP server
+#   - tool_name:   the tool name as discovered from that server
+#
+# Validator behaviour:
+#   At save time:  warn (non-blocking) if a tool reference has no match
+#                  in the MCP registry
+#   At run start:  fail fast (blocking) if a tool reference has no match
+
+capabilities:
+
+  # sensors: list — optional (but at least one sensor or actuator required)
+  #   Read-only tools. Registered with the agent without restriction.
+  #   The agent may call these freely and repeatedly.
+  sensors:
+    - tool: server_name.tool_name
+
+
+  # actuators: list — optional (but at least one sensor or actuator required)
+  #   World-affecting tools. May be approval-gated.
+  actuators:
+    - tool: server_name.tool_name
+
+    # With approval gate:
+    - tool: server_name.tool_name
+      # approval: required | none — optional, default: none
+      approval: required
+      # timeout: duration — optional, only valid if approval: required
+      #   How long to wait for a human decision before timing out.
+      #   Go time.ParseDuration format.
+      timeout: 30m
+      # on_timeout: reject | approve — optional, default: reject
+      #   What to do if the approval window expires without a decision.
+      on_timeout: reject
+
+
+  # feedback: list — optional, defaults to empty list
+  #   Reserved for future explicit non-UI feedback tools.
+  #   UI feedback is always implicitly available and never configured here.
+  #   Leave empty or omit entirely in v0.1.
+  feedback: []
+
+
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
+
+agent:
+
+  # preamble: multiline string — optional
+  #   Behavioral instructions for the agent. Operator-editable.
+  #   If absent, the Gleipnir default BoundAgent preamble is used (ADR-012).
+  #   The generated capabilities block (sensor/actuator/feedback tool lists)
+  #   is appended after the preamble at run start — do not duplicate tool
+  #   names here.
+  preamble: |
+    You are a BoundAgent — an autonomous agent operating within explicitly
+    defined boundaries.
+
+    You have three categories of tools available to you:
+
+    - Sensors: read-only tools for observing the world. Use these freely
+      and thoroughly before acting.
+    - Actuators: tools that affect the world. Use these deliberately — only
+      after you have observed enough to be confident, and only when the
+      task requires it.
+    - Feedback: a channel to consult a human operator. Use this when you
+      are uncertain about intended scope, when observations reveal something
+      unexpected, or when proceeding would require an assumption you cannot
+      verify.
+
+    Your operating principles:
+    1. Observe before acting. Use your sensors to build a complete picture
+       before calling any actuator.
+    2. Act minimally. Do what the task requires. Do not take additional
+       actions because they seem useful.
+    3. Ask when uncertain. A paused run that asks a good question is better
+       than a completed run that made a wrong assumption.
+    4. Be transparent. Your reasoning is fully audited. Explain what you
+       observed, what you concluded, and why you acted.
+
+  # task: multiline string — required
+  #   Task-specific instructions for this policy. Describes what the agent
+  #   should do, what success looks like, and any policy-specific constraints.
+  #   The trigger payload (webhook body, cron metadata, poll filter result)
+  #   is delivered as the first user message — reference it here as needed.
+  task: |
+    Describe what this agent should do, what success looks like,
+    and any constraints specific to this policy.
+
+  limits:
+    # max_tokens_per_run: integer — optional, default: 20000
+    #   Total token budget across the entire run (input + output).
+    #   Run terminates with a failed state if exceeded.
+    max_tokens_per_run: 20000
+
+    # max_tool_calls_per_run: integer — optional, default: 50
+    #   Maximum number of MCP tool calls across the entire run.
+    #   Run terminates with a failed state if exceeded.
+    max_tool_calls_per_run: 50
+
+  # concurrency: skip | queue | parallel | replace — optional, default: skip
+  #   Behaviour when a trigger fires while a run for this policy is active.
+  #
+  #   skip     — discard the new trigger (safest, default)
+  #   queue    — queue the trigger, execute after the active run completes
+  #   parallel — start a new run immediately, up to a configured limit
+  #   replace  — cancel the active run, start fresh with the new trigger
+  #              (not valid if any actuator has approval: required)
+  concurrency: skip

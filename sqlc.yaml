@@ -1,0 +1,13 @@
+version: "2"
+sql:
+  - engine: "sqlite"
+    queries: "internal/db/queries"
+    schema: "schemas/sql_schemas.sql"
+    gen:
+      go:
+        package: "db"
+        out: "internal/db"
+        sql_package: "database/sql"
+        emit_interface: false
+        emit_json_tags: true
+        emit_pointers_for_null_types: true
