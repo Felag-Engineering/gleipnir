@@ -228,6 +228,274 @@ func TestMigrate(t *testing.T) {
 	})
 }
 
+func TestSchemaConstraints(t *testing.T) {
+	newStore := func(t *testing.T) *Store {
+		t.Helper()
+		s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		t.Cleanup(func() { s.Close() })
+		applyTestSchema(t, s)
+		return s
+	}
+
+	t.Run("CHECK constraints reject invalid enum values", func(t *testing.T) {
+		cases := []struct {
+			name  string
+			setup func(t *testing.T, s *Store)
+			exec  func(s *Store) error
+		}{
+			{
+				name: "policies.trigger_type invalid",
+				exec: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO policies(id, name, trigger_type, yaml, created_at, updated_at)
+						 VALUES ('p1', 'p', 'invalid_type', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+			{
+				name: "runs.status invalid",
+				setup: func(t *testing.T, s *Store) {
+					insertPolicy(t, s, "p1")
+				},
+				exec: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
+						 VALUES ('r1', 'p1', 'invalid_status', 'webhook', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+			{
+				name: "runs.trigger_type invalid",
+				setup: func(t *testing.T, s *Store) {
+					insertPolicy(t, s, "p1")
+				},
+				exec: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
+						 VALUES ('r1', 'p1', 'pending', 'invalid_trigger', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+			{
+				name: "run_steps.type invalid",
+				setup: func(t *testing.T, s *Store) {
+					insertPolicy(t, s, "p1")
+					insertRun(t, s, "r1", "p1", "running")
+				},
+				exec: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
+						 VALUES ('s1', 'r1', 1, 'invalid_type', '{}', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+			{
+				name: "approval_requests.status invalid",
+				setup: func(t *testing.T, s *Store) {
+					insertPolicy(t, s, "p1")
+					insertRun(t, s, "r1", "p1", "waiting_for_approval")
+				},
+				exec: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO approval_requests(id, run_id, tool_name, proposed_input, reasoning_summary, status, expires_at, created_at)
+						 VALUES ('a1', 'r1', 'tool', '{}', 'summary', 'invalid_status', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+			{
+				name: "mcp_tools.capability_role invalid",
+				setup: func(t *testing.T, s *Store) {
+					insertMcpServer(t, s, "srv1")
+				},
+				exec: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, capability_role, created_at)
+						 VALUES ('t1', 'srv1', 'tool', 'desc', '{}', 'invalid_role', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				s := newStore(t)
+				if tc.setup != nil {
+					tc.setup(t, s)
+				}
+				if err := tc.exec(s); err == nil {
+					t.Error("expected error for invalid enum value, got nil")
+				}
+			})
+		}
+	})
+
+	t.Run("FOREIGN KEY constraints reject missing parents", func(t *testing.T) {
+		cases := []struct {
+			name string
+			exec func(s *Store) error
+		}{
+			{
+				name: "mcp_tools.server_id nonexistent",
+				exec: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, capability_role, created_at)
+						 VALUES ('t1', 'nonexistent', 'tool', 'desc', '{}', 'sensor', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+			{
+				name: "runs.policy_id nonexistent",
+				exec: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
+						 VALUES ('r1', 'nonexistent', 'pending', 'webhook', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+			{
+				name: "run_steps.run_id nonexistent",
+				exec: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
+						 VALUES ('s1', 'nonexistent', 1, 'thought', '{}', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+			{
+				name: "approval_requests.run_id nonexistent",
+				exec: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO approval_requests(id, run_id, tool_name, proposed_input, reasoning_summary, status, expires_at, created_at)
+						 VALUES ('a1', 'nonexistent', 'tool', '{}', 'summary', 'pending', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				s := newStore(t)
+				if err := tc.exec(s); err == nil {
+					t.Error("expected foreign key error, got nil")
+				}
+			})
+		}
+	})
+
+	t.Run("UNIQUE constraints reject duplicates", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			setup  func(t *testing.T, s *Store)
+			first  func(s *Store) error
+			second func(s *Store) error
+		}{
+			{
+				name: "policies.name",
+				first: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO policies(id, name, trigger_type, yaml, created_at, updated_at)
+						 VALUES ('p1', 'same-name', 'webhook', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+				second: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO policies(id, name, trigger_type, yaml, created_at, updated_at)
+						 VALUES ('p2', 'same-name', 'webhook', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+			{
+				name: "mcp_servers.name",
+				first: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO mcp_servers(id, name, url, created_at)
+						 VALUES ('s1', 'same-name', 'http://localhost:8080', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+				second: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO mcp_servers(id, name, url, created_at)
+						 VALUES ('s2', 'same-name', 'http://localhost:8081', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+			{
+				name: "mcp_tools(server_id, name)",
+				setup: func(t *testing.T, s *Store) {
+					insertMcpServer(t, s, "srv1")
+				},
+				first: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, capability_role, created_at)
+						 VALUES ('t1', 'srv1', 'tool', 'desc', '{}', 'sensor', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+				second: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, capability_role, created_at)
+						 VALUES ('t2', 'srv1', 'tool', 'desc', '{}', 'sensor', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+			{
+				name: "run_steps(run_id, step_number)",
+				setup: func(t *testing.T, s *Store) {
+					insertPolicy(t, s, "p1")
+					insertRun(t, s, "r1", "p1", "running")
+				},
+				first: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
+						 VALUES ('s1', 'r1', 1, 'thought', '{}', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+				second: func(s *Store) error {
+					_, err := s.DB().Exec(
+						`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
+						 VALUES ('s2', 'r1', 1, 'thought', '{}', '2024-01-01T00:00:00Z')`,
+					)
+					return err
+				},
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				s := newStore(t)
+				if tc.setup != nil {
+					tc.setup(t, s)
+				}
+				if err := tc.first(s); err != nil {
+					t.Fatalf("first insert: %v", err)
+				}
+				if err := tc.second(s); err == nil {
+					t.Error("expected unique constraint error, got nil")
+				}
+			})
+		}
+	})
+}
+
 func insertPolicy(t *testing.T, s *Store, id string) {
 	t.Helper()
 	_, err := s.DB().Exec(
@@ -249,5 +517,16 @@ func insertRun(t *testing.T, s *Store, id, policyID, status string) {
 	)
 	if err != nil {
 		t.Fatalf("insertRun %s: %v", id, err)
+	}
+}
+
+func insertMcpServer(t *testing.T, s *Store, id string) {
+	t.Helper()
+	_, err := s.DB().Exec(
+		`INSERT INTO mcp_servers(id, name, url, created_at) VALUES (?, ?, ?, ?)`,
+		id, "server-"+id, "http://localhost:8080", "2024-01-01T00:00:00Z",
+	)
+	if err != nil {
+		t.Fatalf("insertMcpServer %s: %v", id, err)
 	}
 }
