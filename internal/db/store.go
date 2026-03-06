@@ -6,6 +6,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -53,16 +54,18 @@ func (s *Store) Close() error {
 // Migrate applies the embedded initial schema if it has not been applied.
 // It is idempotent — safe to call on every startup.
 func (s *Store) Migrate(ctx context.Context) error {
-	// TODO: embed schemas/sql_schemas.sql using go:embed and apply if
+	// TODO(issue #2): embed schemas/sql_schemas.sql using go:embed and apply if
 	// schema_migrations is empty or missing.
-	panic("not implemented")
+	return errors.New("not implemented")
 }
 
 // MarkInterrupted sets status = 'interrupted' for any run that was in
 // 'running' or 'waiting_for_approval' state when the process last exited.
 // Called once at startup before accepting traffic (ADR-011).
 func (s *Store) MarkInterrupted(ctx context.Context) error {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// TODO(issue #2): move to internal/db/queries/ and regenerate via sqlc.
+	// Inline SQL is a temporary placeholder until the sqlc layer is bootstrapped.
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET status = 'interrupted', completed_at = ?
 		 WHERE status IN ('running', 'waiting_for_approval')`, now)

@@ -11,20 +11,20 @@ import (
 
 // Step is a single entry in the run's reasoning trace.
 type Step struct {
-	RunID      string
-	Type       model.StepType
-	Content    any // will be JSON-marshalled; shape defined by StepType
-	TokenCost  int
+	RunID     string
+	Type      model.StepType
+	Content   any // will be JSON-marshalled; shape defined by StepType
+	TokenCost int
 }
 
 // AuditWriter serialises run step writes through an internal queue to avoid
 // SQLite write contention under concurrent runs (ADR-003).
 // It must be closed after the run completes to flush the queue.
 type AuditWriter struct {
-	db     *sql.DB
-	queue  chan writeRequest
-	done   chan struct{}
-	errCh  chan error
+	db    *sql.DB
+	queue chan writeRequest
+	done  chan struct{}
+	errCh chan error
 }
 
 type writeRequest struct {

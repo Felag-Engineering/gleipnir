@@ -15,11 +15,11 @@ import (
 // dispatches tool calls to MCP clients, intercepts approval-gated actuators,
 // and writes every step to the audit trail via AuditWriter.
 type BoundAgent struct {
-	runID   string
-	policy  *model.ParsedPolicy
-	tools   []mcp.ResolvedTool
-	claude  *anthropic.Client
-	audit   *AuditWriter
+	runID  string
+	policy *model.ParsedPolicy
+	tools  []mcp.ResolvedTool
+	claude *anthropic.Client
+	audit  *AuditWriter
 	// approvalCh receives the operator's decision when a run is suspended
 	// waiting_for_approval. Sent by the approval handler in internal/trigger.
 	approvalCh <-chan ApprovalDecision

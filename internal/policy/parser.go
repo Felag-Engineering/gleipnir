@@ -21,19 +21,19 @@ func Parse(raw string) (*model.ParsedPolicy, error) {
 // rawPolicy is the intermediate YAML representation used during parsing.
 // Field names match the policy schema documented in schemas/policy.yaml.
 type rawPolicy struct {
-	Name         string           `yaml:"name"`
-	Description  string           `yaml:"description"`
-	Trigger      rawTrigger       `yaml:"trigger"`
-	Capabilities rawCapabilities  `yaml:"capabilities"`
-	Agent        rawAgent         `yaml:"agent"`
+	Name         string          `yaml:"name"`
+	Description  string          `yaml:"description"`
+	Trigger      rawTrigger      `yaml:"trigger"`
+	Capabilities rawCapabilities `yaml:"capabilities"`
+	Agent        rawAgent        `yaml:"agent"`
 }
 
 type rawTrigger struct {
 	Type     string      `yaml:"type"`
-	Schedule string      `yaml:"schedule"`   // cron only
-	Interval string      `yaml:"interval"`   // poll only
-	Request  *rawRequest `yaml:"request"`    // poll only
-	Filter   string      `yaml:"filter"`     // poll only
+	Schedule string      `yaml:"schedule"` // cron only
+	Interval string      `yaml:"interval"` // poll only
+	Request  *rawRequest `yaml:"request"`  // poll only
+	Filter   string      `yaml:"filter"`   // poll only
 }
 
 type rawRequest struct {
