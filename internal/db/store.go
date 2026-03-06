@@ -6,17 +6,20 @@ package db
 import (
 	"context"
 	"database/sql"
-	"errors"
+	_ "embed"
 	"fmt"
 	"time"
 
 	_ "modernc.org/sqlite" // register the sqlite driver
 )
 
+//go:embed migrations/0001_initial.sql
+var initialSchema string
+
 // Store wraps the database connection and provides lifecycle methods.
-// After sqlc generate, embed *Queries here for query access.
 type Store struct {
 	db *sql.DB
+	*Queries
 }
 
 // Open opens the SQLite database at path, enables WAL mode and foreign keys,
@@ -38,10 +41,10 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	return &Store{db: db, Queries: New(db)}, nil
 }
 
-// DB returns the underlying *sql.DB, for use by sqlc-generated Queries.
+// DB returns the underlying *sql.DB.
 func (s *Store) DB() *sql.DB {
 	return s.db
 }
@@ -54,9 +57,46 @@ func (s *Store) Close() error {
 // Migrate applies the embedded initial schema if it has not been applied.
 // It is idempotent — safe to call on every startup.
 func (s *Store) Migrate(ctx context.Context) error {
-	// TODO(issue #2): embed schemas/sql_schemas.sql using go:embed and apply if
-	// schema_migrations is empty or missing.
-	return errors.New("not implemented")
+	// Check whether schema_migrations exists. If it doesn't, the schema has
+	// never been applied and we run the full DDL.
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check schema_migrations: %w", err)
+	}
+
+	if count == 0 {
+		// Wrap in a transaction so a mid-DDL failure leaves a clean DB.
+		// SQLite DDL is transactional, so a rollback undoes all CREATE TABLE
+		// and INSERT statements, allowing the next startup to retry cleanly.
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin migration tx: %w", err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, initialSchema); err != nil {
+			return fmt.Errorf("apply initial schema: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration tx: %w", err)
+		}
+		return nil
+	}
+
+	// Table exists — verify version 1 was recorded.
+	var applied int
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = 1`,
+	).Scan(&applied)
+	if err != nil {
+		return fmt.Errorf("check migration version: %w", err)
+	}
+	if applied == 0 {
+		return fmt.Errorf("schema_migrations exists but version 1 is not recorded")
+	}
+	return nil
 }
 
 // MarkInterrupted sets status = 'interrupted' for any run that was in
@@ -64,12 +104,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 // Called once at startup before accepting traffic (ADR-011).
 func (s *Store) MarkInterrupted(ctx context.Context) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	// TODO(issue #2): move to internal/db/queries/ and regenerate via sqlc.
-	// Inline SQL is a temporary placeholder until the sqlc layer is bootstrapped.
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET status = 'interrupted', completed_at = ?
-		 WHERE status IN ('running', 'waiting_for_approval')`, now)
-	if err != nil {
+	if err := s.Queries.MarkInterruptedRuns(ctx, &now); err != nil {
 		return fmt.Errorf("mark interrupted runs: %w", err)
 	}
 	return nil

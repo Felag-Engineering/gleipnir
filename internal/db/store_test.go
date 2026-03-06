@@ -155,39 +155,77 @@ func checkPragmas(t *testing.T, s *Store) {
 	}
 }
 
-// applyTestSchema creates the minimal tables needed for MarkInterrupted tests.
-// Switch to s.Migrate() once issue #2 implements it.
 func applyTestSchema(t *testing.T, s *Store) {
 	t.Helper()
-	_, err := s.DB().Exec(`
-		CREATE TABLE policies (
-			id           TEXT PRIMARY KEY,
-			name         TEXT NOT NULL UNIQUE,
-			trigger_type TEXT NOT NULL,
-			yaml         TEXT NOT NULL,
-			created_at   TEXT NOT NULL,
-			updated_at   TEXT NOT NULL
-		);
-		CREATE TABLE runs (
-			id              TEXT PRIMARY KEY,
-			policy_id       TEXT NOT NULL REFERENCES policies(id),
-			status          TEXT NOT NULL CHECK(status IN (
-								'pending','running','waiting_for_approval',
-								'complete','failed','interrupted'
-							)),
-			trigger_type    TEXT NOT NULL,
-			trigger_payload TEXT NOT NULL,
-			started_at      TEXT NOT NULL,
-			completed_at    TEXT,
-			token_cost      INTEGER NOT NULL DEFAULT 0,
-			error           TEXT,
-			thread_id       TEXT,
-			created_at      TEXT NOT NULL
-		);
-	`)
-	if err != nil {
+	if err := s.Migrate(context.Background()); err != nil {
 		t.Fatalf("apply test schema: %v", err)
 	}
+}
+
+func TestMigrate(t *testing.T) {
+	newStore := func(t *testing.T) *Store {
+		t.Helper()
+		s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		t.Cleanup(func() { s.Close() })
+		return s
+	}
+
+	t.Run("clean state", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.Migrate(context.Background()); err != nil {
+			t.Fatalf("Migrate: %v", err)
+		}
+		// SELECT version = 1 in the WHERE clause means the predicate is already
+		// the assertion; use COUNT so the check fails visibly if the row is absent.
+		var count int
+		if err := s.DB().QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = 1`).Scan(&count); err != nil {
+			t.Fatalf("query schema_migrations: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("schema_migrations: version 1 row not found")
+		}
+	})
+
+	t.Run("idempotent", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.Migrate(context.Background()); err != nil {
+			t.Fatalf("first Migrate: %v", err)
+		}
+		if err := s.Migrate(context.Background()); err != nil {
+			t.Fatalf("second Migrate: %v", err)
+		}
+	})
+
+	t.Run("tables exist", func(t *testing.T) {
+		s := newStore(t)
+		if err := s.Migrate(context.Background()); err != nil {
+			t.Fatalf("Migrate: %v", err)
+		}
+		want := []string{
+			"schema_migrations",
+			"mcp_servers",
+			"mcp_tools",
+			"policies",
+			"runs",
+			"run_steps",
+			"approval_requests",
+		}
+		for _, table := range want {
+			var count int
+			err := s.DB().QueryRow(
+				`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table,
+			).Scan(&count)
+			if err != nil {
+				t.Fatalf("check table %s: %v", table, err)
+			}
+			if count != 1 {
+				t.Errorf("table %q not found in sqlite_master", table)
+			}
+		}
+	})
 }
 
 func insertPolicy(t *testing.T, s *Store, id string) {
