@@ -9,10 +9,14 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	_ "modernc.org/sqlite" // register the sqlite driver
+
+	"github.com/rapp992/gleipnir/internal/model"
 )
 
 //go:embed migrations/0001_initial.sql
@@ -101,13 +105,63 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
-// MarkInterrupted sets status = 'interrupted' for any run that was in
-// 'running' or 'waiting_for_approval' state when the process last exited.
-// Called once at startup before accepting traffic (ADR-011).
-func (s *Store) MarkInterrupted(ctx context.Context) error {
+// ScanOrphanedRuns finds any runs left in 'running' or 'waiting_for_approval'
+// state from a previous process crash, inserts an error run_step for each,
+// and marks them 'interrupted'. Called once at startup before accepting traffic
+// (ADR-011). Errors for individual runs are logged and skipped — startup must
+// not be blocked by a partially-corrupted run.
+func (s *Store) ScanOrphanedRuns(ctx context.Context, logger *slog.Logger) error {
+	runs, err := s.Queries.ListOrphanedRuns(ctx)
+	if err != nil {
+		return fmt.Errorf("list orphaned runs: %w", err)
+	}
+	if len(runs) == 0 {
+		return nil
+	}
+
+	for _, run := range runs {
+		if err := s.interruptOrphanedRun(ctx, run.ID); err != nil {
+			logger.Error("failed to mark orphaned run as interrupted", "run_id", run.ID, "err", err)
+			continue
+		}
+		logger.Warn("marked orphaned run as interrupted", "run_id", run.ID)
+	}
+	return nil
+}
+
+// interruptOrphanedRun inserts an error step and updates the run to 'interrupted'.
+func (s *Store) interruptOrphanedRun(ctx context.Context, runID string) error {
+	count, err := s.Queries.CountRunSteps(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("count run steps: %w", err)
+	}
+
+	content, _ := json.Marshal(map[string]string{
+		"message": "run interrupted by process restart",
+		"code":    "interrupted",
+	})
+
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if err := s.Queries.MarkInterruptedRuns(ctx, &now); err != nil {
-		return fmt.Errorf("mark interrupted runs: %w", err)
+	if _, err := s.Queries.CreateRunStep(ctx, CreateRunStepParams{
+		ID:         model.NewULID(),
+		RunID:      runID,
+		StepNumber: count + 1,
+		Type:       string(model.StepTypeError),
+		Content:    string(content),
+		TokenCost:  0,
+		CreatedAt:  now,
+	}); err != nil {
+		return fmt.Errorf("create error step: %w", err)
+	}
+
+	errMsg := "process restarted while run was active"
+	if err := s.Queries.UpdateRunError(ctx, UpdateRunErrorParams{
+		Status:      string(model.RunStatusInterrupted),
+		Error:       &errMsg,
+		CompletedAt: &now,
+		ID:          runID,
+	}); err != nil {
+		return fmt.Errorf("update run error: %w", err)
 	}
 	return nil
 }

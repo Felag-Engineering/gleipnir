@@ -2,6 +2,9 @@ package db
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"testing"
 	"time"
@@ -74,34 +77,51 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
-func TestMarkInterrupted(t *testing.T) {
-	t.Run("updates running and waiting_for_approval", func(t *testing.T) {
+func TestScanOrphanedRuns(t *testing.T) {
+	// discardLogger silences log output during tests so scan results are
+	// verified via DB state rather than log assertions.
+	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("zero orphans: returns nil, no steps created", func(t *testing.T) {
+		s := newTestStore(t)
+		if err := s.ScanOrphanedRuns(context.Background(), discardLogger); err != nil {
+			t.Fatalf("ScanOrphanedRuns on empty db: %v", err)
+		}
+		var count int64
+		if err := s.DB().QueryRow(`SELECT COUNT(*) FROM run_steps`).Scan(&count); err != nil {
+			t.Fatalf("count run_steps: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("expected 0 run_steps, got %d", count)
+		}
+	})
+
+	t.Run("multiple orphans: running and waiting_for_approval get interrupted, complete is untouched", func(t *testing.T) {
 		s := newTestStore(t)
 		insertPolicy(t, s, "p1")
-
-		// These two statuses must be marked interrupted.
 		insertRun(t, s, "r-running", "p1", "running")
 		insertRun(t, s, "r-waiting", "p1", "waiting_for_approval")
-		// All other statuses must be left untouched.
-		insertRun(t, s, "r-pending", "p1", "pending")
 		insertRun(t, s, "r-complete", "p1", "complete")
-		insertRun(t, s, "r-failed", "p1", "failed")
-		insertRun(t, s, "r-interrupted", "p1", "interrupted")
 
 		before := time.Now()
-		if err := s.MarkInterrupted(context.Background()); err != nil {
-			t.Fatalf("MarkInterrupted: %v", err)
+		if err := s.ScanOrphanedRuns(context.Background(), discardLogger); err != nil {
+			t.Fatalf("ScanOrphanedRuns: %v", err)
 		}
 
+		// Both orphaned runs must be interrupted with a completed_at, error, and an error step.
 		for _, id := range []string{"r-running", "r-waiting"} {
-			var status, completedAt string
-			err := s.DB().QueryRow(`SELECT status, completed_at FROM runs WHERE id = ?`, id).
-				Scan(&status, &completedAt)
+			var status, completedAt, errField string
+			err := s.DB().QueryRow(
+				`SELECT status, completed_at, error FROM runs WHERE id = ?`, id,
+			).Scan(&status, &completedAt, &errField)
 			if err != nil {
 				t.Fatalf("query run %s: %v", id, err)
 			}
 			if status != "interrupted" {
 				t.Errorf("run %s: status = %q, want %q", id, status, "interrupted")
+			}
+			if errField == "" {
+				t.Errorf("run %s: error field is empty", id)
 			}
 			ts, err := time.Parse(time.RFC3339Nano, completedAt)
 			if err != nil {
@@ -109,29 +129,118 @@ func TestMarkInterrupted(t *testing.T) {
 			} else if ts.Before(before) {
 				t.Errorf("run %s: completed_at %v is before test start %v", id, ts, before)
 			}
+
+			// Each orphaned run must have exactly one error step with the expected content.
+			var stepType, content string
+			err = s.DB().QueryRow(
+				`SELECT type, content FROM run_steps WHERE run_id = ?`, id,
+			).Scan(&stepType, &content)
+			if err != nil {
+				t.Fatalf("query run_step for %s: %v", id, err)
+			}
+			if stepType != "error" {
+				t.Errorf("run %s: step type = %q, want %q", id, stepType, "error")
+			}
+			var payload map[string]string
+			if err := json.Unmarshal([]byte(content), &payload); err != nil {
+				t.Errorf("run %s: step content not valid JSON: %v", id, err)
+			} else {
+				if payload["code"] != "interrupted" {
+					t.Errorf("run %s: step content code = %q, want %q", id, payload["code"], "interrupted")
+				}
+				if payload["message"] == "" {
+					t.Errorf("run %s: step content message is empty", id)
+				}
+			}
 		}
 
-		unchanged := map[string]string{
-			"r-pending":     "pending",
-			"r-complete":    "complete",
-			"r-failed":      "failed",
-			"r-interrupted": "interrupted",
+		// The complete run must be entirely untouched.
+		var status string
+		if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = 'r-complete'`).Scan(&status); err != nil {
+			t.Fatalf("query r-complete: %v", err)
 		}
-		for id, want := range unchanged {
-			var got string
-			if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = ?`, id).Scan(&got); err != nil {
-				t.Fatalf("query run %s: %v", id, err)
-			}
-			if got != want {
-				t.Errorf("run %s: status = %q, want %q (should be untouched)", id, got, want)
-			}
+		if status != "complete" {
+			t.Errorf("r-complete: status = %q, want %q (should be untouched)", status, "complete")
+		}
+		var stepCount int64
+		if err := s.DB().QueryRow(`SELECT COUNT(*) FROM run_steps WHERE run_id = 'r-complete'`).Scan(&stepCount); err != nil {
+			t.Fatalf("count steps for r-complete: %v", err)
+		}
+		if stepCount != 0 {
+			t.Errorf("r-complete: got %d run_steps, want 0", stepCount)
 		}
 	})
 
-	t.Run("no-op when no active runs", func(t *testing.T) {
+	t.Run("orphaned run with existing steps: error step gets next step_number", func(t *testing.T) {
 		s := newTestStore(t)
-		if err := s.MarkInterrupted(context.Background()); err != nil {
-			t.Fatalf("MarkInterrupted on empty db: %v", err)
+		insertPolicy(t, s, "p1")
+		insertRun(t, s, "r1", "p1", "running")
+
+		// Pre-insert 2 steps so the error step should get step_number = 3.
+		_, err := s.DB().Exec(
+			`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
+			 VALUES ('s1', 'r1', 1, 'thought', '{}', '2024-01-01T00:00:00Z'),
+			        ('s2', 'r1', 2, 'tool_call', '{}', '2024-01-01T00:00:00Z')`,
+		)
+		if err != nil {
+			t.Fatalf("insert existing steps: %v", err)
+		}
+
+		if err := s.ScanOrphanedRuns(context.Background(), discardLogger); err != nil {
+			t.Fatalf("ScanOrphanedRuns: %v", err)
+		}
+
+		var stepNumber int64
+		err = s.DB().QueryRow(
+			`SELECT step_number FROM run_steps WHERE run_id = 'r1' AND type = 'error'`,
+		).Scan(&stepNumber)
+		if err != nil {
+			t.Fatalf("query error step: %v", err)
+		}
+		if stepNumber != 3 {
+			t.Errorf("error step step_number = %d, want 3", stepNumber)
+		}
+	})
+
+	t.Run("partial failure: second run still gets marked when first fails", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "p1")
+		insertRun(t, s, "r1", "p1", "running")
+		insertRun(t, s, "r2", "p1", "running")
+
+		// Install a trigger that makes any run_step INSERT for r1 fail. This
+		// simulates a DB error mid-scan without needing mocks or concurrency.
+		_, err := s.DB().Exec(`
+			CREATE TRIGGER fail_r1_step
+			BEFORE INSERT ON run_steps
+			WHEN NEW.run_id = 'r1'
+			BEGIN SELECT RAISE(FAIL, 'injected failure for test'); END
+		`)
+		if err != nil {
+			t.Fatalf("create trigger: %v", err)
+		}
+
+		// ScanOrphanedRuns must return nil even though r1 fails — errors are logged.
+		if err := s.ScanOrphanedRuns(context.Background(), discardLogger); err != nil {
+			t.Fatalf("ScanOrphanedRuns returned error, want nil: %v", err)
+		}
+
+		// r1 is NOT interrupted because its step insertion failed and the run was skipped.
+		var r1Status string
+		if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = 'r1'`).Scan(&r1Status); err != nil {
+			t.Fatalf("query r1: %v", err)
+		}
+		if r1Status != "running" {
+			t.Errorf("r1: status = %q, want %q (step insertion should have failed)", r1Status, "running")
+		}
+
+		// r2 is interrupted despite r1's failure.
+		var r2Status string
+		if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = 'r2'`).Scan(&r2Status); err != nil {
+			t.Fatalf("query r2: %v", err)
+		}
+		if r2Status != "interrupted" {
+			t.Errorf("r2: status = %q, want %q (should be marked even after r1 failure)", r2Status, "interrupted")
 		}
 	})
 }

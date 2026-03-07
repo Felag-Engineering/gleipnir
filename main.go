@@ -41,8 +41,8 @@ func run() error {
 	}
 
 	// Mark any in-flight runs as interrupted (ADR-011).
-	if err := store.MarkInterrupted(context.Background()); err != nil {
-		return fmt.Errorf("mark interrupted runs: %w", err)
+	if err := store.ScanOrphanedRuns(context.Background(), slog.Default()); err != nil {
+		return fmt.Errorf("scan orphaned runs: %w", err)
 	}
 
 	r := chi.NewRouter()

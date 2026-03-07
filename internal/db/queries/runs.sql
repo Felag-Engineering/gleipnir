@@ -21,10 +21,8 @@ UPDATE runs SET status = :status, error = :error, completed_at = :completed_at W
 -- name: IncrementRunTokenCost :exec
 UPDATE runs SET token_cost = token_cost + :token_cost WHERE id = :id;
 
--- name: MarkInterruptedRuns :exec
-UPDATE runs
-SET status = 'interrupted', completed_at = :completed_at
-WHERE status IN ('running', 'waiting_for_approval');
+-- name: ListOrphanedRuns :many
+SELECT * FROM runs WHERE status IN ('running', 'waiting_for_approval');
 
 -- name: ListRunsByStatus :many
 SELECT * FROM runs WHERE status = :status ORDER BY created_at ASC;
