@@ -2,10 +2,11 @@ package agent
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 )
 
@@ -21,10 +22,9 @@ type Step struct {
 // SQLite write contention under concurrent runs (ADR-003).
 // It must be closed after the run completes to flush the queue.
 type AuditWriter struct {
-	db    *sql.DB
-	queue chan writeRequest
-	done  chan struct{}
-	errCh chan error
+	queries *db.Queries
+	queue   chan writeRequest
+	done    chan struct{}
 }
 
 type writeRequest struct {
@@ -32,13 +32,26 @@ type writeRequest struct {
 	resp chan error
 }
 
+// Option configures an AuditWriter.
+type Option func(*AuditWriter)
+
+// WithQueueDepth sets the capacity of the internal write queue.
+// The default is 256.
+func WithQueueDepth(n int) Option {
+	return func(w *AuditWriter) {
+		w.queue = make(chan writeRequest, n)
+	}
+}
+
 // NewAuditWriter creates an AuditWriter and starts the background write loop.
-func NewAuditWriter(db *sql.DB) *AuditWriter {
+func NewAuditWriter(queries *db.Queries, opts ...Option) *AuditWriter {
 	w := &AuditWriter{
-		db:    db,
-		queue: make(chan writeRequest, 64),
-		done:  make(chan struct{}),
-		errCh: make(chan error, 1),
+		queries: queries,
+		queue:   make(chan writeRequest, 256),
+		done:    make(chan struct{}),
+	}
+	for _, opt := range opts {
+		opt(w)
 	}
 	go w.loop()
 	return w
@@ -67,27 +80,55 @@ func (w *AuditWriter) Write(ctx context.Context, step Step) error {
 func (w *AuditWriter) Close() error {
 	close(w.queue)
 	<-w.done
-	select {
-	case err := <-w.errCh:
-		return err
-	default:
-		return nil
-	}
+	return nil
 }
 
 // loop is the single writer goroutine. It pulls from the queue and writes
-// each step to the DB, assigning sequential step numbers.
+// each step to the DB, assigning sequential step numbers per run.
+// Uses context.Background() for DB calls so that drain completes even after
+// caller context cancellation.
 func (w *AuditWriter) loop() {
 	defer close(w.done)
-	// TODO: maintain a per-run step counter; for each writeRequest:
-	//   1. Increment counter, generate ULID
-	//   2. JSON-marshal step.Content
-	//   3. INSERT into run_steps
-	//   4. UPDATE runs.token_cost += step.TokenCost
-	//   5. Send nil or error to req.resp
-	_ = fmt.Errorf
-	_ = time.Now
+
+	// counters tracks the next step_number for each run. Because loop() is
+	// the only goroutine writing this map, no mutex is needed.
+	counters := make(map[string]int64)
+
 	for req := range w.queue {
-		req.resp <- fmt.Errorf("not implemented")
+		counters[req.step.RunID]++
+		stepNum := counters[req.step.RunID]
+
+		content, err := json.Marshal(req.step.Content)
+		if err != nil {
+			req.resp <- fmt.Errorf("marshal step content: %w", err)
+			continue
+		}
+
+		_, err = w.queries.CreateRunStep(context.Background(), db.CreateRunStepParams{
+			ID:         model.NewULID(),
+			RunID:      req.step.RunID,
+			StepNumber: stepNum,
+			Type:       req.step.Type.String(),
+			Content:    string(content),
+			TokenCost:  int64(req.step.TokenCost),
+			CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		})
+		if err != nil {
+			req.resp <- fmt.Errorf("create run step: %w", err)
+			continue
+		}
+
+		if req.step.TokenCost > 0 {
+			err = w.queries.IncrementRunTokenCost(context.Background(), db.IncrementRunTokenCostParams{
+				TokenCost: int64(req.step.TokenCost),
+				ID:        req.step.RunID,
+			})
+			if err != nil {
+				req.resp <- fmt.Errorf("increment token cost: %w", err)
+				continue
+			}
+		}
+
+		req.resp <- nil
 	}
 }
