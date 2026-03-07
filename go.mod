@@ -7,6 +7,7 @@ toolchain go1.24.4
 require (
 	github.com/anthropics/anthropic-sdk-go v1.26.0
 	github.com/go-chi/chi/v5 v5.1.0
+	github.com/oklog/ulid/v2 v2.1.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.33.1
 )

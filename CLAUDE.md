@@ -50,6 +50,8 @@ internal/
 
 ## Code style
 
+**Readable and understandable first.** This codebase should be easy to read and reason about for anyone picking it up. Prefer code that is immediately clear over code that is compact or "elegant". When in doubt, optimize for the next reader.
+
 **Explicit over clever.** If there's a straightforward way and a clever way, write the straightforward way.
 
 **Strict error handling.** Never swallow errors. Wrap with context:
