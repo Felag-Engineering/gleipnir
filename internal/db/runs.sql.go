@@ -11,7 +11,7 @@ import (
 
 const createRun = `-- name: CreateRun :one
 INSERT INTO runs (id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
-VALUES (?, ?, 'pending', ?, ?, ?, ?)
+VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6)
 RETURNING id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at
 `
 
@@ -24,6 +24,9 @@ type CreateRunParams struct {
 	CreatedAt      string `json:"created_at"`
 }
 
+// CreateRun: note that started_at is recorded at pending-creation time, not at
+// the running transition. Accurate run-start timing will require making
+// started_at nullable and a schema migration -- tracked as a separate issue.
 func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, error) {
 	row := q.db.QueryRowContext(ctx, createRun,
 		arg.ID,
@@ -51,7 +54,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 }
 
 const getRun = `-- name: GetRun :one
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs WHERE id = ?
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs WHERE id = ?1
 `
 
 func (q *Queries) GetRun(ctx context.Context, id string) (Run, error) {
@@ -74,7 +77,7 @@ func (q *Queries) GetRun(ctx context.Context, id string) (Run, error) {
 }
 
 const incrementRunTokenCost = `-- name: IncrementRunTokenCost :exec
-UPDATE runs SET token_cost = token_cost + ? WHERE id = ?
+UPDATE runs SET token_cost = token_cost + ?1 WHERE id = ?2
 `
 
 type IncrementRunTokenCostParams struct {
@@ -88,7 +91,7 @@ func (q *Queries) IncrementRunTokenCost(ctx context.Context, arg IncrementRunTok
 }
 
 const listRunsByPolicy = `-- name: ListRunsByPolicy :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs WHERE policy_id = ? ORDER BY created_at DESC
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs WHERE policy_id = ?1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListRunsByPolicy(ctx context.Context, policyID string) ([]Run, error) {
@@ -126,9 +129,48 @@ func (q *Queries) ListRunsByPolicy(ctx context.Context, policyID string) ([]Run,
 	return items, nil
 }
 
+const listRunsByStatus = `-- name: ListRunsByStatus :many
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs WHERE status = ?1 ORDER BY created_at ASC
+`
+
+func (q *Queries) ListRunsByStatus(ctx context.Context, status string) ([]Run, error) {
+	rows, err := q.db.QueryContext(ctx, listRunsByStatus, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.TriggerType,
+			&i.TriggerPayload,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.TokenCost,
+			&i.Error,
+			&i.ThreadID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markInterruptedRuns = `-- name: MarkInterruptedRuns :exec
 UPDATE runs
-SET status = 'interrupted', completed_at = ?
+SET status = 'interrupted', completed_at = ?1
 WHERE status IN ('running', 'waiting_for_approval')
 `
 
@@ -138,7 +180,7 @@ func (q *Queries) MarkInterruptedRuns(ctx context.Context, completedAt *string) 
 }
 
 const updateRunError = `-- name: UpdateRunError :exec
-UPDATE runs SET status = ?, error = ?, completed_at = ? WHERE id = ?
+UPDATE runs SET status = ?1, error = ?2, completed_at = ?3 WHERE id = ?4
 `
 
 type UpdateRunErrorParams struct {
@@ -159,7 +201,7 @@ func (q *Queries) UpdateRunError(ctx context.Context, arg UpdateRunErrorParams) 
 }
 
 const updateRunStatus = `-- name: UpdateRunStatus :exec
-UPDATE runs SET status = ?, completed_at = ? WHERE id = ?
+UPDATE runs SET status = ?1, completed_at = ?2 WHERE id = ?3
 `
 
 type UpdateRunStatusParams struct {
@@ -170,5 +212,21 @@ type UpdateRunStatusParams struct {
 
 func (q *Queries) UpdateRunStatus(ctx context.Context, arg UpdateRunStatusParams) error {
 	_, err := q.db.ExecContext(ctx, updateRunStatus, arg.Status, arg.CompletedAt, arg.ID)
+	return err
+}
+
+const updateRunThreadID = `-- name: UpdateRunThreadID :exec
+UPDATE runs SET thread_id = ?1 WHERE id = ?2
+`
+
+type UpdateRunThreadIDParams struct {
+	ThreadID *string `json:"thread_id"`
+	ID       string  `json:"id"`
+}
+
+// UpdateRunThreadID: populated once when the first approval notification creates
+// a Slack thread (see EPIC-010). Must only be called on a run without a thread_id.
+func (q *Queries) UpdateRunThreadID(ctx context.Context, arg UpdateRunThreadIDParams) error {
+	_, err := q.db.ExecContext(ctx, updateRunThreadID, arg.ThreadID, arg.ID)
 	return err
 }

@@ -10,7 +10,7 @@ import (
 )
 
 const countRunSteps = `-- name: CountRunSteps :one
-SELECT COUNT(*) FROM run_steps WHERE run_id = ?
+SELECT COUNT(*) FROM run_steps WHERE run_id = ?1
 `
 
 func (q *Queries) CountRunSteps(ctx context.Context, runID string) (int64, error) {
@@ -22,7 +22,7 @@ func (q *Queries) CountRunSteps(ctx context.Context, runID string) (int64, error
 
 const createRunStep = `-- name: CreateRunStep :one
 INSERT INTO run_steps (id, run_id, step_number, type, content, token_cost, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 RETURNING id, run_id, step_number, type, content, token_cost, created_at
 `
 
@@ -59,8 +59,27 @@ func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (R
 	return i, err
 }
 
+const getLatestRunStep = `-- name: GetLatestRunStep :one
+SELECT id, run_id, step_number, type, content, token_cost, created_at FROM run_steps WHERE run_id = ?1 ORDER BY step_number DESC LIMIT 1
+`
+
+func (q *Queries) GetLatestRunStep(ctx context.Context, runID string) (RunStep, error) {
+	row := q.db.QueryRowContext(ctx, getLatestRunStep, runID)
+	var i RunStep
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.StepNumber,
+		&i.Type,
+		&i.Content,
+		&i.TokenCost,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listRunSteps = `-- name: ListRunSteps :many
-SELECT id, run_id, step_number, type, content, token_cost, created_at FROM run_steps WHERE run_id = ? ORDER BY step_number ASC
+SELECT id, run_id, step_number, type, content, token_cost, created_at FROM run_steps WHERE run_id = ?1 ORDER BY step_number ASC
 `
 
 func (q *Queries) ListRunSteps(ctx context.Context, runID string) ([]RunStep, error) {

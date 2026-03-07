@@ -11,7 +11,7 @@ import (
 
 const createMCPServer = `-- name: CreateMCPServer :one
 INSERT INTO mcp_servers (id, name, url, created_at)
-VALUES (?, ?, ?, ?)
+VALUES (?1, ?2, ?3, ?4)
 RETURNING id, name, url, last_discovered_at, created_at
 `
 
@@ -41,7 +41,7 @@ func (q *Queries) CreateMCPServer(ctx context.Context, arg CreateMCPServerParams
 }
 
 const deleteMCPServer = `-- name: DeleteMCPServer :exec
-DELETE FROM mcp_servers WHERE id = ?
+DELETE FROM mcp_servers WHERE id = ?1
 `
 
 func (q *Queries) DeleteMCPServer(ctx context.Context, id string) error {
@@ -50,7 +50,7 @@ func (q *Queries) DeleteMCPServer(ctx context.Context, id string) error {
 }
 
 const getMCPServer = `-- name: GetMCPServer :one
-SELECT id, name, url, last_discovered_at, created_at FROM mcp_servers WHERE id = ?
+SELECT id, name, url, last_discovered_at, created_at FROM mcp_servers WHERE id = ?1
 `
 
 func (q *Queries) GetMCPServer(ctx context.Context, id string) (McpServer, error) {
@@ -70,6 +70,8 @@ const listMCPServers = `-- name: ListMCPServers :many
 SELECT id, name, url, last_discovered_at, created_at FROM mcp_servers ORDER BY created_at ASC
 `
 
+// ListMCPServers is ordered ASC: MCP servers are administrative objects registered
+// once; insertion order is the natural stable sort for configuration lists.
 func (q *Queries) ListMCPServers(ctx context.Context) ([]McpServer, error) {
 	rows, err := q.db.QueryContext(ctx, listMCPServers)
 	if err != nil {
@@ -100,7 +102,7 @@ func (q *Queries) ListMCPServers(ctx context.Context) ([]McpServer, error) {
 }
 
 const updateMCPServerLastDiscovered = `-- name: UpdateMCPServerLastDiscovered :exec
-UPDATE mcp_servers SET last_discovered_at = ? WHERE id = ?
+UPDATE mcp_servers SET last_discovered_at = ?1 WHERE id = ?2
 `
 
 type UpdateMCPServerLastDiscoveredParams struct {

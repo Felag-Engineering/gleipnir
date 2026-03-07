@@ -10,7 +10,7 @@ import (
 )
 
 const deleteMCPToolsByServer = `-- name: DeleteMCPToolsByServer :exec
-DELETE FROM mcp_tools WHERE server_id = ?
+DELETE FROM mcp_tools WHERE server_id = ?1
 `
 
 func (q *Queries) DeleteMCPToolsByServer(ctx context.Context, serverID string) error {
@@ -18,20 +18,39 @@ func (q *Queries) DeleteMCPToolsByServer(ctx context.Context, serverID string) e
 	return err
 }
 
+const getMCPTool = `-- name: GetMCPTool :one
+SELECT id, server_id, name, description, input_schema, capability_role, created_at FROM mcp_tools WHERE id = ?1
+`
+
+func (q *Queries) GetMCPTool(ctx context.Context, id string) (McpTool, error) {
+	row := q.db.QueryRowContext(ctx, getMCPTool, id)
+	var i McpTool
+	err := row.Scan(
+		&i.ID,
+		&i.ServerID,
+		&i.Name,
+		&i.Description,
+		&i.InputSchema,
+		&i.CapabilityRole,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getMCPToolByServerAndName = `-- name: GetMCPToolByServerAndName :one
 SELECT t.id, t.server_id, t.name, t.description, t.input_schema, t.capability_role, t.created_at
 FROM mcp_tools t
 JOIN mcp_servers s ON t.server_id = s.id
-WHERE s.name = ? AND t.name = ?
+WHERE s.name = ?1 AND t.name = ?2
 `
 
 type GetMCPToolByServerAndNameParams struct {
-	Name   string `json:"name"`
-	Name_2 string `json:"name_2"`
+	ServerName string `json:"server_name"`
+	ToolName   string `json:"tool_name"`
 }
 
 func (q *Queries) GetMCPToolByServerAndName(ctx context.Context, arg GetMCPToolByServerAndNameParams) (McpTool, error) {
-	row := q.db.QueryRowContext(ctx, getMCPToolByServerAndName, arg.Name, arg.Name_2)
+	row := q.db.QueryRowContext(ctx, getMCPToolByServerAndName, arg.ServerName, arg.ToolName)
 	var i McpTool
 	err := row.Scan(
 		&i.ID,
@@ -46,7 +65,7 @@ func (q *Queries) GetMCPToolByServerAndName(ctx context.Context, arg GetMCPToolB
 }
 
 const listMCPToolsByServer = `-- name: ListMCPToolsByServer :many
-SELECT id, server_id, name, description, input_schema, capability_role, created_at FROM mcp_tools WHERE server_id = ? ORDER BY name ASC
+SELECT id, server_id, name, description, input_schema, capability_role, created_at FROM mcp_tools WHERE server_id = ?1 ORDER BY name ASC
 `
 
 func (q *Queries) ListMCPToolsByServer(ctx context.Context, serverID string) ([]McpTool, error) {
@@ -80,9 +99,23 @@ func (q *Queries) ListMCPToolsByServer(ctx context.Context, serverID string) ([]
 	return items, nil
 }
 
+const updateMCPToolCapabilityRole = `-- name: UpdateMCPToolCapabilityRole :exec
+UPDATE mcp_tools SET capability_role = ?1 WHERE id = ?2
+`
+
+type UpdateMCPToolCapabilityRoleParams struct {
+	CapabilityRole string `json:"capability_role"`
+	ID             string `json:"id"`
+}
+
+func (q *Queries) UpdateMCPToolCapabilityRole(ctx context.Context, arg UpdateMCPToolCapabilityRoleParams) error {
+	_, err := q.db.ExecContext(ctx, updateMCPToolCapabilityRole, arg.CapabilityRole, arg.ID)
+	return err
+}
+
 const upsertMCPTool = `-- name: UpsertMCPTool :one
 INSERT INTO mcp_tools (id, server_id, name, description, input_schema, capability_role, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 ON CONFLICT (server_id, name) DO UPDATE SET
     description     = excluded.description,
     input_schema    = excluded.input_schema,

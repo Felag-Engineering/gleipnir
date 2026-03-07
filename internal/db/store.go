@@ -3,6 +3,8 @@
 // `sqlc generate` to produce internal/db/*.sql.go from internal/db/queries/).
 package db
 
+//go:generate sqlc generate -f ../../sqlc.yaml
+
 import (
 	"context"
 	"database/sql"

@@ -61,20 +61,22 @@ func TestOpen(t *testing.T) {
 	}
 }
 
-func TestMarkInterrupted(t *testing.T) {
-	newStore := func(t *testing.T) *Store {
-		t.Helper()
-		s, err := Open(filepath.Join(t.TempDir(), "test.db"))
-		if err != nil {
-			t.Fatalf("Open: %v", err)
-		}
-		t.Cleanup(func() { s.Close() })
-		applyTestSchema(t, s)
-		return s
+// newTestStore opens a fresh in-memory-backed test DB and applies the schema.
+// Use this in any test that needs a fully-migrated store.
+func newTestStore(t *testing.T) *Store {
+	t.Helper()
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
 	}
+	t.Cleanup(func() { s.Close() })
+	applyTestSchema(t, s)
+	return s
+}
 
+func TestMarkInterrupted(t *testing.T) {
 	t.Run("updates running and waiting_for_approval", func(t *testing.T) {
-		s := newStore(t)
+		s := newTestStore(t)
 		insertPolicy(t, s, "p1")
 
 		// These two statuses must be marked interrupted.
@@ -127,7 +129,7 @@ func TestMarkInterrupted(t *testing.T) {
 	})
 
 	t.Run("no-op when no active runs", func(t *testing.T) {
-		s := newStore(t)
+		s := newTestStore(t)
 		if err := s.MarkInterrupted(context.Background()); err != nil {
 			t.Fatalf("MarkInterrupted on empty db: %v", err)
 		}
@@ -229,17 +231,6 @@ func TestMigrate(t *testing.T) {
 }
 
 func TestSchemaConstraints(t *testing.T) {
-	newStore := func(t *testing.T) *Store {
-		t.Helper()
-		s, err := Open(filepath.Join(t.TempDir(), "test.db"))
-		if err != nil {
-			t.Fatalf("Open: %v", err)
-		}
-		t.Cleanup(func() { s.Close() })
-		applyTestSchema(t, s)
-		return s
-	}
-
 	t.Run("CHECK constraints reject invalid enum values", func(t *testing.T) {
 		cases := []struct {
 			name  string
@@ -327,7 +318,7 @@ func TestSchemaConstraints(t *testing.T) {
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				s := newStore(t)
+				s := newTestStore(t)
 				if tc.setup != nil {
 					tc.setup(t, s)
 				}
@@ -387,7 +378,7 @@ func TestSchemaConstraints(t *testing.T) {
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				s := newStore(t)
+				s := newTestStore(t)
 				if err := tc.exec(s); err == nil {
 					t.Error("expected foreign key error, got nil")
 				}
@@ -481,7 +472,7 @@ func TestSchemaConstraints(t *testing.T) {
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				s := newStore(t)
+				s := newTestStore(t)
 				if tc.setup != nil {
 					tc.setup(t, s)
 				}

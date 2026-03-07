@@ -11,7 +11,7 @@ import (
 
 const createApprovalRequest = `-- name: CreateApprovalRequest :one
 INSERT INTO approval_requests (id, run_id, tool_name, proposed_input, reasoning_summary, status, expires_at, created_at)
-VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)
 RETURNING id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at
 `
 
@@ -52,7 +52,7 @@ func (q *Queries) CreateApprovalRequest(ctx context.Context, arg CreateApprovalR
 }
 
 const getApprovalRequest = `-- name: GetApprovalRequest :one
-SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at FROM approval_requests WHERE id = ?
+SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at FROM approval_requests WHERE id = ?1
 `
 
 func (q *Queries) GetApprovalRequest(ctx context.Context, id string) (ApprovalRequest, error) {
@@ -73,12 +73,55 @@ func (q *Queries) GetApprovalRequest(ctx context.Context, id string) (ApprovalRe
 	return i, err
 }
 
-const listExpiredApprovalRequests = `-- name: ListExpiredApprovalRequests :many
-SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at FROM approval_requests WHERE status = 'pending' AND expires_at <= ?
+const getPendingApprovalRequestsByRun = `-- name: GetPendingApprovalRequestsByRun :many
+SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at FROM approval_requests
+WHERE run_id = ?1 AND status = 'pending'
+ORDER BY created_at ASC
 `
 
-func (q *Queries) ListExpiredApprovalRequests(ctx context.Context, expiresAt string) ([]ApprovalRequest, error) {
-	rows, err := q.db.QueryContext(ctx, listExpiredApprovalRequests, expiresAt)
+func (q *Queries) GetPendingApprovalRequestsByRun(ctx context.Context, runID string) ([]ApprovalRequest, error) {
+	rows, err := q.db.QueryContext(ctx, getPendingApprovalRequestsByRun, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ApprovalRequest
+	for rows.Next() {
+		var i ApprovalRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.ToolName,
+			&i.ProposedInput,
+			&i.ReasoningSummary,
+			&i.Status,
+			&i.DecidedAt,
+			&i.ExpiresAt,
+			&i.Note,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExpiredApprovalRequests = `-- name: ListExpiredApprovalRequests :many
+SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at FROM approval_requests WHERE status = 'pending' AND expires_at <= ?1
+`
+
+// ListExpiredApprovalRequests accepts a cutoff timestamp and returns all pending
+// requests whose expires_at is at or before that value. Callers typically pass
+// time.Now() but can pass an earlier value to query historical expiry state.
+func (q *Queries) ListExpiredApprovalRequests(ctx context.Context, cutoff string) ([]ApprovalRequest, error) {
+	rows, err := q.db.QueryContext(ctx, listExpiredApprovalRequests, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -151,8 +194,8 @@ func (q *Queries) ListPendingApprovalRequests(ctx context.Context) ([]ApprovalRe
 
 const updateApprovalRequestStatus = `-- name: UpdateApprovalRequestStatus :exec
 UPDATE approval_requests
-SET status = ?, decided_at = ?, note = ?
-WHERE id = ?
+SET status = ?1, decided_at = ?2, note = ?3
+WHERE id = ?4
 `
 
 type UpdateApprovalRequestStatusParams struct {
@@ -162,6 +205,9 @@ type UpdateApprovalRequestStatusParams struct {
 	ID        string  `json:"id"`
 }
 
+// UpdateApprovalRequestStatus: caller is responsible for valid state transitions
+// (pending -> approved / rejected / timeout). The schema CHECK constraint
+// enforces enum membership but not transition ordering.
 func (q *Queries) UpdateApprovalRequestStatus(ctx context.Context, arg UpdateApprovalRequestStatusParams) error {
 	_, err := q.db.ExecContext(ctx, updateApprovalRequestStatus,
 		arg.Status,

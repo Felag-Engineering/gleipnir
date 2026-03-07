@@ -11,7 +11,7 @@ import (
 
 const createPolicy = `-- name: CreatePolicy :one
 INSERT INTO policies (id, name, trigger_type, yaml, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 RETURNING id, name, trigger_type, yaml, created_at, updated_at
 `
 
@@ -46,7 +46,7 @@ func (q *Queries) CreatePolicy(ctx context.Context, arg CreatePolicyParams) (Pol
 }
 
 const deletePolicy = `-- name: DeletePolicy :exec
-DELETE FROM policies WHERE id = ?
+DELETE FROM policies WHERE id = ?1
 `
 
 func (q *Queries) DeletePolicy(ctx context.Context, id string) error {
@@ -55,7 +55,7 @@ func (q *Queries) DeletePolicy(ctx context.Context, id string) error {
 }
 
 const getPolicy = `-- name: GetPolicy :one
-SELECT id, name, trigger_type, yaml, created_at, updated_at FROM policies WHERE id = ?
+SELECT id, name, trigger_type, yaml, created_at, updated_at FROM policies WHERE id = ?1
 `
 
 func (q *Queries) GetPolicy(ctx context.Context, id string) (Policy, error) {
@@ -73,7 +73,7 @@ func (q *Queries) GetPolicy(ctx context.Context, id string) (Policy, error) {
 }
 
 const getPolicyByName = `-- name: GetPolicyByName :one
-SELECT id, name, trigger_type, yaml, created_at, updated_at FROM policies WHERE name = ?
+SELECT id, name, trigger_type, yaml, created_at, updated_at FROM policies WHERE name = ?1
 `
 
 func (q *Queries) GetPolicyByName(ctx context.Context, name string) (Policy, error) {
@@ -126,8 +126,8 @@ func (q *Queries) ListPolicies(ctx context.Context) ([]Policy, error) {
 
 const updatePolicy = `-- name: UpdatePolicy :one
 UPDATE policies
-SET yaml = ?, updated_at = ?
-WHERE id = ?
+SET yaml = ?1, updated_at = ?2
+WHERE id = ?3
 RETURNING id, name, trigger_type, yaml, created_at, updated_at
 `
 
