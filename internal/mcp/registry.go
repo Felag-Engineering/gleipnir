@@ -3,8 +3,10 @@ package mcp
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
@@ -38,15 +40,105 @@ func NewRegistry(db *sql.DB) *Registry {
 	return &Registry{db: db}
 }
 
+// splitToolName splits a dot-notation tool name (e.g. "my-server.read_pods")
+// into its server and tool components. Both parts must be non-empty.
+func splitToolName(dotName string) (serverName, toolName string, err error) {
+	parts := strings.SplitN(dotName, ".", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("tool name %q must be in server.tool dot-notation", dotName)
+	}
+	return parts[0], parts[1], nil
+}
+
 // ResolveForPolicy resolves the granted tool list for a parsed policy,
 // returning a ResolvedTool for each entry in capabilities.sensors and
 // capabilities.actuators. Returns an error if any tool reference is not
 // found in the DB — this is the fail-fast check at run start.
 func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) ([]ResolvedTool, error) {
-	// TODO: for each sensor and actuator in p.Capabilities, look up the
-	// server and tool by dot-notation name, construct a Client, and return
-	// the resolved list. Fail fast if any tool is missing.
-	panic("not implemented")
+	q := db.New(r.db)
+	var result []ResolvedTool
+
+	for _, s := range p.Capabilities.Sensors {
+		serverName, toolName, err := splitToolName(s.Tool)
+		if err != nil {
+			return nil, fmt.Errorf("resolve sensor %q: %w", s.Tool, err)
+		}
+
+		tool, err := q.GetMCPToolByServerAndName(ctx, db.GetMCPToolByServerAndNameParams{
+			ServerName: serverName,
+			ToolName:   toolName,
+		})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("sensor tool %q not found in registry", s.Tool)
+			}
+			return nil, fmt.Errorf("look up sensor tool %q: %w", s.Tool, err)
+		}
+
+		srv, err := q.GetMCPServer(ctx, tool.ServerID)
+		if err != nil {
+			return nil, fmt.Errorf("get server for sensor tool %q: %w", s.Tool, err)
+		}
+
+		result = append(result, ResolvedTool{
+			GrantedTool: model.GrantedTool{
+				ServerName: serverName,
+				ToolName:   toolName,
+				Role:       model.CapabilityRoleSensor,
+				Approval:   model.ApprovalModeNone,
+				Timeout:    0,
+				OnTimeout:  "",
+				Params:     s.Params,
+			},
+			Client: NewClient(srv.Url),
+		})
+	}
+
+	for _, a := range p.Capabilities.Actuators {
+		serverName, toolName, err := splitToolName(a.Tool)
+		if err != nil {
+			return nil, fmt.Errorf("resolve actuator %q: %w", a.Tool, err)
+		}
+
+		tool, err := q.GetMCPToolByServerAndName(ctx, db.GetMCPToolByServerAndNameParams{
+			ServerName: serverName,
+			ToolName:   toolName,
+		})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("actuator tool %q not found in registry", a.Tool)
+			}
+			return nil, fmt.Errorf("look up actuator tool %q: %w", a.Tool, err)
+		}
+
+		srv, err := q.GetMCPServer(ctx, tool.ServerID)
+		if err != nil {
+			return nil, fmt.Errorf("get server for actuator tool %q: %w", a.Tool, err)
+		}
+
+		var timeout time.Duration
+		if a.Timeout != "" {
+			timeout, err = time.ParseDuration(a.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("parse timeout for actuator tool %q: %w", a.Tool, err)
+			}
+		}
+
+		result = append(result, ResolvedTool{
+			GrantedTool: model.GrantedTool{
+				ServerName: serverName,
+				ToolName:   toolName,
+				Role:       model.CapabilityRoleActuator,
+				Approval:   a.Approval,
+				Timeout:    timeout,
+				OnTimeout:  a.OnTimeout,
+				Params:     a.Params,
+			},
+			Client: NewClient(srv.Url),
+		})
+	}
+
+	return result, nil
 }
 
 // RegisterServer stores a new MCP server record, discovers its tools via the
