@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -535,6 +536,83 @@ func TestRun_ContextCancellation(t *testing.T) {
 	}
 	if run.Status != string(model.RunStatusFailed) {
 		t.Errorf("run status = %q, want %q", run.Status, model.RunStatusFailed)
+	}
+}
+
+func TestRun_MissingCapabilityFailsFast(t *testing.T) {
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	insertRun(t, s, "r1", "p1", "pending")
+
+	// Policy references a sensor tool that is not in the MCP registry.
+	p := &model.ParsedPolicy{
+		Name: "test-policy",
+		Agent: model.AgentConfig{
+			Task: "test task",
+		},
+		Capabilities: model.CapabilitiesConfig{
+			Sensors: []model.SensorCapability{
+				{Tool: "myserver.missing_tool"},
+			},
+		},
+	}
+
+	// Pre-canned response to verify the Claude API is NEVER called.
+	msgs := &fakeMessages{responses: []*anthropic.Message{
+		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
+	}}
+
+	w := NewAuditWriter(s.Queries)
+	// No tools registered — myserver.missing_tool cannot be resolved.
+	ba, err := New(Config{
+		Claude:           &anthropic.Client{},
+		Tools:            nil,
+		Policy:           p,
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		MessagesOverride: msgs,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	runErr := ba.Run(context.Background(), "r1", "trigger")
+	w.Close()
+
+	if runErr == nil {
+		t.Fatal("expected error for missing capability, got nil")
+	}
+	if msgs.calls != 0 {
+		t.Errorf("Claude API calls = %d, want 0 (should fail before any API call)", msgs.calls)
+	}
+
+	// Run must be marked failed in the DB.
+	run, dbErr := s.GetRun(context.Background(), "r1")
+	if dbErr != nil {
+		t.Fatalf("GetRun: %v", dbErr)
+	}
+	if run.Status != string(model.RunStatusFailed) {
+		t.Errorf("run status = %q, want %q", run.Status, model.RunStatusFailed)
+	}
+
+	// An error step with code MISSING_CAPABILITY and the tool name in the message must exist.
+	steps, err := s.ListRunSteps(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	var capErrFound bool
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeError) {
+			var content map[string]string
+			if err := json.Unmarshal([]byte(step.Content), &content); err == nil {
+				if content["code"] == "MISSING_CAPABILITY" && strings.Contains(content["message"], "myserver.missing_tool") {
+					capErrFound = true
+				}
+			}
+		}
+	}
+	if !capErrFound {
+		t.Error("expected error step with code 'MISSING_CAPABILITY' and message containing 'myserver.missing_tool'")
 	}
 }
 

@@ -110,16 +110,50 @@ func (a *BoundAgent) failRun(ctx context.Context, runErr error) error {
 	return runErr
 }
 
+// checkCapabilities verifies every capability reference in the policy resolves
+// to a tool registered at BoundAgent construction time. Called at the start of
+// Run(), before the pending→running transition, so a run with unresolvable
+// capabilities fails immediately without ever appearing as running.
+func (a *BoundAgent) checkCapabilities() error {
+	for _, s := range a.policy.Capabilities.Sensors {
+		if _, ok := a.toolsByName[s.Tool]; !ok {
+			return fmt.Errorf("capability '%s' not found in MCP registry — verify the MCP server is registered and the tool exists", s.Tool)
+		}
+	}
+	for _, act := range a.policy.Capabilities.Actuators {
+		if _, ok := a.toolsByName[act.Tool]; !ok {
+			return fmt.Errorf("capability '%s' not found in MCP registry — verify the MCP server is registered and the tool exists", act.Tool)
+		}
+	}
+	for _, name := range a.policy.Capabilities.Feedback {
+		if _, ok := a.toolsByName[name]; !ok {
+			return fmt.Errorf("capability '%s' not found in MCP registry — verify the MCP server is registered and the tool exists", name)
+		}
+	}
+	return nil
+}
+
 // Run executes the agent loop for a single run. It drives the Claude API
 // until the model produces end_turn or the run limits are exceeded.
 // Run returns nil on clean completion, or a wrapped error on failure.
 // Run owns the run's status transitions: it moves the run to running on entry,
 // complete on success, and failed on any error path.
 func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload string) error {
-	// The pending→running transition must always succeed regardless of the caller's
-	// context state — we want "running" in the DB before doing any real work, and
-	// the context-cancellation check in the loop below will call failRun immediately
-	// if the context is already done.
+	// Fail fast before entering running state: every capability referenced by the
+	// policy must resolve to a registered tool. Checked here (pending→failed) so the
+	// run never briefly appears running when it has no chance of succeeding.
+	if err := a.checkCapabilities(); err != nil {
+		_ = a.audit.Write(ctx, Step{
+			RunID:   runID,
+			Type:    model.StepTypeError,
+			Content: map[string]string{"message": err.Error(), "code": "MISSING_CAPABILITY"},
+		})
+		return a.failRun(ctx, err)
+	}
+
+	// Transition to running only after pre-flight checks pass. Use
+	// context.Background() so the DB write lands even if the caller's context
+	// is already cancelled — the loop will detect cancellation immediately.
 	if err := a.sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
 		// Best-effort: attempt to mark the run failed. If this also fails, log and
 		// return the original transition error — the run will be cleaned up by the
