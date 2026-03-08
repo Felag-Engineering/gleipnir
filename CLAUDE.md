@@ -2,7 +2,21 @@
 
 Gleipnir is a homelab-scale autonomous agent orchestrator. It runs AI agents as **Fetters** — agents with hard capability enforcement (no prompt-based restrictions), a full audit trail, and human-in-the-loop controls.
 
-## Planned stack
+## Commands
+
+```bash
+go build ./...           # build
+go test ./...            # run all tests
+go test ./internal/...   # run only internal package tests
+sqlc generate            # regenerate internal/db/ from internal/db/queries/*.sql
+docker compose up        # run full stack (Go + nginx + frontend)
+```
+
+**Environment variables** (with defaults):
+- `GLEIPNIR_DB_PATH` — SQLite file path (default: `/data/gleipnir.db`)
+- `GLEIPNIR_LISTEN_ADDR` — HTTP listen address (default: `:8080`)
+
+## Stack
 
 - **Backend:** Go, [chi](https://github.com/go-chi/chi) router, [sqlc](https://sqlc.dev/) for type-safe queries, official [Anthropic Go SDK](https://github.com/anthropics/anthropic-sdk-go)
 - **Frontend:** React, served via nginx, proxies `/api` to the Go container
@@ -31,7 +45,9 @@ The Go server handles policy management, agent orchestration, and the reasoning 
 1. Agent-initiated: agent calls feedback tool voluntarily
 2. Policy-gated: actuators marked `approval: required` are intercepted by the runtime before execution — hard guarantee, not prompt-based
 
-## Key packages (planned structure)
+## Key packages
+
+See `docs/architecture.md` for the full package dependency graph (Mermaid diagram).
 
 ```
 schemas/
@@ -39,14 +55,16 @@ schemas/
   sql_schemas.sql   — schema that explains the different tables in our datastore
 
 internal/
-  db/               — sqlc-generated data access layer
+  db/               — sqlc-generated data access layer; queries live in internal/db/queries/
   model/            — domain types (Policy, Run, RunStep, ApprovalRequest, ...)
   policy/           — YAML parser, validator, system prompt renderer
   mcp/              — MCP HTTP client, tool registry, capability tags
   agent/            — BoundAgent runner, Claude API loop, audit writer
-  trigger/          — webhook handler, cron scheduler, poll engine (v0.3)
-  notify/           — feedback channel, notification dispatch (v0.2+)
+  trigger/          — webhook handler; cron/poll stubs (v0.3)
+  notify/           — feedback channel, notification dispatch (stub, v0.2+)
 ```
+
+**ADRs:** Architectural decisions are referenced in docs/ADR_Tracker.md, decisions should be tracked there and this document should be updated anytime architectural decisions are made. Do not refernce in source code but do reference in commit messages and PR messages.
 
 ## Code style
 

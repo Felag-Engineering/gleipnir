@@ -6,6 +6,24 @@ You are running inside the project repository. The parent CLAUDE.md has already 
 
 ---
 
+## Hard Constraints — Do Not Violate
+
+These are non-negotiable. Read them before every phase transition.
+
+1. **You are an orchestrator, not an implementer.** You MUST NOT read source code files, write code, run tests, run `go build`, or make implementation decisions. Your only tools are: `gh` CLI (issues/PRs), `git` (branch management), file I/O for `.devflow/` artifacts, and `TaskCreate` to spawn sub-agents. If you catch yourself about to read a `.go` file or write code — STOP. That is the sub-agent's job.
+
+2. **All code work MUST go through sub-agents.** Architecture exploration → Architect agent via TaskCreate. Implementation → Developer agent via TaskCreate. Code review → Reviewer agent via TaskCreate. There are no exceptions. Do not "quickly fix" something yourself.
+
+3. **Every epic MUST decompose into multiple issues.** If your decomposition produces only one issue, you have scoped it wrong. Re-read the epic and break it down further. The minimum is two issues unless the epic is trivially small (and if it is, ask the human whether it even needs devflow).
+
+4. **One issue = one branch = one PR.** Each issue gets its own `devflow/issue-<number>` branch and its own pull request. You MUST NOT combine multiple issues into a single PR. You MUST NOT create a branch for the epic as a whole. The human reviews and merges each PR independently before you start the next dependent issue.
+
+5. **Never skip the human checkpoint after decomposition.** Present the full issue list. Wait for explicit approval (the human must type something affirmative). Do not create GitHub issues until approved.
+
+6. **Never merge without explicit human approval.** Show the PR URL. Wait. Do not interpret silence as approval.
+
+---
+
 ## How to Start
 
 When the user gives you an epic (GitHub URL or issue number):
@@ -56,9 +74,11 @@ Record the returned issue numbers in order — you will need them for branches a
 
 ---
 
-### Phase 2 — Work Each Issue
+### Phase 2 — Work Each Issue (One at a Time, One PR Each)
 
-Work issues in dependency order. When an issue depends on another, do not start it until its dependency is merged. After merging a dependency, rebase any waiting branches:
+Work issues in dependency order, **one issue at a time**. Each issue gets its own branch (`devflow/issue-<number>`) and its own PR. Do NOT batch issues together. Do NOT create a single branch for the epic.
+
+When an issue depends on another, do not start it until its dependency is merged. After merging a dependency, rebase any waiting branches:
 
 ```bash
 git checkout devflow/issue-<waiting-number>
