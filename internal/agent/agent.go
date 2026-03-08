@@ -4,84 +4,411 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/policy"
 )
+
+// messagesAPI is the subset of the Anthropic Messages service used by BoundAgent.
+// Extracted as an interface for testing — real code uses cfg.Claude.Messages directly.
+type messagesAPI interface {
+	New(ctx context.Context, body anthropic.MessageNewParams, opts ...option.RequestOption) (*anthropic.Message, error)
+}
+
+// resolvedToolEntry holds a ResolvedTool paired with its narrowed JSON schema.
+type resolvedToolEntry struct {
+	tool           mcp.ResolvedTool
+	narrowedSchema json.RawMessage
+}
 
 // BoundAgent executes a single policy run. It owns the Claude API loop,
 // dispatches tool calls to MCP clients, intercepts approval-gated actuators,
 // and writes every step to the audit trail via AuditWriter.
 type BoundAgent struct {
-	runID  string
-	policy *model.ParsedPolicy
-	tools  []mcp.ResolvedTool
-	claude *anthropic.Client
-	audit  *AuditWriter
+	policy      *model.ParsedPolicy
+	tools       []mcp.ResolvedTool
+	toolsByName map[string]resolvedToolEntry
+	messages    messagesAPI
+	audit       *AuditWriter
 	// approvalCh receives the operator's decision when a run is suspended
 	// waiting_for_approval. Sent by the approval handler in internal/trigger.
-	approvalCh <-chan ApprovalDecision
-}
-
-// ApprovalDecision carries the operator's response to an approval request.
-type ApprovalDecision struct {
-	Approved bool
-	Note     string
+	approvalCh <-chan bool
 }
 
 // Config holds the dependencies needed to construct a BoundAgent.
 type Config struct {
-	RunID      string
-	Policy     *model.ParsedPolicy
-	Tools      []mcp.ResolvedTool
-	Claude     *anthropic.Client
-	Audit      *AuditWriter
-	ApprovalCh <-chan ApprovalDecision
+	Policy           *model.ParsedPolicy
+	Tools            []mcp.ResolvedTool
+	Claude           *anthropic.Client
+	Audit            *AuditWriter
+	ApprovalCh       <-chan bool
+	// MessagesOverride replaces the Claude API client for testing.
+	// When non-nil, Claude is ignored for message calls.
+	MessagesOverride messagesAPI
 }
 
-// New returns a BoundAgent ready to run.
-func New(cfg Config) *BoundAgent {
-	return &BoundAgent{
-		runID:      cfg.RunID,
-		policy:     cfg.Policy,
-		tools:      cfg.Tools,
-		claude:     cfg.Claude,
-		audit:      cfg.Audit,
-		approvalCh: cfg.ApprovalCh,
+// New returns a BoundAgent ready to run, or an error if schema narrowing fails
+// for any of the provided tools.
+func New(cfg Config) (*BoundAgent, error) {
+	var msgs messagesAPI
+	if cfg.MessagesOverride != nil {
+		msgs = cfg.MessagesOverride
+	} else {
+		msgs = &cfg.Claude.Messages
 	}
+
+	toolsByName := make(map[string]resolvedToolEntry, len(cfg.Tools))
+	for _, rt := range cfg.Tools {
+		dotName := rt.ServerName + "." + rt.ToolName
+		narrowed, err := mcp.NarrowSchema(rt.InputSchema, rt.Params)
+		if err != nil {
+			return nil, fmt.Errorf("narrowing schema for tool %s.%s: %w", rt.ServerName, rt.ToolName, err)
+		}
+		toolsByName[dotName] = resolvedToolEntry{
+			tool:           rt,
+			narrowedSchema: narrowed,
+		}
+	}
+
+	return &BoundAgent{
+		policy:      cfg.Policy,
+		tools:       cfg.Tools,
+		toolsByName: toolsByName,
+		messages:    msgs,
+		audit:       cfg.Audit,
+		approvalCh:  cfg.ApprovalCh,
+	}, nil
 }
 
 // Run executes the agent loop for a single run. It drives the Claude API
-// until the model produces a stop_sequence or the run limits are exceeded.
+// until the model produces end_turn or the run limits are exceeded.
 // Run returns nil on clean completion, or a wrapped error on failure.
 // The caller is responsible for updating the run's terminal status in the DB.
-func (a *BoundAgent) Run(ctx context.Context, triggerPayload string) error {
-	// TODO:
-	// 1. Render system prompt via policy.RenderSystemPrompt
-	// 2. Build initial message from triggerPayload
-	// 3. Register only granted tools with the Claude API (hard enforcement)
-	// 4. Loop: call claude.Messages.Create, handle each content block:
-	//    - thinking → write thought step
-	//    - text → write thought step
-	//    - tool_use → dispatch via handleToolCall
-	// 5. After each LLM response: check token budget and tool call count
-	// 6. Loop ends when stop_reason == "end_turn" or limits exceeded
-	_ = fmt.Errorf // prevent unused import during stub phase
-	panic("not implemented")
+func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload string) error {
+	// Extract granted tools for system prompt rendering.
+	grantedTools := make([]model.GrantedTool, len(a.tools))
+	for i, rt := range a.tools {
+		grantedTools[i] = rt.GrantedTool
+	}
+
+	// Render system prompt (ADR-001: only granted tools are visible to the agent).
+	systemPrompt := policy.RenderSystemPrompt(a.policy, grantedTools)
+
+	// Build Anthropic tool definitions from narrowed schemas.
+	anthropicTools := make([]anthropic.ToolUnionParam, 0, len(a.toolsByName))
+	for dotName, entry := range a.toolsByName {
+		inputSchema, err := buildToolInputSchema(entry.narrowedSchema)
+		if err != nil {
+			return fmt.Errorf("building tool schema for %s: %w", dotName, err)
+		}
+		tool := anthropic.ToolUnionParamOfTool(inputSchema, dotName)
+		// Set description via the OfTool variant directly.
+		if tool.OfTool != nil {
+			tool.OfTool.Description = param.NewOpt(entry.tool.Description)
+		}
+		anthropicTools = append(anthropicTools, tool)
+	}
+
+	// Write capability snapshot step (ADR-018) — always the first step.
+	if err := a.audit.Write(ctx, Step{
+		RunID:   runID,
+		Type:    model.StepTypeCapabilitySnapshot,
+		Content: grantedTools,
+	}); err != nil {
+		return fmt.Errorf("writing capability snapshot: %w", err)
+	}
+
+	// Initialize message history with the trigger payload.
+	history := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock(triggerPayload)),
+	}
+
+	var (
+		totalTokens    int
+		totalToolCalls int
+	)
+
+	maxTokensPerRun := a.policy.Agent.Limits.MaxTokensPerRun
+	maxToolCalls := a.policy.Agent.Limits.MaxToolCallsPerRun
+
+	for {
+		// Respect context cancellation before each API call.
+		if err := ctx.Err(); err != nil {
+			_ = a.audit.Write(ctx, Step{
+				RunID:   runID,
+				Type:    model.StepTypeError,
+				Content: map[string]string{"message": err.Error(), "code": "context_cancelled"},
+			})
+			return fmt.Errorf("agent run cancelled: %w", err)
+		}
+
+		// Determine per-call token limit.
+		maxTokens := int64(8192)
+		if maxTokensPerRun > 0 {
+			remaining := int64(maxTokensPerRun - totalTokens)
+			if remaining <= 0 {
+				err := fmt.Errorf("token budget exceeded: used %d of %d", totalTokens, maxTokensPerRun)
+				_ = a.audit.Write(ctx, Step{
+					RunID:   runID,
+					Type:    model.StepTypeError,
+					Content: map[string]string{"message": err.Error(), "code": "token_budget_exceeded"},
+				})
+				return err
+			}
+			if remaining < maxTokens {
+				maxTokens = remaining
+			}
+		}
+
+		resp, err := a.messages.New(ctx, anthropic.MessageNewParams{
+			Model:     anthropic.ModelClaudeSonnet4_6,
+			MaxTokens: maxTokens,
+			System:    []anthropic.TextBlockParam{{Text: systemPrompt}},
+			Messages:  history,
+			Tools:     anthropicTools,
+		})
+		if err != nil {
+			_ = a.audit.Write(ctx, Step{
+				RunID:   runID,
+				Type:    model.StepTypeError,
+				Content: map[string]string{"message": err.Error(), "code": "api_error"},
+			})
+			return fmt.Errorf("claude API call: %w", err)
+		}
+
+		tokenCost := int(resp.Usage.InputTokens + resp.Usage.OutputTokens)
+		totalTokens += tokenCost
+		firstTextBlock := true
+
+		var toolResults []anthropic.ContentBlockParamUnion
+
+		for _, block := range resp.Content {
+			switch b := block.AsAny().(type) {
+			case anthropic.TextBlock:
+				cost := 0
+				if firstTextBlock {
+					cost = tokenCost
+					firstTextBlock = false
+				}
+				if err := a.audit.Write(ctx, Step{
+					RunID:     runID,
+					Type:      model.StepTypeThought,
+					Content:   map[string]string{"text": b.Text},
+					TokenCost: cost,
+				}); err != nil {
+					return fmt.Errorf("writing thought step: %w", err)
+				}
+			case anthropic.ToolUseBlock:
+				totalToolCalls++
+				if maxToolCalls > 0 && totalToolCalls > maxToolCalls {
+					err := fmt.Errorf("tool call limit exceeded: limit %d", maxToolCalls)
+					_ = a.audit.Write(ctx, Step{
+						RunID:   runID,
+						Type:    model.StepTypeError,
+						Content: map[string]string{"message": err.Error(), "code": "tool_call_limit_exceeded"},
+					})
+					return err
+				}
+
+				var input map[string]any
+				if err := json.Unmarshal(b.Input, &input); err != nil {
+					return fmt.Errorf("unmarshalling tool input for %s: %w", b.Name, err)
+				}
+
+				resultStr, isError, err := a.handleToolCall(ctx, runID, b.ID, b.Name, input)
+				if err != nil {
+					return err // handleToolCall already writes the error step
+				}
+				toolResults = append(toolResults, anthropic.NewToolResultBlock(b.ID, resultStr, isError))
+			}
+		}
+
+		// Append assistant response to history before checking stop reason.
+		history = append(history, resp.ToParam())
+
+		if resp.StopReason == anthropic.StopReasonEndTurn {
+			if err := a.audit.Write(ctx, Step{
+				RunID:   runID,
+				Type:    model.StepTypeComplete,
+				Content: map[string]string{"message": "agent completed task"},
+			}); err != nil {
+				return fmt.Errorf("writing complete step: %w", err)
+			}
+			return nil
+		}
+
+		// If stop reason is tool_use but no tool calls were dispatched, the
+		// API response is malformed (e.g. unknown block types). Sending
+		// the assistant message back with no tool results would violate the
+		// protocol and likely cause the next API call to fail.
+		if len(toolResults) == 0 {
+			return fmt.Errorf("tool_use stop reason with no tool calls dispatched")
+		}
+		history = append(history, anthropic.NewUserMessage(toolResults...))
+	}
 }
 
 // handleToolCall dispatches a single tool call from the agent.
-// For approval-gated actuators, it suspends the run and waits for a decision
+// For approval-gated actuators it suspends the run and waits for a decision
 // before proceeding. This is the hard runtime guarantee (ADR-001).
-func (a *BoundAgent) handleToolCall(ctx context.Context, toolName string, input map[string]any) (string, error) {
-	// TODO:
-	// 1. Look up tool in a.tools by name
-	// 2. If actuator with approval: required → write approval_request step,
-	//    update run status to waiting_for_approval, block on a.approvalCh
-	// 3. On rejection/timeout → return error to terminate run
-	// 4. On approval (or no gate needed) → call tool.Client.CallTool
-	// 5. Write tool_call and tool_result steps via a.audit
-	panic("not implemented")
+// On error, it writes an error step and returns the error.
+func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/, toolName string, input map[string]any) (string, bool, error) {
+	// Bail early if the context is already cancelled — no steps should be
+	// written and no MCP call should be made.
+	if err := ctx.Err(); err != nil {
+		return "", false, fmt.Errorf("context cancelled before tool dispatch: %w", err)
+	}
+
+	entry, ok := a.toolsByName[toolName]
+	if !ok {
+		err := fmt.Errorf("tool not found: %s", toolName)
+		_ = a.audit.Write(ctx, Step{
+			RunID:   runID,
+			Type:    model.StepTypeError,
+			Content: map[string]string{"message": err.Error(), "code": "tool_error"},
+		})
+		return "", false, err
+	}
+
+	// Validate input against narrowed schema.
+	if err := mcp.ValidateCall(entry.narrowedSchema, input); err != nil {
+		_ = a.audit.Write(ctx, Step{
+			RunID:   runID,
+			Type:    model.StepTypeError,
+			Content: map[string]string{"message": err.Error(), "code": "schema_violation"},
+		})
+		return "", false, fmt.Errorf("schema validation for %s: %w", toolName, err)
+	}
+
+	// Approval gating for actuators with approval: required.
+	if entry.tool.Role == model.CapabilityRoleActuator && entry.tool.Approval == model.ApprovalModeRequired {
+		if err := a.audit.Write(ctx, Step{
+			RunID:   runID,
+			Type:    model.StepTypeApprovalRequest,
+			Content: map[string]any{"tool": toolName, "input": input},
+		}); err != nil {
+			return "", false, fmt.Errorf("writing approval request step: %w", err)
+		}
+
+		// nil timeoutCh (when Timeout == 0) blocks forever in the select,
+		// meaning no timeout is applied. Use NewTimer so we can Stop it
+		// on early approval — time.After leaks until the duration fires.
+		var timeoutCh <-chan time.Time
+		if entry.tool.Timeout > 0 {
+			timer := time.NewTimer(entry.tool.Timeout)
+			defer timer.Stop()
+			timeoutCh = timer.C
+		}
+
+		select {
+		case approved := <-a.approvalCh:
+			if !approved {
+				err := fmt.Errorf("tool call %s rejected by operator", toolName)
+				_ = a.audit.Write(ctx, Step{
+					RunID:   runID,
+					Type:    model.StepTypeError,
+					Content: map[string]string{"message": err.Error(), "code": "approval_rejected"},
+				})
+				return "", false, err
+			}
+		case <-timeoutCh:
+			if entry.tool.OnTimeout == model.OnTimeoutApprove {
+				// Proceed with execution on timeout.
+			} else {
+				err := fmt.Errorf("approval timeout for tool %s", toolName)
+				_ = a.audit.Write(ctx, Step{
+					RunID:   runID,
+					Type:    model.StepTypeError,
+					Content: map[string]string{"message": err.Error(), "code": "approval_rejected"},
+				})
+				return "", false, err
+			}
+		case <-ctx.Done():
+			return "", false, fmt.Errorf("context cancelled waiting for approval: %w", ctx.Err())
+		}
+	}
+
+	// Write tool_call step.
+	if err := a.audit.Write(ctx, Step{
+		RunID:   runID,
+		Type:    model.StepTypeToolCall,
+		Content: map[string]any{"tool": toolName, "input": input},
+	}); err != nil {
+		return "", false, fmt.Errorf("writing tool_call step: %w", err)
+	}
+
+	// Dispatch to MCP server.
+	result, err := entry.tool.Client.CallTool(ctx, entry.tool.ToolName, input)
+	if err != nil {
+		_ = a.audit.Write(ctx, Step{
+			RunID:   runID,
+			Type:    model.StepTypeError,
+			Content: map[string]string{"message": err.Error(), "code": "tool_error"},
+		})
+		return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
+	}
+
+	outputStr := string(result.Output)
+
+	// Write tool_result step.
+	if err := a.audit.Write(ctx, Step{
+		RunID:   runID,
+		Type:    model.StepTypeToolResult,
+		Content: map[string]any{"tool": toolName, "output": outputStr, "is_error": result.IsError},
+	}); err != nil {
+		return "", false, fmt.Errorf("writing tool_result step: %w", err)
+	}
+
+	return outputStr, result.IsError, nil
+}
+
+// buildToolInputSchema converts a raw JSON schema into a ToolInputSchemaParam
+// for use in the Anthropic API.
+func buildToolInputSchema(schema json.RawMessage) (anthropic.ToolInputSchemaParam, error) {
+	if len(schema) == 0 {
+		return anthropic.ToolInputSchemaParam{}, nil
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(schema, &raw); err != nil {
+		return anthropic.ToolInputSchemaParam{}, fmt.Errorf("unmarshal schema: %w", err)
+	}
+
+	var properties any
+	if props, ok := raw["properties"]; ok {
+		properties = props
+	}
+
+	var required []string
+	if req, ok := raw["required"]; ok {
+		if reqSlice, ok := req.([]any); ok {
+			for _, v := range reqSlice {
+				if s, ok := v.(string); ok {
+					required = append(required, s)
+				}
+			}
+		}
+	}
+
+	// Copy any extra fields (e.g. "additionalProperties", "$schema") so the
+	// schema round-trips cleanly.
+	extras := make(map[string]any)
+	for k, v := range raw {
+		if k != "type" && k != "properties" && k != "required" {
+			extras[k] = v
+		}
+	}
+
+	return anthropic.ToolInputSchemaParam{
+		Properties:  properties,
+		Required:    required,
+		ExtraFields: extras,
+	}, nil
 }

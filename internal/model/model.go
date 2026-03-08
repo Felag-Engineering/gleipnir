@@ -48,14 +48,15 @@ const (
 type StepType string
 
 const (
-	StepTypeThought          StepType = "thought"
-	StepTypeToolCall         StepType = "tool_call"
-	StepTypeToolResult       StepType = "tool_result"
-	StepTypeApprovalRequest  StepType = "approval_request"
-	StepTypeFeedbackRequest  StepType = "feedback_request"
-	StepTypeFeedbackResponse StepType = "feedback_response"
-	StepTypeError            StepType = "error"
-	StepTypeComplete         StepType = "complete"
+	StepTypeCapabilitySnapshot StepType = "capability_snapshot"
+	StepTypeThought            StepType = "thought"
+	StepTypeToolCall           StepType = "tool_call"
+	StepTypeToolResult         StepType = "tool_result"
+	StepTypeApprovalRequest    StepType = "approval_request"
+	StepTypeFeedbackRequest    StepType = "feedback_request"
+	StepTypeFeedbackResponse   StepType = "feedback_response"
+	StepTypeError              StepType = "error"
+	StepTypeComplete           StepType = "complete"
 )
 
 // ApprovalMode controls whether a human must approve an actuator call.
@@ -115,7 +116,7 @@ func (r CapabilityRole) Valid() bool {
 func (s StepType) String() string { return string(s) }
 func (s StepType) Valid() bool {
 	switch s {
-	case StepTypeThought, StepTypeToolCall, StepTypeToolResult,
+	case StepTypeCapabilitySnapshot, StepTypeThought, StepTypeToolCall, StepTypeToolResult,
 		StepTypeApprovalRequest, StepTypeFeedbackRequest, StepTypeFeedbackResponse,
 		StepTypeError, StepTypeComplete:
 		return true

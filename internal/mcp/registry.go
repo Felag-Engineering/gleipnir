@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -17,7 +18,9 @@ import (
 // targeting its server. Used by the agent runner to call tools.
 type ResolvedTool struct {
 	model.GrantedTool
-	Client *Client
+	Client      *Client
+	Description string          // tool description from the MCP registry
+	InputSchema json.RawMessage // raw JSON schema from the MCP tool record
 }
 
 // ToolDiff describes the set of changes detected between two successive tool
@@ -90,7 +93,9 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 				OnTimeout:  "",
 				Params:     s.Params,
 			},
-			Client: NewClient(srv.Url),
+			Client:      NewClient(srv.Url),
+			Description: tool.Description,
+			InputSchema: json.RawMessage(tool.InputSchema),
 		})
 	}
 
@@ -134,7 +139,9 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 				OnTimeout:  a.OnTimeout,
 				Params:     a.Params,
 			},
-			Client: NewClient(srv.Url),
+			Client:      NewClient(srv.Url),
+			Description: tool.Description,
+			InputSchema: json.RawMessage(tool.InputSchema),
 		})
 	}
 

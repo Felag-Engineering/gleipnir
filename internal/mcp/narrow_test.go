@@ -64,12 +64,12 @@ func TestNarrowSchema(t *testing.T) {
 	noPropsSchema := json.RawMessage(`{"type": "object"}`)
 
 	tests := []struct {
-		name         string
-		schema       json.RawMessage
-		params       map[string]any
-		wantKeys     []string
-		wantRequired []string // nil means don't check; empty means key must be absent
-		wantUnchanged bool    // true means result must be byte-identical to input
+		name          string
+		schema        json.RawMessage
+		params        map[string]any
+		wantKeys      []string
+		wantRequired  []string // nil means don't check; empty means key must be absent
+		wantUnchanged bool     // true means result must be byte-identical to input
 	}{
 		{
 			name:          "nil params returns schema unchanged",
@@ -194,10 +194,10 @@ func TestValidateCall(t *testing.T) {
 	noPropsSchema := json.RawMessage(`{"type": "object"}`)
 
 	tests := []struct {
-		name      string
-		schema    json.RawMessage
-		input     map[string]any
-		wantErr   bool
+		name        string
+		schema      json.RawMessage
+		input       map[string]any
+		wantErr     bool
 		errContains string
 	}{
 		{

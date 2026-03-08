@@ -151,6 +151,7 @@ CREATE TABLE run_steps (
     run_id      TEXT    NOT NULL REFERENCES runs(id),
     step_number INTEGER NOT NULL,
     type        TEXT    NOT NULL CHECK(type IN (
+                    'capability_snapshot',
                     'thought',
                     'tool_call',
                     'tool_result',
