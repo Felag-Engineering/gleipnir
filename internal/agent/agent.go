@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -154,11 +155,12 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		if maxTokensPerRun > 0 {
 			remaining := int64(maxTokensPerRun - totalTokens)
 			if remaining <= 0 {
-				err := fmt.Errorf("token budget exceeded: used %d of %d", totalTokens, maxTokensPerRun)
+				err := fmt.Errorf("token budget exceeded: %d tokens used, limit %d", totalTokens, maxTokensPerRun)
+				slog.WarnContext(ctx, "token budget exceeded", "run_id", runID, "tokens_used", totalTokens, "limit", maxTokensPerRun)
 				_ = a.audit.Write(ctx, Step{
 					RunID:   runID,
 					Type:    model.StepTypeError,
-					Content: map[string]string{"message": err.Error(), "code": "token_budget_exceeded"},
+					Content: map[string]string{"message": err.Error(), "code": "TOKEN_BUDGET_EXCEEDED"},
 				})
 				return err
 			}
@@ -208,11 +210,12 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 			case anthropic.ToolUseBlock:
 				totalToolCalls++
 				if maxToolCalls > 0 && totalToolCalls > maxToolCalls {
-					err := fmt.Errorf("tool call limit exceeded: limit %d", maxToolCalls)
+					err := fmt.Errorf("tool call limit exceeded: %d calls, limit %d", totalToolCalls, maxToolCalls)
+					slog.WarnContext(ctx, "tool call limit exceeded", "run_id", runID, "calls", totalToolCalls, "limit", maxToolCalls)
 					_ = a.audit.Write(ctx, Step{
 						RunID:   runID,
 						Type:    model.StepTypeError,
-						Content: map[string]string{"message": err.Error(), "code": "tool_call_limit_exceeded"},
+						Content: map[string]string{"message": err.Error(), "code": "TOOL_CALL_LIMIT_EXCEEDED"},
 					})
 					return err
 				}

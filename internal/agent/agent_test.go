@@ -571,14 +571,14 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 		if step.Type == string(model.StepTypeError) {
 			var content map[string]string
 			if err := json.Unmarshal([]byte(step.Content), &content); err == nil {
-				if content["code"] == "token_budget_exceeded" {
+				if content["code"] == "TOKEN_BUDGET_EXCEEDED" {
 					budgetErrFound = true
 				}
 			}
 		}
 	}
 	if !budgetErrFound {
-		t.Error("expected error step with code 'token_budget_exceeded'")
+		t.Error("expected error step with code 'TOKEN_BUDGET_EXCEEDED'")
 	}
 }
 
@@ -754,5 +754,148 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 	}
 	if !approvalErrFound {
 		t.Error("expected error step with code 'approval_rejected'")
+	}
+}
+
+func TestRun_ToolCallCapExceeded(t *testing.T) {
+	var mcpCallCount int
+	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mcpCallCount++
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "tool output"}},
+				"isError": false,
+			},
+		})
+	}))
+	defer mcpSrv.Close()
+
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	insertRun(t, s, "r1", "p1", "running")
+
+	// With MaxToolCallsPerRun=1: first tool call (totalToolCalls=1, 1>1=false) proceeds.
+	// Second response triggers the cap (totalToolCalls=2, 2>1=true) before dispatch.
+	msgs := &fakeMessages{responses: []*anthropic.Message{
+		makeToolUseMessage("tu-1", "my-server.read_data", map[string]any{}, 10, 5),
+		makeToolUseMessage("tu-2", "my-server.read_data", map[string]any{}, 10, 5),
+		// Third response should never be reached.
+		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
+	}}
+	tools := []mcp.ResolvedTool{{
+		GrantedTool: model.GrantedTool{
+			ServerName: "my-server",
+			ToolName:   "read_data",
+			Role:       model.CapabilityRoleSensor,
+			Approval:   model.ApprovalModeNone,
+		},
+		Client:      mcp.NewClient(mcpSrv.URL),
+		Description: "a test tool",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+	}}
+
+	p := minimalPolicy()
+	p.Agent.Limits.MaxToolCallsPerRun = 1
+
+	w := NewAuditWriter(s.Queries)
+	ba, err := New(Config{
+		Claude:           &anthropic.Client{},
+		Tools:            tools,
+		Policy:           p,
+		Audit:            w,
+		MessagesOverride: msgs,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	runErr := ba.Run(context.Background(), "r1", "trigger")
+	w.Close()
+
+	if runErr == nil {
+		t.Fatal("expected tool call cap error, got nil")
+	}
+	// MCP server called once: the first tool call goes through before the cap fires.
+	if mcpCallCount != 1 {
+		t.Errorf("MCP server called %d times, want 1", mcpCallCount)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+
+	var capErrFound bool
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeError) {
+			var content map[string]string
+			if err := json.Unmarshal([]byte(step.Content), &content); err == nil {
+				if content["code"] == "TOOL_CALL_LIMIT_EXCEEDED" {
+					capErrFound = true
+				}
+			}
+		}
+	}
+	if !capErrFound {
+		t.Error("expected error step with code 'TOOL_CALL_LIMIT_EXCEEDED'")
+	}
+}
+
+func TestRun_LimitsNotExceeded(t *testing.T) {
+	mcpSrv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"ok"}]`), false)
+
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	insertRun(t, s, "r1", "p1", "running")
+
+	// One tool call well within limits.
+	msgs := &fakeMessages{responses: []*anthropic.Message{
+		makeToolUseMessage("tu-1", "my-server.read_data", map[string]any{}, 10, 5),
+		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
+	}}
+	tools := []mcp.ResolvedTool{{
+		GrantedTool: model.GrantedTool{
+			ServerName: "my-server",
+			ToolName:   "read_data",
+			Role:       model.CapabilityRoleSensor,
+			Approval:   model.ApprovalModeNone,
+		},
+		Client:      mcp.NewClient(mcpSrv.URL),
+		Description: "a test tool",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+	}}
+
+	p := minimalPolicy()
+	p.Agent.Limits.MaxTokensPerRun = 10000
+	p.Agent.Limits.MaxToolCallsPerRun = 5
+
+	w := NewAuditWriter(s.Queries)
+	ba, err := New(Config{
+		Claude:           &anthropic.Client{},
+		Tools:            tools,
+		Policy:           p,
+		Audit:            w,
+		MessagesOverride: msgs,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := ba.Run(context.Background(), "r1", "trigger"); err != nil {
+		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+	w.Close()
+
+	steps, err := s.ListRunSteps(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeError) {
+			t.Errorf("unexpected error step: %s", step.Content)
+		}
 	}
 }
