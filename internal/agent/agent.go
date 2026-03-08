@@ -38,6 +38,7 @@ type BoundAgent struct {
 	toolsByName map[string]resolvedToolEntry
 	messages    messagesAPI
 	audit       *AuditWriter
+	sm          *RunStateMachine
 	// approvalCh receives the operator's decision when a run is suspended
 	// waiting_for_approval. Sent by the approval handler in internal/trigger.
 	approvalCh <-chan bool
@@ -45,11 +46,12 @@ type BoundAgent struct {
 
 // Config holds the dependencies needed to construct a BoundAgent.
 type Config struct {
-	Policy     *model.ParsedPolicy
-	Tools      []mcp.ResolvedTool
-	Claude     *anthropic.Client
-	Audit      *AuditWriter
-	ApprovalCh <-chan bool
+	Policy       *model.ParsedPolicy
+	Tools        []mcp.ResolvedTool
+	Claude       *anthropic.Client
+	Audit        *AuditWriter
+	ApprovalCh   <-chan bool
+	StateMachine *RunStateMachine
 	// MessagesOverride replaces the Claude API client for testing.
 	// When non-nil, Claude is ignored for message calls.
 	MessagesOverride messagesAPI
@@ -58,6 +60,10 @@ type Config struct {
 // New returns a BoundAgent ready to run, or an error if schema narrowing fails
 // for any of the provided tools.
 func New(cfg Config) (*BoundAgent, error) {
+	if cfg.StateMachine == nil {
+		return nil, fmt.Errorf("config.StateMachine is required")
+	}
+
 	var msgs messagesAPI
 	if cfg.MessagesOverride != nil {
 		msgs = cfg.MessagesOverride
@@ -84,15 +90,44 @@ func New(cfg Config) (*BoundAgent, error) {
 		toolsByName: toolsByName,
 		messages:    msgs,
 		audit:       cfg.Audit,
+		sm:          cfg.StateMachine,
 		approvalCh:  cfg.ApprovalCh,
 	}, nil
+}
+
+// failRun transitions the run to failed status and returns the original error.
+// If the context is already cancelled, a background context is used so the DB
+// write still lands.
+func (a *BoundAgent) failRun(ctx context.Context, runErr error) error {
+	transCtx := ctx
+	if ctx.Err() != nil {
+		transCtx = context.Background()
+	}
+	if tErr := a.sm.Transition(transCtx, model.RunStatusFailed, runErr.Error()); tErr != nil {
+		slog.ErrorContext(transCtx, "failed to persist run failure status",
+			"run_err", runErr, "transition_err", tErr)
+	}
+	return runErr
 }
 
 // Run executes the agent loop for a single run. It drives the Claude API
 // until the model produces end_turn or the run limits are exceeded.
 // Run returns nil on clean completion, or a wrapped error on failure.
-// The caller is responsible for updating the run's terminal status in the DB.
+// Run owns the run's status transitions: it moves the run to running on entry,
+// complete on success, and failed on any error path.
 func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload string) error {
+	// The pending→running transition must always succeed regardless of the caller's
+	// context state — we want "running" in the DB before doing any real work, and
+	// the context-cancellation check in the loop below will call failRun immediately
+	// if the context is already done.
+	if err := a.sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
+		// Best-effort: attempt to mark the run failed. If this also fails, log and
+		// return the original transition error — the run will be cleaned up by the
+		// startup scan on next restart.
+		_ = a.failRun(context.Background(), err)
+		return fmt.Errorf("transitioning run to running: %w", err)
+	}
+
 	// Extract granted tools for system prompt rendering.
 	grantedTools := make([]model.GrantedTool, len(a.tools))
 	for i, rt := range a.tools {
@@ -107,7 +142,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	for dotName, entry := range a.toolsByName {
 		inputSchema, err := buildToolInputSchema(entry.narrowedSchema)
 		if err != nil {
-			return fmt.Errorf("building tool schema for %s: %w", dotName, err)
+			return a.failRun(ctx, fmt.Errorf("building tool schema for %s: %w", dotName, err))
 		}
 		tool := anthropic.ToolUnionParamOfTool(inputSchema, dotName)
 		// Set description via the OfTool variant directly.
@@ -123,7 +158,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		Type:    model.StepTypeCapabilitySnapshot,
 		Content: grantedTools,
 	}); err != nil {
-		return fmt.Errorf("writing capability snapshot: %w", err)
+		return a.failRun(ctx, fmt.Errorf("writing capability snapshot: %w", err))
 	}
 
 	// Initialize message history with the trigger payload.
@@ -147,7 +182,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 				Type:    model.StepTypeError,
 				Content: map[string]string{"message": err.Error(), "code": "context_cancelled"},
 			})
-			return fmt.Errorf("agent run cancelled: %w", err)
+			return a.failRun(ctx, fmt.Errorf("agent run cancelled: %w", err))
 		}
 
 		// Determine per-call token limit.
@@ -162,7 +197,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 					Type:    model.StepTypeError,
 					Content: map[string]string{"message": err.Error(), "code": "TOKEN_BUDGET_EXCEEDED"},
 				})
-				return err
+				return a.failRun(ctx, err)
 			}
 			if remaining < maxTokens {
 				maxTokens = remaining
@@ -182,7 +217,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 				Type:    model.StepTypeError,
 				Content: map[string]string{"message": err.Error(), "code": "api_error"},
 			})
-			return fmt.Errorf("claude API call: %w", err)
+			return a.failRun(ctx, fmt.Errorf("claude API call: %w", err))
 		}
 
 		tokenCost := int(resp.Usage.InputTokens + resp.Usage.OutputTokens)
@@ -209,7 +244,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 					Content:   map[string]string{"text": b.Text},
 					TokenCost: cost,
 				}); err != nil {
-					return fmt.Errorf("writing thought step: %w", err)
+					return a.failRun(ctx, fmt.Errorf("writing thought step: %w", err))
 				}
 			case anthropic.ToolUseBlock:
 				totalToolCalls++
@@ -221,17 +256,17 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 						Type:    model.StepTypeError,
 						Content: map[string]string{"message": err.Error(), "code": "TOOL_CALL_LIMIT_EXCEEDED"},
 					})
-					return err
+					return a.failRun(ctx, err)
 				}
 
 				var input map[string]any
 				if err := json.Unmarshal(b.Input, &input); err != nil {
-					return fmt.Errorf("unmarshalling tool input for %s: %w", b.Name, err)
+					return a.failRun(ctx, fmt.Errorf("unmarshalling tool input for %s: %w", b.Name, err))
 				}
 
 				resultStr, isError, err := a.handleToolCall(ctx, runID, b.ID, b.Name, input)
 				if err != nil {
-					return err // handleToolCall already writes the error step
+					return a.failRun(ctx, err) // handleToolCall already writes the error step
 				}
 				toolResults = append(toolResults, anthropic.NewToolResultBlock(b.ID, resultStr, isError))
 			}
@@ -246,7 +281,10 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 				Type:    model.StepTypeComplete,
 				Content: map[string]string{"message": "agent completed task"},
 			}); err != nil {
-				return fmt.Errorf("writing complete step: %w", err)
+				return a.failRun(ctx, fmt.Errorf("writing complete step: %w", err))
+			}
+			if err := a.sm.Transition(ctx, model.RunStatusComplete, ""); err != nil {
+				return fmt.Errorf("transitioning run to complete: %w", err)
 			}
 			return nil
 		}
@@ -256,7 +294,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		// the assistant message back with no tool results would violate the
 		// protocol and likely cause the next API call to fail.
 		if len(toolResults) == 0 {
-			return fmt.Errorf("tool_use stop reason with no tool calls dispatched")
+			return a.failRun(ctx, fmt.Errorf("tool_use stop reason with no tool calls dispatched"))
 		}
 		history = append(history, anthropic.NewUserMessage(toolResults...))
 	}

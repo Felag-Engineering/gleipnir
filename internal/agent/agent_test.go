@@ -138,6 +138,19 @@ func makeResolvedTool(serverURL, serverName, toolName string) mcp.ResolvedTool {
 	}
 }
 
+func TestNew_RequiresStateMachine(t *testing.T) {
+	_, err := New(Config{
+		Policy:           minimalPolicy(),
+		Tools:            nil,
+		Audit:            NewAuditWriter(newTestStore(t).Queries),
+		MessagesOverride: noopMessages{},
+		// StateMachine intentionally omitted
+	})
+	if err == nil {
+		t.Fatal("expected error when StateMachine is nil, got nil")
+	}
+}
+
 func TestHandleToolCall(t *testing.T) {
 	successContent := json.RawMessage(`[{"type":"text","text":"result data"}]`)
 
@@ -239,11 +252,14 @@ func TestHandleToolCall(t *testing.T) {
 				},
 			}
 
+			// handleToolCall tests don't go through Run(), so we start the SM
+			// at "running" to match the DB row status.
 			agent, err := New(Config{
 				Policy:           policy,
 				Tools:            tools,
 				Audit:            w,
 				ApprovalCh:       make(chan bool),
+				StateMachine:     NewRunStateMachine("run1", model.RunStatusRunning, s.Queries),
 				MessagesOverride: noopMessages{},
 			})
 			if err != nil {
@@ -355,7 +371,7 @@ func minimalPolicy() *model.ParsedPolicy {
 func TestRun_SingleTurnEndTurn(t *testing.T) {
 	s := newTestStore(t)
 	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	insertRun(t, s, "r1", "p1", "pending")
 
 	msgs := &fakeMessages{responses: []*anthropic.Message{
 		makeTextMessage("I completed the task.", anthropic.StopReasonEndTurn, 10, 20),
@@ -367,6 +383,7 @@ func TestRun_SingleTurnEndTurn(t *testing.T) {
 		Tools:            nil,
 		Policy:           minimalPolicy(),
 		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -394,6 +411,15 @@ func TestRun_SingleTurnEndTurn(t *testing.T) {
 	if steps[len(steps)-1].Type != string(model.StepTypeComplete) {
 		t.Errorf("last step.Type = %q, want %q", steps[len(steps)-1].Type, model.StepTypeComplete)
 	}
+
+	// Verify the DB run status is "complete".
+	run, err := s.GetRun(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if run.Status != string(model.RunStatusComplete) {
+		t.Errorf("run status = %q, want %q", run.Status, model.RunStatusComplete)
+	}
 }
 
 func TestRun_ToolCallLoop(t *testing.T) {
@@ -413,7 +439,7 @@ func TestRun_ToolCallLoop(t *testing.T) {
 
 	s := newTestStore(t)
 	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	insertRun(t, s, "r1", "p1", "pending")
 
 	tools := []mcp.ResolvedTool{sensorToolForRun(mcpSrv.URL, "my-server", "read_data")}
 
@@ -428,6 +454,7 @@ func TestRun_ToolCallLoop(t *testing.T) {
 		Tools:            tools,
 		Policy:           minimalPolicy(),
 		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -477,7 +504,7 @@ func TestRun_ContextCancellation(t *testing.T) {
 
 	s := newTestStore(t)
 	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	insertRun(t, s, "r1", "p1", "pending")
 
 	w := NewAuditWriter(s.Queries)
 	ba, err := New(Config{
@@ -485,6 +512,7 @@ func TestRun_ContextCancellation(t *testing.T) {
 		Tools:            nil,
 		Policy:           minimalPolicy(),
 		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -499,12 +527,21 @@ func TestRun_ContextCancellation(t *testing.T) {
 	if msgs.calls != 0 {
 		t.Errorf("API calls = %d, want 0", msgs.calls)
 	}
+
+	// Context-cancelled runs should still be marked failed in the DB.
+	run, dbErr := s.GetRun(context.Background(), "r1")
+	if dbErr != nil {
+		t.Fatalf("GetRun: %v", dbErr)
+	}
+	if run.Status != string(model.RunStatusFailed) {
+		t.Errorf("run status = %q, want %q", run.Status, model.RunStatusFailed)
+	}
 }
 
 func TestRun_ToolNotFound(t *testing.T) {
 	s := newTestStore(t)
 	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	insertRun(t, s, "r1", "p1", "pending")
 
 	// No tools registered, but response asks for one.
 	msgs := &fakeMessages{responses: []*anthropic.Message{
@@ -517,6 +554,7 @@ func TestRun_ToolNotFound(t *testing.T) {
 		Tools:            nil,
 		Policy:           minimalPolicy(),
 		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -543,12 +581,21 @@ func TestRun_ToolNotFound(t *testing.T) {
 	if !hasError {
 		t.Error("expected at least one error step, found none")
 	}
+
+	// Error path must persist "failed" status.
+	run, dbErr := s.GetRun(context.Background(), "r1")
+	if dbErr != nil {
+		t.Fatalf("GetRun: %v", dbErr)
+	}
+	if run.Status != string(model.RunStatusFailed) {
+		t.Errorf("run status = %q, want %q", run.Status, model.RunStatusFailed)
+	}
 }
 
 func TestRun_TokenBudgetExceeded(t *testing.T) {
 	s := newTestStore(t)
 	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	insertRun(t, s, "r1", "p1", "pending")
 
 	// First response uses 1000 tokens (exhausts the 100-token budget).
 	// The loop continues (tool_use stop_reason) and the SECOND iteration detects
@@ -580,6 +627,7 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 		Tools:            tools,
 		Policy:           p,
 		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -617,7 +665,7 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 	s := newTestStore(t)
 	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	insertRun(t, s, "r1", "p1", "pending")
 
 	msgs := &fakeMessages{responses: []*anthropic.Message{
 		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
@@ -629,6 +677,7 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 		Tools:            nil,
 		Policy:           minimalPolicy(),
 		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -665,7 +714,7 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 
 	s := newTestStore(t)
 	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	insertRun(t, s, "r1", "p1", "pending")
 
 	// Tool schema only allows "arg"; "badkey" is undeclared.
 	tools := []mcp.ResolvedTool{sensorToolForRun(fakeSrv.URL, "my-server", "read_data")}
@@ -680,6 +729,7 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 		Tools:            tools,
 		Policy:           minimalPolicy(),
 		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -725,7 +775,7 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 
 	s := newTestStore(t)
 	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	insertRun(t, s, "r1", "p1", "pending")
 
 	approvalCh := make(chan bool, 1)
 	approvalCh <- false // operator rejects
@@ -753,6 +803,7 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 		Policy:           minimalPolicy(),
 		Audit:            w,
 		ApprovalCh:       approvalCh,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -807,7 +858,7 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 
 	s := newTestStore(t)
 	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	insertRun(t, s, "r1", "p1", "pending")
 
 	// With MaxToolCallsPerRun=1: first tool call (totalToolCalls=1, 1>1=false) proceeds.
 	// Second response triggers the cap (totalToolCalls=2, 2>1=true) before dispatch.
@@ -838,6 +889,7 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 		Tools:            tools,
 		Policy:           p,
 		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -881,7 +933,7 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 
 	s := newTestStore(t)
 	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	insertRun(t, s, "r1", "p1", "pending")
 
 	// One tool call well within limits.
 	msgs := &fakeMessages{responses: []*anthropic.Message{
@@ -910,6 +962,7 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 		Tools:            tools,
 		Policy:           p,
 		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
