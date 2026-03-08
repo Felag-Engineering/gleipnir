@@ -45,11 +45,11 @@ type BoundAgent struct {
 
 // Config holds the dependencies needed to construct a BoundAgent.
 type Config struct {
-	Policy           *model.ParsedPolicy
-	Tools            []mcp.ResolvedTool
-	Claude           *anthropic.Client
-	Audit            *AuditWriter
-	ApprovalCh       <-chan bool
+	Policy     *model.ParsedPolicy
+	Tools      []mcp.ResolvedTool
+	Claude     *anthropic.Client
+	Audit      *AuditWriter
+	ApprovalCh <-chan bool
 	// MessagesOverride replaces the Claude API client for testing.
 	// When non-nil, Claude is ignored for message calls.
 	MessagesOverride messagesAPI
@@ -187,7 +187,11 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 
 		tokenCost := int(resp.Usage.InputTokens + resp.Usage.OutputTokens)
 		totalTokens += tokenCost
-		firstTextBlock := true
+		// costAssigned tracks whether the per-turn token cost has been
+		// attributed to an audit step yet. We assign it to the first block of
+		// any type (text or tool_use) so that tool-use-only turns don't silently
+		// drop the cost from the audit trail.
+		costAssigned := false
 
 		var toolResults []anthropic.ContentBlockParamUnion
 
@@ -195,9 +199,9 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 			switch b := block.AsAny().(type) {
 			case anthropic.TextBlock:
 				cost := 0
-				if firstTextBlock {
+				if !costAssigned {
 					cost = tokenCost
-					firstTextBlock = false
+					costAssigned = true
 				}
 				if err := a.audit.Write(ctx, Step{
 					RunID:     runID,
@@ -340,9 +344,13 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 
 	// Write tool_call step.
 	if err := a.audit.Write(ctx, Step{
-		RunID:   runID,
-		Type:    model.StepTypeToolCall,
-		Content: map[string]any{"tool": toolName, "input": input},
+		RunID: runID,
+		Type:  model.StepTypeToolCall,
+		Content: map[string]any{
+			"tool_name": toolName,
+			"server_id": entry.tool.ServerName,
+			"input":     input,
+		},
 	}); err != nil {
 		return "", false, fmt.Errorf("writing tool_call step: %w", err)
 	}
@@ -362,9 +370,13 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 
 	// Write tool_result step.
 	if err := a.audit.Write(ctx, Step{
-		RunID:   runID,
-		Type:    model.StepTypeToolResult,
-		Content: map[string]any{"tool": toolName, "output": outputStr, "is_error": result.IsError},
+		RunID: runID,
+		Type:  model.StepTypeToolResult,
+		Content: map[string]any{
+			"tool_name": toolName,
+			"output":    outputStr,
+			"is_error":  result.IsError,
+		},
 	}); err != nil {
 		return "", false, fmt.Errorf("writing tool_result step: %w", err)
 	}

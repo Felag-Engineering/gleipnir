@@ -291,6 +291,38 @@ func TestHandleToolCall(t *testing.T) {
 					t.Errorf("audit steps = %d, want %d", count, tc.wantSteps)
 				}
 			}
+
+			// For the successful_call case, verify the audit step content shape
+			// matches the spec: tool_call must have "tool_name" and "server_id";
+			// tool_result must have "tool_name" and "is_error".
+			if tc.name == "successful_call" {
+				steps, err := s.ListRunSteps(context.Background(), "run1")
+				if err != nil {
+					t.Fatalf("ListRunSteps: %v", err)
+				}
+				for _, step := range steps {
+					var content map[string]any
+					if err := json.Unmarshal([]byte(step.Content), &content); err != nil {
+						t.Fatalf("unmarshal step content: %v", err)
+					}
+					switch step.Type {
+					case string(model.StepTypeToolCall):
+						if v, ok := content["tool_name"]; !ok || v == "" {
+							t.Errorf("tool_call step: missing non-empty 'tool_name'; content=%s", step.Content)
+						}
+						if v, ok := content["server_id"]; !ok || v == "" {
+							t.Errorf("tool_call step: missing non-empty 'server_id'; content=%s", step.Content)
+						}
+					case string(model.StepTypeToolResult):
+						if _, ok := content["tool_name"]; !ok {
+							t.Errorf("tool_result step: missing 'tool_name'; content=%s", step.Content)
+						}
+						if _, ok := content["is_error"]; !ok {
+							t.Errorf("tool_result step: missing 'is_error'; content=%s", step.Content)
+						}
+					}
+				}
+			}
 		})
 	}
 }
