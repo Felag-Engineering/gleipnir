@@ -1,3 +1,5 @@
+// Package model defines the domain entity types, enums, and ID generation
+// shared across all internal packages.
 package model
 
 import (
@@ -210,7 +212,8 @@ type CapabilitiesConfig struct {
 
 // SensorCapability grants a read-only tool to the agent.
 type SensorCapability struct {
-	Tool string // dot-notation: server_name.tool_name
+	Tool   string         // dot-notation: server_name.tool_name
+	Params map[string]any // policy-level parameter scoping (ADR-017)
 }
 
 // ActuatorCapability grants a world-affecting tool to the agent, optionally
@@ -218,8 +221,9 @@ type SensorCapability struct {
 type ActuatorCapability struct {
 	Tool      string
 	Approval  ApprovalMode
-	Timeout   string    // Go duration string; valid only when Approval == required
-	OnTimeout OnTimeout // valid only when Approval == required
+	Timeout   string         // Go duration string; valid only when Approval == required
+	OnTimeout OnTimeout      // valid only when Approval == required
+	Params    map[string]any // policy-level parameter scoping (ADR-017)
 }
 
 // AgentConfig holds the prompt fields and runtime limits for an agent run.
@@ -242,9 +246,10 @@ type GrantedTool struct {
 	ServerName string
 	ToolName   string
 	Role       CapabilityRole
-	Approval   ApprovalMode  // actuator only
-	Timeout    time.Duration // actuator only, zero means no timeout
-	OnTimeout  OnTimeout     // actuator only
+	Approval   ApprovalMode   // actuator only
+	Timeout    time.Duration  // actuator only, zero means no timeout
+	OnTimeout  OnTimeout      // actuator only
+	Params     map[string]any // policy-level parameter scoping (ADR-017)
 }
 
 // MCPServer represents a registered MCP tool server.

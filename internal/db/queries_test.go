@@ -273,9 +273,11 @@ func TestPolicyQueries(t *testing.T) {
 
 	later := time.Now().UTC().Add(time.Millisecond).Format(time.RFC3339Nano)
 	updated, err := s.UpdatePolicy(ctx, UpdatePolicyParams{
-		Yaml:      "trigger: webhook\nversion: 2",
-		UpdatedAt: later,
-		ID:        "pol1",
+		Name:        "policy-one",
+		TriggerType: "webhook",
+		Yaml:        "trigger: webhook\nversion: 2",
+		UpdatedAt:   later,
+		ID:          "pol1",
 	})
 	if err != nil {
 		t.Fatalf("UpdatePolicy: %v", err)

@@ -126,19 +126,27 @@ func (q *Queries) ListPolicies(ctx context.Context) ([]Policy, error) {
 
 const updatePolicy = `-- name: UpdatePolicy :one
 UPDATE policies
-SET yaml = ?1, updated_at = ?2
-WHERE id = ?3
+SET name = ?1, trigger_type = ?2, yaml = ?3, updated_at = ?4
+WHERE id = ?5
 RETURNING id, name, trigger_type, yaml, created_at, updated_at
 `
 
 type UpdatePolicyParams struct {
-	Yaml      string `json:"yaml"`
-	UpdatedAt string `json:"updated_at"`
-	ID        string `json:"id"`
+	Name        string `json:"name"`
+	TriggerType string `json:"trigger_type"`
+	Yaml        string `json:"yaml"`
+	UpdatedAt   string `json:"updated_at"`
+	ID          string `json:"id"`
 }
 
 func (q *Queries) UpdatePolicy(ctx context.Context, arg UpdatePolicyParams) (Policy, error) {
-	row := q.db.QueryRowContext(ctx, updatePolicy, arg.Yaml, arg.UpdatedAt, arg.ID)
+	row := q.db.QueryRowContext(ctx, updatePolicy,
+		arg.Name,
+		arg.TriggerType,
+		arg.Yaml,
+		arg.UpdatedAt,
+		arg.ID,
+	)
 	var i Policy
 	err := row.Scan(
 		&i.ID,

@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/rapp992/gleipnir/internal/model"
@@ -47,7 +48,51 @@ func RenderSystemPrompt(p *model.ParsedPolicy, granted []model.GrantedTool) stri
 // renderCapabilitiesBlock produces the "## Capabilities" section of the
 // system prompt listing each granted tool by role.
 func renderCapabilitiesBlock(granted []model.GrantedTool) string {
-	// TODO: group tools by role, format sensor/actuator/feedback subsections,
-	// annotate approval-required actuators so the agent is aware of the gate.
-	panic("not implemented")
+	var sensors, actuators, feedback []model.GrantedTool
+	for _, g := range granted {
+		switch g.Role {
+		case model.CapabilityRoleSensor:
+			sensors = append(sensors, g)
+		case model.CapabilityRoleActuator:
+			actuators = append(actuators, g)
+		case model.CapabilityRoleFeedback:
+			feedback = append(feedback, g)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("## Capabilities\n\n")
+
+	b.WriteString("### Sensors (read-only)\n")
+	if len(sensors) == 0 {
+		b.WriteString("None.\n")
+	} else {
+		for _, s := range sensors {
+			fmt.Fprintf(&b, "- %s.%s\n", s.ServerName, s.ToolName)
+		}
+	}
+
+	b.WriteString("\n### Actuators (world-affecting)\n")
+	if len(actuators) == 0 {
+		b.WriteString("None.\n")
+	} else {
+		for _, a := range actuators {
+			if a.Approval == model.ApprovalModeRequired {
+				fmt.Fprintf(&b, "- %s.%s [requires human approval before execution]\n", a.ServerName, a.ToolName)
+			} else {
+				fmt.Fprintf(&b, "- %s.%s\n", a.ServerName, a.ToolName)
+			}
+		}
+	}
+
+	b.WriteString("\n### Feedback (human-in-the-loop)\n")
+	if len(feedback) == 0 {
+		b.WriteString("Use the built-in feedback channel to consult a human operator.\n")
+	} else {
+		for _, f := range feedback {
+			fmt.Fprintf(&b, "- %s.%s\n", f.ServerName, f.ToolName)
+		}
+	}
+
+	return b.String()
 }

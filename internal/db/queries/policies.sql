@@ -14,7 +14,7 @@ SELECT * FROM policies ORDER BY created_at DESC;
 
 -- name: UpdatePolicy :one
 UPDATE policies
-SET yaml = :yaml, updated_at = :updated_at
+SET name = :name, trigger_type = :trigger_type, yaml = :yaml, updated_at = :updated_at
 WHERE id = :id
 RETURNING *;
 
