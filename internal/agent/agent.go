@@ -139,6 +139,10 @@ func (a *BoundAgent) checkCapabilities() error {
 // Run owns the run's status transitions: it moves the run to running on entry,
 // complete on success, and failed on any error path.
 func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload string) error {
+	// Run owns the AuditWriter lifecycle. Close is idempotent, so callers that
+	// already held a reference to the writer can still call Close safely.
+	defer a.audit.Close()
+
 	// Fail fast before entering running state: every capability referenced by the
 	// policy must resolve to a registered tool. Checked here (pending→failed) so the
 	// run never briefly appears running when it has no chance of succeeding.
@@ -187,7 +191,9 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	}
 
 	// Write capability snapshot step (ADR-018) — always the first step.
-	if err := a.audit.Write(ctx, Step{
+	// Use context.Background() so this initialization step always lands, even if
+	// the caller's context was already cancelled before Run was entered.
+	if err := a.audit.Write(context.Background(), Step{
 		RunID:   runID,
 		Type:    model.StepTypeCapabilitySnapshot,
 		Content: grantedTools,
@@ -210,11 +216,13 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 
 	for {
 		// Respect context cancellation before each API call.
+		// Use context.Background() for the audit write — the caller's context is
+		// already done, so writing with it would silently drop the step.
 		if err := ctx.Err(); err != nil {
-			_ = a.audit.Write(ctx, Step{
+			_ = a.audit.Write(context.Background(), Step{
 				RunID:   runID,
 				Type:    model.StepTypeError,
-				Content: map[string]string{"message": err.Error(), "code": "context_cancelled"},
+				Content: map[string]string{"message": "run cancelled", "code": "CANCELLED"},
 			})
 			return a.failRun(ctx, fmt.Errorf("agent run cancelled: %w", err))
 		}
@@ -246,11 +254,22 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 			Tools:     anthropicTools,
 		})
 		if err != nil {
-			_ = a.audit.Write(ctx, Step{
-				RunID:   runID,
-				Type:    model.StepTypeError,
-				Content: map[string]string{"message": err.Error(), "code": "api_error"},
-			})
+			// If the context was cancelled, the API error is a consequence of
+			// cancellation. Write a CANCELLED step so the audit trail is clear.
+			// Use context.Background() in all cases — ctx may already be done.
+			if ctx.Err() != nil {
+				_ = a.audit.Write(context.Background(), Step{
+					RunID:   runID,
+					Type:    model.StepTypeError,
+					Content: map[string]string{"message": "run cancelled", "code": "CANCELLED"},
+				})
+			} else {
+				_ = a.audit.Write(context.Background(), Step{
+					RunID:   runID,
+					Type:    model.StepTypeError,
+					Content: map[string]string{"message": err.Error(), "code": "api_error"},
+				})
+			}
 			return a.failRun(ctx, fmt.Errorf("claude API call: %w", err))
 		}
 
@@ -430,11 +449,21 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 	// Dispatch to MCP server.
 	result, err := entry.tool.Client.CallTool(ctx, entry.tool.ToolName, input)
 	if err != nil {
-		_ = a.audit.Write(ctx, Step{
-			RunID:   runID,
-			Type:    model.StepTypeError,
-			Content: map[string]string{"message": err.Error(), "code": "tool_error"},
-		})
+		// If the context was cancelled, write a canonical CANCELLED step rather
+		// than a tool_error so all cancellation paths produce consistent audit output.
+		if ctx.Err() != nil {
+			_ = a.audit.Write(context.Background(), Step{
+				RunID:   runID,
+				Type:    model.StepTypeError,
+				Content: map[string]string{"message": "run cancelled", "code": "CANCELLED"},
+			})
+		} else {
+			_ = a.audit.Write(context.Background(), Step{
+				RunID:   runID,
+				Type:    model.StepTypeError,
+				Content: map[string]string{"message": err.Error(), "code": "tool_error"},
+			})
+		}
 		return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
 	}
 

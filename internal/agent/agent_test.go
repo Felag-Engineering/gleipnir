@@ -7,10 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -394,7 +398,6 @@ func TestRun_SingleTurnEndTurn(t *testing.T) {
 	if err := ba.Run(context.Background(), "r1", "do stuff"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	w.Close()
 
 	steps, err := s.ListRunSteps(context.Background(), "r1")
 	if err != nil {
@@ -465,7 +468,6 @@ func TestRun_ToolCallLoop(t *testing.T) {
 	if err := ba.Run(context.Background(), "r1", "use the tool"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	w.Close()
 
 	steps, err := s.ListRunSteps(context.Background(), "r1")
 	if err != nil {
@@ -519,7 +521,6 @@ func TestRun_ContextCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer w.Close()
 
 	err = ba.Run(ctx, "r1", "do something")
 	if err == nil {
@@ -577,8 +578,6 @@ func TestRun_MissingCapabilityFailsFast(t *testing.T) {
 	}
 
 	runErr := ba.Run(context.Background(), "r1", "trigger")
-	w.Close()
-
 	if runErr == nil {
 		t.Fatal("expected error for missing capability, got nil")
 	}
@@ -640,7 +639,6 @@ func TestRun_ToolNotFound(t *testing.T) {
 	}
 
 	runErr := ba.Run(context.Background(), "r1", "trigger")
-	w.Close()
 
 	if runErr == nil {
 		t.Fatal("expected error for tool not found, got nil")
@@ -713,7 +711,6 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 	}
 
 	runErr := ba.Run(context.Background(), "r1", "trigger")
-	w.Close()
 
 	if runErr == nil {
 		t.Fatal("expected token budget error, got nil")
@@ -765,7 +762,6 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 	if err := ba.Run(context.Background(), "r1", "trigger"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	w.Close()
 
 	steps, err := s.ListRunSteps(context.Background(), "r1")
 	if err != nil {
@@ -815,7 +811,6 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 	}
 
 	runErr := ba.Run(context.Background(), "r1", "trigger")
-	w.Close()
 
 	if runErr == nil {
 		t.Fatal("expected schema validation error, got nil")
@@ -889,7 +884,6 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 	}
 
 	runErr := ba.Run(context.Background(), "r1", "trigger")
-	w.Close()
 
 	if runErr == nil {
 		t.Fatal("expected rejection error, got nil")
@@ -975,7 +969,6 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 	}
 
 	runErr := ba.Run(context.Background(), "r1", "trigger")
-	w.Close()
 
 	if runErr == nil {
 		t.Fatal("expected tool call cap error, got nil")
@@ -1050,7 +1043,6 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 	if err := ba.Run(context.Background(), "r1", "trigger"); err != nil {
 		t.Fatalf("Run returned unexpected error: %v", err)
 	}
-	w.Close()
 
 	steps, err := s.ListRunSteps(context.Background(), "r1")
 	if err != nil {
@@ -1061,4 +1053,224 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 			t.Errorf("unexpected error step: %s", step.Content)
 		}
 	}
+}
+
+// blockingMessages is a test double for the Anthropic Messages API that blocks
+// until the provided context is cancelled. It counts how many times New() has
+// been called so the test can synchronise on the API call starting.
+type blockingMessages struct {
+	calls atomic.Int64
+}
+
+func (b *blockingMessages) New(ctx context.Context, _ anthropic.MessageNewParams, _ ...option.RequestOption) (*anthropic.Message, error) {
+	b.calls.Add(1)
+	// Block until the caller's context is cancelled.
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestRun_Cancellation(t *testing.T) {
+	// assertCancelledStep asserts that at least one error step with code "CANCELLED"
+	// and message "run cancelled" exists in the audit trail for the given run.
+	assertCancelledStep := func(t *testing.T, s *db.Store, runID string) {
+		t.Helper()
+		steps, err := s.ListRunSteps(context.Background(), runID)
+		if err != nil {
+			t.Fatalf("ListRunSteps: %v", err)
+		}
+		for _, step := range steps {
+			if step.Type != string(model.StepTypeError) {
+				continue
+			}
+			var content map[string]string
+			if err := json.Unmarshal([]byte(step.Content), &content); err != nil {
+				continue
+			}
+			if content["code"] == "CANCELLED" && content["message"] == "run cancelled" {
+				return
+			}
+		}
+		t.Errorf("no error step with code=CANCELLED and message='run cancelled' found in audit trail")
+	}
+
+	t.Run("cancel_before_loop", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "p1")
+		insertRun(t, s, "r1", "p1", "pending")
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // cancel before calling Run
+
+		msgs := &fakeMessages{} // no responses needed — loop never reaches API call
+		w := NewAuditWriter(s.Queries)
+		ba, err := New(Config{
+			Claude:           &anthropic.Client{},
+			Tools:            nil,
+			Policy:           minimalPolicy(),
+			Audit:            w,
+			StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+			MessagesOverride: msgs,
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		done := make(chan error, 1)
+		go func() { done <- ba.Run(ctx, "r1", "trigger") }()
+
+		select {
+		case runErr := <-done:
+			if runErr == nil {
+				t.Fatal("expected error from cancelled context, got nil")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run() goroutine did not exit within 2s after cancellation")
+		}
+
+		// DB run status must be "failed".
+		run, dbErr := s.GetRun(context.Background(), "r1")
+		if dbErr != nil {
+			t.Fatalf("GetRun: %v", dbErr)
+		}
+		if run.Status != string(model.RunStatusFailed) {
+			t.Errorf("run status = %q, want %q", run.Status, model.RunStatusFailed)
+		}
+
+		assertCancelledStep(t, s, "r1")
+	})
+
+	t.Run("cancel_during_api_call", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "p1")
+		insertRun(t, s, "r1", "p1", "pending")
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		blocking := &blockingMessages{}
+		w := NewAuditWriter(s.Queries)
+		ba, err := New(Config{
+			Claude:           &anthropic.Client{},
+			Tools:            nil,
+			Policy:           minimalPolicy(),
+			Audit:            w,
+			StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+			MessagesOverride: blocking,
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		done := make(chan error, 1)
+		go func() { done <- ba.Run(ctx, "r1", "trigger") }()
+
+		// Wait until the blocking API call has started.
+		deadline := time.Now().Add(2 * time.Second)
+		for blocking.calls.Load() == 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("timed out waiting for blockingMessages.New to be called")
+			}
+			time.Sleep(time.Millisecond)
+		}
+
+		cancel() // cancel while the API call is blocked
+
+		select {
+		case runErr := <-done:
+			if runErr == nil {
+				t.Fatal("expected error from cancelled context, got nil")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run() goroutine did not exit within 2s after cancellation")
+		}
+
+		assertCancelledStep(t, s, "r1")
+	})
+
+	t.Run("cancel_during_tool_invocation", func(t *testing.T) {
+		// reached is closed by the slow server as soon as it receives a request,
+		// allowing the test to synchronise on the tool invocation being in-flight
+		// before cancelling the context.
+		reached := make(chan struct{})
+		var reachedOnce sync.Once
+
+		// srvDone is closed during cleanup to unblock the slow server handler so
+		// httptest.Server.Close() can complete without hanging on active connections.
+		srvDone := make(chan struct{})
+
+		slowSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Signal that the server has been reached — exactly once.
+			reachedOnce.Do(func() { close(reached) })
+			// Block until the client disconnects or cleanup forces the handler to exit.
+			select {
+			case <-r.Context().Done():
+			case <-srvDone:
+			}
+			// Don't write a response — the test only needs the block behaviour.
+		}))
+		t.Cleanup(func() {
+			close(srvDone)
+			slowSrv.Close()
+		})
+
+		s := newTestStore(t)
+		insertPolicy(t, s, "p1")
+		insertRun(t, s, "r1", "p1", "pending")
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// fakeMessages returns a tool_use response on the first call, directing
+		// the agent to call the slow MCP server.
+		msgs := &fakeMessages{responses: []*anthropic.Message{
+			makeToolUseMessage("tu-1", "slow-server.slow_tool", map[string]any{}, 10, 5),
+		}}
+
+		tools := []mcp.ResolvedTool{sensorToolForRun(slowSrv.URL, "slow-server", "slow_tool")}
+
+		w := NewAuditWriter(s.Queries)
+		ba, err := New(Config{
+			Claude:           &anthropic.Client{},
+			Tools:            tools,
+			Policy:           minimalPolicy(),
+			Audit:            w,
+			StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+			MessagesOverride: msgs,
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		done := make(chan error, 1)
+		go func() { done <- ba.Run(ctx, "r1", "trigger") }()
+
+		// Wait until the slow MCP server has received the request before cancelling.
+		select {
+		case <-reached:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for tool invocation to reach slow server")
+		}
+
+		cancel() // cancel while the tool invocation is blocked
+
+		select {
+		case runErr := <-done:
+			if runErr == nil {
+				t.Fatal("expected error from cancelled context, got nil")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run() goroutine did not exit within 2s after cancellation")
+		}
+
+		// The tool call was cancelled — we expect a failed run in the DB.
+		run, dbErr := s.GetRun(context.Background(), "r1")
+		if dbErr != nil {
+			t.Fatalf("GetRun: %v", dbErr)
+		}
+		if run.Status != string(model.RunStatusFailed) {
+			t.Errorf("run status = %q, want %q", run.Status, model.RunStatusFailed)
+		}
+
+		assertCancelledStep(t, s, "r1")
+	})
 }

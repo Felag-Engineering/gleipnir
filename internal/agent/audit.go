@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
@@ -22,9 +23,10 @@ type Step struct {
 // SQLite write contention under concurrent runs (ADR-003).
 // It must be closed after the run completes to flush the queue.
 type AuditWriter struct {
-	queries *db.Queries
-	queue   chan writeRequest
-	done    chan struct{}
+	queries   *db.Queries
+	queue     chan writeRequest
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 type writeRequest struct {
@@ -76,9 +78,12 @@ func (w *AuditWriter) Write(ctx context.Context, step Step) error {
 }
 
 // Close drains the queue and stops the background loop.
-// Must be called after the run completes.
+// Must be called after the run completes. Safe to call multiple times —
+// subsequent calls are no-ops and wait for the drain started by the first call.
 func (w *AuditWriter) Close() error {
-	close(w.queue)
+	w.closeOnce.Do(func() {
+		close(w.queue)
+	})
 	<-w.done
 	return nil
 }
