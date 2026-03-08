@@ -153,6 +153,56 @@ func TestResolveForPolicy_InvalidDotNotation(t *testing.T) {
 	}
 }
 
+func TestResolveForPolicy_ServerNotFound(t *testing.T) {
+	reg := newTestRegistry(t)
+
+	// No servers registered — any tool reference should fail.
+	p := &model.ParsedPolicy{
+		Capabilities: model.CapabilitiesConfig{
+			Sensors: []model.SensorCapability{
+				{Tool: "ghost-server.some_tool"},
+			},
+		},
+	}
+
+	_, err := reg.ResolveForPolicy(context.Background(), p)
+	if err == nil {
+		t.Fatal("expected error for unregistered server, got nil")
+	}
+}
+
+func TestResolveForPolicy_ActuatorNotFound(t *testing.T) {
+	reg := newTestRegistry(t)
+
+	tools := []map[string]any{
+		{"name": "read_pods", "description": "list pods", "inputSchema": map[string]any{"type": "object"}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServer: %v", err)
+	}
+
+	p := &model.ParsedPolicy{
+		Capabilities: model.CapabilitiesConfig{
+			Sensors: []model.SensorCapability{
+				{Tool: "my-server.read_pods"},
+			},
+			Actuators: []model.ActuatorCapability{
+				{Tool: "my-server.ghost_actuator", Approval: model.ApprovalModeNone},
+			},
+		},
+	}
+
+	_, err := reg.ResolveForPolicy(context.Background(), p)
+	if err == nil {
+		t.Fatal("expected error for missing actuator tool, got nil")
+	}
+	if !strings.Contains(err.Error(), "ghost_actuator") {
+		t.Errorf("error %q does not mention the missing actuator tool name", err.Error())
+	}
+}
+
 func TestResolveForPolicy_SensorsAndActuatorsOrdered(t *testing.T) {
 	reg := newTestRegistry(t)
 

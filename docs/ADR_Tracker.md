@@ -252,6 +252,8 @@ These are suggestions, not controls. They can be reasoned around, forgotten in l
 
 **Affects epics:** EPIC-003 (tool registry enforcement), EPIC-004 (BoundAgent runtime)
 
+**Implementation note:** The concrete runtime enforcement mechanism for ADR-001 is `ResolveForPolicy` in `internal/mcp/registry.go`. It performs a fail-fast check at run start: every tool reference in the policy's `sensors` and `actuators` lists is looked up in the registry DB. If any tool is not found, the run is aborted before the agent is started — the disallowed tool never reaches the agent's tool list.
+
 ---
 
 ## ADR-002: Policy-as-YAML is the primary configuration primitive
