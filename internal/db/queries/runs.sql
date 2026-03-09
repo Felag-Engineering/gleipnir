@@ -37,3 +37,10 @@ SELECT * FROM runs
 WHERE policy_id = :policy_id
   AND status IN ('pending', 'running', 'waiting_for_approval')
 ORDER BY created_at ASC;
+
+-- name: ListRuns :many
+SELECT * FROM runs
+WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))
+  AND (sqlc.narg('status') IS NULL OR status = sqlc.narg('status'))
+ORDER BY created_at DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');

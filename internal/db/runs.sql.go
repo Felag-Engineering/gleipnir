@@ -171,6 +171,61 @@ func (q *Queries) ListOrphanedRuns(ctx context.Context) ([]Run, error) {
 	return items, nil
 }
 
+const listRuns = `-- name: ListRuns :many
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs
+WHERE (?1 IS NULL OR policy_id = ?1)
+  AND (?2 IS NULL OR status = ?2)
+ORDER BY created_at DESC
+LIMIT ?4 OFFSET ?3
+`
+
+type ListRunsParams struct {
+	PolicyID interface{} `json:"policy_id"`
+	Status   interface{} `json:"status"`
+	Offset   int64       `json:"offset"`
+	Limit    int64       `json:"limit"`
+}
+
+func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, error) {
+	rows, err := q.db.QueryContext(ctx, listRuns,
+		arg.PolicyID,
+		arg.Status,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.TriggerType,
+			&i.TriggerPayload,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.TokenCost,
+			&i.Error,
+			&i.ThreadID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRunsByPolicy = `-- name: ListRunsByPolicy :many
 SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs WHERE policy_id = ?1 ORDER BY created_at DESC
 `
