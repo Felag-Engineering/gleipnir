@@ -17,9 +17,9 @@ import (
 	"github.com/rapp992/gleipnir/internal/policy"
 )
 
-// messagesAPI is the subset of the Anthropic Messages service used by BoundAgent.
+// MessagesAPI is the subset of the Anthropic Messages service used by BoundAgent.
 // Extracted as an interface for testing — real code uses cfg.Claude.Messages directly.
-type messagesAPI interface {
+type MessagesAPI interface {
 	New(ctx context.Context, body anthropic.MessageNewParams, opts ...option.RequestOption) (*anthropic.Message, error)
 }
 
@@ -36,7 +36,7 @@ type BoundAgent struct {
 	policy      *model.ParsedPolicy
 	tools       []mcp.ResolvedTool
 	toolsByName map[string]resolvedToolEntry
-	messages    messagesAPI
+	messages    MessagesAPI
 	audit       *AuditWriter
 	sm          *RunStateMachine
 	// approvalCh receives the operator's decision when a run is suspended
@@ -54,7 +54,8 @@ type Config struct {
 	StateMachine *RunStateMachine
 	// MessagesOverride replaces the Claude API client for testing.
 	// When non-nil, Claude is ignored for message calls.
-	MessagesOverride messagesAPI
+	// TODO(#78): remove once a transport-level Anthropic fake is in place.
+	MessagesOverride MessagesAPI
 }
 
 // New returns a BoundAgent ready to run, or an error if schema narrowing fails
@@ -64,7 +65,7 @@ func New(cfg Config) (*BoundAgent, error) {
 		return nil, fmt.Errorf("config.StateMachine is required")
 	}
 
-	var msgs messagesAPI
+	var msgs MessagesAPI
 	if cfg.MessagesOverride != nil {
 		msgs = cfg.MessagesOverride
 	} else {
@@ -115,17 +116,17 @@ func (a *BoundAgent) failRun(ctx context.Context, runErr error) error {
 // Run(), before the pending→running transition, so a run with unresolvable
 // capabilities fails immediately without ever appearing as running.
 func (a *BoundAgent) checkCapabilities() error {
+	// Collect all referenced tool names from all three capability categories.
+	var toolNames []string
 	for _, s := range a.policy.Capabilities.Sensors {
-		if _, ok := a.toolsByName[s.Tool]; !ok {
-			return fmt.Errorf("capability '%s' not found in MCP registry — verify the MCP server is registered and the tool exists", s.Tool)
-		}
+		toolNames = append(toolNames, s.Tool)
 	}
 	for _, act := range a.policy.Capabilities.Actuators {
-		if _, ok := a.toolsByName[act.Tool]; !ok {
-			return fmt.Errorf("capability '%s' not found in MCP registry — verify the MCP server is registered and the tool exists", act.Tool)
-		}
+		toolNames = append(toolNames, act.Tool)
 	}
-	for _, name := range a.policy.Capabilities.Feedback {
+	toolNames = append(toolNames, a.policy.Capabilities.Feedback...)
+
+	for _, name := range toolNames {
 		if _, ok := a.toolsByName[name]; !ok {
 			return fmt.Errorf("capability '%s' not found in MCP registry — verify the MCP server is registered and the tool exists", name)
 		}
@@ -150,7 +151,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		_ = a.audit.Write(ctx, Step{
 			RunID:   runID,
 			Type:    model.StepTypeError,
-			Content: map[string]string{"message": err.Error(), "code": "MISSING_CAPABILITY"},
+			Content: map[string]string{"message": err.Error(), "code": "missing_capability"},
 		})
 		return a.failRun(ctx, err)
 	}
@@ -222,7 +223,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 			_ = a.audit.Write(context.Background(), Step{
 				RunID:   runID,
 				Type:    model.StepTypeError,
-				Content: map[string]string{"message": "run cancelled", "code": "CANCELLED"},
+				Content: map[string]string{"message": "run cancelled", "code": "cancelled"},
 			})
 			return a.failRun(ctx, fmt.Errorf("agent run cancelled: %w", err))
 		}
@@ -237,7 +238,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 				_ = a.audit.Write(ctx, Step{
 					RunID:   runID,
 					Type:    model.StepTypeError,
-					Content: map[string]string{"message": err.Error(), "code": "TOKEN_BUDGET_EXCEEDED"},
+					Content: map[string]string{"message": err.Error(), "code": "token_budget_exceeded"},
 				})
 				return a.failRun(ctx, err)
 			}
@@ -261,7 +262,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 				_ = a.audit.Write(context.Background(), Step{
 					RunID:   runID,
 					Type:    model.StepTypeError,
-					Content: map[string]string{"message": "run cancelled", "code": "CANCELLED"},
+					Content: map[string]string{"message": "run cancelled", "code": "cancelled"},
 				})
 			} else {
 				_ = a.audit.Write(context.Background(), Step{
@@ -307,7 +308,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 					_ = a.audit.Write(ctx, Step{
 						RunID:   runID,
 						Type:    model.StepTypeError,
-						Content: map[string]string{"message": err.Error(), "code": "TOOL_CALL_LIMIT_EXCEEDED"},
+						Content: map[string]string{"message": err.Error(), "code": "tool_call_limit_exceeded"},
 					})
 					return a.failRun(ctx, err)
 				}
@@ -455,7 +456,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 			_ = a.audit.Write(context.Background(), Step{
 				RunID:   runID,
 				Type:    model.StepTypeError,
-				Content: map[string]string{"message": "run cancelled", "code": "CANCELLED"},
+				Content: map[string]string{"message": "run cancelled", "code": "cancelled"},
 			})
 		} else {
 			_ = a.audit.Write(context.Background(), Step{

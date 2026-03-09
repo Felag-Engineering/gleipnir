@@ -56,7 +56,7 @@ func run() error {
 	registry := mcp.NewRegistry(store.DB())
 	runManager := trigger.NewRunManager()
 	claudeClient := anthropic.NewClient()
-	webhookHandler := trigger.NewWebhookHandler(store, registry, &claudeClient, runManager)
+	webhookHandler := trigger.NewWebhookHandler(store, registry, runManager, trigger.NewAgentFactory(&claudeClient))
 	r.Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
 
 	runsHandler := trigger.NewRunsHandler(store, runManager)

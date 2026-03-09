@@ -594,7 +594,7 @@ func TestRun_MissingCapabilityFailsFast(t *testing.T) {
 		t.Errorf("run status = %q, want %q", run.Status, model.RunStatusFailed)
 	}
 
-	// An error step with code MISSING_CAPABILITY and the tool name in the message must exist.
+	// An error step with code missing_capability and the tool name in the message must exist.
 	steps, err := s.ListRunSteps(context.Background(), "r1")
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
@@ -604,14 +604,14 @@ func TestRun_MissingCapabilityFailsFast(t *testing.T) {
 		if step.Type == string(model.StepTypeError) {
 			var content map[string]string
 			if err := json.Unmarshal([]byte(step.Content), &content); err == nil {
-				if content["code"] == "MISSING_CAPABILITY" && strings.Contains(content["message"], "myserver.missing_tool") {
+				if content["code"] == "missing_capability" && strings.Contains(content["message"], "myserver.missing_tool") {
 					capErrFound = true
 				}
 			}
 		}
 	}
 	if !capErrFound {
-		t.Error("expected error step with code 'MISSING_CAPABILITY' and message containing 'myserver.missing_tool'")
+		t.Error("expected error step with code 'missing_capability' and message containing 'myserver.missing_tool'")
 	}
 }
 
@@ -726,7 +726,7 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 		if step.Type == string(model.StepTypeError) {
 			var content map[string]string
 			if err := json.Unmarshal([]byte(step.Content), &content); err == nil {
-				if content["code"] == "TOKEN_BUDGET_EXCEEDED" {
+				if content["code"] == "token_budget_exceeded" {
 					budgetErrFound = true
 				}
 			}
@@ -988,7 +988,7 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 		if step.Type == string(model.StepTypeError) {
 			var content map[string]string
 			if err := json.Unmarshal([]byte(step.Content), &content); err == nil {
-				if content["code"] == "TOOL_CALL_LIMIT_EXCEEDED" {
+				if content["code"] == "tool_call_limit_exceeded" {
 					capErrFound = true
 				}
 			}
@@ -1070,7 +1070,7 @@ func (b *blockingMessages) New(ctx context.Context, _ anthropic.MessageNewParams
 }
 
 func TestRun_Cancellation(t *testing.T) {
-	// assertCancelledStep asserts that at least one error step with code "CANCELLED"
+	// assertCancelledStep asserts that at least one error step with code "cancelled"
 	// and message "run cancelled" exists in the audit trail for the given run.
 	assertCancelledStep := func(t *testing.T, s *db.Store, runID string) {
 		t.Helper()
@@ -1086,11 +1086,11 @@ func TestRun_Cancellation(t *testing.T) {
 			if err := json.Unmarshal([]byte(step.Content), &content); err != nil {
 				continue
 			}
-			if content["code"] == "CANCELLED" && content["message"] == "run cancelled" {
+			if content["code"] == "cancelled" && content["message"] == "run cancelled" {
 				return
 			}
 		}
-		t.Errorf("no error step with code=CANCELLED and message='run cancelled' found in audit trail")
+		t.Errorf("no error step with code=cancelled and message='run cancelled' found in audit trail")
 	}
 
 	t.Run("cancel_before_loop", func(t *testing.T) {

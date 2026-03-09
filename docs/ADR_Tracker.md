@@ -35,6 +35,10 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-016 | Real-time UI transport: SSE over WebSockets        | 🟢 Decided    | v0.1   | Frontend, Go API, nginx, HA scaling path             |
 | ADR-017 | Policy-level parameter scoping for MCP tools       | 🟢 Decided    | v0.1   | Policy schema, MCP client, agent runtime, audit log  |
 | ADR-018 | Capability snapshot as first run step              | 🟢 Decided    | v0.1   | Run steps schema, agent runtime, reasoning timeline  |
+| ADR-019 | Dual-mode policy editor (form + YAML)             | 🟢 Decided    | v0.1   | Frontend, policy YAML schema                         |
+| ADR-020 | Policy folders for UI grouping                    | 🟢 Decided    | v0.1   | Policy YAML schema, frontend dashboard               |
+| ADR-021 | MCP discovery diffs                               | 🟢 Decided    | v0.1   | MCP discovery endpoint, frontend                     |
+| ADR-022 | Transport-level fake for Anthropic API in tests   | ⬜ Deferred   | v0.1   | agent package, integration tests                     |
 
 ---
 
@@ -314,11 +318,22 @@ sqlc keeps the code close to SQL without an ORM.
 **Status:** Decided
 **Date:** 2026-03
 
-**Decision:** React app served via nginx in a separate container from the Go API. nginx proxies
-`/api` requests to the Go container.
+**Decision:** React + TypeScript app (Vite build) served via nginx in a separate container from the Go API.
+nginx proxies `/api` requests to the Go container. YAML editor uses CodeMirror 6 (`@codemirror/lang-yaml`).
+Response envelope: `{ data: T }` for success, `{ error: string, detail?: string }` for failure.
+
+**Design system:** IBM Plex Sans (body) + IBM Plex Mono (code/values). Dark theme with layered
+backgrounds (`#0F1117` → `#131720` → `#1E2330`). Semantic colors: blue (sensors/running),
+orange (actuators), amber (approvals), green (success), red (errors), purple (feedback/interrupted),
+teal (poll). Full design token reference in `docs/Frontend_Roadmap.md`.
+
+**Design reference:** `docs/frontend_mockups/` contains four JSX mockups (dashboard, policy editor,
+reasoning timeline, MCP registry) that define the visual language and interaction patterns.
 
 **Reasoning:** Separation of concerns, independent iteration on frontend and backend.
-Standard pattern for production deployments.
+Standard pattern for production deployments. CodeMirror 6 chosen over Monaco for bundle size (~30KB vs ~2MB).
+
+**Related:** ADR-016 (SSE), ADR-019 (dual-mode editor), ADR-020 (folders), ADR-021 (discovery diffs).
 
 ---
 
@@ -380,6 +395,89 @@ policies route to dedicated channels or escalation paths.
 
 **Decision:** The project is named Gleipnir, after the Norse mythological binding that held Fenrir.
 Smooth as silk, stronger than iron, invisible in its constraint.
+
+---
+
+## ADR-019: Dual-mode policy editor (form + YAML)
+
+**Status:** Decided
+**Date:** 2026-03
+
+**Decision:** The policy editor provides two modes toggled by a Form/YAML switch. Both modes
+edit the same underlying YAML string. The form view parses YAML into structured fields (name,
+description, folder, trigger, capabilities with tool picker, task instructions, limits,
+concurrency). The YAML view is a CodeMirror 6 editor with syntax highlighting and validation.
+Switching modes syncs data bidirectionally.
+
+**Reasoning:** Raw YAML editing is powerful for operators who know the schema, but a form view
+with a tool picker dramatically lowers the barrier for creating and editing policies. The
+dual-mode approach serves both audiences without maintaining two data models — YAML remains
+the single source of truth (ADR-002), and the form is a structured view into it.
+
+**Consequence:** The frontend must include YAML parse/serialize logic. The form view requires
+`GET /api/v1/mcp/servers` and tool list endpoints to populate the tool picker.
+
+---
+
+## ADR-020: Policy folders for UI grouping
+
+**Status:** Decided
+**Date:** 2026-03
+
+**Decision:** Policies have an optional `folder` field in their YAML (default: "Ungrouped").
+The dashboard groups policies into collapsible folder rows. Folders are purely cosmetic
+organizational labels — they have no effect on trigger routing, runtime behaviour, or
+access control.
+
+**Reasoning:** As the number of policies grows, a flat list becomes hard to scan. Folders
+provide lightweight organization without introducing a separate entity in the data model.
+Storing folder as a YAML field (not a DB column) keeps the schema simple and consistent
+with ADR-002 (policy-as-YAML). The dashboard derives folder groupings at read time.
+
+**Rejected alternative:** Folders as a separate DB table with a foreign key on policies.
+Rejected because folder membership has no runtime semantics — it's a UI-only concern and
+doesn't justify a data model change.
+
+---
+
+## ADR-021: MCP discovery diffs
+
+**Status:** Decided
+**Date:** 2026-03
+
+**Decision:** When `POST /api/v1/mcp/servers/:id/discover` is called, the response includes
+a diff showing tools added, removed, and modified since the last discovery. The frontend
+renders this as a visual diff with accept/assign actions. This is manual, operator-initiated
+re-discovery — not automatic drift detection.
+
+**Reasoning:** MCP servers evolve over time. When an operator updates an MCP server container
+and re-discovers, they need to see what changed and assign roles to new tools. Showing a diff
+is far more useful than silently updating the tool list. It also surfaces affected policies
+(those referencing removed or modified tools) so the operator can update them.
+
+**Consequence:** The discovery endpoint must compare the new tool list against the existing
+registry and return a structured diff. Added tools need role assignment before they can be
+used in policies.
+
+---
+
+## ADR-022: Transport-level fake for Anthropic API in tests
+
+**Status:** Deferred (tracked: #78)
+**Date:** 2026-03
+
+**Decision:** Test infrastructure that needs to avoid real Anthropic API calls should inject
+a fake `http.RoundTripper` into the `anthropic.Client` rather than bypassing the SDK via an
+interface seam in production types.
+
+**Rejected alternative:** `MessagesOverride MessagesAPI` field on `agent.Config`. This is a
+test concern embedded in a production struct — production code should not be modified to
+accommodate tests. Superseded by the `AgentFactory` pattern which already removed the seam
+from `WebhookHandler`; `agent.Config.MessagesOverride` is the remaining field to eliminate.
+
+**Consequence:** `agent.Config.MessagesOverride` and `integrationFakeMessages` to be removed
+when the transport fake is implemented. `agent_test.go` and `integration_test.go` both move
+to the transport fake.
 
 ---
 

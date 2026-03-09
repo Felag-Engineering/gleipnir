@@ -36,6 +36,12 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
+	// Single open connection: SQLite serializes writes at the file level, so
+	// multiple connections contend for the write lock and produce SQLITE_BUSY
+	// errors. One connection avoids that without needing a busy_timeout retry
+	// loop — go's database/sql serializes callers via the pool.
+	db.SetMaxOpenConns(1)
+
 	// WAL mode for concurrent reads alongside serialized audit writes (ADR-003).
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()

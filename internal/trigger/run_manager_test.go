@@ -4,6 +4,14 @@ import (
 	"testing"
 )
 
+// Wait blocks until all registered goroutines have called Deregister or Cancel.
+// Exposed here (in a _test.go file) so integration tests in package trigger_test
+// can use it as a deterministic teardown barrier without it being part of the
+// production API.
+func (m *RunManager) Wait() {
+	m.wg.Wait()
+}
+
 func TestRunManager(t *testing.T) {
 	cases := []struct {
 		name string

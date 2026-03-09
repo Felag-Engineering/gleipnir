@@ -21,24 +21,52 @@ import (
 	"github.com/rapp992/gleipnir/internal/policy"
 )
 
+// AgentFactory constructs a BoundAgent from a fully-populated Config.
+// The factory owns all decisions about how to supply the Claude client or any
+// test doubles — WebhookHandler has no knowledge of either.
+type AgentFactory func(cfg agent.Config) (*agent.BoundAgent, error)
+
+// NewAgentFactory returns an AgentFactory that injects claude into cfg before
+// calling agent.New. Use this in production.
+func NewAgentFactory(claude *anthropic.Client) AgentFactory {
+	return func(cfg agent.Config) (*agent.BoundAgent, error) {
+		cfg.Claude = claude
+		return agent.New(cfg)
+	}
+}
+
 // WebhookHandler handles POST /api/v1/webhooks/{policyID}.
 // It validates the policy exists, applies the concurrency policy, creates a
 // run record, and launches the agent in a goroutine.
 type WebhookHandler struct {
 	store    *db.Store
 	registry *mcp.Registry
-	claude   *anthropic.Client
 	manager  *RunManager
+	newAgent AgentFactory
 }
 
-// NewWebhookHandler returns a WebhookHandler backed by store, registry, claude, and manager.
-func NewWebhookHandler(store *db.Store, registry *mcp.Registry, claude *anthropic.Client, manager *RunManager) *WebhookHandler {
+// NewWebhookHandler returns a WebhookHandler backed by store, registry, manager, and factory.
+func NewWebhookHandler(store *db.Store, registry *mcp.Registry, manager *RunManager, factory AgentFactory) *WebhookHandler {
 	return &WebhookHandler{
 		store:    store,
 		registry: registry,
-		claude:   claude,
 		manager:  manager,
+		newAgent: factory,
 	}
+}
+
+// markRunFailed transitions a run that was created but cannot proceed to the
+// failed state. Called on error paths after CreateRun succeeds so the run
+// does not linger in 'pending' indefinitely.
+func (h *WebhookHandler) markRunFailed(runID string, err error) {
+	failedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	errMsg := err.Error()
+	_ = h.store.UpdateRunError(context.Background(), db.UpdateRunErrorParams{
+		Status:      string(model.RunStatusFailed),
+		Error:       &errMsg,
+		CompletedAt: &failedAt,
+		ID:          runID,
+	})
 }
 
 // Handle is the chi-compatible HTTP handler for webhook-triggered runs.
@@ -117,14 +145,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	tools, err := h.registry.ResolveForPolicy(ctx, parsed)
 	if err != nil {
 		// Mark the run failed before returning — it was created but cannot proceed.
-		failedAt := time.Now().UTC().Format(time.RFC3339Nano)
-		errMsg := err.Error()
-		_ = h.store.UpdateRunError(context.Background(), db.UpdateRunErrorParams{
-			Status:      string(model.RunStatusFailed),
-			Error:       &errMsg,
-			CompletedAt: &failedAt,
-			ID:          run.ID,
-		})
+		h.markRunFailed(run.ID, err)
 		http.Error(w, "failed to resolve tools", http.StatusInternalServerError)
 		return
 	}
@@ -132,8 +153,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	audit := agent.NewAuditWriter(h.store.Queries)
 	sm := agent.NewRunStateMachine(run.ID, model.RunStatusPending, h.store.Queries)
 
-	ba, err := agent.New(agent.Config{
-		Claude:       h.claude,
+	ba, err := h.newAgent(agent.Config{
 		Tools:        tools,
 		Policy:       parsed,
 		Audit:        audit,
@@ -148,14 +168,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		// construction failed (e.g. schema narrowing error). Without this,
 		// the run stays in 'pending' forever since ScanOrphanedRuns only
 		// rescues 'running' and 'waiting_for_approval' states.
-		failedAt := time.Now().UTC().Format(time.RFC3339Nano)
-		errMsg := err.Error()
-		_ = h.store.UpdateRunError(context.Background(), db.UpdateRunErrorParams{
-			Status:      string(model.RunStatusFailed),
-			Error:       &errMsg,
-			CompletedAt: &failedAt,
-			ID:          run.ID,
-		})
+		h.markRunFailed(run.ID, err)
 		audit.Close()
 		http.Error(w, "failed to construct agent", http.StatusInternalServerError)
 		return
