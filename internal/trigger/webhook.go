@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -27,14 +28,16 @@ type WebhookHandler struct {
 	store    *db.Store
 	registry *mcp.Registry
 	claude   *anthropic.Client
+	manager  *RunManager
 }
 
-// NewWebhookHandler returns a WebhookHandler backed by store, registry, and claude.
-func NewWebhookHandler(store *db.Store, registry *mcp.Registry, claude *anthropic.Client) *WebhookHandler {
+// NewWebhookHandler returns a WebhookHandler backed by store, registry, claude, and manager.
+func NewWebhookHandler(store *db.Store, registry *mcp.Registry, claude *anthropic.Client, manager *RunManager) *WebhookHandler {
 	return &WebhookHandler{
 		store:    store,
 		registry: registry,
 		claude:   claude,
+		manager:  manager,
 	}
 }
 
@@ -158,9 +161,18 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	h.manager.Register(run.ID, cancel)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{"run_id": run.ID})
 
-	go ba.Run(context.Background(), run.ID, string(body))
+	go func() {
+		defer cancel()
+		defer h.manager.Deregister(run.ID)
+		if err := ba.Run(ctx, run.ID, string(body)); err != nil {
+			slog.Error("run failed", "run_id", run.ID, "err", err)
+		}
+	}()
 }

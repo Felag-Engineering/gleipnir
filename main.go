@@ -54,8 +54,9 @@ func run() error {
 	r.Use(middleware.Recoverer)
 
 	registry := mcp.NewRegistry(store.DB())
+	runManager := trigger.NewRunManager()
 	claudeClient := anthropic.NewClient()
-	webhookHandler := trigger.NewWebhookHandler(store, registry, &claudeClient)
+	webhookHandler := trigger.NewWebhookHandler(store, registry, &claudeClient, runManager)
 	r.Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
 
 	srv := &http.Server{
