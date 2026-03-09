@@ -19,7 +19,7 @@ docker compose up        # run full stack (Go + nginx + frontend)
 ## Stack
 
 - **Backend:** Go, [chi](https://github.com/go-chi/chi) router, [sqlc](https://sqlc.dev/) for type-safe queries, official [Anthropic Go SDK](https://github.com/anthropics/anthropic-sdk-go)
-- **Frontend:** React, served via nginx, proxies `/api` to the Go container
+- **Frontend:** React + TypeScript (Vite), CSS Modules, CodeMirror 6 (YAML editor), SSE for real-time updates, Storybook for component dev, served via nginx, proxies `/api` to the Go container
 - **Storage:** SQLite with WAL mode
 - **Deployment:** Docker Compose
 - **Tool protocol:** MCP over HTTP transport
@@ -87,6 +87,9 @@ internal/
 ## Key API surface
 
 - `POST /api/v1/webhooks/:policy_id` — fires a webhook-triggered run; request body is the trigger payload
+- `GET /api/v1/events` — SSE stream (`text/event-stream`) for real-time updates to the frontend
+- `POST /api/v1/mcp/servers/:id/discover` — re-discovery endpoint, returns a diff of added/removed/modified tools
+- Response envelope: `{ data: T }` for success, `{ error: string, detail?: string }` for failure
 
 ## Settled architectural decisions
 
@@ -99,3 +102,8 @@ These are resolved constraints — do not re-litigate them.
 - **Package boundary:** `internal/mcp` must not import `internal/agent`.
 - **Policy-gated approval is a hard runtime guarantee:** actuators marked `approval: required` are intercepted by the runtime before execution, regardless of agent reasoning.
 - **Feedback channel resolution:** policy-level channel definition falls back to system-level config if absent.
+- **SSE for real-time UI transport (ADR-016):** Server-Sent Events push run status changes, new steps, and approval events. Mutations remain REST. No WebSockets.
+- **Dual-mode policy editor (ADR-019):** Form view + YAML view, both editing the same YAML string. YAML is the API payload.
+- **Policy folders are YAML-only (ADR-020):** `folder` is an optional string in the policy YAML for UI grouping. No DB column — purely cosmetic.
+- **CSS Modules, no inline styles:** All frontend styling goes through CSS Modules consuming CSS custom properties. No inline `style={}` attributes.
+- **4px spacing scale:** All margins, padding, and gaps snap to multiples of 4px (4, 8, 12, 16, 24, 32, 48, 64).
