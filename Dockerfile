@@ -8,4 +8,6 @@ RUN CGO_ENABLED=0 go build -o /gleipnir .
 FROM alpine:3.20
 RUN apk --no-cache add ca-certificates
 COPY --from=builder /gleipnir /usr/local/bin/gleipnir
+RUN mkdir -p /data
+EXPOSE 8080
 CMD ["/usr/local/bin/gleipnir"]
