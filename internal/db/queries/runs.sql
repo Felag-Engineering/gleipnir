@@ -31,3 +31,9 @@ SELECT * FROM runs WHERE status = :status ORDER BY created_at ASC;
 -- a Slack thread (see EPIC-010). Must only be called on a run without a thread_id.
 -- name: UpdateRunThreadID :exec
 UPDATE runs SET thread_id = :thread_id WHERE id = :id;
+
+-- name: ListActiveRunsByPolicy :many
+SELECT * FROM runs
+WHERE policy_id = :policy_id
+  AND status IN ('pending', 'running', 'waiting_for_approval')
+ORDER BY created_at ASC;

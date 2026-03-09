@@ -90,6 +90,48 @@ func (q *Queries) IncrementRunTokenCost(ctx context.Context, arg IncrementRunTok
 	return err
 }
 
+const listActiveRunsByPolicy = `-- name: ListActiveRunsByPolicy :many
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs
+WHERE policy_id = ?1
+  AND status IN ('pending', 'running', 'waiting_for_approval')
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListActiveRunsByPolicy(ctx context.Context, policyID string) ([]Run, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveRunsByPolicy, policyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.TriggerType,
+			&i.TriggerPayload,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.TokenCost,
+			&i.Error,
+			&i.ThreadID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOrphanedRuns = `-- name: ListOrphanedRuns :many
 SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs WHERE status IN ('running', 'waiting_for_approval')
 `

@@ -10,9 +10,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
@@ -51,7 +53,9 @@ func run() error {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	webhookHandler := trigger.NewWebhookHandler(store)
+	registry := mcp.NewRegistry(store.DB())
+	claudeClient := anthropic.NewClient()
+	webhookHandler := trigger.NewWebhookHandler(store, registry, &claudeClient)
 	r.Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
 
 	srv := &http.Server{
