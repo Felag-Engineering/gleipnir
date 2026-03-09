@@ -38,14 +38,15 @@ type StepSummary struct {
 	CreatedAt  string `json:"created_at"`
 }
 
-// RunsHandler serves read-only run inspection endpoints.
+// RunsHandler serves run inspection and control endpoints.
 type RunsHandler struct {
-	store *db.Store
+	store   *db.Store
+	manager *RunManager
 }
 
-// NewRunsHandler returns a RunsHandler backed by store.
-func NewRunsHandler(store *db.Store) *RunsHandler {
-	return &RunsHandler{store: store}
+// NewRunsHandler returns a RunsHandler backed by store and manager.
+func NewRunsHandler(store *db.Store, manager *RunManager) *RunsHandler {
+	return &RunsHandler{store: store, manager: manager}
 }
 
 // List handles GET /api/v1/runs with optional ?policy_id= and ?status= filters
@@ -166,6 +167,45 @@ func (h *RunsHandler) ListSteps(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, result)
+}
+
+// Cancel handles POST /api/v1/runs/{runID}/cancel.
+// It signals the run goroutine to stop; the goroutine itself transitions the
+// run to failed in the DB.
+func (h *RunsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "runID")
+
+	run, err := h.store.GetRun(r.Context(), runID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "run not found", http.StatusNotFound)
+			return
+		}
+		slog.Error("GetRun query failed", "run_id", runID, "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if run.Status != string(model.RunStatusRunning) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":  "run is not in a cancellable state",
+			"status": run.Status,
+		})
+		return
+	}
+
+	if !h.manager.Cancel(runID) {
+		// Run is in running state in the DB but has no registered cancel func.
+		// This can happen during the TOCTOU window where the goroutine completed
+		// and deregistered itself between our GetRun check and this call.
+		slog.Warn("cancel called for running run with no registered goroutine", "run_id", runID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"run_id": runID})
 }
 
 func toRunSummary(r db.Run) RunSummary {

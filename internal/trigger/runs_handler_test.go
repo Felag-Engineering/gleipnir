@@ -38,6 +38,7 @@ func newRunsRouter(h *trigger.RunsHandler) *chi.Mux {
 	r.Get("/api/v1/runs", h.List)
 	r.Get("/api/v1/runs/{runID}", h.Get)
 	r.Get("/api/v1/runs/{runID}/steps", h.ListSteps)
+	r.Post("/api/v1/runs/{runID}/cancel", h.Cancel)
 	return r
 }
 
@@ -170,7 +171,7 @@ func TestRunsHandler_List(t *testing.T) {
 				tc.setup(t, store)
 			}
 
-			h := trigger.NewRunsHandler(store)
+			h := trigger.NewRunsHandler(store, trigger.NewRunManager())
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/runs"+tc.query, nil)
@@ -248,7 +249,7 @@ func TestRunsHandler_Get(t *testing.T) {
 				tc.setup(t, store)
 			}
 
-			h := trigger.NewRunsHandler(store)
+			h := trigger.NewRunsHandler(store, trigger.NewRunManager())
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+tc.runID, nil)
@@ -329,7 +330,7 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 				tc.setup(t, store)
 			}
 
-			h := trigger.NewRunsHandler(store)
+			h := trigger.NewRunsHandler(store, trigger.NewRunManager())
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+tc.runID+"/steps", nil)
@@ -356,6 +357,157 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 				if tc.checkFn != nil {
 					tc.checkFn(t, steps)
 				}
+			}
+		})
+	}
+}
+
+func TestRunsHandler_Cancel(t *testing.T) {
+	cases := []struct {
+		name      string
+		setup     func(t *testing.T, store *db.Store, manager *trigger.RunManager)
+		runID     string
+		wantCode  int
+		checkBody func(t *testing.T, body map[string]string)
+	}{
+		{
+			name: "running run returns 202 with run_id",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
+				insertTestPolicy(t, store, "p-cancel-run", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-cancel-running", "p-cancel-run", model.RunStatusRunning)
+				manager.Register("r-cancel-running", func() {})
+			},
+			runID:    "r-cancel-running",
+			wantCode: http.StatusAccepted,
+			checkBody: func(t *testing.T, body map[string]string) {
+				if body["run_id"] != "r-cancel-running" {
+					t.Errorf("run_id = %q, want %q", body["run_id"], "r-cancel-running")
+				}
+			},
+		},
+		{
+			name:     "unknown run ID returns 404",
+			setup:    func(t *testing.T, store *db.Store, manager *trigger.RunManager) {},
+			runID:    "r-cancel-nonexistent",
+			wantCode: http.StatusNotFound,
+		},
+		{
+			name: "complete run returns 409 with error and status",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
+				insertTestPolicy(t, store, "p-cancel-complete", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-cancel-complete", "p-cancel-complete", model.RunStatusComplete)
+			},
+			runID:    "r-cancel-complete",
+			wantCode: http.StatusConflict,
+			checkBody: func(t *testing.T, body map[string]string) {
+				if body["error"] != "run is not in a cancellable state" {
+					t.Errorf("error = %q, want %q", body["error"], "run is not in a cancellable state")
+				}
+				if body["status"] != string(model.RunStatusComplete) {
+					t.Errorf("status = %q, want %q", body["status"], model.RunStatusComplete)
+				}
+			},
+		},
+		{
+			name: "pending run returns 409 with error and status",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
+				insertTestPolicy(t, store, "p-cancel-pending", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-cancel-pending", "p-cancel-pending", model.RunStatusPending)
+			},
+			runID:    "r-cancel-pending",
+			wantCode: http.StatusConflict,
+			checkBody: func(t *testing.T, body map[string]string) {
+				if body["error"] != "run is not in a cancellable state" {
+					t.Errorf("error = %q, want %q", body["error"], "run is not in a cancellable state")
+				}
+				if body["status"] != string(model.RunStatusPending) {
+					t.Errorf("status = %q, want %q", body["status"], model.RunStatusPending)
+				}
+			},
+		},
+		{
+			name: "failed run returns 409 with error and status",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
+				insertTestPolicy(t, store, "p-cancel-failed", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-cancel-failed", "p-cancel-failed", model.RunStatusFailed)
+			},
+			runID:    "r-cancel-failed",
+			wantCode: http.StatusConflict,
+			checkBody: func(t *testing.T, body map[string]string) {
+				if body["error"] != "run is not in a cancellable state" {
+					t.Errorf("error = %q, want %q", body["error"], "run is not in a cancellable state")
+				}
+				if body["status"] != string(model.RunStatusFailed) {
+					t.Errorf("status = %q, want %q", body["status"], model.RunStatusFailed)
+				}
+			},
+		},
+		{
+			name: "waiting_for_approval run returns 409 with error and status",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
+				insertTestPolicy(t, store, "p-cancel-waiting", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-cancel-waiting", "p-cancel-waiting", model.RunStatusWaitingForApproval)
+			},
+			runID:    "r-cancel-waiting",
+			wantCode: http.StatusConflict,
+			checkBody: func(t *testing.T, body map[string]string) {
+				if body["error"] != "run is not in a cancellable state" {
+					t.Errorf("error = %q, want %q", body["error"], "run is not in a cancellable state")
+				}
+				if body["status"] != string(model.RunStatusWaitingForApproval) {
+					t.Errorf("status = %q, want %q", body["status"], model.RunStatusWaitingForApproval)
+				}
+			},
+		},
+		{
+			name: "interrupted run returns 409 with error and status",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
+				insertTestPolicy(t, store, "p-cancel-interrupted", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-cancel-interrupted", "p-cancel-interrupted", model.RunStatusInterrupted)
+			},
+			runID:    "r-cancel-interrupted",
+			wantCode: http.StatusConflict,
+			checkBody: func(t *testing.T, body map[string]string) {
+				if body["error"] != "run is not in a cancellable state" {
+					t.Errorf("error = %q, want %q", body["error"], "run is not in a cancellable state")
+				}
+				if body["status"] != string(model.RunStatusInterrupted) {
+					t.Errorf("status = %q, want %q", body["status"], model.RunStatusInterrupted)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			manager := trigger.NewRunManager()
+			if tc.setup != nil {
+				tc.setup(t, store, manager)
+			}
+
+			h := trigger.NewRunsHandler(store, manager)
+			router := newRunsRouter(h)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+tc.runID+"/cancel", nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d; body: %s", w.Code, tc.wantCode, w.Body.String())
+			}
+
+			if tc.checkBody != nil {
+				ct := w.Result().Header.Get("Content-Type")
+				if !strings.Contains(ct, "application/json") {
+					t.Errorf("Content-Type = %q, want application/json", ct)
+				}
+
+				var body map[string]string
+				if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				tc.checkBody(t, body)
 			}
 		})
 	}

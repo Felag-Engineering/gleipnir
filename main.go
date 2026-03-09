@@ -59,10 +59,11 @@ func run() error {
 	webhookHandler := trigger.NewWebhookHandler(store, registry, &claudeClient, runManager)
 	r.Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
 
-	runsHandler := trigger.NewRunsHandler(store)
+	runsHandler := trigger.NewRunsHandler(store, runManager)
 	r.Get("/api/v1/runs", runsHandler.List)
 	r.Get("/api/v1/runs/{runID}", runsHandler.Get)
 	r.Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)
+	r.Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
 
 	srv := &http.Server{
 		Addr:         listenAddr,
