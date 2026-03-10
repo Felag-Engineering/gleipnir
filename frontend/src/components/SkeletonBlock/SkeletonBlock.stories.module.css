@@ -1,0 +1,12 @@
+.cardLayout {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 320px;
+}
+
+.listLayout {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

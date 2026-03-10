@@ -1,0 +1,33 @@
+.block {
+  --skeleton-shimmer-duration: 1.5s;
+  width: var(--skeleton-w, 100%);
+  height: var(--skeleton-h, 16px);
+  border-radius: var(--skeleton-r, 4px);
+  background: var(--bg-elevated);
+  position: relative;
+  overflow: hidden;
+}
+
+.block::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--text-primary) 5%, transparent) 50%,
+    transparent 100%
+  );
+  animation: shimmer var(--skeleton-shimmer-duration) ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .block::after {
+    animation: none;
+  }
+}
