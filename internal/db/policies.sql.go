@@ -124,6 +124,75 @@ func (q *Queries) ListPolicies(ctx context.Context) ([]Policy, error) {
 	return items, nil
 }
 
+const listPoliciesWithLatestRun = `-- name: ListPoliciesWithLatestRun :many
+SELECT
+    p.id,
+    p.name,
+    p.trigger_type,
+    p.yaml,
+    p.created_at,
+    p.updated_at,
+    r.id          AS run_id,
+    r.status      AS run_status,
+    r.started_at  AS run_started_at,
+    r.token_cost  AS run_token_cost
+FROM policies p
+LEFT JOIN runs r ON r.id = (
+    SELECT id FROM runs
+    WHERE policy_id = p.id
+    ORDER BY created_at DESC
+    LIMIT 1
+)
+ORDER BY p.created_at DESC
+`
+
+type ListPoliciesWithLatestRunRow struct {
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	TriggerType  string  `json:"trigger_type"`
+	Yaml         string  `json:"yaml"`
+	CreatedAt    string  `json:"created_at"`
+	UpdatedAt    string  `json:"updated_at"`
+	RunID        *string `json:"run_id"`
+	RunStatus    *string `json:"run_status"`
+	RunStartedAt *string `json:"run_started_at"`
+	RunTokenCost *int64  `json:"run_token_cost"`
+}
+
+func (q *Queries) ListPoliciesWithLatestRun(ctx context.Context) ([]ListPoliciesWithLatestRunRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPoliciesWithLatestRun)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPoliciesWithLatestRunRow
+	for rows.Next() {
+		var i ListPoliciesWithLatestRunRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.TriggerType,
+			&i.Yaml,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RunID,
+			&i.RunStatus,
+			&i.RunStartedAt,
+			&i.RunTokenCost,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updatePolicy = `-- name: UpdatePolicy :one
 UPDATE policies
 SET name = ?1, trigger_type = ?2, yaml = ?3, updated_at = ?4

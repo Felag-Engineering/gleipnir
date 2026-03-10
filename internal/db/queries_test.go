@@ -493,6 +493,122 @@ func TestRunQueries(t *testing.T) {
 	}
 }
 
+func TestListPoliciesWithLatestRunQuery(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("empty db returns empty slice", func(t *testing.T) {
+		s := newTestStore(t)
+		rows, err := s.ListPoliciesWithLatestRun(ctx)
+		if err != nil {
+			t.Fatalf("ListPoliciesWithLatestRun: %v", err)
+		}
+		if len(rows) != 0 {
+			t.Errorf("got %d rows, want 0", len(rows))
+		}
+	})
+
+	t.Run("two policies with no runs: RunID nil", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "pol1")
+		insertPolicy(t, s, "pol2")
+
+		rows, err := s.ListPoliciesWithLatestRun(ctx)
+		if err != nil {
+			t.Fatalf("ListPoliciesWithLatestRun: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("got %d rows, want 2", len(rows))
+		}
+		for _, row := range rows {
+			if row.RunID != nil {
+				t.Errorf("policy %s: RunID = %v, want nil", row.ID, row.RunID)
+			}
+		}
+	})
+
+	t.Run("one policy with three runs: returns newest run", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "pol1")
+
+		// Insert runs with explicit created_at timestamps to control ordering.
+		for _, run := range []struct {
+			id        string
+			createdAt string
+		}{
+			{"run-old", "2024-01-01T00:00:00Z"},
+			{"run-mid", "2024-06-01T00:00:00Z"},
+			{"run-new", "2025-01-01T00:00:00Z"},
+		} {
+			_, err := s.DB().Exec(
+				`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
+				 VALUES (?, 'pol1', 'complete', 'webhook', '{}', ?, ?)`,
+				run.id, run.createdAt, run.createdAt,
+			)
+			if err != nil {
+				t.Fatalf("insert run %s: %v", run.id, err)
+			}
+		}
+
+		rows, err := s.ListPoliciesWithLatestRun(ctx)
+		if err != nil {
+			t.Fatalf("ListPoliciesWithLatestRun: %v", err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("got %d rows, want 1", len(rows))
+		}
+		row := rows[0]
+		if row.RunID == nil {
+			t.Fatal("RunID is nil, want run-new")
+		}
+		if *row.RunID != "run-new" {
+			t.Errorf("RunID = %q, want %q", *row.RunID, "run-new")
+		}
+	})
+
+	t.Run("two policies each with a run: both returned with correct run data", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "pol1")
+		insertPolicy(t, s, "pol2")
+		insertRun(t, s, "run1", "pol1", "complete")
+		insertRun(t, s, "run2", "pol2", "running")
+
+		rows, err := s.ListPoliciesWithLatestRun(ctx)
+		if err != nil {
+			t.Fatalf("ListPoliciesWithLatestRun: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("got %d rows, want 2", len(rows))
+		}
+
+		byPolicy := make(map[string]ListPoliciesWithLatestRunRow, 2)
+		for _, row := range rows {
+			byPolicy[row.ID] = row
+		}
+
+		r1, ok := byPolicy["pol1"]
+		if !ok {
+			t.Fatal("pol1 not in results")
+		}
+		if r1.RunID == nil || *r1.RunID != "run1" {
+			t.Errorf("pol1 RunID = %v, want run1", r1.RunID)
+		}
+		if r1.RunStatus == nil || *r1.RunStatus != "complete" {
+			t.Errorf("pol1 RunStatus = %v, want complete", r1.RunStatus)
+		}
+
+		r2, ok := byPolicy["pol2"]
+		if !ok {
+			t.Fatal("pol2 not in results")
+		}
+		if r2.RunID == nil || *r2.RunID != "run2" {
+			t.Errorf("pol2 RunID = %v, want run2", r2.RunID)
+		}
+		if r2.RunStatus == nil || *r2.RunStatus != "running" {
+			t.Errorf("pol2 RunStatus = %v, want running", r2.RunStatus)
+		}
+	})
+}
+
 func TestRunStepQueries(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
