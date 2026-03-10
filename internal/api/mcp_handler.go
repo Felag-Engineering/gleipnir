@@ -217,6 +217,100 @@ func (h *MCPHandler) Discover(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, diffToResponse(diff))
 }
 
+type mcpToolResponse struct {
+	ID             string          `json:"id"`
+	ServerID       string          `json:"server_id"`
+	Name           string          `json:"name"`
+	Description    string          `json:"description"`
+	CapabilityRole string          `json:"capability_role"`
+	InputSchema    json.RawMessage `json:"input_schema"`
+}
+
+func toolToResponse(t db.McpTool) mcpToolResponse {
+	return mcpToolResponse{
+		ID:             t.ID,
+		ServerID:       t.ServerID,
+		Name:           t.Name,
+		Description:    t.Description,
+		CapabilityRole: t.CapabilityRole,
+		// InputSchema is stored as a JSON string in the DB; cast directly to
+		// json.RawMessage to avoid double-encoding it as a JSON string in the response.
+		InputSchema: json.RawMessage(t.InputSchema),
+	}
+}
+
+// ListTools handles GET /api/v1/mcp/servers/{id}/tools.
+func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	ctx := r.Context()
+
+	if _, err := h.store.GetMCPServer(ctx, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			WriteError(w, http.StatusNotFound, "MCP server not found", "")
+			return
+		}
+		WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
+		return
+	}
+
+	rows, err := h.store.ListMCPToolsByServer(ctx, id)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "failed to list MCP tools", err.Error())
+		return
+	}
+
+	items := make([]mcpToolResponse, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, toolToResponse(row))
+	}
+
+	WriteJSON(w, http.StatusOK, items)
+}
+
+// UpdateToolRole handles PATCH /api/v1/mcp/tools/{id}.
+func (h *MCPHandler) UpdateToolRole(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	ctx := r.Context()
+
+	var body struct {
+		CapabilityRole string `json:"capability_role"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+
+	if !model.CapabilityRole(body.CapabilityRole).Valid() {
+		WriteError(w, http.StatusBadRequest, "invalid capability_role, must be one of: sensor, actuator, feedback", "")
+		return
+	}
+
+	if _, err := h.store.GetMCPTool(ctx, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			WriteError(w, http.StatusNotFound, "MCP tool not found", "")
+			return
+		}
+		WriteError(w, http.StatusInternalServerError, "failed to get MCP tool", err.Error())
+		return
+	}
+
+	if err := h.store.UpdateMCPToolCapabilityRole(ctx, db.UpdateMCPToolCapabilityRoleParams{
+		CapabilityRole: body.CapabilityRole,
+		ID:             id,
+	}); err != nil {
+		WriteError(w, http.StatusInternalServerError, "failed to update capability role", err.Error())
+		return
+	}
+
+	updated, err := h.store.GetMCPTool(ctx, id)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "failed to fetch updated MCP tool", err.Error())
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, toolToResponse(updated))
+}
+
 // policyReferencesServer returns true if the raw policy YAML contains any tool
 // reference starting with the given server name prefix (e.g. "myserver.").
 // Parse failures are treated as no match — a corrupt policy YAML cannot block deletion.

@@ -30,7 +30,9 @@ func NewRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry) chi
 			r.Post("/", mcpH.Create)
 			r.Delete("/{id}", mcpH.Delete)
 			r.Post("/{id}/discover", mcpH.Discover)
+			r.Get("/{id}/tools", mcpH.ListTools)
 		})
+		r.Patch("/tools/{id}", mcpH.UpdateToolRole)
 	})
 
 	return r
