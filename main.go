@@ -17,6 +17,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/rapp992/gleipnir/internal/sse"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
@@ -55,10 +56,14 @@ func run() error {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
+	broadcaster := sse.NewBroadcaster()
+	sseHandler := sse.NewHandler(broadcaster)
+	r.Get("/api/v1/events", sseHandler.ServeHTTP)
+
 	registry := mcp.NewRegistry(store.DB())
 	runManager := trigger.NewRunManager()
 	claudeClient := anthropic.NewClient()
-	webhookHandler := trigger.NewWebhookHandler(store, registry, runManager, trigger.NewAgentFactory(&claudeClient))
+	webhookHandler := trigger.NewWebhookHandler(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
 	r.Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
 
 	runsHandler := trigger.NewRunsHandler(store, runManager)

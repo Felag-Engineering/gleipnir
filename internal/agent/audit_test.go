@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -254,6 +255,67 @@ func TestAuditWriter_MultipleRuns(t *testing.T) {
 					runID, i, step.StepNumber, i+1)
 			}
 		}
+	}
+}
+
+func TestAuditWriter_WithPublisher_EmitsStepAdded(t *testing.T) {
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	insertRun(t, s, "r1", "p1", "running")
+
+	pub := &capturePublisher{}
+	w := NewAuditWriter(s.Queries, WithPublisher(pub))
+
+	if err := w.Write(context.Background(), Step{
+		RunID:   "r1",
+		Type:    model.StepTypeThought,
+		Content: "hello",
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	events := pub.all()
+	if len(events) != 1 {
+		t.Fatalf("got %d published events, want 1", len(events))
+	}
+	if events[0].eventType != "run.step_added" {
+		t.Errorf("event type = %q, want %q", events[0].eventType, "run.step_added")
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(events[0].data, &payload); err != nil {
+		t.Fatalf("unmarshal event data: %v", err)
+	}
+	if payload["run_id"] != "r1" {
+		t.Errorf("run_id = %v, want %q", payload["run_id"], "r1")
+	}
+	if payload["step_number"] == nil {
+		t.Error("step_number is nil, want non-nil")
+	}
+	if payload["type"] == nil {
+		t.Error("type is nil, want non-nil")
+	}
+}
+
+func TestAuditWriter_NilPublisherIsSafe(t *testing.T) {
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	insertRun(t, s, "r1", "p1", "running")
+
+	// No publisher — should not panic.
+	w := NewAuditWriter(s.Queries)
+	if err := w.Write(context.Background(), Step{
+		RunID:   "r1",
+		Type:    model.StepTypeThought,
+		Content: "hello",
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 

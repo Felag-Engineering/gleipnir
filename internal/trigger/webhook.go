@@ -39,19 +39,22 @@ func NewAgentFactory(claude *anthropic.Client) AgentFactory {
 // It validates the policy exists, applies the concurrency policy, creates a
 // run record, and launches the agent in a goroutine.
 type WebhookHandler struct {
-	store    *db.Store
-	registry *mcp.Registry
-	manager  *RunManager
-	newAgent AgentFactory
+	store     *db.Store
+	registry  *mcp.Registry
+	manager   *RunManager
+	newAgent  AgentFactory
+	publisher agent.Publisher
 }
 
-// NewWebhookHandler returns a WebhookHandler backed by store, registry, manager, and factory.
-func NewWebhookHandler(store *db.Store, registry *mcp.Registry, manager *RunManager, factory AgentFactory) *WebhookHandler {
+// NewWebhookHandler returns a WebhookHandler backed by store, registry, manager, factory, and publisher.
+// publisher may be nil, in which case no real-time events are emitted.
+func NewWebhookHandler(store *db.Store, registry *mcp.Registry, manager *RunManager, factory AgentFactory, publisher agent.Publisher) *WebhookHandler {
 	return &WebhookHandler{
-		store:    store,
-		registry: registry,
-		manager:  manager,
-		newAgent: factory,
+		store:     store,
+		registry:  registry,
+		manager:   manager,
+		newAgent:  factory,
+		publisher: publisher,
 	}
 }
 
@@ -150,8 +153,8 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	audit := agent.NewAuditWriter(h.store.Queries)
-	sm := agent.NewRunStateMachine(run.ID, model.RunStatusPending, h.store.Queries)
+	audit := agent.NewAuditWriter(h.store.Queries, agent.WithPublisher(h.publisher))
+	sm := agent.NewRunStateMachine(run.ID, model.RunStatusPending, h.store.Queries, agent.WithStateMachinePublisher(h.publisher))
 
 	ba, err := h.newAgent(agent.Config{
 		Tools:        tools,

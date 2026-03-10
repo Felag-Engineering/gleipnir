@@ -2,12 +2,38 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/rapp992/gleipnir/internal/model"
 )
+
+// capturePublisher records every Publish call for assertion in tests.
+type capturePublisher struct {
+	mu     sync.Mutex
+	events []capturedEvent
+}
+
+type capturedEvent struct {
+	eventType string
+	data      json.RawMessage
+}
+
+func (p *capturePublisher) Publish(eventType string, data json.RawMessage) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.events = append(p.events, capturedEvent{eventType: eventType, data: data})
+}
+
+func (p *capturePublisher) all() []capturedEvent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]capturedEvent, len(p.events))
+	copy(out, p.events)
+	return out
+}
 
 // legalTransitions lists every edge that must succeed.
 var legalTransitions = [][2]model.RunStatus{
@@ -157,6 +183,67 @@ func TestRunStateMachine_FailedTransitionSetsErrorColumn(t *testing.T) {
 	}
 	if *run.Error != wantMsg {
 		t.Errorf("error column = %q, want %q", *run.Error, wantMsg)
+	}
+}
+
+func TestRunStateMachine_PublishesOnSuccessfulTransition(t *testing.T) {
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	insertRun(t, s, "run1", "p1", "pending")
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries, WithStateMachinePublisher(pub))
+
+	if err := sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+
+	events := pub.all()
+	if len(events) != 1 {
+		t.Fatalf("got %d published events, want 1", len(events))
+	}
+	if events[0].eventType != "run.status_changed" {
+		t.Errorf("event type = %q, want %q", events[0].eventType, "run.status_changed")
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(events[0].data, &payload); err != nil {
+		t.Fatalf("unmarshal event data: %v", err)
+	}
+	if payload["run_id"] != "run1" {
+		t.Errorf("run_id = %q, want %q", payload["run_id"], "run1")
+	}
+	if payload["status"] != string(model.RunStatusRunning) {
+		t.Errorf("status = %q, want %q", payload["status"], model.RunStatusRunning)
+	}
+}
+
+func TestRunStateMachine_NoPublishOnIllegalTransition(t *testing.T) {
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	insertRun(t, s, "run1", "p1", "pending")
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries, WithStateMachinePublisher(pub))
+
+	// pending → complete is illegal.
+	_ = sm.Transition(context.Background(), model.RunStatusComplete, "")
+
+	if events := pub.all(); len(events) != 0 {
+		t.Errorf("got %d published events after illegal transition, want 0", len(events))
+	}
+}
+
+func TestRunStateMachine_NilPublisherIsSafe(t *testing.T) {
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	insertRun(t, s, "run1", "p1", "pending")
+
+	// No publisher option — should not panic.
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries)
+
+	if err := sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
+		t.Fatalf("Transition with nil publisher: %v", err)
 	}
 }
 

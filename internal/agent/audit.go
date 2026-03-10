@@ -27,6 +27,7 @@ type AuditWriter struct {
 	queue     chan writeRequest
 	done      chan struct{}
 	closeOnce sync.Once
+	publisher Publisher
 }
 
 type writeRequest struct {
@@ -42,6 +43,14 @@ type Option func(*AuditWriter)
 func WithQueueDepth(n int) Option {
 	return func(w *AuditWriter) {
 		w.queue = make(chan writeRequest, n)
+	}
+}
+
+// WithPublisher injects a Publisher that receives run.step_added events after
+// each step is successfully written to the DB.
+func WithPublisher(p Publisher) Option {
+	return func(w *AuditWriter) {
+		w.publisher = p
 	}
 }
 
@@ -109,8 +118,9 @@ func (w *AuditWriter) loop() {
 			continue
 		}
 
+		stepID := model.NewULID()
 		_, err = w.queries.CreateRunStep(context.Background(), db.CreateRunStepParams{
-			ID:         model.NewULID(),
+			ID:         stepID,
 			RunID:      req.step.RunID,
 			StepNumber: stepNum,
 			Type:       req.step.Type.String(),
@@ -121,6 +131,20 @@ func (w *AuditWriter) loop() {
 		if err != nil {
 			req.resp <- fmt.Errorf("create run step: %w", err)
 			continue
+		}
+
+		if w.publisher != nil {
+			data, err := json.Marshal(map[string]any{
+				"run_id":      req.step.RunID,
+				"step_id":     stepID,
+				"step_number": stepNum,
+				"type":        req.step.Type,
+			})
+			if err != nil {
+				req.resp <- fmt.Errorf("marshal publish payload: %w", err)
+				continue
+			}
+			w.publisher.Publish("run.step_added", data)
 		}
 
 		if req.step.TokenCost > 0 {

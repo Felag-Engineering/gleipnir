@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -14,21 +15,37 @@ import (
 // It enforces the legal transition graph and writes every transition to the DB.
 // Safe for concurrent use.
 type RunStateMachine struct {
-	runID   string
-	current model.RunStatus
-	mu      sync.Mutex
-	queries *db.Queries
+	runID     string
+	current   model.RunStatus
+	mu        sync.Mutex
+	queries   *db.Queries
+	publisher Publisher
+}
+
+// StateMachineOption configures a RunStateMachine at construction time.
+type StateMachineOption func(*RunStateMachine)
+
+// WithStateMachinePublisher injects a Publisher that receives run.status_changed
+// events after each successful transition.
+func WithStateMachinePublisher(p Publisher) StateMachineOption {
+	return func(sm *RunStateMachine) {
+		sm.publisher = p
+	}
 }
 
 // NewRunStateMachine returns a RunStateMachine initialised to the given status.
 // The initial status is not written to the DB — the caller is responsible for
 // ensuring the DB row already reflects that state.
-func NewRunStateMachine(runID string, initial model.RunStatus, queries *db.Queries) *RunStateMachine {
-	return &RunStateMachine{
+func NewRunStateMachine(runID string, initial model.RunStatus, queries *db.Queries, opts ...StateMachineOption) *RunStateMachine {
+	sm := &RunStateMachine{
 		runID:   runID,
 		current: initial,
 		queries: queries,
 	}
+	for _, opt := range opts {
+		opt(sm)
+	}
+	return sm
 }
 
 // Transition validates and persists a run status transition.
@@ -68,6 +85,15 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 	}
 
 	sm.current = next
+
+	if sm.publisher != nil {
+		data, err := json.Marshal(map[string]string{"run_id": sm.runID, "status": string(next)})
+		if err != nil {
+			return fmt.Errorf("marshal publish payload: %w", err)
+		}
+		sm.publisher.Publish("run.status_changed", data)
+	}
+
 	return nil
 }
 
