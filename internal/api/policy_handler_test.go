@@ -44,6 +44,28 @@ func newPolicyRouter(store *db.Store) http.Handler {
 	return r
 }
 
+// newPolicyRouterWithLookup is like newPolicyRouter but passes a ToolLookup to
+// the service so that tool-reference warnings can be exercised in tests.
+func newPolicyRouterWithLookup(store *db.Store, lookup policy.ToolLookup) http.Handler {
+	r := chi.NewRouter()
+	svc := policy.NewService(store, lookup)
+	h := api.NewPolicyHandler(store, svc)
+	r.Get("/policies", h.List)
+	r.Post("/policies", h.Create)
+	r.Get("/policies/{id}", h.Get)
+	r.Put("/policies/{id}", h.Update)
+	r.Delete("/policies/{id}", h.Delete)
+	return r
+}
+
+// alwaysMissingLookup is a ToolLookup stub that reports every tool as absent.
+// Used to exercise the "unresolvable tool refs" warning path.
+type alwaysMissingLookup struct{}
+
+func (alwaysMissingLookup) ToolExists(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
+}
+
 // insertTestPolicy inserts a policy row directly via the store.
 func insertTestPolicy(t *testing.T, s *db.Store, id, name, yaml string) {
 	t.Helper()
@@ -342,6 +364,44 @@ func TestPolicyCreateHandler(t *testing.T) {
 
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400", resp.StatusCode)
+		}
+	})
+
+	t.Run("unresolvable tool refs returns 201 with warnings", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		srv := httptest.NewServer(newPolicyRouterWithLookup(store, alwaysMissingLookup{}))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Post(srv.URL+"/policies", "application/yaml", strings.NewReader(validPolicyYAML))
+		if err != nil {
+			t.Fatalf("POST /policies: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Data struct {
+				Warnings []string `json:"warnings"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data.Warnings) == 0 {
+			t.Fatal("expected at least one warning, got none")
+		}
+		found := false
+		for _, w := range envelope.Data.Warnings {
+			if strings.Contains(w, "github.list_repos") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("warnings %v do not mention github.list_repos", envelope.Data.Warnings)
 		}
 	})
 
