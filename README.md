@@ -180,7 +180,7 @@ In-flight runs do not survive a Gleipnir restart. On startup, any run in `runnin
 
 Read [`SECURITY.md`](SECURITY.md) before deploying. Key points:
 
-- **MCP servers are fully trusted.** A compromised MCP server can expose arbitrary tools to the agent, bypassing capability policy. Treat MCP server containers as part of your trust boundary.
+- **MCP servers are fully trusted.** A compromised MCP server has full control over every tool it implements — it can silently alter tool behavior, fabricate results, and poison discovery with new tool names that operators might accidentally grant later. It cannot inject tools the policy did not grant, but the tools it does own are fully under its control. Treat MCP server containers as part of your trust boundary.
 - **Webhook endpoints have no signature verification in v0.1.** The webhook URL is a secret — treat it as a credential. HMAC verification is planned for v0.4.
 - **Prompt injection via tool results is a known risk.** MCP tool results enter the agent's context window. Structured result wrapping is a planned mitigation, not yet implemented.
 
