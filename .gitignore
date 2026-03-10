@@ -2,6 +2,7 @@
 .claude/agent-memory/go-code-reviewer/MEMORY.md
 devflow/.devflow/
 frontend/node_modules
+frontend/dist
 
 # React Component Preview
 previewConfig.json
