@@ -1,0 +1,105 @@
+:root {
+  /* Background layers */
+  --bg-canvas: #0f1117;
+  --bg-surface: #131720;
+  --bg-elevated: #1e2330;
+  --bg-topbar: #0d1018;
+  --bg-code: #090c12;
+
+  /* Borders */
+  --border-subtle: #1e2330;
+  --border-mid: #253044;
+
+  /* Text */
+  --text-faint: #334155;
+  --text-muted: #475569;
+  --text-second: #94a3b8;
+  --text-primary: #e2e8f0;
+
+  /* Semantic colors */
+  --color-blue: #60a5fa;
+  --color-orange: #fb923c;
+  --color-amber: #f59e0b;
+  --color-green: #4ade80;
+  --color-red: #f87171;
+  --color-purple: #a78bfa;
+  --color-teal: #34d399;
+
+  /* Capability aliases */
+  --color-sensor: var(--color-blue);
+  --color-actuator: var(--color-orange);
+  --color-feedback: var(--color-purple);
+
+  /* Spacing (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* Typography families */
+  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+
+  /* Typography weights */
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* Typography sizes */
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-lg: 18px;
+  --text-xl: 24px;
+  --text-2xl: 32px;
+
+  /* Motion durations */
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --duration-slow: 350ms;
+
+  /* Motion easing */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.5, 0, 0.75, 0);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+    --duration-slow: 0ms;
+  }
+}
+
+html {
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  font-weight: var(--weight-normal);
+  color: var(--text-primary);
+  background: var(--bg-canvas);
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-elevated);
+  border-radius: 2px;
+}
+
+@keyframes gPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+@keyframes gSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
