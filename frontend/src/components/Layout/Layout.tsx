@@ -1,9 +1,12 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { useSSE } from '../../hooks/useSSE'
+import { ConnectionBanner } from '../ConnectionBanner'
 import styles from './Layout.module.css'
 
 export default function Layout() {
   const location = useLocation()
   const policiesActive = location.pathname.startsWith('/policies')
+  const { connectionState } = useSSE()
 
   return (
     <div className={styles.layout}>
@@ -38,6 +41,7 @@ export default function Layout() {
           </nav>
         </div>
       </header>
+      <ConnectionBanner state={connectionState} />
       <main className={styles.main}>
         <Outlet />
       </main>
