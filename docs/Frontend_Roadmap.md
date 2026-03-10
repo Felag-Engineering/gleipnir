@@ -8,11 +8,82 @@
 **Design reference:** `docs/frontend_mockups/` — four JSX mockups defining the visual language and interaction patterns
 **Phase scope:** This document covers EPIC-007 across v0.1 (foundation), v0.2 (approval UI), and v0.1-polish (design quality pass)
 
+**Guiding principle:** Ship views first, extract shared patterns from working code, then polish. Every section in v0.1 should produce a usable screen. Shared components are extracted *from* views, not designed in isolation before views exist.
+
+---
+
+## 0. Frontend Architecture Decisions
+
+These decisions affect every view and must be settled before implementation begins. They are more important than any visual detail in this document.
+
+### State Management — TanStack Query + React Context
+
+Use [TanStack Query](https://tanstack.com/query) (React Query) as the primary data layer. It handles fetching, caching, background refetching, and loading/error states — eliminating the need for hand-rolled fetch-on-mount patterns in every view.
+
+- **Server state** (policies, runs, servers, tools) → TanStack Query. Each entity type gets a query key family (`['policies']`, `['runs', runId]`, `['servers', serverId, 'tools']`).
+- **Client-only UI state** (which folder is expanded, slide-out open, filter selection) → React `useState` / `useReducer` local to the component that owns it. Lift only when two sibling components need the same state.
+- **No global store** (no Redux, no Zustand) unless a clear need emerges. TanStack Query's cache *is* the global server state store.
+
+### SSE-to-Cache Reconciliation
+
+The hardest React problem in this app: when an SSE event arrives, how does it update the UI?
+
+**Strategy: SSE events invalidate TanStack Query caches.**
+
+1. A single `useSSE` hook connects to `GET /api/v1/events` and stays open for the app's lifetime (mounted in the root layout).
+2. When an event arrives (e.g., `run.status_changed`), the hook calls `queryClient.invalidateQueries({ queryKey: ['runs', event.run_id] })` and any related queries (e.g., `['policies']` to update the dashboard list).
+3. TanStack Query automatically refetches invalidated queries if they have active subscribers (i.e., a component is currently rendering that data). Queries with no subscribers just get marked stale.
+4. For high-frequency events (`run.step_added` during a live run), use **optimistic cache updates** instead of refetching: `queryClient.setQueryData(['runs', runId, 'steps'], old => [...old, event.step])`. This avoids a network round-trip per step.
+
+This keeps SSE handling in one place and lets every view stay reactive without subscribing to SSE events directly.
+
+**Why not patch local component state?** Because multiple views may display the same data (stats bar, policy row, run detail). Cache invalidation updates all subscribers automatically.
+
+### Data Fetching Patterns
+
+All API calls go through a shared `apiFetch` wrapper:
+
+```typescript
+// Unwraps { data: T } envelope, throws typed ApiError on failure
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T>
+```
+
+TanStack Query hooks wrap `apiFetch`:
+
+```typescript
+function usePolicies() {
+  return useQuery({ queryKey: ['policies'], queryFn: () => apiFetch<Policy[]>('/policies') })
+}
+
+function useRun(id: string) {
+  return useQuery({ queryKey: ['runs', id], queryFn: () => apiFetch<Run>(`/runs/${id}`) })
+}
+```
+
+Mutations use `useMutation` with cache invalidation on success:
+
+```typescript
+function useSavePolicy() {
+  return useMutation({
+    mutationFn: (policy) => apiFetch('/policies', { method: 'POST', body: ... }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['policies'] }),
+  })
+}
+```
+
+This eliminates loading/error state boilerplate from every view.
+
+### Error Boundaries
+
+- **Root-level boundary:** catches unexpected render crashes. Shows "Something went wrong" with a retry button.
+- **Per-view boundaries:** each route-level component is wrapped in its own error boundary. A crash in the MCP server view does not take down the dashboard.
+- **Fetch errors are not boundary errors.** TanStack Query surfaces fetch failures through its `error` state, which views handle inline (error message at the point of failure, not a page-level crash).
+
 ---
 
 ## Design System
 
-All views share a consistent design language defined in the mockups. Extract these as a shared theme before building any views.
+All views share a consistent design language defined in the mockups. Tokens and scale are defined upfront; shared *components* are extracted from views as they're built.
 
 ### CSS Architecture
 
@@ -35,11 +106,11 @@ All spacing uses a **4px base unit**. No arbitrary pixel values.
 --space-16: 64px
 ```
 
-Every margin, padding, and gap must snap to this scale. This creates visual rhythm.
+Every margin, padding, and gap must snap to this scale.
 
 ### Design Tokens
 
-Defined as CSS custom properties on `:root`, scoped by `data-theme` attribute. The dark theme is the default. Alternative themes (light, color blindness) override only the properties they need to change. See section 14 for the full theme architecture, color blindness palettes, and the "never color alone" rule.
+Defined as CSS custom properties on `:root`, scoped by `data-theme` attribute. The dark theme is the default. Alternative themes (light, color blindness) override only the properties they need to change. See section 12 for the full theme architecture, color blindness palettes, and the "never color alone" rule.
 
 ```css
 :root {
@@ -76,7 +147,7 @@ Defined as CSS custom properties on `:root`, scoped by `data-theme` attribute. T
 }
 ```
 
-**Critical rule: never rely on color alone to convey meaning.** Every color signal must be paired with a shape, icon, or text label. See section 14 for the full audit checklist.
+**Critical rule: never rely on color alone to convey meaning.** Every color signal must be paired with a shape, icon, or text label. See section 12 for the full audit checklist.
 
 ### Typographic Scale
 
@@ -101,7 +172,7 @@ Deliberate size steps — no 1px increments:
 }
 ```
 
-Use `--weight-light` (300) for `--text-2xl` hero numbers in the stats bar to create a distinctive, airy feel that contrasts with the dense data below.
+Use `--weight-light` (300) for `--text-2xl` hero numbers in the stats bar.
 
 ### Motion System
 
@@ -115,24 +186,11 @@ All transitions use a consistent set of durations and curves:
 
   --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);    /* Decelerate — for elements entering */
   --ease-in:    cubic-bezier(0.5, 0, 0.75, 0);     /* Accelerate — for elements leaving */
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* Overshoot — for step card slide-in */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* Overshoot — for playful enter effects */
 }
 ```
 
-List items (folder rows, tool rows, step cards) use a **stagger pattern**: each item delays by 30ms × index for initial render. Maximum 10 items staggered, remainder appear instantly.
-
-### Shared Components
-
-Extract the following as reusable components with CSS Modules. Each component should have all its visual states defined (default, hover, active, disabled, loading). Build these in **Storybook** before integrating into views.
-
-- **StatusBadge** — colored dot + label for run status (`complete`, `running`, `waiting_for_approval`, `failed`, `interrupted`). Pulsing animation for active states.
-- **TriggerChip** — colored monospace label (`webhook` blue, `cron` purple, `poll` teal)
-- **RoleChip / RoleBadge** — capability role indicator (`sensor` blue, `actuator` orange, `feedback` purple)
-- **Spinner** — rotating SVG arc, configurable size and color
-- **CopyBlock** — wrapper that shows a "copy" button on hover, copies text to clipboard, shows "✓ copied" for 1.8s
-- **SkeletonBlock** — pulsing gray rectangle placeholder for loading states. Configurable width, height, and border-radius. Used in place of spinners for initial data loads.
-- **CollapsibleJSON** — formatted JSON with syntax coloring, expand/collapse toggle, and CopyBlock wrapper
-- **ConnectionBanner** — persistent top-of-page banner for SSE disconnect state: "Connection lost — reconnecting…" with retry indicator. Dismisses automatically when SSE reconnects.
+Specific animation patterns (stagger delays, scroll thresholds, blink intervals) are implementation details — discover them during development, not here. The tokens above are the vocabulary; views compose them as needed.
 
 ---
 
@@ -143,8 +201,8 @@ Extract the following as reusable components with CSS Modules. Each component sh
 - All `/api` requests are proxied by nginx to the Go backend — no direct backend URLs in the React app.
 - No auth in v0.1. Basic auth (env-configured) is a v0.4 concern — do not build login flows now.
 - Do not build anything marked v0.2 in the v0.1 milestone. v0.2 items are called out explicitly below.
-- **Real-time updates via SSE (ADR-016).** The frontend opens an `EventSource` connection to receive `run.status_changed`, `run.step_added`, `approval.created`, and `approval.resolved` events. Mutations (approve, reject, CRUD) are normal REST calls. Polling is the fallback only if SSE connection drops and `EventSource` auto-reconnect hasn't recovered. On disconnect, show the `ConnectionBanner` component.
-- **No inline styles.** All styling goes through CSS Modules consuming CSS custom properties. This is a hard rule — PRs with inline `style={}` will be rejected.
+- **Real-time updates via SSE (ADR-016).** See section 0 for the SSE-to-cache reconciliation strategy. On disconnect, show a non-blocking banner ("Connection lost — reconnecting…") that auto-dismisses on reconnect.
+- **No inline styles.** All styling goes through CSS Modules consuming CSS custom properties. This is a hard rule.
 
 ---
 
@@ -152,12 +210,11 @@ Extract the following as reusable components with CSS Modules. Each component sh
 
 ```
 /                          → redirect to /dashboard
-/dashboard                 → Dashboard (stats, approvals, folder→policy→run hierarchy)
+/dashboard                 → Dashboard (stats, policy list with latest run)
 /policies/new              → New policy editor (dual-mode: form + YAML)
 /policies/:id              → Edit policy editor (dual-mode: form + YAML)
 /runs/:id                  → Run detail (reasoning timeline)
 /mcp                       → MCP server management
-/approvals                 → [v0.2] Dedicated approval queue (dashboard handles approvals in v0.1)
 ```
 
 ---
@@ -166,45 +223,32 @@ Extract the following as reusable components with CSS Modules. Each component sh
 
 ### 1. Scaffolding and Infrastructure
 
-**Goal:** Working React app that talks to the backend and is served by nginx.
+**Goal:** Working React app that talks to the backend and is served by nginx. No views yet — just the shell.
 
 - React app bootstrapped with Vite + TypeScript
-- **CSS Modules** configured (Vite default, no extra setup)
-- **Storybook** configured for component development — all shared components built and viewable in isolation before integration
+- CSS Modules configured (Vite default, no extra setup)
 - Global CSS file with `:root` custom properties (design tokens, spacing scale, typographic scale, motion system)
+- TanStack Query provider at the root
+- `apiFetch` wrapper (see section 0)
+- `useSSE` hook mounted in root layout (see section 0 for reconciliation strategy):
+  - Connects to `GET /api/v1/events`
+  - Parses events by type and invalidates relevant TanStack Query caches
+  - Auto-reconnects using `EventSource` native behavior
+  - On disconnect: shows a connection-lost banner. On reconnect: dismisses it.
 - nginx config:
   - Serve the React build from `/`
   - Proxy `/api/*` to the Go container (e.g. `http://gleipnir-api:8080`)
   - Set `X-Accel-Buffering: no` on SSE proxy responses (ADR-016)
 - Dockerfile: multi-stage — Node build stage → nginx serve stage
-- Global layout: **top bar navigation** with GLEIPNIR wordmark and links to Dashboard, Policies, Servers. Approval count badge in top-right when pending approvals exist (pulsing amber dot + count).
-- Basic error boundary at the root level with a styled fallback ("Something went wrong" with a retry button, not a white screen)
-- A shared `apiFetch` wrapper that:
-  - Prefixes all requests with `/api/v1`
-  - Parses JSON responses, unwrapping `{ data: T }` envelope on success
-  - On error (HTTP 4xx/5xx), parses `{ error: string, detail?: string }` and throws a typed error
-- A shared `useSSE` hook (or `EventSource` wrapper) that:
-  - Connects to `GET /api/v1/events` (SSE endpoint)
-  - Parses `text/event-stream` events by type (`run.status_changed`, `run.step_added`, `approval.created`, `approval.resolved`)
-  - Auto-reconnects using `EventSource` native behavior with `Last-Event-ID` support
-  - Components subscribe to specific event types and optionally filter by resource ID
-  - On disconnect: triggers `ConnectionBanner` display. On reconnect: dismisses banner.
-- **Command palette** (`Cmd+K` / `Ctrl+K`):
-  - Opens a centered modal overlay with a search input
-  - Searches across policies (by name), runs (by ID), and actions ("new policy", "approve", "servers")
-  - Results grouped by type with keyboard navigation (↑/↓ to select, Enter to go, Esc to close)
-  - Use [cmdk](https://cmdk.paco.me/) (~4KB) as the base component
-  - Initially populated with static actions + policy/run names from cached API data
-- Shared components built in Storybook: StatusBadge, TriggerChip, RoleBadge, Spinner, CopyBlock, SkeletonBlock, CollapsibleJSON, ConnectionBanner
+- Global layout: **top bar navigation** with GLEIPNIR text wordmark and links to Dashboard, Policies, Servers
+- Root-level and per-route error boundaries
 
 **Acceptance criteria:**
 - `docker-compose up` serves the React app on the configured port
 - `/api` proxy routes correctly to the Go container
 - Navigation renders and routes work
-- Design tokens and shared components are available to all views
-- Storybook is accessible in dev mode with all shared components
-- Command palette opens with `Cmd+K`, searches policies and actions
-- ConnectionBanner appears on SSE disconnect, auto-dismisses on reconnect
+- Design tokens are available to all views via CSS custom properties
+- SSE connection established on app load, reconnects on disconnect with visible banner
 - No inline styles in any component
 
 ---
@@ -214,108 +258,71 @@ Extract the following as reusable components with CSS Modules. Each component sh
 **Reference mockup:** `gleipnir-dashboard.jsx`
 
 **Endpoints:**
-- `GET /api/v1/policies` — list all policies (response includes `folder` field from YAML)
+- `GET /api/v1/policies` — list all policies
 - `GET /api/v1/runs?policy_id=:id&limit=1` — latest run per policy (or included in policy response)
-- `GET /api/v1/runs?policy_id=:id&offset=1` — run history for expanded policy rows
 
-The dashboard is the main view. It replaces the separate "Policy List" and "Run List" views from the original roadmap with a unified folder→policy→run hierarchy.
+The dashboard is the main view. It shows a stats overview and a flat list of policies with their latest run status.
 
 #### Loading State
 
-On initial load, show **skeleton screens** in the shape of the final layout:
-- Stats bar: four skeleton rectangles matching card dimensions
-- Folder list: 3 skeleton rows with gray pulsing blocks for folder name, policy count, and token total
-
-Do not show a spinner. Skeletons feel faster and prevent layout shift.
+On initial load, show **skeleton screens** in the shape of the final layout (stat cards + list rows). Do not show a spinner. Skeletons prevent layout shift and feel faster.
 
 #### Stats Bar
 
-Four stat cards at the top. Counter numbers use `--text-2xl` (32px) with `--weight-light` (300) for a distinctive, airy feel:
+Four stat cards at the top. Counter numbers use `--text-2xl` with `--weight-light` for a distinctive, airy feel:
 
 | Stat | Source |
 |---|---|
 | Active runs | Count of runs with `running` status |
-| Pending approvals | Count of pending approvals (pulsing amber if > 0) |
-| Folders | Count of distinct folders |
+| Pending approvals | Count of pending approvals (amber highlight if > 0) |
+| Policies | Total policy count |
 | Tokens today | Sum of `token_cost` across latest runs |
 
-Stats update in real time via SSE `run.status_changed` and `approval.*` events.
+Stats update in real time via SSE cache invalidation.
 
-#### Pending Approvals Section
+#### Pending Approvals Banner
 
 **[v0.2 functionality — render as placeholder in v0.1]**
 
-In v0.1, if any run has `waiting_for_approval` status, show a non-interactive banner: "N runs awaiting approval — approval UI available in v0.2."
+If any run has `waiting_for_approval` status, show a non-interactive banner: "N runs awaiting approval — approval UI available in v0.2."
 
-In v0.2, this section renders full approval cards (see section 6).
+In v0.2, this becomes the full approval card section (see section 6).
 
-#### Folder → Policy → Run Hierarchy
+#### Policy List
 
-Policies are grouped by their `folder` field (an optional string in the policy YAML, defaults to "Ungrouped").
+A flat table of all policies. Each row shows:
 
-**Folder row (collapsed by default):**
-- Chevron toggle + folder icon + folder name
-- Status dot — derived from the worst-case status across the folder's policies: amber if any approval pending > red if any failed > blue if any running > green if all complete. Status dot color transitions smoothly (`transition: background var(--duration-normal) ease`) when SSE updates change the state.
-- Policy count chip ("3 policies")
-- "approval pending" chip if any policy in the folder has a `waiting_for_approval` run
-- Total token cost (sum of latest runs)
-
-**Folder row (expanded) — shows a column header and policy rows:**
-
-Column headers: `Policy / Latest run | Status | When | Duration | Tokens | History`
-
-Expand/collapse animates with smooth height transition (`max-height` + `overflow: hidden`, duration `--duration-normal`).
-
-**Policy row** (one per policy in the folder):
-- Policy name + trigger chip + latest run summary (truncated, single line)
-- If running: show spinner + "Executing…" instead of summary
-- StatusBadge of the latest run
+- Policy name (linked to `/policies/:id`)
+- TriggerChip (`webhook` / `cron` / `poll`)
+- Latest run: StatusBadge + summary (truncated, single line)
+- If running: spinner + "Executing…" instead of summary
 - Relative timestamp of latest run ("3m ago")
 - Duration of latest run
 - Token cost of latest run
-- History toggle button (clock icon) — expands run history
 
-**Run history (expanded via history toggle):**
-- Table of previous runs for that policy (paginated, 4 per page)
-- Columns: Status | Summary | When | Duration | Tokens
-- Prev/Next pagination controls with "1–4 of 6" counter
+Clicking the run status/summary area navigates to `/runs/:id` for the latest run.
 
-**Run detail slide-out panel:**
-- Clicking any run row (latest or history) opens a slide-out panel on the right (300px wide, fixed position)
-- Panel slides in from the right with `--duration-normal` and `--ease-out`
-- Shows: StatusBadge, run summary, metadata grid (Run ID, Started, Duration, Tokens, Tool calls)
-- "View reasoning timeline" button → navigates to `/runs/:id`
-- Close button (×) dismisses the panel
+**"New Policy" button** in the top-right navigates to `/policies/new`.
 
 **Empty state:**
-When no policies exist, show a purposeful empty state — not just "No policies yet":
-- Centered content with a subtle illustration or icon (interlocking links motif)
+When no policies exist:
+- Centered content
 - Headline: "No policies yet"
 - Subtext: "Create your first policy to start running agents"
-- Three-step visual hint: "1. Create a policy → 2. Assign tools → 3. Trigger a run"
 - Prominent "Create Policy" CTA button
 
-**Keyboard navigation:**
-- `j` / `k` — move selection highlight between folder rows and policy rows
-- `Enter` — expand/collapse the selected folder, or open the slide-out for the selected run
-- `Esc` — close the slide-out panel
-- `n` — navigate to `/policies/new` (new policy)
-
 **Live updates (SSE):**
-- `run.status_changed` → update the affected policy's latest run status, folder status dot, stats bar
-- `run.step_added` → update token cost if changed
+- `run.status_changed` → TanStack Query invalidates `['policies']` and `['runs']`, affected rows re-render automatically
+- `run.step_added` → invalidate run data if token cost changed
 
 **Acceptance criteria:**
-- Skeleton screens shown on initial load, no spinners
-- Policies grouped by folder with collapsible folder rows (animated)
-- Folder status dot reflects worst-case status, transitions smoothly on change
-- Policy rows show latest run with status, timing, tokens
-- Run history expandable per policy with pagination
-- Run detail slide-out panel on row click (animated)
-- Stats bar reflects current state with large (32px) counter numbers
+- Skeleton screens shown on initial load
+- Policies listed with latest run status, timing, tokens
 - "New Policy" button navigates to `/policies/new`
 - Empty state renders with CTA when no policies exist
-- `j`/`k`/`Enter`/`Esc`/`n` keyboard shortcuts work
+- SSE events update the list in real time
+
+**Shared components extracted from this view:** StatusBadge, TriggerChip, SkeletonBlock. These emerge naturally — build them inline first, then extract when the pattern stabilizes.
 
 ---
 
@@ -338,27 +345,27 @@ The editor has two modes toggled by a Form/YAML switch in the top bar. Both mode
 - Breadcrumb: GLEIPNIR › Policies › `{policy-name}`
 - Unsaved changes indicator (amber dot next to policy name when dirty)
 - Form/YAML mode toggle (two-button group)
-- Save button: active (blue) when dirty, muted when clean. Label: "Save Policy" / "Saved"
+- Save button: active (blue) when dirty, muted when clean
+- Delete policy button (with confirmation modal) — edit mode only
 - `Cmd+S` / `Ctrl+S` saves the policy (prevent browser default save)
 
 #### YAML Mode
 
-- Full-height CodeMirror 6 editor (`@codemirror/lang-yaml`), ~30KB gzipped
-- Syntax validation indicator: "● Valid YAML" (green) or "● Invalid YAML" (red) with error message
+- Full-height CodeMirror 6 editor (`@codemirror/lang-yaml`)
+- Syntax validation indicator: "Valid YAML" (green) or "Invalid YAML" (red) with error message
 - Malformed YAML blocks the save button
 - On save error from API (validation failure): display error inline below the editor, do not navigate away
-- Helper text above editor: "Editing raw YAML — changes here sync to the form view on switch."
 
 #### Form Mode
 
-Two-column layout: main form (left, scrollable) + context sidebar (right, fixed 260px).
+Single-column scrollable form.
 
-**Main form sections:**
+**Form sections:**
 
 1. **Policy Identity**
    - Name field (monospace input)
    - Description field
-   - Folder field (text input, optional — for dashboard grouping)
+   - Folder field (text input, optional — for future dashboard grouping)
 
 2. **Trigger**
    - Three trigger type cards (Webhook / Schedule / Poll) with icon, name, and description
@@ -371,18 +378,18 @@ Two-column layout: main form (left, scrollable) + context sidebar (right, fixed 
    - Legend showing role colors: sensor (blue, "read-only, called freely") and actuator (orange, "world-affecting, optionally gated")
    - List of currently assigned tools, each showing:
      - RoleBadge + `server.tool_name` (monospace) + description
-     - For actuators: approval toggle switch (amber when enabled, shows "approval req." / "no approval")
+     - For actuators: approval toggle switch (amber when enabled)
      - Remove button (×)
    - "Add tool from registry" button → opens inline search panel:
      - Search input (filters by tool name, server name, or description)
      - Results list showing RoleBadge + `server.tool_name` + description
-     - Clicking a result adds it to the capabilities list with a brief slide-in animation
+     - Clicking a result adds it to the capabilities list
      - Cancel button closes the search panel
    - Empty state: "No tools added yet. Add tools from the registry below."
 
 4. **Task Instructions**
    - Multiline textarea for agent task prompt
-   - Helper text: "The trigger payload (webhook body, poll result) is delivered as the agent's first message — reference it as needed."
+   - Helper text: "The trigger payload (webhook body, poll result) is delivered as the agent's first message."
 
 5. **Run Limits**
    - Two-column grid: max tokens per run (number input) + max tool calls per run (number input)
@@ -392,48 +399,25 @@ Two-column layout: main form (left, scrollable) + context sidebar (right, fixed 
    - Each card has a label and short description
    - Selected card has blue border + background tint
 
-**Context sidebar (right panel, 260px):**
-
-1. **Capability Envelope** — three large counters:
-   - Sensors count (blue)
-   - Actuators count (orange)
-   - Gated count (amber) — actuators with approval required
-   - If any actuators are gated, show a warning box listing them: "⚠ server.tool requires approval"
-
-2. **Run Limits** — monospace summary:
-   - `20,000 tokens`
-   - `50 tool calls`
-   - `skip concurrency`
-
-3. **Quick Actions** — button list:
-   - Test trigger (▶)
-   - View run history (↗)
-   - Duplicate policy (⎘)
-   - Delete policy (✕, red text) — with confirmation modal
-
 **Syncing between modes:**
 - Switching from Form → YAML: serialize form state to YAML string
 - Switching from YAML → Form: parse YAML string into form fields. If YAML is malformed, stay in YAML mode and show an error.
 
 **New policy flow:**
-- Pre-populate with default YAML template (same as before)
+- Pre-populate with default YAML template
 - Form mode starts with empty fields matching the template
-
-**Webhook URL display:**
-- In form mode: shown below the webhook trigger card
-- In YAML mode: shown in a banner above the editor (only when trigger type is webhook)
-- Copy-to-clipboard button on both
 
 **Acceptance criteria:**
 - Dual-mode toggle works, data syncs between modes
 - YAML round-trips correctly: save → reload produces the same YAML
 - Form mode: all fields editable, tool picker works, approval toggles work
-- Capability envelope sidebar updates as tools are added/removed
 - Syntax error in YAML mode blocks save
 - API validation error shown inline, does not navigate away
 - Webhook URL is visible and copyable after save
 - Dirty indicator shows when unsaved changes exist
 - `Cmd+S` saves the policy
+
+**Shared components extracted from this view:** RoleBadge (reused in MCP view and run timeline).
 
 ---
 
@@ -449,65 +433,62 @@ Two-column layout: main form (left, scrollable) + context sidebar (right, fixed 
 
 #### Loading State
 
-On initial load, show skeleton screens: a skeleton header block + 4-5 skeleton step cards matching the timeline layout. Steps use alternating widths to suggest varying content lengths.
+Skeleton screens: a skeleton header block + several skeleton step cards matching the timeline layout.
 
 #### Run Header
 
-- Back button → navigate to `/dashboard` (also: `Esc` key navigates back)
+- Back button → navigate to `/dashboard`
 - Policy name (linked to `/policies/:id`) + TriggerChip
 - StatusBadge (large)
 - Metadata grid: Run ID (truncated ULID), Started (absolute time), Duration (or "in progress" with elapsed timer), Tokens (total), Tool calls (count)
 - If status is `failed` or `interrupted`: error message displayed in a red-bordered box
-- Trigger payload: collapsible JSON block using `CollapsibleJSON` component
+- Trigger payload: collapsible JSON block
 
 #### Filter Chips
 
-Row of filter buttons: All | Thoughts | Calls | Results | Approvals | Errors
+Row of filter buttons: All | Thoughts | Calls | Results | Errors
 
-Each chip shows a count badge. Clicking a chip filters the timeline to only show steps of that type. "All" shows everything. `capability_snapshot` is never included in filter counts — it's infrastructure, not agent reasoning (ADR-018).
+Each chip shows a count badge. Clicking a chip filters the timeline. `capability_snapshot` steps are excluded from filter counts — they're infrastructure, not agent reasoning (ADR-018).
 
 #### Step Timeline
 
-Vertical timeline with a connector line between steps. Each step has an icon on the left (circles for thoughts/complete, rounded squares for tool calls/results) and a content card on the right.
-
-New step cards enter with a slide-in animation (translate from -6px + fade in, `--duration-normal`, `--ease-spring`).
+Vertical timeline with a connector line between steps. Each step has an icon on the left and a content card on the right.
 
 **Step type rendering:**
 
 | Type | Icon | Content |
 |---|---|---|
-| `capability_snapshot` | Shield icon | Collapsed by default. Summary: "capability snapshot — N tools". Expand to show tool list with name, RoleChip, approval badge, presented schema with enum constraints highlighted. Always renders at the bottom of the timeline (step 0). |
-| `thought` | Gray dot (`·`) | Text block, agent reasoning. Token cost shown. **For in-progress streaming:** render text character-by-character with a typing effect (30ms per character batch) and a blinking cursor (`LiveCursor` component) at the end. Cursor disappears when the step is complete. |
-| `tool_call` | Blue `→` (sensor) or Orange `→` (actuator) | Tool name (monospace, colored by role) + RoleChip. Input JSON in a `CollapsibleJSON` block. |
-| `tool_result` | Green `←` (success) or Red `←` (error) | Output in a `<pre>` block with `CopyBlock` wrapper. If `is_error: true`, red border and error styling. |
-| `approval_request` | Amber shield | [v0.1 placeholder] Show "Approval requested — approval UI available in v0.2". [v0.2] Full inline approval card (see section 7). |
-| `feedback_request` | Purple speech bubble | [v0.1 placeholder] Show "Feedback requested — feedback UI available in v0.2". |
-| `feedback_response` | Purple speech bubble (filled) | [v0.1 placeholder] Show "Feedback response received." |
+| `capability_snapshot` | Shield icon | Collapsed by default. Summary: "capability snapshot — N tools". Expand to show tool list with RoleBadge and approval status. Renders at the top of the timeline (step 0). |
+| `thought` | Gray dot | Text block, agent reasoning. Token cost shown. |
+| `tool_call` | Blue `→` (sensor) or Orange `→` (actuator) | Tool name (monospace, colored by role) + RoleBadge. Input JSON in a collapsible block with copy button. |
+| `tool_result` | Green `←` (success) or Red `←` (error) | Output in a `<pre>` block with copy button. If `is_error: true`, red border and error styling. |
+| `approval_request` | Amber shield | [v0.1 placeholder] "Approval requested — approval UI available in v0.2." [v0.2] Full inline approval card (see section 7). |
+| `feedback_request` | Purple speech bubble | [v0.1 placeholder] "Feedback requested — feedback UI available in v0.2." |
+| `feedback_response` | Purple speech bubble (filled) | [v0.1 placeholder] "Feedback response received." |
 | `error` | Red `!` | Error message in a red-bordered box. |
 | `complete` | Green checkmark | Summary text in a green-bordered success card. Token cost shown. |
 
-**Live updates (SSE):**
-- `run.step_added` → append new step card with slide-in animation. Auto-scroll to bottom if user is within 200px of the bottom. If user has scrolled up, show a "New steps ↓" pill at the bottom that scrolls down on click.
-- `run.status_changed` → update header (status badge, duration, token cost). If status transitions to terminal, stop showing streaming indicators (remove LiveCursor, stop elapsed timer).
+#### Pagination for Long Runs
 
-**Keyboard navigation:**
-- `Esc` — navigate back to dashboard
-- `j` / `k` — move between steps
-- `Enter` — expand/collapse the selected step's JSON or details
-- `c` — copy the selected step's content to clipboard
+For runs with many steps, load the first 50 steps. Show a "Load more" button at the top of the timeline to fetch earlier steps. This avoids the complexity of virtual scrolling with variable-height items.
+
+**Live updates (SSE):**
+- `run.step_added` → optimistic cache update appends the step. Auto-scroll to bottom if user is near the bottom. If user has scrolled up, show a "New steps ↓" pill that scrolls down on click.
+- `run.status_changed` → invalidate run query, header updates automatically.
 
 **Acceptance criteria:**
 - Skeleton screens on initial load
-- All step types render without crashing
-- Live runs append new steps via SSE with slide-in animation
-- Thought steps stream text character-by-character with blinking cursor for in-progress runs
+- All step types render correctly
+- Live runs append new steps via SSE
 - JSON blobs in tool_call/tool_result are collapsible with copy buttons
 - Token cost per step is visible
 - Filter chips work and show correct counts
-- Capability snapshot renders at the bottom, collapsed by default
-- Back button and `Esc` return to dashboard
+- Capability snapshot renders at the top, collapsed by default
+- Back button returns to dashboard
 - "New steps ↓" pill appears when user has scrolled away from bottom during live run
-- `j`/`k`/`Enter`/`c` keyboard shortcuts work
+- "Load more" button works for runs with 50+ steps
+
+**Shared components extracted from this view:** CollapsibleJSON, CopyBlock (these emerge from repeated use of collapsible JSON + copy patterns across tool_call, tool_result, and trigger payload).
 
 ---
 
@@ -519,79 +500,61 @@ New step cards enter with a slide-in animation (translate from -6px + fade in, `
 - `GET /api/v1/mcp/servers` — list registered servers
 - `POST /api/v1/mcp/servers` — register new server
 - `DELETE /api/v1/mcp/servers/:id` — remove server
-- `POST /api/v1/mcp/servers/:id/discover` — trigger re-discovery (returns diff)
+- `POST /api/v1/mcp/servers/:id/discover` — trigger re-discovery
 - `GET /api/v1/mcp/servers/:id/tools` — list tools with capability roles
 - `PATCH /api/v1/mcp/tools/:id` — update capability role
 
-**Layout:** Full-page view with a top section for global stats and actions, followed by server cards.
+**Layout:** Full-page view with global tool stats, an "Add Server" button, and expandable server cards.
 
 #### Loading State
 
 Skeleton screens: stat counters as skeleton blocks + 2-3 skeleton server cards.
 
-#### Global Stats and Actions
+#### Global Stats
 
 - Total tools count, sensors count, actuators count, unassigned count
 - "Add Server" button → opens modal
 
 #### Add Server Modal
 
-- Slides in with `--duration-normal` and `--ease-out`
 - Fields: Name (text input) + URL (text input, monospace, placeholder: `http://my-server:8080`)
 - Cancel / Add Server buttons
-- On success: server card appears in the list with a slide-in animation, auto-triggers discovery
+- On success: server card appears in the list, auto-triggers discovery
 
 #### Server Cards
 
 One card per registered MCP server:
 
 **Card header:**
-- Health dot (pulsing green = reachable, solid red = unreachable, pulsing amber = checking)
+- Health indicator: text label ("reachable" / "unreachable" / "checking") with colored dot
 - Server name
 - Server URL (monospace, muted)
 - Last discovered timestamp (relative: "3h ago") or "Never discovered"
 - "Discover" button (triggers re-discovery, shows spinner while running)
 - Expand/collapse chevron for tool list
-- Delete button (trash icon) — with confirmation modal ("This will remove N tools from the registry. Affected policies: ...")
+- Delete button (trash icon) — with confirmation modal ("This will remove N tools from the registry.")
 
 **Unassigned role warning:**
 If any tools on the server have no capability role assigned, show an amber banner: "N tools need a capability role assigned before they can be used in policies"
 
 **Tool list (per server, expandable):**
 
-Expand/collapse animated with smooth height transition.
-
-Each tool row (grid layout):
+Each tool row:
 - Tool name (`server.tool_name`, monospace)
 - Description
-- **Policy cross-references** — list of policy names that use this tool, with scoping indicator:
-  - "worker-pod-watcher (scoped)" — policy uses this tool with param constraints
-  - "daily-cluster-digest" — policy uses this tool without scoping
-  - Tools not used in any policy show "not used" in muted text
-- Input schema: expandable `CollapsibleJSON` block showing parameter types, required flags, and which params are scopeable
-- Capability role: **inline dropdown** to change role (`sensor` | `actuator` | `feedback`). Dropdown is color-coded by selected role. Saves on change via `PATCH /api/v1/mcp/tools/:id`.
-- Expand button for full detail
+- Input schema: expandable JSON block
+- Capability role: **inline dropdown** to change role (`sensor` | `actuator` | `feedback`). Saves on change via `PATCH /api/v1/mcp/tools/:id`.
 
-#### Discovery Diff View
-
-When re-discovery completes and tools have changed, show a diff overlay/section:
-
-- **Added tools** — green left-border, tool name + description + suggested role dropdown
-- **Removed tools** — red left-border, tool name + description, strikethrough
-- **Modified tools** — amber left-border, tool name + old description → new description
-
-Each section has an "Accept" action. Added tools need a role assignment before accept. The diff view shows affected policies that reference changed/removed tools.
+Re-discovery simply refreshes the tool list in place. The user sees the updated list and can check what changed. A structured diff view is a v0.1-polish enhancement (see section 10).
 
 **Acceptance criteria:**
 - Skeleton screens on initial load
-- Servers list with health indicator and last discovery time
-- Add server modal works (animated), auto-discovers on creation
-- Re-discovery shows diff when tools change (added/removed/modified)
-- Tool capability roles are editable via inline dropdown
-- Policy cross-references shown per tool
+- Servers listed with health indicator (text + dot) and last discovery time
+- Add server modal works, auto-discovers on creation
+- Tool capability roles editable via inline dropdown
 - Unassigned role warning banner when applicable
-- Delete server works with confirmation showing affected policies
-- Adding and removing servers works
+- Delete server works with confirmation
+- Re-discovery refreshes the tool list
 
 ---
 
@@ -608,69 +571,53 @@ Each section has an "Accept" action. Added tools need a role assignment before a
 Replaces the v0.1 placeholder banner with full interactive approval cards.
 
 **Section header:**
-- Pulsing amber dot + "Pending Approvals" + count badge
-- When all resolved: "— all resolved" (muted)
+- Amber indicator + "Pending Approvals" + count badge
 
 **Approval card (one per pending approval):**
 
-- Top amber gradient bar (3px, visual accent)
 - **Header row:**
-  - Amber alert icon (circle with exclamation)
-  - Policy name + folder label + TriggerChip
+  - Amber alert icon
+  - Policy name + TriggerChip
   - Agent summary (1-2 sentence description of what the agent wants to do)
-  - Countdown timer showing time remaining before timeout (`expires_at`). Timer behavior escalates as time runs out:
-    - Normal: amber text, static display
-    - < 5 minutes: timer turns red, border pulses subtly
-    - < 1 minute: entire card border glows amber with a slow pulse animation (`box-shadow` transition)
+  - Countdown timer showing time remaining before timeout (`expires_at`). Two states:
+    - Normal: amber text
+    - Expiring soon (< 5 minutes): timer turns red, border changes to amber
   - "Show reasoning" / "Hide reasoning" toggle
 
 - **Proposed action block** (always visible):
   - "PROPOSED ACTION" label
-  - Tool name in an orange monospace badge
-  - "actuator · approval required" label (muted)
-  - Proposed input as formatted JSON using `CollapsibleJSON`
+  - Tool name in an orange monospace badge + "actuator · approval required" label
+  - Proposed input as formatted, collapsible JSON
 
 - **Agent reasoning trace** (collapsible, hidden by default):
   - "AGENT REASONING" label
-  - Mini reasoning timeline showing the steps that led to this approval request (thoughts, tool calls, tool results)
+  - Mini timeline showing the steps that led to this approval request (thoughts, tool calls, results)
   - Same visual style as the full reasoning timeline but compact
-  - Expand/collapse animated with smooth height transition and subtle backdrop blur behind the trace when expanded
 
 - **Action row:**
-  - "Started {time} · run paused, waiting for your decision" (muted)
-  - Reject button (red outline)
-  - Approve button (green outline)
+  - "Run paused, waiting for your decision" (muted)
+  - Reject button (red outline, ✕ icon)
+  - Approve button (green outline, ✓ icon)
 
 - **Confirm flow** (after clicking Approve or Reject):
-  - Replaces the action row with a confirmation area (animated transition)
-  - Optional note textarea (placeholder varies by action)
-  - Cancel button + "Confirm Approve" / "Confirm Reject" button
+  - Replaces the action row with: optional note textarea + Cancel button + "Confirm Approve" / "Confirm Reject" button
 
-**Approval receipt (after decision):**
-- Replaces the approval card with a compact receipt row
-- Status dot transitions: amber → green (approved) or amber → red (rejected), animated with `--duration-normal`
-- Checkmark (approved, green) or X (rejected, red) + "Approved"/"Rejected" + policy name + tool name
-- If note was provided: shows note in italics
-- "confirming…" spinner until SSE confirms the status change
-- After confirmation: receipt fades out over `--duration-slow`, then card smoothly collapses (height → 0)
-
-**Keyboard navigation:**
-- `a` — approve the first pending approval (opens confirm flow)
-- `r` — reject the first pending approval (opens confirm flow)
-- `Tab` — cycle between pending approval cards
+**After decision:**
+- Card transitions to a compact receipt row showing the decision
+- Receipt shows status icon + "Approved"/"Rejected" + policy name + tool name
+- "confirming…" indicator until SSE confirms the status change, then receipt fades away
 
 **Live updates (SSE):**
-- `approval.created` → new approval card slides in from the top
-- `approval.resolved` → card transitions to receipt, then fades and collapses
+- `approval.created` → new approval card appears
+- `approval.resolved` → card transitions to receipt, then collapses
 
 **Acceptance criteria:**
 - All pending approvals visible with countdown timers
-- Countdown timer escalation (color change, pulse, glow) at 5min and 1min thresholds
-- Agent reasoning trace expandable per approval with backdrop blur
+- Timer visual change at < 5min threshold
+- Agent reasoning trace expandable per approval
 - Approve/reject actions require confirmation with optional note
-- Receipts show after decision with status dot color transition, fade out after confirmation
+- Receipts show after decision, disappear after SSE confirmation
 - SSE events update approval state in real time
-- `a`/`r`/`Tab` keyboard shortcuts work
 
 ### 7. Run Detail — Approval Step Cards
 
@@ -678,197 +625,135 @@ Upgrade the placeholder `approval_request` step cards from v0.1:
 
 **Reference mockup:** `gleipnir-reasoning-timeline.jsx` (approval_request step type)
 
-- Show tool name (orange monospace badge) + RoleChip ("actuator")
-- Proposed input as formatted JSON with `CopyBlock`
-- Countdown timer if status is `pending` (same escalation behavior as dashboard approval cards)
-- If status is `pending`: show Approve / Reject buttons inline in the timeline, with the same confirm flow as the dashboard (optional note → confirm)
-- If status is `approved` / `rejected` / `timeout`: show decided state with green checkmark / red X / amber clock icon, timestamp, and note if present
-- "Jump to approval" button that scrolls to the approval step when viewing the dashboard
+- Show tool name (orange monospace badge) + RoleBadge ("actuator")
+- Proposed input as formatted JSON with copy button
+- If status is `pending`: show Approve / Reject buttons inline, with the same confirm flow as the dashboard
+- Countdown timer if status is `pending` (same two-state behavior as dashboard)
+- If status is `approved` / `rejected` / `timeout`: show decided state with icon, timestamp, and note if present
 
 ### 8. Feedback Round-Trip
 
 Upgrade `feedback_request` and `feedback_response` step cards:
 
 - `feedback_request`: show the agent's message in a purple-bordered card. If awaiting response, show a text input + "Send Response" button
-- `feedback_response`: show the operator's response in a visually distinct style (right-aligned or different background color)
+- `feedback_response`: show the operator's response in a visually distinct style (different background color)
 
 ---
 
 ## v0.1-polish — Design Quality Pass
 
-> This section covers polish items that elevate the UI from functional to production-quality. These can be worked on in parallel with v0.1 features or immediately after. They are not blockers for v0.1 launch but should ship before the UI is shown externally.
+> These items elevate the UI from functional to polished. They can be worked on after v0.1 features ship. They are not blockers for v0.1 launch but should ship before the UI is shown externally.
+>
+> **Key principle:** These are enhancements to working views, not speculative design-in-a-vacuum. Each item here builds on patterns that already exist in the v0.1 codebase.
 
-### 9. Branding and Identity
+### 9. Dashboard — Folder Grouping
 
-**The GLEIPNIR wordmark and logo need a custom design.** The current placeholder is a clock-like SVG that has no connection to the product's identity. Gleipnir is named after the Norse mythological binding — "smooth as silk, stronger than iron, invisible in its constraint."
+Upgrade the flat policy list to a folder→policy hierarchy:
 
-- Commission or design a logo mark: interlocking links, a stylized knot, or an abstract binding pattern. The mark should work at 16×16 (favicon) and 32×32 (top bar) sizes.
-- Wordmark: consider a custom letterform or ligature in the "GLEIPNIR" text. At minimum, use `--weight-bold` (700) with tight letter-spacing.
-- Favicon: derived from the logo mark
-- The logo should evoke constraint and elegance, not surveillance or timekeeping
+- Policies grouped by their `folder` field (optional string in the policy YAML, defaults to "Ungrouped")
+- **Folder row (collapsed by default):** chevron toggle + folder name + policy count + status indicator (derived from worst-case status across the folder's policies)
+- Expand/collapse animates with smooth height transition
+- Expanded folder shows the same policy rows as the v0.1 flat list, now nested under their folder
+- Per-policy run history: expandable list of previous runs (paginated) with a history toggle button
 
-### 10. Empty, Error, and Edge States
+This is the right time for folder grouping because v0.1 established the policy list patterns and you now know what data is available.
 
-Every view needs designed states beyond the happy path:
+### 10. MCP Discovery Diff View
 
-**Empty states (per view):**
-- Dashboard (no policies): covered in section 2
-- Policy editor (no tools added): covered in section 3
-- MCP servers (no servers registered): "No MCP servers registered. Add a server to discover available tools." with "Add Server" CTA
-- MCP server (no tools discovered): "No tools discovered. Click Discover to scan this server."
-- Run history (no runs for a policy): "No runs yet. This policy hasn't been triggered."
+Upgrade re-discovery from "refresh in place" to a structured diff:
 
-**Error states:**
-- API unreachable on page load: full-page error with retry button. Show the last successful data if cached.
-- SSE disconnect: `ConnectionBanner` (covered in section 1). Non-blocking — the page remains usable with stale data.
-- Individual request failure (e.g., save policy fails): inline error message at the point of action, not a toast or global error
+- After re-discovery, if tools changed, show a diff section on the server card:
+  - **Added tools** — green left-border, `+` icon, tool name + description + role dropdown
+  - **Removed tools** — red left-border, `−` icon, tool name + description, strikethrough
+  - **Modified tools** — amber left-border, `~` icon, tool name + old→new description
+- Each section has an "Accept" action
+- Show affected policies that reference changed/removed tools
 
-**Edge states:**
-- Very long policy names: truncate with ellipsis in table cells, show full name on hover (tooltip)
-- Very long tool names: same truncation pattern
-- Many tools on one server (20+): virtual scrolling or "Show all N tools" with initial limit of 10
-- Many folders (10+): all render, no virtual scrolling needed at this scale
-- Run with 100+ steps: virtual scrolling on the timeline (only render steps in viewport + buffer)
+### 11. Keyboard Navigation and Command Palette
 
-### 11. Keyboard Shortcut Discoverability
+Add keyboard shortcuts based on actual usage patterns from v0.1:
 
-- `?` key opens a keyboard shortcut overlay listing all available shortcuts grouped by view
-- Bottom-right corner of every page shows a subtle hint: `? shortcuts` in `--text-muted` color
-- The overlay is a centered modal with two columns (shortcut key + description), grouped by context (Global, Dashboard, Timeline, Editor)
+- **Command palette** (`Cmd+K` / `Ctrl+K`): centered modal with search input. Searches across policies, runs, and actions. Use [cmdk](https://cmdk.paco.me/) as the base component.
+- **Global:** `?` opens shortcut overlay, `Esc` goes back / closes panels
+- **Dashboard:** `j/k` to navigate rows, `Enter` to expand/open, `n` for new policy
+- **Timeline:** `j/k` to navigate steps, `Enter` to expand/collapse, `c` to copy step content
+- **Editor:** `Cmd+S` to save (this one ships in v0.1 since it's essential)
 
-**Global shortcuts (available everywhere):**
-| Key | Action |
-|---|---|
-| `Cmd+K` / `Ctrl+K` | Command palette |
-| `?` | Keyboard shortcut overlay |
-| `g d` | Go to dashboard |
-| `g s` | Go to servers |
-| `g n` | Go to new policy |
+Add a `?` shortcut overlay listing all available shortcuts grouped by context. Show a subtle `? shortcuts` hint in the corner of each page.
 
-**Dashboard shortcuts:**
-| Key | Action |
-|---|---|
-| `j` / `k` | Navigate rows |
-| `Enter` | Expand / open selected |
-| `Esc` | Close slide-out |
-| `n` | New policy |
-
-**Timeline shortcuts:**
-| Key | Action |
-|---|---|
-| `j` / `k` | Navigate steps |
-| `Enter` | Expand/collapse step details |
-| `c` | Copy step content |
-| `Esc` | Back to dashboard |
-
-**Editor shortcuts:**
-| Key | Action |
-|---|---|
-| `Cmd+S` | Save policy |
-
-### 12. Transition and Animation Polish
-
-Audit all transitions for consistency with the motion system:
-
-- **Expand/collapse** (folders, tool lists, JSON blocks, reasoning traces): smooth height animation using `max-height` + `overflow: hidden`, `--duration-normal`, `--ease-out`
-- **Slide-out panel** (dashboard run detail): translate-x from right, `--duration-normal`, `--ease-out` on enter, `--ease-in` on exit
-- **Step card entry** (timeline): translate-y from -6px + opacity 0→1, `--duration-normal`, `--ease-spring`
-- **List stagger**: first render of folder rows, tool rows, and step cards stagger by 30ms × index (max 10 items)
-- **Status dot color change**: `transition: background var(--duration-normal) ease` — no hard cuts when SSE updates change a folder's status
-- **Approval receipt fade-out**: opacity 1→0 over `--duration-slow`, followed by height collapse
-- **Modal enter/exit**: fade-in backdrop + slide-up content (`--duration-normal`, `--ease-out`)
-- **Hover states**: all interactive elements have a hover transition on `--duration-fast`
-
-### 13. Streaming Text Effect for Thoughts
-
-When a `thought` step is being written in real time (via SSE `run.step_added` where the step is still streaming):
-
-- Render the text progressively, batch-appending characters at ~30ms intervals
-- Show a `LiveCursor` (blinking blue rectangle, 7×13px) at the insertion point
-- The cursor blinks at 1.1s interval (`animation: cursorBlink 1.1s ease-in-out infinite`)
-- When the thought is complete (next step arrives or run reaches terminal state), remove the cursor immediately — no fade, just gone
-- For already-complete thoughts (loaded from API, not streaming), render the full text with no cursor
-
-This creates a visceral sense of watching the agent think and is the single most distinctive micro-interaction in the UI.
-
-### 14. Theme and Accessibility Foundation
+### 12. Theme and Accessibility Foundation
 
 #### Theme Architecture
 
 All visual theming runs through CSS custom properties on `:root`, selected by a `data-theme` attribute on `<html>`. This single mechanism supports dark/light mode AND color blindness schemes.
 
-- All color references go through CSS custom properties — no hard-coded hex values in component CSS. This is already enforced by the "no inline styles" rule.
 - Create `themes/dark.css` that sets all `:root` variables (this is the current default)
-- Create empty `themes/light.css` placeholder with a comment: "Override dark theme variables here"
-- Create `themes/cb-deuteranopia.css` — color blindness scheme for red-green deficiency (see below)
-- Create `themes/cb-tritanopia.css` — color blindness scheme for blue-yellow deficiency (see below)
-- Add `data-theme="dark"` attribute on `<html>` that the theme CSS selectors target
-- Theme selector: a small dropdown in the top bar (next to the GLEIPNIR wordmark or in a settings area) offering: Dark (default) | Light | Deuteranopia | Tritanopia
-- Store the selection in `localStorage` and apply on page load before first paint (inline `<script>` in `index.html` to prevent flash)
-- Color blindness themes layer on top of dark/light — they are composable. E.g., `data-theme="dark cb-deuteranopia"` applies the dark background palette with deuteranopia-safe semantic colors.
+- Create empty `themes/light.css` placeholder
+- Create `themes/cb-deuteranopia.css` and `themes/cb-tritanopia.css` (see below)
+- Theme selector: dropdown in top bar offering Dark (default) | Deuteranopia | Tritanopia
+- Store selection in `localStorage`, apply before first paint (inline `<script>` in `index.html`)
+- Color blindness themes compose with dark/light — e.g., `data-theme="dark cb-deuteranopia"`
 
 #### Color Blindness Schemes
 
-The default palette uses red/green as opposing signals (failed/success, reject/approve, removed/added). This is indistinguishable for ~8% of males with deuteranopia or protanopia. The fix is two-part: alternative palettes AND a structural rule that color is never the only differentiator.
+The default palette uses red/green as opposing signals (failed/success). This is indistinguishable for ~8% of males with deuteranopia. The fix is two-part: alternative palettes AND the structural "never color alone" rule.
 
 **Deuteranopia / Protanopia scheme** (red-green deficiency, most common):
 
 ```css
 [data-theme~="cb-deuteranopia"] {
-  --color-green:   #56B4E9;  /* Sky blue — replaces green for success/complete */
-  --color-red:     #D55E00;  /* Vermillion — replaces red for failed/error */
-  --color-amber:   #E69F00;  /* Orange-yellow — approvals/warnings (unchanged, already safe) */
-  --color-blue:    #0072B2;  /* Darker blue — sensors/running (shifted to avoid green-blue confusion) */
-  --color-orange:  #CC79A7;  /* Rose pink — actuators (shifted off orange to avoid red confusion) */
-  --color-purple:  #9467BD;  /* Kept similar — feedback/interrupted */
+  --color-green:   #56B4E9;  /* Sky blue — replaces green */
+  --color-red:     #D55E00;  /* Vermillion — replaces red */
+  --color-amber:   #E69F00;  /* Orange-yellow — unchanged */
+  --color-blue:    #0072B2;  /* Darker blue — sensors */
+  --color-orange:  #CC79A7;  /* Rose pink — actuators */
+  --color-purple:  #9467BD;  /* Kept similar — feedback */
   --color-teal:    #009E73;  /* Bluish green — poll triggers */
 }
 ```
 
-These values are derived from the [Bang Wong color palette](https://www.nature.com/articles/nmeth.1618), which is designed for universal accessibility in scientific visualization.
-
-**Tritanopia scheme** (blue-yellow deficiency, rare):
+**Tritanopia scheme** (blue-yellow deficiency):
 
 ```css
 [data-theme~="cb-tritanopia"] {
-  --color-green:   #009E73;  /* Teal-green — replaces green (safe for tritanopia) */
-  --color-red:     #D55E00;  /* Vermillion — replaces red */
-  --color-amber:   #CC79A7;  /* Rose pink — replaces amber (yellow is problematic) */
-  --color-blue:    #56B4E9;  /* Sky blue — sensors/running */
-  --color-orange:  #E69F00;  /* Orange — actuators */
-  --color-purple:  #882255;  /* Deep magenta — feedback/interrupted */
-  --color-teal:    #117733;  /* Forest green — poll triggers */
+  --color-green:   #009E73;
+  --color-red:     #D55E00;
+  --color-amber:   #CC79A7;
+  --color-blue:    #56B4E9;
+  --color-orange:  #E69F00;
+  --color-purple:  #882255;
+  --color-teal:    #117733;
 }
 ```
 
+These values are derived from the [Bang Wong color palette](https://www.nature.com/articles/nmeth.1618), designed for universal accessibility in scientific visualization.
+
 #### "Never Color Alone" Rule
 
-**Every piece of information conveyed by color must also be conveyed by shape, icon, or text.** This is a hard rule, not a guideline. Audit every color-dependent element:
+**Every piece of information conveyed by color must also be conveyed by shape, icon, or text.** Audit every color-dependent element:
 
 | Element | Color signal | Non-color redundancy required |
 |---|---|---|
-| StatusBadge | Green/blue/amber/red/purple dot | ✅ Already has text label ("Complete", "Failed", etc.) |
-| TriggerChip | Blue/purple/teal text | ✅ Already has text label ("webhook", "cron", "poll") |
-| RoleChip | Blue/orange/purple text | ✅ Already has text label ("sensor", "actuator", "feedback") |
-| Folder status dot | Color-only | ❌ **Add tooltip on hover showing status text** |
-| Health dot (MCP) | Green/red/amber | ❌ **Add text label: "reachable" / "unreachable" / "checking"** |
-| Discovery diff borders | Green/red/amber left-border | ❌ **Add prefix icon: `+` (added), `−` (removed), `~` (modified)** |
-| Approve/Reject buttons | Green/red text and border | ✅ Already has text label, but **also add ✓ and ✕ icons** |
-| Timeline step icons | Color varies by type | ✅ Already has distinct shapes (circle vs rounded square) and symbols (→, ←, ·, !, ✓) |
-| Tool call icon color | Blue (sensor) vs orange (actuator) | ❌ **Add `S` or `A` letter inside the icon, or show RoleChip next to tool name** |
+| StatusBadge | Green/blue/amber/red dot | ✅ Has text label ("Complete", "Failed", etc.) |
+| TriggerChip | Blue/purple/teal text | ✅ Has text label ("webhook", "cron", "poll") |
+| RoleChip | Blue/orange/purple text | ✅ Has text label ("sensor", "actuator", "feedback") |
+| Folder status dot | Color-only | ❌ **Add tooltip showing status text** |
+| Health indicator (MCP) | Green/red/amber dot | ✅ Has text label (fixed in v0.1 — "reachable"/"unreachable"/"checking") |
+| Discovery diff borders | Green/red/amber border | ❌ **Add prefix icon: `+`, `−`, `~`** |
+| Approve/Reject buttons | Green/red | ❌ **Add ✓ and ✕ icons** |
+| Tool call icon color | Blue vs orange | ❌ **Show RoleBadge next to tool name** |
 
-Items marked ❌ must be fixed before shipping. The non-color redundancy should be present in all themes, not just the color blindness schemes — it benefits everyone.
+Items marked ❌ must be fixed when they ship. Non-color redundancy benefits everyone, not just color-blind users.
 
 #### ARIA and Screen Reader Basics
 
 Not a full WCAG audit, but establish the foundation:
 
-- All interactive elements (`button`, `a`, custom clickable divs) must have `role` and `aria-label` attributes where the visual label is insufficient (e.g., icon-only buttons like the history toggle, close ×, expand chevron)
-- Status changes delivered via SSE should update an `aria-live="polite"` region so screen readers announce "Run r502 status changed to complete"
-- Approval countdown timers should have `aria-label` with the time remaining in words ("18 minutes remaining"), not just the visual `18:00`
-- The command palette should follow the [WAI-ARIA combobox pattern](https://www.w3.org/WAI/ARIA/apg/patterns/combobox/)
-- Focus management: opening a modal traps focus inside it; closing returns focus to the trigger element
-- Keyboard shortcuts must not conflict with screen reader shortcuts — all shortcuts should be suppressible via a "keyboard shortcuts enabled" toggle in settings
+- Icon-only buttons (`×`, chevron, history toggle) need `aria-label` attributes
+- SSE-driven status changes update an `aria-live="polite"` region
+- Approval countdown timers need `aria-label` with time in words
+- The command palette (v0.1-polish) follows the WAI-ARIA combobox pattern
+- Focus management: modals trap focus; closing returns focus to the trigger element
 
 #### Reduced Motion
 
@@ -884,7 +769,27 @@ Respect `prefers-reduced-motion`:
 }
 ```
 
-This disables pulse animations, stagger effects, slide-ins, and the streaming text cursor blink. Content still appears — it just appears instantly instead of animating.
+Content still appears — it just appears instantly.
+
+### 13. Animation Polish
+
+Audit all transitions for consistency with the motion system tokens. Key patterns to standardize:
+
+- **Expand/collapse** (folders, tool lists, JSON blocks): smooth height animation
+- **Step card entry** (timeline): subtle enter animation
+- **Status indicator transitions**: no hard color cuts when SSE updates change state
+- **Modal enter/exit**: fade backdrop + slide content
+- **Hover states**: all interactive elements respond on `--duration-fast`
+
+### 14. Dashboard — Run Detail Slide-Out
+
+Add a slide-out panel to the dashboard for quick run inspection without navigating away:
+
+- Clicking a policy's run status opens a side panel with: StatusBadge, run summary, metadata (ID, start time, duration, tokens, tool calls)
+- "View reasoning timeline" button → navigates to `/runs/:id`
+- Close button or `Esc` dismisses the panel
+
+This ships in polish because the v0.1 dashboard is fully functional without it — clicking a run navigates directly to `/runs/:id`.
 
 ---
 
@@ -906,7 +811,7 @@ GET    /api/v1/runs/:id/steps
 GET    /api/v1/mcp/servers
 POST   /api/v1/mcp/servers
 DELETE /api/v1/mcp/servers/:id
-POST   /api/v1/mcp/servers/:id/discover   — returns discovery diff
+POST   /api/v1/mcp/servers/:id/discover
 GET    /api/v1/mcp/servers/:id/tools
 PATCH  /api/v1/mcp/tools/:id              — update capability_role
 
@@ -940,7 +845,7 @@ id: <monotonic-event-id>
 data: {"approval_id": "...", "resolution": "approved|rejected|timeout"}
 ```
 
-**Discovery diff response shape** (from `POST /api/v1/mcp/servers/:id/discover`):
+**Discovery response shape** (from `POST /api/v1/mcp/servers/:id/discover`):
 ```json
 {
   "data": {
@@ -967,10 +872,14 @@ The following are explicitly out of scope for v0.1, v0.1-polish, and v0.2:
 - Login / auth UI (v0.4, basic auth is env-configured at the nginx level)
 - Slack configuration UI (v0.5)
 - Cron miss alerts UI (v0.4)
-- Automatic MCP drift detection (v0.4) — v0.1 has manual re-discovery with diffs
+- Automatic MCP drift detection (v0.4) — v0.1 has manual re-discovery
 - Multi-user / user identity UI (post v0.4)
 - Policy dry-run mode
 - Any agent-to-agent or multi-agent UI
-- Full light theme implementation (v0.1-polish sets up the foundation and dark theme; light theme colors are a future task)
-- Full WCAG 2.1 AA audit (v0.1-polish covers the structural foundation — ARIA, focus management, reduced motion, color blindness schemes — but a formal audit is deferred)
+- Full light theme implementation (v0.1-polish sets up the token foundation; light theme colors are a future task)
+- Full WCAG 2.1 AA audit (v0.1-polish covers the structural foundation; a formal audit is deferred)
 - Sound/audio notifications (consider for v0.3 with approval urgency)
+- Streaming text effect for thoughts (if the backend adds partial step delivery via SSE, revisit then — do not simulate streaming from fully-received data)
+- Storybook (add when there are 10+ shared components worth cataloguing, not before)
+- Logo/branding design (track separately as a creative brief, not an engineering task)
+- Policy cross-references on MCP tool rows (useful but not v0.1 — requires a join query the backend may not support yet)
