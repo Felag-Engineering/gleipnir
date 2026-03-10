@@ -83,7 +83,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-4. Open the UI at `http://localhost:3000`.
+4. Open the UI at `http://localhost:3000` (or the value of `GLEIPNIR_PORT` if set).
 
 ### First run
 
