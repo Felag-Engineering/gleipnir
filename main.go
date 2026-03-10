@@ -71,7 +71,7 @@ func run() error {
 
 	// Mount /api/v1/policies and /api/v1/mcp route groups.
 	// Existing /api/v1/webhooks/ and /api/v1/runs/ routes remain on this root router.
-	r.Mount("/api/v1", api.NewRouter(store, policySvc))
+	r.Mount("/api/v1", api.NewRouter(store, policySvc, registry))
 
 	srv := &http.Server{
 		Addr:         listenAddr,

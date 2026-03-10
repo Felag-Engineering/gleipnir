@@ -3,6 +3,7 @@ package api
 import (
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/policy"
 )
 
@@ -10,7 +11,7 @@ import (
 // Mount this under /api/v1/ in main.go.
 // Note: existing /api/v1/webhooks/ and /api/v1/runs/ routes remain on the root
 // chi router for now. Those handlers will be migrated to the envelope format separately.
-func NewRouter(store *db.Store, svc *policy.Service) chi.Router {
+func NewRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry) chi.Router {
 	r := chi.NewRouter()
 
 	policies := NewPolicyHandler(store, svc)
@@ -23,7 +24,13 @@ func NewRouter(store *db.Store, svc *policy.Service) chi.Router {
 	})
 
 	r.Route("/mcp", func(r chi.Router) {
-		// MCP server and tool handlers added in subsequent PRs.
+		mcpH := NewMCPHandler(store, registry)
+		r.Route("/servers", func(r chi.Router) {
+			r.Get("/", mcpH.List)
+			r.Post("/", mcpH.Create)
+			r.Delete("/{id}", mcpH.Delete)
+			r.Post("/{id}/discover", mcpH.Discover)
+		})
 	})
 
 	return r
