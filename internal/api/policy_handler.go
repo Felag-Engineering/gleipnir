@@ -3,22 +3,28 @@ package api
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/policy"
 )
 
-// PolicyHandler serves GET /api/v1/policies and GET /api/v1/policies/{id}.
+// PolicyHandler serves policy CRUD endpoints under /api/v1/policies.
 type PolicyHandler struct {
 	store *db.Store
+	svc   *policy.Service
 }
 
-// NewPolicyHandler creates a PolicyHandler backed by the given store.
-func NewPolicyHandler(store *db.Store) *PolicyHandler {
-	return &PolicyHandler{store: store}
+// NewPolicyHandler creates a PolicyHandler backed by the given store and service.
+func NewPolicyHandler(store *db.Store, svc *policy.Service) *PolicyHandler {
+	return &PolicyHandler{store: store, svc: svc}
 }
 
 type runSummary struct {
@@ -117,4 +123,149 @@ func extractFolder(rawYAML string) string {
 	}
 	_ = yaml.Unmarshal([]byte(rawYAML), &v)
 	return v.Folder
+}
+
+// policyMutateResponse is the response body for Create and Update, extending
+// policyDetail with a Warnings array for non-blocking MCP tool reference issues.
+type policyMutateResponse struct {
+	policyDetail
+	Warnings []string `json:"warnings"`
+}
+
+// buildMutateResponse constructs a policyMutateResponse from a policy.SaveResult.
+// Warnings is always a non-nil slice to prevent JSON null.
+func buildMutateResponse(result *policy.SaveResult) policyMutateResponse {
+	p := result.Policy
+	warnings := result.Warnings
+	if warnings == nil {
+		warnings = make([]string, 0)
+	}
+	return policyMutateResponse{
+		policyDetail: policyDetail{
+			ID:          p.ID,
+			Name:        p.Name,
+			TriggerType: string(p.TriggerType),
+			Folder:      extractFolder(p.YAML),
+			YAML:        p.YAML,
+			CreatedAt:   p.CreatedAt.Format(time.RFC3339Nano),
+			UpdatedAt:   p.UpdatedAt.Format(time.RFC3339Nano),
+		},
+		Warnings: warnings,
+	}
+}
+
+// Create handles POST /api/v1/policies.
+func (h *PolicyHandler) Create(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "failed to read request body", err.Error())
+		return
+	}
+
+	result, err := h.svc.Create(r.Context(), string(body))
+	if err != nil {
+		var pe *policy.ParseError
+		if errors.As(err, &pe) {
+			WriteError(w, http.StatusBadRequest, "invalid policy YAML", pe.Error())
+			return
+		}
+		var ve *policy.ValidationError
+		if errors.As(err, &ve) {
+			WriteError(w, http.StatusBadRequest, "policy validation failed", strings.Join(ve.Errors, "; "))
+			return
+		}
+		WriteError(w, http.StatusInternalServerError, "failed to create policy", err.Error())
+		return
+	}
+
+	WriteJSON(w, http.StatusCreated, buildMutateResponse(result))
+}
+
+// Update handles PUT /api/v1/policies/{id}.
+func (h *PolicyHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "failed to read request body", err.Error())
+		return
+	}
+
+	result, err := h.svc.Update(r.Context(), id, string(body))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			WriteError(w, http.StatusNotFound, "policy not found", "")
+			return
+		}
+		var pe *policy.ParseError
+		if errors.As(err, &pe) {
+			WriteError(w, http.StatusBadRequest, "invalid policy YAML", pe.Error())
+			return
+		}
+		var ve *policy.ValidationError
+		if errors.As(err, &ve) {
+			WriteError(w, http.StatusBadRequest, "policy validation failed", strings.Join(ve.Errors, "; "))
+			return
+		}
+		WriteError(w, http.StatusInternalServerError, "failed to update policy", err.Error())
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, buildMutateResponse(result))
+}
+
+// Delete handles DELETE /api/v1/policies/{id}.
+func (h *PolicyHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	if _, err := h.store.GetPolicy(r.Context(), id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			WriteError(w, http.StatusNotFound, "policy not found", "")
+			return
+		}
+		WriteError(w, http.StatusInternalServerError, "failed to get policy", err.Error())
+		return
+	}
+
+	runs, err := h.store.ListActiveRunsByPolicy(r.Context(), id)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "failed to check active runs", err.Error())
+		return
+	}
+	if len(runs) > 0 {
+		WriteError(w, http.StatusConflict, "policy has active runs",
+			fmt.Sprintf("%d active run(s) must complete or be cancelled before deletion", len(runs)))
+		return
+	}
+
+	// Remove historical run data and the policy in a single transaction.
+	// FK constraints (no ON DELETE CASCADE) require manual cleanup in dependency
+	// order: approval_requests → run_steps → runs → policies.
+	// Active runs are already blocked by the 409 guard above.
+	tx, err := h.store.DB().BeginTx(r.Context(), nil)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "failed to begin transaction", err.Error())
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback on error path; commit below is the success path
+
+	cleanups := []string{
+		`DELETE FROM approval_requests WHERE run_id IN (SELECT id FROM runs WHERE policy_id = ?)`,
+		`DELETE FROM run_steps WHERE run_id IN (SELECT id FROM runs WHERE policy_id = ?)`,
+		`DELETE FROM runs WHERE policy_id = ?`,
+		`DELETE FROM policies WHERE id = ?`,
+	}
+	for _, q := range cleanups {
+		if _, err := tx.ExecContext(r.Context(), q, id); err != nil {
+			WriteError(w, http.StatusInternalServerError, "failed to delete policy", err.Error())
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		WriteError(w, http.StatusInternalServerError, "failed to commit deletion", err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

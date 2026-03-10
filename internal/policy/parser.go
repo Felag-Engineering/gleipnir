@@ -15,13 +15,22 @@ const (
 	defaultMaxToolCallsPerRun = 50
 )
 
+// ParseError wraps a YAML decode failure so callers can distinguish malformed
+// YAML from validation or storage errors without inspecting error strings.
+type ParseError struct {
+	Cause error
+}
+
+func (e *ParseError) Error() string { return fmt.Sprintf("parse policy yaml: %v", e.Cause) }
+func (e *ParseError) Unwrap() error { return e.Cause }
+
 // Parse parses a raw YAML policy blob into a ParsedPolicy.
 // It applies sensible defaults for optional fields but does not validate
 // the result — call Validate separately.
 func Parse(raw string) (*model.ParsedPolicy, error) {
 	var r rawPolicy
 	if err := yaml.Unmarshal([]byte(raw), &r); err != nil {
-		return nil, fmt.Errorf("parse policy yaml: %w", err)
+		return nil, &ParseError{Cause: err}
 	}
 
 	p := &model.ParsedPolicy{

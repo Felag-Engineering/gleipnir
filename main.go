@@ -16,6 +16,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
+	"github.com/rapp992/gleipnir/internal/policy"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
@@ -66,9 +67,11 @@ func run() error {
 	r.Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)
 	r.Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
 
+	policySvc := policy.NewService(store, nil)
+
 	// Mount /api/v1/policies and /api/v1/mcp route groups.
 	// Existing /api/v1/webhooks/ and /api/v1/runs/ routes remain on this root router.
-	r.Mount("/api/v1", api.NewRouter(store))
+	r.Mount("/api/v1", api.NewRouter(store, policySvc))
 
 	srv := &http.Server{
 		Addr:         listenAddr,
