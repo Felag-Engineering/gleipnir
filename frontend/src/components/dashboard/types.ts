@@ -54,14 +54,11 @@ export interface Receipt {
 
 export const STATUS_CONFIG: Record<RunStatus, {
   label: string;
-  color: string;
-  bg: string;
-  border: string;
   pulse?: boolean;
 }> = {
-  complete:             { label: 'Complete',          color: '#4ade80', bg: 'rgba(74,222,128,0.08)',  border: 'rgba(74,222,128,0.2)' },
-  running:              { label: 'Running',           color: '#60a5fa', bg: 'rgba(96,165,250,0.08)',  border: 'rgba(96,165,250,0.2)', pulse: true },
-  waiting_for_approval: { label: 'Awaiting Approval', color: '#f59e0b', bg: 'rgba(245,158,11,0.08)',  border: 'rgba(245,158,11,0.2)', pulse: true },
-  failed:               { label: 'Failed',            color: '#f87171', bg: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.2)' },
-  interrupted:          { label: 'Interrupted',       color: '#a78bfa', bg: 'rgba(167,139,250,0.08)', border: 'rgba(167,139,250,0.2)' },
+  complete:             { label: 'Complete' },
+  running:              { label: 'Running',           pulse: true },
+  waiting_for_approval: { label: 'Awaiting Approval', pulse: true },
+  failed:               { label: 'Failed' },
+  interrupted:          { label: 'Interrupted' },
 };

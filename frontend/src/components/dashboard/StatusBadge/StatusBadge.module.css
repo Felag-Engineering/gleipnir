@@ -1,0 +1,78 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: 4px;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pulse {
+  animation: gPulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
+}
+
+/* Per-status variants */
+.complete {
+  color: var(--color-green);
+  background: color-mix(in srgb, var(--color-green) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-green) 20%, transparent);
+}
+
+.complete .dot {
+  background: var(--color-green);
+}
+
+.running {
+  color: var(--color-blue);
+  background: color-mix(in srgb, var(--color-blue) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-blue) 20%, transparent);
+}
+
+.running .dot {
+  background: var(--color-blue);
+}
+
+.waitingForApproval {
+  color: var(--color-amber);
+  background: color-mix(in srgb, var(--color-amber) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-amber) 20%, transparent);
+}
+
+.waitingForApproval .dot {
+  background: var(--color-amber);
+}
+
+.failed {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-red) 20%, transparent);
+}
+
+.failed .dot {
+  background: var(--color-red);
+}
+
+.interrupted {
+  color: var(--color-purple);
+  background: color-mix(in srgb, var(--color-purple) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-purple) 20%, transparent);
+}
+
+.interrupted .dot {
+  background: var(--color-purple);
+}

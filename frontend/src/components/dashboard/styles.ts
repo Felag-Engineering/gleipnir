@@ -7,12 +7,6 @@ export const FONT = {
   sans: 'IBM Plex Sans, system-ui, sans-serif',
 };
 
-export const TRIGGER_COLORS: Record<string, string> = {
-  webhook: '#60a5fa',
-  cron: '#a78bfa',
-  poll: '#34d399',
-};
-
 export const GLOBAL_STYLES = `
   @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
