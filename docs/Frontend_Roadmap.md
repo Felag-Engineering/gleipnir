@@ -242,6 +242,12 @@ Specific animation patterns (stagger delays, scroll thresholds, blink intervals)
 - Dockerfile: multi-stage — Node build stage → nginx serve stage
 - Global layout: **top bar navigation** with GLEIPNIR text wordmark and links to Dashboard, Policies, Servers
 - Root-level and per-route error boundaries
+- **Test infrastructure:**
+  - Vitest configured as the test runner (native Vite integration, no separate bundler config)
+  - React Testing Library (`@testing-library/react`) for component tests
+  - `@testing-library/user-event` for simulating user interactions
+  - MSW (Mock Service Worker) for API mocking in tests — intercepts `apiFetch` calls at the network level
+  - Test utility: wrapper that provides TanStack Query client + router context for component tests
 
 **Acceptance criteria:**
 - `docker-compose up` serves the React app on the configured port
@@ -249,6 +255,8 @@ Specific animation patterns (stagger delays, scroll thresholds, blink intervals)
 - Navigation renders and routes work
 - Design tokens are available to all views via CSS custom properties
 - SSE connection established on app load, reconnects on disconnect with visible banner
+- `vitest run` passes with zero tests (infrastructure works)
+- MSW handlers exist for all endpoints used by `apiFetch`
 - No inline styles in any component
 
 ---
@@ -323,6 +331,33 @@ When no policies exist:
 - SSE events update the list in real time
 
 **Shared components extracted from this view:** StatusBadge, TriggerChip, SkeletonBlock. These emerge naturally — build them inline first, then extract when the pattern stabilizes.
+
+---
+
+### 2.5. Test Coverage Catch-Up (Sections 1–2)
+
+**Goal:** Retroactively add test coverage for all code shipped in sections 1 and 2. This section exists because testing infrastructure was not in place when those sections were built. Going forward, sections 3+ include test requirements inline.
+
+#### Vitest + React Testing Library
+
+**Infrastructure tests (Section 1):**
+- `apiFetch`: success envelope unwrapping, error envelope → thrown `ApiError` with status/message, network failure handling
+- `useSSE`: connection lifecycle (connect, disconnect banner, reconnect dismisses banner), cache invalidation dispatch for each event type (`run.status_changed`, `run.step_added`), auto-reconnect behavior
+- Error boundaries: root boundary catches render errors and shows retry UI, per-route boundary isolates crashes to individual views
+
+**Dashboard tests (Section 2):**
+- Stats bar: renders correct counts from API data, amber highlight on pending approvals > 0
+- Policy list: renders policy rows with name, trigger chip, status badge, run metadata; empty state renders CTA when no policies exist
+- Navigation: "New Policy" button links to `/policies/new`, run status area links to `/runs/:id`
+- Loading state: skeleton screens render while data is fetching
+- SSE integration: `run.status_changed` event triggers query invalidation, UI updates without full page reload
+
+**All component tests use MSW to mock API responses.** No direct mocking of `apiFetch` — test the real fetch path with intercepted network requests.
+
+**Acceptance criteria:**
+- All tests pass via `vitest run`
+- Coverage exists for every acceptance criterion in sections 1 and 2 that can be tested without a browser
+- No snapshot tests — test behavior, not markup
 
 ---
 
@@ -417,6 +452,15 @@ Single-column scrollable form.
 - Dirty indicator shows when unsaved changes exist
 - `Cmd+S` saves the policy
 
+**Test requirements (Vitest + RTL):**
+- YAML ↔ form round-trip: serialize form state to YAML, parse back, fields match
+- Mode toggle: switching from YAML to Form with invalid YAML shows error and stays in YAML mode
+- Dirty state: editing a field sets dirty flag, saving clears it
+- Save blocking: malformed YAML disables save button
+- Tool picker: adding a tool from search results updates the capabilities list, removing a tool removes it
+- Approval toggle: toggling approval on an actuator updates the YAML output
+- `Cmd+S` / `Ctrl+S` triggers save (test keyboard event handling)
+
 **Shared components extracted from this view:** RoleBadge (reused in MCP view and run timeline).
 
 ---
@@ -488,6 +532,15 @@ For runs with many steps, load the first 50 steps. Show a "Load more" button at 
 - "New steps ↓" pill appears when user has scrolled away from bottom during live run
 - "Load more" button works for runs with 50+ steps
 
+**Test requirements (Vitest + RTL):**
+- Step rendering: each step type (`thought`, `tool_call`, `tool_result`, `error`, `complete`, `capability_snapshot`) renders with correct icon and content
+- Filter chips: clicking a filter shows only matching step types, counts update correctly
+- Capability snapshot: renders collapsed by default, expands on click to show tool list
+- Collapsible JSON: tool_call inputs and tool_result outputs toggle between collapsed and expanded
+- Copy buttons: clicking copy writes content to clipboard (mock `navigator.clipboard`)
+- Loading state: skeleton screens render while fetching
+- Live updates: `run.step_added` SSE event appends a new step to the timeline
+
 **Shared components extracted from this view:** CollapsibleJSON, CopyBlock (these emerge from repeated use of collapsible JSON + copy patterns across tool_call, tool_result, and trigger payload).
 
 ---
@@ -547,6 +600,15 @@ Each tool row:
 
 Re-discovery simply refreshes the tool list in place. The user sees the updated list and can check what changed. A structured diff view is a v0.1-polish enhancement (see section 10).
 
+**Test requirements (Vitest + RTL):**
+- Server list: renders server cards with health indicator, name, URL, last discovered time
+- Add server modal: submitting the form calls POST endpoint, new server appears in list
+- Tool list: expanding a server card shows its tools with names, descriptions, and role dropdowns
+- Role change: selecting a new capability role from dropdown calls PATCH endpoint
+- Unassigned warning: amber banner appears when tools have no role assigned
+- Delete server: confirmation modal appears, confirming calls DELETE endpoint and removes card
+- Re-discovery: clicking "Discover" button shows spinner, updates tool list on completion
+
 **Acceptance criteria:**
 - Skeleton screens on initial load
 - Servers listed with health indicator (text + dot) and last discovery time
@@ -555,6 +617,30 @@ Re-discovery simply refreshes the tool list in place. The user sees the updated 
 - Unassigned role warning banner when applicable
 - Delete server works with confirmation
 - Re-discovery refreshes the tool list
+
+---
+
+### 5.5. End-to-End Tests (Playwright)
+
+**Goal:** Thin critical-path coverage validating the integrated frontend against the real backend. These tests run against a full `docker-compose` stack.
+
+**Test runner:** Playwright, configured to start the docker-compose stack before the test suite and tear it down after.
+
+**Critical paths (5 tests):**
+
+1. **Dashboard loads with policies** — navigate to `/dashboard`, verify stats bar renders, policy rows appear with correct data
+2. **Create a new policy** — navigate to `/policies/new`, fill out form fields, save, verify redirect to edit view with saved data, verify policy appears on dashboard
+3. **Policy editor YAML round-trip** — open an existing policy, switch to YAML mode, edit a field, switch to Form mode, verify the edit is reflected, save, reload, verify persistence
+4. **MCP server add and discover** — navigate to `/mcp`, add a server via modal, trigger discovery, verify tools appear in the expanded server card
+5. **Run detail renders steps** — navigate to `/runs/:id` for a run with multiple step types, verify the timeline renders thoughts, tool calls, and results with correct styling
+
+**Not in scope for v0.1:** SSE live-update E2E tests (these require orchestrating a run mid-test, which depends on backend trigger infrastructure). Add in v0.2 when the approval flow provides a natural test scenario.
+
+**Acceptance criteria:**
+- `npx playwright test` passes all 5 critical-path tests
+- Tests run against `docker-compose` (not mocked APIs)
+- Tests do not depend on external MCP servers — use a minimal test fixture server if needed
+- CI-ready: tests can run headless in a container environment
 
 ---
 
