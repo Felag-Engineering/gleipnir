@@ -18,6 +18,13 @@ name: string
 #   Human-readable summary of what this policy does.
 description: string
 
+# folder: string — optional, default: "Ungrouped"
+#   Organizational grouping for the UI dashboard. Policies with the same
+#   folder value are displayed together in a collapsible folder row.
+#   Purely cosmetic — has no effect on trigger routing or runtime behaviour.
+#   Stored in the YAML blob, not as a separate column.
+folder: string
+
 
 # ---------------------------------------------------------------------------
 # Trigger
