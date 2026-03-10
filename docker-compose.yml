@@ -4,8 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      - GLEIPNIR_DB_PATH=/data/gleipnir.db
-      - GLEIPNIR_LISTEN_ADDR=:8080
+      - GLEIPNIR_DB_PATH=${GLEIPNIR_DB_PATH:-/data/gleipnir.db}
+      - GLEIPNIR_LISTEN_ADDR=${GLEIPNIR_LISTEN_ADDR:-:8080}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     volumes:
       - gleipnir_data:/data
@@ -16,7 +16,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "3000:80"
+      - "${GLEIPNIR_PORT:-3000}:80"
     depends_on:
       - api
     restart: unless-stopped
