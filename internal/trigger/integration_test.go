@@ -199,11 +199,13 @@ func waitForRun(t *testing.T, manager *trigger.RunManager, router http.Handler, 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /runs/%s: status %d", runID, rec.Code)
 	}
-	var summary trigger.RunSummary
-	if err := json.NewDecoder(rec.Body).Decode(&summary); err != nil {
+	var env struct {
+		Data trigger.RunSummary `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&env); err != nil {
 		t.Fatalf("decode run summary: %v", err)
 	}
-	return summary
+	return env.Data
 }
 
 // fireWebhook sends a POST to the webhook endpoint and returns the run_id from
@@ -261,10 +263,13 @@ func TestIntegration(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET steps: status %d", rec.Code)
 		}
-		var steps []trigger.StepSummary
-		if err := json.NewDecoder(rec.Body).Decode(&steps); err != nil {
+		var stepsEnv struct {
+			Data []trigger.StepSummary `json:"data"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&stepsEnv); err != nil {
 			t.Fatalf("decode steps: %v", err)
 		}
+		steps := stepsEnv.Data
 
 		// Verify expected step types appear in order.
 		wantTypes := []string{
@@ -343,10 +348,13 @@ func TestIntegration(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("GET steps for %s: status %d", id, rec.Code)
 			}
-			var steps []trigger.StepSummary
-			if err := json.NewDecoder(rec.Body).Decode(&steps); err != nil {
+			var stepsEnv struct {
+				Data []trigger.StepSummary `json:"data"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&stepsEnv); err != nil {
 				t.Fatalf("decode steps for %s: %v", id, err)
 			}
+			steps := stepsEnv.Data
 			if len(steps) == 0 {
 				t.Errorf("run %s: expected non-zero steps, got 0", id)
 			}

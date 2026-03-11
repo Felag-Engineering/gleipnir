@@ -191,12 +191,14 @@ func TestRunsHandler_List(t *testing.T) {
 					t.Errorf("Content-Type = %q, want application/json", ct)
 				}
 
-				var got []trigger.RunSummary
-				if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+				var env struct {
+					Data []trigger.RunSummary `json:"data"`
+				}
+				if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
 					t.Fatalf("decode response: %v", err)
 				}
-				if len(got) != tc.wantCount {
-					t.Errorf("len(runs) = %d, want %d", len(got), tc.wantCount)
+				if len(env.Data) != tc.wantCount {
+					t.Errorf("len(runs) = %d, want %d", len(env.Data), tc.wantCount)
 				}
 			}
 		})
@@ -266,11 +268,13 @@ func TestRunsHandler_Get(t *testing.T) {
 					t.Errorf("Content-Type = %q, want application/json", ct)
 				}
 
-				var run trigger.RunSummary
-				if err := json.NewDecoder(w.Body).Decode(&run); err != nil {
+				var env struct {
+					Data trigger.RunSummary `json:"data"`
+				}
+				if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
 					t.Fatalf("decode response: %v", err)
 				}
-				tc.checkFn(t, run)
+				tc.checkFn(t, env.Data)
 			}
 		})
 	}
@@ -347,15 +351,17 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 					t.Errorf("Content-Type = %q, want application/json", ct)
 				}
 
-				var steps []trigger.StepSummary
-				if err := json.NewDecoder(w.Body).Decode(&steps); err != nil {
+				var env struct {
+					Data []trigger.StepSummary `json:"data"`
+				}
+				if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
 					t.Fatalf("decode response: %v", err)
 				}
-				if len(steps) != tc.wantCount {
-					t.Errorf("len(steps) = %d, want %d", len(steps), tc.wantCount)
+				if len(env.Data) != tc.wantCount {
+					t.Errorf("len(steps) = %d, want %d", len(env.Data), tc.wantCount)
 				}
 				if tc.checkFn != nil {
-					tc.checkFn(t, steps)
+					tc.checkFn(t, env.Data)
 				}
 			}
 		})

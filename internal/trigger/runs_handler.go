@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -107,7 +108,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 		result = append(result, toRunSummary(run))
 	}
 
-	writeJSON(w, result)
+	api.WriteJSON(w, http.StatusOK, result)
 }
 
 // Get handles GET /api/v1/runs/{runID}.
@@ -126,7 +127,7 @@ func (h *RunsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, toRunSummary(run))
+	api.WriteJSON(w, http.StatusOK, toRunSummary(run))
 }
 
 // ListSteps handles GET /api/v1/runs/{runID}/steps.
@@ -166,7 +167,7 @@ func (h *RunsHandler) ListSteps(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, result)
+	api.WriteJSON(w, http.StatusOK, result)
 }
 
 // Cancel handles POST /api/v1/runs/{runID}/cancel.
@@ -222,9 +223,3 @@ func toRunSummary(r db.Run) RunSummary {
 	}
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Error("failed to encode JSON response", "err", err)
-	}
-}
