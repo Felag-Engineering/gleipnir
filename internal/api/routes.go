@@ -1,6 +1,8 @@
 package api
 
 import (
+	"net/http"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
@@ -13,6 +15,10 @@ import (
 // chi router for now. Those handlers will be migrated to the envelope format separately.
 func NewRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry) chi.Router {
 	r := chi.NewRouter()
+
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
 
 	policies := NewPolicyHandler(store, svc)
 	r.Route("/policies", func(r chi.Router) {
