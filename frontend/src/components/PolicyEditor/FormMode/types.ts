@@ -47,3 +47,18 @@ export type TriggerFormState =
   | WebhookTriggerState
   | CronTriggerState
   | PollTriggerState;
+
+export interface TaskInstructionsFormState {
+  task: string;
+}
+
+export interface RunLimitsFormState {
+  max_tokens_per_run: number;
+  max_tool_calls_per_run: number;
+}
+
+export type ConcurrencyValue = 'skip' | 'queue' | 'parallel' | 'replace';
+
+export interface ConcurrencyFormState {
+  concurrency: ConcurrencyValue;
+}
