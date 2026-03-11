@@ -1,0 +1,126 @@
+.tableWrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.table {
+  display: grid;
+  width: 100%;
+  min-width: 560px;
+}
+
+/* Grid columns: Policy name + chip | Status | When | Duration | Tokens */
+.row {
+  display: grid;
+  grid-template-columns: 1fr 120px 96px 70px 58px;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.headerRow {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
+}
+
+.policyRow {
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.policyRow:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.colPolicy {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.colStatus {
+  display: flex;
+  align-items: center;
+}
+
+.colWhen {
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.colDuration {
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.colTokens {
+  font-size: var(--text-sm);
+  text-align: right;
+}
+
+.policyLink {
+  color: var(--text-primary);
+  text-decoration: none;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.policyLink:hover {
+  color: var(--color-blue);
+}
+
+.runLink {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-decoration: none;
+  color: inherit;
+}
+
+.executingRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-second);
+  font-size: var(--text-xs);
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  color: var(--color-blue);
+  animation: gSpin 1s linear infinite;
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+
+.executingText {
+  font-size: var(--text-xs);
+  color: var(--text-second);
+}
+
+.muted {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  color: var(--text-second);
+}

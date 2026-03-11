@@ -8,7 +8,7 @@ const meta: Meta<typeof StatusBadge> = {
   argTypes: {
     status: {
       control: 'select',
-      options: ['complete', 'running', 'waiting_for_approval', 'failed', 'interrupted'],
+      options: ['complete', 'running', 'waiting_for_approval', 'failed', 'interrupted', 'pending'],
     },
   },
 };
@@ -21,6 +21,7 @@ export const Running: Story = { args: { status: 'running' } };
 export const AwaitingApproval: Story = { args: { status: 'waiting_for_approval' } };
 export const Failed: Story = { args: { status: 'failed' } };
 export const Interrupted: Story = { args: { status: 'interrupted' } };
+export const Pending: Story = { args: { status: 'pending' } };
 
 export const AllStates: Story = {
   render: () => (
@@ -30,6 +31,7 @@ export const AllStates: Story = {
       <StatusBadge status="waiting_for_approval" />
       <StatusBadge status="failed" />
       <StatusBadge status="interrupted" />
+      <StatusBadge status="pending" />
     </div>
   ),
 };

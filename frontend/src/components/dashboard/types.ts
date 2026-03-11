@@ -1,4 +1,4 @@
-export type RunStatus = 'complete' | 'running' | 'waiting_for_approval' | 'failed' | 'interrupted';
+export type RunStatus = 'complete' | 'running' | 'waiting_for_approval' | 'failed' | 'interrupted' | 'pending';
 export type TriggerType = 'webhook' | 'cron' | 'poll';
 
 export interface Run {
@@ -61,4 +61,5 @@ export const STATUS_CONFIG: Record<RunStatus, {
   waiting_for_approval: { label: 'Awaiting Approval', pulse: true },
   failed:               { label: 'Failed' },
   interrupted:          { label: 'Interrupted' },
+  pending:              { label: 'Pending' },
 };

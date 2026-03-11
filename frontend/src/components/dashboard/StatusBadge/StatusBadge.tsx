@@ -12,6 +12,7 @@ const VARIANT: Record<RunStatus, string> = {
   waiting_for_approval: styles.waitingForApproval,
   failed:               styles.failed,
   interrupted:          styles.interrupted,
+  pending:              styles.pending,
 };
 
 export function StatusBadge({ status }: StatusBadgeProps) {

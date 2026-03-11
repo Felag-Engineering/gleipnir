@@ -76,3 +76,13 @@
 .interrupted .dot {
   background: var(--color-purple);
 }
+
+.pending {
+  color: var(--text-second);
+  background: color-mix(in srgb, var(--text-faint) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-faint) 40%, transparent);
+}
+
+.pending .dot {
+  background: var(--text-second);
+}

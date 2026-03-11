@@ -222,4 +222,3 @@ func toRunSummary(r db.Run) RunSummary {
 		CreatedAt:   r.CreatedAt,
 	}
 }
-
