@@ -1,0 +1,9 @@
+.banner {
+  padding: var(--space-2) var(--space-6);
+  background: color-mix(in srgb, var(--color-amber) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-amber) 30%, transparent);
+  color: var(--color-amber);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  text-align: center;
+}
