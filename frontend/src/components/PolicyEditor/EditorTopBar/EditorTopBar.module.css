@@ -1,0 +1,222 @@
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 52px;
+  padding: 0 var(--space-4);
+  background: var(--bg-topbar);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Breadcrumb */
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.crumb {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.crumbGleipnir {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+
+.crumbPolicies {
+  color: var(--text-muted);
+}
+
+.crumbPolicy {
+  color: var(--text-primary);
+}
+
+.separator {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  user-select: none;
+}
+
+.dirtyDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-amber);
+  flex-shrink: 0;
+}
+
+/* Actions */
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Mode toggle */
+
+.modeToggle {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.toggleActive,
+.toggleInactive {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  padding: var(--space-1) var(--space-3);
+  border: none;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out),
+              color var(--duration-fast) var(--ease-out);
+}
+
+.toggleActive {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.toggleInactive {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.toggleInactive:hover {
+  background: color-mix(in srgb, var(--bg-elevated) 50%, transparent);
+  color: var(--text-second);
+}
+
+/* Save button */
+
+.saveButton {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  padding: var(--space-1) var(--space-3);
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--color-blue) 40%, transparent);
+  background: color-mix(in srgb, var(--color-blue) 12%, transparent);
+  color: var(--color-blue);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out);
+}
+
+.saveButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-blue) 20%, transparent);
+  border-color: color-mix(in srgb, var(--color-blue) 60%, transparent);
+}
+
+.saveButton:disabled {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: var(--border-subtle);
+  cursor: not-allowed;
+}
+
+/* Delete button */
+
+.deleteButton {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  padding: var(--space-1) var(--space-3);
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--color-red) 40%, transparent);
+  background: transparent;
+  color: var(--color-red);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out);
+}
+
+.deleteButton:hover {
+  background: color-mix(in srgb, var(--color-red) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-red) 60%, transparent);
+}
+
+/* Delete confirm modal */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg-canvas) 80%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: 8px;
+  padding: var(--space-6);
+  width: 380px;
+  max-width: calc(100vw - var(--space-8));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.modalTitle {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.modalBody {
+  font-size: var(--text-sm);
+  color: var(--text-second);
+  line-height: 1.5;
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.modalCancel {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  padding: var(--space-1) var(--space-3);
+  border-radius: 6px;
+  border: 1px solid var(--border-mid);
+  background: transparent;
+  color: var(--text-second);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.modalCancel:hover {
+  background: color-mix(in srgb, var(--bg-canvas) 50%, transparent);
+}
+
+.modalConfirm {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  padding: var(--space-1) var(--space-3);
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--color-red) 40%, transparent);
+  background: color-mix(in srgb, var(--color-red) 12%, transparent);
+  color: var(--color-red);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out);
+}
+
+.modalConfirm:hover {
+  background: color-mix(in srgb, var(--color-red) 20%, transparent);
+  border-color: color-mix(in srgb, var(--color-red) 60%, transparent);
+}
