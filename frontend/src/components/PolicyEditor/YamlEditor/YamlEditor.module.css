@@ -1,0 +1,40 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.editorHost {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-mid);
+  border-radius: 8px 8px 0 0;
+}
+
+/* CodeMirror renders its own DOM — scoped global is the standard pattern for third-party DOM */
+.editorHost :global(.cm-editor) {
+  height: 100%;
+}
+
+.indicator {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  border: 1px solid var(--border-mid);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  background: var(--bg-elevated);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.valid {
+  color: var(--color-green);
+}
+
+.invalid {
+  color: var(--color-red);
+}

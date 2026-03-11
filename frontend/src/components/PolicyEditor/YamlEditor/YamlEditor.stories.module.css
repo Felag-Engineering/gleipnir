@@ -1,0 +1,5 @@
+.storyDecorator {
+  height: 500px;
+  padding: var(--space-4);
+  background: var(--bg-surface);
+}

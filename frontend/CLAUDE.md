@@ -74,6 +74,12 @@ These are JSX reference mockups (not runnable components). Use them as the autho
 --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1)
 ```
 
+## Import paths
+
+Use the `@/` alias for all imports from `src/`. Prefer `@/tokens.css`, `@/components/Foo`, `@/hooks/useBar` over relative `../../` paths.
+
+This alias is configured in `tsconfig.json` (`paths`) and `vite.config.ts` (`resolve.alias`).
+
 ## Styling rules
 
 - **CSS Modules only** — no inline `style={}` attributes. Components get `ComponentName.module.css`.
