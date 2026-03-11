@@ -1,18 +1,10 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import '../../../tokens.css';
 import { StatsBar, makeDashboardStats } from './StatsBar';
-import { GLOBAL_STYLES } from './styles';
 
 const meta: Meta<typeof StatsBar> = {
   title: 'Dashboard/StatsBar',
   component: StatsBar,
-  decorators: [
-    (Story) => (
-      <div style={{ maxWidth: 900, padding: 20 }}>
-        <style>{GLOBAL_STYLES}</style>
-        <Story />
-      </div>
-    ),
-  ],
 };
 
 export default meta;
