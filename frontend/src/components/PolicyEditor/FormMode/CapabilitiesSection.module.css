@@ -1,0 +1,271 @@
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.heading {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  margin-bottom: var(--space-2);
+}
+
+/* Legend */
+
+.legend {
+  display: flex;
+  gap: var(--space-6);
+}
+
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.legendDesc {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Empty state */
+
+.emptyState {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  padding: var(--space-4);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+}
+
+/* Assigned tool list */
+
+.toolList {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--border-subtle);
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.toolRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-surface);
+}
+
+.toolName {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.toolDesc {
+  font-size: var(--text-sm);
+  color: var(--text-second);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Approval toggle */
+
+.approvalToggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.approvalLabel {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.toggleButton {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+
+.toggleTrack {
+  width: 28px;
+  height: 16px;
+  border-radius: 8px;
+  position: relative;
+  transition: background var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out);
+}
+
+.toggleTrackOff {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+}
+
+.toggleTrackOn {
+  background: color-mix(in srgb, var(--color-amber) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-amber) 60%, transparent);
+}
+
+.toggleThumb {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  top: 2px;
+  transition: left var(--duration-fast) var(--ease-out),
+              background var(--duration-fast) var(--ease-out);
+}
+
+.toggleThumbOff {
+  left: 2px;
+  background: var(--text-muted);
+}
+
+.toggleThumbOn {
+  left: 14px;
+  background: var(--color-amber);
+}
+
+/* Remove button */
+
+.removeButton {
+  background: none;
+  border: none;
+  padding: 0 var(--space-1);
+  cursor: pointer;
+  font-size: var(--text-base);
+  color: var(--text-muted);
+  line-height: 1;
+  flex-shrink: 0;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.removeButton:hover {
+  color: var(--color-red);
+}
+
+/* Add tool button */
+
+.addButton {
+  align-self: flex-start;
+  background: none;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-second);
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out);
+}
+
+.addButton:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* Search panel */
+
+.searchPanel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.searchHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-mid);
+}
+
+.searchInput {
+  flex: 1;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  transition: border-color var(--duration-fast) var(--ease-out);
+  box-sizing: border-box;
+}
+
+.searchInput:focus {
+  outline: none;
+  border-color: var(--color-blue);
+}
+
+.searchInput::placeholder {
+  color: var(--text-muted);
+}
+
+.cancelButton {
+  background: none;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-second);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out);
+}
+
+.cancelButton:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* Search results */
+
+.searchResults {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.searchEmpty {
+  padding: var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.resultRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: none;
+  border: none;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.resultRow:hover {
+  background: var(--bg-elevated);
+}
