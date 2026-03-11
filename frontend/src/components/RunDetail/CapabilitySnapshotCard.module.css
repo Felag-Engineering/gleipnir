@@ -1,0 +1,99 @@
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.summary:hover {
+  color: var(--text-second);
+}
+
+.icon {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.label {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.chevron {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.tableWrapper {
+  overflow-x: auto;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+  color: var(--text-second);
+}
+
+.table th {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  font-weight: var(--weight-medium);
+  color: var(--text-muted);
+  background: var(--bg-code);
+  border-bottom: 1px solid var(--border-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.roleBadge {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 2px var(--space-1);
+  border-radius: 3px;
+}
+
+.sensor {
+  color: var(--color-sensor);
+  background: color-mix(in srgb, var(--color-sensor) 10%, transparent);
+}
+
+.actuator {
+  color: var(--color-actuator);
+  background: color-mix(in srgb, var(--color-actuator) 10%, transparent);
+}
+
+.feedback {
+  color: var(--color-feedback);
+  background: color-mix(in srgb, var(--color-feedback) 10%, transparent);
+}

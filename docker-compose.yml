@@ -28,5 +28,13 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  mcp-test-server:
+    build:
+      context: ./mcp-test-server
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8090"
+    restart: unless-stopped
+
 volumes:
   gleipnir_data:

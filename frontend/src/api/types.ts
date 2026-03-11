@@ -21,12 +21,25 @@ export interface ApiPolicyListItem {
 export interface ApiRun {
   id: string
   policy_id: string
+  policy_name?: string
   status: string
   trigger_type: string
+  trigger_payload?: string
   started_at: string
   completed_at: string | null
   token_cost: number
   error: string | null
+  created_at: string
+}
+
+// Matches trigger/runs_handler.go → StepSummary struct
+export interface ApiRunStep {
+  id: string
+  run_id: string
+  step_number: number
+  type: string
+  content: string
+  token_cost: number
   created_at: string
 }
 

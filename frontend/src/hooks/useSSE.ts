@@ -33,11 +33,8 @@ export function useSSE(): { connectionState: ConnectionState } {
     eventSource.addEventListener('run.step_added', (e: MessageEvent) => {
       if (e.lastEventId) lastEventIdRef.current = e.lastEventId
       try {
-        const data: { runId: string; step: unknown } = JSON.parse(e.data)
-        queryClient.setQueryData(
-          ['runs', data.runId, 'steps'],
-          (old: unknown[] | undefined) => (old ? [...old, data.step] : [data.step]),
-        )
+        const data: { run_id: string } = JSON.parse(e.data)
+        queryClient.invalidateQueries({ queryKey: ['runs', data.run_id, 'steps'] })
       } catch {
         console.error('useSSE: failed to parse run.step_added payload', e.data)
       }

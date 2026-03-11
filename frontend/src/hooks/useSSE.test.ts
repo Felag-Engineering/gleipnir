@@ -6,6 +6,13 @@ import { sse } from 'msw'
 import { server } from '@/test/server'
 import { useSSE } from './useSSE'
 
+type TestSSEEventMap = {
+  'run.status_changed': unknown
+  'run.step_added': unknown
+  'approval.created': unknown
+  'approval.resolved': unknown
+}
+
 function makeWrapper(queryClient: QueryClient) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return React.createElement(QueryClientProvider, { client: queryClient }, children)
@@ -55,8 +62,8 @@ describe('useSSE', () => {
     let pushEvent!: (type: string, data: string) => void
 
     server.use(
-      sse('/api/v1/events', ({ client }) => {
-        pushEvent = (type, data) => client.send({ event: type, data })
+      sse<TestSSEEventMap>('/api/v1/events', ({ client }) => {
+        pushEvent = (type, data) => client.send({ event: type as keyof TestSSEEventMap, data })
       }),
     )
 
@@ -77,26 +84,28 @@ describe('useSSE', () => {
     })
   })
 
-  it('appends a step to the query cache on run.step_added', async () => {
+  it('invalidates the run steps query cache on run.step_added', async () => {
     let pushEvent!: (type: string, data: string) => void
 
     server.use(
-      sse('/api/v1/events', ({ client }) => {
-        pushEvent = (type, data) => client.send({ event: type, data })
+      sse<TestSSEEventMap>('/api/v1/events', ({ client }) => {
+        pushEvent = (type, data) => client.send({ event: type as keyof TestSSEEventMap, data })
       }),
     )
 
     const qc = makeQueryClient()
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
+
     const { result } = renderHook(() => useSSE(), { wrapper: makeWrapper(qc) })
     await waitFor(() => expect(result.current.connectionState).toBe('connected'))
 
     act(() => {
-      pushEvent('run.step_added', JSON.stringify({ runId: 'r1', step: { id: 's1' } }))
+      pushEvent('run.step_added', JSON.stringify({ run_id: 'r1', step_id: 's1', step_number: 1, type: 'thought' }))
     })
 
     await waitFor(() => {
-      const steps = qc.getQueryData<unknown[]>(['runs', 'r1', 'steps'])
-      expect(steps).toEqual([{ id: 's1' }])
+      const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
+      expect(keys).toContainEqual(['runs', 'r1', 'steps'])
     })
   })
 
@@ -104,8 +113,8 @@ describe('useSSE', () => {
     let pushEvent!: (type: string, data: string) => void
 
     server.use(
-      sse('/api/v1/events', ({ client }) => {
-        pushEvent = (type, data) => client.send({ event: type, data })
+      sse<TestSSEEventMap>('/api/v1/events', ({ client }) => {
+        pushEvent = (type, data) => client.send({ event: type as keyof TestSSEEventMap, data })
       }),
     )
 
@@ -129,8 +138,8 @@ describe('useSSE', () => {
     let pushEvent!: (type: string, data: string) => void
 
     server.use(
-      sse('/api/v1/events', ({ client }) => {
-        pushEvent = (type, data) => client.send({ event: type, data })
+      sse<TestSSEEventMap>('/api/v1/events', ({ client }) => {
+        pushEvent = (type, data) => client.send({ event: type as keyof TestSSEEventMap, data })
       }),
     )
 
