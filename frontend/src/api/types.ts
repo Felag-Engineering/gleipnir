@@ -68,6 +68,11 @@ export interface ApiMcpServer {
   created_at: string
 }
 
+// Matches mcp_handler.go → mcpServerCreateResponse (POST /api/v1/mcp/servers)
+export interface ApiMcpServerCreateResponse extends ApiMcpServer {
+  discovery_error?: string | null
+}
+
 // Matches mcp_handler.go → mcpToolResponse (GET /api/v1/mcp/servers/:id/tools)
 export interface ApiMcpTool {
   id: string

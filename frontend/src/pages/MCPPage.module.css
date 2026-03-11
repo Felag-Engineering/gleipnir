@@ -1,0 +1,78 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.title {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.addBtn {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-blue);
+  color: var(--bg-canvas);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  font-family: var(--font-body);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.addBtn:hover {
+  opacity: 0.85;
+}
+
+.skeletonList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.serverList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.errorState {
+  padding: var(--space-8) 0;
+  text-align: center;
+  color: var(--text-second);
+  font-size: var(--text-sm);
+}
+
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-12) 0;
+  text-align: center;
+}
+
+.emptyHeadline {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  color: var(--text-second);
+  margin: 0;
+}
+
+.emptySubtext {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  margin: 0;
+}
