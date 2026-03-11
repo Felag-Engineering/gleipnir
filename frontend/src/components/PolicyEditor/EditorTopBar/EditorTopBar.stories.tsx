@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { fn } from 'storybook/test';
-import '../../../tokens.css';
+import '@/tokens.css';
 import { EditorTopBar } from './EditorTopBar';
 
 const meta: Meta<typeof EditorTopBar> = {

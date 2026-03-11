@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import '../../../tokens.css';
+import '@/tokens.css';
 import { RoleBadge } from './RoleBadge';
 
 const meta: Meta<typeof RoleBadge> = {

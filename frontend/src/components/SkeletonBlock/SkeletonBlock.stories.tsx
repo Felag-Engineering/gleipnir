@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import SkeletonBlock from './SkeletonBlock';
-import '../../tokens.css';
+import '@/tokens.css';
 import styles from './SkeletonBlock.stories.module.css';
 
 const meta: Meta<typeof SkeletonBlock> = {

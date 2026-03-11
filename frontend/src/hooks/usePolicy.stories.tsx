@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import '../../tokens.css'
+import '@/tokens.css'
 import type { ApiPolicyDetail } from '../api/types'
 import { usePolicy, policyQueryKey } from './usePolicy'
 

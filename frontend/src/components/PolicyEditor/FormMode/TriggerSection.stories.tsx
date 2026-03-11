@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { fn } from 'storybook/test';
 import { useState } from 'react';
-import '../../../../tokens.css';
+import '@/tokens.css';
 import { TriggerSection } from './TriggerSection';
 import type { TriggerFormState } from './types';
 import decoratorStyles from './TriggerSection.stories.module.css';

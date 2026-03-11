@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { MemoryRouter } from 'react-router-dom'
 import EmptyState from './EmptyState'
-import '../../tokens.css'
+import '@/tokens.css'
 
 const meta: Meta<typeof EmptyState> = {
   title: 'Shared/EmptyState',

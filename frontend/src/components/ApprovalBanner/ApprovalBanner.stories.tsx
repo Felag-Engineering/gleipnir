@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import ApprovalBanner from './ApprovalBanner'
-import '../../tokens.css'
+import '@/tokens.css'
 
 const meta: Meta<typeof ApprovalBanner> = {
   title: 'Shared/ApprovalBanner',

@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import '../../../tokens.css';
+import '@/tokens.css';
 import { StatsBar, makeDashboardStats } from './StatsBar';
 
 const meta: Meta<typeof StatsBar> = {
