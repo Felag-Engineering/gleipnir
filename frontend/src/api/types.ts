@@ -29,3 +29,38 @@ export interface ApiRun {
   error: string | null
   created_at: string
 }
+
+// Matches policy_handler.go → policyDetail (GET /api/v1/policies/:id)
+export interface ApiPolicyDetail {
+  id: string
+  name: string
+  trigger_type: string
+  folder: string
+  yaml: string
+  created_at: string
+  updated_at: string
+}
+
+// Matches policy_handler.go → policyMutateResponse (POST/PUT response)
+export interface ApiPolicySaveResponse extends ApiPolicyDetail {
+  warnings: string[]
+}
+
+// Matches mcp_handler.go → mcpServerResponse (GET /api/v1/mcp/servers)
+export interface ApiMcpServer {
+  id: string
+  name: string
+  url: string
+  last_discovered_at: string | null
+  created_at: string
+}
+
+// Matches mcp_handler.go → mcpToolResponse (GET /api/v1/mcp/servers/:id/tools)
+export interface ApiMcpTool {
+  id: string
+  server_id: string
+  name: string
+  description: string
+  capability_role: 'sensor' | 'actuator' | 'feedback'
+  input_schema: Record<string, unknown>
+}
