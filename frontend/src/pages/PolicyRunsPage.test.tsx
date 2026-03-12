@@ -231,7 +231,7 @@ describe('PolicyRunsPage — heading', () => {
 
   it('falls back to id in heading when usePolicy is pending', () => {
     vi.mocked(usePolicyRuns).mockReturnValue({
-      data: [],
+      data: [] as ApiRun[],
       status: 'success',
     } as ReturnType<typeof usePolicyRuns>)
 
