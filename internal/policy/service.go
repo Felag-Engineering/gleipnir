@@ -33,7 +33,7 @@ type SaveResult struct {
 // Service orchestrates policy parse → validate → store operations.
 type Service struct {
 	store          *db.Store
-	lookup         ToolLookup    // nil if MCP registry is unavailable
+	lookup         ToolLookup     // nil if MCP registry is unavailable
 	modelValidator ModelValidator // nil skips API-level model validation
 }
 
