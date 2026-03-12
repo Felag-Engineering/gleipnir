@@ -9,6 +9,17 @@ import (
 	"context"
 )
 
+const countActiveRuns = `-- name: CountActiveRuns :one
+SELECT COUNT(*) FROM runs WHERE status IN ('pending', 'running', 'waiting_for_approval')
+`
+
+func (q *Queries) CountActiveRuns(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countActiveRuns)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createRun = `-- name: CreateRun :one
 INSERT INTO runs (id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
 VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6)
@@ -309,6 +320,17 @@ func (q *Queries) ListRunsByStatus(ctx context.Context, status string) ([]Run, e
 		return nil, err
 	}
 	return items, nil
+}
+
+const sumTokensLast24Hours = `-- name: SumTokensLast24Hours :one
+SELECT COALESCE(SUM(token_cost), 0) FROM runs WHERE created_at >= ?1
+`
+
+func (q *Queries) SumTokensLast24Hours(ctx context.Context, since string) (interface{}, error) {
+	row := q.db.QueryRowContext(ctx, sumTokensLast24Hours, since)
+	var coalesce interface{}
+	err := row.Scan(&coalesce)
+	return coalesce, err
 }
 
 const updateRunError = `-- name: UpdateRunError :exec

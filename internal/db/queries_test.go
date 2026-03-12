@@ -7,6 +7,167 @@ import (
 	"time"
 )
 
+func TestCountActiveRuns(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	t.Run("empty db returns 0", func(t *testing.T) {
+		s := newTestStore(t)
+		got, err := s.CountActiveRuns(ctx)
+		if err != nil {
+			t.Fatalf("CountActiveRuns: %v", err)
+		}
+		if got != 0 {
+			t.Errorf("got %d, want 0", got)
+		}
+	})
+
+	t.Run("counts pending running and waiting_for_approval", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "pol1")
+		for _, row := range []struct {
+			id     string
+			status string
+		}{
+			{"r-pending", "pending"},
+			{"r-running", "running"},
+			{"r-waiting", "waiting_for_approval"},
+			{"r-complete", "complete"},
+			{"r-failed", "failed"},
+		} {
+			_, err := s.DB().ExecContext(ctx,
+				`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
+				 VALUES (?, 'pol1', ?, 'webhook', '{}', ?, ?)`,
+				row.id, row.status, now, now,
+			)
+			if err != nil {
+				t.Fatalf("insert run %s: %v", row.id, err)
+			}
+		}
+		got, err := s.CountActiveRuns(ctx)
+		if err != nil {
+			t.Fatalf("CountActiveRuns: %v", err)
+		}
+		if got != 3 {
+			t.Errorf("got %d, want 3", got)
+		}
+	})
+}
+
+func TestSumTokensLast24Hours(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	t.Run("no runs returns 0", func(t *testing.T) {
+		s := newTestStore(t)
+		since := now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
+		got, err := s.SumTokensLast24Hours(ctx, since)
+		if err != nil {
+			t.Fatalf("SumTokensLast24Hours: %v", err)
+		}
+		// COALESCE returns 0 but sqlc maps it to interface{}
+		var tokens int64
+		switch v := got.(type) {
+		case int64:
+			tokens = v
+		}
+		if tokens != 0 {
+			t.Errorf("got %d, want 0", tokens)
+		}
+	})
+
+	t.Run("runs within 24h are summed", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "pol1")
+		recent := now.Add(-1 * time.Hour).Format(time.RFC3339Nano)
+		for _, row := range []struct {
+			id   string
+			cost int64
+		}{
+			{"run1", 1000},
+			{"run2", 500},
+		} {
+			_, err := s.DB().ExecContext(ctx,
+				`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at, token_cost)
+				 VALUES (?, 'pol1', 'complete', 'webhook', '{}', ?, ?, ?)`,
+				row.id, recent, recent, row.cost,
+			)
+			if err != nil {
+				t.Fatalf("insert run %s: %v", row.id, err)
+			}
+		}
+		since := now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
+		got, err := s.SumTokensLast24Hours(ctx, since)
+		if err != nil {
+			t.Fatalf("SumTokensLast24Hours: %v", err)
+		}
+		var tokens int64
+		switch v := got.(type) {
+		case int64:
+			tokens = v
+		}
+		if tokens != 1500 {
+			t.Errorf("got %d, want 1500", tokens)
+		}
+	})
+
+	t.Run("runs older than 24h are excluded", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "pol1")
+		old := "2020-01-01T00:00:00Z"
+		_, err := s.DB().ExecContext(ctx,
+			`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at, token_cost)
+			 VALUES ('run-old', 'pol1', 'complete', 'webhook', '{}', ?, ?, 9999)`,
+			old, old,
+		)
+		if err != nil {
+			t.Fatalf("insert old run: %v", err)
+		}
+		since := now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
+		got, err := s.SumTokensLast24Hours(ctx, since)
+		if err != nil {
+			t.Fatalf("SumTokensLast24Hours: %v", err)
+		}
+		var tokens int64
+		switch v := got.(type) {
+		case int64:
+			tokens = v
+		}
+		if tokens != 0 {
+			t.Errorf("got %d, want 0 (old run should be excluded)", tokens)
+		}
+	})
+
+	t.Run("multiple runs for same policy all counted", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "pol1")
+		recent := now.Add(-30 * time.Minute).Format(time.RFC3339Nano)
+		for i, id := range []string{"r1", "r2", "r3"} {
+			_, err := s.DB().ExecContext(ctx,
+				`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at, token_cost)
+				 VALUES (?, 'pol1', 'complete', 'webhook', '{}', ?, ?, ?)`,
+				id, recent, recent, (i+1)*100,
+			)
+			if err != nil {
+				t.Fatalf("insert run %s: %v", id, err)
+			}
+		}
+		since := now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
+		got, err := s.SumTokensLast24Hours(ctx, since)
+		if err != nil {
+			t.Fatalf("SumTokensLast24Hours: %v", err)
+		}
+		var tokens int64
+		switch v := got.(type) {
+		case int64:
+			tokens = v
+		}
+		if tokens != 600 { // 100+200+300
+			t.Errorf("got %d, want 600", tokens)
+		}
+	})
+}
+
 func TestMCPServerQueries(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

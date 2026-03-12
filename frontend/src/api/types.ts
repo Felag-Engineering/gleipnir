@@ -74,6 +74,14 @@ export interface ApiMcpServerCreateResponse extends ApiMcpServer {
   discovery_error?: string | null
 }
 
+// Matches api/stats_handler.go → DashboardStats (GET /api/v1/stats)
+export interface ApiStats {
+  active_runs: number
+  pending_approvals: number
+  policy_count: number
+  tokens_last_24h: number
+}
+
 // Matches mcp_handler.go → mcpToolResponse (GET /api/v1/mcp/servers/:id/tools)
 export interface ApiMcpTool {
   id: string

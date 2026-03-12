@@ -20,6 +20,9 @@ func NewRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry) chi
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	statsHandler := NewStatsHandler(NewStatsService(store))
+	r.Get("/stats", statsHandler.Get)
+
 	policies := NewPolicyHandler(store, svc)
 	r.Route("/policies", func(r chi.Router) {
 		r.Get("/", policies.List)

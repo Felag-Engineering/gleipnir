@@ -47,3 +47,9 @@ LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
 -- name: UpdateRunSystemPrompt :exec
 UPDATE runs SET system_prompt = :system_prompt WHERE id = :id;
+
+-- name: CountActiveRuns :one
+SELECT COUNT(*) FROM runs WHERE status IN ('pending', 'running', 'waiting_for_approval');
+
+-- name: SumTokensLast24Hours :one
+SELECT COALESCE(SUM(token_cost), 0) FROM runs WHERE created_at >= :since;

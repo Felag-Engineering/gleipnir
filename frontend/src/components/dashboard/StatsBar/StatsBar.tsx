@@ -49,6 +49,6 @@ export function makeDashboardStats(
     { label: 'Active runs',       value: activeRuns,          variant: 'blue',  sub: 'right now',             pulse: activeRuns > 0 },
     { label: 'Pending approvals', value: pendingApprovals,    variant: 'amber', sub: 'agents waiting on you', pulse: pendingApprovals > 0 },
     { label: 'Policies',          value: policyCount,         variant: 'muted', sub: 'configured' },
-    { label: 'Tokens today',      value: fmtTok(totalTokens), variant: 'muted', sub: 'latest run per policy' },
+    { label: 'Tokens today',      value: fmtTok(totalTokens), variant: 'muted', sub: 'last 24 hours' },
   ];
 }
