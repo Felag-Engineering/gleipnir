@@ -48,7 +48,7 @@ export function PolicyList({ policies }: Props) {
             {items.map(policy => (
               <Link
                 key={policy.id}
-                to={`/policies/${policy.id}`}
+                to={`/policies/${policy.id}/runs`}
                 className={styles.row}
               >
                 <span className={styles.policyName}>{policy.name}</span>

@@ -62,7 +62,7 @@ export function PolicyList({ policies }: PolicyListProps) {
           return (
             <div key={policy.id} className={`${styles.row} ${styles.policyRow}`}>
               <span className={styles.colPolicy}>
-                <Link to={`/policies/${policy.id}`} className={styles.policyLink}>
+                <Link to={`/policies/${policy.id}/runs`} className={styles.policyLink}>
                   {policy.name}
                 </Link>
                 <TriggerChip type={triggerType} />
