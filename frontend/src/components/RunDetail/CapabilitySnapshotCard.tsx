@@ -4,10 +4,12 @@ import styles from './CapabilitySnapshotCard.module.css'
 
 interface Props {
   content: CapabilitySnapshotContent
+  systemPrompt?: string | null
 }
 
-export function CapabilitySnapshotCard({ content }: Props) {
+export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
   const [expanded, setExpanded] = useState(false)
+  const [promptExpanded, setPromptExpanded] = useState(false)
 
   // Support both the legacy array shape (pre-ADR-023) and the V2 object shape.
   const isV2 = !Array.isArray(content) && content !== null && typeof content === 'object'
@@ -55,6 +57,21 @@ export function CapabilitySnapshotCard({ content }: Props) {
               ))}
             </tbody>
           </table>
+          {systemPrompt && (
+            <>
+              <button
+                type="button"
+                className={styles.promptToggle}
+                onClick={() => setPromptExpanded((e) => !e)}
+                aria-expanded={promptExpanded}
+              >
+                {promptExpanded ? '▼' : '▶'} System prompt
+              </button>
+              {promptExpanded && (
+                <pre className={styles.promptBody}>{systemPrompt}</pre>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>

@@ -44,3 +44,6 @@ WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))
   AND (sqlc.narg('status') IS NULL OR status = sqlc.narg('status'))
 ORDER BY created_at DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: UpdateRunSystemPrompt :exec
+UPDATE runs SET system_prompt = :system_prompt WHERE id = :id;

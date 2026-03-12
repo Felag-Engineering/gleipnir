@@ -6,9 +6,10 @@ import styles from './StepTimeline.module.css'
 interface Props {
   steps: ParsedStep[]
   toolRoleMap: Map<string, GrantedToolEntry['Role']>
+  systemPrompt?: string | null
 }
 
-export function StepTimeline({ steps, toolRoleMap }: Props) {
+export function StepTimeline({ steps, toolRoleMap, systemPrompt }: Props) {
   if (steps.length === 0) {
     return (
       <p className={styles.empty}>No steps to display.</p>
@@ -21,7 +22,7 @@ export function StepTimeline({ steps, toolRoleMap }: Props) {
         <li key={step.raw.id} className={styles.item}>
           <div className={styles.connector} aria-hidden="true" />
           {step.type === 'capability_snapshot' ? (
-            <CapabilitySnapshotCard content={step.content} />
+            <CapabilitySnapshotCard content={step.content} systemPrompt={systemPrompt} />
           ) : (
             <StepCard step={step} toolRoleMap={toolRoleMap} />
           )}

@@ -36,6 +36,7 @@ function makeRun(overrides?: Partial<ApiRun>): ApiRun {
     token_cost: 1000,
     error: null,
     created_at: new Date().toISOString(),
+    system_prompt: null,
     ...overrides,
   }
 }

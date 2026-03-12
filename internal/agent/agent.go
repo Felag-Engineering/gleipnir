@@ -207,6 +207,10 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	// Render system prompt (ADR-001: only granted tools are visible to the agent).
 	systemPrompt := policy.RenderSystemPrompt(a.policy, grantedTools)
 
+	if err := a.sm.PersistSystemPrompt(ctx, systemPrompt); err != nil {
+		slog.WarnContext(ctx, "failed to persist system prompt", "run_id", runID, "err", err)
+	}
+
 	// Build Anthropic tool definitions from narrowed schemas.
 	// Use the sanitized Claude-facing name (dots replaced with underscores) because
 	// the Claude API rejects tool names containing dots.
@@ -229,7 +233,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	// Including the model alongside tools makes the snapshot a complete record of
 	// the agent's configuration at run start.
 	type capabilitySnapshot struct {
-		Model string             `json:"model"`
+		Model string              `json:"model"`
 		Tools []model.GrantedTool `json:"tools"`
 	}
 

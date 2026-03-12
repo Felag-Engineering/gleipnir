@@ -238,6 +238,44 @@ func TestRunsHandler_Get(t *testing.T) {
 			},
 		},
 		{
+			name: "system_prompt is returned when set",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-get-prompt", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-get-prompt", "p-get-prompt", model.RunStatusComplete)
+				_, err := store.DB().Exec(
+					`UPDATE runs SET system_prompt = ? WHERE id = ?`,
+					"You are a helpful agent.", "r-get-prompt",
+				)
+				if err != nil {
+					t.Fatalf("set system_prompt: %v", err)
+				}
+			},
+			runID:    "r-get-prompt",
+			wantCode: http.StatusOK,
+			checkFn: func(t *testing.T, run trigger.RunSummary) {
+				if run.SystemPrompt == nil {
+					t.Fatal("system_prompt is nil, want non-nil")
+				}
+				if *run.SystemPrompt != "You are a helpful agent." {
+					t.Errorf("system_prompt = %q, want %q", *run.SystemPrompt, "You are a helpful agent.")
+				}
+			},
+		},
+		{
+			name: "system_prompt is null for old runs",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-get-no-prompt", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-get-no-prompt", "p-get-no-prompt", model.RunStatusComplete)
+			},
+			runID:    "r-get-no-prompt",
+			wantCode: http.StatusOK,
+			checkFn: func(t *testing.T, run trigger.RunSummary) {
+				if run.SystemPrompt != nil {
+					t.Errorf("system_prompt = %q, want nil", *run.SystemPrompt)
+				}
+			},
+		},
+		{
 			name:     "unknown ID returns 404",
 			runID:    "r-does-not-exist",
 			wantCode: http.StatusNotFound,

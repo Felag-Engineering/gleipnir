@@ -12,7 +12,7 @@ import (
 const createRun = `-- name: CreateRun :one
 INSERT INTO runs (id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
 VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6)
-RETURNING id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at
+RETURNING id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt
 `
 
 type CreateRunParams struct {
@@ -49,12 +49,13 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 		&i.Error,
 		&i.ThreadID,
 		&i.CreatedAt,
+		&i.SystemPrompt,
 	)
 	return i, err
 }
 
 const getRun = `-- name: GetRun :one
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs WHERE id = ?1
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs WHERE id = ?1
 `
 
 func (q *Queries) GetRun(ctx context.Context, id string) (Run, error) {
@@ -72,6 +73,7 @@ func (q *Queries) GetRun(ctx context.Context, id string) (Run, error) {
 		&i.Error,
 		&i.ThreadID,
 		&i.CreatedAt,
+		&i.SystemPrompt,
 	)
 	return i, err
 }
@@ -91,7 +93,7 @@ func (q *Queries) IncrementRunTokenCost(ctx context.Context, arg IncrementRunTok
 }
 
 const listActiveRunsByPolicy = `-- name: ListActiveRunsByPolicy :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs
 WHERE policy_id = ?1
   AND status IN ('pending', 'running', 'waiting_for_approval')
 ORDER BY created_at ASC
@@ -118,6 +120,7 @@ func (q *Queries) ListActiveRunsByPolicy(ctx context.Context, policyID string) (
 			&i.Error,
 			&i.ThreadID,
 			&i.CreatedAt,
+			&i.SystemPrompt,
 		); err != nil {
 			return nil, err
 		}
@@ -133,7 +136,7 @@ func (q *Queries) ListActiveRunsByPolicy(ctx context.Context, policyID string) (
 }
 
 const listOrphanedRuns = `-- name: ListOrphanedRuns :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs WHERE status IN ('running', 'waiting_for_approval')
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs WHERE status IN ('running', 'waiting_for_approval')
 `
 
 func (q *Queries) ListOrphanedRuns(ctx context.Context) ([]Run, error) {
@@ -157,6 +160,7 @@ func (q *Queries) ListOrphanedRuns(ctx context.Context) ([]Run, error) {
 			&i.Error,
 			&i.ThreadID,
 			&i.CreatedAt,
+			&i.SystemPrompt,
 		); err != nil {
 			return nil, err
 		}
@@ -172,7 +176,7 @@ func (q *Queries) ListOrphanedRuns(ctx context.Context) ([]Run, error) {
 }
 
 const listRuns = `-- name: ListRuns :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs
 WHERE (?1 IS NULL OR policy_id = ?1)
   AND (?2 IS NULL OR status = ?2)
 ORDER BY created_at DESC
@@ -212,6 +216,7 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, erro
 			&i.Error,
 			&i.ThreadID,
 			&i.CreatedAt,
+			&i.SystemPrompt,
 		); err != nil {
 			return nil, err
 		}
@@ -227,7 +232,7 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, erro
 }
 
 const listRunsByPolicy = `-- name: ListRunsByPolicy :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs WHERE policy_id = ?1 ORDER BY created_at DESC
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs WHERE policy_id = ?1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListRunsByPolicy(ctx context.Context, policyID string) ([]Run, error) {
@@ -251,6 +256,7 @@ func (q *Queries) ListRunsByPolicy(ctx context.Context, policyID string) ([]Run,
 			&i.Error,
 			&i.ThreadID,
 			&i.CreatedAt,
+			&i.SystemPrompt,
 		); err != nil {
 			return nil, err
 		}
@@ -266,7 +272,7 @@ func (q *Queries) ListRunsByPolicy(ctx context.Context, policyID string) ([]Run,
 }
 
 const listRunsByStatus = `-- name: ListRunsByStatus :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at FROM runs WHERE status = ?1 ORDER BY created_at ASC
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs WHERE status = ?1 ORDER BY created_at ASC
 `
 
 func (q *Queries) ListRunsByStatus(ctx context.Context, status string) ([]Run, error) {
@@ -290,6 +296,7 @@ func (q *Queries) ListRunsByStatus(ctx context.Context, status string) ([]Run, e
 			&i.Error,
 			&i.ThreadID,
 			&i.CreatedAt,
+			&i.SystemPrompt,
 		); err != nil {
 			return nil, err
 		}
@@ -337,6 +344,20 @@ type UpdateRunStatusParams struct {
 
 func (q *Queries) UpdateRunStatus(ctx context.Context, arg UpdateRunStatusParams) error {
 	_, err := q.db.ExecContext(ctx, updateRunStatus, arg.Status, arg.CompletedAt, arg.ID)
+	return err
+}
+
+const updateRunSystemPrompt = `-- name: UpdateRunSystemPrompt :exec
+UPDATE runs SET system_prompt = ?1 WHERE id = ?2
+`
+
+type UpdateRunSystemPromptParams struct {
+	SystemPrompt *string `json:"system_prompt"`
+	ID           string  `json:"id"`
+}
+
+func (q *Queries) UpdateRunSystemPrompt(ctx context.Context, arg UpdateRunSystemPromptParams) error {
+	_, err := q.db.ExecContext(ctx, updateRunSystemPrompt, arg.SystemPrompt, arg.ID)
 	return err
 }
 

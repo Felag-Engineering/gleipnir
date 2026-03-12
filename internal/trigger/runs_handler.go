@@ -28,6 +28,7 @@ type RunSummary struct {
 	TokenCost      int64   `json:"token_cost"`
 	Error          *string `json:"error"`
 	CreatedAt      string  `json:"created_at"`
+	SystemPrompt   *string `json:"system_prompt"`
 }
 
 // StepSummary is the JSON shape returned for a single run step.
@@ -235,5 +236,6 @@ func toRunSummary(r db.Run) RunSummary {
 		TokenCost:      r.TokenCost,
 		Error:          r.Error,
 		CreatedAt:      r.CreatedAt,
+		SystemPrompt:   r.SystemPrompt,
 	}
 }

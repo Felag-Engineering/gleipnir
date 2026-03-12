@@ -281,3 +281,29 @@ func TestRunStateMachine_ConcurrentTransitions(t *testing.T) {
 		t.Errorf("final status = %s, want complete", got)
 	}
 }
+
+func TestRunStateMachine_PersistSystemPrompt(t *testing.T) {
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	insertRun(t, s, "run1", "p1", "pending")
+
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries)
+
+	prompt := "You are a helpful agent.\n\nCapabilities:\n- read files"
+	if err := sm.PersistSystemPrompt(context.Background(), prompt); err != nil {
+		t.Fatalf("PersistSystemPrompt: unexpected error: %v", err)
+	}
+
+	// Read back from the DB and verify the value was persisted.
+	row := s.DB().QueryRow(`SELECT system_prompt FROM runs WHERE id = 'run1'`)
+	var got *string
+	if err := row.Scan(&got); err != nil {
+		t.Fatalf("scan system_prompt: %v", err)
+	}
+	if got == nil {
+		t.Fatal("system_prompt is NULL, want non-nil")
+	}
+	if *got != prompt {
+		t.Errorf("system_prompt = %q, want %q", *got, prompt)
+	}
+}

@@ -30,6 +30,7 @@ export interface ApiRun {
   token_cost: number
   error: string | null
   created_at: string
+  system_prompt: string | null
 }
 
 // Matches trigger/runs_handler.go → StepSummary struct

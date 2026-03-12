@@ -22,6 +22,7 @@ const BASE_RUN: ApiRun = {
   token_cost: 2340,
   error: null,
   created_at: '2026-03-10T02:00:00Z',
+  system_prompt: null,
 }
 
 export const Default: Story = {

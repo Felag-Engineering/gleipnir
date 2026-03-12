@@ -97,3 +97,34 @@
   color: var(--color-feedback);
   background: color-mix(in srgb, var(--color-feedback) 10%, transparent);
 }
+
+.promptToggle {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  cursor: pointer;
+  text-align: left;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.promptToggle:hover {
+  color: var(--text-second);
+}
+
+.promptBody {
+  margin: 0;
+  padding: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-second);
+  background: var(--bg-code);
+  overflow: auto;
+  white-space: pre-wrap;
+  border-top: 1px solid var(--border-subtle);
+}

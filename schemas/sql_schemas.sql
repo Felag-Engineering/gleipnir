@@ -111,7 +111,8 @@ CREATE TABLE runs (
     token_cost      INTEGER NOT NULL DEFAULT 0,
     error           TEXT,                 -- nullable, terminal error message
     thread_id       TEXT,                 -- nullable, Slack thread_ts
-    created_at      TEXT    NOT NULL      -- ISO 8601 UTC
+    created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
+    system_prompt   TEXT                  -- nullable, rendered system prompt at run start
 );
 
 CREATE INDEX idx_runs_policy_id  ON runs(policy_id);
@@ -210,5 +211,7 @@ CREATE INDEX idx_approval_requests_status ON approval_requests(status);
 -- Seed migration version
 -- ---------------------------------------------------------------------------
 
-INSERT INTO schema_migrations(version, applied_at)
-VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+-- Seed all migration versions that are baked into this initial schema.
+INSERT INTO schema_migrations(version, applied_at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+INSERT INTO schema_migrations(version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+INSERT INTO schema_migrations(version, applied_at) VALUES (3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));

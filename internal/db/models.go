@@ -56,6 +56,7 @@ type Run struct {
 	Error          *string `json:"error"`
 	ThreadID       *string `json:"thread_id"`
 	CreatedAt      string  `json:"created_at"`
+	SystemPrompt   *string `json:"system_prompt"`
 }
 
 type RunStep struct {

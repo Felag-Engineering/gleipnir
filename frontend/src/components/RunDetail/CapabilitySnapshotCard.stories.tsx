@@ -75,3 +75,33 @@ export const V2WithHaiku: Story = {
     },
   },
 }
+
+const SAMPLE_SYSTEM_PROMPT = `You are an autonomous agent running under the Gleipnir orchestrator.
+
+## Your task
+Monitor the filesystem for changes and report anomalies.
+
+## Capabilities
+You have access to the following tools:
+- fs-server.read_file (sensor): Read file contents
+- fs-server.list_files (sensor): List directory contents
+- fs-server.write_file (actuator, approval required): Write file contents
+
+## Constraints
+- You must not access files outside /data
+- You must request approval before writing any file
+- Token budget: 50000 tokens per run`
+
+export const WithSystemPrompt: Story = {
+  args: {
+    content: MIXED_TOOLS_V2,
+    systemPrompt: SAMPLE_SYSTEM_PROMPT,
+  },
+}
+
+export const WithNullSystemPrompt: Story = {
+  args: {
+    content: MIXED_TOOLS_V2,
+    systemPrompt: null,
+  },
+}

@@ -97,6 +97,15 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 	return nil
 }
 
+// PersistSystemPrompt writes the rendered system prompt to the DB. Non-fatal:
+// callers should log a warning on error rather than aborting the run.
+func (sm *RunStateMachine) PersistSystemPrompt(ctx context.Context, prompt string) error {
+	return sm.queries.UpdateRunSystemPrompt(ctx, db.UpdateRunSystemPromptParams{
+		ID:           sm.runID,
+		SystemPrompt: &prompt,
+	})
+}
+
 // Current returns the current run status. Safe for concurrent use.
 func (sm *RunStateMachine) Current() model.RunStatus {
 	sm.mu.Lock()
