@@ -40,7 +40,7 @@ export default function RunDetailPage() {
       const entries = step.content as CapabilitySnapshotContent
       if (Array.isArray(entries)) {
         for (const entry of entries) {
-          toolRoleMap.set(entry.ToolName, entry.Role)
+          toolRoleMap.set(`${entry.ServerName}.${entry.ToolName}`, entry.Role)
         }
       }
     }

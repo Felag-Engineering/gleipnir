@@ -36,5 +36,29 @@ services:
       - "8090:8090"
     restart: unless-stopped
 
+  todoist-mcp:
+    image: ghcr.io/naotama2002/todoist-go-mcp-server:latest
+    command: ["--mode", "http", "--addr", ":8091"]
+    ports:
+      - "8091:8091"
+    environment:
+      - TODOIST_API_TOKEN=${TODOIST_API_TOKEN}
+    profiles:
+      - integrations
+    restart: unless-stopped
+
+  mealie-mcp:
+    build:
+      context: ./mcp-servers/mealie
+      dockerfile: Dockerfile
+    ports:
+      - "8092:8092"
+    environment:
+      - MEALIE_BASE_URL=${MEALIE_BASE_URL}
+      - MEALIE_API_KEY=${MEALIE_API_KEY}
+    profiles:
+      - integrations
+    restart: unless-stopped
+
 volumes:
   gleipnir_data:
