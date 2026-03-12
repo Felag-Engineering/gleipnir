@@ -1,5 +1,5 @@
 export type RunStatus = 'complete' | 'running' | 'waiting_for_approval' | 'failed' | 'interrupted' | 'pending';
-export type TriggerType = 'webhook' | 'cron' | 'poll';
+export type TriggerType = 'webhook' | 'cron' | 'poll' | 'manual';
 
 export interface Run {
   id: string;

@@ -19,3 +19,7 @@
 .poll {
   color: var(--color-teal);
 }
+
+.manual {
+  color: var(--color-orange);
+}

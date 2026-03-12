@@ -205,6 +205,14 @@ func TestValidate_ActuatorOnlyValid(t *testing.T) {
 	}
 }
 
+func TestValidate_ManualTrigger(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypeManual
+	if err := Validate(p); err != nil {
+		t.Errorf("expected valid manual trigger policy, got: %v", err)
+	}
+}
+
 func TestValidate_ValidPollTrigger(t *testing.T) {
 	p := validPolicy()
 	p.Trigger.Type = model.TriggerTypePoll

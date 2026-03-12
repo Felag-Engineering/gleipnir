@@ -33,6 +33,7 @@ const (
 	TriggerTypeWebhook TriggerType = "webhook"
 	TriggerTypeCron    TriggerType = "cron"
 	TriggerTypePoll    TriggerType = "poll"
+	TriggerTypeManual  TriggerType = "manual"
 )
 
 // CapabilityRole classifies a tool's access level within a run.
@@ -98,7 +99,7 @@ func (s RunStatus) Valid() bool {
 func (t TriggerType) String() string { return string(t) }
 func (t TriggerType) Valid() bool {
 	switch t {
-	case TriggerTypeWebhook, TriggerTypeCron, TriggerTypePoll:
+	case TriggerTypeWebhook, TriggerTypeCron, TriggerTypePoll, TriggerTypeManual:
 		return true
 	}
 	return false

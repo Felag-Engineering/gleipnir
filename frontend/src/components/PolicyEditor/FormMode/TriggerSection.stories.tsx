@@ -62,6 +62,14 @@ export const PollSelected: Story = {
   },
 };
 
+export const ManualSelected: Story = {
+  args: {
+    value: { type: 'manual' },
+    policyId: 'manual-policy',
+    onChange: fn(),
+  },
+};
+
 function InteractiveTriggerSection() {
   const [value, setValue] = useState<TriggerFormState>({ type: 'webhook' });
   return <TriggerSection value={value} onChange={setValue} policyId="example-policy" />;

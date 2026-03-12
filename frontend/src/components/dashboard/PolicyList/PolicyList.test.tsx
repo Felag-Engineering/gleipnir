@@ -29,7 +29,7 @@ describe('PolicyList', () => {
   it('renders policy name, trigger chip label, and status badge label for a policy with a run', () => {
     render(
       <MemoryRouter>
-        <PolicyList policies={[POLICY_WITH_RUN]} />
+        <PolicyList policies={[POLICY_WITH_RUN]} onTrigger={() => {}} />
       </MemoryRouter>,
     )
 
@@ -41,7 +41,7 @@ describe('PolicyList', () => {
   it('renders no policy rows for an empty array', () => {
     render(
       <MemoryRouter>
-        <PolicyList policies={[]} />
+        <PolicyList policies={[]} onTrigger={() => {}} />
       </MemoryRouter>,
     )
 
@@ -51,7 +51,7 @@ describe('PolicyList', () => {
   it('renders the run status area as a link to /runs/:id', () => {
     render(
       <MemoryRouter>
-        <PolicyList policies={[POLICY_WITH_RUN]} />
+        <PolicyList policies={[POLICY_WITH_RUN]} onTrigger={() => {}} />
       </MemoryRouter>,
     )
 

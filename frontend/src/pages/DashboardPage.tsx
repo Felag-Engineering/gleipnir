@@ -1,10 +1,12 @@
+import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { ApprovalBanner } from '../components/ApprovalBanner'
 import { EmptyState } from '../components/EmptyState'
 import { PolicyList } from '../components/PolicyList'
 import { SkeletonBlock } from '../components/SkeletonBlock'
 import { StatsBar } from '../components/dashboard/StatsBar'
+import { TriggerRunModal } from '../components/TriggerRunModal/TriggerRunModal'
 import { usePolicies } from '../hooks/usePolicies'
 import { useStatsData } from '../hooks/useStatsData'
 import styles from './DashboardPage.module.css'
@@ -14,6 +16,8 @@ export default function DashboardPage() {
   // usePolicies is also called inside useStatsData — TanStack Query deduplicates the request.
   const { data: policies, status: policiesStatus } = usePolicies()
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string } | null>(null)
 
   const approvalCount = (policies ?? []).filter(
     p => p.latest_run?.status === 'waiting_for_approval',
@@ -69,7 +73,12 @@ export default function DashboardPage() {
         />
       )
     }
-    return <PolicyList policies={policies} />
+    return (
+      <PolicyList
+        policies={policies}
+        onTrigger={(id: string, name: string) => setTriggerTarget({ id, name })}
+      />
+    )
   }
 
   return (
@@ -83,6 +92,17 @@ export default function DashboardPage() {
       <ApprovalBanner count={approvalCount} />
       {renderStatsSection()}
       {renderPoliciesSection()}
+      {triggerTarget && (
+        <TriggerRunModal
+          policyId={triggerTarget.id}
+          policyName={triggerTarget.name}
+          onClose={() => setTriggerTarget(null)}
+          onSuccess={(runId) => {
+            setTriggerTarget(null)
+            navigate(`/runs/${runId}`)
+          }}
+        />
+      )}
     </div>
   )
 }

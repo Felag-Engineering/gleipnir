@@ -66,6 +66,9 @@ func run() error {
 	webhookHandler := trigger.NewWebhookHandler(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
 	r.Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
 
+	manualTriggerHandler := trigger.NewManualTriggerHandler(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
+	r.Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
+
 	runsHandler := trigger.NewRunsHandler(store, runManager)
 	r.Get("/api/v1/runs", runsHandler.List)
 	r.Get("/api/v1/runs/{runID}", runsHandler.Get)

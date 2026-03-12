@@ -22,6 +22,9 @@ import (
 //go:embed migrations/0001_initial.sql
 var initialSchema string
 
+//go:embed migrations/0002_add_manual_trigger.sql
+var migration0002 string
+
 // Store wraps the database connection and provides lifecycle methods.
 type Store struct {
 	db *sql.DB
@@ -108,6 +111,21 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if applied == 0 {
 		return fmt.Errorf("schema_migrations exists but version 1 is not recorded")
 	}
+
+	// Apply migration 0002 if not yet recorded.
+	var v2Applied int
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = 2`,
+	).Scan(&v2Applied)
+	if err != nil {
+		return fmt.Errorf("check migration 2: %w", err)
+	}
+	if v2Applied == 0 {
+		if _, err := s.db.ExecContext(ctx, migration0002); err != nil {
+			return fmt.Errorf("apply migration 0002: %w", err)
+		}
+	}
+
 	return nil
 }
 

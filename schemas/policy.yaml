@@ -35,7 +35,7 @@ folder: string
 
 trigger:
 
-  # type: webhook | cron | poll — required
+  # type: webhook | cron | poll | manual — required
   type: webhook
 
 

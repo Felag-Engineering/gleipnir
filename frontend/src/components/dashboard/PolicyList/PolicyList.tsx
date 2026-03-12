@@ -8,6 +8,7 @@ import styles from './PolicyList.module.css'
 
 interface PolicyListProps {
   policies: ApiPolicyListItem[]
+  onTrigger: (policyId: string, policyName: string) => void
 }
 
 const KNOWN_STATUSES: RunStatus[] = [
@@ -42,7 +43,7 @@ function RunCell({ policy }: { policy: ApiPolicyListItem }) {
   )
 }
 
-export function PolicyList({ policies }: PolicyListProps) {
+export function PolicyList({ policies, onTrigger }: PolicyListProps) {
   return (
     <div className={styles.tableWrapper}>
       <div className={styles.table}>
@@ -52,6 +53,7 @@ export function PolicyList({ policies }: PolicyListProps) {
           <span className={styles.colWhen}>When</span>
           <span className={styles.colDuration}>Duration</span>
           <span className={styles.colTokens}>Tokens</span>
+          <span className={styles.colActions} />
         </div>
 
         {policies.map((policy) => {
@@ -91,6 +93,17 @@ export function PolicyList({ policies }: PolicyListProps) {
                 ) : (
                   <span className={styles.muted}>—</span>
                 )}
+              </span>
+
+              <span className={styles.colActions}>
+                <button
+                  className={styles.playBtn}
+                  onClick={() => onTrigger(policy.id, policy.name)}
+                  title="Run now"
+                  aria-label={`Run ${policy.name}`}
+                >
+                  ▶
+                </button>
               </span>
             </div>
           )

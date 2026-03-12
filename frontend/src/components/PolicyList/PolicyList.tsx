@@ -7,6 +7,7 @@ import styles from './PolicyList.module.css'
 
 interface Props {
   policies: ApiPolicyListItem[]
+  onTrigger: (policyId: string, policyName: string) => void
 }
 
 // Group policies by their folder field, using "Default" for unset entries.
@@ -29,9 +30,9 @@ function groupByFolder(policies: ApiPolicyListItem[]): Map<string, ApiPolicyList
 const KNOWN_STATUSES = new Set<string>([
   'complete', 'running', 'waiting_for_approval', 'failed', 'interrupted',
 ])
-const KNOWN_TRIGGERS = new Set<string>(['webhook', 'cron', 'poll'])
+const KNOWN_TRIGGERS = new Set<string>(['webhook', 'cron', 'poll', 'manual'])
 
-export function PolicyList({ policies }: Props) {
+export function PolicyList({ policies, onTrigger }: Props) {
   const groups = groupByFolder(policies)
 
   return (
@@ -44,27 +45,39 @@ export function PolicyList({ policies }: Props) {
               <span>Policy</span>
               <span>Trigger</span>
               <span>Latest run</span>
+              <span />
             </div>
             {items.map(policy => (
-              <Link
-                key={policy.id}
-                to={`/policies/${policy.id}/runs`}
-                className={styles.row}
-              >
-                <span className={styles.policyName}>{policy.name}</span>
-                <span>
-                  {KNOWN_TRIGGERS.has(policy.trigger_type) && (
-                    <TriggerChip type={policy.trigger_type as TriggerType} />
-                  )}
+              <div key={policy.id} className={styles.row}>
+                <Link
+                  to={`/policies/${policy.id}/runs`}
+                  className={styles.rowLink}
+                >
+                  <span className={styles.policyName}>{policy.name}</span>
+                  <span>
+                    {KNOWN_TRIGGERS.has(policy.trigger_type) && (
+                      <TriggerChip type={policy.trigger_type as TriggerType} />
+                    )}
+                  </span>
+                  <span>
+                    {policy.latest_run && KNOWN_STATUSES.has(policy.latest_run.status) ? (
+                      <StatusBadge status={policy.latest_run.status as RunStatus} />
+                    ) : (
+                      <span className={styles.noRun}>—</span>
+                    )}
+                  </span>
+                </Link>
+                <span className={styles.rowAction}>
+                  <button
+                    className={styles.playBtn}
+                    onClick={() => onTrigger(policy.id, policy.name)}
+                    title="Run now"
+                    aria-label={`Run ${policy.name}`}
+                  >
+                    ▶
+                  </button>
                 </span>
-                <span>
-                  {policy.latest_run && KNOWN_STATUSES.has(policy.latest_run.status) ? (
-                    <StatusBadge status={policy.latest_run.status as RunStatus} />
-                  ) : (
-                    <span className={styles.noRun}>—</span>
-                  )}
-                </span>
-              </Link>
+              </div>
             ))}
           </div>
         </section>

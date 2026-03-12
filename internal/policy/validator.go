@@ -43,12 +43,15 @@ func validateTrigger(t model.TriggerConfig) []string {
 	var errs []string
 
 	if !t.Type.Valid() {
-		errs = append(errs, fmt.Sprintf("trigger.type %q is invalid; must be webhook, cron, or poll", t.Type))
+		errs = append(errs, fmt.Sprintf("trigger.type %q is invalid; must be webhook, cron, poll, or manual", t.Type))
 		return errs // can't validate type-specific fields without a valid type
 	}
 
 	switch t.Type {
 	case model.TriggerTypeWebhook:
+		// No additional fields required.
+
+	case model.TriggerTypeManual:
 		// No additional fields required.
 
 	case model.TriggerTypeCron:

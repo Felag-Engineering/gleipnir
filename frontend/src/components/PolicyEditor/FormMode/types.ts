@@ -20,7 +20,7 @@ export interface IdentityFormState {
   folder: string;
 }
 
-export type TriggerType = 'webhook' | 'cron' | 'poll';
+export type TriggerType = 'webhook' | 'cron' | 'poll' | 'manual';
 
 export interface WebhookTriggerState {
   type: 'webhook';
@@ -43,10 +43,15 @@ export interface PollTriggerState {
   filter: string;
 }
 
+export interface ManualTriggerState {
+  type: 'manual';
+}
+
 export type TriggerFormState =
   | WebhookTriggerState
   | CronTriggerState
-  | PollTriggerState;
+  | PollTriggerState
+  | ManualTriggerState;
 
 export interface TaskInstructionsFormState {
   task: string;

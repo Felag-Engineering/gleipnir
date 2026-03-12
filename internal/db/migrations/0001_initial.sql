@@ -1,6 +1,9 @@
 -- Gleipnir — Initial Schema
 -- Migration: 0001
 -- Applied by: startup migration runner on first boot
+-- Note: 'manual' was added to trigger_type CHECK constraints retroactively
+-- alongside migration 0002 (0002_add_manual_trigger.sql), which handles
+-- the same change for existing databases via a table-rebuild.
 --
 -- Design decisions:
 --   ADR-002: Policy-as-YAML stored in DB. name and trigger_type as columns for
@@ -69,7 +72,7 @@ CREATE INDEX idx_mcp_tools_server_id ON mcp_tools(server_id);
 CREATE TABLE policies (
     id              TEXT    PRIMARY KEY,  -- ULID
     name            TEXT    NOT NULL UNIQUE,
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll', 'manual')),
     yaml            TEXT    NOT NULL,
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     updated_at      TEXT    NOT NULL      -- ISO 8601 UTC
@@ -104,7 +107,7 @@ CREATE TABLE runs (
                         'failed',
                         'interrupted'
                     )),
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll', 'manual')),
     trigger_payload TEXT    NOT NULL,     -- JSON blob
     started_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     completed_at    TEXT,                 -- nullable, ISO 8601 UTC

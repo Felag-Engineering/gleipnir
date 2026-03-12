@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { fn } from 'storybook/test'
 import { MemoryRouter } from 'react-router-dom'
 import '@/tokens.css'
 import type { ApiPolicyListItem } from '../../../api/types'
@@ -8,6 +9,9 @@ const meta: Meta<typeof PolicyList> = {
   title: 'Dashboard/PolicyList',
   component: PolicyList,
   decorators: [(Story) => (<MemoryRouter><Story /></MemoryRouter>)],
+  args: {
+    onTrigger: fn(),
+  },
 }
 
 export default meta
@@ -106,6 +110,20 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     created_at: '2026-01-10T00:00:00Z',
     updated_at: '2026-01-10T00:00:00Z',
     latest_run: null,
+  },
+  {
+    id: 'pol-8',
+    name: 'Manual Healthcheck',
+    trigger_type: 'manual',
+    folder: 'Infrastructure',
+    created_at: '2026-03-10T00:00:00Z',
+    updated_at: '2026-03-10T00:00:00Z',
+    latest_run: {
+      id: 'run-8',
+      status: 'complete',
+      started_at: '2026-03-10T14:00:00Z',
+      token_cost: 980,
+    },
   },
 ]
 

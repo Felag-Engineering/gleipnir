@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import styles from './TriggerSection.module.css';
-import type { TriggerFormState, CronTriggerState, PollTriggerState } from './types';
+import type { TriggerFormState, CronTriggerState, PollTriggerState, ManualTriggerState } from './types';
 
 export interface TriggerSectionProps {
   value: TriggerFormState;
@@ -9,6 +9,7 @@ export interface TriggerSectionProps {
 }
 
 const DEFAULT_CRON: CronTriggerState = { type: 'cron', schedule: '' };
+const DEFAULT_MANUAL: ManualTriggerState = { type: 'manual' };
 const DEFAULT_POLL: PollTriggerState = {
   type: 'poll',
   interval: '5m',
@@ -28,6 +29,7 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
   function handleTypeSelect(type: TriggerFormState['type']) {
     if (type === 'webhook') onChange({ type: 'webhook' });
     else if (type === 'cron') onChange(DEFAULT_CRON);
+    else if (type === 'manual') onChange(DEFAULT_MANUAL);
     else onChange(DEFAULT_POLL);
   }
 
@@ -76,6 +78,16 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
           </div>
           <div className={styles.cardDesc}>Periodically fetches a URL and reacts to changes</div>
         </button>
+
+        <button
+          className={value.type === 'manual' ? `${styles.card} ${styles.cardActive}` : styles.card}
+          onClick={() => handleTypeSelect('manual')}
+        >
+          <div className={value.type === 'manual' ? `${styles.cardTitle} ${styles.cardTitleActive}` : styles.cardTitle}>
+            Manual
+          </div>
+          <div className={styles.cardDesc}>Triggered on demand from the dashboard</div>
+        </button>
       </div>
 
       <div className={styles.config}>
@@ -88,6 +100,7 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
         {value.type === 'poll' && (
           <PollConfig value={value} onChange={onChange} />
         )}
+        {value.type === 'manual' && null}
       </div>
     </div>
   );

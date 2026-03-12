@@ -292,6 +292,26 @@ agent:
 	}
 }
 
+func TestParse_ManualTrigger(t *testing.T) {
+	raw := `
+name: manual-policy
+trigger:
+  type: manual
+capabilities:
+  sensors:
+    - tool: s.t
+agent:
+  task: do it manually
+`
+	p, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Trigger.Type != model.TriggerTypeManual {
+		t.Errorf("trigger.type = %q, want %q", p.Trigger.Type, model.TriggerTypeManual)
+	}
+}
+
 func TestParse_InvalidYAML(t *testing.T) {
 	_, err := Parse("{{bad yaml")
 	if err == nil {

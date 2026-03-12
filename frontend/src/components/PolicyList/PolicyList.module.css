@@ -29,7 +29,7 @@
 
 .headerRow {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto auto 32px;
   gap: var(--space-4);
   align-items: center;
   padding: var(--space-2) var(--space-4);
@@ -42,14 +42,21 @@
 
 .row {
   display: grid;
+  grid-template-columns: 1fr 32px;
+  gap: var(--space-2);
+  align-items: center;
+  border-bottom: 1px solid var(--border-subtle);
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.rowLink {
+  display: grid;
   grid-template-columns: 1fr auto auto;
   gap: var(--space-4);
   align-items: center;
   padding: var(--space-3) var(--space-4);
   color: var(--text-primary);
   text-decoration: none;
-  border-bottom: 1px solid var(--border-subtle);
-  transition: background var(--duration-fast) var(--ease-out);
 }
 
 .row:last-child {
@@ -58,6 +65,33 @@
 
 .row:hover {
   background: var(--bg-elevated);
+}
+
+.rowAction {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-right: var(--space-3);
+}
+
+.playBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid var(--border-mid);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.playBtn:hover {
+  border-color: var(--color-green);
+  color: var(--color-green);
 }
 
 .policyName {

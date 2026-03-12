@@ -6,7 +6,7 @@ const meta: Meta<typeof TriggerChip> = {
   title: 'Dashboard/TriggerChip',
   component: TriggerChip,
   argTypes: {
-    type: { control: 'select', options: ['webhook', 'cron', 'poll'] },
+    type: { control: 'select', options: ['webhook', 'cron', 'poll', 'manual'] },
   },
 };
 
@@ -16,6 +16,7 @@ type Story = StoryObj<typeof TriggerChip>;
 export const Webhook: Story = { args: { type: 'webhook' } };
 export const Cron: Story = { args: { type: 'cron' } };
 export const Poll: Story = { args: { type: 'poll' } };
+export const Manual: Story = { args: { type: 'manual' } };
 
 export const AllTypes: Story = {
   render: () => (
@@ -23,6 +24,7 @@ export const AllTypes: Story = {
       <TriggerChip type="webhook" />
       <TriggerChip type="cron" />
       <TriggerChip type="poll" />
+      <TriggerChip type="manual" />
     </div>
   ),
 };

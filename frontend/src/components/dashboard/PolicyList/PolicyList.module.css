@@ -9,10 +9,10 @@
   min-width: 560px;
 }
 
-/* Grid columns: Policy name + chip | Status | When | Duration | Tokens */
+/* Grid columns: Policy name + chip | Status | When | Duration | Tokens | Actions */
 .row {
   display: grid;
-  grid-template-columns: 1fr 120px 96px 70px 58px;
+  grid-template-columns: 1fr 120px 96px 70px 58px 32px;
   align-items: center;
   gap: var(--space-4);
   padding: var(--space-2) var(--space-4);
@@ -123,4 +123,30 @@
 .mono {
   font-family: var(--font-mono);
   color: var(--text-second);
+}
+
+.colActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.playBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid var(--border-mid);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.playBtn:hover {
+  border-color: var(--color-green);
+  color: var(--color-green);
 }

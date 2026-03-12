@@ -76,6 +76,8 @@ export function yamlToFormState(yaml: string): FormState | null {
       type: 'cron',
       schedule: typeof triggerRaw.schedule === 'string' ? triggerRaw.schedule : '',
     }
+  } else if (triggerType === 'manual') {
+    trigger = { type: 'manual' }
   } else if (triggerType === 'poll') {
     const reqRaw = triggerRaw.request && typeof triggerRaw.request === 'object' && !Array.isArray(triggerRaw.request)
       ? (triggerRaw.request as Record<string, unknown>)
@@ -226,6 +228,8 @@ export function formStateToYaml(state: FormState): string {
   let triggerObj: Record<string, unknown>
   if (trigger.type === 'cron') {
     triggerObj = { type: 'cron', schedule: trigger.schedule }
+  } else if (trigger.type === 'manual') {
+    triggerObj = { type: 'manual' }
   } else if (trigger.type === 'poll') {
     // Parse headers textarea back to object
     const headersObj: Record<string, string> = {}

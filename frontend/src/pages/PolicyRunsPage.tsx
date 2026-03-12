@@ -1,4 +1,5 @@
-import { Link } from 'react-router-dom'
+import { useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { usePolicy } from '@/hooks/usePolicy'
@@ -7,6 +8,7 @@ import SkeletonBlock from '@/components/SkeletonBlock/SkeletonBlock'
 import EmptyState from '@/components/EmptyState/EmptyState'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'
 import { TriggerChip } from '@/components/dashboard/TriggerChip'
+import { TriggerRunModal } from '@/components/TriggerRunModal/TriggerRunModal'
 import type { RunStatus, TriggerType } from '@/components/dashboard/types'
 import { fmtRel, fmtTok, fmtDur } from '@/components/dashboard/styles'
 import type { ApiRun } from '@/api/types'
@@ -15,7 +17,7 @@ import styles from './PolicyRunsPage.module.css'
 const KNOWN_STATUSES = new Set<string>([
   'complete', 'running', 'waiting_for_approval', 'failed', 'interrupted', 'pending',
 ])
-const KNOWN_TRIGGERS = new Set<string>(['webhook', 'cron', 'poll'])
+const KNOWN_TRIGGERS = new Set<string>(['webhook', 'cron', 'poll', 'manual'])
 
 function computeDuration(run: ApiRun): number | null {
   if (!run.completed_at) return null
@@ -27,8 +29,10 @@ function computeDuration(run: ApiRun): number | null {
 export default function PolicyRunsPage() {
   const { id } = useParams<{ id: string }>()
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const { data: policy } = usePolicy(id)
   const { data: runs, status: runsStatus } = usePolicyRuns(id)
+  const [showTriggerModal, setShowTriggerModal] = useState(false)
 
   const heading = policy?.name ?? id ?? '...'
 
@@ -113,11 +117,32 @@ export default function PolicyRunsPage() {
           </Link>
           <h1 className={styles.title}>{heading}</h1>
         </div>
-        <Link to={`/policies/${id}`} className={styles.editLink}>
-          Edit policy
-        </Link>
+        <div className={styles.headerActions}>
+          <button
+            className={styles.playBtn}
+            onClick={() => setShowTriggerModal(true)}
+            title="Run now"
+            aria-label="Run policy now"
+          >
+            ▶ Run now
+          </button>
+          <Link to={`/policies/${id}`} className={styles.editLink}>
+            Edit policy
+          </Link>
+        </div>
       </div>
       {renderContent()}
+      {showTriggerModal && id && (
+        <TriggerRunModal
+          policyId={id}
+          policyName={heading}
+          onClose={() => setShowTriggerModal(false)}
+          onSuccess={(runId) => {
+            setShowTriggerModal(false)
+            navigate(`/runs/${runId}`)
+          }}
+        />
+      )}
     </div>
   )
 }
