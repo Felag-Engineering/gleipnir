@@ -229,6 +229,7 @@ type ActuatorCapability struct {
 
 // AgentConfig holds the prompt fields and runtime limits for an agent run.
 type AgentConfig struct {
+	Model       string
 	Preamble    string
 	Task        string
 	Limits      RunLimits

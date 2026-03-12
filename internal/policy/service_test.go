@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/rapp992/gleipnir/internal/db"
@@ -15,6 +16,15 @@ type stubLookup struct {
 
 func (s *stubLookup) ToolExists(_ context.Context, serverName, toolName string) (bool, error) {
 	return s.existing[serverName+"."+toolName], nil
+}
+
+// stubModelValidator implements ModelValidator for testing.
+type stubModelValidator struct {
+	err error // if non-nil, ValidateModel returns this error
+}
+
+func (s *stubModelValidator) ValidateModel(_ context.Context, _ string) error {
+	return s.err
 }
 
 func newTestStore(t *testing.T) *db.Store {
@@ -43,7 +53,7 @@ agent:
 
 func TestService_Create(t *testing.T) {
 	store := newTestStore(t)
-	svc := NewService(store, nil)
+	svc := NewService(store, nil, nil)
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -65,7 +75,7 @@ func TestService_Create(t *testing.T) {
 
 func TestService_Create_ValidationError(t *testing.T) {
 	store := newTestStore(t)
-	svc := NewService(store, nil)
+	svc := NewService(store, nil, nil)
 
 	_, err := svc.Create(context.Background(), `name: ""`)
 	if err == nil {
@@ -75,7 +85,7 @@ func TestService_Create_ValidationError(t *testing.T) {
 
 func TestService_Create_ParseError(t *testing.T) {
 	store := newTestStore(t)
-	svc := NewService(store, nil)
+	svc := NewService(store, nil, nil)
 
 	_, err := svc.Create(context.Background(), "{{bad yaml")
 	if err == nil {
@@ -86,7 +96,7 @@ func TestService_Create_ParseError(t *testing.T) {
 func TestService_Create_ToolWarnings(t *testing.T) {
 	store := newTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{}}
-	svc := NewService(store, lookup)
+	svc := NewService(store, lookup, nil)
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -103,7 +113,7 @@ func TestService_Create_ToolWarnings(t *testing.T) {
 func TestService_Create_NoWarningWhenToolExists(t *testing.T) {
 	store := newTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{"github.list_repos": true}}
-	svc := NewService(store, lookup)
+	svc := NewService(store, lookup, nil)
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -116,7 +126,7 @@ func TestService_Create_NoWarningWhenToolExists(t *testing.T) {
 
 func TestService_Update(t *testing.T) {
 	store := newTestStore(t)
-	svc := NewService(store, nil)
+	svc := NewService(store, nil, nil)
 
 	createResult, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -145,7 +155,7 @@ agent:
 
 func TestService_Update_ChangedTriggerType(t *testing.T) {
 	store := newTestStore(t)
-	svc := NewService(store, nil)
+	svc := NewService(store, nil, nil)
 
 	createResult, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -184,7 +194,7 @@ func TestService_Create_ContextCancelled(t *testing.T) {
 
 	store := newTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{}}
-	svc := NewService(store, lookup)
+	svc := NewService(store, lookup, nil)
 
 	// Parse + validate don't use context, so we test checkToolRefs directly.
 	yamlWithManyTools := `
@@ -209,5 +219,47 @@ agent:
 	}
 	if warnings[0] == "" {
 		t.Error("expected non-empty warning")
+	}
+}
+
+func TestService_Create_ModelValidatorCalled(t *testing.T) {
+	store := newTestStore(t)
+	mv := &stubModelValidator{err: errors.New("model not found")}
+	svc := NewService(store, nil, mv)
+
+	_, err := svc.Create(context.Background(), validYAML)
+	if err == nil {
+		t.Fatal("expected error from model validator, got nil")
+	}
+}
+
+func TestService_Create_NilModelValidatorSkipsCheck(t *testing.T) {
+	store := newTestStore(t)
+	svc := NewService(store, nil, nil)
+
+	result, err := svc.Create(context.Background(), validYAML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Policy.ID == "" {
+		t.Error("expected non-empty policy ID")
+	}
+}
+
+func TestService_Update_ModelValidatorCalled(t *testing.T) {
+	store := newTestStore(t)
+	svc := NewService(store, nil, nil)
+
+	createResult, err := svc.Create(context.Background(), validYAML)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	mv := &stubModelValidator{err: errors.New("model not found")}
+	svcWithMV := NewService(store, nil, mv)
+
+	_, err = svcWithMV.Update(context.Background(), createResult.Policy.ID, validYAML)
+	if err == nil {
+		t.Fatal("expected error from model validator on update, got nil")
 	}
 }

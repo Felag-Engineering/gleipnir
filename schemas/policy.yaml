@@ -153,6 +153,15 @@ capabilities:
 
 agent:
 
+  # model: string — optional, default: claude-sonnet-4-6
+  #   The Claude model the agent will use for this policy.
+  #   Supported values:
+  #     claude-opus-4-6           — most capable, highest cost
+  #     claude-sonnet-4-6         — balanced capability and cost (default)
+  #     claude-haiku-4-5-20251001 — fastest, lowest cost
+  #   Validated against the Anthropic API at save time.
+  model: claude-sonnet-4-6
+
   # preamble: multiline string — optional
   #   Behavioral instructions for the agent. Operator-editable.
   #   If absent, the Gleipnir default BoundAgent preamble is used (ADR-012).

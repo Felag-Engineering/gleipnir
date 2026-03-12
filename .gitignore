@@ -8,3 +8,4 @@ frontend/dist
 previewConfig.json
 *storybook.log
 storybook-static
+node_modules

@@ -39,6 +39,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-020 | Policy folders for UI grouping                    | 🟢 Decided    | v0.1   | Policy YAML schema, frontend dashboard               |
 | ADR-021 | MCP discovery diffs                               | 🟢 Decided    | v0.1   | MCP discovery endpoint, frontend                     |
 | ADR-022 | Transport-level fake for Anthropic API in tests   | ⬜ Deferred   | v0.1   | agent package, integration tests                     |
+| ADR-023 | Per-policy model selection                         | 🟢 Decided    | v0.1   | Policy schema, agent runtime, capability snapshot    |
 
 ---
 
@@ -478,6 +479,34 @@ from `WebhookHandler`; `agent.Config.MessagesOverride` is the remaining field to
 **Consequence:** `agent.Config.MessagesOverride` and `integrationFakeMessages` to be removed
 when the transport fake is implemented. `agent_test.go` and `integration_test.go` both move
 to the transport fake.
+
+---
+
+## ADR-023: Per-policy model selection
+
+**Status:** Decided
+**Date:** 2026-03
+
+**Decision:** Policies may declare an optional `agent.model` field selecting which Claude model
+the agent uses. If omitted, the default is `claude-sonnet-4-6`. The field is validated at save
+time against a local allowlist of three known model IDs, with an additional blocking API-level
+check via `client.Models.Get`. The selected model is recorded in the capability snapshot
+(alongside the tool list) so every run's audit trail captures the exact model used.
+
+**Supported models:** `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`.
+
+**Rejected alternative:** Storing a system-wide default model in server config. Per-policy
+selection gives operators the ability to match model capability to task complexity without
+centralizing the decision.
+
+**Consequences:**
+- `internal/model.AgentConfig` gains a `Model string` field.
+- `internal/policy` gains a `ModelValidator` interface and `AnthropicModelValidator` implementation.
+- `internal/policy.NewService` signature updated to accept `ModelValidator` as a third argument.
+- `internal/agent`: `MessageNewParams.Model` uses `anthropic.Model(a.policy.Agent.Model)` instead of
+  the hardcoded `anthropic.ModelClaudeSonnet4_6` constant.
+- Capability snapshot content shape changes from `[]GrantedTool` to `{model string, tools []GrantedTool}`.
+  Frontend handles both shapes for backward compatibility with snapshots written before this change.
 
 ---
 

@@ -72,7 +72,7 @@ func run() error {
 	r.Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)
 	r.Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
 
-	policySvc := policy.NewService(store, nil)
+	policySvc := policy.NewService(store, nil, policy.NewAnthropicModelValidator(&claudeClient))
 
 	// Mount /api/v1/policies and /api/v1/mcp route groups.
 	// Existing /api/v1/webhooks/ and /api/v1/runs/ routes remain on this root router.

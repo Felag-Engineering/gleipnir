@@ -36,7 +36,7 @@ export function StepCard({ step, toolRoleMap }: Props) {
   }
 
   if (step.type === 'tool_call') {
-    const role = toolRoleMap.get(step.content.tool_name) ?? 'sensor'
+    const role = toolRoleMap.get(`${step.content.server_id}.${step.content.tool_name}`) ?? 'sensor'
     const isActuator = role === 'actuator'
     return (
       <div className={styles.card}>

@@ -12,7 +12,7 @@ import {
   parseStep,
 } from '@/components/RunDetail'
 import type { FilterKey } from '@/components/RunDetail'
-import type { ParsedStep, CapabilitySnapshotContent, GrantedToolEntry } from '@/components/RunDetail/types'
+import type { ParsedStep, CapabilitySnapshotContent, CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
 import styles from './RunDetailPage.module.css'
 
 const PAGE_SIZE = 50
@@ -33,15 +33,17 @@ export default function RunDetailPage() {
   // Parse all steps once
   const allParsed: ParsedStep[] = rawSteps.map(parseStep)
 
-  // Build tool role map from capability_snapshot steps
+  // Build tool role map from capability_snapshot steps. Handles both the
+  // legacy array shape (pre-ADR-023) and the V2 object shape { model, tools }.
   const toolRoleMap = new Map<string, GrantedToolEntry['Role']>()
   for (const step of allParsed) {
     if (step.type === 'capability_snapshot') {
-      const entries = step.content as CapabilitySnapshotContent
-      if (Array.isArray(entries)) {
-        for (const entry of entries) {
-          toolRoleMap.set(`${entry.ServerName}.${entry.ToolName}`, entry.Role)
-        }
+      const raw = step.content as CapabilitySnapshotContent
+      const tools: GrantedToolEntry[] = Array.isArray(raw)
+        ? raw
+        : (raw as CapabilitySnapshotV2).tools ?? []
+      for (const entry of tools) {
+        toolRoleMap.set(`${entry.ServerName}.${entry.ToolName}`, entry.Role)
       }
     }
   }

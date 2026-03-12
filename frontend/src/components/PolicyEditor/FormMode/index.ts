@@ -16,6 +16,9 @@ export type { RunLimitsSectionProps } from './RunLimitsSection';
 export { ConcurrencySection } from './ConcurrencySection';
 export type { ConcurrencySectionProps } from './ConcurrencySection';
 
+export { ModelSection } from './ModelSection';
+export type { ModelSectionProps } from './ModelSection';
+
 export type {
   IdentityFormState,
   TriggerType,
@@ -29,4 +32,6 @@ export type {
   RunLimitsFormState,
   ConcurrencyValue,
   ConcurrencyFormState,
+  ModelValue,
+  ModelFormState,
 } from './types';

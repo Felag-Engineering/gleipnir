@@ -139,11 +139,24 @@ func validateCapabilities(c model.CapabilitiesConfig) []string {
 	return errs
 }
 
+// knownModels is the set of Claude model IDs supported by Gleipnir.
+// Validation uses a local allowlist so callers get fast feedback without
+// needing an API key. Update this list when new models are supported.
+var knownModels = map[string]bool{
+	"claude-opus-4-6":           true,
+	"claude-sonnet-4-6":         true,
+	"claude-haiku-4-5-20251001": true,
+}
+
 // validateAgent checks agent config and cross-validates against capabilities.
 // Specifically: replace concurrency is not valid if any actuator has
 // approval: required (the in-flight run cannot be safely cancelled mid-approval).
 func validateAgent(a model.AgentConfig, c model.CapabilitiesConfig) []string {
 	var errs []string
+
+	if a.Model != "" && !knownModels[a.Model] {
+		errs = append(errs, fmt.Sprintf("agent.model %q is not a supported model; must be one of: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5-20251001", a.Model))
+	}
 
 	if a.Task == "" {
 		errs = append(errs, "agent.task is required")

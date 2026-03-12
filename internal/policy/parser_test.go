@@ -251,6 +251,47 @@ agent:
 	}
 }
 
+func TestParse_ModelDefault(t *testing.T) {
+	raw := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  sensors:
+    - tool: s.t
+agent:
+  task: do it
+`
+	p, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Agent.Model != defaultModel {
+		t.Errorf("model = %q, want %q", p.Agent.Model, defaultModel)
+	}
+}
+
+func TestParse_ModelExplicit(t *testing.T) {
+	raw := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  sensors:
+    - tool: s.t
+agent:
+  task: do it
+  model: claude-opus-4-6
+`
+	p, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Agent.Model != "claude-opus-4-6" {
+		t.Errorf("model = %q, want %q", p.Agent.Model, "claude-opus-4-6")
+	}
+}
+
 func TestParse_InvalidYAML(t *testing.T) {
 	_, err := Parse("{{bad yaml")
 	if err == nil {

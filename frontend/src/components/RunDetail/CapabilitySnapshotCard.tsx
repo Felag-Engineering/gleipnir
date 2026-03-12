@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { CapabilitySnapshotContent } from './types'
+import type { CapabilitySnapshotContent, CapabilitySnapshotV2, GrantedToolEntry } from './types'
 import styles from './CapabilitySnapshotCard.module.css'
 
 interface Props {
@@ -8,8 +8,12 @@ interface Props {
 
 export function CapabilitySnapshotCard({ content }: Props) {
   const [expanded, setExpanded] = useState(false)
-  const tools = Array.isArray(content) ? content : []
-  const count = tools.length
+
+  // Support both the legacy array shape (pre-ADR-023) and the V2 object shape.
+  const isV2 = !Array.isArray(content) && content !== null && typeof content === 'object'
+  const tools = isV2 ? (content as CapabilitySnapshotV2).tools : (content as GrantedToolEntry[])
+  const modelName = isV2 ? (content as CapabilitySnapshotV2).model : undefined
+  const count = tools?.length ?? 0
 
   return (
     <div className={styles.card}>
@@ -21,7 +25,7 @@ export function CapabilitySnapshotCard({ content }: Props) {
       >
         <span className={styles.icon}>⚙</span>
         <span className={styles.label}>
-          Capability snapshot — {count} tool{count === 1 ? '' : 's'}
+          Capability snapshot — {count} tool{count === 1 ? '' : 's'}{modelName ? ` · ${modelName}` : ''}
         </span>
         <span className={styles.chevron}>{expanded ? '▲' : '▼'}</span>
       </button>

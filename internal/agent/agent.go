@@ -225,13 +225,24 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		anthropicTools = append(anthropicTools, tool)
 	}
 
+	// capabilitySnapshot is the content written to the capability_snapshot step (ADR-018).
+	// Including the model alongside tools makes the snapshot a complete record of
+	// the agent's configuration at run start.
+	type capabilitySnapshot struct {
+		Model string             `json:"model"`
+		Tools []model.GrantedTool `json:"tools"`
+	}
+
 	// Write capability snapshot step (ADR-018) — always the first step.
 	// Use context.Background() so this initialization step always lands, even if
 	// the caller's context was already cancelled before Run was entered.
 	if err := a.audit.Write(context.Background(), Step{
-		RunID:   runID,
-		Type:    model.StepTypeCapabilitySnapshot,
-		Content: grantedTools,
+		RunID: runID,
+		Type:  model.StepTypeCapabilitySnapshot,
+		Content: capabilitySnapshot{
+			Model: a.policy.Agent.Model,
+			Tools: grantedTools,
+		},
 	}); err != nil {
 		return a.failRun(ctx, fmt.Errorf("writing capability snapshot: %w", err))
 	}
@@ -282,7 +293,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		}
 
 		resp, err := a.messages.New(ctx, anthropic.MessageNewParams{
-			Model:     anthropic.ModelClaudeSonnet4_6,
+			Model:     anthropic.Model(a.policy.Agent.Model),
 			MaxTokens: maxTokens,
 			System:    []anthropic.TextBlockParam{{Text: systemPrompt}},
 			Messages:  history,

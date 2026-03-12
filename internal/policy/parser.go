@@ -13,6 +13,7 @@ import (
 const (
 	defaultMaxTokensPerRun    = 20000
 	defaultMaxToolCallsPerRun = 50
+	defaultModel              = "claude-sonnet-4-6"
 )
 
 // ParseError wraps a YAML decode failure so callers can distinguish malformed
@@ -117,11 +118,17 @@ func convertCapabilities(r rawCapabilities) model.CapabilitiesConfig {
 }
 
 // convertAgent maps raw YAML agent config to typed AgentConfig.
-// Defaults: max_tokens_per_run → 20000, max_tool_calls_per_run → 50, concurrency → skip.
+// Defaults: model → claude-sonnet-4-6, max_tokens_per_run → 20000, max_tool_calls_per_run → 50, concurrency → skip.
 func convertAgent(r rawAgent) model.AgentConfig {
 	ac := model.AgentConfig{
 		Preamble: strings.TrimSpace(r.Preamble),
 		Task:     strings.TrimSpace(r.Task),
+	}
+
+	if r.Model == "" {
+		ac.Model = defaultModel
+	} else {
+		ac.Model = r.Model
 	}
 
 	ac.Limits.MaxTokensPerRun = r.Limits.MaxTokensPerRun
@@ -187,6 +194,7 @@ type rawActuator struct {
 }
 
 type rawAgent struct {
+	Model       string    `yaml:"model"`
 	Preamble    string    `yaml:"preamble"`
 	Task        string    `yaml:"task"`
 	Limits      rawLimits `yaml:"limits"`

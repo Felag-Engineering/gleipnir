@@ -45,7 +45,14 @@ export interface GrantedToolEntry {
   OnTimeout: string
 }
 
-export type CapabilitySnapshotContent = GrantedToolEntry[]
+// CapabilitySnapshotV2 is the shape written by agent runs after ADR-023.
+// Older snapshots written before this change are plain GrantedToolEntry arrays.
+export interface CapabilitySnapshotV2 {
+  model: string;
+  tools: GrantedToolEntry[];
+}
+
+export type CapabilitySnapshotContent = GrantedToolEntry[] | CapabilitySnapshotV2
 
 export interface ApprovalRequestContent {
   tool: string

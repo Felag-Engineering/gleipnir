@@ -8,6 +8,7 @@ import { CapabilitiesSection } from '@/components/PolicyEditor/FormMode/Capabili
 import { TaskInstructionsSection } from '@/components/PolicyEditor/FormMode/TaskInstructionsSection'
 import { RunLimitsSection } from '@/components/PolicyEditor/FormMode/RunLimitsSection'
 import { ConcurrencySection } from '@/components/PolicyEditor/FormMode/ConcurrencySection'
+import { ModelSection } from '@/components/PolicyEditor/FormMode/ModelSection'
 import { usePolicy } from '@/hooks/usePolicy'
 import { useSavePolicy } from '@/hooks/useSavePolicy'
 import { useDeletePolicy } from '@/hooks/useDeletePolicy'
@@ -186,6 +187,10 @@ export function PolicyEditorPage() {
             <TaskInstructionsSection
               value={formState.task}
               onChange={v => handleFormChange({ task: v })}
+            />
+            <ModelSection
+              value={formState.model}
+              onChange={v => handleFormChange({ model: v })}
             />
             <RunLimitsSection
               value={formState.limits}

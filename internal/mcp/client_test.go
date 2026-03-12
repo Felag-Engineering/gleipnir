@@ -111,12 +111,25 @@ func TestDiscoverTools_ContextCancellation(t *testing.T) {
 
 func TestCallTool_HappyPath(t *testing.T) {
 	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
-		// Verify request body contains the tool name and arguments.
 		var req map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad request body", http.StatusBadRequest)
 			return
 		}
+
+		// CallTool performs the MCP handshake before the actual tool call.
+		// Route on method so initialize and notifications/initialized succeed.
+		method, _ := req["method"].(string)
+		switch method {
+		case "initialize":
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": "2024-11-05"}})
+			return
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Verify the tool call contains the expected tool name.
 		params, _ := req["params"].(map[string]any)
 		if params["name"] != "my-tool" {
 			http.Error(w, "wrong tool name", http.StatusBadRequest)

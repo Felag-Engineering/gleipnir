@@ -4,6 +4,8 @@ import type {
   ConcurrencyFormState,
   ConcurrencyValue,
   IdentityFormState,
+  ModelFormState,
+  ModelValue,
   RunLimitsFormState,
   TaskInstructionsFormState,
   TriggerFormState,
@@ -16,6 +18,7 @@ export interface FormState {
   task: TaskInstructionsFormState
   limits: RunLimitsFormState
   concurrency: ConcurrencyFormState
+  model: ModelFormState
   // Passthrough fields preserved across round-trips but not editable in form UI
   _preamble?: string
   _actuatorExtras?: Record<string, { timeout?: number; on_timeout?: string }>
@@ -190,6 +193,14 @@ export function yamlToFormState(yaml: string): FormState | null {
       : 'skip',
   }
 
+  const validModels: ModelValue[] = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001']
+  const modelRaw = agentRaw.model
+  const model: ModelFormState = {
+    model: validModels.includes(modelRaw as ModelValue)
+      ? (modelRaw as ModelValue)
+      : 'claude-sonnet-4-6',
+  }
+
   const _preamble = typeof agentRaw.preamble === 'string' ? agentRaw.preamble : undefined
   const _feedbackCapabilities = Array.isArray(capsRaw.feedback) ? capsRaw.feedback : undefined
 
@@ -200,6 +211,7 @@ export function yamlToFormState(yaml: string): FormState | null {
     task,
     limits,
     concurrency,
+    model,
     _preamble,
     _actuatorExtras: Object.keys(actuatorExtras).length > 0 ? actuatorExtras : undefined,
     _feedbackCapabilities,
@@ -208,7 +220,7 @@ export function yamlToFormState(yaml: string): FormState | null {
 
 // formStateToYaml serializes FormState back to a YAML string.
 export function formStateToYaml(state: FormState): string {
-  const { identity, trigger, capabilities, task, limits, concurrency } = state
+  const { identity, trigger, capabilities, task, limits, concurrency, model } = state
 
   // Build trigger object
   let triggerObj: Record<string, unknown>
@@ -269,6 +281,7 @@ export function formStateToYaml(state: FormState): string {
   // Build agent block
   const agentObj: Record<string, unknown> = {}
   if (state._preamble !== undefined) agentObj.preamble = state._preamble
+  agentObj.model = model.model
   agentObj.task = task.task
   agentObj.limits = {
     max_tokens_per_run: limits.max_tokens_per_run,
