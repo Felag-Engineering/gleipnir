@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -143,6 +145,59 @@ func makeResolvedTool(serverURL, serverName, toolName string) mcp.ResolvedTool {
 	}
 }
 
+func TestSanitizeToolName(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "dot_separator_replaced",
+			input: "my-server.tool_name",
+			want:  "my-server_tool_name",
+		},
+		{
+			name:  "multiple_dots_replaced",
+			input: "server.tool.with.many.dots",
+			want:  "server_tool_with_many_dots",
+		},
+		{
+			name:  "already_valid_unchanged",
+			input: "already_valid-name",
+			want:  "already_valid-name",
+		},
+		{
+			name:  "spaces_replaced",
+			input: "server name with spaces",
+			want:  "server_name_with_spaces",
+		},
+		{
+			name:  "truncated_to_128_chars",
+			input: strings.Repeat("a", 200),
+			want:  strings.Repeat("a", 128),
+		},
+		{
+			name:  "empty_string",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "all_invalid_chars",
+			input: "...",
+			want:  "___",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeToolName(tc.input)
+			if got != tc.want {
+				t.Errorf("sanitizeToolName(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNew_RequiresStateMachine(t *testing.T) {
 	_, err := New(Config{
 		Policy:           minimalPolicy(),
@@ -176,7 +231,7 @@ func TestHandleToolCall(t *testing.T) {
 				srv := makeToolCallServer(t, successContent, false)
 				return []mcp.ResolvedTool{makeResolvedTool(srv.URL, "myserver", "read_data")}
 			},
-			toolName:     "myserver.read_data",
+			toolName:     "myserver_read_data", // sanitized form as Claude returns it
 			input:        map[string]any{},
 			wantNonEmpty: true,
 			wantIsError:  false,
@@ -190,7 +245,7 @@ func TestHandleToolCall(t *testing.T) {
 				srv := makeToolCallServer(t, errorContent, true)
 				return []mcp.ResolvedTool{makeResolvedTool(srv.URL, "myserver", "failing_tool")}
 			},
-			toolName:     "myserver.failing_tool",
+			toolName:     "myserver_failing_tool", // sanitized form as Claude returns it
 			input:        map[string]any{},
 			wantNonEmpty: true,
 			wantIsError:  true,
@@ -206,7 +261,7 @@ func TestHandleToolCall(t *testing.T) {
 				t.Cleanup(srv.Close)
 				return []mcp.ResolvedTool{makeResolvedTool(srv.URL, "myserver", "unreliable_tool")}
 			},
-			toolName:     "myserver.unreliable_tool",
+			toolName:     "myserver_unreliable_tool", // sanitized form as Claude returns it
 			input:        map[string]any{},
 			wantNonEmpty: false,
 			wantErr:      true,
@@ -217,7 +272,7 @@ func TestHandleToolCall(t *testing.T) {
 			setupTools: func(t *testing.T) []mcp.ResolvedTool {
 				return []mcp.ResolvedTool{} // no tools registered
 			},
-			toolName:     "myserver.missing_tool",
+			toolName:     "myserver_missing_tool", // sanitized form as Claude returns it
 			input:        map[string]any{},
 			wantNonEmpty: false,
 			wantErr:      true,
@@ -229,7 +284,7 @@ func TestHandleToolCall(t *testing.T) {
 				srv := makeToolCallServer(t, successContent, false)
 				return []mcp.ResolvedTool{makeResolvedTool(srv.URL, "myserver", "read_data")}
 			},
-			toolName:     "myserver.read_data",
+			toolName:     "myserver_read_data", // sanitized form as Claude returns it
 			input:        map[string]any{},
 			wantNonEmpty: false,
 			wantErr:      true,
@@ -448,7 +503,7 @@ func TestRun_ToolCallLoop(t *testing.T) {
 	tools := []mcp.ResolvedTool{sensorToolForRun(mcpSrv.URL, "my-server", "read_data")}
 
 	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server.read_data", map[string]any{"arg": "x"}, 10, 5),
+		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"arg": "x"}, 10, 5),
 		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
 	}}
 
@@ -622,7 +677,7 @@ func TestRun_ToolNotFound(t *testing.T) {
 
 	// No tools registered, but response asks for one.
 	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "missing-server.nonexistent", map[string]any{}, 10, 5),
+		makeToolUseMessage("tu-1", "missing-server_nonexistent", map[string]any{}, 10, 5),
 	}}
 
 	w := NewAuditWriter(s.Queries)
@@ -678,7 +733,7 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 	// the budget is exhausted before making another API call.
 	mcpSrv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"tool output"}]`), false)
 	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server.read_data", map[string]any{}, 600, 400),
+		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 600, 400),
 		// This second response should never be reached.
 		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
 	}}
@@ -794,7 +849,7 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 	tools := []mcp.ResolvedTool{sensorToolForRun(fakeSrv.URL, "my-server", "read_data")}
 
 	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server.read_data", map[string]any{"badkey": "val"}, 10, 5),
+		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"badkey": "val"}, 10, 5),
 	}}
 
 	w := NewAuditWriter(s.Queries)
@@ -866,7 +921,7 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 	}
 
 	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server.do_thing", map[string]any{"arg": "v"}, 10, 5),
+		makeToolUseMessage("tu-1", "my-server_do_thing", map[string]any{"arg": "v"}, 10, 5),
 	}}
 
 	w := NewAuditWriter(s.Queries)
@@ -915,7 +970,17 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 func TestRun_ToolCallCapExceeded(t *testing.T) {
 	var mcpCallCount int
 	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mcpCallCount++
+		// Only count actual tools/call requests, not MCP initialization handshake
+		// requests (initialize, notifications/initialized) which are sent by the
+		// MCP client on every CallTool invocation.
+		var req map[string]any
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if err := json.Unmarshal(body, &req); err == nil {
+			if method, _ := req["method"].(string); method == "tools/call" {
+				mcpCallCount++
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
 			"jsonrpc": "2.0",
@@ -935,8 +1000,8 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 	// With MaxToolCallsPerRun=1: first tool call (totalToolCalls=1, 1>1=false) proceeds.
 	// Second response triggers the cap (totalToolCalls=2, 2>1=true) before dispatch.
 	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server.read_data", map[string]any{}, 10, 5),
-		makeToolUseMessage("tu-2", "my-server.read_data", map[string]any{}, 10, 5),
+		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5),
+		makeToolUseMessage("tu-2", "my-server_read_data", map[string]any{}, 10, 5),
 		// Third response should never be reached.
 		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
 	}}
@@ -1008,7 +1073,7 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 
 	// One tool call well within limits.
 	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server.read_data", map[string]any{}, 10, 5),
+		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5),
 		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
 	}}
 	tools := []mcp.ResolvedTool{{
@@ -1223,7 +1288,7 @@ func TestRun_Cancellation(t *testing.T) {
 		// fakeMessages returns a tool_use response on the first call, directing
 		// the agent to call the slow MCP server.
 		msgs := &fakeMessages{responses: []*anthropic.Message{
-			makeToolUseMessage("tu-1", "slow-server.slow_tool", map[string]any{}, 10, 5),
+			makeToolUseMessage("tu-1", "slow-server_slow_tool", map[string]any{}, 10, 5),
 		}}
 
 		tools := []mcp.ResolvedTool{sensorToolForRun(slowSrv.URL, "slow-server", "slow_tool")}

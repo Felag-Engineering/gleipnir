@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -29,6 +30,22 @@ type resolvedToolEntry struct {
 	narrowedSchema json.RawMessage
 }
 
+// sanitizeToolName replaces any character outside [a-zA-Z0-9_-] with '_' and
+// truncates to 128 characters. The Claude API rejects tool names containing
+// dots or other special characters, so we must sanitize before registration.
+func sanitizeToolName(name string) string {
+	sanitized := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, name)
+	if len(sanitized) > 128 {
+		sanitized = sanitized[:128]
+	}
+	return sanitized
+}
+
 // BoundAgent executes a single policy run. It owns the Claude API loop,
 // dispatches tool calls to MCP clients, intercepts approval-gated actuators,
 // and writes every step to the audit trail via AuditWriter.
@@ -36,9 +53,13 @@ type BoundAgent struct {
 	policy      *model.ParsedPolicy
 	tools       []mcp.ResolvedTool
 	toolsByName map[string]resolvedToolEntry
-	messages    MessagesAPI
-	audit       *AuditWriter
-	sm          *RunStateMachine
+	// claudeNameToInternal maps sanitized Claude-facing tool names back to the
+	// internal dot-separated names used as keys in toolsByName. Required because
+	// the Claude API rejects tool names containing dots.
+	claudeNameToInternal map[string]string
+	messages             MessagesAPI
+	audit                *AuditWriter
+	sm                   *RunStateMachine
 	// approvalCh receives the operator's decision when a run is suspended
 	// waiting_for_approval. Sent by the approval handler in internal/trigger.
 	approvalCh <-chan bool
@@ -73,8 +94,16 @@ func New(cfg Config) (*BoundAgent, error) {
 	}
 
 	toolsByName := make(map[string]resolvedToolEntry, len(cfg.Tools))
+	claudeNameToInternal := make(map[string]string, len(cfg.Tools))
 	for _, rt := range cfg.Tools {
 		dotName := rt.ServerName + "." + rt.ToolName
+		claudeName := sanitizeToolName(dotName)
+
+		// Detect collisions: two distinct tools that sanitize to the same name.
+		if existing, conflict := claudeNameToInternal[claudeName]; conflict && existing != dotName {
+			return nil, fmt.Errorf("tool name collision after sanitization: %q and %q both become %q", existing, dotName, claudeName)
+		}
+
 		narrowed, err := mcp.NarrowSchema(rt.InputSchema, rt.Params)
 		if err != nil {
 			return nil, fmt.Errorf("narrowing schema for tool %s.%s: %w", rt.ServerName, rt.ToolName, err)
@@ -83,16 +112,18 @@ func New(cfg Config) (*BoundAgent, error) {
 			tool:           rt,
 			narrowedSchema: narrowed,
 		}
+		claudeNameToInternal[claudeName] = dotName
 	}
 
 	return &BoundAgent{
-		policy:      cfg.Policy,
-		tools:       cfg.Tools,
-		toolsByName: toolsByName,
-		messages:    msgs,
-		audit:       cfg.Audit,
-		sm:          cfg.StateMachine,
-		approvalCh:  cfg.ApprovalCh,
+		policy:               cfg.Policy,
+		tools:                cfg.Tools,
+		toolsByName:          toolsByName,
+		claudeNameToInternal: claudeNameToInternal,
+		messages:             msgs,
+		audit:                cfg.Audit,
+		sm:                   cfg.StateMachine,
+		approvalCh:           cfg.ApprovalCh,
 	}, nil
 }
 
@@ -177,13 +208,16 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	systemPrompt := policy.RenderSystemPrompt(a.policy, grantedTools)
 
 	// Build Anthropic tool definitions from narrowed schemas.
+	// Use the sanitized Claude-facing name (dots replaced with underscores) because
+	// the Claude API rejects tool names containing dots.
 	anthropicTools := make([]anthropic.ToolUnionParam, 0, len(a.toolsByName))
 	for dotName, entry := range a.toolsByName {
 		inputSchema, err := buildToolInputSchema(entry.narrowedSchema)
 		if err != nil {
 			return a.failRun(ctx, fmt.Errorf("building tool schema for %s: %w", dotName, err))
 		}
-		tool := anthropic.ToolUnionParamOfTool(inputSchema, dotName)
+		claudeName := sanitizeToolName(dotName)
+		tool := anthropic.ToolUnionParamOfTool(inputSchema, claudeName)
 		// Set description via the OfTool variant directly.
 		if tool.OfTool != nil {
 			tool.OfTool.Description = param.NewOpt(entry.tool.Description)
@@ -358,6 +392,10 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 // For approval-gated actuators it suspends the run and waits for a decision
 // before proceeding. This is the hard runtime guarantee (ADR-001).
 // On error, it writes an error step and returns the error.
+//
+// toolName is the sanitized Claude-facing name returned by the API. It is
+// resolved to the internal dot-separated name via claudeNameToInternal before
+// any audit writes or tool lookups.
 func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/, toolName string, input map[string]any) (string, bool, error) {
 	// Bail early if the context is already cancelled — no steps should be
 	// written and no MCP call should be made.
@@ -365,7 +403,15 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 		return "", false, fmt.Errorf("context cancelled before tool dispatch: %w", err)
 	}
 
-	entry, ok := a.toolsByName[toolName]
+	// Resolve the sanitized Claude-facing name to the internal dot-separated name.
+	internalName, ok := a.claudeNameToInternal[toolName]
+	if !ok {
+		// Fall back to the raw name for the error message so callers can see the
+		// exact name Claude returned.
+		internalName = toolName
+	}
+
+	entry, ok := a.toolsByName[internalName]
 	if !ok {
 		err := fmt.Errorf("tool not found: %s", toolName)
 		_ = a.audit.Write(ctx, Step{
@@ -383,7 +429,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 			Type:    model.StepTypeError,
 			Content: map[string]string{"message": err.Error(), "code": "schema_violation"},
 		})
-		return "", false, fmt.Errorf("schema validation for %s: %w", toolName, err)
+		return "", false, fmt.Errorf("schema validation for %s: %w", internalName, err)
 	}
 
 	// Approval gating for actuators with approval: required.
@@ -391,7 +437,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 		if err := a.audit.Write(ctx, Step{
 			RunID:   runID,
 			Type:    model.StepTypeApprovalRequest,
-			Content: map[string]any{"tool": toolName, "input": input},
+			Content: map[string]any{"tool": internalName, "input": input},
 		}); err != nil {
 			return "", false, fmt.Errorf("writing approval request step: %w", err)
 		}
@@ -409,7 +455,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 		select {
 		case approved := <-a.approvalCh:
 			if !approved {
-				err := fmt.Errorf("tool call %s rejected by operator", toolName)
+				err := fmt.Errorf("tool call %s rejected by operator", internalName)
 				_ = a.audit.Write(ctx, Step{
 					RunID:   runID,
 					Type:    model.StepTypeError,
@@ -421,7 +467,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 			if entry.tool.OnTimeout == model.OnTimeoutApprove {
 				// Proceed with execution on timeout.
 			} else {
-				err := fmt.Errorf("approval timeout for tool %s", toolName)
+				err := fmt.Errorf("approval timeout for tool %s", internalName)
 				_ = a.audit.Write(ctx, Step{
 					RunID:   runID,
 					Type:    model.StepTypeError,
@@ -439,7 +485,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 		RunID: runID,
 		Type:  model.StepTypeToolCall,
 		Content: map[string]any{
-			"tool_name": toolName,
+			"tool_name": internalName,
 			"server_id": entry.tool.ServerName,
 			"input":     input,
 		},
@@ -465,7 +511,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 				Content: map[string]string{"message": err.Error(), "code": "tool_error"},
 			})
 		}
-		return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
+		return "", false, fmt.Errorf("calling tool %s: %w", internalName, err)
 	}
 
 	outputStr := string(result.Output)
@@ -475,7 +521,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 		RunID: runID,
 		Type:  model.StepTypeToolResult,
 		Content: map[string]any{
-			"tool_name": toolName,
+			"tool_name": internalName,
 			"output":    outputStr,
 			"is_error":  result.IsError,
 		},
