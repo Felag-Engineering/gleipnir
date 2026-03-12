@@ -9,10 +9,19 @@ import (
 	"context"
 )
 
+const clearPolicyPausedAt = `-- name: ClearPolicyPausedAt :exec
+UPDATE policies SET paused_at = NULL WHERE id = ?1
+`
+
+func (q *Queries) ClearPolicyPausedAt(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, clearPolicyPausedAt, id)
+	return err
+}
+
 const createPolicy = `-- name: CreatePolicy :one
 INSERT INTO policies (id, name, trigger_type, yaml, created_at, updated_at)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-RETURNING id, name, trigger_type, yaml, created_at, updated_at
+RETURNING id, name, trigger_type, yaml, created_at, updated_at, paused_at
 `
 
 type CreatePolicyParams struct {
@@ -41,6 +50,7 @@ func (q *Queries) CreatePolicy(ctx context.Context, arg CreatePolicyParams) (Pol
 		&i.Yaml,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PausedAt,
 	)
 	return i, err
 }
@@ -55,7 +65,7 @@ func (q *Queries) DeletePolicy(ctx context.Context, id string) error {
 }
 
 const getPolicy = `-- name: GetPolicy :one
-SELECT id, name, trigger_type, yaml, created_at, updated_at FROM policies WHERE id = ?1
+SELECT id, name, trigger_type, yaml, created_at, updated_at, paused_at FROM policies WHERE id = ?1
 `
 
 func (q *Queries) GetPolicy(ctx context.Context, id string) (Policy, error) {
@@ -68,12 +78,13 @@ func (q *Queries) GetPolicy(ctx context.Context, id string) (Policy, error) {
 		&i.Yaml,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PausedAt,
 	)
 	return i, err
 }
 
 const getPolicyByName = `-- name: GetPolicyByName :one
-SELECT id, name, trigger_type, yaml, created_at, updated_at FROM policies WHERE name = ?1
+SELECT id, name, trigger_type, yaml, created_at, updated_at, paused_at FROM policies WHERE name = ?1
 `
 
 func (q *Queries) GetPolicyByName(ctx context.Context, name string) (Policy, error) {
@@ -86,12 +97,48 @@ func (q *Queries) GetPolicyByName(ctx context.Context, name string) (Policy, err
 		&i.Yaml,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PausedAt,
 	)
 	return i, err
 }
 
+const getScheduledActivePolicies = `-- name: GetScheduledActivePolicies :many
+SELECT id, name, trigger_type, yaml, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'scheduled' AND paused_at IS NULL
+`
+
+func (q *Queries) GetScheduledActivePolicies(ctx context.Context) ([]Policy, error) {
+	rows, err := q.db.QueryContext(ctx, getScheduledActivePolicies)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Policy
+	for rows.Next() {
+		var i Policy
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.TriggerType,
+			&i.Yaml,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.PausedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPolicies = `-- name: ListPolicies :many
-SELECT id, name, trigger_type, yaml, created_at, updated_at FROM policies ORDER BY created_at DESC
+SELECT id, name, trigger_type, yaml, created_at, updated_at, paused_at FROM policies ORDER BY created_at DESC
 `
 
 func (q *Queries) ListPolicies(ctx context.Context) ([]Policy, error) {
@@ -110,6 +157,7 @@ func (q *Queries) ListPolicies(ctx context.Context) ([]Policy, error) {
 			&i.Yaml,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.PausedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -132,6 +180,7 @@ SELECT
     p.yaml,
     p.created_at,
     p.updated_at,
+    p.paused_at,
     r.id          AS run_id,
     r.status      AS run_status,
     r.started_at  AS run_started_at,
@@ -153,6 +202,7 @@ type ListPoliciesWithLatestRunRow struct {
 	Yaml         string  `json:"yaml"`
 	CreatedAt    string  `json:"created_at"`
 	UpdatedAt    string  `json:"updated_at"`
+	PausedAt     *string `json:"paused_at"`
 	RunID        *string `json:"run_id"`
 	RunStatus    *string `json:"run_status"`
 	RunStartedAt *string `json:"run_started_at"`
@@ -175,6 +225,7 @@ func (q *Queries) ListPoliciesWithLatestRun(ctx context.Context) ([]ListPolicies
 			&i.Yaml,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.PausedAt,
 			&i.RunID,
 			&i.RunStatus,
 			&i.RunStartedAt,
@@ -193,11 +244,25 @@ func (q *Queries) ListPoliciesWithLatestRun(ctx context.Context) ([]ListPolicies
 	return items, nil
 }
 
+const setPolicyPausedAt = `-- name: SetPolicyPausedAt :exec
+UPDATE policies SET paused_at = ?1 WHERE id = ?2
+`
+
+type SetPolicyPausedAtParams struct {
+	PausedAt *string `json:"paused_at"`
+	ID       string  `json:"id"`
+}
+
+func (q *Queries) SetPolicyPausedAt(ctx context.Context, arg SetPolicyPausedAtParams) error {
+	_, err := q.db.ExecContext(ctx, setPolicyPausedAt, arg.PausedAt, arg.ID)
+	return err
+}
+
 const updatePolicy = `-- name: UpdatePolicy :one
 UPDATE policies
 SET name = ?1, trigger_type = ?2, yaml = ?3, updated_at = ?4
 WHERE id = ?5
-RETURNING id, name, trigger_type, yaml, created_at, updated_at
+RETURNING id, name, trigger_type, yaml, created_at, updated_at, paused_at
 `
 
 type UpdatePolicyParams struct {
@@ -224,6 +289,7 @@ func (q *Queries) UpdatePolicy(ctx context.Context, arg UpdatePolicyParams) (Pol
 		&i.Yaml,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PausedAt,
 	)
 	return i, err
 }

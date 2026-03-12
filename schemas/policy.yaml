@@ -35,7 +35,7 @@ folder: string
 
 trigger:
 
-  # type: webhook | cron | poll | manual — required
+  # type: webhook | cron | poll | manual | scheduled — required
   type: webhook
 
 
@@ -45,6 +45,16 @@ trigger:
   #   POST /api/v1/webhooks/:policy_id
   # The request body (any JSON) becomes the trigger payload, delivered to
   # the agent as the first user message.
+
+
+  # --- scheduled ---
+  # fire_at: list of strings — required for scheduled
+  #   ISO-8601 UTC timestamps at which the policy should fire exactly once.
+  #   The runtime pops each timestamp as it fires a run. When all timestamps
+  #   are consumed the policy is automatically paused (paused_at is set).
+  #   Example: ["2026-06-01T09:00:00Z", "2026-07-01T09:00:00Z"]
+  fire_at:
+    - "2026-06-01T09:00:00Z"
 
 
   # --- cron ---

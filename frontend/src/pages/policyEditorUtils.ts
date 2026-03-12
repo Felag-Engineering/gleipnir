@@ -78,6 +78,12 @@ export function yamlToFormState(yaml: string): FormState | null {
     }
   } else if (triggerType === 'manual') {
     trigger = { type: 'manual' }
+  } else if (triggerType === 'scheduled') {
+    const fireAtRaw = Array.isArray(triggerRaw.fire_at) ? triggerRaw.fire_at : []
+    trigger = {
+      type: 'scheduled',
+      fireAt: fireAtRaw.filter((v: unknown) => typeof v === 'string') as string[],
+    }
   } else if (triggerType === 'poll') {
     const reqRaw = triggerRaw.request && typeof triggerRaw.request === 'object' && !Array.isArray(triggerRaw.request)
       ? (triggerRaw.request as Record<string, unknown>)
@@ -230,6 +236,8 @@ export function formStateToYaml(state: FormState): string {
     triggerObj = { type: 'cron', schedule: trigger.schedule }
   } else if (trigger.type === 'manual') {
     triggerObj = { type: 'manual' }
+  } else if (trigger.type === 'scheduled') {
+    triggerObj = { type: 'scheduled', fire_at: trigger.fireAt }
   } else if (trigger.type === 'poll') {
     // Parse headers textarea back to object
     const headersObj: Record<string, string> = {}

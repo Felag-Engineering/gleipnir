@@ -3,6 +3,7 @@ package policy
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -257,6 +258,22 @@ func TestValidate_EmptyModelPassesAllowlist(t *testing.T) {
 	if err := Validate(p); err != nil {
 		t.Errorf("expected valid for empty model, got: %v", err)
 	}
+}
+
+func TestValidate_ScheduledTriggerValid(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypeScheduled
+	p.Trigger.FireAt = []time.Time{time.Now().Add(time.Hour)}
+	if err := Validate(p); err != nil {
+		t.Errorf("expected valid scheduled trigger policy, got: %v", err)
+	}
+}
+
+func TestValidate_ScheduledTriggerEmptyFireAt(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypeScheduled
+	p.Trigger.FireAt = nil
+	assertValidationContains(t, p, "trigger.fire_at is required")
 }
 
 func assertValidationContains(t *testing.T, p *model.ParsedPolicy, substr string) {

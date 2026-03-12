@@ -312,6 +312,62 @@ agent:
 	}
 }
 
+func TestParse_ScheduledTrigger(t *testing.T) {
+	raw := `
+name: scheduled-policy
+trigger:
+  type: scheduled
+  fire_at:
+    - "2030-01-01T09:00:00Z"
+    - "2030-06-15T12:00:00Z"
+capabilities:
+  sensors:
+    - tool: s.t
+agent:
+  task: scheduled task
+`
+	p, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Trigger.Type != model.TriggerTypeScheduled {
+		t.Errorf("trigger.type = %q, want %q", p.Trigger.Type, model.TriggerTypeScheduled)
+	}
+	if len(p.Trigger.FireAt) != 2 {
+		t.Fatalf("len(fire_at) = %d, want 2", len(p.Trigger.FireAt))
+	}
+	if p.Trigger.FireAt[0].Year() != 2030 {
+		t.Errorf("fire_at[0].Year = %d, want 2030", p.Trigger.FireAt[0].Year())
+	}
+}
+
+func TestParse_ScheduledTrigger_InvalidTimestampSkipped(t *testing.T) {
+	raw := `
+name: scheduled-policy
+trigger:
+  type: scheduled
+  fire_at:
+    - "2030-01-01T09:00:00Z"
+    - "not-a-timestamp"
+    - "2030-06-15T12:00:00Z"
+capabilities:
+  sensors:
+    - tool: s.t
+agent:
+  task: scheduled task
+`
+	p, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Unparseable entries are silently skipped by the parser.
+	// The validator catches the mismatch between raw YAML count and parsed count
+	// only if that's needed; here we just confirm valid entries are preserved.
+	if len(p.Trigger.FireAt) != 2 {
+		t.Fatalf("len(fire_at) = %d, want 2 (invalid entry should be skipped)", len(p.Trigger.FireAt))
+	}
+}
+
 func TestParse_InvalidYAML(t *testing.T) {
 	_, err := Parse("{{bad yaml")
 	if err == nil {

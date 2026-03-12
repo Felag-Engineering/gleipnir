@@ -41,17 +41,19 @@ type policyListItem struct {
 	Folder      string      `json:"folder"`
 	CreatedAt   string      `json:"created_at"`
 	UpdatedAt   string      `json:"updated_at"`
+	PausedAt    *string     `json:"paused_at"`
 	LatestRun   *runSummary `json:"latest_run"`
 }
 
 type policyDetail struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	TriggerType string `json:"trigger_type"`
-	Folder      string `json:"folder"`
-	YAML        string `json:"yaml"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	TriggerType string  `json:"trigger_type"`
+	Folder      string  `json:"folder"`
+	YAML        string  `json:"yaml"`
+	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
+	PausedAt    *string `json:"paused_at"`
 }
 
 // List handles GET /api/v1/policies.
@@ -71,6 +73,7 @@ func (h *PolicyHandler) List(w http.ResponseWriter, r *http.Request) {
 			Folder:      extractFolder(row.Yaml),
 			CreatedAt:   row.CreatedAt,
 			UpdatedAt:   row.UpdatedAt,
+			PausedAt:    row.PausedAt,
 		}
 
 		// Build latest_run only when the LEFT JOIN matched a run row.
@@ -112,6 +115,7 @@ func (h *PolicyHandler) Get(w http.ResponseWriter, r *http.Request) {
 		YAML:        policy.Yaml,
 		CreatedAt:   policy.CreatedAt,
 		UpdatedAt:   policy.UpdatedAt,
+		PausedAt:    policy.PausedAt,
 	})
 }
 
@@ -140,17 +144,22 @@ func buildMutateResponse(result *policy.SaveResult) policyMutateResponse {
 	if warnings == nil {
 		warnings = make([]string, 0)
 	}
+	detail := policyDetail{
+		ID:          p.ID,
+		Name:        p.Name,
+		TriggerType: string(p.TriggerType),
+		Folder:      extractFolder(p.YAML),
+		YAML:        p.YAML,
+		CreatedAt:   p.CreatedAt.Format(time.RFC3339Nano),
+		UpdatedAt:   p.UpdatedAt.Format(time.RFC3339Nano),
+	}
+	if p.PausedAt != nil {
+		s := p.PausedAt.Format(time.RFC3339Nano)
+		detail.PausedAt = &s
+	}
 	return policyMutateResponse{
-		policyDetail: policyDetail{
-			ID:          p.ID,
-			Name:        p.Name,
-			TriggerType: string(p.TriggerType),
-			Folder:      extractFolder(p.YAML),
-			YAML:        p.YAML,
-			CreatedAt:   p.CreatedAt.Format(time.RFC3339Nano),
-			UpdatedAt:   p.UpdatedAt.Format(time.RFC3339Nano),
-		},
-		Warnings: warnings,
+		policyDetail: detail,
+		Warnings:     warnings,
 	}
 }
 

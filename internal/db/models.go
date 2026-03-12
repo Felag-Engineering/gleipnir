@@ -36,12 +36,13 @@ type McpTool struct {
 }
 
 type Policy struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	TriggerType string `json:"trigger_type"`
-	Yaml        string `json:"yaml"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	TriggerType string  `json:"trigger_type"`
+	Yaml        string  `json:"yaml"`
+	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
+	PausedAt    *string `json:"paused_at"`
 }
 
 type Run struct {

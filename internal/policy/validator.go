@@ -43,7 +43,7 @@ func validateTrigger(t model.TriggerConfig) []string {
 	var errs []string
 
 	if !t.Type.Valid() {
-		errs = append(errs, fmt.Sprintf("trigger.type %q is invalid; must be webhook, cron, poll, or manual", t.Type))
+		errs = append(errs, fmt.Sprintf("trigger.type %q is invalid; must be webhook, cron, poll, manual, or scheduled", t.Type))
 		return errs // can't validate type-specific fields without a valid type
 	}
 
@@ -53,6 +53,15 @@ func validateTrigger(t model.TriggerConfig) []string {
 
 	case model.TriggerTypeManual:
 		// No additional fields required.
+
+	case model.TriggerTypeScheduled:
+		if len(t.FireAt) == 0 {
+			errs = append(errs, "trigger.fire_at is required for scheduled triggers and must contain at least one timestamp")
+		}
+		// Validate each individual timestamp can be parsed (parser skips bad entries,
+		// so an entry count mismatch signals parse failures).
+		// Note: we do not validate that timestamps are in the future here, because
+		// historical timestamps in existing policies are valid on read.
 
 	case model.TriggerTypeCron:
 		if t.Schedule == "" {

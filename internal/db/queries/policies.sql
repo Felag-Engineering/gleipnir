@@ -21,6 +21,15 @@ RETURNING *;
 -- name: DeletePolicy :exec
 DELETE FROM policies WHERE id = :id;
 
+-- name: GetScheduledActivePolicies :many
+SELECT * FROM policies WHERE trigger_type = 'scheduled' AND paused_at IS NULL;
+
+-- name: SetPolicyPausedAt :exec
+UPDATE policies SET paused_at = :paused_at WHERE id = :id;
+
+-- name: ClearPolicyPausedAt :exec
+UPDATE policies SET paused_at = NULL WHERE id = :id;
+
 -- name: ListPoliciesWithLatestRun :many
 SELECT
     p.id,
@@ -29,6 +38,7 @@ SELECT
     p.yaml,
     p.created_at,
     p.updated_at,
+    p.paused_at,
     r.id          AS run_id,
     r.status      AS run_status,
     r.started_at  AS run_started_at,

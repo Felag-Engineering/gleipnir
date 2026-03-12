@@ -23,3 +23,11 @@
 .manual {
   color: var(--color-orange);
 }
+
+.scheduled {
+  color: var(--color-amber);
+}
+
+.paused {
+  opacity: 0.6;
+}

@@ -14,6 +14,7 @@ export interface ApiPolicyListItem {
   folder: string
   created_at: string
   updated_at: string
+  paused_at: string | null
   latest_run: ApiRunSummary | null
 }
 
@@ -53,6 +54,7 @@ export interface ApiPolicyDetail {
   yaml: string
   created_at: string
   updated_at: string
+  paused_at: string | null
 }
 
 // Matches policy_handler.go → policyMutateResponse (POST/PUT response)

@@ -67,7 +67,7 @@ export function PolicyList({ policies, onTrigger }: PolicyListProps) {
                 <Link to={`/policies/${policy.id}/runs`} className={styles.policyLink}>
                   {policy.name}
                 </Link>
-                <TriggerChip type={triggerType} />
+                <TriggerChip type={triggerType} pausedAt={policy.paused_at} />
               </span>
 
               <span className={styles.colStatus}>

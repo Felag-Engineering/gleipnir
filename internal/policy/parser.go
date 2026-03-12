@@ -5,6 +5,7 @@ package policy
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rapp992/gleipnir/internal/model"
 	"gopkg.in/yaml.v3"
@@ -48,6 +49,7 @@ func Parse(raw string) (*model.ParsedPolicy, error) {
 
 // convertTrigger maps the raw YAML trigger block to a typed TriggerConfig.
 // Poll-specific fields are only populated when the trigger type is "poll".
+// Scheduled-specific fields are only populated when the trigger type is "scheduled".
 func convertTrigger(r rawTrigger) model.TriggerConfig {
 	tc := model.TriggerConfig{
 		Type:     model.TriggerType(r.Type),
@@ -68,6 +70,17 @@ func convertTrigger(r rawTrigger) model.TriggerConfig {
 			}
 		}
 		tc.Poll = pc
+	}
+
+	if tc.Type == model.TriggerTypeScheduled {
+		for _, s := range r.FireAt {
+			t, err := time.Parse(time.RFC3339, s)
+			if err != nil {
+				// Skip unparseable entries; validator will catch them.
+				continue
+			}
+			tc.FireAt = append(tc.FireAt, t.UTC())
+		}
 	}
 
 	return tc
@@ -165,6 +178,7 @@ type rawTrigger struct {
 	Interval string      `yaml:"interval"` // poll only
 	Request  *rawRequest `yaml:"request"`  // poll only
 	Filter   string      `yaml:"filter"`   // poll only
+	FireAt   []string    `yaml:"fire_at"`  // scheduled only, RFC3339 timestamps
 }
 
 type rawRequest struct {

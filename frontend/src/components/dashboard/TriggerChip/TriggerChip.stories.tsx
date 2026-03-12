@@ -6,7 +6,7 @@ const meta: Meta<typeof TriggerChip> = {
   title: 'Dashboard/TriggerChip',
   component: TriggerChip,
   argTypes: {
-    type: { control: 'select', options: ['webhook', 'cron', 'poll', 'manual'] },
+    type: { control: 'select', options: ['webhook', 'cron', 'poll', 'manual', 'scheduled'] },
   },
 };
 
@@ -17,6 +17,8 @@ export const Webhook: Story = { args: { type: 'webhook' } };
 export const Cron: Story = { args: { type: 'cron' } };
 export const Poll: Story = { args: { type: 'poll' } };
 export const Manual: Story = { args: { type: 'manual' } };
+export const Scheduled: Story = { args: { type: 'scheduled' } };
+export const ScheduledPaused: Story = { args: { type: 'scheduled', pausedAt: '2026-06-01T09:00:00Z' } };
 
 export const AllTypes: Story = {
   render: () => (
@@ -25,6 +27,8 @@ export const AllTypes: Story = {
       <TriggerChip type="cron" />
       <TriggerChip type="poll" />
       <TriggerChip type="manual" />
+      <TriggerChip type="scheduled" />
+      <TriggerChip type="scheduled" pausedAt="2026-06-01T09:00:00Z" />
     </div>
   ),
 };

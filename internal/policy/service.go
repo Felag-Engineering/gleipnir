@@ -59,6 +59,23 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 		return nil, err
 	}
 
+	// For new scheduled policies, reject if all fire_at times are in the past —
+	// the scheduler would have nothing to do immediately. Existing policies
+	// that have been updated to have past times are handled by Update().
+	if parsed.Trigger.Type == model.TriggerTypeScheduled {
+		now := time.Now().UTC()
+		hasFuture := false
+		for _, t := range parsed.Trigger.FireAt {
+			if t.After(now) {
+				hasFuture = true
+				break
+			}
+		}
+		if !hasFuture {
+			return nil, &ValidationError{Errors: []string{"trigger.fire_at: all timestamps are in the past; scheduled policy must have at least one future fire time"}}
+		}
+	}
+
 	warnings := s.checkToolRefs(ctx, parsed)
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -105,14 +122,62 @@ func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (
 		return nil, fmt.Errorf("update policy: %w", err)
 	}
 
-	return &SaveResult{Policy: toModelPolicy(row), Warnings: warnings}, nil
+	// For scheduled policies: if the update includes future fire times, clear
+	// paused_at so the scheduler picks it up again. If all times are past,
+	// ensure it stays paused.
+	if parsed.Trigger.Type == model.TriggerTypeScheduled {
+		nowTime := time.Now().UTC()
+		hasFuture := false
+		for _, t := range parsed.Trigger.FireAt {
+			if t.After(nowTime) {
+				hasFuture = true
+				break
+			}
+		}
+		if hasFuture {
+			if err := s.store.ClearPolicyPausedAt(ctx, policyID); err != nil {
+				return nil, fmt.Errorf("clear policy paused_at: %w", err)
+			}
+		} else {
+			pausedAt := nowTime.Format(time.RFC3339Nano)
+			if err := s.store.SetPolicyPausedAt(ctx, db.SetPolicyPausedAtParams{
+				PausedAt: &pausedAt,
+				ID:       policyID,
+			}); err != nil {
+				return nil, fmt.Errorf("set policy paused_at: %w", err)
+			}
+		}
+	}
+
+	result := toModelPolicy(row)
+	return &SaveResult{Policy: result, Warnings: warnings}, nil
+}
+
+// SetPolicyPausedAt marks a scheduled policy as paused after exhausting all fire times.
+func (s *Service) SetPolicyPausedAt(ctx context.Context, policyID string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.store.SetPolicyPausedAt(ctx, db.SetPolicyPausedAtParams{
+		PausedAt: &now,
+		ID:       policyID,
+	}); err != nil {
+		return fmt.Errorf("set policy paused_at: %w", err)
+	}
+	return nil
+}
+
+// ClearPolicyPausedAt removes the paused state from a scheduled policy.
+func (s *Service) ClearPolicyPausedAt(ctx context.Context, policyID string) error {
+	if err := s.store.ClearPolicyPausedAt(ctx, policyID); err != nil {
+		return fmt.Errorf("clear policy paused_at: %w", err)
+	}
+	return nil
 }
 
 // toModelPolicy maps a sqlc-generated db.Policy to the domain model.Policy.
 func toModelPolicy(row db.Policy) model.Policy {
 	createdAt, _ := time.Parse(time.RFC3339Nano, row.CreatedAt)
 	updatedAt, _ := time.Parse(time.RFC3339Nano, row.UpdatedAt)
-	return model.Policy{
+	p := model.Policy{
 		ID:          row.ID,
 		Name:        row.Name,
 		TriggerType: model.TriggerType(row.TriggerType),
@@ -120,6 +185,11 @@ func toModelPolicy(row db.Policy) model.Policy {
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}
+	if row.PausedAt != nil {
+		t, _ := time.Parse(time.RFC3339Nano, *row.PausedAt)
+		p.PausedAt = &t
+	}
+	return p
 }
 
 // validateModel calls the modelValidator if one is configured. Returns nil

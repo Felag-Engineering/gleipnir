@@ -28,6 +28,9 @@ var migration0002 string
 //go:embed migrations/0003_add_system_prompt.sql
 var migration0003 string
 
+//go:embed migrations/0004_add_scheduled_trigger.sql
+var migration0004 string
+
 // Store wraps the database connection and provides lifecycle methods.
 type Store struct {
 	db *sql.DB
@@ -140,6 +143,20 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if v3Applied == 0 {
 		if _, err := s.db.ExecContext(ctx, migration0003); err != nil {
 			return fmt.Errorf("apply migration 0003: %w", err)
+		}
+	}
+
+	// Apply migration 0004 if not yet recorded.
+	var v4Applied int
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = 4`,
+	).Scan(&v4Applied)
+	if err != nil {
+		return fmt.Errorf("check migration 4: %w", err)
+	}
+	if v4Applied == 0 {
+		if _, err := s.db.ExecContext(ctx, migration0004); err != nil {
+			return fmt.Errorf("apply migration 0004: %w", err)
 		}
 	}
 

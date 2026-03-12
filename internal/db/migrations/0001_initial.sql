@@ -4,6 +4,8 @@
 -- Note: 'manual' was added to trigger_type CHECK constraints retroactively
 -- alongside migration 0002 (0002_add_manual_trigger.sql), which handles
 -- the same change for existing databases via a table-rebuild.
+-- Note: 'scheduled' and paused_at were added retroactively alongside
+-- migration 0004 (0004_add_scheduled_trigger.sql).
 --
 -- Design decisions:
 --   ADR-002: Policy-as-YAML stored in DB. name and trigger_type as columns for
@@ -72,10 +74,11 @@ CREATE INDEX idx_mcp_tools_server_id ON mcp_tools(server_id);
 CREATE TABLE policies (
     id              TEXT    PRIMARY KEY,  -- ULID
     name            TEXT    NOT NULL UNIQUE,
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll', 'manual')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll', 'manual', 'scheduled')),
     yaml            TEXT    NOT NULL,
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
-    updated_at      TEXT    NOT NULL      -- ISO 8601 UTC
+    updated_at      TEXT    NOT NULL,     -- ISO 8601 UTC
+    paused_at       TEXT                  -- nullable, ISO 8601 UTC; set when a scheduled policy exhausts all fire times
 );
 
 CREATE INDEX idx_policies_trigger_type ON policies(trigger_type);
@@ -107,7 +110,7 @@ CREATE TABLE runs (
                         'failed',
                         'interrupted'
                     )),
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll', 'manual')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll', 'manual', 'scheduled')),
     trigger_payload TEXT    NOT NULL,     -- JSON blob
     started_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     completed_at    TEXT,                 -- nullable, ISO 8601 UTC
@@ -220,3 +223,4 @@ CREATE INDEX idx_approval_requests_status ON approval_requests(status);
 INSERT INTO schema_migrations(version, applied_at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 INSERT INTO schema_migrations(version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 INSERT INTO schema_migrations(version, applied_at) VALUES (3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+INSERT INTO schema_migrations(version, applied_at) VALUES (4, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));

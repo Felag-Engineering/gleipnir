@@ -20,7 +20,7 @@ export interface IdentityFormState {
   folder: string;
 }
 
-export type TriggerType = 'webhook' | 'cron' | 'poll' | 'manual';
+export type TriggerType = 'webhook' | 'cron' | 'poll' | 'manual' | 'scheduled';
 
 export interface WebhookTriggerState {
   type: 'webhook';
@@ -47,11 +47,17 @@ export interface ManualTriggerState {
   type: 'manual';
 }
 
+export interface ScheduledTriggerState {
+  type: 'scheduled';
+  fireAt: string[]; // ISO-8601 / RFC3339 timestamps
+}
+
 export type TriggerFormState =
   | WebhookTriggerState
   | CronTriggerState
   | PollTriggerState
-  | ManualTriggerState;
+  | ManualTriggerState
+  | ScheduledTriggerState;
 
 export interface TaskInstructionsFormState {
   task: string;

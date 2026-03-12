@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import styles from './TriggerSection.module.css';
-import type { TriggerFormState, CronTriggerState, PollTriggerState, ManualTriggerState } from './types';
+import type { TriggerFormState, CronTriggerState, PollTriggerState, ManualTriggerState, ScheduledTriggerState } from './types';
 
 export interface TriggerSectionProps {
   value: TriggerFormState;
@@ -16,6 +16,7 @@ const DEFAULT_POLL: PollTriggerState = {
   request: { url: '', method: 'GET', headers: '', body: undefined },
   filter: '',
 };
+const DEFAULT_SCHEDULED: ScheduledTriggerState = { type: 'scheduled', fireAt: [] };
 
 export function TriggerSection({ value, onChange, policyId }: TriggerSectionProps) {
   const [copied, setCopied] = useState(false);
@@ -30,6 +31,7 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
     if (type === 'webhook') onChange({ type: 'webhook' });
     else if (type === 'cron') onChange(DEFAULT_CRON);
     else if (type === 'manual') onChange(DEFAULT_MANUAL);
+    else if (type === 'scheduled') onChange(DEFAULT_SCHEDULED);
     else onChange(DEFAULT_POLL);
   }
 
@@ -88,6 +90,16 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
           </div>
           <div className={styles.cardDesc}>Triggered on demand from the dashboard</div>
         </button>
+
+        <button
+          className={value.type === 'scheduled' ? `${styles.card} ${styles.cardActive}` : styles.card}
+          onClick={() => handleTypeSelect('scheduled')}
+        >
+          <div className={value.type === 'scheduled' ? `${styles.cardTitle} ${styles.cardTitleActive}` : styles.cardTitle}>
+            Scheduled
+          </div>
+          <div className={styles.cardDesc}>Fires once at each specified date and time, then pauses</div>
+        </button>
       </div>
 
       <div className={styles.config}>
@@ -101,6 +113,9 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
           <PollConfig value={value} onChange={onChange} />
         )}
         {value.type === 'manual' && null}
+        {value.type === 'scheduled' && (
+          <ScheduledConfig value={value} onChange={onChange} />
+        )}
       </div>
     </div>
   );
@@ -154,6 +169,75 @@ function CronConfig({ value, onChange }: CronConfigProps) {
         placeholder="0 * * * *"
         onChange={(e) => onChange({ ...value, schedule: e.target.value })}
       />
+    </div>
+  );
+}
+
+interface ScheduledConfigProps {
+  value: ScheduledTriggerState;
+  onChange: (next: TriggerFormState) => void;
+}
+
+function ScheduledConfig({ value, onChange }: ScheduledConfigProps) {
+  function addEntry() {
+    // Default to one hour from now, formatted as a datetime-local value (no seconds).
+    const soon = new Date(Date.now() + 60 * 60 * 1000);
+    const isoLocal = soon.toISOString().slice(0, 16); // "YYYY-MM-DDTHH:MM"
+    onChange({ ...value, fireAt: [...value.fireAt, isoLocal + ':00Z'] });
+  }
+
+  function updateEntry(index: number, raw: string) {
+    // datetime-local input gives "YYYY-MM-DDTHH:MM" — append UTC offset so it
+    // round-trips as a valid RFC3339 timestamp.
+    const asRFC3339 = raw.length === 16 ? raw + ':00Z' : raw;
+    const next = value.fireAt.slice();
+    next[index] = asRFC3339;
+    onChange({ ...value, fireAt: next });
+  }
+
+  function removeEntry(index: number) {
+    onChange({ ...value, fireAt: value.fireAt.filter((_, i) => i !== index) });
+  }
+
+  // Convert a stored RFC3339 value to the "YYYY-MM-DDTHH:MM" format expected
+  // by datetime-local inputs. Falls back to the raw string on parse failure.
+  function toInputValue(ts: string): string {
+    try {
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return ts;
+      return d.toISOString().slice(0, 16);
+    } catch {
+      return ts;
+    }
+  }
+
+  return (
+    <div className={styles.field}>
+      <label className={styles.label}>Fire at (UTC)</label>
+      {value.fireAt.map((ts, i) => (
+        <div key={i} className={styles.fieldRow}>
+          <input
+            className={styles.input}
+            type="datetime-local"
+            value={toInputValue(ts)}
+            onChange={(e) => updateEntry(i, e.target.value)}
+          />
+          <button
+            className={styles.copyButton}
+            type="button"
+            onClick={() => removeEntry(i)}
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      <button
+        className={styles.copyButton}
+        type="button"
+        onClick={addEntry}
+      >
+        + Add time
+      </button>
     </div>
   );
 }

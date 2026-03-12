@@ -30,10 +30,11 @@ const (
 type TriggerType string
 
 const (
-	TriggerTypeWebhook TriggerType = "webhook"
-	TriggerTypeCron    TriggerType = "cron"
-	TriggerTypePoll    TriggerType = "poll"
-	TriggerTypeManual  TriggerType = "manual"
+	TriggerTypeWebhook   TriggerType = "webhook"
+	TriggerTypeCron      TriggerType = "cron"
+	TriggerTypePoll      TriggerType = "poll"
+	TriggerTypeManual    TriggerType = "manual"
+	TriggerTypeScheduled TriggerType = "scheduled"
 )
 
 // CapabilityRole classifies a tool's access level within a run.
@@ -99,7 +100,7 @@ func (s RunStatus) Valid() bool {
 func (t TriggerType) String() string { return string(t) }
 func (t TriggerType) Valid() bool {
 	switch t {
-	case TriggerTypeWebhook, TriggerTypeCron, TriggerTypePoll, TriggerTypeManual:
+	case TriggerTypeWebhook, TriggerTypeCron, TriggerTypePoll, TriggerTypeManual, TriggerTypeScheduled:
 		return true
 	}
 	return false
@@ -187,6 +188,7 @@ type TriggerConfig struct {
 	Type     TriggerType
 	Schedule string      // cron only
 	Poll     *PollConfig // poll only
+	FireAt   []time.Time // scheduled only
 }
 
 // PollConfig describes the HTTP poll trigger (v0.3).
@@ -283,6 +285,7 @@ type Policy struct {
 	YAML        string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	PausedAt    *time.Time // non-nil for paused scheduled policies
 }
 
 // Run is a single agent execution scoped to a policy.

@@ -35,18 +35,22 @@ func run() error {
 	dbPath := envOrDefault("GLEIPNIR_DB_PATH", "/data/gleipnir.db")
 	listenAddr := envOrDefault("GLEIPNIR_LISTEN_ADDR", ":8080")
 
+	// Root context cancelled on shutdown so background components (Scheduler) can stop.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	store, err := db.Open(dbPath)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer store.Close()
 
-	if err := store.Migrate(context.Background()); err != nil {
+	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
 	// Mark any in-flight runs as interrupted (ADR-011).
-	if err := store.ScanOrphanedRuns(context.Background(), slog.Default()); err != nil {
+	if err := store.ScanOrphanedRuns(ctx, slog.Default()); err != nil {
 		return fmt.Errorf("scan orphaned runs: %w", err)
 	}
 
@@ -68,6 +72,11 @@ func run() error {
 
 	manualTriggerHandler := trigger.NewManualTriggerHandler(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
 	r.Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
+
+	scheduler := trigger.NewScheduler(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
+	if err := scheduler.Start(ctx); err != nil {
+		return fmt.Errorf("start scheduler: %w", err)
+	}
 
 	runsHandler := trigger.NewRunsHandler(store, runManager)
 	r.Get("/api/v1/runs", runsHandler.List)
@@ -103,10 +112,13 @@ func run() error {
 	<-quit
 	slog.Info("shutting down")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Cancel the root context to stop the scheduler and any background timers.
+	cancel()
 
-	return srv.Shutdown(ctx)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	return srv.Shutdown(shutdownCtx)
 }
 
 func envOrDefault(key, def string) string {

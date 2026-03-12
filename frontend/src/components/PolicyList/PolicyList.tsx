@@ -30,7 +30,7 @@ function groupByFolder(policies: ApiPolicyListItem[]): Map<string, ApiPolicyList
 const KNOWN_STATUSES = new Set<string>([
   'complete', 'running', 'waiting_for_approval', 'failed', 'interrupted',
 ])
-const KNOWN_TRIGGERS = new Set<string>(['webhook', 'cron', 'poll', 'manual'])
+const KNOWN_TRIGGERS = new Set<string>(['webhook', 'cron', 'poll', 'manual', 'scheduled'])
 
 export function PolicyList({ policies, onTrigger }: Props) {
   const groups = groupByFolder(policies)
@@ -56,7 +56,10 @@ export function PolicyList({ policies, onTrigger }: Props) {
                   <span className={styles.policyName}>{policy.name}</span>
                   <span>
                     {KNOWN_TRIGGERS.has(policy.trigger_type) && (
-                      <TriggerChip type={policy.trigger_type as TriggerType} />
+                      <TriggerChip
+                        type={policy.trigger_type as TriggerType}
+                        pausedAt={policy.paused_at}
+                      />
                     )}
                   </span>
                   <span>

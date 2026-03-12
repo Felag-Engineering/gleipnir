@@ -69,10 +69,11 @@ CREATE INDEX idx_mcp_tools_server_id ON mcp_tools(server_id);
 CREATE TABLE policies (
     id              TEXT    PRIMARY KEY,  -- ULID
     name            TEXT    NOT NULL UNIQUE,
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll', 'manual')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll', 'manual', 'scheduled')),
     yaml            TEXT    NOT NULL,
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
-    updated_at      TEXT    NOT NULL      -- ISO 8601 UTC
+    updated_at      TEXT    NOT NULL,     -- ISO 8601 UTC
+    paused_at       TEXT                  -- nullable; set when a scheduled policy exhausts all fire_at times
 );
 
 CREATE INDEX idx_policies_trigger_type ON policies(trigger_type);
@@ -104,7 +105,7 @@ CREATE TABLE runs (
                         'failed',
                         'interrupted'
                     )),
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll', 'manual')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll', 'manual', 'scheduled')),
     trigger_payload TEXT    NOT NULL,     -- JSON blob
     started_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     completed_at    TEXT,                 -- nullable, ISO 8601 UTC
