@@ -174,6 +174,73 @@ describe('CapabilitiesSection — tool picker remove', () => {
   })
 })
 
+describe('CapabilitiesSection — tool picker search filter', () => {
+  // Use staleTime: Infinity so seeded QueryClient data is never refetched.
+  // The component's useQueries would otherwise fire background fetches that
+  // fail (no MSW handler) and clear the cached tool list before assertions run.
+  function makeStaleQueryClient(): QueryClient {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    })
+    qc.setQueryData(MCP_SERVERS_QUERY_KEY, FIXTURE_SERVERS)
+    qc.setQueryData(mcpToolsQueryKey('srv-1'), FIXTURE_TOOLS_SRV1)
+    qc.setQueryData(mcpToolsQueryKey('srv-2'), FIXTURE_TOOLS_SRV2)
+    return qc
+  }
+
+  it('filters results by tool name as user types', async () => {
+    render(
+      <QueryClientProvider client={makeStaleQueryClient()}>
+        <ControlledCapabilitiesSection />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Add tool from registry' }))
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/filter by tool name/i)).toBeInTheDocument()
+    })
+
+    // Both tools from srv-1 are visible initially
+    await waitFor(() => {
+      expect(screen.getByText('Filesystem Tools.read_file')).toBeInTheDocument()
+      expect(screen.getByText('Filesystem Tools.write_file')).toBeInTheDocument()
+    })
+
+    // Type to filter — should only show write_file
+    fireEvent.change(screen.getByPlaceholderText(/filter by tool name/i), {
+      target: { value: 'write' },
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText('Filesystem Tools.write_file')).toBeInTheDocument()
+      expect(screen.queryByText('Filesystem Tools.read_file')).not.toBeInTheDocument()
+    })
+  })
+
+  it('shows "No tools match" when filter has no results', async () => {
+    render(
+      <QueryClientProvider client={makeStaleQueryClient()}>
+        <ControlledCapabilitiesSection />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Add tool from registry' }))
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/filter by tool name/i)).toBeInTheDocument()
+    })
+
+    fireEvent.change(screen.getByPlaceholderText(/filter by tool name/i), {
+      target: { value: 'xyznonexistent' },
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/no tools match/i)).toBeInTheDocument()
+    })
+  })
+})
+
 describe('CapabilitiesSection — approval toggle', () => {
   it('toggling approval on an actuator calls onChange with approvalRequired flipped', async () => {
     const onChange = vi.fn()

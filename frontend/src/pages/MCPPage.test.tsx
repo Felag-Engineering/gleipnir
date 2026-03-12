@@ -256,9 +256,9 @@ describe('MCPPage — add server modal', () => {
 
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: /add server/i }))
-    // Spinner is rendered with aria-hidden
-    const spinners = document.querySelectorAll('[aria-hidden="true"]')
-    expect(spinners.length).toBeGreaterThan(0)
+    // When isPending, the submit button is disabled and shows "Adding…"
+    const submitBtn = screen.getByRole('button', { name: /adding/i })
+    expect(submitBtn).toBeDisabled()
   })
 })
 
@@ -371,10 +371,51 @@ describe('MCPPage — unassigned banner', () => {
     expect(screen.queryByRole('status', { name: /unassigned/i })).not.toBeInTheDocument()
   })
 
-  it('shows when servers list is empty', () => {
+  it('does not show unassigned banner when servers list is empty', () => {
     mockServersLoaded([])
     mockNoopMutations()
     renderPage()
     expect(screen.queryByText(/no capability role assigned/i)).not.toBeInTheDocument()
+  })
+
+  it('shows banner when a tool has no valid capability role', () => {
+    const unassignedTool: ApiMcpTool = {
+      id: 't-unassigned',
+      server_id: 'srv-1',
+      name: 'kubectl.exec',
+      description: 'Execute a command.',
+      capability_role: '' as ApiMcpTool['capability_role'],
+      input_schema: {},
+    }
+    const tools = new Map([['srv-1', [unassignedTool]]])
+    mockServersLoaded([SERVER_1], tools)
+    mockNoopMutations()
+
+    renderPage()
+    expect(screen.getByRole('status')).toBeInTheDocument()
+    expect(screen.getByText(/no capability role assigned/i)).toBeInTheDocument()
+  })
+})
+
+describe('MCPPage — server card tool count', () => {
+  it('shows the number of tools discovered for a server', async () => {
+    const tools = new Map([['srv-1', [TOOL_1, TOOL_2]]])
+    mockServersLoaded([SERVER_1], tools)
+    mockNoopMutations()
+
+    renderPage()
+
+    // ServerCard renders a button label with tool count; expand to see tool list
+    const toolsBtn = screen.getByRole('button', { name: /2 tools/i })
+    expect(toolsBtn).toBeInTheDocument()
+  })
+
+  it('shows 0 tools for a server with an empty tool list', () => {
+    mockServersLoaded([SERVER_1], new Map([['srv-1', []]]))
+    mockNoopMutations()
+
+    renderPage()
+    const toolsBtn = screen.getByRole('button', { name: /0 tools/i })
+    expect(toolsBtn).toBeInTheDocument()
   })
 })

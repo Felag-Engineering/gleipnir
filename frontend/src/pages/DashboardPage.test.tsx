@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { http, HttpResponse, delay } from 'msw'
 import { server } from '@/test/server'
+import userEvent from '@testing-library/user-event'
 import DashboardPage from './DashboardPage'
 import type { ApiPolicyListItem } from '@/api/types'
 
@@ -137,5 +138,81 @@ describe('DashboardPage', () => {
     await waitFor(() => expect(screen.getByText('grafana-alert-responder')).toBeInTheDocument())
     // StatsBar "Policies" card now shows 2
     expect(screen.getByText('Policies').parentElement?.textContent).toContain('2')
+  })
+
+  it('shows error state and Retry button when /api/v1/policies returns 500', async () => {
+    server.use(
+      http.get('/api/v1/policies', () => {
+        return HttpResponse.json({ error: 'internal server error' }, { status: 500 })
+      }),
+    )
+
+    const qc = makeClient()
+    renderDashboard(qc)
+
+    await waitFor(() => {
+      expect(screen.getByText(/failed to load policies/i)).toBeInTheDocument()
+    })
+
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+  })
+
+  it('retry button re-fetches /api/v1/policies', async () => {
+    let callCount = 0
+    server.use(
+      http.get('/api/v1/policies', () => {
+        callCount += 1
+        if (callCount === 1) {
+          return HttpResponse.json({ error: 'internal server error' }, { status: 500 })
+        }
+        return HttpResponse.json({ data: POLICIES_COMPLETE })
+      }),
+    )
+
+    const qc = makeClient()
+    renderDashboard(qc)
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+    })
+
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('vikunja-triage')).toBeInTheDocument()
+    })
+
+    expect(callCount).toBeGreaterThanOrEqual(2)
+  })
+
+  it('shows approval banner when a policy has a run waiting_for_approval', async () => {
+    const policiesWithApproval: ApiPolicyListItem[] = [
+      {
+        id: 'p1',
+        name: 'my-policy',
+        trigger_type: 'webhook',
+        folder: '',
+        created_at: '2026-03-07T14:32:11Z',
+        updated_at: '2026-03-07T14:32:11Z',
+        latest_run: { id: 'r1', status: 'waiting_for_approval', started_at: '2026-03-07T14:32:11Z', token_cost: 500 },
+      },
+    ]
+
+    server.use(
+      http.get('/api/v1/policies', () => {
+        return HttpResponse.json({ data: policiesWithApproval })
+      }),
+    )
+
+    const qc = makeClient()
+    renderDashboard(qc)
+
+    await waitFor(() => {
+      expect(screen.getByText('my-policy')).toBeInTheDocument()
+    })
+
+    // ApprovalBanner renders with role="status" when count > 0
+    expect(screen.getByRole('status')).toBeInTheDocument()
+    expect(screen.getByRole('status').textContent).toContain('awaiting approval')
   })
 })

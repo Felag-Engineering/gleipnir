@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -236,6 +236,7 @@ describe('RunDetailPage — filter chips', () => {
     makeStep({ id: 's2', step_number: 2, type: 'thought', content: JSON.stringify({ text: 'Thought B' }) }),
     makeStep({ id: 's3', step_number: 3, type: 'tool_call', content: JSON.stringify({ tool_name: 'x', server_id: 'srv', input: {} }) }),
     makeStep({ id: 's4', step_number: 4, type: 'error', content: JSON.stringify({ message: 'err', code: 'E' }) }),
+    makeStep({ id: 's5', step_number: 5, type: 'tool_result', content: JSON.stringify({ tool_name: 'x', output: '"ok"', is_error: false }) }),
   ]
 
   beforeEach(() => {
@@ -244,7 +245,7 @@ describe('RunDetailPage — filter chips', () => {
 
   it('shows all non-snapshot steps on "All" filter', () => {
     renderPage()
-    // 2 thoughts + 1 tool_call + 1 error = 4 visible
+    // 2 thoughts + 1 tool_call + 1 error + 1 tool_result = 5 visible
     expect(screen.getByText('Thought A')).toBeInTheDocument()
     expect(screen.getByText('Thought B')).toBeInTheDocument()
   })
@@ -261,6 +262,26 @@ describe('RunDetailPage — filter chips', () => {
     })
   })
 
+  it('shows only tool_call steps after clicking Calls chip', async () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /^calls/i }))
+    await waitFor(() => {
+      expect(screen.getByText('sensor call')).toBeInTheDocument()
+      expect(screen.queryByText('Thought A')).not.toBeInTheDocument()
+      expect(screen.queryByText('err')).not.toBeInTheDocument()
+    })
+  })
+
+  it('shows only tool_result steps after clicking Results chip', async () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /^results/i }))
+    await waitFor(() => {
+      expect(screen.getByText('result')).toBeInTheDocument()
+      expect(screen.queryByText('Thought A')).not.toBeInTheDocument()
+      expect(screen.queryByText('err')).not.toBeInTheDocument()
+    })
+  })
+
   it('shows count badge on filter chips', () => {
     renderPage()
     // "Thoughts" chip should show count 2
@@ -272,6 +293,31 @@ describe('RunDetailPage — filter chips', () => {
     renderPage()
     const errorsChip = screen.getByRole('button', { name: /errors/i })
     expect(errorsChip.textContent).toContain('1')
+  })
+
+  it('shows count 1 for Calls chip', () => {
+    renderPage()
+    const callsChip = screen.getByRole('button', { name: /^calls/i })
+    expect(callsChip.textContent).toContain('1')
+  })
+
+  it('shows count 1 for Results chip', () => {
+    renderPage()
+    const resultsChip = screen.getByRole('button', { name: /^results/i })
+    expect(resultsChip.textContent).toContain('1')
+  })
+
+  it('clicking All chip after a filter shows all steps again', async () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /thoughts/i }))
+    await waitFor(() => {
+      expect(screen.queryByText('err')).not.toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^all/i }))
+    await waitFor(() => {
+      expect(screen.getByText('Thought A')).toBeInTheDocument()
+      expect(screen.getByText('err')).toBeInTheDocument()
+    })
   })
 })
 
@@ -301,6 +347,16 @@ describe('CollapsibleJSON — isolated', () => {
 })
 
 describe('CopyBlock', () => {
+  let originalClipboard: Clipboard
+
+  beforeEach(() => {
+    originalClipboard = navigator.clipboard
+  })
+
+  afterEach(() => {
+    Object.assign(navigator, { clipboard: originalClipboard })
+  })
+
   it('calls clipboard.writeText on copy click', async () => {
     const writeMock = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText: writeMock } })
@@ -497,6 +553,77 @@ describe('RunDetailPage — "New steps" pill', () => {
 
     // Suppress unused variable warning
     void observerCallback
+
+    vi.unstubAllGlobals()
+  })
+
+  it('clicking the pill hides it', async () => {
+    const initialSteps: ApiRunStep[] = [
+      makeStep({ id: 's1', type: 'thought', content: JSON.stringify({ text: 'Initial' }) }),
+    ]
+
+    vi.mocked(useRun).mockReturnValue({
+      data: makeRun({ status: 'running', completed_at: null }),
+      status: 'success',
+    } as ReturnType<typeof useRun>)
+
+    vi.mocked(useRunSteps).mockReturnValue({
+      data: initialSteps,
+      status: 'success',
+    } as ReturnType<typeof useRunSteps>)
+
+    // scrollIntoView is not implemented in jsdom; stub it to avoid TypeError
+    window.HTMLElement.prototype.scrollIntoView = vi.fn()
+
+    function MockIntersectionObserver(this: IntersectionObserver, cb: IntersectionObserverCallback) {
+      this.observe = (el: Element) => {
+        cb([{ isIntersecting: false, target: el } as IntersectionObserverEntry], this)
+      }
+      this.unobserve = vi.fn()
+      this.disconnect = vi.fn()
+    }
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver)
+
+    const qc = makeQueryClient()
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/runs/r1']}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    const newSteps: ApiRunStep[] = [
+      ...initialSteps,
+      makeStep({ id: 's2', step_number: 2, type: 'thought', content: JSON.stringify({ text: 'New step' }) }),
+    ]
+
+    vi.mocked(useRunSteps).mockReturnValue({
+      data: newSteps,
+      status: 'success',
+    } as ReturnType<typeof useRunSteps>)
+
+    rerender(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/runs/r1']}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /new steps/i })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /new steps/i }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /new steps/i })).not.toBeInTheDocument()
+    })
 
     vi.unstubAllGlobals()
   })

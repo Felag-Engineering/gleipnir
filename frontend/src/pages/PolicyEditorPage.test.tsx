@@ -150,6 +150,51 @@ function mockHooksDefault() {
 
 // --- Tests ---
 
+describe('PolicyEditorUtils — formStateToYaml approval output', () => {
+  it('emits approval: required in YAML when approvalRequired is true on an actuator', () => {
+    const state = yamlToFormState(WEBHOOK_YAML)!
+    // filesystem.write_file is the actuator in WEBHOOK_YAML, already approval: required
+    // Clone and set approvalRequired = true explicitly
+    const modified = {
+      ...state,
+      capabilities: {
+        tools: state.capabilities.tools.map(t =>
+          t.role === 'actuator' ? { ...t, approvalRequired: true } : t,
+        ),
+      },
+    }
+    const yaml = formStateToYaml(modified)
+    expect(yaml).toContain('approval: required')
+  })
+
+  it('does not emit approval in YAML when approvalRequired is false on an actuator', () => {
+    const state = yamlToFormState(WEBHOOK_YAML)!
+    const modified = {
+      ...state,
+      capabilities: {
+        tools: state.capabilities.tools.map(t =>
+          t.role === 'actuator' ? { ...t, approvalRequired: false } : t,
+        ),
+      },
+    }
+    const yaml = formStateToYaml(modified)
+    expect(yaml).not.toContain('approval: required')
+  })
+
+  it('sensors never emit approval in YAML output', () => {
+    const state = yamlToFormState(WEBHOOK_YAML)!
+    const yaml = formStateToYaml(state)
+    // Sensors section should not contain approval key
+    const sensorsIdx = yaml.indexOf('sensors:')
+    const actuatorsIdx = yaml.indexOf('actuators:')
+    // approval: required should only appear in the actuators block
+    const sensorSection = sensorsIdx >= 0 && actuatorsIdx > sensorsIdx
+      ? yaml.slice(sensorsIdx, actuatorsIdx)
+      : yaml.slice(sensorsIdx)
+    expect(sensorSection).not.toContain('approval:')
+  })
+})
+
 describe('PolicyEditorUtils — YAML ↔ form round-trip (pure functions)', () => {
   it.each([
     ['webhook', WEBHOOK_YAML],

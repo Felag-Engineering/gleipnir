@@ -127,4 +127,10 @@ if __name__ == "__main__":
     port = int(os.environ.get("MCP_PORT", 8090))
     mcp.settings.host = "0.0.0.0"
     mcp.settings.port = port
+    # Allow Docker container hostname in addition to localhost.
+    # FastMCP's streamable-HTTP transport rejects requests whose Host header
+    # doesn't match an allowed value (returns 421). When the Go API container
+    # reaches this server via its Docker service name the Host header is
+    # "mcp-test-server:8090", which must be explicitly permitted.
+    mcp.settings.transport_security.allowed_hosts = ["localhost", "localhost:8090", "mcp-test-server", "mcp-test-server:8090"]
     mcp.run(transport="streamable-http")
