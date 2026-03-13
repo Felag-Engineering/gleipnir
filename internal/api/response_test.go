@@ -69,6 +69,36 @@ func TestWriteJSON(t *testing.T) {
 	})
 }
 
+func TestWriteCreated(t *testing.T) {
+	t.Run("sets 201 status, Location header, and data envelope", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		api.WriteCreated(w, "/api/v1/things/abc", map[string]string{"id": "abc"})
+
+		if w.Code != http.StatusCreated {
+			t.Errorf("status = %d, want 201", w.Code)
+		}
+		if loc := w.Header().Get("Location"); loc != "/api/v1/things/abc" {
+			t.Errorf("Location = %q, want /api/v1/things/abc", loc)
+		}
+
+		var got map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		data, ok := got["data"]
+		if !ok {
+			t.Fatal("expected 'data' key in response")
+		}
+		dataMap, ok := data.(map[string]any)
+		if !ok {
+			t.Fatalf("expected data to be an object, got %T", data)
+		}
+		if dataMap["id"] != "abc" {
+			t.Errorf("data.id = %q, want abc", dataMap["id"])
+		}
+	})
+}
+
 func TestWriteError(t *testing.T) {
 	t.Run("includes error and detail when detail is non-empty", func(t *testing.T) {
 		w := httptest.NewRecorder()

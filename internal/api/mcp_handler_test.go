@@ -200,6 +200,10 @@ func TestMCPServerCreateHandler(t *testing.T) {
 		if envelope.Data.LastDiscoveredAt == nil {
 			t.Error("expected last_discovered_at to be set after successful discovery")
 		}
+		wantLocation := "/api/v1/mcp/servers/" + envelope.Data.ID
+		if loc := resp.Header.Get("Location"); loc != wantLocation {
+			t.Errorf("Location = %q, want %q", loc, wantLocation)
+		}
 	})
 
 	t.Run("valid data with unreachable MCP server returns 201 with discovery_error", func(t *testing.T) {

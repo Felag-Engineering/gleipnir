@@ -28,6 +28,13 @@ func WriteJSON(w http.ResponseWriter, status int, data any) {
 	}
 }
 
+// WriteCreated writes a 201 Created response with a Location header and a
+// {"data": data} JSON body.
+func WriteCreated(w http.ResponseWriter, locationPath string, data any) {
+	w.Header().Set("Location", locationPath)
+	WriteJSON(w, http.StatusCreated, data)
+}
+
 // WriteError writes a JSON error response with {"error": msg, "detail": detail}
 // and the given HTTP status code. detail is omitted from the response when empty.
 func WriteError(w http.ResponseWriter, status int, msg, detail string) {

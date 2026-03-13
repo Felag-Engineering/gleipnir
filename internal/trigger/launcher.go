@@ -30,9 +30,9 @@ func NewAgentFactory(claude *anthropic.Client) AgentFactory {
 // Sentinel errors returned by CheckConcurrency so callers can map them to HTTP
 // status codes or log appropriately without inspecting error message strings.
 var (
-	ErrConcurrencySkipActive       = errors.New("run already active for this policy (concurrency: skip)")
-	ErrConcurrencyNotImplemented   = errors.New("concurrency policy not implemented")
-	ErrConcurrencyUnrecognised     = errors.New("unrecognised concurrency policy")
+	ErrConcurrencySkipActive     = errors.New("run already active for this policy (concurrency: skip)")
+	ErrConcurrencyNotImplemented = errors.New("concurrency policy not implemented")
+	ErrConcurrencyUnrecognised   = errors.New("unrecognised concurrency policy")
 )
 
 // LaunchParams carries all the inputs needed to create and start a run.

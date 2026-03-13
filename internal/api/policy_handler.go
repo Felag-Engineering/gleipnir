@@ -165,7 +165,7 @@ func buildMutateResponse(result *policy.SaveResult) policyMutateResponse {
 
 // Create handles POST /api/v1/policies.
 func (h *PolicyHandler) Create(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "failed to read request body", err.Error())
 		return
@@ -187,14 +187,14 @@ func (h *PolicyHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSON(w, http.StatusCreated, buildMutateResponse(result))
+	WriteCreated(w, "/api/v1/policies/"+result.Policy.ID, buildMutateResponse(result))
 }
 
 // Update handles PUT /api/v1/policies/{id}.
 func (h *PolicyHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "failed to read request body", err.Error())
 		return

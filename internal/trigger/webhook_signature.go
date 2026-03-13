@@ -14,9 +14,9 @@ const SignatureHeader = "X-Gleipnir-Signature"
 const signaturePrefix = "sha256="
 
 var (
-	errMissingSignature  = errors.New("missing signature header")
+	errMissingSignature   = errors.New("missing signature header")
 	errMalformedSignature = errors.New("malformed signature: expected sha256= prefix")
-	errInvalidSignature  = errors.New("invalid signature")
+	errInvalidSignature   = errors.New("invalid signature")
 )
 
 // ValidateSignature verifies that signatureHeader matches the HMAC-SHA256 of body

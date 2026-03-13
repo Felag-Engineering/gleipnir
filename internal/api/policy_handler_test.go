@@ -327,6 +327,10 @@ func TestPolicyCreateHandler(t *testing.T) {
 		if len(envelope.Data.Warnings) != 0 {
 			t.Errorf("warnings = %v, want []", envelope.Data.Warnings)
 		}
+		wantLocation := "/api/v1/policies/" + envelope.Data.ID
+		if loc := resp.Header.Get("Location"); loc != wantLocation {
+			t.Errorf("Location = %q, want %q", loc, wantLocation)
+		}
 	})
 
 	t.Run("invalid YAML returns 400", func(t *testing.T) {

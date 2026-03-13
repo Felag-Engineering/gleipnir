@@ -33,7 +33,7 @@ func NewWebhookHandler(store *db.Store, launcher *RunLauncher) *WebhookHandler {
 }
 
 // Handle is the chi-compatible HTTP handler for webhook-triggered runs.
-// Responds 202 Accepted with {"run_id": "..."} on success.
+// Responds 202 Accepted with {"data": {"run_id": "..."}} on success.
 // Responds 400 if the request body is not valid JSON.
 // Responds 404 if the policy does not exist.
 // Responds 409 if the concurrency policy is skip and a run is already active.
@@ -41,7 +41,7 @@ func NewWebhookHandler(store *db.Store, launcher *RunLauncher) *WebhookHandler {
 func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	policyID := chi.URLParam(r, "policyID")
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MiB limit
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		api.WriteError(w, http.StatusBadRequest, "failed to read body", "")
 		return

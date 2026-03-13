@@ -13,6 +13,7 @@ import (
 // Mount this under /api/v1/ in main.go.
 func NewRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry) chi.Router {
 	r := chi.NewRouter()
+	r.Use(BodySizeLimit(MaxRequestBodySize))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -31,6 +32,7 @@ func NewRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry) chi
 	})
 
 	r.Route("/mcp", func(r chi.Router) {
+		r.Use(RequireJSON)
 		mcpH := NewMCPHandler(store, registry)
 		r.Route("/servers", func(r chi.Router) {
 			r.Get("/", mcpH.List)

@@ -70,10 +70,10 @@ func run() error {
 	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
 
 	webhookHandler := trigger.NewWebhookHandler(store, launcher)
-	r.With(middleware.Throttle(10)).Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
+	r.With(middleware.Throttle(10), api.BodySizeLimit(1<<20)).Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
 
 	manualTriggerHandler := trigger.NewManualTriggerHandler(store, launcher)
-	r.Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
+	r.With(api.BodySizeLimit(1<<20)).Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
 
 	scheduler := trigger.NewScheduler(store, launcher)
 	if err := scheduler.Start(ctx); err != nil {

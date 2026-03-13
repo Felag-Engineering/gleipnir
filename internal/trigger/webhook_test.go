@@ -13,6 +13,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/go-chi/chi/v5"
+	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
@@ -95,6 +96,7 @@ func callHandler(t *testing.T, h *trigger.WebhookHandler, policyID, body string)
 func callHandlerWithHeaders(t *testing.T, h *trigger.WebhookHandler, policyID, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
+	r.Use(api.BodySizeLimit(api.MaxRequestBodySize))
 	r.Post("/api/v1/webhooks/{policyID}", h.Handle)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/"+policyID, strings.NewReader(body))
@@ -145,8 +147,8 @@ func TestWebhookHandler(t *testing.T) {
 				insertTestPolicy(t, store, "p-toolarge", minimalWebhookPolicy)
 			},
 			policyID: "p-toolarge",
-			// The full string is valid JSON, but io.LimitReader truncates it to 1 MiB,
-			// cutting off the closing `"}` so json.Valid returns false.
+			// BodySizeLimit middleware wraps the body with http.MaxBytesReader, so
+			// io.ReadAll returns an error when the limit is exceeded.
 			body:       "{\"x\":\"" + strings.Repeat("a", 1<<20) + "\"}",
 			wantStatus: http.StatusBadRequest,
 		},

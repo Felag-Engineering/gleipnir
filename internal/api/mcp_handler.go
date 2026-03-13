@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -100,7 +99,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 		URL  string `json:"url"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
@@ -146,7 +145,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	WriteJSON(w, http.StatusCreated, resp)
+	WriteCreated(w, "/api/v1/mcp/servers/"+server.ID, resp)
 }
 
 // Delete handles DELETE /api/v1/mcp/servers/{id}.
@@ -275,7 +274,7 @@ func (h *MCPHandler) UpdateToolRole(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		CapabilityRole string `json:"capability_role"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}

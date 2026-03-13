@@ -41,7 +41,7 @@ func NewManualTriggerHandler(store *db.Store, launcher *RunLauncher) *ManualTrig
 func (h *ManualTriggerHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	policyID := chi.URLParam(r, "policyID")
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MiB limit
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		api.WriteError(w, http.StatusBadRequest, "failed to read body", "")
 		return
