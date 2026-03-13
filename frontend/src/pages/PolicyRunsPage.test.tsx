@@ -204,10 +204,10 @@ describe('PolicyRunsPage — navigation links', () => {
     mockLoaded([])
   })
 
-  it('back link points to /dashboard', () => {
+  it('back link points to /policies', () => {
     renderPage()
     const backLink = screen.getByText(/← Policies/)
-    expect(backLink).toHaveAttribute('href', '/dashboard')
+    expect(backLink).toHaveAttribute('href', '/policies')
   })
 
   it('"Edit policy" link in header points to /policies/:id', () => {

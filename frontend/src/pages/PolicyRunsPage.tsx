@@ -112,7 +112,7 @@ export default function PolicyRunsPage() {
     <div className={styles.page}>
       <div className={styles.header}>
         <div className={styles.headerLeft}>
-          <Link to="/dashboard" className={styles.backLink}>
+          <Link to="/policies" className={styles.backLink}>
             ← Policies
           </Link>
           <h1 className={styles.title}>{heading}</h1>

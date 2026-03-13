@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { EditorTopBar } from '@/components/PolicyEditor/EditorTopBar/EditorTopBar'
 import { YamlEditor } from '@/components/PolicyEditor/YamlEditor/YamlEditor'
 import { PolicyIdentitySection } from '@/components/PolicyEditor/FormMode/PolicyIdentitySection'
@@ -95,7 +95,7 @@ export function PolicyEditorPage() {
     if (!id) return
     try {
       await deletePolicy.mutateAsync(id)
-      navigate('/dashboard')
+      navigate('/policies')
     } catch (e) {
       const err = e as ApiError
       setSaveError(err?.detail ?? err?.message ?? 'Delete failed. Please try again.')
@@ -144,6 +144,11 @@ export function PolicyEditorPage() {
 
   return (
     <div className={styles.page}>
+      <div className={styles.backLinkWrapper}>
+        <Link to="/policies" className={styles.backLink}>
+          ← Policies
+        </Link>
+      </div>
       <EditorTopBar
         policyName={policyName}
         isDirty={isDirty}

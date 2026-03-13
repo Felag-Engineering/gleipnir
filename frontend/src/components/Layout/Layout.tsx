@@ -23,7 +23,7 @@ export default function Layout() {
               Dashboard
             </NavLink>
             <NavLink
-              to="/policies/new"
+              to="/policies"
               className={() =>
                 policiesActive ? `${styles.navLink} ${styles.navLinkActive}` : styles.navLink
               }

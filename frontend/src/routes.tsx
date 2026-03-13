@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom'
 import Layout from './components/Layout/Layout'
 import DashboardPage from './pages/DashboardPage'
+import PoliciesPage from './pages/PoliciesPage'
 import PolicyEditorPage from './pages/PolicyEditorPage'
 import PolicyRunsPage from './pages/PolicyRunsPage'
 import RunDetailPage from './pages/RunDetailPage'
@@ -14,6 +15,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: 'dashboard', element: <DashboardPage />, errorElement: <RouteErrorFallback /> },
+      { path: 'policies', element: <PoliciesPage />, errorElement: <RouteErrorFallback /> },
       { path: 'policies/new', element: <PolicyEditorPage />, errorElement: <RouteErrorFallback /> },
       { path: 'policies/:id/runs', element: <PolicyRunsPage />, errorElement: <RouteErrorFallback /> },
       { path: 'policies/:id', element: <PolicyEditorPage />, errorElement: <RouteErrorFallback /> },

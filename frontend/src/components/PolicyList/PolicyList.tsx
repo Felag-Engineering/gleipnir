@@ -8,6 +8,7 @@ import styles from './PolicyList.module.css'
 interface Props {
   policies: ApiPolicyListItem[]
   onTrigger: (policyId: string, policyName: string) => void
+  linkTo?: 'runs' | 'editor'
 }
 
 // Group policies by their folder field, using "Default" for unset entries.
@@ -32,7 +33,7 @@ const KNOWN_STATUSES = new Set<string>([
 ])
 const KNOWN_TRIGGERS = new Set<string>(['webhook', 'cron', 'poll', 'manual', 'scheduled'])
 
-export function PolicyList({ policies, onTrigger }: Props) {
+export function PolicyList({ policies, onTrigger, linkTo = 'runs' }: Props) {
   const groups = groupByFolder(policies)
 
   return (
@@ -50,7 +51,7 @@ export function PolicyList({ policies, onTrigger }: Props) {
             {items.map(policy => (
               <div key={policy.id} className={styles.row}>
                 <Link
-                  to={`/policies/${policy.id}/runs`}
+                  to={linkTo === 'editor' ? `/policies/${policy.id}` : `/policies/${policy.id}/runs`}
                   className={styles.rowLink}
                 >
                   <span className={styles.policyName}>{policy.name}</span>
