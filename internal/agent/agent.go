@@ -399,6 +399,14 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		if len(toolResults) == 0 {
 			return a.failRun(ctx, fmt.Errorf("tool_use stop reason with no tool calls dispatched"))
 		}
+
+		// Prepend a current-time text block so the agent is aware of elapsed
+		// time between tool calls (issue #205). The system prompt carries the
+		// static run-start timestamp; this per-turn timestamp is the clock.
+		timeBlock := anthropic.NewTextBlock(
+			fmt.Sprintf("[Current time: %s]", time.Now().UTC().Format(time.RFC3339)),
+		)
+		toolResults = append([]anthropic.ContentBlockParamUnion{timeBlock}, toolResults...)
 		history = append(history, anthropic.NewUserMessage(toolResults...))
 	}
 }

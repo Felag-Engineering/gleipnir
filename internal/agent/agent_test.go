@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1338,4 +1339,95 @@ func TestRun_Cancellation(t *testing.T) {
 
 		assertCancelledStep(t, s, "r1")
 	})
+}
+
+// capturingMessages wraps fakeMessages and records the Messages slice from
+// each New() call so tests can inspect what was sent to the API.
+type capturingMessages struct {
+	inner    *fakeMessages
+	captured [][]anthropic.MessageParam
+}
+
+func (c *capturingMessages) New(ctx context.Context, body anthropic.MessageNewParams, opts ...option.RequestOption) (*anthropic.Message, error) {
+	c.captured = append(c.captured, body.Messages)
+	return c.inner.New(ctx, body, opts...)
+}
+
+func TestRun_ToolResultTimestamp(t *testing.T) {
+	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "tool output"}},
+				"isError": false,
+			},
+		})
+	}))
+	defer mcpSrv.Close()
+
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	insertRun(t, s, "r1", "p1", "pending")
+
+	tools := []mcp.ResolvedTool{sensorToolForRun(mcpSrv.URL, "my-server", "read_data")}
+
+	inner := &fakeMessages{responses: []*anthropic.Message{
+		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"arg": "x"}, 10, 5),
+		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
+	}}
+	capturing := &capturingMessages{inner: inner}
+
+	w := NewAuditWriter(s.Queries)
+	ba, err := New(Config{
+		Claude:           &anthropic.Client{},
+		Tools:            tools,
+		Policy:           minimalPolicy(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		MessagesOverride: capturing,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := ba.Run(context.Background(), "r1", "use the tool"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Two API calls are made: the first returns a tool_use, the second returns end_turn.
+	// The messages slice for the second call contains:
+	//   [0] user (trigger payload)
+	//   [1] assistant (tool_use response)
+	//   [2] user (tool results with prepended timestamp)
+	if len(capturing.captured) != 2 {
+		t.Fatalf("expected 2 API calls, got %d", len(capturing.captured))
+	}
+
+	secondCallMessages := capturing.captured[1]
+	if len(secondCallMessages) < 3 {
+		t.Fatalf("second call messages: want at least 3, got %d", len(secondCallMessages))
+	}
+
+	toolResultsTurn := secondCallMessages[2]
+	if len(toolResultsTurn.Content) < 2 {
+		t.Fatalf("tool-results user turn: want at least 2 content blocks, got %d", len(toolResultsTurn.Content))
+	}
+
+	// First block must be a text block matching the timestamp pattern.
+	firstBlock := toolResultsTurn.Content[0]
+	if firstBlock.OfText == nil {
+		t.Fatalf("content[0]: expected a text block (OfText), got nil")
+	}
+	timestampRE := regexp.MustCompile(`^\[Current time: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\]$`)
+	if !timestampRE.MatchString(firstBlock.OfText.Text) {
+		t.Errorf("content[0].text = %q, want to match %s", firstBlock.OfText.Text, timestampRE)
+	}
+
+	// Second block must be a tool result block.
+	secondBlock := toolResultsTurn.Content[1]
+	if secondBlock.OfToolResult == nil {
+		t.Errorf("content[1]: expected a tool result block (OfToolResult), got nil")
+	}
 }
