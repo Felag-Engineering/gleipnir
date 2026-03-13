@@ -286,17 +286,21 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusAccepted, w.Body.String())
 	}
 
-	// Give the goroutine a moment to update the DB before we query.
-	// The goroutine will fail quickly (no Claude API key), so the run will
-	// transition to failed. We just need to verify the run was created.
-	time.Sleep(100 * time.Millisecond)
-
-	runs, err := store.ListRunsByPolicy(context.Background(), "p-run-created")
-	if err != nil {
-		t.Fatalf("ListRunsByPolicy: %v", err)
-	}
-	if len(runs) == 0 {
-		t.Fatal("expected at least one run in DB after 202 response, got 0")
+	var runs []db.Run
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var err error
+		runs, err = store.ListRunsByPolicy(context.Background(), "p-run-created")
+		if err != nil {
+			t.Fatalf("ListRunsByPolicy: %v", err)
+		}
+		if len(runs) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for run to appear in DB")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	// The run should be in a known final or active state.
 	run := runs[0]
