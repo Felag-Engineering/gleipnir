@@ -3,8 +3,11 @@ package policy
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
 )
@@ -248,5 +251,96 @@ func TestService_Update_ModelValidatorCalled(t *testing.T) {
 	_, err = svcWithMV.Update(context.Background(), createResult.Policy.ID, validYAML)
 	if err == nil {
 		t.Fatal("expected error from model validator on update, got nil")
+	}
+}
+
+func TestToModelPolicy_ValidTimestamps(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+	nowStr := now.Format(time.RFC3339Nano)
+	pausedStr := now.Add(time.Minute).Format(time.RFC3339Nano)
+	row := db.Policy{
+		ID:          "id1",
+		Name:        "p",
+		TriggerType: string(model.TriggerTypeWebhook),
+		Yaml:        "yaml",
+		CreatedAt:   nowStr,
+		UpdatedAt:   nowStr,
+		PausedAt:    &pausedStr,
+	}
+
+	p, err := toModelPolicy(row)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !p.CreatedAt.Equal(now) {
+		t.Errorf("CreatedAt = %v, want %v", p.CreatedAt, now)
+	}
+	if !p.UpdatedAt.Equal(now) {
+		t.Errorf("UpdatedAt = %v, want %v", p.UpdatedAt, now)
+	}
+	want := now.Add(time.Minute)
+	if p.PausedAt == nil || !p.PausedAt.Equal(want) {
+		t.Errorf("PausedAt = %v, want %v", p.PausedAt, want)
+	}
+}
+
+func TestToModelPolicy_InvalidCreatedAt(t *testing.T) {
+	row := db.Policy{
+		CreatedAt: "not-a-time",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	_, err := toModelPolicy(row)
+	if err == nil {
+		t.Fatal("expected error for invalid created_at, got nil")
+	}
+	if !strings.Contains(err.Error(), "parse created_at") {
+		t.Errorf("error %q does not contain %q", err.Error(), "parse created_at")
+	}
+}
+
+func TestToModelPolicy_InvalidUpdatedAt(t *testing.T) {
+	row := db.Policy{
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt: "not-a-time",
+	}
+	_, err := toModelPolicy(row)
+	if err == nil {
+		t.Fatal("expected error for invalid updated_at, got nil")
+	}
+	if !strings.Contains(err.Error(), "parse updated_at") {
+		t.Errorf("error %q does not contain %q", err.Error(), "parse updated_at")
+	}
+}
+
+func TestToModelPolicy_InvalidPausedAt(t *testing.T) {
+	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+	bad := "not-a-time"
+	row := db.Policy{
+		CreatedAt: nowStr,
+		UpdatedAt: nowStr,
+		PausedAt:  &bad,
+	}
+	_, err := toModelPolicy(row)
+	if err == nil {
+		t.Fatal("expected error for invalid paused_at, got nil")
+	}
+	if !strings.Contains(err.Error(), "parse paused_at") {
+		t.Errorf("error %q does not contain %q", err.Error(), "parse paused_at")
+	}
+}
+
+func TestToModelPolicy_NilPausedAt(t *testing.T) {
+	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+	row := db.Policy{
+		CreatedAt: nowStr,
+		UpdatedAt: nowStr,
+		PausedAt:  nil,
+	}
+	p, err := toModelPolicy(row)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.PausedAt != nil {
+		t.Errorf("PausedAt = %v, want nil", p.PausedAt)
 	}
 }

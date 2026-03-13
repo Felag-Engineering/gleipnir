@@ -91,7 +91,11 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 		return nil, fmt.Errorf("create policy: %w", err)
 	}
 
-	return &SaveResult{Policy: toModelPolicy(row), Warnings: warnings}, nil
+	p, err := toModelPolicy(row)
+	if err != nil {
+		return nil, fmt.Errorf("create policy: %w", err)
+	}
+	return &SaveResult{Policy: p, Warnings: warnings}, nil
 }
 
 // Update re-parses and re-validates the YAML, checks tool references, and
@@ -149,7 +153,10 @@ func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (
 		}
 	}
 
-	result := toModelPolicy(row)
+	result, err := toModelPolicy(row)
+	if err != nil {
+		return nil, fmt.Errorf("update policy: %w", err)
+	}
 	return &SaveResult{Policy: result, Warnings: warnings}, nil
 }
 
@@ -174,9 +181,15 @@ func (s *Service) ClearPolicyPausedAt(ctx context.Context, policyID string) erro
 }
 
 // toModelPolicy maps a sqlc-generated db.Policy to the domain model.Policy.
-func toModelPolicy(row db.Policy) model.Policy {
-	createdAt, _ := time.Parse(time.RFC3339Nano, row.CreatedAt)
-	updatedAt, _ := time.Parse(time.RFC3339Nano, row.UpdatedAt)
+func toModelPolicy(row db.Policy) (model.Policy, error) {
+	createdAt, err := time.Parse(time.RFC3339Nano, row.CreatedAt)
+	if err != nil {
+		return model.Policy{}, fmt.Errorf("parse created_at %q: %w", row.CreatedAt, err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339Nano, row.UpdatedAt)
+	if err != nil {
+		return model.Policy{}, fmt.Errorf("parse updated_at %q: %w", row.UpdatedAt, err)
+	}
 	p := model.Policy{
 		ID:          row.ID,
 		Name:        row.Name,
@@ -186,10 +199,13 @@ func toModelPolicy(row db.Policy) model.Policy {
 		UpdatedAt:   updatedAt,
 	}
 	if row.PausedAt != nil {
-		t, _ := time.Parse(time.RFC3339Nano, *row.PausedAt)
+		t, err := time.Parse(time.RFC3339Nano, *row.PausedAt)
+		if err != nil {
+			return model.Policy{}, fmt.Errorf("parse paused_at %q: %w", *row.PausedAt, err)
+		}
 		p.PausedAt = &t
 	}
-	return p
+	return p, nil
 }
 
 // validateModel calls the modelValidator if one is configured. Returns nil
