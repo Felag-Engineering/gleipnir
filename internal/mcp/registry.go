@@ -153,6 +153,10 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 // capability_role defaulting to 'sensor'. last_discovered_at is intentionally
 // left NULL here — it is set only by RefreshTools.
 func (r *Registry) RegisterServer(ctx context.Context, name, url string) error {
+	if err := ValidateServerURL(url); err != nil {
+		return fmt.Errorf("invalid server url: %w", err)
+	}
+
 	serverID := model.NewULID()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 

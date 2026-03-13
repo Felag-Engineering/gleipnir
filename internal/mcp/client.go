@@ -84,6 +84,15 @@ func NewClient(serverURL string) *Client {
 		serverURL: serverURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if err := checkRedirectTarget(req.URL); err != nil {
+					return err
+				}
+				if len(via) >= 10 {
+					return fmt.Errorf("stopped after 10 redirects")
+				}
+				return nil
+			},
 		},
 	}
 }

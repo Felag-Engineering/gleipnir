@@ -416,12 +416,12 @@ func TestRunsHandler_Cancel(t *testing.T) {
 	}
 
 	cases := []struct {
-		name           string
-		setup          func(t *testing.T, store *db.Store, manager *trigger.RunManager)
-		runID          string
-		wantCode       int
-		checkSuccess   func(t *testing.T, body cancelSuccessBody)
-		checkConflict  func(t *testing.T, body cancelErrorBody)
+		name          string
+		setup         func(t *testing.T, store *db.Store, manager *trigger.RunManager)
+		runID         string
+		wantCode      int
+		checkSuccess  func(t *testing.T, body cancelSuccessBody)
+		checkConflict func(t *testing.T, body cancelErrorBody)
 	}{
 		{
 			name: "running run returns 202 with run_id",
