@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -26,7 +27,7 @@ Your operating principles:
 // It combines the preamble (policy-supplied or default), the generated
 // capabilities block listing granted tools, and the task instructions.
 // The capabilities block is generated at run start and never persisted (ADR-012).
-func RenderSystemPrompt(p *model.ParsedPolicy, granted []model.GrantedTool) string {
+func RenderSystemPrompt(p *model.ParsedPolicy, granted []model.GrantedTool, now time.Time) string {
 	var b strings.Builder
 
 	preamble := p.Agent.Preamble
@@ -34,6 +35,7 @@ func RenderSystemPrompt(p *model.ParsedPolicy, granted []model.GrantedTool) stri
 		preamble = defaultPreamble
 	}
 	b.WriteString(preamble)
+	b.WriteString("\n\nThis run started at: " + now.Format(time.RFC3339))
 	b.WriteString("\n\n")
 
 	b.WriteString(renderCapabilitiesBlock(granted))

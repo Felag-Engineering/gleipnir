@@ -3,6 +3,7 @@ package policy
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -17,7 +18,7 @@ func TestRenderSystemPrompt_DefaultPreamble(t *testing.T) {
 		{ServerName: "github", ToolName: "list_repos", Role: model.CapabilityRoleSensor},
 	}
 
-	result := RenderSystemPrompt(p, granted)
+	result := RenderSystemPrompt(p, granted, time.Date(2026, 3, 13, 12, 0, 0, 0, time.UTC))
 
 	if !strings.Contains(result, "BoundAgent") {
 		t.Error("expected default preamble containing 'BoundAgent'")
@@ -41,7 +42,7 @@ func TestRenderSystemPrompt_CustomPreamble(t *testing.T) {
 		},
 	}
 
-	result := RenderSystemPrompt(p, nil)
+	result := RenderSystemPrompt(p, nil, time.Date(2026, 3, 13, 12, 0, 0, 0, time.UTC))
 
 	if !strings.Contains(result, "You are a custom agent.") {
 		t.Error("expected custom preamble")
@@ -49,6 +50,41 @@ func TestRenderSystemPrompt_CustomPreamble(t *testing.T) {
 	if strings.Contains(result, "BoundAgent") {
 		t.Error("should not contain default preamble when custom is provided")
 	}
+}
+
+func TestRenderSystemPrompt_TimestampInjected(t *testing.T) {
+	fixedTime := time.Date(2026, 1, 15, 9, 30, 0, 0, time.UTC)
+	wantTimestamp := "This run started at: 2026-01-15T09:30:00Z"
+
+	t.Run("default preamble", func(t *testing.T) {
+		p := &model.ParsedPolicy{
+			Agent: model.AgentConfig{Task: "Do something"},
+		}
+		granted := []model.GrantedTool{
+			{ServerName: "s", ToolName: "t", Role: model.CapabilityRoleSensor},
+		}
+		result := RenderSystemPrompt(p, granted, fixedTime)
+
+		if !strings.Contains(result, wantTimestamp) {
+			t.Errorf("expected %q in result", wantTimestamp)
+		}
+		tsIdx := strings.Index(result, wantTimestamp)
+		capIdx := strings.Index(result, "## Capabilities")
+		if tsIdx >= capIdx {
+			t.Error("expected timestamp to appear before ## Capabilities")
+		}
+	})
+
+	t.Run("custom preamble", func(t *testing.T) {
+		p := &model.ParsedPolicy{
+			Agent: model.AgentConfig{Preamble: "Custom preamble.", Task: "Do something"},
+		}
+		result := RenderSystemPrompt(p, nil, fixedTime)
+
+		if !strings.Contains(result, wantTimestamp) {
+			t.Errorf("expected %q in result with custom preamble", wantTimestamp)
+		}
+	})
 }
 
 func TestRenderCapabilitiesBlock_AllRoles(t *testing.T) {

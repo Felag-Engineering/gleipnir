@@ -205,7 +205,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	}
 
 	// Render system prompt (ADR-001: only granted tools are visible to the agent).
-	systemPrompt := policy.RenderSystemPrompt(a.policy, grantedTools)
+	systemPrompt := policy.RenderSystemPrompt(a.policy, grantedTools, time.Now().UTC())
 
 	if err := a.sm.PersistSystemPrompt(ctx, systemPrompt); err != nil {
 		slog.WarnContext(ctx, "failed to persist system prompt", "run_id", runID, "err", err)
