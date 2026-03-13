@@ -407,12 +407,21 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 }
 
 func TestRunsHandler_Cancel(t *testing.T) {
+	type cancelSuccessBody struct {
+		Data map[string]string `json:"data"`
+	}
+	type cancelErrorBody struct {
+		Error  string `json:"error"`
+		Detail string `json:"detail"`
+	}
+
 	cases := []struct {
-		name      string
-		setup     func(t *testing.T, store *db.Store, manager *trigger.RunManager)
-		runID     string
-		wantCode  int
-		checkBody func(t *testing.T, body map[string]string)
+		name           string
+		setup          func(t *testing.T, store *db.Store, manager *trigger.RunManager)
+		runID          string
+		wantCode       int
+		checkSuccess   func(t *testing.T, body cancelSuccessBody)
+		checkConflict  func(t *testing.T, body cancelErrorBody)
 	}{
 		{
 			name: "running run returns 202 with run_id",
@@ -423,9 +432,9 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			},
 			runID:    "r-cancel-running",
 			wantCode: http.StatusAccepted,
-			checkBody: func(t *testing.T, body map[string]string) {
-				if body["run_id"] != "r-cancel-running" {
-					t.Errorf("run_id = %q, want %q", body["run_id"], "r-cancel-running")
+			checkSuccess: func(t *testing.T, body cancelSuccessBody) {
+				if body.Data["run_id"] != "r-cancel-running" {
+					t.Errorf("run_id = %q, want %q", body.Data["run_id"], "r-cancel-running")
 				}
 			},
 		},
@@ -443,12 +452,12 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			},
 			runID:    "r-cancel-complete",
 			wantCode: http.StatusConflict,
-			checkBody: func(t *testing.T, body map[string]string) {
-				if body["error"] != "run is not in a cancellable state" {
-					t.Errorf("error = %q, want %q", body["error"], "run is not in a cancellable state")
+			checkConflict: func(t *testing.T, body cancelErrorBody) {
+				if body.Error != "run is not in a cancellable state" {
+					t.Errorf("error = %q, want %q", body.Error, "run is not in a cancellable state")
 				}
-				if body["status"] != string(model.RunStatusComplete) {
-					t.Errorf("status = %q, want %q", body["status"], model.RunStatusComplete)
+				if body.Detail != string(model.RunStatusComplete) {
+					t.Errorf("detail = %q, want %q", body.Detail, model.RunStatusComplete)
 				}
 			},
 		},
@@ -460,12 +469,12 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			},
 			runID:    "r-cancel-pending",
 			wantCode: http.StatusConflict,
-			checkBody: func(t *testing.T, body map[string]string) {
-				if body["error"] != "run is not in a cancellable state" {
-					t.Errorf("error = %q, want %q", body["error"], "run is not in a cancellable state")
+			checkConflict: func(t *testing.T, body cancelErrorBody) {
+				if body.Error != "run is not in a cancellable state" {
+					t.Errorf("error = %q, want %q", body.Error, "run is not in a cancellable state")
 				}
-				if body["status"] != string(model.RunStatusPending) {
-					t.Errorf("status = %q, want %q", body["status"], model.RunStatusPending)
+				if body.Detail != string(model.RunStatusPending) {
+					t.Errorf("detail = %q, want %q", body.Detail, model.RunStatusPending)
 				}
 			},
 		},
@@ -477,12 +486,12 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			},
 			runID:    "r-cancel-failed",
 			wantCode: http.StatusConflict,
-			checkBody: func(t *testing.T, body map[string]string) {
-				if body["error"] != "run is not in a cancellable state" {
-					t.Errorf("error = %q, want %q", body["error"], "run is not in a cancellable state")
+			checkConflict: func(t *testing.T, body cancelErrorBody) {
+				if body.Error != "run is not in a cancellable state" {
+					t.Errorf("error = %q, want %q", body.Error, "run is not in a cancellable state")
 				}
-				if body["status"] != string(model.RunStatusFailed) {
-					t.Errorf("status = %q, want %q", body["status"], model.RunStatusFailed)
+				if body.Detail != string(model.RunStatusFailed) {
+					t.Errorf("detail = %q, want %q", body.Detail, model.RunStatusFailed)
 				}
 			},
 		},
@@ -494,12 +503,12 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			},
 			runID:    "r-cancel-waiting",
 			wantCode: http.StatusConflict,
-			checkBody: func(t *testing.T, body map[string]string) {
-				if body["error"] != "run is not in a cancellable state" {
-					t.Errorf("error = %q, want %q", body["error"], "run is not in a cancellable state")
+			checkConflict: func(t *testing.T, body cancelErrorBody) {
+				if body.Error != "run is not in a cancellable state" {
+					t.Errorf("error = %q, want %q", body.Error, "run is not in a cancellable state")
 				}
-				if body["status"] != string(model.RunStatusWaitingForApproval) {
-					t.Errorf("status = %q, want %q", body["status"], model.RunStatusWaitingForApproval)
+				if body.Detail != string(model.RunStatusWaitingForApproval) {
+					t.Errorf("detail = %q, want %q", body.Detail, model.RunStatusWaitingForApproval)
 				}
 			},
 		},
@@ -511,12 +520,12 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			},
 			runID:    "r-cancel-interrupted",
 			wantCode: http.StatusConflict,
-			checkBody: func(t *testing.T, body map[string]string) {
-				if body["error"] != "run is not in a cancellable state" {
-					t.Errorf("error = %q, want %q", body["error"], "run is not in a cancellable state")
+			checkConflict: func(t *testing.T, body cancelErrorBody) {
+				if body.Error != "run is not in a cancellable state" {
+					t.Errorf("error = %q, want %q", body.Error, "run is not in a cancellable state")
 				}
-				if body["status"] != string(model.RunStatusInterrupted) {
-					t.Errorf("status = %q, want %q", body["status"], model.RunStatusInterrupted)
+				if body.Detail != string(model.RunStatusInterrupted) {
+					t.Errorf("detail = %q, want %q", body.Detail, model.RunStatusInterrupted)
 				}
 			},
 		},
@@ -541,17 +550,27 @@ func TestRunsHandler_Cancel(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body: %s", w.Code, tc.wantCode, w.Body.String())
 			}
 
-			if tc.checkBody != nil {
-				ct := w.Result().Header.Get("Content-Type")
+			ct := w.Result().Header.Get("Content-Type")
+			if tc.checkSuccess != nil || tc.checkConflict != nil {
 				if !strings.Contains(ct, "application/json") {
 					t.Errorf("Content-Type = %q, want application/json", ct)
 				}
+			}
 
-				var body map[string]string
+			if tc.checkSuccess != nil {
+				var body cancelSuccessBody
 				if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-					t.Fatalf("decode response: %v", err)
+					t.Fatalf("decode success response: %v", err)
 				}
-				tc.checkBody(t, body)
+				tc.checkSuccess(t, body)
+			}
+
+			if tc.checkConflict != nil {
+				var body cancelErrorBody
+				if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+					t.Fatalf("decode conflict response: %v", err)
+				}
+				tc.checkConflict(t, body)
 			}
 		})
 	}

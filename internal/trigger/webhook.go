@@ -15,6 +15,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/agent"
+	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
@@ -83,12 +84,12 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MiB limit
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "failed to read body", "")
 		return
 	}
 
 	if !json.Valid(body) {
-		http.Error(w, "request body must be valid JSON", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "request body must be valid JSON", "")
 		return
 	}
 
@@ -97,16 +98,16 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	dbPolicy, err := h.store.GetPolicy(ctx, policyID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "policy not found", http.StatusNotFound)
+			api.WriteError(w, http.StatusNotFound, "policy not found", "")
 			return
 		}
-		http.Error(w, "failed to load policy", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "failed to load policy", "")
 		return
 	}
 
 	parsed, err := policy.Parse(dbPolicy.Yaml)
 	if err != nil {
-		http.Error(w, "failed to parse policy", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "failed to parse policy", "")
 		return
 	}
 
@@ -114,20 +115,20 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	case model.ConcurrencySkip:
 		active, err := h.store.ListActiveRunsByPolicy(ctx, policyID)
 		if err != nil {
-			http.Error(w, "failed to check active runs", http.StatusInternalServerError)
+			api.WriteError(w, http.StatusInternalServerError, "failed to check active runs", "")
 			return
 		}
 		if len(active) > 0 {
-			http.Error(w, "run already active for this policy (concurrency: skip)", http.StatusConflict)
+			api.WriteError(w, http.StatusConflict, "run already active for this policy (concurrency: skip)", "")
 			return
 		}
 	case model.ConcurrencyParallel:
 		// proceed without concurrency checks
 	case model.ConcurrencyQueue, model.ConcurrencyReplace:
-		http.Error(w, "concurrency policy not implemented", http.StatusNotImplemented)
+		api.WriteError(w, http.StatusNotImplemented, "concurrency policy not implemented", "")
 		return
 	default:
-		http.Error(w, "unrecognised concurrency policy", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "unrecognised concurrency policy", "")
 		return
 	}
 
@@ -141,7 +142,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:      now,
 	})
 	if err != nil {
-		http.Error(w, "failed to create run", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "failed to create run", "")
 		return
 	}
 
@@ -149,7 +150,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Mark the run failed before returning — it was created but cannot proceed.
 		markRunFailed(h.store, run.ID, err)
-		http.Error(w, "failed to resolve tools", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "failed to resolve tools", "")
 		return
 	}
 
@@ -173,16 +174,14 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		// rescues 'running' and 'waiting_for_approval' states.
 		markRunFailed(h.store, run.ID, err)
 		audit.Close()
-		http.Error(w, "failed to construct agent", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "failed to construct agent", "")
 		return
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	h.manager.Register(run.ID, cancel)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]string{"run_id": run.ID})
+	api.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": run.ID})
 
 	go func() {
 		defer cancel()

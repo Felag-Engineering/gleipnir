@@ -220,11 +220,13 @@ func fireWebhook(t *testing.T, router http.Handler, policyID string) string {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("POST webhook: status %d, body: %s", rec.Code, rec.Body.String())
 	}
-	var resp map[string]string
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+	var env struct {
+		Data map[string]string `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&env); err != nil {
 		t.Fatalf("decode webhook response: %v", err)
 	}
-	runID, ok := resp["run_id"]
+	runID, ok := env.Data["run_id"]
 	if !ok || runID == "" {
 		t.Fatal("webhook response missing run_id")
 	}

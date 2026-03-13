@@ -11,8 +11,6 @@ import (
 
 // NewRouter returns a chi.Router with sub-routers for /policies and /mcp.
 // Mount this under /api/v1/ in main.go.
-// Note: existing /api/v1/webhooks/ and /api/v1/runs/ routes remain on the root
-// chi router for now. Those handlers will be migrated to the envelope format separately.
 func NewRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry) chi.Router {
 	r := chi.NewRouter()
 

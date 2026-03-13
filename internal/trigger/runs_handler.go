@@ -2,7 +2,6 @@ package trigger
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -66,7 +65,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	var status interface{}
 	if v := r.URL.Query().Get("status"); v != "" {
 		if !model.RunStatus(v).Valid() {
-			http.Error(w, fmt.Sprintf("invalid status %q: must be one of pending, running, complete, failed, waiting_for_approval, interrupted", v), http.StatusBadRequest)
+			api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid status %q: must be one of pending, running, complete, failed, waiting_for_approval, interrupted", v), "")
 			return
 		}
 		status = v
@@ -102,7 +101,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		slog.Error("ListRuns query failed", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
@@ -121,12 +120,12 @@ func (h *RunsHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	run, err := h.store.GetRun(ctx, runID)
 	if errors.Is(err, sql.ErrNoRows) {
-		http.Error(w, "run not found", http.StatusNotFound)
+		api.WriteError(w, http.StatusNotFound, "run not found", "")
 		return
 	}
 	if err != nil {
 		slog.Error("GetRun query failed", "run_id", runID, "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
@@ -154,18 +153,18 @@ func (h *RunsHandler) ListSteps(w http.ResponseWriter, r *http.Request) {
 	// need a separate existence check to distinguish "no steps" from "no run".
 	if _, err := h.store.GetRun(ctx, runID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "run not found", http.StatusNotFound)
+			api.WriteError(w, http.StatusNotFound, "run not found", "")
 			return
 		}
 		slog.Error("GetRun query failed", "run_id", runID, "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
 	steps, err := h.store.ListRunSteps(ctx, runID)
 	if err != nil {
 		slog.Error("ListRunSteps query failed", "run_id", runID, "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
@@ -194,21 +193,16 @@ func (h *RunsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	run, err := h.store.GetRun(r.Context(), runID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "run not found", http.StatusNotFound)
+			api.WriteError(w, http.StatusNotFound, "run not found", "")
 			return
 		}
 		slog.Error("GetRun query failed", "run_id", runID, "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
 	if run.Status != string(model.RunStatusRunning) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error":  "run is not in a cancellable state",
-			"status": run.Status,
-		})
+		api.WriteError(w, http.StatusConflict, "run is not in a cancellable state", run.Status)
 		return
 	}
 
@@ -219,9 +213,7 @@ func (h *RunsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("cancel called for running run with no registered goroutine", "run_id", runID)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"run_id": runID})
+	api.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID})
 }
 
 func toRunSummary(r db.Run) RunSummary {
