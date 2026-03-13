@@ -153,7 +153,8 @@ func TestManualTriggerHandler(t *testing.T) {
 
 			registry := mcp.NewRegistry(store.DB())
 			claudeClient := anthropic.NewClient()
-			h := trigger.NewManualTriggerHandler(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+			h := trigger.NewManualTriggerHandler(store, launcher)
 
 			w := callManualHandler(t, h, tc.policyID, tc.body)
 			if w.Code != tc.wantStatus {
@@ -169,7 +170,8 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 
 	registry := mcp.NewRegistry(store.DB())
 	claudeClient := anthropic.NewClient()
-	h := trigger.NewManualTriggerHandler(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+	h := trigger.NewManualTriggerHandler(store, launcher)
 
 	w := callManualHandler(t, h, "mp-run-created", `{"message": "test"}`)
 	if w.Code != http.StatusAccepted {
@@ -200,7 +202,8 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 
 	registry := mcp.NewRegistry(store.DB())
 	claudeClient := anthropic.NewClient()
-	h := trigger.NewManualTriggerHandler(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+	h := trigger.NewManualTriggerHandler(store, launcher)
 
 	// Empty body should be accepted (treated as '{}')
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/mp-empty-body/trigger", strings.NewReader(""))

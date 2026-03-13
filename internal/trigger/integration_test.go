@@ -178,7 +178,8 @@ func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, msgs agent.
 		cfg.MessagesOverride = msgs
 		return agent.New(cfg)
 	})
-	wh := trigger.NewWebhookHandler(store, registry, manager, factory, nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, factory, nil)
+	wh := trigger.NewWebhookHandler(store, launcher)
 	rh := trigger.NewRunsHandler(store, manager)
 
 	// Reuse newRunsRouter for the runs routes so both stay in sync automatically.

@@ -112,7 +112,8 @@ func TestScheduler_SkipsPastTimestampsOnStartup(t *testing.T) {
 	defer cancel()
 
 	manager := trigger.NewRunManager()
-	scheduler := trigger.NewScheduler(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -145,7 +146,8 @@ func TestScheduler_FiresFutureTimestamp(t *testing.T) {
 	defer cancel()
 
 	manager := trigger.NewRunManager()
-	scheduler := trigger.NewScheduler(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -179,7 +181,8 @@ func TestScheduler_AutoPausesAfterAllTimesConsumed(t *testing.T) {
 	defer cancel()
 
 	manager := trigger.NewRunManager()
-	scheduler := trigger.NewScheduler(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -223,7 +226,8 @@ func TestScheduler_DeduplicatesAlreadyFiredTime(t *testing.T) {
 	defer cancel()
 
 	manager := trigger.NewRunManager()
-	scheduler := trigger.NewScheduler(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)

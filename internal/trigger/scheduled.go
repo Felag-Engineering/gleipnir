@@ -8,9 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/agent"
 	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
 )
@@ -20,22 +18,15 @@ import (
 // timestamps, and sets timers for any future ones. After the final fire time fires for
 // a policy it pauses the policy so it is not re-loaded on the next restart.
 type Scheduler struct {
-	store     *db.Store
-	registry  *mcp.Registry
-	manager   *RunManager
-	newAgent  AgentFactory
-	publisher agent.Publisher
+	store    *db.Store
+	launcher *RunLauncher
 }
 
 // NewScheduler returns a Scheduler ready to be started.
-// publisher may be nil, in which case no real-time events are emitted.
-func NewScheduler(store *db.Store, registry *mcp.Registry, manager *RunManager, factory AgentFactory, publisher agent.Publisher) *Scheduler {
+func NewScheduler(store *db.Store, launcher *RunLauncher) *Scheduler {
 	return &Scheduler{
-		store:     store,
-		registry:  registry,
-		manager:   manager,
-		newAgent:  factory,
-		publisher: publisher,
+		store:    store,
+		launcher: launcher,
 	}
 }
 
@@ -104,54 +95,20 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 		"scheduled_for": fireTime.UTC().Format(time.RFC3339),
 	})
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	run, err := s.store.CreateRun(ctx, db.CreateRunParams{
-		ID:             model.NewULID(),
+	// TODO: scheduled trigger does not currently enforce the policy's concurrency
+	// setting — this is a known pre-existing gap to be addressed in a future release.
+	result, err := s.launcher.Launch(ctx, LaunchParams{
 		PolicyID:       policyID,
-		TriggerType:    string(model.TriggerTypeScheduled),
+		TriggerType:    model.TriggerTypeScheduled,
 		TriggerPayload: string(payload),
-		StartedAt:      now,
-		CreatedAt:      now,
+		ParsedPolicy:   parsed,
 	})
 	if err != nil {
-		slog.Error("scheduled: failed to create run", "policy_id", policyID, "fire_at", fireTime, "err", err)
+		slog.Error("scheduled: failed to launch run", "policy_id", policyID, "fire_at", fireTime, "err", err)
 		return
 	}
 
-	tools, err := s.registry.ResolveForPolicy(ctx, parsed)
-	if err != nil {
-		markRunFailed(s.store, run.ID, err)
-		slog.Error("scheduled: failed to resolve tools", "run_id", run.ID, "err", err)
-		return
-	}
-
-	audit := agent.NewAuditWriter(s.store.Queries, agent.WithPublisher(s.publisher))
-	sm := agent.NewRunStateMachine(run.ID, model.RunStatusPending, s.store.Queries, agent.WithStateMachinePublisher(s.publisher))
-
-	ba, err := s.newAgent(agent.Config{
-		Tools:        tools,
-		Policy:       parsed,
-		Audit:        audit,
-		StateMachine: sm,
-		ApprovalCh:   make(chan bool),
-	})
-	if err != nil {
-		markRunFailed(s.store, run.ID, err)
-		audit.Close()
-		slog.Error("scheduled: failed to construct agent", "run_id", run.ID, "err", err)
-		return
-	}
-
-	runCtx, cancel := context.WithCancel(context.Background())
-	s.manager.Register(run.ID, cancel)
-
-	go func() {
-		defer cancel()
-		defer s.manager.Deregister(run.ID)
-		if err := ba.Run(runCtx, run.ID, string(payload)); err != nil {
-			slog.Error("scheduled run failed", "run_id", run.ID, "err", err)
-		}
-	}()
+	slog.Info("scheduled: run launched", "run_id", result.RunID, "policy_id", policyID, "fire_at", fireTime)
 
 	// Pause policy if all fire times are now in the past.
 	s.pauseIfExhausted(ctx, policyID, parsed)

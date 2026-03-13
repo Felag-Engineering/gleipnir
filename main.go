@@ -67,13 +67,15 @@ func run() error {
 	registry := mcp.NewRegistry(store.DB())
 	runManager := trigger.NewRunManager()
 	claudeClient := anthropic.NewClient()
-	webhookHandler := trigger.NewWebhookHandler(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
+	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
+
+	webhookHandler := trigger.NewWebhookHandler(store, launcher)
 	r.With(middleware.Throttle(10)).Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
 
-	manualTriggerHandler := trigger.NewManualTriggerHandler(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
+	manualTriggerHandler := trigger.NewManualTriggerHandler(store, launcher)
 	r.Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
 
-	scheduler := trigger.NewScheduler(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
+	scheduler := trigger.NewScheduler(store, launcher)
 	if err := scheduler.Start(ctx); err != nil {
 		return fmt.Errorf("start scheduler: %w", err)
 	}

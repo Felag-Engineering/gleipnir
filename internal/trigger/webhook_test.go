@@ -241,7 +241,8 @@ func TestWebhookHandler(t *testing.T) {
 
 			registry := mcp.NewRegistry(store.DB())
 			claudeClient := anthropic.NewClient()
-			h := trigger.NewWebhookHandler(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+			h := trigger.NewWebhookHandler(store, launcher)
 
 			w := callHandlerWithHeaders(t, h, tc.policyID, tc.body, tc.headers)
 			if w.Code != tc.wantStatus {
@@ -257,7 +258,8 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 
 	registry := mcp.NewRegistry(store.DB())
 	claudeClient := anthropic.NewClient()
-	h := trigger.NewWebhookHandler(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+	h := trigger.NewWebhookHandler(store, launcher)
 
 	w := callHandler(t, h, "p-run-created", `{"event": "test"}`)
 	if w.Code != http.StatusAccepted {

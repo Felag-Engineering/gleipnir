@@ -35,7 +35,8 @@ func buildSSERouter(t *testing.T, policyID string, msgs agent.MessagesAPI, broad
 		cfg.MessagesOverride = msgs
 		return agent.New(cfg)
 	})
-	wh := trigger.NewWebhookHandler(store, registry, manager, factory, broadcaster)
+	launcher := trigger.NewRunLauncher(store, registry, manager, factory, broadcaster)
+	wh := trigger.NewWebhookHandler(store, launcher)
 	rh := trigger.NewRunsHandler(store, manager)
 
 	r := newRunsRouter(rh)
