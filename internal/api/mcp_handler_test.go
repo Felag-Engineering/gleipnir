@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,21 +15,8 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/testutil"
 )
-
-// newMCPHandlerStore opens a fresh migrated store for MCP handler tests.
-func newMCPHandlerStore(t *testing.T) *db.Store {
-	t.Helper()
-	s, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("db.Open: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	if err := s.Migrate(context.Background()); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	return s
-}
 
 // newMCPRouter wires a chi router with the MCP handler, mirroring how
 // NewRouter mounts the routes in production.
@@ -108,7 +94,7 @@ func insertTestMCPServer(t *testing.T, s *db.Store, name, url string) string {
 
 func TestMCPServerListHandler(t *testing.T) {
 	t.Run("empty list returns [] not null", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
@@ -135,7 +121,7 @@ func TestMCPServerListHandler(t *testing.T) {
 	})
 
 	t.Run("list after insert returns server with fields", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
 
@@ -172,7 +158,7 @@ func TestMCPServerListHandler(t *testing.T) {
 
 func TestMCPServerCreateHandler(t *testing.T) {
 	t.Run("valid data with reachable MCP server returns 201 with server data", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 
 		fakeMCP := makeFakeMCPServer(t, []string{"tool-a"})
@@ -217,7 +203,7 @@ func TestMCPServerCreateHandler(t *testing.T) {
 	})
 
 	t.Run("valid data with unreachable MCP server returns 201 with discovery_error", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 
 		// Start and immediately close so URL is valid but unreachable.
@@ -258,7 +244,7 @@ func TestMCPServerCreateHandler(t *testing.T) {
 	})
 
 	t.Run("missing name returns 400", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
@@ -276,7 +262,7 @@ func TestMCPServerCreateHandler(t *testing.T) {
 	})
 
 	t.Run("missing url returns 400", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
@@ -294,7 +280,7 @@ func TestMCPServerCreateHandler(t *testing.T) {
 	})
 
 	t.Run("duplicate name returns 409", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		insertTestMCPServer(t, store, "existing-server", "http://localhost:9999")
 
@@ -316,7 +302,7 @@ func TestMCPServerCreateHandler(t *testing.T) {
 
 func TestMCPServerDeleteHandler(t *testing.T) {
 	t.Run("delete existing server with no policy refs returns 204", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		id := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
 
@@ -336,7 +322,7 @@ func TestMCPServerDeleteHandler(t *testing.T) {
 	})
 
 	t.Run("delete non-existent server returns 404", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
@@ -354,7 +340,7 @@ func TestMCPServerDeleteHandler(t *testing.T) {
 	})
 
 	t.Run("delete server referenced by policy returns 409", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		id := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
 
@@ -410,7 +396,7 @@ agent:
 
 func TestMCPServerDiscoverHandler(t *testing.T) {
 	t.Run("discover existing server returns 200 with diff", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 
 		fakeMCP := makeFakeMCPServer(t, []string{"tool-a", "tool-b"})
@@ -453,7 +439,7 @@ func TestMCPServerDiscoverHandler(t *testing.T) {
 	})
 
 	t.Run("discover non-existent server returns 404", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
@@ -473,7 +459,7 @@ func TestMCPServerDiscoverHandler(t *testing.T) {
 
 func TestMCPToolListHandler(t *testing.T) {
 	t.Run("list tools for server with no tools", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		serverID := insertTestMCPServer(t, store, "empty-server", "http://localhost:9999")
 
@@ -502,7 +488,7 @@ func TestMCPToolListHandler(t *testing.T) {
 	})
 
 	t.Run("list tools returns all fields", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
 		insertTestMCPTool(t, store, serverID, "tool-alpha", "sensor")
@@ -555,7 +541,7 @@ func TestMCPToolListHandler(t *testing.T) {
 	})
 
 	t.Run("non-existent server returns 404", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
@@ -589,7 +575,7 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 	}
 
 	t.Run("update role to valid value", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
 		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "sensor")
@@ -622,7 +608,7 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 	})
 
 	t.Run("update role persists", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
 		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "sensor")
@@ -660,7 +646,7 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 	})
 
 	t.Run("invalid role returns 400", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
 		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "sensor")
@@ -677,7 +663,7 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 	})
 
 	t.Run("empty string role returns 400", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
 		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "sensor")
@@ -694,7 +680,7 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 	})
 
 	t.Run("empty body returns 400", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
 		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "sensor")
@@ -716,7 +702,7 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 	})
 
 	t.Run("non-existent tool returns 404", func(t *testing.T) {
-		store := newMCPHandlerStore(t)
+		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.DB())
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)

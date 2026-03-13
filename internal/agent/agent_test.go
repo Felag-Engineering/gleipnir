@@ -20,6 +20,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
 // fakeMessages is a test double for the Anthropic Messages API that returns
@@ -203,7 +204,7 @@ func TestNew_RequiresStateMachine(t *testing.T) {
 	_, err := New(Config{
 		Policy:           minimalPolicy(),
 		Tools:            nil,
-		Audit:            NewAuditWriter(newTestStore(t).Queries),
+		Audit:            NewAuditWriter(testutil.NewTestStore(t).Queries),
 		MessagesOverride: noopMessages{},
 		// StateMachine intentionally omitted
 	})
@@ -300,9 +301,9 @@ func TestHandleToolCall(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tools := tc.setupTools(t)
 
-			s := newTestStore(t)
-			insertPolicy(t, s, "p1")
-			insertRun(t, s, "run1", "p1", "running")
+			s := testutil.NewTestStore(t)
+			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 			w := NewAuditWriter(s.Queries)
 
@@ -430,9 +431,9 @@ func minimalPolicy() *model.ParsedPolicy {
 }
 
 func TestRun_SingleTurnEndTurn(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	msgs := &fakeMessages{responses: []*anthropic.Message{
 		makeTextMessage("I completed the task.", anthropic.StopReasonEndTurn, 10, 20),
@@ -497,9 +498,9 @@ func TestRun_ToolCallLoop(t *testing.T) {
 	}))
 	defer mcpSrv.Close()
 
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	tools := []mcp.ResolvedTool{sensorToolForRun(mcpSrv.URL, "my-server", "read_data")}
 
@@ -561,9 +562,9 @@ func TestRun_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before calling Run
 
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	w := NewAuditWriter(s.Queries)
 	ba, err := New(Config{
@@ -597,9 +598,9 @@ func TestRun_ContextCancellation(t *testing.T) {
 }
 
 func TestRun_MissingCapabilityFailsFast(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	// Policy references a sensor tool that is not in the MCP registry.
 	p := &model.ParsedPolicy{
@@ -672,9 +673,9 @@ func TestRun_MissingCapabilityFailsFast(t *testing.T) {
 }
 
 func TestRun_ToolNotFound(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	// No tools registered, but response asks for one.
 	msgs := &fakeMessages{responses: []*anthropic.Message{
@@ -725,9 +726,9 @@ func TestRun_ToolNotFound(t *testing.T) {
 }
 
 func TestRun_TokenBudgetExceeded(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	// First response uses 1000 tokens (exhausts the 100-token budget).
 	// The loop continues (tool_use stop_reason) and the SECOND iteration detects
@@ -794,9 +795,9 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 }
 
 func TestRun_CapabilitySnapshotFirst(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	msgs := &fakeMessages{responses: []*anthropic.Message{
 		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
@@ -842,9 +843,9 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 	}))
 	defer fakeSrv.Close()
 
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	// Tool schema only allows "arg"; "badkey" is undeclared.
 	tools := []mcp.ResolvedTool{sensorToolForRun(fakeSrv.URL, "my-server", "read_data")}
@@ -902,9 +903,9 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 	}))
 	defer fakeSrv.Close()
 
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	approvalCh := make(chan bool, 1)
 	approvalCh <- false // operator rejects
@@ -994,9 +995,9 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 	}))
 	defer mcpSrv.Close()
 
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	// With MaxToolCallsPerRun=1: first tool call (totalToolCalls=1, 1>1=false) proceeds.
 	// Second response triggers the cap (totalToolCalls=2, 2>1=true) before dispatch.
@@ -1068,9 +1069,9 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 func TestRun_LimitsNotExceeded(t *testing.T) {
 	mcpSrv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"ok"}]`), false)
 
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	// One tool call well within limits.
 	msgs := &fakeMessages{responses: []*anthropic.Message{
@@ -1160,9 +1161,9 @@ func TestRun_Cancellation(t *testing.T) {
 	}
 
 	t.Run("cancel_before_loop", func(t *testing.T) {
-		s := newTestStore(t)
-		insertPolicy(t, s, "p1")
-		insertRun(t, s, "r1", "p1", "pending")
+		s := testutil.NewTestStore(t)
+		testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+		testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // cancel before calling Run
@@ -1206,9 +1207,9 @@ func TestRun_Cancellation(t *testing.T) {
 	})
 
 	t.Run("cancel_during_api_call", func(t *testing.T) {
-		s := newTestStore(t)
-		insertPolicy(t, s, "p1")
-		insertRun(t, s, "r1", "p1", "pending")
+		s := testutil.NewTestStore(t)
+		testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+		testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1279,9 +1280,9 @@ func TestRun_Cancellation(t *testing.T) {
 			slowSrv.Close()
 		})
 
-		s := newTestStore(t)
-		insertPolicy(t, s, "p1")
-		insertRun(t, s, "r1", "p1", "pending")
+		s := testutil.NewTestStore(t)
+		testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+		testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1367,9 +1368,9 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 	}))
 	defer mcpSrv.Close()
 
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	tools := []mcp.ResolvedTool{sensorToolForRun(mcpSrv.URL, "my-server", "read_data")}
 

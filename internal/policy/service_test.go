@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
 // stubLookup implements ToolLookup for testing.
@@ -27,19 +27,6 @@ func (s *stubModelValidator) ValidateModel(_ context.Context, _ string) error {
 	return s.err
 }
 
-func newTestStore(t *testing.T) *db.Store {
-	t.Helper()
-	store, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	if err := store.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
-	return store
-}
-
 const validYAML = `
 name: test-policy
 trigger:
@@ -52,7 +39,7 @@ agent:
 `
 
 func TestService_Create(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	svc := NewService(store, nil, nil)
 
 	result, err := svc.Create(context.Background(), validYAML)
@@ -74,7 +61,7 @@ func TestService_Create(t *testing.T) {
 }
 
 func TestService_Create_ValidationError(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	svc := NewService(store, nil, nil)
 
 	_, err := svc.Create(context.Background(), `name: ""`)
@@ -84,7 +71,7 @@ func TestService_Create_ValidationError(t *testing.T) {
 }
 
 func TestService_Create_ParseError(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	svc := NewService(store, nil, nil)
 
 	_, err := svc.Create(context.Background(), "{{bad yaml")
@@ -94,7 +81,7 @@ func TestService_Create_ParseError(t *testing.T) {
 }
 
 func TestService_Create_ToolWarnings(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{}}
 	svc := NewService(store, lookup, nil)
 
@@ -111,7 +98,7 @@ func TestService_Create_ToolWarnings(t *testing.T) {
 }
 
 func TestService_Create_NoWarningWhenToolExists(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{"github.list_repos": true}}
 	svc := NewService(store, lookup, nil)
 
@@ -125,7 +112,7 @@ func TestService_Create_NoWarningWhenToolExists(t *testing.T) {
 }
 
 func TestService_Update(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	svc := NewService(store, nil, nil)
 
 	createResult, err := svc.Create(context.Background(), validYAML)
@@ -154,7 +141,7 @@ agent:
 }
 
 func TestService_Update_ChangedTriggerType(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	svc := NewService(store, nil, nil)
 
 	createResult, err := svc.Create(context.Background(), validYAML)
@@ -192,7 +179,7 @@ func TestService_Create_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{}}
 	svc := NewService(store, lookup, nil)
 
@@ -223,7 +210,7 @@ agent:
 }
 
 func TestService_Create_ModelValidatorCalled(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	mv := &stubModelValidator{err: errors.New("model not found")}
 	svc := NewService(store, nil, mv)
 
@@ -234,7 +221,7 @@ func TestService_Create_ModelValidatorCalled(t *testing.T) {
 }
 
 func TestService_Create_NilModelValidatorSkipsCheck(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	svc := NewService(store, nil, nil)
 
 	result, err := svc.Create(context.Background(), validYAML)
@@ -247,7 +234,7 @@ func TestService_Create_NilModelValidatorSkipsCheck(t *testing.T) {
 }
 
 func TestService_Update_ModelValidatorCalled(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	svc := NewService(store, nil, nil)
 
 	createResult, err := svc.Create(context.Background(), validYAML)

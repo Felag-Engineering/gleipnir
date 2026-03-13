@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
@@ -71,46 +71,16 @@ agent:
   task: "test task"
 `
 
-func newTestStore(t *testing.T) *db.Store {
-	t.Helper()
-	s, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	if err := s.Migrate(context.Background()); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	return s
-}
-
+// insertTestPolicy inserts a webhook policy with the given ID and YAML.
 func insertTestPolicy(t *testing.T, store *db.Store, policyID, yaml string) {
 	t.Helper()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := store.CreatePolicy(context.Background(), db.CreatePolicyParams{
-		ID:          policyID,
-		Name:        "policy-" + policyID,
-		TriggerType: "webhook",
-		Yaml:        yaml,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	})
-	if err != nil {
-		t.Fatalf("insertTestPolicy %s: %v", policyID, err)
-	}
+	testutil.InsertPolicy(t, store, policyID, "policy-"+policyID, "webhook", yaml)
 }
 
+// insertTestRun inserts a run with the given IDs and status.
 func insertTestRun(t *testing.T, store *db.Store, runID, policyID string, status model.RunStatus) {
 	t.Helper()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := store.DB().Exec(
-		`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
-		 VALUES (?, ?, ?, 'webhook', '{}', ?, ?)`,
-		runID, policyID, string(status), now, now,
-	)
-	if err != nil {
-		t.Fatalf("insertTestRun %s: %v", runID, err)
-	}
+	testutil.InsertRun(t, store, runID, policyID, status)
 }
 
 // callHandler builds a chi router, registers the handler, and fires a request.
@@ -264,7 +234,7 @@ func TestWebhookHandler(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := newTestStore(t)
+			store := testutil.NewTestStore(t)
 			if tc.setup != nil {
 				tc.setup(t, store)
 			}
@@ -282,7 +252,7 @@ func TestWebhookHandler(t *testing.T) {
 }
 
 func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	insertTestPolicy(t, store, "p-run-created", minimalWebhookPolicy)
 
 	registry := mcp.NewRegistry(store.DB())

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
 // capturePublisher records every Publish call for assertion in tests.
@@ -66,9 +67,9 @@ func TestRunStateMachine_LegalTransitions(t *testing.T) {
 	for _, pair := range legalTransitions {
 		from, to := pair[0], pair[1]
 		t.Run(string(from)+"→"+string(to), func(t *testing.T) {
-			s := newTestStore(t)
-			insertPolicy(t, s, "p1")
-			insertRun(t, s, "run1", "p1", string(from))
+			s := testutil.NewTestStore(t)
+			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+			testutil.InsertRun(t, s, "run1", "p1", from)
 
 			sm := NewRunStateMachine("run1", from, s.Queries)
 
@@ -91,9 +92,9 @@ func TestRunStateMachine_IllegalTransitions(t *testing.T) {
 	for _, pair := range illegalTransitions {
 		from, to := pair[0], pair[1]
 		t.Run(string(from)+"→"+string(to), func(t *testing.T) {
-			s := newTestStore(t)
-			insertPolicy(t, s, "p1")
-			insertRun(t, s, "run1", "p1", string(from))
+			s := testutil.NewTestStore(t)
+			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+			testutil.InsertRun(t, s, "run1", "p1", from)
 
 			sm := NewRunStateMachine("run1", from, s.Queries)
 
@@ -120,9 +121,9 @@ func TestRunStateMachine_TerminalStatusSetsCompletedAt(t *testing.T) {
 
 	for _, tc := range terminalCases {
 		t.Run(string(tc.to), func(t *testing.T) {
-			s := newTestStore(t)
-			insertPolicy(t, s, "p1")
-			insertRun(t, s, "run1", "p1", "running")
+			s := testutil.NewTestStore(t)
+			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 			sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries)
 
@@ -143,9 +144,9 @@ func TestRunStateMachine_TerminalStatusSetsCompletedAt(t *testing.T) {
 
 func TestRunStateMachine_NonTerminalStatusLeavesCompletedAtNil(t *testing.T) {
 	// pending → running is the only non-terminal transition from a non-running state.
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "run1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
 	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries)
 
@@ -163,9 +164,9 @@ func TestRunStateMachine_NonTerminalStatusLeavesCompletedAtNil(t *testing.T) {
 }
 
 func TestRunStateMachine_FailedTransitionSetsErrorColumn(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "run1", "p1", "running")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries)
 	const wantMsg = "something bad happened"
@@ -187,9 +188,9 @@ func TestRunStateMachine_FailedTransitionSetsErrorColumn(t *testing.T) {
 }
 
 func TestRunStateMachine_PublishesOnSuccessfulTransition(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "run1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
 	pub := &capturePublisher{}
 	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries, WithStateMachinePublisher(pub))
@@ -219,9 +220,9 @@ func TestRunStateMachine_PublishesOnSuccessfulTransition(t *testing.T) {
 }
 
 func TestRunStateMachine_NoPublishOnIllegalTransition(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "run1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
 	pub := &capturePublisher{}
 	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries, WithStateMachinePublisher(pub))
@@ -235,9 +236,9 @@ func TestRunStateMachine_NoPublishOnIllegalTransition(t *testing.T) {
 }
 
 func TestRunStateMachine_NilPublisherIsSafe(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "run1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
 	// No publisher option — should not panic.
 	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries)
@@ -253,9 +254,9 @@ func TestRunStateMachine_ConcurrentTransitions(t *testing.T) {
 	// state is already complete after the first winner).
 	const N = 20
 
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "run1", "p1", "running")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries)
 
@@ -283,9 +284,9 @@ func TestRunStateMachine_ConcurrentTransitions(t *testing.T) {
 }
 
 func TestRunStateMachine_PersistSystemPrompt(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "run1", "p1", "pending")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
 	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries)
 

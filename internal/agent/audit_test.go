@@ -3,58 +3,18 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
-// newTestStore opens a temp-dir SQLite DB, applies the schema, and registers
-// cleanup. Duplicated from the db package because those helpers are unexported.
-func newTestStore(tb testing.TB) *db.Store {
-	tb.Helper()
-	s, err := db.Open(filepath.Join(tb.TempDir(), "test.db"))
-	if err != nil {
-		tb.Fatalf("Open: %v", err)
-	}
-	tb.Cleanup(func() { s.Close() })
-	if err := s.Migrate(context.Background()); err != nil {
-		tb.Fatalf("Migrate: %v", err)
-	}
-	return s
-}
-
-func insertPolicy(tb testing.TB, s *db.Store, id string) {
-	tb.Helper()
-	_, err := s.DB().Exec(
-		`INSERT INTO policies(id, name, trigger_type, yaml, created_at, updated_at)
-		 VALUES (?, ?, 'webhook', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
-		id, "policy-"+id,
-	)
-	if err != nil {
-		tb.Fatalf("insertPolicy %s: %v", id, err)
-	}
-}
-
-func insertRun(tb testing.TB, s *db.Store, id, policyID, status string) {
-	tb.Helper()
-	_, err := s.DB().Exec(
-		`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
-		 VALUES (?, ?, ?, 'webhook', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
-		id, policyID, status,
-	)
-	if err != nil {
-		tb.Fatalf("insertRun %s: %v", id, err)
-	}
-}
-
 func TestAuditWriter_ConcurrentEnqueue(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
 	w := NewAuditWriter(s.Queries)
 
@@ -111,9 +71,9 @@ func TestAuditWriter_ConcurrentEnqueue(t *testing.T) {
 }
 
 func TestAuditWriter_TokenCostAccumulation(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
 	w := NewAuditWriter(s.Queries)
 
@@ -144,9 +104,9 @@ func TestAuditWriter_TokenCostAccumulation(t *testing.T) {
 }
 
 func TestAuditWriter_StopDrainsQueue(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
 	w := NewAuditWriter(s.Queries)
 
@@ -176,9 +136,9 @@ func TestAuditWriter_StopDrainsQueue(t *testing.T) {
 }
 
 func TestAuditWriter_ContextCancellation(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
 	// Use a queue depth of 0 to force the enqueue to block immediately, so
 	// the cancel fires while Write is waiting to send into the queue.
@@ -210,10 +170,10 @@ func TestAuditWriter_ContextCancellation(t *testing.T) {
 }
 
 func TestAuditWriter_MultipleRuns(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
-	insertRun(t, s, "r2", "p1", "running")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+	testutil.InsertRun(t, s, "r2", "p1", model.RunStatusRunning)
 
 	w := NewAuditWriter(s.Queries)
 
@@ -259,9 +219,9 @@ func TestAuditWriter_MultipleRuns(t *testing.T) {
 }
 
 func TestAuditWriter_WithPublisher_EmitsStepAdded(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
 	pub := &capturePublisher{}
 	w := NewAuditWriter(s.Queries, WithPublisher(pub))
@@ -301,9 +261,9 @@ func TestAuditWriter_WithPublisher_EmitsStepAdded(t *testing.T) {
 }
 
 func TestAuditWriter_NilPublisherIsSafe(t *testing.T) {
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
 	// No publisher — should not panic.
 	w := NewAuditWriter(s.Queries)
@@ -320,9 +280,9 @@ func TestAuditWriter_NilPublisherIsSafe(t *testing.T) {
 }
 
 func BenchmarkAuditWriter_SequentialEnqueue(b *testing.B) {
-	s := newTestStore(b)
-	insertPolicy(b, s, "p1")
-	insertRun(b, s, "r1", "p1", "running")
+	s := testutil.NewTestStore(b)
+	testutil.InsertPolicy(b, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(b, s, "r1", "p1", model.RunStatusRunning)
 
 	w := NewAuditWriter(s.Queries)
 	b.ResetTimer()
@@ -343,9 +303,9 @@ func BenchmarkAuditWriter_SequentialEnqueue(b *testing.B) {
 
 func TestAuditWriter_BenchmarkBaseline(t *testing.T) {
 	// Asserts that 1000 sequential enqueues complete within 500ms.
-	s := newTestStore(t)
-	insertPolicy(t, s, "p1")
-	insertRun(t, s, "r1", "p1", "running")
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
 	w := NewAuditWriter(s.Queries)
 

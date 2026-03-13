@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,21 +12,17 @@ import (
 
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
 // newPolicyHandlerStore opens a fresh migrated store for handler tests.
+// Delegates to testutil.NewTestStore — kept as an alias so the many call
+// sites in this package don't all need updating at once.
 func newPolicyHandlerStore(t *testing.T) *db.Store {
 	t.Helper()
-	s, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("db.Open: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	if err := s.Migrate(context.Background()); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	return s
+	return testutil.NewTestStore(t)
 }
 
 // newPolicyRouter wires a chi router with the policy handler, mirroring how
@@ -66,33 +61,16 @@ func (alwaysMissingLookup) ToolExists(_ context.Context, _, _ string) (bool, err
 	return false, nil
 }
 
-// insertTestPolicy inserts a policy row directly via the store.
+// insertTestPolicy inserts a webhook policy row. Delegates to testutil.InsertPolicy.
 func insertTestPolicy(t *testing.T, s *db.Store, id, name, yaml string) {
 	t.Helper()
-	_, err := s.CreatePolicy(context.Background(), db.CreatePolicyParams{
-		ID:          id,
-		Name:        name,
-		TriggerType: "webhook",
-		Yaml:        yaml,
-		CreatedAt:   "2024-01-01T00:00:00Z",
-		UpdatedAt:   "2024-01-01T00:00:00Z",
-	})
-	if err != nil {
-		t.Fatalf("insertTestPolicy %s: %v", id, err)
-	}
+	testutil.InsertPolicy(t, s, id, name, "webhook", yaml)
 }
 
-// insertTestRun inserts a run row directly via the store.
+// insertTestRun inserts a run row. Delegates to testutil.InsertRun.
 func insertTestRun(t *testing.T, s *db.Store, id, policyID, status string) {
 	t.Helper()
-	_, err := s.DB().Exec(
-		`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
-		 VALUES (?, ?, ?, 'webhook', '{}', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
-		id, policyID, status,
-	)
-	if err != nil {
-		t.Fatalf("insertTestRun %s: %v", id, err)
-	}
+	testutil.InsertRun(t, s, id, policyID, model.RunStatus(status))
 }
 
 func TestPolicyListHandler(t *testing.T) {

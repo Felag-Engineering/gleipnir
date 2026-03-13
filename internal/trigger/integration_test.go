@@ -16,6 +16,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
@@ -142,7 +143,7 @@ func newStubMCPServer(t *testing.T) *httptest.Server {
 // t.Cleanup — callers do not need to close anything manually.
 func setupIntegrationFixture(t *testing.T) (*db.Store, *mcp.Registry) {
 	t.Helper()
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	mcpSrv := newStubMCPServer(t)
 	t.Cleanup(mcpSrv.Close)
 	registry := mcp.NewRegistry(store.DB())

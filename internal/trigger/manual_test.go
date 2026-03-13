@@ -6,13 +6,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
@@ -57,18 +57,7 @@ agent:
 
 func insertTestManualPolicy(t *testing.T, store *db.Store, policyID, yaml string) {
 	t.Helper()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := store.CreatePolicy(context.Background(), db.CreatePolicyParams{
-		ID:          policyID,
-		Name:        "manual-policy-" + policyID,
-		TriggerType: "manual",
-		Yaml:        yaml,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	})
-	if err != nil {
-		t.Fatalf("insertTestManualPolicy %s: %v", policyID, err)
-	}
+	testutil.InsertPolicy(t, store, policyID, "manual-policy-"+policyID, "manual", yaml)
 }
 
 // callManualHandler builds a chi router, registers the handler, and fires a request.
@@ -157,7 +146,7 @@ func TestManualTriggerHandler(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := newTestStore(t)
+			store := testutil.NewTestStore(t)
 			if tc.setup != nil {
 				tc.setup(t, store)
 			}
@@ -175,7 +164,7 @@ func TestManualTriggerHandler(t *testing.T) {
 }
 
 func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	insertTestManualPolicy(t, store, "mp-run-created", minimalManualPolicy)
 
 	registry := mcp.NewRegistry(store.DB())
@@ -206,7 +195,7 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 }
 
 func TestManualTriggerHandler_EmptyBody(t *testing.T) {
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	insertTestManualPolicy(t, store, "mp-empty-body", minimalManualPolicy)
 
 	registry := mcp.NewRegistry(store.DB())

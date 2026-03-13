@@ -7,19 +7,14 @@ import (
 
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
 // insertTestRunWithTime inserts a run row with a specific created_at timestamp and token cost.
 func insertTestRunWithTime(t *testing.T, s *db.Store, id, policyID, status, createdAt string, tokenCost int64) {
 	t.Helper()
-	_, err := s.DB().ExecContext(context.Background(),
-		`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at, token_cost)
-		 VALUES (?, ?, ?, 'webhook', '{}', ?, ?, ?)`,
-		id, policyID, status, createdAt, createdAt, tokenCost,
-	)
-	if err != nil {
-		t.Fatalf("insertTestRunWithTime %s: %v", id, err)
-	}
+	testutil.InsertRunWithTime(t, s, id, policyID, model.RunStatus(status), createdAt, tokenCost)
 }
 
 func TestStatsServiceCompute(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
@@ -166,7 +167,7 @@ func TestRunsHandler_List(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := newTestStore(t)
+			store := testutil.NewTestStore(t)
 			if tc.setup != nil {
 				tc.setup(t, store)
 			}
@@ -284,7 +285,7 @@ func TestRunsHandler_Get(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := newTestStore(t)
+			store := testutil.NewTestStore(t)
 			if tc.setup != nil {
 				tc.setup(t, store)
 			}
@@ -367,7 +368,7 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := newTestStore(t)
+			store := testutil.NewTestStore(t)
 			if tc.setup != nil {
 				tc.setup(t, store)
 			}
@@ -533,7 +534,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := newTestStore(t)
+			store := testutil.NewTestStore(t)
 			manager := trigger.NewRunManager()
 			if tc.setup != nil {
 				tc.setup(t, store, manager)

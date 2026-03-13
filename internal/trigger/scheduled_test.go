@@ -12,6 +12,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
@@ -53,7 +54,7 @@ func schedulerFactory() trigger.AgentFactory {
 // server as "stub-server". Follows the same pattern as setupIntegrationFixture.
 func setupSchedulerFixture(t *testing.T) (*db.Store, *mcp.Registry) {
 	t.Helper()
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	mcpSrv := newStubMCPServer(t)
 	t.Cleanup(mcpSrv.Close)
 	registry := mcp.NewRegistry(store.DB())
