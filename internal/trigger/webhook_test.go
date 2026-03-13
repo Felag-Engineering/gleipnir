@@ -2,6 +2,9 @@ package trigger_test
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -58,6 +61,16 @@ agent:
   concurrency: replace
 `
 
+const webhookPolicyWithSecret = `
+name: test-secret-policy
+trigger:
+  type: webhook
+  webhook_secret: "test-secret-key-must-be-at-least-32-bytes-long"
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+`
+
 func newTestStore(t *testing.T) *db.Store {
 	t.Helper()
 	s, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -104,14 +117,32 @@ func insertTestRun(t *testing.T, store *db.Store, runID, policyID string, status
 // Returns the recorded response.
 func callHandler(t *testing.T, h *trigger.WebhookHandler, policyID, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return callHandlerWithHeaders(t, h, policyID, body, nil)
+}
+
+// callHandlerWithHeaders builds a chi router, registers the handler, and fires a request
+// with additional headers. Returns the recorded response.
+func callHandlerWithHeaders(t *testing.T, h *trigger.WebhookHandler, policyID, body string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
 	r := chi.NewRouter()
 	r.Post("/api/v1/webhooks/{policyID}", h.Handle)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/"+policyID, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	return w
+}
+
+// computeTestSignature returns the correct X-Gleipnir-Signature header value
+// for the given secret and body.
+func computeTestSignature(secret, body string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(body))
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
 func TestWebhookHandler(t *testing.T) {
@@ -120,6 +151,7 @@ func TestWebhookHandler(t *testing.T) {
 		setup      func(t *testing.T, store *db.Store)
 		policyID   string
 		body       string
+		headers    map[string]string
 		wantStatus int
 	}{
 		{
@@ -183,6 +215,51 @@ func TestWebhookHandler(t *testing.T) {
 			body:       `{"event": "test"}`,
 			wantStatus: http.StatusNotImplemented,
 		},
+		{
+			name: "401 missing signature when secret configured",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-secret-missing-sig", webhookPolicyWithSecret)
+			},
+			policyID:   "p-secret-missing-sig",
+			body:       `{"event": "test"}`,
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "403 invalid signature when secret configured",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-secret-bad-sig", webhookPolicyWithSecret)
+			},
+			policyID: "p-secret-bad-sig",
+			body:     `{"event": "test"}`,
+			headers: map[string]string{
+				"X-Gleipnir-Signature": "sha256=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+			},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name: "202 valid signature when secret configured",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-secret-valid-sig", webhookPolicyWithSecret)
+			},
+			policyID: "p-secret-valid-sig",
+			body:     `{"event": "test"}`,
+			headers: map[string]string{
+				"X-Gleipnir-Signature": computeTestSignature(
+					"test-secret-key-must-be-at-least-32-bytes-long",
+					`{"event": "test"}`,
+				),
+			},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "202 no secret configured (open webhook)",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-no-secret", minimalWebhookPolicy)
+			},
+			policyID:   "p-no-secret",
+			body:       `{"event": "test"}`,
+			wantStatus: http.StatusAccepted,
+		},
 	}
 
 	for _, tc := range cases {
@@ -196,7 +273,7 @@ func TestWebhookHandler(t *testing.T) {
 			claudeClient := anthropic.NewClient()
 			h := trigger.NewWebhookHandler(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
 
-			w := callHandler(t, h, tc.policyID, tc.body)
+			w := callHandlerWithHeaders(t, h, tc.policyID, tc.body, tc.headers)
 			if w.Code != tc.wantStatus {
 				t.Errorf("status = %d, want %d; body: %s", w.Code, tc.wantStatus, w.Body.String())
 			}

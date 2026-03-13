@@ -68,7 +68,7 @@ func run() error {
 	runManager := trigger.NewRunManager()
 	claudeClient := anthropic.NewClient()
 	webhookHandler := trigger.NewWebhookHandler(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
-	r.Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
+	r.With(middleware.Throttle(10)).Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
 
 	manualTriggerHandler := trigger.NewManualTriggerHandler(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
 	r.Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)

@@ -40,6 +40,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-021 | MCP discovery diffs                               | 🟢 Decided    | v0.1   | MCP discovery endpoint, frontend                     |
 | ADR-022 | Transport-level fake for Anthropic API in tests   | ⬜ Deferred   | v0.1   | agent package, integration tests                     |
 | ADR-023 | Per-policy model selection                         | 🟢 Decided    | v0.1   | Policy schema, agent runtime, capability snapshot    |
+| ADR-024 | Webhook HMAC-SHA256 signature verification         | 🟢 Decided    | v0.1   | Webhook handler, policy schema, trigger package      |
 
 ---
 
@@ -507,6 +508,42 @@ centralizing the decision.
   the hardcoded `anthropic.ModelClaudeSonnet4_6` constant.
 - Capability snapshot content shape changes from `[]GrantedTool` to `{model string, tools []GrantedTool}`.
   Frontend handles both shapes for backward compatibility with snapshots written before this change.
+
+---
+
+## ADR-024: Webhook HMAC-SHA256 signature verification
+
+**Status:** Decided
+**Date:** 2026-03
+
+**Decision:** Webhook policies may declare an optional `trigger.webhook_secret` field (minimum 32
+bytes). When set, every incoming `POST /api/v1/webhooks/{policyID}` request must include an
+`X-Gleipnir-Signature: sha256=<hex>` header. The signature is the HMAC-SHA256 of the raw
+request body using the configured secret. Comparison is timing-safe (`hmac.Equal`).
+
+**Backward compatibility:** Policies without `webhook_secret` continue to accept requests with no
+signature header (open webhook behaviour). Setting a secret does not break existing callers that
+haven't yet been updated — until the operator sets the secret, the endpoint remains open.
+
+**Response codes:**
+- Secret configured, no header → 401 Unauthorized
+- Secret configured, wrong signature → 403 Forbidden
+- Secret configured, valid signature → proceed normally
+- No secret configured → proceed normally (no header required)
+
+**Rate limiting:** The webhook route is additionally protected by a per-process concurrency
+throttle of 10 in-flight requests (`chi/middleware.Throttle`). This is applied only to the
+webhook route, not globally.
+
+**Secret length:** Minimum 32 bytes enforced by the policy validator. Shorter secrets are
+rejected at save time with a clear error message.
+
+**Secret storage:** `webhook_secret` is stored in the policy YAML blob (ADR-002). The
+`TriggerConfig.WebhookSecret` field is tagged `json:"-"` to prevent the secret from appearing
+in SSE events, run steps, or any JSON serialization of the config.
+
+**Rejected alternative:** A shared global webhook signing key. Per-policy keys allow operators
+to rotate secrets for individual integrations without affecting others.
 
 ---
 

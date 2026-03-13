@@ -49,7 +49,9 @@ func validateTrigger(t model.TriggerConfig) []string {
 
 	switch t.Type {
 	case model.TriggerTypeWebhook:
-		// No additional fields required.
+		if t.WebhookSecret != "" && len(t.WebhookSecret) < 32 {
+			errs = append(errs, "trigger.webhook_secret must be at least 32 bytes")
+		}
 
 	case model.TriggerTypeManual:
 		// No additional fields required.
@@ -88,6 +90,10 @@ func validateTrigger(t model.TriggerConfig) []string {
 		if t.Poll.Filter == "" {
 			errs = append(errs, "trigger.filter is required for poll triggers")
 		}
+	}
+
+	if t.WebhookSecret != "" && t.Type != model.TriggerTypeWebhook {
+		errs = append(errs, "trigger.webhook_secret is only valid for webhook triggers")
 	}
 
 	return errs

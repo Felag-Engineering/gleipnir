@@ -185,10 +185,11 @@ type ParsedPolicy struct {
 // TriggerConfig holds trigger-type-specific fields. Only fields relevant to
 // the active TriggerType are populated.
 type TriggerConfig struct {
-	Type     TriggerType
-	Schedule string      // cron only
-	Poll     *PollConfig // poll only
-	FireAt   []time.Time // scheduled only
+	Type          TriggerType
+	Schedule      string      // cron only
+	Poll          *PollConfig // poll only
+	FireAt        []time.Time // scheduled only
+	WebhookSecret string      `json:"-"` // webhook only; excluded from JSON to prevent secret leakage
 }
 
 // PollConfig describes the HTTP poll trigger (v0.3).

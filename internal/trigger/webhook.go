@@ -111,6 +111,18 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if parsed.Trigger.WebhookSecret != "" {
+		sigHeader := r.Header.Get(SignatureHeader)
+		if err := ValidateSignature(parsed.Trigger.WebhookSecret, body, sigHeader); err != nil {
+			if errors.Is(err, errMissingSignature) {
+				api.WriteError(w, http.StatusUnauthorized, "missing signature", "")
+			} else {
+				api.WriteError(w, http.StatusForbidden, "invalid signature", "")
+			}
+			return
+		}
+	}
+
 	switch parsed.Agent.Concurrency {
 	case model.ConcurrencySkip:
 		active, err := h.store.ListActiveRunsByPolicy(ctx, policyID)

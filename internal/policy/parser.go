@@ -60,8 +60,9 @@ func Parse(raw string) (*model.ParsedPolicy, error) {
 // Scheduled-specific fields are only populated when the trigger type is "scheduled".
 func convertTrigger(r rawTrigger) model.TriggerConfig {
 	tc := model.TriggerConfig{
-		Type:     model.TriggerType(r.Type),
-		Schedule: r.Schedule,
+		Type:          model.TriggerType(r.Type),
+		Schedule:      r.Schedule,
+		WebhookSecret: r.WebhookSecret,
 	}
 
 	if tc.Type == model.TriggerTypePoll {
@@ -181,12 +182,13 @@ type rawPolicy struct {
 }
 
 type rawTrigger struct {
-	Type     string      `yaml:"type"`
-	Schedule string      `yaml:"schedule"` // cron only
-	Interval string      `yaml:"interval"` // poll only
-	Request  *rawRequest `yaml:"request"`  // poll only
-	Filter   string      `yaml:"filter"`   // poll only
-	FireAt   []string    `yaml:"fire_at"`  // scheduled only, RFC3339 timestamps
+	Type          string      `yaml:"type"`
+	Schedule      string      `yaml:"schedule"`       // cron only
+	Interval      string      `yaml:"interval"`       // poll only
+	Request       *rawRequest `yaml:"request"`        // poll only
+	Filter        string      `yaml:"filter"`         // poll only
+	FireAt        []string    `yaml:"fire_at"`        // scheduled only, RFC3339 timestamps
+	WebhookSecret string      `yaml:"webhook_secret"` // webhook only
 }
 
 type rawRequest struct {
