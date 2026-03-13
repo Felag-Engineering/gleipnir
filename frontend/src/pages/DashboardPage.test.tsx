@@ -7,7 +7,19 @@ import { http, HttpResponse, delay } from 'msw'
 import { server } from '@/test/server'
 import userEvent from '@testing-library/user-event'
 import DashboardPage from './DashboardPage'
-import type { ApiPolicyListItem } from '@/api/types'
+import type { ApiPolicyListItem, ApiStats } from '@/api/types'
+
+function makeStats(policies: ApiPolicyListItem[]): ApiStats {
+  const activeRuns = policies.filter(p => p.latest_run?.status === 'running').length
+  const pendingApprovals = policies.filter(p => p.latest_run?.status === 'waiting_for_approval').length
+  const tokensToday = policies.reduce((sum, p) => sum + (p.latest_run?.token_cost ?? 0), 0)
+  return {
+    active_runs: activeRuns,
+    pending_approvals: pendingApprovals,
+    policy_count: policies.length,
+    tokens_last_24h: tokensToday,
+  }
+}
 
 // status: 'complete' avoids the running-spinner aria-hidden contamination in Test 1
 const POLICIES_COMPLETE: ApiPolicyListItem[] = [
@@ -68,6 +80,9 @@ describe('DashboardPage', () => {
         await delay(200)
         return HttpResponse.json({ data: POLICIES_COMPLETE })
       }),
+      http.get('/api/v1/stats', () => {
+        return HttpResponse.json({ data: makeStats(POLICIES_COMPLETE) })
+      }),
     )
 
     const qc = makeClient()
@@ -93,6 +108,9 @@ describe('DashboardPage', () => {
         callCount += 1
         return HttpResponse.json({ data: POLICIES_INITIAL })
       }),
+      http.get('/api/v1/stats', () => {
+        return HttpResponse.json({ data: makeStats(POLICIES_INITIAL) })
+      }),
     )
 
     const qc = makeClient()
@@ -111,12 +129,18 @@ describe('DashboardPage', () => {
 
   it('StatsBar reflects updated counts after invalidation-triggered refetch', async () => {
     let callCount = 0
+    let statsCallCount = 0
 
     server.use(
       http.get('/api/v1/policies', () => {
         callCount += 1
         const data = callCount === 1 ? POLICIES_INITIAL : POLICIES_UPDATED
         return HttpResponse.json({ data })
+      }),
+      http.get('/api/v1/stats', () => {
+        statsCallCount += 1
+        const data = statsCallCount === 1 ? POLICIES_INITIAL : POLICIES_UPDATED
+        return HttpResponse.json({ data: makeStats(data) })
       }),
     )
 
@@ -132,6 +156,7 @@ describe('DashboardPage', () => {
     act(() => {
       void qc.invalidateQueries({ queryKey: ['runs'] })
       void qc.invalidateQueries({ queryKey: ['policies'] })
+      void qc.invalidateQueries({ queryKey: ['stats'] })
     })
 
     // Wait for refetch — now 2 policies
@@ -144,6 +169,9 @@ describe('DashboardPage', () => {
     server.use(
       http.get('/api/v1/policies', () => {
         return HttpResponse.json({ error: 'internal server error' }, { status: 500 })
+      }),
+      http.get('/api/v1/stats', () => {
+        return HttpResponse.json({ data: makeStats([]) })
       }),
     )
 
@@ -166,6 +194,9 @@ describe('DashboardPage', () => {
           return HttpResponse.json({ error: 'internal server error' }, { status: 500 })
         }
         return HttpResponse.json({ data: POLICIES_COMPLETE })
+      }),
+      http.get('/api/v1/stats', () => {
+        return HttpResponse.json({ data: makeStats(POLICIES_COMPLETE) })
       }),
     )
 
@@ -201,6 +232,9 @@ describe('DashboardPage', () => {
     server.use(
       http.get('/api/v1/policies', () => {
         return HttpResponse.json({ data: policiesWithApproval })
+      }),
+      http.get('/api/v1/stats', () => {
+        return HttpResponse.json({ data: makeStats(policiesWithApproval) })
       }),
     )
 
