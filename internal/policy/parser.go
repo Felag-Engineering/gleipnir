@@ -15,6 +15,10 @@ const (
 	defaultMaxTokensPerRun    = 20000
 	defaultMaxToolCallsPerRun = 50
 	defaultModel              = "claude-sonnet-4-6"
+
+	// MaxPolicyYAMLBytes is the maximum allowed size of a raw policy YAML blob.
+	// Enforced before unmarshalling to prevent billion-laughs style DoS attacks.
+	MaxPolicyYAMLBytes = 64 * 1024 // 64 KiB
 )
 
 // ParseError wraps a YAML decode failure so callers can distinguish malformed
@@ -30,6 +34,10 @@ func (e *ParseError) Unwrap() error { return e.Cause }
 // It applies sensible defaults for optional fields but does not validate
 // the result — call Validate separately.
 func Parse(raw string) (*model.ParsedPolicy, error) {
+	if len(raw) > MaxPolicyYAMLBytes {
+		return nil, fmt.Errorf("policy YAML exceeds maximum size (%d bytes > %d bytes)", len(raw), MaxPolicyYAMLBytes)
+	}
+
 	var r rawPolicy
 	if err := yaml.Unmarshal([]byte(raw), &r); err != nil {
 		return nil, &ParseError{Cause: err}

@@ -1,6 +1,8 @@
 package policy
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/rapp992/gleipnir/internal/model"
@@ -372,6 +374,59 @@ func TestParse_InvalidYAML(t *testing.T) {
 	_, err := Parse("{{bad yaml")
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
+	}
+}
+
+func TestParse_SizeLimit(t *testing.T) {
+	cases := []struct {
+		name        string
+		input       string
+		wantSizeErr bool
+	}{
+		{
+			name:        "empty string",
+			input:       "",
+			wantSizeErr: false,
+		},
+		{
+			name:        "exactly at limit",
+			input:       strings.Repeat("x", MaxPolicyYAMLBytes),
+			wantSizeErr: false,
+		},
+		{
+			name:        "one byte over limit",
+			input:       strings.Repeat("x", MaxPolicyYAMLBytes+1),
+			wantSizeErr: true,
+		},
+		{
+			name:        "well over limit",
+			input:       strings.Repeat("x", 2*MaxPolicyYAMLBytes),
+			wantSizeErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse(tc.input)
+			if tc.wantSizeErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "exceeds maximum size") {
+					t.Errorf("error %q does not contain %q", err.Error(), "exceeds maximum size")
+				}
+				var pe *ParseError
+				if errors.As(err, &pe) {
+					t.Error("size limit error should not be a *ParseError")
+				}
+			} else {
+				// A size error must not be returned; other errors (YAML syntax,
+				// validation) are acceptable since the payload is synthetic.
+				if err != nil && strings.Contains(err.Error(), "exceeds maximum size") {
+					t.Errorf("unexpected size error: %v", err)
+				}
+			}
+		})
 	}
 }
 
