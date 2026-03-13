@@ -17,7 +17,7 @@ graph TD
 
         MODEL["<b>model</b><br/>─────────────────────────────<br/>Domain enums: RunStatus · TriggerType<br/>CapabilityRole · StepType · ApprovalStatus<br/>+ 3 more, all with String() / Valid()<br/>─────────────────────────────<br/>Config structs: ParsedPolicy · AgentConfig<br/>CapabilitiesConfig · GrantedTool · ...<br/>─────────────────────────────<br/>Domain entities: Run · RunStep · Policy<br/>ApprovalRequest · MCPServer · MCPTool<br/>─────────────────────────────<br/>NewULID() — monotonic, goroutine-safe"]
 
-        DB["<b>db</b><br/>─────────────────────────<br/>Store: opens SQLite, enables WAL<br/>mode and foreign keys on startup<br/>─────────────────────────<br/>Migrate(): idempotent schema<br/>migration on every startup<br/>─────────────────────────<br/>MarkInterrupted(): resets any<br/>running/waiting runs to interrupted<br/>─────────────────────────<br/>Queries (sqlc-generated):<br/>all fields are plain string / int64"]
+        DB["<b>db</b><br/>─────────────────────────<br/>Store: opens SQLite, enables WAL<br/>mode and foreign keys on startup<br/>─────────────────────────<br/>Migrate(): idempotent schema<br/>migration on every startup<br/>─────────────────────────<br/>ScanOrphanedRuns(): resets any<br/>running/waiting runs to interrupted<br/>─────────────────────────<br/>Queries (sqlc-generated):<br/>all fields are plain string / int64"]
 
         POLICY["<b>policy</b><br/>───────────────────<br/>parser.go: YAML blob<br/>→ model.ParsedPolicy<br/>───────────────────<br/>validator.go: validates<br/>ParsedPolicy fields<br/>───────────────────<br/>renderer.go: renders<br/>Claude system prompt"]
 
@@ -25,7 +25,7 @@ graph TD
 
         AGENT["<b>agent</b><br/>─────────────────────────────────<br/>BoundAgent: drives Claude API loop;<br/>registers only granted tools (hard<br/>capability enforcement); intercepts<br/>approval-gated actuators before<br/>calling them — hard runtime guarantee<br/>─────────────────────────────────<br/>AuditWriter: single background writer<br/>goroutine; serialises run_steps inserts<br/>through a buffered channel to avoid<br/>SQLite write contention; assigns<br/>sequential step_number per run"]
 
-        TRIGGER["<b>trigger</b><br/>──────────────────────────────────<br/>WebhookHandler: validates request,<br/>applies concurrency policy, creates<br/>run record, launches BoundAgent<br/>goroutine, responds 202 Accepted<br/>──────────────────────────────────<br/>cron.go: schedule-triggered runs<br/>(stub — v0.3)<br/>──────────────────────────────────<br/>poll.go: HTTP poll-triggered runs<br/>(stub — v0.3)"]
+        TRIGGER["<b>trigger</b><br/>──────────────────────────────────<br/>WebhookHandler: validates request,<br/>applies concurrency policy, creates<br/>run record, launches BoundAgent<br/>goroutine, responds 202 Accepted<br/>──────────────────────────────────<br/>ManualTriggerHandler: operator-initiated<br/>run without a webhook payload<br/>──────────────────────────────────<br/>Scheduler: cron-triggered runs;<br/>RunLauncher: shared launch logic;<br/>RunManager: tracks active runs<br/>──────────────────────────────────<br/>cron.go: schedule-triggered runs<br/>poll.go: HTTP poll-triggered runs<br/>(stubs — v0.3)"]
 
         NOTIFY["<b>notify</b><br/>──────────────────────────<br/>Feedback channel: agent sends<br/>message, run suspends, operator<br/>responds via UI, run resumes<br/>──────────────────────────<br/>Approval notifications (v0.2)<br/>Slack integration (v0.5)<br/>──────────────────────────<br/>stub — not yet implemented"]
     end
@@ -35,15 +35,16 @@ graph TD
 
     %% trigger → internal
     TRIGGER -->|imports| DB
-    TRIGGER -.->|"will import (stub)"| POLICY
-    TRIGGER -.->|"will import (stub)"| MCP
-    TRIGGER -.->|"will import (stub)"| AGENT
+    TRIGGER -->|imports| POLICY
+    TRIGGER -->|imports| MCP
+    TRIGGER -->|imports| AGENT
 
     %% agent → external + internal
     AGENT -->|"Messages.Create"| CLAUDE
     AGENT -->|imports| MCP
     AGENT -->|imports| MODEL
-    AGENT -->|"sql.DB (direct)"| DB
+    AGENT -->|imports| POLICY
+    AGENT -->|imports| DB
 
     %% mcp → external + model
     MCP -->|"JSON-RPC HTTP"| MCPEXT
@@ -53,7 +54,7 @@ graph TD
     POLICY -->|imports| MODEL
 
     %% approval flow
-    TRIGGER -.->|"ApprovalDecision channel\n(operator response)"| AGENT
+    TRIGGER -->|"ApprovalDecision channel\n(operator response)"| AGENT
 ```
 
 ## Data flow: webhook-triggered run
@@ -112,11 +113,11 @@ sequenceDiagram
 | Package | Status | Notes |
 |---|---|---|
 | `internal/model` | ✅ Complete | Enums, config structs, domain entities, `NewULID()` |
-| `internal/db` | ✅ Complete | `Store`, `Migrate`, `MarkInterrupted`, sqlc queries |
-| `internal/policy` | ⚙ Stub | Parser/validator/renderer signatures only |
-| `internal/mcp` | ⚙ Stub | `Client` and `Registry` signatures only |
-| `internal/agent` | ⚙ Stub | `BoundAgent` and `AuditWriter` signatures only |
-| `internal/trigger` | ⚙ Stub | `WebhookHandler` validates JSON, rest TODO; cron/poll placeholders |
+| `internal/db` | ✅ Complete | `Store`, `Migrate`, `ScanOrphanedRuns`, sqlc queries |
+| `internal/policy` | ✅ Complete | Parser, validator, prompt renderer, model validator, service |
+| `internal/mcp` | ✅ Complete | Client, Registry, schema narrowing, URL checker |
+| `internal/agent` | ✅ Complete | BoundAgent runner, AuditWriter, RunStateMachine, approval interception |
+| `internal/trigger` | ⚙ Partial | WebhookHandler, ManualTriggerHandler, Scheduler, RunLauncher, RunManager, SSE integration; cron/poll stubs remain |
 | `internal/notify` | 📋 Planned | Empty package; v0.2 feedback channel, v0.5 Slack |
 
 ## Key invariants
