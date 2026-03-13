@@ -3,7 +3,7 @@
 package model
 
 import (
-	"math/rand"
+	"crypto/rand"
 	"sync"
 	"time"
 
@@ -331,7 +331,7 @@ type ApprovalRequest struct {
 // entropyMu guards the monotonic entropy source used by NewULID.
 var (
 	entropyMu sync.Mutex
-	entropy   = ulid.Monotonic(rand.New(rand.NewSource(time.Now().UnixNano())), 0) //nolint:gosec
+	entropy   = ulid.Monotonic(rand.Reader, 0)
 )
 
 // NewULID returns a new, lexicographically monotonic ULID string.
