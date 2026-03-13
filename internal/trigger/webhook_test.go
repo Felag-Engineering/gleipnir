@@ -140,6 +140,26 @@ func TestWebhookHandler(t *testing.T) {
 			policyID: "p-badjson",
 		},
 		{
+			name: "400 for body exceeding 1 MiB limit",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-toolarge", minimalWebhookPolicy)
+			},
+			policyID: "p-toolarge",
+			// The full string is valid JSON, but io.LimitReader truncates it to 1 MiB,
+			// cutting off the closing `"}` so json.Valid returns false.
+			body:       "{\"x\":\"" + strings.Repeat("a", 1<<20) + "\"}",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "400 for empty body",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-emptybody", minimalWebhookPolicy)
+			},
+			policyID:   "p-emptybody",
+			body:       "",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
 			name: "409 for skip with active run",
 			setup: func(t *testing.T, store *db.Store) {
 				insertTestPolicy(t, store, "p-skip-active", minimalWebhookPolicy)
