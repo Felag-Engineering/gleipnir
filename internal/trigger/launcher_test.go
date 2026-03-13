@@ -10,6 +10,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
@@ -64,7 +65,7 @@ func TestCheckConcurrency(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := newTestStore(t)
+			store := testutil.NewTestStore(t)
 			policyID := "cp-test"
 			insertTestPolicy(t, store, policyID, minimalWebhookPolicy)
 
@@ -94,7 +95,7 @@ func TestCheckConcurrency(t *testing.T) {
 func TestLaunch_ToolResolutionFailure(t *testing.T) {
 	// Policy grants a tool that does not exist in the registry — ResolveForPolicy
 	// returns an error. Launch should mark the run failed and return an error.
-	store := newTestStore(t)
+	store := testutil.NewTestStore(t)
 	// No MCP server registered, so any tool reference will fail resolution.
 	registry := mcp.NewRegistry(store.DB())
 	manager := trigger.NewRunManager()
