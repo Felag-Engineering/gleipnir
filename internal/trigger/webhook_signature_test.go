@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"testing"
 )
 
@@ -74,7 +75,7 @@ func TestValidateSignature(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ValidateSignature(tc.secret, tc.body, tc.signatureHeader)
-			if err != tc.wantErr {
+			if !errors.Is(err, tc.wantErr) {
 				t.Errorf("ValidateSignature() = %v, want %v", err, tc.wantErr)
 			}
 		})

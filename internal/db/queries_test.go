@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -243,7 +244,7 @@ func TestMCPServerQueries(t *testing.T) {
 	}
 
 	_, err = s.GetMCPServer(ctx, "srv1")
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("GetMCPServer deleted: got %v, want sql.ErrNoRows", err)
 	}
 }
@@ -360,7 +361,7 @@ func TestMCPToolQueries(t *testing.T) {
 		ServerName: "server-srv1",
 		ToolName:   "nonexistent",
 	})
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("GetMCPToolByServerAndName missing: got %v, want sql.ErrNoRows", err)
 	}
 
@@ -460,7 +461,7 @@ func TestPolicyQueries(t *testing.T) {
 	}
 
 	_, err = s.GetPolicy(ctx, "pol1")
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("GetPolicy after delete: got %v, want sql.ErrNoRows", err)
 	}
 
@@ -779,7 +780,7 @@ func TestRunStepQueries(t *testing.T) {
 	insertRun(t, s, "run1", "pol1", "running")
 
 	_, err := s.GetLatestRunStep(ctx, "run1")
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("GetLatestRunStep empty: got %v, want sql.ErrNoRows", err)
 	}
 
