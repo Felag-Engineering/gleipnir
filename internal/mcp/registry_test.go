@@ -11,8 +11,9 @@ import (
 )
 
 // newTestRegistry opens a fresh in-memory-backed SQLite store, applies the
-// schema, and returns a Registry backed by it.
-func newTestRegistry(t *testing.T) *Registry {
+// schema, and returns a Registry backed by it along with the store for raw
+// verification queries.
+func newTestRegistry(t *testing.T) (*Registry, *db.Store) {
 	t.Helper()
 	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -22,7 +23,7 @@ func newTestRegistry(t *testing.T) *Registry {
 	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatalf("store.Migrate: %v", err)
 	}
-	return NewRegistry(store.DB())
+	return NewRegistry(store.Queries), store
 }
 
 // makeMCPServer starts an httptest.Server that returns a tools/list JSON-RPC
@@ -44,7 +45,8 @@ func makeMCPServer(t *testing.T, tools []map[string]any) *httptest.Server {
 }
 
 func TestRegisterServer_HappyPath(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
 
 	tools := []map[string]any{
 		{"name": "tool-a", "description": "first tool", "inputSchema": map[string]any{"type": "object"}},
@@ -58,13 +60,13 @@ func TestRegisterServer_HappyPath(t *testing.T) {
 
 	// Verify server row exists.
 	var serverID string
-	err := reg.db.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID)
+	err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID)
 	if err != nil {
 		t.Fatalf("query server: %v", err)
 	}
 
 	// Verify exactly 2 tool rows with capability_role='sensor'.
-	rows, err := reg.db.QueryContext(context.Background(),
+	rows, err := rawDB.QueryContext(context.Background(),
 		`SELECT name, capability_role FROM mcp_tools WHERE server_id = ? ORDER BY name`, serverID)
 	if err != nil {
 		t.Fatalf("query tools: %v", err)
@@ -101,7 +103,7 @@ func TestRegisterServer_HappyPath(t *testing.T) {
 
 	// last_discovered_at must be NULL after RegisterServer — only RefreshTools sets it.
 	var lastDiscovered *string
-	if err := reg.db.QueryRow(`SELECT last_discovered_at FROM mcp_servers WHERE id = ?`, serverID).Scan(&lastDiscovered); err != nil {
+	if err := rawDB.QueryRow(`SELECT last_discovered_at FROM mcp_servers WHERE id = ?`, serverID).Scan(&lastDiscovered); err != nil {
 		t.Fatalf("query last_discovered_at: %v", err)
 	}
 	if lastDiscovered != nil {
@@ -110,7 +112,8 @@ func TestRegisterServer_HappyPath(t *testing.T) {
 }
 
 func TestRegisterServer_MCPServerUnreachable(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
 
 	// Start and immediately close a server so the URL is valid but unreachable.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
@@ -125,7 +128,7 @@ func TestRegisterServer_MCPServerUnreachable(t *testing.T) {
 	// Server row was inserted before the DiscoverTools call fails; however,
 	// per spec the test asserts 0 tool rows, which is what we verify here.
 	var toolCount int
-	if err := reg.db.QueryRow(`SELECT COUNT(*) FROM mcp_tools`).Scan(&toolCount); err != nil {
+	if err := rawDB.QueryRow(`SELECT COUNT(*) FROM mcp_tools`).Scan(&toolCount); err != nil {
 		t.Fatalf("count tool rows: %v", err)
 	}
 	if toolCount != 0 {
@@ -134,7 +137,8 @@ func TestRegisterServer_MCPServerUnreachable(t *testing.T) {
 }
 
 func TestRefreshTools_NoChanges(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
 
 	tools := []map[string]any{
 		{"name": "tool-a", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
@@ -146,7 +150,7 @@ func TestRefreshTools_NoChanges(t *testing.T) {
 	}
 
 	var serverID string
-	if err := reg.db.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
+	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
 		t.Fatalf("query server id: %v", err)
 	}
 
@@ -167,7 +171,7 @@ func TestRefreshTools_NoChanges(t *testing.T) {
 
 	// last_discovered_at must be set after RefreshTools.
 	var lastDiscovered *string
-	if err := reg.db.QueryRow(`SELECT last_discovered_at FROM mcp_servers WHERE id = ?`, serverID).Scan(&lastDiscovered); err != nil {
+	if err := rawDB.QueryRow(`SELECT last_discovered_at FROM mcp_servers WHERE id = ?`, serverID).Scan(&lastDiscovered); err != nil {
 		t.Fatalf("query last_discovered_at: %v", err)
 	}
 	if lastDiscovered == nil {
@@ -176,7 +180,8 @@ func TestRefreshTools_NoChanges(t *testing.T) {
 }
 
 func TestRefreshTools_AddedTools(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
 
 	oneTool := []map[string]any{
 		{"name": "tool-a", "description": "desc a", "inputSchema": map[string]any{"type": "object"}},
@@ -188,7 +193,7 @@ func TestRefreshTools_AddedTools(t *testing.T) {
 	}
 
 	var serverID string
-	if err := reg.db.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
+	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
 		t.Fatalf("query server id: %v", err)
 	}
 
@@ -200,7 +205,7 @@ func TestRefreshTools_AddedTools(t *testing.T) {
 	secondSrv := makeMCPServer(t, twoTools)
 
 	// Update the server URL in the DB to point to the new handler.
-	if _, err := reg.db.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, secondSrv.URL, serverID); err != nil {
+	if _, err := rawDB.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, secondSrv.URL, serverID); err != nil {
 		t.Fatalf("update server url: %v", err)
 	}
 
@@ -218,7 +223,8 @@ func TestRefreshTools_AddedTools(t *testing.T) {
 }
 
 func TestRefreshTools_RemovedTools(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
 
 	twoTools := []map[string]any{
 		{"name": "tool-a", "description": "desc a", "inputSchema": map[string]any{"type": "object"}},
@@ -231,7 +237,7 @@ func TestRefreshTools_RemovedTools(t *testing.T) {
 	}
 
 	var serverID string
-	if err := reg.db.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
+	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
 		t.Fatalf("query server id: %v", err)
 	}
 
@@ -241,7 +247,7 @@ func TestRefreshTools_RemovedTools(t *testing.T) {
 	}
 	secondSrv := makeMCPServer(t, oneTool)
 
-	if _, err := reg.db.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, secondSrv.URL, serverID); err != nil {
+	if _, err := rawDB.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, secondSrv.URL, serverID); err != nil {
 		t.Fatalf("update server url: %v", err)
 	}
 
@@ -259,7 +265,7 @@ func TestRefreshTools_RemovedTools(t *testing.T) {
 
 	// Verify only 1 DB row remains.
 	var count int
-	if err := reg.db.QueryRow(`SELECT COUNT(*) FROM mcp_tools WHERE server_id = ?`, serverID).Scan(&count); err != nil {
+	if err := rawDB.QueryRow(`SELECT COUNT(*) FROM mcp_tools WHERE server_id = ?`, serverID).Scan(&count); err != nil {
 		t.Fatalf("count tool rows: %v", err)
 	}
 	if count != 1 {
@@ -268,7 +274,8 @@ func TestRefreshTools_RemovedTools(t *testing.T) {
 }
 
 func TestRefreshTools_ModifiedTools(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
 
 	original := []map[string]any{
 		{"name": "tool-a", "description": "original desc", "inputSchema": map[string]any{"type": "object"}},
@@ -280,7 +287,7 @@ func TestRefreshTools_ModifiedTools(t *testing.T) {
 	}
 
 	var serverID string
-	if err := reg.db.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
+	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
 		t.Fatalf("query server id: %v", err)
 	}
 
@@ -290,7 +297,7 @@ func TestRefreshTools_ModifiedTools(t *testing.T) {
 	}
 	secondSrv := makeMCPServer(t, changed)
 
-	if _, err := reg.db.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, secondSrv.URL, serverID); err != nil {
+	if _, err := rawDB.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, secondSrv.URL, serverID); err != nil {
 		t.Fatalf("update server url: %v", err)
 	}
 
@@ -311,7 +318,7 @@ func TestRefreshTools_ModifiedTools(t *testing.T) {
 
 	// Verify the DB row was updated with the new description.
 	var storedDesc string
-	if err := reg.db.QueryRow(`SELECT description FROM mcp_tools WHERE server_id = ? AND name = 'tool-a'`, serverID).Scan(&storedDesc); err != nil {
+	if err := rawDB.QueryRow(`SELECT description FROM mcp_tools WHERE server_id = ? AND name = 'tool-a'`, serverID).Scan(&storedDesc); err != nil {
 		t.Fatalf("query tool description: %v", err)
 	}
 	if storedDesc != "updated desc" {
@@ -320,7 +327,8 @@ func TestRefreshTools_ModifiedTools(t *testing.T) {
 }
 
 func TestRefreshTools_MCPServerUnreachable(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
 
 	tools := []map[string]any{
 		{"name": "tool-a", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
@@ -332,13 +340,13 @@ func TestRefreshTools_MCPServerUnreachable(t *testing.T) {
 	}
 
 	var serverID string
-	if err := reg.db.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
+	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
 		t.Fatalf("query server id: %v", err)
 	}
 
 	// Capture state before the failed refresh.
 	var countBefore int
-	if err := reg.db.QueryRow(`SELECT COUNT(*) FROM mcp_tools WHERE server_id = ?`, serverID).Scan(&countBefore); err != nil {
+	if err := rawDB.QueryRow(`SELECT COUNT(*) FROM mcp_tools WHERE server_id = ?`, serverID).Scan(&countBefore); err != nil {
 		t.Fatalf("count before: %v", err)
 	}
 
@@ -347,7 +355,7 @@ func TestRefreshTools_MCPServerUnreachable(t *testing.T) {
 	deadURL := deadSrv.URL
 	deadSrv.Close()
 
-	if _, err := reg.db.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, deadURL, serverID); err != nil {
+	if _, err := rawDB.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, deadURL, serverID); err != nil {
 		t.Fatalf("update server url: %v", err)
 	}
 
@@ -358,7 +366,7 @@ func TestRefreshTools_MCPServerUnreachable(t *testing.T) {
 
 	// DB must be unchanged.
 	var countAfter int
-	if err := reg.db.QueryRow(`SELECT COUNT(*) FROM mcp_tools WHERE server_id = ?`, serverID).Scan(&countAfter); err != nil {
+	if err := rawDB.QueryRow(`SELECT COUNT(*) FROM mcp_tools WHERE server_id = ?`, serverID).Scan(&countAfter); err != nil {
 		t.Fatalf("count after: %v", err)
 	}
 	if countAfter != countBefore {
@@ -367,7 +375,8 @@ func TestRefreshTools_MCPServerUnreachable(t *testing.T) {
 }
 
 func TestRefreshTools_CapabilityRolePreserved(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
 
 	tools := []map[string]any{
 		{"name": "tool-a", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
@@ -379,12 +388,12 @@ func TestRefreshTools_CapabilityRolePreserved(t *testing.T) {
 	}
 
 	var serverID string
-	if err := reg.db.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
+	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
 		t.Fatalf("query server id: %v", err)
 	}
 
 	// Simulate operator overriding the capability_role to 'actuator'.
-	if _, err := reg.db.Exec(
+	if _, err := rawDB.Exec(
 		`UPDATE mcp_tools SET capability_role = 'actuator' WHERE server_id = ? AND name = 'tool-a'`,
 		serverID,
 	); err != nil {
@@ -402,7 +411,7 @@ func TestRefreshTools_CapabilityRolePreserved(t *testing.T) {
 	}
 
 	var role string
-	if err := reg.db.QueryRow(
+	if err := rawDB.QueryRow(
 		`SELECT capability_role FROM mcp_tools WHERE server_id = ? AND name = 'tool-a'`, serverID,
 	).Scan(&role); err != nil {
 		t.Fatalf("query role: %v", err)

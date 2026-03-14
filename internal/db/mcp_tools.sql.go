@@ -9,6 +9,20 @@ import (
 	"context"
 )
 
+const deleteMCPToolByServerAndName = `-- name: DeleteMCPToolByServerAndName :exec
+DELETE FROM mcp_tools WHERE server_id = ?1 AND name = ?2
+`
+
+type DeleteMCPToolByServerAndNameParams struct {
+	ServerID string `json:"server_id"`
+	Name     string `json:"name"`
+}
+
+func (q *Queries) DeleteMCPToolByServerAndName(ctx context.Context, arg DeleteMCPToolByServerAndNameParams) error {
+	_, err := q.db.ExecContext(ctx, deleteMCPToolByServerAndName, arg.ServerID, arg.Name)
+	return err
+}
+
 const deleteMCPToolsByServer = `-- name: DeleteMCPToolsByServer :exec
 DELETE FROM mcp_tools WHERE server_id = ?1
 `

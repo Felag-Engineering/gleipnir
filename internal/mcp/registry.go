@@ -35,12 +35,12 @@ type ToolDiff struct {
 // It reads server and tool records from the DB and builds Client instances
 // on demand.
 type Registry struct {
-	db *sql.DB
+	queries *db.Queries
 }
 
-// NewRegistry returns a Registry backed by the given database connection.
-func NewRegistry(db *sql.DB) *Registry {
-	return &Registry{db: db}
+// NewRegistry returns a Registry backed by the given sqlc Queries.
+func NewRegistry(queries *db.Queries) *Registry {
+	return &Registry{queries: queries}
 }
 
 // splitToolName splits a dot-notation tool name (e.g. "my-server.read_pods")
@@ -58,7 +58,6 @@ func splitToolName(dotName string) (serverName, toolName string, err error) {
 // capabilities.actuators. Returns an error if any tool reference is not
 // found in the DB — this is the fail-fast check at run start.
 func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) ([]ResolvedTool, error) {
-	q := db.New(r.db)
 	var result []ResolvedTool
 
 	for _, s := range p.Capabilities.Sensors {
@@ -67,7 +66,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			return nil, fmt.Errorf("resolve sensor %q: %w", s.Tool, err)
 		}
 
-		tool, err := q.GetMCPToolByServerAndName(ctx, db.GetMCPToolByServerAndNameParams{
+		tool, err := r.queries.GetMCPToolByServerAndName(ctx, db.GetMCPToolByServerAndNameParams{
 			ServerName: serverName,
 			ToolName:   toolName,
 		})
@@ -78,7 +77,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			return nil, fmt.Errorf("look up sensor tool %q: %w", s.Tool, err)
 		}
 
-		srv, err := q.GetMCPServer(ctx, tool.ServerID)
+		srv, err := r.queries.GetMCPServer(ctx, tool.ServerID)
 		if err != nil {
 			return nil, fmt.Errorf("get server for sensor tool %q: %w", s.Tool, err)
 		}
@@ -105,7 +104,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			return nil, fmt.Errorf("resolve actuator %q: %w", a.Tool, err)
 		}
 
-		tool, err := q.GetMCPToolByServerAndName(ctx, db.GetMCPToolByServerAndNameParams{
+		tool, err := r.queries.GetMCPToolByServerAndName(ctx, db.GetMCPToolByServerAndNameParams{
 			ServerName: serverName,
 			ToolName:   toolName,
 		})
@@ -116,7 +115,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			return nil, fmt.Errorf("look up actuator tool %q: %w", a.Tool, err)
 		}
 
-		srv, err := q.GetMCPServer(ctx, tool.ServerID)
+		srv, err := r.queries.GetMCPServer(ctx, tool.ServerID)
 		if err != nil {
 			return nil, fmt.Errorf("get server for actuator tool %q: %w", a.Tool, err)
 		}
@@ -160,9 +159,7 @@ func (r *Registry) RegisterServer(ctx context.Context, name, url string) error {
 	serverID := model.NewULID()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
-	q := db.New(r.db)
-
-	if _, err := q.CreateMCPServer(ctx, db.CreateMCPServerParams{
+	if _, err := r.queries.CreateMCPServer(ctx, db.CreateMCPServerParams{
 		ID:        serverID,
 		Name:      name,
 		Url:       url,
@@ -177,7 +174,7 @@ func (r *Registry) RegisterServer(ctx context.Context, name, url string) error {
 	}
 
 	for _, t := range tools {
-		if _, err := q.UpsertMCPTool(ctx, db.UpsertMCPToolParams{
+		if _, err := r.queries.UpsertMCPTool(ctx, db.UpsertMCPToolParams{
 			ID:             model.NewULID(),
 			ServerID:       serverID,
 			Name:           t.Name,
@@ -201,11 +198,9 @@ func (r *Registry) RegisterServer(ctx context.Context, name, url string) error {
 // Selective per-name deletes are used rather than bulk DeleteMCPToolsByServer
 // so that operator-assigned capability roles on unchanged tools are preserved.
 func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff, error) {
-	q := db.New(r.db)
-
 	// Fetch current tool state from DB so we can compute the diff and
 	// preserve existing capability_role values for unchanged tools.
-	oldTools, err := q.ListMCPToolsByServer(ctx, serverID)
+	oldTools, err := r.queries.ListMCPToolsByServer(ctx, serverID)
 	if err != nil {
 		return ToolDiff{}, fmt.Errorf("list existing tools: %w", err)
 	}
@@ -215,7 +210,7 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 		oldByName[t.Name] = t
 	}
 
-	srv, err := q.GetMCPServer(ctx, serverID)
+	srv, err := r.queries.GetMCPServer(ctx, serverID)
 	if err != nil {
 		return ToolDiff{}, fmt.Errorf("get mcp server %q: %w", serverID, err)
 	}
@@ -270,7 +265,7 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 			toolID = old.ID
 		}
 
-		if _, err := q.UpsertMCPTool(ctx, db.UpsertMCPToolParams{
+		if _, err := r.queries.UpsertMCPTool(ctx, db.UpsertMCPToolParams{
 			ID:             toolID,
 			ServerID:       serverID,
 			Name:           t.Name,
@@ -288,15 +283,15 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 	// operator-assigned capability roles on still-present tools survive. The
 	// upsert above already handles those — only missing ones are deleted.
 	for _, name := range diff.Removed {
-		if _, err := r.db.ExecContext(ctx,
-			`DELETE FROM mcp_tools WHERE server_id = ? AND name = ?`,
-			serverID, name,
-		); err != nil {
+		if err := r.queries.DeleteMCPToolByServerAndName(ctx, db.DeleteMCPToolByServerAndNameParams{
+			ServerID: serverID,
+			Name:     name,
+		}); err != nil {
 			return ToolDiff{}, fmt.Errorf("delete removed tool %q: %w", name, err)
 		}
 	}
 
-	if err := q.UpdateMCPServerLastDiscovered(ctx, db.UpdateMCPServerLastDiscoveredParams{
+	if err := r.queries.UpdateMCPServerLastDiscovered(ctx, db.UpdateMCPServerLastDiscoveredParams{
 		LastDiscoveredAt: &now,
 		ID:               serverID,
 	}); err != nil {

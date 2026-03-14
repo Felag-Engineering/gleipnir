@@ -10,7 +10,7 @@ import (
 )
 
 func TestResolveForPolicy_AllToolsFound(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 
 	tools := []map[string]any{
 		{"name": "read_pods", "description": "list pods", "inputSchema": map[string]any{"type": "object"}},
@@ -87,7 +87,7 @@ func TestResolveForPolicy_AllToolsFound(t *testing.T) {
 }
 
 func TestResolveForPolicy_MissingTool(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 
 	tools := []map[string]any{
 		{"name": "read_pods", "description": "list pods", "inputSchema": map[string]any{"type": "object"}},
@@ -117,7 +117,7 @@ func TestResolveForPolicy_MissingTool(t *testing.T) {
 }
 
 func TestResolveForPolicy_EmptyCapabilities(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 
 	p := &model.ParsedPolicy{
 		Capabilities: model.CapabilitiesConfig{},
@@ -133,7 +133,7 @@ func TestResolveForPolicy_EmptyCapabilities(t *testing.T) {
 }
 
 func TestResolveForPolicy_InvalidDotNotation(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 
 	p := &model.ParsedPolicy{
 		Capabilities: model.CapabilitiesConfig{
@@ -154,7 +154,7 @@ func TestResolveForPolicy_InvalidDotNotation(t *testing.T) {
 }
 
 func TestResolveForPolicy_ServerNotFound(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 
 	// No servers registered — any tool reference should fail.
 	p := &model.ParsedPolicy{
@@ -172,7 +172,7 @@ func TestResolveForPolicy_ServerNotFound(t *testing.T) {
 }
 
 func TestResolveForPolicy_ActuatorNotFound(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 
 	tools := []map[string]any{
 		{"name": "read_pods", "description": "list pods", "inputSchema": map[string]any{"type": "object"}},
@@ -204,7 +204,7 @@ func TestResolveForPolicy_ActuatorNotFound(t *testing.T) {
 }
 
 func TestResolveForPolicy_SensorsAndActuatorsOrdered(t *testing.T) {
-	reg := newTestRegistry(t)
+	reg, _ := newTestRegistry(t)
 
 	tools := []map[string]any{
 		{"name": "sensor_a", "description": "sensor a", "inputSchema": map[string]any{"type": "object"}},

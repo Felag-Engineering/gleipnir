@@ -73,7 +73,7 @@ func TestCheckConcurrency(t *testing.T) {
 				insertTestRun(t, store, "r-active", policyID, model.RunStatusRunning)
 			}
 
-			registry := mcp.NewRegistry(store.DB())
+			registry := mcp.NewRegistry(store.Queries)
 			manager := trigger.NewRunManager()
 			// factory is nil — CheckConcurrency never calls it.
 			launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil)
@@ -97,7 +97,7 @@ func TestLaunch_ToolResolutionFailure(t *testing.T) {
 	// returns an error. Launch should mark the run failed and return an error.
 	store := testutil.NewTestStore(t)
 	// No MCP server registered, so any tool reference will fail resolution.
-	registry := mcp.NewRegistry(store.DB())
+	registry := mcp.NewRegistry(store.Queries)
 	manager := trigger.NewRunManager()
 	launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil)
 

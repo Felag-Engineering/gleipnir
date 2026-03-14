@@ -24,3 +24,6 @@ SELECT * FROM mcp_tools WHERE id = :id;
 
 -- name: UpdateMCPToolCapabilityRole :exec
 UPDATE mcp_tools SET capability_role = :capability_role WHERE id = :id;
+
+-- name: DeleteMCPToolByServerAndName :exec
+DELETE FROM mcp_tools WHERE server_id = :server_id AND name = :name;

@@ -261,7 +261,7 @@ func TestWebhookHandler(t *testing.T) {
 				tc.setup(t, store)
 			}
 
-			registry := mcp.NewRegistry(store.DB())
+			registry := mcp.NewRegistry(store.Queries)
 			claudeClient := anthropic.NewClient()
 			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
 			h := trigger.NewWebhookHandler(store, launcher)
@@ -278,7 +278,7 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	insertTestPolicy(t, store, "p-run-created", minimalWebhookPolicy)
 
-	registry := mcp.NewRegistry(store.DB())
+	registry := mcp.NewRegistry(store.Queries)
 	claudeClient := anthropic.NewClient()
 	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
 	h := trigger.NewWebhookHandler(store, launcher)
