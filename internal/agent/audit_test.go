@@ -326,8 +326,8 @@ func BenchmarkAuditWriter_SequentialEnqueue(b *testing.B) {
 	w.Close()
 }
 
-func TestAuditWriter_BenchmarkBaseline(t *testing.T) {
-	// Asserts that 1000 sequential enqueues complete within 500ms.
+func TestAuditWriter_PerformanceBaseline(t *testing.T) {
+	// Asserts that 1000 sequential enqueues complete within 5s.
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
