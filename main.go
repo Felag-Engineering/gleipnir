@@ -65,7 +65,7 @@ func run() error {
 	sseHandler := sse.NewHandler(broadcaster)
 	r.Get("/api/v1/events", sseHandler.ServeHTTP)
 
-	registry := mcp.NewRegistry(store.Queries)
+	registry := mcp.NewRegistry(store.Queries())
 	runManager := trigger.NewRunManager()
 	claudeClient := anthropic.NewClient()
 	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)

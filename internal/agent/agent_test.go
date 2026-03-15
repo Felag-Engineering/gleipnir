@@ -204,7 +204,7 @@ func TestNew_RequiresStateMachine(t *testing.T) {
 	_, err := New(Config{
 		Policy:           minimalPolicy(),
 		Tools:            nil,
-		Audit:            NewAuditWriter(testutil.NewTestStore(t).Queries),
+		Audit:            NewAuditWriter(testutil.NewTestStore(t).Queries()),
 		MessagesOverride: noopMessages{},
 		// StateMachine intentionally omitted
 	})
@@ -305,7 +305,7 @@ func TestHandleToolCall(t *testing.T) {
 			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-			w := NewAuditWriter(s.Queries)
+			w := NewAuditWriter(s.Queries())
 
 			policy := &model.ParsedPolicy{
 				Name: "test-policy",
@@ -321,7 +321,7 @@ func TestHandleToolCall(t *testing.T) {
 				Tools:            tools,
 				Audit:            w,
 				ApprovalCh:       make(chan bool),
-				StateMachine:     NewRunStateMachine("run1", model.RunStatusRunning, s.Queries),
+				StateMachine:     NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
 				MessagesOverride: noopMessages{},
 			})
 			if err != nil {
@@ -439,13 +439,13 @@ func TestRun_SingleTurnEndTurn(t *testing.T) {
 		makeTextMessage("I completed the task.", anthropic.StopReasonEndTurn, 10, 20),
 	}}
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		Claude:           &anthropic.Client{},
 		Tools:            nil,
 		Policy:           minimalPolicy(),
 		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -509,13 +509,13 @@ func TestRun_ToolCallLoop(t *testing.T) {
 		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
 	}}
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		Claude:           &anthropic.Client{},
 		Tools:            tools,
 		Policy:           minimalPolicy(),
 		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -566,13 +566,13 @@ func TestRun_ContextCancellation(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		Claude:           &anthropic.Client{},
 		Tools:            nil,
 		Policy:           minimalPolicy(),
 		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -620,14 +620,14 @@ func TestRun_MissingCapabilityFailsFast(t *testing.T) {
 		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
 	}}
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	// No tools registered — myserver.missing_tool cannot be resolved.
 	ba, err := New(Config{
 		Claude:           &anthropic.Client{},
 		Tools:            nil,
 		Policy:           p,
 		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -682,13 +682,13 @@ func TestRun_ToolNotFound(t *testing.T) {
 		makeToolUseMessage("tu-1", "missing-server_nonexistent", map[string]any{}, 10, 5),
 	}}
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		Claude:           &anthropic.Client{},
 		Tools:            nil,
 		Policy:           minimalPolicy(),
 		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -754,13 +754,13 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 	p := minimalPolicy()
 	p.Agent.Limits.MaxTokensPerRun = 100
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		Claude:           &anthropic.Client{},
 		Tools:            tools,
 		Policy:           p,
 		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -803,13 +803,13 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
 	}}
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		Claude:           &anthropic.Client{},
 		Tools:            nil,
 		Policy:           minimalPolicy(),
 		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -854,13 +854,13 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"badkey": "val"}, 10, 5),
 	}}
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		Claude:           &anthropic.Client{},
 		Tools:            tools,
 		Policy:           minimalPolicy(),
 		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -926,14 +926,14 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 		makeToolUseMessage("tu-1", "my-server_do_thing", map[string]any{"arg": "v"}, 10, 5),
 	}}
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		Claude:           &anthropic.Client{},
 		Tools:            []mcp.ResolvedTool{actuatorTool},
 		Policy:           minimalPolicy(),
 		Audit:            w,
 		ApprovalCh:       approvalCh,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -1022,13 +1022,13 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 	p := minimalPolicy()
 	p.Agent.Limits.MaxToolCallsPerRun = 1
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		Claude:           &anthropic.Client{},
 		Tools:            tools,
 		Policy:           p,
 		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -1094,13 +1094,13 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 	p.Agent.Limits.MaxTokensPerRun = 10000
 	p.Agent.Limits.MaxToolCallsPerRun = 5
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		Claude:           &anthropic.Client{},
 		Tools:            tools,
 		Policy:           p,
 		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		MessagesOverride: msgs,
 	})
 	if err != nil {
@@ -1169,13 +1169,13 @@ func TestRun_Cancellation(t *testing.T) {
 		cancel() // cancel before calling Run
 
 		msgs := &fakeMessages{} // no responses needed — loop never reaches API call
-		w := NewAuditWriter(s.Queries)
+		w := NewAuditWriter(s.Queries())
 		ba, err := New(Config{
 			Claude:           &anthropic.Client{},
 			Tools:            nil,
 			Policy:           minimalPolicy(),
 			Audit:            w,
-			StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+			StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 			MessagesOverride: msgs,
 		})
 		if err != nil {
@@ -1215,13 +1215,13 @@ func TestRun_Cancellation(t *testing.T) {
 		defer cancel()
 
 		blocking := &blockingMessages{}
-		w := NewAuditWriter(s.Queries)
+		w := NewAuditWriter(s.Queries())
 		ba, err := New(Config{
 			Claude:           &anthropic.Client{},
 			Tools:            nil,
 			Policy:           minimalPolicy(),
 			Audit:            w,
-			StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+			StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 			MessagesOverride: blocking,
 		})
 		if err != nil {
@@ -1295,13 +1295,13 @@ func TestRun_Cancellation(t *testing.T) {
 
 		tools := []mcp.ResolvedTool{sensorToolForRun(slowSrv.URL, "slow-server", "slow_tool")}
 
-		w := NewAuditWriter(s.Queries)
+		w := NewAuditWriter(s.Queries())
 		ba, err := New(Config{
 			Claude:           &anthropic.Client{},
 			Tools:            tools,
 			Policy:           minimalPolicy(),
 			Audit:            w,
-			StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+			StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 			MessagesOverride: msgs,
 		})
 		if err != nil {
@@ -1380,13 +1380,13 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 	}}
 	capturing := &capturingMessages{inner: inner}
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		Claude:           &anthropic.Client{},
 		Tools:            tools,
 		Policy:           minimalPolicy(),
 		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		MessagesOverride: capturing,
 	})
 	if err != nil {

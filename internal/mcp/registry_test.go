@@ -23,7 +23,7 @@ func newTestRegistry(t *testing.T) (*Registry, *db.Store) {
 	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatalf("store.Migrate: %v", err)
 	}
-	return NewRegistry(store.Queries), store
+	return NewRegistry(store.Queries()), store
 }
 
 // makeMCPServer starts an httptest.Server that returns a tools/list JSON-RPC

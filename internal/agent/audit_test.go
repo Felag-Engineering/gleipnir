@@ -16,7 +16,7 @@ func TestAuditWriter_ConcurrentEnqueue(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 
 	const goroutines = 10
 	const stepsEach = 100
@@ -75,7 +75,7 @@ func TestAuditWriter_TokenCostAccumulation(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 
 	steps := []Step{
 		{RunID: "r1", Type: model.StepTypeThought, Content: "a", TokenCost: 10},
@@ -108,7 +108,7 @@ func TestAuditWriter_StopDrainsQueue(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 
 	const count = 50
 	for i := range count {
@@ -142,7 +142,7 @@ func TestAuditWriter_ContextCancellation(t *testing.T) {
 
 	// Use a queue depth of 0 to force the enqueue to block immediately, so
 	// the cancel fires while Write is waiting to send into the queue.
-	w := NewAuditWriter(s.Queries, WithQueueDepth(0))
+	w := NewAuditWriter(s.Queries(), WithQueueDepth(0))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled
@@ -175,7 +175,7 @@ func TestAuditWriter_MultipleRuns(t *testing.T) {
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 	testutil.InsertRun(t, s, "r2", "p1", model.RunStatusRunning)
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 
 	// Interleave writes across two runs.
 	pairs := []struct{ runID string }{
@@ -224,7 +224,7 @@ func TestAuditWriter_WithPublisher_EmitsStepAdded(t *testing.T) {
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
 	pub := &capturePublisher{}
-	w := NewAuditWriter(s.Queries, WithPublisher(pub))
+	w := NewAuditWriter(s.Queries(), WithPublisher(pub))
 
 	if err := w.Write(context.Background(), Step{
 		RunID:   "r1",
@@ -266,7 +266,7 @@ func TestAuditWriter_NilPublisherIsSafe(t *testing.T) {
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
 	// No publisher — should not panic.
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	if err := w.Write(context.Background(), Step{
 		RunID:   "r1",
 		Type:    model.StepTypeThought,
@@ -284,7 +284,7 @@ func BenchmarkAuditWriter_SequentialEnqueue(b *testing.B) {
 	testutil.InsertPolicy(b, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(b, s, "r1", "p1", model.RunStatusRunning)
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -307,7 +307,7 @@ func TestAuditWriter_BenchmarkBaseline(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 
 	start := time.Now()
 	for i := range 1000 {

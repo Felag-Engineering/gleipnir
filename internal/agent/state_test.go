@@ -71,7 +71,7 @@ func TestRunStateMachine_LegalTransitions(t *testing.T) {
 			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 			testutil.InsertRun(t, s, "run1", "p1", from)
 
-			sm := NewRunStateMachine("run1", from, s.Queries)
+			sm := NewRunStateMachine("run1", from, s.Queries())
 
 			errMsg := ""
 			if to == model.RunStatusFailed || to == model.RunStatusInterrupted {
@@ -96,7 +96,7 @@ func TestRunStateMachine_IllegalTransitions(t *testing.T) {
 			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 			testutil.InsertRun(t, s, "run1", "p1", from)
 
-			sm := NewRunStateMachine("run1", from, s.Queries)
+			sm := NewRunStateMachine("run1", from, s.Queries())
 
 			if err := sm.Transition(context.Background(), to, ""); err == nil {
 				t.Errorf("Transition(%s → %s): expected error, got nil", from, to)
@@ -125,7 +125,7 @@ func TestRunStateMachine_TerminalStatusSetsCompletedAt(t *testing.T) {
 			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-			sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries)
+			sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
 
 			if err := sm.Transition(context.Background(), tc.to, tc.errMsg); err != nil {
 				t.Fatalf("Transition: %v", err)
@@ -148,7 +148,7 @@ func TestRunStateMachine_NonTerminalStatusLeavesCompletedAtNil(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
-	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries)
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries())
 
 	if err := sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
 		t.Fatalf("Transition: %v", err)
@@ -168,7 +168,7 @@ func TestRunStateMachine_FailedTransitionSetsErrorColumn(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries)
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
 	const wantMsg = "something bad happened"
 
 	if err := sm.Transition(context.Background(), model.RunStatusFailed, wantMsg); err != nil {
@@ -193,7 +193,7 @@ func TestRunStateMachine_PublishesOnSuccessfulTransition(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries, WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries(), WithStateMachinePublisher(pub))
 
 	if err := sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
 		t.Fatalf("Transition: %v", err)
@@ -225,7 +225,7 @@ func TestRunStateMachine_NoPublishOnIllegalTransition(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries, WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries(), WithStateMachinePublisher(pub))
 
 	// pending → complete is illegal.
 	_ = sm.Transition(context.Background(), model.RunStatusComplete, "")
@@ -241,7 +241,7 @@ func TestRunStateMachine_NilPublisherIsSafe(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
 	// No publisher option — should not panic.
-	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries)
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries())
 
 	if err := sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
 		t.Fatalf("Transition with nil publisher: %v", err)
@@ -258,7 +258,7 @@ func TestRunStateMachine_ConcurrentTransitions(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries)
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
 
 	var (
 		wg        sync.WaitGroup
@@ -288,7 +288,7 @@ func TestRunStateMachine_PersistSystemPrompt(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
-	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries)
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries())
 
 	prompt := "You are a helpful agent.\n\nCapabilities:\n- read files"
 	if err := sm.PersistSystemPrompt(context.Background(), prompt); err != nil {

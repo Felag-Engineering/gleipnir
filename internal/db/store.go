@@ -31,10 +31,13 @@ var migration0003 string
 //go:embed migrations/0004_add_scheduled_trigger.sql
 var migration0004 string
 
+// queries wraps the sqlc-generated Queries so the embedding is unexported.
+type queries struct{ *Queries }
+
 // Store wraps the database connection and provides lifecycle methods.
 type Store struct {
 	db *sql.DB
-	*Queries
+	queries
 }
 
 // Open opens the SQLite database at path, enables WAL mode and foreign keys,
@@ -62,13 +65,17 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
-	return &Store{db: db, Queries: New(db)}, nil
+	return &Store{db: db, queries: queries{New(db)}}, nil
 }
 
 // DB returns the underlying *sql.DB.
 func (s *Store) DB() *sql.DB {
 	return s.db
 }
+
+// Queries returns the sqlc-generated query object for callers that need to
+// pass it to components outside the Store (e.g. agent.AuditWriter).
+func (s *Store) Queries() *Queries { return s.queries.Queries }
 
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
@@ -169,7 +176,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 // (ADR-011). Errors for individual runs are logged and skipped — startup must
 // not be blocked by a partially-corrupted run.
 func (s *Store) ScanOrphanedRuns(ctx context.Context, logger *slog.Logger) error {
-	runs, err := s.Queries.ListOrphanedRuns(ctx)
+	runs, err := s.queries.ListOrphanedRuns(ctx)
 	if err != nil {
 		return fmt.Errorf("list orphaned runs: %w", err)
 	}
@@ -189,7 +196,7 @@ func (s *Store) ScanOrphanedRuns(ctx context.Context, logger *slog.Logger) error
 
 // interruptOrphanedRun inserts an error step and updates the run to 'interrupted'.
 func (s *Store) interruptOrphanedRun(ctx context.Context, runID string) error {
-	count, err := s.Queries.CountRunSteps(ctx, runID)
+	count, err := s.queries.CountRunSteps(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("count run steps: %w", err)
 	}
@@ -200,7 +207,7 @@ func (s *Store) interruptOrphanedRun(ctx context.Context, runID string) error {
 	})
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := s.Queries.CreateRunStep(ctx, CreateRunStepParams{
+	if _, err := s.queries.CreateRunStep(ctx, CreateRunStepParams{
 		ID:         model.NewULID(),
 		RunID:      runID,
 		StepNumber: count + 1,
@@ -213,7 +220,7 @@ func (s *Store) interruptOrphanedRun(ctx context.Context, runID string) error {
 	}
 
 	errMsg := "process restarted while run was active"
-	if err := s.Queries.UpdateRunError(ctx, UpdateRunErrorParams{
+	if err := s.queries.UpdateRunError(ctx, UpdateRunErrorParams{
 		Status:      string(model.RunStatusInterrupted),
 		Error:       &errMsg,
 		CompletedAt: &now,

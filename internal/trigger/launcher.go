@@ -125,8 +125,8 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		return LaunchResult{}, err
 	}
 
-	audit := agent.NewAuditWriter(l.store.Queries, agent.WithPublisher(l.publisher))
-	sm := agent.NewRunStateMachine(run.ID, model.RunStatusPending, l.store.Queries, agent.WithStateMachinePublisher(l.publisher))
+	audit := agent.NewAuditWriter(l.store.Queries(), agent.WithPublisher(l.publisher))
+	sm := agent.NewRunStateMachine(run.ID, model.RunStatusPending, l.store.Queries(), agent.WithStateMachinePublisher(l.publisher))
 
 	ba, err := l.newAgent(agent.Config{
 		Tools:        resolvedTools,

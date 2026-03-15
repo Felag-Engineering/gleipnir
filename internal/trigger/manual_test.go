@@ -153,7 +153,7 @@ func TestManualTriggerHandler(t *testing.T) {
 				tc.setup(t, store)
 			}
 
-			registry := mcp.NewRegistry(store.Queries)
+			registry := mcp.NewRegistry(store.Queries())
 			claudeClient := anthropic.NewClient()
 			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
 			h := trigger.NewManualTriggerHandler(store, launcher)
@@ -170,7 +170,7 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	insertTestManualPolicy(t, store, "mp-run-created", minimalManualPolicy)
 
-	registry := mcp.NewRegistry(store.Queries)
+	registry := mcp.NewRegistry(store.Queries())
 	claudeClient := anthropic.NewClient()
 	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
 	h := trigger.NewManualTriggerHandler(store, launcher)
@@ -202,7 +202,7 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	insertTestManualPolicy(t, store, "mp-empty-body", minimalManualPolicy)
 
-	registry := mcp.NewRegistry(store.Queries)
+	registry := mcp.NewRegistry(store.Queries())
 	claudeClient := anthropic.NewClient()
 	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
 	h := trigger.NewManualTriggerHandler(store, launcher)
