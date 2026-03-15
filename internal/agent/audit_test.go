@@ -279,6 +279,31 @@ func TestAuditWriter_NilPublisherIsSafe(t *testing.T) {
 	}
 }
 
+func TestAuditWriter_CloseReturnsDrainError(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	w := NewAuditWriter(s.Queries)
+
+	// "nonexistent-run" has no matching row, so CreateRunStep will fail with a
+	// foreign key constraint error. Write must propagate that error to the caller.
+	writeErr := w.Write(context.Background(), Step{
+		RunID:   "nonexistent-run",
+		Type:    model.StepTypeThought,
+		Content: "should fail",
+	})
+	if writeErr == nil {
+		t.Fatal("Write: expected non-nil error for unknown run ID, got nil")
+	}
+
+	// Close must also surface the accumulated drain error.
+	closeErr := w.Close()
+	if closeErr == nil {
+		t.Fatal("Close: expected non-nil error after drain failure, got nil")
+	}
+}
+
 func BenchmarkAuditWriter_SequentialEnqueue(b *testing.B) {
 	s := testutil.NewTestStore(b)
 	testutil.InsertPolicy(b, s, "p1", "policy-p1", "webhook", "{}")

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -28,6 +29,8 @@ type AuditWriter struct {
 	done      chan struct{}
 	closeOnce sync.Once
 	publisher Publisher
+	// drainErr accumulates all errors encountered by loop(); read after <-w.done in Close().
+	drainErr error
 }
 
 type writeRequest struct {
@@ -94,7 +97,7 @@ func (w *AuditWriter) Close() error {
 		close(w.queue)
 	})
 	<-w.done
-	return nil
+	return w.drainErr
 }
 
 // loop is the single writer goroutine. It pulls from the queue and writes
@@ -114,7 +117,9 @@ func (w *AuditWriter) loop() {
 
 		content, err := json.Marshal(req.step.Content)
 		if err != nil {
-			req.resp <- fmt.Errorf("marshal step content: %w", err)
+			e := fmt.Errorf("marshal step content: %w", err)
+			req.resp <- e
+			w.drainErr = errors.Join(w.drainErr, e)
 			continue
 		}
 
@@ -129,7 +134,9 @@ func (w *AuditWriter) loop() {
 			CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
 		})
 		if err != nil {
-			req.resp <- fmt.Errorf("create run step: %w", err)
+			e := fmt.Errorf("create run step: %w", err)
+			req.resp <- e
+			w.drainErr = errors.Join(w.drainErr, e)
 			continue
 		}
 
@@ -141,7 +148,9 @@ func (w *AuditWriter) loop() {
 				"type":        req.step.Type,
 			})
 			if err != nil {
-				req.resp <- fmt.Errorf("marshal publish payload: %w", err)
+				e := fmt.Errorf("marshal publish payload: %w", err)
+				req.resp <- e
+				w.drainErr = errors.Join(w.drainErr, e)
 				continue
 			}
 			w.publisher.Publish("run.step_added", data)
@@ -153,7 +162,9 @@ func (w *AuditWriter) loop() {
 				ID:        req.step.RunID,
 			})
 			if err != nil {
-				req.resp <- fmt.Errorf("increment token cost: %w", err)
+				e := fmt.Errorf("increment token cost: %w", err)
+				req.resp <- e
+				w.drainErr = errors.Join(w.drainErr, e)
 				continue
 			}
 		}
