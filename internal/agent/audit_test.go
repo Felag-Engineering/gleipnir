@@ -284,7 +284,7 @@ func TestAuditWriter_CloseReturnsDrainError(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
-	w := NewAuditWriter(s.Queries)
+	w := NewAuditWriter(s.Queries())
 
 	// "nonexistent-run" has no matching row, so CreateRunStep will fail with a
 	// foreign key constraint error. Write must propagate that error to the caller.
