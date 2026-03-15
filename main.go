@@ -116,9 +116,30 @@ func run() error {
 	slog.Info("shutting down")
 
 	// Cancel the root context to stop the scheduler and any background timers.
+	// Note: run contexts derive from context.Background() (see launcher.go), so
+	// this does NOT cancel in-flight agent runs — CancelAll handles that below.
 	cancel()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Signal all in-flight agent runs to stop.
+	runManager.CancelAll()
+
+	// Wait for agent runs to drain, with a timeout. We give runs 25 s so the
+	// remaining 5 s budget can be used for the HTTP server shutdown.
+	runsDrained := make(chan struct{})
+	go func() {
+		runManager.Wait()
+		close(runsDrained)
+	}()
+
+	drainTimeout := 25 * time.Second
+	select {
+	case <-runsDrained:
+		slog.Info("all agent runs drained")
+	case <-time.After(drainTimeout):
+		slog.Warn("agent run drain timed out, proceeding with server shutdown")
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
 	return srv.Shutdown(shutdownCtx)
