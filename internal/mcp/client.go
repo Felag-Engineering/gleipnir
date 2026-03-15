@@ -78,9 +78,34 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// NewClient returns a Client targeting serverURL.
-func NewClient(serverURL string) *Client {
-	return &Client{
+// ClientOption configures a Client. Options are applied sequentially after
+// the default Client is constructed, so order matters when combining options
+// (e.g. WithHTTPClient followed by WithTimeout sets the timeout on the
+// supplied client, not the default one).
+type ClientOption func(*Client)
+
+// WithHTTPClient replaces the Client's HTTP client entirely. This replaces
+// the default CheckRedirect policy as well; the caller is responsible for
+// their own redirect policy when using this option.
+func WithHTTPClient(c *http.Client) ClientOption {
+	return func(cl *Client) {
+		cl.httpClient = c
+	}
+}
+
+// WithTimeout sets the Timeout on whatever httpClient exists at the time this
+// option is applied. When combined with WithHTTPClient, place WithTimeout
+// after WithHTTPClient so the timeout is set on the supplied client.
+func WithTimeout(d time.Duration) ClientOption {
+	return func(cl *Client) {
+		cl.httpClient.Timeout = d
+	}
+}
+
+// NewClient returns a Client targeting serverURL. Optional ClientOptions are
+// applied in order after the default Client is constructed.
+func NewClient(serverURL string, opts ...ClientOption) *Client {
+	c := &Client{
 		serverURL: serverURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
@@ -95,6 +120,10 @@ func NewClient(serverURL string) *Client {
 			},
 		},
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // initializeResult holds the fields we care about from the MCP initialize response.

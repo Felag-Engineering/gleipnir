@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // makeServer starts an httptest server that calls handler and registers cleanup.
@@ -242,5 +243,66 @@ func TestCallTool_ContextCancellation(t *testing.T) {
 	_, err := c.CallTool(ctx, "some-tool", nil)
 	if err == nil {
 		t.Fatal("expected non-nil error for cancelled context, got nil")
+	}
+}
+
+func TestNewClient_DefaultTimeout(t *testing.T) {
+	c := NewClient("http://example.com")
+	if c.httpClient.Timeout != 30*time.Second {
+		t.Errorf("default timeout = %v, want %v", c.httpClient.Timeout, 30*time.Second)
+	}
+}
+
+func TestNewClient_WithTimeout(t *testing.T) {
+	c := NewClient("http://example.com", WithTimeout(5*time.Second))
+	if c.httpClient.Timeout != 5*time.Second {
+		t.Errorf("timeout = %v, want %v", c.httpClient.Timeout, 5*time.Second)
+	}
+}
+
+func TestNewClient_WithHTTPClient(t *testing.T) {
+	custom := &http.Client{Timeout: 10 * time.Second}
+	c := NewClient("http://example.com", WithHTTPClient(custom))
+	if c.httpClient != custom {
+		t.Errorf("httpClient pointer mismatch: got %p, want %p", c.httpClient, custom)
+	}
+}
+
+func TestNewClient_WithHTTPClientAndTimeout(t *testing.T) {
+	custom := &http.Client{Timeout: 10 * time.Second}
+	c := NewClient("http://example.com", WithHTTPClient(custom), WithTimeout(7*time.Second))
+	// WithTimeout should mutate the custom client's timeout.
+	if c.httpClient.Timeout != 7*time.Second {
+		t.Errorf("timeout = %v, want %v", c.httpClient.Timeout, 7*time.Second)
+	}
+	// Confirm the injected client is still the one in use.
+	if c.httpClient != custom {
+		t.Errorf("httpClient pointer changed after WithTimeout")
+	}
+}
+
+func TestDiscoverTools_WithCustomClient(t *testing.T) {
+	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]any{
+				"tools": []map[string]any{
+					{"name": "injected-tool", "description": "via custom client", "inputSchema": map[string]any{"type": "object"}},
+				},
+			},
+		})
+	})
+
+	c := NewClient(srv.URL, WithHTTPClient(srv.Client()))
+	tools, err := c.DiscoverTools(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverTools: unexpected error: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("len(tools) = %d, want 1", len(tools))
+	}
+	if tools[0].Name != "injected-tool" {
+		t.Errorf("tools[0].Name = %q, want %q", tools[0].Name, "injected-tool")
 	}
 }
