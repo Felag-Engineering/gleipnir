@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -100,10 +101,20 @@ func (w *AuditWriter) Close() error {
 	return w.drainErr
 }
 
+// logAuditError writes an audit step on error paths where the write is best-effort.
+// The primary error is already being returned to the caller, so a failed audit write
+// is logged rather than propagated.
+func logAuditError(ctx context.Context, w *AuditWriter, step Step) {
+	if err := w.Write(ctx, step); err != nil {
+		slog.WarnContext(ctx, "audit write failed on error path", "step_type", step.Type.String(), "run_id", step.RunID, "err", err)
+	}
+}
+
 // loop is the single writer goroutine. It pulls from the queue and writes
 // each step to the DB, assigning sequential step numbers per run.
 // Uses context.Background() for DB calls so that drain completes even after
-// caller context cancellation.
+// caller context cancellation — this ensures in-flight audit writes drain
+// completely even during graceful shutdown when the run context is cancelled.
 func (w *AuditWriter) loop() {
 	defer close(w.done)
 

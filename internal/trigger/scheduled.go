@@ -91,6 +91,8 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 		return
 	}
 
+	// json.Marshal on a map[string]string with a string value cannot fail,
+	// so the error is safe to ignore here.
 	payload, _ := json.Marshal(map[string]string{
 		"scheduled_for": fireTime.UTC().Format(time.RFC3339),
 	})

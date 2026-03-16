@@ -340,8 +340,10 @@ func (a *BoundAgent) runAPILoop(
 
 	for {
 		// Respect context cancellation before each API call.
-		// Use context.Background() for the audit write — the caller's context is
-		// already done, so writing with it would silently drop the step.
+		// context.Background() is used intentionally: the caller's context is
+		// already cancelled, so writing with ctx would silently drop the step.
+		// These DB writes MUST succeed regardless of caller cancellation to preserve
+		// audit trail completeness and final state persistence.
 		if err := ctx.Err(); err != nil {
 			a.logAuditError(context.Background(), runID, "run cancelled", "cancelled")
 			return a.failRun(ctx, fmt.Errorf("agent run cancelled: %w", err))
@@ -372,7 +374,7 @@ func (a *BoundAgent) runAPILoop(
 		if err != nil {
 			// If the context was cancelled, the API error is a consequence of
 			// cancellation. Write a CANCELLED step so the audit trail is clear.
-			// Use context.Background() in all cases — ctx may already be done.
+			// context.Background() is used in all cases — ctx may already be done.
 			if ctx.Err() != nil {
 				a.logAuditError(context.Background(), runID, "run cancelled", "cancelled")
 			} else {
@@ -564,6 +566,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 	if err != nil {
 		// If the context was cancelled, write a canonical CANCELLED step rather
 		// than a tool_error so all cancellation paths produce consistent audit output.
+		// context.Background() is used because ctx may already be done.
 		if ctx.Err() != nil {
 			a.logAuditError(context.Background(), runID, "run cancelled", "cancelled")
 		} else {

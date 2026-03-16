@@ -137,6 +137,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Attempt auto-discovery; a failure is non-fatal — we still return 201 with the
 	// server record plus a discovery_error field so the caller knows to retry.
 	if _, err := h.registry.RefreshTools(r.Context(), server.ID); err != nil {
+		slog.Warn("MCP auto-discovery failed on server create", "server_id", server.ID, "server_name", body.Name, "err", err)
 		errStr := err.Error()
 		resp.DiscoveryError = &errStr
 		slog.Warn("MCP auto-discovery failed during server creation",

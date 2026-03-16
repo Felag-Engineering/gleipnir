@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -55,8 +56,10 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	if !isLegalTransition(sm.current, next) {
-		return fmt.Errorf("illegal run status transition: %s → %s", sm.current, next)
+	from := sm.current
+
+	if !isLegalTransition(from, next) {
+		return fmt.Errorf("illegal run status transition: %s → %s", from, next)
 	}
 
 	var completedAt *string
@@ -85,6 +88,7 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 	}
 
 	sm.current = next
+	slog.InfoContext(ctx, "run status transition", "run_id", sm.runID, "from", string(from), "to", string(next))
 
 	if sm.publisher != nil {
 		data, err := json.Marshal(map[string]string{"run_id": sm.runID, "status": string(next)})

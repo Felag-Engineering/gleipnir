@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -106,7 +107,11 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("begin migration tx: %w", err)
 		}
-		defer tx.Rollback()
+		defer func() {
+			if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+				slog.Error("migration transaction rollback failed", "err", rbErr)
+			}
+		}()
 		if _, err := tx.ExecContext(ctx, initialSchema); err != nil {
 			return fmt.Errorf("apply initial schema: %w", err)
 		}

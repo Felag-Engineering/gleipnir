@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -301,6 +302,101 @@ func TestAuditWriter_CloseReturnsDrainError(t *testing.T) {
 	closeErr := w.Close()
 	if closeErr == nil {
 		t.Fatal("Close: expected non-nil error after drain failure, got nil")
+	}
+}
+
+// captureHandler is a slog.Handler that records every log record for assertion.
+type captureHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *captureHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *captureHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(name string) slog.Handler       { return h }
+
+func (h *captureHandler) all() []slog.Record {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]slog.Record, len(h.records))
+	copy(out, h.records)
+	return out
+}
+
+func TestLogAuditError_SuccessfulWrite_NoLog(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	h := &captureHandler{}
+	orig := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	w := NewAuditWriter(s.Queries())
+	logAuditError(context.Background(), w, Step{
+		RunID:   "r1",
+		Type:    model.StepTypeError,
+		Content: map[string]string{"message": "test", "code": "test_code"},
+	})
+	w.Close()
+
+	if records := h.all(); len(records) != 0 {
+		t.Errorf("expected no log records on successful write, got %d", len(records))
+	}
+}
+
+func TestLogAuditError_FailedWrite_LogsWarn(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	// Do NOT insert a run — the write will fail with a foreign key constraint error.
+
+	h := &captureHandler{}
+	orig := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	w := NewAuditWriter(s.Queries())
+	logAuditError(context.Background(), w, Step{
+		RunID:   "nonexistent-run",
+		Type:    model.StepTypeError,
+		Content: map[string]string{"message": "test", "code": "test_code"},
+	})
+	w.Close()
+
+	records := h.all()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 log record, got %d", len(records))
+	}
+	r := records[0]
+	if r.Level != slog.LevelWarn {
+		t.Errorf("log level = %v, want WARN", r.Level)
+	}
+	if r.Message != "audit write failed on error path" {
+		t.Errorf("log message = %q, want %q", r.Message, "audit write failed on error path")
+	}
+
+	// Verify expected attributes are present.
+	attrs := make(map[string]any)
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	if attrs["step_type"] == nil {
+		t.Error("expected step_type attribute in log record")
+	}
+	if attrs["run_id"] == nil {
+		t.Error("expected run_id attribute in log record")
+	}
+	if attrs["err"] == nil {
+		t.Error("expected err attribute in log record")
 	}
 }
 

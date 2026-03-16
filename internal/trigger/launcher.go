@@ -148,9 +148,9 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		return LaunchResult{}, err
 	}
 
-	// Use a background context (not the request context) so the goroutine
-	// survives after the HTTP handler returns. RunManager's WaitGroup tracks
-	// it for graceful shutdown.
+	// context.Background() is used intentionally so the agent goroutine outlives
+	// the HTTP request that triggered it. RunManager's WaitGroup tracks it for
+	// graceful shutdown; cancellation is performed via the registered cancel func.
 	runCtx, cancel := context.WithCancel(context.Background())
 	l.manager.Register(run.ID, cancel)
 
