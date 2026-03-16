@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
@@ -116,43 +115,21 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 	s.pauseIfExhausted(ctx, policyID, parsed)
 }
 
-// alreadyFired returns true if a run exists for this policy whose trigger_payload
-// contains a scheduled_for time within ±1 minute of fireTime.
+// alreadyFired returns true if a scheduled run already exists for this policy
+// at or after fireTime minus one minute. Using a DB EXISTS query avoids loading
+// all runs into memory for what is fundamentally a boolean check.
 func (s *Scheduler) alreadyFired(ctx context.Context, policyID string, fireTime time.Time) bool {
-	runs, err := s.store.ListRunsByPolicy(ctx, policyID)
+	since := fireTime.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+	fired, err := s.store.HasScheduledRunSince(ctx, db.HasScheduledRunSinceParams{
+		PolicyID: policyID,
+		Since:    since,
+	})
 	if err != nil {
 		slog.Warn("dedup query failed, assuming not fired",
 			"policy_id", policyID, "fire_at", fireTime, "err", err)
 		return false
 	}
-
-	window := time.Minute
-	for _, r := range runs {
-		if r.TriggerType != string(model.TriggerTypeScheduled) {
-			continue
-		}
-		var payload struct {
-			ScheduledFor string `json:"scheduled_for"`
-		}
-		if err := json.Unmarshal([]byte(r.TriggerPayload), &payload); err != nil {
-			continue
-		}
-		if payload.ScheduledFor == "" {
-			continue
-		}
-		t, err := time.Parse(time.RFC3339, strings.TrimSpace(payload.ScheduledFor))
-		if err != nil {
-			continue
-		}
-		diff := t.UTC().Sub(fireTime.UTC())
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff <= window {
-			return true
-		}
-	}
-	return false
+	return fired == 1
 }
 
 // pauseIfExhausted pauses the policy if all fire_at times are now in the past.

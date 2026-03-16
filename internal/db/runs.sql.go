@@ -323,14 +323,30 @@ func (q *Queries) ListRunsByStatus(ctx context.Context, status string) ([]Run, e
 }
 
 const sumTokensLast24Hours = `-- name: SumTokensLast24Hours :one
-SELECT COALESCE(SUM(token_cost), 0) FROM runs WHERE created_at >= ?1
+SELECT CAST(COALESCE(SUM(token_cost), 0) AS INTEGER) FROM runs WHERE created_at >= ?1
 `
 
-func (q *Queries) SumTokensLast24Hours(ctx context.Context, since string) (interface{}, error) {
+func (q *Queries) SumTokensLast24Hours(ctx context.Context, since string) (int64, error) {
 	row := q.db.QueryRowContext(ctx, sumTokensLast24Hours, since)
-	var coalesce interface{}
-	err := row.Scan(&coalesce)
-	return coalesce, err
+	var cast int64
+	err := row.Scan(&cast)
+	return cast, err
+}
+
+const hasScheduledRunSince = `-- name: HasScheduledRunSince :one
+SELECT EXISTS(SELECT 1 FROM runs WHERE policy_id = ?1 AND trigger_type = 'scheduled' AND created_at >= ?2) AS fired
+`
+
+type HasScheduledRunSinceParams struct {
+	PolicyID string `json:"policy_id"`
+	Since    string `json:"since"`
+}
+
+func (q *Queries) HasScheduledRunSince(ctx context.Context, arg HasScheduledRunSinceParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, hasScheduledRunSince, arg.PolicyID, arg.Since)
+	var fired int64
+	err := row.Scan(&fired)
+	return fired, err
 }
 
 const updateRunError = `-- name: UpdateRunError :exec

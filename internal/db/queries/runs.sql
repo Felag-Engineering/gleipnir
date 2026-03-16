@@ -52,7 +52,10 @@ UPDATE runs SET system_prompt = :system_prompt WHERE id = :id;
 SELECT COUNT(*) FROM runs WHERE status IN ('pending', 'running', 'waiting_for_approval');
 
 -- name: SumTokensLast24Hours :one
-SELECT COALESCE(SUM(token_cost), 0) FROM runs WHERE created_at >= :since;
+SELECT CAST(COALESCE(SUM(token_cost), 0) AS INTEGER) FROM runs WHERE created_at >= :since;
+
+-- name: HasScheduledRunSince :one
+SELECT EXISTS(SELECT 1 FROM runs WHERE policy_id = :policy_id AND trigger_type = 'scheduled' AND created_at >= :since) AS fired;
 
 -- name: DeleteRunsByPolicy :exec
 DELETE FROM runs WHERE policy_id = :policy_id;

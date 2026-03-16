@@ -33,38 +33,26 @@ func (s *StatsService) Compute(ctx context.Context) (DashboardStats, error) {
 		return DashboardStats{}, fmt.Errorf("count active runs: %w", err)
 	}
 
-	pending, err := s.store.ListPendingApprovalRequests(ctx)
+	pendingApprovals, err := s.store.CountPendingApprovalRequests(ctx)
 	if err != nil {
-		return DashboardStats{}, fmt.Errorf("list pending approvals: %w", err)
+		return DashboardStats{}, fmt.Errorf("count pending approvals: %w", err)
 	}
 
-	policies, err := s.store.ListPolicies(ctx)
+	policyCount, err := s.store.CountPolicies(ctx)
 	if err != nil {
-		return DashboardStats{}, fmt.Errorf("list policies: %w", err)
+		return DashboardStats{}, fmt.Errorf("count policies: %w", err)
 	}
 
 	since := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
-	rawTokens, err := s.store.SumTokensLast24Hours(ctx, since)
+	tokens, err := s.store.SumTokensLast24Hours(ctx, since)
 	if err != nil {
 		return DashboardStats{}, fmt.Errorf("sum tokens: %w", err)
 	}
 
-	// COALESCE(SUM(...), 0) returns interface{} from the sqlc-generated query
-	// because SQLite's type system makes the result type ambiguous. Convert
-	// explicitly: the value is always an integer, but the driver may return
-	// int64 or []byte depending on whether any rows matched.
-	var tokens int64
-	switch v := rawTokens.(type) {
-	case int64:
-		tokens = v
-	case []byte:
-		fmt.Sscanf(string(v), "%d", &tokens)
-	}
-
 	return DashboardStats{
 		ActiveRuns:       activeRuns,
-		PendingApprovals: int64(len(pending)),
-		PolicyCount:      int64(len(policies)),
+		PendingApprovals: pendingApprovals,
+		PolicyCount:      policyCount,
 		TokensLast24h:    tokens,
 	}, nil
 }

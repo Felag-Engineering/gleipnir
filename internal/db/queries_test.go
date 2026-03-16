@@ -62,15 +62,9 @@ func TestSumTokensLast24Hours(t *testing.T) {
 	t.Run("no runs returns 0", func(t *testing.T) {
 		s := newTestStore(t)
 		since := now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
-		got, err := s.SumTokensLast24Hours(ctx, since)
+		tokens, err := s.SumTokensLast24Hours(ctx, since)
 		if err != nil {
 			t.Fatalf("SumTokensLast24Hours: %v", err)
-		}
-		// COALESCE returns 0 but sqlc maps it to interface{}
-		var tokens int64
-		switch v := got.(type) {
-		case int64:
-			tokens = v
 		}
 		if tokens != 0 {
 			t.Errorf("got %d, want 0", tokens)
@@ -98,14 +92,9 @@ func TestSumTokensLast24Hours(t *testing.T) {
 			}
 		}
 		since := now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
-		got, err := s.SumTokensLast24Hours(ctx, since)
+		tokens, err := s.SumTokensLast24Hours(ctx, since)
 		if err != nil {
 			t.Fatalf("SumTokensLast24Hours: %v", err)
-		}
-		var tokens int64
-		switch v := got.(type) {
-		case int64:
-			tokens = v
 		}
 		if tokens != 1500 {
 			t.Errorf("got %d, want 1500", tokens)
@@ -125,14 +114,9 @@ func TestSumTokensLast24Hours(t *testing.T) {
 			t.Fatalf("insert old run: %v", err)
 		}
 		since := now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
-		got, err := s.SumTokensLast24Hours(ctx, since)
+		tokens, err := s.SumTokensLast24Hours(ctx, since)
 		if err != nil {
 			t.Fatalf("SumTokensLast24Hours: %v", err)
-		}
-		var tokens int64
-		switch v := got.(type) {
-		case int64:
-			tokens = v
 		}
 		if tokens != 0 {
 			t.Errorf("got %d, want 0 (old run should be excluded)", tokens)
@@ -154,17 +138,212 @@ func TestSumTokensLast24Hours(t *testing.T) {
 			}
 		}
 		since := now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
-		got, err := s.SumTokensLast24Hours(ctx, since)
+		tokens, err := s.SumTokensLast24Hours(ctx, since)
 		if err != nil {
 			t.Fatalf("SumTokensLast24Hours: %v", err)
 		}
-		var tokens int64
-		switch v := got.(type) {
-		case int64:
-			tokens = v
-		}
 		if tokens != 600 { // 100+200+300
 			t.Errorf("got %d, want 600", tokens)
+		}
+	})
+}
+
+func TestCountPolicies(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	t.Run("empty db returns 0", func(t *testing.T) {
+		s := newTestStore(t)
+		got, err := s.CountPolicies(ctx)
+		if err != nil {
+			t.Fatalf("CountPolicies: %v", err)
+		}
+		if got != 0 {
+			t.Errorf("got %d, want 0", got)
+		}
+	})
+
+	t.Run("returns count of inserted policies", func(t *testing.T) {
+		s := newTestStore(t)
+		for _, id := range []string{"pol1", "pol2"} {
+			if _, err := s.CreatePolicy(ctx, CreatePolicyParams{
+				ID:          id,
+				Name:        id,
+				TriggerType: "webhook",
+				Yaml:        "trigger: webhook",
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}); err != nil {
+				t.Fatalf("CreatePolicy %s: %v", id, err)
+			}
+		}
+		got, err := s.CountPolicies(ctx)
+		if err != nil {
+			t.Fatalf("CountPolicies: %v", err)
+		}
+		if got != 2 {
+			t.Errorf("got %d, want 2", got)
+		}
+	})
+}
+
+func TestCountPendingApprovalRequests(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	futureExpiry := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+
+	t.Run("empty db returns 0", func(t *testing.T) {
+		s := newTestStore(t)
+		got, err := s.CountPendingApprovalRequests(ctx)
+		if err != nil {
+			t.Fatalf("CountPendingApprovalRequests: %v", err)
+		}
+		if got != 0 {
+			t.Errorf("got %d, want 0", got)
+		}
+	})
+
+	t.Run("counts only pending not approved", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "pol1")
+		insertRun(t, s, "run1", "pol1", "waiting_for_approval")
+
+		// Insert one pending and one approved request.
+		if _, err := s.CreateApprovalRequest(ctx, CreateApprovalRequestParams{
+			ID:               "ar1",
+			RunID:            "run1",
+			ToolName:         "bash",
+			ProposedInput:    `{}`,
+			ReasoningSummary: "pending one",
+			ExpiresAt:        futureExpiry,
+			CreatedAt:        now,
+		}); err != nil {
+			t.Fatalf("CreateApprovalRequest ar1: %v", err)
+		}
+		if _, err := s.CreateApprovalRequest(ctx, CreateApprovalRequestParams{
+			ID:               "ar2",
+			RunID:            "run1",
+			ToolName:         "curl",
+			ProposedInput:    `{}`,
+			ReasoningSummary: "will be approved",
+			ExpiresAt:        futureExpiry,
+			CreatedAt:        now,
+		}); err != nil {
+			t.Fatalf("CreateApprovalRequest ar2: %v", err)
+		}
+		decidedAt := now
+		note := "ok"
+		if err := s.UpdateApprovalRequestStatus(ctx, UpdateApprovalRequestStatusParams{
+			Status:    "approved",
+			DecidedAt: &decidedAt,
+			Note:      &note,
+			ID:        "ar2",
+		}); err != nil {
+			t.Fatalf("UpdateApprovalRequestStatus: %v", err)
+		}
+
+		got, err := s.CountPendingApprovalRequests(ctx)
+		if err != nil {
+			t.Fatalf("CountPendingApprovalRequests: %v", err)
+		}
+		if got != 1 {
+			t.Errorf("got %d, want 1", got)
+		}
+	})
+}
+
+func TestHasScheduledRunSince(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	t.Run("no runs returns 0", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "pol1")
+		since := now.Add(-time.Minute).Format(time.RFC3339Nano)
+		got, err := s.HasScheduledRunSince(ctx, HasScheduledRunSinceParams{
+			PolicyID: "pol1",
+			Since:    since,
+		})
+		if err != nil {
+			t.Fatalf("HasScheduledRunSince: %v", err)
+		}
+		if got != 0 {
+			t.Errorf("got %d, want 0", got)
+		}
+	})
+
+	t.Run("run created after since returns 1", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "pol1")
+		runAt := now.Format(time.RFC3339Nano)
+		_, err := s.DB().ExecContext(ctx,
+			`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
+			 VALUES ('run1', 'pol1', 'complete', 'scheduled', '{}', ?, ?)`,
+			runAt, runAt,
+		)
+		if err != nil {
+			t.Fatalf("insert scheduled run: %v", err)
+		}
+		since := now.Add(-time.Minute).Format(time.RFC3339Nano)
+		got, err := s.HasScheduledRunSince(ctx, HasScheduledRunSinceParams{
+			PolicyID: "pol1",
+			Since:    since,
+		})
+		if err != nil {
+			t.Fatalf("HasScheduledRunSince: %v", err)
+		}
+		if got != 1 {
+			t.Errorf("got %d, want 1", got)
+		}
+	})
+
+	t.Run("run created before since returns 0", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "pol1")
+		oldAt := now.Add(-2 * time.Hour).Format(time.RFC3339Nano)
+		_, err := s.DB().ExecContext(ctx,
+			`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
+			 VALUES ('run1', 'pol1', 'complete', 'scheduled', '{}', ?, ?)`,
+			oldAt, oldAt,
+		)
+		if err != nil {
+			t.Fatalf("insert old scheduled run: %v", err)
+		}
+		since := now.Add(-time.Minute).Format(time.RFC3339Nano)
+		got, err := s.HasScheduledRunSince(ctx, HasScheduledRunSinceParams{
+			PolicyID: "pol1",
+			Since:    since,
+		})
+		if err != nil {
+			t.Fatalf("HasScheduledRunSince: %v", err)
+		}
+		if got != 0 {
+			t.Errorf("got %d, want 0", got)
+		}
+	})
+
+	t.Run("webhook run after since is not counted", func(t *testing.T) {
+		s := newTestStore(t)
+		insertPolicy(t, s, "pol1")
+		runAt := now.Format(time.RFC3339Nano)
+		_, err := s.DB().ExecContext(ctx,
+			`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
+			 VALUES ('run1', 'pol1', 'complete', 'webhook', '{}', ?, ?)`,
+			runAt, runAt,
+		)
+		if err != nil {
+			t.Fatalf("insert webhook run: %v", err)
+		}
+		since := now.Add(-time.Minute).Format(time.RFC3339Nano)
+		got, err := s.HasScheduledRunSince(ctx, HasScheduledRunSinceParams{
+			PolicyID: "pol1",
+			Since:    since,
+		})
+		if err != nil {
+			t.Fatalf("HasScheduledRunSince: %v", err)
+		}
+		if got != 0 {
+			t.Errorf("got %d, want 0 (webhook runs must not trigger dedup)", got)
 		}
 	})
 }

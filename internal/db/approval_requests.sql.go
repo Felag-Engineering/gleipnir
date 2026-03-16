@@ -9,6 +9,17 @@ import (
 	"context"
 )
 
+const countPendingApprovalRequests = `-- name: CountPendingApprovalRequests :one
+SELECT COUNT(*) FROM approval_requests WHERE status = 'pending'
+`
+
+func (q *Queries) CountPendingApprovalRequests(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPendingApprovalRequests)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createApprovalRequest = `-- name: CreateApprovalRequest :one
 INSERT INTO approval_requests (id, run_id, tool_name, proposed_input, reasoning_summary, status, expires_at, created_at)
 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)

@@ -30,6 +30,9 @@ UPDATE policies SET paused_at = :paused_at WHERE id = :id;
 -- name: ClearPolicyPausedAt :exec
 UPDATE policies SET paused_at = NULL WHERE id = :id;
 
+-- name: CountPolicies :one
+SELECT COUNT(*) FROM policies;
+
 -- name: ListPoliciesWithLatestRun :many
 SELECT
     p.id,
