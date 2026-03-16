@@ -1,6 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ReasoningTrace } from './ReasoningTrace';
-import { GLOBAL_STYLES } from './styles';
 import { SAMPLE_APPROVALS } from './fixtures';
 
 const meta: Meta<typeof ReasoningTrace> = {
@@ -9,7 +8,6 @@ const meta: Meta<typeof ReasoningTrace> = {
   decorators: [
     (Story) => (
       <div style={{ maxWidth: 600, padding: 16, background: '#0f1219', borderRadius: 8 }}>
-        <style>{GLOBAL_STYLES}</style>
         <Story />
       </div>
     ),

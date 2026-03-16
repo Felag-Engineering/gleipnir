@@ -1,6 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ApprovalCard } from './ApprovalCard';
-import { GLOBAL_STYLES } from './styles';
 import { SAMPLE_APPROVALS } from './fixtures';
 
 const meta: Meta<typeof ApprovalCard> = {
@@ -9,7 +8,6 @@ const meta: Meta<typeof ApprovalCard> = {
   decorators: [
     (Story) => (
       <div style={{ maxWidth: 700, padding: 20 }}>
-        <style>{GLOBAL_STYLES}</style>
         <Story />
       </div>
     ),
