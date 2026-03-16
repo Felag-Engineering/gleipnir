@@ -142,6 +142,26 @@ func (a *BoundAgent) failRun(ctx context.Context, runErr error) error {
 	return runErr
 }
 
+// logAuditError writes an error step to the audit trail with the given message and code.
+// Callers that pass context.Background() do so intentionally — DB writes must complete
+// even after the caller's context is cancelled (e.g. cancellation-path error steps).
+func (a *BoundAgent) logAuditError(ctx context.Context, runID string, msg string, code string) {
+	_ = a.audit.Write(ctx, Step{
+		RunID:   runID,
+		Type:    model.StepTypeError,
+		Content: map[string]string{"message": msg, "code": code},
+	})
+}
+
+// logTransitionError wraps a failRun call that intentionally discards errors from
+// state transitions that fail after the run itself has already failed. Logs via
+// slog when the transition itself errors so the failure is not silently swallowed.
+func (a *BoundAgent) logTransitionError(ctx context.Context, runErr error) {
+	if tErr := a.failRun(ctx, runErr); tErr != nil && tErr != runErr {
+		slog.ErrorContext(ctx, "run transition failed", "err", tErr)
+	}
+}
+
 // checkCapabilities verifies every capability reference in the policy resolves
 // to a tool registered at BoundAgent construction time. Called at the start of
 // Run(), before the pending→running transition, so a run with unresolvable
@@ -165,62 +185,19 @@ func (a *BoundAgent) checkCapabilities() error {
 	return nil
 }
 
-// Run executes the agent loop for a single run. It drives the Claude API
-// until the model produces end_turn or the run limits are exceeded.
-// Run returns nil on clean completion, or a wrapped error on failure.
-// Run owns the run's status transitions: it moves the run to running on entry,
-// complete on success, and failed on any error path.
-func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload string) error {
-	// Run owns the AuditWriter lifecycle. Close is idempotent, so callers that
-	// already held a reference to the writer can still call Close safely.
-	defer a.audit.Close()
-
-	// Fail fast before entering running state: every capability referenced by the
-	// policy must resolve to a registered tool. Checked here (pending→failed) so the
-	// run never briefly appears running when it has no chance of succeeding.
-	if err := a.checkCapabilities(); err != nil {
-		_ = a.audit.Write(ctx, Step{
-			RunID:   runID,
-			Type:    model.StepTypeError,
-			Content: map[string]string{"message": err.Error(), "code": "missing_capability"},
-		})
-		return a.failRun(ctx, err)
-	}
-
-	// Transition to running only after pre-flight checks pass. Use
-	// context.Background() so the DB write lands even if the caller's context
-	// is already cancelled — the loop will detect cancellation immediately.
-	if err := a.sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
-		// Best-effort: attempt to mark the run failed. If this also fails, log and
-		// return the original transition error — the run will be cleaned up by the
-		// startup scan on next restart.
-		_ = a.failRun(context.Background(), err)
-		return fmt.Errorf("transitioning run to running: %w", err)
-	}
-
-	// Extract granted tools for system prompt rendering.
-	grantedTools := make([]model.GrantedTool, len(a.tools))
-	for i, rt := range a.tools {
-		grantedTools[i] = rt.GrantedTool
-	}
-
-	// Render system prompt (ADR-001: only granted tools are visible to the agent).
-	systemPrompt := policy.RenderSystemPrompt(a.policy, grantedTools, time.Now().UTC())
-
-	if err := a.sm.PersistSystemPrompt(ctx, systemPrompt); err != nil {
-		slog.WarnContext(ctx, "failed to persist system prompt", "run_id", runID, "err", err)
-	}
-
-	// Build Anthropic tool definitions from narrowed schemas.
-	// Use the sanitized Claude-facing name (dots replaced with underscores) because
-	// the Claude API rejects tool names containing dots.
+// buildToolDefinitions builds the Anthropic tool definitions slice from the
+// agent's registered tools. The claudeNameToInternal mapping is already
+// populated in New(), so it is not returned here.
+func (a *BoundAgent) buildToolDefinitions() ([]anthropic.ToolUnionParam, error) {
 	anthropicTools := make([]anthropic.ToolUnionParam, 0, len(a.toolsByName))
+
 	for dotName, entry := range a.toolsByName {
 		inputSchema, err := buildToolInputSchema(entry.narrowedSchema)
 		if err != nil {
-			return a.failRun(ctx, fmt.Errorf("building tool schema for %s: %w", dotName, err))
+			return nil, fmt.Errorf("building tool schema for %s: %w", dotName, err)
 		}
 		claudeName := sanitizeToolName(dotName)
+
 		tool := anthropic.ToolUnionParamOfTool(inputSchema, claudeName)
 		// Set description via the OfTool variant directly.
 		if tool.OfTool != nil {
@@ -229,33 +206,125 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		anthropicTools = append(anthropicTools, tool)
 	}
 
-	// capabilitySnapshot is the content written to the capability_snapshot step (ADR-018).
-	// Including the model alongside tools makes the snapshot a complete record of
-	// the agent's configuration at run start.
-	type capabilitySnapshot struct {
-		Model string              `json:"model"`
-		Tools []model.GrantedTool `json:"tools"`
-	}
+	return anthropicTools, nil
+}
 
-	// Write capability snapshot step (ADR-018) — always the first step.
-	// Use context.Background() so this initialization step always lands, even if
-	// the caller's context was already cancelled before Run was entered.
-	if err := a.audit.Write(context.Background(), Step{
-		RunID: runID,
-		Type:  model.StepTypeCapabilitySnapshot,
-		Content: capabilitySnapshot{
-			Model: a.policy.Agent.Model,
-			Tools: grantedTools,
-		},
+// waitForApproval suspends the run at an approval gate for the given tool entry.
+// It writes the approval_request audit step, then blocks on the approval channel,
+// a timeout, or context cancellation.
+// Returns nil if approved (or timed out with on_timeout=approve), error otherwise.
+func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry resolvedToolEntry, internalName string, input map[string]any) error {
+	if err := a.audit.Write(ctx, Step{
+		RunID:   runID,
+		Type:    model.StepTypeApprovalRequest,
+		Content: map[string]any{"tool": internalName, "input": input},
 	}); err != nil {
-		return a.failRun(ctx, fmt.Errorf("writing capability snapshot: %w", err))
+		return fmt.Errorf("writing approval request step: %w", err)
 	}
 
-	// Initialize message history with the trigger payload.
-	history := []anthropic.MessageParam{
-		anthropic.NewUserMessage(anthropic.NewTextBlock(triggerPayload)),
+	// nil timeoutCh (when Timeout == 0) blocks forever in the select,
+	// meaning no timeout is applied. Use NewTimer so we can Stop it
+	// on early approval — time.After leaks until the duration fires.
+	var timeoutCh <-chan time.Time
+	if entry.tool.Timeout > 0 {
+		timer := time.NewTimer(entry.tool.Timeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
 	}
 
+	select {
+	case approved := <-a.approvalCh:
+		if !approved {
+			err := fmt.Errorf("tool call %s rejected by operator", internalName)
+			a.logAuditError(ctx, runID, err.Error(), "approval_rejected")
+			return err
+		}
+	case <-timeoutCh:
+		if entry.tool.OnTimeout == model.OnTimeoutApprove {
+			// Proceed with execution on timeout.
+		} else {
+			err := fmt.Errorf("approval timeout for tool %s", internalName)
+			a.logAuditError(ctx, runID, err.Error(), "approval_rejected")
+			return err
+		}
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled waiting for approval: %w", ctx.Err())
+	}
+
+	return nil
+}
+
+// processContentBlocks iterates the content blocks of a single API response,
+// writing audit steps and dispatching tool calls. Returns the tool result
+// blocks to feed back to the next API call, the updated totalToolCalls count,
+// and any fatal error.
+func (a *BoundAgent) processContentBlocks(
+	ctx context.Context,
+	runID string,
+	resp *anthropic.Message,
+	totalToolCalls int,
+	maxToolCalls int,
+	tokenCost int,
+) ([]anthropic.ContentBlockParamUnion, int, error) {
+	// costAssigned tracks whether the per-turn token cost has been
+	// attributed to an audit step yet. We assign it to the first block of
+	// any type (text or tool_use) so that tool-use-only turns don't silently
+	// drop the cost from the audit trail.
+	costAssigned := false
+
+	var toolResults []anthropic.ContentBlockParamUnion
+
+	for _, block := range resp.Content {
+		switch b := block.AsAny().(type) {
+		case anthropic.TextBlock:
+			cost := 0
+			if !costAssigned {
+				cost = tokenCost
+				costAssigned = true
+			}
+			if err := a.audit.Write(ctx, Step{
+				RunID:     runID,
+				Type:      model.StepTypeThought,
+				Content:   map[string]string{"text": b.Text},
+				TokenCost: cost,
+			}); err != nil {
+				return nil, totalToolCalls, fmt.Errorf("writing thought step: %w", err)
+			}
+		case anthropic.ToolUseBlock:
+			totalToolCalls++
+			if maxToolCalls > 0 && totalToolCalls > maxToolCalls {
+				err := fmt.Errorf("tool call limit exceeded: %d calls, limit %d", totalToolCalls, maxToolCalls)
+				slog.WarnContext(ctx, "tool call limit exceeded", "run_id", runID, "calls", totalToolCalls, "limit", maxToolCalls)
+				a.logAuditError(ctx, runID, err.Error(), "tool_call_limit_exceeded")
+				return nil, totalToolCalls, err
+			}
+
+			var input map[string]any
+			if err := json.Unmarshal(b.Input, &input); err != nil {
+				return nil, totalToolCalls, fmt.Errorf("unmarshalling tool input for %s: %w", b.Name, err)
+			}
+
+			resultStr, isError, err := a.handleToolCall(ctx, runID, b.ID, b.Name, input)
+			if err != nil {
+				return nil, totalToolCalls, err // handleToolCall already writes the error step
+			}
+			toolResults = append(toolResults, anthropic.NewToolResultBlock(b.ID, resultStr, isError))
+		}
+	}
+
+	return toolResults, totalToolCalls, nil
+}
+
+// runAPILoop drives the Claude API loop until the model returns end_turn,
+// a limit is exceeded, or an error occurs. It owns the token and tool-call
+// counters for the run.
+func (a *BoundAgent) runAPILoop(
+	ctx context.Context,
+	runID string,
+	history []anthropic.MessageParam,
+	anthropicTools []anthropic.ToolUnionParam,
+	systemPrompt string,
+) error {
 	var (
 		totalTokens    int
 		totalToolCalls int
@@ -269,11 +338,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		// Use context.Background() for the audit write — the caller's context is
 		// already done, so writing with it would silently drop the step.
 		if err := ctx.Err(); err != nil {
-			_ = a.audit.Write(context.Background(), Step{
-				RunID:   runID,
-				Type:    model.StepTypeError,
-				Content: map[string]string{"message": "run cancelled", "code": "cancelled"},
-			})
+			a.logAuditError(context.Background(), runID, "run cancelled", "cancelled")
 			return a.failRun(ctx, fmt.Errorf("agent run cancelled: %w", err))
 		}
 
@@ -284,11 +349,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 			if remaining <= 0 {
 				err := fmt.Errorf("token budget exceeded: %d tokens used, limit %d", totalTokens, maxTokensPerRun)
 				slog.WarnContext(ctx, "token budget exceeded", "run_id", runID, "tokens_used", totalTokens, "limit", maxTokensPerRun)
-				_ = a.audit.Write(ctx, Step{
-					RunID:   runID,
-					Type:    model.StepTypeError,
-					Content: map[string]string{"message": err.Error(), "code": "token_budget_exceeded"},
-				})
+				a.logAuditError(ctx, runID, err.Error(), "token_budget_exceeded")
 				return a.failRun(ctx, err)
 			}
 			if remaining < maxTokens {
@@ -308,71 +369,20 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 			// cancellation. Write a CANCELLED step so the audit trail is clear.
 			// Use context.Background() in all cases — ctx may already be done.
 			if ctx.Err() != nil {
-				_ = a.audit.Write(context.Background(), Step{
-					RunID:   runID,
-					Type:    model.StepTypeError,
-					Content: map[string]string{"message": "run cancelled", "code": "cancelled"},
-				})
+				a.logAuditError(context.Background(), runID, "run cancelled", "cancelled")
 			} else {
-				_ = a.audit.Write(context.Background(), Step{
-					RunID:   runID,
-					Type:    model.StepTypeError,
-					Content: map[string]string{"message": err.Error(), "code": "api_error"},
-				})
+				a.logAuditError(context.Background(), runID, err.Error(), "api_error")
 			}
 			return a.failRun(ctx, fmt.Errorf("claude API call: %w", err))
 		}
 
 		tokenCost := int(resp.Usage.InputTokens + resp.Usage.OutputTokens)
 		totalTokens += tokenCost
-		// costAssigned tracks whether the per-turn token cost has been
-		// attributed to an audit step yet. We assign it to the first block of
-		// any type (text or tool_use) so that tool-use-only turns don't silently
-		// drop the cost from the audit trail.
-		costAssigned := false
 
-		var toolResults []anthropic.ContentBlockParamUnion
-
-		for _, block := range resp.Content {
-			switch b := block.AsAny().(type) {
-			case anthropic.TextBlock:
-				cost := 0
-				if !costAssigned {
-					cost = tokenCost
-					costAssigned = true
-				}
-				if err := a.audit.Write(ctx, Step{
-					RunID:     runID,
-					Type:      model.StepTypeThought,
-					Content:   map[string]string{"text": b.Text},
-					TokenCost: cost,
-				}); err != nil {
-					return a.failRun(ctx, fmt.Errorf("writing thought step: %w", err))
-				}
-			case anthropic.ToolUseBlock:
-				totalToolCalls++
-				if maxToolCalls > 0 && totalToolCalls > maxToolCalls {
-					err := fmt.Errorf("tool call limit exceeded: %d calls, limit %d", totalToolCalls, maxToolCalls)
-					slog.WarnContext(ctx, "tool call limit exceeded", "run_id", runID, "calls", totalToolCalls, "limit", maxToolCalls)
-					_ = a.audit.Write(ctx, Step{
-						RunID:   runID,
-						Type:    model.StepTypeError,
-						Content: map[string]string{"message": err.Error(), "code": "tool_call_limit_exceeded"},
-					})
-					return a.failRun(ctx, err)
-				}
-
-				var input map[string]any
-				if err := json.Unmarshal(b.Input, &input); err != nil {
-					return a.failRun(ctx, fmt.Errorf("unmarshalling tool input for %s: %w", b.Name, err))
-				}
-
-				resultStr, isError, err := a.handleToolCall(ctx, runID, b.ID, b.Name, input)
-				if err != nil {
-					return a.failRun(ctx, err) // handleToolCall already writes the error step
-				}
-				toolResults = append(toolResults, anthropic.NewToolResultBlock(b.ID, resultStr, isError))
-			}
+		toolResults, updatedToolCalls, err := a.processContentBlocks(ctx, runID, resp, totalToolCalls, maxToolCalls, tokenCost)
+		totalToolCalls = updatedToolCalls
+		if err != nil {
+			return a.failRun(ctx, err)
 		}
 
 		// Append assistant response to history before checking stop reason.
@@ -411,6 +421,83 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	}
 }
 
+// Run executes the agent loop for a single run. It drives the Claude API
+// until the model produces end_turn or the run limits are exceeded.
+// Run returns nil on clean completion, or a wrapped error on failure.
+// Run owns the run's status transitions: it moves the run to running on entry,
+// complete on success, and failed on any error path.
+func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload string) error {
+	// Run owns the AuditWriter lifecycle. Close is idempotent, so callers that
+	// already held a reference to the writer can still call Close safely.
+	defer a.audit.Close()
+
+	// Fail fast before entering running state: every capability referenced by the
+	// policy must resolve to a registered tool. Checked here (pending→failed) so the
+	// run never briefly appears running when it has no chance of succeeding.
+	if err := a.checkCapabilities(); err != nil {
+		a.logAuditError(ctx, runID, err.Error(), "missing_capability")
+		return a.failRun(ctx, err)
+	}
+
+	// Transition to running only after pre-flight checks pass. Use
+	// context.Background() so the DB write lands even if the caller's context
+	// is already cancelled — the loop will detect cancellation immediately.
+	if err := a.sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
+		// Best-effort: attempt to mark the run failed. If this also fails, log and
+		// return the original transition error — the run will be cleaned up by the
+		// startup scan on next restart.
+		a.logTransitionError(context.Background(), err)
+		return fmt.Errorf("transitioning run to running: %w", err)
+	}
+
+	// Extract granted tools for system prompt rendering.
+	grantedTools := make([]model.GrantedTool, len(a.tools))
+	for i, rt := range a.tools {
+		grantedTools[i] = rt.GrantedTool
+	}
+
+	// Render system prompt (ADR-001: only granted tools are visible to the agent).
+	systemPrompt := policy.RenderSystemPrompt(a.policy, grantedTools, time.Now().UTC())
+
+	if err := a.sm.PersistSystemPrompt(ctx, systemPrompt); err != nil {
+		slog.WarnContext(ctx, "failed to persist system prompt", "run_id", runID, "err", err)
+	}
+
+	anthropicTools, err := a.buildToolDefinitions()
+	if err != nil {
+		return a.failRun(ctx, err)
+	}
+
+	// capabilitySnapshot is the content written to the capability_snapshot step (ADR-018).
+	// Including the model alongside tools makes the snapshot a complete record of
+	// the agent's configuration at run start.
+	type capabilitySnapshot struct {
+		Model string              `json:"model"`
+		Tools []model.GrantedTool `json:"tools"`
+	}
+
+	// Write capability snapshot step (ADR-018) — always the first step.
+	// Use context.Background() so this initialization step always lands, even if
+	// the caller's context was already cancelled before Run was entered.
+	if err := a.audit.Write(context.Background(), Step{
+		RunID: runID,
+		Type:  model.StepTypeCapabilitySnapshot,
+		Content: capabilitySnapshot{
+			Model: a.policy.Agent.Model,
+			Tools: grantedTools,
+		},
+	}); err != nil {
+		return a.failRun(ctx, fmt.Errorf("writing capability snapshot: %w", err))
+	}
+
+	// Initialize message history with the trigger payload.
+	history := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock(triggerPayload)),
+	}
+
+	return a.runAPILoop(ctx, runID, history, anthropicTools, systemPrompt)
+}
+
 // handleToolCall dispatches a single tool call from the agent.
 // For approval-gated actuators it suspends the run and waits for a decision
 // before proceeding. This is the hard runtime guarantee (ADR-001).
@@ -437,69 +524,20 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 	entry, ok := a.toolsByName[internalName]
 	if !ok {
 		err := fmt.Errorf("tool not found: %s", toolName)
-		_ = a.audit.Write(ctx, Step{
-			RunID:   runID,
-			Type:    model.StepTypeError,
-			Content: map[string]string{"message": err.Error(), "code": "tool_error"},
-		})
+		a.logAuditError(ctx, runID, err.Error(), "tool_error")
 		return "", false, err
 	}
 
 	// Validate input against narrowed schema.
 	if err := mcp.ValidateCall(entry.narrowedSchema, input); err != nil {
-		_ = a.audit.Write(ctx, Step{
-			RunID:   runID,
-			Type:    model.StepTypeError,
-			Content: map[string]string{"message": err.Error(), "code": "schema_violation"},
-		})
+		a.logAuditError(ctx, runID, err.Error(), "schema_violation")
 		return "", false, fmt.Errorf("schema validation for %s: %w", internalName, err)
 	}
 
 	// Approval gating for actuators with approval: required.
 	if entry.tool.Role == model.CapabilityRoleActuator && entry.tool.Approval == model.ApprovalModeRequired {
-		if err := a.audit.Write(ctx, Step{
-			RunID:   runID,
-			Type:    model.StepTypeApprovalRequest,
-			Content: map[string]any{"tool": internalName, "input": input},
-		}); err != nil {
-			return "", false, fmt.Errorf("writing approval request step: %w", err)
-		}
-
-		// nil timeoutCh (when Timeout == 0) blocks forever in the select,
-		// meaning no timeout is applied. Use NewTimer so we can Stop it
-		// on early approval — time.After leaks until the duration fires.
-		var timeoutCh <-chan time.Time
-		if entry.tool.Timeout > 0 {
-			timer := time.NewTimer(entry.tool.Timeout)
-			defer timer.Stop()
-			timeoutCh = timer.C
-		}
-
-		select {
-		case approved := <-a.approvalCh:
-			if !approved {
-				err := fmt.Errorf("tool call %s rejected by operator", internalName)
-				_ = a.audit.Write(ctx, Step{
-					RunID:   runID,
-					Type:    model.StepTypeError,
-					Content: map[string]string{"message": err.Error(), "code": "approval_rejected"},
-				})
-				return "", false, err
-			}
-		case <-timeoutCh:
-			if entry.tool.OnTimeout == model.OnTimeoutApprove {
-				// Proceed with execution on timeout.
-			} else {
-				err := fmt.Errorf("approval timeout for tool %s", internalName)
-				_ = a.audit.Write(ctx, Step{
-					RunID:   runID,
-					Type:    model.StepTypeError,
-					Content: map[string]string{"message": err.Error(), "code": "approval_rejected"},
-				})
-				return "", false, err
-			}
-		case <-ctx.Done():
-			return "", false, fmt.Errorf("context cancelled waiting for approval: %w", ctx.Err())
+		if err := a.waitForApproval(ctx, runID, entry, internalName, input); err != nil {
+			return "", false, err
 		}
 	}
 
@@ -522,17 +560,9 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 		// If the context was cancelled, write a canonical CANCELLED step rather
 		// than a tool_error so all cancellation paths produce consistent audit output.
 		if ctx.Err() != nil {
-			_ = a.audit.Write(context.Background(), Step{
-				RunID:   runID,
-				Type:    model.StepTypeError,
-				Content: map[string]string{"message": "run cancelled", "code": "cancelled"},
-			})
+			a.logAuditError(context.Background(), runID, "run cancelled", "cancelled")
 		} else {
-			_ = a.audit.Write(context.Background(), Step{
-				RunID:   runID,
-				Type:    model.StepTypeError,
-				Content: map[string]string{"message": err.Error(), "code": "tool_error"},
-			})
+			a.logAuditError(context.Background(), runID, err.Error(), "tool_error")
 		}
 		return "", false, fmt.Errorf("calling tool %s: %w", internalName, err)
 	}

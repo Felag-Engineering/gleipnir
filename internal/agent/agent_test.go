@@ -1432,3 +1432,501 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 		t.Errorf("content[1]: expected a tool result block (OfToolResult), got nil")
 	}
 }
+
+// makeActuatorTool builds an actuator ResolvedTool with the given approval settings,
+// pointing at the provided server URL.
+func makeActuatorTool(serverURL, serverName, toolName string, approval model.ApprovalMode, timeout time.Duration, onTimeout model.OnTimeout) mcp.ResolvedTool {
+	return mcp.ResolvedTool{
+		GrantedTool: model.GrantedTool{
+			ServerName: serverName,
+			ToolName:   toolName,
+			Role:       model.CapabilityRoleActuator,
+			Approval:   approval,
+			Timeout:    timeout,
+			OnTimeout:  onTimeout,
+		},
+		Client:      mcp.NewClient(serverURL),
+		Description: "a world-affecting tool",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+	}
+}
+
+// makeAgentWithTools is a helper that builds a BoundAgent for a running run with
+// the given tools. The SM is initialised at RunStatusRunning to skip the
+// pending→running transition (which Run() owns).
+func makeAgentWithTools(t *testing.T, tools []mcp.ResolvedTool, approvalCh chan bool) (*BoundAgent, *db.Store, *AuditWriter) {
+	t.Helper()
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	w := NewAuditWriter(s.Queries())
+	ch := (<-chan bool)(approvalCh)
+	ba, err := New(Config{
+		Policy:           minimalPolicy(),
+		Tools:            tools,
+		Audit:            w,
+		ApprovalCh:       ch,
+		StateMachine:     NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
+		MessagesOverride: noopMessages{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return ba, s, w
+}
+
+func TestBuildToolDefinitions(t *testing.T) {
+	tests := []struct {
+		name      string
+		tools     []mcp.ResolvedTool
+		wantCount int
+		wantErr   bool
+	}{
+		{
+			name:      "empty_tools_produces_empty_slice",
+			tools:     nil,
+			wantCount: 0,
+			wantErr:   false,
+		},
+		{
+			name: "single_tool_sanitized_name_and_description",
+			tools: []mcp.ResolvedTool{
+				{
+					GrantedTool: model.GrantedTool{
+						ServerName: "my-server",
+						ToolName:   "read.data",
+						Role:       model.CapabilityRoleSensor,
+					},
+					Description: "reads some data",
+					InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+				},
+			},
+			wantCount: 1,
+			wantErr:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testutil.NewTestStore(t)
+			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+			ba, err := New(Config{
+				Policy:           minimalPolicy(),
+				Tools:            tc.tools,
+				Audit:            NewAuditWriter(s.Queries()),
+				StateMachine:     NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
+				MessagesOverride: noopMessages{},
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			defs, err := ba.buildToolDefinitions()
+			if tc.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if err != nil {
+				return
+			}
+
+			if len(defs) != tc.wantCount {
+				t.Errorf("len(defs) = %d, want %d", len(defs), tc.wantCount)
+			}
+
+			// For the single-tool case, verify the sanitized name and description.
+			if tc.name == "single_tool_sanitized_name_and_description" && len(defs) == 1 {
+				tool := defs[0]
+				if tool.OfTool == nil {
+					t.Fatal("OfTool is nil")
+				}
+				wantName := "my-server_read_data"
+				if tool.OfTool.Name != wantName {
+					t.Errorf("tool name = %q, want %q", tool.OfTool.Name, wantName)
+				}
+				if !tool.OfTool.Description.Valid() || tool.OfTool.Description.Value != "reads some data" {
+					t.Errorf("tool description = %v, want 'reads some data'", tool.OfTool.Description)
+				}
+				// Verify the name is correctly mapped via claudeNameToInternal (built in New()).
+				if internal, ok := ba.claudeNameToInternal[wantName]; !ok || internal != "my-server.read.data" {
+					t.Errorf("claudeNameToInternal[%q] = %q, want %q", wantName, internal, "my-server.read.data")
+				}
+			}
+		})
+	}
+}
+
+// TestBuildToolDefinitions_InvalidSchema verifies that a tool with a non-JSON
+// narrowedSchema causes buildToolDefinitions to return an error. This requires
+// direct construction of toolsByName to inject a bad schema after New().
+func TestBuildToolDefinitions_InvalidSchema(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	ba := &BoundAgent{
+		policy:       minimalPolicy(),
+		audit:        NewAuditWriter(s.Queries()),
+		sm:           NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
+		messages:     noopMessages{},
+		toolsByName: map[string]resolvedToolEntry{
+			"bad-server.bad_tool": {
+				tool: mcp.ResolvedTool{
+					GrantedTool: model.GrantedTool{
+						ServerName: "bad-server",
+						ToolName:   "bad_tool",
+					},
+					Description: "bad tool",
+				},
+				narrowedSchema: json.RawMessage(`not valid json`),
+			},
+		},
+		claudeNameToInternal: map[string]string{
+			"bad-server_bad_tool": "bad-server.bad_tool",
+		},
+	}
+
+	_, err := ba.buildToolDefinitions()
+	if err == nil {
+		t.Error("expected error for invalid schema, got nil")
+	}
+}
+
+func TestWaitForApproval(t *testing.T) {
+	t.Run("Timeout_Reject", func(t *testing.T) {
+		approvalCh := make(chan bool)
+		ba, _, w := makeAgentWithTools(t, nil, approvalCh)
+		defer w.Close()
+
+		entry := resolvedToolEntry{
+			tool: mcp.ResolvedTool{
+				GrantedTool: model.GrantedTool{
+					Timeout:   10 * time.Millisecond,
+					OnTimeout: model.OnTimeoutReject,
+				},
+			},
+		}
+
+		err := ba.waitForApproval(context.Background(), "run1", entry, "my-server.do_thing", map[string]any{})
+		if err == nil {
+			t.Error("expected error on timeout-reject, got nil")
+		}
+		if !strings.Contains(err.Error(), "approval timeout") {
+			t.Errorf("error message = %q, want to contain 'approval timeout'", err.Error())
+		}
+	})
+
+	t.Run("Timeout_Approve", func(t *testing.T) {
+		approvalCh := make(chan bool)
+		ba, _, w := makeAgentWithTools(t, nil, approvalCh)
+		defer w.Close()
+
+		entry := resolvedToolEntry{
+			tool: mcp.ResolvedTool{
+				GrantedTool: model.GrantedTool{
+					Timeout:   10 * time.Millisecond,
+					OnTimeout: model.OnTimeoutApprove,
+				},
+			},
+		}
+
+		err := ba.waitForApproval(context.Background(), "run1", entry, "my-server.do_thing", map[string]any{})
+		if err != nil {
+			t.Errorf("expected nil on timeout-approve, got: %v", err)
+		}
+	})
+
+	t.Run("ContextCancelled", func(t *testing.T) {
+		approvalCh := make(chan bool) // unbuffered — nothing sends
+		ba, _, w := makeAgentWithTools(t, nil, approvalCh)
+		defer w.Close()
+
+		// A context with a very short deadline ensures the call will return with
+		// an error regardless of whether cancellation hits the audit write or the
+		// approval select.
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+
+		entry := resolvedToolEntry{
+			tool: mcp.ResolvedTool{
+				GrantedTool: model.GrantedTool{}, // no timeout — blocks until approval or ctx
+			},
+		}
+
+		err := ba.waitForApproval(ctx, "run1", entry, "my-server.do_thing", map[string]any{})
+		if err == nil {
+			t.Error("expected error on context cancellation, got nil")
+		}
+	})
+
+	t.Run("Approved", func(t *testing.T) {
+		approvalCh := make(chan bool, 1)
+		approvalCh <- true // operator approves
+
+		ba, _, w := makeAgentWithTools(t, nil, approvalCh)
+		defer w.Close()
+
+		entry := resolvedToolEntry{
+			tool: mcp.ResolvedTool{
+				GrantedTool: model.GrantedTool{},
+			},
+		}
+
+		err := ba.waitForApproval(context.Background(), "run1", entry, "my-server.do_thing", map[string]any{})
+		if err != nil {
+			t.Errorf("expected nil on approval, got: %v", err)
+		}
+	})
+
+	t.Run("Rejected", func(t *testing.T) {
+		approvalCh := make(chan bool, 1)
+		approvalCh <- false // operator rejects
+
+		ba, _, w := makeAgentWithTools(t, nil, approvalCh)
+		defer w.Close()
+
+		entry := resolvedToolEntry{
+			tool: mcp.ResolvedTool{
+				GrantedTool: model.GrantedTool{},
+			},
+		}
+
+		err := ba.waitForApproval(context.Background(), "run1", entry, "my-server.do_thing", map[string]any{})
+		if err == nil {
+			t.Error("expected error on rejection, got nil")
+		}
+		if !strings.Contains(err.Error(), "rejected") {
+			t.Errorf("error message = %q, want to contain 'rejected'", err.Error())
+		}
+	})
+}
+
+func TestProcessContentBlocks(t *testing.T) {
+	tests := []struct {
+		name            string
+		setupResp       func(t *testing.T) (*anthropic.Message, []mcp.ResolvedTool)
+		totalToolCalls  int
+		maxToolCalls    int
+		wantResultCount int
+		wantToolCalls   int
+		wantErr         bool
+		wantErrCode     string
+	}{
+		{
+			name: "single_text_block_writes_thought_no_tool_results",
+			setupResp: func(t *testing.T) (*anthropic.Message, []mcp.ResolvedTool) {
+				return makeTextMessage("thinking...", anthropic.StopReasonEndTurn, 5, 3), nil
+			},
+			totalToolCalls:  0,
+			maxToolCalls:    0,
+			wantResultCount: 0,
+			wantToolCalls:   0,
+			wantErr:         false,
+		},
+		{
+			name: "single_tool_use_block_returns_one_result",
+			setupResp: func(t *testing.T) (*anthropic.Message, []mcp.ResolvedTool) {
+				srv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"result"}]`), false)
+				tools := []mcp.ResolvedTool{makeResolvedTool(srv.URL, "my-server", "read_data")}
+				msg := makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5)
+				return msg, tools
+			},
+			totalToolCalls:  0,
+			maxToolCalls:    0,
+			wantResultCount: 1,
+			wantToolCalls:   1,
+			wantErr:         false,
+		},
+		{
+			name: "tool_call_limit_exceeded_returns_error",
+			setupResp: func(t *testing.T) (*anthropic.Message, []mcp.ResolvedTool) {
+				srv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"result"}]`), false)
+				tools := []mcp.ResolvedTool{makeResolvedTool(srv.URL, "my-server", "read_data")}
+				msg := makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5)
+				return msg, tools
+			},
+			totalToolCalls:  1,   // already at 1
+			maxToolCalls:    1,   // cap is 1, so totalToolCalls+1 > cap
+			wantResultCount: 0,
+			wantToolCalls:   2,   // incremented before limit check
+			wantErr:         true,
+			wantErrCode:     "tool_call_limit_exceeded",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, tools := tc.setupResp(t)
+
+			s := testutil.NewTestStore(t)
+			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+			w := NewAuditWriter(s.Queries())
+			ba, err := New(Config{
+				Policy:           minimalPolicy(),
+				Tools:            tools,
+				Audit:            w,
+				ApprovalCh:       make(chan bool),
+				StateMachine:     NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
+				MessagesOverride: noopMessages{},
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			tokenCost := int(resp.Usage.InputTokens + resp.Usage.OutputTokens)
+			results, updatedCalls, err := ba.processContentBlocks(
+				context.Background(), "run1", resp,
+				tc.totalToolCalls, tc.maxToolCalls, tokenCost,
+			)
+
+			if tc.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+
+			if len(results) != tc.wantResultCount {
+				t.Errorf("results count = %d, want %d", len(results), tc.wantResultCount)
+			}
+			if updatedCalls != tc.wantToolCalls {
+				t.Errorf("updatedToolCalls = %d, want %d", updatedCalls, tc.wantToolCalls)
+			}
+
+			// For error cases with a known code, verify the audit step was written.
+			if tc.wantErr && tc.wantErrCode != "" {
+				if err := w.Close(); err != nil {
+					t.Fatalf("Close: %v", err)
+				}
+				steps, dbErr := s.ListRunSteps(context.Background(), "run1")
+				if dbErr != nil {
+					t.Fatalf("ListRunSteps: %v", dbErr)
+				}
+				var found bool
+				for _, step := range steps {
+					if step.Type == string(model.StepTypeError) {
+						var content map[string]string
+						if jsonErr := json.Unmarshal([]byte(step.Content), &content); jsonErr == nil {
+							if content["code"] == tc.wantErrCode {
+								found = true
+							}
+						}
+					}
+				}
+				if !found {
+					t.Errorf("expected error step with code %q, not found in audit trail", tc.wantErrCode)
+				}
+			}
+		})
+	}
+}
+
+func TestRunAPILoop_EndTurn(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	msgs := &fakeMessages{responses: []*anthropic.Message{
+		makeTextMessage("all done", anthropic.StopReasonEndTurn, 10, 5),
+	}}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy:           minimalPolicy(),
+		Tools:            nil,
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.Queries()),
+		MessagesOverride: msgs,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	history := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock("go")),
+	}
+
+	err = ba.runAPILoop(context.Background(), "r1", history, nil, "system prompt")
+	if err != nil {
+		t.Fatalf("runAPILoop: %v", err)
+	}
+
+	// Verify the run transitioned to complete.
+	run, dbErr := s.GetRun(context.Background(), "r1")
+	if dbErr != nil {
+		t.Fatalf("GetRun: %v", dbErr)
+	}
+	if run.Status != string(model.RunStatusComplete) {
+		t.Errorf("run status = %q, want %q", run.Status, model.RunStatusComplete)
+	}
+
+	// Verify a complete step was written.
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	steps, dbErr := s.ListRunSteps(context.Background(), "r1")
+	if dbErr != nil {
+		t.Fatalf("ListRunSteps: %v", dbErr)
+	}
+	var hasComplete bool
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeComplete) {
+			hasComplete = true
+		}
+	}
+	if !hasComplete {
+		t.Error("expected a complete step in audit trail, found none")
+	}
+}
+
+func TestLogAuditError(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy:           minimalPolicy(),
+		Tools:            nil,
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
+		MessagesOverride: noopMessages{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ba.logAuditError(context.Background(), "run1", "something went wrong", "test_code")
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	steps, dbErr := s.ListRunSteps(context.Background(), "run1")
+	if dbErr != nil {
+		t.Fatalf("ListRunSteps: %v", dbErr)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("step count = %d, want 1", len(steps))
+	}
+	if steps[0].Type != string(model.StepTypeError) {
+		t.Errorf("step type = %q, want %q", steps[0].Type, model.StepTypeError)
+	}
+	var content map[string]string
+	if err := json.Unmarshal([]byte(steps[0].Content), &content); err != nil {
+		t.Fatalf("unmarshal step content: %v", err)
+	}
+	if content["message"] != "something went wrong" {
+		t.Errorf("message = %q, want %q", content["message"], "something went wrong")
+	}
+	if content["code"] != "test_code" {
+		t.Errorf("code = %q, want %q", content["code"], "test_code")
+	}
+}
