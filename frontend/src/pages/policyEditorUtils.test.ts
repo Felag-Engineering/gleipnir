@@ -51,37 +51,14 @@ describe('yamlToFormState — all trigger types', () => {
     expect(state!.trigger.type).toBe('webhook')
   })
 
-  it('parses cron trigger with schedule', () => {
+  it('defaults cron trigger type to webhook (removed trigger type)', () => {
     const state = yamlToFormState('name: p\ntrigger:\n  type: cron\n  schedule: "0 * * * *"\n')
-    expect(state!.trigger.type).toBe('cron')
-    if (state!.trigger.type !== 'cron') throw new Error('expected cron')
-    expect(state!.trigger.schedule).toBe('0 * * * *')
+    expect(state!.trigger.type).toBe('webhook')
   })
 
-  it('parses poll trigger with all fields including headers', () => {
-    const yaml = `name: p
-trigger:
-  type: poll
-  interval: 10m
-  request:
-    url: https://example.com/api
-    method: POST
-    headers:
-      Authorization: Bearer token
-      Accept: application/json
-    body: '{"key":"value"}'
-  filter: .items
-`
-    const state = yamlToFormState(yaml)
-    expect(state!.trigger.type).toBe('poll')
-    if (state!.trigger.type !== 'poll') throw new Error('expected poll')
-    expect(state!.trigger.interval).toBe('10m')
-    expect(state!.trigger.request.url).toBe('https://example.com/api')
-    expect(state!.trigger.request.method).toBe('POST')
-    expect(state!.trigger.request.headers).toContain('Authorization: Bearer token')
-    expect(state!.trigger.request.headers).toContain('Accept: application/json')
-    expect(state!.trigger.request.body).toBe('{"key":"value"}')
-    expect(state!.trigger.filter).toBe('.items')
+  it('defaults poll trigger type to webhook (removed trigger type)', () => {
+    const state = yamlToFormState('name: p\ntrigger:\n  type: poll\n  interval: 10m\n')
+    expect(state!.trigger.type).toBe('webhook')
   })
 
   it('parses manual trigger', () => {
@@ -272,54 +249,6 @@ describe('formStateToYaml — serialization', () => {
     expect(yaml).toContain('my-folder')
   })
 
-  it('serializes poll trigger headers back to object format', () => {
-    const yaml = `name: p
-trigger:
-  type: poll
-  interval: 5m
-  request:
-    url: https://api.example.com
-    method: GET
-    headers:
-      Authorization: Bearer token
-  filter: ''
-`
-    const state = yamlToFormState(yaml)!
-    const output = formStateToYaml(state)
-    // Headers should be serialized as a YAML mapping
-    expect(output).toContain('Authorization')
-    expect(output).toContain('Bearer token')
-  })
-
-  it('serializes poll body only when present', () => {
-    const yamlWithBody = `name: p
-trigger:
-  type: poll
-  interval: 5m
-  request:
-    url: https://api.example.com
-    method: POST
-    body: '{"q":"test"}'
-  filter: ''
-`
-    const stateWithBody = yamlToFormState(yamlWithBody)!
-    const outputWithBody = formStateToYaml(stateWithBody)
-    expect(outputWithBody).toContain('body')
-
-    const yamlNoBody = `name: p
-trigger:
-  type: poll
-  interval: 5m
-  request:
-    url: https://api.example.com
-    method: GET
-  filter: ''
-`
-    const stateNoBody = yamlToFormState(yamlNoBody)!
-    const outputNoBody = formStateToYaml(stateNoBody)
-    expect(outputNoBody).not.toContain('body')
-  })
-
   it('serializes scheduled trigger fireAt as fire_at array', () => {
     const yaml = `name: p
 trigger:
@@ -382,16 +311,7 @@ describe('round-trip fidelity', () => {
 description: A comprehensive policy
 folder: ops
 trigger:
-  type: poll
-  interval: 15m
-  request:
-    url: https://api.example.com/events
-    method: POST
-    headers:
-      Authorization: Bearer mytoken
-      Content-Type: application/json
-    body: '{"since":"2025-01-01"}'
-  filter: '.events | length > 0'
+  type: webhook
 capabilities:
   sensors:
     - tool: github.list_prs
@@ -430,13 +350,6 @@ agent:
     expect(second!._preamble).toBe(first!._preamble)
     expect(second!._feedbackCapabilities).toBeDefined()
 
-    if (first!.trigger.type === 'poll' && second!.trigger.type === 'poll') {
-      expect(second!.trigger.interval).toBe(first!.trigger.interval)
-      expect(second!.trigger.request.url).toBe(first!.trigger.request.url)
-      expect(second!.trigger.request.method).toBe(first!.trigger.request.method)
-      expect(second!.trigger.filter).toBe(first!.trigger.filter)
-    }
-
     expect(second!.capabilities.tools).toHaveLength(first!.capabilities.tools.length)
     first!.capabilities.tools.forEach((t, i) => {
       expect(second!.capabilities.tools[i].serverName).toBe(t.serverName)
@@ -468,31 +381,6 @@ trigger:
     expect(second.trigger.fireAt).toEqual(['2025-03-01T10:00:00Z', '2025-09-01T10:00:00Z'])
   })
 
-  it('round-trips poll trigger with headers and body', () => {
-    const yaml = `name: p
-trigger:
-  type: poll
-  interval: 5m
-  request:
-    url: https://api.example.com
-    method: POST
-    headers:
-      X-Token: abc123
-    body: '{"q":"search"}'
-  filter: '.results'
-`
-    const first = yamlToFormState(yaml)!
-    const second = yamlToFormState(formStateToYaml(first))!
-    expect(second.trigger.type).toBe('poll')
-    if (second.trigger.type !== 'poll') throw new Error('expected poll')
-    expect(second.trigger.interval).toBe('5m')
-    expect(second.trigger.request.url).toBe('https://api.example.com')
-    expect(second.trigger.request.method).toBe('POST')
-    expect(second.trigger.request.body).toBe('{"q":"search"}')
-    expect(second.trigger.filter).toBe('.results')
-    // Headers survive the round-trip
-    expect(second.trigger.request.headers).toContain('X-Token: abc123')
-  })
 })
 
 // --- defaultFormState ---

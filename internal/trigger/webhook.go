@@ -1,5 +1,4 @@
-// Package trigger implements run trigger handlers. v0.1 supports webhook only;
-// cron and poll are planned for v0.3.
+// Package trigger implements run trigger handlers (webhook, manual, scheduled).
 package trigger
 
 import (

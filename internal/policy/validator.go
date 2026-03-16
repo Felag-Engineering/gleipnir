@@ -43,7 +43,7 @@ func validateTrigger(t model.TriggerConfig) []string {
 	var errs []string
 
 	if !t.Type.Valid() {
-		errs = append(errs, fmt.Sprintf("trigger.type %q is invalid; must be webhook, cron, poll, manual, or scheduled", t.Type))
+		errs = append(errs, fmt.Sprintf("trigger.type %q is invalid; must be webhook, manual, or scheduled", t.Type))
 		return errs // can't validate type-specific fields without a valid type
 	}
 
@@ -64,32 +64,6 @@ func validateTrigger(t model.TriggerConfig) []string {
 		// so an entry count mismatch signals parse failures).
 		// Note: we do not validate that timestamps are in the future here, because
 		// historical timestamps in existing policies are valid on read.
-
-	case model.TriggerTypeCron:
-		if t.Schedule == "" {
-			errs = append(errs, "trigger.schedule is required for cron triggers")
-		}
-
-	case model.TriggerTypePoll:
-		if t.Poll == nil {
-			errs = append(errs, "trigger poll config is required for poll triggers")
-			return errs
-		}
-		if t.Poll.Interval == "" {
-			errs = append(errs, "trigger.interval is required for poll triggers")
-		} else if _, err := time.ParseDuration(t.Poll.Interval); err != nil {
-			errs = append(errs, fmt.Sprintf("trigger.interval %q is not a valid duration: %v", t.Poll.Interval, err))
-		}
-		if t.Poll.Request.URL == "" {
-			errs = append(errs, "trigger.request.url is required for poll triggers")
-		}
-		method := strings.ToUpper(t.Poll.Request.Method)
-		if method != "GET" && method != "POST" {
-			errs = append(errs, fmt.Sprintf("trigger.request.method %q is invalid; must be GET or POST", t.Poll.Request.Method))
-		}
-		if t.Poll.Filter == "" {
-			errs = append(errs, "trigger.filter is required for poll triggers")
-		}
 	}
 
 	if t.WebhookSecret != "" && t.Type != model.TriggerTypeWebhook {

@@ -12,14 +12,6 @@
   color: var(--color-blue);
 }
 
-.cron {
-  color: var(--color-purple);
-}
-
-.poll {
-  color: var(--color-teal);
-}
-
 .manual {
   color: var(--color-orange);
 }

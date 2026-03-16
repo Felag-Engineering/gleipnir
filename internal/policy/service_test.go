@@ -143,7 +143,7 @@ agent:
 	}
 }
 
-func TestService_Update_ChangedTriggerType(t *testing.T) {
+func TestService_Update_ChangedTriggerType_WebhookToManual(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	svc := NewService(store, nil, nil)
 
@@ -155,23 +155,22 @@ func TestService_Update_ChangedTriggerType(t *testing.T) {
 		t.Fatalf("initial trigger_type = %q, want webhook", createResult.Policy.TriggerType)
 	}
 
-	cronYAML := `
+	manualYAML := `
 name: test-policy-renamed
 trigger:
-  type: cron
-  schedule: "0 * * * *"
+  type: manual
 capabilities:
   sensors:
     - tool: github.list_repos
 agent:
-  task: Check repos on schedule
+  task: Check repos on demand
 `
-	result, err := svc.Update(context.Background(), createResult.Policy.ID, cronYAML)
+	result, err := svc.Update(context.Background(), createResult.Policy.ID, manualYAML)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if result.Policy.TriggerType != model.TriggerTypeCron {
-		t.Errorf("trigger_type = %q after update, want cron", result.Policy.TriggerType)
+	if result.Policy.TriggerType != model.TriggerTypeManual {
+		t.Errorf("trigger_type = %q after update, want manual", result.Policy.TriggerType)
 	}
 	if result.Policy.Name != "test-policy-renamed" {
 		t.Errorf("name = %q after update, want test-policy-renamed", result.Policy.Name)

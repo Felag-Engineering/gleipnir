@@ -23,8 +23,6 @@ export type {
   IdentityFormState,
   TriggerType,
   WebhookTriggerState,
-  CronTriggerState,
-  PollTriggerState,
   TriggerFormState,
   AssignedTool,
   CapabilitiesFormState,

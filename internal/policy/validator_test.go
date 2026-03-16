@@ -49,61 +49,16 @@ func TestValidate_InvalidTriggerType(t *testing.T) {
 	assertValidationContains(t, p, "trigger.type")
 }
 
-func TestValidate_CronMissingSchedule(t *testing.T) {
+func TestValidate_CronTriggerIsInvalid(t *testing.T) {
 	p := validPolicy()
-	p.Trigger.Type = model.TriggerTypeCron
-	p.Trigger.Schedule = ""
-	assertValidationContains(t, p, "trigger.schedule is required")
+	p.Trigger.Type = "cron"
+	assertValidationContains(t, p, "trigger.type")
 }
 
-func TestValidate_PollMissingConfig(t *testing.T) {
+func TestValidate_PollTriggerIsInvalid(t *testing.T) {
 	p := validPolicy()
-	p.Trigger.Type = model.TriggerTypePoll
-	p.Trigger.Poll = nil
-	assertValidationContains(t, p, "trigger poll config is required")
-}
-
-func TestValidate_PollInvalidInterval(t *testing.T) {
-	p := validPolicy()
-	p.Trigger.Type = model.TriggerTypePoll
-	p.Trigger.Poll = &model.PollConfig{
-		Interval: "bad",
-		Request:  model.PollRequest{URL: "https://example.com", Method: "GET"},
-		Filter:   "$.x",
-	}
-	assertValidationContains(t, p, "not a valid duration")
-}
-
-func TestValidate_PollMissingURL(t *testing.T) {
-	p := validPolicy()
-	p.Trigger.Type = model.TriggerTypePoll
-	p.Trigger.Poll = &model.PollConfig{
-		Interval: "5m",
-		Request:  model.PollRequest{Method: "GET"},
-		Filter:   "$.x",
-	}
-	assertValidationContains(t, p, "trigger.request.url is required")
-}
-
-func TestValidate_PollInvalidMethod(t *testing.T) {
-	p := validPolicy()
-	p.Trigger.Type = model.TriggerTypePoll
-	p.Trigger.Poll = &model.PollConfig{
-		Interval: "5m",
-		Request:  model.PollRequest{URL: "https://example.com", Method: "DELETE"},
-		Filter:   "$.x",
-	}
-	assertValidationContains(t, p, "must be GET or POST")
-}
-
-func TestValidate_PollMissingFilter(t *testing.T) {
-	p := validPolicy()
-	p.Trigger.Type = model.TriggerTypePoll
-	p.Trigger.Poll = &model.PollConfig{
-		Interval: "5m",
-		Request:  model.PollRequest{URL: "https://example.com", Method: "GET"},
-	}
-	assertValidationContains(t, p, "trigger.filter is required")
+	p.Trigger.Type = "poll"
+	assertValidationContains(t, p, "trigger.type")
 }
 
 func TestValidate_NoSensorsOrActuators(t *testing.T) {
@@ -214,18 +169,6 @@ func TestValidate_ManualTrigger(t *testing.T) {
 	}
 }
 
-func TestValidate_ValidPollTrigger(t *testing.T) {
-	p := validPolicy()
-	p.Trigger.Type = model.TriggerTypePoll
-	p.Trigger.Poll = &model.PollConfig{
-		Interval: "5m",
-		Request:  model.PollRequest{URL: "https://example.com", Method: "GET"},
-		Filter:   "$.items",
-	}
-	if err := Validate(p); err != nil {
-		t.Errorf("expected valid poll policy, got: %v", err)
-	}
-}
 
 func TestValidate_UnknownModel(t *testing.T) {
 	p := validPolicy()

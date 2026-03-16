@@ -31,8 +31,6 @@ type TriggerType string
 
 const (
 	TriggerTypeWebhook   TriggerType = "webhook"
-	TriggerTypeCron      TriggerType = "cron"
-	TriggerTypePoll      TriggerType = "poll"
 	TriggerTypeManual    TriggerType = "manual"
 	TriggerTypeScheduled TriggerType = "scheduled"
 )
@@ -100,7 +98,7 @@ func (s RunStatus) Valid() bool {
 func (t TriggerType) String() string { return string(t) }
 func (t TriggerType) Valid() bool {
 	switch t {
-	case TriggerTypeWebhook, TriggerTypeCron, TriggerTypePoll, TriggerTypeManual, TriggerTypeScheduled:
+	case TriggerTypeWebhook, TriggerTypeManual, TriggerTypeScheduled:
 		return true
 	}
 	return false
@@ -186,25 +184,8 @@ type ParsedPolicy struct {
 // the active TriggerType are populated.
 type TriggerConfig struct {
 	Type          TriggerType
-	Schedule      string      // cron only
-	Poll          *PollConfig // poll only
 	FireAt        []time.Time // scheduled only
 	WebhookSecret string      `json:"-"` // webhook only; excluded from JSON to prevent secret leakage
-}
-
-// PollConfig describes the HTTP poll trigger (v0.3).
-type PollConfig struct {
-	Interval string
-	Request  PollRequest
-	Filter   string // JSONPath expression
-}
-
-// PollRequest describes the HTTP request made by the poll trigger.
-type PollRequest struct {
-	URL     string
-	Method  string
-	Headers map[string]string
-	Body    string // POST only
 }
 
 // CapabilitiesConfig defines the tool envelope granted to an agent for this run.

@@ -37,7 +37,7 @@ export function ApprovalCard({ def, onDecide }: ApprovalCardProps) {
           <div className={styles.headerTitle}>
             <span className={styles.policyName}>{def.policyName}</span>
             <span className={styles.folderName}>{def.folder}</span>
-            <TriggerChip type="poll" />
+            <TriggerChip type="webhook" />
           </div>
           <p className={styles.agentSummary}>{def.agentSummary}</p>
         </div>

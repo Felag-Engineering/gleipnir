@@ -35,7 +35,7 @@ folder: string
 
 trigger:
 
-  # type: webhook | cron | poll | manual | scheduled — required
+  # type: webhook | manual | scheduled — required
   type: webhook
 
 
@@ -47,6 +47,10 @@ trigger:
   # the agent as the first user message.
 
 
+  # --- manual ---
+  # No additional configuration. Triggered on demand from the dashboard.
+
+
   # --- scheduled ---
   # fire_at: list of strings — required for scheduled
   #   ISO-8601 UTC timestamps at which the policy should fire exactly once.
@@ -55,55 +59,6 @@ trigger:
   #   Example: ["2026-06-01T09:00:00Z", "2026-07-01T09:00:00Z"]
   fire_at:
     - "2026-06-01T09:00:00Z"
-
-
-  # --- cron ---
-  # schedule: string — required for cron
-  #   Standard 5-field cron expression. Evaluated by robfig/cron.
-  #   Examples: "0 * * * *" (hourly), "*/5 * * * *" (every 5 minutes)
-  schedule: "0 * * * *"
-
-
-  # --- poll ---
-  # interval: duration — required for poll
-  #   How often to make the HTTP request. Go time.ParseDuration format.
-  #   Valid units: s (seconds), m (minutes), h (hours).
-  #   Examples: 30s, 5m, 1h, 1h30m
-  interval: 5m
-
-  # request — required for poll
-  request:
-
-    # url: string — required
-    #   The HTTP endpoint to poll. Supports ${ENV_VAR} substitution.
-    url: "https://example.local/api/resource"
-
-    # method: GET | POST — required
-    method: GET
-
-    # headers: map[string]string — optional
-    #   HTTP headers to include in the request.
-    #   Values support ${ENV_VAR} substitution. The raw ${VAR_NAME} string
-    #   is stored in the YAML — substitution happens at run start, never
-    #   at save time. A missing env var at run start fails the run.
-    headers:
-      Authorization: "Bearer ${API_TOKEN}"
-      Accept: "application/json"
-
-    # body: string — optional, only valid for POST
-    #   Request body. Supports ${ENV_VAR} substitution.
-    body: '{"filter": "active"}'
-
-  # filter: string — required for poll
-  #   JSONPath expression evaluated against the JSON response body.
-  #   A run fires if the expression returns a non-empty result.
-  #   The matched result becomes the trigger payload delivered to the
-  #   agent as the first user message.
-  #   Examples:
-  #     "$.items[?(@.status == 'open')]"       — array of matching items
-  #     "$.alerts[?(@.severity == 'critical')]" — critical alerts only
-  #     "$.count"                               — fires if count is non-zero
-  filter: "$.items[?(@.status == 'open')]"
 
 
 # ---------------------------------------------------------------------------

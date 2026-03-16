@@ -417,8 +417,8 @@ func TestPolicyQueries(t *testing.T) {
 	if _, err := s.CreatePolicy(ctx, CreatePolicyParams{
 		ID:          "pol2",
 		Name:        "other-policy",
-		TriggerType: "cron",
-		Yaml:        "trigger: cron",
+		TriggerType: "webhook",
+		Yaml:        "trigger: webhook",
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}); err != nil {

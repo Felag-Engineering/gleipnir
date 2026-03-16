@@ -1,4 +1,28 @@
-import type { Folder, ApprovalDef } from './types';
+import type { RunStatus, TriggerType, ApprovalDef } from './types';
+
+interface Run {
+  id: string;
+  status: RunStatus;
+  startedAt: string;
+  duration: number | null;
+  tokenCost: number;
+  toolCalls: number;
+  summary: string | null;
+}
+
+interface Policy {
+  id: string;
+  name: string;
+  triggerType: TriggerType;
+  latestRun: Run;
+  history: Run[];
+}
+
+interface Folder {
+  id: string;
+  name: string;
+  policies: Policy[];
+}
 
 export const SAMPLE_FOLDERS: Folder[] = [
   {
@@ -16,7 +40,7 @@ export const SAMPLE_FOLDERS: Folder[] = [
         ],
       },
       {
-        id: 'p2', name: 'vikunja-daily-digest', triggerType: 'cron',
+        id: 'p2', name: 'vikunja-daily-digest', triggerType: 'scheduled',
         latestRun: { id: 'r201', status: 'running', startedAt: '2026-03-07T08:00:00Z', duration: null, tokenCost: 1850, toolCalls: 4, summary: null },
         history: [
           { id: 'r200', status: 'complete', startedAt: '2026-03-06T08:00:00Z', duration: 84, tokenCost: 10200, toolCalls: 22, summary: 'Digest posted — 7 overdue tasks across 3 projects.' },
@@ -24,7 +48,7 @@ export const SAMPLE_FOLDERS: Folder[] = [
         ],
       },
       {
-        id: 'p3', name: 'vikunja-close-resolved', triggerType: 'poll',
+        id: 'p3', name: 'vikunja-close-resolved', triggerType: 'webhook',
         latestRun: { id: 'r301', status: 'waiting_for_approval', startedAt: '2026-03-07T14:29:05Z', duration: null, tokenCost: 3210, toolCalls: 7, summary: 'Wants to close task #1040 — all criteria met.' },
         history: [
           { id: 'r300', status: 'complete', startedAt: '2026-03-07T12:00:00Z', duration: 29, tokenCost: 4100, toolCalls: 8, summary: 'Closed task #1038 after approval.' },
@@ -37,7 +61,7 @@ export const SAMPLE_FOLDERS: Folder[] = [
     id: 'f2', name: 'Grafana',
     policies: [
       {
-        id: 'p4', name: 'grafana-alert-responder', triggerType: 'poll',
+        id: 'p4', name: 'grafana-alert-responder', triggerType: 'webhook',
         latestRun: { id: 'r401', status: 'complete', startedAt: '2026-03-07T12:44:00Z', duration: 38, tokenCost: 6100, toolCalls: 9, summary: 'Incident task #1038 created for memory-pressure alert on worker-03.' },
         history: [
           { id: 'r400', status: 'complete', startedAt: '2026-03-07T10:12:00Z', duration: 41, tokenCost: 6400, toolCalls: 10, summary: 'Incident task created for CPU spike on api-gateway.' },
@@ -50,7 +74,7 @@ export const SAMPLE_FOLDERS: Folder[] = [
     id: 'f3', name: 'Infrastructure',
     policies: [
       {
-        id: 'p5', name: 'kubectl-pod-watcher', triggerType: 'poll',
+        id: 'p5', name: 'kubectl-pod-watcher', triggerType: 'webhook',
         latestRun: { id: 'r502', status: 'waiting_for_approval', startedAt: '2026-03-07T14:38:00Z', duration: null, tokenCost: 4100, toolCalls: 6, summary: 'Wants to create P1 incident task — CrashLoopBackOff on worker-02.' },
         history: [
           { id: 'r501', status: 'complete', startedAt: '2026-03-07T14:15:00Z', duration: 22, tokenCost: 3200, toolCalls: 6, summary: 'No CrashLoopBackOff pods detected. All namespaces healthy.' },

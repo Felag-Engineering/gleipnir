@@ -71,42 +71,13 @@ export function yamlToFormState(yaml: string): FormState | null {
 
   let trigger: TriggerFormState
   const triggerType = triggerRaw.type
-  if (triggerType === 'cron') {
-    trigger = {
-      type: 'cron',
-      schedule: typeof triggerRaw.schedule === 'string' ? triggerRaw.schedule : '',
-    }
-  } else if (triggerType === 'manual') {
+  if (triggerType === 'manual') {
     trigger = { type: 'manual' }
   } else if (triggerType === 'scheduled') {
     const fireAtRaw = Array.isArray(triggerRaw.fire_at) ? triggerRaw.fire_at : []
     trigger = {
       type: 'scheduled',
       fireAt: fireAtRaw.filter((v: unknown) => typeof v === 'string') as string[],
-    }
-  } else if (triggerType === 'poll') {
-    const reqRaw = triggerRaw.request && typeof triggerRaw.request === 'object' && !Array.isArray(triggerRaw.request)
-      ? (triggerRaw.request as Record<string, unknown>)
-      : {}
-
-    // Headers: convert object → "Key: Value\n..." textarea string
-    let headersStr = ''
-    if (reqRaw.headers && typeof reqRaw.headers === 'object' && !Array.isArray(reqRaw.headers)) {
-      headersStr = Object.entries(reqRaw.headers as Record<string, unknown>)
-        .map(([k, v]) => `${k}: ${String(v)}`)
-        .join('\n')
-    }
-
-    trigger = {
-      type: 'poll',
-      interval: typeof triggerRaw.interval === 'string' ? triggerRaw.interval : '5m',
-      request: {
-        url: typeof reqRaw.url === 'string' ? reqRaw.url : '',
-        method: reqRaw.method === 'POST' ? 'POST' : 'GET',
-        headers: headersStr,
-        body: typeof reqRaw.body === 'string' ? reqRaw.body : undefined,
-      },
-      filter: typeof triggerRaw.filter === 'string' ? triggerRaw.filter : '',
     }
   } else {
     trigger = { type: 'webhook' }
@@ -232,38 +203,10 @@ export function formStateToYaml(state: FormState): string {
 
   // Build trigger object
   let triggerObj: Record<string, unknown>
-  if (trigger.type === 'cron') {
-    triggerObj = { type: 'cron', schedule: trigger.schedule }
-  } else if (trigger.type === 'manual') {
+  if (trigger.type === 'manual') {
     triggerObj = { type: 'manual' }
   } else if (trigger.type === 'scheduled') {
     triggerObj = { type: 'scheduled', fire_at: trigger.fireAt }
-  } else if (trigger.type === 'poll') {
-    // Parse headers textarea back to object
-    const headersObj: Record<string, string> = {}
-    if (trigger.request.headers) {
-      for (const line of trigger.request.headers.split('\n')) {
-        const trimmed = line.trim()
-        if (!trimmed) continue
-        const sepIdx = trimmed.indexOf(': ')
-        if (sepIdx < 0) continue
-        headersObj[trimmed.slice(0, sepIdx)] = trimmed.slice(sepIdx + 2)
-      }
-    }
-
-    const reqObj: Record<string, unknown> = {
-      url: trigger.request.url,
-      method: trigger.request.method,
-    }
-    if (Object.keys(headersObj).length > 0) reqObj.headers = headersObj
-    if (trigger.request.body) reqObj.body = trigger.request.body
-
-    triggerObj = {
-      type: 'poll',
-      interval: trigger.interval,
-      request: reqObj,
-      filter: trigger.filter,
-    }
   } else {
     triggerObj = { type: 'webhook' }
   }

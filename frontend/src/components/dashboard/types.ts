@@ -1,29 +1,5 @@
 export type RunStatus = 'complete' | 'running' | 'waiting_for_approval' | 'failed' | 'interrupted' | 'pending';
-export type TriggerType = 'webhook' | 'cron' | 'poll' | 'manual' | 'scheduled';
-
-export interface Run {
-  id: string;
-  status: RunStatus;
-  startedAt: string;
-  duration: number | null;
-  tokenCost: number;
-  toolCalls: number;
-  summary: string | null;
-}
-
-export interface Policy {
-  id: string;
-  name: string;
-  triggerType: TriggerType;
-  latestRun: Run;
-  history: Run[];
-}
-
-export interface Folder {
-  id: string;
-  name: string;
-  policies: Policy[];
-}
+export type TriggerType = 'webhook' | 'manual' | 'scheduled';
 
 export interface ReasoningStep {
   type: 'thought' | 'tool_call' | 'tool_result';
@@ -43,13 +19,6 @@ export interface ApprovalDef {
   reasoning: ReasoningStep[];
   expiresAt: string;
   startedAt: string;
-}
-
-export interface Receipt {
-  id: string;
-  decision: 'approve' | 'reject';
-  note: string;
-  settled: boolean;
 }
 
 export const STATUS_CONFIG: Record<RunStatus, {

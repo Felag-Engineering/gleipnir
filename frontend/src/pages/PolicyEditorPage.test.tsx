@@ -59,29 +59,26 @@ agent:
   concurrency: skip
 `
 
-const CRON_YAML = `name: cron-policy
+const MANUAL_YAML = `name: manual-policy
 trigger:
-  type: cron
-  schedule: '0 * * * *'
+  type: manual
 capabilities:
   sensors: []
   actuators: []
 agent:
-  task: Run hourly checks.
+  task: Run on demand.
   limits:
     max_tokens_per_run: 5000
     max_tool_calls_per_run: 10
   concurrency: queue
 `
 
-const POLL_YAML = `name: poll-policy
+const SCHEDULED_YAML = `name: scheduled-policy
 trigger:
-  type: poll
-  interval: 10m
-  request:
-    url: https://example.com/api
-    method: GET
-  filter: '.items | length > 0'
+  type: scheduled
+  fire_at:
+    - '2030-01-01T09:00:00Z'
+    - '2030-06-15T12:00:00Z'
 capabilities:
   sensors:
     - tool: github.list_issues
@@ -91,7 +88,7 @@ agent:
   limits:
     max_tokens_per_run: 8000
     max_tool_calls_per_run: 20
-  concurrency: replace
+  concurrency: skip
 `
 
 // --- Helpers ---
@@ -198,8 +195,8 @@ describe('PolicyEditorUtils — formStateToYaml approval output', () => {
 describe('PolicyEditorUtils — YAML ↔ form round-trip (pure functions)', () => {
   it.each([
     ['webhook', WEBHOOK_YAML],
-    ['cron', CRON_YAML],
-    ['poll', POLL_YAML],
+    ['manual', MANUAL_YAML],
+    ['scheduled', SCHEDULED_YAML],
   ])('round-trips a %s policy preserving identity, trigger type, and tool server names', (_label, yaml) => {
     const parsed = yamlToFormState(yaml)
     expect(parsed).not.toBeNull()
@@ -232,21 +229,19 @@ describe('PolicyEditorUtils — YAML ↔ form round-trip (pure functions)', () =
     expect(rt.trigger.type).toBe('webhook')
   })
 
-  it('cron schedule is preserved after round-trip', () => {
-    const parsed = yamlToFormState(CRON_YAML)!
-    if (parsed.trigger.type !== 'cron') throw new Error('expected cron')
+  it('scheduled fire_at timestamps are preserved after round-trip', () => {
+    const parsed = yamlToFormState(SCHEDULED_YAML)!
+    if (parsed.trigger.type !== 'scheduled') throw new Error('expected scheduled')
     const rt = yamlToFormState(formStateToYaml(parsed))!
-    if (rt.trigger.type !== 'cron') throw new Error('expected cron after round-trip')
-    expect(rt.trigger.schedule).toBe(parsed.trigger.schedule)
+    if (rt.trigger.type !== 'scheduled') throw new Error('expected scheduled after round-trip')
+    expect(rt.trigger.fireAt).toEqual(parsed.trigger.fireAt)
   })
 
-  it('poll interval and url are preserved after round-trip', () => {
-    const parsed = yamlToFormState(POLL_YAML)!
-    if (parsed.trigger.type !== 'poll') throw new Error('expected poll')
-    const rt = yamlToFormState(formStateToYaml(parsed))!
-    if (rt.trigger.type !== 'poll') throw new Error('expected poll after round-trip')
-    expect(rt.trigger.interval).toBe(parsed.trigger.interval)
-    expect(rt.trigger.request.url).toBe(parsed.trigger.request.url)
+  it('cron and poll trigger types fall back to webhook', () => {
+    const cronParsed = yamlToFormState('name: x\ntrigger:\n  type: cron\n  schedule: "0 * * * *"\ncapabilities:\n  sensors: []\nagent:\n  task: t\n')
+    expect(cronParsed?.trigger.type).toBe('webhook')
+    const pollParsed = yamlToFormState('name: x\ntrigger:\n  type: poll\n  interval: 5m\ncapabilities:\n  sensors: []\nagent:\n  task: t\n')
+    expect(pollParsed?.trigger.type).toBe('webhook')
   })
 })
 

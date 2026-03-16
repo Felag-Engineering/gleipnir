@@ -56,29 +56,11 @@ func Parse(raw string) (*model.ParsedPolicy, error) {
 }
 
 // convertTrigger maps the raw YAML trigger block to a typed TriggerConfig.
-// Poll-specific fields are only populated when the trigger type is "poll".
 // Scheduled-specific fields are only populated when the trigger type is "scheduled".
 func convertTrigger(r rawTrigger) model.TriggerConfig {
 	tc := model.TriggerConfig{
 		Type:          model.TriggerType(r.Type),
-		Schedule:      r.Schedule,
 		WebhookSecret: r.WebhookSecret,
-	}
-
-	if tc.Type == model.TriggerTypePoll {
-		pc := &model.PollConfig{
-			Interval: r.Interval,
-			Filter:   r.Filter,
-		}
-		if r.Request != nil {
-			pc.Request = model.PollRequest{
-				URL:     r.Request.URL,
-				Method:  r.Request.Method,
-				Headers: r.Request.Headers,
-				Body:    r.Request.Body,
-			}
-		}
-		tc.Poll = pc
 	}
 
 	if tc.Type == model.TriggerTypeScheduled {
@@ -182,20 +164,9 @@ type rawPolicy struct {
 }
 
 type rawTrigger struct {
-	Type          string      `yaml:"type"`
-	Schedule      string      `yaml:"schedule"`       // cron only
-	Interval      string      `yaml:"interval"`       // poll only
-	Request       *rawRequest `yaml:"request"`        // poll only
-	Filter        string      `yaml:"filter"`         // poll only
-	FireAt        []string    `yaml:"fire_at"`        // scheduled only, RFC3339 timestamps
-	WebhookSecret string      `yaml:"webhook_secret"` // webhook only
-}
-
-type rawRequest struct {
-	URL     string            `yaml:"url"`
-	Method  string            `yaml:"method"`
-	Headers map[string]string `yaml:"headers"`
-	Body    string            `yaml:"body"`
+	Type          string   `yaml:"type"`
+	FireAt        []string `yaml:"fire_at"`        // scheduled only, RFC3339 timestamps
+	WebhookSecret string   `yaml:"webhook_secret"` // webhook only
 }
 
 type rawCapabilities struct {

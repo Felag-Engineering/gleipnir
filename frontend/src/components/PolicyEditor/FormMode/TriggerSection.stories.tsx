@@ -36,32 +36,6 @@ export const WebhookNewPolicy: Story = {
   },
 };
 
-export const CronSelected: Story = {
-  args: {
-    value: { type: 'cron', schedule: '0 * * * *' },
-    policyId: 'hourly-check',
-    onChange: fn(),
-  },
-};
-
-export const PollSelected: Story = {
-  args: {
-    value: {
-      type: 'poll',
-      interval: '5m',
-      request: {
-        url: 'https://api.github.com/repos/owner/repo/issues',
-        method: 'GET',
-        headers: 'Authorization: Bearer ghp_token\nAccept: application/vnd.github+json',
-        body: undefined,
-      },
-      filter: '.[] | select(.state == "open")',
-    },
-    policyId: 'poll-issues',
-    onChange: fn(),
-  },
-};
-
 export const ManualSelected: Story = {
   args: {
     value: { type: 'manual' },
