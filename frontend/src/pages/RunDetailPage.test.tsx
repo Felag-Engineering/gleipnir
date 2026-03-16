@@ -459,6 +459,94 @@ describe('RunDetailPage — Load more', () => {
   })
 })
 
+describe('RunDetailPage — pagination with active filter', () => {
+  it('shows Load More when >50 steps match the active filter and loads remaining on click', async () => {
+    // 55 tool_call steps + 10 thought steps
+    const steps: ApiRunStep[] = [
+      ...Array.from({ length: 55 }, (_, i) =>
+        makeStep({
+          id: `tc${i}`,
+          step_number: i + 1,
+          type: 'tool_call',
+          content: JSON.stringify({ tool_name: `tool_${i}`, server_id: 'srv', input: {} }),
+        }),
+      ),
+      ...Array.from({ length: 10 }, (_, i) =>
+        makeStep({
+          id: `th${i}`,
+          step_number: 56 + i,
+          type: 'thought',
+          content: JSON.stringify({ text: `Thought ${i}` }),
+        }),
+      ),
+    ]
+    mockLoaded(makeRun(), steps)
+    renderPage()
+
+    // Filter to only Calls
+    fireEvent.click(screen.getByRole('button', { name: /^calls/i }))
+
+    // With 55 tool_call steps and PAGE_SIZE=50, Load More should be visible
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /load more/i })).toBeInTheDocument()
+    })
+
+    // Click Load More
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }))
+
+    // All 55 tool_call steps now visible — no more Load More button
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
+    })
+  })
+})
+
+describe('RunDetailPage — filter does NOT reset displayedCount', () => {
+  it('persists displayedCount when switching filters', async () => {
+    // 55 thought steps + 55 tool_call steps
+    const steps: ApiRunStep[] = [
+      ...Array.from({ length: 55 }, (_, i) =>
+        makeStep({
+          id: `th${i}`,
+          step_number: i + 1,
+          type: 'thought',
+          content: JSON.stringify({ text: `Thought ${i}` }),
+        }),
+      ),
+      ...Array.from({ length: 55 }, (_, i) =>
+        makeStep({
+          id: `tc${i}`,
+          step_number: 56 + i,
+          type: 'tool_call',
+          content: JSON.stringify({ tool_name: `tool_${i}`, server_id: 'srv', input: {} }),
+        }),
+      ),
+    ]
+    mockLoaded(makeRun(), steps)
+    renderPage()
+
+    // Start on Thoughts filter — 55 thoughts, 50 shown, Load More visible
+    fireEvent.click(screen.getByRole('button', { name: /thoughts/i }))
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /load more/i })).toBeInTheDocument()
+    })
+
+    // Load more (displayedCount becomes 100)
+    fireEvent.click(screen.getByRole('button', { name: /load more/i }))
+    await waitFor(() => {
+      // All 55 thoughts shown, no Load More
+      expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
+    })
+
+    // Switch to Calls filter — displayedCount is still 100, which is > 55 tool_calls,
+    // so all 55 calls should be shown immediately with no Load More
+    fireEvent.click(screen.getByRole('button', { name: /^calls/i }))
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
+    })
+  })
+})
+
 describe('RunDetailPage — error box', () => {
   it('shows error box when run status is failed', () => {
     mockLoaded(makeRun({ status: 'failed', error: 'agent timed out' }))

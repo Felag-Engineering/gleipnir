@@ -391,6 +391,49 @@ describe('PolicyEditorPage — save blocking with malformed YAML', () => {
   })
 })
 
+describe('PolicyEditorPage — form ↔ YAML mode switching round-trip', () => {
+  it('persists name edits made in form mode when switching to YAML and back', async () => {
+    mockHooksDefault()
+    renderEditor()
+
+    // Edit the name field in form mode
+    const nameInput = screen.getAllByRole('textbox')[0]
+    await userEvent.clear(nameInput)
+    await userEvent.type(nameInput, 'round-trip-name')
+
+    // Switch to YAML mode
+    fireEvent.click(screen.getByRole('button', { name: 'YAML' }))
+
+    // Switch back to form mode
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Form' }))
+    })
+
+    // The edited name should persist in the form input
+    await waitFor(() => {
+      const inputs = screen.getAllByRole('textbox')
+      // Name input should contain our edited value
+      expect(inputs[0]).toHaveValue('round-trip-name')
+    })
+  })
+})
+
+describe('PolicyEditorPage — Ctrl+S always triggers save', () => {
+  it('calls mutateAsync on Ctrl+S even when the form has not been changed', async () => {
+    const { mutateAsync } = mockHooksDefault()
+    renderEditor()
+
+    // Ctrl+S fires handleSave unconditionally (does not check canSave/isDirty)
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(mutateAsync).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('PolicyEditorPage — Cmd+S / Ctrl+S fires save', () => {
   it('fires mutateAsync on Cmd+S when form is dirty', async () => {
     const { mutateAsync } = mockHooksDefault()
