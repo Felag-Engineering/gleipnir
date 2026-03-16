@@ -9,7 +9,7 @@ go build ./...           # build
 go test ./...            # run all tests
 go test ./internal/...   # run only internal package tests
 sqlc generate            # regenerate internal/db/ from internal/db/queries/*.sql
-docker compose up        # run full stack (Go + nginx + frontend)
+docker compose up        # run full stack (Go binary with embedded frontend)
 ```
 
 **Environment variables** (with defaults):
@@ -19,14 +19,14 @@ docker compose up        # run full stack (Go + nginx + frontend)
 ## Stack
 
 - **Backend:** Go, [chi](https://github.com/go-chi/chi) router, [sqlc](https://sqlc.dev/) for type-safe queries, official [Anthropic Go SDK](https://github.com/anthropics/anthropic-sdk-go)
-- **Frontend:** React + TypeScript (Vite), CSS Modules, CodeMirror 6 (YAML editor), SSE for real-time updates, Storybook for component dev, served via nginx, proxies `/api` to the Go container
+- **Frontend:** React + TypeScript (Vite), CSS Modules, CodeMirror 6 (YAML editor), SSE for real-time updates, Storybook for component dev, embedded in the Go binary via `go:embed` and served directly
 - **Storage:** SQLite with WAL mode
 - **Deployment:** Docker Compose
 - **Tool protocol:** MCP over HTTP transport
 
 ## Architecture
 
-The Go server handles policy management, agent orchestration, and the reasoning trace. It talks to external MCP servers over HTTP to discover and invoke tools. The React frontend is served by nginx, which proxies `/api` to the Go container. SQLite (WAL mode) is the only datastore, embedded in the Go container.
+The Go server handles policy management, agent orchestration, and the reasoning trace. It talks to external MCP servers over HTTP to discover and invoke tools. The React frontend is embedded in the Go binary via `go:embed` (built in Docker from `frontend/dist`) and served directly by the Go HTTP server. SQLite (WAL mode) is the only datastore, embedded in the Go container.
 
 ## Core domain concepts
 

@@ -737,9 +737,8 @@ Optimized for build cache (dependency download as a separate layer).
 _Labels: `backend`, `docs` — Depends on: all v0.1 epics._
 
 #### [BE] docker-compose.yml
-Services: `gleipnir-api` (Go binary), `gleipnir-frontend` (nginx + React build).
+Services: `gleipnir-api` (Go binary, serves both API and embedded React UI).
 SQLite data as a named Docker volume mounted into the API container.
-nginx proxy: routes `/api` requests to `gleipnir-api`, serves React static files for all other paths.
 Configurable port via env var.
 _Labels: `backend`, `docs` — Depends on: Dockerfiles._
 

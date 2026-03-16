@@ -1,6 +1,6 @@
 ## Frontend overview
 
-React + TypeScript UI for Gleipnir. Served by nginx in production, which proxies `/api` to the Go backend. Vite for dev/build, Storybook for component development, Vitest + Playwright for testing.
+React + TypeScript UI for Gleipnir. In production, `npm run build` produces `frontend/dist/` which is embedded into the Go binary via `go:embed` in `frontend/embed.go` and served directly by the Go HTTP server. Vite for dev/build, Storybook for component development, Vitest + Playwright for testing.
 
 ## Commands
 
@@ -142,7 +142,7 @@ Types in `types.ts`, fixtures in `fixtures.ts`, helpers in `styles.ts` (`fmtDur`
 
 ## Key architectural decisions
 
-- **ADR-016:** SSE for real-time transport, not WebSockets. nginx must set `X-Accel-Buffering: no` on SSE responses.
+- **ADR-016:** SSE for real-time transport, not WebSockets. The Go SSE handler sets `X-Accel-Buffering: no` directly for compatibility with upstream reverse proxies.
 - **ADR-019:** Dual-mode policy editor. Form view + YAML view edit the same YAML string. YAML is the API payload.
 - **ADR-020:** Policy folders are a YAML-only `folder` field for UI grouping. No DB column.
 - **Hard capability enforcement:** disallowed tools are never registered with the agent. The UI displays what the runtime enforces.

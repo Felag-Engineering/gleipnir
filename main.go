@@ -14,6 +14,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/rapp992/gleipnir/frontend"
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
@@ -92,6 +93,9 @@ func run() error {
 	// Mount /api/v1/policies and /api/v1/mcp route groups.
 	// Existing /api/v1/webhooks/ and /api/v1/runs/ routes remain on this root router.
 	r.Mount("/api/v1", api.NewRouter(store, policySvc, registry))
+
+	// Serve the embedded React SPA for all non-API routes.
+	r.Handle("/*", frontend.NewSPAHandler())
 
 	srv := &http.Server{
 		Addr:         listenAddr,

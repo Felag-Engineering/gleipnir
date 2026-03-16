@@ -28,15 +28,15 @@ Every agent run produces a full reasoning trace — thoughts, tool calls, tool r
 ┌─────────────────────────────────────────────────────────┐
 │  Docker Compose                                         │
 │                                                         │
-│  ┌──────────────┐        ┌──────────────────────────┐  │
-│  │   React UI   │        │      Go API Server        │  │
-│  │   (nginx)    │◄──────►│  chi · sqlc · Anthropic  │  │
-│  └──────────────┘  /api  └────────────┬─────────────┘  │
-│                           proxy        │                 │
-│                                   ┌───▼────┐            │
-│                                   │ SQLite │            │
-│                                   │  WAL   │            │
-│                                   └────────┘            │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │                  Go Binary                        │  │
+│  │  chi · sqlc · Anthropic · go:embed (React UI)    │  │
+│  │                       │                           │  │
+│  │                  ┌────▼───┐                       │  │
+│  │                  │ SQLite │                       │  │
+│  │                  │  WAL   │                       │  │
+│  │                  └────────┘                       │  │
+│  └──────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────┘
                               │
                     MCP HTTP transport
@@ -49,7 +49,7 @@ Every agent run produces a full reasoning trace — thoughts, tool calls, tool r
 
 **Backend:** Go, [chi](https://github.com/go-chi/chi) router, [sqlc](https://sqlc.dev/) for type-safe queries, official [Anthropic Go SDK](https://github.com/anthropics/anthropic-sdk-go).
 
-**Frontend:** React, served via nginx, proxies `/api` to the Go container.
+**Frontend:** React, embedded in the Go binary via `go:embed` and served directly by the chi router.
 
 **Storage:** SQLite with WAL mode. Single file, zero ops, ships in the container.
 

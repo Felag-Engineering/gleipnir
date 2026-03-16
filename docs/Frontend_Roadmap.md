@@ -1,9 +1,9 @@
 # Gleipnir — Frontend Implementation Roadmap
 
-**Stack:** React + TypeScript, Vite, CSS Modules, CodeMirror 6 (YAML editor), served via nginx, `/api` proxied to Go backend
+**Stack:** React + TypeScript, Vite, CSS Modules, CodeMirror 6 (YAML editor), embedded in the Go binary via `go:embed`
 **Real-time transport:** Server-Sent Events (SSE) for all server→client updates (see ADR-016). Mutations remain REST.
 **Response envelope:** `{ data: T }` for success (HTTP 2xx), `{ error: string, detail?: string }` for failure (HTTP 4xx/5xx)
-**Deployment:** Separate Docker container (`gleipnir-frontend`)
+**Deployment:** Embedded in the Go binary; served directly by the chi router. No separate frontend container.
 **Source of truth for data shapes:** `0001_initial_schema.sql`
 **Design reference:** `docs/frontend_mockups/` — four JSX mockups defining the visual language and interaction patterns
 **Phase scope:** This document covers EPIC-007 across v0.1 (foundation), v0.2 (approval UI), and v0.1-polish (design quality pass)
@@ -198,7 +198,7 @@ Specific animation patterns (stagger delays, scroll thresholds, blink intervals)
 
 - The UI reads and writes policy YAML directly — there is no separate form-based data model for policies. The form view parses YAML into fields for editing, then serializes back to YAML on save. The YAML string is the API payload.
 - IDs are ULIDs (strings). Timestamps are ISO 8601 UTC strings.
-- All `/api` requests are proxied by nginx to the Go backend — no direct backend URLs in the React app.
+- All `/api` requests are handled by the Go backend — no direct backend URLs in the React app. In local dev, Vite proxies `/api` to `localhost:8080`.
 - No auth in v0.1. Basic auth (env-configured) is a v0.4 concern — do not build login flows now.
 - Do not build anything marked v0.2 in the v0.1 milestone. v0.2 items are called out explicitly below.
 - **Real-time updates via SSE (ADR-016).** See section 0 for the SSE-to-cache reconciliation strategy. On disconnect, show a non-blocking banner ("Connection lost — reconnecting…") that auto-dismisses on reconnect.
@@ -223,7 +223,7 @@ Specific animation patterns (stagger delays, scroll thresholds, blink intervals)
 
 ### 1. Scaffolding and Infrastructure
 
-**Goal:** Working React app that talks to the backend and is served by nginx. No views yet — just the shell.
+**Goal:** Working React app that talks to the backend. No views yet — just the shell.
 
 - React app bootstrapped with Vite + TypeScript
 - CSS Modules configured (Vite default, no extra setup)
@@ -235,11 +235,7 @@ Specific animation patterns (stagger delays, scroll thresholds, blink intervals)
   - Parses events by type and invalidates relevant TanStack Query caches
   - Auto-reconnects using `EventSource` native behavior
   - On disconnect: shows a connection-lost banner. On reconnect: dismisses it.
-- nginx config:
-  - Serve the React build from `/`
-  - Proxy `/api/*` to the Go container (e.g. `http://gleipnir-api:8080`)
-  - Set `X-Accel-Buffering: no` on SSE proxy responses (ADR-016)
-- Dockerfile: multi-stage — Node build stage → nginx serve stage
+- Dockerfile: multi-stage — Node build stage produces `frontend/dist/`, Go build stage embeds it via `go:embed`
 - Global layout: **top bar navigation** with GLEIPNIR text wordmark and links to Dashboard, Policies, Servers
 - Root-level and per-route error boundaries
 - **Test infrastructure:**
@@ -955,7 +951,7 @@ data: {"approval_id": "...", "resolution": "approved|rejected|timeout"}
 
 The following are explicitly out of scope for v0.1, v0.1-polish, and v0.2:
 
-- Login / auth UI (v0.4, basic auth is env-configured at the nginx level)
+- Login / auth UI (v0.4, basic auth is env-configured at the Go binary level)
 - Slack configuration UI (v0.5)
 - Cron miss alerts UI (v0.4)
 - Automatic MCP drift detection (v0.4) — v0.1 has manual re-discovery

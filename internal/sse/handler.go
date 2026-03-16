@@ -21,7 +21,7 @@ func NewHandler(b EventBroadcaster) *Handler {
 
 // ServeHTTP implements http.Handler. It:
 //  1. Sets the required SSE response headers (including X-Accel-Buffering: no
-//     to disable nginx proxy buffering).
+//     to disable proxy buffering (e.g., if behind a reverse proxy)).
 //  2. Disables the server's WriteTimeout so long-lived connections are not
 //     killed mid-stream.
 //  3. Subscribes to the broadcaster before replaying buffered events, so no

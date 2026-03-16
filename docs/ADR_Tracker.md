@@ -22,7 +22,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-003 | SQLite for storage                                 | 🟢 Decided    | v0.1   | Storage layer, audit queue                           |
 | ADR-004 | MCP-native, HTTP transport first                   | 🟢 Decided    | v0.1   | MCP client, tool registry                            |
 | ADR-005 | Go + chi + sqlc backend                            | 🟢 Decided    | v0.1   | Backend architecture                                 |
-| ADR-006 | React frontend, separate Docker container          | 🟢 Decided    | v0.1   | Frontend, nginx, Docker Compose                      |
+| ADR-006 | React frontend, embedded in Go binary              | 🟢 Decided    | v0.1   | Frontend, go:embed, Docker Compose                   |
 | ADR-007 | BoundAgent: sensor / actuator / feedback roles     | 🟢 Decided    | v0.1   | Policy schema, runtime, UI                           |
 | ADR-008 | Two approval modes (agent-initiated + policy-gated)| 🟢 Decided    | v0.2   | Approval interceptor, feedback channel               |
 | ADR-009 | Feedback channel: policy-first, system fallback    | 🟢 Decided    | v0.2   | Policy schema, notification system                   |
@@ -32,7 +32,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-013 | System prompt default template                     | 🟢 Decided    | v0.1   | Agent runtime, policy schema, UI prompt editor       |
 | ADR-014 | Poll trigger MCP client architecture               | 🔴 Unresolved | v0.3   | Trigger engine, MCP client, package structure        |
 | ADR-015 | Policy concurrency model                           | 🔴 Unresolved | v0.3   | Trigger engine, run executor, policy schema          |
-| ADR-016 | Real-time UI transport: SSE over WebSockets        | 🟢 Decided    | v0.1   | Frontend, Go API, nginx, HA scaling path             |
+| ADR-016 | Real-time UI transport: SSE over WebSockets        | 🟢 Decided    | v0.1   | Frontend, Go API, HA scaling path                    |
 | ADR-017 | Policy-level parameter scoping for MCP tools       | 🟢 Decided    | v0.1   | Policy schema, MCP client, agent runtime, audit log  |
 | ADR-018 | Capability snapshot as first run step              | 🟢 Decided    | v0.1   | Run steps schema, agent runtime, reasoning timeline  |
 | ADR-019 | Dual-mode policy editor (form + YAML)             | 🟢 Decided    | v0.1   | Frontend, policy YAML schema                         |
@@ -83,8 +83,9 @@ in Redis Pub/Sub or NATS a seam, not a rewrite, when the HA tier is introduced.
 - `approval.resolved` — approval decided or timed out
 - `mcp.drift_detected` — tool registry change detected
 
-**Consequence:** The nginx Docker container config must set `X-Accel-Buffering: no` on SSE
-proxy responses to prevent nginx from buffering the event stream.
+**Consequence:** The Go SSE handler must flush each event immediately. Since the frontend is
+now served directly by the Go HTTP server (ADR-006 revised), there is no nginx buffering layer
+to contend with — the `http.Flusher` interface in the SSE handler is sufficient.
 
 ---
 
@@ -315,14 +316,24 @@ sqlc keeps the code close to SQL without an ORM.
 
 ---
 
-## ADR-006: React frontend, separate Docker container
+## ADR-006: React frontend, embedded in Go binary
 
-**Status:** Decided
+**Status:** Decided (revised)
 **Date:** 2026-03
 
-**Decision:** React + TypeScript app (Vite build) served via nginx in a separate container from the Go API.
-nginx proxies `/api` requests to the Go container. YAML editor uses CodeMirror 6 (`@codemirror/lang-yaml`).
-Response envelope: `{ data: T }` for success, `{ error: string, detail?: string }` for failure.
+**Decision:** React + TypeScript app (Vite build) is embedded directly into the Go binary via
+`go:embed` and served by the Go HTTP server. The Docker build uses a multi-stage Dockerfile:
+Node builds `frontend/dist/`, then the Go stage copies it in before `go build` so the embed
+directive captures it. nginx and a separate frontend container are eliminated. YAML editor uses
+CodeMirror 6 (`@codemirror/lang-yaml`). Response envelope: `{ data: T }` for success,
+`{ error: string, detail?: string }` for failure.
+
+**SPA routing:** The Go server registers a catch-all `/*` route (`frontend.NewSPAHandler`) that
+serves static assets directly and falls back to `index.html` for unknown paths, enabling
+client-side routing.
+
+**Caching:** Assets under `assets/` (Vite's hashed filenames) are served with
+`Cache-Control: public, max-age=31536000, immutable`. `index.html` is served with `no-cache`.
 
 **Design system:** IBM Plex Sans (body) + IBM Plex Mono (code/values). Dark theme with layered
 backgrounds (`#0F1117` → `#131720` → `#1E2330`). Semantic colors: blue (sensors/running),
@@ -332,8 +343,9 @@ teal (poll). Full design token reference in `docs/Frontend_Roadmap.md`.
 **Design reference:** `docs/frontend_mockups/` contains four JSX mockups (dashboard, policy editor,
 reasoning timeline, MCP registry) that define the visual language and interaction patterns.
 
-**Reasoning:** Separation of concerns, independent iteration on frontend and backend.
-Standard pattern for production deployments. CodeMirror 6 chosen over Monaco for bundle size (~30KB vs ~2MB).
+**Reasoning:** Eliminates the nginx container, reducing the deployment footprint to a single
+container. The Go binary becomes the sole deliverable — simpler ops for homelab deployments.
+CodeMirror 6 chosen over Monaco for bundle size (~30KB vs ~2MB).
 
 **Related:** ADR-016 (SSE), ADR-019 (dual-mode editor), ADR-020 (folders), ADR-021 (discovery diffs).
 
