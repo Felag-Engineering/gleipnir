@@ -116,8 +116,10 @@ CREATE TABLE runs (
     system_prompt   TEXT                  -- nullable, rendered system prompt at run start
 );
 
-CREATE INDEX idx_runs_policy_id  ON runs(policy_id);
-CREATE INDEX idx_runs_status     ON runs(status);
+CREATE INDEX idx_runs_policy_id      ON runs(policy_id);
+CREATE INDEX idx_runs_status         ON runs(status);
+CREATE INDEX idx_runs_created_at     ON runs(created_at DESC);
+CREATE INDEX idx_runs_policy_created ON runs(policy_id, created_at DESC);
 
 -- ---------------------------------------------------------------------------
 -- Run steps
@@ -169,7 +171,7 @@ CREATE TABLE run_steps (
     UNIQUE(run_id, step_number)
 );
 
-CREATE INDEX idx_run_steps_run_id ON run_steps(run_id);
+CREATE INDEX idx_run_steps_run_step ON run_steps(run_id, step_number);
 
 -- ---------------------------------------------------------------------------
 -- Approval requests
@@ -205,8 +207,10 @@ CREATE TABLE approval_requests (
     created_at        TEXT    NOT NULL      -- ISO 8601 UTC
 );
 
-CREATE INDEX idx_approval_requests_run_id ON approval_requests(run_id);
-CREATE INDEX idx_approval_requests_status ON approval_requests(status);
+CREATE INDEX idx_approval_requests_run_id          ON approval_requests(run_id);
+CREATE INDEX idx_approval_requests_status          ON approval_requests(status);
+CREATE INDEX idx_approval_requests_status_expires  ON approval_requests(status, expires_at);
+CREATE INDEX idx_approval_requests_run_pending     ON approval_requests(run_id, status);
 
 -- ---------------------------------------------------------------------------
 -- Seed migration version
@@ -216,3 +220,5 @@ CREATE INDEX idx_approval_requests_status ON approval_requests(status);
 INSERT INTO schema_migrations(version, applied_at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 INSERT INTO schema_migrations(version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 INSERT INTO schema_migrations(version, applied_at) VALUES (3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+INSERT INTO schema_migrations(version, applied_at) VALUES (4, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+INSERT INTO schema_migrations(version, applied_at) VALUES (5, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
