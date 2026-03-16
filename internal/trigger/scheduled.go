@@ -119,7 +119,8 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 func (s *Scheduler) alreadyFired(ctx context.Context, policyID string, fireTime time.Time) bool {
 	runs, err := s.store.ListRunsByPolicy(ctx, policyID)
 	if err != nil {
-		// Can't determine — assume not fired to avoid skipping silently.
+		slog.Warn("dedup query failed, assuming not fired",
+			"policy_id", policyID, "fire_at", fireTime, "err", err)
 		return false
 	}
 

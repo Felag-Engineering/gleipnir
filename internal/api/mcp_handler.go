@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -138,6 +139,8 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.registry.RefreshTools(r.Context(), server.ID); err != nil {
 		errStr := err.Error()
 		resp.DiscoveryError = &errStr
+		slog.Warn("MCP auto-discovery failed during server creation",
+			"server_id", server.ID, "server_name", server.Name, "err", err)
 	} else {
 		// Re-fetch so the response reflects the updated last_discovered_at.
 		if updated, err := h.store.GetMCPServer(r.Context(), server.ID); err == nil {
@@ -209,6 +212,7 @@ func (h *MCPHandler) Discover(w http.ResponseWriter, r *http.Request) {
 
 	diff, err := h.registry.RefreshTools(r.Context(), id)
 	if err != nil {
+		slog.Error("MCP discovery failed", "server_id", id, "err", err)
 		WriteError(w, http.StatusInternalServerError, "discovery failed", err.Error())
 		return
 	}

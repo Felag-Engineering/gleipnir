@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -256,7 +257,12 @@ func (h *PolicyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, "failed to begin transaction", err.Error())
 		return
 	}
-	defer tx.Rollback() //nolint:errcheck // rollback on error path; commit below is the success path
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.Error("rollback policy delete transaction failed",
+				"policy_id", id, "err", rbErr)
+		}
+	}()
 
 	qtx := h.store.Queries().WithTx(tx)
 

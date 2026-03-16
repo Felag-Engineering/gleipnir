@@ -169,13 +169,19 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 // markRunFailed transitions a run that was created but cannot proceed to the
 // failed state. Called on error paths after CreateRun succeeds so the run
 // does not linger in 'pending' indefinitely.
-func markRunFailed(store *db.Store, runID string, err error) {
+func markRunFailed(store *db.Store, runID string, origErr error) {
 	failedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	errMsg := err.Error()
-	_ = store.UpdateRunError(context.Background(), db.UpdateRunErrorParams{
+	errMsg := origErr.Error()
+	// context.Background() strategy: called on error paths after the HTTP request
+	// context may have been cancelled. The DB write must complete so the run does
+	// not linger in 'pending' indefinitely.
+	if err := store.UpdateRunError(context.Background(), db.UpdateRunErrorParams{
 		Status:      string(model.RunStatusFailed),
 		Error:       &errMsg,
 		CompletedAt: &failedAt,
 		ID:          runID,
-	})
+	}); err != nil {
+		slog.Error("mark run failed: persist status failed",
+			"run_id", runID, "cause", origErr, "err", err)
+	}
 }

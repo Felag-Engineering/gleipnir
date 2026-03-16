@@ -146,11 +146,13 @@ func (a *BoundAgent) failRun(ctx context.Context, runErr error) error {
 // Callers that pass context.Background() do so intentionally — DB writes must complete
 // even after the caller's context is cancelled (e.g. cancellation-path error steps).
 func (a *BoundAgent) logAuditError(ctx context.Context, runID string, msg string, code string) {
-	_ = a.audit.Write(ctx, Step{
+	if err := a.audit.Write(ctx, Step{
 		RunID:   runID,
 		Type:    model.StepTypeError,
 		Content: map[string]string{"message": msg, "code": code},
-	})
+	}); err != nil {
+		slog.WarnContext(ctx, "audit write failed", "run_id", runID, "err", err)
+	}
 }
 
 // logTransitionError wraps a failRun call that intentionally discards errors from
@@ -240,6 +242,9 @@ func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry re
 			return err
 		}
 	case <-timeoutCh:
+		slog.WarnContext(ctx, "approval timeout reached",
+			"run_id", runID, "tool", internalName,
+			"timeout", entry.tool.Timeout.String())
 		if entry.tool.OnTimeout == model.OnTimeoutApprove {
 			// Proceed with execution on timeout.
 		} else {
