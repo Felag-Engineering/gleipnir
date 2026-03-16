@@ -53,3 +53,6 @@ SELECT COUNT(*) FROM runs WHERE status IN ('pending', 'running', 'waiting_for_ap
 
 -- name: SumTokensLast24Hours :one
 SELECT COALESCE(SUM(token_cost), 0) FROM runs WHERE created_at >= :since;
+
+-- name: DeleteRunsByPolicy :exec
+DELETE FROM runs WHERE policy_id = :policy_id;

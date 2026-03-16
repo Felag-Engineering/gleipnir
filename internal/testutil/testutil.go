@@ -72,6 +72,43 @@ func InsertRunWithTime(tb testing.TB, s *db.Store, id, policyID string, status m
 	}
 }
 
+// InsertRunStep inserts a run_step row with sensible defaults.
+func InsertRunStep(tb testing.TB, s *db.Store, id, runID string, stepNumber int64) {
+	tb.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.CreateRunStep(context.Background(), db.CreateRunStepParams{
+		ID:         id,
+		RunID:      runID,
+		StepNumber: stepNumber,
+		Type:       "thought",
+		Content:    "",
+		TokenCost:  0,
+		CreatedAt:  now,
+	})
+	if err != nil {
+		tb.Fatalf("InsertRunStep %s: %v", id, err)
+	}
+}
+
+// InsertApprovalRequest inserts an approval_request row with sensible defaults.
+func InsertApprovalRequest(tb testing.TB, s *db.Store, id, runID, toolName string) {
+	tb.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	expiresAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	_, err := s.CreateApprovalRequest(context.Background(), db.CreateApprovalRequestParams{
+		ID:               id,
+		RunID:            runID,
+		ToolName:         toolName,
+		ProposedInput:    "",
+		ReasoningSummary: "",
+		ExpiresAt:        expiresAt,
+		CreatedAt:        now,
+	})
+	if err != nil {
+		tb.Fatalf("InsertApprovalRequest %s: %v", id, err)
+	}
+}
+
 // InsertMcpServer inserts a minimal MCP server row.
 func InsertMcpServer(tb testing.TB, s *db.Store, id, name, url string) {
 	tb.Helper()

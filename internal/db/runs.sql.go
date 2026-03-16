@@ -398,3 +398,12 @@ func (q *Queries) UpdateRunThreadID(ctx context.Context, arg UpdateRunThreadIDPa
 	_, err := q.db.ExecContext(ctx, updateRunThreadID, arg.ThreadID, arg.ID)
 	return err
 }
+
+const deleteRunsByPolicy = `-- name: DeleteRunsByPolicy :exec
+DELETE FROM runs WHERE policy_id = ?1
+`
+
+func (q *Queries) DeleteRunsByPolicy(ctx context.Context, policyID string) error {
+	_, err := q.db.ExecContext(ctx, deleteRunsByPolicy, policyID)
+	return err
+}

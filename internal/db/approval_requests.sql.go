@@ -217,3 +217,12 @@ func (q *Queries) UpdateApprovalRequestStatus(ctx context.Context, arg UpdateApp
 	)
 	return err
 }
+
+const deleteApprovalRequestsByPolicyRuns = `-- name: DeleteApprovalRequestsByPolicyRuns :exec
+DELETE FROM approval_requests WHERE run_id IN (SELECT id FROM runs WHERE policy_id = ?1)
+`
+
+func (q *Queries) DeleteApprovalRequestsByPolicyRuns(ctx context.Context, policyID string) error {
+	_, err := q.db.ExecContext(ctx, deleteApprovalRequestsByPolicyRuns, policyID)
+	return err
+}

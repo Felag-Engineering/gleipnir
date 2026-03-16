@@ -258,17 +258,23 @@ func (h *PolicyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback on error path; commit below is the success path
 
-	cleanups := []string{
-		`DELETE FROM approval_requests WHERE run_id IN (SELECT id FROM runs WHERE policy_id = ?)`,
-		`DELETE FROM run_steps WHERE run_id IN (SELECT id FROM runs WHERE policy_id = ?)`,
-		`DELETE FROM runs WHERE policy_id = ?`,
-		`DELETE FROM policies WHERE id = ?`,
+	qtx := h.store.Queries().WithTx(tx)
+
+	if err := qtx.DeleteApprovalRequestsByPolicyRuns(r.Context(), id); err != nil {
+		WriteError(w, http.StatusInternalServerError, "failed to delete approval requests", err.Error())
+		return
 	}
-	for _, q := range cleanups {
-		if _, err := tx.ExecContext(r.Context(), q, id); err != nil {
-			WriteError(w, http.StatusInternalServerError, "failed to delete policy", err.Error())
-			return
-		}
+	if err := qtx.DeleteRunStepsByPolicyRuns(r.Context(), id); err != nil {
+		WriteError(w, http.StatusInternalServerError, "failed to delete run steps", err.Error())
+		return
+	}
+	if err := qtx.DeleteRunsByPolicy(r.Context(), id); err != nil {
+		WriteError(w, http.StatusInternalServerError, "failed to delete runs", err.Error())
+		return
+	}
+	if err := qtx.DeletePolicy(r.Context(), id); err != nil {
+		WriteError(w, http.StatusInternalServerError, "failed to delete policy", err.Error())
+		return
 	}
 
 	if err := tx.Commit(); err != nil {

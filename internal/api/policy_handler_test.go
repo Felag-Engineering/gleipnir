@@ -583,6 +583,60 @@ func TestPolicyDeleteHandler(t *testing.T) {
 			t.Fatalf("status = %d, want 204", resp.StatusCode)
 		}
 	})
+
+	t.Run("delete cascades to run, run_steps, and approval_requests", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		insertTestPolicy(t, store, "pol1", "my-policy", "trigger: webhook\n")
+		insertTestRun(t, store, "run1", "pol1", "complete")
+		testutil.InsertRunStep(t, store, "step1", "run1", 1)
+		testutil.InsertApprovalRequest(t, store, "apr1", "run1", "some_tool")
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/policies/pol1", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE /policies/pol1: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", resp.StatusCode)
+		}
+
+		// Verify all records are gone.
+		var n int
+		db := store.DB()
+
+		if err := db.QueryRow(`SELECT COUNT(*) FROM policies WHERE id = 'pol1'`).Scan(&n); err != nil {
+			t.Fatalf("query policies: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("policies: got %d rows, want 0", n)
+		}
+
+		if err := db.QueryRow(`SELECT COUNT(*) FROM runs WHERE id = 'run1'`).Scan(&n); err != nil {
+			t.Fatalf("query runs: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("runs: got %d rows, want 0", n)
+		}
+
+		if err := db.QueryRow(`SELECT COUNT(*) FROM run_steps WHERE id = 'step1'`).Scan(&n); err != nil {
+			t.Fatalf("query run_steps: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("run_steps: got %d rows, want 0", n)
+		}
+
+		if err := db.QueryRow(`SELECT COUNT(*) FROM approval_requests WHERE id = 'apr1'`).Scan(&n); err != nil {
+			t.Fatalf("query approval_requests: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("approval_requests: got %d rows, want 0", n)
+		}
+	})
 }
 
 func TestPolicyCRUDRoundTrip(t *testing.T) {
