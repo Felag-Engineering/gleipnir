@@ -2,7 +2,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/tokens.css'
 import type { ApiPolicyDetail } from '../api/types'
-import { usePolicy, policyQueryKey } from './usePolicy'
+import { usePolicy } from './usePolicy'
+import { queryKeys } from './queryKeys'
 
 const FIXTURE_POLICY: ApiPolicyDetail = {
   id: 'pol-1',
@@ -30,7 +31,7 @@ function UsePolicyDisplay({ id }: { id?: string }) {
 function makeQueryClient(policy?: ApiPolicyDetail): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   if (policy) {
-    qc.setQueryData(policyQueryKey(policy.id), policy)
+    qc.setQueryData(queryKeys.policies.detail(policy.id), policy)
   }
   return qc
 }

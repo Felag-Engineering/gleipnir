@@ -2,7 +2,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/tokens.css'
 import type { ApiStats } from '../api/types'
-import { useStats, STATS_QUERY_KEY } from './useStats'
+import { useStats } from './useStats'
+import { queryKeys } from './queryKeys'
 
 const FIXTURE_STATS: ApiStats = {
   active_runs: 2,
@@ -34,7 +35,7 @@ function UseStatsDisplay() {
 function makeQueryClient(stats?: ApiStats): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   if (stats) {
-    qc.setQueryData(STATS_QUERY_KEY, stats)
+    qc.setQueryData(queryKeys.stats.all, stats)
   }
   return qc
 }

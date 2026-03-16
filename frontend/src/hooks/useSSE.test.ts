@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { sse } from 'msw'
 import { server } from '@/test/server'
 import { useSSE } from './useSSE'
+import { queryKeys } from '@/hooks/queryKeys'
 
 type TestSSEEventMap = {
   'run.status_changed': unknown
@@ -79,8 +80,8 @@ describe('useSSE', () => {
 
     await waitFor(() => {
       const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
-      expect(keys).toContainEqual(['runs'])
-      expect(keys).toContainEqual(['policies'])
+      expect(keys).toContainEqual(queryKeys.runs.all)
+      expect(keys).toContainEqual(queryKeys.policies.all)
     })
   })
 
@@ -105,7 +106,7 @@ describe('useSSE', () => {
 
     await waitFor(() => {
       const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
-      expect(keys).toContainEqual(['runs', 'r1', 'steps'])
+      expect(keys).toContainEqual(queryKeys.runs.steps('r1'))
     })
   })
 
@@ -130,7 +131,7 @@ describe('useSSE', () => {
 
     await waitFor(() => {
       const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
-      expect(keys).toContainEqual(['approvals'])
+      expect(keys).toContainEqual(queryKeys.approvals.all)
     })
   })
 
@@ -155,8 +156,8 @@ describe('useSSE', () => {
 
     await waitFor(() => {
       const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
-      expect(keys).toContainEqual(['approvals'])
-      expect(keys).toContainEqual(['runs'])
+      expect(keys).toContainEqual(queryKeys.approvals.all)
+      expect(keys).toContainEqual(queryKeys.runs.all)
     })
   })
 

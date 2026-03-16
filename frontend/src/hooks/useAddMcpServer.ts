@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/api/fetch'
 import type { ApiMcpServerCreateResponse } from '@/api/types'
-import { MCP_SERVERS_QUERY_KEY } from './useMcpServers'
+import { queryKeys } from './queryKeys'
 
 interface AddServerParams {
   name: string
@@ -18,7 +18,7 @@ export function useAddMcpServer() {
         body: JSON.stringify(params),
       }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: MCP_SERVERS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.all })
     },
   })
 }

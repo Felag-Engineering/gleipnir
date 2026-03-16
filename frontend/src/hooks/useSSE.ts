@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { queryKeys } from './queryKeys'
 
 export type ConnectionState = 'connected' | 'disconnected' | 'reconnecting'
 
@@ -26,15 +27,15 @@ export function useSSE(): { connectionState: ConnectionState } {
 
     eventSource.addEventListener('run.status_changed', (e: MessageEvent) => {
       if (e.lastEventId) lastEventIdRef.current = e.lastEventId
-      queryClient.invalidateQueries({ queryKey: ['runs'] })
-      queryClient.invalidateQueries({ queryKey: ['policies'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })
     })
 
     eventSource.addEventListener('run.step_added', (e: MessageEvent) => {
       if (e.lastEventId) lastEventIdRef.current = e.lastEventId
       try {
         const data: { run_id: string } = JSON.parse(e.data)
-        queryClient.invalidateQueries({ queryKey: ['runs', data.run_id, 'steps'] })
+        queryClient.invalidateQueries({ queryKey: queryKeys.runs.steps(data.run_id) })
       } catch {
         console.error('useSSE: failed to parse run.step_added payload', e.data)
       }
@@ -42,13 +43,13 @@ export function useSSE(): { connectionState: ConnectionState } {
 
     eventSource.addEventListener('approval.created', (e: MessageEvent) => {
       if (e.lastEventId) lastEventIdRef.current = e.lastEventId
-      queryClient.invalidateQueries({ queryKey: ['approvals'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.all })
     })
 
     eventSource.addEventListener('approval.resolved', (e: MessageEvent) => {
       if (e.lastEventId) lastEventIdRef.current = e.lastEventId
-      queryClient.invalidateQueries({ queryKey: ['approvals'] })
-      queryClient.invalidateQueries({ queryKey: ['runs'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
     })
 
     return () => {

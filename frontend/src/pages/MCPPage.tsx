@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { useMcpServers } from '@/hooks/useMcpServers'
-import { mcpToolsQueryKey } from '@/hooks/useMcpTools'
+import { queryKeys } from '@/hooks/queryKeys'
 import { useAddMcpServer } from '@/hooks/useAddMcpServer'
 import { useDeleteMcpServer } from '@/hooks/useDeleteMcpServer'
 import { useDiscoverMcpServer } from '@/hooks/useDiscoverMcpServer'
@@ -10,6 +10,7 @@ import { apiFetch } from '@/api/fetch'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 import type { ApiError } from '@/api/fetch'
 import { SkeletonBlock } from '@/components/SkeletonBlock'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { MCPStatsBar } from '@/components/MCPPage/MCPStatsBar'
 import { UnassignedBanner } from '@/components/MCPPage/UnassignedBanner'
 import { ServerCard } from '@/components/MCPPage/ServerCard'
@@ -34,7 +35,7 @@ export default function MCPPage() {
   // Eagerly fetch all server tool lists so stats are accurate.
   const toolResults = useQueries({
     queries: (servers ?? []).map((server) => ({
-      queryKey: mcpToolsQueryKey(server.id),
+      queryKey: queryKeys.servers.tools(server.id),
       queryFn: () => apiFetch<ApiMcpTool[]>(`/mcp/servers/${encodeURIComponent(server.id)}/tools`),
       enabled: Boolean(server.id),
     })),
@@ -140,57 +141,59 @@ export default function MCPPage() {
         </button>
       </div>
 
-      <MCPStatsBar
-        totalTools={allTools.length}
-        sensors={sensors}
-        actuators={actuators}
-        feedback={feedback}
-        isLoading={!toolsFullyLoaded}
-      />
+      <ErrorBoundary>
+        <MCPStatsBar
+          totalTools={allTools.length}
+          sensors={sensors}
+          actuators={actuators}
+          feedback={feedback}
+          isLoading={!toolsFullyLoaded}
+        />
 
-      {unassignedCount > 0 && <UnassignedBanner count={unassignedCount} />}
+        {unassignedCount > 0 && <UnassignedBanner count={unassignedCount} />}
 
-      {serversStatus === 'pending' && (
-        <div className={styles.skeletonList}>
-          <SkeletonBlock height={120} borderRadius={8} />
-          <SkeletonBlock height={120} borderRadius={8} />
-          <SkeletonBlock height={120} borderRadius={8} />
-        </div>
-      )}
+        {serversStatus === 'pending' && (
+          <div className={styles.skeletonList}>
+            <SkeletonBlock height={120} borderRadius={8} />
+            <SkeletonBlock height={120} borderRadius={8} />
+            <SkeletonBlock height={120} borderRadius={8} />
+          </div>
+        )}
 
-      {serversStatus === 'error' && (
-        <div className={styles.errorState}>
-          Failed to load MCP servers.
-        </div>
-      )}
+        {serversStatus === 'error' && (
+          <div className={styles.errorState}>
+            Failed to load MCP servers.
+          </div>
+        )}
 
-      {serversStatus === 'success' && servers.length === 0 && (
-        <div className={styles.emptyState}>
-          <p className={styles.emptyHeadline}>No MCP servers</p>
-          <p className={styles.emptySubtext}>Add a server to start discovering tools.</p>
-        </div>
-      )}
+        {serversStatus === 'success' && servers.length === 0 && (
+          <div className={styles.emptyState}>
+            <p className={styles.emptyHeadline}>No MCP servers</p>
+            <p className={styles.emptySubtext}>Add a server to start discovering tools.</p>
+          </div>
+        )}
 
-      {serversStatus === 'success' && servers.length > 0 && (
-        <div className={styles.serverList}>
-          {servers.map((server, i) => {
-            const toolResult = toolResults[i]
-            return (
-              <ServerCard
-                key={server.id}
-                server={server}
-                tools={toolsByServer.get(server.id)}
-                toolsLoading={toolResult?.status === 'pending'}
-                isDiscovering={discoveringServerId === server.id}
-                onDiscover={handleDiscover}
-                onDelete={handleDeleteOpen}
-                onRoleChange={handleRoleChange}
-                updatingToolId={updatingToolId}
-              />
-            )
-          })}
-        </div>
-      )}
+        {serversStatus === 'success' && servers.length > 0 && (
+          <div className={styles.serverList}>
+            {servers.map((server, i) => {
+              const toolResult = toolResults[i]
+              return (
+                <ServerCard
+                  key={server.id}
+                  server={server}
+                  tools={toolsByServer.get(server.id)}
+                  toolsLoading={toolResult?.status === 'pending'}
+                  isDiscovering={discoveringServerId === server.id}
+                  onDiscover={handleDiscover}
+                  onDelete={handleDeleteOpen}
+                  onRoleChange={handleRoleChange}
+                  updatingToolId={updatingToolId}
+                />
+              )
+            })}
+          </div>
+        )}
+      </ErrorBoundary>
 
       {showAddModal && (
         <AddServerModal

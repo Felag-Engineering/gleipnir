@@ -9,6 +9,7 @@ import { StatsBar } from '../components/dashboard/StatsBar'
 import { TriggerRunModal } from '../components/TriggerRunModal/TriggerRunModal'
 import { usePolicies } from '../hooks/usePolicies'
 import { useStatsData } from '../hooks/useStatsData'
+import { queryKeys } from '../hooks/queryKeys'
 import styles from './DashboardPage.module.css'
 
 export default function DashboardPage() {
@@ -56,7 +57,7 @@ export default function DashboardPage() {
           <span>Failed to load policies.</span>
           <button
             className={styles.retryBtn}
-            onClick={() => queryClient.invalidateQueries({ queryKey: ['policies'] })}
+            onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })}
           >
             Retry
           </button>

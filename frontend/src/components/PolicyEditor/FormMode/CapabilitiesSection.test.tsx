@@ -3,8 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-import { MCP_SERVERS_QUERY_KEY } from '@/hooks/useMcpServers'
-import { mcpToolsQueryKey } from '@/hooks/useMcpTools'
+import { queryKeys } from '@/hooks/queryKeys'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 import { CapabilitiesSection } from './CapabilitiesSection'
 import type { CapabilitiesFormState, AssignedTool } from './types'
@@ -68,9 +67,9 @@ const FIXTURE_TOOLS_SRV2: ApiMcpTool[] = [
 
 function makeQueryClient(): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  qc.setQueryData(MCP_SERVERS_QUERY_KEY, FIXTURE_SERVERS)
-  qc.setQueryData(mcpToolsQueryKey('srv-1'), FIXTURE_TOOLS_SRV1)
-  qc.setQueryData(mcpToolsQueryKey('srv-2'), FIXTURE_TOOLS_SRV2)
+  qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS)
+  qc.setQueryData(queryKeys.servers.tools('srv-1'), FIXTURE_TOOLS_SRV1)
+  qc.setQueryData(queryKeys.servers.tools('srv-2'), FIXTURE_TOOLS_SRV2)
   return qc
 }
 
@@ -182,9 +181,9 @@ describe('CapabilitiesSection — tool picker search filter', () => {
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: Infinity } },
     })
-    qc.setQueryData(MCP_SERVERS_QUERY_KEY, FIXTURE_SERVERS)
-    qc.setQueryData(mcpToolsQueryKey('srv-1'), FIXTURE_TOOLS_SRV1)
-    qc.setQueryData(mcpToolsQueryKey('srv-2'), FIXTURE_TOOLS_SRV2)
+    qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS)
+    qc.setQueryData(queryKeys.servers.tools('srv-1'), FIXTURE_TOOLS_SRV1)
+    qc.setQueryData(queryKeys.servers.tools('srv-2'), FIXTURE_TOOLS_SRV2)
     return qc
   }
 

@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/api/fetch'
 import type { ApiMcpTool } from '@/api/types'
-import { mcpToolsQueryKey } from './useMcpTools'
+import { queryKeys } from './queryKeys'
 
 interface UpdateToolParams {
   toolId: string
@@ -19,7 +19,7 @@ export function useUpdateMcpTool() {
         body: JSON.stringify({ capability_role }),
       }),
     onSuccess: (_data, { serverId }) => {
-      void queryClient.invalidateQueries({ queryKey: mcpToolsQueryKey(serverId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.tools(serverId) })
     },
   })
 }

@@ -7,6 +7,7 @@ import { http, HttpResponse, delay } from 'msw'
 import { server } from '@/test/server'
 import userEvent from '@testing-library/user-event'
 import DashboardPage from './DashboardPage'
+import { queryKeys } from '@/hooks/queryKeys'
 import type { ApiPolicyListItem, ApiStats } from '@/api/types'
 
 function makeStats(policies: ApiPolicyListItem[]): ApiStats {
@@ -120,8 +121,8 @@ describe('DashboardPage', () => {
     expect(callCount).toBe(1)
 
     act(() => {
-      void qc.invalidateQueries({ queryKey: ['runs'] })
-      void qc.invalidateQueries({ queryKey: ['policies'] })
+      void qc.invalidateQueries({ queryKey: queryKeys.runs.all })
+      void qc.invalidateQueries({ queryKey: queryKeys.policies.all })
     })
 
     await waitFor(() => expect(callCount).toBe(2))
@@ -154,9 +155,9 @@ describe('DashboardPage', () => {
     expect(policiesCard?.textContent).toContain('1')
 
     act(() => {
-      void qc.invalidateQueries({ queryKey: ['runs'] })
-      void qc.invalidateQueries({ queryKey: ['policies'] })
-      void qc.invalidateQueries({ queryKey: ['stats'] })
+      void qc.invalidateQueries({ queryKey: queryKeys.runs.all })
+      void qc.invalidateQueries({ queryKey: queryKeys.policies.all })
+      void qc.invalidateQueries({ queryKey: queryKeys.stats.all })
     })
 
     // Wait for refetch — now 2 policies

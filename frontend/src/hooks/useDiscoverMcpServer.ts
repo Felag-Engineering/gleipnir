@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/api/fetch'
-import { mcpToolsQueryKey } from './useMcpTools'
+import { queryKeys } from './queryKeys'
 
 interface ToolDiff {
   added: string[]
@@ -17,7 +17,7 @@ export function useDiscoverMcpServer() {
         method: 'POST',
       }),
     onSuccess: (_data, serverId) => {
-      void queryClient.invalidateQueries({ queryKey: mcpToolsQueryKey(serverId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.tools(serverId) })
     },
   })
 }

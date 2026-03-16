@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { usePolicy } from '@/hooks/usePolicy'
+import { queryKeys } from '@/hooks/queryKeys'
 import { usePolicyRuns } from '@/hooks/usePolicyRuns'
 import SkeletonBlock from '@/components/SkeletonBlock/SkeletonBlock'
 import EmptyState from '@/components/EmptyState/EmptyState'
@@ -55,7 +56,7 @@ export default function PolicyRunsPage() {
           <span>Failed to load runs.</span>
           <button
             className={styles.retryBtn}
-            onClick={() => queryClient.invalidateQueries({ queryKey: ['runs', { policyId: id }] })}
+            onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.runs.byPolicy(id!) })}
           >
             Retry
           </button>

@@ -1,8 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../api/fetch'
 import type { ApiPolicySaveResponse } from '../api/types'
-import { POLICIES_QUERY_KEY } from './usePolicies'
-import { policyQueryKey } from './usePolicy'
+import { queryKeys } from './queryKeys'
 
 interface SavePolicyArgs {
   id?: string   // absent → POST (create), present → PUT (update)
@@ -23,9 +22,9 @@ export function useSavePolicy() {
       })
     },
     onSuccess: (_data, { id }) => {
-      queryClient.invalidateQueries({ queryKey: POLICIES_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })
       if (id) {
-        queryClient.invalidateQueries({ queryKey: policyQueryKey(id) })
+        queryClient.invalidateQueries({ queryKey: queryKeys.policies.detail(id) })
       }
     },
   })

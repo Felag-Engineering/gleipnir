@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetchVoid } from '@/api/fetch'
-import { MCP_SERVERS_QUERY_KEY } from './useMcpServers'
+import { queryKeys } from './queryKeys'
 
 export function useDeleteMcpServer() {
   const queryClient = useQueryClient()
@@ -11,7 +11,7 @@ export function useDeleteMcpServer() {
         method: 'DELETE',
       }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: MCP_SERVERS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.all })
     },
   })
 }

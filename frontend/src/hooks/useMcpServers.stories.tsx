@@ -2,8 +2,9 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/tokens.css'
 import type { ApiMcpServer, ApiMcpTool } from '../api/types'
-import { useMcpServers, MCP_SERVERS_QUERY_KEY } from './useMcpServers'
-import { useMcpTools, mcpToolsQueryKey } from './useMcpTools'
+import { useMcpServers } from './useMcpServers'
+import { useMcpTools } from './useMcpTools'
+import { queryKeys } from './queryKeys'
 
 const FIXTURE_SERVERS: ApiMcpServer[] = [
   {
@@ -81,8 +82,8 @@ function UseMcpToolsDisplay({ serverId }: { serverId: string }) {
 
 function makeQueryClient(): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  qc.setQueryData(MCP_SERVERS_QUERY_KEY, FIXTURE_SERVERS)
-  qc.setQueryData(mcpToolsQueryKey('srv-1'), FIXTURE_TOOLS)
+  qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS)
+  qc.setQueryData(queryKeys.servers.tools('srv-1'), FIXTURE_TOOLS)
   return qc
 }
 

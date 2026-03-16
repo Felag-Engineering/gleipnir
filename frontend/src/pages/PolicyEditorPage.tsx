@@ -9,6 +9,7 @@ import { TaskInstructionsSection } from '@/components/PolicyEditor/FormMode/Task
 import { RunLimitsSection } from '@/components/PolicyEditor/FormMode/RunLimitsSection'
 import { ConcurrencySection } from '@/components/PolicyEditor/FormMode/ConcurrencySection'
 import { ModelSection } from '@/components/PolicyEditor/FormMode/ModelSection'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { usePolicy } from '@/hooks/usePolicy'
 import { useSavePolicy } from '@/hooks/useSavePolicy'
 import { useDeletePolicy } from '@/hooks/useDeletePolicy'
@@ -159,55 +160,57 @@ export function PolicyEditorPage() {
         onSave={handleSave}
         onDelete={handleDelete}
       />
-      <div className={styles.content}>
-        {saveError && (
-          <div className={styles.errorBanner}>
-            <span className={styles.errorBannerMessage}>{saveError}</span>
-            <button className={styles.errorBannerClose} onClick={() => setSaveError(null)}>×</button>
-          </div>
-        )}
-        {mode === 'yaml' ? (
-          <div className={styles.yamlPane}>
-            <YamlEditor
-              value={yamlString}
-              onChange={handleYamlChange}
-              onValidityChange={setYamlValid}
-            />
-          </div>
-        ) : (
-          <div className={styles.formPane}>
-            <PolicyIdentitySection
-              value={formState.identity}
-              onChange={v => handleFormChange({ identity: v })}
-            />
-            <TriggerSection
-              value={formState.trigger}
-              onChange={v => handleFormChange({ trigger: v })}
-              policyId={savedPolicyId}
-            />
-            <CapabilitiesSection
-              value={formState.capabilities}
-              onChange={v => handleFormChange({ capabilities: v })}
-            />
-            <TaskInstructionsSection
-              value={formState.task}
-              onChange={v => handleFormChange({ task: v })}
-            />
-            <ModelSection
-              value={formState.model}
-              onChange={v => handleFormChange({ model: v })}
-            />
-            <RunLimitsSection
-              value={formState.limits}
-              onChange={v => handleFormChange({ limits: v })}
-            />
-            <ConcurrencySection
-              value={formState.concurrency}
-              onChange={v => handleFormChange({ concurrency: v })}
-            />
-          </div>
-        )}
-      </div>
+      <ErrorBoundary>
+        <div className={styles.content}>
+          {saveError && (
+            <div className={styles.errorBanner}>
+              <span className={styles.errorBannerMessage}>{saveError}</span>
+              <button className={styles.errorBannerClose} onClick={() => setSaveError(null)}>×</button>
+            </div>
+          )}
+          {mode === 'yaml' ? (
+            <div className={styles.yamlPane}>
+              <YamlEditor
+                value={yamlString}
+                onChange={handleYamlChange}
+                onValidityChange={setYamlValid}
+              />
+            </div>
+          ) : (
+            <div className={styles.formPane}>
+              <PolicyIdentitySection
+                value={formState.identity}
+                onChange={v => handleFormChange({ identity: v })}
+              />
+              <TriggerSection
+                value={formState.trigger}
+                onChange={v => handleFormChange({ trigger: v })}
+                policyId={savedPolicyId}
+              />
+              <CapabilitiesSection
+                value={formState.capabilities}
+                onChange={v => handleFormChange({ capabilities: v })}
+              />
+              <TaskInstructionsSection
+                value={formState.task}
+                onChange={v => handleFormChange({ task: v })}
+              />
+              <ModelSection
+                value={formState.model}
+                onChange={v => handleFormChange({ model: v })}
+              />
+              <RunLimitsSection
+                value={formState.limits}
+                onChange={v => handleFormChange({ limits: v })}
+              />
+              <ConcurrencySection
+                value={formState.concurrency}
+                onChange={v => handleFormChange({ concurrency: v })}
+              />
+            </div>
+          )}
+        </div>
+      </ErrorBoundary>
     </div>
   )
 }

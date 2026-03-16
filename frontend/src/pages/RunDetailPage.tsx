@@ -4,6 +4,7 @@ import { useRun } from '@/hooks/useRun'
 import { useRunSteps } from '@/hooks/useRunSteps'
 import SkeletonBlock from '@/components/SkeletonBlock/SkeletonBlock'
 import { CollapsibleJSON } from '@/components/CollapsibleJSON'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import {
   RunHeader,
   MetadataGrid,
@@ -132,7 +133,7 @@ export default function RunDetailPage() {
       )}
 
       {!isLoading && run && (
-        <>
+        <ErrorBoundary>
           <RunHeader run={run} />
 
           <MetadataGrid
@@ -189,7 +190,7 @@ export default function RunDetailPage() {
               New steps ↓
             </button>
           )}
-        </>
+        </ErrorBoundary>
       )}
     </div>
   )

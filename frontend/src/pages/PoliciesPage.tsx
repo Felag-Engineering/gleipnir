@@ -6,6 +6,7 @@ import { PolicyList } from '../components/PolicyList'
 import { SkeletonBlock } from '../components/SkeletonBlock'
 import { TriggerRunModal } from '../components/TriggerRunModal/TriggerRunModal'
 import { usePolicies } from '../hooks/usePolicies'
+import { queryKeys } from '../hooks/queryKeys'
 import styles from './PoliciesPage.module.css'
 
 export default function PoliciesPage() {
@@ -32,7 +33,7 @@ export default function PoliciesPage() {
           <span>Failed to load policies.</span>
           <button
             className={styles.retryBtn}
-            onClick={() => queryClient.invalidateQueries({ queryKey: ['policies'] })}
+            onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })}
           >
             Retry
           </button>

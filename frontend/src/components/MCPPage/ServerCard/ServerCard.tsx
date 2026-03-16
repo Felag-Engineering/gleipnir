@@ -2,15 +2,8 @@ import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 import { HealthIndicator } from '@/components/MCPPage/HealthIndicator'
 import type { HealthStatus } from '@/components/MCPPage/HealthIndicator'
 import { ToolList } from '@/components/MCPPage/ToolList'
+import { fmtRel } from '@/components/dashboard/styles'
 import styles from './ServerCard.module.css'
-
-function fmtAgo(iso: string): string {
-  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-  if (s < 60) return `${s}s ago`
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-  return `${Math.floor(s / 86400)}d ago`
-}
 
 interface Props {
   server: ApiMcpServer
@@ -52,7 +45,7 @@ export function ServerCard({
           <div className={styles.url}>{server.url}</div>
           {server.last_discovered_at && (
             <div className={styles.meta}>
-              Discovered {fmtAgo(server.last_discovered_at)}
+              Discovered {fmtRel(server.last_discovered_at)}
             </div>
           )}
         </div>

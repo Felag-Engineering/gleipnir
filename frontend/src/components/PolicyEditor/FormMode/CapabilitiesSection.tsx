@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { RoleBadge } from '@/components/RoleBadge';
-import { useMcpServers, MCP_SERVERS_QUERY_KEY } from '@/hooks/useMcpServers';
-import { mcpToolsQueryKey } from '@/hooks/useMcpTools';
+import { useMcpServers } from '@/hooks/useMcpServers';
+import { queryKeys } from '@/hooks/queryKeys';
 import { apiFetch } from '@/api/fetch';
 import type { ApiMcpTool } from '@/api/types';
 import type { AssignedTool, CapabilitiesFormState } from './types';
@@ -23,7 +23,7 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
 
   const toolQueries = useQueries({
     queries: (servers ?? []).map(s => ({
-      queryKey: mcpToolsQueryKey(s.id),
+      queryKey: queryKeys.servers.tools(s.id),
       queryFn: () => apiFetch<ApiMcpTool[]>(`/mcp/servers/${encodeURIComponent(s.id)}/tools`),
       enabled: Boolean(s.id),
     })),
