@@ -31,7 +31,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-012 | Run persistence and recovery behavior              | 🟢 Decided    | v0.1   | Run executor, storage layer, startup sequence        |
 | ADR-013 | System prompt default template                     | 🟢 Decided    | v0.1   | Agent runtime, policy schema, UI prompt editor       |
 | ADR-014 | Poll trigger MCP client architecture               | 🔴 Unresolved | v0.3   | Trigger engine, MCP client, package structure        |
-| ADR-015 | Policy concurrency model                           | 🔴 Unresolved | v0.3   | Trigger engine, run executor, policy schema          |
+| ADR-015 | Policy concurrency model                           | 🟢 Decided    | v1.0   | Trigger engine, run executor, policy schema          |
 | ADR-016 | Real-time UI transport: SSE over WebSockets        | 🟢 Decided    | v0.1   | Frontend, Go API, HA scaling path                    |
 | ADR-017 | Policy-level parameter scoping for MCP tools       | 🟢 Decided    | v0.1   | Policy schema, MCP client, agent runtime, audit log  |
 | ADR-018 | Capability snapshot as first run step              | 🟢 Decided    | v0.1   | Run steps schema, agent runtime, reasoning timeline  |
@@ -41,6 +41,8 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-022 | Transport-level fake for Anthropic API in tests   | ⬜ Deferred   | v0.1   | agent package, integration tests                     |
 | ADR-023 | Per-policy model selection                         | 🟢 Decided    | v0.1   | Policy schema, agent runtime, capability snapshot    |
 | ADR-024 | Webhook HMAC-SHA256 signature verification         | 🟢 Decided    | v0.1   | Webhook handler, policy schema, trigger package      |
+| ADR-028 | Tool risk classification model                     | 🟢 Decided    | v1.0   | Policy schema, runtime approval interceptor          |
+| ADR-029 | Approval state machine (v1.0 minimal)              | 🟢 Decided    | v1.0   | BoundAgent runtime, approval handler, SSE, UI        |
 
 ---
 
@@ -556,6 +558,157 @@ in SSE events, run steps, or any JSON serialization of the config.
 
 **Rejected alternative:** A shared global webhook signing key. Per-policy keys allow operators
 to rotate secrets for individual integrations without affecting others.
+
+---
+
+## ADR-015: Policy Concurrency Model
+
+**Status:** Decided
+**Date:** 2026-03
+
+**Decision:** v1.0 supports two concurrency modes, configured per policy in the `concurrency`
+block of the policy YAML:
+
+- **Skip** — if a run for this policy is already active (status `pending` or `running` or
+  `waiting_for_approval`), the incoming trigger is dropped. The webhook still returns 202
+  Accepted, but no run is created. The response body indicates the trigger was skipped and
+  includes the ID of the currently active run.
+- **Queue** — if a run is already active, the incoming trigger payload is held in a
+  per-policy queue. When the active run reaches a terminal state (`complete`, `failed`,
+  `interrupted`), the next queued payload is dequeued and a new run is created from it.
+  Queue depth is bounded (default: 10 entries); payloads arriving when the queue is full
+  are dropped with a 429 response.
+
+`skip` is the default if no `concurrency` block is specified.
+
+**Deferred to v1.1:** `parallel` (allow N concurrent runs up to a configured limit) and
+`replace` (cancel the active run and immediately start a new one from the incoming trigger).
+Both are architecturally compatible with the skip/queue implementation — they share the same
+active-run detection path and require only additional branch handling.
+
+**Policy YAML shape:**
+```yaml
+concurrency:
+  mode: skip | queue
+  queue_depth: 10    # only meaningful when mode is queue
+```
+
+---
+
+## ADR-028: Tool Risk Classification Model
+
+**Status:** Decided
+**Date:** 2026-03
+
+**Decision:** Tool risk is expressed exclusively via per-tool `approval` configuration in the
+policy YAML. There is no risk level abstraction (safe / elevated / critical), no tag system,
+and no category-level default behavior. Every tool's approval requirement is stated explicitly
+by the policy author at the point of use.
+
+**Policy YAML shape:**
+```yaml
+tools:
+  - tool: kubectl.get_pods
+    params:
+      namespace: ["worker-01", "worker-02"]
+
+  - tool: kubectl.delete_pod
+    approval: required
+    params:
+      namespace: ["worker-01", "worker-02"]
+
+  - tool: mealie.search_recipes
+    # no approval field — defaults to not required
+```
+
+The `approval` field on a tool entry accepts:
+- `required` — the tool call is intercepted before execution; an operator must approve
+- absent / omitted — no approval gate; the tool executes immediately
+
+**Deferred:** Risk level labels (safe / elevated / critical) as optional metadata for UI
+grouping and default-approval inference. If introduced in a later version, they will be
+additive — the per-tool `approval` field remains the runtime primitive and any risk label
+would only influence the form editor's defaults, never override an explicit per-tool setting.
+
+**Reasoning:** The sensor/actuator distinction (original ADR-007) provided implicit risk
+classification — sensors were implicitly safe, actuators were implicitly risky. With that
+distinction removed, the temptation is to replace it with an explicit risk taxonomy. This
+adds complexity at both the schema and runtime layers without providing meaningful benefit
+for v1.0: the policy author already knows which tools are dangerous in their environment,
+and making that judgment explicit in the policy is clearer than inferring it from a category.
+A `kubectl.get_pods` call is safe in most contexts; in a policy with write-access to a
+production cluster it may warrant approval. Only the policy author can make that call.
+
+**Rejected alternatives:**
+- Risk levels with runtime effect: adds a layer of indirection between what the YAML says
+  and what the runtime does. Hard to reason about, harder to audit.
+- Tags with policy rules keyed off them: significant schema complexity for v1.0 with no
+  clear benefit over per-tool config.
+
+**Consequence:** The policy schema `tools` entries have two fields beyond the tool reference:
+`approval` (optional, `required` or absent) and `params` (optional, see ADR-017). No
+additional fields or tables are needed. The runtime approval interceptor in `BoundAgent`
+checks the per-tool approval flag directly from the parsed policy — no lookup into a
+risk registry.
+
+---
+
+## ADR-029: Approval State Machine (v1.0 Minimal)
+
+**Status:** Decided
+**Date:** 2026-03
+
+**Decision:** The v1.0 approval gate is a two-outcome gate: approve or deny. No reason field,
+no agent feedback path, no per-tool timeout configuration.
+
+**Approve path:**
+1. `BoundAgent` intercepts the tool call, sets run status to `waiting_for_approval`, writes
+   an `approval_request` step to the audit trail.
+2. The SSE stream emits `approval.created` — the UI surfaces the request to any user holding
+   the Approver role.
+3. The operator clicks Approve in the UI, which calls `POST /api/v1/runs/:run_id/approval`
+   with `{"decision": "approved"}`.
+4. The approval decision is written as an `approval_decision` step in the audit trail.
+5. `BoundAgent` unblocks, calls the MCP server, returns the result to Claude, sets run status
+   back to `running`.
+
+**Deny path:**
+1. Same interception and notification as the approve path.
+2. The operator clicks Deny.
+3. The decision is written as an `approval_decision` step with `outcome: denied`.
+4. `BoundAgent` unblocks, sets run status to `failed`, writes an `error` step with a
+   structured failure record indicating which tool was denied and at which step.
+5. The run terminates. Claude is not informed — the run simply ends.
+
+**Timeout behavior:** A fixed global timeout applies to all approval gates (default: 30
+minutes, configurable via environment variable at the instance level). On timeout, the
+outcome is `denied` — the same path as an explicit denial. No auto-approve option in v1.0.
+
+**Deferred to v1.1:**
+- Denial with reason: operator provides a reason string; the reason is fed back to Claude
+  as a structured tool result and the run continues rather than terminates.
+- Denial hard-stop vs denial-with-reason as distinct outcomes (the full ADR-029 state
+  machine).
+- Per-tool timeout duration and per-tool timeout outcome (auto-approve vs auto-deny).
+- Timeout with reason (auto-deny and inject a canned reason into the agent context).
+
+These are additive changes. The approve/deny channel between the HTTP handler and
+`BoundAgent` is designed as a typed struct (`ApprovalDecision{Outcome, Reason}`) from day
+one — even though `Reason` is unused in v1.0, the channel shape does not need to change
+when denial-with-reason is added.
+
+**Reasoning:** The full approval state machine (PAT-005) is one of Gleipnir's strongest
+product differentiators. It is deliberately deferred — not because it is unimportant but
+because shipping a minimal gate first keeps the v1.0 surface area manageable and ensures
+the audit trail, SSE notification, and UI approval flow are solid before adding the
+complexity of agent-adaptive denial handling.
+
+**Consequence:** `ApprovalDecision` struct carries `Outcome` (approved / denied / timeout)
+and `Reason` (string, unused in v1.0 but present for forward compatibility). The
+`approval_decision` step content records `outcome` and `tool_name`. A `run_approvals` table
+(or equivalent column on `run_steps`) records the wall-clock time between `approval_request`
+and `approval_decision` for future approval analytics. The global timeout is implemented as
+a `time.After` in the `BoundAgent` approval wait loop.
 
 ---
 
