@@ -43,6 +43,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-024 | Webhook HMAC-SHA256 signature verification         | 🟢 Decided    | v0.1   | Webhook handler, policy schema, trigger package      |
 | ADR-028 | Tool risk classification model                     | 🟢 Decided    | v1.0   | Policy schema, runtime approval interceptor          |
 | ADR-029 | Approval state machine (v1.0 minimal)              | 🟢 Decided    | v1.0   | BoundAgent runtime, approval handler, SSE, UI        |
+| ADR-030 | UI abstracts over tool transport — Tools page is protocol-agnostic | 🟢 Decided | v0.1 | Frontend nav, routes, MCPPage UI text          |
 
 ---
 
@@ -709,6 +710,31 @@ and `Reason` (string, unused in v1.0 but present for forward compatibility). The
 (or equivalent column on `run_steps`) records the wall-clock time between `approval_request`
 and `approval_decision` for future approval analytics. The global timeout is implemented as
 a `time.After` in the `BoundAgent` approval wait loop.
+
+---
+
+## ADR-030: UI abstracts over tool transport — "Tools" page is protocol-agnostic
+
+**Status:** Decided
+**Date:** 2026-03
+
+**Decision:** The frontend uses "Tools" as the page name, navigation label, and route (`/tools`).
+Tool providers are called "sources" in all user-visible text. The backend API routes remain
+`/api/v1/mcp/servers` and `/api/v1/mcp/tools` — unchanged. A redirect from `/mcp` to `/tools`
+is in place for backward compatibility with any bookmarked URLs.
+
+**Reasoning:** MCP is an implementation detail. Users care about what tools their agents can
+use, not which transport protocol delivers them. Surfacing "MCP" in the UI would couple the
+user's mental model to a specific protocol, making it harder to add non-MCP tool sources in
+the future without a disruptive rename.
+
+**Rejected alternative:** Keeping "MCP Servers" as the UI label. Rejected because it leaks an
+implementation detail into the user interface and would require a UI rename when additional
+transport types are supported.
+
+**Consequence:** Component directories retain `MCPPage/` names as an internal detail — not
+user-facing. Hook names (`useMcpServers`, `useAddMcpServer`, etc.) are unchanged. All
+user-visible text uses "Tools" and "source" vocabulary. Backend API routes are not affected.
 
 ---
 

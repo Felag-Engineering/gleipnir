@@ -39,7 +39,7 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
             Adding…
           </>
         ) : (
-          'Add server'
+          'Add MCP server'
         )}
       </button>
     </>

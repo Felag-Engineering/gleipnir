@@ -29,7 +29,7 @@ export function DeleteServerModal({ serverName, toolCount, onClose, onConfirm, i
             Deleting…
           </>
         ) : (
-          'Delete server'
+          'Delete MCP server'
         )}
       </button>
     </>

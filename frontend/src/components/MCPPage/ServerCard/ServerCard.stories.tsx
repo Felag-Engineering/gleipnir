@@ -4,7 +4,7 @@ import { ServerCard } from './ServerCard'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 
 const meta: Meta<typeof ServerCard> = {
-  title: 'MCPPage/ServerCard',
+  title: 'ToolsPage/ServerCard',
   component: ServerCard,
 }
 

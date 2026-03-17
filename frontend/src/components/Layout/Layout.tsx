@@ -11,7 +11,7 @@ const NAV_ITEMS = [
   { label: 'Dashboard', to: '/dashboard', Icon: CircleGauge },
   { label: 'Runs', to: '/runs', Icon: History },
   { label: 'Policies', to: '/policies', Icon: ScrollText },
-  { label: 'Tools', to: '/mcp', Icon: Wrench },
+  { label: 'Tools', to: '/tools', Icon: Wrench },
 ]
 
 export default function Layout() {

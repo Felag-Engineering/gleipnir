@@ -4,7 +4,7 @@ import { ToolRow } from './ToolRow'
 import type { ApiMcpTool } from '@/api/types'
 
 const meta: Meta<typeof ToolRow> = {
-  title: 'MCPPage/ToolRow',
+  title: 'ToolsPage/ToolRow',
   component: ToolRow,
 }
 

@@ -3,7 +3,7 @@ import '@/tokens.css'
 import { UnassignedBanner } from './UnassignedBanner'
 
 const meta: Meta<typeof UnassignedBanner> = {
-  title: 'MCPPage/UnassignedBanner',
+  title: 'ToolsPage/UnassignedBanner',
   component: UnassignedBanner,
 }
 

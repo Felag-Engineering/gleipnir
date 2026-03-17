@@ -214,7 +214,7 @@ Specific animation patterns (stagger delays, scroll thresholds, blink intervals)
 /policies/new              → New policy editor (dual-mode: form + YAML)
 /policies/:id              → Edit policy editor (dual-mode: form + YAML)
 /runs/:id                  → Run detail (reasoning timeline)
-/mcp                       → MCP server management
+/tools                     → Tool source management
 ```
 
 ---
@@ -627,7 +627,7 @@ Re-discovery simply refreshes the tool list in place. The user sees the updated 
 1. **Dashboard loads with policies** — navigate to `/dashboard`, verify stats bar renders, policy rows appear with correct data
 2. **Create a new policy** — navigate to `/policies/new`, fill out form fields, save, verify redirect to edit view with saved data, verify policy appears on dashboard
 3. **Policy editor YAML round-trip** — open an existing policy, switch to YAML mode, edit a field, switch to Form mode, verify the edit is reflected, save, reload, verify persistence
-4. **MCP server add and discover** — navigate to `/mcp`, add a server via modal, trigger discovery, verify tools appear in the expanded server card
+4. **Tool source add and discover** — navigate to `/tools`, add a source via modal, trigger discovery, verify tools appear in the expanded source card
 5. **Run detail renders steps** — navigate to `/runs/:id` for a run with multiple step types, verify the timeline renders thoughts, tool calls, and results with correct styling
 
 **Not in scope for v0.1:** SSE live-update E2E tests (these require orchestrating a run mid-test, which depends on backend trigger infrastructure). Add in v0.2 when the approval flow provides a natural test scenario.

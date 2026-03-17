@@ -3,7 +3,7 @@ import '@/tokens.css'
 import { HealthIndicator } from './HealthIndicator'
 
 const meta: Meta<typeof HealthIndicator> = {
-  title: 'MCPPage/HealthIndicator',
+  title: 'ToolsPage/HealthIndicator',
   component: HealthIndicator,
 }
 

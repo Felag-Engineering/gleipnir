@@ -116,7 +116,7 @@ function mockServersPending() {
 
 // --- Tests ---
 
-describe('MCPPage — skeleton on load', () => {
+describe('ToolsPage — skeleton on load', () => {
   beforeEach(() => {
     mockServersPending()
     mockNoopMutations()
@@ -134,7 +134,7 @@ describe('MCPPage — skeleton on load', () => {
   })
 })
 
-describe('MCPPage — servers loaded', () => {
+describe('ToolsPage — servers loaded', () => {
   beforeEach(() => {
     const tools = new Map([['srv-1', [TOOL_1, TOOL_2]]])
     mockServersLoaded([SERVER_1, SERVER_2], tools)
@@ -165,7 +165,7 @@ describe('MCPPage — servers loaded', () => {
   })
 })
 
-describe('MCPPage — stats bar', () => {
+describe('ToolsPage — stats bar', () => {
   it('shows correct tool counts from eager fetches', () => {
     const tools = new Map([['srv-1', [TOOL_1, TOOL_2]]])
     mockServersLoaded([SERVER_1], tools)
@@ -198,17 +198,17 @@ describe('MCPPage — stats bar', () => {
   })
 })
 
-describe('MCPPage — add server modal', () => {
+describe('ToolsPage — add MCP server modal', () => {
   beforeEach(() => {
     mockServersLoaded([])
     mockNoopMutations()
   })
 
-  it('opens add server modal on button click', () => {
+  it('opens add MCP server modal on button click', () => {
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /add server/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add mcp server/i }))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
-    expect(screen.getByText('Add MCP server')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Add MCP server' })).toBeInTheDocument()
   })
 
   it('calls mutate with name and url on submit', () => {
@@ -221,7 +221,7 @@ describe('MCPPage — add server modal', () => {
     } as unknown as ReturnType<typeof useAddMcpServer>)
 
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /add server/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add mcp server/i }))
 
     fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'my-mcp' } })
     fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'http://my-mcp:8080' } })
@@ -237,7 +237,7 @@ describe('MCPPage — add server modal', () => {
 
   it('closes modal on cancel', async () => {
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /add server/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add mcp server/i }))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
@@ -255,14 +255,14 @@ describe('MCPPage — add server modal', () => {
     } as unknown as ReturnType<typeof useAddMcpServer>)
 
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /add server/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add mcp server/i }))
     // When isPending, the submit button is disabled and shows "Adding…"
     const submitBtn = screen.getByRole('button', { name: /adding/i })
     expect(submitBtn).toBeDisabled()
   })
 })
 
-describe('MCPPage — delete server modal', () => {
+describe('ToolsPage — delete MCP server modal', () => {
   beforeEach(() => {
     const tools = new Map([['srv-1', [TOOL_1, TOOL_2]]])
     mockServersLoaded([SERVER_1], tools)
@@ -273,7 +273,7 @@ describe('MCPPage — delete server modal', () => {
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: /delete kubectl-mcp/i }))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
-    expect(screen.getByText('Delete MCP server')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Delete MCP server' })).toBeInTheDocument()
   })
 
   it('calls deleteMutate on confirm', () => {
@@ -287,7 +287,7 @@ describe('MCPPage — delete server modal', () => {
 
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: /delete kubectl-mcp/i }))
-    fireEvent.click(screen.getByRole('button', { name: /delete server/i }))
+    fireEvent.click(screen.getByRole('button', { name: /delete mcp server/i }))
 
     expect(mutateMock).toHaveBeenCalledWith('srv-1', expect.any(Object))
   })
@@ -304,7 +304,7 @@ describe('MCPPage — delete server modal', () => {
   })
 })
 
-describe('MCPPage — discover button', () => {
+describe('ToolsPage — discover button', () => {
   it('shows spinner when discover is pending for a server', () => {
     const tools = new Map([['srv-1', [TOOL_1]]])
     mockServersLoaded([SERVER_1], tools)
@@ -328,7 +328,7 @@ describe('MCPPage — discover button', () => {
   })
 })
 
-describe('MCPPage — tool role dropdown', () => {
+describe('ToolsPage — tool role dropdown', () => {
   it('calls updateTool.mutate with correct args on role change', async () => {
     const tools = new Map([['srv-1', [TOOL_1, TOOL_2]]])
     mockServersLoaded([SERVER_1], tools)
@@ -360,7 +360,7 @@ describe('MCPPage — tool role dropdown', () => {
   })
 })
 
-describe('MCPPage — unassigned banner', () => {
+describe('ToolsPage — unassigned banner', () => {
   it('is hidden when all tools have valid roles', () => {
     const tools = new Map([['srv-1', [TOOL_1, TOOL_2]]])
     mockServersLoaded([SERVER_1], tools)
@@ -397,7 +397,7 @@ describe('MCPPage — unassigned banner', () => {
   })
 })
 
-describe('MCPPage — server card tool count', () => {
+describe('ToolsPage — server card tool count', () => {
   it('shows the number of tools discovered for a server', async () => {
     const tools = new Map([['srv-1', [TOOL_1, TOOL_2]]])
     mockServersLoaded([SERVER_1], tools)

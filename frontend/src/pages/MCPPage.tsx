@@ -127,7 +127,7 @@ export default function MCPPage() {
   return (
     <div className={styles.page}>
       <div className={styles.header}>
-        <h1 className={styles.title}>MCP Servers</h1>
+        <h1 className={styles.title}>Tools</h1>
         <button
           type="button"
           className={styles.addBtn}
@@ -137,7 +137,7 @@ export default function MCPPage() {
             setShowAddModal(true)
           }}
         >
-          Add server
+          Add MCP server
         </button>
       </div>
 
@@ -169,7 +169,7 @@ export default function MCPPage() {
         {serversStatus === 'success' && servers.length === 0 && (
           <div className={styles.emptyState}>
             <p className={styles.emptyHeadline}>No MCP servers</p>
-            <p className={styles.emptySubtext}>Add a server to start discovering tools.</p>
+            <p className={styles.emptySubtext}>Add an MCP server to start discovering tools.</p>
           </div>
         )}
 

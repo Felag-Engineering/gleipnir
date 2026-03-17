@@ -3,7 +3,7 @@ import '@/tokens.css'
 import { MCPStatsBar } from './MCPStatsBar'
 
 const meta: Meta<typeof MCPStatsBar> = {
-  title: 'MCPPage/MCPStatsBar',
+  title: 'ToolsPage/MCPStatsBar',
   component: MCPStatsBar,
 }
 

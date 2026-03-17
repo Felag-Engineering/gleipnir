@@ -22,7 +22,8 @@ const router = createBrowserRouter([
       { path: 'policies/:id/runs', element: <PolicyRunsPage />, errorElement: <RouteErrorFallback /> },
       { path: 'policies/:id', element: <PolicyEditorPage />, errorElement: <RouteErrorFallback /> },
       { path: 'runs/:id', element: <RunDetailPage />, errorElement: <RouteErrorFallback /> },
-      { path: 'mcp', element: <MCPPage />, errorElement: <RouteErrorFallback /> },
+      { path: 'tools', element: <MCPPage />, errorElement: <RouteErrorFallback /> },
+      { path: 'mcp', element: <Navigate to="/tools" replace /> },
     ],
   },
 ])

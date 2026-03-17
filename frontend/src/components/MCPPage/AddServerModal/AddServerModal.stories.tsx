@@ -3,7 +3,7 @@ import '@/tokens.css'
 import { AddServerModal } from './AddServerModal'
 
 const meta: Meta<typeof AddServerModal> = {
-  title: 'MCPPage/AddServerModal',
+  title: 'ToolsPage/AddServerModal',
   component: AddServerModal,
 }
 

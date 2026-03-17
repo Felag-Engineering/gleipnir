@@ -3,7 +3,7 @@ import '@/tokens.css'
 import { DeleteServerModal } from './DeleteServerModal'
 
 const meta: Meta<typeof DeleteServerModal> = {
-  title: 'MCPPage/DeleteServerModal',
+  title: 'ToolsPage/DeleteServerModal',
   component: DeleteServerModal,
 }
 

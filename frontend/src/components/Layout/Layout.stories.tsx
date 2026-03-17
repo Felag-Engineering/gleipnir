@@ -28,7 +28,7 @@ function SidebarStory({ initialPath = '/dashboard' }: { initialPath?: string }) 
             <Route path="/runs/:id" element={<PageContent title="Run Detail" />} />
             <Route path="/policies" element={<PageContent title="Policies" />} />
             <Route path="/policies/new" element={<PageContent title="New Policy" />} />
-            <Route path="/mcp" element={<PageContent title="Tools" />} />
+            <Route path="/tools" element={<PageContent title="Tools" />} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -76,5 +76,5 @@ export const ActivePolicies: Story = {
 }
 
 export const ActiveTools: Story = {
-  render: () => <SidebarStory initialPath="/mcp" />,
+  render: () => <SidebarStory initialPath="/tools" />,
 }

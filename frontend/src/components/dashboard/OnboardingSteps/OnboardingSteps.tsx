@@ -17,8 +17,8 @@ interface StepConfig {
 export function OnboardingSteps({ hasServers, hasPolicies, hasRuns }: OnboardingStepsProps) {
   const steps: StepConfig[] = [
     {
-      title: <Link to="/mcp" className={styles.stepLink}>Add a tool source</Link>,
-      desc: 'Connect an MCP server to give your agents access to tools.',
+      title: <Link to="/tools" className={styles.stepLink}>Add a tool source</Link>,
+      desc: 'Connect a tool source to give your agents access to tools.',
       done: hasServers,
     },
     {
