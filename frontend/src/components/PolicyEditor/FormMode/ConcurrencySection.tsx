@@ -1,3 +1,4 @@
+import { Check } from 'lucide-react';
 import styles from './ConcurrencySection.module.css';
 import type { ConcurrencyFormState, ConcurrencyValue } from './types';
 
@@ -27,6 +28,11 @@ export function ConcurrencySection({ value, onChange }: ConcurrencySectionProps)
               className={isActive ? `${styles.card} ${styles.cardActive}` : styles.card}
               onClick={() => onChange({ concurrency: option.value })}
             >
+              {isActive && (
+                <span className={styles.checkmark} aria-hidden="true">
+                  <Check size={10} color="var(--bg-surface)" strokeWidth={2.5} aria-hidden="true" />
+                </span>
+              )}
               <div className={isActive ? `${styles.cardTitle} ${styles.cardTitleActive}` : styles.cardTitle}>
                 {option.label}
               </div>

@@ -7,8 +7,8 @@
 .heading {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  text-transform: none;
+  letter-spacing: normal;
   color: var(--text-faint);
   margin-bottom: var(--space-2);
 }
@@ -22,6 +22,7 @@
 }
 
 .card {
+  position: relative;
   border: 1px solid var(--border-mid);
   border-radius: 8px;
   padding: var(--space-4);
@@ -63,6 +64,19 @@
   font-size: var(--text-xs);
   color: var(--text-muted);
   margin-top: var(--space-1);
+}
+
+.checkmark {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-blue);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Config area below cards */

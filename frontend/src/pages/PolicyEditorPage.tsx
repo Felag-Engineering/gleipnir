@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { EditorTopBar } from '@/components/PolicyEditor/EditorTopBar/EditorTopBar'
 import { YamlEditor } from '@/components/PolicyEditor/YamlEditor/YamlEditor'
 import { PolicyIdentitySection } from '@/components/PolicyEditor/FormMode/PolicyIdentitySection'
@@ -145,11 +145,6 @@ export function PolicyEditorPage() {
 
   return (
     <div className={styles.page}>
-      <div className={styles.backLinkWrapper}>
-        <Link to="/policies" className={styles.backLink}>
-          ← Policies
-        </Link>
-      </div>
       <EditorTopBar
         policyName={policyName}
         isDirty={isDirty}

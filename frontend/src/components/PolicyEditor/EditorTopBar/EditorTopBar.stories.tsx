@@ -1,11 +1,19 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { fn } from 'storybook/test';
+import { MemoryRouter } from 'react-router-dom';
 import '@/tokens.css';
 import { EditorTopBar } from './EditorTopBar';
 
 const meta: Meta<typeof EditorTopBar> = {
   title: 'PolicyEditor/EditorTopBar',
   component: EditorTopBar,
+  decorators: [
+    (Story) => (
+      <MemoryRouter>
+        <Story />
+      </MemoryRouter>
+    ),
+  ],
   argTypes: {
     mode: { control: 'select', options: ['form', 'yaml'] },
   },

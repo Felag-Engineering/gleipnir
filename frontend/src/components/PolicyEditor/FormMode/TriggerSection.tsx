@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Check } from 'lucide-react';
 import styles from './TriggerSection.module.css';
 import type { TriggerFormState, ManualTriggerState, ScheduledTriggerState } from './types';
 
@@ -46,6 +47,11 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
           className={value.type === 'webhook' ? `${styles.card} ${styles.cardActive}` : styles.card}
           onClick={() => handleTypeSelect('webhook')}
         >
+          {value.type === 'webhook' && (
+            <span className={styles.checkmark} aria-hidden="true">
+              <Check size={10} color="var(--bg-surface)" strokeWidth={2.5} aria-hidden="true" />
+            </span>
+          )}
           <div className={value.type === 'webhook' ? `${styles.cardTitle} ${styles.cardTitleActive}` : styles.cardTitle}>
             Webhook
           </div>
@@ -56,6 +62,11 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
           className={value.type === 'manual' ? `${styles.card} ${styles.cardActive}` : styles.card}
           onClick={() => handleTypeSelect('manual')}
         >
+          {value.type === 'manual' && (
+            <span className={styles.checkmark} aria-hidden="true">
+              <Check size={10} color="var(--bg-surface)" strokeWidth={2.5} aria-hidden="true" />
+            </span>
+          )}
           <div className={value.type === 'manual' ? `${styles.cardTitle} ${styles.cardTitleActive}` : styles.cardTitle}>
             Manual
           </div>
@@ -66,6 +77,11 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
           className={value.type === 'scheduled' ? `${styles.card} ${styles.cardActive}` : styles.card}
           onClick={() => handleTypeSelect('scheduled')}
         >
+          {value.type === 'scheduled' && (
+            <span className={styles.checkmark} aria-hidden="true">
+              <Check size={10} color="var(--bg-surface)" strokeWidth={2.5} aria-hidden="true" />
+            </span>
+          )}
           <div className={value.type === 'scheduled' ? `${styles.cardTitle} ${styles.cardTitleActive}` : styles.cardTitle}>
             Scheduled
           </div>

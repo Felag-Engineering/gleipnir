@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import styles from './EditorTopBar.module.css';
 
 export interface EditorTopBarProps {
@@ -30,7 +31,7 @@ export function EditorTopBar({
         <div className={styles.breadcrumb}>
           <span className={`${styles.crumb} ${styles.crumbGleipnir}`}>GLEIPNIR</span>
           <span className={styles.separator}>›</span>
-          <span className={`${styles.crumb} ${styles.crumbPolicies}`}>Policies</span>
+          <Link to="/policies" className={`${styles.crumb} ${styles.crumbPolicies} ${styles.crumbLink}`}>Policies</Link>
           <span className={styles.separator}>›</span>
           <span className={`${styles.crumb} ${styles.crumbPolicy}`}>{policyName}</span>
           {isDirty && <span className={styles.dirtyDot} />}

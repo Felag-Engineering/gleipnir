@@ -4,21 +4,6 @@
   height: 100%;
 }
 
-.backLinkWrapper {
-  padding: var(--space-2) var(--space-4);
-}
-
-.backLink {
-  font-size: var(--text-xs);
-  color: var(--text-faint);
-  text-decoration: none;
-  transition: color var(--duration-fast) var(--ease-out);
-}
-
-.backLink:hover {
-  color: var(--text-primary);
-}
-
 .content {
   flex: 1;
   min-height: 0;

@@ -30,6 +30,15 @@
   color: var(--text-muted);
 }
 
+.crumbLink {
+  text-decoration: none;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.crumbLink:hover {
+  color: var(--text-primary);
+}
+
 .crumbPolicy {
   color: var(--text-primary);
 }
