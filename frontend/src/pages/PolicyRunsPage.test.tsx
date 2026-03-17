@@ -49,6 +49,7 @@ function makePolicy(overrides?: Partial<ApiPolicyDetail>): ApiPolicyDetail {
     yaml: '',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
+    paused_at: null,
     ...overrides,
   }
 }

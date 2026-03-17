@@ -17,6 +17,7 @@ const POLICIES: ApiPolicyListItem[] = [
     folder: '',
     created_at: '2026-03-07T14:32:11Z',
     updated_at: '2026-03-07T14:32:11Z',
+    paused_at: null,
     latest_run: { id: 'r101', status: 'complete', started_at: '2026-03-07T14:32:11Z', token_cost: 1000 },
   },
 ]

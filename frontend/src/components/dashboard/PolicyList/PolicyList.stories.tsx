@@ -25,6 +25,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     folder: 'Infrastructure',
     created_at: '2026-03-01T00:00:00Z',
     updated_at: '2026-03-09T00:00:00Z',
+    paused_at: null,
     latest_run: {
       id: 'run-1',
       status: 'complete',
@@ -39,6 +40,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     folder: 'CI/CD',
     created_at: '2026-02-15T00:00:00Z',
     updated_at: '2026-03-10T00:00:00Z',
+    paused_at: null,
     latest_run: {
       id: 'run-2',
       status: 'running',
@@ -53,6 +55,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     folder: 'Infrastructure',
     created_at: '2026-02-20T00:00:00Z',
     updated_at: '2026-03-08T00:00:00Z',
+    paused_at: null,
     latest_run: {
       id: 'run-3',
       status: 'failed',
@@ -67,6 +70,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     folder: 'Security',
     created_at: '2026-03-05T00:00:00Z',
     updated_at: '2026-03-09T00:00:00Z',
+    paused_at: null,
     latest_run: {
       id: 'run-4',
       status: 'waiting_for_approval',
@@ -81,6 +85,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     folder: 'Monitoring',
     created_at: '2026-03-02T00:00:00Z',
     updated_at: '2026-03-07T00:00:00Z',
+    paused_at: null,
     latest_run: {
       id: 'run-5',
       status: 'interrupted',
@@ -95,6 +100,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     folder: 'CI/CD',
     created_at: '2026-03-08T00:00:00Z',
     updated_at: '2026-03-10T00:00:00Z',
+    paused_at: null,
     latest_run: {
       id: 'run-6',
       status: 'pending',
@@ -109,6 +115,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     folder: '',
     created_at: '2026-01-10T00:00:00Z',
     updated_at: '2026-01-10T00:00:00Z',
+    paused_at: null,
     latest_run: null,
   },
   {
@@ -118,6 +125,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     folder: 'Infrastructure',
     created_at: '2026-03-10T00:00:00Z',
     updated_at: '2026-03-10T00:00:00Z',
+    paused_at: null,
     latest_run: {
       id: 'run-8',
       status: 'complete',

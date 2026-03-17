@@ -31,6 +31,7 @@ const POLICIES_COMPLETE: ApiPolicyListItem[] = [
     folder: '',
     created_at: '2026-03-07T14:32:11Z',
     updated_at: '2026-03-07T14:32:11Z',
+    paused_at: null,
     latest_run: { id: 'r101', status: 'complete', started_at: '2026-03-07T14:32:11Z', token_cost: 1000 },
   },
 ]
@@ -43,6 +44,7 @@ const POLICIES_INITIAL: ApiPolicyListItem[] = [
     folder: '',
     created_at: '2026-03-07T14:32:11Z',
     updated_at: '2026-03-07T14:32:11Z',
+    paused_at: null,
     latest_run: { id: 'r101', status: 'running', started_at: '2026-03-07T14:32:11Z', token_cost: 1000 },
   },
 ]
@@ -56,6 +58,7 @@ const POLICIES_UPDATED: ApiPolicyListItem[] = [
     folder: '',
     created_at: '2026-03-07T14:00:00Z',
     updated_at: '2026-03-07T14:00:00Z',
+    paused_at: null,
     latest_run: { id: 'r201', status: 'running', started_at: '2026-03-07T14:30:00Z', token_cost: 2000 },
   },
 ]
@@ -226,6 +229,7 @@ describe('DashboardPage', () => {
         folder: '',
         created_at: '2026-03-07T14:32:11Z',
         updated_at: '2026-03-07T14:32:11Z',
+        paused_at: null,
         latest_run: { id: 'r1', status: 'waiting_for_approval', started_at: '2026-03-07T14:32:11Z', token_cost: 500 },
       },
     ]

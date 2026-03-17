@@ -13,6 +13,7 @@ const FIXTURE_POLICY: ApiPolicyDetail = {
   yaml: 'name: Nightly Backup Check\ntrigger:\n  type: cron\n  schedule: "0 2 * * *"\n',
   created_at: '2026-03-01T00:00:00Z',
   updated_at: '2026-03-09T00:00:00Z',
+  paused_at: null,
 }
 
 function UsePolicyDisplay({ id }: { id?: string }) {
