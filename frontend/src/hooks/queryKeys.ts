@@ -9,6 +9,7 @@ export const queryKeys = {
     steps: (id: string) => ['runs', id, 'steps'] as const,
     byPolicy: (policyId: string) => ['runs', { policyId }] as const,
     latestByPolicy: (policyId: string) => ['runs', { policyId, limit: 1 }] as const,
+    list: (params: Record<string, string>) => ['runs', 'list', params] as const,
   },
   servers: {
     all: ['servers'] as const,

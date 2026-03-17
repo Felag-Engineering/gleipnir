@@ -20,6 +20,33 @@ func (q *Queries) CountActiveRuns(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countRuns = `-- name: CountRuns :one
+SELECT COUNT(*) FROM runs
+WHERE (?1 IS NULL OR policy_id = ?1)
+  AND (?2 IS NULL OR status = ?2)
+  AND (?3 IS NULL OR created_at >= ?3)
+  AND (?4 IS NULL OR created_at <= ?4)
+`
+
+type CountRunsParams struct {
+	PolicyID interface{} `json:"policy_id"`
+	Status   interface{} `json:"status"`
+	Since    interface{} `json:"since"`
+	Until    interface{} `json:"until"`
+}
+
+func (q *Queries) CountRuns(ctx context.Context, arg CountRunsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countRuns,
+		arg.PolicyID,
+		arg.Status,
+		arg.Since,
+		arg.Until,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createRun = `-- name: CreateRun :one
 INSERT INTO runs (id, policy_id, status, trigger_type, trigger_payload, started_at, created_at)
 VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6)
@@ -65,6 +92,15 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 	return i, err
 }
 
+const deleteRunsByPolicy = `-- name: DeleteRunsByPolicy :exec
+DELETE FROM runs WHERE policy_id = ?1
+`
+
+func (q *Queries) DeleteRunsByPolicy(ctx context.Context, policyID string) error {
+	_, err := q.db.ExecContext(ctx, deleteRunsByPolicy, policyID)
+	return err
+}
+
 const getRun = `-- name: GetRun :one
 SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs WHERE id = ?1
 `
@@ -87,6 +123,22 @@ func (q *Queries) GetRun(ctx context.Context, id string) (Run, error) {
 		&i.SystemPrompt,
 	)
 	return i, err
+}
+
+const hasScheduledRunSince = `-- name: HasScheduledRunSince :one
+SELECT EXISTS(SELECT 1 FROM runs WHERE policy_id = ?1 AND trigger_type = 'scheduled' AND created_at >= ?2) AS fired
+`
+
+type HasScheduledRunSinceParams struct {
+	PolicyID string `json:"policy_id"`
+	Since    string `json:"since"`
+}
+
+func (q *Queries) HasScheduledRunSince(ctx context.Context, arg HasScheduledRunSinceParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, hasScheduledRunSince, arg.PolicyID, arg.Since)
+	var fired int64
+	err := row.Scan(&fired)
+	return fired, err
 }
 
 const incrementRunTokenCost = `-- name: IncrementRunTokenCost :exec
@@ -190,13 +242,17 @@ const listRuns = `-- name: ListRuns :many
 SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs
 WHERE (?1 IS NULL OR policy_id = ?1)
   AND (?2 IS NULL OR status = ?2)
+  AND (?3 IS NULL OR created_at >= ?3)
+  AND (?4 IS NULL OR created_at <= ?4)
 ORDER BY created_at DESC
-LIMIT ?4 OFFSET ?3
+LIMIT ?6 OFFSET ?5
 `
 
 type ListRunsParams struct {
 	PolicyID interface{} `json:"policy_id"`
 	Status   interface{} `json:"status"`
+	Since    interface{} `json:"since"`
+	Until    interface{} `json:"until"`
 	Offset   int64       `json:"offset"`
 	Limit    int64       `json:"limit"`
 }
@@ -205,6 +261,70 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, erro
 	rows, err := q.db.QueryContext(ctx, listRuns,
 		arg.PolicyID,
 		arg.Status,
+		arg.Since,
+		arg.Until,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.TriggerType,
+			&i.TriggerPayload,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.TokenCost,
+			&i.Error,
+			&i.ThreadID,
+			&i.CreatedAt,
+			&i.SystemPrompt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunsAsc = `-- name: ListRunsAsc :many
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs
+WHERE (?1 IS NULL OR policy_id = ?1)
+  AND (?2 IS NULL OR status = ?2)
+  AND (?3 IS NULL OR created_at >= ?3)
+  AND (?4 IS NULL OR created_at <= ?4)
+ORDER BY created_at ASC
+LIMIT ?6 OFFSET ?5
+`
+
+type ListRunsAscParams struct {
+	PolicyID interface{} `json:"policy_id"`
+	Status   interface{} `json:"status"`
+	Since    interface{} `json:"since"`
+	Until    interface{} `json:"until"`
+	Offset   int64       `json:"offset"`
+	Limit    int64       `json:"limit"`
+}
+
+func (q *Queries) ListRunsAsc(ctx context.Context, arg ListRunsAscParams) ([]Run, error) {
+	rows, err := q.db.QueryContext(ctx, listRunsAsc,
+		arg.PolicyID,
+		arg.Status,
+		arg.Since,
+		arg.Until,
 		arg.Offset,
 		arg.Limit,
 	)
@@ -328,25 +448,9 @@ SELECT CAST(COALESCE(SUM(token_cost), 0) AS INTEGER) FROM runs WHERE created_at 
 
 func (q *Queries) SumTokensLast24Hours(ctx context.Context, since string) (int64, error) {
 	row := q.db.QueryRowContext(ctx, sumTokensLast24Hours, since)
-	var cast int64
-	err := row.Scan(&cast)
-	return cast, err
-}
-
-const hasScheduledRunSince = `-- name: HasScheduledRunSince :one
-SELECT EXISTS(SELECT 1 FROM runs WHERE policy_id = ?1 AND trigger_type = 'scheduled' AND created_at >= ?2) AS fired
-`
-
-type HasScheduledRunSinceParams struct {
-	PolicyID string `json:"policy_id"`
-	Since    string `json:"since"`
-}
-
-func (q *Queries) HasScheduledRunSince(ctx context.Context, arg HasScheduledRunSinceParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, hasScheduledRunSince, arg.PolicyID, arg.Since)
-	var fired int64
-	err := row.Scan(&fired)
-	return fired, err
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const updateRunError = `-- name: UpdateRunError :exec
@@ -414,80 +518,3 @@ func (q *Queries) UpdateRunThreadID(ctx context.Context, arg UpdateRunThreadIDPa
 	_, err := q.db.ExecContext(ctx, updateRunThreadID, arg.ThreadID, arg.ID)
 	return err
 }
-
-const deleteRunsByPolicy = `-- name: DeleteRunsByPolicy :exec
-DELETE FROM runs WHERE policy_id = ?1
-`
-
-func (q *Queries) DeleteRunsByPolicy(ctx context.Context, policyID string) error {
-	_, err := q.db.ExecContext(ctx, deleteRunsByPolicy, policyID)
-	return err
-}
-
-// --- Hand-written additions: replace by running `sqlc generate` when tooling is available ---
-
-const listRunsWithPolicyName = `-- name: ListRunsWithPolicyName :many
-SELECT r.id, r.policy_id, r.status, r.trigger_type, r.trigger_payload, r.started_at, r.completed_at, r.token_cost, r.error, r.thread_id, r.created_at, r.system_prompt, COALESCE(p.name, '') AS policy_name
-FROM runs r
-LEFT JOIN policies p ON r.policy_id = p.id
-WHERE (?1 IS NULL OR r.policy_id = ?1)
-  AND (?2 IS NULL OR r.status = ?2)
-ORDER BY r.created_at DESC
-LIMIT ?4 OFFSET ?3
-`
-
-type ListRunsWithPolicyNameParams struct {
-	PolicyID interface{} `json:"policy_id"`
-	Status   interface{} `json:"status"`
-	Offset   int64       `json:"offset"`
-	Limit    int64       `json:"limit"`
-}
-
-type RunWithPolicyName struct {
-	Run
-	PolicyName string `json:"policy_name"`
-}
-
-func (q *Queries) ListRunsWithPolicyName(ctx context.Context, arg ListRunsWithPolicyNameParams) ([]RunWithPolicyName, error) {
-	rows, err := q.db.QueryContext(ctx, listRunsWithPolicyName,
-		arg.PolicyID,
-		arg.Status,
-		arg.Offset,
-		arg.Limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []RunWithPolicyName
-	for rows.Next() {
-		var i RunWithPolicyName
-		if err := rows.Scan(
-			&i.ID,
-			&i.PolicyID,
-			&i.Status,
-			&i.TriggerType,
-			&i.TriggerPayload,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.TokenCost,
-			&i.Error,
-			&i.ThreadID,
-			&i.CreatedAt,
-			&i.SystemPrompt,
-			&i.PolicyName,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-// --- End hand-written additions ---

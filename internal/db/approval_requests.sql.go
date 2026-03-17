@@ -62,6 +62,15 @@ func (q *Queries) CreateApprovalRequest(ctx context.Context, arg CreateApprovalR
 	return i, err
 }
 
+const deleteApprovalRequestsByPolicyRuns = `-- name: DeleteApprovalRequestsByPolicyRuns :exec
+DELETE FROM approval_requests WHERE run_id IN (SELECT id FROM runs WHERE policy_id = ?1)
+`
+
+func (q *Queries) DeleteApprovalRequestsByPolicyRuns(ctx context.Context, policyID string) error {
+	_, err := q.db.ExecContext(ctx, deleteApprovalRequestsByPolicyRuns, policyID)
+	return err
+}
+
 const getApprovalRequest = `-- name: GetApprovalRequest :one
 SELECT id, run_id, tool_name, proposed_input, reasoning_summary, status, decided_at, expires_at, note, created_at FROM approval_requests WHERE id = ?1
 `
@@ -226,14 +235,5 @@ func (q *Queries) UpdateApprovalRequestStatus(ctx context.Context, arg UpdateApp
 		arg.Note,
 		arg.ID,
 	)
-	return err
-}
-
-const deleteApprovalRequestsByPolicyRuns = `-- name: DeleteApprovalRequestsByPolicyRuns :exec
-DELETE FROM approval_requests WHERE run_id IN (SELECT id FROM runs WHERE policy_id = ?1)
-`
-
-func (q *Queries) DeleteApprovalRequestsByPolicyRuns(ctx context.Context, policyID string) error {
-	_, err := q.db.ExecContext(ctx, deleteApprovalRequestsByPolicyRuns, policyID)
 	return err
 }

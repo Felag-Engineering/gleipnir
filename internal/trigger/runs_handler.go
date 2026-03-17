@@ -7,12 +7,19 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 )
+
+// PaginatedRunsResponse is the JSON envelope returned by List.
+type PaginatedRunsResponse struct {
+	Runs  []RunSummary `json:"runs"`
+	Total int64        `json:"total"`
+}
 
 // RunSummary is the JSON shape returned for a single run.
 type RunSummary struct {
@@ -52,18 +59,20 @@ func NewRunsHandler(store *db.Store, manager *RunManager) *RunsHandler {
 	return &RunsHandler{store: store, manager: manager}
 }
 
-// List handles GET /api/v1/runs with optional ?policy_id= and ?status= filters
-// and ?limit= / ?offset= pagination.
+// List handles GET /api/v1/runs with optional filters and pagination.
+// Query params: policy_id, status, since (RFC3339), until (RFC3339),
+// sort (only "started"), order ("asc"|"desc"), limit, offset.
 func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	q := r.URL.Query()
 
 	var policyID interface{}
-	if v := r.URL.Query().Get("policy_id"); v != "" {
+	if v := q.Get("policy_id"); v != "" {
 		policyID = v
 	}
 
 	var status interface{}
-	if v := r.URL.Query().Get("status"); v != "" {
+	if v := q.Get("status"); v != "" {
 		if !model.RunStatus(v).Valid() {
 			api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid status %q: must be one of pending, running, complete, failed, waiting_for_approval, interrupted", v), "")
 			return
@@ -71,8 +80,44 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 		status = v
 	}
 
+	var since interface{}
+	if v := q.Get("since"); v != "" {
+		if _, err := time.Parse(time.RFC3339, v); err != nil {
+			api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid since %q: must be RFC3339", v), "")
+			return
+		}
+		since = v
+	}
+
+	var until interface{}
+	if v := q.Get("until"); v != "" {
+		if _, err := time.Parse(time.RFC3339, v); err != nil {
+			api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid until %q: must be RFC3339", v), "")
+			return
+		}
+		until = v
+	}
+
+	sort := q.Get("sort")
+	if sort == "" {
+		sort = "started"
+	}
+	if sort != "started" {
+		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid sort %q: must be \"started\"", sort), "")
+		return
+	}
+
+	order := q.Get("order")
+	if order == "" {
+		order = "desc"
+	}
+	if order != "asc" && order != "desc" {
+		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order), "")
+		return
+	}
+
 	limit := int64(50)
-	if v := r.URL.Query().Get("limit"); v != "" {
+	if v := q.Get("limit"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err == nil {
 			limit = n
@@ -86,31 +131,77 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	offset := int64(0)
-	if v := r.URL.Query().Get("offset"); v != "" {
+	if v := q.Get("offset"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err == nil && n >= 0 {
 			offset = n
 		}
 	}
 
-	rows, err := h.store.ListRunsWithPolicyName(ctx, db.ListRunsWithPolicyNameParams{
-		PolicyID: policyID,
-		Status:   status,
-		Limit:    limit,
-		Offset:   offset,
-	})
+	var rows []db.Run
+	var err error
+	if order == "asc" {
+		rows, err = h.store.ListRunsAsc(ctx, db.ListRunsAscParams{
+			PolicyID: policyID,
+			Status:   status,
+			Since:    since,
+			Until:    until,
+			Limit:    limit,
+			Offset:   offset,
+		})
+	} else {
+		rows, err = h.store.ListRuns(ctx, db.ListRunsParams{
+			PolicyID: policyID,
+			Status:   status,
+			Since:    since,
+			Until:    until,
+			Limit:    limit,
+			Offset:   offset,
+		})
+	}
 	if err != nil {
-		slog.Error("ListRunsWithPolicyName query failed", "err", err)
+		slog.Error("ListRuns query failed", "err", err)
 		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
-	result := make([]RunSummary, 0, len(rows))
-	for _, run := range rows {
-		result = append(result, toRunSummaryWithName(run))
+	total, err := h.store.CountRuns(ctx, db.CountRunsParams{
+		PolicyID: policyID,
+		Status:   status,
+		Since:    since,
+		Until:    until,
+	})
+	if err != nil {
+		slog.Error("CountRuns query failed", "err", err)
+		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		return
 	}
 
-	api.WriteJSON(w, http.StatusOK, result)
+	// Fetch policy names for all unique policy IDs in the result set.
+	// A missing policy (deleted after runs were created) is non-fatal.
+	policyNames := make(map[string]string)
+	for _, run := range rows {
+		if _, seen := policyNames[run.PolicyID]; !seen {
+			policyNames[run.PolicyID] = ""
+		}
+	}
+	for pid := range policyNames {
+		policy, err := h.store.GetPolicy(ctx, pid)
+		if err == nil {
+			policyNames[pid] = policy.Name
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			slog.Warn("GetPolicy for run list failed", "policy_id", pid, "err", err)
+		}
+	}
+
+	result := make([]RunSummary, 0, len(rows))
+	for _, run := range rows {
+		s := toRunSummary(run)
+		s.PolicyName = policyNames[run.PolicyID]
+		result = append(result, s)
+	}
+
+	api.WriteJSON(w, http.StatusOK, PaginatedRunsResponse{Runs: result, Total: total})
 }
 
 // Get handles GET /api/v1/runs/{runID}.
@@ -230,10 +321,4 @@ func toRunSummary(r db.Run) RunSummary {
 		CreatedAt:      r.CreatedAt,
 		SystemPrompt:   r.SystemPrompt,
 	}
-}
-
-func toRunSummaryWithName(r db.RunWithPolicyName) RunSummary {
-	s := toRunSummary(r.Run)
-	s.PolicyName = r.PolicyName
-	return s
 }

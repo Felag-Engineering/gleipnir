@@ -9,6 +9,15 @@ import (
 	"context"
 )
 
+const clearPolicyPausedAt = `-- name: ClearPolicyPausedAt :exec
+UPDATE policies SET paused_at = NULL WHERE id = ?1
+`
+
+func (q *Queries) ClearPolicyPausedAt(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, clearPolicyPausedAt, id)
+	return err
+}
+
 const countPolicies = `-- name: CountPolicies :one
 SELECT COUNT(*) FROM policies
 `
@@ -18,15 +27,6 @@ func (q *Queries) CountPolicies(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
-}
-
-const clearPolicyPausedAt = `-- name: ClearPolicyPausedAt :exec
-UPDATE policies SET paused_at = NULL WHERE id = ?1
-`
-
-func (q *Queries) ClearPolicyPausedAt(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, clearPolicyPausedAt, id)
-	return err
 }
 
 const createPolicy = `-- name: CreatePolicy :one

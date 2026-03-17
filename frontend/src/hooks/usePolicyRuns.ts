@@ -1,12 +1,18 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/api/fetch'
-import type { ApiRun } from '@/api/types'
+import type { ApiRunsResponse } from '@/api/types'
 import { queryKeys } from './queryKeys'
 
 export function usePolicyRuns(policyId: string | undefined) {
-  return useQuery({
+  const result = useQuery({
     queryKey: queryKeys.runs.byPolicy(policyId ?? ''),
-    queryFn: () => apiFetch<ApiRun[]>(`/runs?policy_id=${encodeURIComponent(policyId!)}`),
+    queryFn: () => apiFetch<ApiRunsResponse>(`/runs?policy_id=${encodeURIComponent(policyId!)}`),
     enabled: Boolean(policyId),
   })
+
+  return {
+    ...result,
+    // Unwrap runs array for backward compatibility with PolicyRunsPage
+    data: result.data?.runs,
+  }
 }

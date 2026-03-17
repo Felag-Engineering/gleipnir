@@ -59,6 +59,15 @@ func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (R
 	return i, err
 }
 
+const deleteRunStepsByPolicyRuns = `-- name: DeleteRunStepsByPolicyRuns :exec
+DELETE FROM run_steps WHERE run_id IN (SELECT id FROM runs WHERE policy_id = ?1)
+`
+
+func (q *Queries) DeleteRunStepsByPolicyRuns(ctx context.Context, policyID string) error {
+	_, err := q.db.ExecContext(ctx, deleteRunStepsByPolicyRuns, policyID)
+	return err
+}
+
 const getLatestRunStep = `-- name: GetLatestRunStep :one
 SELECT id, run_id, step_number, type, content, token_cost, created_at FROM run_steps WHERE run_id = ?1 ORDER BY step_number DESC LIMIT 1
 `
@@ -76,15 +85,6 @@ func (q *Queries) GetLatestRunStep(ctx context.Context, runID string) (RunStep, 
 		&i.CreatedAt,
 	)
 	return i, err
-}
-
-const deleteRunStepsByPolicyRuns = `-- name: DeleteRunStepsByPolicyRuns :exec
-DELETE FROM run_steps WHERE run_id IN (SELECT id FROM runs WHERE policy_id = ?1)
-`
-
-func (q *Queries) DeleteRunStepsByPolicyRuns(ctx context.Context, policyID string) error {
-	_, err := q.db.ExecContext(ctx, deleteRunStepsByPolicyRuns, policyID)
-	return err
 }
 
 const listRunSteps = `-- name: ListRunSteps :many

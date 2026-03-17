@@ -32,7 +32,8 @@ export default function PolicyRunsPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { data: policy } = usePolicy(id)
-  const { data: runs, status: runsStatus } = usePolicyRuns(id)
+  const { data: runsData, status: runsStatus } = usePolicyRuns(id)
+  const runs = runsData ?? []
   const [showTriggerModal, setShowTriggerModal] = useState(false)
 
   const heading = policy?.name ?? id ?? '...'

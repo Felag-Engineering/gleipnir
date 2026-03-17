@@ -49,8 +49,10 @@ func TestRunsHandler_List(t *testing.T) {
 		setup            func(t *testing.T, store *db.Store)
 		query            string
 		wantCount        int
+		wantTotal        int64
 		wantCode         int
 		wantBodyContains string
+		checkFn          func(t *testing.T, resp trigger.PaginatedRunsResponse)
 	}{
 		{
 			name: "no filters returns all runs",
@@ -62,6 +64,7 @@ func TestRunsHandler_List(t *testing.T) {
 			},
 			query:     "",
 			wantCount: 2,
+			wantTotal: 2,
 			wantCode:  http.StatusOK,
 		},
 		{
@@ -75,6 +78,7 @@ func TestRunsHandler_List(t *testing.T) {
 			},
 			query:     "?policy_id=p-filter-pol",
 			wantCount: 2,
+			wantTotal: 2,
 			wantCode:  http.StatusOK,
 		},
 		{
@@ -87,6 +91,7 @@ func TestRunsHandler_List(t *testing.T) {
 			},
 			query:     "?status=complete",
 			wantCount: 2,
+			wantTotal: 2,
 			wantCode:  http.StatusOK,
 		},
 		{
@@ -100,6 +105,7 @@ func TestRunsHandler_List(t *testing.T) {
 			},
 			query:     "?policy_id=p-combined&status=complete",
 			wantCount: 1,
+			wantTotal: 1,
 			wantCode:  http.StatusOK,
 		},
 		{
@@ -109,6 +115,7 @@ func TestRunsHandler_List(t *testing.T) {
 			},
 			query:     "?policy_id=p-empty",
 			wantCount: 0,
+			wantTotal: 0,
 			wantCode:  http.StatusOK,
 		},
 		{
@@ -120,7 +127,7 @@ func TestRunsHandler_List(t *testing.T) {
 			wantBodyContains: "invalid status",
 		},
 		{
-			name: "limit=2 with 3 runs returns 2 results",
+			name: "limit=2 with 3 runs returns 2 results but total=3",
 			setup: func(t *testing.T, store *db.Store) {
 				insertTestPolicy(t, store, "p-limit2", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-limit2-1", "p-limit2", model.RunStatusComplete)
@@ -129,6 +136,7 @@ func TestRunsHandler_List(t *testing.T) {
 			},
 			query:     "?policy_id=p-limit2&limit=2",
 			wantCount: 2,
+			wantTotal: 3,
 			wantCode:  http.StatusOK,
 		},
 		{
@@ -140,6 +148,7 @@ func TestRunsHandler_List(t *testing.T) {
 			},
 			query:     "?policy_id=p-limit0&limit=0",
 			wantCount: 2,
+			wantTotal: 2,
 			wantCode:  http.StatusOK,
 		},
 		{
@@ -150,6 +159,7 @@ func TestRunsHandler_List(t *testing.T) {
 			},
 			query:     "?policy_id=p-limit999&limit=999",
 			wantCount: 1,
+			wantTotal: 1,
 			wantCode:  http.StatusOK,
 		},
 		{
@@ -161,7 +171,96 @@ func TestRunsHandler_List(t *testing.T) {
 			},
 			query:     "?policy_id=p-offset1&offset=1",
 			wantCount: 1,
+			wantTotal: 2,
 			wantCode:  http.StatusOK,
+		},
+		{
+			name: "filter by since returns only recent runs",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-since", minimalWebhookPolicy)
+				old := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+				testutil.InsertRunWithTime(t, store, "r-since-old", "p-since", model.RunStatusComplete, old, 0)
+				recent := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+				testutil.InsertRunWithTime(t, store, "r-since-new", "p-since", model.RunStatusComplete, recent, 0)
+			},
+			query:     "?policy_id=p-since&since=" + time.Now().Add(-6*time.Hour).UTC().Format(time.RFC3339),
+			wantCount: 1,
+			wantTotal: 1,
+			wantCode:  http.StatusOK,
+		},
+		{
+			name: "filter by until returns only older runs",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-until", minimalWebhookPolicy)
+				old := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+				testutil.InsertRunWithTime(t, store, "r-until-old", "p-until", model.RunStatusComplete, old, 0)
+				recent := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+				testutil.InsertRunWithTime(t, store, "r-until-new", "p-until", model.RunStatusComplete, recent, 0)
+			},
+			query:     "?policy_id=p-until&until=" + time.Now().Add(-6*time.Hour).UTC().Format(time.RFC3339),
+			wantCount: 1,
+			wantTotal: 1,
+			wantCode:  http.StatusOK,
+		},
+		{
+			name:             "invalid since returns 400",
+			setup:            func(t *testing.T, store *db.Store) {},
+			query:            "?since=not-a-time",
+			wantCount:        -1,
+			wantCode:         http.StatusBadRequest,
+			wantBodyContains: "invalid since",
+		},
+		{
+			name: "order=asc returns runs in ascending created_at order",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-asc", minimalWebhookPolicy)
+				t1 := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+				t2 := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+				testutil.InsertRunWithTime(t, store, "r-asc-older", "p-asc", model.RunStatusComplete, t1, 0)
+				testutil.InsertRunWithTime(t, store, "r-asc-newer", "p-asc", model.RunStatusComplete, t2, 0)
+			},
+			query:     "?policy_id=p-asc&order=asc",
+			wantCount: 2,
+			wantTotal: 2,
+			wantCode:  http.StatusOK,
+			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+				if len(resp.Runs) != 2 {
+					t.Fatalf("expected 2 runs, got %d", len(resp.Runs))
+				}
+				if resp.Runs[0].ID != "r-asc-older" {
+					t.Errorf("first run = %q, want %q", resp.Runs[0].ID, "r-asc-older")
+				}
+				if resp.Runs[1].ID != "r-asc-newer" {
+					t.Errorf("second run = %q, want %q", resp.Runs[1].ID, "r-asc-newer")
+				}
+			},
+		},
+		{
+			name:             "invalid sort returns 400",
+			setup:            func(t *testing.T, store *db.Store) {},
+			query:            "?sort=tokens",
+			wantCount:        -1,
+			wantCode:         http.StatusBadRequest,
+			wantBodyContains: "invalid sort",
+		},
+		{
+			name: "policy_name is populated in list results",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-name-check", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-name-check", "p-name-check", model.RunStatusComplete)
+			},
+			query:     "?policy_id=p-name-check",
+			wantCount: 1,
+			wantTotal: 1,
+			wantCode:  http.StatusOK,
+			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+				if len(resp.Runs) == 0 {
+					t.Fatal("expected at least 1 run")
+				}
+				if resp.Runs[0].PolicyName == "" {
+					t.Errorf("policy_name is empty, want non-empty")
+				}
+			},
 		},
 	}
 
@@ -193,13 +292,19 @@ func TestRunsHandler_List(t *testing.T) {
 				}
 
 				var env struct {
-					Data []trigger.RunSummary `json:"data"`
+					Data trigger.PaginatedRunsResponse `json:"data"`
 				}
 				if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
 					t.Fatalf("decode response: %v", err)
 				}
-				if len(env.Data) != tc.wantCount {
-					t.Errorf("len(runs) = %d, want %d", len(env.Data), tc.wantCount)
+				if len(env.Data.Runs) != tc.wantCount {
+					t.Errorf("len(runs) = %d, want %d", len(env.Data.Runs), tc.wantCount)
+				}
+				if tc.wantTotal >= 0 && env.Data.Total != tc.wantTotal {
+					t.Errorf("total = %d, want %d", env.Data.Total, tc.wantTotal)
+				}
+				if tc.checkFn != nil {
+					tc.checkFn(t, env.Data)
 				}
 			}
 		})
@@ -223,18 +328,18 @@ func TestRunsHandler_List_PolicyName(t *testing.T) {
 	}
 
 	var env struct {
-		Data []trigger.RunSummary `json:"data"`
+		Data trigger.PaginatedRunsResponse `json:"data"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(env.Data) != 1 {
-		t.Fatalf("len(runs) = %d, want 1", len(env.Data))
+	if len(env.Data.Runs) != 1 {
+		t.Fatalf("len(runs) = %d, want 1", len(env.Data.Runs))
 	}
 	// insertTestPolicy uses "policy-" + policyID as the name (see webhook_test.go)
 	wantName := "policy-p-pname-test"
-	if env.Data[0].PolicyName != wantName {
-		t.Errorf("policy_name = %q, want %q", env.Data[0].PolicyName, wantName)
+	if env.Data.Runs[0].PolicyName != wantName {
+		t.Errorf("policy_name = %q, want %q", env.Data.Runs[0].PolicyName, wantName)
 	}
 }
 

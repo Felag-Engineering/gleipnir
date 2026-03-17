@@ -42,8 +42,26 @@ ORDER BY created_at ASC;
 SELECT * FROM runs
 WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))
   AND (sqlc.narg('status') IS NULL OR status = sqlc.narg('status'))
+  AND (sqlc.narg('since') IS NULL OR created_at >= sqlc.narg('since'))
+  AND (sqlc.narg('until') IS NULL OR created_at <= sqlc.narg('until'))
 ORDER BY created_at DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: ListRunsAsc :many
+SELECT * FROM runs
+WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))
+  AND (sqlc.narg('status') IS NULL OR status = sqlc.narg('status'))
+  AND (sqlc.narg('since') IS NULL OR created_at >= sqlc.narg('since'))
+  AND (sqlc.narg('until') IS NULL OR created_at <= sqlc.narg('until'))
+ORDER BY created_at ASC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: CountRuns :one
+SELECT COUNT(*) FROM runs
+WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))
+  AND (sqlc.narg('status') IS NULL OR status = sqlc.narg('status'))
+  AND (sqlc.narg('since') IS NULL OR created_at >= sqlc.narg('since'))
+  AND (sqlc.narg('until') IS NULL OR created_at <= sqlc.narg('until'));
 
 -- name: UpdateRunSystemPrompt :exec
 UPDATE runs SET system_prompt = :system_prompt WHERE id = :id;

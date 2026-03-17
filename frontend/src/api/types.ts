@@ -18,6 +18,12 @@ export interface ApiPolicyListItem {
   latest_run: ApiRunSummary | null
 }
 
+// Matches trigger/runs_handler.go → PaginatedRunsResponse struct
+export interface ApiRunsResponse {
+  runs: ApiRun[]
+  total: number
+}
+
 // Matches trigger/runs_handler.go → RunSummary struct
 export interface ApiRun {
   id: string
