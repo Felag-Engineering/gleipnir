@@ -8,7 +8,7 @@ export default function ApprovalBanner({ count }: Props) {
   if (count === 0) return null
 
   return (
-    <div className={styles.banner} role="status" aria-live="polite">
+    <div className={styles.banner} role="status">
       {count} {count === 1 ? 'run' : 'runs'} awaiting approval — approval UI available in v0.2
     </div>
   )

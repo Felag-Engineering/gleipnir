@@ -16,7 +16,7 @@ export function ReasoningTrace({ steps }: ReasoningTraceProps) {
           <div key={i} className={styles.step}>
             {/* Vertical connector */}
             <div className={styles.connector}>
-              <div className={`${styles.icon} ${iconVariant}`}>
+              <div className={`${styles.icon} ${iconVariant}`} aria-hidden="true">
                 {isCall ? '→' : isResult ? '←' : '·'}
               </div>
               {i < steps.length - 1 && (
@@ -26,6 +26,9 @@ export function ReasoningTrace({ steps }: ReasoningTraceProps) {
 
             {/* Step content */}
             <div className={`${styles.content} ${i < steps.length - 1 ? styles.contentSpaced : ''}`}>
+              <span className={styles.srOnly}>
+                {isCall ? 'Tool call:' : isResult ? 'Tool result:' : 'Thought:'}
+              </span>
               {isCall && (
                 <div>
                   <span className={styles.callText}>{step.text}</span>

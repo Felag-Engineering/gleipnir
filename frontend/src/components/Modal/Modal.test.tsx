@@ -74,10 +74,44 @@ describe('Modal — accessibility', () => {
     expect(dialog).toHaveAttribute('aria-modal', 'true')
   })
 
-  it('title element has id="modal-title"', () => {
+  it('aria-labelledby on dialog matches id on h2', () => {
     render(<Modal title="Accessible Title" onClose={vi.fn()}><p>Body</p></Modal>)
+    const dialog = screen.getByRole('dialog')
     const title = screen.getByText('Accessible Title')
-    expect(title).toHaveAttribute('id', 'modal-title')
+    const labelledBy = dialog.getAttribute('aria-labelledby')
+    expect(labelledBy).toBeTruthy()
+    expect(title).toHaveAttribute('id', labelledBy)
+  })
+
+  it('renders FocusTrap wrapping the dialog', () => {
+    const { container } = render(
+      <Modal title="T" onClose={vi.fn()}>
+        <button>First</button>
+        <button>Second</button>
+      </Modal>
+    )
+    // FocusTrap renders as a passthrough — verify the dialog is present and
+    // all focusable elements are inside it (focus-trap-react manages focus at runtime)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toBeInTheDocument()
+    const buttons = container.querySelectorAll('button')
+    buttons.forEach((btn) => expect(dialog.contains(btn)).toBe(true))
+  })
+
+  it('returns focus to previously focused element on close', () => {
+    const trigger = document.createElement('button')
+    trigger.textContent = 'Open'
+    document.body.appendChild(trigger)
+    trigger.focus()
+
+    const onClose = vi.fn()
+    const { unmount } = render(
+      <Modal title="T" onClose={onClose}><p>Body</p></Modal>
+    )
+
+    unmount()
+    expect(document.activeElement).toBe(trigger)
+    document.body.removeChild(trigger)
   })
 })
 

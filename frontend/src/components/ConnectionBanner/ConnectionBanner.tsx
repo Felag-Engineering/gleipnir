@@ -12,7 +12,7 @@ export default function ConnectionBanner({ state }: Props) {
     state === 'reconnecting' ? 'Connection lost — reconnecting…' : 'Connection lost'
 
   return (
-    <div className={styles.banner} role="status" aria-live="polite">
+    <div className={styles.banner} role="status">
       {message}
     </div>
   )
