@@ -59,3 +59,12 @@ SELECT EXISTS(SELECT 1 FROM runs WHERE policy_id = :policy_id AND trigger_type =
 
 -- name: DeleteRunsByPolicy :exec
 DELETE FROM runs WHERE policy_id = :policy_id;
+
+-- name: ListRunsWithPolicyName :many
+SELECT r.*, COALESCE(p.name, '') AS policy_name
+FROM runs r
+LEFT JOIN policies p ON r.policy_id = p.id
+WHERE (sqlc.narg('policy_id') IS NULL OR r.policy_id = sqlc.narg('policy_id'))
+  AND (sqlc.narg('status') IS NULL OR r.status = sqlc.narg('status'))
+ORDER BY r.created_at DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');

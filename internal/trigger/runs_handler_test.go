@@ -206,6 +206,38 @@ func TestRunsHandler_List(t *testing.T) {
 	}
 }
 
+func TestRunsHandler_List_PolicyName(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	insertTestPolicy(t, store, "p-pname-test", minimalWebhookPolicy)
+	insertTestRun(t, store, "r-pname-test-1", "p-pname-test", model.RunStatusComplete)
+
+	h := trigger.NewRunsHandler(store, trigger.NewRunManager())
+	router := newRunsRouter(h)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs?policy_id=p-pname-test", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+
+	var env struct {
+		Data []trigger.RunSummary `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(env.Data) != 1 {
+		t.Fatalf("len(runs) = %d, want 1", len(env.Data))
+	}
+	// insertTestPolicy uses "policy-" + policyID as the name (see webhook_test.go)
+	wantName := "policy-p-pname-test"
+	if env.Data[0].PolicyName != wantName {
+		t.Errorf("policy_name = %q, want %q", env.Data[0].PolicyName, wantName)
+	}
+}
+
 func TestRunsHandler_Get(t *testing.T) {
 	cases := []struct {
 		name     string

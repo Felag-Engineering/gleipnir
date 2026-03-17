@@ -423,3 +423,71 @@ func (q *Queries) DeleteRunsByPolicy(ctx context.Context, policyID string) error
 	_, err := q.db.ExecContext(ctx, deleteRunsByPolicy, policyID)
 	return err
 }
+
+// --- Hand-written additions: replace by running `sqlc generate` when tooling is available ---
+
+const listRunsWithPolicyName = `-- name: ListRunsWithPolicyName :many
+SELECT r.id, r.policy_id, r.status, r.trigger_type, r.trigger_payload, r.started_at, r.completed_at, r.token_cost, r.error, r.thread_id, r.created_at, r.system_prompt, COALESCE(p.name, '') AS policy_name
+FROM runs r
+LEFT JOIN policies p ON r.policy_id = p.id
+WHERE (?1 IS NULL OR r.policy_id = ?1)
+  AND (?2 IS NULL OR r.status = ?2)
+ORDER BY r.created_at DESC
+LIMIT ?4 OFFSET ?3
+`
+
+type ListRunsWithPolicyNameParams struct {
+	PolicyID interface{} `json:"policy_id"`
+	Status   interface{} `json:"status"`
+	Offset   int64       `json:"offset"`
+	Limit    int64       `json:"limit"`
+}
+
+type RunWithPolicyName struct {
+	Run
+	PolicyName string `json:"policy_name"`
+}
+
+func (q *Queries) ListRunsWithPolicyName(ctx context.Context, arg ListRunsWithPolicyNameParams) ([]RunWithPolicyName, error) {
+	rows, err := q.db.QueryContext(ctx, listRunsWithPolicyName,
+		arg.PolicyID,
+		arg.Status,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RunWithPolicyName
+	for rows.Next() {
+		var i RunWithPolicyName
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.TriggerType,
+			&i.TriggerPayload,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.TokenCost,
+			&i.Error,
+			&i.ThreadID,
+			&i.CreatedAt,
+			&i.SystemPrompt,
+			&i.PolicyName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// --- End hand-written additions ---

@@ -35,16 +35,11 @@
   opacity: 0.85;
 }
 
-.skeletonGrid {
+.mainGrid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: var(--space-3);
-}
-
-.skeletonList {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
+  grid-template-columns: 1.5fr 1fr;
+  gap: var(--space-6);
+  align-items: start;
 }
 
 .errorState {
@@ -75,8 +70,8 @@
   color: var(--text-primary);
 }
 
-@media (max-width: 480px) {
-  .skeletonGrid {
+@media (max-width: 768px) {
+  .mainGrid {
     grid-template-columns: 1fr;
   }
 }

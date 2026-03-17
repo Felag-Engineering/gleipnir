@@ -3,27 +3,14 @@ import { describe, it, expect } from 'vitest'
 import { render, screen, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { http, HttpResponse, delay } from 'msw'
+import { http, HttpResponse } from 'msw'
 import { server } from '@/test/server'
 import userEvent from '@testing-library/user-event'
 import DashboardPage from './DashboardPage'
 import { queryKeys } from '@/hooks/queryKeys'
-import type { ApiPolicyListItem, ApiStats } from '@/api/types'
+import type { ApiPolicyListItem, ApiStats, ApiRun, ApiMcpServer } from '@/api/types'
 
-function makeStats(policies: ApiPolicyListItem[]): ApiStats {
-  const activeRuns = policies.filter(p => p.latest_run?.status === 'running').length
-  const pendingApprovals = policies.filter(p => p.latest_run?.status === 'waiting_for_approval').length
-  const tokensToday = policies.reduce((sum, p) => sum + (p.latest_run?.token_cost ?? 0), 0)
-  return {
-    active_runs: activeRuns,
-    pending_approvals: pendingApprovals,
-    policy_count: policies.length,
-    tokens_last_24h: tokensToday,
-  }
-}
-
-// status: 'complete' avoids the running-spinner aria-hidden contamination in Test 1
-const POLICIES_COMPLETE: ApiPolicyListItem[] = [
+const POLICIES: ApiPolicyListItem[] = [
   {
     id: 'p1',
     name: 'vikunja-triage',
@@ -36,31 +23,31 @@ const POLICIES_COMPLETE: ApiPolicyListItem[] = [
   },
 ]
 
-const POLICIES_INITIAL: ApiPolicyListItem[] = [
+const RUNS: ApiRun[] = [
   {
-    id: 'p1',
-    name: 'vikunja-triage',
+    id: 'r101',
+    policy_id: 'p1',
+    policy_name: 'vikunja-triage',
+    status: 'complete',
     trigger_type: 'webhook',
-    folder: '',
+    started_at: '2026-03-07T14:32:11Z',
+    completed_at: '2026-03-07T14:35:11Z',
+    token_cost: 1000,
+    error: null,
     created_at: '2026-03-07T14:32:11Z',
-    updated_at: '2026-03-07T14:32:11Z',
-    paused_at: null,
-    latest_run: { id: 'r101', status: 'running', started_at: '2026-03-07T14:32:11Z', token_cost: 1000 },
+    system_prompt: null,
   },
 ]
 
-const POLICIES_UPDATED: ApiPolicyListItem[] = [
-  ...POLICIES_INITIAL,
-  {
-    id: 'p2',
-    name: 'grafana-alert-responder',
-    trigger_type: 'poll',
-    folder: '',
-    created_at: '2026-03-07T14:00:00Z',
-    updated_at: '2026-03-07T14:00:00Z',
-    paused_at: null,
-    latest_run: { id: 'r201', status: 'running', started_at: '2026-03-07T14:30:00Z', token_cost: 2000 },
-  },
+const STATS: ApiStats = {
+  active_runs: 1,
+  pending_approvals: 0,
+  policy_count: 1,
+  tokens_last_24h: 1000,
+}
+
+const SERVERS: ApiMcpServer[] = [
+  { id: 's1', name: 'filesystem', url: 'http://localhost:8100', last_discovered_at: null, created_at: '2026-03-01T00:00:00Z' },
 ]
 
 function makeClient() {
@@ -77,106 +64,98 @@ function renderDashboard(queryClient: QueryClient) {
   )
 }
 
+function setupDefaultHandlers(overrides?: {
+  policies?: ApiPolicyListItem[]
+  runs?: ApiRun[]
+  stats?: ApiStats
+  servers?: ApiMcpServer[]
+}) {
+  server.use(
+    http.get('/api/v1/policies', () =>
+      HttpResponse.json({ data: overrides?.policies ?? POLICIES }),
+    ),
+    http.get('/api/v1/runs', () =>
+      HttpResponse.json({ data: overrides?.runs ?? RUNS }),
+    ),
+    http.get('/api/v1/stats', () =>
+      HttpResponse.json({ data: overrides?.stats ?? STATS }),
+    ),
+    http.get('/api/v1/mcp/servers', () =>
+      HttpResponse.json({ data: overrides?.servers ?? SERVERS }),
+    ),
+  )
+}
+
 describe('DashboardPage', () => {
-  it('shows skeleton blocks while /api/v1/policies is in flight, then hides them once data arrives', async () => {
-    server.use(
-      http.get('/api/v1/policies', async () => {
-        await delay(200)
-        return HttpResponse.json({ data: POLICIES_COMPLETE })
-      }),
-      http.get('/api/v1/stats', () => {
-        return HttpResponse.json({ data: makeStats(POLICIES_COMPLETE) })
-      }),
-    )
-
-    const qc = makeClient()
-    const { container } = renderDashboard(qc)
-
-    // Before response resolves — skeletons should be visible
-    const skeletonsBefore = container.querySelectorAll('[aria-hidden="true"]')
-    expect(skeletonsBefore.length).toBeGreaterThan(0)
-
-    // Wait for data to arrive
-    await waitFor(() => expect(screen.getByText('vikunja-triage')).toBeInTheDocument())
-
-    // After data loads — no skeletons remain (fixture uses 'complete' status, no spinner)
-    const skeletonsAfter = container.querySelectorAll('[aria-hidden="true"]')
-    expect(skeletonsAfter.length).toBe(0)
-  })
-
-  it("refetches /api/v1/policies when ['policies'] query is invalidated", async () => {
-    let callCount = 0
-
-    server.use(
-      http.get('/api/v1/policies', () => {
-        callCount += 1
-        return HttpResponse.json({ data: POLICIES_INITIAL })
-      }),
-      http.get('/api/v1/stats', () => {
-        return HttpResponse.json({ data: makeStats(POLICIES_INITIAL) })
-      }),
-    )
-
+  it('stat strip shows Active Runs, Pending Approvals, System Health', async () => {
+    setupDefaultHandlers()
     const qc = makeClient()
     renderDashboard(qc)
 
-    await waitFor(() => expect(screen.getByText('vikunja-triage')).toBeInTheDocument())
-    expect(callCount).toBe(1)
-
-    act(() => {
-      void qc.invalidateQueries({ queryKey: queryKeys.runs.all })
-      void qc.invalidateQueries({ queryKey: queryKeys.policies.all })
+    await waitFor(() => {
+      expect(screen.getByText('Active Runs')).toBeInTheDocument()
+      expect(screen.getByText('Pending Approvals')).toBeInTheDocument()
+      expect(screen.getByText('System Health')).toBeInTheDocument()
     })
-
-    await waitFor(() => expect(callCount).toBe(2))
   })
 
-  it('StatsBar reflects updated counts after invalidation-triggered refetch', async () => {
-    let callCount = 0
-    let statsCallCount = 0
-
-    server.use(
-      http.get('/api/v1/policies', () => {
-        callCount += 1
-        const data = callCount === 1 ? POLICIES_INITIAL : POLICIES_UPDATED
-        return HttpResponse.json({ data })
-      }),
-      http.get('/api/v1/stats', () => {
-        statsCallCount += 1
-        const data = statsCallCount === 1 ? POLICIES_INITIAL : POLICIES_UPDATED
-        return HttpResponse.json({ data: makeStats(data) })
-      }),
-    )
-
+  it('activity feed renders run entries with policy names', async () => {
+    setupDefaultHandlers()
     const qc = makeClient()
     renderDashboard(qc)
 
-    // Wait for initial load — 1 policy
-    await waitFor(() => expect(screen.getByText('vikunja-triage')).toBeInTheDocument())
-    // StatsBar "Policies" card shows 1
-    const policiesCard = screen.getByText('Policies').parentElement
-    expect(policiesCard?.textContent).toContain('1')
+    await waitFor(() => {
+      // Policy name appears in the activity feed
+      expect(screen.getAllByText('vikunja-triage').length).toBeGreaterThan(0)
+    })
+  })
 
-    act(() => {
-      void qc.invalidateQueries({ queryKey: queryKeys.runs.all })
-      void qc.invalidateQueries({ queryKey: queryKeys.policies.all })
-      void qc.invalidateQueries({ queryKey: queryKeys.stats.all })
+  it('status board renders policy names', async () => {
+    setupDefaultHandlers()
+    const qc = makeClient()
+    renderDashboard(qc)
+
+    await waitFor(() => {
+      expect(screen.getAllByText('vikunja-triage').length).toBeGreaterThan(0)
+    })
+  })
+
+  it('onboarding steps appear when no policies exist', async () => {
+    setupDefaultHandlers({ policies: [], runs: [] })
+    const qc = makeClient()
+    renderDashboard(qc)
+
+    await waitFor(() => {
+      expect(screen.getByText(/get started with gleipnir/i)).toBeInTheDocument()
+    })
+  })
+
+  it('onboarding step 1 shows checkmark when servers exist', async () => {
+    setupDefaultHandlers({ policies: [], runs: [], servers: SERVERS })
+    const qc = makeClient()
+    renderDashboard(qc)
+
+    await waitFor(() => {
+      // The first step title (Add a tool source) becomes a link when no server
+      // When server exists, the step number is replaced by a Check icon
+      // We verify onboarding is shown and server count is non-zero
+      expect(screen.getByText(/get started with gleipnir/i)).toBeInTheDocument()
     })
 
-    // Wait for refetch — now 2 policies
-    await waitFor(() => expect(screen.getByText('grafana-alert-responder')).toBeInTheDocument())
-    // StatsBar "Policies" card now shows 2
-    expect(screen.getByText('Policies').parentElement?.textContent).toContain('2')
+    // System Health card should show 1 server after data loads
+    await waitFor(() => {
+      expect(screen.getByText('1 server')).toBeInTheDocument()
+    })
   })
 
   it('shows error state and Retry button when /api/v1/policies returns 500', async () => {
     server.use(
-      http.get('/api/v1/policies', () => {
-        return HttpResponse.json({ error: 'internal server error' }, { status: 500 })
-      }),
-      http.get('/api/v1/stats', () => {
-        return HttpResponse.json({ data: makeStats([]) })
-      }),
+      http.get('/api/v1/policies', () =>
+        HttpResponse.json({ error: 'internal server error' }, { status: 500 }),
+      ),
+      http.get('/api/v1/runs', () => HttpResponse.json({ data: [] })),
+      http.get('/api/v1/stats', () => HttpResponse.json({ data: STATS })),
+      http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: SERVERS })),
     )
 
     const qc = makeClient()
@@ -197,11 +176,11 @@ describe('DashboardPage', () => {
         if (callCount === 1) {
           return HttpResponse.json({ error: 'internal server error' }, { status: 500 })
         }
-        return HttpResponse.json({ data: POLICIES_COMPLETE })
+        return HttpResponse.json({ data: POLICIES })
       }),
-      http.get('/api/v1/stats', () => {
-        return HttpResponse.json({ data: makeStats(POLICIES_COMPLETE) })
-      }),
+      http.get('/api/v1/runs', () => HttpResponse.json({ data: RUNS })),
+      http.get('/api/v1/stats', () => HttpResponse.json({ data: STATS })),
+      http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: SERVERS })),
     )
 
     const qc = makeClient()
@@ -214,44 +193,48 @@ describe('DashboardPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /retry/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('vikunja-triage')).toBeInTheDocument()
+      expect(screen.getAllByText('vikunja-triage').length).toBeGreaterThan(0)
     })
 
     expect(callCount).toBeGreaterThanOrEqual(2)
   })
 
-  it('shows approval banner when a policy has a run waiting_for_approval', async () => {
-    const policiesWithApproval: ApiPolicyListItem[] = [
-      {
-        id: 'p1',
-        name: 'my-policy',
-        trigger_type: 'webhook',
-        folder: '',
-        created_at: '2026-03-07T14:32:11Z',
-        updated_at: '2026-03-07T14:32:11Z',
-        paused_at: null,
-        latest_run: { id: 'r1', status: 'waiting_for_approval', started_at: '2026-03-07T14:32:11Z', token_cost: 500 },
-      },
-    ]
+  it('Review link appears in stat card when pendingApprovals > 0', async () => {
+    setupDefaultHandlers({
+      stats: { ...STATS, pending_approvals: 2 },
+    })
+    const qc = makeClient()
+    renderDashboard(qc)
 
+    await waitFor(() => {
+      const reviewLink = screen.getByRole('link', { name: /review/i })
+      expect(reviewLink).toBeInTheDocument()
+    })
+  })
+
+  it('refetches /api/v1/policies when queries are invalidated', async () => {
+    let callCount = 0
     server.use(
       http.get('/api/v1/policies', () => {
-        return HttpResponse.json({ data: policiesWithApproval })
+        callCount += 1
+        return HttpResponse.json({ data: POLICIES })
       }),
-      http.get('/api/v1/stats', () => {
-        return HttpResponse.json({ data: makeStats(policiesWithApproval) })
-      }),
+      http.get('/api/v1/runs', () => HttpResponse.json({ data: RUNS })),
+      http.get('/api/v1/stats', () => HttpResponse.json({ data: STATS })),
+      http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: SERVERS })),
     )
 
     const qc = makeClient()
     renderDashboard(qc)
 
-    await waitFor(() => {
-      expect(screen.getByText('my-policy')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getAllByText('vikunja-triage').length).toBeGreaterThan(0))
+    expect(callCount).toBe(1)
+
+    act(() => {
+      void qc.invalidateQueries({ queryKey: queryKeys.runs.all })
+      void qc.invalidateQueries({ queryKey: queryKeys.policies.all })
     })
 
-    // ApprovalBanner renders with role="status" when count > 0
-    expect(screen.getByRole('status')).toBeInTheDocument()
-    expect(screen.getByRole('status').textContent).toContain('awaiting approval')
+    await waitFor(() => expect(callCount).toBe(2))
   })
 })

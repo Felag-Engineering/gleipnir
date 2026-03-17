@@ -1,6 +1,6 @@
 .grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: var(--space-3);
 }
 
@@ -9,6 +9,23 @@
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: var(--space-3) var(--space-4);
+  border-left-width: 3px;
+}
+
+.cardBlue {
+  border-left: 3px solid var(--color-blue);
+}
+
+.cardAmber {
+  border-left: 3px solid var(--color-amber);
+}
+
+.cardGreen {
+  border-left: 3px solid var(--color-green);
+}
+
+.cardRed {
+  border-left: 3px solid var(--color-red);
 }
 
 .label {
@@ -27,40 +44,33 @@
   color: var(--text-second);
 }
 
+.valueBlue {
+  color: var(--color-blue);
+}
+
+.valueAmber {
+  color: var(--color-amber);
+}
+
 .sub {
   font-size: var(--text-xs);
   color: var(--text-faint);
   margin-top: var(--space-1);
 }
 
-/* gPulse is a global keyframe defined in tokens.css */
-.pulse {
-  animation: gPulse 1.6s ease-in-out infinite;
-}
-
-/* Amber highlight for pending approvals card when count > 0 */
-.amber {
-  border-color: color-mix(in srgb, var(--color-amber) 30%, transparent);
-  background: color-mix(in srgb, var(--color-amber) 6%, var(--bg-surface));
-}
-
-.amber .value {
+.reviewLink {
   color: var(--color-amber);
+  text-decoration: none;
+  font-weight: var(--weight-medium);
 }
 
-.blue .value {
-  color: var(--color-blue);
+.reviewLink:hover {
+  text-decoration: underline;
 }
 
 /* Responsive: single column on small screens */
 @media (max-width: 480px) {
   .grid {
     grid-template-columns: 1fr;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pulse {
-    animation: none;
   }
 }

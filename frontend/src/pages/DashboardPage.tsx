@@ -1,55 +1,32 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
-import { ApprovalBanner } from '../components/ApprovalBanner'
-import { EmptyState } from '../components/EmptyState'
-import { PolicyList } from '../components/PolicyList'
-import { SkeletonBlock } from '../components/SkeletonBlock'
+import { ActivityFeed } from '../components/dashboard/ActivityFeed'
+import { StatusBoard } from '../components/dashboard/StatusBoard'
+import { OnboardingSteps } from '../components/dashboard/OnboardingSteps'
 import { StatsBar } from '../components/dashboard/StatsBar'
 import { TriggerRunModal } from '../components/TriggerRunModal/TriggerRunModal'
 import { usePolicies } from '../hooks/usePolicies'
 import { useStatsData } from '../hooks/useStatsData'
+import { useRuns } from '../hooks/useRuns'
+import { useMcpServers } from '../hooks/useMcpServers'
 import { queryKeys } from '../hooks/queryKeys'
 import styles from './DashboardPage.module.css'
 
 export default function DashboardPage() {
-  const { stats, isLoading, isError } = useStatsData()
-  // usePolicies is also called inside useStatsData — TanStack Query deduplicates the request.
+  const { activeRuns, pendingApprovals } = useStatsData()
   const { data: policies, status: policiesStatus } = usePolicies()
+  const { data: runs, isLoading: runsLoading } = useRuns({ limit: 20 })
+  const { data: servers, isLoading: serversLoading } = useMcpServers()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string } | null>(null)
 
-  const approvalCount = (policies ?? []).filter(
-    p => p.latest_run?.status === 'waiting_for_approval',
-  ).length
+  const mcpServerCount = servers?.length ?? 0
 
-  function renderStatsSection() {
-    if (isLoading) {
-      return (
-        <div className={styles.skeletonGrid}>
-          <SkeletonBlock height={80} borderRadius={8} />
-          <SkeletonBlock height={80} borderRadius={8} />
-          <SkeletonBlock height={80} borderRadius={8} />
-          <SkeletonBlock height={80} borderRadius={8} />
-        </div>
-      )
-    }
-    if (isError) return null
-    return <StatsBar stats={stats} />
-  }
-
-  function renderPoliciesSection() {
+  function renderMainContent() {
     if (policiesStatus === 'pending') {
-      return (
-        <div className={styles.skeletonList}>
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={48} />
-        </div>
-      )
+      return null
     }
     if (policiesStatus === 'error') {
       return (
@@ -66,19 +43,21 @@ export default function DashboardPage() {
     }
     if (policies.length === 0) {
       return (
-        <EmptyState
-          headline="No policies yet"
-          subtext="Create your first policy to start running agents"
-          ctaLabel="Create policy"
-          ctaTo="/policies/new"
+        <OnboardingSteps
+          hasServers={mcpServerCount > 0}
+          hasPolicies={false}
+          hasRuns={(runs?.length ?? 0) > 0}
         />
       )
     }
     return (
-      <PolicyList
-        policies={policies}
-        onTrigger={(id: string, name: string) => setTriggerTarget({ id, name })}
-      />
+      <div className={styles.mainGrid}>
+        <ActivityFeed runs={runs ?? []} isLoading={runsLoading} />
+        <StatusBoard
+          policies={policies}
+          onTrigger={(id, name) => setTriggerTarget({ id, name })}
+        />
+      </div>
     )
   }
 
@@ -90,9 +69,13 @@ export default function DashboardPage() {
           New Policy
         </Link>
       </div>
-      <ApprovalBanner count={approvalCount} />
-      {renderStatsSection()}
-      {renderPoliciesSection()}
+      <StatsBar
+        activeRuns={activeRuns}
+        pendingApprovals={pendingApprovals}
+        mcpServerCount={mcpServerCount}
+        mcpServersLoading={serversLoading}
+      />
+      {renderMainContent()}
       {triggerTarget && (
         <TriggerRunModal
           policyId={triggerTarget.id}

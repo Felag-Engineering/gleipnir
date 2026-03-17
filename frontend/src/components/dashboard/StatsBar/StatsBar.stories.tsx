@@ -1,23 +1,35 @@
-import type { Meta, StoryObj } from '@storybook/react-vite';
-import '@/tokens.css';
-import { StatsBar, makeDashboardStats } from './StatsBar';
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { MemoryRouter } from 'react-router-dom'
+import '@/tokens.css'
+import { StatsBar } from './StatsBar'
 
 const meta: Meta<typeof StatsBar> = {
   title: 'Dashboard/StatsBar',
   component: StatsBar,
-};
+  decorators: [
+    (Story) => (
+      <MemoryRouter>
+        <Story />
+      </MemoryRouter>
+    ),
+  ],
+}
 
-export default meta;
-type Story = StoryObj<typeof StatsBar>;
+export default meta
+type Story = StoryObj<typeof StatsBar>
 
 export const ActiveDashboard: Story = {
-  args: { stats: makeDashboardStats(1, 2, 3, 23680) },
-};
+  args: { activeRuns: 2, pendingApprovals: 1, mcpServerCount: 3, mcpServersLoading: false },
+}
 
 export const AllQuiet: Story = {
-  args: { stats: makeDashboardStats(0, 0, 3, 23680) },
-};
+  args: { activeRuns: 0, pendingApprovals: 0, mcpServerCount: 3, mcpServersLoading: false },
+}
 
-export const HighActivity: Story = {
-  args: { stats: makeDashboardStats(5, 4, 8, 142300) },
-};
+export const NoServers: Story = {
+  args: { activeRuns: 0, pendingApprovals: 0, mcpServerCount: 0, mcpServersLoading: false },
+}
+
+export const Loading: Story = {
+  args: { activeRuns: 0, pendingApprovals: 0, mcpServerCount: 0, mcpServersLoading: true },
+}

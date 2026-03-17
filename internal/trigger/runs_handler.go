@@ -93,21 +93,21 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rows, err := h.store.ListRuns(ctx, db.ListRunsParams{
+	rows, err := h.store.ListRunsWithPolicyName(ctx, db.ListRunsWithPolicyNameParams{
 		PolicyID: policyID,
 		Status:   status,
 		Limit:    limit,
 		Offset:   offset,
 	})
 	if err != nil {
-		slog.Error("ListRuns query failed", "err", err)
+		slog.Error("ListRunsWithPolicyName query failed", "err", err)
 		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
 	result := make([]RunSummary, 0, len(rows))
 	for _, run := range rows {
-		result = append(result, toRunSummary(run))
+		result = append(result, toRunSummaryWithName(run))
 	}
 
 	api.WriteJSON(w, http.StatusOK, result)
@@ -230,4 +230,10 @@ func toRunSummary(r db.Run) RunSummary {
 		CreatedAt:      r.CreatedAt,
 		SystemPrompt:   r.SystemPrompt,
 	}
+}
+
+func toRunSummaryWithName(r db.RunWithPolicyName) RunSummary {
+	s := toRunSummary(r.Run)
+	s.PolicyName = r.PolicyName
+	return s
 }

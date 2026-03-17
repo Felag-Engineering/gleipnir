@@ -29,6 +29,7 @@ export function useSSE(): { connectionState: ConnectionState } {
       if (e.lastEventId) lastEventIdRef.current = e.lastEventId
       queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
     })
 
     eventSource.addEventListener('run.step_added', (e: MessageEvent) => {
@@ -44,12 +45,14 @@ export function useSSE(): { connectionState: ConnectionState } {
     eventSource.addEventListener('approval.created', (e: MessageEvent) => {
       if (e.lastEventId) lastEventIdRef.current = e.lastEventId
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
     })
 
     eventSource.addEventListener('approval.resolved', (e: MessageEvent) => {
       if (e.lastEventId) lastEventIdRef.current = e.lastEventId
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
     })
 
     return () => {
