@@ -1,27 +1,41 @@
 .layout {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   min-height: 100vh;
 }
 
-.topbar {
+/* ---- Sidebar ---- */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
   position: sticky;
   top: 0;
-  z-index: 100;
-  min-height: 52px;
-  display: flex;
-  align-items: center;
-  padding: 0 var(--space-6);
-  background: var(--bg-topbar);
-  border-bottom: 1px solid var(--border-subtle);
+  height: 100vh;
+  width: var(--sidebar-width);
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
   flex-shrink: 0;
+  transition: width var(--duration-normal) var(--ease-out);
+  overflow: hidden;
+  z-index: 100;
 }
 
-.topbarInner {
+.sidebarCollapsed {
+  width: var(--sidebar-collapsed);
+}
+
+/* ---- Sidebar header ---- */
+
+.sidebarHeader {
   display: flex;
+  flex-direction: row;
   align-items: center;
-  gap: var(--space-6);
-  flex-wrap: wrap;
+  height: 48px;
+  padding: 0 var(--space-3);
+  gap: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
 }
 
 .wordmark {
@@ -30,50 +44,154 @@
   font-size: var(--text-sm);
   letter-spacing: 0.06em;
   color: var(--text-primary);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  opacity: 1;
+  transition:
+    opacity var(--duration-normal) var(--ease-out),
+    width var(--duration-normal) var(--ease-out);
 }
+
+.wordmarkHidden {
+  opacity: 0;
+  width: 0;
+  flex: none;
+}
+
+.collapseButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out);
+}
+
+.collapseButton:hover {
+  color: var(--text-second);
+  background: var(--bg-elevated);
+}
+
+/* ---- Nav ---- */
 
 .nav {
   display: flex;
-  align-items: center;
-  gap: var(--space-6);
+  flex-direction: column;
+  flex: 1;
+  gap: var(--space-1);
+  padding: var(--space-2) 0;
 }
 
 .navLink {
-  font-size: var(--text-sm);
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  margin: 0 var(--space-2);
   color: var(--text-muted);
   text-decoration: none;
-  padding-bottom: 2px;
-  border-bottom: 2px solid transparent;
+  border-radius: 4px;
+  font-size: var(--text-sm);
+  position: relative;
   transition:
     color var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out);
+    background var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
 }
 
 .navLink:hover {
   color: var(--text-second);
+  background: var(--bg-elevated);
 }
 
 .navLinkActive {
   color: var(--text-primary);
-  border-bottom-color: var(--color-blue);
+  background: color-mix(in srgb, var(--color-blue) 10%, transparent);
+}
+
+/* Left accent bar for active link */
+.navLinkActive::before {
+  content: '';
+  position: absolute;
+  left: calc(-1 * var(--space-2));
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  background: var(--color-blue);
+  border-radius: 0 2px 2px 0;
+}
+
+.navIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.navLabel {
+  opacity: 1;
+  overflow: hidden;
+  transition: opacity var(--duration-normal) var(--ease-out);
+}
+
+.navLabelHidden {
+  opacity: 0;
+  width: 0;
+}
+
+/* ---- Sidebar footer ---- */
+
+.sidebarFooter {
+  padding: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+/* ---- Main content area ---- */
+
+.mainWrapper {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
 }
 
 .main {
-  flex: 1;
-  overflow: auto;
   padding: var(--space-6);
+  max-width: 1200px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
 }
 
-@media (max-width: 480px) {
-  .topbar {
-    padding: 0 var(--space-3);
+/* ---- Responsive: auto-collapse below 768px ---- */
+
+@media (max-width: 768px) {
+  .sidebar {
+    width: var(--sidebar-collapsed);
   }
 
-  .topbarInner {
-    gap: var(--space-3);
+  .wordmark {
+    opacity: 0;
+    width: 0;
+    flex: none;
   }
 
-  .nav {
-    gap: var(--space-3);
+  .navLabel {
+    opacity: 0;
+    width: 0;
+  }
+
+  .collapseButton {
+    display: none;
   }
 }

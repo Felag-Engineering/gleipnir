@@ -1570,10 +1570,10 @@ func TestBuildToolDefinitions_InvalidSchema(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 	ba := &BoundAgent{
-		policy:       minimalPolicy(),
-		audit:        NewAuditWriter(s.Queries()),
-		sm:           NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
-		messages:     noopMessages{},
+		policy:   minimalPolicy(),
+		audit:    NewAuditWriter(s.Queries()),
+		sm:       NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
+		messages: noopMessages{},
 		toolsByName: map[string]resolvedToolEntry{
 			"bad-server.bad_tool": {
 				tool: mcp.ResolvedTool{
@@ -1750,10 +1750,10 @@ func TestProcessContentBlocks(t *testing.T) {
 				msg := makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5)
 				return msg, tools
 			},
-			totalToolCalls:  1,   // already at 1
-			maxToolCalls:    1,   // cap is 1, so totalToolCalls+1 > cap
+			totalToolCalls:  1, // already at 1
+			maxToolCalls:    1, // cap is 1, so totalToolCalls+1 > cap
 			wantResultCount: 0,
-			wantToolCalls:   2,   // incremented before limit check
+			wantToolCalls:   2, // incremented before limit check
 			wantErr:         true,
 			wantErrCode:     "tool_call_limit_exceeded",
 		},

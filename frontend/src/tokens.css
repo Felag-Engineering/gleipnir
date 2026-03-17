@@ -3,7 +3,11 @@
   --bg-canvas: #0f1117;
   --bg-surface: #131720;
   --bg-elevated: #1e2330;
-  --bg-topbar: #0d1018;
+  --bg-sidebar: #0d1018;
+
+  /* Sidebar dimensions */
+  --sidebar-width: 232px;
+  --sidebar-collapsed: 48px;
   --bg-code: #090c12;
 
   /* Borders */

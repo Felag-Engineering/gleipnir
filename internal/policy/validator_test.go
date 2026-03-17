@@ -169,7 +169,6 @@ func TestValidate_ManualTrigger(t *testing.T) {
 	}
 }
 
-
 func TestValidate_UnknownModel(t *testing.T) {
 	p := validPolicy()
 	p.Agent.Model = "claude-unknown-99"

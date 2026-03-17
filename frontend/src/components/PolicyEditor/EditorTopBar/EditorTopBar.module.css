@@ -4,7 +4,7 @@
   justify-content: space-between;
   height: 52px;
   padding: 0 var(--space-4);
-  background: var(--bg-topbar);
+  background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border-subtle);
 }
 

@@ -127,7 +127,6 @@ agent:
 	}
 }
 
-
 func TestParse_Params(t *testing.T) {
 	raw := `
 name: params-test
