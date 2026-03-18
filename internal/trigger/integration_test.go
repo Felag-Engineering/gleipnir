@@ -3,15 +3,12 @@ package trigger_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/rapp992/gleipnir/internal/agent"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
@@ -19,88 +16,6 @@ import (
 	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
-
-// integrationFakeMessages is a concurrency-safe test double for the Anthropic
-// Messages API that returns pre-canned responses in sequence.
-type integrationFakeMessages struct {
-	mu        sync.Mutex
-	responses []*anthropic.Message
-	calls     int
-}
-
-func (f *integrationFakeMessages) New(ctx context.Context, body anthropic.MessageNewParams, opts ...option.RequestOption) (*anthropic.Message, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.calls >= len(f.responses) {
-		return nil, fmt.Errorf("fakeMessages: no more responses (called %d times)", f.calls)
-	}
-	resp := f.responses[f.calls]
-	f.calls++
-	return resp, nil
-}
-
-// makeTextMsg constructs an anthropic.Message with a text content block via
-// JSON unmarshal so that AsAny() (which inspects the raw JSON) works correctly.
-func makeTextMsg(text string) *anthropic.Message {
-	raw, _ := json.Marshal(map[string]any{
-		"id":            "msg_test",
-		"type":          "message",
-		"role":          "assistant",
-		"stop_reason":   string(anthropic.StopReasonEndTurn),
-		"stop_sequence": "",
-		"model":         "claude-sonnet-4-6",
-		"content": []map[string]any{
-			{"type": "text", "text": text},
-		},
-		"usage": map[string]any{
-			"input_tokens":                int64(10),
-			"output_tokens":               int64(5),
-			"cache_creation_input_tokens": 0,
-			"cache_read_input_tokens":     0,
-			"service_tier":                "standard",
-		},
-	})
-	var msg anthropic.Message
-	if err := json.Unmarshal(raw, &msg); err != nil {
-		panic("makeTextMsg: " + err.Error())
-	}
-	return &msg
-}
-
-// makeToolUseMsg constructs a message with a tool_use content block via JSON
-// unmarshal so that AsAny() works correctly. The tool name must match the full
-// dot-notation name that the agent registers (server_name.tool_name).
-func makeToolUseMsg(toolUseID, toolName string, input map[string]any) *anthropic.Message {
-	inputJSON, _ := json.Marshal(input)
-	raw, _ := json.Marshal(map[string]any{
-		"id":            "msg_test",
-		"type":          "message",
-		"role":          "assistant",
-		"stop_reason":   "tool_use",
-		"stop_sequence": "",
-		"model":         "claude-sonnet-4-6",
-		"content": []map[string]any{
-			{
-				"type":  "tool_use",
-				"id":    toolUseID,
-				"name":  toolName,
-				"input": json.RawMessage(inputJSON),
-			},
-		},
-		"usage": map[string]any{
-			"input_tokens":                int64(10),
-			"output_tokens":               int64(5),
-			"cache_creation_input_tokens": 0,
-			"cache_read_input_tokens":     0,
-			"service_tier":                "standard",
-		},
-	})
-	var msg anthropic.Message
-	if err := json.Unmarshal(raw, &msg); err != nil {
-		panic("makeToolUseMsg: " + err.Error())
-	}
-	return &msg
-}
 
 // newStubMCPServer starts an httptest.Server that handles MCP JSON-RPC over
 // HTTP. It responds to tools/list with a single "read_data" tool and to all
@@ -172,10 +87,10 @@ agent:
 // buildIntegrationRouter wires a WebhookHandler and RunsHandler together into
 // a chi router suitable for httptest requests. It returns the router and the
 // RunManager so callers can call manager.Wait() for deterministic cleanup.
-func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, msgs agent.MessagesAPI) (http.Handler, *trigger.RunManager) {
+func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, claude *anthropic.Client) (http.Handler, *trigger.RunManager) {
 	manager := trigger.NewRunManager()
 	factory := trigger.AgentFactory(func(cfg agent.Config) (*agent.BoundAgent, error) {
-		cfg.MessagesOverride = msgs
+		cfg.Claude = claude
 		return agent.New(cfg)
 	})
 	launcher := trigger.NewRunLauncher(store, registry, manager, factory, nil)
@@ -242,14 +157,10 @@ func TestIntegration(t *testing.T) {
 		insertTestPolicy(t, store, "pol-happy", integrationPolicy)
 
 		// Two responses: tool-use on the first turn, then end-turn text.
-		msgs := &integrationFakeMessages{
-			responses: []*anthropic.Message{
-				makeToolUseMsg("tu-1", "stub-server.read_data", map[string]any{}),
-				makeTextMsg("All done."),
-			},
-		}
-
-		router, manager := buildIntegrationRouter(store, registry, msgs)
+		router, manager := buildIntegrationRouter(store, registry, testutil.NewFakeAnthropicClient([]*anthropic.Message{
+			testutil.MakeToolUseMessage("tu-1", "stub-server.read_data", map[string]any{}, 10, 5),
+			testutil.MakeTextMessage("All done.", anthropic.StopReasonEndTurn, 10, 5),
+		}))
 		runID := fireWebhook(t, router, "pol-happy")
 
 		summary := waitForRun(t, manager, router, runID)
@@ -320,15 +231,12 @@ func TestIntegration(t *testing.T) {
 		store, registry := setupIntegrationFixture(t)
 		insertTestPolicy(t, store, "pol-concurrent", integrationPolicy)
 
-		msgs := &integrationFakeMessages{
-			responses: []*anthropic.Message{
-				makeToolUseMsg("tu-1", "stub-server.read_data", map[string]any{}),
-				makeToolUseMsg("tu-2", "stub-server.read_data", map[string]any{}),
-				makeTextMsg("Done A."),
-				makeTextMsg("Done B."),
-			},
-		}
-		router, manager := buildIntegrationRouter(store, registry, msgs)
+		router, manager := buildIntegrationRouter(store, registry, testutil.NewFakeAnthropicClient([]*anthropic.Message{
+			testutil.MakeToolUseMessage("tu-1", "stub-server.read_data", map[string]any{}, 10, 5),
+			testutil.MakeToolUseMessage("tu-2", "stub-server.read_data", map[string]any{}, 10, 5),
+			testutil.MakeTextMessage("Done A.", anthropic.StopReasonEndTurn, 10, 5),
+			testutil.MakeTextMessage("Done B.", anthropic.StopReasonEndTurn, 10, 5),
+		}))
 
 		// Fire both webhooks before waiting so the goroutines run in parallel.
 		idA := fireWebhook(t, router, "pol-concurrent")
@@ -373,8 +281,7 @@ func TestIntegration(t *testing.T) {
 	t.Run("unknown_policy", func(t *testing.T) {
 		store, registry := setupIntegrationFixture(t)
 
-		msgs := &integrationFakeMessages{}
-		router, _ := buildIntegrationRouter(store, registry, msgs)
+		router, _ := buildIntegrationRouter(store, registry, testutil.NoopAnthropicClient())
 
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/nonexistent-policy",
 			strings.NewReader(`{"event":"test"}`))

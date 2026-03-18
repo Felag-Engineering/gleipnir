@@ -39,13 +39,13 @@ agent:
 `, name, fireAtLines)
 }
 
-// schedulerFactory returns an AgentFactory that uses integrationFakeMessages so
+// schedulerFactory returns an AgentFactory that uses a fake Anthropic client so
 // no real Claude API calls are made during scheduler tests.
 func schedulerFactory() trigger.AgentFactory {
 	return func(cfg agent.Config) (*agent.BoundAgent, error) {
-		cfg.MessagesOverride = &integrationFakeMessages{
-			responses: []*anthropic.Message{makeTextMsg("done")},
-		}
+		cfg.Claude = testutil.NewFakeAnthropicClient([]*anthropic.Message{
+			testutil.MakeTextMessage("done", anthropic.StopReasonEndTurn, 10, 5),
+		})
 		return agent.New(cfg)
 	}
 }

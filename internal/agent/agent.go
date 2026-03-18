@@ -11,19 +11,12 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
 )
-
-// MessagesAPI is the subset of the Anthropic Messages service used by BoundAgent.
-// Extracted as an interface for testing — real code uses cfg.Claude.Messages directly.
-type MessagesAPI interface {
-	New(ctx context.Context, body anthropic.MessageNewParams, opts ...option.RequestOption) (*anthropic.Message, error)
-}
 
 // resolvedToolEntry holds a ResolvedTool paired with its narrowed JSON schema.
 type resolvedToolEntry struct {
@@ -58,7 +51,7 @@ type BoundAgent struct {
 	// internal dot-separated names used as keys in toolsByName. Required because
 	// the Claude API rejects tool names containing dots.
 	claudeNameToInternal map[string]string
-	messages             MessagesAPI
+	messages             *anthropic.MessageService
 	audit                *AuditWriter
 	sm                   *RunStateMachine
 	// approvalCh receives the operator's decision when a run is suspended
@@ -74,10 +67,6 @@ type Config struct {
 	Audit        *AuditWriter
 	ApprovalCh   <-chan bool
 	StateMachine *RunStateMachine
-	// MessagesOverride replaces the Claude API client for testing.
-	// When non-nil, Claude is ignored for message calls.
-	// TODO(#78): remove once a transport-level Anthropic fake is in place.
-	MessagesOverride MessagesAPI
 }
 
 // New returns a BoundAgent ready to run, or an error if schema narrowing fails
@@ -87,12 +76,7 @@ func New(cfg Config) (*BoundAgent, error) {
 		return nil, fmt.Errorf("config.StateMachine is required")
 	}
 
-	var msgs MessagesAPI
-	if cfg.MessagesOverride != nil {
-		msgs = cfg.MessagesOverride
-	} else {
-		msgs = &cfg.Claude.Messages
-	}
+	msgs := &cfg.Claude.Messages
 
 	toolsByName := make(map[string]resolvedToolEntry, len(cfg.Tools))
 	claudeNameToInternal := make(map[string]string, len(cfg.Tools))

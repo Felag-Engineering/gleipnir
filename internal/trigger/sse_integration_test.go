@@ -12,6 +12,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/rapp992/gleipnir/internal/agent"
 	"github.com/rapp992/gleipnir/internal/sse"
+	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
@@ -25,14 +26,14 @@ type sseEvent struct {
 // buildSSERouter wires a WebhookHandler (with broadcaster as publisher), a
 // RunsHandler, and the SSE handler together into a single chi router.
 // It inserts integrationPolicy under policyID into a fresh store.
-func buildSSERouter(t *testing.T, policyID string, msgs agent.MessagesAPI, broadcaster *sse.Broadcaster) (http.Handler, *trigger.RunManager) {
+func buildSSERouter(t *testing.T, policyID string, claude *anthropic.Client, broadcaster *sse.Broadcaster) (http.Handler, *trigger.RunManager) {
 	t.Helper()
 	store, registry := setupIntegrationFixture(t)
 	insertTestPolicy(t, store, policyID, integrationPolicy)
 
 	manager := trigger.NewRunManager()
 	factory := trigger.AgentFactory(func(cfg agent.Config) (*agent.BoundAgent, error) {
-		cfg.MessagesOverride = msgs
+		cfg.Claude = claude
 		return agent.New(cfg)
 	})
 	launcher := trigger.NewRunLauncher(store, registry, manager, factory, broadcaster)
@@ -112,16 +113,14 @@ func drainSSEEvents(t *testing.T, resp *http.Response, n int, timeout time.Durat
 	return events
 }
 
-// sseOneTurnMsgs returns a fake MessagesAPI that drives one tool call
+// sseOneTurnMsgs returns a fake Anthropic client that drives one tool call
 // then ends the run. It is intentionally a new allocation per call so
 // concurrent tests don't share state.
-func sseOneTurnMsgs() *integrationFakeMessages {
-	return &integrationFakeMessages{
-		responses: []*anthropic.Message{
-			makeToolUseMsg("tu-sse", "stub-server.read_data", map[string]any{}),
-			makeTextMsg("Done."),
-		},
-	}
+func sseOneTurnMsgs() *anthropic.Client {
+	return testutil.NewFakeAnthropicClient([]*anthropic.Message{
+		testutil.MakeToolUseMessage("tu-sse", "stub-server.read_data", map[string]any{}, 10, 5),
+		testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 10, 5),
+	})
 }
 
 func TestSSEIntegration_LiveEventDelivery(t *testing.T) {

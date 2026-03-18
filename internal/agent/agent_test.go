@@ -4,109 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
 )
-
-// fakeMessages is a test double for the Anthropic Messages API that returns
-// pre-canned responses in sequence.
-type fakeMessages struct {
-	responses []*anthropic.Message
-	calls     int
-}
-
-func (f *fakeMessages) New(ctx context.Context, body anthropic.MessageNewParams, opts ...option.RequestOption) (*anthropic.Message, error) {
-	if f.calls >= len(f.responses) {
-		return nil, fmt.Errorf("no more fake responses")
-	}
-	resp := f.responses[f.calls]
-	f.calls++
-	return resp, nil
-}
-
-// makeTextMessage constructs an anthropic.Message via JSON unmarshalling so that
-// AsAny() (which inspects JSON.raw) works correctly in tests.
-func makeTextMessage(text string, stopReason anthropic.StopReason, inputTokens, outputTokens int64) *anthropic.Message {
-	raw, _ := json.Marshal(map[string]any{
-		"id":            "msg_test",
-		"type":          "message",
-		"role":          "assistant",
-		"stop_reason":   string(stopReason),
-		"stop_sequence": "",
-		"model":         "claude-sonnet-4-6",
-		"content": []map[string]any{
-			{"type": "text", "text": text},
-		},
-		"usage": map[string]any{
-			"input_tokens":                inputTokens,
-			"output_tokens":               outputTokens,
-			"cache_creation_input_tokens": 0,
-			"cache_read_input_tokens":     0,
-			"service_tier":                "standard",
-		},
-	})
-	var msg anthropic.Message
-	if err := json.Unmarshal(raw, &msg); err != nil {
-		panic("makeTextMessage: " + err.Error())
-	}
-	return &msg
-}
-
-// makeToolUseMessage constructs a message with a tool_use content block.
-func makeToolUseMessage(toolUseID, toolName string, input map[string]any, inputTokens, outputTokens int64) *anthropic.Message {
-	inputJSON, _ := json.Marshal(input)
-	raw, _ := json.Marshal(map[string]any{
-		"id":            "msg_test",
-		"type":          "message",
-		"role":          "assistant",
-		"stop_reason":   "tool_use",
-		"stop_sequence": "",
-		"model":         "claude-sonnet-4-6",
-		"content": []map[string]any{
-			{
-				"type":  "tool_use",
-				"id":    toolUseID,
-				"name":  toolName,
-				"input": json.RawMessage(inputJSON),
-			},
-		},
-		"usage": map[string]any{
-			"input_tokens":                inputTokens,
-			"output_tokens":               outputTokens,
-			"cache_creation_input_tokens": 0,
-			"cache_read_input_tokens":     0,
-			"service_tier":                "standard",
-		},
-	})
-	var msg anthropic.Message
-	if err := json.Unmarshal(raw, &msg); err != nil {
-		panic("makeToolUseMessage: " + err.Error())
-	}
-	return &msg
-}
-
-// noopMessages is a stub messagesAPI that returns an error if called.
-// handleToolCall never calls the Claude API, so this is safe for tool-dispatch tests.
-type noopMessages struct{}
-
-func (noopMessages) New(_ context.Context, _ anthropic.MessageNewParams, _ ...option.RequestOption) (*anthropic.Message, error) {
-	panic("messagesAPI.New called unexpectedly in handleToolCall test")
-}
 
 // makeToolCallServer starts an httptest.Server that responds to tools/call
 // JSON-RPC requests with the given content payload and isError flag.
@@ -202,10 +114,10 @@ func TestSanitizeToolName(t *testing.T) {
 
 func TestNew_RequiresStateMachine(t *testing.T) {
 	_, err := New(Config{
-		Policy:           minimalPolicy(),
-		Tools:            nil,
-		Audit:            NewAuditWriter(testutil.NewTestStore(t).Queries()),
-		MessagesOverride: noopMessages{},
+		Policy:  minimalPolicy(),
+		Tools:   nil,
+		Audit:   NewAuditWriter(testutil.NewTestStore(t).Queries()),
+		Claude:  testutil.NoopAnthropicClient(),
 		// StateMachine intentionally omitted
 	})
 	if err == nil {
@@ -317,12 +229,12 @@ func TestHandleToolCall(t *testing.T) {
 			// handleToolCall tests don't go through Run(), so we start the SM
 			// at "running" to match the DB row status.
 			agent, err := New(Config{
-				Policy:           policy,
-				Tools:            tools,
-				Audit:            w,
-				ApprovalCh:       make(chan bool),
-				StateMachine:     NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
-				MessagesOverride: noopMessages{},
+				Policy:       policy,
+				Tools:        tools,
+				Audit:        w,
+				Claude:       testutil.NoopAnthropicClient(),
+				ApprovalCh:   make(chan bool),
+				StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -435,18 +347,13 @@ func TestRun_SingleTurnEndTurn(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
-	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeTextMessage("I completed the task.", anthropic.StopReasonEndTurn, 10, 20),
-	}}
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:           &anthropic.Client{},
-		Tools:            nil,
-		Policy:           minimalPolicy(),
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-		MessagesOverride: msgs,
+		Claude:       testutil.NewFakeAnthropicClient([]*anthropic.Message{testutil.MakeTextMessage("I completed the task.", anthropic.StopReasonEndTurn, 10, 20)}),
+		Tools:        nil,
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -504,19 +411,16 @@ func TestRun_ToolCallLoop(t *testing.T) {
 
 	tools := []mcp.ResolvedTool{sensorToolForRun(mcpSrv.URL, "my-server", "read_data")}
 
-	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"arg": "x"}, 10, 5),
-		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
-	}}
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:           &anthropic.Client{},
-		Tools:            tools,
-		Policy:           minimalPolicy(),
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-		MessagesOverride: msgs,
+		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
+			testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"arg": "x"}, 10, 5),
+			testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
+		}),
+		Tools:        tools,
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -551,14 +455,9 @@ func TestRun_ToolCallLoop(t *testing.T) {
 			t.Errorf("step[%d].Type = %q, want %q", i, types[i], wt)
 		}
 	}
-	if msgs.calls != 2 {
-		t.Errorf("API calls = %d, want 2", msgs.calls)
-	}
 }
 
 func TestRun_ContextCancellation(t *testing.T) {
-	msgs := &fakeMessages{}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before calling Run
 
@@ -567,13 +466,13 @@ func TestRun_ContextCancellation(t *testing.T) {
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	w := NewAuditWriter(s.Queries())
+	// NoopAnthropicClient panics if called — verifies no API call is made.
 	ba, err := New(Config{
-		Claude:           &anthropic.Client{},
-		Tools:            nil,
-		Policy:           minimalPolicy(),
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-		MessagesOverride: msgs,
+		Claude:       testutil.NoopAnthropicClient(),
+		Tools:        nil,
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -582,9 +481,6 @@ func TestRun_ContextCancellation(t *testing.T) {
 	err = ba.Run(ctx, "r1", "do something")
 	if err == nil {
 		t.Fatal("expected error from cancelled context, got nil")
-	}
-	if msgs.calls != 0 {
-		t.Errorf("API calls = %d, want 0", msgs.calls)
 	}
 
 	// Context-cancelled runs should still be marked failed in the DB.
@@ -615,20 +511,15 @@ func TestRun_MissingCapabilityFailsFast(t *testing.T) {
 		},
 	}
 
-	// Pre-canned response to verify the Claude API is NEVER called.
-	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
-	}}
-
 	w := NewAuditWriter(s.Queries())
 	// No tools registered — myserver.missing_tool cannot be resolved.
+	// NoopAnthropicClient panics if called — verifies no API call is made.
 	ba, err := New(Config{
-		Claude:           &anthropic.Client{},
-		Tools:            nil,
-		Policy:           p,
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-		MessagesOverride: msgs,
+		Claude:       testutil.NoopAnthropicClient(),
+		Tools:        nil,
+		Policy:       p,
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -637,9 +528,6 @@ func TestRun_MissingCapabilityFailsFast(t *testing.T) {
 	runErr := ba.Run(context.Background(), "r1", "trigger")
 	if runErr == nil {
 		t.Fatal("expected error for missing capability, got nil")
-	}
-	if msgs.calls != 0 {
-		t.Errorf("Claude API calls = %d, want 0 (should fail before any API call)", msgs.calls)
 	}
 
 	// Run must be marked failed in the DB.
@@ -678,18 +566,15 @@ func TestRun_ToolNotFound(t *testing.T) {
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	// No tools registered, but response asks for one.
-	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "missing-server_nonexistent", map[string]any{}, 10, 5),
-	}}
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:           &anthropic.Client{},
-		Tools:            nil,
-		Policy:           minimalPolicy(),
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-		MessagesOverride: msgs,
+		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
+			testutil.MakeToolUseMessage("tu-1", "missing-server_nonexistent", map[string]any{}, 10, 5),
+		}),
+		Tools:        nil,
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -734,11 +619,6 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 	// The loop continues (tool_use stop_reason) and the SECOND iteration detects
 	// the budget is exhausted before making another API call.
 	mcpSrv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"tool output"}]`), false)
-	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 600, 400),
-		// This second response should never be reached.
-		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
-	}}
 	tools := []mcp.ResolvedTool{{
 		GrantedTool: model.GrantedTool{
 			ServerName: "my-server",
@@ -756,12 +636,15 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:           &anthropic.Client{},
-		Tools:            tools,
-		Policy:           p,
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-		MessagesOverride: msgs,
+		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
+			testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 600, 400),
+			// This second response should never be reached.
+			testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
+		}),
+		Tools:        tools,
+		Policy:       p,
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -799,18 +682,13 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
-	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
-	}}
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:           &anthropic.Client{},
-		Tools:            nil,
-		Policy:           minimalPolicy(),
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-		MessagesOverride: msgs,
+		Claude:       testutil.NewFakeAnthropicClient([]*anthropic.Message{testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5)}),
+		Tools:        nil,
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -850,18 +728,15 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 	// Tool schema only allows "arg"; "badkey" is undeclared.
 	tools := []mcp.ResolvedTool{sensorToolForRun(fakeSrv.URL, "my-server", "read_data")}
 
-	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"badkey": "val"}, 10, 5),
-	}}
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:           &anthropic.Client{},
-		Tools:            tools,
-		Policy:           minimalPolicy(),
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-		MessagesOverride: msgs,
+		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
+			testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"badkey": "val"}, 10, 5),
+		}),
+		Tools:        tools,
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -922,19 +797,16 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"arg":{"type":"string"}}}`),
 	}
 
-	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server_do_thing", map[string]any{"arg": "v"}, 10, 5),
-	}}
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:           &anthropic.Client{},
-		Tools:            []mcp.ResolvedTool{actuatorTool},
-		Policy:           minimalPolicy(),
-		Audit:            w,
-		ApprovalCh:       approvalCh,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-		MessagesOverride: msgs,
+		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
+			testutil.MakeToolUseMessage("tu-1", "my-server_do_thing", map[string]any{"arg": "v"}, 10, 5),
+		}),
+		Tools:        []mcp.ResolvedTool{actuatorTool},
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		ApprovalCh:   approvalCh,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1001,12 +873,6 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 
 	// With MaxToolCallsPerRun=1: first tool call (totalToolCalls=1, 1>1=false) proceeds.
 	// Second response triggers the cap (totalToolCalls=2, 2>1=true) before dispatch.
-	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5),
-		makeToolUseMessage("tu-2", "my-server_read_data", map[string]any{}, 10, 5),
-		// Third response should never be reached.
-		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
-	}}
 	tools := []mcp.ResolvedTool{{
 		GrantedTool: model.GrantedTool{
 			ServerName: "my-server",
@@ -1024,12 +890,16 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:           &anthropic.Client{},
-		Tools:            tools,
-		Policy:           p,
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-		MessagesOverride: msgs,
+		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
+			testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5),
+			testutil.MakeToolUseMessage("tu-2", "my-server_read_data", map[string]any{}, 10, 5),
+			// Third response should never be reached.
+			testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
+		}),
+		Tools:        tools,
+		Policy:       p,
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1074,10 +944,6 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	// One tool call well within limits.
-	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5),
-		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
-	}}
 	tools := []mcp.ResolvedTool{{
 		GrantedTool: model.GrantedTool{
 			ServerName: "my-server",
@@ -1096,12 +962,14 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:           &anthropic.Client{},
-		Tools:            tools,
-		Policy:           p,
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-		MessagesOverride: msgs,
+		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
+			testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5),
+			testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
+		}),
+		Tools:        tools,
+		Policy:       p,
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1120,20 +988,6 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 			t.Errorf("unexpected error step: %s", step.Content)
 		}
 	}
-}
-
-// blockingMessages is a test double for the Anthropic Messages API that blocks
-// until the provided context is cancelled. It counts how many times New() has
-// been called so the test can synchronise on the API call starting.
-type blockingMessages struct {
-	calls atomic.Int64
-}
-
-func (b *blockingMessages) New(ctx context.Context, _ anthropic.MessageNewParams, _ ...option.RequestOption) (*anthropic.Message, error) {
-	b.calls.Add(1)
-	// Block until the caller's context is cancelled.
-	<-ctx.Done()
-	return nil, ctx.Err()
 }
 
 func TestRun_Cancellation(t *testing.T) {
@@ -1168,15 +1022,14 @@ func TestRun_Cancellation(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // cancel before calling Run
 
-		msgs := &fakeMessages{} // no responses needed — loop never reaches API call
 		w := NewAuditWriter(s.Queries())
+		// NoopAnthropicClient panics if called — verifies no API call is made.
 		ba, err := New(Config{
-			Claude:           &anthropic.Client{},
-			Tools:            nil,
-			Policy:           minimalPolicy(),
-			Audit:            w,
-			StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-			MessagesOverride: msgs,
+			Claude:       testutil.NoopAnthropicClient(),
+			Tools:        nil,
+			Policy:       minimalPolicy(),
+			Audit:        w,
+			StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -1214,15 +1067,14 @@ func TestRun_Cancellation(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		blocking := &blockingMessages{}
+		blockingClient, blockingTransport := testutil.NewBlockingAnthropicClient()
 		w := NewAuditWriter(s.Queries())
 		ba, err := New(Config{
-			Claude:           &anthropic.Client{},
-			Tools:            nil,
-			Policy:           minimalPolicy(),
-			Audit:            w,
-			StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-			MessagesOverride: blocking,
+			Claude:       blockingClient,
+			Tools:        nil,
+			Policy:       minimalPolicy(),
+			Audit:        w,
+			StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -1233,9 +1085,9 @@ func TestRun_Cancellation(t *testing.T) {
 
 		// Wait until the blocking API call has started.
 		deadline := time.Now().Add(2 * time.Second)
-		for blocking.calls.Load() == 0 {
+		for blockingTransport.Calls() == 0 {
 			if time.Now().After(deadline) {
-				t.Fatal("timed out waiting for blockingMessages.New to be called")
+				t.Fatal("timed out waiting for blocking transport to be called")
 			}
 			time.Sleep(time.Millisecond)
 		}
@@ -1287,22 +1139,19 @@ func TestRun_Cancellation(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// fakeMessages returns a tool_use response on the first call, directing
+		// Fake client returns a tool_use response on the first call, directing
 		// the agent to call the slow MCP server.
-		msgs := &fakeMessages{responses: []*anthropic.Message{
-			makeToolUseMessage("tu-1", "slow-server_slow_tool", map[string]any{}, 10, 5),
-		}}
-
 		tools := []mcp.ResolvedTool{sensorToolForRun(slowSrv.URL, "slow-server", "slow_tool")}
 
 		w := NewAuditWriter(s.Queries())
 		ba, err := New(Config{
-			Claude:           &anthropic.Client{},
-			Tools:            tools,
-			Policy:           minimalPolicy(),
-			Audit:            w,
-			StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-			MessagesOverride: msgs,
+			Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
+				testutil.MakeToolUseMessage("tu-1", "slow-server_slow_tool", map[string]any{}, 10, 5),
+			}),
+			Tools:        tools,
+			Policy:       minimalPolicy(),
+			Audit:        w,
+			StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -1342,18 +1191,6 @@ func TestRun_Cancellation(t *testing.T) {
 	})
 }
 
-// capturingMessages wraps fakeMessages and records the Messages slice from
-// each New() call so tests can inspect what was sent to the API.
-type capturingMessages struct {
-	inner    *fakeMessages
-	captured [][]anthropic.MessageParam
-}
-
-func (c *capturingMessages) New(ctx context.Context, body anthropic.MessageNewParams, opts ...option.RequestOption) (*anthropic.Message, error) {
-	c.captured = append(c.captured, body.Messages)
-	return c.inner.New(ctx, body, opts...)
-}
-
 func TestRun_ToolResultTimestamp(t *testing.T) {
 	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1374,20 +1211,18 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 
 	tools := []mcp.ResolvedTool{sensorToolForRun(mcpSrv.URL, "my-server", "read_data")}
 
-	inner := &fakeMessages{responses: []*anthropic.Message{
-		makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"arg": "x"}, 10, 5),
-		makeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
-	}}
-	capturing := &capturingMessages{inner: inner}
+	capturingClient, capturingTransport := testutil.NewCapturingAnthropicClient([]*anthropic.Message{
+		testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"arg": "x"}, 10, 5),
+		testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
+	})
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:           &anthropic.Client{},
-		Tools:            tools,
-		Policy:           minimalPolicy(),
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
-		MessagesOverride: capturing,
+		Claude:       capturingClient,
+		Tools:        tools,
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1402,35 +1237,49 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 	//   [0] user (trigger payload)
 	//   [1] assistant (tool_use response)
 	//   [2] user (tool results with prepended timestamp)
-	if len(capturing.captured) != 2 {
-		t.Fatalf("expected 2 API calls, got %d", len(capturing.captured))
+	bodies := capturingTransport.CapturedBodies()
+	if len(bodies) != 2 {
+		t.Fatalf("expected 2 API calls, got %d", len(bodies))
 	}
 
-	secondCallMessages := capturing.captured[1]
-	if len(secondCallMessages) < 3 {
-		t.Fatalf("second call messages: want at least 3, got %d", len(secondCallMessages))
+	// Unmarshal the second call's request body to inspect the messages.
+	var secondReq struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(bodies[1], &secondReq); err != nil {
+		t.Fatalf("unmarshal second request body: %v", err)
 	}
 
-	toolResultsTurn := secondCallMessages[2]
+	if len(secondReq.Messages) < 3 {
+		t.Fatalf("second call messages: want at least 3, got %d", len(secondReq.Messages))
+	}
+
+	toolResultsTurn := secondReq.Messages[2]
 	if len(toolResultsTurn.Content) < 2 {
 		t.Fatalf("tool-results user turn: want at least 2 content blocks, got %d", len(toolResultsTurn.Content))
 	}
 
 	// First block must be a text block matching the timestamp pattern.
 	firstBlock := toolResultsTurn.Content[0]
-	if firstBlock.OfText == nil {
-		t.Fatalf("content[0]: expected a text block (OfText), got nil")
+	if firstBlock.Type != "text" {
+		t.Fatalf("content[0].type = %q, want \"text\"", firstBlock.Type)
 	}
 	// RFC3339Nano may include fractional seconds, e.g. T12:34:56.123456789Z
 	timestampRE := regexp.MustCompile(`^\[Current time: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z\]$`)
-	if !timestampRE.MatchString(firstBlock.OfText.Text) {
-		t.Errorf("content[0].text = %q, want to match %s", firstBlock.OfText.Text, timestampRE)
+	if !timestampRE.MatchString(firstBlock.Text) {
+		t.Errorf("content[0].text = %q, want to match %s", firstBlock.Text, timestampRE)
 	}
 
 	// Second block must be a tool result block.
 	secondBlock := toolResultsTurn.Content[1]
-	if secondBlock.OfToolResult == nil {
-		t.Errorf("content[1]: expected a tool result block (OfToolResult), got nil")
+	if secondBlock.Type != "tool_result" {
+		t.Errorf("content[1].type = %q, want \"tool_result\"", secondBlock.Type)
 	}
 }
 
@@ -1464,12 +1313,12 @@ func makeAgentWithTools(t *testing.T, tools []mcp.ResolvedTool, approvalCh chan 
 	w := NewAuditWriter(s.Queries())
 	ch := (<-chan bool)(approvalCh)
 	ba, err := New(Config{
-		Policy:           minimalPolicy(),
-		Tools:            tools,
-		Audit:            w,
-		ApprovalCh:       ch,
-		StateMachine:     NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
-		MessagesOverride: noopMessages{},
+		Policy:       minimalPolicy(),
+		Tools:        tools,
+		Claude:       testutil.NoopAnthropicClient(),
+		Audit:        w,
+		ApprovalCh:   ch,
+		StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1515,11 +1364,11 @@ func TestBuildToolDefinitions(t *testing.T) {
 			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 			ba, err := New(Config{
-				Policy:           minimalPolicy(),
-				Tools:            tc.tools,
-				Audit:            NewAuditWriter(s.Queries()),
-				StateMachine:     NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
-				MessagesOverride: noopMessages{},
+				Policy:       minimalPolicy(),
+				Tools:        tc.tools,
+				Claude:       testutil.NoopAnthropicClient(),
+				Audit:        NewAuditWriter(s.Queries()),
+				StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -1574,7 +1423,7 @@ func TestBuildToolDefinitions_InvalidSchema(t *testing.T) {
 		policy:   minimalPolicy(),
 		audit:    NewAuditWriter(s.Queries()),
 		sm:       NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
-		messages: noopMessages{},
+		messages: &testutil.NoopAnthropicClient().Messages,
 		toolsByName: map[string]resolvedToolEntry{
 			"bad-server.bad_tool": {
 				tool: mcp.ResolvedTool{
@@ -1721,7 +1570,7 @@ func TestProcessContentBlocks(t *testing.T) {
 		{
 			name: "single_text_block_writes_thought_no_tool_results",
 			setupResp: func(t *testing.T) (*anthropic.Message, []mcp.ResolvedTool) {
-				return makeTextMessage("thinking...", anthropic.StopReasonEndTurn, 5, 3), nil
+				return testutil.MakeTextMessage("thinking...", anthropic.StopReasonEndTurn, 5, 3), nil
 			},
 			totalToolCalls:  0,
 			maxToolCalls:    0,
@@ -1734,7 +1583,7 @@ func TestProcessContentBlocks(t *testing.T) {
 			setupResp: func(t *testing.T) (*anthropic.Message, []mcp.ResolvedTool) {
 				srv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"result"}]`), false)
 				tools := []mcp.ResolvedTool{makeResolvedTool(srv.URL, "my-server", "read_data")}
-				msg := makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5)
+				msg := testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5)
 				return msg, tools
 			},
 			totalToolCalls:  0,
@@ -1748,7 +1597,7 @@ func TestProcessContentBlocks(t *testing.T) {
 			setupResp: func(t *testing.T) (*anthropic.Message, []mcp.ResolvedTool) {
 				srv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"result"}]`), false)
 				tools := []mcp.ResolvedTool{makeResolvedTool(srv.URL, "my-server", "read_data")}
-				msg := makeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5)
+				msg := testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5)
 				return msg, tools
 			},
 			totalToolCalls:  1, // already at 1
@@ -1770,12 +1619,12 @@ func TestProcessContentBlocks(t *testing.T) {
 
 			w := NewAuditWriter(s.Queries())
 			ba, err := New(Config{
-				Policy:           minimalPolicy(),
-				Tools:            tools,
-				Audit:            w,
-				ApprovalCh:       make(chan bool),
-				StateMachine:     NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
-				MessagesOverride: noopMessages{},
+				Policy:       minimalPolicy(),
+				Tools:        tools,
+				Claude:       testutil.NoopAnthropicClient(),
+				Audit:        w,
+				ApprovalCh:   make(chan bool),
+				StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -1834,17 +1683,13 @@ func TestRunAPILoop_EndTurn(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
-	msgs := &fakeMessages{responses: []*anthropic.Message{
-		makeTextMessage("all done", anthropic.StopReasonEndTurn, 10, 5),
-	}}
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Policy:           minimalPolicy(),
-		Tools:            nil,
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.Queries()),
-		MessagesOverride: msgs,
+		Policy:       minimalPolicy(),
+		Tools:        nil,
+		Claude:       testutil.NewFakeAnthropicClient([]*anthropic.Message{testutil.MakeTextMessage("all done", anthropic.StopReasonEndTurn, 10, 5)}),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1894,11 +1739,11 @@ func TestLogAuditError(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Policy:           minimalPolicy(),
-		Tools:            nil,
-		Audit:            w,
-		StateMachine:     NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
-		MessagesOverride: noopMessages{},
+		Policy:       minimalPolicy(),
+		Tools:        nil,
+		Claude:       testutil.NoopAnthropicClient(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
