@@ -437,7 +437,11 @@ func (a *BoundAgent) runAPILoop(
 func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload string) error {
 	// Run owns the AuditWriter lifecycle. Close is idempotent, so callers that
 	// already held a reference to the writer can still call Close safely.
-	defer a.audit.Close()
+	defer func() {
+		if err := a.audit.Close(); err != nil {
+			slog.ErrorContext(ctx, "audit writer drain error", "run_id", runID, "err", err)
+		}
+	}()
 
 	// Fail fast before entering running state: every capability referenced by the
 	// policy must resolve to a registered tool. Checked here (pending→failed) so the

@@ -144,7 +144,9 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		// the run stays in 'pending' forever since ScanOrphanedRuns only
 		// rescues 'running' and 'waiting_for_approval' states.
 		markRunFailed(l.store, run.ID, err)
-		audit.Close()
+		if closeErr := audit.Close(); closeErr != nil {
+			slog.Error("audit writer drain error on failed launch", "run_id", run.ID, "err", closeErr)
+		}
 		return LaunchResult{}, err
 	}
 
