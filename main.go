@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rapp992/gleipnir/frontend"
 	"github.com/rapp992/gleipnir/internal/api"
+	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/policy"
@@ -24,24 +25,22 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	cfg := config.Load()
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(logger)
 
-	if err := run(); err != nil {
+	if err := run(cfg); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	dbPath := envOrDefault("GLEIPNIR_DB_PATH", "/data/gleipnir.db")
-	listenAddr := envOrDefault("GLEIPNIR_LISTEN_ADDR", ":8080")
-
+func run(cfg config.Config) error {
 	// Root context cancelled on shutdown so background components (Scheduler) can stop.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	store, err := db.Open(dbPath)
+	store, err := db.Open(cfg.DBPath)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
@@ -66,16 +65,16 @@ func run() error {
 	sseHandler := sse.NewHandler(broadcaster)
 	r.Get("/api/v1/events", sseHandler.ServeHTTP)
 
-	registry := mcp.NewRegistry(store.Queries())
+	registry := mcp.NewRegistry(store.Queries(), mcp.WithMCPTimeout(cfg.MCPTimeout))
 	runManager := trigger.NewRunManager()
 	claudeClient := anthropic.NewClient()
 	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
 
 	webhookHandler := trigger.NewWebhookHandler(store, launcher)
-	r.With(middleware.Throttle(10), api.BodySizeLimit(1<<20)).Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
+	r.With(middleware.Throttle(10), api.BodySizeLimit(api.MaxRequestBodySize)).Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
 
 	manualTriggerHandler := trigger.NewManualTriggerHandler(store, launcher)
-	r.With(api.BodySizeLimit(1<<20)).Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
+	r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
 
 	scheduler := trigger.NewScheduler(store, launcher)
 	if err := scheduler.Start(ctx); err != nil {
@@ -98,18 +97,18 @@ func run() error {
 	r.Handle("/*", frontend.NewSPAHandler())
 
 	srv := &http.Server{
-		Addr:         listenAddr,
+		Addr:         cfg.ListenAddr,
 		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  cfg.IdleTimeout,
 	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		slog.Info("server listening", "addr", listenAddr)
+		slog.Info("server listening", "addr", cfg.ListenAddr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server error", "err", err)
 			quit <- syscall.SIGTERM
@@ -147,11 +146,4 @@ func run() error {
 	defer shutdownCancel()
 
 	return srv.Shutdown(shutdownCtx)
-}
-
-func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }

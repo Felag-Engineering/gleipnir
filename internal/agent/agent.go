@@ -13,6 +13,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
+	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
@@ -350,7 +351,7 @@ func (a *BoundAgent) runAPILoop(
 		}
 
 		// Determine per-call token limit.
-		maxTokens := int64(8192)
+		maxTokens := int64(config.DefaultPerCallMaxTokens)
 		if maxTokensPerRun > 0 {
 			remaining := int64(maxTokensPerRun - totalTokens)
 			if remaining <= 0 {
@@ -421,7 +422,7 @@ func (a *BoundAgent) runAPILoop(
 		// time between tool calls (issue #205). The system prompt carries the
 		// static run-start timestamp; this per-turn timestamp is the clock.
 		timeBlock := anthropic.NewTextBlock(
-			fmt.Sprintf("[Current time: %s]", time.Now().UTC().Format(time.RFC3339)),
+			fmt.Sprintf("[Current time: %s]", time.Now().UTC().Format(config.TimestampFormat)),
 		)
 		toolResults = append([]anthropic.ContentBlockParamUnion{timeBlock}, toolResults...)
 		history = append(history, anthropic.NewUserMessage(toolResults...))

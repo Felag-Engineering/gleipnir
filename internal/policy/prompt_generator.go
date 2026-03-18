@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/model"
 )
 
@@ -35,7 +36,7 @@ func RenderSystemPrompt(p *model.ParsedPolicy, granted []model.GrantedTool, now 
 		preamble = defaultPreamble
 	}
 	b.WriteString(preamble)
-	b.WriteString("\n\nThis run started at: " + now.Format(time.RFC3339))
+	b.WriteString("\n\nThis run started at: " + now.Format(config.TimestampFormat))
 	b.WriteString("\n\n")
 
 	b.WriteString(renderCapabilitiesBlock(granted))

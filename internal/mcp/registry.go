@@ -35,12 +35,37 @@ type ToolDiff struct {
 // It reads server and tool records from the DB and builds Client instances
 // on demand.
 type Registry struct {
-	queries *db.Queries
+	queries    *db.Queries
+	mcpTimeout time.Duration
+}
+
+// RegistryOption configures a Registry.
+type RegistryOption func(*Registry)
+
+// WithMCPTimeout sets the HTTP timeout applied to every MCP Client created
+// by the Registry. When zero, the Client default (30 s) is used.
+func WithMCPTimeout(d time.Duration) RegistryOption {
+	return func(r *Registry) {
+		r.mcpTimeout = d
+	}
 }
 
 // NewRegistry returns a Registry backed by the given sqlc Queries.
-func NewRegistry(queries *db.Queries) *Registry {
-	return &Registry{queries: queries}
+func NewRegistry(queries *db.Queries, opts ...RegistryOption) *Registry {
+	r := &Registry{queries: queries}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+
+// newClient creates an MCP Client for the given URL, applying the Registry's
+// mcpTimeout when it is non-zero.
+func (r *Registry) newClient(url string) *Client {
+	if r.mcpTimeout > 0 {
+		return NewClient(url, WithTimeout(r.mcpTimeout))
+	}
+	return NewClient(url)
 }
 
 // splitToolName splits a dot-notation tool name (e.g. "my-server.read_pods")
@@ -92,7 +117,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 				OnTimeout:  "",
 				Params:     s.Params,
 			},
-			Client:      NewClient(srv.Url),
+			Client:      r.newClient(srv.Url),
 			Description: tool.Description,
 			InputSchema: json.RawMessage(tool.InputSchema),
 		})
@@ -138,7 +163,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 				OnTimeout:  a.OnTimeout,
 				Params:     a.Params,
 			},
-			Client:      NewClient(srv.Url),
+			Client:      r.newClient(srv.Url),
 			Description: tool.Description,
 			InputSchema: json.RawMessage(tool.InputSchema),
 		})
@@ -168,7 +193,7 @@ func (r *Registry) RegisterServer(ctx context.Context, name, url string) error {
 		return fmt.Errorf("create mcp server: %w", err)
 	}
 
-	tools, err := NewClient(url).DiscoverTools(ctx)
+	tools, err := r.newClient(url).DiscoverTools(ctx)
 	if err != nil {
 		return fmt.Errorf("discover tools for server %q: %w", name, err)
 	}
@@ -215,7 +240,7 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 		return ToolDiff{}, fmt.Errorf("get mcp server %q: %w", serverID, err)
 	}
 
-	freshTools, err := NewClient(srv.Url).DiscoverTools(ctx)
+	freshTools, err := r.newClient(srv.Url).DiscoverTools(ctx)
 	if err != nil {
 		return ToolDiff{}, fmt.Errorf("discover tools for server %q: %w", serverID, err)
 	}

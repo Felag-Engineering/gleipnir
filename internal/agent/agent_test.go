@@ -1421,7 +1421,8 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 	if firstBlock.OfText == nil {
 		t.Fatalf("content[0]: expected a text block (OfText), got nil")
 	}
-	timestampRE := regexp.MustCompile(`^\[Current time: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\]$`)
+	// RFC3339Nano may include fractional seconds, e.g. T12:34:56.123456789Z
+	timestampRE := regexp.MustCompile(`^\[Current time: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z\]$`)
 	if !timestampRE.MatchString(firstBlock.OfText.Text) {
 		t.Errorf("content[0].text = %q, want to match %s", firstBlock.OfText.Text, timestampRE)
 	}

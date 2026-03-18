@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
@@ -93,7 +94,7 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 	// json.Marshal on a map[string]string with a string value cannot fail,
 	// so the error is safe to ignore here.
 	payload, _ := json.Marshal(map[string]string{
-		"scheduled_for": fireTime.UTC().Format(time.RFC3339),
+		"scheduled_for": fireTime.UTC().Format(config.TimestampFormat),
 	})
 
 	// TODO: scheduled trigger does not currently enforce the policy's concurrency
