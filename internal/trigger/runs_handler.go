@@ -61,7 +61,7 @@ func NewRunsHandler(store *db.Store, manager *RunManager) *RunsHandler {
 
 // List handles GET /api/v1/runs with optional filters and pagination.
 // Query params: policy_id, status, since (RFC3339), until (RFC3339),
-// sort (only "started"), order ("asc"|"desc"), limit, offset.
+// sort ("started_at"|"started"|"duration"|"token_cost"), order ("asc"|"desc"), limit, offset.
 func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
@@ -100,10 +100,14 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	sort := q.Get("sort")
 	if sort == "" {
-		sort = "started"
+		sort = "started_at"
 	}
-	if sort != "started" {
-		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid sort %q: must be \"started\"", sort), "")
+	// "started" is accepted as a backward-compatible alias for "started_at".
+	switch sort {
+	case "started_at", "started", "duration", "token_cost":
+		// valid
+	default:
+		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid sort %q: must be one of started_at, duration, token_cost", sort), "")
 		return
 	}
 
@@ -116,7 +120,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := int64(50)
+	limit := int64(25)
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err == nil {
@@ -124,10 +128,10 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if limit < 1 {
-		limit = 50
+		limit = 25
 	}
-	if limit > 200 {
-		limit = 200
+	if limit > 100 {
+		limit = 100
 	}
 
 	offset := int64(0)
@@ -138,26 +142,30 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	filterBase := db.ListRunsParams{
+		PolicyID: policyID,
+		Status:   status,
+		Since:    since,
+		Until:    until,
+		Limit:    limit,
+		Offset:   offset,
+	}
+
 	var rows []db.Run
 	var err error
-	if order == "asc" {
-		rows, err = h.store.ListRunsAsc(ctx, db.ListRunsAscParams{
-			PolicyID: policyID,
-			Status:   status,
-			Since:    since,
-			Until:    until,
-			Limit:    limit,
-			Offset:   offset,
-		})
-	} else {
-		rows, err = h.store.ListRuns(ctx, db.ListRunsParams{
-			PolicyID: policyID,
-			Status:   status,
-			Since:    since,
-			Until:    until,
-			Limit:    limit,
-			Offset:   offset,
-		})
+	switch {
+	case (sort == "started_at" || sort == "started") && order == "asc":
+		rows, err = h.store.ListRunsAsc(ctx, db.ListRunsAscParams(filterBase))
+	case (sort == "started_at" || sort == "started") && order == "desc":
+		rows, err = h.store.ListRuns(ctx, filterBase)
+	case sort == "token_cost" && order == "asc":
+		rows, err = h.store.ListRunsByTokenCostAsc(ctx, db.ListRunsByTokenCostAscParams(filterBase))
+	case sort == "token_cost" && order == "desc":
+		rows, err = h.store.ListRunsByTokenCostDesc(ctx, db.ListRunsByTokenCostDescParams(filterBase))
+	case sort == "duration" && order == "asc":
+		rows, err = h.store.ListRunsByDurationAsc(ctx, db.ListRunsByDurationAscParams(filterBase))
+	case sort == "duration" && order == "desc":
+		rows, err = h.store.ListRunsByDurationDesc(ctx, db.ListRunsByDurationDescParams(filterBase))
 	}
 	if err != nil {
 		slog.Error("ListRuns query failed", "err", err)

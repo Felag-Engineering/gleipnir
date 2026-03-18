@@ -56,6 +56,42 @@ WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))
 ORDER BY created_at ASC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
+-- name: ListRunsByTokenCostDesc :many
+SELECT * FROM runs
+WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))
+  AND (sqlc.narg('status') IS NULL OR status = sqlc.narg('status'))
+  AND (sqlc.narg('since') IS NULL OR created_at >= sqlc.narg('since'))
+  AND (sqlc.narg('until') IS NULL OR created_at <= sqlc.narg('until'))
+ORDER BY token_cost DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: ListRunsByTokenCostAsc :many
+SELECT * FROM runs
+WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))
+  AND (sqlc.narg('status') IS NULL OR status = sqlc.narg('status'))
+  AND (sqlc.narg('since') IS NULL OR created_at >= sqlc.narg('since'))
+  AND (sqlc.narg('until') IS NULL OR created_at <= sqlc.narg('until'))
+ORDER BY token_cost ASC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: ListRunsByDurationDesc :many
+SELECT * FROM runs
+WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))
+  AND (sqlc.narg('status') IS NULL OR status = sqlc.narg('status'))
+  AND (sqlc.narg('since') IS NULL OR created_at >= sqlc.narg('since'))
+  AND (sqlc.narg('until') IS NULL OR created_at <= sqlc.narg('until'))
+ORDER BY CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END ASC, (julianday(completed_at) - julianday(started_at)) DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: ListRunsByDurationAsc :many
+SELECT * FROM runs
+WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))
+  AND (sqlc.narg('status') IS NULL OR status = sqlc.narg('status'))
+  AND (sqlc.narg('since') IS NULL OR created_at >= sqlc.narg('since'))
+  AND (sqlc.narg('until') IS NULL OR created_at <= sqlc.narg('until'))
+ORDER BY CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END ASC, (julianday(completed_at) - julianday(started_at)) ASC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
 -- name: CountRuns :one
 SELECT COUNT(*) FROM runs
 WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))

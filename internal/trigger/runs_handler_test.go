@@ -3,6 +3,7 @@ package trigger_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -152,7 +153,7 @@ func TestRunsHandler_List(t *testing.T) {
 			wantCode:  http.StatusOK,
 		},
 		{
-			name: "limit=999 clamped to 200 returns 200 status",
+			name: "limit=999 clamped to 100 returns 200 status",
 			setup: func(t *testing.T, store *db.Store) {
 				insertTestPolicy(t, store, "p-limit999", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-limit999-1", "p-limit999", model.RunStatusComplete)
@@ -236,12 +237,165 @@ func TestRunsHandler_List(t *testing.T) {
 			},
 		},
 		{
-			name:             "invalid sort returns 400",
+			name:             "invalid sort returns 400 with list of valid values",
 			setup:            func(t *testing.T, store *db.Store) {},
 			query:            "?sort=tokens",
 			wantCount:        -1,
 			wantCode:         http.StatusBadRequest,
 			wantBodyContains: "invalid sort",
+		},
+		{
+			name: "sort=started_at is accepted as canonical alias",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-sort-started-at", minimalWebhookPolicy)
+				t1 := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+				t2 := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+				testutil.InsertRunWithTime(t, store, "r-sort-started-at-older", "p-sort-started-at", model.RunStatusComplete, t1, 0)
+				testutil.InsertRunWithTime(t, store, "r-sort-started-at-newer", "p-sort-started-at", model.RunStatusComplete, t2, 0)
+			},
+			query:     "?policy_id=p-sort-started-at&sort=started_at&order=asc",
+			wantCount: 2,
+			wantTotal: 2,
+			wantCode:  http.StatusOK,
+			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+				if len(resp.Runs) != 2 {
+					t.Fatalf("expected 2 runs, got %d", len(resp.Runs))
+				}
+				if resp.Runs[0].ID != "r-sort-started-at-older" {
+					t.Errorf("first run = %q, want %q", resp.Runs[0].ID, "r-sort-started-at-older")
+				}
+			},
+		},
+		{
+			name: "sort=token_cost desc returns runs with highest token_cost first",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-sort-tc-desc", minimalWebhookPolicy)
+				now := time.Now().UTC().Format(time.RFC3339)
+				testutil.InsertRunWithTime(t, store, "r-sort-tc-low", "p-sort-tc-desc", model.RunStatusComplete, now, 10)
+				testutil.InsertRunWithTime(t, store, "r-sort-tc-high", "p-sort-tc-desc", model.RunStatusComplete, now, 100)
+			},
+			query:     "?policy_id=p-sort-tc-desc&sort=token_cost",
+			wantCount: 2,
+			wantTotal: 2,
+			wantCode:  http.StatusOK,
+			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+				if len(resp.Runs) != 2 {
+					t.Fatalf("expected 2 runs, got %d", len(resp.Runs))
+				}
+				if resp.Runs[0].ID != "r-sort-tc-high" {
+					t.Errorf("first run = %q, want %q", resp.Runs[0].ID, "r-sort-tc-high")
+				}
+				if resp.Runs[1].ID != "r-sort-tc-low" {
+					t.Errorf("second run = %q, want %q", resp.Runs[1].ID, "r-sort-tc-low")
+				}
+			},
+		},
+		{
+			name: "sort=token_cost asc returns runs with lowest token_cost first",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-sort-tc-asc", minimalWebhookPolicy)
+				now := time.Now().UTC().Format(time.RFC3339)
+				testutil.InsertRunWithTime(t, store, "r-sort-tc-asc-low", "p-sort-tc-asc", model.RunStatusComplete, now, 10)
+				testutil.InsertRunWithTime(t, store, "r-sort-tc-asc-high", "p-sort-tc-asc", model.RunStatusComplete, now, 100)
+			},
+			query:     "?policy_id=p-sort-tc-asc&sort=token_cost&order=asc",
+			wantCount: 2,
+			wantTotal: 2,
+			wantCode:  http.StatusOK,
+			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+				if len(resp.Runs) != 2 {
+					t.Fatalf("expected 2 runs, got %d", len(resp.Runs))
+				}
+				if resp.Runs[0].ID != "r-sort-tc-asc-low" {
+					t.Errorf("first run = %q, want %q", resp.Runs[0].ID, "r-sort-tc-asc-low")
+				}
+				if resp.Runs[1].ID != "r-sort-tc-asc-high" {
+					t.Errorf("second run = %q, want %q", resp.Runs[1].ID, "r-sort-tc-asc-high")
+				}
+			},
+		},
+		{
+			name: "sort=duration desc returns completed runs with longest duration first",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-sort-dur-desc", minimalWebhookPolicy)
+				base := time.Now().Add(-10 * time.Minute).UTC()
+				// short run: started 5 min ago, completed 4 min ago (1 min duration)
+				shortStart := base.Add(5 * time.Minute).Format(time.RFC3339)
+				shortEnd := base.Add(6 * time.Minute).Format(time.RFC3339)
+				// long run: started 10 min ago, completed 3 min ago (7 min duration)
+				longStart := base.Format(time.RFC3339)
+				longEnd := base.Add(7 * time.Minute).Format(time.RFC3339)
+				store.DB().Exec(
+					`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, created_at)
+					 VALUES (?, ?, ?, 'webhook', '{}', ?, ?, ?)`,
+					"r-dur-short", "p-sort-dur-desc", string(model.RunStatusComplete), shortStart, shortEnd, shortStart,
+				)
+				store.DB().Exec(
+					`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, created_at)
+					 VALUES (?, ?, ?, 'webhook', '{}', ?, ?, ?)`,
+					"r-dur-long", "p-sort-dur-desc", string(model.RunStatusComplete), longStart, longEnd, longStart,
+				)
+			},
+			query:     "?policy_id=p-sort-dur-desc&sort=duration",
+			wantCount: 2,
+			wantTotal: 2,
+			wantCode:  http.StatusOK,
+			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+				if len(resp.Runs) != 2 {
+					t.Fatalf("expected 2 runs, got %d", len(resp.Runs))
+				}
+				if resp.Runs[0].ID != "r-dur-long" {
+					t.Errorf("first run = %q, want %q (longest duration)", resp.Runs[0].ID, "r-dur-long")
+				}
+			},
+		},
+		{
+			name: "sort=duration asc returns completed runs with shortest duration first",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-sort-dur-asc", minimalWebhookPolicy)
+				base := time.Now().Add(-10 * time.Minute).UTC()
+				shortStart := base.Add(5 * time.Minute).Format(time.RFC3339)
+				shortEnd := base.Add(6 * time.Minute).Format(time.RFC3339)
+				longStart := base.Format(time.RFC3339)
+				longEnd := base.Add(7 * time.Minute).Format(time.RFC3339)
+				store.DB().Exec(
+					`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, created_at)
+					 VALUES (?, ?, ?, 'webhook', '{}', ?, ?, ?)`,
+					"r-dur-asc-short", "p-sort-dur-asc", string(model.RunStatusComplete), shortStart, shortEnd, shortStart,
+				)
+				store.DB().Exec(
+					`INSERT INTO runs(id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, created_at)
+					 VALUES (?, ?, ?, 'webhook', '{}', ?, ?, ?)`,
+					"r-dur-asc-long", "p-sort-dur-asc", string(model.RunStatusComplete), longStart, longEnd, longStart,
+				)
+			},
+			query:     "?policy_id=p-sort-dur-asc&sort=duration&order=asc",
+			wantCount: 2,
+			wantTotal: 2,
+			wantCode:  http.StatusOK,
+			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+				if len(resp.Runs) != 2 {
+					t.Fatalf("expected 2 runs, got %d", len(resp.Runs))
+				}
+				if resp.Runs[0].ID != "r-dur-asc-short" {
+					t.Errorf("first run = %q, want %q (shortest duration)", resp.Runs[0].ID, "r-dur-asc-short")
+				}
+			},
+		},
+		{
+			name: "default limit is 25",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-default-limit", minimalWebhookPolicy)
+				now := time.Now().UTC().Format(time.RFC3339)
+				for i := 0; i < 30; i++ {
+					id := fmt.Sprintf("r-default-limit-%02d", i)
+					testutil.InsertRunWithTime(t, store, id, "p-default-limit", model.RunStatusComplete, now, 0)
+				}
+			},
+			query:     "?policy_id=p-default-limit",
+			wantCount: 25,
+			wantTotal: 30,
+			wantCode:  http.StatusOK,
 		},
 		{
 			name: "policy_name is populated in list results",

@@ -362,6 +362,130 @@ func (q *Queries) ListRunsAsc(ctx context.Context, arg ListRunsAscParams) ([]Run
 	return items, nil
 }
 
+const listRunsByDurationAsc = `-- name: ListRunsByDurationAsc :many
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs
+WHERE (?1 IS NULL OR policy_id = ?1)
+  AND (?2 IS NULL OR status = ?2)
+  AND (?3 IS NULL OR created_at >= ?3)
+  AND (?4 IS NULL OR created_at <= ?4)
+ORDER BY CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END ASC, (julianday(completed_at) - julianday(started_at)) ASC
+LIMIT ?6 OFFSET ?5
+`
+
+type ListRunsByDurationAscParams struct {
+	PolicyID interface{} `json:"policy_id"`
+	Status   interface{} `json:"status"`
+	Since    interface{} `json:"since"`
+	Until    interface{} `json:"until"`
+	Offset   int64       `json:"offset"`
+	Limit    int64       `json:"limit"`
+}
+
+func (q *Queries) ListRunsByDurationAsc(ctx context.Context, arg ListRunsByDurationAscParams) ([]Run, error) {
+	rows, err := q.db.QueryContext(ctx, listRunsByDurationAsc,
+		arg.PolicyID,
+		arg.Status,
+		arg.Since,
+		arg.Until,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.TriggerType,
+			&i.TriggerPayload,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.TokenCost,
+			&i.Error,
+			&i.ThreadID,
+			&i.CreatedAt,
+			&i.SystemPrompt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunsByDurationDesc = `-- name: ListRunsByDurationDesc :many
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs
+WHERE (?1 IS NULL OR policy_id = ?1)
+  AND (?2 IS NULL OR status = ?2)
+  AND (?3 IS NULL OR created_at >= ?3)
+  AND (?4 IS NULL OR created_at <= ?4)
+ORDER BY CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END ASC, (julianday(completed_at) - julianday(started_at)) DESC
+LIMIT ?6 OFFSET ?5
+`
+
+type ListRunsByDurationDescParams struct {
+	PolicyID interface{} `json:"policy_id"`
+	Status   interface{} `json:"status"`
+	Since    interface{} `json:"since"`
+	Until    interface{} `json:"until"`
+	Offset   int64       `json:"offset"`
+	Limit    int64       `json:"limit"`
+}
+
+func (q *Queries) ListRunsByDurationDesc(ctx context.Context, arg ListRunsByDurationDescParams) ([]Run, error) {
+	rows, err := q.db.QueryContext(ctx, listRunsByDurationDesc,
+		arg.PolicyID,
+		arg.Status,
+		arg.Since,
+		arg.Until,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.TriggerType,
+			&i.TriggerPayload,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.TokenCost,
+			&i.Error,
+			&i.ThreadID,
+			&i.CreatedAt,
+			&i.SystemPrompt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRunsByPolicy = `-- name: ListRunsByPolicy :many
 SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs WHERE policy_id = ?1 ORDER BY created_at DESC
 `
@@ -428,6 +552,205 @@ func (q *Queries) ListRunsByStatus(ctx context.Context, status string) ([]Run, e
 			&i.ThreadID,
 			&i.CreatedAt,
 			&i.SystemPrompt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunsByTokenCostAsc = `-- name: ListRunsByTokenCostAsc :many
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs
+WHERE (?1 IS NULL OR policy_id = ?1)
+  AND (?2 IS NULL OR status = ?2)
+  AND (?3 IS NULL OR created_at >= ?3)
+  AND (?4 IS NULL OR created_at <= ?4)
+ORDER BY token_cost ASC
+LIMIT ?6 OFFSET ?5
+`
+
+type ListRunsByTokenCostAscParams struct {
+	PolicyID interface{} `json:"policy_id"`
+	Status   interface{} `json:"status"`
+	Since    interface{} `json:"since"`
+	Until    interface{} `json:"until"`
+	Offset   int64       `json:"offset"`
+	Limit    int64       `json:"limit"`
+}
+
+func (q *Queries) ListRunsByTokenCostAsc(ctx context.Context, arg ListRunsByTokenCostAscParams) ([]Run, error) {
+	rows, err := q.db.QueryContext(ctx, listRunsByTokenCostAsc,
+		arg.PolicyID,
+		arg.Status,
+		arg.Since,
+		arg.Until,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.TriggerType,
+			&i.TriggerPayload,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.TokenCost,
+			&i.Error,
+			&i.ThreadID,
+			&i.CreatedAt,
+			&i.SystemPrompt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunsByTokenCostDesc = `-- name: ListRunsByTokenCostDesc :many
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs
+WHERE (?1 IS NULL OR policy_id = ?1)
+  AND (?2 IS NULL OR status = ?2)
+  AND (?3 IS NULL OR created_at >= ?3)
+  AND (?4 IS NULL OR created_at <= ?4)
+ORDER BY token_cost DESC
+LIMIT ?6 OFFSET ?5
+`
+
+type ListRunsByTokenCostDescParams struct {
+	PolicyID interface{} `json:"policy_id"`
+	Status   interface{} `json:"status"`
+	Since    interface{} `json:"since"`
+	Until    interface{} `json:"until"`
+	Offset   int64       `json:"offset"`
+	Limit    int64       `json:"limit"`
+}
+
+func (q *Queries) ListRunsByTokenCostDesc(ctx context.Context, arg ListRunsByTokenCostDescParams) ([]Run, error) {
+	rows, err := q.db.QueryContext(ctx, listRunsByTokenCostDesc,
+		arg.PolicyID,
+		arg.Status,
+		arg.Since,
+		arg.Until,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.TriggerType,
+			&i.TriggerPayload,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.TokenCost,
+			&i.Error,
+			&i.ThreadID,
+			&i.CreatedAt,
+			&i.SystemPrompt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunsWithPolicyName = `-- name: ListRunsWithPolicyName :many
+SELECT r.id, r.policy_id, r.status, r.trigger_type, r.trigger_payload, r.started_at, r.completed_at, r.token_cost, r.error, r.thread_id, r.created_at, r.system_prompt, COALESCE(p.name, '') AS policy_name
+FROM runs r
+LEFT JOIN policies p ON r.policy_id = p.id
+WHERE (?1 IS NULL OR r.policy_id = ?1)
+  AND (?2 IS NULL OR r.status = ?2)
+ORDER BY r.created_at DESC
+LIMIT ?4 OFFSET ?3
+`
+
+type ListRunsWithPolicyNameParams struct {
+	PolicyID interface{} `json:"policy_id"`
+	Status   interface{} `json:"status"`
+	Offset   int64       `json:"offset"`
+	Limit    int64       `json:"limit"`
+}
+
+type ListRunsWithPolicyNameRow struct {
+	ID             string  `json:"id"`
+	PolicyID       string  `json:"policy_id"`
+	Status         string  `json:"status"`
+	TriggerType    string  `json:"trigger_type"`
+	TriggerPayload string  `json:"trigger_payload"`
+	StartedAt      string  `json:"started_at"`
+	CompletedAt    *string `json:"completed_at"`
+	TokenCost      int64   `json:"token_cost"`
+	Error          *string `json:"error"`
+	ThreadID       *string `json:"thread_id"`
+	CreatedAt      string  `json:"created_at"`
+	SystemPrompt   *string `json:"system_prompt"`
+	PolicyName     string  `json:"policy_name"`
+}
+
+func (q *Queries) ListRunsWithPolicyName(ctx context.Context, arg ListRunsWithPolicyNameParams) ([]ListRunsWithPolicyNameRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRunsWithPolicyName,
+		arg.PolicyID,
+		arg.Status,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRunsWithPolicyNameRow
+	for rows.Next() {
+		var i ListRunsWithPolicyNameRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.TriggerType,
+			&i.TriggerPayload,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.TokenCost,
+			&i.Error,
+			&i.ThreadID,
+			&i.CreatedAt,
+			&i.SystemPrompt,
+			&i.PolicyName,
 		); err != nil {
 			return nil, err
 		}
