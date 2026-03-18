@@ -89,7 +89,9 @@ export default function Layout() {
 
       <div className={styles.mainWrapper}>
         <main className={styles.main}>
-          <Outlet />
+          <div key={location.pathname} className={styles.pageContent}>
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

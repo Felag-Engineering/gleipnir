@@ -19,7 +19,7 @@ export function StatsBar({ activeRuns, pendingApprovals, mcpServerCount, mcpServ
     <div className={styles.grid}>
       <div className={`${styles.card} ${styles.cardBlue}`}>
         <div className={styles.label}>Active Runs</div>
-        <div className={`${styles.value} ${styles.valueBlue}`}>{activeRuns}</div>
+        <div className={`${styles.value}${activeRuns > 0 ? ` ${styles.valueBlue}` : ''}`}>{activeRuns}</div>
         <div className={styles.sub}>active</div>
       </div>
 

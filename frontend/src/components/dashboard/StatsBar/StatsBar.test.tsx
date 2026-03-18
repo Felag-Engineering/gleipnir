@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { StatsBar } from './StatsBar'
 
@@ -45,5 +45,18 @@ describe('StatsBar', () => {
   it('System Health shows 0 servers when no servers and not loading', () => {
     renderBar({ activeRuns: 0, pendingApprovals: 0, mcpServerCount: 0, mcpServersLoading: false })
     expect(screen.getByText('0 servers')).toBeInTheDocument()
+  })
+
+  it('Active Runs value has blue accent when activeRuns > 0', () => {
+    renderBar({ activeRuns: 3, pendingApprovals: 0, mcpServerCount: 0, mcpServersLoading: false })
+    const valueEl = screen.getByText('3')
+    expect(valueEl.className).toMatch(/valueBlue/)
+  })
+
+  it('Active Runs value has no blue accent when activeRuns is 0', () => {
+    renderBar({ activeRuns: 0, pendingApprovals: 0, mcpServerCount: 0, mcpServersLoading: false })
+    const card = screen.getByText('Active Runs').parentElement!
+    const valueEl = within(card).getByText('0')
+    expect(valueEl.className).not.toMatch(/valueBlue/)
   })
 })

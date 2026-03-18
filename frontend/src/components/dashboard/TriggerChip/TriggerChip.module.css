@@ -1,8 +1,8 @@
 .chip {
   font-size: 10px;
   font-family: var(--font-mono);
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, white 4%, transparent);
+  border: 1px solid color-mix(in srgb, white 8%, transparent);
   padding: var(--space-1) var(--space-2);
   border-radius: 3px;
   flex-shrink: 0;
