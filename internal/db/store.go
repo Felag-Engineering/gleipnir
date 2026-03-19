@@ -35,6 +35,9 @@ var migration0004 string
 //go:embed migrations/0005_add_performance_indexes.sql
 var migration0005 string
 
+//go:embed migrations/0006_add_auth_tables.sql
+var migration0006 string
+
 // queries wraps the sqlc-generated Queries so the embedding is unexported.
 type queries struct{ *Queries }
 
@@ -186,6 +189,20 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if v5Applied == 0 {
 		if _, err := s.db.ExecContext(ctx, migration0005); err != nil {
 			return fmt.Errorf("apply migration 0005: %w", err)
+		}
+	}
+
+	// Apply migration 0006 if not yet recorded.
+	var v6Applied int
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = 6`,
+	).Scan(&v6Applied)
+	if err != nil {
+		return fmt.Errorf("check migration 6: %w", err)
+	}
+	if v6Applied == 0 {
+		if _, err := s.db.ExecContext(ctx, migration0006); err != nil {
+			return fmt.Errorf("apply migration 0006: %w", err)
 		}
 	}
 

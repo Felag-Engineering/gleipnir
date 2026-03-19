@@ -74,3 +74,19 @@ type SchemaMigration struct {
 	Version   int64  `json:"version"`
 	AppliedAt string `json:"applied_at"`
 }
+
+type Session struct {
+	ID        string `json:"id"`
+	UserID    string `json:"user_id"`
+	Token     string `json:"token"`
+	CreatedAt string `json:"created_at"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+type User struct {
+	ID            string  `json:"id"`
+	Username      string  `json:"username"`
+	PasswordHash  string  `json:"password_hash"`
+	CreatedAt     string  `json:"created_at"`
+	DeactivatedAt *string `json:"deactivated_at"`
+}

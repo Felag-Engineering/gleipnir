@@ -323,6 +323,8 @@ func TestMigrate(t *testing.T) {
 			"runs",
 			"run_steps",
 			"approval_requests",
+			"users",
+			"sessions",
 		}
 		for _, table := range want {
 			var count int

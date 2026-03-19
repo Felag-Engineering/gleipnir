@@ -214,6 +214,40 @@ CREATE INDEX idx_approval_requests_run_id ON approval_requests(run_id);
 CREATE INDEX idx_approval_requests_status ON approval_requests(status);
 
 -- ---------------------------------------------------------------------------
+-- Users
+--
+-- deactivated_at is nullable — a non-null value means the account has been
+-- soft-deleted and must not be used for login.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE users (
+    id              TEXT    PRIMARY KEY,  -- ULID
+    username        TEXT    NOT NULL UNIQUE,
+    password_hash   TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
+    deactivated_at  TEXT                  -- nullable, ISO 8601 UTC
+);
+
+-- ---------------------------------------------------------------------------
+-- Sessions
+--
+-- token is a random opaque value stored in a cookie. The index on token is
+-- the hot path for every authenticated request.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE sessions (
+    id          TEXT    PRIMARY KEY,  -- ULID
+    user_id     TEXT    NOT NULL REFERENCES users(id),
+    token       TEXT    NOT NULL UNIQUE,
+    created_at  TEXT    NOT NULL,     -- ISO 8601 UTC
+    expires_at  TEXT    NOT NULL      -- ISO 8601 UTC
+);
+
+CREATE INDEX idx_sessions_token      ON sessions(token);
+CREATE INDEX idx_sessions_user_id    ON sessions(user_id);
+CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
+
+-- ---------------------------------------------------------------------------
 -- Seed migration version
 -- ---------------------------------------------------------------------------
 
@@ -224,3 +258,5 @@ INSERT INTO schema_migrations(version, applied_at) VALUES (1, strftime('%Y-%m-%d
 INSERT INTO schema_migrations(version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 INSERT INTO schema_migrations(version, applied_at) VALUES (3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 INSERT INTO schema_migrations(version, applied_at) VALUES (4, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+INSERT INTO schema_migrations(version, applied_at) VALUES (5, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+INSERT INTO schema_migrations(version, applied_at) VALUES (6, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));

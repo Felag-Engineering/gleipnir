@@ -1,13 +1,12 @@
 module github.com/rapp992/gleipnir
 
-go 1.23.0
-
-toolchain go1.24.4
+go 1.25.0
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.26.0
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/oklog/ulid/v2 v2.1.1
+	golang.org/x/crypto v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.33.1
 )
@@ -24,7 +23,7 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/sys v0.34.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
 	modernc.org/libc v1.55.3 // indirect
 	modernc.org/mathutil v1.6.0 // indirect

@@ -310,6 +310,23 @@ type ApprovalRequest struct {
 	CreatedAt        time.Time
 }
 
+// User is a registered operator account.
+type User struct {
+	ID            string
+	Username      string
+	CreatedAt     time.Time
+	DeactivatedAt *time.Time // non-nil when the account has been soft-deleted
+}
+
+// Session is an authenticated browser session linked to a user.
+type Session struct {
+	ID        string
+	UserID    string
+	Token     string // opaque random value stored in a cookie
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
 // entropyMu guards the monotonic entropy source used by NewULID.
 var (
 	entropyMu sync.Mutex

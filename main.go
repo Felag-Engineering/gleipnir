@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rapp992/gleipnir/frontend"
 	"github.com/rapp992/gleipnir/internal/api"
+	"github.com/rapp992/gleipnir/internal/auth"
 	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
@@ -63,6 +64,8 @@ func run(cfg config.Config) error {
 
 	broadcaster := sse.NewBroadcaster()
 	sseHandler := sse.NewHandler(broadcaster)
+	// SSE events are unprotected so the UI can receive events before auth UI is
+	// implemented (follow-up issues will add login/logout).
 	r.Get("/api/v1/events", sseHandler.ServeHTTP)
 
 	registry := mcp.NewRegistry(store.Queries(), mcp.WithMCPTimeout(cfg.MCPTimeout))
@@ -70,28 +73,36 @@ func run(cfg config.Config) error {
 	claudeClient := anthropic.NewClient()
 	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
 
+	// Webhooks are unprotected — they are called by external systems with their
+	// own secret-based authentication (policy.trigger.secret in the policy YAML).
 	webhookHandler := trigger.NewWebhookHandler(store, launcher)
 	r.With(middleware.Throttle(10), api.BodySizeLimit(api.MaxRequestBodySize)).Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
-
-	manualTriggerHandler := trigger.NewManualTriggerHandler(store, launcher)
-	r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
 
 	scheduler := trigger.NewScheduler(store, launcher)
 	if err := scheduler.Start(ctx); err != nil {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
 
-	runsHandler := trigger.NewRunsHandler(store, runManager)
-	r.Get("/api/v1/runs", runsHandler.List)
-	r.Get("/api/v1/runs/{runID}", runsHandler.Get)
-	r.Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)
-	r.Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
+	requireAuth := auth.RequireAuth(store.Queries())
 
-	policySvc := policy.NewService(store, nil, policy.NewAnthropicModelValidator(&claudeClient))
+	// Protected routes: all UI-facing API endpoints require a valid session cookie.
+	r.Group(func(r chi.Router) {
+		r.Use(requireAuth)
 
-	// Mount /api/v1/policies and /api/v1/mcp route groups.
-	// Existing /api/v1/webhooks/ and /api/v1/runs/ routes remain on this root router.
-	r.Mount("/api/v1", api.NewRouter(store, policySvc, registry))
+		manualTriggerHandler := trigger.NewManualTriggerHandler(store, launcher)
+		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
+
+		runsHandler := trigger.NewRunsHandler(store, runManager)
+		r.Get("/api/v1/runs", runsHandler.List)
+		r.Get("/api/v1/runs/{runID}", runsHandler.Get)
+		r.Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)
+		r.Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
+
+		policySvc := policy.NewService(store, nil, policy.NewAnthropicModelValidator(&claudeClient))
+
+		// Mount /api/v1/policies, /api/v1/mcp, /api/v1/stats, and /api/v1/health route groups.
+		r.Mount("/api/v1", api.NewRouter(store, policySvc, registry))
+	})
 
 	// Serve the embedded React SPA for all non-API routes.
 	r.Handle("/*", frontend.NewSPAHandler())
