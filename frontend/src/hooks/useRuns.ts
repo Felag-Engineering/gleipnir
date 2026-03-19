@@ -27,9 +27,15 @@ export function useRuns(params: RunsFilterParams) {
 
   const qs = new URLSearchParams(paramRecord).toString()
 
-  return useQuery({
+  const query = useQuery({
     queryKey: queryKeys.runs.list(paramRecord),
     queryFn: () => apiFetch<ApiRunsResponse>(`/runs${qs ? '?' + qs : ''}`),
     placeholderData: keepPreviousData,
   })
+
+  return {
+    ...query,
+    runs: query.data?.runs ?? [],
+    total: query.data?.total ?? 0,
+  }
 }

@@ -16,7 +16,7 @@ import styles from './DashboardPage.module.css'
 export default function DashboardPage() {
   const { activeRuns, pendingApprovals } = useStatsData()
   const { data: policies, status: policiesStatus } = usePolicies()
-  const { data: runs, isLoading: runsLoading } = useRuns({ limit: 20 })
+  const { runs, isLoading: runsLoading } = useRuns({ limit: 20 })
   const { data: servers, isLoading: serversLoading } = useMcpServers()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -46,13 +46,13 @@ export default function DashboardPage() {
         <OnboardingSteps
           hasServers={mcpServerCount > 0}
           hasPolicies={false}
-          hasRuns={(runs?.length ?? 0) > 0}
+          hasRuns={runs.length > 0}
         />
       )
     }
     return (
       <div className={styles.mainGrid}>
-        <ActivityFeed runs={runs ?? []} isLoading={runsLoading} />
+        <ActivityFeed runs={runs} isLoading={runsLoading} />
         <StatusBoard
           policies={policies}
           onTrigger={(id, name) => setTriggerTarget({ id, name })}

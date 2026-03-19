@@ -47,7 +47,7 @@ export default function RunsPage() {
   const since = range !== 'all' ? rangeToSince(range) : undefined
   const offset = (page - 1) * PAGE_SIZE
 
-  const { data, status: fetchStatus } = useRuns({
+  const { runs, total, status: fetchStatus } = useRuns({
     status: status || undefined,
     policy_id: policy || undefined,
     since,
@@ -88,8 +88,6 @@ export default function RunsPage() {
     })
   }
 
-  const runs = data?.runs ?? []
-  const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   const firstItem = offset + 1

@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 
 import RunsPage from './RunsPage'
-import type { ApiRun, ApiPolicyListItem, ApiRunsResponse } from '@/api/types'
+import type { ApiRun, ApiPolicyListItem } from '@/api/types'
 
 // --- Mocks ---
 
@@ -68,9 +68,11 @@ function renderPage(initialPath = '/runs') {
 
 function mockPending() {
   vi.mocked(useRuns).mockReturnValue({
+    runs: [],
+    total: 0,
     data: undefined,
     status: 'pending',
-  } as ReturnType<typeof useRuns>)
+  } as unknown as ReturnType<typeof useRuns>)
 
   vi.mocked(usePolicies).mockReturnValue({
     data: undefined,
@@ -79,11 +81,12 @@ function mockPending() {
 }
 
 function mockLoaded(runs: ApiRun[], total?: number, policies?: ApiPolicyListItem[]) {
-  const response: ApiRunsResponse = { runs, total: total ?? runs.length }
   vi.mocked(useRuns).mockReturnValue({
-    data: response,
+    runs,
+    total: total ?? runs.length,
+    data: { runs, total: total ?? runs.length },
     status: 'success',
-  } as ReturnType<typeof useRuns>)
+  } as unknown as ReturnType<typeof useRuns>)
 
   vi.mocked(usePolicies).mockReturnValue({
     data: policies ?? [makePolicy()],
@@ -93,9 +96,11 @@ function mockLoaded(runs: ApiRun[], total?: number, policies?: ApiPolicyListItem
 
 function mockError() {
   vi.mocked(useRuns).mockReturnValue({
+    runs: [],
+    total: 0,
     data: undefined,
     status: 'error',
-  } as ReturnType<typeof useRuns>)
+  } as unknown as ReturnType<typeof useRuns>)
 
   vi.mocked(usePolicies).mockReturnValue({
     data: undefined,

@@ -7,7 +7,8 @@ export const queryKeys = {
     all: ['runs'] as const,
     detail: (id: string) => ['runs', id] as const,
     steps: (id: string) => ['runs', id, 'steps'] as const,
-list: (params: Record<string, string>) => ['runs', 'list', params] as const,
+    list: (params: Record<string, string>) => ['runs', 'list', params] as const,
+    latestByPolicy: (policyId: string) => ['runs', 'latestByPolicy', policyId] as const,
   },
   servers: {
     all: ['servers'] as const,
