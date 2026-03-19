@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate, useParams } from 'react-router-dom'
 import Layout from './components/Layout/Layout'
 import DashboardPage from './pages/DashboardPage'
+import LoginPage from './pages/LoginPage'
 import PoliciesPage from './pages/PoliciesPage'
 import PolicyEditorPage from './pages/PolicyEditorPage'
 import RunDetailPage from './pages/RunDetailPage'
@@ -14,6 +15,7 @@ function PolicyRunsRedirect() {
 }
 
 const router = createBrowserRouter([
+  { path: '/login', element: <LoginPage /> },
   {
     path: '/',
     element: <Layout />,

@@ -14,10 +14,10 @@ import (
 
 // mockQuerier implements SessionQuerier for testing.
 type mockQuerier struct {
-	session  db.Session
-	err      error
-	user     db.User
-	userErr  error
+	session db.Session
+	err     error
+	user    db.User
+	userErr error
 }
 
 func (m *mockQuerier) GetSessionByToken(_ context.Context, _ string) (db.Session, error) {

@@ -83,6 +83,12 @@ func run(cfg config.Config) error {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
 
+	authHandler := auth.NewHandler(store.Queries())
+	r.Route("/api/v1/auth", func(r chi.Router) {
+		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/login", authHandler.Login)
+		r.Post("/logout", authHandler.Logout)
+	})
+
 	requireAuth := auth.RequireAuth(store.Queries())
 
 	// Protected routes: all UI-facing API endpoints require a valid session cookie.

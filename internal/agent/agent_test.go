@@ -114,10 +114,10 @@ func TestSanitizeToolName(t *testing.T) {
 
 func TestNew_RequiresStateMachine(t *testing.T) {
 	_, err := New(Config{
-		Policy:  minimalPolicy(),
-		Tools:   nil,
-		Audit:   NewAuditWriter(testutil.NewTestStore(t).Queries()),
-		Claude:  testutil.NoopAnthropicClient(),
+		Policy: minimalPolicy(),
+		Tools:  nil,
+		Audit:  NewAuditWriter(testutil.NewTestStore(t).Queries()),
+		Claude: testutil.NoopAnthropicClient(),
 		// StateMachine intentionally omitted
 	})
 	if err == nil {

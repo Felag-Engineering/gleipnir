@@ -110,9 +110,9 @@ func NewBlockingAnthropicClient() (*anthropic.Client, *BlockingAnthropicTranspor
 // raw request body bytes for each call. Tests can unmarshal the captured
 // bodies to inspect what was sent to the API.
 type CapturingAnthropicTransport struct {
-	inner   *FakeAnthropicTransport
-	mu      sync.Mutex
-	bodies  [][]byte
+	inner  *FakeAnthropicTransport
+	mu     sync.Mutex
+	bodies [][]byte
 }
 
 // RoundTrip captures the request body then delegates to the inner transport.

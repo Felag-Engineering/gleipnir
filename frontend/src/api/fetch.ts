@@ -21,6 +21,10 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   const response = await fetch(url, { ...init, headers })
 
   if (!response.ok) {
+    if (response.status === 401 && window.location.pathname !== '/login') {
+      window.location.href = '/login'
+      return Promise.reject()
+    }
     let message = response.statusText
     let detail: string | undefined
     try {
@@ -48,6 +52,10 @@ export async function apiFetchVoid(path: string, init?: RequestInit): Promise<vo
   const response = await fetch(url, { ...init, headers })
 
   if (!response.ok) {
+    if (response.status === 401 && window.location.pathname !== '/login') {
+      window.location.href = '/login'
+      return
+    }
     let message = response.statusText
     let detail: string | undefined
     try {
