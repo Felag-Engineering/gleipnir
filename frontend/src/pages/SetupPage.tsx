@@ -1,35 +1,36 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/Button/Button'
-import { login, getAuthStatus } from '@/api/auth'
-import styles from './LoginPage.module.css'
+import { setup } from '@/api/auth'
+import styles from './SetupPage.module.css'
 
-export default function LoginPage() {
+export default function SetupPage() {
   const navigate = useNavigate()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-
-  useEffect(() => {
-    getAuthStatus().then((status) => {
-      if (status.setup_required) {
-        navigate('/setup', { replace: true })
-      }
-    }).catch(() => {
-      // If status check fails, let the user attempt to log in normally.
-    })
-  }, [navigate])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
+
+    if (password !== confirmPassword) {
+      setError('Passwords do not match')
+      return
+    }
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters')
+      return
+    }
+
     setLoading(true)
     try {
-      await login(username, password)
-      navigate('/dashboard')
+      await setup(username, password)
+      navigate('/login')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed')
+      setError(err instanceof Error ? err.message : 'Setup failed')
     } finally {
       setLoading(false)
     }
@@ -39,6 +40,7 @@ export default function LoginPage() {
     <div className={styles.page}>
       <div className={styles.card}>
         <h1 className={styles.wordmark}>GLEIPNIR</h1>
+        <p className={styles.subtitle}>Create your admin account</p>
         <form className={styles.form} onSubmit={handleSubmit}>
           <div className={styles.field}>
             <label htmlFor="username" className={styles.label}>
@@ -65,13 +67,27 @@ export default function LoginPage() {
               className={styles.input}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
+              autoComplete="new-password"
+              disabled={loading}
+            />
+          </div>
+          <div className={styles.field}>
+            <label htmlFor="confirm-password" className={styles.label}>
+              Confirm password
+            </label>
+            <input
+              id="confirm-password"
+              type="password"
+              className={styles.input}
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              autoComplete="new-password"
               disabled={loading}
             />
           </div>
           {error && <p className={styles.error}>{error}</p>}
           <Button type="submit" className={styles.submit} disabled={loading}>
-            {loading ? 'Signing in…' : 'Sign in'}
+            {loading ? 'Creating account…' : 'Create account'}
           </Button>
         </form>
       </div>

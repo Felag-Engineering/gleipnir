@@ -85,6 +85,8 @@ func run(cfg config.Config) error {
 
 	authHandler := auth.NewHandler(store.Queries())
 	r.Route("/api/v1/auth", func(r chi.Router) {
+		r.Get("/status", authHandler.Status)
+		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/setup", authHandler.Setup)
 		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/login", authHandler.Login)
 		r.Post("/logout", authHandler.Logout)
 	})

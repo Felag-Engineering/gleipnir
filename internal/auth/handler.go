@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -16,6 +17,10 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 )
+
+const maxUsernameLength = 64
+
+var validUsername = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // SessionDuration is how long a newly created session remains valid.
 const SessionDuration = 24 * time.Hour
@@ -26,6 +31,9 @@ type AuthQuerier interface {
 	GetUserByUsername(ctx context.Context, username string) (db.User, error)
 	CreateSession(ctx context.Context, arg db.CreateSessionParams) (db.Session, error)
 	DeleteSessionByToken(ctx context.Context, token string) error
+	CountUsers(ctx context.Context) (int64, error)
+	CreateUser(ctx context.Context, arg db.CreateUserParams) (db.User, error)
+	CreateFirstUser(ctx context.Context, arg db.CreateFirstUserParams) (db.User, error)
 }
 
 // Handler handles the login and logout HTTP endpoints.
@@ -168,6 +176,97 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	})
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type setupRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// Status reports whether initial setup is required (i.e., no users exist yet).
+func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
+	count, err := h.q.CountUsers(r.Context())
+	if err != nil {
+		slog.Error("status: count users failed", "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	type statusData struct {
+		SetupRequired bool `json:"setup_required"`
+	}
+	if err := json.NewEncoder(w).Encode(struct {
+		Data statusData `json:"data"`
+	}{Data: statusData{SetupRequired: count == 0}}); err != nil {
+		slog.Error("status: failed to write response", "err", err)
+	}
+}
+
+// Setup creates the initial admin account. Returns 403 if any user already exists.
+// Uses an atomic INSERT…WHERE to prevent TOCTOU races between concurrent requests.
+func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
+	var req setupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Username == "" {
+		writeJSONError(w, http.StatusBadRequest, "username is required")
+		return
+	}
+	if len(req.Username) > maxUsernameLength {
+		writeJSONError(w, http.StatusBadRequest, "username must be at most 64 characters")
+		return
+	}
+	if !validUsername.MatchString(req.Username) {
+		writeJSONError(w, http.StatusBadRequest, "username may only contain letters, digits, hyphens, and underscores")
+		return
+	}
+	if req.Password == "" {
+		writeJSONError(w, http.StatusBadRequest, "password is required")
+		return
+	}
+	if len(req.Password) < 8 {
+		writeJSONError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		return
+	}
+
+	hash, err := HashPassword(req.Password)
+	if err != nil {
+		slog.Error("setup: hash password failed", "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	user, err := h.q.CreateFirstUser(r.Context(), db.CreateFirstUserParams{
+		ID:           model.NewULID(),
+		Username:     req.Username,
+		PasswordHash: hash,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSONError(w, http.StatusForbidden, "setup already completed")
+			return
+		}
+		slog.Error("setup: create user failed", "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	type setupData struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewEncoder(w).Encode(struct {
+		Data setupData `json:"data"`
+	}{Data: setupData{Username: user.Username}}); err != nil {
+		slog.Error("setup: failed to write response", "err", err)
+	}
 }
 
 func writeJSONError(w http.ResponseWriter, status int, msg string) {

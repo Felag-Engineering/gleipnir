@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,11 +17,16 @@ import (
 
 // mockAuthQuerier implements AuthQuerier for testing.
 type mockAuthQuerier struct {
-	user            db.User
-	getUserErr      error
-	createdSession  db.Session
+	user             db.User
+	getUserErr       error
+	createdSession   db.Session
 	createSessionErr error
 	deleteSessionErr error
+	userCount        int64
+	countUsersErr    error
+	createdUser         db.User
+	createUserErr       error
+	createFirstUserErr  error
 }
 
 func (m *mockAuthQuerier) GetUserByUsername(_ context.Context, _ string) (db.User, error) {
@@ -44,6 +50,42 @@ func (m *mockAuthQuerier) CreateSession(_ context.Context, arg db.CreateSessionP
 
 func (m *mockAuthQuerier) DeleteSessionByToken(_ context.Context, _ string) error {
 	return m.deleteSessionErr
+}
+
+func (m *mockAuthQuerier) CountUsers(_ context.Context) (int64, error) {
+	return m.userCount, m.countUsersErr
+}
+
+func (m *mockAuthQuerier) CreateUser(_ context.Context, arg db.CreateUserParams) (db.User, error) {
+	if m.createUserErr != nil {
+		return db.User{}, m.createUserErr
+	}
+	u := db.User{
+		ID:           arg.ID,
+		Username:     arg.Username,
+		PasswordHash: arg.PasswordHash,
+		CreatedAt:    arg.CreatedAt,
+	}
+	m.createdUser = u
+	return u, nil
+}
+
+func (m *mockAuthQuerier) CreateFirstUser(_ context.Context, arg db.CreateFirstUserParams) (db.User, error) {
+	if m.createFirstUserErr != nil {
+		return db.User{}, m.createFirstUserErr
+	}
+	// Simulate the atomic WHERE clause: if users already exist, return no rows.
+	if m.userCount > 0 {
+		return db.User{}, sql.ErrNoRows
+	}
+	u := db.User{
+		ID:           arg.ID,
+		Username:     arg.Username,
+		PasswordHash: arg.PasswordHash,
+		CreatedAt:    arg.CreatedAt,
+	}
+	m.createdUser = u
+	return u, nil
 }
 
 func makeUser(username string, deactivated bool) db.User {
@@ -252,6 +294,162 @@ func TestHandler_Logout(t *testing.T) {
 				}
 				if sessionCookie.MaxAge != -1 {
 					t.Errorf("cookie MaxAge = %d, want -1 (clear)", sessionCookie.MaxAge)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_Status(t *testing.T) {
+	cases := []struct {
+		name       string
+		querier    *mockAuthQuerier
+		wantStatus int
+		wantSetup  bool
+	}{
+		{
+			name:       "no users returns setup_required true",
+			querier:    &mockAuthQuerier{userCount: 0},
+			wantStatus: http.StatusOK,
+			wantSetup:  true,
+		},
+		{
+			name:       "users exist returns setup_required false",
+			querier:    &mockAuthQuerier{userCount: 1},
+			wantStatus: http.StatusOK,
+			wantSetup:  false,
+		},
+		{
+			name:       "DB error returns 500",
+			querier:    &mockAuthQuerier{countUsersErr: sql.ErrConnDone},
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHandler(tc.querier)
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+			rec := httptest.NewRecorder()
+
+			h.Status(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+
+			if rec.Code == http.StatusOK {
+				var resp struct {
+					Data struct {
+						SetupRequired bool `json:"setup_required"`
+					} `json:"data"`
+				}
+				if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				if resp.Data.SetupRequired != tc.wantSetup {
+					t.Errorf("setup_required = %v, want %v", resp.Data.SetupRequired, tc.wantSetup)
+				}
+			}
+		})
+	}
+}
+
+func setupBody(username, password string) string {
+	return fmt.Sprintf(`{"username":%q,"password":%q}`, username, password)
+}
+
+func TestHandler_Setup(t *testing.T) {
+	dbErr := errors.New("db failure")
+
+	cases := []struct {
+		name         string
+		body         string
+		querier      *mockAuthQuerier
+		wantStatus   int
+		wantUsername string
+	}{
+		{
+			name:         "success creates user and returns 201",
+			body:         setupBody("admin", "securepassword"),
+			querier:      &mockAuthQuerier{userCount: 0},
+			wantStatus:   http.StatusCreated,
+			wantUsername: "admin",
+		},
+		{
+			name:       "returns 403 when users already exist",
+			body:       setupBody("admin", "securepassword"),
+			querier:    &mockAuthQuerier{userCount: 1},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "missing username returns 400",
+			body:       `{"password":"securepassword"}`,
+			querier:    &mockAuthQuerier{userCount: 0},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "missing password returns 400",
+			body:       `{"username":"admin"}`,
+			querier:    &mockAuthQuerier{userCount: 0},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "password too short returns 400",
+			body:       setupBody("admin", "short"),
+			querier:    &mockAuthQuerier{userCount: 0},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "username too long returns 400",
+			body:       setupBody("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "securepassword"),
+			querier:    &mockAuthQuerier{userCount: 0},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "username with invalid characters returns 400",
+			body:       setupBody("admin@host", "securepassword"),
+			querier:    &mockAuthQuerier{userCount: 0},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid JSON returns 400",
+			body:       "not-json",
+			querier:    &mockAuthQuerier{userCount: 0},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "CreateFirstUser DB error returns 500",
+			body:       setupBody("admin", "securepassword"),
+			querier:    &mockAuthQuerier{userCount: 0, createFirstUserErr: dbErr},
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHandler(tc.querier)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/setup", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			h.Setup(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+
+			if tc.wantUsername != "" && rec.Code == http.StatusCreated {
+				var resp struct {
+					Data struct {
+						Username string `json:"username"`
+					} `json:"data"`
+				}
+				if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				if resp.Data.Username != tc.wantUsername {
+					t.Errorf("username = %q, want %q", resp.Data.Username, tc.wantUsername)
 				}
 			}
 		})

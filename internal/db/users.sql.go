@@ -20,6 +20,39 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const createFirstUser = `-- name: CreateFirstUser :one
+INSERT INTO users (id, username, password_hash, created_at)
+SELECT ?1, ?2, ?3, ?4
+WHERE (SELECT COUNT(*) FROM users WHERE deactivated_at IS NULL) = 0
+RETURNING id, username, password_hash, created_at, deactivated_at
+`
+
+type CreateFirstUserParams struct {
+	ID           string `json:"id"`
+	Username     string `json:"username"`
+	PasswordHash string `json:"password_hash"`
+	CreatedAt    string `json:"created_at"`
+}
+
+// Atomic first-user creation: only inserts when no active users exist.
+func (q *Queries) CreateFirstUser(ctx context.Context, arg CreateFirstUserParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, createFirstUser,
+		arg.ID,
+		arg.Username,
+		arg.PasswordHash,
+		arg.CreatedAt,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.PasswordHash,
+		&i.CreatedAt,
+		&i.DeactivatedAt,
+	)
+	return i, err
+}
+
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, username, password_hash, created_at)
 VALUES (?1, ?2, ?3, ?4)
