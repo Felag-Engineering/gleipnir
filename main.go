@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rapp992/gleipnir/frontend"
 	"github.com/rapp992/gleipnir/internal/api"
+	"github.com/rapp992/gleipnir/internal/approval"
 	"github.com/rapp992/gleipnir/internal/auth"
 	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/db"
@@ -64,6 +65,13 @@ func run(cfg config.Config) error {
 
 	broadcaster := sse.NewBroadcaster()
 	sseHandler := sse.NewHandler(broadcaster)
+
+	approvalScanner := approval.NewScanner(
+		store,
+		cfg.ApprovalScanInterval,
+		approval.WithPublisher(broadcaster),
+	)
+	approvalScanner.Start(ctx)
 	// SSE events are unprotected so the UI can receive events before auth UI is
 	// implemented (follow-up issues will add login/logout).
 	r.Get("/api/v1/events", sseHandler.ServeHTTP)

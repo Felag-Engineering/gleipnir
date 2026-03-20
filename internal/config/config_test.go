@@ -16,6 +16,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"GLEIPNIR_HTTP_READ_TIMEOUT",
 		"GLEIPNIR_HTTP_WRITE_TIMEOUT",
 		"GLEIPNIR_HTTP_IDLE_TIMEOUT",
+		"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
 	} {
 		t.Setenv(key, "")
 	}
@@ -42,6 +43,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.IdleTimeout != 60*time.Second {
 		t.Errorf("IdleTimeout: got %v, want 60s", cfg.IdleTimeout)
+	}
+	if cfg.ApprovalScanInterval != 30*time.Second {
+		t.Errorf("ApprovalScanInterval: got %v, want 30s", cfg.ApprovalScanInterval)
 	}
 }
 
@@ -105,6 +109,15 @@ func TestLoad_Overrides(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "approval scan interval",
+			env:  map[string]string{"GLEIPNIR_APPROVAL_SCAN_INTERVAL": "1m"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.ApprovalScanInterval != time.Minute {
+					t.Errorf("got %v, want 1m", cfg.ApprovalScanInterval)
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -114,6 +127,7 @@ func TestLoad_Overrides(t *testing.T) {
 				"GLEIPNIR_DB_PATH", "GLEIPNIR_LISTEN_ADDR", "GLEIPNIR_LOG_LEVEL",
 				"GLEIPNIR_MCP_TIMEOUT", "GLEIPNIR_HTTP_READ_TIMEOUT",
 				"GLEIPNIR_HTTP_WRITE_TIMEOUT", "GLEIPNIR_HTTP_IDLE_TIMEOUT",
+				"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
 			} {
 				t.Setenv(key, "")
 			}
@@ -165,6 +179,7 @@ func TestLoad_InvalidDuration(t *testing.T) {
 		{"invalid read timeout falls back", "GLEIPNIR_HTTP_READ_TIMEOUT", 15 * time.Second},
 		{"invalid write timeout falls back", "GLEIPNIR_HTTP_WRITE_TIMEOUT", 15 * time.Second},
 		{"invalid idle timeout falls back", "GLEIPNIR_HTTP_IDLE_TIMEOUT", 60 * time.Second},
+		{"invalid approval scan interval falls back", "GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30 * time.Second},
 	}
 
 	for _, tc := range tests {
@@ -181,6 +196,8 @@ func TestLoad_InvalidDuration(t *testing.T) {
 				got = cfg.WriteTimeout
 			case "GLEIPNIR_HTTP_IDLE_TIMEOUT":
 				got = cfg.IdleTimeout
+			case "GLEIPNIR_APPROVAL_SCAN_INTERVAL":
+				got = cfg.ApprovalScanInterval
 			}
 			if got != tc.want {
 				t.Errorf("%s: got %v, want %v", tc.key, got, tc.want)

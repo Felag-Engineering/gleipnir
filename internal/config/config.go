@@ -19,26 +19,28 @@ const DefaultPerCallMaxTokens = 8192
 
 // Config holds all runtime configuration for the Gleipnir server.
 type Config struct {
-	DBPath       string
-	ListenAddr   string
-	LogLevel     slog.Level
-	MCPTimeout   time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
+	DBPath                string
+	ListenAddr            string
+	LogLevel              slog.Level
+	MCPTimeout            time.Duration
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
+	IdleTimeout           time.Duration
+	ApprovalScanInterval  time.Duration
 }
 
 // Load reads configuration from environment variables and applies defaults
 // for any values not set or invalid.
 func Load() Config {
 	return Config{
-		DBPath:       envOrDefault("GLEIPNIR_DB_PATH", "/data/gleipnir.db"),
-		ListenAddr:   envOrDefault("GLEIPNIR_LISTEN_ADDR", ":8080"),
-		LogLevel:     envLogLevel("GLEIPNIR_LOG_LEVEL", slog.LevelInfo),
-		MCPTimeout:   envDuration("GLEIPNIR_MCP_TIMEOUT", 30*time.Second),
-		ReadTimeout:  envDuration("GLEIPNIR_HTTP_READ_TIMEOUT", 15*time.Second),
-		WriteTimeout: envDuration("GLEIPNIR_HTTP_WRITE_TIMEOUT", 15*time.Second),
-		IdleTimeout:  envDuration("GLEIPNIR_HTTP_IDLE_TIMEOUT", 60*time.Second),
+		DBPath:               envOrDefault("GLEIPNIR_DB_PATH", "/data/gleipnir.db"),
+		ListenAddr:           envOrDefault("GLEIPNIR_LISTEN_ADDR", ":8080"),
+		LogLevel:             envLogLevel("GLEIPNIR_LOG_LEVEL", slog.LevelInfo),
+		MCPTimeout:           envDuration("GLEIPNIR_MCP_TIMEOUT", 30*time.Second),
+		ReadTimeout:          envDuration("GLEIPNIR_HTTP_READ_TIMEOUT", 15*time.Second),
+		WriteTimeout:         envDuration("GLEIPNIR_HTTP_WRITE_TIMEOUT", 15*time.Second),
+		IdleTimeout:          envDuration("GLEIPNIR_HTTP_IDLE_TIMEOUT", 60*time.Second),
+		ApprovalScanInterval: envDuration("GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30*time.Second),
 	}
 }
 
