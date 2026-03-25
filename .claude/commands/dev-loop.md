@@ -16,9 +16,28 @@ You are a development pipeline coordinator. Execute the following pipeline for G
 
 ---
 
+## Shared state
+
+All pipeline artifacts are written to `.dev-loop/` in the repo root. This directory is created at the start and cleaned up at the end.
+
+- `.dev-loop/plan.md` — the architecture plan (written in Stage 3, possibly revised in Stage 4)
+- `.dev-loop/review-feedback.md` — accumulated code-review feedback across cycles (appended in Stage 6)
+
+These files are the source of truth for passing context between agents. When a stage says "pass the plan", tell the agent to read `.dev-loop/plan.md`. Do not paste plan contents into agent prompts — instruct agents to read the file.
+
+---
+
 ## Pipeline
 
 Execute these stages **in order**. Report progress clearly between stages.
+
+### Stage 0 — Setup
+
+```bash
+mkdir -p .dev-loop
+```
+
+Verify `gh auth status` succeeds. If not, stop immediately and tell the user.
 
 ### Stage 1 — Fetch Issue
 
@@ -43,7 +62,7 @@ Pass it:
 - The full issue title and body
 - Instruction to follow its system prompt output format exactly
 
-Save the plan output — you will need it for every subsequent stage.
+Write the agent's plan output to `.dev-loop/plan.md`. This file is the canonical plan for all subsequent stages.
 
 ### Stage 4 — Plan Review (adversarial)
 
@@ -51,23 +70,30 @@ Save the plan output — you will need it for every subsequent stage.
 
 Pass it:
 - The full issue title and body
-- The architect's plan from Stage 3
+- Instruction to read the plan from `.dev-loop/plan.md`
 - Instruction to verify claims against the actual codebase
 
 **Decision point:**
-- If verdict is **APPROVE** → proceed to Stage 5 with the original plan
-- If verdict is **REVISE** → fold the reviewer's corrections into the plan, then proceed
+- If verdict is **APPROVE** → proceed to Stage 5
+- If verdict is **REVISE** → **use the `architect` agent** again, passing it:
+  - The original issue title and body
+  - Instruction to read the current plan from `.dev-loop/plan.md`
+  - The reviewer's specific corrections and concerns
+  - Instruction to produce a revised plan addressing the feedback
+
+  Overwrite `.dev-loop/plan.md` with the revised plan, then proceed to Stage 5.
 
 ### Stage 5 — Implement
 
-**Use the `developer` agent** to implement the (possibly revised) plan.
+**Use the `developer` agent** to implement the plan.
 
 Pass it:
 - The issue title and body
-- The final plan (original or revised)
-- If this is a revision cycle: the code reviewer's feedback from the previous cycle
+- Instruction to read the plan from `.dev-loop/plan.md`
+- If this is a revision cycle: instruction to read accumulated feedback from `.dev-loop/review-feedback.md`
+- Instruction to end its response with a **structured implementation summary** under a `## Implementation Summary` heading, listing: files changed, tests added/modified, and any deviations from the plan
 
-The developer will modify files, write tests, and run the test suite.
+After the developer finishes, append its implementation summary to `.dev-loop/review-feedback.md` under a `## Cycle N — Implementation` heading.
 
 ### Stage 6 — Code Review
 
@@ -75,19 +101,21 @@ The developer will modify files, write tests, and run the test suite.
 
 Pass it:
 - The issue title and body
-- The plan
-- The developer's implementation summary
+- Instruction to read the plan from `.dev-loop/plan.md`
+- Instruction to read `.dev-loop/review-feedback.md` for prior cycle context
 - Instruction to run `git diff` and read modified files in full context
 
 **Decision point:**
 - If verdict is **APPROVE** → proceed to Stage 7
-- If verdict is **CHANGES_REQUESTED** → go back to Stage 5 with the feedback
+- If verdict is **CHANGES_REQUESTED** → append the reviewer's feedback to `.dev-loop/review-feedback.md` under a `## Cycle N — Review Feedback` heading, then go back to Stage 5
 - **Maximum 3 review cycles.** If cycle 3 still gets CHANGES_REQUESTED, log a warning and proceed to Stage 7 anyway.
 
 ### Stage 7 — Create PR
 
+Stage changed files using specific file paths (not `git add -A`). Use the plan and implementation summary to identify which files were modified, and verify with `git status`.
+
 ```bash
-git add -A
+git add <file1> <file2> ...
 git commit -m "feat: <issue-title> (#<issue-number>)
 
 Implemented via agentic development pipeline.
@@ -116,17 +144,17 @@ The PR body should include:
 
 After the PR is created, wait for CI checks to complete and fix any failures.
 
-1. **Poll for CI status** using `gh pr checks <pr-number> --watch` (timeout after 10 minutes).
+1. **Poll for CI status** using `gh pr checks <pr-number>`. Check every 30 seconds, timeout after 10 minutes. Do not use `--watch` as it blocks without a timeout.
 2. **If all checks pass** → done. Print final success summary.
 3. **If any check fails:**
    a. Fetch the failed job logs: `gh run view <run-id> --log-failed`
    b. Analyze the failure output to identify which tests failed and why.
    c. **Use the `developer` agent** to fix the failing tests. Pass it:
       - The issue title and body
-      - The plan
+      - The plan (from the PR body `<details>` block or from memory if still in context)
       - The full failure log output
       - Instruction to fix the root cause (not skip/disable tests)
-   d. Commit the fix, push, and poll CI again.
+   d. Stage specific files, commit the fix, push, and poll CI again.
    e. **Maximum 3 fix cycles.** If cycle 3 still fails, stop and tell the user which checks are still failing so they can intervene.
 
 ## Rules
@@ -136,3 +164,4 @@ After the PR is created, wait for CI checks to complete and fix any failures.
 3. **Report progress.** After each stage, print a clear status line like: `✅ Stage 3 complete: Plan produced (12 files identified)`
 4. **Stop on errors.** If `gh` is not authenticated, tests catastrophically fail, or git operations fail, stop and tell the user what went wrong.
 5. **Respect scope.** Only change files identified in the plan. Do not refactor unrelated code.
+6. **Pass context by file, not by pasting.** Tell agents to read `.dev-loop/plan.md` and `.dev-loop/review-feedback.md` rather than copying their contents into prompts.

@@ -1,12 +1,25 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash(git commit*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "go vet ./... && go build ./...",
+            "timeout": 120,
+            "statusMessage": "Running go vet and go build..."
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "gofmt -w -s ."
+            "command": "gofmt -w -s . && rm -rf .dev-loop"
           }
         ]
       }
