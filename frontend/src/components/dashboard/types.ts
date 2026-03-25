@@ -21,13 +21,10 @@ export interface ApprovalDef {
   startedAt: string;
 }
 
-export const STATUS_CONFIG: Record<RunStatus, {
-  label: string;
-  pulse?: boolean;
-}> = {
+export const STATUS_CONFIG: Record<RunStatus, { label: string }> = {
   complete:             { label: 'Complete' },
-  running:              { label: 'Running',           pulse: true },
-  waiting_for_approval: { label: 'Awaiting Approval', pulse: true },
+  running:              { label: 'Running' },
+  waiting_for_approval: { label: 'Awaiting Approval' },
   failed:               { label: 'Failed' },
   interrupted:          { label: 'Interrupted' },
   pending:              { label: 'Pending' },

@@ -16,11 +16,9 @@ const VARIANT: Record<RunStatus, string> = {
 };
 
 export function StatusBadge({ status }: StatusBadgeProps) {
-  const config = STATUS_CONFIG[status];
   return (
     <span className={`${styles.badge} ${VARIANT[status]}`}>
-      <span className={`${styles.dot}${config.pulse ? ` ${styles.pulse}` : ''}`} />
-      {config.label}
+      {STATUS_CONFIG[status].label}
     </span>
   );
 }
