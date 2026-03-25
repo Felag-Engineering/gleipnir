@@ -14,10 +14,12 @@ import (
 
 // mockQuerier implements SessionQuerier for testing.
 type mockQuerier struct {
-	session db.Session
-	err     error
-	user    db.User
-	userErr error
+	session      db.Session
+	err          error
+	user         db.User
+	userErr      error
+	roles        []string
+	listRolesErr error
 }
 
 func (m *mockQuerier) GetSessionByToken(_ context.Context, _ string) (db.Session, error) {
@@ -26,6 +28,10 @@ func (m *mockQuerier) GetSessionByToken(_ context.Context, _ string) (db.Session
 
 func (m *mockQuerier) GetUser(_ context.Context, _ string) (db.User, error) {
 	return m.user, m.userErr
+}
+
+func (m *mockQuerier) ListRolesByUser(_ context.Context, _ string) ([]string, error) {
+	return m.roles, m.listRolesErr
 }
 
 // sentinel handler that records whether it was called and injects the context
@@ -64,6 +70,7 @@ func TestRequireAuth(t *testing.T) {
 		wantStatus    int
 		wantUserInCtx bool
 		wantUsername  string
+		wantRoles     []string
 	}{
 		{
 			name:   "valid session passes through and populates username",
@@ -80,6 +87,29 @@ func TestRequireAuth(t *testing.T) {
 					ID:       "user1",
 					Username: "alice",
 				},
+				roles: []string{"admin", "operator"},
+			},
+			wantStatus:    http.StatusOK,
+			wantUserInCtx: true,
+			wantUsername:  "alice",
+			wantRoles:     []string{"admin", "operator"},
+		},
+		{
+			name:   "valid session with no roles populates empty roles slice",
+			cookie: &http.Cookie{Name: sessionCookieName, Value: "good-token"},
+			querier: &mockQuerier{
+				session: db.Session{
+					ID:        "sess1",
+					UserID:    "user1",
+					Token:     "good-token",
+					CreatedAt: time.Now().UTC().Format(time.RFC3339),
+					ExpiresAt: futureExpiry(),
+				},
+				user: db.User{
+					ID:       "user1",
+					Username: "alice",
+				},
+				roles: nil,
 			},
 			wantStatus:    http.StatusOK,
 			wantUserInCtx: true,
@@ -180,6 +210,26 @@ func TestRequireAuth(t *testing.T) {
 			wantStatus:    http.StatusUnauthorized,
 			wantUserInCtx: false,
 		},
+		{
+			name:   "role lookup error returns 401",
+			cookie: &http.Cookie{Name: sessionCookieName, Value: "good-token"},
+			querier: &mockQuerier{
+				session: db.Session{
+					ID:        "sess6",
+					UserID:    "user6",
+					Token:     "good-token",
+					CreatedAt: time.Now().UTC().Format(time.RFC3339),
+					ExpiresAt: futureExpiry(),
+				},
+				user: db.User{
+					ID:       "user6",
+					Username: "charlie",
+				},
+				listRolesErr: sql.ErrConnDone,
+			},
+			wantStatus:    http.StatusUnauthorized,
+			wantUserInCtx: false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -208,6 +258,17 @@ func TestRequireAuth(t *testing.T) {
 				if tc.wantUsername != "" && u.Username != tc.wantUsername {
 					t.Errorf("UserContext.Username = %q, want %q", u.Username, tc.wantUsername)
 				}
+				if tc.wantRoles != nil {
+					if len(u.Roles) != len(tc.wantRoles) {
+						t.Errorf("UserContext.Roles = %v, want %v", u.Roles, tc.wantRoles)
+					} else {
+						for i, r := range tc.wantRoles {
+							if u.Roles[i] != r {
+								t.Errorf("UserContext.Roles[%d] = %q, want %q", i, u.Roles[i], r)
+							}
+						}
+					}
+				}
 			}
 		})
 	}
@@ -225,6 +286,7 @@ func TestUserFromContext(t *testing.T) {
 		ctx := context.WithValue(context.Background(), contextKey{}, &UserContext{
 			ID:       "test-id",
 			Username: "test-user",
+			Roles:    []string{"admin"},
 		})
 		u, ok := UserFromContext(ctx)
 		if !ok {
@@ -232,6 +294,9 @@ func TestUserFromContext(t *testing.T) {
 		}
 		if u.ID != "test-id" {
 			t.Errorf("ID = %q, want %q", u.ID, "test-id")
+		}
+		if len(u.Roles) != 1 || u.Roles[0] != "admin" {
+			t.Errorf("Roles = %v, want [admin]", u.Roles)
 		}
 	})
 }

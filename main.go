@@ -21,6 +21,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
+	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
 	"github.com/rapp992/gleipnir/internal/sse"
 	"github.com/rapp992/gleipnir/internal/trigger"
@@ -91,7 +92,7 @@ func run(cfg config.Config) error {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
 
-	authHandler := auth.NewHandler(store.Queries())
+	authHandler := auth.NewHandler(store.Queries(), store.DB())
 	r.Route("/api/v1/auth", func(r chi.Router) {
 		r.Get("/status", authHandler.Status)
 		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/setup", authHandler.Setup)
@@ -106,13 +107,13 @@ func run(cfg config.Config) error {
 		r.Use(requireAuth)
 
 		manualTriggerHandler := trigger.NewManualTriggerHandler(store, launcher)
-		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
+		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleOperator)).Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
 
 		runsHandler := trigger.NewRunsHandler(store, runManager)
-		r.Get("/api/v1/runs", runsHandler.List)
-		r.Get("/api/v1/runs/{runID}", runsHandler.Get)
-		r.Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)
-		r.Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
+		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs", runsHandler.List)
+		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}", runsHandler.Get)
+		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)
+		r.With(auth.RequireRole(model.RoleOperator)).Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
 
 		policySvc := policy.NewService(store, nil, policy.NewAnthropicModelValidator(&claudeClient))
 

@@ -4,18 +4,20 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/model"
 )
 
-// mockAuthQuerier implements AuthQuerier for testing.
+// mockAuthQuerier implements AuthQuerier for testing Login, Logout, and Status.
+// Setup tests use a real DB (see newTestDB).
 type mockAuthQuerier struct {
 	user             db.User
 	getUserErr       error
@@ -24,9 +26,6 @@ type mockAuthQuerier struct {
 	deleteSessionErr error
 	userCount        int64
 	countUsersErr    error
-	createdUser         db.User
-	createUserErr       error
-	createFirstUserErr  error
 }
 
 func (m *mockAuthQuerier) GetUserByUsername(_ context.Context, _ string) (db.User, error) {
@@ -56,36 +55,16 @@ func (m *mockAuthQuerier) CountUsers(_ context.Context) (int64, error) {
 	return m.userCount, m.countUsersErr
 }
 
-func (m *mockAuthQuerier) CreateUser(_ context.Context, arg db.CreateUserParams) (db.User, error) {
-	if m.createUserErr != nil {
-		return db.User{}, m.createUserErr
-	}
-	u := db.User{
-		ID:           arg.ID,
-		Username:     arg.Username,
-		PasswordHash: arg.PasswordHash,
-		CreatedAt:    arg.CreatedAt,
-	}
-	m.createdUser = u
-	return u, nil
+func (m *mockAuthQuerier) CreateUser(_ context.Context, _ db.CreateUserParams) (db.User, error) {
+	return db.User{}, nil
 }
 
-func (m *mockAuthQuerier) CreateFirstUser(_ context.Context, arg db.CreateFirstUserParams) (db.User, error) {
-	if m.createFirstUserErr != nil {
-		return db.User{}, m.createFirstUserErr
-	}
-	// Simulate the atomic WHERE clause: if users already exist, return no rows.
-	if m.userCount > 0 {
-		return db.User{}, sql.ErrNoRows
-	}
-	u := db.User{
-		ID:           arg.ID,
-		Username:     arg.Username,
-		PasswordHash: arg.PasswordHash,
-		CreatedAt:    arg.CreatedAt,
-	}
-	m.createdUser = u
-	return u, nil
+func (m *mockAuthQuerier) CreateFirstUser(_ context.Context, _ db.CreateFirstUserParams) (db.User, error) {
+	return db.User{}, nil
+}
+
+func (m *mockAuthQuerier) AssignRole(_ context.Context, _ db.AssignRoleParams) error {
+	return nil
 }
 
 func makeUser(username string, deactivated bool) db.User {
@@ -188,7 +167,7 @@ func TestHandler_Login(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := NewHandler(tc.querier)
+			h := NewHandler(tc.querier, nil)
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(tc.body))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
@@ -267,7 +246,7 @@ func TestHandler_Logout(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := NewHandler(tc.querier)
+			h := NewHandler(tc.querier, nil)
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
 			if tc.cookie != nil {
 				req.AddCookie(tc.cookie)
@@ -328,7 +307,7 @@ func TestHandler_Status(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := NewHandler(tc.querier)
+			h := NewHandler(tc.querier, nil)
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
 			rec := httptest.NewRecorder()
 
@@ -359,99 +338,203 @@ func setupBody(username, password string) string {
 	return fmt.Sprintf(`{"username":%q,"password":%q}`, username, password)
 }
 
-func TestHandler_Setup(t *testing.T) {
-	dbErr := errors.New("db failure")
-
-	cases := []struct {
-		name         string
-		body         string
-		querier      *mockAuthQuerier
-		wantStatus   int
-		wantUsername string
-	}{
-		{
-			name:         "success creates user and returns 201",
-			body:         setupBody("admin", "securepassword"),
-			querier:      &mockAuthQuerier{userCount: 0},
-			wantStatus:   http.StatusCreated,
-			wantUsername: "admin",
-		},
-		{
-			name:       "returns 403 when users already exist",
-			body:       setupBody("admin", "securepassword"),
-			querier:    &mockAuthQuerier{userCount: 1},
-			wantStatus: http.StatusForbidden,
-		},
-		{
-			name:       "missing username returns 400",
-			body:       `{"password":"securepassword"}`,
-			querier:    &mockAuthQuerier{userCount: 0},
-			wantStatus: http.StatusBadRequest,
-		},
-		{
-			name:       "missing password returns 400",
-			body:       `{"username":"admin"}`,
-			querier:    &mockAuthQuerier{userCount: 0},
-			wantStatus: http.StatusBadRequest,
-		},
-		{
-			name:       "password too short returns 400",
-			body:       setupBody("admin", "short"),
-			querier:    &mockAuthQuerier{userCount: 0},
-			wantStatus: http.StatusBadRequest,
-		},
-		{
-			name:       "username too long returns 400",
-			body:       setupBody("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "securepassword"),
-			querier:    &mockAuthQuerier{userCount: 0},
-			wantStatus: http.StatusBadRequest,
-		},
-		{
-			name:       "username with invalid characters returns 400",
-			body:       setupBody("admin@host", "securepassword"),
-			querier:    &mockAuthQuerier{userCount: 0},
-			wantStatus: http.StatusBadRequest,
-		},
-		{
-			name:       "invalid JSON returns 400",
-			body:       "not-json",
-			querier:    &mockAuthQuerier{userCount: 0},
-			wantStatus: http.StatusBadRequest,
-		},
-		{
-			name:       "CreateFirstUser DB error returns 500",
-			body:       setupBody("admin", "securepassword"),
-			querier:    &mockAuthQuerier{userCount: 0, createFirstUserErr: dbErr},
-			wantStatus: http.StatusInternalServerError,
-		},
+// newTestDB opens a temporary SQLite database, applies migrations, and returns
+// the underlying *sql.DB. The store is closed automatically via t.Cleanup.
+func newTestDB(t *testing.T) (*db.Store, *sql.DB) {
+	t.Helper()
+	s, err := db.Open(filepath.Join(t.TempDir(), "auth_test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
 	}
+	t.Cleanup(func() { s.Close() })
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+	return s, s.DB()
+}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			h := NewHandler(tc.querier)
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/setup", strings.NewReader(tc.body))
+func TestHandler_Setup(t *testing.T) {
+	// Input-validation cases do not reach the DB, so we pass a real (empty) DB
+	// but the handler short-circuits before any transaction begins.
+	t.Run("missing username returns 400", func(t *testing.T) {
+		_, sqlDB := newTestDB(t)
+		h := NewHandler(&mockAuthQuerier{}, sqlDB)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/setup", strings.NewReader(`{"password":"securepassword"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.Setup(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("missing password returns 400", func(t *testing.T) {
+		_, sqlDB := newTestDB(t)
+		h := NewHandler(&mockAuthQuerier{}, sqlDB)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/setup", strings.NewReader(`{"username":"admin"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.Setup(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("password too short returns 400", func(t *testing.T) {
+		_, sqlDB := newTestDB(t)
+		h := NewHandler(&mockAuthQuerier{}, sqlDB)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/setup", strings.NewReader(setupBody("admin", "short")))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.Setup(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("username too long returns 400", func(t *testing.T) {
+		_, sqlDB := newTestDB(t)
+		h := NewHandler(&mockAuthQuerier{}, sqlDB)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/setup",
+			strings.NewReader(setupBody("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "securepassword")))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.Setup(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("username with invalid characters returns 400", func(t *testing.T) {
+		_, sqlDB := newTestDB(t)
+		h := NewHandler(&mockAuthQuerier{}, sqlDB)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/setup", strings.NewReader(setupBody("admin@host", "securepassword")))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.Setup(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("invalid JSON returns 400", func(t *testing.T) {
+		_, sqlDB := newTestDB(t)
+		h := NewHandler(&mockAuthQuerier{}, sqlDB)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/setup", strings.NewReader("not-json"))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.Setup(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+	})
+
+	// The following cases exercise the transaction path and use a real DB.
+
+	t.Run("success creates user with admin role and returns 201", func(t *testing.T) {
+		store, sqlDB := newTestDB(t)
+		h := NewHandler(store.Queries(), sqlDB)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/setup", strings.NewReader(setupBody("admin", "securepassword")))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.Setup(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+		}
+		var resp struct {
+			Data struct {
+				Username string `json:"username"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if resp.Data.Username != "admin" {
+			t.Errorf("username = %q, want %q", resp.Data.Username, "admin")
+		}
+
+		// Verify user and admin role were persisted atomically.
+		user, err := store.Queries().GetUserByUsername(context.Background(), "admin")
+		if err != nil {
+			t.Fatalf("GetUserByUsername: %v", err)
+		}
+		roles, err := store.Queries().ListRolesByUser(context.Background(), user.ID)
+		if err != nil {
+			t.Fatalf("ListRolesByUser: %v", err)
+		}
+		if len(roles) != 1 || roles[0] != string(model.RoleAdmin) {
+			t.Errorf("roles = %v, want [%s]", roles, model.RoleAdmin)
+		}
+	})
+
+	t.Run("returns 403 when a user already exists", func(t *testing.T) {
+		store, sqlDB := newTestDB(t)
+		// Seed a pre-existing user so the atomic guard rejects the second creation.
+		_, err := store.Queries().CreateUser(context.Background(), db.CreateUserParams{
+			ID:           model.NewULID(),
+			Username:     "existing",
+			PasswordHash: "hash",
+			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		})
+		if err != nil {
+			t.Fatalf("seed user: %v", err)
+		}
+
+		h := NewHandler(store.Queries(), sqlDB)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/setup", strings.NewReader(setupBody("admin", "securepassword")))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.Setup(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+		}
+	})
+
+	// Verify atomicity: if setup is called twice concurrently the second call
+	// must not leave a user without roles (the original bug). We simulate this
+	// by running setup twice sequentially on the same DB — the second must 403.
+	t.Run("second concurrent setup attempt does not create a roleless user", func(t *testing.T) {
+		store, sqlDB := newTestDB(t)
+		h := NewHandler(store.Queries(), sqlDB)
+
+		makeReq := func() *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/setup", strings.NewReader(setupBody("admin", "securepassword")))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
-
 			h.Setup(rec, req)
+			return rec
+		}
 
-			if rec.Code != tc.wantStatus {
-				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
-			}
+		first := makeReq()
+		if first.Code != http.StatusCreated {
+			t.Fatalf("first setup: status = %d, want 201", first.Code)
+		}
+		second := makeReq()
+		if second.Code != http.StatusForbidden {
+			t.Fatalf("second setup: status = %d, want 403", second.Code)
+		}
 
-			if tc.wantUsername != "" && rec.Code == http.StatusCreated {
-				var resp struct {
-					Data struct {
-						Username string `json:"username"`
-					} `json:"data"`
-				}
-				if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-					t.Fatalf("decode response: %v", err)
-				}
-				if resp.Data.Username != tc.wantUsername {
-					t.Errorf("username = %q, want %q", resp.Data.Username, tc.wantUsername)
-				}
-			}
-		})
-	}
+		// Exactly one user must exist and they must have the admin role.
+		var count int64
+		if err := sqlDB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+			t.Fatalf("count users: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("user count = %d, want 1", count)
+		}
+
+		user, err := store.Queries().GetUserByUsername(context.Background(), "admin")
+		if err != nil {
+			t.Fatalf("GetUserByUsername: %v", err)
+		}
+		roles, err := store.Queries().ListRolesByUser(context.Background(), user.ID)
+		if err != nil {
+			t.Fatalf("ListRolesByUser: %v", err)
+		}
+		if len(roles) != 1 || roles[0] != string(model.RoleAdmin) {
+			t.Errorf("roles = %v, want [%s]", roles, model.RoleAdmin)
+		}
+	})
 }

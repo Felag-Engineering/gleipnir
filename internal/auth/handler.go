@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -34,16 +35,20 @@ type AuthQuerier interface {
 	CountUsers(ctx context.Context) (int64, error)
 	CreateUser(ctx context.Context, arg db.CreateUserParams) (db.User, error)
 	CreateFirstUser(ctx context.Context, arg db.CreateFirstUserParams) (db.User, error)
+	AssignRole(ctx context.Context, arg db.AssignRoleParams) error
 }
 
 // Handler handles the login and logout HTTP endpoints.
 type Handler struct {
-	q AuthQuerier
+	q  AuthQuerier
+	db *sql.DB
 }
 
 // NewHandler returns a Handler backed by the given querier.
-func NewHandler(q AuthQuerier) *Handler {
-	return &Handler{q: q}
+// db is required for the Setup endpoint, which needs a transaction to
+// atomically create the first user and assign their role.
+func NewHandler(q AuthQuerier, database *sql.DB) *Handler {
+	return &Handler{q: q, db: database}
 }
 
 // dummyHash is used for constant-time password checking when a user is not
@@ -241,18 +246,13 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.q.CreateFirstUser(r.Context(), db.CreateFirstUserParams{
-		ID:           model.NewULID(),
-		Username:     req.Username,
-		PasswordHash: hash,
-		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
-	})
+	user, err := h.createFirstUserWithRole(r.Context(), req.Username, hash)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSONError(w, http.StatusForbidden, "setup already completed")
 			return
 		}
-		slog.Error("setup: create user failed", "err", err)
+		slog.Error("setup: create first user failed", "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -267,6 +267,50 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	}{Data: setupData{Username: user.Username}}); err != nil {
 		slog.Error("setup: failed to write response", "err", err)
 	}
+}
+
+// createFirstUserWithRole atomically creates the first user and assigns the
+// admin role inside a single transaction. If CreateFirstUser returns
+// sql.ErrNoRows (meaning a user already exists), the transaction is rolled back
+// and the error is returned unwrapped so the caller can detect it.
+func (h *Handler) createFirstUserWithRole(ctx context.Context, username, passwordHash string) (db.User, error) {
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return db.User{}, fmt.Errorf("begin setup tx: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.Error("setup: transaction rollback failed", "err", rbErr)
+		}
+	}()
+
+	q := db.New(tx)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	user, err := q.CreateFirstUser(ctx, db.CreateFirstUserParams{
+		ID:           model.NewULID(),
+		Username:     username,
+		PasswordHash: passwordHash,
+		CreatedAt:    now,
+	})
+	if err != nil {
+		// sql.ErrNoRows means the atomic WHERE guard rejected the insert because
+		// a user already exists — propagate unwrapped so Setup can return 403.
+		return db.User{}, err
+	}
+
+	if err := q.AssignRole(ctx, db.AssignRoleParams{
+		UserID:    user.ID,
+		Role:      string(model.RoleAdmin),
+		CreatedAt: now,
+	}); err != nil {
+		return db.User{}, fmt.Errorf("assign admin role: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return db.User{}, fmt.Errorf("commit setup tx: %w", err)
+	}
+	return user, nil
 }
 
 func writeJSONError(w http.ResponseWriter, status int, msg string) {

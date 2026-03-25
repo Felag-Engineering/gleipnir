@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/model"
 )
 
 const sessionCookieName = "gleipnir_session"
@@ -19,6 +20,7 @@ const sessionCookieName = "gleipnir_session"
 type SessionQuerier interface {
 	GetSessionByToken(ctx context.Context, token string) (db.Session, error)
 	GetUser(ctx context.Context, id string) (db.User, error)
+	ListRolesByUser(ctx context.Context, userID string) ([]string, error)
 }
 
 // UserContext holds the authenticated user's identity injected into the
@@ -27,6 +29,17 @@ type SessionQuerier interface {
 type UserContext struct {
 	ID       string
 	Username string
+	Roles    []string
+}
+
+// HasRole reports whether the user holds the given role.
+func (u *UserContext) HasRole(role model.Role) bool {
+	for _, r := range u.Roles {
+		if r == string(role) {
+			return true
+		}
+	}
+	return false
 }
 
 type contextKey struct{}
@@ -89,11 +102,49 @@ func RequireAuth(querier SessionQuerier) func(http.Handler) http.Handler {
 				return
 			}
 
+			roles, err := querier.ListRolesByUser(r.Context(), user.ID)
+			if err != nil {
+				slog.Error("role lookup failed", "user_id", user.ID, "err", err)
+				writeUnauthorized(w, "authentication error")
+				return
+			}
+
 			ctx := context.WithValue(r.Context(), contextKey{}, &UserContext{
 				ID:       user.ID,
 				Username: user.Username,
+				Roles:    roles,
 			})
 			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// RequireRole returns a Chi middleware that enforces role-based access control.
+// The user must hold at least one of the given roles; admins always pass.
+// A 401 is returned when no user is in context; a 403 for insufficient roles.
+func RequireRole(roles ...model.Role) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, ok := UserFromContext(r.Context())
+			if !ok {
+				writeUnauthorized(w, "authentication required")
+				return
+			}
+
+			// Admins bypass all role guards.
+			if user.HasRole(model.RoleAdmin) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			for _, required := range roles {
+				if user.HasRole(required) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+
+			writeForbidden(w, "insufficient permissions")
 		})
 	}
 }
@@ -107,5 +158,13 @@ func writeUnauthorized(w http.ResponseWriter, msg string) {
 	w.WriteHeader(http.StatusUnauthorized)
 	if err := json.NewEncoder(w).Encode(unauthorizedEnvelope{Error: msg}); err != nil {
 		slog.Error("failed to encode 401 response", "err", err)
+	}
+}
+
+func writeForbidden(w http.ResponseWriter, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	if err := json.NewEncoder(w).Encode(unauthorizedEnvelope{Error: msg}); err != nil {
+		slog.Error("failed to encode 403 response", "err", err)
 	}
 }

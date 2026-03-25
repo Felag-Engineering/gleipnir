@@ -90,3 +90,9 @@ type User struct {
 	CreatedAt     string  `json:"created_at"`
 	DeactivatedAt *string `json:"deactivated_at"`
 }
+
+type UserRole struct {
+	UserID    string `json:"user_id"`
+	Role      string `json:"role"`
+	CreatedAt string `json:"created_at"`
+}

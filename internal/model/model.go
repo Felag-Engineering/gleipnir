@@ -151,6 +151,26 @@ func (c ConcurrencyPolicy) Valid() bool {
 	return false
 }
 
+// Role identifies the access level granted to a user account.
+// Users may hold multiple roles simultaneously.
+type Role string
+
+const (
+	RoleAdmin    Role = "admin"
+	RoleOperator Role = "operator"
+	RoleApprover Role = "approver"
+	RoleAuditor  Role = "auditor"
+)
+
+func (r Role) String() string { return string(r) }
+func (r Role) Valid() bool {
+	switch r {
+	case RoleAdmin, RoleOperator, RoleApprover, RoleAuditor:
+		return true
+	}
+	return false
+}
+
 // ApprovalStatus tracks the lifecycle of a human approval request.
 type ApprovalStatus string
 

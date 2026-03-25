@@ -248,6 +248,22 @@ CREATE INDEX idx_sessions_user_id    ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 
 -- ---------------------------------------------------------------------------
+-- User roles
+--
+-- Four fixed roles: admin, operator, approver, auditor.
+-- Users may hold multiple roles simultaneously.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE user_roles (
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role       TEXT NOT NULL CHECK(role IN ('admin', 'operator', 'approver', 'auditor')),
+    created_at TEXT NOT NULL,  -- ISO 8601 UTC
+    PRIMARY KEY (user_id, role)
+);
+
+CREATE INDEX idx_user_roles_user_id ON user_roles(user_id);
+
+-- ---------------------------------------------------------------------------
 -- Seed migration version
 -- ---------------------------------------------------------------------------
 
@@ -260,3 +276,4 @@ INSERT INTO schema_migrations(version, applied_at) VALUES (3, strftime('%Y-%m-%d
 INSERT INTO schema_migrations(version, applied_at) VALUES (4, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 INSERT INTO schema_migrations(version, applied_at) VALUES (5, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 INSERT INTO schema_migrations(version, applied_at) VALUES (6, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+INSERT INTO schema_migrations(version, applied_at) VALUES (7, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
