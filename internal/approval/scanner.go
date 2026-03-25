@@ -152,7 +152,7 @@ func (s *Scanner) resolveTimeout(ctx context.Context, req db.ApprovalRequest) er
 	if _, err := s.store.Queries().CreateRunStep(ctx, db.CreateRunStepParams{
 		ID:         model.NewULID(),
 		RunID:      req.RunID,
-		StepNumber: stepCount + 1,
+		StepNumber: stepCount,
 		Type:       string(model.StepTypeError),
 		Content:    string(content),
 		TokenCost:  0,

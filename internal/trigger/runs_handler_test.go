@@ -625,17 +625,17 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store) {
 				insertTestPolicy(t, store, "p-steps", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-steps", "p-steps", model.RunStatusComplete)
-				insertTestStep(t, store, "s-steps-1", "r-steps", 1)
-				insertTestStep(t, store, "s-steps-2", "r-steps", 2)
-				insertTestStep(t, store, "s-steps-3", "r-steps", 3)
+				insertTestStep(t, store, "s-steps-1", "r-steps", 0)
+				insertTestStep(t, store, "s-steps-2", "r-steps", 1)
+				insertTestStep(t, store, "s-steps-3", "r-steps", 2)
 			},
 			runID:     "r-steps",
 			wantCode:  http.StatusOK,
 			wantCount: 3,
 			checkFn: func(t *testing.T, steps []trigger.StepSummary) {
 				for i, s := range steps {
-					if s.StepNumber != int64(i+1) {
-						t.Errorf("steps[%d].StepNumber = %d, want %d", i, s.StepNumber, i+1)
+					if s.StepNumber != int64(i) {
+						t.Errorf("steps[%d].StepNumber = %d, want %d", i, s.StepNumber, i)
 					}
 				}
 			},

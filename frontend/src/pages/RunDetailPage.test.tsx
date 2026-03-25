@@ -45,7 +45,7 @@ function makeStep(overrides?: Partial<ApiRunStep>): ApiRunStep {
   return {
     id: 's1',
     run_id: 'r1',
-    step_number: 1,
+    step_number: 0,
     type: 'thought',
     content: JSON.stringify({ text: 'I am thinking.' }),
     token_cost: 50,
@@ -140,7 +140,7 @@ describe('RunDetailPage — step types render', () => {
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
       makeStep({
         id: 's2',
-        step_number: 2,
+        step_number: 1,
         type: 'tool_call',
         content: JSON.stringify({ tool_name: 'fs.write', server_id: 'srv1', input: { path: '/tmp' } }),
       }),
@@ -234,10 +234,10 @@ describe('RunDetailPage — step types render', () => {
 describe('RunDetailPage — filter chips', () => {
   const steps: ApiRunStep[] = [
     makeStep({ id: 's1', type: 'thought', content: JSON.stringify({ text: 'Thought A' }) }),
-    makeStep({ id: 's2', step_number: 2, type: 'thought', content: JSON.stringify({ text: 'Thought B' }) }),
-    makeStep({ id: 's3', step_number: 3, type: 'tool_call', content: JSON.stringify({ tool_name: 'x', server_id: 'srv', input: {} }) }),
-    makeStep({ id: 's4', step_number: 4, type: 'error', content: JSON.stringify({ message: 'err', code: 'E' }) }),
-    makeStep({ id: 's5', step_number: 5, type: 'tool_result', content: JSON.stringify({ tool_name: 'x', output: '"ok"', is_error: false }) }),
+    makeStep({ id: 's2', step_number: 1, type: 'thought', content: JSON.stringify({ text: 'Thought B' }) }),
+    makeStep({ id: 's3', step_number: 2, type: 'tool_call', content: JSON.stringify({ tool_name: 'x', server_id: 'srv', input: {} }) }),
+    makeStep({ id: 's4', step_number: 3, type: 'error', content: JSON.stringify({ message: 'err', code: 'E' }) }),
+    makeStep({ id: 's5', step_number: 4, type: 'tool_result', content: JSON.stringify({ tool_name: 'x', output: '"ok"', is_error: false }) }),
   ]
 
   beforeEach(() => {
@@ -413,7 +413,7 @@ describe('RunDetailPage — Load more', () => {
     const steps: ApiRunStep[] = Array.from({ length: 55 }, (_, i) =>
       makeStep({
         id: `s${i}`,
-        step_number: i + 1,
+        step_number: i,
         type: 'thought',
         content: JSON.stringify({ text: `Thought ${i}` }),
       }),
@@ -427,7 +427,7 @@ describe('RunDetailPage — Load more', () => {
     const steps: ApiRunStep[] = Array.from({ length: 10 }, (_, i) =>
       makeStep({
         id: `s${i}`,
-        step_number: i + 1,
+        step_number: i,
         type: 'thought',
         content: JSON.stringify({ text: `Thought ${i}` }),
       }),
@@ -441,7 +441,7 @@ describe('RunDetailPage — Load more', () => {
     const steps: ApiRunStep[] = Array.from({ length: 55 }, (_, i) =>
       makeStep({
         id: `s${i}`,
-        step_number: i + 1,
+        step_number: i,
         type: 'thought',
         content: JSON.stringify({ text: `Thought ${i}` }),
       }),
@@ -466,7 +466,7 @@ describe('RunDetailPage — pagination with active filter', () => {
       ...Array.from({ length: 55 }, (_, i) =>
         makeStep({
           id: `tc${i}`,
-          step_number: i + 1,
+          step_number: i,
           type: 'tool_call',
           content: JSON.stringify({ tool_name: `tool_${i}`, server_id: 'srv', input: {} }),
         }),
@@ -474,7 +474,7 @@ describe('RunDetailPage — pagination with active filter', () => {
       ...Array.from({ length: 10 }, (_, i) =>
         makeStep({
           id: `th${i}`,
-          step_number: 56 + i,
+          step_number: 55 + i,
           type: 'thought',
           content: JSON.stringify({ text: `Thought ${i}` }),
         }),
@@ -508,7 +508,7 @@ describe('RunDetailPage — filter does NOT reset displayedCount', () => {
       ...Array.from({ length: 55 }, (_, i) =>
         makeStep({
           id: `th${i}`,
-          step_number: i + 1,
+          step_number: i,
           type: 'thought',
           content: JSON.stringify({ text: `Thought ${i}` }),
         }),
@@ -516,7 +516,7 @@ describe('RunDetailPage — filter does NOT reset displayedCount', () => {
       ...Array.from({ length: 55 }, (_, i) =>
         makeStep({
           id: `tc${i}`,
-          step_number: 56 + i,
+          step_number: 55 + i,
           type: 'tool_call',
           content: JSON.stringify({ tool_name: `tool_${i}`, server_id: 'srv', input: {} }),
         }),
@@ -618,7 +618,7 @@ describe('RunDetailPage — "New steps" pill', () => {
     // Simulate new steps arriving by updating the mock return value
     const newSteps: ApiRunStep[] = [
       ...initialSteps,
-      makeStep({ id: 's2', step_number: 2, type: 'thought', content: JSON.stringify({ text: 'New step' }) }),
+      makeStep({ id: 's2', step_number: 1, type: 'thought', content: JSON.stringify({ text: 'New step' }) }),
     ]
 
     vi.mocked(useRunSteps).mockReturnValue({
@@ -686,7 +686,7 @@ describe('RunDetailPage — "New steps" pill', () => {
 
     const newSteps: ApiRunStep[] = [
       ...initialSteps,
-      makeStep({ id: 's2', step_number: 2, type: 'thought', content: JSON.stringify({ text: 'New step' }) }),
+      makeStep({ id: 's2', step_number: 1, type: 'thought', content: JSON.stringify({ text: 'New step' }) }),
     ]
 
     vi.mocked(useRunSteps).mockReturnValue({

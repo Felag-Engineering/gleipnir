@@ -337,7 +337,7 @@ _Labels: `backend`, `data-model` — Depends on: SQLite init._
 `token_cost` INTEGER accumulates across all steps. Updated on each step write.
 `error` nullable — populated on terminal `failed` or `interrupted` states only.
 
-`run_steps` table: one row per agent conversation step. `step_number` is 1-indexed and contiguous within a run.
+`run_steps` table: one row per agent conversation step. `step_number` is 0-indexed and contiguous within a run; step 0 is always `capability_snapshot`.
 `type` CHECK: `thought | tool_call | tool_result | approval_request | feedback_request | feedback_response | error | complete`.
 `content` is a raw JSON blob — shape varies by type (documented in schema comments). No typed columns.
 `token_cost` is 0 for non-LLM steps.
@@ -633,7 +633,7 @@ Step types and their content shapes:
 - `tool_result`: `{ "tool_name": "...", "output": ..., "is_error": false }`. `token_cost` = 0.
 - `error`: `{ "message": "...", "code": "..." }`. `token_cost` = 0.
 - `complete`: `{ "summary": "..." }`. `token_cost` = 0.
-Accumulate `token_cost` into `runs.token_cost` on each write. `step_number` is 1-indexed,
+Accumulate `token_cost` into `runs.token_cost` on each write. `step_number` is 0-indexed,
 incremented atomically within the run.
 _Labels: `backend`, `agent-runtime` — Depends on: EPIC-001 audit write queue, Claude API loop._
 

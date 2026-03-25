@@ -266,7 +266,7 @@ func (s *Store) interruptOrphanedRun(ctx context.Context, runID string) error {
 	if _, err := s.queries.CreateRunStep(ctx, CreateRunStepParams{
 		ID:         model.NewULID(),
 		RunID:      runID,
-		StepNumber: count + 1,
+		StepNumber: count,
 		Type:       string(model.StepTypeError),
 		Content:    string(content),
 		TokenCost:  0,

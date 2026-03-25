@@ -207,9 +207,9 @@ func TestIntegration(t *testing.T) {
 			}
 		}
 
-		// Step numbers must be 1-indexed and contiguous.
+		// Step numbers must be 0-indexed and contiguous.
 		for i, s := range steps {
-			want := int64(i + 1)
+			want := int64(i)
 			if s.StepNumber != want {
 				t.Errorf("step[%d].StepNumber = %d, want %d", i, s.StepNumber, want)
 			}
@@ -271,8 +271,8 @@ func TestIntegration(t *testing.T) {
 				t.Errorf("run %s: expected non-zero steps, got 0", id)
 			}
 			for i, s := range steps {
-				if s.StepNumber != int64(i+1) {
-					t.Errorf("run %s step[%d].StepNumber = %d, want %d", id, i, s.StepNumber, i+1)
+				if s.StepNumber != int64(i) {
+					t.Errorf("run %s step[%d].StepNumber = %d, want %d", id, i, s.StepNumber, i)
 				}
 			}
 		}

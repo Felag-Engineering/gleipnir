@@ -128,7 +128,7 @@ CREATE INDEX idx_runs_status     ON runs(status);
 -- Run steps
 --
 -- Full reasoning trace. One row per step in the agent conversation loop.
--- step_number is 1-indexed and contiguous within a run.
+-- step_number is 0-indexed and contiguous within a run; step 0 is always capability_snapshot.
 --
 -- type discriminates the content shape:
 --

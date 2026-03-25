@@ -101,7 +101,7 @@ describe('useSSE', () => {
     await waitFor(() => expect(result.current.connectionState).toBe('connected'))
 
     act(() => {
-      pushEvent('run.step_added', JSON.stringify({ run_id: 'r1', step_id: 's1', step_number: 1, type: 'thought' }))
+      pushEvent('run.step_added', JSON.stringify({ run_id: 'r1', step_id: 's1', step_number: 0, type: 'thought' }))
     })
 
     await waitFor(() => {

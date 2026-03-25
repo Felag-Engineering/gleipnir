@@ -349,11 +349,11 @@ func TestScanner_StepNumberContinuesExistingSteps(t *testing.T) {
 	insertRun(t, s, "r1", "p1", "waiting_for_approval")
 	insertApprovalRequest(t, s, "a1", "r1", "tool_w", pastTimestamp())
 
-	// Pre-insert 2 steps so the error step should get step_number = 3.
+	// Pre-insert 2 steps so the error step should get step_number = 2.
 	_, err := s.DB().Exec(
 		`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
-		 VALUES ('s1', 'r1', 1, 'thought', '{}', '2024-01-01T00:00:00Z'),
-		        ('s2', 'r1', 2, 'tool_call', '{}', '2024-01-01T00:00:00Z')`,
+		 VALUES ('s1', 'r1', 0, 'thought', '{}', '2024-01-01T00:00:00Z'),
+		        ('s2', 'r1', 1, 'tool_call', '{}', '2024-01-01T00:00:00Z')`,
 	)
 	if err != nil {
 		t.Fatalf("insert existing steps: %v", err)
@@ -368,8 +368,8 @@ func TestScanner_StepNumberContinuesExistingSteps(t *testing.T) {
 	if err := s.DB().QueryRow(`SELECT step_number FROM run_steps WHERE run_id = 'r1' AND type = 'error'`).Scan(&stepNumber); err != nil {
 		t.Fatalf("query error step: %v", err)
 	}
-	if stepNumber != 3 {
-		t.Errorf("error step step_number = %d, want 3", stepNumber)
+	if stepNumber != 2 {
+		t.Errorf("error step step_number = %d, want 2", stepNumber)
 	}
 }
 

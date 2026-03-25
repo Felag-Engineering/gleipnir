@@ -54,7 +54,7 @@ func TestAuditWriter_ConcurrentEnqueue(t *testing.T) {
 		t.Errorf("step count = %d, want %d", count, want)
 	}
 
-	// Verify step_numbers are unique and span 1..1000
+	// Verify step_numbers are unique and span 0..999
 	steps, err := s.ListRunSteps(context.Background(), "r1")
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
@@ -65,8 +65,8 @@ func TestAuditWriter_ConcurrentEnqueue(t *testing.T) {
 			t.Errorf("duplicate step_number %d", step.StepNumber)
 		}
 		seen[step.StepNumber] = true
-		if step.StepNumber < 1 || step.StepNumber > want {
-			t.Errorf("step_number %d out of range [1, %d]", step.StepNumber, want)
+		if step.StepNumber < 0 || step.StepNumber >= want {
+			t.Errorf("step_number %d out of range [0, %d)", step.StepNumber, want)
 		}
 	}
 }
@@ -205,15 +205,15 @@ func TestAuditWriter_MultipleRuns(t *testing.T) {
 			t.Errorf("run %s: %d steps, want %d", runID, got, wantCount)
 		}
 
-		// step_numbers must be 1..N with no gaps for each run.
+		// step_numbers must be 0..N-1 with no gaps for each run.
 		steps, err := s.ListRunSteps(context.Background(), runID)
 		if err != nil {
 			t.Fatalf("ListRunSteps(%s): %v", runID, err)
 		}
 		for i, step := range steps {
-			if step.StepNumber != int64(i+1) {
+			if step.StepNumber != int64(i) {
 				t.Errorf("run %s step[%d]: step_number = %d, want %d",
-					runID, i, step.StepNumber, i+1)
+					runID, i, step.StepNumber, i)
 			}
 		}
 	}

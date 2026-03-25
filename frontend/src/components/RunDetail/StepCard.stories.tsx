@@ -17,7 +17,7 @@ function makeRaw(overrides: Partial<ApiRunStep> = {}): ApiRunStep {
   return {
     id: 'step-1',
     run_id: 'run-1',
-    step_number: 1,
+    step_number: 0,
     type: 'thought',
     content: '{}',
     token_cost: 42,

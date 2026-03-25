@@ -176,11 +176,11 @@ func TestScanOrphanedRuns(t *testing.T) {
 		insertPolicy(t, s, "p1")
 		insertRun(t, s, "r1", "p1", "running")
 
-		// Pre-insert 2 steps so the error step should get step_number = 3.
+		// Pre-insert 2 steps so the error step should get step_number = 2.
 		_, err := s.DB().Exec(
 			`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
-			 VALUES ('s1', 'r1', 1, 'thought', '{}', '2024-01-01T00:00:00Z'),
-			        ('s2', 'r1', 2, 'tool_call', '{}', '2024-01-01T00:00:00Z')`,
+			 VALUES ('s1', 'r1', 0, 'thought', '{}', '2024-01-01T00:00:00Z'),
+			        ('s2', 'r1', 1, 'tool_call', '{}', '2024-01-01T00:00:00Z')`,
 		)
 		if err != nil {
 			t.Fatalf("insert existing steps: %v", err)
@@ -197,8 +197,8 @@ func TestScanOrphanedRuns(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query error step: %v", err)
 		}
-		if stepNumber != 3 {
-			t.Errorf("error step step_number = %d, want 3", stepNumber)
+		if stepNumber != 2 {
+			t.Errorf("error step step_number = %d, want 2", stepNumber)
 		}
 	})
 
@@ -394,7 +394,7 @@ func TestSchemaConstraints(t *testing.T) {
 				exec: func(s *Store) error {
 					_, err := s.DB().Exec(
 						`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
-						 VALUES ('s1', 'r1', 1, 'invalid_type', '{}', '2024-01-01T00:00:00Z')`,
+						 VALUES ('s1', 'r1', 0, 'invalid_type', '{}', '2024-01-01T00:00:00Z')`,
 					)
 					return err
 				},
@@ -471,7 +471,7 @@ func TestSchemaConstraints(t *testing.T) {
 				exec: func(s *Store) error {
 					_, err := s.DB().Exec(
 						`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
-						 VALUES ('s1', 'nonexistent', 1, 'thought', '{}', '2024-01-01T00:00:00Z')`,
+						 VALUES ('s1', 'nonexistent', 0, 'thought', '{}', '2024-01-01T00:00:00Z')`,
 					)
 					return err
 				},
@@ -568,14 +568,14 @@ func TestSchemaConstraints(t *testing.T) {
 				first: func(s *Store) error {
 					_, err := s.DB().Exec(
 						`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
-						 VALUES ('s1', 'r1', 1, 'thought', '{}', '2024-01-01T00:00:00Z')`,
+						 VALUES ('s1', 'r1', 0, 'thought', '{}', '2024-01-01T00:00:00Z')`,
 					)
 					return err
 				},
 				second: func(s *Store) error {
 					_, err := s.DB().Exec(
 						`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
-						 VALUES ('s2', 'r1', 1, 'thought', '{}', '2024-01-01T00:00:00Z')`,
+						 VALUES ('s2', 'r1', 0, 'thought', '{}', '2024-01-01T00:00:00Z')`,
 					)
 					return err
 				},

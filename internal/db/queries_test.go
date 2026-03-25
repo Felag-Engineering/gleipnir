@@ -966,7 +966,7 @@ func TestRunStepQueries(t *testing.T) {
 	step1, err := s.CreateRunStep(ctx, CreateRunStepParams{
 		ID:         "step1",
 		RunID:      "run1",
-		StepNumber: 1,
+		StepNumber: 0,
 		Type:       "thought",
 		Content:    `{"text":"thinking"}`,
 		TokenCost:  100,
@@ -975,14 +975,14 @@ func TestRunStepQueries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRunStep 1: %v", err)
 	}
-	if step1.StepNumber != 1 || step1.Type != "thought" {
+	if step1.StepNumber != 0 || step1.Type != "thought" {
 		t.Errorf("CreateRunStep 1 fields: %+v", step1)
 	}
 
 	if _, err := s.CreateRunStep(ctx, CreateRunStepParams{
 		ID:         "step2",
 		RunID:      "run1",
-		StepNumber: 2,
+		StepNumber: 1,
 		Type:       "tool_call",
 		Content:    `{"tool":"bash"}`,
 		TokenCost:  50,
@@ -994,7 +994,7 @@ func TestRunStepQueries(t *testing.T) {
 	if _, err := s.CreateRunStep(ctx, CreateRunStepParams{
 		ID:         "step3",
 		RunID:      "run1",
-		StepNumber: 3,
+		StepNumber: 2,
 		Type:       "tool_result",
 		Content:    `{"result":"ok"}`,
 		TokenCost:  0,
@@ -1011,7 +1011,7 @@ func TestRunStepQueries(t *testing.T) {
 		t.Errorf("ListRunSteps: got %d, want 3", len(steps))
 	}
 	for i, step := range steps {
-		want := int64(i + 1)
+		want := int64(i)
 		if step.StepNumber != want {
 			t.Errorf("ListRunSteps[%d].StepNumber = %d, want %d", i, step.StepNumber, want)
 		}
@@ -1021,7 +1021,7 @@ func TestRunStepQueries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetLatestRunStep: %v", err)
 	}
-	if latest.StepNumber != 3 || latest.Type != "tool_result" {
+	if latest.StepNumber != 2 || latest.Type != "tool_result" {
 		t.Errorf("GetLatestRunStep: step_number=%d type=%q", latest.StepNumber, latest.Type)
 	}
 
@@ -1037,7 +1037,7 @@ func TestRunStepQueries(t *testing.T) {
 	_, err = s.CreateRunStep(ctx, CreateRunStepParams{
 		ID:         "step4",
 		RunID:      "run1",
-		StepNumber: 1, // duplicate
+		StepNumber: 0, // duplicate
 		Type:       "thought",
 		Content:    `{}`,
 		TokenCost:  0,

@@ -118,13 +118,13 @@ func logAuditError(ctx context.Context, w *AuditWriter, step Step) {
 func (w *AuditWriter) loop() {
 	defer close(w.done)
 
-	// counters tracks the next step_number for each run. Because loop() is
-	// the only goroutine writing this map, no mutex is needed.
+	// counters tracks the next step_number (0-indexed) for each run. Because
+	// loop() is the only goroutine writing this map, no mutex is needed.
 	counters := make(map[string]int64)
 
 	for req := range w.queue {
-		counters[req.step.RunID]++
 		stepNum := counters[req.step.RunID]
+		counters[req.step.RunID]++
 
 		content, err := json.Marshal(req.step.Content)
 		if err != nil {
