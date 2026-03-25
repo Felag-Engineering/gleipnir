@@ -13,8 +13,7 @@ interface Props {
 function StepIcon({ type, role }: { type: string; role?: GrantedToolEntry['Role'] }) {
   const cls = [styles.icon]
   if (type === 'thought') cls.push(styles.iconThought)
-  else if (type === 'tool_call' && role === 'sensor') cls.push(styles.iconSensor)
-  else if (type === 'tool_call' && role === 'actuator') cls.push(styles.iconActuator)
+  else if (type === 'tool_call' && role === 'tool') cls.push(styles.iconTool)
   else if (type === 'tool_result') cls.push(styles.iconResult)
   else if (type === 'error') cls.push(styles.iconError)
   else if (type === 'complete') cls.push(styles.iconComplete)
@@ -39,8 +38,7 @@ export function StepCard({ step, toolRoleMap, runId, runStatus }: Props) {
   }
 
   if (step.type === 'tool_call') {
-    const role = toolRoleMap.get(`${step.content.server_id}.${step.content.tool_name}`) ?? 'sensor'
-    const isActuator = role === 'actuator'
+    const role = toolRoleMap.get(`${step.content.server_id}.${step.content.tool_name}`) ?? 'tool'
     return (
       <div className={styles.card}>
         <div className={styles.iconCol}>
@@ -48,8 +46,8 @@ export function StepCard({ step, toolRoleMap, runId, runStatus }: Props) {
         </div>
         <div className={styles.body}>
           <div className={styles.row}>
-            <span className={`${styles.typeLabel} ${isActuator ? styles.actuatorLabel : styles.sensorLabel}`}>
-              {isActuator ? 'actuator call' : 'sensor call'}
+            <span className={`${styles.typeLabel} ${styles.toolLabel}`}>
+              tool call
             </span>
             <code className={styles.toolName}>{step.content.tool_name}</code>
           </div>

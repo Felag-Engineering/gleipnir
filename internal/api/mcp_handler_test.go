@@ -358,7 +358,7 @@ name: ref-policy
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: my-server.some_tool
 agent:
   task: test
@@ -522,8 +522,8 @@ func TestMCPToolListHandler(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.Queries())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
-		insertTestMCPTool(t, store, serverID, "tool-alpha", "sensor")
-		insertTestMCPTool(t, store, serverID, "tool-beta", "actuator")
+		insertTestMCPTool(t, store, serverID, "tool-alpha", "tool")
+		insertTestMCPTool(t, store, serverID, "tool-beta", "tool")
 
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
@@ -558,8 +558,8 @@ func TestMCPToolListHandler(t *testing.T) {
 		if envelope.Data[0].Name != "tool-alpha" {
 			t.Errorf("data[0].name = %q, want tool-alpha", envelope.Data[0].Name)
 		}
-		if envelope.Data[0].CapabilityRole != "sensor" {
-			t.Errorf("data[0].capability_role = %q, want sensor", envelope.Data[0].CapabilityRole)
+		if envelope.Data[0].CapabilityRole != "tool" {
+			t.Errorf("data[0].capability_role = %q, want tool", envelope.Data[0].CapabilityRole)
 		}
 		if envelope.Data[0].ServerID != serverID {
 			t.Errorf("data[0].server_id = %q, want %q", envelope.Data[0].ServerID, serverID)
@@ -609,12 +609,12 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.Queries())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
-		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "sensor")
+		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "tool")
 
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
 
-		resp := patchRole(t, srv.URL, toolID, map[string]string{"capability_role": "actuator"})
+		resp := patchRole(t, srv.URL, toolID, map[string]string{"capability_role": "feedback"})
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
@@ -633,8 +633,8 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 		if envelope.Data.ID != toolID {
 			t.Errorf("id = %q, want %q", envelope.Data.ID, toolID)
 		}
-		if envelope.Data.CapabilityRole != "actuator" {
-			t.Errorf("capability_role = %q, want actuator", envelope.Data.CapabilityRole)
+		if envelope.Data.CapabilityRole != "feedback" {
+			t.Errorf("capability_role = %q, want feedback", envelope.Data.CapabilityRole)
 		}
 	})
 
@@ -642,7 +642,7 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.Queries())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
-		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "sensor")
+		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "tool")
 
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
@@ -680,7 +680,7 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.Queries())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
-		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "sensor")
+		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "tool")
 
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
@@ -697,7 +697,7 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.Queries())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
-		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "sensor")
+		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "tool")
 
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
@@ -714,7 +714,7 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.Queries())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
-		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "sensor")
+		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "tool")
 
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
@@ -738,7 +738,7 @@ func TestMCPToolUpdateRoleHandler(t *testing.T) {
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
 
-		resp := patchRole(t, srv.URL, "does-not-exist", map[string]string{"capability_role": "sensor"})
+		resp := patchRole(t, srv.URL, "does-not-exist", map[string]string{"capability_role": "tool"})
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusNotFound {

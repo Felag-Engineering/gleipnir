@@ -287,7 +287,7 @@ func (h *MCPHandler) UpdateToolRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !model.CapabilityRole(body.CapabilityRole).Valid() {
-		WriteError(w, http.StatusBadRequest, "invalid capability_role, must be one of: sensor, actuator, feedback", "")
+		WriteError(w, http.StatusBadRequest, "invalid capability_role, must be one of: tool, feedback", "")
 		return
 	}
 
@@ -323,12 +323,9 @@ func (h *MCPHandler) UpdateToolRole(w http.ResponseWriter, r *http.Request) {
 func policyReferencesServer(rawYAML, serverPrefix string) bool {
 	var v struct {
 		Capabilities struct {
-			Sensors []struct {
+			Tools []struct {
 				Tool string `yaml:"tool"`
-			} `yaml:"sensors"`
-			Actuators []struct {
-				Tool string `yaml:"tool"`
-			} `yaml:"actuators"`
+			} `yaml:"tools"`
 			Feedback []struct {
 				Tool string `yaml:"tool"`
 			} `yaml:"feedback"`
@@ -337,13 +334,8 @@ func policyReferencesServer(rawYAML, serverPrefix string) bool {
 	if err := yaml.Unmarshal([]byte(rawYAML), &v); err != nil {
 		return false
 	}
-	for _, s := range v.Capabilities.Sensors {
-		if strings.HasPrefix(s.Tool, serverPrefix) {
-			return true
-		}
-	}
-	for _, a := range v.Capabilities.Actuators {
-		if strings.HasPrefix(a.Tool, serverPrefix) {
+	for _, t := range v.Capabilities.Tools {
+		if strings.HasPrefix(t.Tool, serverPrefix) {
 			return true
 		}
 	}

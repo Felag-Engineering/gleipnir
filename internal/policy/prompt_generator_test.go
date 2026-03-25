@@ -15,7 +15,7 @@ func TestRenderSystemPrompt_DefaultPreamble(t *testing.T) {
 		},
 	}
 	granted := []model.GrantedTool{
-		{ServerName: "github", ToolName: "list_repos", Role: model.CapabilityRoleSensor},
+		{ServerName: "github", ToolName: "list_repos", Role: model.CapabilityRoleTool},
 	}
 
 	result := RenderSystemPrompt(p, granted, time.Date(2026, 3, 13, 12, 0, 0, 0, time.UTC))
@@ -24,7 +24,7 @@ func TestRenderSystemPrompt_DefaultPreamble(t *testing.T) {
 		t.Error("expected default preamble containing 'BoundAgent'")
 	}
 	if !strings.Contains(result, "github.list_repos") {
-		t.Error("expected sensor tool in capabilities block")
+		t.Error("expected tool in capabilities block")
 	}
 	if !strings.Contains(result, "## Your task") {
 		t.Error("expected task section header")
@@ -61,7 +61,7 @@ func TestRenderSystemPrompt_TimestampInjected(t *testing.T) {
 			Agent: model.AgentConfig{Task: "Do something"},
 		}
 		granted := []model.GrantedTool{
-			{ServerName: "s", ToolName: "t", Role: model.CapabilityRoleSensor},
+			{ServerName: "s", ToolName: "t", Role: model.CapabilityRoleTool},
 		}
 		result := RenderSystemPrompt(p, granted, fixedTime)
 
@@ -89,36 +89,34 @@ func TestRenderSystemPrompt_TimestampInjected(t *testing.T) {
 
 func TestRenderCapabilitiesBlock_AllRoles(t *testing.T) {
 	granted := []model.GrantedTool{
-		{ServerName: "github", ToolName: "list_repos", Role: model.CapabilityRoleSensor},
-		{ServerName: "github", ToolName: "list_issues", Role: model.CapabilityRoleSensor},
-		{ServerName: "deploy", ToolName: "run", Role: model.CapabilityRoleActuator, Approval: model.ApprovalModeNone},
-		{ServerName: "deploy", ToolName: "rollback", Role: model.CapabilityRoleActuator, Approval: model.ApprovalModeRequired},
+		{ServerName: "github", ToolName: "list_repos", Role: model.CapabilityRoleTool},
+		{ServerName: "github", ToolName: "list_issues", Role: model.CapabilityRoleTool},
+		{ServerName: "deploy", ToolName: "run", Role: model.CapabilityRoleTool, Approval: model.ApprovalModeNone},
+		{ServerName: "deploy", ToolName: "rollback", Role: model.CapabilityRoleTool, Approval: model.ApprovalModeRequired},
 		{ServerName: "slack", ToolName: "send_message", Role: model.CapabilityRoleFeedback},
 	}
 
 	result := renderCapabilitiesBlock(granted)
 
-	// Sensors
+	// Tools
 	if !strings.Contains(result, "github.list_repos") {
-		t.Error("expected sensor tool github.list_repos")
+		t.Error("expected tool github.list_repos")
 	}
 	if !strings.Contains(result, "github.list_issues") {
-		t.Error("expected sensor tool github.list_issues")
+		t.Error("expected tool github.list_issues")
 	}
-
-	// Actuators
 	if !strings.Contains(result, "deploy.run") {
-		t.Error("expected actuator tool deploy.run")
+		t.Error("expected tool deploy.run")
 	}
 	if !strings.Contains(result, "deploy.rollback") {
-		t.Error("expected actuator tool deploy.rollback")
+		t.Error("expected tool deploy.rollback")
 	}
 
 	// Approval annotation
 	if !strings.Contains(result, "[requires human approval before execution]") {
 		t.Error("expected approval annotation on deploy.rollback")
 	}
-	// Ensure non-approval actuator does NOT have the annotation
+	// Ensure non-approval tool does NOT have the annotation
 	runLine := ""
 	for _, line := range strings.Split(result, "\n") {
 		if strings.Contains(line, "deploy.run") {
@@ -136,33 +134,21 @@ func TestRenderCapabilitiesBlock_AllRoles(t *testing.T) {
 	}
 }
 
-func TestRenderCapabilitiesBlock_EmptySensors(t *testing.T) {
+func TestRenderCapabilitiesBlock_EmptyTools(t *testing.T) {
 	granted := []model.GrantedTool{
-		{ServerName: "deploy", ToolName: "run", Role: model.CapabilityRoleActuator},
+		{ServerName: "slack", ToolName: "send_message", Role: model.CapabilityRoleFeedback},
 	}
 
 	result := renderCapabilitiesBlock(granted)
 
-	if !strings.Contains(result, "### Sensors (read-only)\nNone.") {
-		t.Error("expected 'None.' for empty sensors section")
-	}
-}
-
-func TestRenderCapabilitiesBlock_EmptyActuators(t *testing.T) {
-	granted := []model.GrantedTool{
-		{ServerName: "github", ToolName: "list_repos", Role: model.CapabilityRoleSensor},
-	}
-
-	result := renderCapabilitiesBlock(granted)
-
-	if !strings.Contains(result, "### Actuators (world-affecting)\nNone.") {
-		t.Error("expected 'None.' for empty actuators section")
+	if !strings.Contains(result, "### Tools\nNone.") {
+		t.Error("expected 'None.' for empty tools section")
 	}
 }
 
 func TestRenderCapabilitiesBlock_NoFeedbackTools(t *testing.T) {
 	granted := []model.GrantedTool{
-		{ServerName: "s", ToolName: "t", Role: model.CapabilityRoleSensor},
+		{ServerName: "s", ToolName: "t", Role: model.CapabilityRoleTool},
 	}
 
 	result := renderCapabilitiesBlock(granted)

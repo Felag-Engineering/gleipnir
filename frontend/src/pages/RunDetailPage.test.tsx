@@ -119,7 +119,7 @@ describe('RunDetailPage — step types render', () => {
     expect(screen.getByText('Thinking hard.')).toBeInTheDocument()
   })
 
-  it('renders tool_call step with tool name and sensor label', () => {
+  it('renders tool_call step with tool name and tool label', () => {
     mockLoaded(makeRun(), [
       makeStep({
         id: 's2',
@@ -129,12 +129,12 @@ describe('RunDetailPage — step types render', () => {
     ])
     renderPage()
     expect(screen.getByText('fs.read')).toBeInTheDocument()
-    expect(screen.getByText('sensor call')).toBeInTheDocument()
+    expect(screen.getByText('tool call')).toBeInTheDocument()
   })
 
-  it('renders tool_call step with actuator label when capability_snapshot marks it as actuator', () => {
+  it('renders tool_call step with tool label when capability_snapshot marks it as tool', () => {
     const capContent = JSON.stringify([
-      { ServerName: 'srv1', ToolName: 'fs.write', Role: 'actuator', Approval: 'none', Timeout: 0, OnTimeout: '' },
+      { ServerName: 'srv1', ToolName: 'fs.write', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
     ])
     mockLoaded(makeRun(), [
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
@@ -146,7 +146,7 @@ describe('RunDetailPage — step types render', () => {
       }),
     ])
     renderPage()
-    expect(screen.getByText('actuator call')).toBeInTheDocument()
+    expect(screen.getByText('tool call')).toBeInTheDocument()
   })
 
   it('renders tool_result step', () => {
@@ -193,7 +193,7 @@ describe('RunDetailPage — step types render', () => {
 
   it('renders capability_snapshot step collapsed by default', () => {
     const capContent = JSON.stringify([
-      { ServerName: 'srv1', ToolName: 'fs.read', Role: 'sensor', Approval: 'none', Timeout: 0, OnTimeout: '' },
+      { ServerName: 'srv1', ToolName: 'fs.read', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
     ])
     mockLoaded(makeRun(), [
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
@@ -206,7 +206,7 @@ describe('RunDetailPage — step types render', () => {
 
   it('expands capability_snapshot on click', async () => {
     const capContent = JSON.stringify([
-      { ServerName: 'srv1', ToolName: 'fs.read', Role: 'sensor', Approval: 'none', Timeout: 0, OnTimeout: '' },
+      { ServerName: 'srv1', ToolName: 'fs.read', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
     ])
     mockLoaded(makeRun(), [
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
@@ -258,7 +258,7 @@ describe('RunDetailPage — filter chips', () => {
       expect(screen.getByText('Thought A')).toBeInTheDocument()
       expect(screen.getByText('Thought B')).toBeInTheDocument()
       // tool_call and error should be gone
-      expect(screen.queryByText('sensor call')).not.toBeInTheDocument()
+      expect(screen.queryByText('tool call')).not.toBeInTheDocument()
       expect(screen.queryByText('err')).not.toBeInTheDocument()
     })
   })
@@ -267,7 +267,7 @@ describe('RunDetailPage — filter chips', () => {
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: /^calls/i }))
     await waitFor(() => {
-      expect(screen.getByText('sensor call')).toBeInTheDocument()
+      expect(screen.getByText('tool call')).toBeInTheDocument()
       expect(screen.queryByText('Thought A')).not.toBeInTheDocument()
       expect(screen.queryByText('err')).not.toBeInTheDocument()
     })

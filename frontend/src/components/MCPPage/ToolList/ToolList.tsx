@@ -7,7 +7,7 @@ import styles from './ToolList.module.css'
 interface Props {
   tools: ApiMcpTool[] | undefined
   isLoading: boolean
-  onRoleChange: (toolId: string, serverId: string, role: 'sensor' | 'actuator' | 'feedback') => void
+  onRoleChange: (toolId: string, serverId: string, role: 'tool' | 'feedback') => void
   updatingToolId: string | null
 }
 

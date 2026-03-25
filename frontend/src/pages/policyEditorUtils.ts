@@ -21,7 +21,7 @@ export interface FormState {
   model: ModelFormState
   // Passthrough fields preserved across round-trips but not editable in form UI
   _preamble?: string
-  _actuatorExtras?: Record<string, { timeout?: number; on_timeout?: string }>
+  _toolExtras?: Record<string, { timeout?: number; on_timeout?: string }>
   _feedbackCapabilities?: unknown[]
 }
 
@@ -30,8 +30,7 @@ description: ''
 trigger:
   type: webhook
 capabilities:
-  sensors: []
-  actuators: []
+  tools: []
 agent:
   task: |
     Describe what this agent should do.
@@ -88,31 +87,10 @@ export function yamlToFormState(yaml: string): FormState | null {
     ? (p.capabilities as Record<string, unknown>)
     : {}
 
-  const actuatorExtras: Record<string, { timeout?: number; on_timeout?: string }> = {}
+  const toolExtras: Record<string, { timeout?: number; on_timeout?: string }> = {}
 
-  const sensorTools = Array.isArray(capsRaw.sensors)
-    ? capsRaw.sensors.flatMap((entry: unknown) => {
-        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
-        const e = entry as Record<string, unknown>
-        const toolStr = typeof e.tool === 'string' ? e.tool : ''
-        if (!toolStr) return []
-        const dotIdx = toolStr.indexOf('.')
-        const serverPart = dotIdx >= 0 ? toolStr.slice(0, dotIdx) : toolStr
-        const toolPart = dotIdx >= 0 ? toolStr.slice(dotIdx + 1) : ''
-        return [{
-          toolId: toolStr,
-          serverId: serverPart,
-          serverName: serverPart,
-          name: toolPart,
-          description: '',
-          role: 'sensor' as const,
-          approvalRequired: false,
-        }]
-      })
-    : []
-
-  const actuatorTools = Array.isArray(capsRaw.actuators)
-    ? capsRaw.actuators.flatMap((entry: unknown) => {
+  const tools = Array.isArray(capsRaw.tools)
+    ? capsRaw.tools.flatMap((entry: unknown) => {
         if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
         const e = entry as Record<string, unknown>
         const toolStr = typeof e.tool === 'string' ? e.tool : ''
@@ -127,7 +105,7 @@ export function yamlToFormState(yaml: string): FormState | null {
         if (typeof e.timeout === 'number') extras.timeout = e.timeout
         if (typeof e.on_timeout === 'string') extras.on_timeout = e.on_timeout
         if (Object.keys(extras).length > 0) {
-          actuatorExtras[toolStr] = extras
+          toolExtras[toolStr] = extras
         }
 
         return [{
@@ -136,15 +114,13 @@ export function yamlToFormState(yaml: string): FormState | null {
           serverName: serverPart,
           name: toolPart,
           description: '',
-          role: 'actuator' as const,
+          role: 'tool' as const,
           approvalRequired,
         }]
       })
     : []
 
-  const capabilities: CapabilitiesFormState = {
-    tools: [...sensorTools, ...actuatorTools],
-  }
+  const capabilities: CapabilitiesFormState = { tools }
 
   // Agent block
   const agentRaw = p.agent && typeof p.agent === 'object' && !Array.isArray(p.agent)
@@ -192,7 +168,7 @@ export function yamlToFormState(yaml: string): FormState | null {
     concurrency,
     model,
     _preamble,
-    _actuatorExtras: Object.keys(actuatorExtras).length > 0 ? actuatorExtras : undefined,
+    _toolExtras: Object.keys(toolExtras).length > 0 ? toolExtras : undefined,
     _feedbackCapabilities,
   }
 }
@@ -211,24 +187,18 @@ export function formStateToYaml(state: FormState): string {
     triggerObj = { type: 'webhook' }
   }
 
-  // Build capabilities
-  const sensors = capabilities.tools
-    .filter(t => t.role === 'sensor')
-    .map(t => ({ tool: `${t.serverName}.${t.name}` }))
+  // Build capabilities — single tools array
+  const tools = capabilities.tools.map(t => {
+    const toolId = t.toolId
+    const extras = state._toolExtras?.[toolId] ?? {}
+    const entry: Record<string, unknown> = { tool: `${t.serverName}.${t.name}` }
+    if (extras.timeout !== undefined) entry.timeout = extras.timeout
+    if (extras.on_timeout !== undefined) entry.on_timeout = extras.on_timeout
+    if (t.approvalRequired) entry.approval = 'required'
+    return entry
+  })
 
-  const actuators = capabilities.tools
-    .filter(t => t.role === 'actuator')
-    .map(t => {
-      const toolId = t.toolId
-      const extras = state._actuatorExtras?.[toolId] ?? {}
-      const entry: Record<string, unknown> = { tool: `${t.serverName}.${t.name}` }
-      if (extras.timeout !== undefined) entry.timeout = extras.timeout
-      if (extras.on_timeout !== undefined) entry.on_timeout = extras.on_timeout
-      if (t.approvalRequired) entry.approval = 'required'
-      return entry
-    })
-
-  const capsObj: Record<string, unknown> = { sensors, actuators }
+  const capsObj: Record<string, unknown> = { tools }
   if (state._feedbackCapabilities !== undefined) {
     capsObj.feedback = state._feedbackCapabilities
   }

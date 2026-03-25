@@ -39,7 +39,7 @@ export interface CompleteContent {
 export interface GrantedToolEntry {
   ServerName: string
   ToolName: string
-  Role: 'sensor' | 'actuator' | 'feedback'
+  Role: 'tool' | 'feedback'
   Approval: 'none' | 'required'
   Timeout: number
   OnTimeout: string

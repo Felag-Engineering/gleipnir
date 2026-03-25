@@ -65,7 +65,7 @@ func TestRegisterServer_HappyPath(t *testing.T) {
 		t.Fatalf("query server: %v", err)
 	}
 
-	// Verify exactly 2 tool rows with capability_role='sensor'.
+	// Verify exactly 2 tool rows with capability_role='tool'.
 	rows, err := rawDB.QueryContext(context.Background(),
 		`SELECT name, capability_role FROM mcp_tools WHERE server_id = ? ORDER BY name`, serverID)
 	if err != nil {
@@ -90,8 +90,8 @@ func TestRegisterServer_HappyPath(t *testing.T) {
 		t.Fatalf("len(tools) = %d, want 2", len(got))
 	}
 	for _, tr := range got {
-		if tr.role != "sensor" {
-			t.Errorf("tool %q: capability_role = %q, want %q", tr.name, tr.role, "sensor")
+		if tr.role != "tool" {
+			t.Errorf("tool %q: capability_role = %q, want %q", tr.name, tr.role, "tool")
 		}
 	}
 	if got[0].name != "tool-a" {
@@ -428,9 +428,9 @@ func TestRefreshTools_CapabilityRolePreserved(t *testing.T) {
 		t.Fatalf("query server id: %v", err)
 	}
 
-	// Simulate operator overriding the capability_role to 'actuator'.
+	// Simulate operator overriding the capability_role to 'feedback'.
 	if _, err := rawDB.Exec(
-		`UPDATE mcp_tools SET capability_role = 'actuator' WHERE server_id = ? AND name = 'tool-a'`,
+		`UPDATE mcp_tools SET capability_role = 'feedback' WHERE server_id = ? AND name = 'tool-a'`,
 		serverID,
 	); err != nil {
 		t.Fatalf("update capability_role: %v", err)
@@ -452,8 +452,8 @@ func TestRefreshTools_CapabilityRolePreserved(t *testing.T) {
 	).Scan(&role); err != nil {
 		t.Fatalf("query role: %v", err)
 	}
-	if role != "actuator" {
-		t.Errorf("capability_role = %q, want %q (operator override should be preserved)", role, "actuator")
+	if role != "feedback" {
+		t.Errorf("capability_role = %q, want %q (operator override should be preserved)", role, "feedback")
 	}
 }
 

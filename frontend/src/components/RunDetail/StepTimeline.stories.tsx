@@ -27,14 +27,14 @@ function makeRaw(overrides: Partial<ApiRunStep> = {}): ApiRunStep {
 }
 
 const roleMap = new Map<string, GrantedToolEntry['Role']>([
-  ['read_file', 'sensor'],
-  ['write_file', 'actuator'],
+  ['read_file', 'tool'],
+  ['write_file', 'tool'],
 ])
 
 const FULL_STEPS = [
   parseStep(makeRaw({ id: 's1', step_number: 0, type: 'capability_snapshot', content: JSON.stringify([
-    { ServerName: 'fs-server', ToolName: 'read_file', Role: 'sensor', Approval: 'none', Timeout: 30, OnTimeout: 'fail' },
-    { ServerName: 'fs-server', ToolName: 'write_file', Role: 'actuator', Approval: 'required', Timeout: 60, OnTimeout: 'fail' },
+    { ServerName: 'fs-server', ToolName: 'read_file', Role: 'tool', Approval: 'none', Timeout: 30, OnTimeout: 'fail' },
+    { ServerName: 'fs-server', ToolName: 'write_file', Role: 'tool', Approval: 'required', Timeout: 60, OnTimeout: 'fail' },
   ]) })),
   parseStep(makeRaw({ id: 's2', step_number: 1, type: 'thought', content: JSON.stringify({ text: 'I should start by reading the log file.' }) })),
   parseStep(makeRaw({ id: 's3', step_number: 2, type: 'tool_call', content: JSON.stringify({ tool_name: 'read_file', server_id: 'fs-server', input: { path: '/var/log/app.log', lines: 100 } }) })),

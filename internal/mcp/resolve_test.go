@@ -24,10 +24,8 @@ func TestResolveForPolicy_AllToolsFound(t *testing.T) {
 
 	p := &model.ParsedPolicy{
 		Capabilities: model.CapabilitiesConfig{
-			Sensors: []model.SensorCapability{
-				{Tool: "my-server.read_pods", Params: map[string]any{"namespace": "worker-01"}},
-			},
-			Actuators: []model.ActuatorCapability{
+			Tools: []model.ToolCapability{
+				{Tool: "my-server.read_pods", Approval: model.ApprovalModeNone, Params: map[string]any{"namespace": "worker-01"}},
 				{
 					Tool:      "my-server.delete_pod",
 					Approval:  model.ApprovalModeRequired,
@@ -48,40 +46,40 @@ func TestResolveForPolicy_AllToolsFound(t *testing.T) {
 		t.Fatalf("len(result) = %d, want 2", len(result))
 	}
 
-	sensor := result[0]
-	if sensor.Role != model.CapabilityRoleSensor {
-		t.Errorf("result[0].Role = %q, want %q", sensor.Role, model.CapabilityRoleSensor)
+	tool0 := result[0]
+	if tool0.Role != model.CapabilityRoleTool {
+		t.Errorf("result[0].Role = %q, want %q", tool0.Role, model.CapabilityRoleTool)
 	}
-	if sensor.ServerName != "my-server" {
-		t.Errorf("result[0].ServerName = %q, want %q", sensor.ServerName, "my-server")
+	if tool0.ServerName != "my-server" {
+		t.Errorf("result[0].ServerName = %q, want %q", tool0.ServerName, "my-server")
 	}
-	if sensor.ToolName != "read_pods" {
-		t.Errorf("result[0].ToolName = %q, want %q", sensor.ToolName, "read_pods")
+	if tool0.ToolName != "read_pods" {
+		t.Errorf("result[0].ToolName = %q, want %q", tool0.ToolName, "read_pods")
 	}
-	if sensor.Approval != model.ApprovalModeNone {
-		t.Errorf("result[0].Approval = %q, want %q", sensor.Approval, model.ApprovalModeNone)
+	if tool0.Approval != model.ApprovalModeNone {
+		t.Errorf("result[0].Approval = %q, want %q", tool0.Approval, model.ApprovalModeNone)
 	}
-	if sensor.Timeout != 0 {
-		t.Errorf("result[0].Timeout = %v, want 0", sensor.Timeout)
+	if tool0.Timeout != 0 {
+		t.Errorf("result[0].Timeout = %v, want 0", tool0.Timeout)
 	}
-	if sensor.Client == nil {
+	if tool0.Client == nil {
 		t.Errorf("result[0].Client is nil")
 	}
 
-	actuator := result[1]
-	if actuator.Role != model.CapabilityRoleActuator {
-		t.Errorf("result[1].Role = %q, want %q", actuator.Role, model.CapabilityRoleActuator)
+	tool1 := result[1]
+	if tool1.Role != model.CapabilityRoleTool {
+		t.Errorf("result[1].Role = %q, want %q", tool1.Role, model.CapabilityRoleTool)
 	}
-	if actuator.Approval != model.ApprovalModeRequired {
-		t.Errorf("result[1].Approval = %q, want %q", actuator.Approval, model.ApprovalModeRequired)
+	if tool1.Approval != model.ApprovalModeRequired {
+		t.Errorf("result[1].Approval = %q, want %q", tool1.Approval, model.ApprovalModeRequired)
 	}
-	if actuator.Timeout != 30*time.Minute {
-		t.Errorf("result[1].Timeout = %v, want %v", actuator.Timeout, 30*time.Minute)
+	if tool1.Timeout != 30*time.Minute {
+		t.Errorf("result[1].Timeout = %v, want %v", tool1.Timeout, 30*time.Minute)
 	}
-	if actuator.OnTimeout != model.OnTimeoutReject {
-		t.Errorf("result[1].OnTimeout = %q, want %q", actuator.OnTimeout, model.OnTimeoutReject)
+	if tool1.OnTimeout != model.OnTimeoutReject {
+		t.Errorf("result[1].OnTimeout = %q, want %q", tool1.OnTimeout, model.OnTimeoutReject)
 	}
-	if actuator.Client == nil {
+	if tool1.Client == nil {
 		t.Errorf("result[1].Client is nil")
 	}
 }
@@ -100,9 +98,9 @@ func TestResolveForPolicy_MissingTool(t *testing.T) {
 
 	p := &model.ParsedPolicy{
 		Capabilities: model.CapabilitiesConfig{
-			Sensors: []model.SensorCapability{
-				{Tool: "my-server.read_pods"},
-				{Tool: "my-server.nonexistent_tool"},
+			Tools: []model.ToolCapability{
+				{Tool: "my-server.read_pods", Approval: model.ApprovalModeNone},
+				{Tool: "my-server.nonexistent_tool", Approval: model.ApprovalModeNone},
 			},
 		},
 	}
@@ -137,8 +135,8 @@ func TestResolveForPolicy_InvalidDotNotation(t *testing.T) {
 
 	p := &model.ParsedPolicy{
 		Capabilities: model.CapabilitiesConfig{
-			Sensors: []model.SensorCapability{
-				{Tool: "nodot"},
+			Tools: []model.ToolCapability{
+				{Tool: "nodot", Approval: model.ApprovalModeNone},
 			},
 		},
 	}
@@ -159,8 +157,8 @@ func TestResolveForPolicy_ServerNotFound(t *testing.T) {
 	// No servers registered — any tool reference should fail.
 	p := &model.ParsedPolicy{
 		Capabilities: model.CapabilitiesConfig{
-			Sensors: []model.SensorCapability{
-				{Tool: "ghost-server.some_tool"},
+			Tools: []model.ToolCapability{
+				{Tool: "ghost-server.some_tool", Approval: model.ApprovalModeNone},
 			},
 		},
 	}
@@ -171,7 +169,7 @@ func TestResolveForPolicy_ServerNotFound(t *testing.T) {
 	}
 }
 
-func TestResolveForPolicy_ActuatorNotFound(t *testing.T) {
+func TestResolveForPolicy_ToolNotFound(t *testing.T) {
 	reg, _ := newTestRegistry(t)
 
 	tools := []map[string]any{
@@ -185,31 +183,29 @@ func TestResolveForPolicy_ActuatorNotFound(t *testing.T) {
 
 	p := &model.ParsedPolicy{
 		Capabilities: model.CapabilitiesConfig{
-			Sensors: []model.SensorCapability{
-				{Tool: "my-server.read_pods"},
-			},
-			Actuators: []model.ActuatorCapability{
-				{Tool: "my-server.ghost_actuator", Approval: model.ApprovalModeNone},
+			Tools: []model.ToolCapability{
+				{Tool: "my-server.read_pods", Approval: model.ApprovalModeNone},
+				{Tool: "my-server.ghost_tool", Approval: model.ApprovalModeNone},
 			},
 		},
 	}
 
 	_, err := reg.ResolveForPolicy(context.Background(), p)
 	if err == nil {
-		t.Fatal("expected error for missing actuator tool, got nil")
+		t.Fatal("expected error for missing tool, got nil")
 	}
-	if !strings.Contains(err.Error(), "ghost_actuator") {
-		t.Errorf("error %q does not mention the missing actuator tool name", err.Error())
+	if !strings.Contains(err.Error(), "ghost_tool") {
+		t.Errorf("error %q does not mention the missing tool name", err.Error())
 	}
 }
 
-func TestResolveForPolicy_SensorsAndActuatorsOrdered(t *testing.T) {
+func TestResolveForPolicy_ToolsOrdered(t *testing.T) {
 	reg, _ := newTestRegistry(t)
 
 	tools := []map[string]any{
-		{"name": "sensor_a", "description": "sensor a", "inputSchema": map[string]any{"type": "object"}},
-		{"name": "sensor_b", "description": "sensor b", "inputSchema": map[string]any{"type": "object"}},
-		{"name": "actuator_c", "description": "actuator c", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "tool_a", "description": "tool a", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "tool_b", "description": "tool b", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "tool_c", "description": "tool c", "inputSchema": map[string]any{"type": "object"}},
 	}
 	srv := makeMCPServer(t, tools)
 
@@ -219,12 +215,10 @@ func TestResolveForPolicy_SensorsAndActuatorsOrdered(t *testing.T) {
 
 	p := &model.ParsedPolicy{
 		Capabilities: model.CapabilitiesConfig{
-			Sensors: []model.SensorCapability{
-				{Tool: "my-server.sensor_a"},
-				{Tool: "my-server.sensor_b"},
-			},
-			Actuators: []model.ActuatorCapability{
-				{Tool: "my-server.actuator_c", Approval: model.ApprovalModeNone},
+			Tools: []model.ToolCapability{
+				{Tool: "my-server.tool_a", Approval: model.ApprovalModeNone},
+				{Tool: "my-server.tool_b", Approval: model.ApprovalModeNone},
+				{Tool: "my-server.tool_c", Approval: model.ApprovalModeRequired},
 			},
 		},
 	}
@@ -237,13 +231,13 @@ func TestResolveForPolicy_SensorsAndActuatorsOrdered(t *testing.T) {
 	if len(result) != 3 {
 		t.Fatalf("len(result) = %d, want 3", len(result))
 	}
-	if result[0].Role != model.CapabilityRoleSensor {
-		t.Errorf("result[0].Role = %q, want sensor", result[0].Role)
+	if result[0].Role != model.CapabilityRoleTool {
+		t.Errorf("result[0].Role = %q, want tool", result[0].Role)
 	}
-	if result[1].Role != model.CapabilityRoleSensor {
-		t.Errorf("result[1].Role = %q, want sensor", result[1].Role)
+	if result[1].Role != model.CapabilityRoleTool {
+		t.Errorf("result[1].Role = %q, want tool", result[1].Role)
 	}
-	if result[2].Role != model.CapabilityRoleActuator {
-		t.Errorf("result[2].Role = %q, want actuator", result[2].Role)
+	if result[2].Role != model.CapabilityRoleTool {
+		t.Errorf("result[2].Role = %q, want tool", result[2].Role)
 	}
 }

@@ -30,8 +30,7 @@
   --color-teal: #34d399;
 
   /* Capability aliases */
-  --color-sensor: var(--color-blue);
-  --color-actuator: var(--color-orange);
+  --color-tool: var(--color-blue);
   --color-feedback: var(--color-purple);
 
   /* Spacing (4px base) */

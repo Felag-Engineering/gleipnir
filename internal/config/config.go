@@ -19,14 +19,14 @@ const DefaultPerCallMaxTokens = 8192
 
 // Config holds all runtime configuration for the Gleipnir server.
 type Config struct {
-	DBPath                string
-	ListenAddr            string
-	LogLevel              slog.Level
-	MCPTimeout            time.Duration
-	ReadTimeout           time.Duration
-	WriteTimeout          time.Duration
-	IdleTimeout           time.Duration
-	ApprovalScanInterval  time.Duration
+	DBPath               string
+	ListenAddr           string
+	LogLevel             slog.Level
+	MCPTimeout           time.Duration
+	ReadTimeout          time.Duration
+	WriteTimeout         time.Duration
+	IdleTimeout          time.Duration
+	ApprovalScanInterval time.Duration
 }
 
 // Load reads configuration from environment variables and applies defaults

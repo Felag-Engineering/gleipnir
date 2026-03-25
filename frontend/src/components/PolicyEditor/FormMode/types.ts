@@ -7,7 +7,7 @@ export interface AssignedTool {
   name: string;
   description: string;
   role: CapabilityRole;
-  approvalRequired: boolean; // only meaningful for actuators
+  approvalRequired: boolean; // only meaningful for tools
 }
 
 export interface CapabilitiesFormState {

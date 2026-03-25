@@ -89,10 +89,10 @@ trigger:
 // --- Capabilities parsing ---
 
 describe('yamlToFormState — capabilities parsing', () => {
-  it('parses sensor tools with server.tool format', () => {
+  it('parses tools with server.tool format', () => {
     const yaml = `name: p
 capabilities:
-  sensors:
+  tools:
     - tool: myserver.read_file
 `
     const state = yamlToFormState(yaml)
@@ -101,28 +101,28 @@ capabilities:
     expect(tool.serverId).toBe('myserver')
     expect(tool.serverName).toBe('myserver')
     expect(tool.name).toBe('read_file')
-    expect(tool.role).toBe('sensor')
+    expect(tool.role).toBe('tool')
     expect(tool.approvalRequired).toBe(false)
   })
 
-  it('parses actuator tools with approval: required flag', () => {
+  it('parses tools with approval: required flag', () => {
     const yaml = `name: p
 capabilities:
-  actuators:
+  tools:
     - tool: myserver.write_file
       approval: required
 `
     const state = yamlToFormState(yaml)
     expect(state!.capabilities.tools).toHaveLength(1)
     const tool = state!.capabilities.tools[0]
-    expect(tool.role).toBe('actuator')
+    expect(tool.role).toBe('tool')
     expect(tool.approvalRequired).toBe(true)
   })
 
-  it('parses actuator without approval: required as approvalRequired false', () => {
+  it('parses tool without approval: required as approvalRequired false', () => {
     const yaml = `name: p
 capabilities:
-  actuators:
+  tools:
     - tool: myserver.deploy
 `
     const state = yamlToFormState(yaml)
@@ -130,24 +130,23 @@ capabilities:
     expect(tool.approvalRequired).toBe(false)
   })
 
-  it('preserves _actuatorExtras (timeout and on_timeout)', () => {
+  it('preserves _toolExtras (timeout and on_timeout)', () => {
     const yaml = `name: p
 capabilities:
-  actuators:
+  tools:
     - tool: myserver.deploy
       timeout: 300
       on_timeout: fail
 `
     const state = yamlToFormState(yaml)
-    expect(state!._actuatorExtras).toBeDefined()
-    expect(state!._actuatorExtras!['myserver.deploy']).toEqual({ timeout: 300, on_timeout: 'fail' })
+    expect(state!._toolExtras).toBeDefined()
+    expect(state!._toolExtras!['myserver.deploy']).toEqual({ timeout: 300, on_timeout: 'fail' })
   })
 
   it('preserves _feedbackCapabilities passthrough', () => {
     const yaml = `name: p
 capabilities:
-  sensors: []
-  actuators: []
+  tools: []
   feedback:
     - channel: slack
 `
@@ -157,11 +156,10 @@ capabilities:
     expect((state!._feedbackCapabilities as unknown[])).toHaveLength(1)
   })
 
-  it('handles empty sensor and actuator arrays', () => {
+  it('handles empty tools array', () => {
     const yaml = `name: p
 capabilities:
-  sensors: []
-  actuators: []
+  tools: []
 `
     const state = yamlToFormState(yaml)
     expect(state!.capabilities.tools).toHaveLength(0)
@@ -277,8 +275,7 @@ agent:
   it('includes _feedbackCapabilities in capabilities', () => {
     const yaml = `name: p
 capabilities:
-  sensors: []
-  actuators: []
+  tools: []
   feedback:
     - channel: email
 `
@@ -287,10 +284,10 @@ capabilities:
     expect(output).toContain('feedback')
   })
 
-  it('preserves _actuatorExtras (timeout and on_timeout) in output', () => {
+  it('preserves _toolExtras (timeout and on_timeout) in output', () => {
     const yaml = `name: p
 capabilities:
-  actuators:
+  tools:
     - tool: srv.deploy
       timeout: 120
       on_timeout: skip
@@ -301,6 +298,29 @@ capabilities:
     expect(output).toContain('120')
     expect(output).toContain('on_timeout')
     expect(output).toContain('skip')
+  })
+
+  it('emits approval: required in YAML when approvalRequired is true', () => {
+    const yaml = `name: p
+capabilities:
+  tools:
+    - tool: srv.deploy
+      approval: required
+`
+    const state = yamlToFormState(yaml)!
+    const output = formStateToYaml(state)
+    expect(output).toContain('approval: required')
+  })
+
+  it('does not emit approval in YAML when approvalRequired is false', () => {
+    const yaml = `name: p
+capabilities:
+  tools:
+    - tool: srv.deploy
+`
+    const state = yamlToFormState(yaml)!
+    const output = formStateToYaml(state)
+    expect(output).not.toContain('approval: required')
   })
 })
 
@@ -313,9 +333,8 @@ folder: ops
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: github.list_prs
-  actuators:
     - tool: github.merge_pr
       approval: required
       timeout: 300

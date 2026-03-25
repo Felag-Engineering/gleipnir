@@ -73,12 +73,8 @@
   cursor: not-allowed;
 }
 
-.roleSelect.sensor {
-  color: var(--color-sensor);
-}
-
-.roleSelect.actuator {
-  color: var(--color-actuator);
+.roleSelect.tool {
+  color: var(--color-tool);
 }
 
 .roleSelect.feedback {

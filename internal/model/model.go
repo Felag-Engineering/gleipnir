@@ -39,8 +39,7 @@ const (
 type CapabilityRole string
 
 const (
-	CapabilityRoleSensor   CapabilityRole = "sensor"
-	CapabilityRoleActuator CapabilityRole = "actuator"
+	CapabilityRoleTool     CapabilityRole = "tool"
 	CapabilityRoleFeedback CapabilityRole = "feedback"
 )
 
@@ -59,7 +58,7 @@ const (
 	StepTypeComplete           StepType = "complete"
 )
 
-// ApprovalMode controls whether a human must approve an actuator call.
+// ApprovalMode controls whether a human must approve a tool call.
 type ApprovalMode string
 
 const (
@@ -107,7 +106,7 @@ func (t TriggerType) Valid() bool {
 func (r CapabilityRole) String() string { return string(r) }
 func (r CapabilityRole) Valid() bool {
 	switch r {
-	case CapabilityRoleSensor, CapabilityRoleActuator, CapabilityRoleFeedback:
+	case CapabilityRoleTool, CapabilityRoleFeedback:
 		return true
 	}
 	return false
@@ -211,21 +210,13 @@ type TriggerConfig struct {
 // CapabilitiesConfig defines the tool envelope granted to an agent for this run.
 // Tools not listed here are never registered with the agent (ADR-001).
 type CapabilitiesConfig struct {
-	Sensors   []SensorCapability
-	Actuators []ActuatorCapability
-	Feedback  []string // reserved for future explicit feedback tools
+	Tools    []ToolCapability
+	Feedback []string // reserved for future explicit feedback tools
 }
 
-// SensorCapability grants a read-only tool to the agent.
-type SensorCapability struct {
-	Tool   string         // dot-notation: server_name.tool_name
-	Params map[string]any // policy-level parameter scoping (ADR-017)
-}
-
-// ActuatorCapability grants a world-affecting tool to the agent, optionally
-// with a hard approval gate.
-type ActuatorCapability struct {
-	Tool      string
+// ToolCapability grants a tool to the agent, optionally with a hard approval gate.
+type ToolCapability struct {
+	Tool      string // dot-notation: server_name.tool_name
 	Approval  ApprovalMode
 	Timeout   string         // Go duration string; valid only when Approval == required
 	OnTimeout OnTimeout      // valid only when Approval == required
@@ -253,9 +244,9 @@ type GrantedTool struct {
 	ServerName string
 	ToolName   string
 	Role       CapabilityRole
-	Approval   ApprovalMode   // actuator only
-	Timeout    time.Duration  // actuator only, zero means no timeout
-	OnTimeout  OnTimeout      // actuator only
+	Approval   ApprovalMode
+	Timeout    time.Duration // zero means no timeout
+	OnTimeout  OnTimeout
 	Params     map[string]any // policy-level parameter scoping (ADR-017)
 }
 
@@ -316,7 +307,7 @@ type RunStep struct {
 	CreatedAt  time.Time
 }
 
-// ApprovalRequest is a pending human-approval gate for an actuator call.
+// ApprovalRequest is a pending human-approval gate for a tool call.
 type ApprovalRequest struct {
 	ID               string
 	RunID            string

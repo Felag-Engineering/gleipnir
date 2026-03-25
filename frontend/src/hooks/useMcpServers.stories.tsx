@@ -31,7 +31,7 @@ const FIXTURE_TOOLS: ApiMcpTool[] = [
     server_id: 'srv-1',
     name: 'read_file',
     description: 'Read the contents of a file at the given path',
-    capability_role: 'sensor',
+    capability_role: 'tool',
     input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
   },
   {
@@ -39,7 +39,7 @@ const FIXTURE_TOOLS: ApiMcpTool[] = [
     server_id: 'srv-1',
     name: 'write_file',
     description: 'Write content to a file at the given path',
-    capability_role: 'actuator',
+    capability_role: 'tool',
     input_schema: {
       type: 'object',
       properties: { path: { type: 'string' }, content: { type: 'string' } },

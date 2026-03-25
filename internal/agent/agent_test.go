@@ -44,13 +44,13 @@ func makeToolCallServer(t *testing.T, content json.RawMessage, isError bool) *ht
 	return srv
 }
 
-// makeResolvedTool builds a sensor ResolvedTool pointing at the given MCP server URL.
+// makeResolvedTool builds a ResolvedTool pointing at the given MCP server URL.
 func makeResolvedTool(serverURL, serverName, toolName string) mcp.ResolvedTool {
 	return mcp.ResolvedTool{
 		GrantedTool: model.GrantedTool{
 			ServerName: serverName,
 			ToolName:   toolName,
-			Role:       model.CapabilityRoleSensor,
+			Role:       model.CapabilityRoleTool,
 			Approval:   model.ApprovalModeNone,
 		},
 		Client:      mcp.NewClient(serverURL),
@@ -317,13 +317,13 @@ func TestHandleToolCall(t *testing.T) {
 	}
 }
 
-// sensorToolForRun returns a sensor ResolvedTool for Run-level tests.
-func sensorToolForRun(serverURL, serverName, toolName string) mcp.ResolvedTool {
+// toolForRun returns a ResolvedTool for Run-level tests.
+func toolForRun(serverURL, serverName, toolName string) mcp.ResolvedTool {
 	return mcp.ResolvedTool{
 		GrantedTool: model.GrantedTool{
 			ServerName: serverName,
 			ToolName:   toolName,
-			Role:       model.CapabilityRoleSensor,
+			Role:       model.CapabilityRoleTool,
 			Approval:   model.ApprovalModeNone,
 		},
 		Client:      mcp.NewClient(serverURL),
@@ -409,7 +409,7 @@ func TestRun_ToolCallLoop(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
-	tools := []mcp.ResolvedTool{sensorToolForRun(mcpSrv.URL, "my-server", "read_data")}
+	tools := []mcp.ResolvedTool{toolForRun(mcpSrv.URL, "my-server", "read_data")}
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
@@ -498,15 +498,15 @@ func TestRun_MissingCapabilityFailsFast(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
-	// Policy references a sensor tool that is not in the MCP registry.
+	// Policy references a tool that is not in the MCP registry.
 	p := &model.ParsedPolicy{
 		Name: "test-policy",
 		Agent: model.AgentConfig{
 			Task: "test task",
 		},
 		Capabilities: model.CapabilitiesConfig{
-			Sensors: []model.SensorCapability{
-				{Tool: "myserver.missing_tool"},
+			Tools: []model.ToolCapability{
+				{Tool: "myserver.missing_tool", Approval: model.ApprovalModeNone},
 			},
 		},
 	}
@@ -623,7 +623,7 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 		GrantedTool: model.GrantedTool{
 			ServerName: "my-server",
 			ToolName:   "read_data",
-			Role:       model.CapabilityRoleSensor,
+			Role:       model.CapabilityRoleTool,
 			Approval:   model.ApprovalModeNone,
 		},
 		Client:      mcp.NewClient(mcpSrv.URL),
@@ -726,7 +726,7 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	// Tool schema only allows "arg"; "badkey" is undeclared.
-	tools := []mcp.ResolvedTool{sensorToolForRun(fakeSrv.URL, "my-server", "read_data")}
+	tools := []mcp.ResolvedTool{toolForRun(fakeSrv.URL, "my-server", "read_data")}
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
@@ -785,11 +785,11 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 	approvalCh := make(chan bool, 1)
 	approvalCh <- false // operator rejects
 
-	actuatorTool := mcp.ResolvedTool{
+	approvalTool := mcp.ResolvedTool{
 		GrantedTool: model.GrantedTool{
 			ServerName: "my-server",
 			ToolName:   "do_thing",
-			Role:       model.CapabilityRoleActuator,
+			Role:       model.CapabilityRoleTool,
 			Approval:   model.ApprovalModeRequired,
 		},
 		Client:      mcp.NewClient(fakeSrv.URL),
@@ -802,7 +802,7 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
 			testutil.MakeToolUseMessage("tu-1", "my-server_do_thing", map[string]any{"arg": "v"}, 10, 5),
 		}),
-		Tools:        []mcp.ResolvedTool{actuatorTool},
+		Tools:        []mcp.ResolvedTool{approvalTool},
 		Policy:       minimalPolicy(),
 		Audit:        w,
 		ApprovalCh:   approvalCh,
@@ -877,7 +877,7 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 		GrantedTool: model.GrantedTool{
 			ServerName: "my-server",
 			ToolName:   "read_data",
-			Role:       model.CapabilityRoleSensor,
+			Role:       model.CapabilityRoleTool,
 			Approval:   model.ApprovalModeNone,
 		},
 		Client:      mcp.NewClient(mcpSrv.URL),
@@ -948,7 +948,7 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 		GrantedTool: model.GrantedTool{
 			ServerName: "my-server",
 			ToolName:   "read_data",
-			Role:       model.CapabilityRoleSensor,
+			Role:       model.CapabilityRoleTool,
 			Approval:   model.ApprovalModeNone,
 		},
 		Client:      mcp.NewClient(mcpSrv.URL),
@@ -1141,7 +1141,7 @@ func TestRun_Cancellation(t *testing.T) {
 
 		// Fake client returns a tool_use response on the first call, directing
 		// the agent to call the slow MCP server.
-		tools := []mcp.ResolvedTool{sensorToolForRun(slowSrv.URL, "slow-server", "slow_tool")}
+		tools := []mcp.ResolvedTool{toolForRun(slowSrv.URL, "slow-server", "slow_tool")}
 
 		w := NewAuditWriter(s.Queries())
 		ba, err := New(Config{
@@ -1209,7 +1209,7 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
-	tools := []mcp.ResolvedTool{sensorToolForRun(mcpSrv.URL, "my-server", "read_data")}
+	tools := []mcp.ResolvedTool{toolForRun(mcpSrv.URL, "my-server", "read_data")}
 
 	capturingClient, capturingTransport := testutil.NewCapturingAnthropicClient([]*anthropic.Message{
 		testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"arg": "x"}, 10, 5),
@@ -1283,14 +1283,14 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 	}
 }
 
-// makeActuatorTool builds an actuator ResolvedTool with the given approval settings,
+// makeApprovalTool builds a ResolvedTool with the given approval settings,
 // pointing at the provided server URL.
-func makeActuatorTool(serverURL, serverName, toolName string, approval model.ApprovalMode, timeout time.Duration, onTimeout model.OnTimeout) mcp.ResolvedTool {
+func makeApprovalTool(serverURL, serverName, toolName string, approval model.ApprovalMode, timeout time.Duration, onTimeout model.OnTimeout) mcp.ResolvedTool {
 	return mcp.ResolvedTool{
 		GrantedTool: model.GrantedTool{
 			ServerName: serverName,
 			ToolName:   toolName,
-			Role:       model.CapabilityRoleActuator,
+			Role:       model.CapabilityRoleTool,
 			Approval:   approval,
 			Timeout:    timeout,
 			OnTimeout:  onTimeout,
@@ -1346,7 +1346,7 @@ func TestBuildToolDefinitions(t *testing.T) {
 					GrantedTool: model.GrantedTool{
 						ServerName: "my-server",
 						ToolName:   "read.data",
-						Role:       model.CapabilityRoleSensor,
+						Role:       model.CapabilityRoleTool,
 					},
 					Description: "reads some data",
 					InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),

@@ -106,7 +106,7 @@ name: tool-failure-policy
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: nonexistent-server.some_tool
 agent:
   model: claude-opus-4-5
@@ -155,7 +155,7 @@ name: agent-fail-policy
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: stub-server.read_data
 agent:
   model: claude-opus-4-5
@@ -203,7 +203,7 @@ name: launch-success-policy
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: stub-server.read_data
 agent:
   model: claude-opus-4-5

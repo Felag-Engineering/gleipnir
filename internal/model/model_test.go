@@ -40,7 +40,7 @@ func TestEnumValid(t *testing.T) {
 	})
 
 	t.Run("CapabilityRole", func(t *testing.T) {
-		valid := []CapabilityRole{CapabilityRoleSensor, CapabilityRoleActuator, CapabilityRoleFeedback}
+		valid := []CapabilityRole{CapabilityRoleTool, CapabilityRoleFeedback}
 		for _, v := range valid {
 			if !v.Valid() {
 				t.Errorf("expected %q to be valid", v)

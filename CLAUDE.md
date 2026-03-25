@@ -34,16 +34,15 @@ The Go server handles policy management, agent orchestration, and the reasoning 
 
 **Policy** — YAML config defining trigger, agent task prompt, capability grants, and limits. Three trigger types: `webhook`, `cron`, `poll`.
 
-**Capabilities** — three categories, tracked in Gleipnir's own DB (not in MCP servers):
-- `sensor` — read-only tools, called freely
-- `actuator` — world-affecting tools, can require approval before execution
+**Capabilities** — two categories, tracked in Gleipnir's own DB (not in MCP servers):
+- `tool` — MCP tools the agent can call, optionally approval-gated
 - `feedback` — human-in-the-loop channel; agent sends a message and waits for operator response
 
 **Run states:** `pending → running → complete | failed | waiting_for_approval → running (approved) | failed (rejected/timeout)`; `interrupted` on restart.
 
 **Approval modes:**
 1. Agent-initiated: agent calls feedback tool voluntarily
-2. Policy-gated: actuators marked `approval: required` are intercepted by the runtime before execution — hard guarantee, not prompt-based
+2. Policy-gated: tools marked `approval: required` are intercepted by the runtime before execution — hard guarantee, not prompt-based
 
 ## Key packages
 
@@ -98,9 +97,9 @@ These are resolved constraints — do not re-litigate them.
 - **Hard capability enforcement:** disallowed tools are never registered with the agent. Prompt-based restrictions are not a control mechanism and must not be used as one.
 - **Policy stored as a YAML blob:** `name` and `trigger_type` are indexed columns for routing and list views; all other policy fields live in the `yaml` column. No separate data model for policy fields.
 - **SQLite, WAL mode, no ORM:** WAL is enabled at the application layer on startup. Audit writes are serialized through an application-layer queue to avoid contention. All queries go through sqlc — raw `.sql` files only.
-- **MCP HTTP transport only:** capability tags (`sensor`/`actuator`/`feedback`) are Gleipnir's metadata, stored in Gleipnir's DB — not in the MCP server.
+- **MCP HTTP transport only:** capability tags (`tool`/`feedback`) are Gleipnir's metadata, stored in Gleipnir's DB — not in the MCP server.
 - **Package boundary:** `internal/mcp` must not import `internal/agent`.
-- **Policy-gated approval is a hard runtime guarantee:** actuators marked `approval: required` are intercepted by the runtime before execution, regardless of agent reasoning.
+- **Policy-gated approval is a hard runtime guarantee:** tools marked `approval: required` are intercepted by the runtime before execution, regardless of agent reasoning.
 - **Feedback channel resolution:** policy-level channel definition falls back to system-level config if absent.
 - **SSE for real-time UI transport (ADR-016):** Server-Sent Events push run status changes, new steps, and approval events. Mutations remain REST. No WebSockets.
 - **Dual-mode policy editor (ADR-019):** Form view + YAML view, both editing the same YAML string. YAML is the API payload.

@@ -33,7 +33,7 @@ const FIXTURE_TOOLS_SRV1: ApiMcpTool[] = [
     server_id: 'srv-1',
     name: 'read_file',
     description: 'Read the contents of a file at the given path',
-    capability_role: 'sensor',
+    capability_role: 'tool',
     input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
   },
   {
@@ -41,7 +41,7 @@ const FIXTURE_TOOLS_SRV1: ApiMcpTool[] = [
     server_id: 'srv-1',
     name: 'write_file',
     description: 'Write content to a file at the given path',
-    capability_role: 'actuator',
+    capability_role: 'tool',
     input_schema: {
       type: 'object',
       properties: { path: { type: 'string' }, content: { type: 'string' } },
@@ -53,7 +53,7 @@ const FIXTURE_TOOLS_SRV1: ApiMcpTool[] = [
     server_id: 'srv-1',
     name: 'list_directory',
     description: 'List files and directories at the given path',
-    capability_role: 'sensor',
+    capability_role: 'tool',
     input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
   },
 ];
@@ -64,7 +64,7 @@ const FIXTURE_TOOLS_SRV2: ApiMcpTool[] = [
     server_id: 'srv-2',
     name: 'create_issue',
     description: 'Create a new GitHub issue in a repository',
-    capability_role: 'actuator',
+    capability_role: 'tool',
     input_schema: {
       type: 'object',
       properties: {
@@ -80,7 +80,7 @@ const FIXTURE_TOOLS_SRV2: ApiMcpTool[] = [
     server_id: 'srv-2',
     name: 'list_issues',
     description: 'List open issues for a GitHub repository',
-    capability_role: 'sensor',
+    capability_role: 'tool',
     input_schema: { type: 'object', properties: { repo: { type: 'string' } }, required: ['repo'] },
   },
 ];
@@ -92,7 +92,7 @@ const FIXTURE_ASSIGNED_TOOLS: AssignedTool[] = [
     serverName: 'Filesystem Tools',
     name: 'read_file',
     description: 'Read the contents of a file at the given path',
-    role: 'sensor',
+    role: 'tool',
     approvalRequired: false,
   },
   {
@@ -101,7 +101,7 @@ const FIXTURE_ASSIGNED_TOOLS: AssignedTool[] = [
     serverName: 'Filesystem Tools',
     name: 'write_file',
     description: 'Write content to a file at the given path',
-    role: 'actuator',
+    role: 'tool',
     approvalRequired: true,
   },
   {
@@ -110,7 +110,7 @@ const FIXTURE_ASSIGNED_TOOLS: AssignedTool[] = [
     serverName: 'GitHub Tools',
     name: 'create_issue',
     description: 'Create a new GitHub issue in a repository',
-    role: 'actuator',
+    role: 'tool',
     approvalRequired: false,
   },
 ];

@@ -125,12 +125,12 @@ function Legend() {
   return (
     <div className={styles.legend}>
       <div className={styles.legendItem}>
-        <RoleBadge role="sensor" />
-        <span className={styles.legendDesc}>read-only, called freely</span>
+        <RoleBadge role="tool" />
+        <span className={styles.legendDesc}>available tools, optionally approval-gated</span>
       </div>
       <div className={styles.legendItem}>
-        <RoleBadge role="actuator" />
-        <span className={styles.legendDesc}>world-affecting, optionally gated</span>
+        <RoleBadge role="feedback" />
+        <span className={styles.legendDesc}>human-in-the-loop channel</span>
       </div>
     </div>
   );
@@ -150,7 +150,7 @@ function AssignedToolRow({ tool, onRemove, onToggleApproval }: AssignedToolRowPr
       <RoleBadge role={tool.role} />
       <span className={styles.toolName}>{displayName}</span>
       <span className={styles.toolDesc}>{tool.description}</span>
-      {tool.role === 'actuator' && (
+      {tool.role === 'tool' && (
         <div className={styles.approvalToggle}>
           <span className={styles.approvalLabel}>approval</span>
           <button

@@ -20,7 +20,7 @@ func (e *ValidationError) Error() string {
 
 // Validate checks a ParsedPolicy for required fields, valid enum values,
 // and internal consistency (e.g. replace concurrency incompatible with
-// approval-required actuators). Returns nil if valid.
+// approval-required tools). Returns nil if valid.
 func Validate(p *model.ParsedPolicy) error {
 	var errs []string
 
@@ -73,57 +73,43 @@ func validateTrigger(t model.TriggerConfig) []string {
 	return errs
 }
 
-// validateCapabilities checks that at least one sensor or actuator is present,
-// tool references use valid dot notation, there are no duplicates across roles,
-// and actuator approval/timeout fields are well-formed.
+// validateCapabilities checks that at least one tool is present,
+// tool references use valid dot notation, there are no duplicates,
+// and approval/timeout fields are well-formed.
 func validateCapabilities(c model.CapabilitiesConfig) []string {
 	var errs []string
 
-	if len(c.Sensors) == 0 && len(c.Actuators) == 0 {
-		errs = append(errs, "at least one sensor or actuator is required")
+	if len(c.Tools) == 0 {
+		errs = append(errs, "at least one tool is required")
 	}
 
 	seen := make(map[string]bool)
 
-	for i, s := range c.Sensors {
-		if s.Tool == "" {
-			errs = append(errs, fmt.Sprintf("capabilities.sensors[%d].tool is required", i))
+	for i, t := range c.Tools {
+		if t.Tool == "" {
+			errs = append(errs, fmt.Sprintf("capabilities.tools[%d].tool is required", i))
 			continue
 		}
-		if !isValidToolRef(s.Tool) {
-			errs = append(errs, fmt.Sprintf("capabilities.sensors[%d].tool %q must use dot notation (server_name.tool_name)", i, s.Tool))
+		if !isValidToolRef(t.Tool) {
+			errs = append(errs, fmt.Sprintf("capabilities.tools[%d].tool %q must use dot notation (server_name.tool_name)", i, t.Tool))
 		}
-		if seen[s.Tool] {
-			errs = append(errs, fmt.Sprintf("capabilities.sensors[%d].tool %q is a duplicate", i, s.Tool))
+		if seen[t.Tool] {
+			errs = append(errs, fmt.Sprintf("capabilities.tools[%d].tool %q is a duplicate", i, t.Tool))
 		}
-		seen[s.Tool] = true
-	}
+		seen[t.Tool] = true
 
-	for i, a := range c.Actuators {
-		if a.Tool == "" {
-			errs = append(errs, fmt.Sprintf("capabilities.actuators[%d].tool is required", i))
-			continue
-		}
-		if !isValidToolRef(a.Tool) {
-			errs = append(errs, fmt.Sprintf("capabilities.actuators[%d].tool %q must use dot notation (server_name.tool_name)", i, a.Tool))
-		}
-		if seen[a.Tool] {
-			errs = append(errs, fmt.Sprintf("capabilities.actuators[%d].tool %q is a duplicate", i, a.Tool))
-		}
-		seen[a.Tool] = true
-
-		if !a.Approval.Valid() {
-			errs = append(errs, fmt.Sprintf("capabilities.actuators[%d].approval %q is invalid; must be none or required", i, a.Approval))
+		if !t.Approval.Valid() {
+			errs = append(errs, fmt.Sprintf("capabilities.tools[%d].approval %q is invalid; must be none or required", i, t.Approval))
 		}
 
-		if a.Approval == model.ApprovalModeRequired {
-			if a.Timeout != "" {
-				if _, err := time.ParseDuration(a.Timeout); err != nil {
-					errs = append(errs, fmt.Sprintf("capabilities.actuators[%d].timeout %q is not a valid duration: %v", i, a.Timeout, err))
+		if t.Approval == model.ApprovalModeRequired {
+			if t.Timeout != "" {
+				if _, err := time.ParseDuration(t.Timeout); err != nil {
+					errs = append(errs, fmt.Sprintf("capabilities.tools[%d].timeout %q is not a valid duration: %v", i, t.Timeout, err))
 				}
 			}
-			if !a.OnTimeout.Valid() {
-				errs = append(errs, fmt.Sprintf("capabilities.actuators[%d].on_timeout %q is invalid; must be reject or approve", i, a.OnTimeout))
+			if !t.OnTimeout.Valid() {
+				errs = append(errs, fmt.Sprintf("capabilities.tools[%d].on_timeout %q is invalid; must be reject or approve", i, t.OnTimeout))
 			}
 		}
 	}
@@ -141,7 +127,7 @@ var knownModels = map[string]bool{
 }
 
 // validateAgent checks agent config and cross-validates against capabilities.
-// Specifically: replace concurrency is not valid if any actuator has
+// Specifically: replace concurrency is not valid if any tool has
 // approval: required (the in-flight run cannot be safely cancelled mid-approval).
 func validateAgent(a model.AgentConfig, c model.CapabilitiesConfig) []string {
 	var errs []string
@@ -165,11 +151,11 @@ func validateAgent(a model.AgentConfig, c model.CapabilitiesConfig) []string {
 		errs = append(errs, fmt.Sprintf("agent.concurrency %q is invalid; must be skip, queue, parallel, or replace", a.Concurrency))
 	}
 
-	// Cross-validation: replace concurrency is incompatible with approval-required actuators.
+	// Cross-validation: replace concurrency is incompatible with approval-required tools.
 	if a.Concurrency == model.ConcurrencyReplace {
-		for _, act := range c.Actuators {
-			if act.Approval == model.ApprovalModeRequired {
-				errs = append(errs, "agent.concurrency \"replace\" is not valid when any actuator has approval: required")
+		for _, t := range c.Tools {
+			if t.Approval == model.ApprovalModeRequired {
+				errs = append(errs, "agent.concurrency \"replace\" is not valid when any tool has approval: required")
 				break
 			}
 		}

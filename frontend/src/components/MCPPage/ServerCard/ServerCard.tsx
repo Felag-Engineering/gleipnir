@@ -12,7 +12,7 @@ interface Props {
   isDiscovering: boolean
   onDiscover: (serverId: string) => void
   onDelete: (server: ApiMcpServer, toolCount: number) => void
-  onRoleChange: (toolId: string, serverId: string, role: 'sensor' | 'actuator' | 'feedback') => void
+  onRoleChange: (toolId: string, serverId: string, role: 'tool' | 'feedback') => void
   updatingToolId: string | null
 }
 

@@ -1,9 +1,8 @@
 """
 Gleipnir test MCP server.
 
-Exposes a small set of tools covering all three Gleipnir capability roles:
-  sensor    — read-only, called freely
-  actuator  — world-affecting (tagged in Gleipnir's tool registry, not here)
+Exposes a small set of tools covering both Gleipnir capability roles:
+  tool      — callable tools, optionally approval-gated (tagged in Gleipnir's tool registry)
   feedback  — human-in-the-loop channel (tagged in Gleipnir's tool registry)
 
 Run with:  python server.py
@@ -58,7 +57,7 @@ def echo(message: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Actuator tools — world-affecting; tag these as 'actuator' in Gleipnir
+# Write tools — world-affecting; consider adding approval: required in Gleipnir
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
@@ -66,7 +65,7 @@ def send_notification(channel: str, message: str) -> dict:
     """
     Simulate sending a notification to a channel (Slack, email, etc.).
     In this test server the message is only logged — nothing is actually sent.
-    Tag as 'actuator' in Gleipnir.
+    Consider adding approval: required in policy.
     """
     print(f"[notify] channel={channel!r} message={message!r}")
     return {"ok": True, "channel": channel, "queued_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
@@ -77,7 +76,7 @@ def update_item_stock(item_id: str, new_stock: int) -> dict:
     """
     Simulate updating the stock count for an item.
     In this test server the update is only logged — no state is persisted.
-    Tag as 'actuator' in Gleipnir.
+    Consider adding approval: required in policy.
     """
     if new_stock < 0:
         raise ValueError(f"stock must be >= 0, got {new_stock}")
@@ -89,7 +88,7 @@ def update_item_stock(item_id: str, new_stock: int) -> dict:
 def write_file(path: str, content: str) -> dict:
     """
     Write content to a file under /tmp/gleipnir-test/ (sandboxed).
-    Tag as 'actuator' in Gleipnir.
+    Consider adding approval: required in policy.
     """
     base = "/tmp/gleipnir-test"
     os.makedirs(base, exist_ok=True)

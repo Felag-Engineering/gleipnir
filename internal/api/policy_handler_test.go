@@ -283,7 +283,7 @@ name: test-policy
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: github.list_repos
 agent:
   task: Check all repos
@@ -397,7 +397,7 @@ func TestPolicyCreateHandler(t *testing.T) {
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: github.list_repos
 agent:
   task: Check all repos
@@ -438,7 +438,7 @@ name: updated-name
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: github.list_repos
 agent:
   task: Updated task
@@ -682,7 +682,7 @@ name: updated-policy
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: github.list_repos
 agent:
   task: Updated task

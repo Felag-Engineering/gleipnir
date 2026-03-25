@@ -6,7 +6,7 @@
 --   ADR-002: Policy-as-YAML stored in DB. name and trigger_type as columns for
 --            list views and trigger routing; everything else lives in the YAML.
 --   ADR-003: SQLite, WAL mode enabled at the application layer on startup.
---   ADR-007: sensor / actuator / feedback roles stored as capability_role on
+--   ADR-007: tool / feedback roles stored as capability_role on
 --            mcp_tools (denormalized — each tool has exactly one role).
 --   ADR-011: interrupted is a valid terminal run state. Startup scan marks any
 --            run in running or waiting_for_approval as interrupted.
@@ -52,7 +52,7 @@ CREATE TABLE mcp_tools (
     name            TEXT    NOT NULL,
     description     TEXT    NOT NULL,
     input_schema    TEXT    NOT NULL,     -- JSON blob (MCP tool input schema)
-    capability_role TEXT    NOT NULL CHECK(capability_role IN ('sensor', 'actuator', 'feedback')),
+    capability_role TEXT    NOT NULL CHECK(capability_role IN ('tool', 'feedback')),
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     UNIQUE(server_id, name)
 );
@@ -177,7 +177,7 @@ CREATE INDEX idx_run_steps_run_step ON run_steps(run_id, step_number);
 -- ---------------------------------------------------------------------------
 -- Approval requests
 --
--- Created when the approval interceptor pauses a run before an actuator
+-- Created when the approval interceptor pauses a run before a tool
 -- call marked approval: required.
 --
 -- reasoning_summary is a snapshot of the run's reasoning up to the pause

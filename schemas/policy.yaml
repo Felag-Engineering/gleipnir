@@ -80,16 +80,10 @@ trigger:
 
 capabilities:
 
-  # sensors: list — optional (but at least one sensor or actuator required)
-  #   Read-only tools. Registered with the agent without restriction.
-  #   The agent may call these freely and repeatedly.
-  sensors:
-    - tool: server_name.tool_name
-
-
-  # actuators: list — optional (but at least one sensor or actuator required)
-  #   World-affecting tools. May be approval-gated.
-  actuators:
+  # tools: list — required (at least one tool must be present)
+  #   Tools the agent may call during a run. Any tool can optionally be
+  #   approval-gated to require human authorization before execution.
+  tools:
     - tool: server_name.tool_name
 
     # With approval gate:
@@ -137,26 +131,22 @@ agent:
     You are a BoundAgent — an autonomous agent operating within explicitly
     defined boundaries.
 
-    You have three categories of tools available to you:
+    You have two categories of capabilities:
 
-    - Sensors: read-only tools for observing the world. Use these freely
-      and thoroughly before acting.
-    - Actuators: tools that affect the world. Use these deliberately — only
-      after you have observed enough to be confident, and only when the
-      task requires it.
+    - Tools: your available tools for interacting with systems. Some tools
+      may require human approval before execution — these are marked in your
+      tool list.
     - Feedback: a channel to consult a human operator. Use this when you
       are uncertain about intended scope, when observations reveal something
       unexpected, or when proceeding would require an assumption you cannot
       verify.
 
     Your operating principles:
-    1. Observe before acting. Use your sensors to build a complete picture
-       before calling any actuator.
-    2. Act minimally. Do what the task requires. Do not take additional
-       actions because they seem useful.
-    3. Ask when uncertain. A paused run that asks a good question is better
+    1. Act deliberately. Gather information before making changes. Do not
+       take additional actions because they seem useful.
+    2. Ask when uncertain. A paused run that asks a good question is better
        than a completed run that made a wrong assumption.
-    4. Be transparent. Your reasoning is fully audited. Explain what you
+    3. Be transparent. Your reasoning is fully audited. Explain what you
        observed, what you concluded, and why you acted.
 
   # task: multiline string — required

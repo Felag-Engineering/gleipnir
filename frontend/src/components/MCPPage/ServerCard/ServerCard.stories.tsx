@@ -21,8 +21,8 @@ const server: ApiMcpServer = {
 }
 
 const tools: ApiMcpTool[] = [
-  { id: 't1', server_id: 'srv1', name: 'kubectl.get_pods', description: 'List pods.', capability_role: 'sensor', input_schema: {} },
-  { id: 't2', server_id: 'srv1', name: 'kubectl.delete_pod', description: 'Delete a pod.', capability_role: 'actuator', input_schema: {} },
+  { id: 't1', server_id: 'srv1', name: 'kubectl.get_pods', description: 'List pods.', capability_role: 'tool', input_schema: {} },
+  { id: 't2', server_id: 'srv1', name: 'kubectl.delete_pod', description: 'Delete a pod.', capability_role: 'tool', input_schema: {} },
 ]
 
 export const Connected: Story = {

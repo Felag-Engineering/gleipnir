@@ -255,11 +255,8 @@ func (s *Service) checkToolRefs(ctx context.Context, p *model.ParsedPolicy) []st
 		}
 	}
 
-	for _, sensor := range p.Capabilities.Sensors {
-		checkRef(sensor.Tool)
-	}
-	for _, actuator := range p.Capabilities.Actuators {
-		checkRef(actuator.Tool)
+	for _, t := range p.Capabilities.Tools {
+		checkRef(t.Tool)
 	}
 
 	if ctx.Err() != nil {

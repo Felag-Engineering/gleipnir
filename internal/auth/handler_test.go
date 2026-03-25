@@ -30,22 +30,22 @@ type mockAuthQuerier struct {
 	countUsersErr    error
 
 	// Fields for user management tests
-	users                []db.ListUsersRow
-	listUsersErr         error
-	allRoles             []db.ListAllUserRolesRow
-	listRolesErr         error
-	getUser              db.User
-	getUserByIDErr       error
-	rolesByUser          []string
-	listByUserErr        error
-	usersByRole          []db.ListUsersByRoleRow
-	listByRoleErr        error
-	activeUsersByRole    []db.ListActiveUsersByRoleRow
-	listActiveByRoleErr  error
-	deactivateErr        error
-	removeRolesErr       error
-	createUserUser       db.User
-	createUserErr        error
+	users               []db.ListUsersRow
+	listUsersErr        error
+	allRoles            []db.ListAllUserRolesRow
+	listRolesErr        error
+	getUser             db.User
+	getUserByIDErr      error
+	rolesByUser         []string
+	listByUserErr       error
+	usersByRole         []db.ListUsersByRoleRow
+	listByRoleErr       error
+	activeUsersByRole   []db.ListActiveUsersByRoleRow
+	listActiveByRoleErr error
+	deactivateErr       error
+	removeRolesErr      error
+	createUserUser      db.User
+	createUserErr       error
 }
 
 func (m *mockAuthQuerier) GetUserByUsername(_ context.Context, _ string) (db.User, error) {

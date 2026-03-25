@@ -84,15 +84,8 @@ func convertCapabilities(r rawCapabilities) model.CapabilitiesConfig {
 		Feedback: r.Feedback,
 	}
 
-	for _, s := range r.Sensors {
-		cc.Sensors = append(cc.Sensors, model.SensorCapability{
-			Tool:   s.Tool,
-			Params: s.Params,
-		})
-	}
-
-	for _, a := range r.Actuators {
-		approval := model.ApprovalMode(a.Approval)
+	for _, t := range r.Tools {
+		approval := model.ApprovalMode(t.Approval)
 		if approval == "" {
 			approval = model.ApprovalModeNone
 		}
@@ -102,19 +95,19 @@ func convertCapabilities(r rawCapabilities) model.CapabilitiesConfig {
 		var timeout string
 		var onTimeout model.OnTimeout
 		if approval == model.ApprovalModeRequired {
-			timeout = a.Timeout
-			onTimeout = model.OnTimeout(a.OnTimeout)
+			timeout = t.Timeout
+			onTimeout = model.OnTimeout(t.OnTimeout)
 			if onTimeout == "" {
 				onTimeout = model.OnTimeoutReject
 			}
 		}
 
-		cc.Actuators = append(cc.Actuators, model.ActuatorCapability{
-			Tool:      a.Tool,
+		cc.Tools = append(cc.Tools, model.ToolCapability{
+			Tool:      t.Tool,
 			Approval:  approval,
 			Timeout:   timeout,
 			OnTimeout: onTimeout,
-			Params:    a.Params,
+			Params:    t.Params,
 		})
 	}
 
@@ -170,17 +163,11 @@ type rawTrigger struct {
 }
 
 type rawCapabilities struct {
-	Sensors   []rawSensor   `yaml:"sensors"`
-	Actuators []rawActuator `yaml:"actuators"`
-	Feedback  []string      `yaml:"feedback"`
+	Tools    []rawTool `yaml:"tools"`
+	Feedback []string  `yaml:"feedback"`
 }
 
-type rawSensor struct {
-	Tool   string         `yaml:"tool"`
-	Params map[string]any `yaml:"params"`
-}
-
-type rawActuator struct {
+type rawTool struct {
 	Tool      string         `yaml:"tool"`
 	Approval  string         `yaml:"approval"`
 	Timeout   string         `yaml:"timeout"`

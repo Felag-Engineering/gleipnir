@@ -160,7 +160,7 @@
   border-radius: 4px;
 }
 
-.actuatorLabel {
+.toolLabel {
   font-size: 10px;
   color: var(--text-faint);
   margin-left: auto;

@@ -441,13 +441,13 @@ func TestMCPToolQueries(t *testing.T) {
 		Name:           "alpha",
 		Description:    "first tool",
 		InputSchema:    "{}",
-		CapabilityRole: "sensor",
+		CapabilityRole: "tool",
 		CreatedAt:      now,
 	})
 	if err != nil {
 		t.Fatalf("UpsertMCPTool: %v", err)
 	}
-	if tool.ID != "tool1" || tool.CapabilityRole != "sensor" {
+	if tool.ID != "tool1" || tool.CapabilityRole != "tool" {
 		t.Errorf("UpsertMCPTool fields mismatch: %+v", tool)
 	}
 
@@ -465,7 +465,7 @@ func TestMCPToolQueries(t *testing.T) {
 		Name:           "beta",
 		Description:    "second tool",
 		InputSchema:    "{}",
-		CapabilityRole: "actuator",
+		CapabilityRole: "tool",
 		CreatedAt:      now,
 	}); err != nil {
 		t.Fatalf("UpsertMCPTool tool2: %v", err)
@@ -505,14 +505,14 @@ func TestMCPToolQueries(t *testing.T) {
 		Name:           "alpha", // same server+name as tool1
 		Description:    "updated desc",
 		InputSchema:    `{"type":"object"}`,
-		CapabilityRole: "sensor",
+		CapabilityRole: "tool",
 		CreatedAt:      now,
 	})
 	if err != nil {
 		t.Fatalf("UpsertMCPTool conflict path: %v", err)
 	}
 	// RETURNING * must reflect the updated columns, not the attempted insert values.
-	if upserted.Description != "updated desc" || upserted.InputSchema != `{"type":"object"}` || upserted.CapabilityRole != "sensor" {
+	if upserted.Description != "updated desc" || upserted.InputSchema != `{"type":"object"}` || upserted.CapabilityRole != "tool" {
 		t.Errorf("UpsertMCPTool conflict path: returned row wrong: %+v", upserted)
 	}
 

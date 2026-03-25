@@ -1,14 +1,13 @@
 import styles from './RoleBadge.module.css';
 
-export type CapabilityRole = 'sensor' | 'actuator' | 'feedback';
+export type CapabilityRole = 'tool' | 'feedback';
 
 interface RoleBadgeProps {
   role: CapabilityRole;
 }
 
 const VARIANT: Record<CapabilityRole, string> = {
-  sensor:   styles.sensor,
-  actuator: styles.actuator,
+  tool:     styles.tool,
   feedback: styles.feedback,
 };
 

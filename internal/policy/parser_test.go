@@ -14,7 +14,7 @@ name: my-policy
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: github.list_repos
 agent:
   task: Do something
@@ -30,11 +30,11 @@ agent:
 	if p.Trigger.Type != model.TriggerTypeWebhook {
 		t.Errorf("trigger.type = %q, want %q", p.Trigger.Type, model.TriggerTypeWebhook)
 	}
-	if len(p.Capabilities.Sensors) != 1 {
-		t.Fatalf("len(sensors) = %d, want 1", len(p.Capabilities.Sensors))
+	if len(p.Capabilities.Tools) != 1 {
+		t.Fatalf("len(tools) = %d, want 1", len(p.Capabilities.Tools))
 	}
-	if p.Capabilities.Sensors[0].Tool != "github.list_repos" {
-		t.Errorf("sensor tool = %q, want %q", p.Capabilities.Sensors[0].Tool, "github.list_repos")
+	if p.Capabilities.Tools[0].Tool != "github.list_repos" {
+		t.Errorf("tool = %q, want %q", p.Capabilities.Tools[0].Tool, "github.list_repos")
 	}
 	if p.Agent.Task != "Do something" {
 		t.Errorf("task = %q, want %q", p.Agent.Task, "Do something")
@@ -47,7 +47,7 @@ name: test
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: s.t
 agent:
   task: do it
@@ -68,13 +68,13 @@ agent:
 	}
 }
 
-func TestParse_ActuatorDefaults(t *testing.T) {
+func TestParse_ToolApprovalDefaults(t *testing.T) {
 	raw := `
 name: test
 trigger:
   type: webhook
 capabilities:
-  actuators:
+  tools:
     - tool: deploy.run
 agent:
   task: deploy
@@ -84,25 +84,25 @@ agent:
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(p.Capabilities.Actuators) != 1 {
-		t.Fatalf("len(actuators) = %d, want 1", len(p.Capabilities.Actuators))
+	if len(p.Capabilities.Tools) != 1 {
+		t.Fatalf("len(tools) = %d, want 1", len(p.Capabilities.Tools))
 	}
-	a := p.Capabilities.Actuators[0]
-	if a.Approval != model.ApprovalModeNone {
-		t.Errorf("approval = %q, want %q", a.Approval, model.ApprovalModeNone)
+	tc := p.Capabilities.Tools[0]
+	if tc.Approval != model.ApprovalModeNone {
+		t.Errorf("approval = %q, want %q", tc.Approval, model.ApprovalModeNone)
 	}
-	if a.OnTimeout != "" {
-		t.Errorf("on_timeout = %q, want empty (ignored for approval: none)", a.OnTimeout)
+	if tc.OnTimeout != "" {
+		t.Errorf("on_timeout = %q, want empty (ignored for approval: none)", tc.OnTimeout)
 	}
 }
 
-func TestParse_ActuatorWithApproval(t *testing.T) {
+func TestParse_ToolWithApproval(t *testing.T) {
 	raw := `
 name: test
 trigger:
   type: webhook
 capabilities:
-  actuators:
+  tools:
     - tool: deploy.run
       approval: required
       timeout: 30m
@@ -115,15 +115,15 @@ agent:
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	a := p.Capabilities.Actuators[0]
-	if a.Approval != model.ApprovalModeRequired {
-		t.Errorf("approval = %q, want %q", a.Approval, model.ApprovalModeRequired)
+	tc := p.Capabilities.Tools[0]
+	if tc.Approval != model.ApprovalModeRequired {
+		t.Errorf("approval = %q, want %q", tc.Approval, model.ApprovalModeRequired)
 	}
-	if a.Timeout != "30m" {
-		t.Errorf("timeout = %q, want %q", a.Timeout, "30m")
+	if tc.Timeout != "30m" {
+		t.Errorf("timeout = %q, want %q", tc.Timeout, "30m")
 	}
-	if a.OnTimeout != model.OnTimeoutApprove {
-		t.Errorf("on_timeout = %q, want %q", a.OnTimeout, model.OnTimeoutApprove)
+	if tc.OnTimeout != model.OnTimeoutApprove {
+		t.Errorf("on_timeout = %q, want %q", tc.OnTimeout, model.OnTimeoutApprove)
 	}
 }
 
@@ -133,11 +133,10 @@ name: params-test
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: github.list_repos
       params:
         org: myorg
-  actuators:
     - tool: deploy.run
       params:
         env: staging
@@ -149,11 +148,11 @@ agent:
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if p.Capabilities.Sensors[0].Params["org"] != "myorg" {
-		t.Errorf("sensor params[org] = %v", p.Capabilities.Sensors[0].Params["org"])
+	if p.Capabilities.Tools[0].Params["org"] != "myorg" {
+		t.Errorf("tools[0] params[org] = %v", p.Capabilities.Tools[0].Params["org"])
 	}
-	if p.Capabilities.Actuators[0].Params["env"] != "staging" {
-		t.Errorf("actuator params[env] = %v", p.Capabilities.Actuators[0].Params["env"])
+	if p.Capabilities.Tools[1].Params["env"] != "staging" {
+		t.Errorf("tools[1] params[env] = %v", p.Capabilities.Tools[1].Params["env"])
 	}
 }
 
@@ -163,7 +162,7 @@ name: test
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: s.t
 agent:
   task: do it
@@ -193,7 +192,7 @@ name: test
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: s.t
 agent:
   task: do it
@@ -213,7 +212,7 @@ name: test
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: s.t
 agent:
   task: do it
@@ -234,7 +233,7 @@ name: manual-policy
 trigger:
   type: manual
 capabilities:
-  sensors:
+  tools:
     - tool: s.t
 agent:
   task: do it manually
@@ -257,7 +256,7 @@ trigger:
     - "2030-01-01T09:00:00Z"
     - "2030-06-15T12:00:00Z"
 capabilities:
-  sensors:
+  tools:
     - tool: s.t
 agent:
   task: scheduled task
@@ -287,7 +286,7 @@ trigger:
     - "not-a-timestamp"
     - "2030-06-15T12:00:00Z"
 capabilities:
-  sensors:
+  tools:
     - tool: s.t
 agent:
   task: scheduled task
@@ -370,7 +369,7 @@ name: test
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: s.t
 agent:
   preamble: Custom preamble text

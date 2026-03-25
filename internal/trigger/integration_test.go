@@ -69,14 +69,14 @@ func setupIntegrationFixture(t *testing.T) (*db.Store, *mcp.Registry) {
 }
 
 // integrationPolicy is a policy YAML that grants the stub-server.read_data
-// sensor to the agent, with parallel concurrency so sub-tests can fire
+// tool to the agent, with parallel concurrency so sub-tests can fire
 // multiple concurrent runs if needed.
 const integrationPolicy = `
 name: integration-test-policy
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: stub-server.read_data
 agent:
   model: claude-sonnet-4-6

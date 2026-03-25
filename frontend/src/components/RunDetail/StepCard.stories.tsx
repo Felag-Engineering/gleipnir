@@ -28,10 +28,10 @@ function makeRaw(overrides: Partial<ApiRunStep> = {}): ApiRunStep {
 
 const emptyRoleMap = new Map<string, GrantedToolEntry['Role']>()
 const roleMap = new Map<string, GrantedToolEntry['Role']>([
-  ['read_file', 'sensor'],
-  ['write_file', 'actuator'],
-  ['send_slack', 'actuator'],
-  ['list_files', 'sensor'],
+  ['read_file', 'tool'],
+  ['write_file', 'tool'],
+  ['send_slack', 'tool'],
+  ['list_files', 'tool'],
 ])
 
 const defaultRunProps = {
@@ -50,8 +50,8 @@ export const Thought: Story = {
   },
 }
 
-export const ToolCallSensor: Story = {
-  name: 'Tool call — sensor (blue)',
+export const ToolCallTool: Story = {
+  name: 'Tool call — tool (blue)',
   args: {
     step: parseStep(makeRaw({
       type: 'tool_call',
@@ -62,8 +62,8 @@ export const ToolCallSensor: Story = {
   },
 }
 
-export const ToolCallActuator: Story = {
-  name: 'Tool call — actuator (orange)',
+export const ToolCallFeedback: Story = {
+  name: 'Tool call — feedback (purple)',
   args: {
     step: parseStep(makeRaw({
       type: 'tool_call',

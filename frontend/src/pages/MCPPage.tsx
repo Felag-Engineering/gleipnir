@@ -58,13 +58,12 @@ export default function MCPPage() {
   // Compute stats from all loaded tools
   const allTools = Array.from(toolsByServer.values()).flat()
   const toolsFullyLoaded = toolResults.every((r) => r.status !== 'pending')
-  const sensors = allTools.filter((t) => t.capability_role === 'sensor').length
-  const actuators = allTools.filter((t) => t.capability_role === 'actuator').length
+  const toolCount = allTools.filter((t) => t.capability_role === 'tool').length
   const feedback = allTools.filter((t) => t.capability_role === 'feedback').length
 
   // Unassigned: tools that have no valid role (defensive, DB constraint prevents this normally)
   const unassignedCount = allTools.filter(
-    (t) => !['sensor', 'actuator', 'feedback'].includes(t.capability_role),
+    (t) => !['tool', 'feedback'].includes(t.capability_role),
   ).length
 
   function handleAddSubmit(name: string, url: string) {
@@ -116,7 +115,7 @@ export default function MCPPage() {
     })
   }
 
-  function handleRoleChange(toolId: string, serverId: string, role: 'sensor' | 'actuator' | 'feedback') {
+  function handleRoleChange(toolId: string, serverId: string, role: 'tool' | 'feedback') {
     setUpdatingToolId(toolId)
     updateToolMutation.mutate(
       { toolId, serverId, capability_role: role },
@@ -144,8 +143,7 @@ export default function MCPPage() {
       <ErrorBoundary>
         <MCPStatsBar
           totalTools={allTools.length}
-          sensors={sensors}
-          actuators={actuators}
+          tools={toolCount}
           feedback={feedback}
           isLoading={!toolsFullyLoaded}
         />

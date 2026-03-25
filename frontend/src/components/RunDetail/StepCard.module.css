@@ -31,14 +31,9 @@
   background: var(--text-muted);
 }
 
-.iconSensor {
-  border-color: var(--color-sensor);
-  background: var(--color-sensor);
-}
-
-.iconActuator {
-  border-color: var(--color-actuator);
-  background: var(--color-actuator);
+.iconTool {
+  border-color: var(--color-tool);
+  background: var(--color-tool);
 }
 
 .iconResult {
@@ -89,12 +84,8 @@
   letter-spacing: 0.06em;
 }
 
-.sensorLabel {
-  color: var(--color-sensor);
-}
-
-.actuatorLabel {
-  color: var(--color-actuator);
+.toolLabel {
+  color: var(--color-tool);
 }
 
 .resultLabel {

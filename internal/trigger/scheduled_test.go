@@ -17,7 +17,7 @@ import (
 )
 
 // scheduledPolicyYAML builds a minimal scheduled policy YAML with the given
-// fire times. The stub-server.read_data sensor is granted so the registry can
+// fire times. The stub-server.read_data tool is granted so the registry can
 // resolve tools without additional setup.
 func scheduledPolicyYAML(name string, fireTimes []time.Time) string {
 	fireAtLines := ""
@@ -30,7 +30,7 @@ trigger:
   type: scheduled
   fire_at:
 %scapabilities:
-  sensors:
+  tools:
     - tool: stub-server.read_data
 agent:
   model: claude-opus-4-6

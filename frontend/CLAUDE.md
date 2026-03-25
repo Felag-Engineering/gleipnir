@@ -39,8 +39,8 @@ These are JSX reference mockups (not runnable components). Use them as the autho
 ### Color palette (dark theme)
 
 ```
---bg-canvas:     #0F1117      --color-blue:    #60A5FA  (sensors, running)
---bg-surface:    #131720      --color-orange:  #FB923C  (actuators)
+--bg-canvas:     #0F1117      --color-blue:    #60A5FA  (tools, running)
+--bg-surface:    #131720      --color-orange:  #FB923C
 --bg-elevated:   #1E2330      --color-amber:   #F59E0B  (approvals)
 --bg-topbar:     #0D1018      --color-green:   #4ADE80  (success, complete)
 --bg-code:       #090C12      --color-red:     #F87171  (errors, failed)

@@ -56,7 +56,7 @@ const TOOL_1: ApiMcpTool = {
   server_id: 'srv-1',
   name: 'kubectl.get_pods',
   description: 'List pods.',
-  capability_role: 'sensor',
+  capability_role: 'tool',
   input_schema: { namespace: { type: 'string' } },
 }
 
@@ -65,7 +65,7 @@ const TOOL_2: ApiMcpTool = {
   server_id: 'srv-1',
   name: 'kubectl.delete_pod',
   description: 'Delete a pod.',
-  capability_role: 'actuator',
+  capability_role: 'tool',
   input_schema: {},
 }
 
@@ -189,12 +189,9 @@ describe('ToolsPage — stats bar', () => {
     mockNoopMutations()
 
     renderPage()
-    // Total tools = 2 (TOOL_1 is sensor, TOOL_2 is actuator)
+    // Total tools = 2 (both TOOL_1 and TOOL_2 are 'tool' role)
     const twos = screen.getAllByText('2')
     expect(twos.length).toBeGreaterThan(0)
-    // At least one "1" for sensors or actuators count
-    const ones = screen.getAllByText('1')
-    expect(ones.length).toBeGreaterThan(0)
   })
 
   it('shows dash placeholder while tool lists are loading', () => {
@@ -368,10 +365,10 @@ describe('ToolsPage — tool role dropdown', () => {
     })
 
     const select = screen.getByLabelText(`Role for ${TOOL_1.name}`)
-    fireEvent.change(select, { target: { value: 'actuator' } })
+    fireEvent.change(select, { target: { value: 'feedback' } })
 
     expect(mutateMock).toHaveBeenCalledWith(
-      { toolId: 't1', serverId: 'srv-1', capability_role: 'actuator' },
+      { toolId: 't1', serverId: 'srv-1', capability_role: 'feedback' },
       expect.any(Object),
     )
   })
@@ -384,7 +381,7 @@ describe('ToolsPage — unassigned banner', () => {
     mockNoopMutations()
 
     renderPage()
-    // Both tools have valid roles (sensor, actuator)
+    // Both tools have valid roles (tool)
     expect(screen.queryByRole('status', { name: /unassigned/i })).not.toBeInTheDocument()
   })
 

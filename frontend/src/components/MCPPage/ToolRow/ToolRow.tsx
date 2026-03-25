@@ -2,7 +2,7 @@ import { CollapsibleJSON } from '@/components/CollapsibleJSON'
 import type { ApiMcpTool } from '@/api/types'
 import styles from './ToolRow.module.css'
 
-const ROLES = ['sensor', 'actuator', 'feedback'] as const
+const ROLES = ['tool', 'feedback'] as const
 type Role = typeof ROLES[number]
 
 interface Props {

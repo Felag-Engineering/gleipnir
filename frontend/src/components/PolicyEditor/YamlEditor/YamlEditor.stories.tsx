@@ -10,8 +10,8 @@ trigger:
 task: |
   Check for new deployments and summarize status.
 capabilities:
-  sensors:
-    - name: list_deployments
+  tools:
+    - tool: k8s.list_deployments
 `
 
 const INVALID_YAML = `name: broken-policy

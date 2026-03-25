@@ -66,7 +66,7 @@ export function ApprovalCard({ def, onDecide }: ApprovalCardProps) {
         <div className={styles.proposedActionHeader}>
           <span className={styles.sectionLabel}>Proposed action</span>
           <span className={styles.toolNameBadge}>{def.toolName}</span>
-          <span className={styles.actuatorLabel}>actuator · approval required</span>
+          <span className={styles.toolLabel}>tool · approval required</span>
         </div>
         <pre className={styles.proposedJson}>
           {JSON.stringify(def.proposedInput, null, 2)}

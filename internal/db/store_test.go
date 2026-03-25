@@ -451,7 +451,7 @@ func TestSchemaConstraints(t *testing.T) {
 				exec: func(s *Store) error {
 					_, err := s.DB().Exec(
 						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, capability_role, created_at)
-						 VALUES ('t1', 'nonexistent', 'tool', 'desc', '{}', 'sensor', '2024-01-01T00:00:00Z')`,
+						 VALUES ('t1', 'nonexistent', 'tool', 'desc', '{}', 'tool', '2024-01-01T00:00:00Z')`,
 					)
 					return err
 				},
@@ -547,14 +547,14 @@ func TestSchemaConstraints(t *testing.T) {
 				first: func(s *Store) error {
 					_, err := s.DB().Exec(
 						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, capability_role, created_at)
-						 VALUES ('t1', 'srv1', 'tool', 'desc', '{}', 'sensor', '2024-01-01T00:00:00Z')`,
+						 VALUES ('t1', 'srv1', 'tool', 'desc', '{}', 'tool', '2024-01-01T00:00:00Z')`,
 					)
 					return err
 				},
 				second: func(s *Store) error {
 					_, err := s.DB().Exec(
 						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, capability_role, created_at)
-						 VALUES ('t2', 'srv1', 'tool', 'desc', '{}', 'sensor', '2024-01-01T00:00:00Z')`,
+						 VALUES ('t2', 'srv1', 'tool', 'desc', '{}', 'tool', '2024-01-01T00:00:00Z')`,
 					)
 					return err
 				},

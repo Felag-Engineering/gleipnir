@@ -2,13 +2,12 @@ import styles from './MCPStatsBar.module.css'
 
 interface Props {
   totalTools: number
-  sensors: number
-  actuators: number
+  tools: number
   feedback: number
   isLoading: boolean
 }
 
-export function MCPStatsBar({ totalTools, sensors, actuators, feedback, isLoading }: Props) {
+export function MCPStatsBar({ totalTools, tools, feedback, isLoading }: Props) {
   const dash = '–'
   return (
     <div className={styles.grid}>
@@ -17,14 +16,9 @@ export function MCPStatsBar({ totalTools, sensors, actuators, feedback, isLoadin
         <div className={styles.value}>{isLoading ? dash : totalTools}</div>
       </div>
       <div className={`${styles.card} ${styles.blue}`}>
-        <div className={styles.label}>Sensors</div>
-        <div className={styles.value}>{isLoading ? dash : sensors}</div>
-        <div className={styles.sub}>read-only</div>
-      </div>
-      <div className={`${styles.card} ${styles.orange}`}>
-        <div className={styles.label}>Actuators</div>
-        <div className={styles.value}>{isLoading ? dash : actuators}</div>
-        <div className={styles.sub}>world-affecting</div>
+        <div className={styles.label}>Tools</div>
+        <div className={styles.value}>{isLoading ? dash : tools}</div>
+        <div className={styles.sub}>available</div>
       </div>
       <div className={`${styles.card} ${styles.purple}`}>
         <div className={styles.label}>Feedback</div>

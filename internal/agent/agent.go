@@ -41,7 +41,7 @@ func sanitizeToolName(name string) string {
 }
 
 // BoundAgent executes a single policy run. It owns the Claude API loop,
-// dispatches tool calls to MCP clients, intercepts approval-gated actuators,
+// dispatches tool calls to MCP clients, intercepts approval-gated tools,
 // and writes every step to the audit trail via AuditWriter.
 type BoundAgent struct {
 	policy      *model.ParsedPolicy
@@ -154,13 +154,10 @@ func (a *BoundAgent) logTransitionError(ctx context.Context, runErr error) {
 // Run(), before the pending→running transition, so a run with unresolvable
 // capabilities fails immediately without ever appearing as running.
 func (a *BoundAgent) checkCapabilities() error {
-	// Collect all referenced tool names from all three capability categories.
+	// Collect all referenced tool names from both capability categories.
 	var toolNames []string
-	for _, s := range a.policy.Capabilities.Sensors {
-		toolNames = append(toolNames, s.Tool)
-	}
-	for _, act := range a.policy.Capabilities.Actuators {
-		toolNames = append(toolNames, act.Tool)
+	for _, t := range a.policy.Capabilities.Tools {
+		toolNames = append(toolNames, t.Tool)
 	}
 	toolNames = append(toolNames, a.policy.Capabilities.Feedback...)
 
@@ -495,7 +492,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 }
 
 // handleToolCall dispatches a single tool call from the agent.
-// For approval-gated actuators it suspends the run and waits for a decision
+// For approval-gated tools it suspends the run and waits for a decision
 // before proceeding. This is the hard runtime guarantee (ADR-001).
 // On error, it writes an error step and returns the error.
 //
@@ -530,8 +527,8 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 		return "", false, fmt.Errorf("schema validation for %s: %w", internalName, err)
 	}
 
-	// Approval gating for actuators with approval: required.
-	if entry.tool.Role == model.CapabilityRoleActuator && entry.tool.Approval == model.ApprovalModeRequired {
+	// Approval gating for tools with approval: required.
+	if entry.tool.Approval == model.ApprovalModeRequired {
 		if err := a.waitForApproval(ctx, runID, entry, internalName, input); err != nil {
 			return "", false, err
 		}

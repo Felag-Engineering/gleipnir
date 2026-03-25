@@ -45,9 +45,8 @@ description: A webhook triggered policy
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: filesystem.read_file
-  actuators:
     - tool: filesystem.write_file
       approval: required
 agent:
@@ -63,8 +62,7 @@ const MANUAL_YAML = `name: manual-policy
 trigger:
   type: manual
 capabilities:
-  sensors: []
-  actuators: []
+  tools: []
 agent:
   task: Run on demand.
   limits:
@@ -80,9 +78,8 @@ trigger:
     - '2030-01-01T09:00:00Z'
     - '2030-06-15T12:00:00Z'
 capabilities:
-  sensors:
+  tools:
     - tool: github.list_issues
-  actuators: []
 agent:
   task: Check for new items.
   limits:
@@ -148,47 +145,30 @@ function mockHooksDefault() {
 // --- Tests ---
 
 describe('PolicyEditorUtils — formStateToYaml approval output', () => {
-  it('emits approval: required in YAML when approvalRequired is true on an actuator', () => {
+  it('emits approval: required in YAML when approvalRequired is true on a tool', () => {
     const state = yamlToFormState(WEBHOOK_YAML)!
-    // filesystem.write_file is the actuator in WEBHOOK_YAML, already approval: required
-    // Clone and set approvalRequired = true explicitly
+    // filesystem.write_file already has approval: required in WEBHOOK_YAML
+    // Clone and set approvalRequired = true explicitly on all tools
     const modified = {
       ...state,
       capabilities: {
-        tools: state.capabilities.tools.map(t =>
-          t.role === 'actuator' ? { ...t, approvalRequired: true } : t,
-        ),
+        tools: state.capabilities.tools.map(t => ({ ...t, approvalRequired: true })),
       },
     }
     const yaml = formStateToYaml(modified)
     expect(yaml).toContain('approval: required')
   })
 
-  it('does not emit approval in YAML when approvalRequired is false on an actuator', () => {
+  it('does not emit approval in YAML when approvalRequired is false on a tool', () => {
     const state = yamlToFormState(WEBHOOK_YAML)!
     const modified = {
       ...state,
       capabilities: {
-        tools: state.capabilities.tools.map(t =>
-          t.role === 'actuator' ? { ...t, approvalRequired: false } : t,
-        ),
+        tools: state.capabilities.tools.map(t => ({ ...t, approvalRequired: false })),
       },
     }
     const yaml = formStateToYaml(modified)
     expect(yaml).not.toContain('approval: required')
-  })
-
-  it('sensors never emit approval in YAML output', () => {
-    const state = yamlToFormState(WEBHOOK_YAML)!
-    const yaml = formStateToYaml(state)
-    // Sensors section should not contain approval key
-    const sensorsIdx = yaml.indexOf('sensors:')
-    const actuatorsIdx = yaml.indexOf('actuators:')
-    // approval: required should only appear in the actuators block
-    const sensorSection = sensorsIdx >= 0 && actuatorsIdx > sensorsIdx
-      ? yaml.slice(sensorsIdx, actuatorsIdx)
-      : yaml.slice(sensorsIdx)
-    expect(sensorSection).not.toContain('approval:')
   })
 })
 
@@ -238,9 +218,9 @@ describe('PolicyEditorUtils — YAML ↔ form round-trip (pure functions)', () =
   })
 
   it('cron and poll trigger types fall back to webhook', () => {
-    const cronParsed = yamlToFormState('name: x\ntrigger:\n  type: cron\n  schedule: "0 * * * *"\ncapabilities:\n  sensors: []\nagent:\n  task: t\n')
+    const cronParsed = yamlToFormState('name: x\ntrigger:\n  type: cron\n  schedule: "0 * * * *"\ncapabilities:\n  tools: []\nagent:\n  task: t\n')
     expect(cronParsed?.trigger.type).toBe('webhook')
-    const pollParsed = yamlToFormState('name: x\ntrigger:\n  type: poll\n  interval: 5m\ncapabilities:\n  sensors: []\nagent:\n  task: t\n')
+    const pollParsed = yamlToFormState('name: x\ntrigger:\n  type: poll\n  interval: 5m\ncapabilities:\n  tools: []\nagent:\n  task: t\n')
     expect(pollParsed?.trigger.type).toBe('webhook')
   })
 })

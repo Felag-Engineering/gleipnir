@@ -35,7 +35,7 @@ name: test-policy
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: github.list_repos
 agent:
   task: Check all repos
@@ -128,7 +128,7 @@ name: test-policy
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: github.list_repos
     - tool: github.list_issues
 agent:
@@ -160,7 +160,7 @@ name: test-policy-renamed
 trigger:
   type: manual
 capabilities:
-  sensors:
+  tools:
     - tool: github.list_repos
 agent:
   task: Check repos on demand
@@ -191,7 +191,7 @@ name: ctx-test
 trigger:
   type: webhook
 capabilities:
-  sensors:
+  tools:
     - tool: a.one
     - tool: a.two
     - tool: a.three

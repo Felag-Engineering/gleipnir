@@ -6,7 +6,7 @@ import { queryKeys } from './queryKeys'
 interface UpdateToolParams {
   toolId: string
   serverId: string
-  capability_role: 'sensor' | 'actuator' | 'feedback'
+  capability_role: 'tool' | 'feedback'
 }
 
 export function useUpdateMcpTool() {

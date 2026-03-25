@@ -16,8 +16,8 @@ func validPolicy() *model.ParsedPolicy {
 			Type: model.TriggerTypeWebhook,
 		},
 		Capabilities: model.CapabilitiesConfig{
-			Sensors: []model.SensorCapability{
-				{Tool: "server.tool"},
+			Tools: []model.ToolCapability{
+				{Tool: "server.tool", Approval: model.ApprovalModeNone},
 			},
 		},
 		Agent: model.AgentConfig{
@@ -61,38 +61,28 @@ func TestValidate_PollTriggerIsInvalid(t *testing.T) {
 	assertValidationContains(t, p, "trigger.type")
 }
 
-func TestValidate_NoSensorsOrActuators(t *testing.T) {
+func TestValidate_NoTools(t *testing.T) {
 	p := validPolicy()
-	p.Capabilities.Sensors = nil
-	p.Capabilities.Actuators = nil
-	assertValidationContains(t, p, "at least one sensor or actuator")
+	p.Capabilities.Tools = nil
+	assertValidationContains(t, p, "at least one tool is required")
 }
 
 func TestValidate_EmptyToolRef(t *testing.T) {
 	p := validPolicy()
-	p.Capabilities.Sensors = []model.SensorCapability{{Tool: ""}}
+	p.Capabilities.Tools = []model.ToolCapability{{Tool: "", Approval: model.ApprovalModeNone}}
 	assertValidationContains(t, p, "tool is required")
 }
 
 func TestValidate_BadDotNotation(t *testing.T) {
 	p := validPolicy()
-	p.Capabilities.Sensors = []model.SensorCapability{{Tool: "no_dot"}}
+	p.Capabilities.Tools = []model.ToolCapability{{Tool: "no_dot", Approval: model.ApprovalModeNone}}
 	assertValidationContains(t, p, "dot notation")
 }
 
 func TestValidate_DuplicateTool(t *testing.T) {
 	p := validPolicy()
-	p.Capabilities.Sensors = []model.SensorCapability{
-		{Tool: "s.t"},
-		{Tool: "s.t"},
-	}
-	assertValidationContains(t, p, "duplicate")
-}
-
-func TestValidate_DuplicateToolAcrossRoles(t *testing.T) {
-	p := validPolicy()
-	p.Capabilities.Sensors = []model.SensorCapability{{Tool: "s.t"}}
-	p.Capabilities.Actuators = []model.ActuatorCapability{
+	p.Capabilities.Tools = []model.ToolCapability{
+		{Tool: "s.t", Approval: model.ApprovalModeNone},
 		{Tool: "s.t", Approval: model.ApprovalModeNone},
 	}
 	assertValidationContains(t, p, "duplicate")
@@ -100,8 +90,7 @@ func TestValidate_DuplicateToolAcrossRoles(t *testing.T) {
 
 func TestValidate_InvalidApprovalMode(t *testing.T) {
 	p := validPolicy()
-	p.Capabilities.Sensors = nil
-	p.Capabilities.Actuators = []model.ActuatorCapability{
+	p.Capabilities.Tools = []model.ToolCapability{
 		{Tool: "s.t", Approval: "maybe"},
 	}
 	assertValidationContains(t, p, "approval")
@@ -109,8 +98,7 @@ func TestValidate_InvalidApprovalMode(t *testing.T) {
 
 func TestValidate_InvalidTimeout(t *testing.T) {
 	p := validPolicy()
-	p.Capabilities.Sensors = nil
-	p.Capabilities.Actuators = []model.ActuatorCapability{
+	p.Capabilities.Tools = []model.ToolCapability{
 		{Tool: "s.t", Approval: model.ApprovalModeRequired, Timeout: "bad", OnTimeout: model.OnTimeoutReject},
 	}
 	assertValidationContains(t, p, "not a valid duration")
@@ -131,8 +119,7 @@ func TestValidate_InvalidConcurrency(t *testing.T) {
 func TestValidate_ReplacePlusApproval(t *testing.T) {
 	p := validPolicy()
 	p.Agent.Concurrency = model.ConcurrencyReplace
-	p.Capabilities.Sensors = nil
-	p.Capabilities.Actuators = []model.ActuatorCapability{
+	p.Capabilities.Tools = []model.ToolCapability{
 		{Tool: "s.t", Approval: model.ApprovalModeRequired, OnTimeout: model.OnTimeoutReject},
 	}
 	assertValidationContains(t, p, "replace")
@@ -150,14 +137,13 @@ func TestValidate_ZeroToolCalls(t *testing.T) {
 	assertValidationContains(t, p, "max_tool_calls_per_run must be positive")
 }
 
-func TestValidate_ActuatorOnlyValid(t *testing.T) {
+func TestValidate_ToolWithApprovalValid(t *testing.T) {
 	p := validPolicy()
-	p.Capabilities.Sensors = nil
-	p.Capabilities.Actuators = []model.ActuatorCapability{
-		{Tool: "s.t", Approval: model.ApprovalModeNone},
+	p.Capabilities.Tools = []model.ToolCapability{
+		{Tool: "s.t", Approval: model.ApprovalModeRequired, OnTimeout: model.OnTimeoutReject},
 	}
 	if err := Validate(p); err != nil {
-		t.Errorf("expected valid actuator-only policy, got: %v", err)
+		t.Errorf("expected valid tool with approval, got: %v", err)
 	}
 }
 

@@ -12,17 +12,15 @@ import (
 // defaultPreamble is used when the policy does not supply its own preamble.
 const defaultPreamble = `You are a BoundAgent — an autonomous agent operating within explicitly defined boundaries.
 
-You have three categories of tools available to you:
+You have two categories of capabilities:
 
-- Sensors: read-only tools for observing the world. Use these freely and thoroughly before acting.
-- Actuators: tools that affect the world. Use these deliberately — only after you have observed enough to be confident, and only when the task requires it.
+- Tools: your available tools for interacting with systems. Some tools may require human approval before execution — these are marked in your tool list.
 - Feedback: a channel to consult a human operator. Use this when you are uncertain about intended scope, when observations reveal something unexpected, or when proceeding would require an assumption you cannot verify.
 
 Your operating principles:
-1. Observe before acting. Use your sensors to build a complete picture before calling any actuator.
-2. Act minimally. Do what the task requires. Do not take additional actions because they seem useful.
-3. Ask when uncertain. A paused run that asks a good question is better than a completed run that made a wrong assumption.
-4. Be transparent. Your reasoning is fully audited. Explain what you observed, what you concluded, and why you acted.`
+1. Act deliberately. Gather information before making changes. Do not take additional actions because they seem useful.
+2. Ask when uncertain. A paused run that asks a good question is better than a completed run that made a wrong assumption.
+3. Be transparent. Your reasoning is fully audited. Explain what you observed, what you concluded, and why you acted.`
 
 // RenderSystemPrompt produces the full system prompt for an agent run.
 // It combines the preamble (policy-supplied or default), the generated
@@ -51,13 +49,11 @@ func RenderSystemPrompt(p *model.ParsedPolicy, granted []model.GrantedTool, now 
 // renderCapabilitiesBlock produces the "## Capabilities" section of the
 // system prompt listing each granted tool by role.
 func renderCapabilitiesBlock(granted []model.GrantedTool) string {
-	var sensors, actuators, feedback []model.GrantedTool
+	var tools, feedback []model.GrantedTool
 	for _, g := range granted {
 		switch g.Role {
-		case model.CapabilityRoleSensor:
-			sensors = append(sensors, g)
-		case model.CapabilityRoleActuator:
-			actuators = append(actuators, g)
+		case model.CapabilityRoleTool:
+			tools = append(tools, g)
 		case model.CapabilityRoleFeedback:
 			feedback = append(feedback, g)
 		}
@@ -66,24 +62,15 @@ func renderCapabilitiesBlock(granted []model.GrantedTool) string {
 	var b strings.Builder
 	b.WriteString("## Capabilities\n\n")
 
-	b.WriteString("### Sensors (read-only)\n")
-	if len(sensors) == 0 {
+	b.WriteString("### Tools\n")
+	if len(tools) == 0 {
 		b.WriteString("None.\n")
 	} else {
-		for _, s := range sensors {
-			fmt.Fprintf(&b, "- %s.%s\n", s.ServerName, s.ToolName)
-		}
-	}
-
-	b.WriteString("\n### Actuators (world-affecting)\n")
-	if len(actuators) == 0 {
-		b.WriteString("None.\n")
-	} else {
-		for _, a := range actuators {
-			if a.Approval == model.ApprovalModeRequired {
-				fmt.Fprintf(&b, "- %s.%s [requires human approval before execution]\n", a.ServerName, a.ToolName)
+		for _, t := range tools {
+			if t.Approval == model.ApprovalModeRequired {
+				fmt.Fprintf(&b, "- %s.%s [requires human approval before execution]\n", t.ServerName, t.ToolName)
 			} else {
-				fmt.Fprintf(&b, "- %s.%s\n", a.ServerName, a.ToolName)
+				fmt.Fprintf(&b, "- %s.%s\n", t.ServerName, t.ToolName)
 			}
 		}
 	}

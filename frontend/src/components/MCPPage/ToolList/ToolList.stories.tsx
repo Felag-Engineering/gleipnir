@@ -12,8 +12,8 @@ export default meta
 type Story = StoryObj<typeof ToolList>
 
 const tools: ApiMcpTool[] = [
-  { id: 't1', server_id: 'srv1', name: 'kubectl.get_pods', description: 'List pods.', capability_role: 'sensor', input_schema: { namespace: { type: 'string' } } },
-  { id: 't2', server_id: 'srv1', name: 'kubectl.delete_pod', description: 'Delete a pod.', capability_role: 'actuator', input_schema: { namespace: { type: 'string' }, pod: { type: 'string' } } },
+  { id: 't1', server_id: 'srv1', name: 'kubectl.get_pods', description: 'List pods.', capability_role: 'tool', input_schema: { namespace: { type: 'string' } } },
+  { id: 't2', server_id: 'srv1', name: 'kubectl.delete_pod', description: 'Delete a pod.', capability_role: 'tool', input_schema: { namespace: { type: 'string' }, pod: { type: 'string' } } },
 ]
 
 export const Loaded: Story = {
