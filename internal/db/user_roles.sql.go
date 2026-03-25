@@ -41,6 +41,74 @@ func (q *Queries) HasRole(ctx context.Context, arg HasRoleParams) (int64, error)
 	return count, err
 }
 
+const listActiveUsersByRole = `-- name: ListActiveUsersByRole :many
+SELECT ur.user_id, u.username
+FROM user_roles ur
+JOIN users u ON u.id = ur.user_id
+WHERE ur.role = ?1 AND u.deactivated_at IS NULL
+ORDER BY u.username
+`
+
+type ListActiveUsersByRoleRow struct {
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+}
+
+func (q *Queries) ListActiveUsersByRole(ctx context.Context, role string) ([]ListActiveUsersByRoleRow, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveUsersByRole, role)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActiveUsersByRoleRow
+	for rows.Next() {
+		var i ListActiveUsersByRoleRow
+		if err := rows.Scan(&i.UserID, &i.Username); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllUserRoles = `-- name: ListAllUserRoles :many
+SELECT user_id, role FROM user_roles ORDER BY user_id, role
+`
+
+type ListAllUserRolesRow struct {
+	UserID string `json:"user_id"`
+	Role   string `json:"role"`
+}
+
+func (q *Queries) ListAllUserRoles(ctx context.Context) ([]ListAllUserRolesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAllUserRoles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAllUserRolesRow
+	for rows.Next() {
+		var i ListAllUserRolesRow
+		if err := rows.Scan(&i.UserID, &i.Role); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRolesByUser = `-- name: ListRolesByUser :many
 SELECT role FROM user_roles WHERE user_id = ?1 ORDER BY role
 `

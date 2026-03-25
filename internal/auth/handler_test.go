@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -26,6 +28,24 @@ type mockAuthQuerier struct {
 	deleteSessionErr error
 	userCount        int64
 	countUsersErr    error
+
+	// Fields for user management tests
+	users                []db.ListUsersRow
+	listUsersErr         error
+	allRoles             []db.ListAllUserRolesRow
+	listRolesErr         error
+	getUser              db.User
+	getUserByIDErr       error
+	rolesByUser          []string
+	listByUserErr        error
+	usersByRole          []db.ListUsersByRoleRow
+	listByRoleErr        error
+	activeUsersByRole    []db.ListActiveUsersByRoleRow
+	listActiveByRoleErr  error
+	deactivateErr        error
+	removeRolesErr       error
+	createUserUser       db.User
+	createUserErr        error
 }
 
 func (m *mockAuthQuerier) GetUserByUsername(_ context.Context, _ string) (db.User, error) {
@@ -56,7 +76,13 @@ func (m *mockAuthQuerier) CountUsers(_ context.Context) (int64, error) {
 }
 
 func (m *mockAuthQuerier) CreateUser(_ context.Context, _ db.CreateUserParams) (db.User, error) {
-	return db.User{}, nil
+	if m.createUserErr != nil {
+		return db.User{}, m.createUserErr
+	}
+	if m.createUserUser.ID != "" {
+		return m.createUserUser, nil
+	}
+	return db.User{ID: "new-user-1", Username: "newuser", CreatedAt: time.Now().UTC().Format(time.RFC3339)}, nil
 }
 
 func (m *mockAuthQuerier) CreateFirstUser(_ context.Context, _ db.CreateFirstUserParams) (db.User, error) {
@@ -65,6 +91,38 @@ func (m *mockAuthQuerier) CreateFirstUser(_ context.Context, _ db.CreateFirstUse
 
 func (m *mockAuthQuerier) AssignRole(_ context.Context, _ db.AssignRoleParams) error {
 	return nil
+}
+
+func (m *mockAuthQuerier) ListUsers(_ context.Context) ([]db.ListUsersRow, error) {
+	return m.users, m.listUsersErr
+}
+
+func (m *mockAuthQuerier) ListAllUserRoles(_ context.Context) ([]db.ListAllUserRolesRow, error) {
+	return m.allRoles, m.listRolesErr
+}
+
+func (m *mockAuthQuerier) GetUser(_ context.Context, _ string) (db.User, error) {
+	return m.getUser, m.getUserByIDErr
+}
+
+func (m *mockAuthQuerier) DeactivateUser(_ context.Context, _ db.DeactivateUserParams) error {
+	return m.deactivateErr
+}
+
+func (m *mockAuthQuerier) RemoveAllRolesForUser(_ context.Context, _ string) error {
+	return m.removeRolesErr
+}
+
+func (m *mockAuthQuerier) ListRolesByUser(_ context.Context, _ string) ([]string, error) {
+	return m.rolesByUser, m.listByUserErr
+}
+
+func (m *mockAuthQuerier) ListUsersByRole(_ context.Context, _ string) ([]db.ListUsersByRoleRow, error) {
+	return m.usersByRole, m.listByRoleErr
+}
+
+func (m *mockAuthQuerier) ListActiveUsersByRole(_ context.Context, _ string) ([]db.ListActiveUsersByRoleRow, error) {
+	return m.activeUsersByRole, m.listActiveByRoleErr
 }
 
 func makeUser(username string, deactivated bool) db.User {
@@ -535,6 +593,439 @@ func TestHandler_Setup(t *testing.T) {
 		}
 		if len(roles) != 1 || roles[0] != string(model.RoleAdmin) {
 			t.Errorf("roles = %v, want [%s]", roles, model.RoleAdmin)
+		}
+	})
+}
+
+// withCallerContext injects a UserContext into the request — simulates RequireAuth.
+func withCallerContext(r *http.Request, id, username string, roles []string) *http.Request {
+	ctx := context.WithValue(r.Context(), contextKey{}, &UserContext{
+		ID:       id,
+		Username: username,
+		Roles:    roles,
+	})
+	return r.WithContext(ctx)
+}
+
+func TestMe(t *testing.T) {
+	q := &mockAuthQuerier{}
+	h := NewHandler(q, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req = withCallerContext(req, "user-1", "alice", []string{"admin"})
+	rec := httptest.NewRecorder()
+
+	h.Me(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var resp struct {
+		Data struct {
+			ID       string   `json:"id"`
+			Username string   `json:"username"`
+			Roles    []string `json:"roles"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Data.ID != "user-1" {
+		t.Errorf("id = %q, want user-1", resp.Data.ID)
+	}
+	if resp.Data.Username != "alice" {
+		t.Errorf("username = %q, want alice", resp.Data.Username)
+	}
+	if len(resp.Data.Roles) != 1 || resp.Data.Roles[0] != "admin" {
+		t.Errorf("roles = %v, want [admin]", resp.Data.Roles)
+	}
+}
+
+func TestMe_Unauthenticated(t *testing.T) {
+	h := NewHandler(&mockAuthQuerier{}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	rec := httptest.NewRecorder()
+	h.Me(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestListUsersHandler(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	cases := []struct {
+		name       string
+		users      []db.ListUsersRow
+		allRoles   []db.ListAllUserRolesRow
+		listErr    error
+		rolesErr   error
+		wantStatus int
+		wantCount  int
+	}{
+		{
+			name: "returns users with roles",
+			users: []db.ListUsersRow{
+				{ID: "u1", Username: "alice", CreatedAt: now},
+				{ID: "u2", Username: "bob", CreatedAt: now},
+			},
+			allRoles: []db.ListAllUserRolesRow{
+				{UserID: "u1", Role: "admin"},
+				{UserID: "u2", Role: "operator"},
+			},
+			wantStatus: http.StatusOK,
+			wantCount:  2,
+		},
+		{
+			name:       "empty list returns empty array",
+			users:      []db.ListUsersRow{},
+			allRoles:   []db.ListAllUserRolesRow{},
+			wantStatus: http.StatusOK,
+			wantCount:  0,
+		},
+		{
+			name:       "DB error on list users returns 500",
+			listErr:    sql.ErrConnDone,
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "DB error on list roles returns 500",
+			users: []db.ListUsersRow{
+				{ID: "u1", Username: "alice", CreatedAt: now},
+			},
+			rolesErr:   sql.ErrConnDone,
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &mockAuthQuerier{
+				users:        tc.users,
+				listUsersErr: tc.listErr,
+				allRoles:     tc.allRoles,
+				listRolesErr: tc.rolesErr,
+			}
+			h := NewHandler(q, nil)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+			req = withCallerContext(req, "caller-1", "admin", []string{"admin"})
+			rec := httptest.NewRecorder()
+
+			h.ListUsersHandler(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+
+			if tc.wantStatus == http.StatusOK {
+				var resp struct {
+					Data []userResponse `json:"data"`
+				}
+				if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if len(resp.Data) != tc.wantCount {
+					t.Errorf("user count = %d, want %d", len(resp.Data), tc.wantCount)
+				}
+			}
+		})
+	}
+}
+
+func TestCreateUserHandler(t *testing.T) {
+	// Input validation tests do not reach the DB — use a mock querier.
+	validationCases := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{
+			name:       "missing username returns 400",
+			body:       `{"password":"securepass","roles":[]}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "short password returns 400",
+			body:       `{"username":"newuser","password":"short","roles":[]}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid role returns 400",
+			body:       `{"username":"newuser","password":"securepass","roles":["superadmin"]}`,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+	for _, tc := range validationCases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHandler(&mockAuthQuerier{}, nil)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/users", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			req = withCallerContext(req, "caller-1", "admin", []string{"admin"})
+			rec := httptest.NewRecorder()
+			h.CreateUserHandler(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d; body: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+		})
+	}
+
+	// DB-path tests use a real database.
+	t.Run("valid input creates user and returns 201", func(t *testing.T) {
+		store, sqlDB := newTestDB(t)
+		h := NewHandler(store.Queries(), sqlDB)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/users", strings.NewReader(`{"username":"newuser","password":"securepass","roles":["operator"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		req = withCallerContext(req, "caller-1", "admin", []string{"admin"})
+		rec := httptest.NewRecorder()
+		h.CreateUserHandler(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Data userResponse `json:"data"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Data.Username != "newuser" {
+			t.Errorf("username = %q, want newuser", resp.Data.Username)
+		}
+		if len(resp.Data.Roles) != 1 || resp.Data.Roles[0] != "operator" {
+			t.Errorf("roles = %v, want [operator]", resp.Data.Roles)
+		}
+	})
+
+	t.Run("duplicate username returns 409", func(t *testing.T) {
+		store, sqlDB := newTestDB(t)
+		// Seed an existing user.
+		if _, err := store.Queries().CreateUser(context.Background(), db.CreateUserParams{
+			ID:           model.NewULID(),
+			Username:     "existing",
+			PasswordHash: "hash",
+			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		}); err != nil {
+			t.Fatalf("seed user: %v", err)
+		}
+
+		h := NewHandler(store.Queries(), sqlDB)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/users", strings.NewReader(`{"username":"existing","password":"securepass","roles":[]}`))
+		req.Header.Set("Content-Type", "application/json")
+		req = withCallerContext(req, "caller-1", "admin", []string{"admin"})
+		rec := httptest.NewRecorder()
+		h.CreateUserHandler(rec, req)
+
+		if rec.Code != http.StatusConflict {
+			t.Errorf("status = %d, want 409; body: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// patchWithID builds an http.Request for PATCH /api/v1/users/:id with the chi
+// URL param injected.
+func patchWithID(targetID, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/users/"+targetID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", targetID)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
+
+func TestUpdateUserHandler(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Mock-querier tests cover pre-DB error paths.
+	t.Run("user not found returns 404", func(t *testing.T) {
+		q := &mockAuthQuerier{getUserByIDErr: sql.ErrNoRows}
+		h := NewHandler(q, nil)
+		req := withCallerContext(patchWithID("missing", `{"deactivated":true}`), "caller-1", "admin", []string{"admin"})
+		rec := httptest.NewRecorder()
+		h.UpdateUserHandler(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", rec.Code)
+		}
+	})
+
+	t.Run("self-deactivation returns 400", func(t *testing.T) {
+		q := &mockAuthQuerier{
+			getUser: db.User{ID: "caller-1", Username: "admin", CreatedAt: now},
+		}
+		h := NewHandler(q, nil)
+		req := withCallerContext(patchWithID("caller-1", `{"deactivated":true}`), "caller-1", "admin", []string{"admin"})
+		rec := httptest.NewRecorder()
+		h.UpdateUserHandler(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", rec.Code)
+		}
+	})
+
+	// Real-DB tests cover the transaction path.
+	t.Run("deactivate user returns 200", func(t *testing.T) {
+		store, sqlDB := newTestDB(t)
+		// Create admin (caller) and a target user.
+		callerUser, _ := store.Queries().CreateUser(context.Background(), db.CreateUserParams{
+			ID:           "caller-1",
+			Username:     "admin",
+			PasswordHash: "hash",
+			CreatedAt:    now,
+		})
+		_ = store.Queries().AssignRole(context.Background(), db.AssignRoleParams{UserID: callerUser.ID, Role: "admin", CreatedAt: now})
+
+		targetUser, _ := store.Queries().CreateUser(context.Background(), db.CreateUserParams{
+			ID:           "target-1",
+			Username:     "bob",
+			PasswordHash: "hash",
+			CreatedAt:    now,
+		})
+		_ = store.Queries().AssignRole(context.Background(), db.AssignRoleParams{UserID: targetUser.ID, Role: "operator", CreatedAt: now})
+
+		h := NewHandler(store.Queries(), sqlDB)
+		req := withCallerContext(patchWithID("target-1", `{"deactivated":true}`), "caller-1", "admin", []string{"admin"})
+		rec := httptest.NewRecorder()
+		h.UpdateUserHandler(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Data userResponse `json:"data"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Data.DeactivatedAt == nil {
+			t.Error("expected deactivated_at to be set")
+		}
+	})
+
+	t.Run("update roles returns 200", func(t *testing.T) {
+		store, sqlDB := newTestDB(t)
+
+		callerUser, _ := store.Queries().CreateUser(context.Background(), db.CreateUserParams{
+			ID:           "caller-2",
+			Username:     "admin2",
+			PasswordHash: "hash",
+			CreatedAt:    now,
+		})
+		_ = store.Queries().AssignRole(context.Background(), db.AssignRoleParams{UserID: callerUser.ID, Role: "admin", CreatedAt: now})
+
+		targetUser, _ := store.Queries().CreateUser(context.Background(), db.CreateUserParams{
+			ID:           "target-2",
+			Username:     "charlie",
+			PasswordHash: "hash",
+			CreatedAt:    now,
+		})
+		_ = store.Queries().AssignRole(context.Background(), db.AssignRoleParams{UserID: targetUser.ID, Role: "operator", CreatedAt: now})
+
+		h := NewHandler(store.Queries(), sqlDB)
+		req := withCallerContext(patchWithID("target-2", `{"roles":["operator","approver"]}`), "caller-2", "admin2", []string{"admin"})
+		rec := httptest.NewRecorder()
+		h.UpdateUserHandler(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Data userResponse `json:"data"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp.Data.Roles) != 2 {
+			t.Errorf("roles = %v, want [approver, operator]", resp.Data.Roles)
+		}
+	})
+
+	t.Run("last admin protection returns 400", func(t *testing.T) {
+		store, sqlDB := newTestDB(t)
+
+		// Single admin user — deactivating them should be blocked.
+		adminUser, _ := store.Queries().CreateUser(context.Background(), db.CreateUserParams{
+			ID:           "admin-only",
+			Username:     "adminonly",
+			PasswordHash: "hash",
+			CreatedAt:    now,
+		})
+		_ = store.Queries().AssignRole(context.Background(), db.AssignRoleParams{UserID: adminUser.ID, Role: "admin", CreatedAt: now})
+
+		// A second non-admin caller.
+		callerUser, _ := store.Queries().CreateUser(context.Background(), db.CreateUserParams{
+			ID:           "caller-3",
+			Username:     "caller",
+			PasswordHash: "hash",
+			CreatedAt:    now,
+		})
+		_ = store.Queries().AssignRole(context.Background(), db.AssignRoleParams{UserID: callerUser.ID, Role: "admin", CreatedAt: now})
+
+		h := NewHandler(store.Queries(), sqlDB)
+		// Try to deactivate the ONLY OTHER admin from a 2-admin system — but make
+		// one of them the last. Use admin-only as target and caller-3 as caller,
+		// but remove caller-3's admin role first so admin-only is the last admin.
+		if err := store.Queries().RemoveAllRolesForUser(context.Background(), "caller-3"); err != nil {
+			t.Fatalf("remove role: %v", err)
+		}
+		_ = store.Queries().AssignRole(context.Background(), db.AssignRoleParams{UserID: "caller-3", Role: "operator", CreatedAt: now})
+
+		req := withCallerContext(patchWithID("admin-only", `{"deactivated":true}`), "caller-3", "caller", []string{"admin"})
+		rec := httptest.NewRecorder()
+		h.UpdateUserHandler(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	// Regression test: a deactivated admin must not be counted as an active admin
+	// when enforcing last-admin protection. Without the fix, deactivating the
+	// last active admin would succeed if another (deactivated) admin still held
+	// the role in the DB.
+	t.Run("deactivated admin is not counted for last-admin protection", func(t *testing.T) {
+		store, sqlDB := newTestDB(t)
+
+		// "active-admin" is the only active admin.
+		activeAdmin, _ := store.Queries().CreateUser(context.Background(), db.CreateUserParams{
+			ID:           "active-admin",
+			Username:     "activeadmin",
+			PasswordHash: "hash",
+			CreatedAt:    now,
+		})
+		_ = store.Queries().AssignRole(context.Background(), db.AssignRoleParams{UserID: activeAdmin.ID, Role: "admin", CreatedAt: now})
+
+		// "ghost-admin" still holds the admin role but is deactivated.
+		deactivatedAt := now
+		ghostAdmin, _ := store.Queries().CreateUser(context.Background(), db.CreateUserParams{
+			ID:           "ghost-admin",
+			Username:     "ghostadmin",
+			PasswordHash: "hash",
+			CreatedAt:    now,
+		})
+		_ = store.Queries().AssignRole(context.Background(), db.AssignRoleParams{UserID: ghostAdmin.ID, Role: "admin", CreatedAt: now})
+		_ = store.Queries().DeactivateUser(context.Background(), db.DeactivateUserParams{
+			ID:            ghostAdmin.ID,
+			DeactivatedAt: &deactivatedAt,
+		})
+
+		// A non-admin caller who performs the update request.
+		caller, _ := store.Queries().CreateUser(context.Background(), db.CreateUserParams{
+			ID:           "caller-4",
+			Username:     "caller4",
+			PasswordHash: "hash",
+			CreatedAt:    now,
+		})
+		_ = store.Queries().AssignRole(context.Background(), db.AssignRoleParams{UserID: caller.ID, Role: "operator", CreatedAt: now})
+
+		h := NewHandler(store.Queries(), sqlDB)
+		// Attempting to deactivate active-admin should be blocked — the deactivated
+		// ghost-admin must not count as an "other active admin".
+		req := withCallerContext(patchWithID("active-admin", `{"deactivated":true}`), "caller-4", "caller4", []string{"operator"})
+		rec := httptest.NewRecorder()
+		h.UpdateUserHandler(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400 (last-admin protection); body: %s", rec.Code, rec.Body.String())
 		}
 	})
 }

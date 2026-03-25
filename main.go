@@ -106,6 +106,15 @@ func run(cfg config.Config) error {
 	r.Group(func(r chi.Router) {
 		r.Use(requireAuth)
 
+		r.Get("/api/v1/auth/me", authHandler.Me)
+
+		r.Route("/api/v1/users", func(r chi.Router) {
+			r.Use(auth.RequireRole(model.RoleAdmin))
+			r.Get("/", authHandler.ListUsersHandler)
+			r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/", authHandler.CreateUserHandler)
+			r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Patch("/{id}", authHandler.UpdateUserHandler)
+		})
+
 		manualTriggerHandler := trigger.NewManualTriggerHandler(store, launcher)
 		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleOperator)).Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
 

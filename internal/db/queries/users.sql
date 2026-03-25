@@ -21,3 +21,6 @@ INSERT INTO users (id, username, password_hash, created_at)
 SELECT :id, :username, :password_hash, :created_at
 WHERE (SELECT COUNT(*) FROM users WHERE deactivated_at IS NULL) = 0
 RETURNING *;
+
+-- name: ListUsers :many
+SELECT id, username, created_at, deactivated_at FROM users ORDER BY created_at;

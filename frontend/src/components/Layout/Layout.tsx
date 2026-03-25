@@ -1,22 +1,25 @@
 import { useState } from 'react'
-import { ChevronLeft, ChevronRight, CircleGauge, History, ScrollText, Wrench } from 'lucide-react'
+import { ChevronLeft, ChevronRight, CircleGauge, History, ScrollText, Users, Wrench } from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useSSE } from '../../hooks/useSSE'
+import { useCurrentUser } from '../../hooks/useCurrentUser'
 import { ConnectionBanner } from '../ConnectionBanner'
 import styles from './Layout.module.css'
 
 const SIDEBAR_STORAGE_KEY = 'gleipnir-sidebar-collapsed'
 
 const NAV_ITEMS = [
-  { label: 'Dashboard', to: '/dashboard', Icon: CircleGauge },
-  { label: 'Runs', to: '/runs', Icon: History },
-  { label: 'Policies', to: '/policies', Icon: ScrollText },
-  { label: 'Tools', to: '/tools', Icon: Wrench },
+  { label: 'Dashboard', to: '/dashboard', Icon: CircleGauge, requiredRole: undefined },
+  { label: 'Runs', to: '/runs', Icon: History, requiredRole: undefined },
+  { label: 'Policies', to: '/policies', Icon: ScrollText, requiredRole: undefined },
+  { label: 'Tools', to: '/tools', Icon: Wrench, requiredRole: undefined },
+  { label: 'Users', to: '/users', Icon: Users, requiredRole: 'admin' },
 ]
 
 export default function Layout() {
   const location = useLocation()
   const { connectionState } = useSSE()
+  const { data: currentUser } = useCurrentUser()
 
   // Synchronous localStorage read to avoid layout shift on page load
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -65,7 +68,10 @@ export default function Layout() {
         </div>
 
         <nav className={styles.nav} aria-label="Main navigation">
-          {NAV_ITEMS.map(({ label, to, Icon }) => (
+          {NAV_ITEMS.filter(({ requiredRole }) => {
+            if (!requiredRole) return true
+            return currentUser?.roles.includes(requiredRole) ?? false
+          }).map(({ label, to, Icon }) => (
             <NavLink
               key={to}
               to={to}

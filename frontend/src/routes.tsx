@@ -8,6 +8,7 @@ import PolicyEditorPage from './pages/PolicyEditorPage'
 import RunDetailPage from './pages/RunDetailPage'
 import RunsPage from './pages/RunsPage'
 import MCPPage from './pages/MCPPage'
+import UsersPage from './pages/UsersPage'
 import { RouteErrorFallback } from './components/ErrorBoundary'
 
 function PolicyRunsRedirect() {
@@ -32,6 +33,7 @@ const router = createBrowserRouter([
       { path: 'runs/:id', element: <RunDetailPage />, errorElement: <RouteErrorFallback /> },
       { path: 'tools', element: <MCPPage />, errorElement: <RouteErrorFallback /> },
       { path: 'mcp', element: <Navigate to="/tools" replace /> },
+      { path: 'users', element: <UsersPage />, errorElement: <RouteErrorFallback /> },
     ],
   },
 ])

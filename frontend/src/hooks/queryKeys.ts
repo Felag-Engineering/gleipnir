@@ -20,4 +20,10 @@ export const queryKeys = {
   approvals: {
     all: ['approvals'] as const,
   },
+  users: {
+    all: ['users'] as const,
+  },
+  currentUser: {
+    all: ['currentUser'] as const,
+  },
 } as const

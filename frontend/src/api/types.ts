@@ -90,6 +90,15 @@ export interface ApiStats {
   tokens_last_24h: number
 }
 
+// Matches auth/handler.go → userResponse (GET /api/v1/users)
+export interface ApiUser {
+  id: string
+  username: string
+  roles: string[]
+  created_at: string
+  deactivated_at: string | null
+}
+
 // Matches mcp_handler.go → mcpToolResponse (GET /api/v1/mcp/servers/:id/tools)
 export interface ApiMcpTool {
   id: string
