@@ -216,9 +216,20 @@ func TestService_Create_ModelValidatorCalled(t *testing.T) {
 	mv := &stubModelValidator{err: errors.New("model not found")}
 	svc := NewService(store, nil, mv)
 
-	_, err := svc.Create(context.Background(), validYAML)
-	if err == nil {
-		t.Fatal("expected error from model validator, got nil")
+	// Model validation failures are non-blocking — the policy is saved and
+	// the error is reported as a warning so a missing API key doesn't hard-block saves.
+	result, err := svc.Create(context.Background(), validYAML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(result.Warnings), result.Warnings)
+	}
+	if result.Warnings[0] != "model not found" {
+		t.Errorf("unexpected warning: %s", result.Warnings[0])
 	}
 }
 
@@ -247,9 +258,20 @@ func TestService_Update_ModelValidatorCalled(t *testing.T) {
 	mv := &stubModelValidator{err: errors.New("model not found")}
 	svcWithMV := NewService(store, nil, mv)
 
-	_, err = svcWithMV.Update(context.Background(), createResult.Policy.ID, validYAML)
-	if err == nil {
-		t.Fatal("expected error from model validator on update, got nil")
+	// Model validation failures are non-blocking — the update succeeds and the
+	// error surfaces as a warning.
+	result, err := svcWithMV.Update(context.Background(), createResult.Policy.ID, validYAML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(result.Warnings), result.Warnings)
+	}
+	if result.Warnings[0] != "model not found" {
+		t.Errorf("unexpected warning: %s", result.Warnings[0])
 	}
 }
 

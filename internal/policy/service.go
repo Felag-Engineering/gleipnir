@@ -18,7 +18,10 @@ type ToolLookup interface {
 }
 
 // ModelValidator validates that a model ID is accepted by the Anthropic API.
-// Validation is blocking: a failure prevents the policy from being saved.
+// Validation is non-blocking: a failure is reported as a warning in SaveResult
+// rather than preventing the policy from being saved. The local allowlist in
+// Validate() rejects unknown model IDs before this is called, so API-level
+// failures (auth errors, network issues) are safe to demote to warnings.
 type ModelValidator interface {
 	ValidateModel(ctx context.Context, modelID string) error
 }
@@ -55,8 +58,12 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 	if err := Validate(parsed); err != nil {
 		return nil, err
 	}
+	// Collect warnings before any blocking checks so model validation failures
+	// can be appended without returning an error.
+	var warnings []string
+
 	if err := s.validateModel(ctx, parsed.Agent.Model); err != nil {
-		return nil, err
+		warnings = append(warnings, err.Error())
 	}
 
 	// For new scheduled policies, reject if all fire_at times are in the past —
@@ -76,7 +83,7 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 		}
 	}
 
-	warnings := s.checkToolRefs(ctx, parsed)
+	warnings = append(warnings, s.checkToolRefs(ctx, parsed)...)
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	row, err := s.store.CreatePolicy(ctx, db.CreatePolicyParams{
@@ -108,11 +115,14 @@ func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (
 	if err := Validate(parsed); err != nil {
 		return nil, err
 	}
+
+	var warnings []string
+
 	if err := s.validateModel(ctx, parsed.Agent.Model); err != nil {
-		return nil, err
+		warnings = append(warnings, err.Error())
 	}
 
-	warnings := s.checkToolRefs(ctx, parsed)
+	warnings = append(warnings, s.checkToolRefs(ctx, parsed)...)
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	row, err := s.store.UpdatePolicy(ctx, db.UpdatePolicyParams{
@@ -209,8 +219,8 @@ func toModelPolicy(row db.Policy) (model.Policy, error) {
 }
 
 // validateModel calls the modelValidator if one is configured. Returns nil
-// when modelValidator is nil (skips API-level check). Errors are blocking —
-// unlike tool reference checks, a bad model ID must prevent save.
+// when modelValidator is nil (skips API-level check). The caller treats any
+// returned error as a non-blocking warning — see ModelValidator doc comment.
 func (s *Service) validateModel(ctx context.Context, modelID string) error {
 	if s.modelValidator == nil {
 		return nil
