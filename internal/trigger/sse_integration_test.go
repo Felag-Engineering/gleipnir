@@ -38,7 +38,7 @@ func buildSSERouter(t *testing.T, policyID string, claude *anthropic.Client, bro
 	})
 	launcher := trigger.NewRunLauncher(store, registry, manager, factory, broadcaster)
 	wh := trigger.NewWebhookHandler(store, launcher)
-	rh := trigger.NewRunsHandler(store, manager)
+	rh := trigger.NewRunsHandler(store, manager, broadcaster)
 
 	r := newRunsRouter(rh)
 	r.Post("/api/v1/webhooks/{policyID}", wh.Handle)

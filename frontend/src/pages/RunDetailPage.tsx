@@ -166,7 +166,7 @@ export default function RunDetailPage() {
           <FilterBar active={filter} counts={counts} onChange={setFilter} />
 
           <div className={styles.timeline}>
-            <StepTimeline steps={timelineSteps} toolRoleMap={toolRoleMap} systemPrompt={run.system_prompt} />
+            <StepTimeline steps={timelineSteps} toolRoleMap={toolRoleMap} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} />
 
             {hasMore && (
               <button

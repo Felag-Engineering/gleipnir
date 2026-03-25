@@ -128,15 +128,13 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	audit := agent.NewAuditWriter(l.store.Queries(), agent.WithPublisher(l.publisher))
 	sm := agent.NewRunStateMachine(run.ID, model.RunStatusPending, l.store.Queries(), agent.WithStateMachinePublisher(l.publisher))
 
+	approvalCh := make(chan bool)
 	ba, err := l.newAgent(agent.Config{
 		Tools:        resolvedTools,
 		Policy:       params.ParsedPolicy,
 		Audit:        audit,
 		StateMachine: sm,
-		// ApprovalCh is an unbuffered channel that is never sent to.
-		// Runs requiring approval will block until ScanOrphanedRuns marks
-		// them interrupted on the next restart.
-		ApprovalCh: make(chan bool),
+		ApprovalCh:   approvalCh,
 	})
 	if err != nil {
 		// Mark the run failed — it was created and tools resolved but agent
@@ -154,7 +152,7 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	// the HTTP request that triggered it. RunManager's WaitGroup tracks it for
 	// graceful shutdown; cancellation is performed via the registered cancel func.
 	runCtx, cancel := context.WithCancel(context.Background())
-	l.manager.Register(run.ID, cancel)
+	l.manager.Register(run.ID, cancel, approvalCh)
 
 	payload := params.TriggerPayload
 	go func() {

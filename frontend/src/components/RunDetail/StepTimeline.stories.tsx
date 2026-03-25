@@ -45,8 +45,13 @@ const FULL_STEPS = [
   parseStep(makeRaw({ id: 's8', step_number: 7, type: 'complete', content: JSON.stringify({ message: 'Report written to /tmp/report.txt.' }) })),
 ]
 
+const defaultRunProps = {
+  runId: 'run-1',
+  runStatus: 'complete',
+}
+
 export const FullRun: Story = {
-  args: { steps: FULL_STEPS, toolRoleMap: roleMap },
+  args: { steps: FULL_STEPS, toolRoleMap: roleMap, ...defaultRunProps },
 }
 
 export const WithError: Story = {
@@ -56,16 +61,18 @@ export const WithError: Story = {
       parseStep(makeRaw({ id: 's5e', step_number: 4, type: 'error', content: JSON.stringify({ message: 'write_file: permission denied', code: 'FS_PERMISSION' }) })),
     ],
     toolRoleMap: roleMap,
+    ...defaultRunProps,
   },
 }
 
 export const Empty: Story = {
-  args: { steps: [], toolRoleMap: roleMap },
+  args: { steps: [], toolRoleMap: roleMap, ...defaultRunProps },
 }
 
 export const OnlyCapabilitySnapshot: Story = {
   args: {
     steps: [FULL_STEPS[0]],
     toolRoleMap: roleMap,
+    ...defaultRunProps,
   },
 }

@@ -95,7 +95,7 @@ func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, claude *ant
 	})
 	launcher := trigger.NewRunLauncher(store, registry, manager, factory, nil)
 	wh := trigger.NewWebhookHandler(store, launcher)
-	rh := trigger.NewRunsHandler(store, manager)
+	rh := trigger.NewRunsHandler(store, manager, nil)
 
 	// Reuse newRunsRouter for the runs routes so both stay in sync automatically.
 	r := newRunsRouter(rh)

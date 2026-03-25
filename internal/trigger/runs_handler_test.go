@@ -41,6 +41,7 @@ func newRunsRouter(h *trigger.RunsHandler) *chi.Mux {
 	r.Get("/api/v1/runs/{runID}", h.Get)
 	r.Get("/api/v1/runs/{runID}/steps", h.ListSteps)
 	r.Post("/api/v1/runs/{runID}/cancel", h.Cancel)
+	r.Post("/api/v1/runs/{runID}/approval", h.SubmitApproval)
 	return r
 }
 
@@ -425,7 +426,7 @@ func TestRunsHandler_List(t *testing.T) {
 				tc.setup(t, store)
 			}
 
-			h := trigger.NewRunsHandler(store, trigger.NewRunManager())
+			h := trigger.NewRunsHandler(store, trigger.NewRunManager(), nil)
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/runs"+tc.query, nil)
@@ -470,7 +471,7 @@ func TestRunsHandler_List_PolicyName(t *testing.T) {
 	insertTestPolicy(t, store, "p-pname-test", minimalWebhookPolicy)
 	insertTestRun(t, store, "r-pname-test-1", "p-pname-test", model.RunStatusComplete)
 
-	h := trigger.NewRunsHandler(store, trigger.NewRunManager())
+	h := trigger.NewRunsHandler(store, trigger.NewRunManager(), nil)
 	router := newRunsRouter(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs?policy_id=p-pname-test", nil)
@@ -581,7 +582,7 @@ func TestRunsHandler_Get(t *testing.T) {
 				tc.setup(t, store)
 			}
 
-			h := trigger.NewRunsHandler(store, trigger.NewRunManager())
+			h := trigger.NewRunsHandler(store, trigger.NewRunManager(), nil)
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+tc.runID, nil)
@@ -664,7 +665,7 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 				tc.setup(t, store)
 			}
 
-			h := trigger.NewRunsHandler(store, trigger.NewRunManager())
+			h := trigger.NewRunsHandler(store, trigger.NewRunManager(), nil)
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+tc.runID+"/steps", nil)
@@ -720,7 +721,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
 				insertTestPolicy(t, store, "p-cancel-run", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-cancel-running", "p-cancel-run", model.RunStatusRunning)
-				manager.Register("r-cancel-running", func() {})
+				manager.Register("r-cancel-running", func() {}, make(chan bool))
 			},
 			runID:    "r-cancel-running",
 			wantCode: http.StatusAccepted,
@@ -831,7 +832,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 				tc.setup(t, store, manager)
 			}
 
-			h := trigger.NewRunsHandler(store, manager)
+			h := trigger.NewRunsHandler(store, manager, nil)
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+tc.runID+"/cancel", nil)
@@ -864,6 +865,203 @@ func TestRunsHandler_Cancel(t *testing.T) {
 				}
 				tc.checkConflict(t, body)
 			}
+		})
+	}
+}
+
+func TestRunsHandler_SubmitApproval(t *testing.T) {
+	type successBody struct {
+		Data map[string]string `json:"data"`
+	}
+	type approvalErrorBody struct {
+		Error  string `json:"error"`
+		Detail string `json:"detail"`
+	}
+
+	cases := []struct {
+		name         string
+		setup        func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool
+		runID        string
+		body         string
+		wantCode     int
+		checkSuccess func(t *testing.T, body successBody)
+		checkError   func(t *testing.T, body approvalErrorBody)
+	}{
+		{
+			name: "run not found returns 404",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
+				return nil
+			},
+			runID:    "r-approval-missing",
+			body:     `{"decision":"approved"}`,
+			wantCode: http.StatusNotFound,
+		},
+		{
+			name: "run not waiting_for_approval returns 409",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
+				insertTestPolicy(t, store, "p-approval-running", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-approval-running", "p-approval-running", model.RunStatusRunning)
+				return nil
+			},
+			runID:    "r-approval-running",
+			body:     `{"decision":"approved"}`,
+			wantCode: http.StatusConflict,
+			checkError: func(t *testing.T, body approvalErrorBody) {
+				if body.Error != "run is not waiting for approval" {
+					t.Errorf("error = %q, want %q", body.Error, "run is not waiting for approval")
+				}
+				if body.Detail != string(model.RunStatusRunning) {
+					t.Errorf("detail = %q, want %q", body.Detail, model.RunStatusRunning)
+				}
+			},
+		},
+		{
+			name: "missing decision field returns 400",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
+				return nil
+			},
+			runID:    "r-approval-bad-body",
+			body:     `{}`,
+			wantCode: http.StatusBadRequest,
+			checkError: func(t *testing.T, body approvalErrorBody) {
+				if body.Error == "" {
+					t.Error("expected non-empty error message")
+				}
+			},
+		},
+		{
+			name: "invalid decision value returns 400",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
+				return nil
+			},
+			runID:    "r-approval-bad-decision",
+			body:     `{"decision":"maybe"}`,
+			wantCode: http.StatusBadRequest,
+			checkError: func(t *testing.T, body approvalErrorBody) {
+				if body.Error == "" {
+					t.Error("expected non-empty error message")
+				}
+			},
+		},
+		{
+			name: "invalid JSON body returns 400",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
+				return nil
+			},
+			runID:    "r-approval-bad-json",
+			body:     `not-json`,
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "waiting_for_approval but no active gate returns 409",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
+				insertTestPolicy(t, store, "p-approval-no-gate", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-approval-no-gate", "p-approval-no-gate", model.RunStatusWaitingForApproval)
+				// Run is registered but nobody is reading from the channel.
+				manager.Register("r-approval-no-gate", func() {}, make(chan bool))
+				return nil
+			},
+			runID:    "r-approval-no-gate",
+			body:     `{"decision":"approved"}`,
+			wantCode: http.StatusConflict,
+			checkError: func(t *testing.T, body approvalErrorBody) {
+				if body.Error != "no active approval gate for this run" {
+					t.Errorf("error = %q, want %q", body.Error, "no active approval gate for this run")
+				}
+			},
+		},
+		{
+			name: "approved decision delivered returns 202",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
+				insertTestPolicy(t, store, "p-approval-ok", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-approval-ok", "p-approval-ok", model.RunStatusWaitingForApproval)
+				testutil.InsertApprovalRequest(t, store, "ar-approval-ok", "r-approval-ok", "some_tool")
+				// Buffered so the non-blocking send in SendApproval succeeds without
+				// needing a goroutine to be scheduled and blocking on the channel.
+				ch := make(chan bool, 1)
+				manager.Register("r-approval-ok", func() {}, ch)
+				return ch
+			},
+			runID:    "r-approval-ok",
+			body:     `{"decision":"approved"}`,
+			wantCode: http.StatusAccepted,
+			checkSuccess: func(t *testing.T, body successBody) {
+				if body.Data["run_id"] != "r-approval-ok" {
+					t.Errorf("run_id = %q, want %q", body.Data["run_id"], "r-approval-ok")
+				}
+				if body.Data["decision"] != "approved" {
+					t.Errorf("decision = %q, want %q", body.Data["decision"], "approved")
+				}
+			},
+		},
+		{
+			name: "denied decision delivered returns 202",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
+				insertTestPolicy(t, store, "p-approval-deny", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-approval-deny", "p-approval-deny", model.RunStatusWaitingForApproval)
+				testutil.InsertApprovalRequest(t, store, "ar-approval-deny", "r-approval-deny", "some_tool")
+				// Buffered so the non-blocking send in SendApproval succeeds without
+				// needing a goroutine to be scheduled and blocking on the channel.
+				ch := make(chan bool, 1)
+				manager.Register("r-approval-deny", func() {}, ch)
+				return ch
+			},
+			runID:    "r-approval-deny",
+			body:     `{"decision":"denied"}`,
+			wantCode: http.StatusAccepted,
+			checkSuccess: func(t *testing.T, body successBody) {
+				if body.Data["decision"] != "denied" {
+					t.Errorf("decision = %q, want %q", body.Data["decision"], "denied")
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			manager := trigger.NewRunManager()
+
+			var approvalCh chan bool
+			if tc.setup != nil {
+				approvalCh = tc.setup(t, store, manager)
+			}
+
+			// Drain any buffered channel to avoid leaks.
+			if approvalCh != nil {
+				go func() { <-approvalCh }()
+			}
+
+			h := trigger.NewRunsHandler(store, manager, nil)
+			router := newRunsRouter(h)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+tc.runID+"/approval", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d; body: %s", w.Code, tc.wantCode, w.Body.String())
+			}
+
+			if tc.checkSuccess != nil {
+				var body successBody
+				if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+					t.Fatalf("decode success response: %v", err)
+				}
+				tc.checkSuccess(t, body)
+			}
+
+			if tc.checkError != nil {
+				var body approvalErrorBody
+				if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+					t.Fatalf("decode error response: %v", err)
+				}
+				tc.checkError(t, body)
+			}
+
+			// Clean up any registered runs to drain the WaitGroup.
+			manager.Deregister(tc.runID)
 		})
 	}
 }

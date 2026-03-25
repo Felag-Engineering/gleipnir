@@ -7,9 +7,11 @@ interface Props {
   steps: ParsedStep[]
   toolRoleMap: Map<string, GrantedToolEntry['Role']>
   systemPrompt?: string | null
+  runId: string
+  runStatus: string
 }
 
-export function StepTimeline({ steps, toolRoleMap, systemPrompt }: Props) {
+export function StepTimeline({ steps, toolRoleMap, systemPrompt, runId, runStatus }: Props) {
   if (steps.length === 0) {
     return (
       <p className={styles.empty}>No steps to display.</p>
@@ -24,7 +26,7 @@ export function StepTimeline({ steps, toolRoleMap, systemPrompt }: Props) {
           {step.type === 'capability_snapshot' ? (
             <CapabilitySnapshotCard content={step.content} systemPrompt={systemPrompt} />
           ) : (
-            <StepCard step={step} toolRoleMap={toolRoleMap} />
+            <StepCard step={step} toolRoleMap={toolRoleMap} runId={runId} runStatus={runStatus} />
           )}
         </li>
       ))}

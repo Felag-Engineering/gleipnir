@@ -34,6 +34,11 @@ const roleMap = new Map<string, GrantedToolEntry['Role']>([
   ['list_files', 'sensor'],
 ])
 
+const defaultRunProps = {
+  runId: 'run-1',
+  runStatus: 'complete',
+}
+
 export const Thought: Story = {
   args: {
     step: parseStep(makeRaw({
@@ -41,6 +46,7 @@ export const Thought: Story = {
       content: JSON.stringify({ text: 'I should start by reading the log file to understand what happened during the last deployment window.' }),
     })),
     toolRoleMap: emptyRoleMap,
+    ...defaultRunProps,
   },
 }
 
@@ -52,6 +58,7 @@ export const ToolCallSensor: Story = {
       content: JSON.stringify({ tool_name: 'read_file', server_id: 'fs-server', input: { path: '/var/log/app.log', lines: 50 } }),
     })),
     toolRoleMap: roleMap,
+    ...defaultRunProps,
   },
 }
 
@@ -63,6 +70,7 @@ export const ToolCallActuator: Story = {
       content: JSON.stringify({ tool_name: 'write_file', server_id: 'fs-server', input: { path: '/tmp/report.txt', content: 'All checks passed.' } }),
     })),
     toolRoleMap: roleMap,
+    ...defaultRunProps,
   },
 }
 
@@ -74,6 +82,7 @@ export const ToolResultOk: Story = {
       content: JSON.stringify({ tool_name: 'read_file', output: JSON.stringify({ lines: ['INFO app started', 'INFO ready'] }), is_error: false }),
     })),
     toolRoleMap: emptyRoleMap,
+    ...defaultRunProps,
   },
 }
 
@@ -85,6 +94,7 @@ export const ToolResultError: Story = {
       content: JSON.stringify({ tool_name: 'write_file', output: 'permission denied: /tmp/report.txt', is_error: true }),
     })),
     toolRoleMap: emptyRoleMap,
+    ...defaultRunProps,
   },
 }
 
@@ -95,6 +105,7 @@ export const Error: Story = {
       content: JSON.stringify({ message: 'MCP server unreachable after 3 retries', code: 'MCP_TIMEOUT' }),
     })),
     toolRoleMap: emptyRoleMap,
+    ...defaultRunProps,
   },
 }
 
@@ -105,6 +116,7 @@ export const Complete: Story = {
       content: JSON.stringify({ message: 'Backup verification complete. All 12 shards healthy.' }),
     })),
     toolRoleMap: emptyRoleMap,
+    ...defaultRunProps,
   },
 }
 
@@ -115,6 +127,8 @@ export const ApprovalRequest: Story = {
       content: JSON.stringify({ tool: 'send_slack', input: { channel: '#incidents', message: 'Deploying hotfix to prod.' } }),
     })),
     toolRoleMap: emptyRoleMap,
+    runId: 'run-1',
+    runStatus: 'waiting_for_approval',
   },
 }
 
@@ -124,26 +138,38 @@ export const AllTypes: Story = {
       <StepCard
         step={parseStep(makeRaw({ type: 'thought', content: JSON.stringify({ text: 'Let me check the logs.' }) }))}
         toolRoleMap={emptyRoleMap}
+        runId="run-1"
+        runStatus="complete"
       />
       <StepCard
         step={parseStep(makeRaw({ type: 'tool_call', content: JSON.stringify({ tool_name: 'read_file', server_id: 'fs', input: { path: '/var/log/app.log' } }) }))}
         toolRoleMap={roleMap}
+        runId="run-1"
+        runStatus="complete"
       />
       <StepCard
         step={parseStep(makeRaw({ type: 'tool_call', content: JSON.stringify({ tool_name: 'write_file', server_id: 'fs', input: { path: '/tmp/out.txt', content: 'done' } }) }))}
         toolRoleMap={roleMap}
+        runId="run-1"
+        runStatus="complete"
       />
       <StepCard
         step={parseStep(makeRaw({ type: 'tool_result', content: JSON.stringify({ tool_name: 'read_file', output: '["INFO ready"]', is_error: false }) }))}
         toolRoleMap={emptyRoleMap}
+        runId="run-1"
+        runStatus="complete"
       />
       <StepCard
         step={parseStep(makeRaw({ type: 'error', content: JSON.stringify({ message: 'timeout', code: 'TIMEOUT' }) }))}
         toolRoleMap={emptyRoleMap}
+        runId="run-1"
+        runStatus="complete"
       />
       <StepCard
         step={parseStep(makeRaw({ type: 'complete', content: JSON.stringify({ message: 'Done.' }) }))}
         toolRoleMap={emptyRoleMap}
+        runId="run-1"
+        runStatus="complete"
       />
     </div>
   ),

@@ -1,10 +1,13 @@
 import { CollapsibleJSON } from '@/components/CollapsibleJSON'
+import { ApprovalActions } from './ApprovalActions'
 import type { ParsedStep, GrantedToolEntry } from './types'
 import styles from './StepCard.module.css'
 
 interface Props {
   step: ParsedStep
   toolRoleMap: Map<string, GrantedToolEntry['Role']>
+  runId: string
+  runStatus: string
 }
 
 function StepIcon({ type, role }: { type: string; role?: GrantedToolEntry['Role'] }) {
@@ -20,7 +23,7 @@ function StepIcon({ type, role }: { type: string; role?: GrantedToolEntry['Role'
   return <span className={cls.join(' ')} aria-hidden="true" />
 }
 
-export function StepCard({ step, toolRoleMap }: Props) {
+export function StepCard({ step, toolRoleMap, runId, runStatus }: Props) {
   if (step.type === 'thought') {
     return (
       <div className={styles.card}>
@@ -121,6 +124,7 @@ export function StepCard({ step, toolRoleMap }: Props) {
         <div className={styles.body}>
           <span className={`${styles.typeLabel} ${styles.approvalLabel}`}>Approval requested</span>
           <code className={styles.toolName}>{step.content.tool}</code>
+          <ApprovalActions runId={runId} runStatus={runStatus} />
         </div>
       </div>
     )

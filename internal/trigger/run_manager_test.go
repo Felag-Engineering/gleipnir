@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+// noopApprovalCh returns a new unbuffered channel suitable for passing to
+// Register when tests don't exercise the approval path.
+func noopApprovalCh() chan bool { return make(chan bool) }
+
 func TestRunManager(t *testing.T) {
 	cases := []struct {
 		name string
@@ -14,7 +18,7 @@ func TestRunManager(t *testing.T) {
 			name: "register then cancel returns true and calls cancel func",
 			run: func(t *testing.T, m *RunManager) {
 				cancelled := false
-				m.Register("run-1", func() { cancelled = true })
+				m.Register("run-1", func() { cancelled = true }, noopApprovalCh())
 				got := m.Cancel("run-1")
 				if !got {
 					t.Error("Cancel returned false, want true")
@@ -40,7 +44,7 @@ func TestRunManager(t *testing.T) {
 			name: "deregister calls cancel func then cancel returns false",
 			run: func(t *testing.T, m *RunManager) {
 				cancelled := false
-				m.Register("run-2", func() { cancelled = true })
+				m.Register("run-2", func() { cancelled = true }, noopApprovalCh())
 				m.Deregister("run-2")
 				// Deregister calls the cancel func to clean up the context on
 				// normal goroutine exit (before the goroutine's own defer cancel).
@@ -61,7 +65,7 @@ func TestRunManager(t *testing.T) {
 				called := make([]bool, 3)
 				ids := []string{"run-a", "run-b", "run-c"}
 				for i, id := range ids {
-					m.Register(id, func() { called[i] = true })
+					m.Register(id, func() { called[i] = true }, noopApprovalCh())
 				}
 
 				m.CancelAll()
@@ -105,6 +109,101 @@ func TestRunManager(t *testing.T) {
 			tc.run(t, m)
 		})
 	}
+}
+
+func TestSendApproval(t *testing.T) {
+	t.Run("run not registered returns false", func(t *testing.T) {
+		m := NewRunManager()
+		got := m.SendApproval("unknown-run", true)
+		if got {
+			t.Error("SendApproval returned true for unregistered run, want false")
+		}
+	})
+
+	t.Run("registered but nobody reading returns false", func(t *testing.T) {
+		m := NewRunManager()
+		m.Register("run-blocked", func() {}, noopApprovalCh())
+		// Channel is unbuffered and nobody is reading — non-blocking send must fail.
+		got := m.SendApproval("run-blocked", true)
+		if got {
+			t.Error("SendApproval returned true with no reader, want false")
+		}
+		m.Deregister("run-blocked")
+		waitWithTimeout(t, m, "blocked run")
+	})
+
+	t.Run("approved delivered to waiting goroutine returns true", func(t *testing.T) {
+		m := NewRunManager()
+		ch := make(chan bool)
+		m.Register("run-approve", func() {}, ch)
+
+		received := make(chan bool, 1)
+		ready := make(chan struct{})
+		go func() {
+			close(ready) // signal that this goroutine is about to block on ch
+			received <- <-ch
+		}()
+		<-ready
+		// Yield to give the goroutine a chance to actually block on ch.
+		time.Sleep(time.Millisecond)
+
+		got := m.SendApproval("run-approve", true)
+		if !got {
+			t.Error("SendApproval returned false, want true")
+		}
+		select {
+		case val := <-received:
+			if !val {
+				t.Error("received false from channel, want true")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("goroutine did not receive approval within deadline")
+		}
+		m.Deregister("run-approve")
+		waitWithTimeout(t, m, "approve run")
+	})
+
+	t.Run("denied delivered to waiting goroutine returns true", func(t *testing.T) {
+		m := NewRunManager()
+		ch := make(chan bool)
+		m.Register("run-deny", func() {}, ch)
+
+		received := make(chan bool, 1)
+		ready := make(chan struct{})
+		go func() {
+			close(ready) // signal that this goroutine is about to block on ch
+			received <- <-ch
+		}()
+		<-ready
+		// Yield to give the goroutine a chance to actually block on ch.
+		time.Sleep(time.Millisecond)
+
+		got := m.SendApproval("run-deny", false)
+		if !got {
+			t.Error("SendApproval returned false, want true")
+		}
+		select {
+		case val := <-received:
+			if val {
+				t.Error("received true from channel, want false")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("goroutine did not receive denial within deadline")
+		}
+		m.Deregister("run-deny")
+		waitWithTimeout(t, m, "deny run")
+	})
+
+	t.Run("deregistered run returns false", func(t *testing.T) {
+		m := NewRunManager()
+		m.Register("run-dereg", func() {}, noopApprovalCh())
+		m.Deregister("run-dereg")
+		waitWithTimeout(t, m, "deregistered run")
+		got := m.SendApproval("run-dereg", true)
+		if got {
+			t.Error("SendApproval returned true after Deregister, want false")
+		}
+	})
 }
 
 // waitWithTimeout calls m.Wait() in a goroutine and fails the test if it does

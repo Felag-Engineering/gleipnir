@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/rapp992/gleipnir/internal/agent"
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
@@ -48,15 +50,22 @@ type StepSummary struct {
 	CreatedAt  string `json:"created_at"`
 }
 
-// RunsHandler serves run inspection and control endpoints.
-type RunsHandler struct {
-	store   *db.Store
-	manager *RunManager
+// ApprovalDecisionRequest is the JSON body for SubmitApproval.
+type ApprovalDecisionRequest struct {
+	Decision string `json:"decision"` // "approved" or "denied"
 }
 
-// NewRunsHandler returns a RunsHandler backed by store and manager.
-func NewRunsHandler(store *db.Store, manager *RunManager) *RunsHandler {
-	return &RunsHandler{store: store, manager: manager}
+// RunsHandler serves run inspection and control endpoints.
+type RunsHandler struct {
+	store     *db.Store
+	manager   *RunManager
+	publisher agent.Publisher
+}
+
+// NewRunsHandler returns a RunsHandler backed by store, manager, and publisher.
+// publisher may be nil, in which case no SSE events are emitted.
+func NewRunsHandler(store *db.Store, manager *RunManager, publisher agent.Publisher) *RunsHandler {
+	return &RunsHandler{store: store, manager: manager, publisher: publisher}
 }
 
 // List handles GET /api/v1/runs with optional filters and pagination.
@@ -313,6 +322,88 @@ func (h *RunsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID})
+}
+
+// SubmitApproval handles POST /api/v1/runs/{runID}/approval.
+// It validates the run is waiting for approval and routes the decision to the
+// BoundAgent's approval gate via the RunManager. The Approver role is required
+// (enforced at the router level).
+func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	runID := chi.URLParam(r, "runID")
+
+	var req ApprovalDecisionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.Decision != "approved" && req.Decision != "denied" {
+		api.WriteError(w, http.StatusBadRequest, `decision must be "approved" or "denied"`, req.Decision)
+		return
+	}
+
+	run, err := h.store.GetRun(ctx, runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		api.WriteError(w, http.StatusNotFound, "run not found", "")
+		return
+	}
+	if err != nil {
+		slog.Error("GetRun query failed", "run_id", runID, "err", err)
+		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		return
+	}
+
+	if run.Status != string(model.RunStatusWaitingForApproval) {
+		api.WriteError(w, http.StatusConflict, "run is not waiting for approval", run.Status)
+		return
+	}
+
+	approved := req.Decision == "approved"
+	if !h.manager.SendApproval(runID, approved) {
+		// TOCTOU: the run was in waiting_for_approval in the DB but the agent's
+		// approval gate is no longer blocking (timeout, context cancel, etc.).
+		api.WriteError(w, http.StatusConflict, "no active approval gate for this run", "")
+		return
+	}
+
+	// Map API decision to DB status: "denied" → "rejected" (model enum).
+	dbStatus := string(model.ApprovalStatusApproved)
+	if !approved {
+		dbStatus = string(model.ApprovalStatusRejected)
+	}
+
+	// Update the pending approval_request record. Best-effort after the channel
+	// send — DB consistency is secondary to unblocking the agent.
+	pendingApprovals, err := h.store.GetPendingApprovalRequestsByRun(ctx, runID)
+	if err != nil {
+		slog.Warn("GetPendingApprovalRequestsByRun failed after approval send", "run_id", runID, "err", err)
+	}
+
+	var approvalID string
+	if len(pendingApprovals) > 0 {
+		approvalID = pendingApprovals[0].ID
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if err := h.store.UpdateApprovalRequestStatus(ctx, db.UpdateApprovalRequestStatusParams{
+			Status:    dbStatus,
+			DecidedAt: &now,
+			Note:      nil,
+			ID:        approvalID,
+		}); err != nil {
+			slog.Warn("UpdateApprovalRequestStatus failed", "approval_id", approvalID, "err", err)
+		}
+	}
+
+	if h.publisher != nil {
+		if data, err := json.Marshal(map[string]string{
+			"approval_id": approvalID,
+			"run_id":      runID,
+			"status":      dbStatus,
+		}); err == nil {
+			h.publisher.Publish("approval.resolved", data)
+		}
+	}
+
+	api.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID, "decision": req.Decision})
 }
 
 func toRunSummary(r db.Run) RunSummary {

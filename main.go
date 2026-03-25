@@ -118,11 +118,12 @@ func run(cfg config.Config) error {
 		manualTriggerHandler := trigger.NewManualTriggerHandler(store, launcher)
 		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleOperator)).Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
 
-		runsHandler := trigger.NewRunsHandler(store, runManager)
+		runsHandler := trigger.NewRunsHandler(store, runManager, broadcaster)
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs", runsHandler.List)
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}", runsHandler.Get)
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)
 		r.With(auth.RequireRole(model.RoleOperator)).Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
+		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleApprover)).Post("/api/v1/runs/{runID}/approval", runsHandler.SubmitApproval)
 
 		policySvc := policy.NewService(store, nil, policy.NewAnthropicModelValidator(&claudeClient))
 
