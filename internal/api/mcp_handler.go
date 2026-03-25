@@ -34,6 +34,7 @@ type mcpServerResponse struct {
 	Name             string  `json:"name"`
 	URL              string  `json:"url"`
 	LastDiscoveredAt *string `json:"last_discovered_at"`
+	HasDrift         bool    `json:"has_drift"`
 	CreatedAt        string  `json:"created_at"`
 }
 
@@ -54,6 +55,7 @@ func serverToResponse(s db.McpServer) mcpServerResponse {
 		Name:             s.Name,
 		URL:              s.Url,
 		LastDiscoveredAt: s.LastDiscoveredAt,
+		HasDrift:         s.HasDrift != 0,
 		CreatedAt:        s.CreatedAt,
 	}
 }

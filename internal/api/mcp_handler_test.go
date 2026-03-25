@@ -136,9 +136,10 @@ func TestMCPServerListHandler(t *testing.T) {
 
 		var envelope struct {
 			Data []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-				URL  string `json:"url"`
+				ID       string `json:"id"`
+				Name     string `json:"name"`
+				URL      string `json:"url"`
+				HasDrift bool   `json:"has_drift"`
 			} `json:"data"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
@@ -152,6 +153,9 @@ func TestMCPServerListHandler(t *testing.T) {
 		}
 		if envelope.Data[0].URL != "http://localhost:9999" {
 			t.Errorf("url = %q, want http://localhost:9999", envelope.Data[0].URL)
+		}
+		if envelope.Data[0].HasDrift {
+			t.Errorf("has_drift = true, want false for a freshly inserted server")
 		}
 	})
 }
@@ -439,6 +443,29 @@ func TestMCPServerDiscoverHandler(t *testing.T) {
 		}
 		if envelope.Data.Modified == nil {
 			t.Error("modified must not be null — want empty array")
+		}
+
+		// After a discovery that adds tools, has_drift should be true in GET /servers.
+		listResp, err := http.Get(srv.URL + "/servers")
+		if err != nil {
+			t.Fatalf("GET /servers: %v", err)
+		}
+		defer listResp.Body.Close()
+
+		var listEnvelope struct {
+			Data []struct {
+				ID       string `json:"id"`
+				HasDrift bool   `json:"has_drift"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(listResp.Body).Decode(&listEnvelope); err != nil {
+			t.Fatalf("decode list response: %v", err)
+		}
+		if len(listEnvelope.Data) != 1 {
+			t.Fatalf("list len = %d, want 1", len(listEnvelope.Data))
+		}
+		if !listEnvelope.Data[0].HasDrift {
+			t.Errorf("has_drift = false after discovery that added tools, want true")
 		}
 	})
 

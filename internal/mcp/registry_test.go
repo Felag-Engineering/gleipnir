@@ -177,6 +177,15 @@ func TestRefreshTools_NoChanges(t *testing.T) {
 	if lastDiscovered == nil {
 		t.Error("last_discovered_at is NULL after RefreshTools, want non-nil")
 	}
+
+	// No changes: has_drift must be 0.
+	var hasDrift int64
+	if err := rawDB.QueryRow(`SELECT has_drift FROM mcp_servers WHERE id = ?`, serverID).Scan(&hasDrift); err != nil {
+		t.Fatalf("query has_drift: %v", err)
+	}
+	if hasDrift != 0 {
+		t.Errorf("has_drift = %d, want 0 after no-change refresh", hasDrift)
+	}
 }
 
 func TestRefreshTools_AddedTools(t *testing.T) {
@@ -219,6 +228,15 @@ func TestRefreshTools_AddedTools(t *testing.T) {
 	}
 	if len(diff.Removed) != 0 {
 		t.Errorf("Removed = %v, want empty", diff.Removed)
+	}
+
+	// Added tools: has_drift must be 1.
+	var hasDrift int64
+	if err := rawDB.QueryRow(`SELECT has_drift FROM mcp_servers WHERE id = ?`, serverID).Scan(&hasDrift); err != nil {
+		t.Fatalf("query has_drift: %v", err)
+	}
+	if hasDrift != 1 {
+		t.Errorf("has_drift = %d, want 1 after added-tools refresh", hasDrift)
 	}
 }
 
@@ -270,6 +288,15 @@ func TestRefreshTools_RemovedTools(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("tool row count = %d, want 1", count)
+	}
+
+	// Removed tools: has_drift must be 1.
+	var hasDrift int64
+	if err := rawDB.QueryRow(`SELECT has_drift FROM mcp_servers WHERE id = ?`, serverID).Scan(&hasDrift); err != nil {
+		t.Fatalf("query has_drift: %v", err)
+	}
+	if hasDrift != 1 {
+		t.Errorf("has_drift = %d, want 1 after removed-tools refresh", hasDrift)
 	}
 }
 
@@ -323,6 +350,15 @@ func TestRefreshTools_ModifiedTools(t *testing.T) {
 	}
 	if storedDesc != "updated desc" {
 		t.Errorf("description = %q, want %q", storedDesc, "updated desc")
+	}
+
+	// Modified tools: has_drift must be 1.
+	var hasDrift int64
+	if err := rawDB.QueryRow(`SELECT has_drift FROM mcp_servers WHERE id = ?`, serverID).Scan(&hasDrift); err != nil {
+		t.Fatalf("query has_drift: %v", err)
+	}
+	if hasDrift != 1 {
+		t.Errorf("has_drift = %d, want 1 after modified-tools refresh", hasDrift)
 	}
 }
 
@@ -418,5 +454,63 @@ func TestRefreshTools_CapabilityRolePreserved(t *testing.T) {
 	}
 	if role != "actuator" {
 		t.Errorf("capability_role = %q, want %q (operator override should be preserved)", role, "actuator")
+	}
+}
+
+// TestRefreshTools_DriftClearedOnCleanRefresh verifies the full drift lifecycle:
+// a discovery with changes sets has_drift=1, and a subsequent discovery that
+// finds no changes clears it back to has_drift=0.
+func TestRefreshTools_DriftClearedOnCleanRefresh(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
+
+	// Register server with tool-a only.
+	oneTool := []map[string]any{
+		{"name": "tool-a", "description": "desc a", "inputSchema": map[string]any{"type": "object"}},
+	}
+	firstSrv := makeMCPServer(t, oneTool)
+
+	if err := reg.RegisterServer(context.Background(), "test-server", firstSrv.URL); err != nil {
+		t.Fatalf("RegisterServer: %v", err)
+	}
+
+	var serverID string
+	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
+		t.Fatalf("query server id: %v", err)
+	}
+
+	// Point to a server that returns tool-a + tool-b: diff is non-empty, so has_drift=1.
+	twoTools := []map[string]any{
+		{"name": "tool-a", "description": "desc a", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "tool-b", "description": "desc b", "inputSchema": map[string]any{"type": "object"}},
+	}
+	secondSrv := makeMCPServer(t, twoTools)
+
+	if _, err := rawDB.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, secondSrv.URL, serverID); err != nil {
+		t.Fatalf("update server url: %v", err)
+	}
+
+	if _, err := reg.RefreshTools(context.Background(), serverID); err != nil {
+		t.Fatalf("RefreshTools (drift): %v", err)
+	}
+
+	var hasDrift int64
+	if err := rawDB.QueryRow(`SELECT has_drift FROM mcp_servers WHERE id = ?`, serverID).Scan(&hasDrift); err != nil {
+		t.Fatalf("query has_drift: %v", err)
+	}
+	if hasDrift != 1 {
+		t.Errorf("has_drift = %d, want 1 after adding tool-b", hasDrift)
+	}
+
+	// Re-discover with the same two tools — diff is empty, so has_drift must clear to 0.
+	if _, err := reg.RefreshTools(context.Background(), serverID); err != nil {
+		t.Fatalf("RefreshTools (clean): %v", err)
+	}
+
+	if err := rawDB.QueryRow(`SELECT has_drift FROM mcp_servers WHERE id = ?`, serverID).Scan(&hasDrift); err != nil {
+		t.Fatalf("query has_drift after clean refresh: %v", err)
+	}
+	if hasDrift != 0 {
+		t.Errorf("has_drift = %d, want 0 after clean re-discovery", hasDrift)
 	}
 }

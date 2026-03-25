@@ -323,5 +323,16 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 		return ToolDiff{}, fmt.Errorf("update last_discovered_at: %w", err)
 	}
 
+	hasDrift := int64(0)
+	if len(diff.Added) > 0 || len(diff.Removed) > 0 || len(diff.Modified) > 0 {
+		hasDrift = 1
+	}
+	if err := r.queries.UpdateMCPServerDrift(ctx, db.UpdateMCPServerDriftParams{
+		HasDrift: hasDrift,
+		ID:       serverID,
+	}); err != nil {
+		return ToolDiff{}, fmt.Errorf("update has_drift: %w", err)
+	}
+
 	return diff, nil
 }

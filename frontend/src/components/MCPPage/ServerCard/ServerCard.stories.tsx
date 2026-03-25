@@ -16,6 +16,7 @@ const server: ApiMcpServer = {
   name: 'kubectl-mcp',
   url: 'http://kubectl-mcp:8080',
   last_discovered_at: new Date(Date.now() - 3_600_000).toISOString(),
+  has_drift: false,
   created_at: new Date(Date.now() - 86_400_000).toISOString(),
 }
 
@@ -48,5 +49,12 @@ export const Unreachable: Story = {
   args: {
     ...Connected.args,
     server: { ...server, last_discovered_at: null },
+  },
+}
+
+export const Drifted: Story = {
+  args: {
+    ...Connected.args,
+    server: { ...server, has_drift: true },
   },
 }

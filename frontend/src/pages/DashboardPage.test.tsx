@@ -47,7 +47,7 @@ const STATS: ApiStats = {
 }
 
 const SERVERS: ApiMcpServer[] = [
-  { id: 's1', name: 'filesystem', url: 'http://localhost:8100', last_discovered_at: null, created_at: '2026-03-01T00:00:00Z' },
+  { id: 's1', name: 'filesystem', url: 'http://localhost:8100', last_discovered_at: null, has_drift: false, created_at: '2026-03-01T00:00:00Z' },
 ]
 
 function makeClient() {

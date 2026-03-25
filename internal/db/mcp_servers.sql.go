@@ -12,7 +12,7 @@ import (
 const createMCPServer = `-- name: CreateMCPServer :one
 INSERT INTO mcp_servers (id, name, url, created_at)
 VALUES (?1, ?2, ?3, ?4)
-RETURNING id, name, url, last_discovered_at, created_at
+RETURNING id, name, url, last_discovered_at, has_drift, created_at
 `
 
 type CreateMCPServerParams struct {
@@ -35,6 +35,7 @@ func (q *Queries) CreateMCPServer(ctx context.Context, arg CreateMCPServerParams
 		&i.Name,
 		&i.Url,
 		&i.LastDiscoveredAt,
+		&i.HasDrift,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -50,7 +51,7 @@ func (q *Queries) DeleteMCPServer(ctx context.Context, id string) error {
 }
 
 const getMCPServer = `-- name: GetMCPServer :one
-SELECT id, name, url, last_discovered_at, created_at FROM mcp_servers WHERE id = ?1
+SELECT id, name, url, last_discovered_at, has_drift, created_at FROM mcp_servers WHERE id = ?1
 `
 
 func (q *Queries) GetMCPServer(ctx context.Context, id string) (McpServer, error) {
@@ -61,13 +62,14 @@ func (q *Queries) GetMCPServer(ctx context.Context, id string) (McpServer, error
 		&i.Name,
 		&i.Url,
 		&i.LastDiscoveredAt,
+		&i.HasDrift,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const listMCPServers = `-- name: ListMCPServers :many
-SELECT id, name, url, last_discovered_at, created_at FROM mcp_servers ORDER BY created_at ASC
+SELECT id, name, url, last_discovered_at, has_drift, created_at FROM mcp_servers ORDER BY created_at ASC
 `
 
 // ListMCPServers is ordered ASC: MCP servers are administrative objects registered
@@ -86,6 +88,7 @@ func (q *Queries) ListMCPServers(ctx context.Context) ([]McpServer, error) {
 			&i.Name,
 			&i.Url,
 			&i.LastDiscoveredAt,
+			&i.HasDrift,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -99,6 +102,20 @@ func (q *Queries) ListMCPServers(ctx context.Context) ([]McpServer, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateMCPServerDrift = `-- name: UpdateMCPServerDrift :exec
+UPDATE mcp_servers SET has_drift = ?1 WHERE id = ?2
+`
+
+type UpdateMCPServerDriftParams struct {
+	HasDrift int64  `json:"has_drift"`
+	ID       string `json:"id"`
+}
+
+func (q *Queries) UpdateMCPServerDrift(ctx context.Context, arg UpdateMCPServerDriftParams) error {
+	_, err := q.db.ExecContext(ctx, updateMCPServerDrift, arg.HasDrift, arg.ID)
+	return err
 }
 
 const updateMCPServerLastDiscovered = `-- name: UpdateMCPServerLastDiscovered :exec

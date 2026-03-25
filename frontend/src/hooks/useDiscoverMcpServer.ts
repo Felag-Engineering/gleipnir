@@ -18,6 +18,7 @@ export function useDiscoverMcpServer() {
       }),
     onSuccess: (_data, serverId) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.servers.tools(serverId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.all })
     },
   })
 }

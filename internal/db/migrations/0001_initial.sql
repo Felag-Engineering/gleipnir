@@ -39,6 +39,7 @@ CREATE TABLE mcp_servers (
     name                TEXT    NOT NULL UNIQUE,
     url                 TEXT    NOT NULL,
     last_discovered_at  TEXT,                 -- nullable, ISO 8601 UTC
+    has_drift           INTEGER NOT NULL DEFAULT 0,  -- 1 when re-discovery found changes
     created_at          TEXT    NOT NULL      -- ISO 8601 UTC
 );
 
@@ -277,3 +278,4 @@ INSERT INTO schema_migrations(version, applied_at) VALUES (4, strftime('%Y-%m-%d
 INSERT INTO schema_migrations(version, applied_at) VALUES (5, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 INSERT INTO schema_migrations(version, applied_at) VALUES (6, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 INSERT INTO schema_migrations(version, applied_at) VALUES (7, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+INSERT INTO schema_migrations(version, applied_at) VALUES (8, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));

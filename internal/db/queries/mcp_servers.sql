@@ -14,5 +14,8 @@ SELECT * FROM mcp_servers ORDER BY created_at ASC;
 -- name: UpdateMCPServerLastDiscovered :exec
 UPDATE mcp_servers SET last_discovered_at = :last_discovered_at WHERE id = :id;
 
+-- name: UpdateMCPServerDrift :exec
+UPDATE mcp_servers SET has_drift = :has_drift WHERE id = :id;
+
 -- name: DeleteMCPServer :exec
 DELETE FROM mcp_servers WHERE id = :id;

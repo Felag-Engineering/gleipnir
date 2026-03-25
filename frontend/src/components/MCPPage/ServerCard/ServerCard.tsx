@@ -41,6 +41,11 @@ export function ServerCard({
           <div className={styles.titleRow}>
             <HealthIndicator status={health} />
             <h2 className={styles.name}>{server.name}</h2>
+            {server.has_drift && (
+              <span className={styles.driftBadge} title="Tools have changed since last acknowledged discovery">
+                Drift
+              </span>
+            )}
           </div>
           <div className={styles.url}>{server.url}</div>
           {server.last_discovered_at && (

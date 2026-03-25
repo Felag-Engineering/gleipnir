@@ -119,3 +119,18 @@
 .deleteBtn:hover {
   background: color-mix(in srgb, var(--color-red) 16%, transparent);
 }
+
+.driftBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  font-weight: var(--weight-medium);
+  color: var(--color-amber);
+  background: color-mix(in srgb, var(--color-amber) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-amber) 24%, transparent);
+  flex-shrink: 0;
+  white-space: nowrap;
+}

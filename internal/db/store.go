@@ -41,6 +41,9 @@ var migration0006 string
 //go:embed migrations/0007_add_user_roles.sql
 var migration0007 string
 
+//go:embed migrations/0008_add_mcp_server_drift.sql
+var migration0008 string
+
 // queries wraps the sqlc-generated Queries so the embedding is unexported.
 type queries struct{ *Queries }
 
@@ -220,6 +223,20 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if v7Applied == 0 {
 		if _, err := s.db.ExecContext(ctx, migration0007); err != nil {
 			return fmt.Errorf("apply migration 0007: %w", err)
+		}
+	}
+
+	// Apply migration 0008 if not yet recorded.
+	var v8Applied int
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = 8`,
+	).Scan(&v8Applied)
+	if err != nil {
+		return fmt.Errorf("check migration 8: %w", err)
+	}
+	if v8Applied == 0 {
+		if _, err := s.db.ExecContext(ctx, migration0008); err != nil {
+			return fmt.Errorf("apply migration 0008: %w", err)
 		}
 	}
 

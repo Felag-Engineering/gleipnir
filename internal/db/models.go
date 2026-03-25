@@ -22,6 +22,7 @@ type McpServer struct {
 	Name             string  `json:"name"`
 	Url              string  `json:"url"`
 	LastDiscoveredAt *string `json:"last_discovered_at"`
+	HasDrift         int64   `json:"has_drift"`
 	CreatedAt        string  `json:"created_at"`
 }
 

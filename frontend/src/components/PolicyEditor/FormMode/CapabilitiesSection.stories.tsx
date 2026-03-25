@@ -14,6 +14,7 @@ const FIXTURE_SERVERS: ApiMcpServer[] = [
     name: 'Filesystem Tools',
     url: 'http://mcp-filesystem:8080',
     last_discovered_at: '2026-03-10T12:00:00Z',
+    has_drift: false,
     created_at: '2026-03-01T00:00:00Z',
   },
   {
@@ -21,6 +22,7 @@ const FIXTURE_SERVERS: ApiMcpServer[] = [
     name: 'GitHub Tools',
     url: 'http://mcp-github:8080',
     last_discovered_at: '2026-03-10T12:00:00Z',
+    has_drift: false,
     created_at: '2026-03-05T00:00:00Z',
   },
 ];

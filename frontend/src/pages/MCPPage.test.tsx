@@ -38,6 +38,7 @@ const SERVER_1: ApiMcpServer = {
   name: 'kubectl-mcp',
   url: 'http://kubectl-mcp:8080',
   last_discovered_at: '2026-03-10T12:00:00Z',
+  has_drift: false,
   created_at: '2026-03-01T00:00:00Z',
 }
 
@@ -46,6 +47,7 @@ const SERVER_2: ApiMcpServer = {
   name: 'vikunja-mcp',
   url: 'http://vikunja-mcp:8080',
   last_discovered_at: null,
+  has_drift: false,
   created_at: '2026-03-02T00:00:00Z',
 }
 
@@ -162,6 +164,21 @@ describe('ToolsPage — servers loaded', () => {
   it('shows Unreachable health for server with null last_discovered_at', () => {
     renderPage()
     expect(screen.getByText('Unreachable')).toBeInTheDocument()
+  })
+
+  it('shows drift badge when server has_drift is true', () => {
+    const driftedServer = { ...SERVER_1, has_drift: true }
+    mockServersLoaded([driftedServer], new Map([['srv-1', [TOOL_1]]]))
+    mockNoopMutations()
+    renderPage()
+    expect(screen.getByText('Drift')).toBeInTheDocument()
+  })
+
+  it('hides drift badge when server has_drift is false', () => {
+    mockServersLoaded([SERVER_1], new Map([['srv-1', [TOOL_1]]]))
+    mockNoopMutations()
+    renderPage()
+    expect(screen.queryByText('Drift')).not.toBeInTheDocument()
   })
 })
 

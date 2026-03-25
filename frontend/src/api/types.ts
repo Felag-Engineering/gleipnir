@@ -74,6 +74,7 @@ export interface ApiMcpServer {
   name: string
   url: string
   last_discovered_at: string | null
+  has_drift: boolean
   created_at: string
 }
 
