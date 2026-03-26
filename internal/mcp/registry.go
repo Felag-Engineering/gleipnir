@@ -84,6 +84,7 @@ func splitToolName(dotName string) (serverName, toolName string, err error) {
 // fail-fast check at run start.
 func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) ([]ResolvedTool, error) {
 	var result []ResolvedTool
+	clients := make(map[string]*Client)
 
 	for _, t := range p.Capabilities.Tools {
 		serverName, toolName, err := splitToolName(t.Tool)
@@ -115,6 +116,12 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			}
 		}
 
+		cl, ok := clients[srv.Url]
+		if !ok {
+			cl = r.newClient(srv.Url)
+			clients[srv.Url] = cl
+		}
+
 		result = append(result, ResolvedTool{
 			GrantedTool: model.GrantedTool{
 				ServerName: serverName,
@@ -125,7 +132,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 				OnTimeout:  t.OnTimeout,
 				Params:     t.Params,
 			},
-			Client:      r.newClient(srv.Url),
+			Client:      cl,
 			Description: tool.Description,
 			InputSchema: json.RawMessage(tool.InputSchema),
 		})

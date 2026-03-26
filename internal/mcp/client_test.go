@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -26,6 +28,21 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 func TestDiscoverTools_HappyPath(t *testing.T) {
 	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request body", http.StatusBadRequest)
+			return
+		}
+		method, _ := req["method"].(string)
+		switch method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "test-session")
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": "2024-11-05"}})
+			return
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		writeJSON(w, map[string]any{
 			"jsonrpc": "2.0",
 			"id":      1,
@@ -123,6 +140,7 @@ func TestCallTool_HappyPath(t *testing.T) {
 		method, _ := req["method"].(string)
 		switch method {
 		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "test-session")
 			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": "2024-11-05"}})
 			return
 		case "notifications/initialized":
@@ -304,5 +322,130 @@ func TestDiscoverTools_WithCustomClient(t *testing.T) {
 	}
 	if tools[0].Name != "injected-tool" {
 		t.Errorf("tools[0].Name = %q, want %q", tools[0].Name, "injected-tool")
+	}
+}
+
+// routingHandler returns an http.HandlerFunc that routes on the JSON-RPC method.
+// initExtra is called (if non-nil) after setting the session header, before writing
+// the initialize response — useful for side effects like incrementing a counter.
+func routingHandler(t *testing.T, initExtra func(), toolCallHandler http.HandlerFunc) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request body", http.StatusBadRequest)
+			return
+		}
+		method, _ := req["method"].(string)
+		switch method {
+		case "initialize":
+			if initExtra != nil {
+				initExtra()
+			}
+			w.Header().Set("Mcp-Session-Id", "test-session")
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": "2024-11-05"}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusOK)
+		default:
+			toolCallHandler(w, r)
+		}
+	}
+}
+
+func successToolCallHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"result": map[string]any{
+			"content": []map[string]any{{"type": "text", "text": "ok"}},
+			"isError": false,
+		},
+	})
+}
+
+func TestEnsureSession_CachesSessionID(t *testing.T) {
+	var initCount atomic.Int32
+
+	srv := makeServer(t, routingHandler(t, func() { initCount.Add(1) }, successToolCallHandler))
+
+	c := NewClient(srv.URL)
+
+	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+		t.Fatalf("first CallTool: %v", err)
+	}
+	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+		t.Fatalf("second CallTool: %v", err)
+	}
+
+	if got := initCount.Load(); got != 1 {
+		t.Errorf("initialize called %d times, want 1 (session should be cached)", got)
+	}
+}
+
+func TestEnsureSession_RetriesOn401(t *testing.T) {
+	var initCount atomic.Int32
+	var callCount atomic.Int32
+
+	srv := makeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request body", http.StatusBadRequest)
+			return
+		}
+		method, _ := req["method"].(string)
+		switch method {
+		case "initialize":
+			n := initCount.Add(1)
+			w.Header().Set("Mcp-Session-Id", "session-"+string(rune('0'+n)))
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": "2024-11-05"}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusOK)
+		default:
+			n := callCount.Add(1)
+			if n == 1 {
+				// First tools/call simulates an expired session.
+				http.Error(w, "session expired", http.StatusUnauthorized)
+				return
+			}
+			successToolCallHandler(w, r)
+		}
+	})
+
+	c := NewClient(srv.URL)
+	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+		t.Fatalf("CallTool: unexpected error: %v", err)
+	}
+
+	if got := initCount.Load(); got != 2 {
+		t.Errorf("initialize called %d times, want 2 (initial + retry after 401)", got)
+	}
+}
+
+func TestEnsureSession_ConcurrentCalls(t *testing.T) {
+	var initCount atomic.Int32
+
+	srv := makeServer(t, routingHandler(t, func() { initCount.Add(1) }, successToolCallHandler))
+
+	c := NewClient(srv.URL)
+
+	const goroutines = 5
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+				t.Errorf("CallTool: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// With double-checked locking, at most N goroutines may each call initialize
+	// once if they all race before the session is stored. Any value in [1, 5] is
+	// correct; the important thing is that there are no data races (verified by
+	// the race detector when tests run with -race).
+	if got := initCount.Load(); got < 1 || got > goroutines {
+		t.Errorf("initialize called %d times, want between 1 and %d", got, goroutines)
 	}
 }

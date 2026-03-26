@@ -7,10 +7,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -52,6 +54,14 @@ func (e *jsonrpcError) Error() string {
 	return fmt.Sprintf("json-rpc error %d: %s", e.Code, e.Message)
 }
 
+type httpStatusError struct {
+	StatusCode int
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("mcp server returned status %d", e.StatusCode)
+}
+
 type toolsListResult struct {
 	Tools []toolWire `json:"tools"`
 }
@@ -76,6 +86,8 @@ type contentItem struct {
 type Client struct {
 	serverURL  string
 	httpClient *http.Client
+	mu         sync.Mutex
+	sessionID  string
 }
 
 // ClientOption configures a Client. Options are applied sequentially after
@@ -193,14 +205,70 @@ func (c *Client) initialize(ctx context.Context) (string, error) {
 	return sessionID, nil
 }
 
+// ensureSession returns the cached session ID, initializing if necessary.
+// Uses double-checked locking so that the HTTP round-trip to initialize is not
+// done under the mutex — concurrent callers unblock immediately once any one
+// of them stores a valid session.
+func (c *Client) ensureSession(ctx context.Context) (string, error) {
+	c.mu.Lock()
+	if c.sessionID != "" {
+		sid := c.sessionID
+		c.mu.Unlock()
+		return sid, nil
+	}
+	c.mu.Unlock()
+
+	sid, err := c.initialize(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	c.mu.Lock()
+	if c.sessionID != "" {
+		// Another goroutine stored a valid session while we were initializing.
+		sid = c.sessionID
+	} else {
+		c.sessionID = sid
+	}
+	c.mu.Unlock()
+	return sid, nil
+}
+
+// resetSession clears the cached session ID so the next call re-initializes.
+func (c *Client) resetSession() {
+	c.mu.Lock()
+	c.sessionID = ""
+	c.mu.Unlock()
+}
+
+// callWithSession sends body to the server, automatically handling session
+// initialization and a single re-init retry on HTTP 401.
+func (c *Client) callWithSession(ctx context.Context, body []byte) (*http.Response, error) {
+	sid, err := c.ensureSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.postRaw(ctx, body, sid)
+	if err != nil {
+		var statusErr *httpStatusError
+		if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized {
+			// Session expired — re-initialize once and retry.
+			c.resetSession()
+			sid, err = c.ensureSession(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return c.postRaw(ctx, body, sid)
+		}
+		return nil, err
+	}
+	return resp, nil
+}
+
 // DiscoverTools calls the MCP server's tool list endpoint and returns all
 // available tools. Used during server registration to populate mcp_tools.
 func (c *Client) DiscoverTools(ctx context.Context) ([]Tool, error) {
-	sessionID, err := c.initialize(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("initialize: %w", err)
-	}
-
 	body, err := json.Marshal(jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      2,
@@ -211,7 +279,7 @@ func (c *Client) DiscoverTools(ctx context.Context) ([]Tool, error) {
 		return nil, fmt.Errorf("marshal tools/list request: %w", err)
 	}
 
-	resp, err := c.postRaw(ctx, body, sessionID)
+	resp, err := c.callWithSession(ctx, body)
 	if err != nil {
 		return nil, fmt.Errorf("post tools/list: %w", err)
 	}
@@ -244,11 +312,6 @@ func (c *Client) DiscoverTools(ctx context.Context) ([]Tool, error) {
 // CallTool invokes a named tool on the MCP server with the given input.
 // The input must be a JSON-serialisable value matching the tool's inputSchema.
 func (c *Client) CallTool(ctx context.Context, name string, input map[string]any) (ToolResult, error) {
-	sessionID, err := c.initialize(ctx)
-	if err != nil {
-		return ToolResult{}, fmt.Errorf("initialize: %w", err)
-	}
-
 	body, err := json.Marshal(jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      2,
@@ -265,7 +328,7 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 		return ToolResult{}, fmt.Errorf("marshal tools/call request: %w", err)
 	}
 
-	resp, err := c.postRaw(ctx, body, sessionID)
+	resp, err := c.callWithSession(ctx, body)
 	if err != nil {
 		return ToolResult{}, fmt.Errorf("post tools/call: %w", err)
 	}
@@ -342,7 +405,7 @@ func (c *Client) postRaw(ctx context.Context, body []byte, sessionID string) (*h
 		// Drain and close the body so the connection can be reused.
 		io.Copy(io.Discard, resp.Body) //nolint:errcheck
 		resp.Body.Close()
-		return nil, fmt.Errorf("mcp server returned status %d", resp.StatusCode)
+		return nil, &httpStatusError{StatusCode: resp.StatusCode}
 	}
 
 	return resp, nil

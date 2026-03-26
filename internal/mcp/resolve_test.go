@@ -199,6 +199,47 @@ func TestResolveForPolicy_ToolNotFound(t *testing.T) {
 	}
 }
 
+func TestResolveForPolicy_SharedClient(t *testing.T) {
+	reg, _ := newTestRegistry(t)
+
+	tools := []map[string]any{
+		{"name": "tool_a", "description": "tool a", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "tool_b", "description": "tool b", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "tool_c", "description": "tool c", "inputSchema": map[string]any{"type": "object"}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServer: %v", err)
+	}
+
+	p := &model.ParsedPolicy{
+		Capabilities: model.CapabilitiesConfig{
+			Tools: []model.ToolCapability{
+				{Tool: "my-server.tool_a", Approval: model.ApprovalModeNone},
+				{Tool: "my-server.tool_b", Approval: model.ApprovalModeNone},
+				{Tool: "my-server.tool_c", Approval: model.ApprovalModeNone},
+			},
+		},
+	}
+
+	result, err := reg.ResolveForPolicy(context.Background(), p)
+	if err != nil {
+		t.Fatalf("ResolveForPolicy: %v", err)
+	}
+
+	if len(result) != 3 {
+		t.Fatalf("len(result) = %d, want 3", len(result))
+	}
+
+	if result[0].Client != result[1].Client {
+		t.Errorf("result[0].Client and result[1].Client are different pointers; want same client for tools on the same server")
+	}
+	if result[0].Client != result[2].Client {
+		t.Errorf("result[0].Client and result[2].Client are different pointers; want same client for tools on the same server")
+	}
+}
+
 func TestResolveForPolicy_ToolsOrdered(t *testing.T) {
 	reg, _ := newTestRegistry(t)
 
