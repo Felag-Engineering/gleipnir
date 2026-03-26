@@ -1,7 +1,9 @@
 import { useState, type FormEvent } from 'react'
 import { Modal } from '@/components/Modal'
+import { Button } from '@/components/Button'
 import type { ApiError } from '@/api/fetch'
 import styles from './AddServerModal.module.css'
+import alertStyles from '@/styles/alerts.module.css'
 
 interface Props {
   onClose: () => void
@@ -24,13 +26,13 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
 
   const footer = (
     <>
-      <button type="button" className={styles.cancelBtn} onClick={onClose} disabled={isPending}>
+      <Button type="button" variant="ghost" onClick={onClose} disabled={isPending}>
         Cancel
-      </button>
-      <button
+      </Button>
+      <Button
         form="add-server-form"
         type="submit"
-        className={styles.submitBtn}
+        variant="primary"
         disabled={isPending || !name.trim() || !url.trim()}
       >
         {isPending ? (
@@ -41,7 +43,7 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
         ) : (
           'Add MCP server'
         )}
-      </button>
+      </Button>
     </>
   )
 
@@ -74,12 +76,12 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
           />
         </div>
         {error && (
-          <div className={styles.errorMsg} role="alert">
+          <div className={alertStyles.alertError} role="alert">
             {error.message}
           </div>
         )}
         {discoveryWarning && (
-          <div className={styles.warningMsg} role="status">
+          <div className={alertStyles.alertWarning} role="status">
             Server registered, but tool discovery failed: {discoveryWarning}. You can retry with the Discover button.
           </div>
         )}

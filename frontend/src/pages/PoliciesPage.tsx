@@ -5,8 +5,11 @@ import { EmptyState } from '../components/EmptyState'
 import { PolicyList } from '../components/PolicyList'
 import { SkeletonBlock } from '../components/SkeletonBlock'
 import { TriggerRunModal } from '../components/TriggerRunModal/TriggerRunModal'
+import { PageHeader } from '../components/PageHeader'
+import { Button } from '../components/Button'
 import { usePolicies } from '../hooks/usePolicies'
 import { queryKeys } from '../hooks/queryKeys'
+import buttonStyles from '../components/Button/Button.module.css'
 import styles from './PoliciesPage.module.css'
 
 export default function PoliciesPage() {
@@ -31,12 +34,12 @@ export default function PoliciesPage() {
       return (
         <div className={styles.errorState}>
           <span>Failed to load policies.</span>
-          <button
-            className={styles.retryBtn}
+          <Button
+            variant="ghost"
             onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })}
           >
             Retry
-          </button>
+          </Button>
         </div>
       )
     }
@@ -61,12 +64,11 @@ export default function PoliciesPage() {
 
   return (
     <div className={styles.page}>
-      <div className={styles.header}>
-        <h1 className={styles.title}>Policies</h1>
-        <Link to="/policies/new" className={styles.newPolicyBtn}>
+      <PageHeader title="Policies">
+        <Link to="/policies/new" className={`${buttonStyles.button} ${buttonStyles.primary}`}>
           New Policy
         </Link>
-      </div>
+      </PageHeader>
       {renderContent()}
       {triggerTarget && (
         <TriggerRunModal

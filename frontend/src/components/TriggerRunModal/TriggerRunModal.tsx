@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Modal } from '@/components/Modal/Modal'
+import { Button } from '@/components/Button'
 import { useTriggerPolicy } from '@/hooks/useTriggerPolicy'
 import styles from './TriggerRunModal.module.css'
 
@@ -28,12 +29,12 @@ export function TriggerRunModal({ policyId, policyName, onClose, onSuccess }: Tr
 
   const footer = (
     <>
-      <button type="button" className={styles.cancelBtn} onClick={onClose} disabled={isPending}>
+      <Button type="button" variant="ghost" onClick={onClose} disabled={isPending}>
         Cancel
-      </button>
-      <button type="submit" form="trigger-run-form" className={styles.submitBtn} disabled={isPending}>
+      </Button>
+      <Button type="submit" form="trigger-run-form" variant="primary" disabled={isPending}>
         {isPending ? 'Starting…' : 'Run now'}
-      </button>
+      </Button>
     </>
   )
 

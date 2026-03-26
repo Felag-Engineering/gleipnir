@@ -21,32 +21,18 @@
 }
 
 .table {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  overflow: hidden;
+  composes: table from '../../styles/table.module.css';
 }
 
 .headerRow {
-  display: grid;
+  composes: headerRow from '../../styles/table.module.css';
   grid-template-columns: 1fr auto auto 32px;
-  gap: var(--space-4);
-  align-items: center;
-  padding: var(--space-2) var(--space-4);
-  font-size: var(--text-xs);
-  color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  border-bottom: 1px solid var(--border-subtle);
 }
 
 .row {
-  display: grid;
+  composes: row from '../../styles/table.module.css';
   grid-template-columns: 1fr 32px;
   gap: var(--space-2);
-  align-items: center;
-  border-bottom: 1px solid var(--border-subtle);
-  transition: background var(--duration-fast) var(--ease-out);
 }
 
 .rowLink {

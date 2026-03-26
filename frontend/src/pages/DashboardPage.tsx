@@ -6,11 +6,14 @@ import { StatusBoard } from '../components/dashboard/StatusBoard'
 import { OnboardingSteps } from '../components/dashboard/OnboardingSteps'
 import { StatsBar } from '../components/dashboard/StatsBar'
 import { TriggerRunModal } from '../components/TriggerRunModal/TriggerRunModal'
+import { PageHeader } from '../components/PageHeader'
+import { Button } from '../components/Button'
 import { usePolicies } from '../hooks/usePolicies'
 import { useStatsData } from '../hooks/useStatsData'
 import { useRuns } from '../hooks/useRuns'
 import { useMcpServers } from '../hooks/useMcpServers'
 import { queryKeys } from '../hooks/queryKeys'
+import buttonStyles from '../components/Button/Button.module.css'
 import styles from './DashboardPage.module.css'
 
 export default function DashboardPage() {
@@ -32,12 +35,12 @@ export default function DashboardPage() {
       return (
         <div className={styles.errorState}>
           <span>Failed to load policies.</span>
-          <button
-            className={styles.retryBtn}
+          <Button
+            variant="ghost"
             onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })}
           >
             Retry
-          </button>
+          </Button>
         </div>
       )
     }
@@ -63,12 +66,11 @@ export default function DashboardPage() {
 
   return (
     <div className={styles.page}>
-      <div className={styles.header}>
-        <h1 className={styles.title}>Dashboard</h1>
-        <Link to="/policies/new" className={styles.newPolicyBtn}>
+      <PageHeader title="Dashboard">
+        <Link to="/policies/new" className={`${buttonStyles.button} ${buttonStyles.primary}`}>
           New Policy
         </Link>
-      </div>
+      </PageHeader>
       <StatsBar
         activeRuns={activeRuns}
         pendingApprovals={pendingApprovals}

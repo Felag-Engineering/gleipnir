@@ -16,6 +16,8 @@ import { UnassignedBanner } from '@/components/MCPPage/UnassignedBanner'
 import { ServerCard } from '@/components/MCPPage/ServerCard'
 import { AddServerModal } from '@/components/MCPPage/AddServerModal'
 import { DeleteServerModal } from '@/components/MCPPage/DeleteServerModal'
+import { PageHeader } from '@/components/PageHeader'
+import { Button } from '@/components/Button'
 import styles from './MCPPage.module.css'
 
 interface DeleteTarget {
@@ -125,11 +127,9 @@ export default function MCPPage() {
 
   return (
     <div className={styles.page}>
-      <div className={styles.header}>
-        <h1 className={styles.title}>Tools</h1>
-        <button
-          type="button"
-          className={styles.addBtn}
+      <PageHeader title="Tools">
+        <Button
+          variant="primary"
           onClick={() => {
             setAddDiscoveryWarning(null)
             addMutation.reset()
@@ -137,8 +137,8 @@ export default function MCPPage() {
           }}
         >
           Add MCP server
-        </button>
-      </div>
+        </Button>
+      </PageHeader>
 
       <ErrorBoundary>
         <MCPStatsBar

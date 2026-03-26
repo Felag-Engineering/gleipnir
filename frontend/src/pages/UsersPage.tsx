@@ -5,6 +5,8 @@ import { useUpdateUser } from '@/hooks/useUpdateUser'
 import type { ApiUser } from '@/api/types'
 import type { ApiError } from '@/api/fetch'
 import { SkeletonBlock } from '@/components/SkeletonBlock'
+import { PageHeader } from '@/components/PageHeader'
+import { Button } from '@/components/Button'
 import styles from './UsersPage.module.css'
 
 const ALL_ROLES = ['admin', 'operator', 'approver', 'auditor'] as const
@@ -136,17 +138,17 @@ function CreateUserModal({ onClose, onSubmit, isPending, error }: CreateUserModa
         </form>
 
         <div className={styles.modalActions}>
-          <button type="button" className={styles.cancelBtn} onClick={onClose}>
+          <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="submit"
             form="create-user-form"
-            className={styles.submitBtn}
+            variant="primary"
             disabled={isPending}
           >
             {isPending ? 'Creating…' : 'Create user'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -202,19 +204,17 @@ export default function UsersPage() {
 
   return (
     <div className={styles.page}>
-      <div className={styles.header}>
-        <h1 className={styles.title}>Users</h1>
-        <button
-          type="button"
-          className={styles.addBtn}
+      <PageHeader title="Users">
+        <Button
+          variant="primary"
           onClick={() => {
             createMutation.reset()
             setShowCreateModal(true)
           }}
         >
           Create user
-        </button>
-      </div>
+        </Button>
+      </PageHeader>
 
       {status === 'pending' && (
         <div className={styles.skeletonList}>

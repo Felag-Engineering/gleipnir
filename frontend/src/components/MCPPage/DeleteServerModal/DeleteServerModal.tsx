@@ -1,6 +1,8 @@
 import { Modal } from '@/components/Modal'
+import { Button } from '@/components/Button'
 import type { ApiError } from '@/api/fetch'
 import styles from './DeleteServerModal.module.css'
+import alertStyles from '@/styles/alerts.module.css'
 
 interface Props {
   serverName: string
@@ -14,12 +16,12 @@ interface Props {
 export function DeleteServerModal({ serverName, toolCount, onClose, onConfirm, isPending, error }: Props) {
   const footer = (
     <>
-      <button type="button" className={styles.cancelBtn} onClick={onClose} disabled={isPending}>
+      <Button type="button" variant="ghost" onClick={onClose} disabled={isPending}>
         Cancel
-      </button>
-      <button
+      </Button>
+      <Button
         type="button"
-        className={styles.deleteBtn}
+        variant="danger"
         onClick={onConfirm}
         disabled={isPending}
       >
@@ -31,7 +33,7 @@ export function DeleteServerModal({ serverName, toolCount, onClose, onConfirm, i
         ) : (
           'Delete MCP server'
         )}
-      </button>
+      </Button>
     </>
   )
 
@@ -48,7 +50,7 @@ export function DeleteServerModal({ serverName, toolCount, onClose, onConfirm, i
           Any policies referencing tools from this server will fail to run.
         </p>
         {error && (
-          <div className={styles.errorMsg} role="alert">
+          <div className={alertStyles.alertError} role="alert">
             {error.detail ?? error.message}
           </div>
         )}

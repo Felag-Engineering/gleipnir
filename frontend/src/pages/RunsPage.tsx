@@ -10,6 +10,8 @@ import type { RunStatus, TriggerType } from '@/components/dashboard/types'
 import { KNOWN_STATUSES, KNOWN_TRIGGERS } from '@/constants/status'
 import { fmtRel, fmtTok, fmtDur, fmtAbs } from '@/components/dashboard/styles'
 import type { ApiRun } from '@/api/types'
+import { PageHeader } from '@/components/PageHeader'
+import { Button } from '@/components/Button'
 import styles from './RunsPage.module.css'
 
 const PAGE_SIZE = 25
@@ -111,12 +113,12 @@ export default function RunsPage() {
       return (
         <div className={styles.errorState} role="alert">
           <span>Failed to load runs.</span>
-          <button
-            className={styles.retryBtn}
+          <Button
+            variant="ghost"
             onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })}
           >
             Retry
-          </button>
+          </Button>
         </div>
       )
     }
@@ -184,9 +186,7 @@ export default function RunsPage() {
 
   return (
     <div className={styles.page}>
-      <div className={styles.header}>
-        <h1 className={styles.title}>Runs</h1>
-      </div>
+      <PageHeader title="Runs" />
 
       <div className={styles.filters}>
         <select
@@ -239,8 +239,8 @@ export default function RunsPage() {
             Showing {firstItem}–{lastItem} of {total} runs
           </span>
           <div>
-            <button
-              className={styles.pageBtn}
+            <Button
+              variant="ghost"
               disabled={page <= 1}
               onClick={() =>
                 setSearchParams((prev) => {
@@ -251,9 +251,9 @@ export default function RunsPage() {
               }
             >
               Previous
-            </button>{' '}
-            <button
-              className={styles.pageBtn}
+            </Button>{' '}
+            <Button
+              variant="ghost"
               disabled={page >= totalPages}
               onClick={() =>
                 setSearchParams((prev) => {
@@ -264,7 +264,7 @@ export default function RunsPage() {
               }
             >
               Next
-            </button>
+            </Button>
           </div>
         </div>
       )}
