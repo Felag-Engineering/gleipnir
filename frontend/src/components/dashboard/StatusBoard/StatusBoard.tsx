@@ -4,7 +4,7 @@ import { StatusBadge } from '../StatusBadge'
 import type { RunStatus } from '../types'
 import { TriggerChip } from '../TriggerChip'
 import type { TriggerType } from '../types'
-import { fmtRel } from '../styles'
+import { formatTimeAgo } from '@/utils/format'
 import styles from './StatusBoard.module.css'
 
 interface StatusBoardProps {
@@ -53,7 +53,7 @@ export function StatusBoard({ policies, onTrigger: _onTrigger }: StatusBoardProp
                 Review →
               </Link>
             ) : policy.latest_run ? (
-              <span className={styles.lastRun}>{fmtRel(policy.latest_run.started_at)}</span>
+              <span className={styles.lastRun}>{formatTimeAgo(policy.latest_run.started_at)}</span>
             ) : (
               <span />
             )}

@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import type { ApiRun } from '@/api/types'
 import { StatusBadge } from '@/components/dashboard/StatusBadge/StatusBadge'
 import { TriggerChip } from '@/components/dashboard/TriggerChip/TriggerChip'
-import type { RunStatus, TriggerType } from '@/components/dashboard/types'
+import type { RunStatus, TriggerType } from '@/constants/status'
 import styles from './RunHeader.module.css'
 
 interface Props {

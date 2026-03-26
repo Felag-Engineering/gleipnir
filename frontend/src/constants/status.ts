@@ -15,3 +15,10 @@ export const KNOWN_TRIGGERS: Set<string> = new Set([
 export function isRunStatus(s: string): s is RunStatus {
   return KNOWN_STATUSES.has(s)
 }
+
+export function isTriggerType(s: string): s is TriggerType {
+  return KNOWN_TRIGGERS.has(s)
+}
+
+export const CAPABILITY_ROLES = ['tool', 'feedback'] as const
+export type CapabilityRole = typeof CAPABILITY_ROLES[number]

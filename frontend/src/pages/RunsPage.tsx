@@ -6,22 +6,14 @@ import { queryKeys } from '@/hooks/queryKeys'
 import SkeletonBlock from '@/components/SkeletonBlock/SkeletonBlock'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'
 import { TriggerChip } from '@/components/dashboard/TriggerChip'
-import type { RunStatus, TriggerType } from '@/components/dashboard/types'
+import type { RunStatus, TriggerType } from '@/constants/status'
 import { KNOWN_STATUSES, KNOWN_TRIGGERS } from '@/constants/status'
-import { fmtRel, fmtTok, fmtDur, fmtAbs } from '@/components/dashboard/styles'
-import type { ApiRun } from '@/api/types'
+import { formatTimeAgo, formatTokens, formatDuration, formatTimestamp, computeRunDuration } from '@/utils/format'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
 import styles from './RunsPage.module.css'
 
 const PAGE_SIZE = 25
-
-function computeDuration(run: ApiRun): number | null {
-  if (!run.completed_at) return null
-  return Math.floor(
-    (new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()) / 1000,
-  )
-}
 
 function rangeToSince(range: string): string | undefined {
   const now = Date.now()
@@ -170,11 +162,11 @@ export default function RunsPage() {
                 <TriggerChip type={run.trigger_type as TriggerType} />
               )}
             </span>
-            <span className={styles.mono} title={fmtAbs(run.started_at)}>
-              {fmtRel(run.started_at)}
+            <span className={styles.mono} title={formatTimestamp(run.started_at)}>
+              {formatTimeAgo(run.started_at)}
             </span>
-            <span className={styles.mono}>{fmtDur(computeDuration(run))}</span>
-            <span className={styles.tokensCell}>{fmtTok(run.token_cost)}</span>
+            <span className={styles.mono}>{formatDuration(computeRunDuration(run))}</span>
+            <span className={styles.tokensCell}>{formatTokens(run.token_cost)}</span>
             <span className={styles.errorCell} title={run.error ?? undefined}>
               {run.error ?? ''}
             </span>

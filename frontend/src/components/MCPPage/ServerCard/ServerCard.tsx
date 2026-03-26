@@ -2,7 +2,7 @@ import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 import { HealthIndicator } from '@/components/MCPPage/HealthIndicator'
 import type { HealthStatus } from '@/components/MCPPage/HealthIndicator'
 import { ToolList } from '@/components/MCPPage/ToolList'
-import { fmtRel } from '@/components/dashboard/styles'
+import { formatTimeAgo } from '@/utils/format'
 import styles from './ServerCard.module.css'
 
 interface Props {
@@ -50,7 +50,7 @@ export function ServerCard({
           <div className={styles.url}>{server.url}</div>
           {server.last_discovered_at && (
             <div className={styles.meta}>
-              Discovered {fmtRel(server.last_discovered_at)}
+              Discovered {formatTimeAgo(server.last_discovered_at)}
             </div>
           )}
         </div>

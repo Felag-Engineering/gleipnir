@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { ApprovalDef } from './types';
 import { TriggerChip } from './TriggerChip';
 import { ReasoningTrace } from './ReasoningTrace';
-import { fmtAbs, timeLeft } from './styles';
+import { formatTimestamp, formatCountdown } from '@/utils/format';
 import styles from './ApprovalCard.module.css';
 
 interface ApprovalCardProps {
@@ -14,7 +14,7 @@ export function ApprovalCard({ def, onDecide }: ApprovalCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [deciding, setDeciding] = useState<'approve' | 'reject' | null>(null);
   const [note, setNote] = useState('');
-  const tl = timeLeft(def.expiresAt);
+  const tl = formatCountdown(def.expiresAt);
 
   const confirm = (decision: 'approve' | 'reject') => {
     setDeciding(null);
@@ -109,7 +109,7 @@ export function ApprovalCard({ def, onDecide }: ApprovalCardProps) {
       {!deciding && (
         <div className={styles.actionRow}>
           <div className={styles.actionInfo}>
-            Started {fmtAbs(def.startedAt)} · run paused, waiting for your decision
+            Started {formatTimestamp(def.startedAt)} · run paused, waiting for your decision
           </div>
           <button onClick={() => setDeciding('reject')} className={styles.rejectBtn}>Reject</button>
           <button onClick={() => setDeciding('approve')} className={styles.approveBtn}>Approve</button>

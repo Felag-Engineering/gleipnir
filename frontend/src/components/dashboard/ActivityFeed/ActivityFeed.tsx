@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import type { ApiRun } from '@/api/types'
 import { StatusBadge } from '../StatusBadge'
 import type { RunStatus } from '../types'
-import { fmtRel } from '../styles'
+import { formatTimeAgo } from '@/utils/format'
 import { SkeletonBlock } from '@/components/SkeletonBlock'
 import styles from './ActivityFeed.module.css'
 
@@ -44,7 +44,7 @@ export function ActivityFeed({ runs, isLoading }: ActivityFeedProps) {
               {run.policy_name || run.policy_id}
             </span>
             <StatusBadge status={run.status as RunStatus} />
-            <span className={styles.timestamp}>{fmtRel(run.created_at)}</span>
+            <span className={styles.timestamp}>{formatTimeAgo(run.created_at)}</span>
           </Link>
         </div>
       ))}
