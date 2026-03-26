@@ -2,11 +2,11 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { fn } from 'storybook/test'
 import { MemoryRouter } from 'react-router-dom'
 import '@/tokens.css'
-import type { ApiPolicyListItem } from '../../../api/types'
+import type { ApiPolicyListItem } from '../../api/types'
 import { PolicyList } from './PolicyList'
 
 const meta: Meta<typeof PolicyList> = {
-  title: 'Dashboard/PolicyList',
+  title: 'Components/PolicyList',
   component: PolicyList,
   decorators: [(Story) => (<MemoryRouter><Story /></MemoryRouter>)],
   args: {
@@ -135,21 +135,40 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
   },
 ]
 
-export const AllStates: Story = {
-  args: { policies: FIXTURE_POLICIES },
-}
-
-export const NoRun: Story = {
+export const Flat: Story = {
   args: {
-    policies: FIXTURE_POLICIES.filter((p) => p.latest_run === null),
+    policies: FIXTURE_POLICIES,
+    groupByFolder: false,
   },
 }
 
-export const ManyPolicies: Story = {
+export const GroupedByFolder: Story = {
   args: {
-    policies: [
-      ...FIXTURE_POLICIES,
-      ...FIXTURE_POLICIES.map((p) => ({ ...p, id: `${p.id}-b`, name: `${p.name} (copy)` })),
-    ],
+    policies: FIXTURE_POLICIES,
+    groupByFolder: true,
+  },
+}
+
+export const NoTriggerButton: Story = {
+  args: {
+    policies: FIXTURE_POLICIES,
+    onTrigger: undefined,
+  },
+}
+
+export const CustomRunCell: Story = {
+  args: {
+    policies: FIXTURE_POLICIES,
+    renderRunCell: (policy) => (
+      <span style={{ fontFamily: 'monospace', fontSize: '12px' }}>
+        {policy.latest_run ? `#${policy.latest_run.id.slice(-4)}` : '—'}
+      </span>
+    ),
+  },
+}
+
+export const Empty: Story = {
+  args: {
+    policies: [],
   },
 }

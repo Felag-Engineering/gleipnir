@@ -7,16 +7,12 @@ import SkeletonBlock from '@/components/SkeletonBlock/SkeletonBlock'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'
 import { TriggerChip } from '@/components/dashboard/TriggerChip'
 import type { RunStatus, TriggerType } from '@/components/dashboard/types'
+import { KNOWN_STATUSES, KNOWN_TRIGGERS } from '@/constants/status'
 import { fmtRel, fmtTok, fmtDur, fmtAbs } from '@/components/dashboard/styles'
 import type { ApiRun } from '@/api/types'
 import styles from './RunsPage.module.css'
 
 const PAGE_SIZE = 25
-
-const KNOWN_STATUSES = new Set<string>([
-  'complete', 'running', 'waiting_for_approval', 'failed', 'interrupted', 'pending',
-])
-const KNOWN_TRIGGERS = new Set<string>(['webhook', 'cron', 'poll', 'manual'])
 
 function computeDuration(run: ApiRun): number | null {
   if (!run.completed_at) return null

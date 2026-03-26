@@ -1,5 +1,5 @@
-export type RunStatus = 'complete' | 'running' | 'waiting_for_approval' | 'failed' | 'interrupted' | 'pending';
-export type TriggerType = 'webhook' | 'manual' | 'scheduled';
+import type { RunStatus, TriggerType } from '@/constants/status'
+export type { RunStatus, TriggerType }
 
 export interface ReasoningStep {
   type: 'thought' | 'tool_call' | 'tool_result';
