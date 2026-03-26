@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useRuns } from '@/hooks/useRuns'
 import { usePolicies } from '@/hooks/usePolicies'
 import { queryKeys } from '@/hooks/queryKeys'
-import SkeletonBlock from '@/components/SkeletonBlock/SkeletonBlock'
+import { QueryBoundary } from '@/components/QueryBoundary'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'
 import { TriggerChip } from '@/components/dashboard/TriggerChip'
 import type { RunStatus, TriggerType } from '@/constants/status'
@@ -88,94 +88,6 @@ export default function RunsPage() {
     return order === 'asc' ? ' ▲' : ' ▼'
   }
 
-  function renderContent() {
-    if (fetchStatus === 'pending') {
-      return (
-        <div className={styles.skeletonList}>
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={48} />
-        </div>
-      )
-    }
-
-    if (fetchStatus === 'error') {
-      return (
-        <div className={styles.errorState} role="alert">
-          <span>Failed to load runs.</span>
-          <Button
-            variant="ghost"
-            onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })}
-          >
-            Retry
-          </Button>
-        </div>
-      )
-    }
-
-    if (runs.length === 0) {
-      return (
-        <div className={styles.errorState}>
-          <span>No runs found.</span>
-          <span>Try adjusting the filters, or trigger a policy to create a run.</span>
-        </div>
-      )
-    }
-
-    return (
-      <div className={styles.table}>
-        <div className={styles.headerRow}>
-          <span>Run ID</span>
-          <span>Policy</span>
-          <span>Status</span>
-          <span>Trigger</span>
-          <span
-            className={`${styles.sortable} ${sort === 'started' ? styles.sortActive : ''}`}
-            onClick={() => toggleSort('started')}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => e.key === 'Enter' && toggleSort('started')}
-          >
-            Started{sortIndicator('started')}
-          </span>
-          <span>Duration</span>
-          <span>Tokens</span>
-          <span>Error</span>
-        </div>
-        {runs.map((run) => (
-          <Link key={run.id} to={`/runs/${run.id}`} className={styles.row}>
-            <span className={styles.runId} title={run.id}>
-              {run.id.slice(0, 8)}
-            </span>
-            <span className={styles.policyName} title={run.policy_name ?? run.policy_id}>
-              {run.policy_name || run.policy_id}
-            </span>
-            <span>
-              {KNOWN_STATUSES.has(run.status) && (
-                <StatusBadge status={run.status as RunStatus} />
-              )}
-            </span>
-            <span>
-              {KNOWN_TRIGGERS.has(run.trigger_type) && (
-                <TriggerChip type={run.trigger_type as TriggerType} />
-              )}
-            </span>
-            <span className={styles.mono} title={formatTimestamp(run.started_at)}>
-              {formatTimeAgo(run.started_at)}
-            </span>
-            <span className={styles.mono}>{formatDuration(computeRunDuration(run))}</span>
-            <span className={styles.tokensCell}>{formatTokens(run.token_cost)}</span>
-            <span className={styles.errorCell} title={run.error ?? undefined}>
-              {run.error ?? ''}
-            </span>
-          </Link>
-        ))}
-      </div>
-    )
-  }
-
   return (
     <div className={styles.page}>
       <PageHeader title="Runs" />
@@ -223,7 +135,67 @@ export default function RunsPage() {
         </select>
       </div>
 
-      {renderContent()}
+      <QueryBoundary
+        status={fetchStatus}
+        isEmpty={runs.length === 0}
+        errorMessage="Failed to load runs."
+        onRetry={() => queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })}
+        emptyState={
+          <div className={styles.emptyRuns}>
+            <span>No runs found.</span>
+            <span>Try adjusting the filters, or trigger a policy to create a run.</span>
+          </div>
+        }
+      >
+        <div className={styles.table}>
+          <div className={styles.headerRow}>
+            <span>Run ID</span>
+            <span>Policy</span>
+            <span>Status</span>
+            <span>Trigger</span>
+            <span
+              className={`${styles.sortable} ${sort === 'started' ? styles.sortActive : ''}`}
+              onClick={() => toggleSort('started')}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => e.key === 'Enter' && toggleSort('started')}
+            >
+              Started{sortIndicator('started')}
+            </span>
+            <span>Duration</span>
+            <span>Tokens</span>
+            <span>Error</span>
+          </div>
+          {runs.map((run) => (
+            <Link key={run.id} to={`/runs/${run.id}`} className={styles.row}>
+              <span className={styles.runId} title={run.id}>
+                {run.id.slice(0, 8)}
+              </span>
+              <span className={styles.policyName} title={run.policy_name ?? run.policy_id}>
+                {run.policy_name || run.policy_id}
+              </span>
+              <span>
+                {KNOWN_STATUSES.has(run.status) && (
+                  <StatusBadge status={run.status as RunStatus} />
+                )}
+              </span>
+              <span>
+                {KNOWN_TRIGGERS.has(run.trigger_type) && (
+                  <TriggerChip type={run.trigger_type as TriggerType} />
+                )}
+              </span>
+              <span className={styles.mono} title={formatTimestamp(run.started_at)}>
+                {formatTimeAgo(run.started_at)}
+              </span>
+              <span className={styles.mono}>{formatDuration(computeRunDuration(run))}</span>
+              <span className={styles.tokensCell}>{formatTokens(run.token_cost)}</span>
+              <span className={styles.errorCell} title={run.error ?? undefined}>
+                {run.error ?? ''}
+              </span>
+            </Link>
+          ))}
+        </div>
+      </QueryBoundary>
 
       {fetchStatus === 'success' && total > 0 && (
         <div className={styles.pagination}>

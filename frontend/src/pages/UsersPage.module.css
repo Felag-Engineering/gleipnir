@@ -158,14 +158,7 @@
   border-color: var(--color-red);
 }
 
-/* Empty and error states */
-
-.errorState {
-  padding: var(--space-8) 0;
-  text-align: center;
-  color: var(--text-second);
-  font-size: var(--text-sm);
-}
+/* Empty state */
 
 .emptyState {
   display: flex;
@@ -289,10 +282,3 @@
   gap: var(--space-2);
 }
 
-/* Skeleton */
-
-.skeletonList {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}

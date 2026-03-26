@@ -4,7 +4,7 @@ import { useCreateUser } from '@/hooks/useCreateUser'
 import { useUpdateUser } from '@/hooks/useUpdateUser'
 import type { ApiUser } from '@/api/types'
 import type { ApiError } from '@/api/fetch'
-import { SkeletonBlock } from '@/components/SkeletonBlock'
+import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
 import styles from './UsersPage.module.css'
@@ -216,26 +216,18 @@ export default function UsersPage() {
         </Button>
       </PageHeader>
 
-      {status === 'pending' && (
-        <div className={styles.skeletonList}>
-          <SkeletonBlock height={48} borderRadius={8} />
-          <SkeletonBlock height={48} borderRadius={8} />
-          <SkeletonBlock height={48} borderRadius={8} />
-        </div>
-      )}
-
-      {status === 'error' && (
-        <div className={styles.errorState}>Failed to load users.</div>
-      )}
-
-      {status === 'success' && users.length === 0 && (
-        <div className={styles.emptyState}>
-          <p className={styles.emptyHeadline}>No users</p>
-          <p className={styles.emptySubtext}>Create a user to get started.</p>
-        </div>
-      )}
-
-      {status === 'success' && users.length > 0 && (
+      <QueryBoundary
+        status={status}
+        isEmpty={(users ?? []).length === 0}
+        errorMessage="Failed to load users."
+        skeleton={<SkeletonList count={3} height={48} gap={12} borderRadius={8} />}
+        emptyState={
+          <div className={styles.emptyState}>
+            <p className={styles.emptyHeadline}>No users</p>
+            <p className={styles.emptySubtext}>Create a user to get started.</p>
+          </div>
+        }
+      >
         <div className={styles.tableWrapper}>
           <table className={styles.table}>
             <thead>
@@ -248,7 +240,7 @@ export default function UsersPage() {
               </tr>
             </thead>
             <tbody>
-              {users.map((user) => (
+              {(users ?? []).map((user) => (
                 <tr key={user.id}>
                   <td>{user.username}</td>
                   <td>
@@ -282,7 +274,7 @@ export default function UsersPage() {
             </tbody>
           </table>
         </div>
-      )}
+      </QueryBoundary>
 
       {showCreateModal && (
         <CreateUserModal

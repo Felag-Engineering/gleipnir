@@ -7,12 +7,12 @@ import { OnboardingSteps } from '../components/dashboard/OnboardingSteps'
 import { StatsBar } from '../components/dashboard/StatsBar'
 import { TriggerRunModal } from '../components/TriggerRunModal/TriggerRunModal'
 import { PageHeader } from '../components/PageHeader'
-import { Button } from '../components/Button'
 import { usePolicies } from '../hooks/usePolicies'
 import { useStatsData } from '../hooks/useStatsData'
 import { useRuns } from '../hooks/useRuns'
 import { useMcpServers } from '../hooks/useMcpServers'
 import { queryKeys } from '../hooks/queryKeys'
+import { QueryBoundary } from '@/components/QueryBoundary'
 import buttonStyles from '../components/Button/Button.module.css'
 import styles from './DashboardPage.module.css'
 
@@ -27,43 +27,6 @@ export default function DashboardPage() {
 
   const mcpServerCount = servers?.length ?? 0
 
-  function renderMainContent() {
-    if (policiesStatus === 'pending') {
-      return null
-    }
-    if (policiesStatus === 'error') {
-      return (
-        <div className={styles.errorState}>
-          <span>Failed to load policies.</span>
-          <Button
-            variant="ghost"
-            onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })}
-          >
-            Retry
-          </Button>
-        </div>
-      )
-    }
-    if (policies.length === 0) {
-      return (
-        <OnboardingSteps
-          hasServers={mcpServerCount > 0}
-          hasPolicies={false}
-          hasRuns={runs.length > 0}
-        />
-      )
-    }
-    return (
-      <div className={styles.mainGrid}>
-        <ActivityFeed runs={runs} isLoading={runsLoading} />
-        <StatusBoard
-          policies={policies}
-          onTrigger={(id, name) => setTriggerTarget({ id, name })}
-        />
-      </div>
-    )
-  }
-
   return (
     <div className={styles.page}>
       <PageHeader title="Dashboard">
@@ -77,7 +40,28 @@ export default function DashboardPage() {
         mcpServerCount={mcpServerCount}
         mcpServersLoading={serversLoading}
       />
-      {renderMainContent()}
+      <QueryBoundary
+        status={policiesStatus}
+        isEmpty={(policies ?? []).length === 0}
+        errorMessage="Failed to load policies."
+        onRetry={() => queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })}
+        skeleton={null}
+        emptyState={
+          <OnboardingSteps
+            hasServers={mcpServerCount > 0}
+            hasPolicies={false}
+            hasRuns={runs.length > 0}
+          />
+        }
+      >
+        <div className={styles.mainGrid}>
+          <ActivityFeed runs={runs} isLoading={runsLoading} />
+          <StatusBoard
+            policies={policies ?? []}
+            onTrigger={(id, name) => setTriggerTarget({ id, name })}
+          />
+        </div>
+      </QueryBoundary>
       {triggerTarget && (
         <TriggerRunModal
           policyId={triggerTarget.id}

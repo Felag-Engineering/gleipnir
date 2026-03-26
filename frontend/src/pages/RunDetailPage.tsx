@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { useRun } from '@/hooks/useRun'
 import { useRunSteps } from '@/hooks/useRunSteps'
 import SkeletonBlock from '@/components/SkeletonBlock/SkeletonBlock'
+import { QueryBoundary } from '@/components/QueryBoundary'
 import { CollapsibleJSON } from '@/components/CollapsibleJSON'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import {
@@ -121,77 +122,81 @@ export default function RunDetailPage() {
 
   return (
     <div className={styles.page}>
-      {isLoading && (
-        <div className={styles.skeleton}>
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={24} width="60%" />
-          <SkeletonBlock height={80} />
-          <SkeletonBlock height={40} />
-          <SkeletonBlock height={120} />
-          <SkeletonBlock height={120} />
-        </div>
-      )}
+      <QueryBoundary
+        status={isLoading ? 'pending' : 'success'}
+        isEmpty={!run}
+        skeleton={
+          <div className={styles.skeleton}>
+            <SkeletonBlock height={48} />
+            <SkeletonBlock height={24} width="60%" />
+            <SkeletonBlock height={80} />
+            <SkeletonBlock height={40} />
+            <SkeletonBlock height={120} />
+            <SkeletonBlock height={120} />
+          </div>
+        }
+      >
+        {run && (
+          <ErrorBoundary>
+            <RunHeader run={run} />
 
-      {!isLoading && run && (
-        <ErrorBoundary>
-          <RunHeader run={run} />
+            <MetadataGrid
+              run={run}
+              toolCallCount={toolCallCount}
+              tokenTotal={tokenTotal}
+              duration={duration}
+            />
 
-          <MetadataGrid
-            run={run}
-            toolCallCount={toolCallCount}
-            tokenTotal={tokenTotal}
-            duration={duration}
-          />
+            {(run.status === 'failed' || run.status === 'interrupted') && run.error && (
+              <div className={styles.errorBox} role="alert">
+                <span className={styles.errorBoxLabel}>
+                  {run.status === 'failed' ? 'Run failed' : 'Run interrupted'}
+                </span>
+                <pre className={styles.errorBoxMsg}>{run.error}</pre>
+              </div>
+            )}
 
-          {(run.status === 'failed' || run.status === 'interrupted') && run.error && (
-            <div className={styles.errorBox} role="alert">
-              <span className={styles.errorBoxLabel}>
-                {run.status === 'failed' ? 'Run failed' : 'Run interrupted'}
-              </span>
-              <pre className={styles.errorBoxMsg}>{run.error}</pre>
+            {run.trigger_payload && run.trigger_payload !== '{}' && run.trigger_payload !== 'null' && (
+              <div className={styles.triggerPayload}>
+                <h2 className={styles.sectionTitle}>Trigger payload</h2>
+                <CollapsibleJSON
+                  value={(() => {
+                    try { return JSON.parse(run.trigger_payload!) } catch { return run.trigger_payload }
+                  })()}
+                />
+              </div>
+            )}
+
+            <FilterBar active={filter} counts={counts} onChange={setFilter} />
+
+            <div className={styles.timeline}>
+              <StepTimeline steps={timelineSteps} toolRoleMap={toolRoleMap} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} />
+
+              {hasMore && (
+                <button
+                  type="button"
+                  className={styles.loadMoreBtn}
+                  onClick={() => setDisplayedCount((c) => c + PAGE_SIZE)}
+                >
+                  Load more ({filteredSteps.length - displayedCount} remaining)
+                </button>
+              )}
             </div>
-          )}
 
-          {run.trigger_payload && run.trigger_payload !== '{}' && run.trigger_payload !== 'null' && (
-            <div className={styles.triggerPayload}>
-              <h2 className={styles.sectionTitle}>Trigger payload</h2>
-              <CollapsibleJSON
-                value={(() => {
-                  try { return JSON.parse(run.trigger_payload!) } catch { return run.trigger_payload }
-                })()}
-              />
-            </div>
-          )}
+            <div ref={sentinelRef} className={styles.sentinel} aria-hidden="true" />
 
-          <FilterBar active={filter} counts={counts} onChange={setFilter} />
-
-          <div className={styles.timeline}>
-            <StepTimeline steps={timelineSteps} toolRoleMap={toolRoleMap} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} />
-
-            {hasMore && (
+            {showNewPill && (
               <button
                 type="button"
-                className={styles.loadMoreBtn}
-                onClick={() => setDisplayedCount((c) => c + PAGE_SIZE)}
+                className={styles.newStepsPill}
+                onClick={scrollToBottom}
               >
-                Load more ({filteredSteps.length - displayedCount} remaining)
+                New steps ↓
               </button>
             )}
-          </div>
-
-          <div ref={sentinelRef} className={styles.sentinel} aria-hidden="true" />
-
-          {showNewPill && (
-            <button
-              type="button"
-              className={styles.newStepsPill}
-              onClick={scrollToBottom}
-            >
-              New steps ↓
-            </button>
-          )}
-        </ErrorBoundary>
-      )}
+          </ErrorBoundary>
+        )}
+      </QueryBoundary>
     </div>
   )
 }

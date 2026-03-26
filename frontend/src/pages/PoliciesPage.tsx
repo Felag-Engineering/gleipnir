@@ -3,12 +3,11 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { EmptyState } from '../components/EmptyState'
 import { PolicyList } from '../components/PolicyList'
-import { SkeletonBlock } from '../components/SkeletonBlock'
 import { TriggerRunModal } from '../components/TriggerRunModal/TriggerRunModal'
 import { PageHeader } from '../components/PageHeader'
-import { Button } from '../components/Button'
 import { usePolicies } from '../hooks/usePolicies'
 import { queryKeys } from '../hooks/queryKeys'
+import { QueryBoundary } from '@/components/QueryBoundary'
 import buttonStyles from '../components/Button/Button.module.css'
 import styles from './PoliciesPage.module.css'
 
@@ -18,50 +17,6 @@ export default function PoliciesPage() {
   const navigate = useNavigate()
   const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string } | null>(null)
 
-  function renderContent() {
-    if (policiesStatus === 'pending') {
-      return (
-        <div className={styles.skeletonList}>
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={48} />
-          <SkeletonBlock height={48} />
-        </div>
-      )
-    }
-    if (policiesStatus === 'error') {
-      return (
-        <div className={styles.errorState}>
-          <span>Failed to load policies.</span>
-          <Button
-            variant="ghost"
-            onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })}
-          >
-            Retry
-          </Button>
-        </div>
-      )
-    }
-    if (policies.length === 0) {
-      return (
-        <EmptyState
-          headline="No policies yet"
-          subtext="Create your first policy to get started"
-          ctaLabel="New Policy"
-          ctaTo="/policies/new"
-        />
-      )
-    }
-    return (
-      <PolicyList
-        policies={policies}
-        linkTo="editor"
-        onTrigger={(id: string, name: string) => setTriggerTarget({ id, name })}
-      />
-    )
-  }
-
   return (
     <div className={styles.page}>
       <PageHeader title="Policies">
@@ -69,7 +24,26 @@ export default function PoliciesPage() {
           New Policy
         </Link>
       </PageHeader>
-      {renderContent()}
+      <QueryBoundary
+        status={policiesStatus}
+        isEmpty={(policies ?? []).length === 0}
+        errorMessage="Failed to load policies."
+        onRetry={() => queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })}
+        emptyState={
+          <EmptyState
+            headline="No policies yet"
+            subtext="Create your first policy to get started"
+            ctaLabel="New Policy"
+            ctaTo="/policies/new"
+          />
+        }
+      >
+        <PolicyList
+          policies={policies ?? []}
+          linkTo="editor"
+          onTrigger={(id: string, name: string) => setTriggerTarget({ id, name })}
+        />
+      </QueryBoundary>
       {triggerTarget && (
         <TriggerRunModal
           policyId={triggerTarget.id}

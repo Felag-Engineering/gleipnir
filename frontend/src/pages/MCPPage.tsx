@@ -9,7 +9,7 @@ import { useUpdateMcpTool } from '@/hooks/useUpdateMcpTool'
 import { apiFetch } from '@/api/fetch'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 import type { ApiError } from '@/api/fetch'
-import { SkeletonBlock } from '@/components/SkeletonBlock'
+import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { MCPStatsBar } from '@/components/MCPPage/MCPStatsBar'
 import { UnassignedBanner } from '@/components/MCPPage/UnassignedBanner'
@@ -150,30 +150,20 @@ export default function MCPPage() {
 
         {unassignedCount > 0 && <UnassignedBanner count={unassignedCount} />}
 
-        {serversStatus === 'pending' && (
-          <div className={styles.skeletonList}>
-            <SkeletonBlock height={120} borderRadius={8} />
-            <SkeletonBlock height={120} borderRadius={8} />
-            <SkeletonBlock height={120} borderRadius={8} />
-          </div>
-        )}
-
-        {serversStatus === 'error' && (
-          <div className={styles.errorState}>
-            Failed to load MCP servers.
-          </div>
-        )}
-
-        {serversStatus === 'success' && servers.length === 0 && (
-          <div className={styles.emptyState}>
-            <p className={styles.emptyHeadline}>No MCP servers</p>
-            <p className={styles.emptySubtext}>Add an MCP server to start discovering tools.</p>
-          </div>
-        )}
-
-        {serversStatus === 'success' && servers.length > 0 && (
+        <QueryBoundary
+          status={serversStatus}
+          isEmpty={(servers ?? []).length === 0}
+          errorMessage="Failed to load MCP servers."
+          skeleton={<SkeletonList count={3} height={120} gap={12} borderRadius={8} />}
+          emptyState={
+            <div className={styles.emptyState}>
+              <p className={styles.emptyHeadline}>No MCP servers</p>
+              <p className={styles.emptySubtext}>Add an MCP server to start discovering tools.</p>
+            </div>
+          }
+        >
           <div className={styles.serverList}>
-            {servers.map((server, i) => {
+            {(servers ?? []).map((server, i) => {
               const toolResult = toolResults[i]
               return (
                 <ServerCard
@@ -190,7 +180,7 @@ export default function MCPPage() {
               )
             })}
           </div>
-        )}
+        </QueryBoundary>
       </ErrorBoundary>
 
       {showAddModal && (

@@ -4,23 +4,10 @@
   gap: var(--space-6);
 }
 
-.skeletonList {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
 .serverList {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-}
-
-.errorState {
-  padding: var(--space-8) 0;
-  text-align: center;
-  color: var(--text-second);
-  font-size: var(--text-sm);
 }
 
 .emptyState {
