@@ -9,14 +9,16 @@
   letter-spacing: 0.03em;
 }
 
+/* Lighter tints than StatusBadge — these are categorization
+   labels, not status indicators. They should recede slightly. */
 .tool {
   color: var(--color-tool);
-  background: color-mix(in srgb, var(--color-tool) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-tool) 25%, transparent);
+  background: color-mix(in srgb, var(--color-tool) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-tool) 14%, transparent);
 }
 
 .feedback {
   color: var(--color-feedback);
-  background: color-mix(in srgb, var(--color-feedback) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-feedback) 25%, transparent);
+  background: color-mix(in srgb, var(--color-feedback) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-feedback) 14%, transparent);
 }

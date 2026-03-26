@@ -9,23 +9,12 @@
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: var(--space-3) var(--space-4);
-  border-left-width: 3px;
 }
 
-.cardBlue {
-  border-left: 3px solid var(--color-blue);
-}
-
-.cardAmber {
+/* Only the approvals card gets an accent — and only when
+   there are items needing action. Informational cards stay quiet. */
+.cardActionable {
   border-left: 3px solid var(--color-amber);
-}
-
-.cardGreen {
-  border-left: 3px solid var(--color-green);
-}
-
-.cardRed {
-  border-left: 3px solid var(--color-red);
 }
 
 .label {
@@ -44,11 +33,7 @@
   color: var(--text-second);
 }
 
-.valueBlue {
-  color: var(--color-blue);
-}
-
-.valueAmber {
+.valueHighlight {
   color: var(--color-amber);
 }
 

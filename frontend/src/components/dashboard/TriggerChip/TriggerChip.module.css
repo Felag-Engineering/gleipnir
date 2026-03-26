@@ -1,25 +1,10 @@
 .chip {
   font-size: 10px;
   font-family: var(--font-mono);
-  background: color-mix(in srgb, white 4%, transparent);
-  border: 1px solid color-mix(in srgb, white 8%, transparent);
-  padding: var(--space-1) var(--space-2);
-  border-radius: 3px;
+  color: var(--color-teal);
   flex-shrink: 0;
 }
 
-.webhook {
-  color: var(--color-blue);
-}
-
-.manual {
-  color: var(--color-orange);
-}
-
-.scheduled {
-  color: var(--color-amber);
-}
-
 .paused {
-  opacity: 0.6;
+  color: var(--text-muted);
 }

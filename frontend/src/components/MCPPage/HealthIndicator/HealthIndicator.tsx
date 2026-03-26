@@ -20,9 +20,6 @@ const LABEL_CLASS: Record<HealthStatus, string> = {
 
 export function HealthIndicator({ status }: Props) {
   return (
-    <span className={styles.root}>
-      <span className={`${styles.dot} ${styles[status]}`} aria-hidden="true" />
-      <span className={`${styles.label} ${LABEL_CLASS[status]}`}>{LABEL[status]}</span>
-    </span>
+    <span className={`${styles.label} ${LABEL_CLASS[status]}`}>{LABEL[status]}</span>
   )
 }

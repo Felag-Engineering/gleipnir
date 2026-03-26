@@ -32,7 +32,7 @@ describe('StatsBar', () => {
     expect(screen.getByText('none')).toBeInTheDocument()
   })
 
-  it('System Health shows green border when servers > 0', () => {
+  it('System Health shows server count when servers > 0', () => {
     renderBar({ activeRuns: 0, pendingApprovals: 0, mcpServerCount: 2, mcpServersLoading: false })
     expect(screen.getByText('2 servers')).toBeInTheDocument()
   })
@@ -47,16 +47,16 @@ describe('StatsBar', () => {
     expect(screen.getByText('0 servers')).toBeInTheDocument()
   })
 
-  it('Active Runs value has blue accent when activeRuns > 0', () => {
-    renderBar({ activeRuns: 3, pendingApprovals: 0, mcpServerCount: 0, mcpServersLoading: false })
+  it('Pending Approvals value has highlight when pendingApprovals > 0', () => {
+    renderBar({ activeRuns: 0, pendingApprovals: 3, mcpServerCount: 0, mcpServersLoading: false })
     const valueEl = screen.getByText('3')
-    expect(valueEl.className).toMatch(/valueBlue/)
+    expect(valueEl.className).toMatch(/valueHighlight/)
   })
 
-  it('Active Runs value has no blue accent when activeRuns is 0', () => {
+  it('Pending Approvals value has no highlight when pendingApprovals is 0', () => {
     renderBar({ activeRuns: 0, pendingApprovals: 0, mcpServerCount: 0, mcpServersLoading: false })
-    const card = screen.getByText('Active Runs').parentElement!
+    const card = screen.getByText('Pending Approvals').parentElement!
     const valueEl = within(card).getByText('0')
-    expect(valueEl.className).not.toMatch(/valueBlue/)
+    expect(valueEl.className).not.toMatch(/valueHighlight/)
   })
 })

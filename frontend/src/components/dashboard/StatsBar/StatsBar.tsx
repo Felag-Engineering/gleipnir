@@ -9,27 +9,23 @@ interface StatsBarProps {
 }
 
 export function StatsBar({ activeRuns, pendingApprovals, mcpServerCount, mcpServersLoading }: StatsBarProps) {
-  const healthClass = mcpServersLoading
-    ? ''
-    : mcpServerCount > 0
-      ? styles.cardGreen
-      : styles.cardRed
+  const hasApprovals = pendingApprovals > 0
 
   return (
     <div className={styles.grid}>
-      <div className={`${styles.card} ${styles.cardBlue}`}>
+      <div className={styles.card}>
         <div className={styles.label}>Active Runs</div>
-        <div className={`${styles.value}${activeRuns > 0 ? ` ${styles.valueBlue}` : ''}`}>{activeRuns}</div>
+        <div className={styles.value}>{activeRuns}</div>
         <div className={styles.sub}>active</div>
       </div>
 
-      <div className={`${styles.card} ${styles.cardAmber}`}>
+      <div className={`${styles.card}${hasApprovals ? ` ${styles.cardActionable}` : ''}`}>
         <div className={styles.label}>Pending Approvals</div>
-        <div className={`${styles.value}${pendingApprovals > 0 ? ` ${styles.valueAmber}` : ''}`}>
+        <div className={`${styles.value}${hasApprovals ? ` ${styles.valueHighlight}` : ''}`}>
           {pendingApprovals}
         </div>
         <div className={styles.sub}>
-          {pendingApprovals > 0 ? (
+          {hasApprovals ? (
             <Link to="/runs?status=waiting_for_approval" className={styles.reviewLink}>
               Review →
             </Link>
@@ -39,7 +35,7 @@ export function StatsBar({ activeRuns, pendingApprovals, mcpServerCount, mcpServ
         </div>
       </div>
 
-      <div className={`${styles.card} ${healthClass}`}>
+      <div className={styles.card}>
         <div className={styles.label}>System Health</div>
         <div className={styles.value}>
           {mcpServersLoading ? '—' : `${mcpServerCount} ${mcpServerCount === 1 ? 'server' : 'servers'}`}
