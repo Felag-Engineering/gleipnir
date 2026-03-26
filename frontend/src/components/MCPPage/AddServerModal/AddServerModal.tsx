@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from 'react'
 import { Modal } from '@/components/Modal'
-import { Button } from '@/components/Button'
+import { ModalFooter } from '@/components/ModalFooter'
 import type { ApiError } from '@/api/fetch'
 import styles from './AddServerModal.module.css'
+import formStyles from '@/styles/forms.module.css'
 import alertStyles from '@/styles/alerts.module.css'
 
 interface Props {
@@ -25,33 +26,21 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
   }
 
   const footer = (
-    <>
-      <Button type="button" variant="ghost" onClick={onClose} disabled={isPending}>
-        Cancel
-      </Button>
-      <Button
-        form="add-server-form"
-        type="submit"
-        variant="primary"
-        disabled={isPending || !name.trim() || !url.trim()}
-      >
-        {isPending ? (
-          <>
-            <span className={styles.spinner} aria-hidden="true" />
-            Adding…
-          </>
-        ) : (
-          'Add MCP server'
-        )}
-      </Button>
-    </>
+    <ModalFooter
+      onCancel={onClose}
+      formId="add-server-form"
+      isLoading={isPending}
+      submitLabel="Add MCP server"
+      loadingLabel="Adding…"
+      submitDisabled={!name.trim() || !url.trim()}
+    />
   )
 
   return (
     <Modal title="Add MCP server" onClose={onClose} footer={footer}>
-      <form id="add-server-form" onSubmit={handleSubmit} className={styles.form}>
-        <div className={styles.field}>
-          <label htmlFor="server-name" className={styles.label}>Name</label>
+      <form id="add-server-form" onSubmit={handleSubmit} className={formStyles.form}>
+        <div className={formStyles.field}>
+          <label htmlFor="server-name" className={formStyles.labelMono}>Name</label>
           <input
             id="server-name"
             type="text"
@@ -63,8 +52,8 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
             required
           />
         </div>
-        <div className={styles.field}>
-          <label htmlFor="server-url" className={styles.label}>URL</label>
+        <div className={formStyles.field}>
+          <label htmlFor="server-url" className={formStyles.labelMono}>URL</label>
           <input
             id="server-url"
             type="url"

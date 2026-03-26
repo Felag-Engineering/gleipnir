@@ -21,14 +21,3 @@
   color: var(--text-second);
   margin: 0;
 }
-
-.spinner {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  border: 2px solid color-mix(in srgb, var(--color-red) 30%, transparent);
-  border-top-color: var(--color-red);
-  border-radius: 50%;
-  animation: gSpin 0.7s linear infinite;
-  flex-shrink: 0;
-}

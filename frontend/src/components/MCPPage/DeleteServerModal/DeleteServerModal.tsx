@@ -1,5 +1,5 @@
 import { Modal } from '@/components/Modal'
-import { Button } from '@/components/Button'
+import { ModalFooter } from '@/components/ModalFooter'
 import type { ApiError } from '@/api/fetch'
 import styles from './DeleteServerModal.module.css'
 import alertStyles from '@/styles/alerts.module.css'
@@ -15,26 +15,14 @@ interface Props {
 
 export function DeleteServerModal({ serverName, toolCount, onClose, onConfirm, isPending, error }: Props) {
   const footer = (
-    <>
-      <Button type="button" variant="ghost" onClick={onClose} disabled={isPending}>
-        Cancel
-      </Button>
-      <Button
-        type="button"
-        variant="danger"
-        onClick={onConfirm}
-        disabled={isPending}
-      >
-        {isPending ? (
-          <>
-            <span className={styles.spinner} aria-hidden="true" />
-            Deleting…
-          </>
-        ) : (
-          'Delete MCP server'
-        )}
-      </Button>
-    </>
+    <ModalFooter
+      onCancel={onClose}
+      onSubmit={onConfirm}
+      isLoading={isPending}
+      submitLabel="Delete MCP server"
+      loadingLabel="Deleting…"
+      variant="danger"
+    />
   )
 
   return (

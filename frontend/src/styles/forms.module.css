@@ -16,6 +16,16 @@
   color: var(--text-second);
 }
 
+.labelMono {
+  composes: label;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: normal;
+}
+
 .optional {
   font-weight: var(--weight-normal);
   color: var(--text-muted);
@@ -43,10 +53,3 @@
 .textarea::placeholder {
   color: var(--text-faint);
 }
-
-.errorMsg {
-  font-size: var(--text-sm);
-  color: var(--color-red);
-  margin: 0;
-}
-
