@@ -9,6 +9,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/rapp992/gleipnir/internal/agent"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/event"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -56,7 +57,7 @@ type RunLauncher struct {
 	registry  registryResolver
 	manager   *RunManager
 	newAgent  AgentFactory
-	publisher agent.Publisher
+	publisher event.Publisher
 }
 
 // registryResolver is the subset of mcp.Registry used by RunLauncher, defined
@@ -67,7 +68,7 @@ type registryResolver interface {
 
 // NewRunLauncher returns a RunLauncher ready to use.
 // publisher may be nil, in which case no real-time events are emitted.
-func NewRunLauncher(store *db.Store, registry registryResolver, manager *RunManager, factory AgentFactory, publisher agent.Publisher) *RunLauncher {
+func NewRunLauncher(store *db.Store, registry registryResolver, manager *RunManager, factory AgentFactory, publisher event.Publisher) *RunLauncher {
 	return &RunLauncher{
 		store:     store,
 		registry:  registry,

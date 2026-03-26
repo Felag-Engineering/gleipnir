@@ -1,9 +1,7 @@
 package agent
 
-import "encoding/json"
+import "github.com/rapp992/gleipnir/internal/event"
 
-// Publisher emits real-time events. Implemented by the SSE broadcaster;
-// accepted as injected dependency so agent never imports internal/sse.
-type Publisher interface {
-	Publish(eventType string, data json.RawMessage)
-}
+// Publisher is an alias for event.Publisher, kept for backward compatibility
+// while callers migrate to importing event.Publisher directly.
+type Publisher = event.Publisher

@@ -11,15 +11,9 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/event"
 	"github.com/rapp992/gleipnir/internal/model"
 )
-
-// Publisher emits real-time events. Duplicated from internal/agent to avoid a
-// package dependency from internal/approval on internal/agent (ADR package
-// boundary rules).
-type Publisher interface {
-	Publish(eventType string, data json.RawMessage)
-}
 
 // Scanner periodically scans for expired pending approval requests and resolves
 // them as timeout. It handles both normal timeout and crash-recovery cases
@@ -31,7 +25,7 @@ type Publisher interface {
 type Scanner struct {
 	store     *db.Store
 	interval  time.Duration
-	publisher Publisher
+	publisher event.Publisher
 }
 
 // ScannerOption is a functional option for Scanner.
@@ -39,7 +33,7 @@ type ScannerOption func(*Scanner)
 
 // WithPublisher sets an optional SSE publisher so the scanner can emit
 // run.status_changed and approval.resolved events to connected clients.
-func WithPublisher(p Publisher) ScannerOption {
+func WithPublisher(p event.Publisher) ScannerOption {
 	return func(s *Scanner) {
 		s.publisher = p
 	}

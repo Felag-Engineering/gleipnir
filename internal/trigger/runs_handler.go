@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/rapp992/gleipnir/internal/agent"
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/event"
 	"github.com/rapp992/gleipnir/internal/model"
 )
 
@@ -59,12 +59,12 @@ type ApprovalDecisionRequest struct {
 type RunsHandler struct {
 	store     *db.Store
 	manager   *RunManager
-	publisher agent.Publisher
+	publisher event.Publisher
 }
 
 // NewRunsHandler returns a RunsHandler backed by store, manager, and publisher.
 // publisher may be nil, in which case no SSE events are emitted.
-func NewRunsHandler(store *db.Store, manager *RunManager, publisher agent.Publisher) *RunsHandler {
+func NewRunsHandler(store *db.Store, manager *RunManager, publisher event.Publisher) *RunsHandler {
 	return &RunsHandler{store: store, manager: manager, publisher: publisher}
 }
 
