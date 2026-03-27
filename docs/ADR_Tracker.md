@@ -41,6 +41,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-022 | Transport-level fake for Anthropic API in tests   | ⬜ Deferred   | v0.1   | agent package, integration tests                     |
 | ADR-023 | Per-policy model selection                         | 🟢 Decided    | v0.1   | Policy schema, agent runtime, capability snapshot    |
 | ADR-024 | Webhook HMAC-SHA256 signature verification         | 🟢 Decided    | v0.1   | Webhook handler, policy schema, trigger package      |
+| ADR-026 | Model-agnostic design (multi-provider) — revised   | 🟢 Decided    | v1.0   | LLM client interface, agent runtime, policy schema   |
 | ADR-028 | Tool risk classification model                     | 🟢 Decided    | v1.0   | Policy schema, runtime approval interceptor          |
 | ADR-029 | Approval state machine (v1.0 minimal)              | 🟢 Decided    | v1.0   | BoundAgent runtime, approval handler, SSE, UI        |
 | ADR-030 | UI abstracts over tool transport — Tools page is protocol-agnostic | 🟢 Decided | v0.1 | Frontend nav, routes, MCPPage UI text          |
@@ -593,6 +594,87 @@ concurrency:
   mode: skip | queue
   queue_depth: 10    # only meaningful when mode is queue
 ```
+
+---
+
+## ADR-026: Model-Agnostic Design (Multi-Provider) — Revised
+
+**Status:** Decided (revised 2026-03)
+**Date:** 2026-03
+**Supersedes:** Original ADR-026 (Model-Agnostic Design)
+
+**Decision:** The LLM client is abstracted behind an `LLMClient` interface with three methods:
+`CreateMessage` (stateless request/response translator), `StreamMessage` (returns a channel of
+response chunks), and `ValidateOptions` (validates provider-specific policy options at save time).
+
+The interface is a **stateless translator** — one request in, one API call, one response out. No
+memory of previous calls. No decisions. The `BoundAgent` is the orchestrator: it owns the
+conversation loop, conversation history, tool call routing, approval interception, audit trail,
+and loop termination.
+
+**v1.0 ships two providers:** Anthropic (Claude) via `anthropic-sdk-go` and Google (Gemini) via
+`google.golang.org/genai`.
+
+**Core types:** `MessageRequest` carries system prompt, full conversation history (provider-neutral
+`ConversationTurn` slices), tool definitions (MCP-native JSON Schema), and optional `ProviderHints`.
+`MessageResponse` returns ordered `ContentBlock` slices (text + tool calls interleaved), `StopReason`,
+and optional `TokenUsage`. `MessageChunk` supports streaming with a `Done` flag and error channel.
+
+**Provider hints:** Typed, provider-specific config via `ProviderHints` struct with `*AnthropicHints`
+and `*GoogleHints` fields. Anthropic hints include `EnablePromptCaching` and `MaxTokens`. Google
+hints include `EnableGrounding` and `ThinkingLevel`. All fields are pointers; nil means use default.
+
+**Policy YAML model section:**
+```yaml
+model:
+  provider: anthropic
+  name: claude-sonnet-4-20250514
+  options:
+    enable_prompt_caching: true
+```
+
+The `provider` field selects the `LLMClient` implementation. The `name` field is the model identifier.
+The `options` map is translated into `ProviderHints` at parse time — unknown options are validation
+errors. A policy omitting `model` entirely uses the system default (configurable via env var,
+defaulting to `anthropic/claude-sonnet-4-20250514`).
+
+**Boundary of responsibilities:**
+
+*BoundAgent owns:* conversation state (full history in neutral format, passed on every call), loop
+termination (max turns, max tokens, timeout), tool call routing (MCP registry dispatch, parameter
+validation per ADR-017, approval interception per ADR-028/029), parallel tool call batching, audit
+trail, error handling, and conversation structure discipline (strictly alternating turns).
+
+*LLMClient implementations own:* SDK interaction and auth, schema translation (MCP JSON Schema →
+provider-native tool format), conversation format translation (roles and content blocks), response
+normalization, tool call ID guarantees (synthetic UUIDs when provider returns empty IDs), error
+result translation (`IsError` → provider convention), error mapping (rate limits, auth failures),
+provider hints application, and option validation.
+
+**Validation wiring:** A provider registry (keyed by name string) is created at startup holding all
+`LLMClient` implementations. The policy validator receives this registry via DI and calls
+`ValidateOptions` at save time — the policy package never imports provider SDKs.
+
+**Package structure:** `internal/llm` contains the interface and shared types. `internal/llm/anthropic`
+and `internal/llm/google` contain the two implementations. `internal/agent` imports `internal/llm`
+for the interface; it never imports provider SDKs directly.
+
+**Rejected alternatives:**
+- Per-provider BoundAgent implementations — duplicates 5-10x more orchestration logic than it saves
+- Neutral ToolDef intermediate struct — premature with two providers
+- Stateful interface with internal conversation management — loses audit visibility
+- Single-method interface (no streaming) — adding methods later is breaking
+- CountTokens method — deferred to v1.1
+- Limits in the interface — loop control is a BoundAgent responsibility
+
+**Consequences:**
+- `internal/llm` package created with interface, shared types, and two implementations
+- `internal/agent` imports `internal/llm`, never provider SDKs
+- Provider registry created at startup, injected into policy validator and trigger engine
+- Policy parser validates `model` section including provider options via `ValidateOptions` at save time
+- Audit trail records `provider` and `model_name` on every run record
+- Capability snapshot (ADR-018) records tools in MCP-native `ToolDefinition` format
+- Adding a new provider requires: implementing `LLMClient`, adding a `ProviderHints` field, registering in the registry — no BoundAgent changes
 
 ---
 
