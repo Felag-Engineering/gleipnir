@@ -117,10 +117,10 @@ func drainSSEEvents(t *testing.T, resp *http.Response, n int, timeout time.Durat
 // the run. It is intentionally a new allocation per call so concurrent tests
 // don't share state.
 func sseOneTurnMsgs() llm.LLMClient {
-	return testutil.NewMockLLMClient([]*llm.MessageResponse{
+	return testutil.NewMockLLMClient(
 		testutil.MakeLLMToolCallResponse("tu-sse", "stub-server.read_data", map[string]any{}, 10, 5),
 		testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 10, 5),
-	})
+	)
 }
 
 func TestSSEIntegration_LiveEventDelivery(t *testing.T) {

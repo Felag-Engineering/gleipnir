@@ -43,9 +43,9 @@ agent:
 // no real Claude API calls are made during scheduler tests.
 func schedulerFactory() trigger.AgentFactory {
 	return func(cfg agent.Config) (*agent.BoundAgent, error) {
-		cfg.LLMClient = testutil.NewMockLLMClient([]*llm.MessageResponse{
+		cfg.LLMClient = testutil.NewMockLLMClient(
 			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
-		})
+		)
 		return agent.New(cfg)
 	}
 }

@@ -17,23 +17,25 @@ import (
 type MockLLMClient struct {
 	mu        sync.Mutex
 	Responses []*llm.MessageResponse
-	calls     int
+	requests  []*llm.MessageRequest
+	callIdx   int
 }
 
 // NewMockLLMClient returns a MockLLMClient that returns responses in order.
-func NewMockLLMClient(responses []*llm.MessageResponse) *MockLLMClient {
+func NewMockLLMClient(responses ...*llm.MessageResponse) *MockLLMClient {
 	return &MockLLMClient{Responses: responses}
 }
 
 // CreateMessage returns the next pre-canned response or an error when exhausted.
-func (m *MockLLMClient) CreateMessage(_ context.Context, _ llm.MessageRequest) (*llm.MessageResponse, error) {
+func (m *MockLLMClient) CreateMessage(_ context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.calls >= len(m.Responses) {
-		return nil, fmt.Errorf("MockLLMClient: no more responses (called %d times, have %d)", m.calls+1, len(m.Responses))
+	m.requests = append(m.requests, &req)
+	if m.callIdx >= len(m.Responses) {
+		return nil, fmt.Errorf("MockLLMClient: no more responses (called %d times, have %d)", m.callIdx+1, len(m.Responses))
 	}
-	resp := m.Responses[m.calls]
-	m.calls++
+	resp := m.Responses[m.callIdx]
+	m.callIdx++
 	return resp, nil
 }
 
@@ -67,7 +69,16 @@ func (m *MockLLMClient) ValidateOptions(_ map[string]any) error { return nil }
 func (m *MockLLMClient) Calls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.calls
+	return m.callIdx
+}
+
+// Requests returns a copy of all captured requests in call order.
+func (m *MockLLMClient) Requests() []*llm.MessageRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*llm.MessageRequest, len(m.requests))
+	copy(out, m.requests)
+	return out
 }
 
 // noopLLMClient panics if CreateMessage is called. Use NewNoopLLMClient for
@@ -120,48 +131,22 @@ func NewBlockingLLMClient() (llm.LLMClient, *BlockingLLMTransport) {
 	return &blockingLLMClient{transport: t}, t
 }
 
-// CapturingLLMTransport records each MessageRequest passed to CreateMessage.
-type CapturingLLMTransport struct {
-	mu       sync.Mutex
-	requests []llm.MessageRequest
+// errorLLMClient always returns the same error from CreateMessage and StreamMessage.
+type errorLLMClient struct{ err error }
+
+func (e *errorLLMClient) CreateMessage(_ context.Context, _ llm.MessageRequest) (*llm.MessageResponse, error) {
+	return nil, e.err
 }
 
-// Requests returns copies of all captured requests in call order.
-func (t *CapturingLLMTransport) Requests() []llm.MessageRequest {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	out := make([]llm.MessageRequest, len(t.requests))
-	copy(out, t.requests)
-	return out
+func (e *errorLLMClient) StreamMessage(_ context.Context, _ llm.MessageRequest) (<-chan llm.MessageChunk, error) {
+	return nil, e.err
 }
 
-type capturingLLMClient struct {
-	inner     *MockLLMClient
-	transport *CapturingLLMTransport
-}
+func (e *errorLLMClient) ValidateOptions(_ map[string]any) error { return nil }
 
-func (c *capturingLLMClient) CreateMessage(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
-	c.transport.mu.Lock()
-	c.transport.requests = append(c.transport.requests, req)
-	c.transport.mu.Unlock()
-	return c.inner.CreateMessage(ctx, req)
-}
-
-func (c *capturingLLMClient) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
-	return c.inner.StreamMessage(ctx, req)
-}
-
-func (c *capturingLLMClient) ValidateOptions(opts map[string]any) error {
-	return c.inner.ValidateOptions(opts)
-}
-
-// NewCapturingLLMClient returns an llm.LLMClient that records every
-// MessageRequest passed to CreateMessage and returns pre-canned responses.
-func NewCapturingLLMClient(responses []*llm.MessageResponse) (llm.LLMClient, *CapturingLLMTransport) {
-	inner := NewMockLLMClient(responses)
-	transport := &CapturingLLMTransport{}
-	return &capturingLLMClient{inner: inner, transport: transport}, transport
-}
+// NewErrorLLMClient returns an llm.LLMClient that always returns err from
+// CreateMessage and StreamMessage.
+func NewErrorLLMClient(err error) llm.LLMClient { return &errorLLMClient{err: err} }
 
 // MakeLLMTextResponse builds a *llm.MessageResponse with a single text block.
 func MakeLLMTextResponse(text string, stopReason llm.StopReason, inputTokens, outputTokens int) *llm.MessageResponse {
@@ -180,4 +165,17 @@ func MakeLLMToolCallResponse(id, name string, input map[string]any, inputTokens,
 		StopReason: llm.StopReasonToolUse,
 		Usage:      llm.TokenUsage{InputTokens: inputTokens, OutputTokens: outputTokens},
 	}
+}
+
+// MakeTextResponse builds a *llm.MessageResponse with sensible default token counts.
+// Use MakeLLMTextResponse when you need explicit token counts.
+func MakeTextResponse(text string) *llm.MessageResponse {
+	return MakeLLMTextResponse(text, llm.StopReasonEndTurn, 10, 5)
+}
+
+// MakeToolCallResponse builds a *llm.MessageResponse for a tool call with sensible
+// default token counts. Use MakeLLMToolCallResponse when you need explicit token counts.
+// Note: params are (name, id, input) per the AC signature; MakeLLMToolCallResponse uses (id, name, input).
+func MakeToolCallResponse(name, id string, input map[string]any) *llm.MessageResponse {
+	return MakeLLMToolCallResponse(id, name, input, 10, 5)
 }
