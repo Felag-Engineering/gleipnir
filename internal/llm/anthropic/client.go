@@ -70,9 +70,37 @@ func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequ
 	return translateResponse(resp), nil
 }
 
-// StreamMessage is not yet implemented.
-func (c *AnthropicClient) StreamMessage(_ context.Context, _ llm.MessageRequest) (<-chan llm.MessageChunk, error) {
-	return nil, fmt.Errorf("anthropic: StreamMessage: %w", errors.ErrUnsupported)
+// StreamMessage wraps CreateMessage and emits the complete response as a single
+// MessageChunk on a buffered channel. The channel is closed immediately after
+// the chunk is sent. This is a v1.0 stub; real streaming will be added later.
+func (c *AnthropicClient) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
+	resp, err := c.CreateMessage(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	var chunk llm.MessageChunk
+
+	if len(resp.Text) > 0 {
+		parts := make([]string, len(resp.Text))
+		for i, tb := range resp.Text {
+			parts[i] = tb.Text
+		}
+		joined := strings.Join(parts, "")
+		chunk.Text = &joined
+	}
+
+	if len(resp.ToolCalls) > 0 {
+		chunk.ToolCall = &resp.ToolCalls[0]
+	}
+
+	chunk.StopReason = &resp.StopReason
+	chunk.Usage = &resp.Usage
+
+	ch := make(chan llm.MessageChunk, 1)
+	ch <- chunk
+	close(ch)
+	return ch, nil
 }
 
 // ValidateOptions validates provider-specific options from the policy YAML.

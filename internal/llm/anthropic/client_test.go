@@ -679,3 +679,108 @@ func TestCreateMessage_ErrorResponses(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamMessage_SingleChunk(t *testing.T) {
+	body := messageRespJSON(
+		`[{"type":"text","text":"thinking..."},{"type":"tool_use","id":"tu_2","name":"run","input":{}}]`,
+		"tool_use", 30, 15,
+	)
+
+	srv := serveJSON(t, 200, body)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ch, err := client.StreamMessage(context.Background(), minimalRequest())
+	if err != nil {
+		t.Fatalf("StreamMessage() error: %v", err)
+	}
+
+	chunk, ok := <-ch
+	if !ok {
+		t.Fatal("expected a chunk from channel, got closed channel")
+	}
+	if chunk.Err != nil {
+		t.Fatalf("chunk.Err = %v, want nil", chunk.Err)
+	}
+	if chunk.Text == nil || *chunk.Text != "thinking..." {
+		t.Errorf("chunk.Text = %v, want %q", chunk.Text, "thinking...")
+	}
+	if chunk.ToolCall == nil {
+		t.Fatal("chunk.ToolCall is nil, want non-nil")
+	}
+	if chunk.ToolCall.ID != "tu_2" {
+		t.Errorf("chunk.ToolCall.ID = %q, want %q", chunk.ToolCall.ID, "tu_2")
+	}
+	if chunk.ToolCall.Name != "run" {
+		t.Errorf("chunk.ToolCall.Name = %q, want %q", chunk.ToolCall.Name, "run")
+	}
+	if chunk.StopReason == nil || *chunk.StopReason != llm.StopReasonToolUse {
+		t.Errorf("chunk.StopReason = %v, want StopReasonToolUse", chunk.StopReason)
+	}
+	if chunk.Usage == nil || chunk.Usage.InputTokens != 30 || chunk.Usage.OutputTokens != 15 {
+		t.Errorf("chunk.Usage = %v, want {InputTokens:30, OutputTokens:15}", chunk.Usage)
+	}
+}
+
+func TestStreamMessage_ChannelClosed(t *testing.T) {
+	body := messageRespJSON(
+		`[{"type":"text","text":"thinking..."},{"type":"tool_use","id":"tu_2","name":"run","input":{}}]`,
+		"tool_use", 30, 15,
+	)
+
+	srv := serveJSON(t, 200, body)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ch, err := client.StreamMessage(context.Background(), minimalRequest())
+	if err != nil {
+		t.Fatalf("StreamMessage() error: %v", err)
+	}
+
+	// Discard the first chunk.
+	<-ch
+
+	// Second receive must signal channel closed.
+	_, ok := <-ch
+	if ok {
+		t.Error("expected channel to be closed after single chunk, but received a value")
+	}
+}
+
+func TestStreamMessage_CreateMessageError(t *testing.T) {
+	errorJSON := `{"type":"error","error":{"type":"api_error","message":"error"}}`
+
+	srv := serveJSON(t, 401, errorJSON)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ch, err := client.StreamMessage(context.Background(), minimalRequest())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Errorf("error %q does not contain %q", err.Error(), "authentication failed")
+	}
+	if ch != nil {
+		t.Error("expected nil channel on error, got non-nil")
+	}
+}
+
+func TestStreamMessage_ContextCancellation(t *testing.T) {
+	// Pre-cancel the context so the SDK call fails immediately.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// The server won't be reached, but we need a valid URL for the client.
+	srv := serveJSON(t, 200, messageRespJSON(`[{"type":"text","text":"ok"}]`, "end_turn", 1, 1))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ch, err := client.StreamMessage(ctx, minimalRequest())
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	if ch != nil {
+		t.Error("expected nil channel on error, got non-nil")
+	}
+}
