@@ -15,10 +15,6 @@ const (
 	defaultMaxTokensPerRun    = 20000
 	defaultMaxToolCallsPerRun = 50
 
-	// DefaultProvider is a package-level alias for model.DefaultProvider, kept
-	// for backward compatibility with callers that reference policy.DefaultProvider.
-	DefaultProvider = model.DefaultProvider
-
 	// MaxPolicyYAMLBytes is the maximum allowed size of a raw policy YAML blob.
 	// Enforced before unmarshalling to prevent billion-laughs style DoS attacks.
 	MaxPolicyYAMLBytes = 64 * 1024 // 64 KiB
@@ -53,9 +49,35 @@ func Parse(raw string) (*model.ParsedPolicy, error) {
 
 	p.Trigger = convertTrigger(r.Trigger)
 	p.Capabilities = convertCapabilities(r.Capabilities)
-	p.Agent = convertAgent(r.Agent)
+	mc := resolveModelConfig(r.Model)
+	p.Agent = convertAgent(r.Agent, mc)
 
 	return p, nil
+}
+
+// resolveModelConfig determines the ModelConfig from the top-level `model:`
+// section, applying defaults for any missing fields.
+func resolveModelConfig(topLevel *rawModel) model.ModelConfig {
+	if topLevel == nil {
+		return model.ModelConfig{
+			Provider: model.DefaultProvider,
+			Name:     model.DefaultModelName,
+		}
+	}
+
+	provider := topLevel.Provider
+	if provider == "" {
+		provider = model.DefaultProvider
+	}
+	name := topLevel.Name
+	if name == "" {
+		name = model.DefaultModelName
+	}
+	return model.ModelConfig{
+		Provider: provider,
+		Name:     name,
+		Options:  topLevel.Options,
+	}
 }
 
 // convertTrigger maps the raw YAML trigger block to a typed TriggerConfig.
@@ -118,26 +140,14 @@ func convertCapabilities(r rawCapabilities) model.CapabilitiesConfig {
 }
 
 // convertAgent maps raw YAML agent config to typed AgentConfig.
-// Defaults: model → model.DefaultModelName, provider → model.DefaultProvider, max_tokens_per_run → 20000, max_tool_calls_per_run → 50, concurrency → skip.
-func convertAgent(r rawAgent) model.AgentConfig {
+// The resolved ModelConfig is passed in from resolveModelConfig — this function
+// handles everything else (preamble, task, limits, concurrency).
+func convertAgent(r rawAgent, mc model.ModelConfig) model.AgentConfig {
 	ac := model.AgentConfig{
-		Preamble: strings.TrimSpace(r.Preamble),
-		Task:     strings.TrimSpace(r.Task),
+		Preamble:    strings.TrimSpace(r.Preamble),
+		Task:        strings.TrimSpace(r.Task),
+		ModelConfig: mc,
 	}
-
-	if r.Model == "" {
-		ac.ModelConfig.Name = model.DefaultModelName
-	} else {
-		ac.ModelConfig.Name = r.Model
-	}
-
-	if r.Provider == "" {
-		ac.ModelConfig.Provider = model.DefaultProvider
-	} else {
-		ac.ModelConfig.Provider = r.Provider
-	}
-
-	ac.ModelConfig.Options = r.Options
 
 	ac.Limits.MaxTokensPerRun = r.Limits.MaxTokensPerRun
 	if ac.Limits.MaxTokensPerRun == 0 {
@@ -162,9 +172,19 @@ func convertAgent(r rawAgent) model.AgentConfig {
 type rawPolicy struct {
 	Name         string          `yaml:"name"`
 	Description  string          `yaml:"description"`
+	Model        *rawModel       `yaml:"model"`
 	Trigger      rawTrigger      `yaml:"trigger"`
 	Capabilities rawCapabilities `yaml:"capabilities"`
 	Agent        rawAgent        `yaml:"agent"`
+}
+
+// rawModel holds the top-level `model:` section introduced in issue #344.
+// A pointer is used in rawPolicy so we can distinguish "key absent" (nil)
+// from "key present but empty" (non-nil with zero-value fields).
+type rawModel struct {
+	Provider string         `yaml:"provider"`
+	Name     string         `yaml:"name"`
+	Options  map[string]any `yaml:"options"`
 }
 
 type rawTrigger struct {
@@ -187,13 +207,10 @@ type rawTool struct {
 }
 
 type rawAgent struct {
-	Model       string         `yaml:"model"`
-	Provider    string         `yaml:"provider"`
-	Options     map[string]any `yaml:"options"`
-	Preamble    string         `yaml:"preamble"`
-	Task        string         `yaml:"task"`
-	Limits      rawLimits      `yaml:"limits"`
-	Concurrency string         `yaml:"concurrency"`
+	Preamble    string    `yaml:"preamble"`
+	Task        string    `yaml:"task"`
+	Limits      rawLimits `yaml:"limits"`
+	Concurrency string    `yaml:"concurrency"`
 }
 
 type rawLimits struct {

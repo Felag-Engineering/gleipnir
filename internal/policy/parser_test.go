@@ -206,27 +206,6 @@ agent:
 	}
 }
 
-func TestParse_ModelExplicit(t *testing.T) {
-	raw := `
-name: test
-trigger:
-  type: webhook
-capabilities:
-  tools:
-    - tool: s.t
-agent:
-  task: do it
-  model: claude-opus-4-6
-`
-	p, err := Parse(raw)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if p.Agent.ModelConfig.Name != "claude-opus-4-6" {
-		t.Errorf("model = %q, want %q", p.Agent.ModelConfig.Name, "claude-opus-4-6")
-	}
-}
-
 func TestParse_ManualTrigger(t *testing.T) {
 	raw := `
 name: manual-policy
@@ -383,18 +362,8 @@ agent:
 	}
 }
 
-func TestParse_ProviderExplicit(t *testing.T) {
-	cases := []struct {
-		name     string
-		provider string
-	}{
-		{name: "anthropic", provider: "anthropic"},
-		{name: "google", provider: "google"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			raw := `
+func TestParse_ModelSection(t *testing.T) {
+	minimalHeader := `
 name: test
 trigger:
   type: webhook
@@ -403,17 +372,225 @@ capabilities:
     - tool: s.t
 agent:
   task: do it
-  provider: ` + tc.provider + `
 `
-			p, err := Parse(raw)
+	cases := []struct {
+		name         string
+		yaml         string
+		wantProvider string
+		wantName     string
+		wantOptions  map[string]any
+	}{
+		{
+			name: "new format with all fields",
+			yaml: `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+model:
+  provider: anthropic
+  name: claude-sonnet-4-20250514
+  options:
+    enable_prompt_caching: true
+`,
+			wantProvider: "anthropic",
+			wantName:     "claude-sonnet-4-20250514",
+			wantOptions:  map[string]any{"enable_prompt_caching": true},
+		},
+		{
+			name: "new format provider and name only",
+			yaml: `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+model:
+  provider: anthropic
+  name: claude-sonnet-4-20250514
+`,
+			wantProvider: "anthropic",
+			wantName:     "claude-sonnet-4-20250514",
+			wantOptions:  nil,
+		},
+		{
+			name:         "completely omitted model section",
+			yaml:         minimalHeader,
+			wantProvider: model.DefaultProvider,
+			wantName:     model.DefaultModelName,
+			wantOptions:  nil,
+		},
+		{
+			name: "partial section provider only",
+			yaml: `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+model:
+  provider: google
+`,
+			wantProvider: "google",
+			wantName:     model.DefaultModelName,
+			wantOptions:  nil,
+		},
+		{
+			name: "partial section name only",
+			yaml: `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+model:
+  name: gemini-2.0-flash
+`,
+			wantProvider: model.DefaultProvider,
+			wantName:     "gemini-2.0-flash",
+			wantOptions:  nil,
+		},
+		{
+			name: "options with mixed types",
+			yaml: `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+  options:
+    enable_prompt_caching: true
+    max_tokens: 8192
+    tag: production
+`,
+			wantProvider: "anthropic",
+			wantName:     "claude-sonnet-4-6",
+			wantOptions: map[string]any{
+				"enable_prompt_caching": true,
+				"max_tokens":            8192,
+				"tag":                   "production",
+			},
+		},
+		{
+			name: "model present but empty",
+			yaml: `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+model: {}
+`,
+			wantProvider: model.DefaultProvider,
+			wantName:     model.DefaultModelName,
+			wantOptions:  nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := Parse(tc.yaml)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if p.Agent.ModelConfig.Provider != tc.provider {
-				t.Errorf("provider = %q, want %q", p.Agent.ModelConfig.Provider, tc.provider)
+			if p.Agent.ModelConfig.Provider != tc.wantProvider {
+				t.Errorf("provider = %q, want %q", p.Agent.ModelConfig.Provider, tc.wantProvider)
+			}
+			if p.Agent.ModelConfig.Name != tc.wantName {
+				t.Errorf("name = %q, want %q", p.Agent.ModelConfig.Name, tc.wantName)
+			}
+			if len(p.Agent.ModelConfig.Options) != len(tc.wantOptions) {
+				t.Errorf("options len = %d, want %d", len(p.Agent.ModelConfig.Options), len(tc.wantOptions))
+			}
+			for k, want := range tc.wantOptions {
+				got, ok := p.Agent.ModelConfig.Options[k]
+				if !ok {
+					t.Errorf("options[%q] missing", k)
+					continue
+				}
+				// yaml.v3 decodes integers as int, booleans as bool, strings as string.
+				if got != want {
+					t.Errorf("options[%q] = %v (%T), want %v (%T)", k, got, got, want, want)
+				}
 			}
 		})
 	}
+
+	t.Run("round-trip parse render parse", func(t *testing.T) {
+		// Parse an initial YAML with the new model section.
+		first, err := Parse(`
+name: rt-test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: round trip
+model:
+  provider: anthropic
+  name: claude-sonnet-4-20250514
+  options:
+    enable_prompt_caching: true
+`)
+		if err != nil {
+			t.Fatalf("first parse error: %v", err)
+		}
+
+		// Reconstruct a minimal YAML string from the parsed fields to simulate
+		// a round-trip (ParsedPolicy has no Render method).
+		reconstructed := `
+name: rt-test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: round trip
+model:
+  provider: ` + first.Agent.ModelConfig.Provider + `
+  name: ` + first.Agent.ModelConfig.Name + `
+  options:
+    enable_prompt_caching: true
+`
+		second, err := Parse(reconstructed)
+		if err != nil {
+			t.Fatalf("second parse error: %v", err)
+		}
+
+		if first.Agent.ModelConfig.Provider != second.Agent.ModelConfig.Provider {
+			t.Errorf("provider mismatch: %q vs %q", first.Agent.ModelConfig.Provider, second.Agent.ModelConfig.Provider)
+		}
+		if first.Agent.ModelConfig.Name != second.Agent.ModelConfig.Name {
+			t.Errorf("name mismatch: %q vs %q", first.Agent.ModelConfig.Name, second.Agent.ModelConfig.Name)
+		}
+		if first.Agent.ModelConfig.Options["enable_prompt_caching"] != second.Agent.ModelConfig.Options["enable_prompt_caching"] {
+			t.Errorf("options mismatch")
+		}
+	})
 }
 
 func TestParse_CustomPreamble(t *testing.T) {

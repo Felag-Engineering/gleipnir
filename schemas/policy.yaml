@@ -27,6 +27,37 @@ folder: string
 
 
 # ---------------------------------------------------------------------------
+# Model (preferred format, introduced in issue #344)
+# ---------------------------------------------------------------------------
+#
+# Specifies the LLM provider, model name, and provider-specific options for
+# this policy. Omit this section entirely to use the defaults.
+
+model:
+
+  # provider: string — optional, default: "anthropic"
+  #   The LLM provider to use for this policy.
+  #   Currently supported: anthropic
+  provider: anthropic
+
+  # name: string — optional, default: claude-sonnet-4-6
+  #   The model the agent will use for this policy.
+  #   Supported values depend on the chosen provider.
+  #   For anthropic:
+  #     claude-sonnet-4-6         — balanced capability and cost (default)
+  #     claude-opus-4-6           — most capable, highest cost
+  #     claude-sonnet-4-20250514  — dated alias for claude-sonnet-4-6
+  #     claude-haiku-4-5-20251001 — fastest, lowest cost
+  name: claude-sonnet-4-6
+
+  # options: map — optional, default: empty
+  #   Provider-specific options (e.g., enable_prompt_caching).
+  #   Preserved as-is and validated downstream by the provider implementation.
+  options:
+    enable_prompt_caching: true
+
+
+# ---------------------------------------------------------------------------
 # Trigger
 # ---------------------------------------------------------------------------
 #
@@ -112,23 +143,6 @@ capabilities:
 
 agent:
 
-  # provider: string — optional, default: "anthropic"
-  #   The LLM provider to use for this policy.
-  #   Must match a provider registered at server startup.
-  #   Currently supported: anthropic
-  provider: anthropic
-
-  # model: string — optional, default: claude-sonnet-4-6
-  #   The model the agent will use for this policy.
-  #   Supported values depend on the chosen provider.
-  #   For anthropic:
-  #     claude-sonnet-4-6         — balanced capability and cost (default)
-  #     claude-opus-4-6           — most capable, highest cost
-  #     claude-sonnet-4-20250514  — dated alias for claude-sonnet-4-6
-  #     claude-haiku-4-5-20251001 — fastest, lowest cost
-  #   Validated against the Anthropic API at save time.
-  model: claude-sonnet-4-6
-
   # preamble: multiline string — optional
   #   Behavioral instructions for the agent. Operator-editable.
   #   If absent, the Gleipnir default BoundAgent preamble is used (ADR-012).
@@ -176,12 +190,6 @@ agent:
     #   Maximum number of MCP tool calls across the entire run.
     #   Run terminates with a failed state if exceeded.
     max_tool_calls_per_run: 50
-
-  # options: map — optional, default: empty
-  #   Provider-specific options (e.g., temperature, top_p).
-  #   Validated downstream by the provider implementation, not by the
-  #   policy parser or validator.
-  options: {}
 
   # concurrency: skip | queue | parallel | replace — optional, default: skip
   #   Behaviour when a trigger fires while a run for this policy is active.
