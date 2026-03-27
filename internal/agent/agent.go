@@ -130,11 +130,11 @@ func (a *BoundAgent) failRun(ctx context.Context, runErr error) error {
 // logAuditError writes an error step to the audit trail with the given message and code.
 // Callers that pass context.Background() do so intentionally — DB writes must complete
 // even after the caller's context is cancelled (e.g. cancellation-path error steps).
-func (a *BoundAgent) logAuditError(ctx context.Context, runID string, msg string, code string) {
+func (a *BoundAgent) logAuditError(ctx context.Context, runID string, msg string, code model.ErrorCode) {
 	if err := a.audit.Write(ctx, Step{
 		RunID:   runID,
 		Type:    model.StepTypeError,
-		Content: map[string]string{"message": msg, "code": code},
+		Content: model.ErrorStepContent{Message: msg, Code: code},
 	}); err != nil {
 		slog.WarnContext(ctx, "audit write failed", "run_id", runID, "err", err)
 	}
@@ -220,7 +220,7 @@ func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry re
 	case approved := <-a.approvalCh:
 		if !approved {
 			err := fmt.Errorf("tool call %s rejected by operator", internalName)
-			a.logAuditError(ctx, runID, err.Error(), "approval_rejected")
+			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeApprovalRejected)
 			return err
 		}
 	case <-timeoutCh:
@@ -231,7 +231,7 @@ func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry re
 			// Proceed with execution on timeout.
 		} else {
 			err := fmt.Errorf("approval timeout for tool %s", internalName)
-			a.logAuditError(ctx, runID, err.Error(), "approval_rejected")
+			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeApprovalRejected)
 			return err
 		}
 	case <-ctx.Done():
@@ -282,7 +282,7 @@ func (a *BoundAgent) processContentBlocks(
 			if maxToolCalls > 0 && totalToolCalls > maxToolCalls {
 				err := fmt.Errorf("tool call limit exceeded: %d calls, limit %d", totalToolCalls, maxToolCalls)
 				slog.WarnContext(ctx, "tool call limit exceeded", "run_id", runID, "calls", totalToolCalls, "limit", maxToolCalls)
-				a.logAuditError(ctx, runID, err.Error(), "tool_call_limit_exceeded")
+				a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeToolCallLimitExceeded)
 				return nil, totalToolCalls, err
 			}
 
@@ -327,7 +327,7 @@ func (a *BoundAgent) runAPILoop(
 		// These DB writes MUST succeed regardless of caller cancellation to preserve
 		// audit trail completeness and final state persistence.
 		if err := ctx.Err(); err != nil {
-			a.logAuditError(context.Background(), runID, "run cancelled", "cancelled")
+			a.logAuditError(context.Background(), runID, "run cancelled", model.ErrorCodeCancelled)
 			return a.failRun(ctx, fmt.Errorf("agent run cancelled: %w", err))
 		}
 
@@ -338,7 +338,7 @@ func (a *BoundAgent) runAPILoop(
 			if remaining <= 0 {
 				err := fmt.Errorf("token budget exceeded: %d tokens used, limit %d", totalTokens, maxTokensPerRun)
 				slog.WarnContext(ctx, "token budget exceeded", "run_id", runID, "tokens_used", totalTokens, "limit", maxTokensPerRun)
-				a.logAuditError(ctx, runID, err.Error(), "token_budget_exceeded")
+				a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeTokenBudgetExceeded)
 				return a.failRun(ctx, err)
 			}
 			if remaining < maxTokens {
@@ -358,9 +358,9 @@ func (a *BoundAgent) runAPILoop(
 			// cancellation. Write a CANCELLED step so the audit trail is clear.
 			// context.Background() is used in all cases — ctx may already be done.
 			if ctx.Err() != nil {
-				a.logAuditError(context.Background(), runID, "run cancelled", "cancelled")
+				a.logAuditError(context.Background(), runID, "run cancelled", model.ErrorCodeCancelled)
 			} else {
-				a.logAuditError(context.Background(), runID, err.Error(), "api_error")
+				a.logAuditError(context.Background(), runID, err.Error(), model.ErrorCodeAPIError)
 			}
 			return a.failRun(ctx, fmt.Errorf("claude API call: %w", err))
 		}
@@ -428,7 +428,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	// policy must resolve to a registered tool. Checked here (pending→failed) so the
 	// run never briefly appears running when it has no chance of succeeding.
 	if err := a.checkCapabilities(); err != nil {
-		a.logAuditError(ctx, runID, err.Error(), "missing_capability")
+		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeMissingCapability)
 		return a.failRun(ctx, err)
 	}
 
@@ -517,13 +517,13 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 	entry, ok := a.toolsByName[internalName]
 	if !ok {
 		err := fmt.Errorf("tool not found: %s", toolName)
-		a.logAuditError(ctx, runID, err.Error(), "tool_error")
+		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeToolError)
 		return "", false, err
 	}
 
 	// Validate input against narrowed schema.
 	if err := mcp.ValidateCall(entry.narrowedSchema, input); err != nil {
-		a.logAuditError(ctx, runID, err.Error(), "schema_violation")
+		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeSchemaViolation)
 		return "", false, fmt.Errorf("schema validation for %s: %w", internalName, err)
 	}
 
@@ -554,9 +554,9 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 		// than a tool_error so all cancellation paths produce consistent audit output.
 		// context.Background() is used because ctx may already be done.
 		if ctx.Err() != nil {
-			a.logAuditError(context.Background(), runID, "run cancelled", "cancelled")
+			a.logAuditError(context.Background(), runID, "run cancelled", model.ErrorCodeCancelled)
 		} else {
-			a.logAuditError(context.Background(), runID, err.Error(), "tool_error")
+			a.logAuditError(context.Background(), runID, err.Error(), model.ErrorCodeToolError)
 		}
 		return "", false, fmt.Errorf("calling tool %s: %w", internalName, err)
 	}

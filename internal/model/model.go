@@ -189,6 +189,39 @@ func (s ApprovalStatus) Valid() bool {
 	return false
 }
 
+// ErrorCode identifies the machine-readable reason an agent run step failed.
+// Values are serialized to JSON and stored in SQLite — do not change existing constants.
+type ErrorCode string
+
+const (
+	ErrorCodeToolError             ErrorCode = "tool_error"
+	ErrorCodeAPIError              ErrorCode = "api_error"
+	ErrorCodeCancelled             ErrorCode = "cancelled"
+	ErrorCodeMissingCapability     ErrorCode = "missing_capability"
+	ErrorCodeApprovalRejected      ErrorCode = "approval_rejected"
+	ErrorCodeTokenBudgetExceeded   ErrorCode = "token_budget_exceeded"
+	ErrorCodeToolCallLimitExceeded ErrorCode = "tool_call_limit_exceeded"
+	ErrorCodeSchemaViolation       ErrorCode = "schema_violation"
+)
+
+func (e ErrorCode) String() string { return string(e) }
+func (e ErrorCode) Valid() bool {
+	switch e {
+	case ErrorCodeToolError, ErrorCodeAPIError, ErrorCodeCancelled, ErrorCodeMissingCapability,
+		ErrorCodeApprovalRejected, ErrorCodeTokenBudgetExceeded, ErrorCodeToolCallLimitExceeded,
+		ErrorCodeSchemaViolation:
+		return true
+	}
+	return false
+}
+
+// ErrorStepContent is the structured payload written to audit steps of type error.
+// It matches the ErrorContent interface expected by the frontend (frontend/src/components/RunDetail/types.ts).
+type ErrorStepContent struct {
+	Message string    `json:"message"`
+	Code    ErrorCode `json:"code"`
+}
+
 // ParsedPolicy is the authoritative in-memory representation of a policy's
 // configuration, derived from parsing the raw YAML blob stored in the DB.
 type ParsedPolicy struct {

@@ -1749,7 +1749,7 @@ func TestLogAuditError(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	ba.logAuditError(context.Background(), "run1", "something went wrong", "test_code")
+	ba.logAuditError(context.Background(), "run1", "something went wrong", model.ErrorCode("test_code"))
 
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

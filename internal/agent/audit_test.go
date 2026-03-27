@@ -345,7 +345,7 @@ func TestLogAuditError_SuccessfulWrite_NoLog(t *testing.T) {
 	logAuditError(context.Background(), w, Step{
 		RunID:   "r1",
 		Type:    model.StepTypeError,
-		Content: map[string]string{"message": "test", "code": "test_code"},
+		Content: model.ErrorStepContent{Message: "test", Code: "test_code"},
 	})
 	w.Close()
 
@@ -367,7 +367,7 @@ func TestLogAuditError_FailedWrite_LogsWarn(t *testing.T) {
 	logAuditError(context.Background(), w, Step{
 		RunID:   "nonexistent-run",
 		Type:    model.StepTypeError,
-		Content: map[string]string{"message": "test", "code": "test_code"},
+		Content: model.ErrorStepContent{Message: "test", Code: "test_code"},
 	})
 	w.Close()
 

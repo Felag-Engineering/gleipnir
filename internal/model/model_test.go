@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"sort"
 	"testing"
 
@@ -128,6 +129,55 @@ func TestEnumValid(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("ErrorCode", func(t *testing.T) {
+		valid := []ErrorCode{
+			ErrorCodeToolError,
+			ErrorCodeAPIError,
+			ErrorCodeCancelled,
+			ErrorCodeMissingCapability,
+			ErrorCodeApprovalRejected,
+			ErrorCodeTokenBudgetExceeded,
+			ErrorCodeToolCallLimitExceeded,
+			ErrorCodeSchemaViolation,
+		}
+		for _, v := range valid {
+			if !v.Valid() {
+				t.Errorf("expected %q to be valid", v)
+			}
+		}
+		for _, bad := range []ErrorCode{"", "invalid"} {
+			if bad.Valid() {
+				t.Errorf("expected %q to be invalid", bad)
+			}
+		}
+	})
+}
+
+func TestErrorStepContent_JSON(t *testing.T) {
+	c := ErrorStepContent{
+		Message: "tool not found: foo.bar",
+		Code:    ErrorCodeToolError,
+	}
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	want := `{"message":"tool not found: foo.bar","code":"tool_error"}`
+	if string(data) != want {
+		t.Errorf("JSON = %s, want %s", data, want)
+	}
+
+	var got ErrorStepContent
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if got.Message != c.Message {
+		t.Errorf("Message = %q, want %q", got.Message, c.Message)
+	}
+	if got.Code != c.Code {
+		t.Errorf("Code = %q, want %q", got.Code, c.Code)
+	}
 }
 
 func TestNewULID(t *testing.T) {
