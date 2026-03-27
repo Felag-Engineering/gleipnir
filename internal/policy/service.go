@@ -17,13 +17,13 @@ type ToolLookup interface {
 	ToolExists(ctx context.Context, serverName, toolName string) (bool, error)
 }
 
-// ModelValidator validates that a model ID is accepted by the Anthropic API.
+// ModelValidator validates that a model name is recognized by the named provider.
 // Validation is non-blocking: a failure is reported as a warning in SaveResult
-// rather than preventing the policy from being saved. The local allowlist in
-// Validate() rejects unknown model IDs before this is called, so API-level
-// failures (auth errors, network issues) are safe to demote to warnings.
+// rather than preventing the policy from being saved. An unrecognized model
+// name might be a newly released model not yet in the provider's allowlist.
+// *llm.ProviderRegistry satisfies this interface via its ValidateModelName method.
 type ModelValidator interface {
-	ValidateModel(ctx context.Context, modelID string) error
+	ValidateModelName(ctx context.Context, provider, modelName string) error
 }
 
 // OptionsValidator looks up a provider and validates its options.
@@ -43,14 +43,14 @@ type SaveResult struct {
 // Service orchestrates policy parse → validate → store operations.
 type Service struct {
 	store            *db.Store
-	lookup           ToolLookup      // nil if MCP registry is unavailable
-	modelValidator   ModelValidator  // nil skips API-level model validation
+	lookup           ToolLookup       // nil if MCP registry is unavailable
+	modelValidator   ModelValidator   // nil skips model name validation
 	optionsValidator OptionsValidator // nil skips provider options validation
 }
 
 // NewService returns a policy Service. lookup may be nil if MCP registry
 // checking is not yet available — tool reference warnings will be skipped.
-// modelValidator may be nil — API-level model validation will be skipped.
+// modelValidator may be nil — model name validation will be skipped.
 // optionsValidator may be nil — provider options validation will be skipped.
 func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidator, optionsValidator OptionsValidator) *Service {
 	return &Service{store: store, lookup: lookup, modelValidator: modelValidator, optionsValidator: optionsValidator}
@@ -73,7 +73,7 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 	// can be appended without returning an error.
 	var warnings []string
 
-	if err := s.validateModel(ctx, parsed.Agent.ModelConfig.Name); err != nil {
+	if err := s.validateModel(ctx, parsed); err != nil {
 		warnings = append(warnings, err.Error())
 	}
 
@@ -132,7 +132,7 @@ func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (
 
 	var warnings []string
 
-	if err := s.validateModel(ctx, parsed.Agent.ModelConfig.Name); err != nil {
+	if err := s.validateModel(ctx, parsed); err != nil {
 		warnings = append(warnings, err.Error())
 	}
 
@@ -247,13 +247,17 @@ func (s *Service) validateProviderOptions(parsed *model.ParsedPolicy) error {
 }
 
 // validateModel calls the modelValidator if one is configured. Returns nil
-// when modelValidator is nil (skips API-level check). The caller treats any
-// returned error as a non-blocking warning — see ModelValidator doc comment.
-func (s *Service) validateModel(ctx context.Context, modelID string) error {
+// when modelValidator is nil (skips check). The caller treats any returned
+// error as a non-blocking warning — see ModelValidator doc comment.
+func (s *Service) validateModel(ctx context.Context, parsed *model.ParsedPolicy) error {
 	if s.modelValidator == nil {
 		return nil
 	}
-	return s.modelValidator.ValidateModel(ctx, modelID)
+	return s.modelValidator.ValidateModelName(
+		ctx,
+		parsed.Agent.ModelConfig.Provider,
+		parsed.Agent.ModelConfig.Name,
+	)
 }
 
 // checkToolRefs issues non-blocking warnings for tool references that don't

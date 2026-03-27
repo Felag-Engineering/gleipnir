@@ -9,6 +9,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -45,6 +46,13 @@ var _ llm.LLMClient = (*AnthropicClient)(nil)
 // AnthropicClient implements llm.LLMClient using the Anthropic Claude API.
 type AnthropicClient struct {
 	client *anthropic.Client
+
+	// modelCacheOnce guards the one-time population of modelCache.
+	modelCacheOnce sync.Once
+	// modelCache holds the set of model IDs returned by the API on first call.
+	// nil means the API call failed; the error is stored in modelCacheErr.
+	modelCache    map[string]bool
+	modelCacheErr error
 }
 
 // NewClient constructs an AnthropicClient with the given API key.
@@ -181,6 +189,47 @@ func (c *AnthropicClient) ValidateOptions(options map[string]any) error {
 		return errors.New(strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// fetchModels calls the Anthropic Models API and populates modelCache.
+// It is called at most once per process lifetime via modelCacheOnce.
+func (c *AnthropicClient) fetchModels(ctx context.Context) {
+	c.modelCacheOnce.Do(func() {
+		pager := c.client.Models.ListAutoPaging(ctx, anthropic.ModelListParams{})
+		cache := make(map[string]bool)
+		for pager.Next() {
+			cache[pager.Current().ID] = true
+		}
+		if err := pager.Err(); err != nil {
+			c.modelCacheErr = fmt.Errorf("anthropic: fetching available models: %w", err)
+			return
+		}
+		c.modelCache = cache
+	})
+}
+
+// ValidateModelName returns nil if modelName is recognized by the Anthropic
+// Models API, or a descriptive error if not. The model list is fetched from
+// the API on the first call and cached for the lifetime of the process.
+// If the API call fails, an error describing the failure is returned so the
+// caller can treat it as a non-blocking warning.
+func (c *AnthropicClient) ValidateModelName(ctx context.Context, modelName string) error {
+	c.fetchModels(ctx)
+
+	if c.modelCacheErr != nil {
+		return fmt.Errorf("could not validate model name: %w", c.modelCacheErr)
+	}
+
+	if c.modelCache[modelName] {
+		return nil
+	}
+
+	known := make([]string, 0, len(c.modelCache))
+	for name := range c.modelCache {
+		known = append(known, name)
+	}
+	sort.Strings(known)
+	return fmt.Errorf("unknown Anthropic model %q; known models: %s", modelName, strings.Join(known, ", "))
 }
 
 // resolveMaxTokens determines the effective max_tokens for a request.

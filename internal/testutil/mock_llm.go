@@ -65,6 +65,9 @@ func (m *MockLLMClient) StreamMessage(ctx context.Context, req llm.MessageReques
 // ValidateOptions returns nil (no validation in mocks).
 func (m *MockLLMClient) ValidateOptions(_ map[string]any) error { return nil }
 
+// ValidateModelName returns nil (no validation in mocks).
+func (m *MockLLMClient) ValidateModelName(_ context.Context, _ string) error { return nil }
+
 // Calls returns the number of CreateMessage invocations.
 func (m *MockLLMClient) Calls() int {
 	m.mu.Lock()
@@ -93,7 +96,8 @@ func (noopLLMClient) StreamMessage(_ context.Context, _ llm.MessageRequest) (<-c
 	panic("NoopLLMClient: StreamMessage called unexpectedly")
 }
 
-func (noopLLMClient) ValidateOptions(_ map[string]any) error { return nil }
+func (noopLLMClient) ValidateOptions(_ map[string]any) error                  { return nil }
+func (noopLLMClient) ValidateModelName(_ context.Context, _ string) error     { return nil }
 
 // NewNoopLLMClient returns an llm.LLMClient that panics if CreateMessage or
 // StreamMessage is called. Use in tests that never reach the API loop.
@@ -122,7 +126,8 @@ func (c *blockingLLMClient) StreamMessage(ctx context.Context, req llm.MessageRe
 	return nil, err
 }
 
-func (c *blockingLLMClient) ValidateOptions(_ map[string]any) error { return nil }
+func (c *blockingLLMClient) ValidateOptions(_ map[string]any) error              { return nil }
+func (c *blockingLLMClient) ValidateModelName(_ context.Context, _ string) error { return nil }
 
 // NewBlockingLLMClient returns an llm.LLMClient that blocks until the context
 // is cancelled. The transport reference lets callers synchronise on call starts.
@@ -142,7 +147,8 @@ func (e *errorLLMClient) StreamMessage(_ context.Context, _ llm.MessageRequest) 
 	return nil, e.err
 }
 
-func (e *errorLLMClient) ValidateOptions(_ map[string]any) error { return nil }
+func (e *errorLLMClient) ValidateOptions(_ map[string]any) error              { return nil }
+func (e *errorLLMClient) ValidateModelName(_ context.Context, _ string) error { return nil }
 
 // NewErrorLLMClient returns an llm.LLMClient that always returns err from
 // CreateMessage and StreamMessage.

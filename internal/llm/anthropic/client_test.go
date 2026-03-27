@@ -924,3 +924,151 @@ func TestStreamMessage_ContextCancellation(t *testing.T) {
 		t.Error("expected nil channel on error, got non-nil")
 	}
 }
+
+// modelsListJSON builds a minimal Anthropic Models list response JSON string.
+// has_more=false so the auto-pager stops after the first page.
+func modelsListJSON(modelIDs []string) string {
+	type modelEntry struct {
+		ID          string `json:"id"`
+		CreatedAt   string `json:"created_at"`
+		DisplayName string `json:"display_name"`
+		Type        string `json:"type"`
+	}
+	entries := make([]modelEntry, len(modelIDs))
+	for i, id := range modelIDs {
+		entries[i] = modelEntry{
+			ID:          id,
+			CreatedAt:   "2024-01-01T00:00:00Z",
+			DisplayName: id,
+			Type:        "model",
+		}
+	}
+	data, _ := json.Marshal(entries)
+	return fmt.Sprintf(`{"data":%s,"has_more":false,"first_id":"","last_id":""}`, data)
+}
+
+func TestAnthropicClient_ValidateModelName(t *testing.T) {
+	availableModels := []string{
+		"claude-sonnet-4-6",
+		"claude-opus-4-0",
+		"claude-sonnet-4-5-20250929",
+	}
+
+	tests := []struct {
+		name        string
+		modelName   string
+		serverFails bool
+		wantErr     bool
+		wantMsg     string
+	}{
+		{
+			name:      "known model returned by API",
+			modelName: "claude-sonnet-4-6",
+			wantErr:   false,
+		},
+		{
+			name:      "another known model",
+			modelName: "claude-opus-4-0",
+			wantErr:   false,
+		},
+		{
+			name:      "known dated variant",
+			modelName: "claude-sonnet-4-5-20250929",
+			wantErr:   false,
+		},
+		{
+			name:      "model not in API list",
+			modelName: "gemini-2.0-flash",
+			wantErr:   true,
+			wantMsg:   "unknown Anthropic model",
+		},
+		{
+			name:      "nonsense name",
+			modelName: "not-a-model",
+			wantErr:   true,
+			wantMsg:   "unknown Anthropic model",
+		},
+		{
+			name:      "empty string",
+			modelName: "",
+			wantErr:   true,
+			wantMsg:   "unknown Anthropic model",
+		},
+		{
+			name:        "API failure returns error",
+			modelName:   "claude-sonnet-4-6",
+			serverFails: true,
+			wantErr:     true,
+			wantMsg:     "could not validate model name",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var server *httptest.Server
+			if tc.serverFails {
+				server = serveJSON(t, http.StatusInternalServerError, `{"type":"error","error":{"type":"api_error","message":"internal server error"}}`)
+			} else {
+				modelsBody := modelsListJSON(availableModels)
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/v1/models" {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusOK)
+						w.Write([]byte(modelsBody)) //nolint:errcheck
+						return
+					}
+					// Unexpected endpoint.
+					w.WriteHeader(http.StatusNotFound)
+				}))
+			}
+			defer server.Close()
+
+			// Each sub-test gets its own client so the cache is fresh.
+			client := newTestClient(t, server)
+			err := client.ValidateModelName(context.Background(), tc.modelName)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for model %q, got nil", tc.modelName)
+				}
+				if tc.wantMsg != "" && !strings.Contains(err.Error(), tc.wantMsg) {
+					t.Errorf("error %q does not contain %q", err.Error(), tc.wantMsg)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("expected nil for model %q, got: %v", tc.modelName, err)
+				}
+			}
+		})
+	}
+}
+
+func TestAnthropicClient_ValidateModelName_CachesResult(t *testing.T) {
+	availableModels := []string{"claude-sonnet-4-6"}
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			callCount++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(modelsListJSON(availableModels))) //nolint:errcheck
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	ctx := context.Background()
+
+	// Call ValidateModelName several times — the models list API should only be
+	// hit once regardless of how many times we validate.
+	for i := 0; i < 5; i++ {
+		if err := client.ValidateModelName(ctx, "claude-sonnet-4-6"); err != nil {
+			t.Fatalf("call %d: unexpected error: %v", i, err)
+		}
+	}
+
+	if callCount != 1 {
+		t.Errorf("models list API called %d times, want 1 (cache not working)", callCount)
+	}
+}

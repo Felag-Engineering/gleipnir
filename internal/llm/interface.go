@@ -159,4 +159,9 @@ type LLMClient interface {
 	// It returns an error describing all validation problems if any are found.
 	// Empty or nil options are valid.
 	ValidateOptions(options map[string]any) error
+
+	// ValidateModelName returns nil if modelName is recognized by this provider,
+	// or a descriptive error if not. Implementations may make a network call to
+	// fetch available models; results are cached for the lifetime of the process.
+	ValidateModelName(ctx context.Context, modelName string) error
 }

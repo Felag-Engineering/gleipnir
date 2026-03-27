@@ -10,10 +10,11 @@ import (
 
 // stubClient is a minimal LLMClient implementation for registry tests.
 // CreateMessage and StreamMessage panic on call to catch misuse. ValidateOptions
-// returns validateErr when non-nil, so tests can exercise the validation path.
+// and ValidateModelName return their respective error fields when non-nil.
 type stubClient struct {
-	name        string
-	validateErr error // if non-nil, returned from ValidateOptions
+	name             string
+	validateErr      error // if non-nil, returned from ValidateOptions
+	validateModelErr error // if non-nil, returned from ValidateModelName
 }
 
 func (s *stubClient) CreateMessage(_ context.Context, _ MessageRequest) (*MessageResponse, error) {
@@ -26,6 +27,10 @@ func (s *stubClient) StreamMessage(_ context.Context, _ MessageRequest) (<-chan 
 
 func (s *stubClient) ValidateOptions(_ map[string]any) error {
 	return s.validateErr
+}
+
+func (s *stubClient) ValidateModelName(_ context.Context, _ string) error {
+	return s.validateModelErr
 }
 
 func TestProviderRegistry_RegisterAndGet(t *testing.T) {
@@ -150,5 +155,43 @@ func TestProviderRegistry_ValidateProviderOptions_UnknownProvider(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "unknown") {
 		t.Errorf("error %q does not contain provider name %q", err.Error(), "unknown")
+	}
+}
+
+func TestProviderRegistry_ValidateModelName_KnownModel(t *testing.T) {
+	r := NewProviderRegistry()
+	r.Register("anthropic", &stubClient{name: "anthropic", validateModelErr: nil})
+
+	err := r.ValidateModelName(context.Background(), "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("expected nil for known model, got: %v", err)
+	}
+}
+
+func TestProviderRegistry_ValidateModelName_UnknownModel(t *testing.T) {
+	r := NewProviderRegistry()
+	r.Register("anthropic", &stubClient{
+		name:             "anthropic",
+		validateModelErr: fmt.Errorf("unknown Anthropic model %q", "not-a-model"),
+	})
+
+	err := r.ValidateModelName(context.Background(), "anthropic", "not-a-model")
+	if err == nil {
+		t.Fatal("expected error for unknown model, got nil")
+	}
+	if !strings.Contains(err.Error(), "not-a-model") {
+		t.Errorf("error %q does not contain model name", err.Error())
+	}
+}
+
+func TestProviderRegistry_ValidateModelName_UnknownProvider(t *testing.T) {
+	r := NewProviderRegistry()
+
+	err := r.ValidateModelName(context.Background(), "nonexistent", "claude-sonnet-4-6")
+	if err == nil {
+		t.Fatal("expected error for unknown provider, got nil")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Errorf("error %q does not contain provider name %q", err.Error(), "nonexistent")
 	}
 }

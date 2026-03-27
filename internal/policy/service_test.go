@@ -24,10 +24,10 @@ func (s *stubLookup) ToolExists(_ context.Context, serverName, toolName string) 
 
 // stubModelValidator implements ModelValidator for testing.
 type stubModelValidator struct {
-	err error // if non-nil, ValidateModel returns this error
+	err error // if non-nil, ValidateModelName returns this error
 }
 
-func (s *stubModelValidator) ValidateModel(_ context.Context, _ string) error {
+func (s *stubModelValidator) ValidateModelName(_ context.Context, provider, modelName string) error {
 	return s.err
 }
 
@@ -244,6 +244,23 @@ func TestService_Create_NilModelValidatorSkipsCheck(t *testing.T) {
 	}
 	if result.Policy.ID == "" {
 		t.Error("expected non-empty policy ID")
+	}
+}
+
+func TestService_Create_ModelValidationWarningIncludesContext(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	mv := &stubModelValidator{err: fmt.Errorf("unknown Anthropic model %q", "claude-sonnet-4-6")}
+	svc := NewService(store, nil, mv, nil)
+
+	result, err := svc.Create(context.Background(), validYAMLWithOptions)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(result.Warnings), result.Warnings)
+	}
+	if !strings.Contains(result.Warnings[0], "claude-sonnet-4-6") {
+		t.Errorf("warning %q does not mention model name", result.Warnings[0])
 	}
 }
 

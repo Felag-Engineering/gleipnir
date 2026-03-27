@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
@@ -48,6 +49,21 @@ func (r *ProviderRegistry) ValidateProviderOptions(provider string, options map[
 		return fmt.Errorf("unknown provider %q: cannot validate model options", provider)
 	}
 	if err := client.ValidateOptions(options); err != nil {
+		return fmt.Errorf("provider %q: %w", provider, err)
+	}
+	return nil
+}
+
+// ValidateModelName looks up provider by name and delegates model name
+// validation to its client. This method satisfies the policy.ModelValidator
+// interface so *ProviderRegistry can be passed to policy.NewService without
+// the policy package importing internal/llm.
+func (r *ProviderRegistry) ValidateModelName(ctx context.Context, provider, modelName string) error {
+	client, err := r.Get(provider)
+	if err != nil {
+		return fmt.Errorf("unknown provider %q: cannot validate model name", provider)
+	}
+	if err := client.ValidateModelName(ctx, modelName); err != nil {
 		return fmt.Errorf("provider %q: %w", provider, err)
 	}
 	return nil
