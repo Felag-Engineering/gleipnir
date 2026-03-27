@@ -130,7 +130,7 @@ func run(cfg config.Config) error {
 		r.With(auth.RequireRole(model.RoleOperator)).Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
 		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleApprover)).Post("/api/v1/runs/{runID}/approval", runsHandler.SubmitApproval)
 
-		policySvc := policy.NewService(store, nil, policy.NewAnthropicModelValidator(&claudeClient))
+		policySvc := policy.NewService(store, nil, policy.NewAnthropicModelValidator(&claudeClient), providerRegistry)
 
 		// Mount /api/v1/policies, /api/v1/mcp, /api/v1/stats, and /api/v1/health route groups.
 		r.Mount("/api/v1", api.NewRouter(store, policySvc, registry))

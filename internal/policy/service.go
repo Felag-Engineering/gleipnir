@@ -26,6 +26,13 @@ type ModelValidator interface {
 	ValidateModel(ctx context.Context, modelID string) error
 }
 
+// OptionsValidator looks up a provider and validates its options.
+// Defined as an interface so the policy package does not import internal/llm directly.
+// *llm.ProviderRegistry satisfies this interface via its ValidateProviderOptions method.
+type OptionsValidator interface {
+	ValidateProviderOptions(provider string, options map[string]any) error
+}
+
 // SaveResult holds the outcome of saving a policy, including any non-blocking
 // warnings (e.g. unresolved tool references).
 type SaveResult struct {
@@ -35,17 +42,18 @@ type SaveResult struct {
 
 // Service orchestrates policy parse → validate → store operations.
 type Service struct {
-	store          *db.Store
-	lookup         ToolLookup     // nil if MCP registry is unavailable
-	modelValidator ModelValidator // nil skips API-level model validation
+	store            *db.Store
+	lookup           ToolLookup      // nil if MCP registry is unavailable
+	modelValidator   ModelValidator  // nil skips API-level model validation
+	optionsValidator OptionsValidator // nil skips provider options validation
 }
 
 // NewService returns a policy Service. lookup may be nil if MCP registry
 // checking is not yet available — tool reference warnings will be skipped.
-// modelValidator may be nil — API-level model validation will be skipped,
-// though the local allowlist check in Validate still runs.
-func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidator) *Service {
-	return &Service{store: store, lookup: lookup, modelValidator: modelValidator}
+// modelValidator may be nil — API-level model validation will be skipped.
+// optionsValidator may be nil — provider options validation will be skipped.
+func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidator, optionsValidator OptionsValidator) *Service {
+	return &Service{store: store, lookup: lookup, modelValidator: modelValidator, optionsValidator: optionsValidator}
 }
 
 // Create parses and validates the YAML, checks tool references against the
@@ -57,6 +65,9 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 	}
 	if err := Validate(parsed); err != nil {
 		return nil, err
+	}
+	if err := s.validateProviderOptions(parsed); err != nil {
+		return nil, &ValidationError{Errors: []string{err.Error()}}
 	}
 	// Collect warnings before any blocking checks so model validation failures
 	// can be appended without returning an error.
@@ -114,6 +125,9 @@ func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (
 	}
 	if err := Validate(parsed); err != nil {
 		return nil, err
+	}
+	if err := s.validateProviderOptions(parsed); err != nil {
+		return nil, &ValidationError{Errors: []string{err.Error()}}
 	}
 
 	var warnings []string
@@ -216,6 +230,20 @@ func toModelPolicy(row db.Policy) (model.Policy, error) {
 		p.PausedAt = &t
 	}
 	return p, nil
+}
+
+// validateProviderOptions calls the optionsValidator if one is configured.
+// Returns nil when optionsValidator is nil (skips check). The caller treats
+// any returned error as a blocking validation error — invalid options will
+// fail at run time, so catching them at save time is the whole point.
+func (s *Service) validateProviderOptions(parsed *model.ParsedPolicy) error {
+	if s.optionsValidator == nil {
+		return nil
+	}
+	return s.optionsValidator.ValidateProviderOptions(
+		parsed.Agent.ModelConfig.Provider,
+		parsed.Agent.ModelConfig.Options,
+	)
 }
 
 // validateModel calls the modelValidator if one is configured. Returns nil

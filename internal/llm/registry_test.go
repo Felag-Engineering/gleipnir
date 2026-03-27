@@ -2,15 +2,18 @@ package llm
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 )
 
 // stubClient is a minimal LLMClient implementation for registry tests.
-// Its methods are never called in these tests; they panic to catch misuse.
+// CreateMessage and StreamMessage panic on call to catch misuse. ValidateOptions
+// returns validateErr when non-nil, so tests can exercise the validation path.
 type stubClient struct {
-	name string
+	name        string
+	validateErr error // if non-nil, returned from ValidateOptions
 }
 
 func (s *stubClient) CreateMessage(_ context.Context, _ MessageRequest) (*MessageResponse, error) {
@@ -22,7 +25,7 @@ func (s *stubClient) StreamMessage(_ context.Context, _ MessageRequest) (<-chan 
 }
 
 func (s *stubClient) ValidateOptions(_ map[string]any) error {
-	panic("stubClient.ValidateOptions should not be called in registry tests")
+	return s.validateErr
 }
 
 func TestProviderRegistry_RegisterAndGet(t *testing.T) {
@@ -110,4 +113,42 @@ func TestProviderRegistry_ConcurrentReads(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestProviderRegistry_ValidateProviderOptions_Success(t *testing.T) {
+	r := NewProviderRegistry()
+	r.Register("anthropic", &stubClient{name: "anthropic", validateErr: nil})
+
+	err := r.ValidateProviderOptions("anthropic", map[string]any{"temperature": 0.7})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestProviderRegistry_ValidateProviderOptions_InvalidOptions(t *testing.T) {
+	r := NewProviderRegistry()
+	r.Register("anthropic", &stubClient{
+		name:        "anthropic",
+		validateErr: fmt.Errorf("temperature must be between 0 and 1"),
+	})
+
+	err := r.ValidateProviderOptions("anthropic", map[string]any{"temperature": 99.0})
+	if err == nil {
+		t.Fatal("expected error for invalid options, got nil")
+	}
+	if !strings.Contains(err.Error(), "anthropic") {
+		t.Errorf("error %q does not contain provider name %q", err.Error(), "anthropic")
+	}
+}
+
+func TestProviderRegistry_ValidateProviderOptions_UnknownProvider(t *testing.T) {
+	r := NewProviderRegistry()
+
+	err := r.ValidateProviderOptions("unknown", nil)
+	if err == nil {
+		t.Fatal("expected error for unknown provider, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown") {
+		t.Errorf("error %q does not contain provider name %q", err.Error(), "unknown")
+	}
 }

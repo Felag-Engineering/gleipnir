@@ -37,3 +37,18 @@ func (r *ProviderRegistry) Get(name string) (LLMClient, error) {
 	}
 	return client, nil
 }
+
+// ValidateProviderOptions looks up provider by name and delegates option
+// validation to its client. This method satisfies the policy.OptionsValidator
+// interface so *ProviderRegistry can be passed to policy.NewService without
+// the policy package importing internal/llm.
+func (r *ProviderRegistry) ValidateProviderOptions(provider string, options map[string]any) error {
+	client, err := r.Get(provider)
+	if err != nil {
+		return fmt.Errorf("unknown provider %q: cannot validate model options", provider)
+	}
+	if err := client.ValidateOptions(options); err != nil {
+		return fmt.Errorf("provider %q: %w", provider, err)
+	}
+	return nil
+}

@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ agent:
 
 func TestService_Create(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil)
+	svc := NewService(store, nil, nil, nil)
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -65,7 +66,7 @@ func TestService_Create(t *testing.T) {
 
 func TestService_Create_ValidationError(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil)
+	svc := NewService(store, nil, nil, nil)
 
 	_, err := svc.Create(context.Background(), `name: ""`)
 	if err == nil {
@@ -75,7 +76,7 @@ func TestService_Create_ValidationError(t *testing.T) {
 
 func TestService_Create_ParseError(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil)
+	svc := NewService(store, nil, nil, nil)
 
 	_, err := svc.Create(context.Background(), "{{bad yaml")
 	if err == nil {
@@ -86,7 +87,7 @@ func TestService_Create_ParseError(t *testing.T) {
 func TestService_Create_ToolWarnings(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{}}
-	svc := NewService(store, lookup, nil)
+	svc := NewService(store, lookup, nil, nil)
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -103,7 +104,7 @@ func TestService_Create_ToolWarnings(t *testing.T) {
 func TestService_Create_NoWarningWhenToolExists(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{"github.list_repos": true}}
-	svc := NewService(store, lookup, nil)
+	svc := NewService(store, lookup, nil, nil)
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -116,7 +117,7 @@ func TestService_Create_NoWarningWhenToolExists(t *testing.T) {
 
 func TestService_Update(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil)
+	svc := NewService(store, nil, nil, nil)
 
 	createResult, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -145,7 +146,7 @@ agent:
 
 func TestService_Update_ChangedTriggerType_WebhookToManual(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil)
+	svc := NewService(store, nil, nil, nil)
 
 	createResult, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -183,7 +184,7 @@ func TestService_Create_ContextCancelled(t *testing.T) {
 
 	store := testutil.NewTestStore(t)
 	lookup := &stubLookup{existing: map[string]bool{}}
-	svc := NewService(store, lookup, nil)
+	svc := NewService(store, lookup, nil, nil)
 
 	// Parse + validate don't use context, so we test checkToolRefs directly.
 	yamlWithManyTools := `
@@ -214,7 +215,7 @@ agent:
 func TestService_Create_ModelValidatorCalled(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	mv := &stubModelValidator{err: errors.New("model not found")}
-	svc := NewService(store, nil, mv)
+	svc := NewService(store, nil, mv, nil)
 
 	// Model validation failures are non-blocking — the policy is saved and
 	// the error is reported as a warning so a missing API key doesn't hard-block saves.
@@ -235,7 +236,7 @@ func TestService_Create_ModelValidatorCalled(t *testing.T) {
 
 func TestService_Create_NilModelValidatorSkipsCheck(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil)
+	svc := NewService(store, nil, nil, nil)
 
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -248,7 +249,7 @@ func TestService_Create_NilModelValidatorSkipsCheck(t *testing.T) {
 
 func TestService_Update_ModelValidatorCalled(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	svc := NewService(store, nil, nil)
+	svc := NewService(store, nil, nil, nil)
 
 	createResult, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
@@ -256,7 +257,7 @@ func TestService_Update_ModelValidatorCalled(t *testing.T) {
 	}
 
 	mv := &stubModelValidator{err: errors.New("model not found")}
-	svcWithMV := NewService(store, nil, mv)
+	svcWithMV := NewService(store, nil, mv, nil)
 
 	// Model validation failures are non-blocking — the update succeeds and the
 	// error surfaces as a warning.
@@ -272,6 +273,133 @@ func TestService_Update_ModelValidatorCalled(t *testing.T) {
 	}
 	if result.Warnings[0] != "model not found" {
 		t.Errorf("unexpected warning: %s", result.Warnings[0])
+	}
+}
+
+// stubOptionsValidator implements OptionsValidator for testing.
+type stubOptionsValidator struct {
+	err error // returned from ValidateProviderOptions
+}
+
+func (s *stubOptionsValidator) ValidateProviderOptions(provider string, options map[string]any) error {
+	return s.err
+}
+
+const validYAMLWithOptions = `
+name: test-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: github.list_repos
+agent:
+  task: Check all repos
+  model:
+    provider: anthropic
+    name: claude-sonnet-4-6
+    options:
+      temperature: 0.7
+`
+
+func TestService_Create_ValidOptionsPass(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	ov := &stubOptionsValidator{err: nil}
+	svc := NewService(store, nil, nil, ov)
+
+	result, err := svc.Create(context.Background(), validYAMLWithOptions)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Policy.Name != "test-policy" {
+		t.Errorf("name = %q, want %q", result.Policy.Name, "test-policy")
+	}
+}
+
+func TestService_Create_InvalidOptionsError(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	ov := &stubOptionsValidator{err: fmt.Errorf("provider %q: temperature must be between 0 and 1", "anthropic")}
+	svc := NewService(store, nil, nil, ov)
+
+	_, err := svc.Create(context.Background(), validYAMLWithOptions)
+	if err == nil {
+		t.Fatal("expected error for invalid options, got nil")
+	}
+	if !strings.Contains(err.Error(), "anthropic") {
+		t.Errorf("error %q does not contain provider name %q", err.Error(), "anthropic")
+	}
+
+	// Verify the policy was NOT saved.
+	policies, listErr := store.ListPolicies(context.Background())
+	if listErr != nil {
+		t.Fatalf("list: %v", listErr)
+	}
+	if len(policies) != 0 {
+		t.Errorf("expected 0 saved policies, got %d", len(policies))
+	}
+}
+
+func TestService_Create_UnknownProviderError(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	ov := &stubOptionsValidator{err: fmt.Errorf("unknown provider %q: cannot validate model options", "fake")}
+	svc := NewService(store, nil, nil, ov)
+
+	_, err := svc.Create(context.Background(), validYAMLWithOptions)
+	if err == nil {
+		t.Fatal("expected error for unknown provider, got nil")
+	}
+	if !strings.Contains(err.Error(), "fake") {
+		t.Errorf("error %q does not contain provider name %q", err.Error(), "fake")
+	}
+}
+
+func TestService_Create_NilOptionsValidatorSkipsCheck(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	svc := NewService(store, nil, nil, nil)
+
+	result, err := svc.Create(context.Background(), validYAMLWithOptions)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Policy.ID == "" {
+		t.Error("expected non-empty policy ID")
+	}
+}
+
+func TestService_Create_NoModelSectionDefaultsPass(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	ov := &stubOptionsValidator{err: nil}
+	svc := NewService(store, nil, nil, ov)
+
+	// validYAML has no model section; the parser fills in provider defaults.
+	result, err := svc.Create(context.Background(), validYAML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Policy.ID == "" {
+		t.Error("expected non-empty policy ID")
+	}
+}
+
+func TestService_Update_InvalidOptionsError(t *testing.T) {
+	store := testutil.NewTestStore(t)
+
+	// Create with nil validator first so the initial save succeeds.
+	svc := NewService(store, nil, nil, nil)
+	createResult, err := svc.Create(context.Background(), validYAML)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Now update with a validator that rejects the options.
+	ov := &stubOptionsValidator{err: fmt.Errorf("provider %q: temperature must be between 0 and 1", "anthropic")}
+	svcWithOV := NewService(store, nil, nil, ov)
+
+	_, err = svcWithOV.Update(context.Background(), createResult.Policy.ID, validYAMLWithOptions)
+	if err == nil {
+		t.Fatal("expected error for invalid options on update, got nil")
+	}
+	if !strings.Contains(err.Error(), "anthropic") {
+		t.Errorf("error %q does not contain provider name %q", err.Error(), "anthropic")
 	}
 }
 

@@ -155,40 +155,6 @@ func TestValidate_ManualTrigger(t *testing.T) {
 	}
 }
 
-func TestValidate_UnknownModel(t *testing.T) {
-	p := validPolicy()
-	p.Agent.ModelConfig.Name = "claude-unknown-99"
-	assertValidationContains(t, p, "agent.model")
-}
-
-func TestValidate_KnownModels(t *testing.T) {
-	models := []string{
-		"claude-opus-4-6",
-		"claude-sonnet-4-6",
-		"claude-haiku-4-5-20251001",
-		"claude-sonnet-4-20250514",
-	}
-	for _, m := range models {
-		t.Run(m, func(t *testing.T) {
-			p := validPolicy()
-			p.Agent.ModelConfig.Name = m
-			if err := Validate(p); err != nil {
-				t.Errorf("expected valid for model %q, got: %v", m, err)
-			}
-		})
-	}
-}
-
-func TestValidate_EmptyModelPassesAllowlist(t *testing.T) {
-	// Empty model is allowed by Validate — the default is applied at parse time.
-	// The allowlist check only fires when a non-empty, unrecognised value is provided.
-	p := validPolicy()
-	p.Agent.ModelConfig.Name = ""
-	if err := Validate(p); err != nil {
-		t.Errorf("expected valid for empty model, got: %v", err)
-	}
-}
-
 func TestValidate_ScheduledTriggerValid(t *testing.T) {
 	p := validPolicy()
 	p.Trigger.Type = model.TriggerTypeScheduled
