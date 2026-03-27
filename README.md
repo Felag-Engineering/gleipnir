@@ -53,7 +53,7 @@ Every agent run produces a full reasoning trace — thoughts, tool calls, tool r
 
 **Storage:** SQLite with WAL mode. Single file, zero ops, ships in the container.
 
-**Tools:** All tools are MCP tools over HTTP transport. Gleipnir maintains its own capability tag registry (sensor/actuator/feedback) — this metadata lives in Gleipnir's DB, not in the MCP server.
+**Tools:** All tools are MCP tools over HTTP transport. Gleipnir maintains its own capability tag registry (sensor/actuator/feedback) — this metadata lives in Gleipnir's DB, not in the MCP server. For stdio-only MCP servers, see the [Supergateway sidecar guide](docs/stdio-mcp-servers.md).
 
 ---
 
