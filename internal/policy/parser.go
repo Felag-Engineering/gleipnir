@@ -14,10 +14,10 @@ import (
 const (
 	defaultMaxTokensPerRun    = 20000
 	defaultMaxToolCallsPerRun = 50
-	defaultModel              = "claude-sonnet-4-6"
-	// DefaultProvider is the LLM provider used when the policy omits the
-	// provider field. Exported so tests can reference it without hard-coding.
-	DefaultProvider = "anthropic"
+
+	// DefaultProvider is a package-level alias for model.DefaultProvider, kept
+	// for backward compatibility with callers that reference policy.DefaultProvider.
+	DefaultProvider = model.DefaultProvider
 
 	// MaxPolicyYAMLBytes is the maximum allowed size of a raw policy YAML blob.
 	// Enforced before unmarshalling to prevent billion-laughs style DoS attacks.
@@ -118,7 +118,7 @@ func convertCapabilities(r rawCapabilities) model.CapabilitiesConfig {
 }
 
 // convertAgent maps raw YAML agent config to typed AgentConfig.
-// Defaults: model → claude-sonnet-4-6, provider → anthropic, max_tokens_per_run → 20000, max_tool_calls_per_run → 50, concurrency → skip.
+// Defaults: model → model.DefaultModelName, provider → model.DefaultProvider, max_tokens_per_run → 20000, max_tool_calls_per_run → 50, concurrency → skip.
 func convertAgent(r rawAgent) model.AgentConfig {
 	ac := model.AgentConfig{
 		Preamble: strings.TrimSpace(r.Preamble),
@@ -126,16 +126,18 @@ func convertAgent(r rawAgent) model.AgentConfig {
 	}
 
 	if r.Model == "" {
-		ac.Model = defaultModel
+		ac.ModelConfig.Name = model.DefaultModelName
 	} else {
-		ac.Model = r.Model
+		ac.ModelConfig.Name = r.Model
 	}
 
 	if r.Provider == "" {
-		ac.Provider = DefaultProvider
+		ac.ModelConfig.Provider = model.DefaultProvider
 	} else {
-		ac.Provider = r.Provider
+		ac.ModelConfig.Provider = r.Provider
 	}
+
+	ac.ModelConfig.Options = r.Options
 
 	ac.Limits.MaxTokensPerRun = r.Limits.MaxTokensPerRun
 	if ac.Limits.MaxTokensPerRun == 0 {
@@ -185,12 +187,13 @@ type rawTool struct {
 }
 
 type rawAgent struct {
-	Model       string    `yaml:"model"`
-	Provider    string    `yaml:"provider"`
-	Preamble    string    `yaml:"preamble"`
-	Task        string    `yaml:"task"`
-	Limits      rawLimits `yaml:"limits"`
-	Concurrency string    `yaml:"concurrency"`
+	Model       string         `yaml:"model"`
+	Provider    string         `yaml:"provider"`
+	Options     map[string]any `yaml:"options"`
+	Preamble    string         `yaml:"preamble"`
+	Task        string         `yaml:"task"`
+	Limits      rawLimits      `yaml:"limits"`
+	Concurrency string         `yaml:"concurrency"`
 }
 
 type rawLimits struct {

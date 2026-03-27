@@ -84,6 +84,12 @@ const (
 	ConcurrencyReplace  ConcurrencyPolicy = "replace"
 )
 
+// DefaultProvider is the LLM provider used when the policy omits the provider field.
+const DefaultProvider = "anthropic"
+
+// DefaultModelName is the model ID used when the policy omits the model field.
+const DefaultModelName = "claude-sonnet-4-6"
+
 func (s RunStatus) String() string { return string(s) }
 func (s RunStatus) Valid() bool {
 	switch s {
@@ -256,10 +262,17 @@ type ToolCapability struct {
 	Params    map[string]any // policy-level parameter scoping (ADR-017)
 }
 
+// ModelConfig bundles the provider, model name, and provider-specific options
+// for an agent run. Options are validated downstream by the provider, not here.
+type ModelConfig struct {
+	Provider string         `json:"provider"`
+	Name     string         `json:"name"`
+	Options  map[string]any `json:"options,omitempty"`
+}
+
 // AgentConfig holds the prompt fields and runtime limits for an agent run.
 type AgentConfig struct {
-	Model       string
-	Provider    string // LLM provider name, e.g. "anthropic"
+	ModelConfig ModelConfig `json:"model_config"`
 	Preamble    string
 	Task        string
 	Limits      RunLimits

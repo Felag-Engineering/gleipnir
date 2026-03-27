@@ -62,7 +62,7 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 	// can be appended without returning an error.
 	var warnings []string
 
-	if err := s.validateModel(ctx, parsed.Agent.Model); err != nil {
+	if err := s.validateModel(ctx, parsed.Agent.ModelConfig.Name); err != nil {
 		warnings = append(warnings, err.Error())
 	}
 
@@ -118,7 +118,7 @@ func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (
 
 	var warnings []string
 
-	if err := s.validateModel(ctx, parsed.Agent.Model); err != nil {
+	if err := s.validateModel(ctx, parsed.Agent.ModelConfig.Name); err != nil {
 		warnings = append(warnings, err.Error())
 	}
 

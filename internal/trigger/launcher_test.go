@@ -279,7 +279,7 @@ func TestNewAgentFactory_ProviderLookup(t *testing.T) {
 		wantErrContains string // empty means no error expected from provider lookup
 	}{
 		{
-			name:           "known provider anthropic",
+			name:            "known provider anthropic",
 			registerClients: map[string]llm.LLMClient{"anthropic": anthropicClient},
 			policyProvider:  "anthropic",
 			// error may come from agent.New (missing state machine etc.) but
@@ -287,7 +287,7 @@ func TestNewAgentFactory_ProviderLookup(t *testing.T) {
 			wantErrContains: "",
 		},
 		{
-			name:           "known provider google",
+			name:            "known provider google",
 			registerClients: map[string]llm.LLMClient{"google": googleClient},
 			policyProvider:  "google",
 			wantErrContains: "",
@@ -312,7 +312,7 @@ func TestNewAgentFactory_ProviderLookup(t *testing.T) {
 			cfg := agent.Config{
 				Policy: &model.ParsedPolicy{
 					Agent: model.AgentConfig{
-						Provider: tc.policyProvider,
+						ModelConfig: model.ModelConfig{Provider: tc.policyProvider},
 					},
 				},
 			}

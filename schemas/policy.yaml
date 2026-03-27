@@ -122,8 +122,9 @@ agent:
   #   The model the agent will use for this policy.
   #   Supported values depend on the chosen provider.
   #   For anthropic:
-  #     claude-opus-4-6           — most capable, highest cost
   #     claude-sonnet-4-6         — balanced capability and cost (default)
+  #     claude-opus-4-6           — most capable, highest cost
+  #     claude-sonnet-4-20250514  — dated alias for claude-sonnet-4-6
   #     claude-haiku-4-5-20251001 — fastest, lowest cost
   #   Validated against the Anthropic API at save time.
   model: claude-sonnet-4-6
@@ -175,6 +176,12 @@ agent:
     #   Maximum number of MCP tool calls across the entire run.
     #   Run terminates with a failed state if exceeded.
     max_tool_calls_per_run: 50
+
+  # options: map — optional, default: empty
+  #   Provider-specific options (e.g., temperature, top_p).
+  #   Validated downstream by the provider implementation, not by the
+  #   policy parser or validator.
+  options: {}
 
   # concurrency: skip | queue | parallel | replace — optional, default: skip
   #   Behaviour when a trigger fires while a run for this policy is active.

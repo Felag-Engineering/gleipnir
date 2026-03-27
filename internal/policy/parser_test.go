@@ -201,8 +201,8 @@ agent:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.Agent.Model != defaultModel {
-		t.Errorf("model = %q, want %q", p.Agent.Model, defaultModel)
+	if p.Agent.ModelConfig.Name != model.DefaultModelName {
+		t.Errorf("model = %q, want %q", p.Agent.ModelConfig.Name, model.DefaultModelName)
 	}
 }
 
@@ -222,8 +222,8 @@ agent:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.Agent.Model != "claude-opus-4-6" {
-		t.Errorf("model = %q, want %q", p.Agent.Model, "claude-opus-4-6")
+	if p.Agent.ModelConfig.Name != "claude-opus-4-6" {
+		t.Errorf("model = %q, want %q", p.Agent.ModelConfig.Name, "claude-opus-4-6")
 	}
 }
 
@@ -378,8 +378,8 @@ agent:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if p.Agent.Provider != DefaultProvider {
-		t.Errorf("provider = %q, want %q (default)", p.Agent.Provider, DefaultProvider)
+	if p.Agent.ModelConfig.Provider != model.DefaultProvider {
+		t.Errorf("provider = %q, want %q (default)", p.Agent.ModelConfig.Provider, model.DefaultProvider)
 	}
 }
 
@@ -409,8 +409,8 @@ agent:
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if p.Agent.Provider != tc.provider {
-				t.Errorf("provider = %q, want %q", p.Agent.Provider, tc.provider)
+			if p.Agent.ModelConfig.Provider != tc.provider {
+				t.Errorf("provider = %q, want %q", p.Agent.ModelConfig.Provider, tc.provider)
 			}
 		})
 	}

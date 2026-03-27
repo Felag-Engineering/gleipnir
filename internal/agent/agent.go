@@ -244,7 +244,7 @@ func (a *BoundAgent) runAPILoop(
 		}
 
 		req := llm.MessageRequest{
-			Model:        a.policy.Agent.Model,
+			Model:        a.policy.Agent.ModelConfig.Name,
 			MaxTokens:    maxTokens,
 			SystemPrompt: systemPrompt,
 			History:      history,
@@ -433,11 +433,12 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	tools := a.buildToolDefinitions()
 
 	// capabilitySnapshot is the content written to the capability_snapshot step (ADR-018).
-	// Including the model alongside tools makes the snapshot a complete record of
+	// Including provider and model alongside tools makes the snapshot a complete record of
 	// the agent's configuration at run start.
 	type capabilitySnapshot struct {
-		Model string              `json:"model"`
-		Tools []model.GrantedTool `json:"tools"`
+		Provider string              `json:"provider"`
+		Model    string              `json:"model"`
+		Tools    []model.GrantedTool `json:"tools"`
 	}
 
 	// Write capability snapshot step (ADR-018) — always the first step.
@@ -447,8 +448,9 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		RunID: runID,
 		Type:  model.StepTypeCapabilitySnapshot,
 		Content: capabilitySnapshot{
-			Model: a.policy.Agent.Model,
-			Tools: grantedTools,
+			Provider: a.policy.Agent.ModelConfig.Provider,
+			Model:    a.policy.Agent.ModelConfig.Name,
+			Tools:    grantedTools,
 		},
 	}); err != nil {
 		return a.failRun(ctx, fmt.Errorf("writing capability snapshot: %w", err))

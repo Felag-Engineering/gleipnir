@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/oklog/ulid/v2"
@@ -177,6 +178,53 @@ func TestErrorStepContent_JSON(t *testing.T) {
 	}
 	if got.Code != c.Code {
 		t.Errorf("Code = %q, want %q", got.Code, c.Code)
+	}
+}
+
+func TestModelConfig_JSONRoundTrip(t *testing.T) {
+	t.Run("with options", func(t *testing.T) {
+		mc := ModelConfig{
+			Provider: "anthropic",
+			Name:     "claude-sonnet-4-20250514",
+			Options:  map[string]any{"temperature": 0.7},
+		}
+		data, err := json.Marshal(mc)
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		var got ModelConfig
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("json.Unmarshal: %v", err)
+		}
+		if got.Provider != mc.Provider {
+			t.Errorf("Provider = %q, want %q", got.Provider, mc.Provider)
+		}
+		if got.Name != mc.Name {
+			t.Errorf("Name = %q, want %q", got.Name, mc.Name)
+		}
+		if got.Options["temperature"] != mc.Options["temperature"] {
+			t.Errorf("Options[temperature] = %v, want %v", got.Options["temperature"], mc.Options["temperature"])
+		}
+	})
+
+	t.Run("nil options omitted from json", func(t *testing.T) {
+		mc := ModelConfig{Provider: "anthropic", Name: "claude-sonnet-4-20250514"}
+		data, err := json.Marshal(mc)
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		if strings.Contains(string(data), `"options"`) {
+			t.Errorf("expected options key to be absent with omitempty, got: %s", data)
+		}
+	})
+}
+
+func TestModelConfig_Defaults(t *testing.T) {
+	if DefaultProvider != "anthropic" {
+		t.Errorf("DefaultProvider = %q, want %q", DefaultProvider, "anthropic")
+	}
+	if DefaultModelName != "claude-sonnet-4-6" {
+		t.Errorf("DefaultModelName = %q, want %q", DefaultModelName, "claude-sonnet-4-6")
 	}
 }
 

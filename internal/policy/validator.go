@@ -124,6 +124,7 @@ var knownModels = map[string]bool{
 	"claude-opus-4-6":           true,
 	"claude-sonnet-4-6":         true,
 	"claude-haiku-4-5-20251001": true,
+	"claude-sonnet-4-20250514":  true,
 }
 
 // validateAgent checks agent config and cross-validates against capabilities.
@@ -132,8 +133,8 @@ var knownModels = map[string]bool{
 func validateAgent(a model.AgentConfig, c model.CapabilitiesConfig) []string {
 	var errs []string
 
-	if a.Model != "" && !knownModels[a.Model] {
-		errs = append(errs, fmt.Sprintf("agent.model %q is not a supported model; must be one of: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5-20251001", a.Model))
+	if a.ModelConfig.Name != "" && !knownModels[a.ModelConfig.Name] {
+		errs = append(errs, fmt.Sprintf("agent.model %q is not a supported model; must be one of: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-sonnet-4-20250514", a.ModelConfig.Name))
 	}
 
 	if a.Task == "" {

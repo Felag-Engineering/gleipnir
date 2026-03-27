@@ -26,7 +26,7 @@ type AgentFactory func(cfg agent.Config) (*agent.BoundAgent, error)
 // the provider name so the run can be marked failed with a clear message.
 func NewAgentFactory(registry *llm.ProviderRegistry) AgentFactory {
 	return func(cfg agent.Config) (*agent.BoundAgent, error) {
-		client, err := registry.Get(cfg.Policy.Agent.Provider)
+		client, err := registry.Get(cfg.Policy.Agent.ModelConfig.Provider)
 		if err != nil {
 			return nil, fmt.Errorf("provider lookup: %w", err)
 		}
