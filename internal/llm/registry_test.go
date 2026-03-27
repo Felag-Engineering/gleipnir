@@ -21,7 +21,7 @@ func (s *stubClient) StreamMessage(_ context.Context, _ MessageRequest) (<-chan 
 	panic("stubClient.StreamMessage should not be called in registry tests")
 }
 
-func (s *stubClient) ValidateOptions(_ string) error {
+func (s *stubClient) ValidateOptions(_ map[string]any) error {
 	panic("stubClient.ValidateOptions should not be called in registry tests")
 }
 
@@ -111,4 +111,3 @@ func TestProviderRegistry_ConcurrentReads(t *testing.T) {
 	}
 	wg.Wait()
 }
-

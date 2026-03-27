@@ -155,7 +155,8 @@ type LLMClient interface {
 	// error occurs. The final chunk carries Usage and StopReason.
 	StreamMessage(ctx context.Context, req MessageRequest) (<-chan MessageChunk, error)
 
-	// ValidateOptions checks whether the given model ID is valid for this
-	// provider. Returns an error describing the problem if not.
-	ValidateOptions(model string) error
+	// ValidateOptions validates provider-specific options from the policy YAML.
+	// It returns an error describing all validation problems if any are found.
+	// Empty or nil options are valid.
+	ValidateOptions(options map[string]any) error
 }

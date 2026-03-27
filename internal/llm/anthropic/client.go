@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"sort"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -14,6 +17,11 @@ import (
 )
 
 const defaultMaxTokens = 4096
+
+var validOptions = map[string]bool{
+	"enable_prompt_caching": true,
+	"max_tokens":            true,
+}
 
 // Compile-time check that AnthropicClient satisfies the LLMClient interface.
 var _ llm.LLMClient = (*AnthropicClient)(nil)
@@ -67,8 +75,58 @@ func (c *AnthropicClient) StreamMessage(_ context.Context, _ llm.MessageRequest)
 	return nil, fmt.Errorf("anthropic: StreamMessage: %w", errors.ErrUnsupported)
 }
 
-// ValidateOptions is not yet implemented.
-func (c *AnthropicClient) ValidateOptions(_ string) error {
+// ValidateOptions validates provider-specific options from the policy YAML.
+// Accepted keys: "enable_prompt_caching" (bool), "max_tokens" (positive int).
+// All errors are collected before returning so the caller sees every problem at once.
+func (c *AnthropicClient) ValidateOptions(options map[string]any) error {
+	if options == nil {
+		return nil
+	}
+
+	var errs []string
+
+	keys := make([]string, 0, len(options))
+	for key := range options {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		if !validOptions[key] {
+			errs = append(errs, fmt.Sprintf("unknown option: %s", key))
+		}
+	}
+
+	if v, ok := options["enable_prompt_caching"]; ok {
+		if _, isBool := v.(bool); !isBool {
+			errs = append(errs, fmt.Sprintf("option \"enable_prompt_caching\": expected bool, got %T", v))
+		}
+	}
+
+	if v, ok := options["max_tokens"]; ok {
+		switch val := v.(type) {
+		case int:
+			if val <= 0 {
+				errs = append(errs, fmt.Sprintf("option \"max_tokens\": must be positive, got %d", val))
+			}
+		case int64:
+			if val <= 0 {
+				errs = append(errs, fmt.Sprintf("option \"max_tokens\": must be positive, got %d", val))
+			}
+		case float64:
+			if val != math.Trunc(val) {
+				errs = append(errs, fmt.Sprintf("option \"max_tokens\": must be a whole number, got %v", val))
+			} else if val <= 0 {
+				errs = append(errs, fmt.Sprintf("option \"max_tokens\": must be positive, got %d", int(val)))
+			}
+		default:
+			errs = append(errs, fmt.Sprintf("option \"max_tokens\": expected numeric, got %T", v))
+		}
+	}
+
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
 	return nil
 }
 

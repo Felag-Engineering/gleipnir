@@ -525,6 +525,131 @@ func TestTokenUsage(t *testing.T) {
 	}
 }
 
+func TestValidateOptions(t *testing.T) {
+	// ValidateOptions is pure validation; the SDK client created here is unused.
+	client := NewClient("test-key")
+
+	tests := []struct {
+		name        string
+		options     map[string]any
+		wantErr     bool
+		wantSubstrs []string
+	}{
+		{
+			name:    "nil map passes",
+			options: nil,
+			wantErr: false,
+		},
+		{
+			name:    "empty map passes",
+			options: map[string]any{},
+			wantErr: false,
+		},
+		{
+			name:    "valid bool and int",
+			options: map[string]any{"enable_prompt_caching": true, "max_tokens": 4096},
+			wantErr: false,
+		},
+		{
+			name:    "valid enable_prompt_caching only",
+			options: map[string]any{"enable_prompt_caching": false},
+			wantErr: false,
+		},
+		{
+			name:    "valid max_tokens only",
+			options: map[string]any{"max_tokens": 8192},
+			wantErr: false,
+		},
+		{
+			name:    "valid max_tokens as float64",
+			options: map[string]any{"max_tokens": float64(4096)},
+			wantErr: false,
+		},
+		{
+			name:    "valid max_tokens as int64",
+			options: map[string]any{"max_tokens": int64(4096)},
+			wantErr: false,
+		},
+		{
+			name:        "unknown key",
+			options:     map[string]any{"foo": "bar"},
+			wantErr:     true,
+			wantSubstrs: []string{"unknown option: foo"},
+		},
+		{
+			name:        "wrong type enable_prompt_caching",
+			options:     map[string]any{"enable_prompt_caching": "yes"},
+			wantErr:     true,
+			wantSubstrs: []string{"enable_prompt_caching", "expected bool", "string"},
+		},
+		{
+			name:        "wrong type max_tokens string",
+			options:     map[string]any{"max_tokens": "big"},
+			wantErr:     true,
+			wantSubstrs: []string{"max_tokens", "expected numeric", "string"},
+		},
+		{
+			name:        "max_tokens zero",
+			options:     map[string]any{"max_tokens": 0},
+			wantErr:     true,
+			wantSubstrs: []string{"max_tokens", "must be positive"},
+		},
+		{
+			name:        "max_tokens negative",
+			options:     map[string]any{"max_tokens": -1},
+			wantErr:     true,
+			wantSubstrs: []string{"max_tokens", "must be positive"},
+		},
+		{
+			name:        "max_tokens float64 zero",
+			options:     map[string]any{"max_tokens": float64(0)},
+			wantErr:     true,
+			wantSubstrs: []string{"must be positive"},
+		},
+		{
+			name:        "max_tokens float64 with fraction",
+			options:     map[string]any{"max_tokens": 4096.5},
+			wantErr:     true,
+			wantSubstrs: []string{"max_tokens", "must be a whole number"},
+		},
+		{
+			name:        "max_tokens negative fraction",
+			options:     map[string]any{"max_tokens": -1.5},
+			wantErr:     true,
+			wantSubstrs: []string{"must be a whole number"},
+		},
+		{
+			name:        "max_tokens int64 negative",
+			options:     map[string]any{"max_tokens": int64(-5)},
+			wantErr:     true,
+			wantSubstrs: []string{"max_tokens", "must be positive"},
+		},
+		{
+			name:        "multiple errors",
+			options:     map[string]any{"foo": 1, "enable_prompt_caching": 42, "max_tokens": "nope"},
+			wantErr:     true,
+			wantSubstrs: []string{"unknown option: foo", "enable_prompt_caching", "max_tokens"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := client.ValidateOptions(tc.options)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			for _, substr := range tc.wantSubstrs {
+				if !strings.Contains(err.Error(), substr) {
+					t.Errorf("error %q does not contain %q", err.Error(), substr)
+				}
+			}
+		})
+	}
+}
+
 func TestCreateMessage_ErrorResponses(t *testing.T) {
 	errorJSON := `{"type":"error","error":{"type":"api_error","message":"error"}}`
 
