@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
@@ -154,7 +155,9 @@ func TestManualTriggerHandler(t *testing.T) {
 
 			registry := mcp.NewRegistry(store.Queries())
 			noopClient := testutil.NewNoopLLMClient()
-			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(noopClient), nil)
+			providerReg := llm.NewProviderRegistry()
+			providerReg.Register("anthropic", noopClient)
+			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil)
 			h := trigger.NewManualTriggerHandler(store, launcher)
 
 			w := callManualHandler(t, h, tc.policyID, tc.body)
@@ -171,7 +174,9 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 
 	registry := mcp.NewRegistry(store.Queries())
 	noopClient := testutil.NewNoopLLMClient()
-	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(noopClient), nil)
+	providerReg := llm.NewProviderRegistry()
+	providerReg.Register("anthropic", noopClient)
+	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil)
 	h := trigger.NewManualTriggerHandler(store, launcher)
 
 	w := callManualHandler(t, h, "mp-run-created", `{"message": "test"}`)
@@ -203,7 +208,9 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 
 	registry := mcp.NewRegistry(store.Queries())
 	noopClient := testutil.NewNoopLLMClient()
-	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(noopClient), nil)
+	providerReg := llm.NewProviderRegistry()
+	providerReg.Register("anthropic", noopClient)
+	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil)
 	h := trigger.NewManualTriggerHandler(store, launcher)
 
 	// Empty body should be accepted (treated as '{}')

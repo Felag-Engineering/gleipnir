@@ -363,6 +363,59 @@ func TestParse_SizeLimit(t *testing.T) {
 	}
 }
 
+func TestParse_ProviderDefault(t *testing.T) {
+	raw := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+`
+	p, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Agent.Provider != DefaultProvider {
+		t.Errorf("provider = %q, want %q (default)", p.Agent.Provider, DefaultProvider)
+	}
+}
+
+func TestParse_ProviderExplicit(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+	}{
+		{name: "anthropic", provider: "anthropic"},
+		{name: "google", provider: "google"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+  provider: ` + tc.provider + `
+`
+			p, err := Parse(raw)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if p.Agent.Provider != tc.provider {
+				t.Errorf("provider = %q, want %q", p.Agent.Provider, tc.provider)
+			}
+		})
+	}
+}
+
 func TestParse_CustomPreamble(t *testing.T) {
 	raw := `
 name: test

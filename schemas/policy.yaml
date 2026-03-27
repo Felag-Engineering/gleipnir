@@ -112,9 +112,16 @@ capabilities:
 
 agent:
 
+  # provider: string — optional, default: "anthropic"
+  #   The LLM provider to use for this policy.
+  #   Must match a provider registered at server startup.
+  #   Currently supported: anthropic
+  provider: anthropic
+
   # model: string — optional, default: claude-sonnet-4-6
-  #   The Claude model the agent will use for this policy.
-  #   Supported values:
+  #   The model the agent will use for this policy.
+  #   Supported values depend on the chosen provider.
+  #   For anthropic:
   #     claude-opus-4-6           — most capable, highest cost
   #     claude-sonnet-4-6         — balanced capability and cost (default)
   #     claude-haiku-4-5-20251001 — fastest, lowest cost

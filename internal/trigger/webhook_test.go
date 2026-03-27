@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
@@ -262,7 +263,9 @@ func TestWebhookHandler(t *testing.T) {
 
 			registry := mcp.NewRegistry(store.Queries())
 			noopClient := testutil.NewNoopLLMClient()
-			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(noopClient), nil)
+			providerReg := llm.NewProviderRegistry()
+			providerReg.Register("anthropic", noopClient)
+			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil)
 			h := trigger.NewWebhookHandler(store, launcher)
 
 			w := callHandlerWithHeaders(t, h, tc.policyID, tc.body, tc.headers)
@@ -279,7 +282,9 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 
 	registry := mcp.NewRegistry(store.Queries())
 	noopClient := testutil.NewNoopLLMClient()
-	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(noopClient), nil)
+	providerReg := llm.NewProviderRegistry()
+	providerReg.Register("anthropic", noopClient)
+	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil)
 	h := trigger.NewWebhookHandler(store, launcher)
 
 	w := callHandler(t, h, "p-run-created", `{"event": "test"}`)

@@ -259,6 +259,7 @@ type ToolCapability struct {
 // AgentConfig holds the prompt fields and runtime limits for an agent run.
 type AgentConfig struct {
 	Model       string
+	Provider    string // LLM provider name, e.g. "anthropic"
 	Preamble    string
 	Task        string
 	Limits      RunLimits

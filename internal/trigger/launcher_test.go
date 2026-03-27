@@ -3,10 +3,12 @@ package trigger_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/agent"
+	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
@@ -258,4 +260,80 @@ agent:
 		time.Sleep(50 * time.Millisecond)
 	}
 	manager.Wait()
+}
+
+// TestNewAgentFactory_ProviderLookup verifies that NewAgentFactory resolves the
+// correct LLMClient from the registry using the policy's Agent.Provider field,
+// and returns a descriptive error for unknown providers.
+//
+// Note: TestLaunch_Successful does not exercise the registry path — it uses
+// schedulerFactory(), an inline factory that bypasses NewAgentFactory.
+func TestNewAgentFactory_ProviderLookup(t *testing.T) {
+	anthropicClient := testutil.NewNoopLLMClient()
+	googleClient := testutil.NewNoopLLMClient()
+
+	cases := []struct {
+		name            string
+		registerClients map[string]llm.LLMClient
+		policyProvider  string
+		wantErrContains string // empty means no error expected from provider lookup
+	}{
+		{
+			name:           "known provider anthropic",
+			registerClients: map[string]llm.LLMClient{"anthropic": anthropicClient},
+			policyProvider:  "anthropic",
+			// error may come from agent.New (missing state machine etc.) but
+			// must NOT be a provider lookup error
+			wantErrContains: "",
+		},
+		{
+			name:           "known provider google",
+			registerClients: map[string]llm.LLMClient{"google": googleClient},
+			policyProvider:  "google",
+			wantErrContains: "",
+		},
+		{
+			name:            "unknown provider openai",
+			registerClients: map[string]llm.LLMClient{"anthropic": anthropicClient},
+			policyProvider:  "openai",
+			wantErrContains: "openai",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := llm.NewProviderRegistry()
+			for name, client := range tc.registerClients {
+				reg.Register(name, client)
+			}
+
+			factory := trigger.NewAgentFactory(reg)
+
+			cfg := agent.Config{
+				Policy: &model.ParsedPolicy{
+					Agent: model.AgentConfig{
+						Provider: tc.policyProvider,
+					},
+				},
+			}
+
+			_, err := factory(cfg)
+
+			if tc.wantErrContains != "" {
+				// Unknown provider — must get an error containing the provider name.
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.wantErrContains)
+				}
+				if !strings.Contains(err.Error(), tc.wantErrContains) {
+					t.Errorf("error %q does not contain %q", err.Error(), tc.wantErrContains)
+				}
+			} else {
+				// Known provider — error must not be a provider lookup failure.
+				// agent.New will fail due to the minimal config, which is acceptable.
+				if err != nil && strings.Contains(err.Error(), "unknown LLM provider") {
+					t.Errorf("unexpected provider lookup error: %v", err)
+				}
+			}
+		})
+	}
 }

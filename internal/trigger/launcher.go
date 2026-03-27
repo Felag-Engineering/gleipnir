@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -15,15 +16,21 @@ import (
 )
 
 // AgentFactory constructs a BoundAgent from a fully-populated Config.
-// The factory owns all decisions about how to supply the Claude client or any
+// The factory owns all decisions about how to supply the LLM client or any
 // test doubles — callers have no knowledge of either.
 type AgentFactory func(cfg agent.Config) (*agent.BoundAgent, error)
 
-// NewAgentFactory returns an AgentFactory that injects llmClient into cfg before
-// calling agent.New. Use this in production.
-func NewAgentFactory(llmClient llm.LLMClient) AgentFactory {
+// NewAgentFactory returns an AgentFactory that resolves the LLM provider from
+// the policy's Agent.Provider field via registry, then calls agent.New.
+// If the provider is not registered, the factory returns an error containing
+// the provider name so the run can be marked failed with a clear message.
+func NewAgentFactory(registry *llm.ProviderRegistry) AgentFactory {
 	return func(cfg agent.Config) (*agent.BoundAgent, error) {
-		cfg.LLMClient = llmClient
+		client, err := registry.Get(cfg.Policy.Agent.Provider)
+		if err != nil {
+			return nil, fmt.Errorf("provider lookup: %w", err)
+		}
+		cfg.LLMClient = client
 		return agent.New(cfg)
 	}
 }
