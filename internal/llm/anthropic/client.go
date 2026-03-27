@@ -16,6 +16,22 @@ import (
 	"github.com/rapp992/gleipnir/internal/llm"
 )
 
+// sanitizeToolName replaces any character outside [a-zA-Z0-9_-] with '_' and
+// truncates to 128 characters. The Claude API rejects tool names containing
+// dots or other special characters.
+func sanitizeToolName(name string) string {
+	sanitized := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, name)
+	if len(sanitized) > 128 {
+		sanitized = sanitized[:128]
+	}
+	return sanitized
+}
+
 const defaultMaxTokens = 4096
 
 var validOptions = map[string]bool{
@@ -31,12 +47,21 @@ type AnthropicClient struct {
 	client *anthropic.Client
 }
 
-// NewClient constructs an AnthropicClient. The variadic opts are forwarded to
-// the SDK constructor, allowing callers to inject options such as
-// option.WithBaseURL for tests without exposing the SDK client directly.
+// NewClient constructs an AnthropicClient with the given API key.
+// The variadic opts are forwarded to the SDK constructor, allowing callers
+// to inject options such as option.WithBaseURL for tests without exposing
+// the SDK client directly.
 func NewClient(apiKey string, opts ...option.RequestOption) *AnthropicClient {
 	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
 	c := anthropic.NewClient(allOpts...)
+	return &AnthropicClient{client: &c}
+}
+
+// NewClientFromEnv constructs an AnthropicClient using only the default SDK
+// options (ANTHROPIC_API_KEY env var). Use this in production so the API key
+// is read from the environment without an empty string override.
+func NewClientFromEnv(opts ...option.RequestOption) *AnthropicClient {
+	c := anthropic.NewClient(opts...)
 	return &AnthropicClient{client: &c}
 }
 
@@ -49,7 +74,7 @@ func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequ
 	system := buildSystemBlocks(req, hints)
 	messages := buildMessages(req.History)
 
-	tools, err := buildTools(req.Tools)
+	tools, sanitizedToOriginal, err := buildTools(req.Tools)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: building tools: %w", err)
 	}
@@ -67,7 +92,7 @@ func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequ
 		return nil, wrapSDKError(err)
 	}
 
-	return translateResponse(resp), nil
+	return translateResponse(resp, sanitizedToOriginal), nil
 }
 
 // StreamMessage wraps CreateMessage and emits the complete response as a single
@@ -215,15 +240,29 @@ func buildMessages(history []llm.ConversationTurn) []anthropic.MessageParam {
 }
 
 // buildTools translates the provider-neutral tool definitions into the
-// Anthropic ToolUnionParam slice.
-func buildTools(tools []llm.ToolDefinition) ([]anthropic.ToolUnionParam, error) {
+// Anthropic ToolUnionParam slice. It sanitizes tool names for the Claude API
+// and returns a sanitized→original name map so translateResponse can reverse
+// the mapping. Returns an error if two tools collide after sanitization.
+func buildTools(tools []llm.ToolDefinition) ([]anthropic.ToolUnionParam, map[string]string, error) {
 	result := make([]anthropic.ToolUnionParam, 0, len(tools))
+	// sanitizedToOriginal maps Claude-facing sanitized names back to the
+	// original names returned in ToolCallBlock so the agent sees MCP names.
+	sanitizedToOriginal := make(map[string]string, len(tools))
+
 	for _, t := range tools {
+		sanitized := sanitizeToolName(t.Name)
+
+		// Collision: two distinct original names map to the same sanitized name.
+		if existing, conflict := sanitizedToOriginal[sanitized]; conflict && existing != t.Name {
+			return nil, nil, fmt.Errorf("tool name collision after sanitization: %q and %q both become %q", existing, t.Name, sanitized)
+		}
+		sanitizedToOriginal[sanitized] = t.Name
+
 		schema, err := buildToolInputSchema(t.InputSchema)
 		if err != nil {
-			return nil, fmt.Errorf("building schema for tool %s: %w", t.Name, err)
+			return nil, nil, fmt.Errorf("building schema for tool %s: %w", t.Name, err)
 		}
-		tool := anthropic.ToolUnionParamOfTool(schema, t.Name)
+		tool := anthropic.ToolUnionParamOfTool(schema, sanitized)
 		// OfTool is the active variant after ToolUnionParamOfTool; guard is
 		// defensive against future SDK union changes.
 		if tool.OfTool != nil && t.Description != "" {
@@ -231,7 +270,7 @@ func buildTools(tools []llm.ToolDefinition) ([]anthropic.ToolUnionParam, error) 
 		}
 		result = append(result, tool)
 	}
-	return result, nil
+	return result, sanitizedToOriginal, nil
 }
 
 // buildToolInputSchema converts a raw JSON schema into a ToolInputSchemaParam.
@@ -282,8 +321,10 @@ func buildToolInputSchema(schema json.RawMessage) (anthropic.ToolInputSchemaPara
 }
 
 // translateResponse converts an Anthropic API response into the
-// provider-neutral MessageResponse.
-func translateResponse(resp *anthropic.Message) *llm.MessageResponse {
+// provider-neutral MessageResponse. sanitizedToOriginal is the name map
+// returned by buildTools; it is used to reverse-map sanitized tool names
+// in ToolUseBlock responses back to the original MCP names.
+func translateResponse(resp *anthropic.Message, sanitizedToOriginal map[string]string) *llm.MessageResponse {
 	var result llm.MessageResponse
 
 	for _, block := range resp.Content {
@@ -291,9 +332,16 @@ func translateResponse(resp *anthropic.Message) *llm.MessageResponse {
 		case anthropic.TextBlock:
 			result.Text = append(result.Text, llm.TextBlock{Text: b.Text})
 		case anthropic.ToolUseBlock:
+			// Reverse-map from the sanitized Claude-facing name to the original
+			// MCP dot-separated name. If the name is not in the map (unexpected),
+			// fall back to the raw name so callers still see something meaningful.
+			originalName := b.Name
+			if mapped, ok := sanitizedToOriginal[b.Name]; ok {
+				originalName = mapped
+			}
 			result.ToolCalls = append(result.ToolCalls, llm.ToolCallBlock{
 				ID:    b.ID,
-				Name:  b.Name,
+				Name:  originalName,
 				Input: b.Input,
 			})
 		default:

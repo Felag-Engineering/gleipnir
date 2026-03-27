@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/rapp992/gleipnir/internal/agent"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/event"
+	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -19,11 +19,11 @@ import (
 // test doubles — callers have no knowledge of either.
 type AgentFactory func(cfg agent.Config) (*agent.BoundAgent, error)
 
-// NewAgentFactory returns an AgentFactory that injects claude into cfg before
+// NewAgentFactory returns an AgentFactory that injects llmClient into cfg before
 // calling agent.New. Use this in production.
-func NewAgentFactory(claude *anthropic.Client) AgentFactory {
+func NewAgentFactory(llmClient llm.LLMClient) AgentFactory {
 	return func(cfg agent.Config) (*agent.BoundAgent, error) {
-		cfg.Claude = claude
+		cfg.LLMClient = llmClient
 		return agent.New(cfg)
 	}
 }

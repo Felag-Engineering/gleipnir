@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
@@ -154,8 +153,8 @@ func TestManualTriggerHandler(t *testing.T) {
 			}
 
 			registry := mcp.NewRegistry(store.Queries())
-			claudeClient := anthropic.NewClient()
-			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+			noopClient := testutil.NewNoopLLMClient()
+			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(noopClient), nil)
 			h := trigger.NewManualTriggerHandler(store, launcher)
 
 			w := callManualHandler(t, h, tc.policyID, tc.body)
@@ -171,8 +170,8 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 	insertTestManualPolicy(t, store, "mp-run-created", minimalManualPolicy)
 
 	registry := mcp.NewRegistry(store.Queries())
-	claudeClient := anthropic.NewClient()
-	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+	noopClient := testutil.NewNoopLLMClient()
+	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(noopClient), nil)
 	h := trigger.NewManualTriggerHandler(store, launcher)
 
 	w := callManualHandler(t, h, "mp-run-created", `{"message": "test"}`)
@@ -203,8 +202,8 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 	insertTestManualPolicy(t, store, "mp-empty-body", minimalManualPolicy)
 
 	registry := mcp.NewRegistry(store.Queries())
-	claudeClient := anthropic.NewClient()
-	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(&claudeClient), nil)
+	noopClient := testutil.NewNoopLLMClient()
+	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(noopClient), nil)
 	h := trigger.NewManualTriggerHandler(store, launcher)
 
 	// Empty body should be accepted (treated as '{}')

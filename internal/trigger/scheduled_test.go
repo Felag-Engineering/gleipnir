@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/rapp992/gleipnir/internal/agent"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
@@ -39,12 +39,12 @@ agent:
 `, name, fireAtLines)
 }
 
-// schedulerFactory returns an AgentFactory that uses a fake Anthropic client so
+// schedulerFactory returns an AgentFactory that uses a mock LLM client so
 // no real Claude API calls are made during scheduler tests.
 func schedulerFactory() trigger.AgentFactory {
 	return func(cfg agent.Config) (*agent.BoundAgent, error) {
-		cfg.Claude = testutil.NewFakeAnthropicClient([]*anthropic.Message{
-			testutil.MakeTextMessage("done", anthropic.StopReasonEndTurn, 10, 5),
+		cfg.LLMClient = testutil.NewMockLLMClient([]*llm.MessageResponse{
+			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
 		})
 		return agent.New(cfg)
 	}

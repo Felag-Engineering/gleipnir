@@ -20,6 +20,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/auth"
 	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/db"
+	anthropicllm "github.com/rapp992/gleipnir/internal/llm/anthropic"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
@@ -80,7 +81,8 @@ func run(cfg config.Config) error {
 	registry := mcp.NewRegistry(store.Queries(), mcp.WithMCPTimeout(cfg.MCPTimeout))
 	runManager := trigger.NewRunManager()
 	claudeClient := anthropic.NewClient()
-	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(&claudeClient), broadcaster)
+	llmClient := anthropicllm.NewClientFromEnv()
+	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(llmClient), broadcaster)
 
 	// Webhooks are unprotected — they are called by external systems with their
 	// own secret-based authentication (policy.trigger.secret in the policy YAML).

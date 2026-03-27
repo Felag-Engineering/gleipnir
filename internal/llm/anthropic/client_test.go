@@ -248,7 +248,7 @@ func TestBuildTools(t *testing.T) {
 		{Name: "search", Description: "Search the web", InputSchema: schema},
 	}
 
-	result, err := buildTools(tools)
+	result, nameMap, err := buildTools(tools)
 	if err != nil {
 		t.Fatalf("buildTools() error: %v", err)
 	}
@@ -276,6 +276,10 @@ func TestBuildTools(t *testing.T) {
 	if len(tool.OfTool.InputSchema.Required) != 1 || tool.OfTool.InputSchema.Required[0] != "query" {
 		t.Errorf("Required = %v, want [query]", tool.OfTool.InputSchema.Required)
 	}
+	// Name map must map sanitized name back to original.
+	if nameMap["search"] != "search" {
+		t.Errorf("nameMap[\"search\"] = %q, want %q", nameMap["search"], "search")
+	}
 }
 
 func TestBuildMessages_EmptyHistory(t *testing.T) {
@@ -291,12 +295,15 @@ func TestBuildMessages_EmptyHistory(t *testing.T) {
 func TestBuildTools_Empty(t *testing.T) {
 	// nil and empty slices must not panic and must return an empty slice.
 	for _, tools := range [][]llm.ToolDefinition{nil, {}} {
-		result, err := buildTools(tools)
+		result, nameMap, err := buildTools(tools)
 		if err != nil {
 			t.Fatalf("buildTools(%v) error: %v", tools, err)
 		}
 		if len(result) != 0 {
 			t.Errorf("buildTools(%v) = %d tools, want 0", tools, len(result))
+		}
+		if len(nameMap) != 0 {
+			t.Errorf("buildTools(%v) name map len = %d, want 0", tools, len(nameMap))
 		}
 	}
 }
@@ -306,7 +313,7 @@ func TestBuildTools_EmptyDescription(t *testing.T) {
 	tools := []llm.ToolDefinition{
 		{Name: "noop", Description: "", InputSchema: schema},
 	}
-	result, err := buildTools(tools)
+	result, _, err := buildTools(tools)
 	if err != nil {
 		t.Fatalf("buildTools() error: %v", err)
 	}
@@ -320,6 +327,139 @@ func TestBuildTools_EmptyDescription(t *testing.T) {
 	// Description must not be set when the source description is empty.
 	if tool.OfTool.Description.Valid() {
 		t.Errorf("Description should not be set for empty description, got %q", tool.OfTool.Description.Value)
+	}
+}
+
+func TestSanitizeToolName(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "dot_separator_replaced",
+			input: "my-server.tool_name",
+			want:  "my-server_tool_name",
+		},
+		{
+			name:  "multiple_dots_replaced",
+			input: "server.tool.with.many.dots",
+			want:  "server_tool_with_many_dots",
+		},
+		{
+			name:  "already_valid_unchanged",
+			input: "already_valid-name",
+			want:  "already_valid-name",
+		},
+		{
+			name:  "spaces_replaced",
+			input: "server name with spaces",
+			want:  "server_name_with_spaces",
+		},
+		{
+			name:  "truncated_to_128_chars",
+			input: strings.Repeat("a", 200),
+			want:  strings.Repeat("a", 128),
+		},
+		{
+			name:  "empty_string",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "all_invalid_chars",
+			input: "...",
+			want:  "___",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeToolName(tc.input)
+			if got != tc.want {
+				t.Errorf("sanitizeToolName(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildTools_SanitizesNames(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{}}`)
+	tools := []llm.ToolDefinition{
+		{Name: "my-server.read.data", Description: "reads data", InputSchema: schema},
+	}
+
+	result, nameMap, err := buildTools(tools)
+	if err != nil {
+		t.Fatalf("buildTools() error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("got %d tools, want 1", len(result))
+	}
+	// The tool name passed to the SDK must be sanitized.
+	wantSanitized := "my-server_read_data"
+	if result[0].OfTool == nil || result[0].OfTool.Name != wantSanitized {
+		t.Errorf("tool name = %q, want %q", result[0].OfTool.Name, wantSanitized)
+	}
+	// The name map must map sanitized back to original.
+	if nameMap[wantSanitized] != "my-server.read.data" {
+		t.Errorf("nameMap[%q] = %q, want %q", wantSanitized, nameMap[wantSanitized], "my-server.read.data")
+	}
+}
+
+func TestBuildTools_CollisionDetected(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{}}`)
+	// Both "my.tool" and "my_tool" sanitize to "my_tool".
+	tools := []llm.ToolDefinition{
+		{Name: "my.tool", InputSchema: schema},
+		{Name: "my_tool", InputSchema: schema},
+	}
+
+	_, _, err := buildTools(tools)
+	if err == nil {
+		t.Fatal("expected collision error, got nil")
+	}
+	if !strings.Contains(err.Error(), "collision") {
+		t.Errorf("error %q does not mention 'collision'", err.Error())
+	}
+}
+
+func TestTranslateResponse_ReverseMapToolName(t *testing.T) {
+	// Build a fake Anthropic message with a sanitized tool name.
+	body := messageRespJSON(
+		`[{"type":"tool_use","id":"tu_1","name":"my-server_read_data","input":{}}]`,
+		"tool_use", 10, 5,
+	)
+	srv := serveJSON(t, 200, body)
+	defer srv.Close()
+
+	// Register the reverse map: sanitized → original.
+	// We do this by providing a tool definition with the dot-separated name,
+	// which triggers sanitization inside buildTools.
+	schema := json.RawMessage(`{"type":"object","properties":{}}`)
+	req := llm.MessageRequest{
+		Model:     "claude-3-5-sonnet-20241022",
+		MaxTokens: 100,
+		History: []llm.ConversationTurn{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}},
+		},
+		Tools: []llm.ToolDefinition{
+			{Name: "my-server.read_data", Description: "reads data", InputSchema: schema},
+		},
+	}
+
+	client := newTestClient(t, srv)
+	resp, err := client.CreateMessage(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateMessage() error: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("got %d tool calls, want 1", len(resp.ToolCalls))
+	}
+	// The name in the response must be the original MCP name, not sanitized.
+	wantName := "my-server.read_data"
+	if resp.ToolCalls[0].Name != wantName {
+		t.Errorf("ToolCallBlock.Name = %q, want %q", resp.ToolCalls[0].Name, wantName)
 	}
 }
 
@@ -391,7 +531,7 @@ func TestTranslateStopReason(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(string(tc.sdkReason), func(t *testing.T) {
 			msg := &sdkanthropic.Message{StopReason: tc.sdkReason}
-			got := translateResponse(msg)
+			got := translateResponse(msg, nil)
 			if got.StopReason != tc.want {
 				t.Errorf("StopReason = %v, want %v", got.StopReason, tc.want)
 			}

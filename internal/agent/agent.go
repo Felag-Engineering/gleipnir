@@ -1,4 +1,4 @@
-// Package agent implements the BoundAgent runner — the core Claude API loop
+// Package agent implements the BoundAgent runner — the core LLM API loop
 // with hard capability enforcement, approval interception, and audit writing.
 package agent
 
@@ -7,12 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/rapp992/gleipnir/internal/config"
+	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
@@ -24,36 +22,16 @@ type resolvedToolEntry struct {
 	narrowedSchema json.RawMessage
 }
 
-// sanitizeToolName replaces any character outside [a-zA-Z0-9_-] with '_' and
-// truncates to 128 characters. The Claude API rejects tool names containing
-// dots or other special characters, so we must sanitize before registration.
-func sanitizeToolName(name string) string {
-	sanitized := strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-			return r
-		}
-		return '_'
-	}, name)
-	if len(sanitized) > 128 {
-		sanitized = sanitized[:128]
-	}
-	return sanitized
-}
-
-// BoundAgent executes a single policy run. It owns the Claude API loop,
+// BoundAgent executes a single policy run. It owns the LLM API loop,
 // dispatches tool calls to MCP clients, intercepts approval-gated tools,
 // and writes every step to the audit trail via AuditWriter.
 type BoundAgent struct {
 	policy      *model.ParsedPolicy
 	tools       []mcp.ResolvedTool
 	toolsByName map[string]resolvedToolEntry
-	// claudeNameToInternal maps sanitized Claude-facing tool names back to the
-	// internal dot-separated names used as keys in toolsByName. Required because
-	// the Claude API rejects tool names containing dots.
-	claudeNameToInternal map[string]string
-	messages             *anthropic.MessageService
-	audit                *AuditWriter
-	sm                   *RunStateMachine
+	llmClient   llm.LLMClient
+	audit       *AuditWriter
+	sm          *RunStateMachine
 	// approvalCh receives the operator's decision when a run is suspended
 	// waiting_for_approval. Sent by the approval handler in internal/trigger.
 	approvalCh <-chan bool
@@ -63,7 +41,7 @@ type BoundAgent struct {
 type Config struct {
 	Policy       *model.ParsedPolicy
 	Tools        []mcp.ResolvedTool
-	Claude       *anthropic.Client
+	LLMClient    llm.LLMClient
 	Audit        *AuditWriter
 	ApprovalCh   <-chan bool
 	StateMachine *RunStateMachine
@@ -76,18 +54,9 @@ func New(cfg Config) (*BoundAgent, error) {
 		return nil, fmt.Errorf("config.StateMachine is required")
 	}
 
-	msgs := &cfg.Claude.Messages
-
 	toolsByName := make(map[string]resolvedToolEntry, len(cfg.Tools))
-	claudeNameToInternal := make(map[string]string, len(cfg.Tools))
 	for _, rt := range cfg.Tools {
 		dotName := rt.ServerName + "." + rt.ToolName
-		claudeName := sanitizeToolName(dotName)
-
-		// Detect collisions: two distinct tools that sanitize to the same name.
-		if existing, conflict := claudeNameToInternal[claudeName]; conflict && existing != dotName {
-			return nil, fmt.Errorf("tool name collision after sanitization: %q and %q both become %q", existing, dotName, claudeName)
-		}
 
 		narrowed, err := mcp.NarrowSchema(rt.InputSchema, rt.Params)
 		if err != nil {
@@ -97,18 +66,16 @@ func New(cfg Config) (*BoundAgent, error) {
 			tool:           rt,
 			narrowedSchema: narrowed,
 		}
-		claudeNameToInternal[claudeName] = dotName
 	}
 
 	return &BoundAgent{
-		policy:               cfg.Policy,
-		tools:                cfg.Tools,
-		toolsByName:          toolsByName,
-		claudeNameToInternal: claudeNameToInternal,
-		messages:             msgs,
-		audit:                cfg.Audit,
-		sm:                   cfg.StateMachine,
-		approvalCh:           cfg.ApprovalCh,
+		policy:      cfg.Policy,
+		tools:       cfg.Tools,
+		toolsByName: toolsByName,
+		llmClient:   cfg.LLMClient,
+		audit:       cfg.Audit,
+		sm:          cfg.StateMachine,
+		approvalCh:  cfg.ApprovalCh,
 	}, nil
 }
 
@@ -169,28 +136,19 @@ func (a *BoundAgent) checkCapabilities() error {
 	return nil
 }
 
-// buildToolDefinitions builds the Anthropic tool definitions slice from the
-// agent's registered tools. The claudeNameToInternal mapping is already
-// populated in New(), so it is not returned here.
-func (a *BoundAgent) buildToolDefinitions() ([]anthropic.ToolUnionParam, error) {
-	anthropicTools := make([]anthropic.ToolUnionParam, 0, len(a.toolsByName))
-
+// buildToolDefinitions builds the provider-neutral tool definitions from the
+// agent's registered tools. The LLMClient handles provider-specific name
+// sanitization and schema formatting.
+func (a *BoundAgent) buildToolDefinitions() []llm.ToolDefinition {
+	defs := make([]llm.ToolDefinition, 0, len(a.toolsByName))
 	for dotName, entry := range a.toolsByName {
-		inputSchema, err := buildToolInputSchema(entry.narrowedSchema)
-		if err != nil {
-			return nil, fmt.Errorf("building tool schema for %s: %w", dotName, err)
-		}
-		claudeName := sanitizeToolName(dotName)
-
-		tool := anthropic.ToolUnionParamOfTool(inputSchema, claudeName)
-		// Set description via the OfTool variant directly.
-		if tool.OfTool != nil {
-			tool.OfTool.Description = param.NewOpt(entry.tool.Description)
-		}
-		anthropicTools = append(anthropicTools, tool)
+		defs = append(defs, llm.ToolDefinition{
+			Name:        dotName,
+			Description: entry.tool.Description,
+			InputSchema: entry.narrowedSchema,
+		})
 	}
-
-	return anthropicTools, nil
+	return defs
 }
 
 // waitForApproval suspends the run at an approval gate for the given tool entry.
@@ -241,75 +199,14 @@ func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry re
 	return nil
 }
 
-// processContentBlocks iterates the content blocks of a single API response,
-// writing audit steps and dispatching tool calls. Returns the tool result
-// blocks to feed back to the next API call, the updated totalToolCalls count,
-// and any fatal error.
-func (a *BoundAgent) processContentBlocks(
-	ctx context.Context,
-	runID string,
-	resp *anthropic.Message,
-	totalToolCalls int,
-	maxToolCalls int,
-	tokenCost int,
-) ([]anthropic.ContentBlockParamUnion, int, error) {
-	// costAssigned tracks whether the per-turn token cost has been
-	// attributed to an audit step yet. We assign it to the first block of
-	// any type (text or tool_use) so that tool-use-only turns don't silently
-	// drop the cost from the audit trail.
-	costAssigned := false
-
-	var toolResults []anthropic.ContentBlockParamUnion
-
-	for _, block := range resp.Content {
-		switch b := block.AsAny().(type) {
-		case anthropic.TextBlock:
-			cost := 0
-			if !costAssigned {
-				cost = tokenCost
-				costAssigned = true
-			}
-			if err := a.audit.Write(ctx, Step{
-				RunID:     runID,
-				Type:      model.StepTypeThought,
-				Content:   map[string]string{"text": b.Text},
-				TokenCost: cost,
-			}); err != nil {
-				return nil, totalToolCalls, fmt.Errorf("writing thought step: %w", err)
-			}
-		case anthropic.ToolUseBlock:
-			totalToolCalls++
-			if maxToolCalls > 0 && totalToolCalls > maxToolCalls {
-				err := fmt.Errorf("tool call limit exceeded: %d calls, limit %d", totalToolCalls, maxToolCalls)
-				slog.WarnContext(ctx, "tool call limit exceeded", "run_id", runID, "calls", totalToolCalls, "limit", maxToolCalls)
-				a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeToolCallLimitExceeded)
-				return nil, totalToolCalls, err
-			}
-
-			var input map[string]any
-			if err := json.Unmarshal(b.Input, &input); err != nil {
-				return nil, totalToolCalls, fmt.Errorf("unmarshalling tool input for %s: %w", b.Name, err)
-			}
-
-			resultStr, isError, err := a.handleToolCall(ctx, runID, b.ID, b.Name, input)
-			if err != nil {
-				return nil, totalToolCalls, err // handleToolCall already writes the error step
-			}
-			toolResults = append(toolResults, anthropic.NewToolResultBlock(b.ID, resultStr, isError))
-		}
-	}
-
-	return toolResults, totalToolCalls, nil
-}
-
-// runAPILoop drives the Claude API loop until the model returns end_turn,
+// runAPILoop drives the LLM API loop until the model returns end_turn,
 // a limit is exceeded, or an error occurs. It owns the token and tool-call
 // counters for the run.
 func (a *BoundAgent) runAPILoop(
 	ctx context.Context,
 	runID string,
-	history []anthropic.MessageParam,
-	anthropicTools []anthropic.ToolUnionParam,
+	history []llm.ConversationTurn,
+	tools []llm.ToolDefinition,
 	systemPrompt string,
 ) error {
 	var (
@@ -332,9 +229,9 @@ func (a *BoundAgent) runAPILoop(
 		}
 
 		// Determine per-call token limit.
-		maxTokens := int64(config.DefaultPerCallMaxTokens)
+		maxTokens := config.DefaultPerCallMaxTokens
 		if maxTokensPerRun > 0 {
-			remaining := int64(maxTokensPerRun - totalTokens)
+			remaining := maxTokensPerRun - totalTokens
 			if remaining <= 0 {
 				err := fmt.Errorf("token budget exceeded: %d tokens used, limit %d", totalTokens, maxTokensPerRun)
 				slog.WarnContext(ctx, "token budget exceeded", "run_id", runID, "tokens_used", totalTokens, "limit", maxTokensPerRun)
@@ -346,13 +243,15 @@ func (a *BoundAgent) runAPILoop(
 			}
 		}
 
-		resp, err := a.messages.New(ctx, anthropic.MessageNewParams{
-			Model:     anthropic.Model(a.policy.Agent.Model),
-			MaxTokens: maxTokens,
-			System:    []anthropic.TextBlockParam{{Text: systemPrompt}},
-			Messages:  history,
-			Tools:     anthropicTools,
-		})
+		req := llm.MessageRequest{
+			Model:        a.policy.Agent.Model,
+			MaxTokens:    maxTokens,
+			SystemPrompt: systemPrompt,
+			History:      history,
+			Tools:        tools,
+		}
+
+		resp, err := a.llmClient.CreateMessage(ctx, req)
 		if err != nil {
 			// If the context was cancelled, the API error is a consequence of
 			// cancellation. Write a CANCELLED step so the audit trail is clear.
@@ -362,22 +261,83 @@ func (a *BoundAgent) runAPILoop(
 			} else {
 				a.logAuditError(context.Background(), runID, err.Error(), model.ErrorCodeAPIError)
 			}
-			return a.failRun(ctx, fmt.Errorf("claude API call: %w", err))
+			return a.failRun(ctx, fmt.Errorf("LLM API call: %w", err))
 		}
 
-		tokenCost := int(resp.Usage.InputTokens + resp.Usage.OutputTokens)
+		tokenCost := resp.Usage.InputTokens + resp.Usage.OutputTokens
 		totalTokens += tokenCost
 
-		toolResults, updatedToolCalls, err := a.processContentBlocks(ctx, runID, resp, totalToolCalls, maxToolCalls, tokenCost)
-		totalToolCalls = updatedToolCalls
-		if err != nil {
-			return a.failRun(ctx, err)
+		// costAssigned tracks whether the per-turn token cost has been attributed
+		// to an audit step yet. We assign it to the first text block so that
+		// tool-use-only turns don't silently drop the cost.
+		costAssigned := false
+		var toolResultBlocks []llm.ContentBlock
+
+		// Process text blocks: write thought audit steps.
+		for _, tb := range resp.Text {
+			cost := 0
+			if !costAssigned {
+				cost = tokenCost
+				costAssigned = true
+			}
+			if err := a.audit.Write(ctx, Step{
+				RunID:     runID,
+				Type:      model.StepTypeThought,
+				Content:   map[string]string{"text": tb.Text},
+				TokenCost: cost,
+			}); err != nil {
+				return a.failRun(ctx, fmt.Errorf("writing thought step: %w", err))
+			}
 		}
 
-		// Append assistant response to history before checking stop reason.
-		history = append(history, resp.ToParam())
+		// Process tool calls: dispatch and collect results.
+		for _, tc := range resp.ToolCalls {
+			if !costAssigned {
+				// Assign cost to the first tool call block when there are no text blocks.
+				costAssigned = true
+				// Cost was already added to totalTokens; the audit step for tool_call
+				// will carry zero cost. The token cost is reflected in the total only.
+				// (The thought audit step is the canonical bearer of token cost.)
+			}
 
-		if resp.StopReason == anthropic.StopReasonEndTurn {
+			totalToolCalls++
+			if maxToolCalls > 0 && totalToolCalls > maxToolCalls {
+				err := fmt.Errorf("tool call limit exceeded: %d calls, limit %d", totalToolCalls, maxToolCalls)
+				slog.WarnContext(ctx, "tool call limit exceeded", "run_id", runID, "calls", totalToolCalls, "limit", maxToolCalls)
+				a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeToolCallLimitExceeded)
+				return a.failRun(ctx, err)
+			}
+
+			var input map[string]any
+			if err := json.Unmarshal(tc.Input, &input); err != nil {
+				return a.failRun(ctx, fmt.Errorf("unmarshalling tool input for %s: %w", tc.Name, err))
+			}
+
+			resultStr, isError, err := a.handleToolCall(ctx, runID, tc.Name, input)
+			if err != nil {
+				return a.failRun(ctx, err)
+			}
+			toolResultBlocks = append(toolResultBlocks, llm.ToolResultBlock{
+				ToolCallID: tc.ID,
+				Content:    resultStr,
+				IsError:    isError,
+			})
+		}
+
+		// Append assistant turn to history (reconstruct from resp fields).
+		assistantContent := make([]llm.ContentBlock, 0, len(resp.Text)+len(resp.ToolCalls))
+		for _, tb := range resp.Text {
+			assistantContent = append(assistantContent, tb)
+		}
+		for _, tc := range resp.ToolCalls {
+			assistantContent = append(assistantContent, tc)
+		}
+		history = append(history, llm.ConversationTurn{
+			Role:    llm.RoleAssistant,
+			Content: assistantContent,
+		})
+
+		if resp.StopReason == llm.StopReasonEndTurn {
 			if err := a.audit.Write(ctx, Step{
 				RunID:   runID,
 				Type:    model.StepTypeComplete,
@@ -391,26 +351,40 @@ func (a *BoundAgent) runAPILoop(
 			return nil
 		}
 
+		// MaxTokens stop reason: the model was truncated. Fail the run so the
+		// operator knows the token budget was too tight. (New behavior: previously
+		// unhandled — see issue #340 / ADR-026.)
+		if resp.StopReason == llm.StopReasonMaxTokens {
+			err := fmt.Errorf("LLM response truncated: max_tokens limit reached")
+			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeTokenBudgetExceeded)
+			return a.failRun(ctx, err)
+		}
+
 		// If stop reason is tool_use but no tool calls were dispatched, the
 		// API response is malformed (e.g. unknown block types). Sending
 		// the assistant message back with no tool results would violate the
 		// protocol and likely cause the next API call to fail.
-		if len(toolResults) == 0 {
+		if len(toolResultBlocks) == 0 {
 			return a.failRun(ctx, fmt.Errorf("tool_use stop reason with no tool calls dispatched"))
 		}
 
 		// Prepend a current-time text block so the agent is aware of elapsed
 		// time between tool calls (issue #205). The system prompt carries the
 		// static run-start timestamp; this per-turn timestamp is the clock.
-		timeBlock := anthropic.NewTextBlock(
-			fmt.Sprintf("[Current time: %s]", time.Now().UTC().Format(config.TimestampFormat)),
-		)
-		toolResults = append([]anthropic.ContentBlockParamUnion{timeBlock}, toolResults...)
-		history = append(history, anthropic.NewUserMessage(toolResults...))
+		timeBlock := llm.TextBlock{
+			Text: fmt.Sprintf("[Current time: %s]", time.Now().UTC().Format(config.TimestampFormat)),
+		}
+		userContent := make([]llm.ContentBlock, 0, 1+len(toolResultBlocks))
+		userContent = append(userContent, timeBlock)
+		userContent = append(userContent, toolResultBlocks...)
+		history = append(history, llm.ConversationTurn{
+			Role:    llm.RoleUser,
+			Content: userContent,
+		})
 	}
 }
 
-// Run executes the agent loop for a single run. It drives the Claude API
+// Run executes the agent loop for a single run. It drives the LLM API
 // until the model produces end_turn or the run limits are exceeded.
 // Run returns nil on clean completion, or a wrapped error on failure.
 // Run owns the run's status transitions: it moves the run to running on entry,
@@ -456,10 +430,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		slog.WarnContext(ctx, "failed to persist system prompt", "run_id", runID, "err", err)
 	}
 
-	anthropicTools, err := a.buildToolDefinitions()
-	if err != nil {
-		return a.failRun(ctx, err)
-	}
+	tools := a.buildToolDefinitions()
 
 	// capabilitySnapshot is the content written to the capability_snapshot step (ADR-018).
 	// Including the model alongside tools makes the snapshot a complete record of
@@ -483,12 +454,13 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		return a.failRun(ctx, fmt.Errorf("writing capability snapshot: %w", err))
 	}
 
-	// Initialize message history with the trigger payload.
-	history := []anthropic.MessageParam{
-		anthropic.NewUserMessage(anthropic.NewTextBlock(triggerPayload)),
-	}
+	// Initialize conversation history with the trigger payload as the first user turn.
+	history := []llm.ConversationTurn{{
+		Role:    llm.RoleUser,
+		Content: []llm.ContentBlock{llm.TextBlock{Text: triggerPayload}},
+	}}
 
-	return a.runAPILoop(ctx, runID, history, anthropicTools, systemPrompt)
+	return a.runAPILoop(ctx, runID, history, tools, systemPrompt)
 }
 
 // handleToolCall dispatches a single tool call from the agent.
@@ -496,25 +468,16 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 // before proceeding. This is the hard runtime guarantee (ADR-001).
 // On error, it writes an error step and returns the error.
 //
-// toolName is the sanitized Claude-facing name returned by the API. It is
-// resolved to the internal dot-separated name via claudeNameToInternal before
-// any audit writes or tool lookups.
-func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/, toolName string, input map[string]any) (string, bool, error) {
+// toolName is the original MCP dot-separated name (e.g. "myserver.read_data"),
+// reverse-mapped by the LLMClient before being passed here.
+func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string, input map[string]any) (string, bool, error) {
 	// Bail early if the context is already cancelled — no steps should be
 	// written and no MCP call should be made.
 	if err := ctx.Err(); err != nil {
 		return "", false, fmt.Errorf("context cancelled before tool dispatch: %w", err)
 	}
 
-	// Resolve the sanitized Claude-facing name to the internal dot-separated name.
-	internalName, ok := a.claudeNameToInternal[toolName]
-	if !ok {
-		// Fall back to the raw name for the error message so callers can see the
-		// exact name Claude returned.
-		internalName = toolName
-	}
-
-	entry, ok := a.toolsByName[internalName]
+	entry, ok := a.toolsByName[toolName]
 	if !ok {
 		err := fmt.Errorf("tool not found: %s", toolName)
 		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeToolError)
@@ -524,12 +487,12 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 	// Validate input against narrowed schema.
 	if err := mcp.ValidateCall(entry.narrowedSchema, input); err != nil {
 		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeSchemaViolation)
-		return "", false, fmt.Errorf("schema validation for %s: %w", internalName, err)
+		return "", false, fmt.Errorf("schema validation for %s: %w", toolName, err)
 	}
 
 	// Approval gating for tools with approval: required.
 	if entry.tool.Approval == model.ApprovalModeRequired {
-		if err := a.waitForApproval(ctx, runID, entry, internalName, input); err != nil {
+		if err := a.waitForApproval(ctx, runID, entry, toolName, input); err != nil {
 			return "", false, err
 		}
 	}
@@ -539,7 +502,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 		RunID: runID,
 		Type:  model.StepTypeToolCall,
 		Content: map[string]any{
-			"tool_name": internalName,
+			"tool_name": toolName,
 			"server_id": entry.tool.ServerName,
 			"input":     input,
 		},
@@ -558,7 +521,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 		} else {
 			a.logAuditError(context.Background(), runID, err.Error(), model.ErrorCodeToolError)
 		}
-		return "", false, fmt.Errorf("calling tool %s: %w", internalName, err)
+		return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
 	}
 
 	outputStr := string(result.Output)
@@ -568,7 +531,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 		RunID: runID,
 		Type:  model.StepTypeToolResult,
 		Content: map[string]any{
-			"tool_name": internalName,
+			"tool_name": toolName,
 			"output":    outputStr,
 			"is_error":  result.IsError,
 		},
@@ -577,48 +540,4 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, _ /*toolUseID*/,
 	}
 
 	return outputStr, result.IsError, nil
-}
-
-// buildToolInputSchema converts a raw JSON schema into a ToolInputSchemaParam
-// for use in the Anthropic API.
-func buildToolInputSchema(schema json.RawMessage) (anthropic.ToolInputSchemaParam, error) {
-	if len(schema) == 0 {
-		return anthropic.ToolInputSchemaParam{}, nil
-	}
-
-	var raw map[string]any
-	if err := json.Unmarshal(schema, &raw); err != nil {
-		return anthropic.ToolInputSchemaParam{}, fmt.Errorf("unmarshal schema: %w", err)
-	}
-
-	var properties any
-	if props, ok := raw["properties"]; ok {
-		properties = props
-	}
-
-	var required []string
-	if req, ok := raw["required"]; ok {
-		if reqSlice, ok := req.([]any); ok {
-			for _, v := range reqSlice {
-				if s, ok := v.(string); ok {
-					required = append(required, s)
-				}
-			}
-		}
-	}
-
-	// Copy any extra fields (e.g. "additionalProperties", "$schema") so the
-	// schema round-trips cleanly.
-	extras := make(map[string]any)
-	for k, v := range raw {
-		if k != "type" && k != "properties" && k != "required" {
-			extras[k] = v
-		}
-	}
-
-	return anthropic.ToolInputSchemaParam{
-		Properties:  properties,
-		Required:    required,
-		ExtraFields: extras,
-	}, nil
 }

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/rapp992/gleipnir/internal/agent"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
@@ -87,10 +87,10 @@ agent:
 // buildIntegrationRouter wires a WebhookHandler and RunsHandler together into
 // a chi router suitable for httptest requests. It returns the router and the
 // RunManager so callers can call manager.Wait() for deterministic cleanup.
-func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, claude *anthropic.Client) (http.Handler, *trigger.RunManager) {
+func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, llmClient llm.LLMClient) (http.Handler, *trigger.RunManager) {
 	manager := trigger.NewRunManager()
 	factory := trigger.AgentFactory(func(cfg agent.Config) (*agent.BoundAgent, error) {
-		cfg.Claude = claude
+		cfg.LLMClient = llmClient
 		return agent.New(cfg)
 	})
 	launcher := trigger.NewRunLauncher(store, registry, manager, factory, nil)
@@ -157,9 +157,9 @@ func TestIntegration(t *testing.T) {
 		insertTestPolicy(t, store, "pol-happy", integrationPolicy)
 
 		// Two responses: tool-use on the first turn, then end-turn text.
-		router, manager := buildIntegrationRouter(store, registry, testutil.NewFakeAnthropicClient([]*anthropic.Message{
-			testutil.MakeToolUseMessage("tu-1", "stub-server.read_data", map[string]any{}, 10, 5),
-			testutil.MakeTextMessage("All done.", anthropic.StopReasonEndTurn, 10, 5),
+		router, manager := buildIntegrationRouter(store, registry, testutil.NewMockLLMClient([]*llm.MessageResponse{
+			testutil.MakeLLMToolCallResponse("tu-1", "stub-server.read_data", map[string]any{}, 10, 5),
+			testutil.MakeLLMTextResponse("All done.", llm.StopReasonEndTurn, 10, 5),
 		}))
 		runID := fireWebhook(t, router, "pol-happy")
 
@@ -231,11 +231,11 @@ func TestIntegration(t *testing.T) {
 		store, registry := setupIntegrationFixture(t)
 		insertTestPolicy(t, store, "pol-concurrent", integrationPolicy)
 
-		router, manager := buildIntegrationRouter(store, registry, testutil.NewFakeAnthropicClient([]*anthropic.Message{
-			testutil.MakeToolUseMessage("tu-1", "stub-server.read_data", map[string]any{}, 10, 5),
-			testutil.MakeToolUseMessage("tu-2", "stub-server.read_data", map[string]any{}, 10, 5),
-			testutil.MakeTextMessage("Done A.", anthropic.StopReasonEndTurn, 10, 5),
-			testutil.MakeTextMessage("Done B.", anthropic.StopReasonEndTurn, 10, 5),
+		router, manager := buildIntegrationRouter(store, registry, testutil.NewMockLLMClient([]*llm.MessageResponse{
+			testutil.MakeLLMToolCallResponse("tu-1", "stub-server.read_data", map[string]any{}, 10, 5),
+			testutil.MakeLLMToolCallResponse("tu-2", "stub-server.read_data", map[string]any{}, 10, 5),
+			testutil.MakeLLMTextResponse("Done A.", llm.StopReasonEndTurn, 10, 5),
+			testutil.MakeLLMTextResponse("Done B.", llm.StopReasonEndTurn, 10, 5),
 		}))
 
 		// Fire both webhooks before waiting so the goroutines run in parallel.
@@ -281,7 +281,7 @@ func TestIntegration(t *testing.T) {
 	t.Run("unknown_policy", func(t *testing.T) {
 		store, registry := setupIntegrationFixture(t)
 
-		router, _ := buildIntegrationRouter(store, registry, testutil.NoopAnthropicClient())
+		router, _ := buildIntegrationRouter(store, registry, testutil.NewNoopLLMClient())
 
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/nonexistent-policy",
 			strings.NewReader(`{"event":"test"}`))

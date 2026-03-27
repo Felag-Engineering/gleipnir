@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
@@ -59,65 +59,12 @@ func makeResolvedTool(serverURL, serverName, toolName string) mcp.ResolvedTool {
 	}
 }
 
-func TestSanitizeToolName(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{
-			name:  "dot_separator_replaced",
-			input: "my-server.tool_name",
-			want:  "my-server_tool_name",
-		},
-		{
-			name:  "multiple_dots_replaced",
-			input: "server.tool.with.many.dots",
-			want:  "server_tool_with_many_dots",
-		},
-		{
-			name:  "already_valid_unchanged",
-			input: "already_valid-name",
-			want:  "already_valid-name",
-		},
-		{
-			name:  "spaces_replaced",
-			input: "server name with spaces",
-			want:  "server_name_with_spaces",
-		},
-		{
-			name:  "truncated_to_128_chars",
-			input: strings.Repeat("a", 200),
-			want:  strings.Repeat("a", 128),
-		},
-		{
-			name:  "empty_string",
-			input: "",
-			want:  "",
-		},
-		{
-			name:  "all_invalid_chars",
-			input: "...",
-			want:  "___",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := sanitizeToolName(tc.input)
-			if got != tc.want {
-				t.Errorf("sanitizeToolName(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestNew_RequiresStateMachine(t *testing.T) {
 	_, err := New(Config{
-		Policy: minimalPolicy(),
-		Tools:  nil,
-		Audit:  NewAuditWriter(testutil.NewTestStore(t).Queries()),
-		Claude: testutil.NoopAnthropicClient(),
+		Policy:    minimalPolicy(),
+		Tools:     nil,
+		Audit:     NewAuditWriter(testutil.NewTestStore(t).Queries()),
+		LLMClient: testutil.NewNoopLLMClient(),
 		// StateMachine intentionally omitted
 	})
 	if err == nil {
@@ -145,7 +92,7 @@ func TestHandleToolCall(t *testing.T) {
 				srv := makeToolCallServer(t, successContent, false)
 				return []mcp.ResolvedTool{makeResolvedTool(srv.URL, "myserver", "read_data")}
 			},
-			toolName:     "myserver_read_data", // sanitized form as Claude returns it
+			toolName:     "myserver.read_data", // original MCP dot-separated name
 			input:        map[string]any{},
 			wantNonEmpty: true,
 			wantIsError:  false,
@@ -159,7 +106,7 @@ func TestHandleToolCall(t *testing.T) {
 				srv := makeToolCallServer(t, errorContent, true)
 				return []mcp.ResolvedTool{makeResolvedTool(srv.URL, "myserver", "failing_tool")}
 			},
-			toolName:     "myserver_failing_tool", // sanitized form as Claude returns it
+			toolName:     "myserver.failing_tool", // original MCP dot-separated name
 			input:        map[string]any{},
 			wantNonEmpty: true,
 			wantIsError:  true,
@@ -175,7 +122,7 @@ func TestHandleToolCall(t *testing.T) {
 				t.Cleanup(srv.Close)
 				return []mcp.ResolvedTool{makeResolvedTool(srv.URL, "myserver", "unreliable_tool")}
 			},
-			toolName:     "myserver_unreliable_tool", // sanitized form as Claude returns it
+			toolName:     "myserver.unreliable_tool", // original MCP dot-separated name
 			input:        map[string]any{},
 			wantNonEmpty: false,
 			wantErr:      true,
@@ -186,7 +133,7 @@ func TestHandleToolCall(t *testing.T) {
 			setupTools: func(t *testing.T) []mcp.ResolvedTool {
 				return []mcp.ResolvedTool{} // no tools registered
 			},
-			toolName:     "myserver_missing_tool", // sanitized form as Claude returns it
+			toolName:     "myserver.missing_tool", // original MCP dot-separated name
 			input:        map[string]any{},
 			wantNonEmpty: false,
 			wantErr:      true,
@@ -198,7 +145,7 @@ func TestHandleToolCall(t *testing.T) {
 				srv := makeToolCallServer(t, successContent, false)
 				return []mcp.ResolvedTool{makeResolvedTool(srv.URL, "myserver", "read_data")}
 			},
-			toolName:     "myserver_read_data", // sanitized form as Claude returns it
+			toolName:     "myserver.read_data", // original MCP dot-separated name
 			input:        map[string]any{},
 			wantNonEmpty: false,
 			wantErr:      true,
@@ -232,7 +179,7 @@ func TestHandleToolCall(t *testing.T) {
 				Policy:       policy,
 				Tools:        tools,
 				Audit:        w,
-				Claude:       testutil.NoopAnthropicClient(),
+				LLMClient:    testutil.NewNoopLLMClient(),
 				ApprovalCh:   make(chan bool),
 				StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
 			})
@@ -247,7 +194,7 @@ func TestHandleToolCall(t *testing.T) {
 				ctx = cancelCtx
 			}
 
-			output, isError, err := agent.handleToolCall(ctx, "run1", "use-id-1", tc.toolName, tc.input)
+			output, isError, err := agent.handleToolCall(ctx, "run1", tc.toolName, tc.input)
 
 			if tc.wantErr && err == nil {
 				t.Errorf("expected error, got nil")
@@ -349,7 +296,7 @@ func TestRun_SingleTurnEndTurn(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:       testutil.NewFakeAnthropicClient([]*anthropic.Message{testutil.MakeTextMessage("I completed the task.", anthropic.StopReasonEndTurn, 10, 20)}),
+		LLMClient:    testutil.NewMockLLMClient([]*llm.MessageResponse{testutil.MakeLLMTextResponse("I completed the task.", llm.StopReasonEndTurn, 10, 20)}),
 		Tools:        nil,
 		Policy:       minimalPolicy(),
 		Audit:        w,
@@ -413,9 +360,9 @@ func TestRun_ToolCallLoop(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
-			testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"arg": "x"}, 10, 5),
-			testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
+		LLMClient: testutil.NewMockLLMClient([]*llm.MessageResponse{
+			testutil.MakeLLMToolCallResponse("tu-1", "my-server.read_data", map[string]any{"arg": "x"}, 10, 5),
+			testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 3),
 		}),
 		Tools:        tools,
 		Policy:       minimalPolicy(),
@@ -466,9 +413,9 @@ func TestRun_ContextCancellation(t *testing.T) {
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	w := NewAuditWriter(s.Queries())
-	// NoopAnthropicClient panics if called — verifies no API call is made.
+	// NewNoopLLMClient panics if CreateMessage is called — verifies no API call is made.
 	ba, err := New(Config{
-		Claude:       testutil.NoopAnthropicClient(),
+		LLMClient:    testutil.NewNoopLLMClient(),
 		Tools:        nil,
 		Policy:       minimalPolicy(),
 		Audit:        w,
@@ -513,9 +460,9 @@ func TestRun_MissingCapabilityFailsFast(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	// No tools registered — myserver.missing_tool cannot be resolved.
-	// NoopAnthropicClient panics if called — verifies no API call is made.
+	// NewNoopLLMClient panics if CreateMessage is called — verifies no API call is made.
 	ba, err := New(Config{
-		Claude:       testutil.NoopAnthropicClient(),
+		LLMClient:    testutil.NewNoopLLMClient(),
 		Tools:        nil,
 		Policy:       p,
 		Audit:        w,
@@ -568,8 +515,8 @@ func TestRun_ToolNotFound(t *testing.T) {
 	// No tools registered, but response asks for one.
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
-			testutil.MakeToolUseMessage("tu-1", "missing-server_nonexistent", map[string]any{}, 10, 5),
+		LLMClient: testutil.NewMockLLMClient([]*llm.MessageResponse{
+			testutil.MakeLLMToolCallResponse("tu-1", "missing-server.nonexistent", map[string]any{}, 10, 5),
 		}),
 		Tools:        nil,
 		Policy:       minimalPolicy(),
@@ -636,10 +583,10 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
-			testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 600, 400),
+		LLMClient: testutil.NewMockLLMClient([]*llm.MessageResponse{
+			testutil.MakeLLMToolCallResponse("tu-1", "my-server.read_data", map[string]any{}, 600, 400),
 			// This second response should never be reached.
-			testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
+			testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 5),
 		}),
 		Tools:        tools,
 		Policy:       p,
@@ -684,7 +631,7 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:       testutil.NewFakeAnthropicClient([]*anthropic.Message{testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5)}),
+		LLMClient:    testutil.NewMockLLMClient([]*llm.MessageResponse{testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 5)}),
 		Tools:        nil,
 		Policy:       minimalPolicy(),
 		Audit:        w,
@@ -730,8 +677,8 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
-			testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"badkey": "val"}, 10, 5),
+		LLMClient: testutil.NewMockLLMClient([]*llm.MessageResponse{
+			testutil.MakeLLMToolCallResponse("tu-1", "my-server.read_data", map[string]any{"badkey": "val"}, 10, 5),
 		}),
 		Tools:        tools,
 		Policy:       minimalPolicy(),
@@ -799,8 +746,8 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
-			testutil.MakeToolUseMessage("tu-1", "my-server_do_thing", map[string]any{"arg": "v"}, 10, 5),
+		LLMClient: testutil.NewMockLLMClient([]*llm.MessageResponse{
+			testutil.MakeLLMToolCallResponse("tu-1", "my-server.do_thing", map[string]any{"arg": "v"}, 10, 5),
 		}),
 		Tools:        []mcp.ResolvedTool{approvalTool},
 		Policy:       minimalPolicy(),
@@ -890,11 +837,11 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
-			testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5),
-			testutil.MakeToolUseMessage("tu-2", "my-server_read_data", map[string]any{}, 10, 5),
+		LLMClient: testutil.NewMockLLMClient([]*llm.MessageResponse{
+			testutil.MakeLLMToolCallResponse("tu-1", "my-server.read_data", map[string]any{}, 10, 5),
+			testutil.MakeLLMToolCallResponse("tu-2", "my-server.read_data", map[string]any{}, 10, 5),
 			// Third response should never be reached.
-			testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 5),
+			testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 5),
 		}),
 		Tools:        tools,
 		Policy:       p,
@@ -962,9 +909,9 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
-			testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5),
-			testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
+		LLMClient: testutil.NewMockLLMClient([]*llm.MessageResponse{
+			testutil.MakeLLMToolCallResponse("tu-1", "my-server.read_data", map[string]any{}, 10, 5),
+			testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 3),
 		}),
 		Tools:        tools,
 		Policy:       p,
@@ -1023,9 +970,9 @@ func TestRun_Cancellation(t *testing.T) {
 		cancel() // cancel before calling Run
 
 		w := NewAuditWriter(s.Queries())
-		// NoopAnthropicClient panics if called — verifies no API call is made.
+		// NewNoopLLMClient panics if CreateMessage is called — verifies no API call is made.
 		ba, err := New(Config{
-			Claude:       testutil.NoopAnthropicClient(),
+			LLMClient:    testutil.NewNoopLLMClient(),
 			Tools:        nil,
 			Policy:       minimalPolicy(),
 			Audit:        w,
@@ -1067,10 +1014,10 @@ func TestRun_Cancellation(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		blockingClient, blockingTransport := testutil.NewBlockingAnthropicClient()
+		blockingClient, blockingTransport := testutil.NewBlockingLLMClient()
 		w := NewAuditWriter(s.Queries())
 		ba, err := New(Config{
-			Claude:       blockingClient,
+			LLMClient:    blockingClient,
 			Tools:        nil,
 			Policy:       minimalPolicy(),
 			Audit:        w,
@@ -1145,8 +1092,8 @@ func TestRun_Cancellation(t *testing.T) {
 
 		w := NewAuditWriter(s.Queries())
 		ba, err := New(Config{
-			Claude: testutil.NewFakeAnthropicClient([]*anthropic.Message{
-				testutil.MakeToolUseMessage("tu-1", "slow-server_slow_tool", map[string]any{}, 10, 5),
+			LLMClient: testutil.NewMockLLMClient([]*llm.MessageResponse{
+				testutil.MakeLLMToolCallResponse("tu-1", "slow-server.slow_tool", map[string]any{}, 10, 5),
 			}),
 			Tools:        tools,
 			Policy:       minimalPolicy(),
@@ -1211,14 +1158,14 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 
 	tools := []mcp.ResolvedTool{toolForRun(mcpSrv.URL, "my-server", "read_data")}
 
-	capturingClient, capturingTransport := testutil.NewCapturingAnthropicClient([]*anthropic.Message{
-		testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{"arg": "x"}, 10, 5),
-		testutil.MakeTextMessage("Done.", anthropic.StopReasonEndTurn, 5, 3),
+	capturingClient, capturingTransport := testutil.NewCapturingLLMClient([]*llm.MessageResponse{
+		testutil.MakeLLMToolCallResponse("tu-1", "my-server.read_data", map[string]any{"arg": "x"}, 10, 5),
+		testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 3),
 	})
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		Claude:       capturingClient,
+		LLMClient:    capturingClient,
 		Tools:        tools,
 		Policy:       minimalPolicy(),
 		Audit:        w,
@@ -1233,53 +1180,39 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 	}
 
 	// Two API calls are made: the first returns a tool_use, the second returns end_turn.
-	// The messages slice for the second call contains:
+	// The history slice for the second call contains:
 	//   [0] user (trigger payload)
 	//   [1] assistant (tool_use response)
 	//   [2] user (tool results with prepended timestamp)
-	bodies := capturingTransport.CapturedBodies()
-	if len(bodies) != 2 {
-		t.Fatalf("expected 2 API calls, got %d", len(bodies))
+	requests := capturingTransport.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("expected 2 API calls, got %d", len(requests))
 	}
 
-	// Unmarshal the second call's request body to inspect the messages.
-	var secondReq struct {
-		Messages []struct {
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(bodies[1], &secondReq); err != nil {
-		t.Fatalf("unmarshal second request body: %v", err)
+	secondReq := requests[1]
+	if len(secondReq.History) < 3 {
+		t.Fatalf("second call history: want at least 3 turns, got %d", len(secondReq.History))
 	}
 
-	if len(secondReq.Messages) < 3 {
-		t.Fatalf("second call messages: want at least 3, got %d", len(secondReq.Messages))
-	}
-
-	toolResultsTurn := secondReq.Messages[2]
+	toolResultsTurn := secondReq.History[2]
 	if len(toolResultsTurn.Content) < 2 {
 		t.Fatalf("tool-results user turn: want at least 2 content blocks, got %d", len(toolResultsTurn.Content))
 	}
 
-	// First block must be a text block matching the timestamp pattern.
-	firstBlock := toolResultsTurn.Content[0]
-	if firstBlock.Type != "text" {
-		t.Fatalf("content[0].type = %q, want \"text\"", firstBlock.Type)
+	// First block must be a TextBlock matching the timestamp pattern.
+	firstBlock, ok := toolResultsTurn.Content[0].(llm.TextBlock)
+	if !ok {
+		t.Fatalf("content[0] type = %T, want llm.TextBlock", toolResultsTurn.Content[0])
 	}
 	// RFC3339Nano may include fractional seconds, e.g. T12:34:56.123456789Z
 	timestampRE := regexp.MustCompile(`^\[Current time: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z\]$`)
 	if !timestampRE.MatchString(firstBlock.Text) {
-		t.Errorf("content[0].text = %q, want to match %s", firstBlock.Text, timestampRE)
+		t.Errorf("content[0].Text = %q, want to match %s", firstBlock.Text, timestampRE)
 	}
 
-	// Second block must be a tool result block.
-	secondBlock := toolResultsTurn.Content[1]
-	if secondBlock.Type != "tool_result" {
-		t.Errorf("content[1].type = %q, want \"tool_result\"", secondBlock.Type)
+	// Second block must be a ToolResultBlock.
+	if _, ok := toolResultsTurn.Content[1].(llm.ToolResultBlock); !ok {
+		t.Errorf("content[1] type = %T, want llm.ToolResultBlock", toolResultsTurn.Content[1])
 	}
 }
 
@@ -1315,7 +1248,7 @@ func makeAgentWithTools(t *testing.T, tools []mcp.ResolvedTool, approvalCh chan 
 	ba, err := New(Config{
 		Policy:       minimalPolicy(),
 		Tools:        tools,
-		Claude:       testutil.NoopAnthropicClient(),
+		LLMClient:    testutil.NewNoopLLMClient(),
 		Audit:        w,
 		ApprovalCh:   ch,
 		StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
@@ -1331,16 +1264,14 @@ func TestBuildToolDefinitions(t *testing.T) {
 		name      string
 		tools     []mcp.ResolvedTool
 		wantCount int
-		wantErr   bool
 	}{
 		{
 			name:      "empty_tools_produces_empty_slice",
 			tools:     nil,
 			wantCount: 0,
-			wantErr:   false,
 		},
 		{
-			name: "single_tool_sanitized_name_and_description",
+			name: "single_tool_original_name_and_description",
 			tools: []mcp.ResolvedTool{
 				{
 					GrantedTool: model.GrantedTool{
@@ -1353,7 +1284,6 @@ func TestBuildToolDefinitions(t *testing.T) {
 				},
 			},
 			wantCount: 1,
-			wantErr:   false,
 		},
 	}
 
@@ -1366,7 +1296,7 @@ func TestBuildToolDefinitions(t *testing.T) {
 			ba, err := New(Config{
 				Policy:       minimalPolicy(),
 				Tools:        tc.tools,
-				Claude:       testutil.NoopAnthropicClient(),
+				LLMClient:    testutil.NewNoopLLMClient(),
 				Audit:        NewAuditWriter(s.Queries()),
 				StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
 			})
@@ -1374,76 +1304,24 @@ func TestBuildToolDefinitions(t *testing.T) {
 				t.Fatalf("New: %v", err)
 			}
 
-			defs, err := ba.buildToolDefinitions()
-			if tc.wantErr && err == nil {
-				t.Error("expected error, got nil")
-			}
-			if !tc.wantErr && err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
-			if err != nil {
-				return
-			}
-
+			defs := ba.buildToolDefinitions()
 			if len(defs) != tc.wantCount {
 				t.Errorf("len(defs) = %d, want %d", len(defs), tc.wantCount)
 			}
 
-			// For the single-tool case, verify the sanitized name and description.
-			if tc.name == "single_tool_sanitized_name_and_description" && len(defs) == 1 {
-				tool := defs[0]
-				if tool.OfTool == nil {
-					t.Fatal("OfTool is nil")
+			// For the single-tool case, verify the agent returns the original
+			// dot-separated name (sanitization is the LLMClient's responsibility).
+			if tc.name == "single_tool_original_name_and_description" && len(defs) == 1 {
+				def := defs[0]
+				wantName := "my-server.read.data"
+				if def.Name != wantName {
+					t.Errorf("tool name = %q, want %q", def.Name, wantName)
 				}
-				wantName := "my-server_read_data"
-				if tool.OfTool.Name != wantName {
-					t.Errorf("tool name = %q, want %q", tool.OfTool.Name, wantName)
-				}
-				if !tool.OfTool.Description.Valid() || tool.OfTool.Description.Value != "reads some data" {
-					t.Errorf("tool description = %v, want 'reads some data'", tool.OfTool.Description)
-				}
-				// Verify the name is correctly mapped via claudeNameToInternal (built in New()).
-				if internal, ok := ba.claudeNameToInternal[wantName]; !ok || internal != "my-server.read.data" {
-					t.Errorf("claudeNameToInternal[%q] = %q, want %q", wantName, internal, "my-server.read.data")
+				if def.Description != "reads some data" {
+					t.Errorf("tool description = %q, want %q", def.Description, "reads some data")
 				}
 			}
 		})
-	}
-}
-
-// TestBuildToolDefinitions_InvalidSchema verifies that a tool with a non-JSON
-// narrowedSchema causes buildToolDefinitions to return an error. This requires
-// direct construction of toolsByName to inject a bad schema after New().
-func TestBuildToolDefinitions_InvalidSchema(t *testing.T) {
-	s := testutil.NewTestStore(t)
-	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
-	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
-
-	ba := &BoundAgent{
-		policy:   minimalPolicy(),
-		audit:    NewAuditWriter(s.Queries()),
-		sm:       NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
-		messages: &testutil.NoopAnthropicClient().Messages,
-		toolsByName: map[string]resolvedToolEntry{
-			"bad-server.bad_tool": {
-				tool: mcp.ResolvedTool{
-					GrantedTool: model.GrantedTool{
-						ServerName: "bad-server",
-						ToolName:   "bad_tool",
-					},
-					Description: "bad tool",
-				},
-				narrowedSchema: json.RawMessage(`not valid json`),
-			},
-		},
-		claudeNameToInternal: map[string]string{
-			"bad-server_bad_tool": "bad-server.bad_tool",
-		},
-	}
-
-	_, err := ba.buildToolDefinitions()
-	if err == nil {
-		t.Error("expected error for invalid schema, got nil")
 	}
 }
 
@@ -1556,128 +1434,6 @@ func TestWaitForApproval(t *testing.T) {
 	})
 }
 
-func TestProcessContentBlocks(t *testing.T) {
-	tests := []struct {
-		name            string
-		setupResp       func(t *testing.T) (*anthropic.Message, []mcp.ResolvedTool)
-		totalToolCalls  int
-		maxToolCalls    int
-		wantResultCount int
-		wantToolCalls   int
-		wantErr         bool
-		wantErrCode     string
-	}{
-		{
-			name: "single_text_block_writes_thought_no_tool_results",
-			setupResp: func(t *testing.T) (*anthropic.Message, []mcp.ResolvedTool) {
-				return testutil.MakeTextMessage("thinking...", anthropic.StopReasonEndTurn, 5, 3), nil
-			},
-			totalToolCalls:  0,
-			maxToolCalls:    0,
-			wantResultCount: 0,
-			wantToolCalls:   0,
-			wantErr:         false,
-		},
-		{
-			name: "single_tool_use_block_returns_one_result",
-			setupResp: func(t *testing.T) (*anthropic.Message, []mcp.ResolvedTool) {
-				srv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"result"}]`), false)
-				tools := []mcp.ResolvedTool{makeResolvedTool(srv.URL, "my-server", "read_data")}
-				msg := testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5)
-				return msg, tools
-			},
-			totalToolCalls:  0,
-			maxToolCalls:    0,
-			wantResultCount: 1,
-			wantToolCalls:   1,
-			wantErr:         false,
-		},
-		{
-			name: "tool_call_limit_exceeded_returns_error",
-			setupResp: func(t *testing.T) (*anthropic.Message, []mcp.ResolvedTool) {
-				srv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"result"}]`), false)
-				tools := []mcp.ResolvedTool{makeResolvedTool(srv.URL, "my-server", "read_data")}
-				msg := testutil.MakeToolUseMessage("tu-1", "my-server_read_data", map[string]any{}, 10, 5)
-				return msg, tools
-			},
-			totalToolCalls:  1, // already at 1
-			maxToolCalls:    1, // cap is 1, so totalToolCalls+1 > cap
-			wantResultCount: 0,
-			wantToolCalls:   2, // incremented before limit check
-			wantErr:         true,
-			wantErrCode:     "tool_call_limit_exceeded",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			resp, tools := tc.setupResp(t)
-
-			s := testutil.NewTestStore(t)
-			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
-			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
-
-			w := NewAuditWriter(s.Queries())
-			ba, err := New(Config{
-				Policy:       minimalPolicy(),
-				Tools:        tools,
-				Claude:       testutil.NoopAnthropicClient(),
-				Audit:        w,
-				ApprovalCh:   make(chan bool),
-				StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
-			})
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-
-			tokenCost := int(resp.Usage.InputTokens + resp.Usage.OutputTokens)
-			results, updatedCalls, err := ba.processContentBlocks(
-				context.Background(), "run1", resp,
-				tc.totalToolCalls, tc.maxToolCalls, tokenCost,
-			)
-
-			if tc.wantErr && err == nil {
-				t.Error("expected error, got nil")
-			}
-			if !tc.wantErr && err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
-
-			if len(results) != tc.wantResultCount {
-				t.Errorf("results count = %d, want %d", len(results), tc.wantResultCount)
-			}
-			if updatedCalls != tc.wantToolCalls {
-				t.Errorf("updatedToolCalls = %d, want %d", updatedCalls, tc.wantToolCalls)
-			}
-
-			// For error cases with a known code, verify the audit step was written.
-			if tc.wantErr && tc.wantErrCode != "" {
-				if err := w.Close(); err != nil {
-					t.Fatalf("Close: %v", err)
-				}
-				steps, dbErr := s.ListRunSteps(context.Background(), "run1")
-				if dbErr != nil {
-					t.Fatalf("ListRunSteps: %v", dbErr)
-				}
-				var found bool
-				for _, step := range steps {
-					if step.Type == string(model.StepTypeError) {
-						var content map[string]string
-						if jsonErr := json.Unmarshal([]byte(step.Content), &content); jsonErr == nil {
-							if content["code"] == tc.wantErrCode {
-								found = true
-							}
-						}
-					}
-				}
-				if !found {
-					t.Errorf("expected error step with code %q, not found in audit trail", tc.wantErrCode)
-				}
-			}
-		})
-	}
-}
-
 func TestRunAPILoop_EndTurn(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
@@ -1687,7 +1443,7 @@ func TestRunAPILoop_EndTurn(t *testing.T) {
 	ba, err := New(Config{
 		Policy:       minimalPolicy(),
 		Tools:        nil,
-		Claude:       testutil.NewFakeAnthropicClient([]*anthropic.Message{testutil.MakeTextMessage("all done", anthropic.StopReasonEndTurn, 10, 5)}),
+		LLMClient:    testutil.NewMockLLMClient([]*llm.MessageResponse{testutil.MakeLLMTextResponse("all done", llm.StopReasonEndTurn, 10, 5)}),
 		Audit:        w,
 		StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.Queries()),
 	})
@@ -1695,8 +1451,8 @@ func TestRunAPILoop_EndTurn(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	history := []anthropic.MessageParam{
-		anthropic.NewUserMessage(anthropic.NewTextBlock("go")),
+	history := []llm.ConversationTurn{
+		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "go"}}},
 	}
 
 	err = ba.runAPILoop(context.Background(), "r1", history, nil, "system prompt")
@@ -1741,7 +1497,7 @@ func TestLogAuditError(t *testing.T) {
 	ba, err := New(Config{
 		Policy:       minimalPolicy(),
 		Tools:        nil,
-		Claude:       testutil.NoopAnthropicClient(),
+		LLMClient:    testutil.NewNoopLLMClient(),
 		Audit:        w,
 		StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
 	})
