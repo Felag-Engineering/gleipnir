@@ -629,11 +629,15 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
+	pol := minimalPolicy()
+	pol.Agent.ModelConfig.Provider = "anthropic"
+	pol.Agent.ModelConfig.Name = "claude-sonnet-4-6"
+
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		LLMClient:    testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 5)),
 		Tools:        nil,
-		Policy:       minimalPolicy(),
+		Policy:       pol,
 		Audit:        w,
 		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
@@ -658,6 +662,22 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 	}
 	if first.TokenCost != 0 {
 		t.Errorf("capability snapshot token cost = %d, want 0", first.TokenCost)
+	}
+
+	// Verify provider and model are recorded in the snapshot content JSON.
+	type snapshotContent struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	var snap snapshotContent
+	if err := json.Unmarshal([]byte(first.Content), &snap); err != nil {
+		t.Fatalf("unmarshal snapshot content: %v", err)
+	}
+	if snap.Provider != "anthropic" {
+		t.Errorf("snapshot provider = %q, want %q", snap.Provider, "anthropic")
+	}
+	if snap.Model != "claude-sonnet-4-6" {
+		t.Errorf("snapshot model = %q, want %q", snap.Model, "claude-sonnet-4-6")
 	}
 }
 

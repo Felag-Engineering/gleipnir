@@ -47,7 +47,9 @@ export interface GrantedToolEntry {
 
 // CapabilitySnapshotV2 is the shape written by agent runs after ADR-023.
 // Older snapshots written before this change are plain GrantedToolEntry arrays.
+// provider is optional for backward compat: snapshots written before issue #352 have model but no provider.
 export interface CapabilitySnapshotV2 {
+  provider?: string;
   model: string;
   tools: GrantedToolEntry[];
 }

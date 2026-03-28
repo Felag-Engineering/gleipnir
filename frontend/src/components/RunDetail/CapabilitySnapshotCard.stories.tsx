@@ -53,6 +53,7 @@ export const Empty: Story = {
 // V2 shape stories — capability snapshots written after ADR-023 include the model field.
 
 const MIXED_TOOLS_V2: CapabilitySnapshotV2 = {
+  provider: 'anthropic',
   model: 'claude-sonnet-4-6',
   tools: MIXED_TOOLS,
 }
@@ -62,16 +63,36 @@ export const V2WithSonnet: Story = {
 }
 
 export const V2WithOpus: Story = {
-  args: { content: { model: 'claude-opus-4-6', tools: MIXED_TOOLS } },
+  args: { content: { provider: 'anthropic', model: 'claude-opus-4-6', tools: MIXED_TOOLS } },
 }
 
 export const V2WithHaiku: Story = {
   args: {
     content: {
+      provider: 'anthropic',
       model: 'claude-haiku-4-5-20251001',
       tools: [
         { ServerName: 'fs-server', ToolName: 'read_file', Role: 'tool', Approval: 'none', Timeout: 30, OnTimeout: 'fail' },
       ],
+    },
+  },
+}
+
+export const V2WithGemini: Story = {
+  args: {
+    content: {
+      provider: 'google',
+      model: 'gemini-2.0-flash',
+      tools: MIXED_TOOLS,
+    },
+  },
+}
+
+export const V2WithoutProvider: Story = {
+  args: {
+    content: {
+      model: 'claude-sonnet-4-6',
+      tools: MIXED_TOOLS,
     },
   },
 }

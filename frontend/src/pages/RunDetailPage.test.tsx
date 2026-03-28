@@ -218,6 +218,40 @@ describe('RunDetailPage — step types render', () => {
     })
   })
 
+  it('renders capability_snapshot V2 with provider in summary label', () => {
+    const capContent = JSON.stringify({
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      tools: [
+        { ServerName: 'srv1', ToolName: 'fs.read', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
+      ],
+    })
+    mockLoaded(makeRun(), [
+      makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
+    ])
+    renderPage()
+    const summary = screen.getByText(/Capability snapshot/)
+    expect(summary.textContent).toContain('anthropic')
+    expect(summary.textContent).toContain('claude-sonnet-4-6')
+  })
+
+  it('renders capability_snapshot V2 without provider (backward compat)', () => {
+    const capContent = JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      tools: [
+        { ServerName: 'srv1', ToolName: 'fs.read', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
+      ],
+    })
+    mockLoaded(makeRun(), [
+      makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
+    ])
+    renderPage()
+    const summary = screen.getByText(/Capability snapshot/)
+    expect(summary.textContent).toContain('claude-sonnet-4-6')
+    // provider omitted — should not appear in summary
+    expect(summary.textContent).not.toContain('anthropic')
+  })
+
   it('renders approval_request placeholder', () => {
     mockLoaded(makeRun(), [
       makeStep({

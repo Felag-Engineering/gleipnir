@@ -7,13 +7,13 @@ import (
 
 func TestStubStreamFromResponse(t *testing.T) {
 	tests := []struct {
-		name          string
-		resp          *MessageResponse
-		wantText      *string
-		wantToolCall  bool
-		wantToolName  string
+		name           string
+		resp           *MessageResponse
+		wantText       *string
+		wantToolCall   bool
+		wantToolName   string
 		wantStopReason StopReason
-		wantUsage     TokenUsage
+		wantUsage      TokenUsage
 	}{
 		{
 			name: "text-only response",
@@ -45,8 +45,8 @@ func TestStubStreamFromResponse(t *testing.T) {
 		{
 			name: "combined text and tool calls",
 			resp: &MessageResponse{
-				Text:      []TextBlock{{Text: "using tool"}},
-				ToolCalls: []ToolCallBlock{{ID: "tc-2", Name: "fetch", Input: json.RawMessage(`{}`)}},
+				Text:       []TextBlock{{Text: "using tool"}},
+				ToolCalls:  []ToolCallBlock{{ID: "tc-2", Name: "fetch", Input: json.RawMessage(`{}`)}},
 				StopReason: StopReasonToolUse,
 				Usage:      TokenUsage{InputTokens: 15, OutputTokens: 7},
 			},

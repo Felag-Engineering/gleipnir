@@ -15,6 +15,7 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
   const isV2 = !Array.isArray(content) && content !== null && typeof content === 'object'
   const tools = isV2 ? (content as CapabilitySnapshotV2).tools : (content as GrantedToolEntry[])
   const modelName = isV2 ? (content as CapabilitySnapshotV2).model : undefined
+  const provider = isV2 ? (content as CapabilitySnapshotV2).provider : undefined
   const count = tools?.length ?? 0
 
   return (
@@ -27,7 +28,7 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
       >
         <span className={styles.icon}>⚙</span>
         <span className={styles.label}>
-          Capability snapshot — {count} tool{count === 1 ? '' : 's'}{modelName ? ` · ${modelName}` : ''}
+          Capability snapshot — {count} tool{count === 1 ? '' : 's'}{provider ? ` · ${provider}` : ''}{modelName ? ` · ${modelName}` : ''}
         </span>
         <span className={styles.chevron}>{expanded ? '▲' : '▼'}</span>
       </button>

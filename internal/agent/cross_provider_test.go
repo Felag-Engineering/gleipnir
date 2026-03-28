@@ -27,15 +27,15 @@ func TestCrossProvider_StructuralParity(t *testing.T) {
 	providerSequences := make(map[string][]string)
 
 	providers := []struct {
-		name     string
-		provider string
+		name      string
+		provider  string
+		modelName string
 	}{
-		{name: "anthropic", provider: "anthropic"},
-		{name: "google", provider: "google"},
+		{name: "anthropic", provider: "anthropic", modelName: "claude-sonnet-4-6"},
+		{name: "google", provider: "google", modelName: "gemini-2.0-flash"},
 	}
 
 	for _, tc := range providers {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			s := testutil.NewTestStore(t)
 			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
@@ -43,6 +43,7 @@ func TestCrossProvider_StructuralParity(t *testing.T) {
 
 			pol := minimalPolicy()
 			pol.Agent.ModelConfig.Provider = tc.provider
+			pol.Agent.ModelConfig.Name = tc.modelName
 
 			mockClient := testutil.NewMockLLMClient(
 				testutil.MakeToolCallResponse("my-server.read_data", "call-1", nil),
@@ -85,6 +86,22 @@ func TestCrossProvider_StructuralParity(t *testing.T) {
 			}
 			if !reflect.DeepEqual(types, want) {
 				t.Errorf("provider=%s: step types = %v, want %v", tc.provider, types, want)
+			}
+
+			// Verify capability snapshot content includes provider and model fields.
+			type snapshotContent struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			}
+			var snap snapshotContent
+			if err := json.Unmarshal([]byte(steps[0].Content), &snap); err != nil {
+				t.Fatalf("provider=%s: unmarshal snapshot content: %v", tc.provider, err)
+			}
+			if snap.Provider != tc.provider {
+				t.Errorf("provider=%s: snapshot provider = %q, want %q", tc.provider, snap.Provider, tc.provider)
+			}
+			if snap.Model != tc.modelName {
+				t.Errorf("provider=%s: snapshot model = %q, want %q", tc.provider, snap.Model, tc.modelName)
 			}
 
 			providerSequences[tc.provider] = types
@@ -135,7 +152,6 @@ func TestCrossProvider_OptionsValidation(t *testing.T) {
 		}
 
 		for _, tc := range tests {
-			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
 				err := tc.client.ValidateOptions(tc.options)
 				if err == nil {
@@ -176,7 +192,6 @@ func TestCrossProvider_OptionsValidation(t *testing.T) {
 		}
 
 		for _, tc := range tests {
-			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
 				err := registry.ValidateProviderOptions(tc.provider, tc.options)
 				if err == nil {
@@ -211,7 +226,6 @@ func TestCrossProvider_MultiToolCallBatching(t *testing.T) {
 	}
 
 	for _, tc := range providers {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			s := testutil.NewTestStore(t)
 			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
