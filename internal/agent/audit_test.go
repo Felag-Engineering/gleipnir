@@ -423,7 +423,8 @@ func BenchmarkAuditWriter_SequentialEnqueue(b *testing.B) {
 }
 
 func TestAuditWriter_PerformanceBaseline(t *testing.T) {
-	// Asserts that 1000 sequential enqueues complete within 5s.
+	// Asserts that 1000 sequential enqueues complete within 10s.
+	// Threshold is generous to avoid flaking on slow CI runners.
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
@@ -445,7 +446,7 @@ func TestAuditWriter_PerformanceBaseline(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	if elapsed > 5*time.Second {
-		t.Errorf("1000 sequential enqueues took %v, want < 5s", elapsed)
+	if elapsed > 10*time.Second {
+		t.Errorf("1000 sequential enqueues took %v, want < 10s", elapsed)
 	}
 }

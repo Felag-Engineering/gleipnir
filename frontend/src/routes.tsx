@@ -1,5 +1,5 @@
 import { createBrowserRouter, Navigate, useParams } from 'react-router-dom'
-import Layout from './components/Layout/Layout'
+import Layout from '@/components/Layout'
 import DashboardPage from './pages/DashboardPage'
 import LoginPage from './pages/LoginPage'
 import SetupPage from './pages/SetupPage'
