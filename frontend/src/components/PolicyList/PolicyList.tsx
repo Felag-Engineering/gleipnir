@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import type { ApiPolicyListItem } from '../../api/types'
+import type { ApiPolicyListItem } from '@/api/types'
 import { StatusBadge } from '../dashboard/StatusBadge'
 import { TriggerChip } from '../dashboard/TriggerChip'
 import { KNOWN_TRIGGERS, isRunStatus } from '@/constants/status'

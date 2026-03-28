@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { ChevronLeft, ChevronRight, CircleGauge, History, ScrollText, Users, Wrench } from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { useSSE } from '../../hooks/useSSE'
-import { useCurrentUser } from '../../hooks/useCurrentUser'
+import { useSSE } from '@/hooks/useSSE'
+import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { ConnectionBanner } from '../ConnectionBanner'
 import styles from './Layout.module.css'
 

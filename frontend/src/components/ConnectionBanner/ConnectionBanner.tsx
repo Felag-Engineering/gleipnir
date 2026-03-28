@@ -1,4 +1,4 @@
-import { ConnectionState } from '../../hooks/useSSE'
+import { ConnectionState } from '@/hooks/useSSE'
 import styles from './ConnectionBanner.module.css'
 
 interface Props {

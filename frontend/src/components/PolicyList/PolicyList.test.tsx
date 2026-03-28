@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { PolicyList } from './PolicyList'
-import type { ApiPolicyListItem } from '../../api/types'
+import type { ApiPolicyListItem } from '@/api/types'
 
 const BASE_POLICY: ApiPolicyListItem = {
   id: 'p1',
