@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -84,6 +85,7 @@ func (h *ManualTriggerHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrConcurrencyUnrecognised):
 			api.WriteError(w, http.StatusInternalServerError, "unrecognised concurrency policy", "")
 		default:
+			slog.ErrorContext(ctx, "manual trigger: failed to check active runs", "policy_id", policyID, "err", err)
 			api.WriteError(w, http.StatusInternalServerError, "failed to check active runs", "")
 		}
 		return

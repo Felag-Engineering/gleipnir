@@ -93,7 +93,7 @@ func (l *RunLauncher) CheckConcurrency(ctx context.Context, policyID string, con
 	case model.ConcurrencySkip:
 		active, err := l.store.ListActiveRunsByPolicy(ctx, policyID)
 		if err != nil {
-			return err
+			return fmt.Errorf("list active runs for policy %q: %w", policyID, err)
 		}
 		if len(active) > 0 {
 			return ErrConcurrencySkipActive
@@ -123,7 +123,7 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		CreatedAt:      now,
 	})
 	if err != nil {
-		return LaunchResult{}, err
+		return LaunchResult{}, fmt.Errorf("create run for policy %q: %w", params.PolicyID, err)
 	}
 
 	resolvedTools, err := l.registry.ResolveForPolicy(ctx, params.ParsedPolicy)
