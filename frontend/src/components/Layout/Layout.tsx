@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, CircleGauge, History, ScrollText, Users, Wre
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useSSE } from '@/hooks/useSSE'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
-import { ConnectionBanner } from '../ConnectionBanner'
+import { ConnectionBanner } from '@/components/ConnectionBanner'
 import styles from './Layout.module.css'
 
 const SIDEBAR_STORAGE_KEY = 'gleipnir-sidebar-collapsed'

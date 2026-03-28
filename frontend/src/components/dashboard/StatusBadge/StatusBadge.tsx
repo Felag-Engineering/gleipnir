@@ -1,5 +1,5 @@
-import type { RunStatus } from '../types';
-import { STATUS_CONFIG } from '../types';
+import type { RunStatus } from '@/components/dashboard/types';
+import { STATUS_CONFIG } from '@/components/dashboard/types';
 import styles from './StatusBadge.module.css';
 
 interface StatusBadgeProps {

@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiFetchVoid } from '../api/fetch'
+import { apiFetchVoid } from '@/api/fetch'
 import { queryKeys } from './queryKeys'
 
 export function useDeletePolicy() {

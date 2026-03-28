@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiFetch } from '../api/fetch'
-import type { ApiPolicySaveResponse } from '../api/types'
+import { apiFetch } from '@/api/fetch'
+import type { ApiPolicySaveResponse } from '@/api/types'
 import { queryKeys } from './queryKeys'
 
 interface SavePolicyArgs {

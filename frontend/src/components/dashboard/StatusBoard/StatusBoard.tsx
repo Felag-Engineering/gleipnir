@@ -1,9 +1,9 @@
 import { Link } from 'react-router-dom'
 import type { ApiPolicyListItem } from '@/api/types'
-import { StatusBadge } from '../StatusBadge'
-import type { RunStatus } from '../types'
-import { TriggerChip } from '../TriggerChip'
-import type { TriggerType } from '../types'
+import { StatusBadge } from '@/components/dashboard/StatusBadge'
+import type { RunStatus } from '@/components/dashboard/types'
+import { TriggerChip } from '@/components/dashboard/TriggerChip'
+import type { TriggerType } from '@/components/dashboard/types'
 import { formatTimeAgo } from '@/utils/format'
 import styles from './StatusBoard.module.css'
 

@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/tokens.css'
-import type { ApiMcpServer, ApiMcpTool } from '../api/types'
+import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 import { useMcpServers } from './useMcpServers'
 import { useMcpTools } from './useMcpTools'
 import { queryKeys } from './queryKeys'

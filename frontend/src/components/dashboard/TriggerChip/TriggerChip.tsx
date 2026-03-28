@@ -1,4 +1,4 @@
-import type { TriggerType } from '../types';
+import type { TriggerType } from '@/components/dashboard/types';
 import styles from './TriggerChip.module.css';
 
 interface TriggerChipProps {

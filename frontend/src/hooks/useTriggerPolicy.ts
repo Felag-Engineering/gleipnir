@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query'
-import { apiFetch } from '../api/fetch'
+import { apiFetch } from '@/api/fetch'
 
 interface TriggerPolicyArgs {
   policyId: string
