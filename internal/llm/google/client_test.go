@@ -718,6 +718,143 @@ func TestCreateMessage_WithHints(t *testing.T) {
 	}
 }
 
+// --- StreamMessage tests ---
+
+func TestStreamMessage_SingleChunk(t *testing.T) {
+	mock := &mockGenerator{
+		response: &genai.GenerateContentResponse{
+			Candidates: []*genai.Candidate{
+				{
+					Content: &genai.Content{
+						Parts: []*genai.Part{
+							{Text: "hello from stream"},
+							{FunctionCall: &genai.FunctionCall{ID: "fc-1", Name: "search", Args: map[string]any{"q": "test"}}},
+						},
+					},
+					FinishReason: genai.FinishReasonStop,
+				},
+			},
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     25,
+				CandidatesTokenCount: 12,
+			},
+		},
+	}
+	client := newClientWithGenerator(mock)
+
+	ch, err := client.StreamMessage(context.Background(), llm.MessageRequest{
+		Model:   "gemini-2.0-flash",
+		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "go"}}}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	chunk, ok := <-ch
+	if !ok {
+		t.Fatal("expected chunk from channel, channel was already closed")
+	}
+
+	if chunk.Err != nil {
+		t.Errorf("expected nil Err, got %v", chunk.Err)
+	}
+	if chunk.Text == nil {
+		t.Fatal("expected non-nil Text")
+	}
+	if *chunk.Text != "hello from stream" {
+		t.Errorf("expected Text=%q, got %q", "hello from stream", *chunk.Text)
+	}
+	if chunk.ToolCall == nil {
+		t.Fatal("expected non-nil ToolCall")
+	}
+	if chunk.ToolCall.ID != "fc-1" {
+		t.Errorf("expected ToolCall.ID=%q, got %q", "fc-1", chunk.ToolCall.ID)
+	}
+	if chunk.ToolCall.Name != "search" {
+		t.Errorf("expected ToolCall.Name=%q, got %q", "search", chunk.ToolCall.Name)
+	}
+	if chunk.StopReason == nil {
+		t.Fatal("expected non-nil StopReason")
+	}
+	if *chunk.StopReason != llm.StopReasonToolUse {
+		t.Errorf("expected StopReasonToolUse, got %v", *chunk.StopReason)
+	}
+	if chunk.Usage == nil {
+		t.Fatal("expected non-nil Usage")
+	}
+	if chunk.Usage.InputTokens != 25 || chunk.Usage.OutputTokens != 12 {
+		t.Errorf("expected Usage={25,12}, got %+v", *chunk.Usage)
+	}
+}
+
+func TestStreamMessage_ChannelClosed(t *testing.T) {
+	mock := &mockGenerator{
+		response: makeTextResponse("hi", genai.FinishReasonStop, 5, 3),
+	}
+	client := newClientWithGenerator(mock)
+
+	ch, err := client.StreamMessage(context.Background(), llm.MessageRequest{
+		Model:   "gemini-2.0-flash",
+		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Consume the single chunk.
+	<-ch
+
+	// Channel must be closed — second receive must return ok=false.
+	_, ok := <-ch
+	if ok {
+		t.Error("expected channel to be closed after single chunk")
+	}
+}
+
+func TestStreamMessage_ErrorPropagation(t *testing.T) {
+	mock := &mockGenerator{
+		err: genai.APIError{Code: 500, Message: "boom"},
+	}
+	client := newClientWithGenerator(mock)
+
+	ch, err := client.StreamMessage(context.Background(), llm.MessageRequest{
+		Model:   "gemini-2.0-flash",
+		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "server error") {
+		t.Errorf("expected error to contain 'server error', got %q", err.Error())
+	}
+	if ch != nil {
+		t.Error("expected nil channel on error, got non-nil")
+	}
+}
+
+func TestStreamMessage_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel the context
+
+	// The mock returns context.Canceled to simulate the SDK detecting the
+	// cancelled context when GenerateContent is called.
+	mock := &mockGenerator{
+		err: context.Canceled,
+	}
+	client := newClientWithGenerator(mock)
+
+	ch, err := client.StreamMessage(ctx, llm.MessageRequest{
+		Model:   "gemini-2.0-flash",
+		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}},
+	})
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	if ch != nil {
+		t.Error("expected nil channel on error, got non-nil")
+	}
+}
+
 // --- ValidateOptions tests ---
 
 func TestValidateOptions(t *testing.T) {

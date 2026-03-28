@@ -111,29 +111,7 @@ func (c *AnthropicClient) StreamMessage(ctx context.Context, req llm.MessageRequ
 	if err != nil {
 		return nil, err
 	}
-
-	var chunk llm.MessageChunk
-
-	if len(resp.Text) > 0 {
-		parts := make([]string, len(resp.Text))
-		for i, tb := range resp.Text {
-			parts[i] = tb.Text
-		}
-		joined := strings.Join(parts, "")
-		chunk.Text = &joined
-	}
-
-	if len(resp.ToolCalls) > 0 {
-		chunk.ToolCall = &resp.ToolCalls[0]
-	}
-
-	chunk.StopReason = &resp.StopReason
-	chunk.Usage = &resp.Usage
-
-	ch := make(chan llm.MessageChunk, 1)
-	ch <- chunk
-	close(ch)
-	return ch, nil
+	return llm.StubStreamFromResponse(resp), nil
 }
 
 // ValidateOptions validates provider-specific options from the policy YAML.
