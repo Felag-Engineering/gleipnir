@@ -185,3 +185,30 @@ func MakeTextResponse(text string) *llm.MessageResponse {
 func MakeToolCallResponse(name, id string, input map[string]any) *llm.MessageResponse {
 	return MakeLLMToolCallResponse(id, name, input, 10, 5)
 }
+
+// MockToolCall describes a single tool call for MakeMultiToolCallResponse.
+type MockToolCall struct {
+	ID    string
+	Name  string
+	Input map[string]any
+}
+
+// MakeMultiToolCallResponse builds a *llm.MessageResponse containing multiple
+// tool calls in a single response. StopReason is always StopReasonToolUse.
+// Token counts default to 10 input / 5 output.
+func MakeMultiToolCallResponse(calls []MockToolCall) *llm.MessageResponse {
+	toolCalls := make([]llm.ToolCallBlock, 0, len(calls))
+	for _, c := range calls {
+		inputJSON, _ := json.Marshal(c.Input)
+		toolCalls = append(toolCalls, llm.ToolCallBlock{
+			ID:    c.ID,
+			Name:  c.Name,
+			Input: json.RawMessage(inputJSON),
+		})
+	}
+	return &llm.MessageResponse{
+		ToolCalls:  toolCalls,
+		StopReason: llm.StopReasonToolUse,
+		Usage:      llm.TokenUsage{InputTokens: 10, OutputTokens: 5},
+	}
+}
