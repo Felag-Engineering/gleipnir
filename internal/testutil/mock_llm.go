@@ -96,8 +96,8 @@ func (noopLLMClient) StreamMessage(_ context.Context, _ llm.MessageRequest) (<-c
 	panic("NoopLLMClient: StreamMessage called unexpectedly")
 }
 
-func (noopLLMClient) ValidateOptions(_ map[string]any) error                  { return nil }
-func (noopLLMClient) ValidateModelName(_ context.Context, _ string) error     { return nil }
+func (noopLLMClient) ValidateOptions(_ map[string]any) error              { return nil }
+func (noopLLMClient) ValidateModelName(_ context.Context, _ string) error { return nil }
 
 // NewNoopLLMClient returns an llm.LLMClient that panics if CreateMessage or
 // StreamMessage is called. Use in tests that never reach the API loop.
