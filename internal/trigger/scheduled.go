@@ -40,7 +40,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	}
 
 	for _, p := range policies {
-		parsed, err := policy.Parse(p.Yaml)
+		parsed, err := policy.Parse(p.Yaml, model.DefaultProvider, model.DefaultModelName)
 		if err != nil {
 			slog.Error("scheduled: failed to parse policy yaml", "policy_id", p.ID, "err", err)
 			continue

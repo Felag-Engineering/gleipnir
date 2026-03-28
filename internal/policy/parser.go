@@ -32,7 +32,9 @@ func (e *ParseError) Unwrap() error { return e.Cause }
 // Parse parses a raw YAML policy blob into a ParsedPolicy.
 // It applies sensible defaults for optional fields but does not validate
 // the result — call Validate separately.
-func Parse(raw string) (*model.ParsedPolicy, error) {
+// defaultProvider and defaultModel are used when the policy YAML omits the
+// top-level model section or leaves provider/name blank.
+func Parse(raw string, defaultProvider, defaultModel string) (*model.ParsedPolicy, error) {
 	if len(raw) > MaxPolicyYAMLBytes {
 		return nil, fmt.Errorf("policy YAML exceeds maximum size (%d bytes > %d bytes)", len(raw), MaxPolicyYAMLBytes)
 	}
@@ -49,7 +51,7 @@ func Parse(raw string) (*model.ParsedPolicy, error) {
 
 	p.Trigger = convertTrigger(r.Trigger)
 	p.Capabilities = convertCapabilities(r.Capabilities)
-	mc := resolveModelConfig(r.Model)
+	mc := resolveModelConfig(r.Model, defaultProvider, defaultModel)
 	p.Agent = convertAgent(r.Agent, mc)
 
 	return p, nil
@@ -57,21 +59,21 @@ func Parse(raw string) (*model.ParsedPolicy, error) {
 
 // resolveModelConfig determines the ModelConfig from the top-level `model:`
 // section, applying defaults for any missing fields.
-func resolveModelConfig(topLevel *rawModel) model.ModelConfig {
+func resolveModelConfig(topLevel *rawModel, defaultProvider, defaultModel string) model.ModelConfig {
 	if topLevel == nil {
 		return model.ModelConfig{
-			Provider: model.DefaultProvider,
-			Name:     model.DefaultModelName,
+			Provider: defaultProvider,
+			Name:     defaultModel,
 		}
 	}
 
 	provider := topLevel.Provider
 	if provider == "" {
-		provider = model.DefaultProvider
+		provider = defaultProvider
 	}
 	name := topLevel.Name
 	if name == "" {
-		name = model.DefaultModelName
+		name = defaultModel
 	}
 	return model.ModelConfig{
 		Provider: provider,

@@ -27,6 +27,8 @@ type Config struct {
 	WriteTimeout         time.Duration
 	IdleTimeout          time.Duration
 	ApprovalScanInterval time.Duration
+	DefaultProvider      string
+	DefaultModel         string
 }
 
 // Load reads configuration from environment variables and applies defaults
@@ -41,6 +43,8 @@ func Load() Config {
 		WriteTimeout:         envDuration("GLEIPNIR_HTTP_WRITE_TIMEOUT", 15*time.Second),
 		IdleTimeout:          envDuration("GLEIPNIR_HTTP_IDLE_TIMEOUT", 60*time.Second),
 		ApprovalScanInterval: envDuration("GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30*time.Second),
+		DefaultProvider:      envOrDefault("GLEIPNIR_DEFAULT_PROVIDER", "anthropic"),
+		DefaultModel:         envOrDefault("GLEIPNIR_DEFAULT_MODEL", "claude-sonnet-4-20250514"),
 	}
 }
 

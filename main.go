@@ -21,6 +21,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/llm"
 	anthropicllm "github.com/rapp992/gleipnir/internal/llm/anthropic"
+	googlellm "github.com/rapp992/gleipnir/internal/llm/google"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
@@ -80,9 +81,12 @@ func run(cfg config.Config) error {
 
 	registry := mcp.NewRegistry(store.Queries(), mcp.WithMCPTimeout(cfg.MCPTimeout))
 	runManager := trigger.NewRunManager()
-	llmClient := anthropicllm.NewClientFromEnv()
-	providerRegistry := llm.NewProviderRegistry()
-	providerRegistry.Register("anthropic", llmClient)
+	providerRegistry, err := buildProviderRegistry(ctx,
+		os.Getenv("ANTHROPIC_API_KEY"), os.Getenv("GOOGLE_API_KEY"),
+		newAnthropicProvider, newGoogleProvider)
+	if err != nil {
+		return err
+	}
 	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(providerRegistry), broadcaster)
 
 	// Webhooks are unprotected — they are called by external systems with their
@@ -128,7 +132,7 @@ func run(cfg config.Config) error {
 		r.With(auth.RequireRole(model.RoleOperator)).Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
 		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleApprover)).Post("/api/v1/runs/{runID}/approval", runsHandler.SubmitApproval)
 
-		policySvc := policy.NewService(store, nil, providerRegistry, providerRegistry)
+		policySvc := policy.NewService(store, nil, providerRegistry, providerRegistry, cfg.DefaultProvider, cfg.DefaultModel)
 
 		// Mount /api/v1/policies, /api/v1/mcp, /api/v1/stats, and /api/v1/health route groups.
 		r.Mount("/api/v1", api.NewRouter(store, policySvc, registry))
@@ -187,4 +191,52 @@ func run(cfg config.Config) error {
 	defer shutdownCancel()
 
 	return srv.Shutdown(shutdownCtx)
+}
+
+// providerFactory creates an LLMClient from an API key.
+// The context parameter accommodates providers (like Google) that require it
+// during client construction; Anthropic ignores it.
+type providerFactory func(ctx context.Context, apiKey string) (llm.LLMClient, error)
+
+// buildProviderRegistry creates and populates the provider registry based on
+// which API keys are present. Returns an error if no providers are available.
+// Factory functions allow tests to inject stubs without real API calls.
+func buildProviderRegistry(ctx context.Context, anthropicKey, googleKey string, newAnthropic, newGoogle providerFactory) (*llm.ProviderRegistry, error) {
+	reg := llm.NewProviderRegistry()
+	count := 0
+
+	if anthropicKey != "" {
+		client, err := newAnthropic(ctx, anthropicKey)
+		if err != nil {
+			return nil, fmt.Errorf("create anthropic LLM client: %w", err)
+		}
+		reg.Register("anthropic", client)
+		count++
+	} else {
+		slog.Warn("ANTHROPIC_API_KEY not set, Anthropic provider unavailable")
+	}
+
+	if googleKey != "" {
+		client, err := newGoogle(ctx, googleKey)
+		if err != nil {
+			return nil, fmt.Errorf("create google LLM client: %w", err)
+		}
+		reg.Register("google", client)
+		count++
+	} else {
+		slog.Warn("GOOGLE_API_KEY not set, Google provider unavailable")
+	}
+
+	if count == 0 {
+		return nil, fmt.Errorf("no LLM providers available: set ANTHROPIC_API_KEY and/or GOOGLE_API_KEY")
+	}
+	return reg, nil
+}
+
+func newAnthropicProvider(_ context.Context, apiKey string) (llm.LLMClient, error) {
+	return anthropicllm.NewClient(apiKey), nil
+}
+
+func newGoogleProvider(ctx context.Context, apiKey string) (llm.LLMClient, error) {
+	return googlellm.NewClient(ctx, apiKey)
 }

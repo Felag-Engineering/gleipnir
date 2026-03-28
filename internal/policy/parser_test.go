@@ -19,7 +19,7 @@ capabilities:
 agent:
   task: Do something
 `
-	p, err := Parse(raw)
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -52,7 +52,7 @@ capabilities:
 agent:
   task: do it
 `
-	p, err := Parse(raw)
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,7 +79,7 @@ capabilities:
 agent:
   task: deploy
 `
-	p, err := Parse(raw)
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +110,7 @@ capabilities:
 agent:
   task: deploy
 `
-	p, err := Parse(raw)
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +143,7 @@ capabilities:
 agent:
   task: deploy
 `
-	p, err := Parse(raw)
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,7 +171,7 @@ agent:
     max_tool_calls_per_run: 100
   concurrency: queue
 `
-	p, err := Parse(raw)
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,7 +197,7 @@ capabilities:
 agent:
   task: do it
 `
-	p, err := Parse(raw)
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -217,7 +217,7 @@ capabilities:
 agent:
   task: do it manually
 `
-	p, err := Parse(raw)
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -240,7 +240,7 @@ capabilities:
 agent:
   task: scheduled task
 `
-	p, err := Parse(raw)
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -270,7 +270,7 @@ capabilities:
 agent:
   task: scheduled task
 `
-	p, err := Parse(raw)
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -283,7 +283,7 @@ agent:
 }
 
 func TestParse_InvalidYAML(t *testing.T) {
-	_, err := Parse("{{bad yaml")
+	_, err := Parse("{{bad yaml", model.DefaultProvider, model.DefaultModelName)
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
 	}
@@ -319,7 +319,7 @@ func TestParse_SizeLimit(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Parse(tc.input)
+			_, err := Parse(tc.input, model.DefaultProvider, model.DefaultModelName)
 			if tc.wantSizeErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -353,7 +353,7 @@ capabilities:
 agent:
   task: do it
 `
-	p, err := Parse(raw)
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -511,7 +511,7 @@ model: {}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p, err := Parse(tc.yaml)
+			p, err := Parse(tc.yaml, model.DefaultProvider, model.DefaultModelName)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -554,7 +554,7 @@ model:
   name: claude-sonnet-4-20250514
   options:
     enable_prompt_caching: true
-`)
+`, model.DefaultProvider, model.DefaultModelName)
 		if err != nil {
 			t.Fatalf("first parse error: %v", err)
 		}
@@ -576,7 +576,7 @@ model:
   options:
     enable_prompt_caching: true
 `
-		second, err := Parse(reconstructed)
+		second, err := Parse(reconstructed, model.DefaultProvider, model.DefaultModelName)
 		if err != nil {
 			t.Fatalf("second parse error: %v", err)
 		}
@@ -605,7 +605,7 @@ agent:
   preamble: Custom preamble text
   task: do it
 `
-	p, err := Parse(raw)
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

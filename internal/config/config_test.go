@@ -17,6 +17,8 @@ func TestLoad_Defaults(t *testing.T) {
 		"GLEIPNIR_HTTP_WRITE_TIMEOUT",
 		"GLEIPNIR_HTTP_IDLE_TIMEOUT",
 		"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
+		"GLEIPNIR_DEFAULT_PROVIDER",
+		"GLEIPNIR_DEFAULT_MODEL",
 	} {
 		t.Setenv(key, "")
 	}
@@ -46,6 +48,12 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.ApprovalScanInterval != 30*time.Second {
 		t.Errorf("ApprovalScanInterval: got %v, want 30s", cfg.ApprovalScanInterval)
+	}
+	if cfg.DefaultProvider != "anthropic" {
+		t.Errorf("DefaultProvider: got %q, want anthropic", cfg.DefaultProvider)
+	}
+	if cfg.DefaultModel != "claude-sonnet-4-20250514" {
+		t.Errorf("DefaultModel: got %q, want claude-sonnet-4-20250514", cfg.DefaultModel)
 	}
 }
 
@@ -118,6 +126,24 @@ func TestLoad_Overrides(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "default provider",
+			env:  map[string]string{"GLEIPNIR_DEFAULT_PROVIDER": "google"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.DefaultProvider != "google" {
+					t.Errorf("got %q, want google", cfg.DefaultProvider)
+				}
+			},
+		},
+		{
+			name: "default model",
+			env:  map[string]string{"GLEIPNIR_DEFAULT_MODEL": "gemini-2.0-flash"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.DefaultModel != "gemini-2.0-flash" {
+					t.Errorf("got %q, want gemini-2.0-flash", cfg.DefaultModel)
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -128,6 +154,7 @@ func TestLoad_Overrides(t *testing.T) {
 				"GLEIPNIR_MCP_TIMEOUT", "GLEIPNIR_HTTP_READ_TIMEOUT",
 				"GLEIPNIR_HTTP_WRITE_TIMEOUT", "GLEIPNIR_HTTP_IDLE_TIMEOUT",
 				"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
+				"GLEIPNIR_DEFAULT_PROVIDER", "GLEIPNIR_DEFAULT_MODEL",
 			} {
 				t.Setenv(key, "")
 			}

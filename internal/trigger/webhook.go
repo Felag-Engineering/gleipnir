@@ -64,7 +64,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	parsed, err := policy.Parse(dbPolicy.Yaml)
+	parsed, err := policy.Parse(dbPolicy.Yaml, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "failed to parse policy", "")
 		return

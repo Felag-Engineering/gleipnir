@@ -116,7 +116,7 @@ agent:
   concurrency: parallel
 `
 	insertTestPolicy(t, store, "p-tool-fail", policyWithMissingTool)
-	parsed, err := policy.Parse(policyWithMissingTool)
+	parsed, err := policy.Parse(policyWithMissingTool, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("policy.Parse: %v", err)
 	}
@@ -165,7 +165,7 @@ agent:
   concurrency: parallel
 `
 	insertTestPolicy(t, store, "p-agent-fail", launchPolicy)
-	parsed, err := policy.Parse(launchPolicy)
+	parsed, err := policy.Parse(launchPolicy, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("policy.Parse: %v", err)
 	}
@@ -213,7 +213,7 @@ agent:
   concurrency: parallel
 `
 	insertTestPolicy(t, store, "p-launch-ok", launchPolicy)
-	parsed, err := policy.Parse(launchPolicy)
+	parsed, err := policy.Parse(launchPolicy, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("policy.Parse: %v", err)
 	}

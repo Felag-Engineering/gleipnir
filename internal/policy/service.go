@@ -46,20 +46,31 @@ type Service struct {
 	lookup           ToolLookup       // nil if MCP registry is unavailable
 	modelValidator   ModelValidator   // nil skips model name validation
 	optionsValidator OptionsValidator // nil skips provider options validation
+	defaultProvider  string
+	defaultModel     string
 }
 
 // NewService returns a policy Service. lookup may be nil if MCP registry
 // checking is not yet available — tool reference warnings will be skipped.
 // modelValidator may be nil — model name validation will be skipped.
 // optionsValidator may be nil — provider options validation will be skipped.
-func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidator, optionsValidator OptionsValidator) *Service {
-	return &Service{store: store, lookup: lookup, modelValidator: modelValidator, optionsValidator: optionsValidator}
+// defaultProvider and defaultModel are passed through to Parse() for policies
+// that omit the top-level model section.
+func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidator, optionsValidator OptionsValidator, defaultProvider, defaultModel string) *Service {
+	return &Service{
+		store:            store,
+		lookup:           lookup,
+		modelValidator:   modelValidator,
+		optionsValidator: optionsValidator,
+		defaultProvider:  defaultProvider,
+		defaultModel:     defaultModel,
+	}
 }
 
 // Create parses and validates the YAML, checks tool references against the
 // MCP registry (non-blocking warnings), and stores the policy.
 func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, error) {
-	parsed, err := Parse(rawYAML)
+	parsed, err := Parse(rawYAML, s.defaultProvider, s.defaultModel)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +130,7 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 // Update re-parses and re-validates the YAML, checks tool references, and
 // replaces the stored YAML for the given policy ID.
 func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (*SaveResult, error) {
-	parsed, err := Parse(rawYAML)
+	parsed, err := Parse(rawYAML, s.defaultProvider, s.defaultModel)
 	if err != nil {
 		return nil, err
 	}
