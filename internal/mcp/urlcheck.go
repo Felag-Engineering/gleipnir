@@ -44,7 +44,10 @@ func isUnsafeIP(ip net.IP) bool {
 // It allows both http:// and https://, permits private IPs and loopback
 // (homelab use), and blocks only link-local ranges (169.254.x.x, fe80::)
 // since those indicate cloud metadata endpoints or misconfigured addresses.
-func ValidateServerURL(rawURL string) error {
+//
+// ctx is used for the DNS lookup so that request cancellation and deadlines
+// propagate correctly; callers should pass r.Context() or the ambient ctx.
+func ValidateServerURL(ctx context.Context, rawURL string) error {
 	if rawURL == "" {
 		return fmt.Errorf("url must not be empty")
 	}
@@ -74,7 +77,7 @@ func ValidateServerURL(rawURL string) error {
 	}
 
 	// Hostname — resolve and block only if every address is link-local.
-	addrs, err := net.DefaultResolver.LookupHost(context.Background(), host)
+	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
 	if err != nil {
 		// Resolution failure is not a security issue; allow the URL and let
 		// the actual connection attempt surface the error.

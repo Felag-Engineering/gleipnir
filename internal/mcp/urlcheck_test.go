@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"net/url"
 	"testing"
 )
@@ -102,7 +103,7 @@ func TestValidateServerURL(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateServerURL(tc.rawURL)
+			err := ValidateServerURL(context.Background(), tc.rawURL)
 			if tc.wantErr && err == nil {
 				t.Errorf("ValidateServerURL(%q) = nil, want error", tc.rawURL)
 			}

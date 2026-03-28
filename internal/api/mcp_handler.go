@@ -111,7 +111,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "name is required", "")
 		return
 	}
-	if err := mcp.ValidateServerURL(body.URL); err != nil {
+	if err := mcp.ValidateServerURL(r.Context(), body.URL); err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid url", err.Error())
 		return
 	}
