@@ -97,12 +97,14 @@ func (c *GeminiClient) StreamMessage(ctx context.Context, req llm.MessageRequest
 }
 
 var validOptions = map[string]bool{
-	"thinking_budget":  true,
+	"thinking_level":   true,
 	"enable_grounding": true,
 }
 
+var validThinkingLevels = []string{"low", "medium", "high"}
+
 // ValidateOptions validates provider-specific options from the policy YAML.
-// Accepted keys: "thinking_budget" (positive int), "enable_grounding" (bool).
+// Accepted keys: "thinking_level" (string, one of "low", "medium", "high"), "enable_grounding" (bool).
 // All errors are collected before returning so the caller sees every problem at once.
 func (c *GeminiClient) ValidateOptions(options map[string]any) error {
 	if options == nil {
@@ -123,28 +125,21 @@ func (c *GeminiClient) ValidateOptions(options map[string]any) error {
 		}
 	}
 
-	if v, ok := options["thinking_budget"]; ok {
-		switch val := v.(type) {
-		case int:
-			if val <= 0 {
-				errs = append(errs, fmt.Sprintf("option \"thinking_budget\": must be positive, got %d", val))
+	if v, ok := options["thinking_level"]; ok {
+		s, isString := v.(string)
+		if !isString {
+			errs = append(errs, fmt.Sprintf("option \"thinking_level\": expected string, got %T", v))
+		} else {
+			validLevel := false
+			for _, level := range validThinkingLevels {
+				if s == level {
+					validLevel = true
+					break
+				}
 			}
-		case int32:
-			if val <= 0 {
-				errs = append(errs, fmt.Sprintf("option \"thinking_budget\": must be positive, got %d", val))
+			if !validLevel {
+				errs = append(errs, fmt.Sprintf("option \"thinking_level\": must be one of %q, got %q", validThinkingLevels, s))
 			}
-		case int64:
-			if val <= 0 {
-				errs = append(errs, fmt.Sprintf("option \"thinking_budget\": must be positive, got %d", val))
-			}
-		case float64:
-			if val != float64(int64(val)) {
-				errs = append(errs, fmt.Sprintf("option \"thinking_budget\": must be a whole number, got %v", val))
-			} else if val <= 0 {
-				errs = append(errs, fmt.Sprintf("option \"thinking_budget\": must be positive, got %d", int(val)))
-			}
-		default:
-			errs = append(errs, fmt.Sprintf("option \"thinking_budget\": expected numeric, got %T", v))
 		}
 	}
 

@@ -579,7 +579,6 @@ func TestWrapSDKError_NonAPIError(t *testing.T) {
 	}
 }
 
-
 // --- Integration-level tests via mockGenerator ---
 
 func TestCreateMessage_Success(t *testing.T) {
@@ -690,8 +689,8 @@ func TestCreateMessage_WithHints(t *testing.T) {
 	client := newClientWithGenerator(mock)
 
 	_, err := client.CreateMessage(context.Background(), llm.MessageRequest{
-		Model:  "gemini-2.0-flash",
-		Hints:  hints,
+		Model:   "gemini-2.0-flash",
+		Hints:   hints,
 		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
@@ -725,10 +724,10 @@ func TestValidateOptions(t *testing.T) {
 	c := &GeminiClient{}
 
 	tests := []struct {
-		name    string
-		options map[string]any
-		wantErr bool
-		wantMsg string
+		name     string
+		options  map[string]any
+		wantErr  bool
+		wantMsgs []string
 	}{
 		{
 			name:    "nil options",
@@ -741,55 +740,70 @@ func TestValidateOptions(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "valid thinking_budget int",
-			options: map[string]any{"thinking_budget": 512},
+			name:    "valid thinking_level low",
+			options: map[string]any{"thinking_level": "low"},
 			wantErr: false,
 		},
 		{
-			name:    "valid enable_grounding bool",
+			name:    "valid thinking_level medium",
+			options: map[string]any{"thinking_level": "medium"},
+			wantErr: false,
+		},
+		{
+			name:    "valid thinking_level high",
+			options: map[string]any{"thinking_level": "high"},
+			wantErr: false,
+		},
+		{
+			name:    "valid enable_grounding true",
 			options: map[string]any{"enable_grounding": true},
 			wantErr: false,
 		},
 		{
-			name:    "valid both options",
-			options: map[string]any{"thinking_budget": 256, "enable_grounding": false},
+			name:    "valid enable_grounding false",
+			options: map[string]any{"enable_grounding": false},
 			wantErr: false,
 		},
 		{
-			name:    "unknown option",
-			options: map[string]any{"unknown_key": "value"},
-			wantErr: true,
-			wantMsg: "unknown option: unknown_key",
+			name:    "valid both options",
+			options: map[string]any{"thinking_level": "high", "enable_grounding": true},
+			wantErr: false,
 		},
 		{
-			name:    "thinking_budget zero is invalid",
-			options: map[string]any{"thinking_budget": 0},
-			wantErr: true,
-			wantMsg: "must be positive",
+			name:     "unknown option",
+			options:  map[string]any{"unknown_key": "value"},
+			wantErr:  true,
+			wantMsgs: []string{"unknown option: unknown_key"},
 		},
 		{
-			name:    "thinking_budget negative is invalid",
-			options: map[string]any{"thinking_budget": -1},
-			wantErr: true,
-			wantMsg: "must be positive",
+			name:     "invalid thinking_level value max",
+			options:  map[string]any{"thinking_level": "max"},
+			wantErr:  true,
+			wantMsgs: []string{"must be one of"},
 		},
 		{
-			name:    "thinking_budget wrong type",
-			options: map[string]any{"thinking_budget": "large"},
-			wantErr: true,
-			wantMsg: "expected numeric",
+			name:     "invalid thinking_level empty string",
+			options:  map[string]any{"thinking_level": ""},
+			wantErr:  true,
+			wantMsgs: []string{"must be one of"},
 		},
 		{
-			name:    "enable_grounding wrong type",
-			options: map[string]any{"enable_grounding": "yes"},
-			wantErr: true,
-			wantMsg: "expected bool",
+			name:     "wrong type for thinking_level",
+			options:  map[string]any{"thinking_level": 42},
+			wantErr:  true,
+			wantMsgs: []string{"expected string, got int"},
 		},
 		{
-			name:    "multiple errors collected",
-			options: map[string]any{"bad_key": 1, "enable_grounding": "not-bool"},
-			wantErr: true,
-			wantMsg: "unknown option: bad_key",
+			name:     "wrong type for enable_grounding",
+			options:  map[string]any{"enable_grounding": "yes"},
+			wantErr:  true,
+			wantMsgs: []string{"expected bool, got string"},
+		},
+		{
+			name:     "multiple errors collected",
+			options:  map[string]any{"bad_key": 1, "thinking_level": "invalid", "enable_grounding": "not-bool"},
+			wantErr:  true,
+			wantMsgs: []string{"unknown option: bad_key", "must be one of", "expected bool, got string"},
 		},
 	}
 
@@ -800,8 +814,10 @@ func TestValidateOptions(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
-				if tc.wantMsg != "" && !strings.Contains(err.Error(), tc.wantMsg) {
-					t.Errorf("expected error to contain %q, got %q", tc.wantMsg, err.Error())
+				for _, msg := range tc.wantMsgs {
+					if !strings.Contains(err.Error(), msg) {
+						t.Errorf("expected error to contain %q, got %q", msg, err.Error())
+					}
 				}
 			} else {
 				if err != nil {
