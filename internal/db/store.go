@@ -274,10 +274,14 @@ func (s *Store) interruptOrphanedRun(ctx context.Context, runID string) error {
 		return fmt.Errorf("count run steps: %w", err)
 	}
 
-	content, _ := json.Marshal(map[string]string{
+	content, err := json.Marshal(map[string]string{
 		"message": "run interrupted by process restart",
 		"code":    "interrupted",
 	})
+	if err != nil {
+		// Encoding a static string map cannot fail; this branch is unreachable in practice.
+		return fmt.Errorf("marshal interrupted run content: %w", err)
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := s.queries.CreateRunStep(ctx, CreateRunStepParams{

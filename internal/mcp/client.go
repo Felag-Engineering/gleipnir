@@ -220,7 +220,7 @@ func (c *Client) ensureSession(ctx context.Context) (string, error) {
 
 	sid, err := c.initialize(ctx)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("ensure session: %w", err)
 	}
 
 	c.mu.Lock()
