@@ -66,6 +66,34 @@ function renderPage(queryClient = makeQueryClient()) {
   )
 }
 
+function mockError() {
+  vi.mocked(useRun).mockReturnValue({
+    data: undefined,
+    status: 'error',
+    error: new Error('Not Found'),
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useRun>)
+
+  vi.mocked(useRunSteps).mockReturnValue({
+    data: undefined,
+    status: 'error',
+    error: new Error('Not Found'),
+  } as unknown as ReturnType<typeof useRunSteps>)
+}
+
+function mockSuccessNoData() {
+  vi.mocked(useRun).mockReturnValue({
+    data: undefined,
+    status: 'success',
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useRun>)
+
+  vi.mocked(useRunSteps).mockReturnValue({
+    data: [],
+    status: 'success',
+  } as unknown as ReturnType<typeof useRunSteps>)
+}
+
 function mockPending() {
   vi.mocked(useRun).mockReturnValue({
     data: undefined,
@@ -749,5 +777,45 @@ describe('RunDetailPage — "New steps" pill', () => {
     })
 
     vi.unstubAllGlobals()
+  })
+})
+
+describe('RunDetailPage — error state (404)', () => {
+  beforeEach(() => {
+    mockError()
+  })
+
+  it('shows error message when run fetch fails', () => {
+    renderPage()
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(screen.getByText(/failed to load run/i)).toBeInTheDocument()
+  })
+
+  it('shows Retry button when run fetch fails', () => {
+    renderPage()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+  })
+
+  it('does not render run header when in error state', () => {
+    renderPage()
+    expect(screen.queryByText(/back/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('RunDetailPage — not found empty state', () => {
+  beforeEach(() => {
+    mockSuccessNoData()
+  })
+
+  it('shows "Run not found" when run data is undefined after success', () => {
+    renderPage()
+    expect(screen.getByText('Run not found')).toBeInTheDocument()
+  })
+
+  it('shows a link back to runs list', () => {
+    renderPage()
+    const link = screen.getByRole('link', { name: /back to runs/i })
+    expect(link).toBeInTheDocument()
+    expect(link).toHaveAttribute('href', '/runs')
   })
 })

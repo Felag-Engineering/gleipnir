@@ -4,6 +4,7 @@ import { useRun } from '@/hooks/useRun'
 import { useRunSteps } from '@/hooks/useRunSteps'
 import SkeletonBlock from '@/components/SkeletonBlock/SkeletonBlock'
 import { QueryBoundary } from '@/components/QueryBoundary'
+import { EmptyState } from '@/components/EmptyState'
 import { CollapsibleJSON } from '@/components/CollapsibleJSON'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import {
@@ -21,7 +22,7 @@ const PAGE_SIZE = 50
 
 export default function RunDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const { data: run, status: runStatus } = useRun(id)
+  const { data: run, status: runStatus, refetch: runRefetch } = useRun(id)
   const { data: rawSteps = [], status: stepsStatus } = useRunSteps(id)
 
   const [filter, setFilter] = useState<FilterKey>('all')
@@ -119,12 +120,24 @@ export default function RunDetailPage() {
   const tokenTotal = rawSteps.reduce((acc, s) => acc + s.token_cost, 0)
 
   const isLoading = runStatus === 'pending' || stepsStatus === 'pending'
+  const runError = runStatus === 'error'
+  const boundaryStatus = isLoading ? 'pending' : runError ? 'error' : 'success'
 
   return (
     <div className={styles.page}>
       <QueryBoundary
-        status={isLoading ? 'pending' : 'success'}
+        status={boundaryStatus}
         isEmpty={!run}
+        errorMessage="Failed to load run. It may not exist or the server may be unavailable."
+        onRetry={() => { void runRefetch() }}
+        emptyState={
+          <EmptyState
+            headline="Run not found"
+            subtext="The run you're looking for doesn't exist or may have been deleted."
+            ctaLabel="Back to runs"
+            ctaTo="/runs"
+          />
+        }
         skeleton={
           <div className={styles.skeleton}>
             <SkeletonBlock height={48} />
