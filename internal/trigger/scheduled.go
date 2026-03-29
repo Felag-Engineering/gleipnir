@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -91,14 +92,29 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 		return
 	}
 
+	// Enforce concurrency policy before launching, consistent with webhook and
+	// manual triggers. All non-nil errors prevent the run from firing.
+	if err := s.launcher.CheckConcurrency(ctx, policyID, parsed.Agent.Concurrency); err != nil {
+		switch {
+		case errors.Is(err, ErrConcurrencySkipActive):
+			slog.Info("scheduled: skipping fire, active run exists (concurrency: skip)",
+				"policy_id", policyID, "fire_at", fireTime)
+		case errors.Is(err, ErrConcurrencyNotImplemented):
+			slog.Warn("scheduled: concurrency mode not implemented, skipping",
+				"policy_id", policyID, "concurrency", parsed.Agent.Concurrency)
+		default:
+			slog.Error("scheduled: concurrency check failed",
+				"policy_id", policyID, "err", err)
+		}
+		return
+	}
+
 	// json.Marshal on a map[string]string with a string value cannot fail,
 	// so the error is safe to ignore here.
 	payload, _ := json.Marshal(map[string]string{
 		"scheduled_for": fireTime.UTC().Format(config.TimestampFormat),
 	})
 
-	// TODO: scheduled trigger does not currently enforce the policy's concurrency
-	// setting — this is a known pre-existing gap to be addressed in a future release.
 	result, err := s.launcher.Launch(ctx, LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypeScheduled,

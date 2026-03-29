@@ -20,6 +20,12 @@ import (
 // fire times. The stub-server.read_data tool is granted so the registry can
 // resolve tools without additional setup.
 func scheduledPolicyYAML(name string, fireTimes []time.Time) string {
+	return scheduledPolicyYAMLWithConcurrency(name, fireTimes, "parallel")
+}
+
+// scheduledPolicyYAMLWithConcurrency is like scheduledPolicyYAML but allows
+// the caller to specify the concurrency mode.
+func scheduledPolicyYAMLWithConcurrency(name string, fireTimes []time.Time, concurrency string) string {
 	fireAtLines := ""
 	for _, t := range fireTimes {
 		fireAtLines += fmt.Sprintf("    - %q\n", t.UTC().Format(time.RFC3339))
@@ -35,8 +41,8 @@ trigger:
 agent:
   model: claude-opus-4-6
   task: "do thing"
-  concurrency: parallel
-`, name, fireAtLines)
+  concurrency: %s
+`, name, fireAtLines, concurrency)
 }
 
 // schedulerFactory returns an AgentFactory that uses a mock LLM client so
@@ -243,5 +249,110 @@ func TestScheduler_DeduplicatesAlreadyFiredTime(t *testing.T) {
 	// Only the pre-inserted run; no duplicate.
 	if len(runs) != 1 {
 		t.Errorf("expected 1 run (pre-inserted), got %d", len(runs))
+	}
+}
+
+// TestScheduler_ConcurrencySkip_BlocksWhenActive verifies that a scheduled
+// trigger with concurrency: skip does NOT launch a new run when an active
+// run already exists for the policy.
+func TestScheduler_ConcurrencySkip_BlocksWhenActive(t *testing.T) {
+	store, registry := setupSchedulerFixture(t)
+
+	future := time.Now().Add(2 * time.Second)
+	yaml := scheduledPolicyYAMLWithConcurrency("skip-policy", []time.Time{future}, "skip")
+	insertTestScheduledPolicy(t, store, "pol-skip", "skip-policy", yaml)
+
+	// Insert an active (running) run so the concurrency check blocks the new one.
+	insertTestRun(t, store, "r-active-sched", "pol-skip", model.RunStatusRunning)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	manager := trigger.NewRunManager()
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	scheduler := trigger.NewScheduler(store, launcher)
+
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for the timer to fire and the concurrency check to block it.
+	time.Sleep(4 * time.Second)
+
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "pol-skip", Limit: 100})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	// Only the pre-inserted active run should exist; no new run created.
+	if len(runs) != 1 {
+		t.Errorf("expected 1 run (pre-existing active), got %d", len(runs))
+	}
+}
+
+// TestScheduler_ConcurrencySkip_ProceedsWhenIdle verifies that a scheduled
+// trigger with concurrency: skip proceeds normally when no active run exists.
+func TestScheduler_ConcurrencySkip_ProceedsWhenIdle(t *testing.T) {
+	store, registry := setupSchedulerFixture(t)
+
+	future := time.Now().Add(2 * time.Second)
+	yaml := scheduledPolicyYAMLWithConcurrency("skip-idle-policy", []time.Time{future}, "skip")
+	insertTestScheduledPolicy(t, store, "pol-skip-idle", "skip-idle-policy", yaml)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	manager := trigger.NewRunManager()
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	scheduler := trigger.NewScheduler(store, launcher)
+
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for the timer to fire and the run to be created.
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		runs, err := store.ListRuns(ctx, db.ListRunsParams{PolicyID: "pol-skip-idle", Limit: 100})
+		if err != nil {
+			t.Fatalf("ListRuns: %v", err)
+		}
+		if len(runs) > 0 {
+			return // success — run was created
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Error("expected a run to be created for skip policy with no active runs, but none appeared")
+}
+
+// TestScheduler_ConcurrencyQueue_SkipsNotImplemented verifies that a scheduled
+// trigger with concurrency: queue (not yet implemented) does not launch a run.
+func TestScheduler_ConcurrencyQueue_SkipsNotImplemented(t *testing.T) {
+	store, registry := setupSchedulerFixture(t)
+
+	future := time.Now().Add(2 * time.Second)
+	yaml := scheduledPolicyYAMLWithConcurrency("queue-policy", []time.Time{future}, "queue")
+	insertTestScheduledPolicy(t, store, "pol-queue", "queue-policy", yaml)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	manager := trigger.NewRunManager()
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	scheduler := trigger.NewScheduler(store, launcher)
+
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for the timer to fire.
+	time.Sleep(4 * time.Second)
+
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "pol-queue", Limit: 100})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	// No run should be created because queue returns ErrConcurrencyNotImplemented.
+	if len(runs) != 0 {
+		t.Errorf("expected 0 runs for queue concurrency (not implemented), got %d", len(runs))
 	}
 }
