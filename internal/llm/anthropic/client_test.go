@@ -137,7 +137,7 @@ func TestBuildMessages_TextBlocks(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			msgs := buildMessages(tc.history)
+			msgs := buildMessages(tc.history, nil)
 			if len(msgs) != 1 {
 				t.Fatalf("got %d messages, want 1", len(msgs))
 			}
@@ -178,7 +178,7 @@ func TestBuildMessages_ToolCallBlocks(t *testing.T) {
 			history := []llm.ConversationTurn{
 				{Role: llm.RoleAssistant, Content: []llm.ContentBlock{tc.block}},
 			}
-			msgs := buildMessages(history)
+			msgs := buildMessages(history, nil)
 			if len(msgs) != 1 || len(msgs[0].Content) != 1 {
 				t.Fatal("expected 1 message with 1 content block")
 			}
@@ -219,7 +219,7 @@ func TestBuildMessages_ToolResultBlocks(t *testing.T) {
 			history := []llm.ConversationTurn{
 				{Role: llm.RoleUser, Content: []llm.ContentBlock{tc.block}},
 			}
-			msgs := buildMessages(history)
+			msgs := buildMessages(history, nil)
 			if len(msgs) != 1 || len(msgs[0].Content) != 1 {
 				t.Fatal("expected 1 message with 1 content block")
 			}
@@ -248,7 +248,7 @@ func TestBuildTools(t *testing.T) {
 		{Name: "search", Description: "Search the web", InputSchema: schema},
 	}
 
-	result, nameMap, err := buildTools(tools)
+	result, names, err := buildTools(tools)
 	if err != nil {
 		t.Fatalf("buildTools() error: %v", err)
 	}
@@ -277,15 +277,15 @@ func TestBuildTools(t *testing.T) {
 		t.Errorf("Required = %v, want [query]", tool.OfTool.InputSchema.Required)
 	}
 	// Name map must map sanitized name back to original.
-	if nameMap["search"] != "search" {
-		t.Errorf("nameMap[\"search\"] = %q, want %q", nameMap["search"], "search")
+	if names.SanitizedToOriginal["search"] != "search" {
+		t.Errorf("SanitizedToOriginal[\"search\"] = %q, want %q", names.SanitizedToOriginal["search"], "search")
 	}
 }
 
 func TestBuildMessages_EmptyHistory(t *testing.T) {
 	// nil and empty slices must not panic and must return an empty slice.
 	for _, history := range [][]llm.ConversationTurn{nil, {}} {
-		msgs := buildMessages(history)
+		msgs := buildMessages(history, nil)
 		if len(msgs) != 0 {
 			t.Errorf("buildMessages(%v) = %d messages, want 0", history, len(msgs))
 		}
@@ -295,15 +295,18 @@ func TestBuildMessages_EmptyHistory(t *testing.T) {
 func TestBuildTools_Empty(t *testing.T) {
 	// nil and empty slices must not panic and must return an empty slice.
 	for _, tools := range [][]llm.ToolDefinition{nil, {}} {
-		result, nameMap, err := buildTools(tools)
+		result, names, err := buildTools(tools)
 		if err != nil {
 			t.Fatalf("buildTools(%v) error: %v", tools, err)
 		}
 		if len(result) != 0 {
 			t.Errorf("buildTools(%v) = %d tools, want 0", tools, len(result))
 		}
-		if len(nameMap) != 0 {
-			t.Errorf("buildTools(%v) name map len = %d, want 0", tools, len(nameMap))
+		if len(names.SanitizedToOriginal) != 0 {
+			t.Errorf("buildTools(%v) SanitizedToOriginal len = %d, want 0", tools, len(names.SanitizedToOriginal))
+		}
+		if len(names.OriginalToSanitized) != 0 {
+			t.Errorf("buildTools(%v) OriginalToSanitized len = %d, want 0", tools, len(names.OriginalToSanitized))
 		}
 	}
 }
@@ -389,7 +392,7 @@ func TestBuildTools_SanitizesNames(t *testing.T) {
 		{Name: "my-server.read.data", Description: "reads data", InputSchema: schema},
 	}
 
-	result, nameMap, err := buildTools(tools)
+	result, names, err := buildTools(tools)
 	if err != nil {
 		t.Fatalf("buildTools() error: %v", err)
 	}
@@ -402,8 +405,8 @@ func TestBuildTools_SanitizesNames(t *testing.T) {
 		t.Errorf("tool name = %q, want %q", result[0].OfTool.Name, wantSanitized)
 	}
 	// The name map must map sanitized back to original.
-	if nameMap[wantSanitized] != "my-server.read.data" {
-		t.Errorf("nameMap[%q] = %q, want %q", wantSanitized, nameMap[wantSanitized], "my-server.read.data")
+	if names.SanitizedToOriginal[wantSanitized] != "my-server.read.data" {
+		t.Errorf("SanitizedToOriginal[%q] = %q, want %q", wantSanitized, names.SanitizedToOriginal[wantSanitized], "my-server.read.data")
 	}
 }
 
@@ -1229,5 +1232,203 @@ func TestCreateMessage_ThinkingBlocks(t *testing.T) {
 	}
 	if resp.Text[0].Text != "the answer" {
 		t.Errorf("Text[0].Text = %q, want %q", resp.Text[0].Text, "the answer")
+	}
+}
+
+// TestBuildTools_ReturnsOriginalToSanitized verifies that buildTools returns
+// a forward map (original MCP name → sanitized wire name) alongside the
+// existing reverse map, so callers can look up wire names without re-deriving.
+func TestBuildTools_ReturnsOriginalToSanitized(t *testing.T) {
+	tools := []llm.ToolDefinition{
+		{
+			Name:        "test-server.echo",
+			Description: "echoes input",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		},
+		{
+			Name:        "simple_tool",
+			Description: "no dots",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		},
+	}
+
+	_, names, err := buildTools(tools)
+	if err != nil {
+		t.Fatalf("buildTools: %v", err)
+	}
+
+	// Forward map: original → sanitized
+	if got, ok := names.OriginalToSanitized["test-server.echo"]; !ok || got != "test-server_echo" {
+		t.Errorf("OriginalToSanitized[test-server.echo] = %q, ok=%v; want %q", got, ok, "test-server_echo")
+	}
+	if got, ok := names.OriginalToSanitized["simple_tool"]; !ok || got != "simple_tool" {
+		t.Errorf("OriginalToSanitized[simple_tool] = %q, ok=%v; want %q", got, ok, "simple_tool")
+	}
+
+	// Reverse map still works
+	if got, ok := names.SanitizedToOriginal["test-server_echo"]; !ok || got != "test-server.echo" {
+		t.Errorf("SanitizedToOriginal[test-server_echo] = %q, ok=%v; want %q", got, ok, "test-server.echo")
+	}
+}
+
+// TestBuildMessages_UsesNameMap verifies that buildMessages looks up tool
+// names in the provided originalToSanitized map to produce wire-format names,
+// rather than re-deriving them via sanitizeToolName. See issue #413.
+func TestBuildMessages_UsesNameMap(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string // original MCP name in history
+		nameMap  map[string]string
+		wantName string
+	}{
+		{
+			name:     "dotted MCP name looked up in map",
+			toolName: "test-server.echo",
+			nameMap:  map[string]string{"test-server.echo": "test-server_echo"},
+			wantName: "test-server_echo",
+		},
+		{
+			name:     "already clean name looked up in map",
+			toolName: "simple_tool",
+			nameMap:  map[string]string{"simple_tool": "simple_tool"},
+			wantName: "simple_tool",
+		},
+		{
+			name:     "multiple dots",
+			toolName: "ns.sub.tool",
+			nameMap:  map[string]string{"ns.sub.tool": "ns_sub_tool"},
+			wantName: "ns_sub_tool",
+		},
+		{
+			name:     "clean name not in map falls back unchanged",
+			toolName: "unknown_tool",
+			nameMap:  map[string]string{},
+			wantName: "unknown_tool",
+		},
+		{
+			name:     "dotted name not in map falls back to sanitized",
+			toolName: "removed-server.old_tool",
+			nameMap:  map[string]string{},
+			wantName: "removed-server_old_tool",
+		},
+		{
+			name:     "nil map passes name through unchanged",
+			toolName: "any.tool",
+			nameMap:  nil,
+			wantName: "any.tool",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			history := []llm.ConversationTurn{
+				{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentBlock{
+						llm.ToolCallBlock{
+							ID:    "tu_1",
+							Name:  tc.toolName,
+							Input: json.RawMessage(`{"key":"value"}`),
+						},
+					},
+				},
+			}
+			msgs := buildMessages(history, tc.nameMap)
+			if len(msgs) != 1 || len(msgs[0].Content) != 1 {
+				t.Fatal("expected 1 message with 1 content block")
+			}
+			block := msgs[0].Content[0]
+			if block.OfToolUse == nil {
+				t.Fatal("expected OfToolUse block, got nil")
+			}
+			if block.OfToolUse.Name != tc.wantName {
+				t.Errorf("Name = %q, want %q", block.OfToolUse.Name, tc.wantName)
+			}
+		})
+	}
+}
+
+// TestToolNameRoundTrip exercises the full round-trip that triggers issue #413:
+// buildTools (sanitize + produce both maps) -> API response (sanitized names)
+// -> translateResponse (reverse-map to original) -> store in history
+// -> buildMessages (forward-map via lookup) -> verify names match registered tools.
+func TestToolNameRoundTrip(t *testing.T) {
+	// 1. Build tools with a dotted MCP name.
+	tools := []llm.ToolDefinition{
+		{
+			Name:        "test-server.echo",
+			Description: "echoes input",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"msg":{"type":"string"}}}`),
+		},
+	}
+	toolParams, names, err := buildTools(tools)
+	if err != nil {
+		t.Fatalf("buildTools: %v", err)
+	}
+
+	// Verify the tool was registered with the sanitized name.
+	if len(toolParams) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(toolParams))
+	}
+	registeredName := toolParams[0].OfTool.Name
+	if registeredName != "test-server_echo" {
+		t.Fatalf("registered tool name = %q, want %q", registeredName, "test-server_echo")
+	}
+
+	// 2. Simulate API response via a test HTTP server returning the sanitized name.
+	body := messageRespJSON(
+		`[{"type":"tool_use","id":"toolu_01ABC","name":"test-server_echo","input":{"msg":"hello"}}]`,
+		"tool_use", 10, 5,
+	)
+	srv := serveJSON(t, 200, body)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	resp, err := client.CreateMessage(context.Background(), llm.MessageRequest{
+		Model:     "claude-3-5-sonnet-20241022",
+		MaxTokens: 100,
+		History: []llm.ConversationTurn{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}},
+		},
+		Tools: tools,
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+
+	// 3. translateResponse should have reverse-mapped to the original MCP name.
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(resp.ToolCalls))
+	}
+	if resp.ToolCalls[0].Name != "test-server.echo" {
+		t.Fatalf("translateResponse name = %q, want %q", resp.ToolCalls[0].Name, "test-server.echo")
+	}
+
+	// 4. Store in history (as the agent loop does).
+	history := []llm.ConversationTurn{
+		{
+			Role:    llm.RoleAssistant,
+			Content: []llm.ContentBlock{resp.ToolCalls[0]},
+		},
+	}
+
+	// 5. Rebuild messages for the next API call using the forward map.
+	msgs := buildMessages(history, names.OriginalToSanitized)
+	if len(msgs) != 1 || len(msgs[0].Content) != 1 {
+		t.Fatal("expected 1 message with 1 content block")
+	}
+	block := msgs[0].Content[0]
+	if block.OfToolUse == nil {
+		t.Fatal("expected OfToolUse block, got nil")
+	}
+
+	// 6. The name in the reconstructed message MUST match the registered tool name.
+	if block.OfToolUse.Name != registeredName {
+		t.Errorf("round-trip name = %q, want %q (registered name); this would cause a 400 from the API", block.OfToolUse.Name, registeredName)
+	}
+
+	// Verify both maps are consistent.
+	if _, ok := names.SanitizedToOriginal[block.OfToolUse.Name]; !ok {
+		t.Errorf("rebuilt name %q not found in SanitizedToOriginal map", block.OfToolUse.Name)
 	}
 }

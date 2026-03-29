@@ -33,6 +33,18 @@ func sanitizeToolName(name string) string {
 	return sanitized
 }
 
+// toolNameMapping holds both directions of the MCP-name ↔ wire-name mapping
+// produced by buildTools. Named fields prevent callers from confusing the two
+// maps, which would otherwise both be map[string]string.
+type toolNameMapping struct {
+	// SanitizedToOriginal maps Claude-facing wire names back to original MCP
+	// names. Used by translateResponse to reverse-map API responses.
+	SanitizedToOriginal map[string]string
+	// OriginalToSanitized maps original MCP names to Claude-facing wire names.
+	// Used by buildMessages to forward-map conversation history.
+	OriginalToSanitized map[string]string
+}
+
 const defaultMaxTokens = 4096
 
 var validOptions = map[string]bool{
@@ -78,12 +90,12 @@ func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequ
 
 	maxTokens := resolveMaxTokens(req, hints)
 	system := buildSystemBlocks(req, hints)
-	messages := buildMessages(req.History)
 
-	tools, sanitizedToOriginal, err := buildTools(req.Tools)
+	tools, nameMap, err := buildTools(req.Tools)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: building tools: %w", err)
 	}
+	messages := buildMessages(req.History, nameMap.OriginalToSanitized)
 
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(req.Model),
@@ -98,7 +110,7 @@ func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequ
 		return nil, wrapSDKError(err)
 	}
 
-	return translateResponse(resp, sanitizedToOriginal), nil
+	return translateResponse(resp, nameMap.SanitizedToOriginal), nil
 }
 
 // StreamMessage wraps CreateMessage and emits the complete response as a single
@@ -278,8 +290,10 @@ func buildSystemBlocks(req llm.MessageRequest, hints *AnthropicHints) []anthropi
 }
 
 // buildMessages translates the provider-neutral conversation history into
-// Anthropic MessageParams.
-func buildMessages(history []llm.ConversationTurn) []anthropic.MessageParam {
+// Anthropic MessageParams. originalToSanitized maps original MCP tool names
+// to their sanitized wire-format names; when non-nil, ToolCallBlock names are
+// looked up in the map so the API receives valid tool names. See issue #413.
+func buildMessages(history []llm.ConversationTurn, originalToSanitized map[string]string) []anthropic.MessageParam {
 	msgs := make([]anthropic.MessageParam, 0, len(history))
 	for _, turn := range history {
 		blocks := make([]anthropic.ContentBlockParamUnion, 0, len(turn.Content))
@@ -288,7 +302,18 @@ func buildMessages(history []llm.ConversationTurn) []anthropic.MessageParam {
 			case llm.TextBlock:
 				blocks = append(blocks, anthropic.NewTextBlock(b.Text))
 			case llm.ToolCallBlock:
-				blocks = append(blocks, anthropic.NewToolUseBlock(b.ID, b.Input, b.Name))
+				// Look up the sanitized wire name from the map built by buildTools.
+				// If the name is not in the map, fall back to sanitizeToolName so
+				// the API never receives an invalid name (e.g. dots from MCP names).
+				name := b.Name
+				if wire, ok := originalToSanitized[name]; ok {
+					name = wire
+				} else if originalToSanitized != nil {
+					slog.Warn("buildMessages: tool name not found in name map; sanitizing as fallback",
+						"tool_name", b.Name, "tool_call_id", b.ID)
+					name = sanitizeToolName(name)
+				}
+				blocks = append(blocks, anthropic.NewToolUseBlock(b.ID, b.Input, name))
 			case llm.ToolResultBlock:
 				blocks = append(blocks, anthropic.NewToolResultBlock(b.ToolCallID, b.Content, b.IsError))
 			default:
@@ -307,26 +332,29 @@ func buildMessages(history []llm.ConversationTurn) []anthropic.MessageParam {
 
 // buildTools translates the provider-neutral tool definitions into the
 // Anthropic ToolUnionParam slice. It sanitizes tool names for the Claude API
-// and returns a sanitized→original name map so translateResponse can reverse
-// the mapping. Returns an error if two tools collide after sanitization.
-func buildTools(tools []llm.ToolDefinition) ([]anthropic.ToolUnionParam, map[string]string, error) {
+// and returns a toolNameMapping with both directions so translateResponse can
+// reverse-map API responses and buildMessages can forward-map conversation
+// history. Returns an error if two tools collide after sanitization.
+func buildTools(tools []llm.ToolDefinition) ([]anthropic.ToolUnionParam, toolNameMapping, error) {
 	result := make([]anthropic.ToolUnionParam, 0, len(tools))
-	// sanitizedToOriginal maps Claude-facing sanitized names back to the
-	// original names returned in ToolCallBlock so the agent sees MCP names.
-	sanitizedToOriginal := make(map[string]string, len(tools))
+	names := toolNameMapping{
+		SanitizedToOriginal: make(map[string]string, len(tools)),
+		OriginalToSanitized: make(map[string]string, len(tools)),
+	}
 
 	for _, t := range tools {
 		sanitized := sanitizeToolName(t.Name)
 
 		// Collision: two distinct original names map to the same sanitized name.
-		if existing, conflict := sanitizedToOriginal[sanitized]; conflict && existing != t.Name {
-			return nil, nil, fmt.Errorf("tool name collision after sanitization: %q and %q both become %q", existing, t.Name, sanitized)
+		if existing, conflict := names.SanitizedToOriginal[sanitized]; conflict && existing != t.Name {
+			return nil, toolNameMapping{}, fmt.Errorf("tool name collision after sanitization: %q and %q both become %q", existing, t.Name, sanitized)
 		}
-		sanitizedToOriginal[sanitized] = t.Name
+		names.SanitizedToOriginal[sanitized] = t.Name
+		names.OriginalToSanitized[t.Name] = sanitized
 
 		schema, err := buildToolInputSchema(t.InputSchema)
 		if err != nil {
-			return nil, nil, fmt.Errorf("building schema for tool %s: %w", t.Name, err)
+			return nil, toolNameMapping{}, fmt.Errorf("building schema for tool %s: %w", t.Name, err)
 		}
 		tool := anthropic.ToolUnionParamOfTool(schema, sanitized)
 		// OfTool is the active variant after ToolUnionParamOfTool; guard is
@@ -336,7 +364,7 @@ func buildTools(tools []llm.ToolDefinition) ([]anthropic.ToolUnionParam, map[str
 		}
 		result = append(result, tool)
 	}
-	return result, sanitizedToOriginal, nil
+	return result, names, nil
 }
 
 // buildToolInputSchema converts a raw JSON schema into a ToolInputSchemaParam.
