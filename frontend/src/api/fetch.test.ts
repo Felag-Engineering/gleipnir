@@ -53,4 +53,17 @@ describe('apiFetch', () => {
     server.use(http.get(TEST_URL, () => HttpResponse.error()))
     await expect(apiFetch(TEST_PATH)).rejects.toThrow()
   })
+
+  it('always sets Content-Type: application/json', async () => {
+    let capturedContentType: string | null = null
+    server.use(
+      http.post(TEST_URL, ({ request }) => {
+        capturedContentType = request.headers.get('Content-Type')
+        return HttpResponse.json({ data: { ok: true } }, { status: 200 })
+      })
+    )
+    const result = await apiFetch<{ ok: boolean }>(TEST_PATH, { method: 'POST' })
+    expect(result).toEqual({ ok: true })
+    expect(capturedContentType).toBe('application/json')
+  })
 })

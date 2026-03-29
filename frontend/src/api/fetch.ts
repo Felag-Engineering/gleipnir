@@ -14,7 +14,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   const url = `/api/v1${path}`
 
   const headers: HeadersInit = {
-    ...(init?.body != null ? { 'Content-Type': 'application/json' } : {}),
+    'Content-Type': 'application/json',
     ...init?.headers,
   }
 
@@ -45,7 +45,7 @@ export async function apiFetchVoid(path: string, init?: RequestInit): Promise<vo
   const url = `/api/v1${path}`
 
   const headers: HeadersInit = {
-    ...(init?.body != null ? { 'Content-Type': 'application/json' } : {}),
+    'Content-Type': 'application/json',
     ...init?.headers,
   }
 
