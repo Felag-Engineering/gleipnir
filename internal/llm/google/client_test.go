@@ -374,7 +374,7 @@ func TestTranslateResponse_SyntheticID(t *testing.T) {
 	}
 }
 
-func TestTranslateResponse_ThoughtPartsFiltered(t *testing.T) {
+func TestTranslateResponse_ThoughtPartsAsThinking(t *testing.T) {
 	resp := &genai.GenerateContentResponse{
 		Candidates: []*genai.Candidate{
 			{
@@ -393,14 +393,102 @@ func TestTranslateResponse_ThoughtPartsFiltered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if len(result.Thinking) != 1 {
+		t.Fatalf("expected 1 thinking block, got %d", len(result.Thinking))
+	}
+	if result.Thinking[0].Text != "reasoning text" {
+		t.Errorf("Thinking[0].Text = %q, want %q", result.Thinking[0].Text, "reasoning text")
+	}
+	if result.Thinking[0].Redacted {
+		t.Errorf("Thinking[0].Redacted = true, want false")
+	}
 	if len(result.Text) != 1 {
-		t.Fatalf("expected 1 text block (thought filtered), got %d", len(result.Text))
+		t.Fatalf("expected 1 text block, got %d", len(result.Text))
 	}
 	if result.Text[0].Text != "visible text" {
 		t.Errorf("expected 'visible text', got %q", result.Text[0].Text)
 	}
 	if len(result.ToolCalls) != 0 {
 		t.Errorf("expected no tool calls, got %d", len(result.ToolCalls))
+	}
+}
+
+func TestTranslateResponse_ThinkingTokenUsage(t *testing.T) {
+	resp := &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{
+			{
+				Content:      &genai.Content{Parts: []*genai.Part{{Text: "hi"}}},
+				FinishReason: genai.FinishReasonStop,
+			},
+		},
+		UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+			PromptTokenCount:     10,
+			CandidatesTokenCount: 20,
+			ThoughtsTokenCount:   100,
+		},
+	}
+
+	result, err := translateResponse(resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Usage.ThinkingTokens != 100 {
+		t.Errorf("ThinkingTokens = %d, want 100", result.Usage.ThinkingTokens)
+	}
+	if result.Usage.InputTokens != 10 {
+		t.Errorf("InputTokens = %d, want 10", result.Usage.InputTokens)
+	}
+	if result.Usage.OutputTokens != 20 {
+		t.Errorf("OutputTokens = %d, want 20", result.Usage.OutputTokens)
+	}
+}
+
+func TestCreateMessage_ThinkingBlocks(t *testing.T) {
+	mock := &mockGenerator{
+		response: &genai.GenerateContentResponse{
+			Candidates: []*genai.Candidate{
+				{
+					Content: &genai.Content{
+						Parts: []*genai.Part{
+							{Text: "internal reasoning", Thought: true},
+							{Text: "visible answer"},
+						},
+					},
+					FinishReason: genai.FinishReasonStop,
+				},
+			},
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     10,
+				CandidatesTokenCount: 5,
+				ThoughtsTokenCount:   50,
+			},
+		},
+	}
+	client := newClientWithGenerator(mock, nil)
+
+	resp, err := client.CreateMessage(context.Background(), llm.MessageRequest{
+		Model: "gemini-2.0-flash",
+		History: []llm.ConversationTurn{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hello"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Thinking) != 1 {
+		t.Fatalf("got %d thinking blocks, want 1", len(resp.Thinking))
+	}
+	if resp.Thinking[0].Text != "internal reasoning" {
+		t.Errorf("Thinking[0].Text = %q, want %q", resp.Thinking[0].Text, "internal reasoning")
+	}
+	if resp.Thinking[0].Redacted {
+		t.Errorf("Thinking[0].Redacted = true, want false")
+	}
+	if resp.Usage.ThinkingTokens != 50 {
+		t.Errorf("ThinkingTokens = %d, want 50", resp.Usage.ThinkingTokens)
+	}
+	if len(resp.Text) != 1 || resp.Text[0].Text != "visible answer" {
+		t.Errorf("unexpected text: %+v", resp.Text)
 	}
 }
 

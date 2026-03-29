@@ -273,6 +273,24 @@ func (a *BoundAgent) runAPILoop(
 		costAssigned := false
 		var toolResultBlocks []llm.ContentBlock
 
+		// Process thinking blocks: write thinking audit steps before text blocks
+		// so the first thinking block carries the token cost on thinking-heavy turns.
+		for _, tb := range resp.Thinking {
+			cost := 0
+			if !costAssigned {
+				cost = tokenCost
+				costAssigned = true
+			}
+			if err := a.audit.Write(ctx, Step{
+				RunID:     runID,
+				Type:      model.StepTypeThinking,
+				Content:   map[string]any{"text": tb.Text, "redacted": tb.Redacted},
+				TokenCost: cost,
+			}); err != nil {
+				return a.failRun(ctx, fmt.Errorf("writing thinking step: %w", err))
+			}
+		}
+
 		// Process text blocks: write thought audit steps.
 		for _, tb := range resp.Text {
 			cost := 0

@@ -599,6 +599,67 @@ func TestSchemaConstraints(t *testing.T) {
 	})
 }
 
+func TestMigrateAddThinkingStepType(t *testing.T) {
+	t.Run("adds thinking to CHECK constraint when absent", func(t *testing.T) {
+		s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		t.Cleanup(func() { s.Close() })
+
+		// Apply the old schema without 'thinking' in the CHECK constraint.
+		oldSchema := `
+CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+INSERT INTO schema_migrations VALUES (1, '2024-01-01T00:00:00Z');
+CREATE TABLE policies (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, trigger_type TEXT NOT NULL, yaml TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE runs (id TEXT PRIMARY KEY, policy_id TEXT NOT NULL REFERENCES policies(id) ON DELETE CASCADE, status TEXT NOT NULL, trigger_type TEXT NOT NULL, trigger_payload TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT, token_cost INTEGER NOT NULL DEFAULT 0, error TEXT, thread_id TEXT, created_at TEXT NOT NULL);
+CREATE TABLE run_steps (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    step_number INTEGER NOT NULL,
+    type TEXT NOT NULL CHECK(type IN ('capability_snapshot','thought','tool_call','tool_result','approval_request','feedback_request','feedback_response','error','complete')),
+    content TEXT NOT NULL,
+    token_cost INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE(run_id, step_number)
+);
+CREATE INDEX idx_run_steps_run_step ON run_steps(run_id, step_number);
+`
+		if _, err := s.db.Exec(oldSchema); err != nil {
+			t.Fatalf("apply old schema: %v", err)
+		}
+
+		// Run the inline migration.
+		if err := s.migrateAddThinkingStepType(context.Background()); err != nil {
+			t.Fatalf("migrateAddThinkingStepType: %v", err)
+		}
+
+		// Insert a policy and run so we can insert a run_step.
+		insertPolicy(t, s, "p1")
+		insertRun(t, s, "r1", "p1", "running")
+
+		// Verify that inserting a 'thinking' step now succeeds.
+		_, err = s.db.Exec(
+			`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
+			 VALUES ('s1', 'r1', 0, 'thinking', '{}', '2024-01-01T00:00:00Z')`,
+		)
+		if err != nil {
+			t.Errorf("expected thinking insert to succeed after migration, got: %v", err)
+		}
+	})
+
+	t.Run("idempotent when thinking already present", func(t *testing.T) {
+		s := newTestStore(t) // schema already includes 'thinking'
+
+		if err := s.migrateAddThinkingStepType(context.Background()); err != nil {
+			t.Fatalf("first migrateAddThinkingStepType: %v", err)
+		}
+		if err := s.migrateAddThinkingStepType(context.Background()); err != nil {
+			t.Fatalf("second migrateAddThinkingStepType: %v", err)
+		}
+	})
+}
+
 func insertPolicy(t *testing.T, s *Store, id string) {
 	t.Helper()
 	_, err := s.DB().Exec(

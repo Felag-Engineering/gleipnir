@@ -1150,3 +1150,84 @@ func TestAnthropicClient_InvalidateModelCache(t *testing.T) {
 		t.Fatalf("expected 2 API calls after invalidation, got %d", callCount)
 	}
 }
+
+func TestTranslateResponse_ThinkingBlock(t *testing.T) {
+	body := messageRespJSON(
+		`[{"type":"thinking","thinking":"my reasoning","signature":"sig"}]`,
+		"end_turn", 10, 5,
+	)
+	srv := serveJSON(t, 200, body)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	resp, err := client.CreateMessage(context.Background(), minimalRequest())
+	if err != nil {
+		t.Fatalf("CreateMessage() error: %v", err)
+	}
+	if len(resp.Thinking) != 1 {
+		t.Fatalf("got %d thinking blocks, want 1", len(resp.Thinking))
+	}
+	if resp.Thinking[0].Text != "my reasoning" {
+		t.Errorf("Thinking[0].Text = %q, want %q", resp.Thinking[0].Text, "my reasoning")
+	}
+	if resp.Thinking[0].Redacted {
+		t.Errorf("Thinking[0].Redacted = true, want false")
+	}
+	if len(resp.Text) != 0 {
+		t.Errorf("got %d text blocks, want 0", len(resp.Text))
+	}
+}
+
+func TestTranslateResponse_RedactedThinkingBlock(t *testing.T) {
+	body := messageRespJSON(
+		`[{"type":"redacted_thinking","data":"abc"}]`,
+		"end_turn", 10, 5,
+	)
+	srv := serveJSON(t, 200, body)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	resp, err := client.CreateMessage(context.Background(), minimalRequest())
+	if err != nil {
+		t.Fatalf("CreateMessage() error: %v", err)
+	}
+	if len(resp.Thinking) != 1 {
+		t.Fatalf("got %d thinking blocks, want 1", len(resp.Thinking))
+	}
+	if resp.Thinking[0].Text != "[redacted]" {
+		t.Errorf("Thinking[0].Text = %q, want %q", resp.Thinking[0].Text, "[redacted]")
+	}
+	if !resp.Thinking[0].Redacted {
+		t.Errorf("Thinking[0].Redacted = false, want true")
+	}
+}
+
+func TestCreateMessage_ThinkingBlocks(t *testing.T) {
+	body := messageRespJSON(
+		`[{"type":"thinking","thinking":"step by step","signature":"sig1"},{"type":"text","text":"the answer"}]`,
+		"end_turn", 20, 15,
+	)
+	srv := serveJSON(t, 200, body)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	resp, err := client.CreateMessage(context.Background(), minimalRequest())
+	if err != nil {
+		t.Fatalf("CreateMessage() error: %v", err)
+	}
+	if len(resp.Thinking) != 1 {
+		t.Fatalf("got %d thinking blocks, want 1", len(resp.Thinking))
+	}
+	if resp.Thinking[0].Text != "step by step" {
+		t.Errorf("Thinking[0].Text = %q, want %q", resp.Thinking[0].Text, "step by step")
+	}
+	if resp.Thinking[0].Redacted {
+		t.Errorf("Thinking[0].Redacted = true, want false")
+	}
+	if len(resp.Text) != 1 {
+		t.Fatalf("got %d text blocks, want 1", len(resp.Text))
+	}
+	if resp.Text[0].Text != "the answer" {
+		t.Errorf("Text[0].Text = %q, want %q", resp.Text[0].Text, "the answer")
+	}
+}

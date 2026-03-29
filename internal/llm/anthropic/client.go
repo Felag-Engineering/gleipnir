@@ -410,10 +410,17 @@ func translateResponse(resp *anthropic.Message, sanitizedToOriginal map[string]s
 				Name:  originalName,
 				Input: b.Input,
 			})
+		case anthropic.ThinkingBlock:
+			result.Thinking = append(result.Thinking, llm.ThinkingBlock{
+				Text:     b.Thinking,
+				Redacted: false,
+			})
+		case anthropic.RedactedThinkingBlock:
+			result.Thinking = append(result.Thinking, llm.ThinkingBlock{
+				Text:     "[redacted]",
+				Redacted: true,
+			})
 		default:
-			// Known skipped types: ThinkingBlock, RedactedThinkingBlock.
-			// The agent does not consume these. Log so new block types
-			// are visible rather than silently dropped.
 			slog.Warn("translateResponse: skipping unhandled content block type", "type", fmt.Sprintf("%T", b))
 		}
 	}

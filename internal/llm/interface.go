@@ -55,8 +55,17 @@ func (s StopReason) String() string {
 
 // TokenUsage records token consumption for a single API call.
 type TokenUsage struct {
-	InputTokens  int
-	OutputTokens int
+	InputTokens    int
+	OutputTokens   int
+	ThinkingTokens int // Gemini reports thinking tokens separately; Anthropic includes them in OutputTokens
+}
+
+// ThinkingBlock is an internal reasoning block returned by the model.
+// It is audit-only — thinking blocks are never included in conversation history
+// sent back to the LLM (providers handle continuity internally via signatures).
+type ThinkingBlock struct {
+	Text     string
+	Redacted bool
 }
 
 // TextBlock is a plain text content block from the model's response.
@@ -126,9 +135,11 @@ type MessageRequest struct {
 // MessageResponse is the parsed output of a single LLM API call.
 // Text and ToolCalls are separate slices because the BoundAgent processes them
 // differently: text goes to audit as thought steps, tool calls go to dispatch.
+// Thinking holds internal reasoning blocks for audit purposes only.
 type MessageResponse struct {
 	Text       []TextBlock
 	ToolCalls  []ToolCallBlock
+	Thinking   []ThinkingBlock
 	StopReason StopReason
 	Usage      TokenUsage
 }

@@ -158,6 +158,7 @@ CREATE TABLE run_steps (
     type        TEXT    NOT NULL CHECK(type IN (
                     'capability_snapshot',
                     'thought',
+                    'thinking',
                     'tool_call',
                     'tool_result',
                     'approval_request',

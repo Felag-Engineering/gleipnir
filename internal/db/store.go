@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // register the sqlite driver
@@ -121,6 +122,77 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("schema_migrations exists but version 1 is not recorded")
 	}
 
+	if err := s.migrateAddThinkingStepType(ctx); err != nil {
+		return fmt.Errorf("migrate thinking step type: %w", err)
+	}
+
+	return nil
+}
+
+// migrateAddThinkingStepType updates the run_steps CHECK constraint to include
+// 'thinking' on existing deployments where 0001_initial.sql was applied before
+// this value existed. New deployments get it directly from 0001_initial.sql.
+//
+// SQLite does not support ALTER COLUMN to modify CHECK constraints, so we use
+// the table-recreation pattern: create a new table, copy data, drop old, rename.
+func (s *Store) migrateAddThinkingStepType(ctx context.Context) error {
+	var tableSQL string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='run_steps'`,
+	).Scan(&tableSQL)
+	if err != nil {
+		return fmt.Errorf("query run_steps schema: %w", err)
+	}
+
+	if strings.Contains(tableSQL, "'thinking'") {
+		return nil // already present; nothing to do
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin thinking migration tx: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.Error("thinking migration rollback failed", "err", rbErr)
+		}
+	}()
+
+	ddl := `
+CREATE TABLE run_steps_new (
+    id          TEXT    PRIMARY KEY,
+    run_id      TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    step_number INTEGER NOT NULL,
+    type        TEXT    NOT NULL CHECK(type IN (
+                    'capability_snapshot',
+                    'thought',
+                    'thinking',
+                    'tool_call',
+                    'tool_result',
+                    'approval_request',
+                    'feedback_request',
+                    'feedback_response',
+                    'error',
+                    'complete'
+                )),
+    content     TEXT    NOT NULL,
+    token_cost  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL,
+    UNIQUE(run_id, step_number)
+);
+INSERT INTO run_steps_new SELECT * FROM run_steps;
+DROP TABLE run_steps;
+ALTER TABLE run_steps_new RENAME TO run_steps;
+CREATE INDEX idx_run_steps_run_step ON run_steps(run_id, step_number);`
+
+	if _, err := tx.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("recreate run_steps with thinking: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit thinking migration: %w", err)
+	}
+
+	slog.Info("migrated run_steps table to include thinking step type")
 	return nil
 }
 

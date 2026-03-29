@@ -378,19 +378,20 @@ func buildTools(tools []llm.ToolDefinition) []*genai.Tool {
 }
 
 // translateResponse converts a Gemini API response into the provider-neutral
-// MessageResponse. Thought parts (part.Thought == true) are filtered out to
-// prevent internal reasoning from leaking into the visible response.
+// MessageResponse. Thought parts (part.Thought == true) are captured as
+// ThinkingBlocks for audit purposes and excluded from the visible text response.
 //
 // Known gap: part.ThoughtSignature bytes are discarded here. When full thinking
-// support is implemented, ThoughtSignature must be echoed back in subsequent
+// continuity is implemented, ThoughtSignature must be echoed back in subsequent
 // requests to maintain the thinking chain. A follow-up issue is needed.
 func translateResponse(resp *genai.GenerateContentResponse) (*llm.MessageResponse, error) {
 	var result llm.MessageResponse
 
 	if resp.UsageMetadata != nil {
 		result.Usage = llm.TokenUsage{
-			InputTokens:  int(resp.UsageMetadata.PromptTokenCount),
-			OutputTokens: int(resp.UsageMetadata.CandidatesTokenCount),
+			InputTokens:    int(resp.UsageMetadata.PromptTokenCount),
+			OutputTokens:   int(resp.UsageMetadata.CandidatesTokenCount),
+			ThinkingTokens: int(resp.UsageMetadata.ThoughtsTokenCount),
 		}
 	}
 
@@ -402,8 +403,10 @@ func translateResponse(resp *genai.GenerateContentResponse) (*llm.MessageRespons
 
 	for _, part := range candidate.Content.Parts {
 		if part.Thought {
-			// Skip thinking/reasoning parts — analogous to how the Anthropic
-			// client skips ThinkingBlock in its translateResponse.
+			result.Thinking = append(result.Thinking, llm.ThinkingBlock{
+				Text:     part.Text,
+				Redacted: false,
+			})
 			continue
 		}
 		if part.FunctionCall != nil {

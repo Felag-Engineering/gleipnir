@@ -49,6 +49,7 @@ type StepType string
 const (
 	StepTypeCapabilitySnapshot StepType = "capability_snapshot"
 	StepTypeThought            StepType = "thought"
+	StepTypeThinking           StepType = "thinking"
 	StepTypeToolCall           StepType = "tool_call"
 	StepTypeToolResult         StepType = "tool_result"
 	StepTypeApprovalRequest    StepType = "approval_request"
@@ -121,9 +122,9 @@ func (r CapabilityRole) Valid() bool {
 func (s StepType) String() string { return string(s) }
 func (s StepType) Valid() bool {
 	switch s {
-	case StepTypeCapabilitySnapshot, StepTypeThought, StepTypeToolCall, StepTypeToolResult,
-		StepTypeApprovalRequest, StepTypeFeedbackRequest, StepTypeFeedbackResponse,
-		StepTypeError, StepTypeComplete:
+	case StepTypeCapabilitySnapshot, StepTypeThought, StepTypeThinking, StepTypeToolCall,
+		StepTypeToolResult, StepTypeApprovalRequest, StepTypeFeedbackRequest,
+		StepTypeFeedbackResponse, StepTypeError, StepTypeComplete:
 		return true
 	}
 	return false
