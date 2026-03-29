@@ -154,7 +154,7 @@ func (a *BoundAgent) buildToolDefinitions() []llm.ToolDefinition {
 // waitForApproval suspends the run at an approval gate for the given tool entry.
 // It writes the approval_request audit step, then blocks on the approval channel,
 // a timeout, or context cancellation.
-// Returns nil if approved (or timed out with on_timeout=approve), error otherwise.
+// Returns nil if approved, error otherwise.
 func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry resolvedToolEntry, internalName string, input map[string]any) error {
 	if err := a.audit.Write(ctx, Step{
 		RunID:   runID,
@@ -185,13 +185,9 @@ func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry re
 		slog.WarnContext(ctx, "approval timeout reached",
 			"run_id", runID, "tool", internalName,
 			"timeout", entry.tool.Timeout.String())
-		if entry.tool.OnTimeout == model.OnTimeoutApprove {
-			// Proceed with execution on timeout.
-		} else {
-			err := fmt.Errorf("approval timeout for tool %s", internalName)
-			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeApprovalRejected)
-			return err
-		}
+		err := fmt.Errorf("approval timeout for tool %s", internalName)
+		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeApprovalRejected)
+		return err
 	case <-ctx.Done():
 		return fmt.Errorf("context cancelled waiting for approval: %w", ctx.Err())
 	}

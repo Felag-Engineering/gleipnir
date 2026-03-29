@@ -106,7 +106,7 @@ capabilities:
     - tool: deploy.run
       approval: required
       timeout: 30m
-      on_timeout: approve
+      on_timeout: reject
 agent:
   task: deploy
 `
@@ -122,8 +122,8 @@ agent:
 	if tc.Timeout != "30m" {
 		t.Errorf("timeout = %q, want %q", tc.Timeout, "30m")
 	}
-	if tc.OnTimeout != model.OnTimeoutApprove {
-		t.Errorf("on_timeout = %q, want %q", tc.OnTimeout, model.OnTimeoutApprove)
+	if tc.OnTimeout != model.OnTimeoutReject {
+		t.Errorf("on_timeout = %q, want %q", tc.OnTimeout, model.OnTimeoutReject)
 	}
 }
 

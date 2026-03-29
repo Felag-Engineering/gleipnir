@@ -109,7 +109,7 @@ func validateCapabilities(c model.CapabilitiesConfig) []string {
 				}
 			}
 			if !t.OnTimeout.Valid() {
-				errs = append(errs, fmt.Sprintf("capabilities.tools[%d].on_timeout %q is invalid; must be reject or approve", i, t.OnTimeout))
+				errs = append(errs, fmt.Sprintf("capabilities.tools[%d].on_timeout %q is invalid; must be reject", i, t.OnTimeout))
 			}
 		}
 	}

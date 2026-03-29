@@ -1369,7 +1369,9 @@ func TestWaitForApproval(t *testing.T) {
 		}
 	})
 
-	t.Run("Timeout_Approve", func(t *testing.T) {
+	t.Run("Timeout_AlwaysRejects", func(t *testing.T) {
+		// Verify that timeout always results in an error regardless of OnTimeout value,
+		// since on_timeout: approve was removed (issue #313).
 		approvalCh := make(chan bool)
 		ba, _, w := makeAgentWithTools(t, nil, approvalCh)
 		defer w.Close()
@@ -1378,14 +1380,17 @@ func TestWaitForApproval(t *testing.T) {
 			tool: mcp.ResolvedTool{
 				GrantedTool: model.GrantedTool{
 					Timeout:   10 * time.Millisecond,
-					OnTimeout: model.OnTimeoutApprove,
+					OnTimeout: model.OnTimeoutReject,
 				},
 			},
 		}
 
 		err := ba.waitForApproval(context.Background(), "run1", entry, "my-server.do_thing", map[string]any{})
-		if err != nil {
-			t.Errorf("expected nil on timeout-approve, got: %v", err)
+		if err == nil {
+			t.Error("expected error on timeout, got nil")
+		}
+		if !strings.Contains(err.Error(), "approval timeout") {
+			t.Errorf("error message = %q, want to contain 'approval timeout'", err.Error())
 		}
 	})
 

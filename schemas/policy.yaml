@@ -125,8 +125,10 @@ capabilities:
       #   How long to wait for a human decision before timing out.
       #   Go time.ParseDuration format.
       timeout: 30m
-      # on_timeout: reject | approve — optional, default: reject
+      # on_timeout: reject — optional, default: reject
       #   What to do if the approval window expires without a decision.
+      #   Only "reject" is supported. "approve" was removed in issue #313
+      #   because the background scanner could not honor it on crash recovery.
       on_timeout: reject
 
 

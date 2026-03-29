@@ -88,13 +88,13 @@ func TestEnumValid(t *testing.T) {
 	})
 
 	t.Run("OnTimeout", func(t *testing.T) {
-		valid := []OnTimeout{OnTimeoutReject, OnTimeoutApprove}
+		valid := []OnTimeout{OnTimeoutReject}
 		for _, v := range valid {
 			if !v.Valid() {
 				t.Errorf("expected %q to be valid", v)
 			}
 		}
-		for _, bad := range []OnTimeout{"", "invalid"} {
+		for _, bad := range []OnTimeout{"", "invalid", "approve"} {
 			if bad.Valid() {
 				t.Errorf("expected %q to be invalid", bad)
 			}

@@ -19,9 +19,9 @@ import (
 // them as timeout. It handles both normal timeout and crash-recovery cases
 // (when the process restarted while a run was waiting_for_approval).
 //
-// v1 simplification: all timeouts result in run failure regardless of the
-// policy's on_timeout field. A future version can inspect the policy to support
-// auto-approve-on-timeout.
+// All timeouts result in run failure. The on_timeout field only accepts "reject"
+// (the "approve" value was removed in issue #313 because this scanner could not
+// honor it during crash recovery).
 type Scanner struct {
 	store     *db.Store
 	interval  time.Duration

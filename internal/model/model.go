@@ -71,8 +71,7 @@ const (
 type OnTimeout string
 
 const (
-	OnTimeoutReject  OnTimeout = "reject"
-	OnTimeoutApprove OnTimeout = "approve"
+	OnTimeoutReject OnTimeout = "reject"
 )
 
 // ConcurrencyPolicy controls behaviour when a trigger fires while a run is active.
@@ -142,7 +141,7 @@ func (m ApprovalMode) Valid() bool {
 func (t OnTimeout) String() string { return string(t) }
 func (t OnTimeout) Valid() bool {
 	switch t {
-	case OnTimeoutReject, OnTimeoutApprove:
+	case OnTimeoutReject:
 		return true
 	}
 	return false

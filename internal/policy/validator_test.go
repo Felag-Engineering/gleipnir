@@ -104,6 +104,14 @@ func TestValidate_InvalidTimeout(t *testing.T) {
 	assertValidationContains(t, p, "not a valid duration")
 }
 
+func TestValidate_OnTimeoutApproveRejected(t *testing.T) {
+	p := validPolicy()
+	p.Capabilities.Tools = []model.ToolCapability{
+		{Tool: "s.t", Approval: model.ApprovalModeRequired, OnTimeout: "approve"},
+	}
+	assertValidationContains(t, p, "on_timeout")
+}
+
 func TestValidate_MissingTask(t *testing.T) {
 	p := validPolicy()
 	p.Agent.Task = ""
