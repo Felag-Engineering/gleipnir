@@ -33,6 +33,9 @@ func (s *stubClient) ValidateModelName(_ context.Context, _ string) error {
 	return s.validateModelErr
 }
 
+func (s *stubClient) ListModels(_ context.Context) ([]ModelInfo, error) { return nil, nil }
+func (s *stubClient) InvalidateModelCache()                             {}
+
 func TestProviderRegistry_RegisterAndGet(t *testing.T) {
 	r := NewProviderRegistry()
 	stub := &stubClient{name: "anthropic"}

@@ -135,7 +135,7 @@ func run(cfg config.Config) error {
 		policySvc := policy.NewService(store, nil, providerRegistry, providerRegistry, cfg.DefaultProvider, cfg.DefaultModel)
 
 		// Mount /api/v1/policies, /api/v1/mcp, /api/v1/stats, and /api/v1/health route groups.
-		r.Mount("/api/v1", api.NewRouter(store, policySvc, registry))
+		r.Mount("/api/v1", api.NewRouter(store, policySvc, registry, providerRegistry))
 	})
 
 	// Serve the embedded React SPA for all non-API routes.

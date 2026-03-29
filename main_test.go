@@ -22,6 +22,10 @@ func (s *stubLLMClient) StreamMessage(_ context.Context, _ llm.MessageRequest) (
 
 func (s *stubLLMClient) ValidateOptions(_ map[string]any) error              { return nil }
 func (s *stubLLMClient) ValidateModelName(_ context.Context, _ string) error { return nil }
+func (s *stubLLMClient) ListModels(_ context.Context) ([]llm.ModelInfo, error) {
+	return nil, nil
+}
+func (s *stubLLMClient) InvalidateModelCache() {}
 
 func stubFactory(_ context.Context, _ string) (llm.LLMClient, error) {
 	return &stubLLMClient{}, nil

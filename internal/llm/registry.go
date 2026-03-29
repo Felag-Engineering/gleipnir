@@ -68,3 +68,51 @@ func (r *ProviderRegistry) ValidateModelName(ctx context.Context, provider, mode
 	}
 	return nil
 }
+
+// ListModels returns models from the named provider.
+func (r *ProviderRegistry) ListModels(ctx context.Context, provider string) ([]ModelInfo, error) {
+	client, err := r.Get(provider)
+	if err != nil {
+		return nil, fmt.Errorf("unknown provider %q: cannot list models", provider)
+	}
+	return client.ListModels(ctx)
+}
+
+// ListAllModels returns models from every registered provider, keyed by provider name.
+func (r *ProviderRegistry) ListAllModels(ctx context.Context) (map[string][]ModelInfo, error) {
+	r.mu.RLock()
+	names := make([]string, 0, len(r.providers))
+	for name := range r.providers {
+		names = append(names, name)
+	}
+	r.mu.RUnlock()
+
+	result := make(map[string][]ModelInfo, len(names))
+	for _, name := range names {
+		models, err := r.providers[name].ListModels(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+		result[name] = models
+	}
+	return result, nil
+}
+
+// InvalidateModelCache clears the cached model list for the named provider.
+func (r *ProviderRegistry) InvalidateModelCache(provider string) error {
+	client, err := r.Get(provider)
+	if err != nil {
+		return fmt.Errorf("unknown provider %q: cannot invalidate cache", provider)
+	}
+	client.InvalidateModelCache()
+	return nil
+}
+
+// InvalidateAllModelCaches clears model caches for all registered providers.
+func (r *ProviderRegistry) InvalidateAllModelCaches() {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, client := range r.providers {
+		client.InvalidateModelCache()
+	}
+}

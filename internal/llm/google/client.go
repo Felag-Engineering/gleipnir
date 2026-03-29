@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/rapp992/gleipnir/internal/llm"
@@ -21,12 +22,23 @@ type contentGenerator interface {
 	GenerateContent(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error)
 }
 
+// modelLister abstracts genai.Models.List for test injection.
+type modelLister interface {
+	List(ctx context.Context, config *genai.ListModelsConfig) (genai.Page[genai.Model], error)
+}
+
 // Compile-time check that GeminiClient satisfies the LLMClient interface.
 var _ llm.LLMClient = (*GeminiClient)(nil)
 
 // GeminiClient implements llm.LLMClient using the Google Gemini API.
 type GeminiClient struct {
 	generator contentGenerator
+	lister    modelLister
+
+	modelMu     sync.RWMutex
+	modelCache  map[string]string // model name → display name
+	modelErr    error
+	modelLoaded bool
 }
 
 // NewClient constructs a GeminiClient with the given API key.
@@ -38,13 +50,13 @@ func NewClient(ctx context.Context, apiKey string) (*GeminiClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("google: creating client: %w", err)
 	}
-	return &GeminiClient{generator: client.Models}, nil
+	return &GeminiClient{generator: client.Models, lister: client.Models}, nil
 }
 
-// newClientWithGenerator constructs a GeminiClient with an injected generator.
+// newClientWithGenerator constructs a GeminiClient with an injected generator and lister.
 // Used in tests to avoid real API calls.
-func newClientWithGenerator(gen contentGenerator) *GeminiClient {
-	return &GeminiClient{generator: gen}
+func newClientWithGenerator(gen contentGenerator, lister modelLister) *GeminiClient {
+	return &GeminiClient{generator: gen, lister: lister}
 }
 
 // CreateMessage sends a single synchronous request to the Gemini API and
@@ -133,10 +145,110 @@ func (c *GeminiClient) ValidateOptions(options map[string]any) error {
 	return nil
 }
 
-// ValidateModelName always returns nil. Gemini model list API is different
-// from Anthropic's; validation is deferred to a follow-up issue.
-func (c *GeminiClient) ValidateModelName(_ context.Context, _ string) error {
-	return nil
+// fetchModels populates the model cache from the API if not already loaded.
+func (c *GeminiClient) fetchModels(ctx context.Context) {
+	c.modelMu.Lock()
+	defer c.modelMu.Unlock()
+
+	if c.modelLoaded {
+		return
+	}
+
+	cache := make(map[string]string)
+	page, err := c.lister.List(ctx, nil)
+	if err != nil {
+		c.modelErr = fmt.Errorf("google: fetching available models: %w", err)
+		c.modelLoaded = true
+		return
+	}
+
+	for _, m := range page.Items {
+		// The API returns names like "models/gemini-2.0-flash".
+		// Strip the "models/" prefix so users write just "gemini-2.0-flash" in policy YAML.
+		name := strings.TrimPrefix(m.Name, "models/")
+		displayName := m.DisplayName
+		if displayName == "" {
+			displayName = name
+		}
+		cache[name] = displayName
+	}
+
+	// Paginate through all pages.
+	for page.NextPageToken != "" {
+		page, err = page.Next(ctx)
+		if err != nil {
+			c.modelErr = fmt.Errorf("google: fetching available models (pagination): %w", err)
+			c.modelLoaded = true
+			return
+		}
+		for _, m := range page.Items {
+			name := strings.TrimPrefix(m.Name, "models/")
+			displayName := m.DisplayName
+			if displayName == "" {
+				displayName = name
+			}
+			cache[name] = displayName
+		}
+	}
+
+	c.modelCache = cache
+	c.modelErr = nil
+	c.modelLoaded = true
+}
+
+// ValidateModelName returns nil if modelName is recognized by the Gemini API,
+// or a descriptive error if not. The model list is fetched from the API on the
+// first call and cached until InvalidateModelCache is called.
+func (c *GeminiClient) ValidateModelName(ctx context.Context, modelName string) error {
+	c.fetchModels(ctx)
+
+	c.modelMu.RLock()
+	defer c.modelMu.RUnlock()
+
+	if c.modelErr != nil {
+		return fmt.Errorf("could not validate model name: %w", c.modelErr)
+	}
+
+	if _, ok := c.modelCache[modelName]; ok {
+		return nil
+	}
+
+	known := make([]string, 0, len(c.modelCache))
+	for name := range c.modelCache {
+		known = append(known, name)
+	}
+	sort.Strings(known)
+	return fmt.Errorf("unknown Google model %q; known models: %s", modelName, strings.Join(known, ", "))
+}
+
+// ListModels returns the models available from the Gemini API. Results are
+// cached; call InvalidateModelCache to force a refresh on the next call.
+func (c *GeminiClient) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+	c.fetchModels(ctx)
+
+	c.modelMu.RLock()
+	defer c.modelMu.RUnlock()
+
+	if c.modelErr != nil {
+		return nil, c.modelErr
+	}
+
+	models := make([]llm.ModelInfo, 0, len(c.modelCache))
+	for name, displayName := range c.modelCache {
+		models = append(models, llm.ModelInfo{Name: name, DisplayName: displayName})
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
+	return models, nil
+}
+
+// InvalidateModelCache clears the cached model list so the next call to
+// ListModels or ValidateModelName fetches fresh data from the API.
+func (c *GeminiClient) InvalidateModelCache() {
+	c.modelMu.Lock()
+	defer c.modelMu.Unlock()
+	c.modelCache = nil
+	c.modelErr = nil
+	c.modelLoaded = false
 }
 
 // buildContents translates the provider-neutral conversation history into

@@ -144,6 +144,12 @@ type MessageChunk struct {
 	Err        error
 }
 
+// ModelInfo describes an available model from a provider.
+type ModelInfo struct {
+	Name        string // model ID used in API calls (e.g. "gemini-2.0-flash", "claude-sonnet-4-6")
+	DisplayName string // human-readable name (e.g. "Gemini 2.0 Flash")
+}
+
 // LLMClient is the provider-agnostic interface for interacting with an LLM API.
 type LLMClient interface {
 	// CreateMessage sends a single synchronous request and returns the complete
@@ -164,4 +170,12 @@ type LLMClient interface {
 	// or a descriptive error if not. Implementations may make a network call to
 	// fetch available models; results are cached for the lifetime of the process.
 	ValidateModelName(ctx context.Context, modelName string) error
+
+	// ListModels returns the models available from this provider. Results are
+	// cached; call InvalidateModelCache to force a refresh on the next call.
+	ListModels(ctx context.Context) ([]ModelInfo, error)
+
+	// InvalidateModelCache clears any cached model list so the next call to
+	// ListModels or ValidateModelName fetches fresh data from the API.
+	InvalidateModelCache()
 }

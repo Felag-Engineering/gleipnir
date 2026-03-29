@@ -13,7 +13,7 @@ import (
 
 // NewRouter returns a chi.Router with sub-routers for /policies and /mcp.
 // Mount this under /api/v1/ in main.go.
-func NewRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry) chi.Router {
+func NewRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister ModelLister) chi.Router {
 	r := chi.NewRouter()
 	r.Use(BodySizeLimit(MaxRequestBodySize))
 
@@ -32,6 +32,10 @@ func NewRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry) chi
 		r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Put("/{id}", policies.Update)
 		r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Delete("/{id}", policies.Delete)
 	})
+
+	modelsH := NewModelsHandler(modelLister)
+	r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/models", modelsH.List)
+	r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/models/refresh", modelsH.Refresh)
 
 	r.Route("/mcp", func(r chi.Router) {
 		r.Use(RequireJSON)

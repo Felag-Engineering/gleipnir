@@ -1072,3 +1072,81 @@ func TestAnthropicClient_ValidateModelName_CachesResult(t *testing.T) {
 		t.Errorf("models list API called %d times, want 1 (cache not working)", callCount)
 	}
 }
+
+func TestAnthropicClient_ListModels(t *testing.T) {
+	availableModels := []string{"claude-sonnet-4-6", "claude-opus-4-0"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(modelsListJSON(availableModels))) //nolint:errcheck
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	models, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(models))
+	}
+	// Results are sorted by name.
+	if models[0].Name != "claude-opus-4-0" {
+		t.Errorf("models[0].Name = %q, want %q", models[0].Name, "claude-opus-4-0")
+	}
+	if models[1].Name != "claude-sonnet-4-6" {
+		t.Errorf("models[1].Name = %q, want %q", models[1].Name, "claude-sonnet-4-6")
+	}
+	// Anthropic has no separate display name; Name is used for both.
+	if models[0].DisplayName != models[0].Name {
+		t.Errorf("expected DisplayName == Name for Anthropic, got %q", models[0].DisplayName)
+	}
+}
+
+func TestAnthropicClient_InvalidateModelCache(t *testing.T) {
+	callCount := 0
+	availableModels := []string{"claude-sonnet-4-6"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			callCount++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(modelsListJSON(availableModels))) //nolint:errcheck
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server)
+	ctx := context.Background()
+
+	// First call populates cache.
+	if _, err := client.ListModels(ctx); err != nil {
+		t.Fatalf("first ListModels: %v", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 API call, got %d", callCount)
+	}
+
+	// Second call uses cache.
+	if _, err := client.ListModels(ctx); err != nil {
+		t.Fatalf("second ListModels: %v", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected still 1 API call (cached), got %d", callCount)
+	}
+
+	// Invalidate and call again — should re-fetch.
+	client.InvalidateModelCache()
+	if _, err := client.ListModels(ctx); err != nil {
+		t.Fatalf("third ListModels: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 API calls after invalidation, got %d", callCount)
+	}
+}

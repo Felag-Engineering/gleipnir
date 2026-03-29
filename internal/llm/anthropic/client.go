@@ -47,12 +47,10 @@ var _ llm.LLMClient = (*AnthropicClient)(nil)
 type AnthropicClient struct {
 	client *anthropic.Client
 
-	// modelCacheOnce guards the one-time population of modelCache.
-	modelCacheOnce sync.Once
-	// modelCache holds the set of model IDs returned by the API on first call.
-	// nil means the API call failed; the error is stored in modelCacheErr.
-	modelCache    map[string]bool
-	modelCacheErr error
+	modelMu     sync.RWMutex
+	modelCache  map[string]bool
+	modelErr    error
+	modelLoaded bool
 }
 
 // NewClient constructs an AnthropicClient with the given API key.
@@ -170,32 +168,43 @@ func (c *AnthropicClient) ValidateOptions(options map[string]any) error {
 }
 
 // fetchModels calls the Anthropic Models API and populates modelCache.
-// It is called at most once per process lifetime via modelCacheOnce.
+// It is a no-op if the cache is already loaded.
 func (c *AnthropicClient) fetchModels(ctx context.Context) {
-	c.modelCacheOnce.Do(func() {
-		pager := c.client.Models.ListAutoPaging(ctx, anthropic.ModelListParams{})
-		cache := make(map[string]bool)
-		for pager.Next() {
-			cache[pager.Current().ID] = true
-		}
-		if err := pager.Err(); err != nil {
-			c.modelCacheErr = fmt.Errorf("anthropic: fetching available models: %w", err)
-			return
-		}
-		c.modelCache = cache
-	})
+	c.modelMu.Lock()
+	defer c.modelMu.Unlock()
+
+	if c.modelLoaded {
+		return
+	}
+
+	pager := c.client.Models.ListAutoPaging(ctx, anthropic.ModelListParams{})
+	cache := make(map[string]bool)
+	for pager.Next() {
+		cache[pager.Current().ID] = true
+	}
+	if err := pager.Err(); err != nil {
+		c.modelErr = fmt.Errorf("anthropic: fetching available models: %w", err)
+		c.modelLoaded = true
+		return
+	}
+	c.modelCache = cache
+	c.modelErr = nil
+	c.modelLoaded = true
 }
 
 // ValidateModelName returns nil if modelName is recognized by the Anthropic
 // Models API, or a descriptive error if not. The model list is fetched from
-// the API on the first call and cached for the lifetime of the process.
+// the API on the first call and cached until InvalidateModelCache is called.
 // If the API call fails, an error describing the failure is returned so the
 // caller can treat it as a non-blocking warning.
 func (c *AnthropicClient) ValidateModelName(ctx context.Context, modelName string) error {
 	c.fetchModels(ctx)
 
-	if c.modelCacheErr != nil {
-		return fmt.Errorf("could not validate model name: %w", c.modelCacheErr)
+	c.modelMu.RLock()
+	defer c.modelMu.RUnlock()
+
+	if c.modelErr != nil {
+		return fmt.Errorf("could not validate model name: %w", c.modelErr)
 	}
 
 	if c.modelCache[modelName] {
@@ -208,6 +217,36 @@ func (c *AnthropicClient) ValidateModelName(ctx context.Context, modelName strin
 	}
 	sort.Strings(known)
 	return fmt.Errorf("unknown Anthropic model %q; known models: %s", modelName, strings.Join(known, ", "))
+}
+
+// ListModels returns the models available from the Anthropic API. Results are
+// cached; call InvalidateModelCache to force a refresh on the next call.
+func (c *AnthropicClient) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+	c.fetchModels(ctx)
+
+	c.modelMu.RLock()
+	defer c.modelMu.RUnlock()
+
+	if c.modelErr != nil {
+		return nil, c.modelErr
+	}
+
+	models := make([]llm.ModelInfo, 0, len(c.modelCache))
+	for name := range c.modelCache {
+		models = append(models, llm.ModelInfo{Name: name, DisplayName: name})
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
+	return models, nil
+}
+
+// InvalidateModelCache clears the cached model list so the next call to
+// ListModels or ValidateModelName fetches fresh data from the API.
+func (c *AnthropicClient) InvalidateModelCache() {
+	c.modelMu.Lock()
+	defer c.modelMu.Unlock()
+	c.modelCache = nil
+	c.modelErr = nil
+	c.modelLoaded = false
 }
 
 // resolveMaxTokens determines the effective max_tokens for a request.
