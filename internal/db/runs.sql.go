@@ -92,15 +92,6 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 	return i, err
 }
 
-const deleteRunsByPolicy = `-- name: DeleteRunsByPolicy :exec
-DELETE FROM runs WHERE policy_id = ?1
-`
-
-func (q *Queries) DeleteRunsByPolicy(ctx context.Context, policyID string) error {
-	_, err := q.db.ExecContext(ctx, deleteRunsByPolicy, policyID)
-	return err
-}
-
 const getRun = `-- name: GetRun :one
 SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs WHERE id = ?1
 `
@@ -486,86 +477,6 @@ func (q *Queries) ListRunsByDurationDesc(ctx context.Context, arg ListRunsByDura
 	return items, nil
 }
 
-const listRunsByPolicy = `-- name: ListRunsByPolicy :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs WHERE policy_id = ?1 ORDER BY created_at DESC
-`
-
-func (q *Queries) ListRunsByPolicy(ctx context.Context, policyID string) ([]Run, error) {
-	rows, err := q.db.QueryContext(ctx, listRunsByPolicy, policyID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Run
-	for rows.Next() {
-		var i Run
-		if err := rows.Scan(
-			&i.ID,
-			&i.PolicyID,
-			&i.Status,
-			&i.TriggerType,
-			&i.TriggerPayload,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.TokenCost,
-			&i.Error,
-			&i.ThreadID,
-			&i.CreatedAt,
-			&i.SystemPrompt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listRunsByStatus = `-- name: ListRunsByStatus :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs WHERE status = ?1 ORDER BY created_at ASC
-`
-
-func (q *Queries) ListRunsByStatus(ctx context.Context, status string) ([]Run, error) {
-	rows, err := q.db.QueryContext(ctx, listRunsByStatus, status)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Run
-	for rows.Next() {
-		var i Run
-		if err := rows.Scan(
-			&i.ID,
-			&i.PolicyID,
-			&i.Status,
-			&i.TriggerType,
-			&i.TriggerPayload,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.TokenCost,
-			&i.Error,
-			&i.ThreadID,
-			&i.CreatedAt,
-			&i.SystemPrompt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listRunsByTokenCostAsc = `-- name: ListRunsByTokenCostAsc :many
 SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs
 WHERE (?1 IS NULL OR policy_id = ?1)
@@ -690,81 +601,6 @@ func (q *Queries) ListRunsByTokenCostDesc(ctx context.Context, arg ListRunsByTok
 	return items, nil
 }
 
-const listRunsWithPolicyName = `-- name: ListRunsWithPolicyName :many
-SELECT r.id, r.policy_id, r.status, r.trigger_type, r.trigger_payload, r.started_at, r.completed_at, r.token_cost, r.error, r.thread_id, r.created_at, r.system_prompt, COALESCE(p.name, '') AS policy_name
-FROM runs r
-LEFT JOIN policies p ON r.policy_id = p.id
-WHERE (?1 IS NULL OR r.policy_id = ?1)
-  AND (?2 IS NULL OR r.status = ?2)
-ORDER BY r.created_at DESC
-LIMIT ?4 OFFSET ?3
-`
-
-type ListRunsWithPolicyNameParams struct {
-	PolicyID interface{} `json:"policy_id"`
-	Status   interface{} `json:"status"`
-	Offset   int64       `json:"offset"`
-	Limit    int64       `json:"limit"`
-}
-
-type ListRunsWithPolicyNameRow struct {
-	ID             string  `json:"id"`
-	PolicyID       string  `json:"policy_id"`
-	Status         string  `json:"status"`
-	TriggerType    string  `json:"trigger_type"`
-	TriggerPayload string  `json:"trigger_payload"`
-	StartedAt      string  `json:"started_at"`
-	CompletedAt    *string `json:"completed_at"`
-	TokenCost      int64   `json:"token_cost"`
-	Error          *string `json:"error"`
-	ThreadID       *string `json:"thread_id"`
-	CreatedAt      string  `json:"created_at"`
-	SystemPrompt   *string `json:"system_prompt"`
-	PolicyName     string  `json:"policy_name"`
-}
-
-func (q *Queries) ListRunsWithPolicyName(ctx context.Context, arg ListRunsWithPolicyNameParams) ([]ListRunsWithPolicyNameRow, error) {
-	rows, err := q.db.QueryContext(ctx, listRunsWithPolicyName,
-		arg.PolicyID,
-		arg.Status,
-		arg.Offset,
-		arg.Limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListRunsWithPolicyNameRow
-	for rows.Next() {
-		var i ListRunsWithPolicyNameRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.PolicyID,
-			&i.Status,
-			&i.TriggerType,
-			&i.TriggerPayload,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.TokenCost,
-			&i.Error,
-			&i.ThreadID,
-			&i.CreatedAt,
-			&i.SystemPrompt,
-			&i.PolicyName,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const sumTokensLast24Hours = `-- name: SumTokensLast24Hours :one
 SELECT CAST(COALESCE(SUM(token_cost), 0) AS INTEGER) FROM runs WHERE created_at >= ?1
 `
@@ -823,21 +659,5 @@ type UpdateRunSystemPromptParams struct {
 
 func (q *Queries) UpdateRunSystemPrompt(ctx context.Context, arg UpdateRunSystemPromptParams) error {
 	_, err := q.db.ExecContext(ctx, updateRunSystemPrompt, arg.SystemPrompt, arg.ID)
-	return err
-}
-
-const updateRunThreadID = `-- name: UpdateRunThreadID :exec
-UPDATE runs SET thread_id = ?1 WHERE id = ?2
-`
-
-type UpdateRunThreadIDParams struct {
-	ThreadID *string `json:"thread_id"`
-	ID       string  `json:"id"`
-}
-
-// UpdateRunThreadID: populated once when the first approval notification creates
-// a Slack thread (see EPIC-010). Must only be called on a run without a thread_id.
-func (q *Queries) UpdateRunThreadID(ctx context.Context, arg UpdateRunThreadIDParams) error {
-	_, err := q.db.ExecContext(ctx, updateRunThreadID, arg.ThreadID, arg.ID)
 	return err
 }

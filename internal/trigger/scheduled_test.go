@@ -122,9 +122,9 @@ func TestScheduler_SkipsPastTimestampsOnStartup(t *testing.T) {
 	// Give the scheduler a moment — no goroutines should fire for past times.
 	time.Sleep(100 * time.Millisecond)
 
-	runs, err := store.ListRunsByPolicy(ctx, "pol-past")
+	runs, err := store.ListRuns(ctx, db.ListRunsParams{PolicyID: "pol-past", Limit: 100})
 	if err != nil {
-		t.Fatalf("ListRunsByPolicy: %v", err)
+		t.Fatalf("ListRuns: %v", err)
 	}
 	if len(runs) != 0 {
 		t.Errorf("expected 0 runs for past-only scheduled policy, got %d", len(runs))
@@ -155,9 +155,9 @@ func TestScheduler_FiresFutureTimestamp(t *testing.T) {
 
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		runs, err := store.ListRunsByPolicy(ctx, "pol-future")
+		runs, err := store.ListRuns(ctx, db.ListRunsParams{PolicyID: "pol-future", Limit: 100})
 		if err != nil {
-			t.Fatalf("ListRunsByPolicy: %v", err)
+			t.Fatalf("ListRuns: %v", err)
 		}
 		if len(runs) > 0 {
 			return // success
@@ -236,9 +236,9 @@ func TestScheduler_DeduplicatesAlreadyFiredTime(t *testing.T) {
 	// Let the timer fire and dedup logic run.
 	time.Sleep(3 * time.Second)
 
-	runs, err := store.ListRunsByPolicy(context.Background(), "pol-dedup")
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "pol-dedup", Limit: 100})
 	if err != nil {
-		t.Fatalf("ListRunsByPolicy: %v", err)
+		t.Fatalf("ListRuns: %v", err)
 	}
 	// Only the pre-inserted run; no duplicate.
 	if len(runs) != 1 {

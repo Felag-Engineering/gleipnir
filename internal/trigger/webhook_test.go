@@ -296,9 +296,9 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		var err error
-		runs, err = store.ListRunsByPolicy(context.Background(), "p-run-created")
+		runs, err = store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "p-run-created", Limit: 100})
 		if err != nil {
-			t.Fatalf("ListRunsByPolicy: %v", err)
+			t.Fatalf("ListRuns: %v", err)
 		}
 		if len(runs) > 0 {
 			break

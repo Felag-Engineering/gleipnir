@@ -706,12 +706,15 @@ func TestRunQueries(t *testing.T) {
 		t.Fatalf("CreateRun run2: %v", err)
 	}
 
-	runs, err := s.ListRunsByPolicy(ctx, "pol1")
+	allRuns, err := s.ListRuns(ctx, ListRunsParams{
+		PolicyID: "pol1",
+		Limit:    100,
+	})
 	if err != nil {
-		t.Fatalf("ListRunsByPolicy: %v", err)
+		t.Fatalf("ListRuns by policy: %v", err)
 	}
-	if len(runs) != 2 {
-		t.Errorf("ListRunsByPolicy: got %d, want 2", len(runs))
+	if len(allRuns) != 2 {
+		t.Errorf("ListRuns by policy: got %d, want 2", len(allRuns))
 	}
 
 	if err := s.UpdateRunStatus(ctx, UpdateRunStatusParams{
@@ -782,9 +785,12 @@ func TestRunQueries(t *testing.T) {
 		t.Error("UpdateRunError: completed_at is nil")
 	}
 
-	completeRuns, err := s.ListRunsByStatus(ctx, "complete")
+	completeRuns, err := s.ListRuns(ctx, ListRunsParams{
+		Status: "complete",
+		Limit:  100,
+	})
 	if err != nil {
-		t.Fatalf("ListRunsByStatus complete: %v", err)
+		t.Fatalf("ListRuns by status complete: %v", err)
 	}
 	found := false
 	for _, r := range completeRuns {
@@ -793,12 +799,15 @@ func TestRunQueries(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("run1 not found in ListRunsByStatus('complete')")
+		t.Error("run1 not found in ListRuns status=complete")
 	}
 
-	pendingRuns, err := s.ListRunsByStatus(ctx, "pending")
+	pendingRuns, err := s.ListRuns(ctx, ListRunsParams{
+		Status: "pending",
+		Limit:  100,
+	})
 	if err != nil {
-		t.Fatalf("ListRunsByStatus pending: %v", err)
+		t.Fatalf("ListRuns by status pending: %v", err)
 	}
 	foundFirst := false
 	foundSecond := false
@@ -811,26 +820,10 @@ func TestRunQueries(t *testing.T) {
 		}
 	}
 	if foundFirst {
-		t.Error("run1 (complete) should not appear in ListRunsByStatus('pending')")
+		t.Error("run1 (complete) should not appear in ListRuns status=pending")
 	}
 	if !foundSecond {
-		t.Error("run2 not found in ListRunsByStatus('pending')")
-	}
-
-	// UpdateRunThreadID is written once when the first Slack notification is posted.
-	threadID := "1234567890.123456"
-	if err := s.UpdateRunThreadID(ctx, UpdateRunThreadIDParams{
-		ThreadID: &threadID,
-		ID:       "run1",
-	}); err != nil {
-		t.Fatalf("UpdateRunThreadID: %v", err)
-	}
-	got, err = s.GetRun(ctx, "run1")
-	if err != nil {
-		t.Fatalf("GetRun after UpdateRunThreadID: %v", err)
-	}
-	if got.ThreadID == nil || *got.ThreadID != threadID {
-		t.Errorf("ThreadID after update: got %v, want %q", got.ThreadID, threadID)
+		t.Error("run2 not found in ListRuns status=pending")
 	}
 }
 

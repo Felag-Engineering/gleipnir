@@ -12,5 +12,3 @@ SELECT COUNT(*) FROM run_steps WHERE run_id = :run_id;
 -- name: GetLatestRunStep :one
 SELECT * FROM run_steps WHERE run_id = :run_id ORDER BY step_number DESC LIMIT 1;
 
--- name: DeleteRunStepsByPolicyRuns :exec
-DELETE FROM run_steps WHERE run_id IN (SELECT id FROM runs WHERE policy_id = :policy_id);

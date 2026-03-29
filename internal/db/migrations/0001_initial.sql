@@ -1,11 +1,6 @@
 -- Gleipnir — Initial Schema
 -- Migration: 0001
 -- Applied by: startup migration runner on first boot
--- Note: 'manual' was added to trigger_type CHECK constraints retroactively
--- alongside migration 0002 (0002_add_manual_trigger.sql), which handles
--- the same change for existing databases via a table-rebuild.
--- Note: 'scheduled' and paused_at were added retroactively alongside
--- migration 0004 (0004_add_scheduled_trigger.sql).
 --
 -- Design decisions:
 --   ADR-002: Policy-as-YAML stored in DB. name and trigger_type as columns for
@@ -75,7 +70,7 @@ CREATE INDEX idx_mcp_tools_server_id ON mcp_tools(server_id);
 CREATE TABLE policies (
     id              TEXT    PRIMARY KEY,  -- ULID
     name            TEXT    NOT NULL UNIQUE,
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll', 'manual', 'scheduled')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled')),
     yaml            TEXT    NOT NULL,
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     updated_at      TEXT    NOT NULL,     -- ISO 8601 UTC
@@ -102,7 +97,7 @@ CREATE INDEX idx_policies_trigger_type ON policies(trigger_type);
 
 CREATE TABLE runs (
     id              TEXT    PRIMARY KEY,  -- ULID
-    policy_id       TEXT    NOT NULL REFERENCES policies(id),
+    policy_id       TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
     status          TEXT    NOT NULL CHECK(status IN (
                         'pending',
                         'running',
@@ -111,7 +106,7 @@ CREATE TABLE runs (
                         'failed',
                         'interrupted'
                     )),
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'cron', 'poll', 'manual', 'scheduled')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled')),
     trigger_payload TEXT    NOT NULL,     -- JSON blob
     started_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     completed_at    TEXT,                 -- nullable, ISO 8601 UTC
@@ -122,8 +117,10 @@ CREATE TABLE runs (
     system_prompt   TEXT                  -- nullable, rendered system prompt at run start
 );
 
-CREATE INDEX idx_runs_policy_id  ON runs(policy_id);
-CREATE INDEX idx_runs_status     ON runs(status);
+CREATE INDEX idx_runs_status         ON runs(status);
+CREATE INDEX idx_runs_created_at     ON runs(created_at DESC);
+CREATE INDEX idx_runs_policy_created ON runs(policy_id, created_at DESC);
+CREATE INDEX idx_runs_policy_status  ON runs(policy_id, status);
 
 -- ---------------------------------------------------------------------------
 -- Run steps
@@ -156,7 +153,7 @@ CREATE INDEX idx_runs_status     ON runs(status);
 
 CREATE TABLE run_steps (
     id          TEXT    PRIMARY KEY,  -- ULID
-    run_id      TEXT    NOT NULL REFERENCES runs(id),
+    run_id      TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     step_number INTEGER NOT NULL,
     type        TEXT    NOT NULL CHECK(type IN (
                     'capability_snapshot',
@@ -175,7 +172,7 @@ CREATE TABLE run_steps (
     UNIQUE(run_id, step_number)
 );
 
-CREATE INDEX idx_run_steps_run_id ON run_steps(run_id);
+CREATE INDEX idx_run_steps_run_step ON run_steps(run_id, step_number);
 
 -- ---------------------------------------------------------------------------
 -- Approval requests
@@ -195,7 +192,7 @@ CREATE INDEX idx_run_steps_run_id ON run_steps(run_id);
 
 CREATE TABLE approval_requests (
     id                TEXT    PRIMARY KEY,  -- ULID
-    run_id            TEXT    NOT NULL REFERENCES runs(id),
+    run_id            TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     tool_name         TEXT    NOT NULL,
     proposed_input    TEXT    NOT NULL,     -- JSON blob
     reasoning_summary TEXT    NOT NULL,
@@ -211,8 +208,10 @@ CREATE TABLE approval_requests (
     created_at        TEXT    NOT NULL      -- ISO 8601 UTC
 );
 
-CREATE INDEX idx_approval_requests_run_id ON approval_requests(run_id);
-CREATE INDEX idx_approval_requests_status ON approval_requests(status);
+CREATE INDEX idx_approval_requests_run_id         ON approval_requests(run_id);
+CREATE INDEX idx_approval_requests_status         ON approval_requests(status);
+CREATE INDEX idx_approval_requests_status_expires ON approval_requests(status, expires_at);
+CREATE INDEX idx_approval_requests_run_pending    ON approval_requests(run_id, status);
 
 -- ---------------------------------------------------------------------------
 -- Users
@@ -244,7 +243,6 @@ CREATE TABLE sessions (
     expires_at  TEXT    NOT NULL      -- ISO 8601 UTC
 );
 
-CREATE INDEX idx_sessions_token      ON sessions(token);
 CREATE INDEX idx_sessions_user_id    ON sessions(user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 
@@ -262,20 +260,8 @@ CREATE TABLE user_roles (
     PRIMARY KEY (user_id, role)
 );
 
-CREATE INDEX idx_user_roles_user_id ON user_roles(user_id);
-
 -- ---------------------------------------------------------------------------
 -- Seed migration version
 -- ---------------------------------------------------------------------------
 
--- Seed all migration versions that are baked into this initial schema.
--- This prevents the migration runner from attempting to apply earlier
--- migrations on a fresh install (they are already incorporated here).
 INSERT INTO schema_migrations(version, applied_at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
-INSERT INTO schema_migrations(version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
-INSERT INTO schema_migrations(version, applied_at) VALUES (3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
-INSERT INTO schema_migrations(version, applied_at) VALUES (4, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
-INSERT INTO schema_migrations(version, applied_at) VALUES (5, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
-INSERT INTO schema_migrations(version, applied_at) VALUES (6, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
-INSERT INTO schema_migrations(version, applied_at) VALUES (7, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
-INSERT INTO schema_migrations(version, applied_at) VALUES (8, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));

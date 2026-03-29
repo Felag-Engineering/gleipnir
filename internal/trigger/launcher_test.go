@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/agent"
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
@@ -132,9 +133,9 @@ agent:
 	}
 
 	// The run should exist in DB and be marked failed.
-	runs, err := store.ListRunsByPolicy(context.Background(), "p-tool-fail")
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "p-tool-fail", Limit: 100})
 	if err != nil {
-		t.Fatalf("ListRunsByPolicy: %v", err)
+		t.Fatalf("ListRuns: %v", err)
 	}
 	if len(runs) == 0 {
 		t.Fatal("expected run to be created before failure, got 0 runs")
@@ -181,9 +182,9 @@ agent:
 	}
 
 	// The run should exist in DB and be marked failed.
-	runs, err := store.ListRunsByPolicy(context.Background(), "p-agent-fail")
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "p-agent-fail", Limit: 100})
 	if err != nil {
-		t.Fatalf("ListRunsByPolicy: %v", err)
+		t.Fatalf("ListRuns: %v", err)
 	}
 	if len(runs) == 0 {
 		t.Fatal("expected run to be created before failure, got 0 runs")
@@ -232,9 +233,9 @@ agent:
 	}
 
 	// Run must exist in the DB immediately (created synchronously before goroutine launches).
-	runs, err := store.ListRunsByPolicy(context.Background(), "p-launch-ok")
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "p-launch-ok", Limit: 100})
 	if err != nil {
-		t.Fatalf("ListRunsByPolicy: %v", err)
+		t.Fatalf("ListRuns: %v", err)
 	}
 	if len(runs) == 0 {
 		t.Fatal("expected run in DB after successful Launch, got 0")
@@ -253,7 +254,7 @@ agent:
 	// Wait for the background goroutine to finish so the test does not leak goroutines.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		updated, _ := store.ListRunsByPolicy(context.Background(), "p-launch-ok")
+		updated, _ := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "p-launch-ok", Limit: 100})
 		if len(updated) > 0 && updated[0].Status != string(model.RunStatusPending) {
 			break
 		}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -248,43 +247,9 @@ func (h *PolicyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Remove historical run data and the policy in a single transaction.
-	// FK constraints (no ON DELETE CASCADE) require manual cleanup in dependency
-	// order: approval_requests → run_steps → runs → policies.
-	// Active runs are already blocked by the 409 guard above.
-	tx, err := h.store.DB().BeginTx(r.Context(), nil)
-	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to begin transaction", err.Error())
-		return
-	}
-	defer func() {
-		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
-			slog.Error("rollback policy delete transaction failed",
-				"policy_id", id, "err", rbErr)
-		}
-	}()
-
-	qtx := h.store.Queries().WithTx(tx)
-
-	if err := qtx.DeleteApprovalRequestsByPolicyRuns(r.Context(), id); err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to delete approval requests", err.Error())
-		return
-	}
-	if err := qtx.DeleteRunStepsByPolicyRuns(r.Context(), id); err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to delete run steps", err.Error())
-		return
-	}
-	if err := qtx.DeleteRunsByPolicy(r.Context(), id); err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to delete runs", err.Error())
-		return
-	}
-	if err := qtx.DeletePolicy(r.Context(), id); err != nil {
+	// ON DELETE CASCADE handles runs, run_steps, and approval_requests automatically.
+	if err := h.store.DeletePolicy(r.Context(), id); err != nil {
 		WriteError(w, http.StatusInternalServerError, "failed to delete policy", err.Error())
-		return
-	}
-
-	if err := tx.Commit(); err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to commit deletion", err.Error())
 		return
 	}
 

@@ -28,8 +28,5 @@ SELECT * FROM approval_requests
 WHERE run_id = :run_id AND status = 'pending'
 ORDER BY created_at ASC;
 
--- name: DeleteApprovalRequestsByPolicyRuns :exec
-DELETE FROM approval_requests WHERE run_id IN (SELECT id FROM runs WHERE policy_id = :policy_id);
-
 -- name: CountPendingApprovalRequests :one
 SELECT COUNT(*) FROM approval_requests WHERE status = 'pending';

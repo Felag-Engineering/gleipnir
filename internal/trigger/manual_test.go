@@ -186,9 +186,9 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 
 	// The run row is created synchronously before the goroutine launches,
 	// so we can query immediately without waiting.
-	runs, err := store.ListRunsByPolicy(context.Background(), "mp-run-created")
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "mp-run-created", Limit: 100})
 	if err != nil {
-		t.Fatalf("ListRunsByPolicy: %v", err)
+		t.Fatalf("ListRuns: %v", err)
 	}
 	if len(runs) == 0 {
 		t.Fatal("expected at least one run in DB after 202 response, got 0")
