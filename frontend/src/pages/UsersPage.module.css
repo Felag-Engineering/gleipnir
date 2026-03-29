@@ -273,7 +273,7 @@
 }
 
 .modalError {
-  composes: alertError from '../../styles/alerts.module.css';
+  composes: alertError from '../styles/alerts.module.css';
 }
 
 .modalActions {
