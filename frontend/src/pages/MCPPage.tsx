@@ -40,6 +40,7 @@ export default function MCPPage() {
       queryKey: queryKeys.servers.tools(server.id),
       queryFn: () => apiFetch<ApiMcpTool[]>(`/mcp/servers/${encodeURIComponent(server.id)}/tools`),
       enabled: Boolean(server.id),
+      staleTime: 30_000,
     })),
   })
 
@@ -59,7 +60,10 @@ export default function MCPPage() {
 
   // Compute stats from all loaded tools
   const allTools = Array.from(toolsByServer.values()).flat()
-  const toolsFullyLoaded = toolResults.every((r) => r.status !== 'pending')
+  // Show cached tool data immediately on re-navigation instead of showing
+  // dashes while a background refetch is in flight. Only show loading state
+  // when there is genuinely no data yet (first load).
+  const toolsFullyLoaded = toolResults.length === 0 || toolResults.every((r) => r.data !== undefined)
   const toolCount = allTools.filter((t) => t.capability_role === 'tool').length
   const feedback = allTools.filter((t) => t.capability_role === 'feedback').length
 

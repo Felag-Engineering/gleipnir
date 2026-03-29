@@ -8,5 +8,6 @@ export function useMcpTools(serverId: string) {
     queryKey: queryKeys.servers.tools(serverId),
     queryFn: () => apiFetch<ApiMcpTool[]>(`/mcp/servers/${encodeURIComponent(serverId)}/tools`),
     enabled: Boolean(serverId),
+    staleTime: 30_000,
   })
 }

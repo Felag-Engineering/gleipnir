@@ -194,7 +194,7 @@ describe('ToolsPage — stats bar', () => {
     expect(twos.length).toBeGreaterThan(0)
   })
 
-  it('shows dash placeholder while tool lists are loading', () => {
+  it('shows dash placeholder on initial load with no cached data', () => {
     vi.mocked(useMcpServers).mockReturnValue({
       data: [SERVER_1],
       status: 'success',
@@ -209,6 +209,26 @@ describe('ToolsPage — stats bar', () => {
 
     const dashes = screen.getAllByText('–')
     expect(dashes.length).toBeGreaterThan(0)
+  })
+
+  it('shows cached tool counts during background refetch instead of dashes', () => {
+    vi.mocked(useMcpServers).mockReturnValue({
+      data: [SERVER_1],
+      status: 'success',
+    } as ReturnType<typeof useMcpServers>)
+
+    // Simulate re-navigation: data is cached but query is refetching in background
+    vi.mocked(useQueries).mockReturnValue([
+      { data: [TOOL_1, TOOL_2], status: 'success' },
+    ] as ReturnType<typeof useQueries>)
+
+    mockNoopMutations()
+    renderPage()
+
+    // Stats should show actual counts, not dashes
+    const twos = screen.getAllByText('2')
+    expect(twos.length).toBeGreaterThan(0)
+    expect(screen.queryAllByText('–').length).toBe(0)
   })
 })
 

@@ -7,5 +7,6 @@ export function useMcpServers() {
   return useQuery({
     queryKey: queryKeys.servers.all,
     queryFn: () => apiFetch<ApiMcpServer[]>('/mcp/servers'),
+    staleTime: 30_000,
   })
 }
