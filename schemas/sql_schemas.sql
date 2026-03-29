@@ -121,6 +121,7 @@ CREATE INDEX idx_runs_policy_id      ON runs(policy_id);
 CREATE INDEX idx_runs_status         ON runs(status);
 CREATE INDEX idx_runs_created_at     ON runs(created_at DESC);
 CREATE INDEX idx_runs_policy_created ON runs(policy_id, created_at DESC);
+CREATE INDEX idx_runs_policy_status  ON runs(policy_id, status);
 
 -- ---------------------------------------------------------------------------
 -- Run steps
