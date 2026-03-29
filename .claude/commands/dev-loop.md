@@ -90,10 +90,25 @@ Pass it:
 Pass it:
 - The issue title and body
 - Instruction to read the plan from `.dev-loop/plan.md`
+- Instruction to read `CLAUDE.md` for project constraints and code style requirements
 - If this is a revision cycle: instruction to read accumulated feedback from `.dev-loop/review-feedback.md`
+- Emphasis that **code must be written for humans to read** — a developer unfamiliar with the codebase should be able to understand every function without external context. Readable and maintainable code is not optional.
 - Instruction to end its response with a **structured implementation summary** under a `## Implementation Summary` heading, listing: files changed, tests added/modified, and any deviations from the plan
 
 After the developer finishes, append its implementation summary to `.dev-loop/review-feedback.md` under a `## Cycle N — Implementation` heading.
+
+### Stage 5.5 — Test Gate
+
+Before entering code review, verify that the implementation compiles and tests pass. This avoids burning a review cycle on broken code.
+
+```bash
+go build ./...
+go test ./...
+```
+
+- **If both pass** → proceed to Stage 6.
+- **If either fails** → send the failure output back to the `developer` agent to fix, then re-run. This does NOT count as a review cycle.
+- **Maximum 2 fix attempts.** If it still fails after 2 attempts, proceed to Stage 6 anyway and let the reviewer see the full picture.
 
 ### Stage 6 — Code Review
 
@@ -102,8 +117,11 @@ After the developer finishes, append its implementation summary to `.dev-loop/re
 Pass it:
 - The issue title and body
 - Instruction to read the plan from `.dev-loop/plan.md`
+- Instruction to read `CLAUDE.md` for project constraints — the reviewer must verify each constraint
 - Instruction to read `.dev-loop/review-feedback.md` for prior cycle context
 - Instruction to run `git diff` and read modified files in full context
+- Instruction to systematically verify each planned change was implemented (plan compliance check)
+- Emphasis that **readability and maintainability are the highest priority** — code must be understandable by someone who has never seen the codebase
 
 **Decision point:**
 - If verdict is **APPROVE** → proceed to Stage 7
