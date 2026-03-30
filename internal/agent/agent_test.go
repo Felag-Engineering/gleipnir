@@ -1219,20 +1219,21 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 		t.Fatalf("tool-results user turn: want at least 2 content blocks, got %d", len(toolResultsTurn.Content))
 	}
 
-	// First block must be a TextBlock matching the timestamp pattern.
-	firstBlock, ok := toolResultsTurn.Content[0].(llm.TextBlock)
+	// First block must be a ToolResultBlock (Anthropic API requires tool_result
+	// blocks before text blocks in user messages).
+	if _, ok := toolResultsTurn.Content[0].(llm.ToolResultBlock); !ok {
+		t.Fatalf("content[0] type = %T, want llm.ToolResultBlock", toolResultsTurn.Content[0])
+	}
+
+	// Last block must be a TextBlock matching the timestamp pattern.
+	lastBlock, ok := toolResultsTurn.Content[len(toolResultsTurn.Content)-1].(llm.TextBlock)
 	if !ok {
-		t.Fatalf("content[0] type = %T, want llm.TextBlock", toolResultsTurn.Content[0])
+		t.Fatalf("content[last] type = %T, want llm.TextBlock", toolResultsTurn.Content[len(toolResultsTurn.Content)-1])
 	}
 	// RFC3339Nano may include fractional seconds, e.g. T12:34:56.123456789Z
 	timestampRE := regexp.MustCompile(`^\[Current time: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z\]$`)
-	if !timestampRE.MatchString(firstBlock.Text) {
-		t.Errorf("content[0].Text = %q, want to match %s", firstBlock.Text, timestampRE)
-	}
-
-	// Second block must be a ToolResultBlock.
-	if _, ok := toolResultsTurn.Content[1].(llm.ToolResultBlock); !ok {
-		t.Errorf("content[1] type = %T, want llm.ToolResultBlock", toolResultsTurn.Content[1])
+	if !timestampRE.MatchString(lastBlock.Text) {
+		t.Errorf("content[last].Text = %q, want to match %s", lastBlock.Text, timestampRE)
 	}
 }
 

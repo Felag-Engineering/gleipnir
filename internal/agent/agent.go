@@ -389,8 +389,8 @@ func (a *BoundAgent) runAPILoop(
 			Text: fmt.Sprintf("[Current time: %s]", time.Now().UTC().Format(config.TimestampFormat)),
 		}
 		userContent := make([]llm.ContentBlock, 0, 1+len(toolResultBlocks))
-		userContent = append(userContent, timeBlock)
 		userContent = append(userContent, toolResultBlocks...)
+		userContent = append(userContent, timeBlock)
 		history = append(history, llm.ConversationTurn{
 			Role:    llm.RoleUser,
 			Content: userContent,

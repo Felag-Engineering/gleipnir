@@ -309,3 +309,77 @@ func TestCrossProvider_MultiToolCallBatching(t *testing.T) {
 		t.Errorf("cross-provider step sequences differ:\n  anthropic: %v\n  google:    %v", seq1, seq2)
 	}
 }
+
+// TestToolResultBlocksBeforeTextInUserTurn verifies that when the agent builds
+// a user turn containing tool results and a time text block, the tool_result
+// blocks appear before any text blocks. The Anthropic API requires this ordering
+// and returns a 400 if a text block precedes tool_result blocks in a user message.
+func TestToolResultBlocksBeforeTextInUserTurn(t *testing.T) {
+	mcpSrv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"ok"}]`), false)
+
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	pol := minimalPolicy()
+
+	tools := []mcp.ResolvedTool{
+		toolForRun(mcpSrv.URL, "srv", "tool_a"),
+		toolForRun(mcpSrv.URL, "srv", "tool_b"),
+	}
+
+	mockClient := testutil.NewMockLLMClient(
+		testutil.MakeMultiToolCallResponse([]testutil.MockToolCall{
+			{ID: "call-a", Name: "srv.tool_a", Input: nil},
+			{ID: "call-b", Name: "srv.tool_b", Input: nil},
+		}),
+		testutil.MakeTextResponse("Done."),
+	)
+
+	ba, err := New(Config{
+		LLMClient:    mockClient,
+		Tools:        tools,
+		Policy:       pol,
+		Audit:        NewAuditWriter(s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := ba.Run(context.Background(), "r1", "use tools"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The second CreateMessage call should have the tool results turn in its history.
+	reqs := mockClient.Requests()
+	if len(reqs) < 2 {
+		t.Fatalf("expected at least 2 API calls, got %d", len(reqs))
+	}
+
+	// History on the second call: [user(trigger), assistant(tool_use), user(tool_results+time)]
+	history := reqs[1].History
+	if len(history) < 3 {
+		t.Fatalf("expected at least 3 turns in second request history, got %d", len(history))
+	}
+
+	// The third turn (index 2) is the user turn with tool results and the time block.
+	userTurn := history[2]
+	if userTurn.Role != llm.RoleUser {
+		t.Fatalf("expected user turn at index 2, got %s", userTurn.Role)
+	}
+
+	// Verify: all ToolResultBlocks must appear before any TextBlock.
+	seenText := false
+	for i, block := range userTurn.Content {
+		switch block.(type) {
+		case llm.TextBlock:
+			seenText = true
+		case llm.ToolResultBlock:
+			if seenText {
+				t.Errorf("ToolResultBlock at index %d appears after a TextBlock — "+
+					"Anthropic API requires tool_result blocks before text blocks in user messages", i)
+			}
+		}
+	}
+}
