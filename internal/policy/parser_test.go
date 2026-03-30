@@ -593,6 +593,73 @@ model:
 	})
 }
 
+func TestParse_QueueDepthDefault(t *testing.T) {
+	raw := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+  concurrency: queue
+`
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Agent.QueueDepth != model.DefaultQueueDepth {
+		t.Errorf("queue_depth = %d, want %d (default)", p.Agent.QueueDepth, model.DefaultQueueDepth)
+	}
+}
+
+func TestParse_QueueDepthExplicit(t *testing.T) {
+	raw := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+  concurrency: queue
+  queue_depth: 5
+`
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Agent.QueueDepth != 5 {
+		t.Errorf("queue_depth = %d, want 5", p.Agent.QueueDepth)
+	}
+}
+
+func TestParse_QueueDepthZeroUsesDefault(t *testing.T) {
+	// queue_depth: 0 means "use default" — consistent with how max_tokens/max_tool_calls
+	// handle zero values.
+	raw := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+  concurrency: queue
+  queue_depth: 0
+`
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Agent.QueueDepth != model.DefaultQueueDepth {
+		t.Errorf("queue_depth = %d, want %d (default for zero)", p.Agent.QueueDepth, model.DefaultQueueDepth)
+	}
+}
+
 func TestParse_CustomPreamble(t *testing.T) {
 	raw := `
 name: test

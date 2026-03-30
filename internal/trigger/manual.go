@@ -33,12 +33,14 @@ func NewManualTriggerHandler(store *db.Store, launcher *RunLauncher) *ManualTrig
 
 // Handle is the chi-compatible HTTP handler for manually-triggered runs.
 // Responds 202 Accepted with {"data": {"run_id": "..."}} on success.
+// Responds 202 Accepted with {"data": {"queued": true}} when enqueued (concurrency: queue).
 // The optional request body is passed as the trigger payload. An empty body
 // is treated as '{}'.
 // Responds 400 if the request body is not valid JSON.
 // Responds 404 if the policy does not exist.
 // Responds 409 if the concurrency policy is skip and a run is already active.
-// Responds 501 if the concurrency policy is queue or replace (not yet implemented).
+// Responds 429 if the trigger queue is full (concurrency: queue).
+// Responds 501 if the concurrency policy is replace (not yet implemented).
 func (h *ManualTriggerHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	policyID := chi.URLParam(r, "policyID")
 
@@ -80,6 +82,23 @@ func (h *ManualTriggerHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, ErrConcurrencySkipActive):
 			api.WriteError(w, http.StatusConflict, "run already active for this policy (concurrency: skip)", "")
+		case errors.Is(err, ErrConcurrencyQueueActive):
+			if enqErr := h.launcher.Enqueue(ctx, LaunchParams{
+				PolicyID:       policyID,
+				TriggerType:    model.TriggerTypeManual,
+				TriggerPayload: string(body),
+				ParsedPolicy:   parsed,
+			}, parsed.Agent.QueueDepth); enqErr != nil {
+				if errors.Is(enqErr, ErrConcurrencyQueueFull) {
+					api.WriteError(w, http.StatusTooManyRequests, "trigger queue is full", "")
+				} else {
+					slog.ErrorContext(ctx, "manual trigger: failed to enqueue trigger", "policy_id", policyID, "err", enqErr)
+					api.WriteError(w, http.StatusInternalServerError, "failed to enqueue trigger", "")
+				}
+				return
+			}
+			api.WriteJSON(w, http.StatusAccepted, map[string]any{"queued": true})
+			return
 		case errors.Is(err, ErrConcurrencyNotImplemented):
 			api.WriteError(w, http.StatusNotImplemented, "concurrency policy not implemented", "")
 		case errors.Is(err, ErrConcurrencyUnrecognised):

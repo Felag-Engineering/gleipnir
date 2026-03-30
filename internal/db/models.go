@@ -84,6 +84,15 @@ type Session struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
+type TriggerQueue struct {
+	ID             string `json:"id"`
+	PolicyID       string `json:"policy_id"`
+	TriggerType    string `json:"trigger_type"`
+	TriggerPayload string `json:"trigger_payload"`
+	Position       int64  `json:"position"`
+	CreatedAt      string `json:"created_at"`
+}
+
 type User struct {
 	ID            string  `json:"id"`
 	Username      string  `json:"username"`

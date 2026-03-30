@@ -202,3 +202,10 @@ agent:
   #   replace  — cancel the active run, start fresh with the new trigger
   #              (not valid if any actuator has approval: required)
   concurrency: skip
+
+  # queue_depth: integer — optional, default: 10
+  #   Maximum number of trigger payloads to hold in the queue when
+  #   concurrency is "queue". Triggers arriving when the queue is full
+  #   are rejected with 429 Too Many Requests. Ignored for other modes.
+  #   A value of 0 means "use default" (10).
+  queue_depth: 10

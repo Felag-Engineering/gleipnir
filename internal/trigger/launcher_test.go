@@ -50,9 +50,16 @@ func TestCheckConcurrency(t *testing.T) {
 			wantNil:     true,
 		},
 		{
-			name:        "queue returns ErrConcurrencyNotImplemented",
+			name:        "queue with active run returns ErrConcurrencyQueueActive",
+			hasActive:   true,
 			concurrency: model.ConcurrencyQueue,
-			wantErr:     trigger.ErrConcurrencyNotImplemented,
+			wantErr:     trigger.ErrConcurrencyQueueActive,
+		},
+		{
+			name:        "queue with no active run returns nil",
+			hasActive:   false,
+			concurrency: model.ConcurrencyQueue,
+			wantNil:     true,
 		},
 		{
 			name:        "replace returns ErrConcurrencyNotImplemented",
@@ -261,6 +268,248 @@ agent:
 		time.Sleep(50 * time.Millisecond)
 	}
 	manager.Wait()
+}
+
+func TestEnqueue(t *testing.T) {
+	const queuePolicyYAML = `
+name: enqueue-test-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: stub-server.read_data
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: queue
+  queue_depth: 2
+`
+	cases := []struct {
+		name           string
+		preloadEntries int
+		queueDepth     int
+		wantErr        error
+		wantNil        bool
+	}{
+		{
+			name:           "enqueues when under depth limit",
+			preloadEntries: 0,
+			queueDepth:     2,
+			wantNil:        true,
+		},
+		{
+			name:           "enqueues when one below limit",
+			preloadEntries: 1,
+			queueDepth:     2,
+			wantNil:        true,
+		},
+		{
+			name:           "returns ErrConcurrencyQueueFull when at limit",
+			preloadEntries: 2,
+			queueDepth:     2,
+			wantErr:        trigger.ErrConcurrencyQueueFull,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			insertTestPolicy(t, store, "p-enqueue", queuePolicyYAML)
+
+			for i := 0; i < tc.preloadEntries; i++ {
+				testutil.InsertQueueEntry(t, store, "p-enqueue", "webhook")
+			}
+
+			registry := mcp.NewRegistry(store.Queries())
+			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), nil, nil)
+
+			parsed, err := policy.Parse(queuePolicyYAML, model.DefaultProvider, model.DefaultModelName)
+			if err != nil {
+				t.Fatalf("policy.Parse: %v", err)
+			}
+
+			enqErr := launcher.Enqueue(context.Background(), trigger.LaunchParams{
+				PolicyID:       "p-enqueue",
+				TriggerType:    model.TriggerTypeWebhook,
+				TriggerPayload: `{"event":"queued"}`,
+				ParsedPolicy:   parsed,
+			}, tc.queueDepth)
+
+			if tc.wantNil {
+				if enqErr != nil {
+					t.Errorf("Enqueue() = %v, want nil", enqErr)
+				}
+			} else {
+				if !errors.Is(enqErr, tc.wantErr) {
+					t.Errorf("Enqueue() = %v, want %v", enqErr, tc.wantErr)
+				}
+			}
+		})
+	}
+}
+
+func TestDrainQueue(t *testing.T) {
+	t.Run("launches next queued trigger when queue is non-empty", func(t *testing.T) {
+		store, registry := setupIntegrationFixture(t)
+		const policyYAML = `
+name: drain-test-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: stub-server.read_data
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: queue
+`
+		insertTestPolicy(t, store, "p-drain", policyYAML)
+		testutil.InsertQueueEntry(t, store, "p-drain", "webhook")
+
+		manager := trigger.NewRunManager()
+		launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+
+		parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
+		if err != nil {
+			t.Fatalf("policy.Parse: %v", err)
+		}
+
+		launcher.DrainQueue(context.Background(), "p-drain", parsed)
+		manager.Wait()
+
+		runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "p-drain", Limit: 100})
+		if err != nil {
+			t.Fatalf("ListRuns: %v", err)
+		}
+		if len(runs) == 0 {
+			t.Fatal("DrainQueue: expected run to be created, got 0 runs")
+		}
+	})
+
+	t.Run("is a no-op when queue is empty", func(t *testing.T) {
+		store, registry := setupIntegrationFixture(t)
+		const policyYAML = `
+name: drain-empty-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: stub-server.read_data
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: queue
+`
+		insertTestPolicy(t, store, "p-drain-empty", policyYAML)
+
+		manager := trigger.NewRunManager()
+		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil)
+
+		parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
+		if err != nil {
+			t.Fatalf("policy.Parse: %v", err)
+		}
+
+		// Should not panic or return an error — queue is empty.
+		launcher.DrainQueue(context.Background(), "p-drain-empty", parsed)
+		manager.Wait()
+
+		runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "p-drain-empty", Limit: 100})
+		if err != nil {
+			t.Fatalf("ListRuns: %v", err)
+		}
+		if len(runs) != 0 {
+			t.Errorf("DrainQueue on empty queue: expected 0 runs, got %d", len(runs))
+		}
+	})
+
+	t.Run("re-enqueues entry at front when launch fails", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		// No MCP server registered, so ResolveForPolicy will fail and Launch will return an error.
+		registry := mcp.NewRegistry(store.Queries())
+		const policyYAML = `
+name: drain-fail-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: nonexistent-server.some_tool
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: queue
+`
+		insertTestPolicy(t, store, "p-drain-fail", policyYAML)
+		// Insert two entries: the first will fail to launch, the second stays.
+		testutil.InsertQueueEntry(t, store, "p-drain-fail", "webhook")
+		testutil.InsertQueueEntry(t, store, "p-drain-fail", "webhook")
+
+		manager := trigger.NewRunManager()
+		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil)
+
+		parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
+		if err != nil {
+			t.Fatalf("policy.Parse: %v", err)
+		}
+
+		launcher.DrainQueue(context.Background(), "p-drain-fail", parsed)
+
+		// Both entries should still be in the queue (one re-enqueued at front,
+		// one untouched).
+		count, err := store.CountQueuedTriggers(context.Background(), "p-drain-fail")
+		if err != nil {
+			t.Fatalf("CountQueuedTriggers: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("expected 2 entries (re-enqueued + original), got %d", count)
+		}
+
+		// The re-enqueued entry must be dequeued first (FIFO — front of queue).
+		front, err := store.DequeueTrigger(context.Background(), "p-drain-fail")
+		if err != nil {
+			t.Fatalf("DequeueTrigger: %v", err)
+		}
+		back, err := store.DequeueTrigger(context.Background(), "p-drain-fail")
+		if err != nil {
+			t.Fatalf("DequeueTrigger: %v", err)
+		}
+		if front.Position >= back.Position {
+			t.Errorf("re-enqueued entry position (%d) should be less than remaining entry (%d)",
+				front.Position, back.Position)
+		}
+	})
+
+	t.Run("logs error when dequeue fails with DB error", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		const policyYAML = `
+name: drain-dberr-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: stub-server.read_data
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: queue
+`
+		insertTestPolicy(t, store, "p-drain-dberr", policyYAML)
+
+		manager := trigger.NewRunManager()
+		registry := mcp.NewRegistry(store.Queries())
+		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil)
+
+		parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
+		if err != nil {
+			t.Fatalf("policy.Parse: %v", err)
+		}
+
+		// Close the DB to force a real error (not sql.ErrNoRows) from DequeueTrigger.
+		store.Close()
+
+		// Should not panic — errors are logged, not propagated.
+		launcher.DrainQueue(context.Background(), "p-drain-dberr", parsed)
+	})
 }
 
 // TestNewAgentFactory_ProviderLookup verifies that NewAgentFactory resolves the

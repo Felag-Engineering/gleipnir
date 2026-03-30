@@ -270,6 +270,10 @@ type ModelConfig struct {
 	Options  map[string]any `json:"options,omitempty"`
 }
 
+// DefaultQueueDepth is the maximum number of trigger payloads held in the queue
+// when concurrency is "queue" and the policy does not specify queue_depth.
+const DefaultQueueDepth = 10
+
 // AgentConfig holds the prompt fields and runtime limits for an agent run.
 type AgentConfig struct {
 	ModelConfig ModelConfig `json:"model_config"`
@@ -277,6 +281,7 @@ type AgentConfig struct {
 	Task        string
 	Limits      RunLimits
 	Concurrency ConcurrencyPolicy
+	QueueDepth  int
 }
 
 // RunLimits caps resource consumption for an agent run.

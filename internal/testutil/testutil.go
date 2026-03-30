@@ -109,6 +109,23 @@ func InsertApprovalRequest(tb testing.TB, s *db.Store, id, runID, toolName strin
 	}
 }
 
+// InsertQueueEntry inserts a trigger_queue row for the given policy and trigger type.
+// The payload is '{}' and position is computed automatically by the DB.
+func InsertQueueEntry(tb testing.TB, s *db.Store, policyID, triggerType string) {
+	tb.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.EnqueueTrigger(context.Background(), db.EnqueueTriggerParams{
+		ID:             model.NewULID(),
+		PolicyID:       policyID,
+		TriggerType:    triggerType,
+		TriggerPayload: "{}",
+		CreatedAt:      now,
+	})
+	if err != nil {
+		tb.Fatalf("InsertQueueEntry for policy %s: %v", policyID, err)
+	}
+}
+
 // InsertMcpServer inserts a minimal MCP server row.
 func InsertMcpServer(tb testing.TB, s *db.Store, id, name, url string) {
 	tb.Helper()

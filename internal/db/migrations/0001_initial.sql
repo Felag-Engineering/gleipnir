@@ -262,6 +262,29 @@ CREATE TABLE user_roles (
 );
 
 -- ---------------------------------------------------------------------------
+-- Trigger queue
+--
+-- Holds enqueued trigger payloads for policies with concurrency: queue.
+-- When a run is active, incoming triggers are appended here and dequeued
+-- (FIFO by position) when the active run reaches a terminal state.
+--
+-- position is MAX(position)+1 per policy — it grows monotonically and is
+-- never renumbered after dequeues. Harmless at small queue depths.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE trigger_queue (
+    id              TEXT    PRIMARY KEY,  -- ULID
+    policy_id       TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled')),
+    trigger_payload TEXT    NOT NULL,     -- JSON blob
+    position        INTEGER NOT NULL,     -- monotonically increasing per-policy ordering
+    created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
+    UNIQUE(policy_id, position)
+);
+
+CREATE INDEX idx_trigger_queue_policy_position ON trigger_queue(policy_id, position);
+
+-- ---------------------------------------------------------------------------
 -- Seed migration version
 -- ---------------------------------------------------------------------------
 

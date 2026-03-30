@@ -179,6 +179,21 @@ func TestValidate_ScheduledTriggerEmptyFireAt(t *testing.T) {
 	assertValidationContains(t, p, "trigger.fire_at is required")
 }
 
+func TestValidate_NegativeQueueDepth(t *testing.T) {
+	p := validPolicy()
+	p.Agent.QueueDepth = -1
+	assertValidationContains(t, p, "agent.queue_depth must not be negative")
+}
+
+func TestValidate_ZeroQueueDepthIsValid(t *testing.T) {
+	// queue_depth: 0 is treated as "use default" by the parser, not rejected by the validator.
+	p := validPolicy()
+	p.Agent.QueueDepth = 0
+	if err := Validate(p); err != nil {
+		t.Errorf("expected queue_depth 0 to be valid (means use default), got: %v", err)
+	}
+}
+
 func assertValidationContains(t *testing.T, p *model.ParsedPolicy, substr string) {
 	t.Helper()
 	err := Validate(p)

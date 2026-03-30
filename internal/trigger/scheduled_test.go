@@ -324,9 +324,55 @@ func TestScheduler_ConcurrencySkip_ProceedsWhenIdle(t *testing.T) {
 	t.Error("expected a run to be created for skip policy with no active runs, but none appeared")
 }
 
-// TestScheduler_ConcurrencyQueue_SkipsNotImplemented verifies that a scheduled
-// trigger with concurrency: queue (not yet implemented) does not launch a run.
-func TestScheduler_ConcurrencyQueue_SkipsNotImplemented(t *testing.T) {
+// TestScheduler_ConcurrencyQueue_EnqueuesWhenActive verifies that a scheduled
+// trigger with concurrency: queue enqueues the trigger when an active run exists.
+func TestScheduler_ConcurrencyQueue_EnqueuesWhenActive(t *testing.T) {
+	store, registry := setupSchedulerFixture(t)
+
+	future := time.Now().Add(2 * time.Second)
+	yaml := scheduledPolicyYAMLWithConcurrency("queue-active-policy", []time.Time{future}, "queue")
+	insertTestScheduledPolicy(t, store, "pol-queue-active", "queue-active-policy", yaml)
+
+	// Insert an active (running) run so the concurrency check triggers enqueue.
+	insertTestRun(t, store, "r-active-queue", "pol-queue-active", model.RunStatusRunning)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	manager := trigger.NewRunManager()
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	scheduler := trigger.NewScheduler(store, launcher)
+
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for the timer to fire and the trigger to be enqueued.
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		count, err := store.CountQueuedTriggers(context.Background(), "pol-queue-active")
+		if err != nil {
+			t.Fatalf("CountQueuedTriggers: %v", err)
+		}
+		if count > 0 {
+			// Verify no new run was created (only the pre-existing active run).
+			runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "pol-queue-active", Limit: 100})
+			if err != nil {
+				t.Fatalf("ListRuns: %v", err)
+			}
+			if len(runs) != 1 {
+				t.Errorf("expected 1 run (pre-existing active), got %d", len(runs))
+			}
+			return // success — trigger was enqueued
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Error("expected trigger to be enqueued for queue policy with active run, but queue remained empty")
+}
+
+// TestScheduler_ConcurrencyQueue_LaunchesWhenIdle verifies that a scheduled
+// trigger with concurrency: queue fires a run when no active run exists.
+func TestScheduler_ConcurrencyQueue_LaunchesWhenIdle(t *testing.T) {
 	store, registry := setupSchedulerFixture(t)
 
 	future := time.Now().Add(2 * time.Second)
@@ -344,15 +390,18 @@ func TestScheduler_ConcurrencyQueue_SkipsNotImplemented(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Wait for the timer to fire.
-	time.Sleep(4 * time.Second)
-
-	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "pol-queue", Limit: 100})
-	if err != nil {
-		t.Fatalf("ListRuns: %v", err)
+	// Wait for the timer to fire and the run to be created.
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "pol-queue", Limit: 100})
+		if err != nil {
+			t.Fatalf("ListRuns: %v", err)
+		}
+		if len(runs) > 0 {
+			manager.Wait()
+			return // success — run was created and launched
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	// No run should be created because queue returns ErrConcurrencyNotImplemented.
-	if len(runs) != 0 {
-		t.Errorf("expected 0 runs for queue concurrency (not implemented), got %d", len(runs))
-	}
+	t.Error("expected a run to be created for queue policy with no active runs, but none appeared")
 }

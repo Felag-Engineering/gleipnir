@@ -92,6 +92,12 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 		return
 	}
 
+	// json.Marshal on a map[string]string with a string value cannot fail,
+	// so the error is safe to ignore here.
+	payload, _ := json.Marshal(map[string]string{
+		"scheduled_for": fireTime.UTC().Format(config.TimestampFormat),
+	})
+
 	// Enforce concurrency policy before launching, consistent with webhook and
 	// manual triggers. All non-nil errors prevent the run from firing.
 	if err := s.launcher.CheckConcurrency(ctx, policyID, parsed.Agent.Concurrency); err != nil {
@@ -99,6 +105,28 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 		case errors.Is(err, ErrConcurrencySkipActive):
 			slog.Info("scheduled: skipping fire, active run exists (concurrency: skip)",
 				"policy_id", policyID, "fire_at", fireTime)
+		case errors.Is(err, ErrConcurrencyQueueActive):
+			if enqErr := s.launcher.Enqueue(ctx, LaunchParams{
+				PolicyID:       policyID,
+				TriggerType:    model.TriggerTypeScheduled,
+				TriggerPayload: string(payload),
+				ParsedPolicy:   parsed,
+			}, parsed.Agent.QueueDepth); enqErr != nil {
+				if errors.Is(enqErr, ErrConcurrencyQueueFull) {
+					slog.Warn("scheduled: trigger queue is full",
+						"policy_id", policyID, "fire_at", fireTime)
+				} else {
+					slog.Error("scheduled: failed to enqueue trigger",
+						"policy_id", policyID, "fire_at", fireTime, "err", enqErr)
+				}
+			} else {
+				slog.Info("scheduled: trigger queued (active run exists)",
+					"policy_id", policyID, "fire_at", fireTime)
+				// The fire time was consumed (enqueued). Pause the policy if
+				// all fire_at times are now exhausted — DrainQueue calls Launch
+				// directly and does not invoke pauseIfExhausted.
+				s.pauseIfExhausted(ctx, policyID, parsed)
+			}
 		case errors.Is(err, ErrConcurrencyNotImplemented):
 			slog.Warn("scheduled: concurrency mode not implemented, skipping",
 				"policy_id", policyID, "concurrency", parsed.Agent.Concurrency)
@@ -108,12 +136,6 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 		}
 		return
 	}
-
-	// json.Marshal on a map[string]string with a string value cannot fail,
-	// so the error is safe to ignore here.
-	payload, _ := json.Marshal(map[string]string{
-		"scheduled_for": fireTime.UTC().Format(config.TimestampFormat),
-	})
 
 	result, err := s.launcher.Launch(ctx, LaunchParams{
 		PolicyID:       policyID,

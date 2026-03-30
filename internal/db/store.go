@@ -126,6 +126,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate thinking step type: %w", err)
 	}
 
+	if err := s.migrateAddTriggerQueue(ctx); err != nil {
+		return fmt.Errorf("migrate trigger queue: %w", err)
+	}
+
 	return nil
 }
 
@@ -193,6 +197,41 @@ CREATE INDEX idx_run_steps_run_step ON run_steps(run_id, step_number);`
 	}
 
 	slog.Info("migrated run_steps table to include thinking step type")
+	return nil
+}
+
+// migrateAddTriggerQueue creates the trigger_queue table and its index on
+// existing deployments that were initialized before this table was added.
+// New deployments get it from 0001_initial.sql; this migration is a no-op for them.
+func (s *Store) migrateAddTriggerQueue(ctx context.Context) error {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='trigger_queue'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check trigger_queue existence: %w", err)
+	}
+	if count > 0 {
+		return nil // already present; nothing to do
+	}
+
+	ddl := `
+CREATE TABLE trigger_queue (
+    id              TEXT    PRIMARY KEY,
+    policy_id       TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled')),
+    trigger_payload TEXT    NOT NULL,
+    position        INTEGER NOT NULL,
+    created_at      TEXT    NOT NULL,
+    UNIQUE(policy_id, position)
+);
+CREATE INDEX idx_trigger_queue_policy_position ON trigger_queue(policy_id, position);`
+
+	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("create trigger_queue: %w", err)
+	}
+
+	slog.Info("migrated: created trigger_queue table")
 	return nil
 }
 

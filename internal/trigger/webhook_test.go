@@ -62,6 +62,17 @@ agent:
   concurrency: replace
 `
 
+const queuePolicyDepth1 = `
+name: test-queue-depth1-policy
+trigger:
+  type: webhook
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: queue
+  queue_depth: 1
+`
+
 const webhookPolicyWithSecret = `
 name: test-secret-policy
 trigger:
@@ -190,13 +201,35 @@ func TestWebhookHandler(t *testing.T) {
 			wantStatus: http.StatusAccepted,
 		},
 		{
-			name: "501 for queue",
+			name: "202 queued for queue with active run",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-queue", queuePolicy)
+				insertTestPolicy(t, store, "p-queue-active", queuePolicy)
+				insertTestRun(t, store, "r-queue-active", "p-queue-active", model.RunStatusRunning)
 			},
-			policyID:   "p-queue",
+			policyID:   "p-queue-active",
 			body:       `{"event": "test"}`,
-			wantStatus: http.StatusNotImplemented,
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "202 launch for queue with no active run",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-queue-empty", queuePolicy)
+			},
+			policyID:   "p-queue-empty",
+			body:       `{"event": "test"}`,
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "429 for queue with full queue",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-queue-full", queuePolicyDepth1)
+				insertTestRun(t, store, "r-queue-full", "p-queue-full", model.RunStatusRunning)
+				// Fill the queue to depth 1.
+				testutil.InsertQueueEntry(t, store, "p-queue-full", "webhook")
+			},
+			policyID:   "p-queue-full",
+			body:       `{"event": "test"}`,
+			wantStatus: http.StatusTooManyRequests,
 		},
 		{
 			name: "501 for replace",

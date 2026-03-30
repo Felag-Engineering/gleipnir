@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/policy"
 )
 
 // AgentFactory constructs a BoundAgent from a fully-populated Config.
@@ -39,6 +41,8 @@ func NewAgentFactory(registry *llm.ProviderRegistry) AgentFactory {
 // status codes or log appropriately without inspecting error message strings.
 var (
 	ErrConcurrencySkipActive     = errors.New("run already active for this policy (concurrency: skip)")
+	ErrConcurrencyQueueActive    = errors.New("run active, trigger should be queued")
+	ErrConcurrencyQueueFull      = errors.New("trigger queue is full")
 	ErrConcurrencyNotImplemented = errors.New("concurrency policy not implemented")
 	ErrConcurrencyUnrecognised   = errors.New("unrecognised concurrency policy")
 )
@@ -101,7 +105,16 @@ func (l *RunLauncher) CheckConcurrency(ctx context.Context, policyID string, con
 		return nil
 	case model.ConcurrencyParallel:
 		return nil
-	case model.ConcurrencyQueue, model.ConcurrencyReplace:
+	case model.ConcurrencyQueue:
+		active, err := l.store.ListActiveRunsByPolicy(ctx, policyID)
+		if err != nil {
+			return fmt.Errorf("list active runs for policy %q: %w", policyID, err)
+		}
+		if len(active) > 0 {
+			return ErrConcurrencyQueueActive
+		}
+		return nil
+	case model.ConcurrencyReplace:
 		return ErrConcurrencyNotImplemented
 	default:
 		return ErrConcurrencyUnrecognised
@@ -169,9 +182,98 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		if err := ba.Run(runCtx, run.ID, payload); err != nil {
 			slog.Error("run failed", "run_id", run.ID, "trigger_type", string(params.TriggerType), "err", err)
 		}
+		// Drain the queue if this policy uses queue concurrency.
+		// ba.Run has completed so the run's DB status is terminal — DrainQueue's
+		// ListActiveRunsByPolicy (called inside Launch) will not see this run.
+		// Use context.Background() because runCtx may be cancelled.
+		// Re-fetch the policy so DrainQueue uses current settings (queue_depth,
+		// concurrency) rather than a snapshot captured at launch time.
+		if params.ParsedPolicy.Agent.Concurrency == model.ConcurrencyQueue {
+			drainCtx := context.Background()
+			currentPolicy := params.ParsedPolicy
+			if dbPol, err := l.store.GetPolicy(drainCtx, params.PolicyID); err == nil {
+				if p, err := policy.Parse(dbPol.Yaml, model.DefaultProvider, model.DefaultModelName); err == nil {
+					currentPolicy = p
+				}
+			}
+			l.DrainQueue(drainCtx, params.PolicyID, currentPolicy)
+		}
 	}()
 
 	return LaunchResult{RunID: run.ID}, nil
+}
+
+// Enqueue checks queue depth and enqueues the trigger payload.
+// Returns ErrConcurrencyQueueFull if the queue is at capacity.
+//
+// The count-then-insert is not wrapped in an explicit transaction.
+// Safety relies on db.SetMaxOpenConns(1) (store.go) which serializes all
+// DB access through a single connection. If that constraint is ever
+// relaxed, this must be wrapped in a BEGIN/COMMIT to prevent TOCTOU races
+// that could allow queue depth to be exceeded by one.
+func (l *RunLauncher) Enqueue(ctx context.Context, params LaunchParams, queueDepth int) error {
+	count, err := l.store.CountQueuedTriggers(ctx, params.PolicyID)
+	if err != nil {
+		return fmt.Errorf("count queued triggers: %w", err)
+	}
+	if count >= int64(queueDepth) {
+		return ErrConcurrencyQueueFull
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = l.store.EnqueueTrigger(ctx, db.EnqueueTriggerParams{
+		ID:             model.NewULID(),
+		PolicyID:       params.PolicyID,
+		TriggerType:    string(params.TriggerType),
+		TriggerPayload: params.TriggerPayload,
+		CreatedAt:      now,
+	})
+	if err != nil {
+		return fmt.Errorf("enqueue trigger: %w", err)
+	}
+	return nil
+}
+
+// DrainQueue dequeues the next trigger for the policy and launches it.
+// DequeueTrigger is a DELETE…RETURNING — the row is removed immediately. If
+// Launch fails, the entry is re-inserted at the front of the queue via
+// RequeueTriggerAtFront so FIFO ordering is preserved.
+// Called after a run reaches a terminal state; not a periodic loop.
+// Errors are logged because the caller is a fire-and-forget goroutine.
+// This is a no-op when the queue is empty.
+func (l *RunLauncher) DrainQueue(ctx context.Context, policyID string, parsedPolicy *model.ParsedPolicy) {
+	entry, err := l.store.DequeueTrigger(ctx, policyID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Error("drain queue: failed to dequeue trigger",
+				"policy_id", policyID, "err", err)
+		}
+		return
+	}
+
+	_, launchErr := l.Launch(ctx, LaunchParams{
+		PolicyID:       policyID,
+		TriggerType:    model.TriggerType(entry.TriggerType),
+		TriggerPayload: entry.TriggerPayload,
+		ParsedPolicy:   parsedPolicy,
+	})
+	if launchErr != nil {
+		// Launch failed. Re-enqueue at front to preserve FIFO ordering.
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, reErr := l.store.RequeueTriggerAtFront(ctx, db.RequeueTriggerAtFrontParams{
+			ID:             entry.ID,
+			PolicyID:       policyID,
+			TriggerType:    entry.TriggerType,
+			TriggerPayload: entry.TriggerPayload,
+			CreatedAt:      now,
+		}); reErr != nil {
+			slog.Error("drain queue: failed to re-enqueue after launch failure",
+				"policy_id", policyID, "queue_entry_id", entry.ID,
+				"launch_err", launchErr, "re_enqueue_err", reErr)
+		} else {
+			slog.Warn("drain queue: launch failed, entry re-enqueued at front for retry",
+				"policy_id", policyID, "queue_entry_id", entry.ID, "err", launchErr)
+		}
+	}
 }
 
 // markRunFailed transitions a run that was created but cannot proceed to the

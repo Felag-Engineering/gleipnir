@@ -56,6 +56,17 @@ agent:
   concurrency: replace
 `
 
+const queueManualPolicyDepth1 = `
+name: test-manual-queue-depth1-policy
+trigger:
+  type: manual
+agent:
+  model: claude-opus-4-6
+  task: "test task"
+  concurrency: queue
+  queue_depth: 1
+`
+
 func insertTestManualPolicy(t *testing.T, store *db.Store, policyID, yaml string) {
 	t.Helper()
 	testutil.InsertPolicy(t, store, policyID, "manual-policy-"+policyID, "manual", yaml)
@@ -127,13 +138,34 @@ func TestManualTriggerHandler(t *testing.T) {
 			wantStatus: http.StatusAccepted,
 		},
 		{
-			name: "501 for queue",
+			name: "202 queued for queue with active run",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestManualPolicy(t, store, "mp-queue", queueManualPolicy)
+				insertTestManualPolicy(t, store, "mp-queue-active", queueManualPolicy)
+				insertTestRun(t, store, "mr-queue-active", "mp-queue-active", model.RunStatusRunning)
 			},
-			policyID:   "mp-queue",
+			policyID:   "mp-queue-active",
 			body:       `{"message": "test"}`,
-			wantStatus: http.StatusNotImplemented,
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "202 launch for queue with no active run",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestManualPolicy(t, store, "mp-queue-empty", queueManualPolicy)
+			},
+			policyID:   "mp-queue-empty",
+			body:       `{"message": "test"}`,
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "429 for queue with full queue",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestManualPolicy(t, store, "mp-queue-full", queueManualPolicyDepth1)
+				insertTestRun(t, store, "mr-queue-full", "mp-queue-full", model.RunStatusRunning)
+				testutil.InsertQueueEntry(t, store, "mp-queue-full", "manual")
+			},
+			policyID:   "mp-queue-full",
+			body:       `{"message": "test"}`,
+			wantStatus: http.StatusTooManyRequests,
 		},
 		{
 			name: "501 for replace",

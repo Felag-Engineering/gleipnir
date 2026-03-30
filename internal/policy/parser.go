@@ -166,6 +166,11 @@ func convertAgent(r rawAgent, mc model.ModelConfig) model.AgentConfig {
 		ac.Concurrency = model.ConcurrencySkip
 	}
 
+	ac.QueueDepth = r.QueueDepth
+	if ac.QueueDepth == 0 {
+		ac.QueueDepth = model.DefaultQueueDepth
+	}
+
 	return ac
 }
 
@@ -213,6 +218,7 @@ type rawAgent struct {
 	Task        string    `yaml:"task"`
 	Limits      rawLimits `yaml:"limits"`
 	Concurrency string    `yaml:"concurrency"`
+	QueueDepth  int       `yaml:"queue_depth"`
 }
 
 type rawLimits struct {

@@ -139,6 +139,14 @@ func validateAgent(a model.AgentConfig, c model.CapabilitiesConfig) []string {
 		errs = append(errs, fmt.Sprintf("agent.concurrency %q is invalid; must be skip, queue, parallel, or replace", a.Concurrency))
 	}
 
+	if a.QueueDepth < 0 {
+		errs = append(errs, "agent.queue_depth must not be negative")
+	}
+
+	// Note: cross-validating queue_depth against concurrency mode is impractical
+	// because the parser defaults queue_depth to 10 when unset (Go zero value),
+	// so we cannot distinguish "user explicitly set queue_depth" from "default."
+
 	// Cross-validation: replace concurrency is incompatible with approval-required tools.
 	if a.Concurrency == model.ConcurrencyReplace {
 		for _, t := range c.Tools {
