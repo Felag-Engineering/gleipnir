@@ -1460,6 +1460,111 @@ func TestWaitForApproval(t *testing.T) {
 	})
 }
 
+func TestWaitForApproval_DBAndSSE(t *testing.T) {
+	t.Run("creates_approval_request_record_and_publishes_event", func(t *testing.T) {
+		s := testutil.NewTestStore(t)
+		testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+		testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+		pub := &capturePublisher{}
+		approvalCh := make(chan bool, 1)
+		approvalCh <- true // approved immediately
+
+		w := NewAuditWriter(s.Queries())
+		ba, err := New(Config{
+			Policy:       minimalPolicy(),
+			Tools:        nil,
+			LLMClient:    testutil.NewNoopLLMClient(),
+			Audit:        w,
+			ApprovalCh:   (<-chan bool)(approvalCh),
+			StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub)),
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		entry := resolvedToolEntry{
+			tool: mcp.ResolvedTool{
+				GrantedTool: model.GrantedTool{},
+			},
+		}
+
+		if err := ba.waitForApproval(context.Background(), "run1", entry, "my-server.do_thing", map[string]any{}); err != nil {
+			t.Fatalf("waitForApproval: %v", err)
+		}
+
+		// Verify approval_requests DB record was created. The record stays 'pending'
+		// until the approval scanner updates it — waitForApproval only creates the
+		// record; resolving it is the scanner's responsibility.
+		pending, err := s.GetPendingApprovalRequestsByRun(context.Background(), "run1")
+		if err != nil {
+			t.Fatalf("GetPendingApprovalRequestsByRun: %v", err)
+		}
+		if len(pending) != 1 {
+			t.Errorf("pending approval requests = %d, want 1", len(pending))
+		}
+
+		// Verify the SSE event was published.
+		events := pub.all()
+		var approvalEvent *capturedEvent
+		for i := range events {
+			if events[i].eventType == "approval.created" {
+				approvalEvent = &events[i]
+				break
+			}
+		}
+		if approvalEvent == nil {
+			t.Fatal("expected approval.created SSE event, none found")
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(approvalEvent.data, &payload); err != nil {
+			t.Fatalf("unmarshal approval.created data: %v", err)
+		}
+		if payload["run_id"] != "run1" {
+			t.Errorf("approval.created run_id = %q, want %q", payload["run_id"], "run1")
+		}
+		if payload["approval_id"] == "" {
+			t.Error("approval.created approval_id is empty")
+		}
+	})
+
+	t.Run("transitions_run_to_waiting_and_back_to_running_on_approval", func(t *testing.T) {
+		s := testutil.NewTestStore(t)
+		testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+		testutil.InsertRun(t, s, "run2", "p1", model.RunStatusRunning)
+
+		approvalCh := make(chan bool, 1)
+		approvalCh <- true
+
+		w := NewAuditWriter(s.Queries())
+		sm := NewRunStateMachine("run2", model.RunStatusRunning, s.Queries())
+		ba, err := New(Config{
+			Policy:       minimalPolicy(),
+			Tools:        nil,
+			LLMClient:    testutil.NewNoopLLMClient(),
+			Audit:        w,
+			ApprovalCh:   (<-chan bool)(approvalCh),
+			StateMachine: sm,
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		entry := resolvedToolEntry{
+			tool: mcp.ResolvedTool{GrantedTool: model.GrantedTool{}},
+		}
+
+		if err := ba.waitForApproval(context.Background(), "run2", entry, "my-server.do_thing", map[string]any{}); err != nil {
+			t.Fatalf("waitForApproval: %v", err)
+		}
+
+		// After approval the state machine should be back at running.
+		if got := sm.Current(); got != model.RunStatusRunning {
+			t.Errorf("run status after approval = %q, want %q", got, model.RunStatusRunning)
+		}
+	})
+}
+
 func TestRunAPILoop_EndTurn(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")

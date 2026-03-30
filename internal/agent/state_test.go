@@ -283,6 +283,97 @@ func TestRunStateMachine_ConcurrentTransitions(t *testing.T) {
 	}
 }
 
+func TestRunStateMachine_WaitingForApproval_CreatesRecord(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+
+	payload := ApprovalPayload{
+		ApprovalID:    "approval-001",
+		ToolName:      "my-server.do_thing",
+		ProposedInput: `{"key":"value"}`,
+		ExpiresAt:     "2099-01-01T00:00:00Z",
+	}
+
+	if err := sm.Transition(context.Background(), model.RunStatusWaitingForApproval, "", WithApprovalPayload(payload)); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+
+	// Verify the approval_requests DB record was created.
+	pending, err := s.GetPendingApprovalRequestsByRun(context.Background(), "run1")
+	if err != nil {
+		t.Fatalf("GetPendingApprovalRequestsByRun: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending approval requests = %d, want 1", len(pending))
+	}
+	if pending[0].ID != "approval-001" {
+		t.Errorf("approval request ID = %q, want %q", pending[0].ID, "approval-001")
+	}
+
+	// Verify both run.status_changed and approval.created events were published.
+	events := pub.all()
+	var hasStatusChanged, hasApprovalCreated bool
+	var approvalCreatedPayload map[string]string
+	for _, ev := range events {
+		switch ev.eventType {
+		case "run.status_changed":
+			hasStatusChanged = true
+		case "approval.created":
+			hasApprovalCreated = true
+			if err := json.Unmarshal(ev.data, &approvalCreatedPayload); err != nil {
+				t.Fatalf("unmarshal approval.created data: %v", err)
+			}
+		}
+	}
+	if !hasStatusChanged {
+		t.Error("expected run.status_changed event, not found")
+	}
+	if !hasApprovalCreated {
+		t.Fatal("expected approval.created event, not found")
+	}
+	if approvalCreatedPayload["approval_id"] != "approval-001" {
+		t.Errorf("approval.created approval_id = %q, want %q", approvalCreatedPayload["approval_id"], "approval-001")
+	}
+	if approvalCreatedPayload["run_id"] != "run1" {
+		t.Errorf("approval.created run_id = %q, want %q", approvalCreatedPayload["run_id"], "run1")
+	}
+}
+
+func TestRunStateMachine_WaitingForApproval_NoPayload(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+
+	// Transition without a payload — should succeed with only run.status_changed.
+	if err := sm.Transition(context.Background(), model.RunStatusWaitingForApproval, ""); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+
+	events := pub.all()
+	if len(events) != 1 {
+		t.Fatalf("got %d published events, want 1", len(events))
+	}
+	if events[0].eventType != "run.status_changed" {
+		t.Errorf("event type = %q, want %q", events[0].eventType, "run.status_changed")
+	}
+
+	// No approval_requests record should have been created.
+	pending, err := s.GetPendingApprovalRequestsByRun(context.Background(), "run1")
+	if err != nil {
+		t.Fatalf("GetPendingApprovalRequestsByRun: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("pending approval requests = %d, want 0", len(pending))
+	}
+}
+
 func TestRunStateMachine_PersistSystemPrompt(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")

@@ -152,16 +152,40 @@ func (a *BoundAgent) buildToolDefinitions() []llm.ToolDefinition {
 }
 
 // waitForApproval suspends the run at an approval gate for the given tool entry.
-// It writes the approval_request audit step, then blocks on the approval channel,
-// a timeout, or context cancellation.
-// Returns nil if approved, error otherwise.
+// It writes the approval_request audit step, transitions the run to
+// waiting_for_approval (which creates the DB record and publishes approval.created
+// via the state machine), then blocks on the approval channel, a timeout, or
+// context cancellation. Returns nil if approved, error otherwise.
 func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry resolvedToolEntry, internalName string, input map[string]any) error {
+	approvalID := model.NewULID()
+
+	proposedInput, err := json.Marshal(input)
+	if err != nil {
+		return fmt.Errorf("marshalling proposed input for approval request: %w", err)
+	}
+
+	var expiresAt string
+	if entry.tool.Timeout > 0 {
+		expiresAt = time.Now().UTC().Add(entry.tool.Timeout).Format(time.RFC3339Nano)
+	} else {
+		expiresAt = time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	}
+
 	if err := a.audit.Write(ctx, Step{
 		RunID:   runID,
 		Type:    model.StepTypeApprovalRequest,
 		Content: map[string]any{"tool": internalName, "input": input},
 	}); err != nil {
 		return fmt.Errorf("writing approval request step: %w", err)
+	}
+
+	if err := a.sm.Transition(ctx, model.RunStatusWaitingForApproval, "", WithApprovalPayload(ApprovalPayload{
+		ApprovalID:    approvalID,
+		ToolName:      internalName,
+		ProposedInput: string(proposedInput),
+		ExpiresAt:     expiresAt,
+	})); err != nil {
+		return fmt.Errorf("transitioning run to waiting_for_approval: %w", err)
 	}
 
 	// nil timeoutCh (when Timeout == 0) blocks forever in the select,
@@ -180,6 +204,9 @@ func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry re
 			err := fmt.Errorf("tool call %s rejected by operator", internalName)
 			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeApprovalRejected)
 			return err
+		}
+		if err := a.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
+			return fmt.Errorf("transitioning run back to running after approval: %w", err)
 		}
 	case <-timeoutCh:
 		slog.WarnContext(ctx, "approval timeout reached",

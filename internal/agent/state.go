@@ -49,10 +49,31 @@ func NewRunStateMachine(runID string, initial model.RunStatus, queries *db.Queri
 	return sm
 }
 
+// ApprovalPayload carries the data needed to create an approval_requests DB
+// record when entering waiting_for_approval.
+type ApprovalPayload struct {
+	ApprovalID    string
+	ToolName      string
+	ProposedInput string // JSON-encoded
+	ExpiresAt     string // RFC3339Nano
+}
+
+type transitionOpts struct {
+	approval *ApprovalPayload
+}
+
+// TransitionOption configures optional behavior for a Transition call.
+type TransitionOption func(*transitionOpts)
+
+// WithApprovalPayload attaches approval context to a waiting_for_approval transition.
+func WithApprovalPayload(p ApprovalPayload) TransitionOption {
+	return func(o *transitionOpts) { o.approval = &p }
+}
+
 // Transition validates and persists a run status transition.
 // For failed and interrupted transitions, errMsg is written to the runs.error column.
 // It is safe for concurrent calls from multiple goroutines.
-func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus, errMsg string) error {
+func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus, errMsg string, opts ...TransitionOption) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -87,6 +108,28 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 		}
 	}
 
+	// Apply options.
+	var topts transitionOpts
+	for _, o := range opts {
+		o(&topts)
+	}
+
+	// Create the approval_requests DB record when entering waiting_for_approval.
+	if next == model.RunStatusWaitingForApproval && topts.approval != nil {
+		p := topts.approval
+		if _, err := sm.queries.CreateApprovalRequest(ctx, db.CreateApprovalRequestParams{
+			ID:               p.ApprovalID,
+			RunID:            sm.runID,
+			ToolName:         p.ToolName,
+			ProposedInput:    p.ProposedInput,
+			ReasoningSummary: "{}",
+			ExpiresAt:        p.ExpiresAt,
+			CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		}); err != nil {
+			return fmt.Errorf("creating approval request record: %w", err)
+		}
+	}
+
 	sm.current = next
 	slog.InfoContext(ctx, "run status transition", "run_id", sm.runID, "from", string(from), "to", string(next))
 
@@ -96,6 +139,14 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 			return fmt.Errorf("marshal publish payload: %w", err)
 		}
 		sm.publisher.Publish("run.status_changed", data)
+	}
+
+	if sm.publisher != nil && topts.approval != nil {
+		eventData, err := json.Marshal(map[string]string{"approval_id": topts.approval.ApprovalID, "run_id": sm.runID})
+		if err != nil {
+			return fmt.Errorf("marshal approval.created payload: %w", err)
+		}
+		sm.publisher.Publish("approval.created", eventData)
 	}
 
 	return nil
