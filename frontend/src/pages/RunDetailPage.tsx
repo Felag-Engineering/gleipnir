@@ -16,6 +16,7 @@ import {
 } from '@/components/RunDetail'
 import type { FilterKey } from '@/components/RunDetail'
 import type { ParsedStep, CapabilitySnapshotContent, CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import styles from './RunDetailPage.module.css'
 
 const PAGE_SIZE = 50
@@ -25,6 +26,7 @@ export default function RunDetailPage() {
   const { data: run, status: runStatus, refetch: runRefetch } = useRun(id)
   const { data: rawSteps = [], status: stepsStatus } = useRunSteps(id)
 
+  usePageTitle(id ? `Run ${id.slice(0, 8)}` : 'Run')
   const [filter, setFilter] = useState<FilterKey>('all')
   const [displayedCount, setDisplayedCount] = useState(PAGE_SIZE)
   const [showNewPill, setShowNewPill] = useState(false)

@@ -7,6 +7,7 @@ import type { ApiError } from '@/api/fetch'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import styles from './UsersPage.module.css'
 
 const ALL_ROLES = ['admin', 'operator', 'approver', 'auditor'] as const
@@ -164,6 +165,7 @@ function formatDate(iso: string) {
 }
 
 export default function UsersPage() {
+  usePageTitle('Users')
   const [showCreateModal, setShowCreateModal] = useState(false)
 
   const { data: users, status } = useUsers()

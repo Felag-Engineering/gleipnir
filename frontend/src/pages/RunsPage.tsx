@@ -11,6 +11,7 @@ import { KNOWN_STATUSES, KNOWN_TRIGGERS } from '@/constants/status'
 import { formatTimeAgo, formatTokens, formatDuration, formatTimestamp, computeRunDuration } from '@/utils/format'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import styles from './RunsPage.module.css'
 
 const PAGE_SIZE = 25
@@ -47,6 +48,7 @@ export default function RunsPage() {
     offset,
   })
 
+  usePageTitle('Runs')
   const { data: policies } = usePolicies()
 
   function setFilter(key: string, value: string) {
@@ -143,7 +145,7 @@ export default function RunsPage() {
         emptyState={
           <div className={styles.emptyRuns}>
             <span>No runs found.</span>
-            <span>Try adjusting the filters, or trigger a policy to create a run.</span>
+            <span>Try adjusting the filters, or <Link to="/policies">go to Policies</Link> to trigger a run.</span>
           </div>
         }
       >

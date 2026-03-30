@@ -8,10 +8,12 @@ import { PageHeader } from '@/components/PageHeader'
 import { usePolicies } from '@/hooks/usePolicies'
 import { queryKeys } from '@/hooks/queryKeys'
 import { QueryBoundary } from '@/components/QueryBoundary'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import buttonStyles from '@/components/Button/Button.module.css'
 import styles from './PoliciesPage.module.css'
 
 export default function PoliciesPage() {
+  usePageTitle('Policies')
   const { data: policies, status: policiesStatus } = usePolicies()
   const queryClient = useQueryClient()
   const navigate = useNavigate()

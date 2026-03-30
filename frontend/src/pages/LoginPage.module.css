@@ -73,5 +73,12 @@
 
 .submit {
   width: 100%;
+  justify-content: center;
   margin-top: var(--space-2);
+}
+
+.expired {
+  font-size: var(--text-sm);
+  color: var(--color-amber);
+  text-align: center;
 }

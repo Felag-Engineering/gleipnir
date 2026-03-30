@@ -18,7 +18,7 @@ interface Props {
 function groupPoliciesByFolder(policies: ApiPolicyListItem[]): Map<string, ApiPolicyListItem[]> {
   const groups = new Map<string, ApiPolicyListItem[]>()
   for (const policy of policies) {
-    const folder = policy.folder || 'Default'
+    const folder = policy.folder || 'Ungrouped'
     const existing = groups.get(folder)
     if (existing) {
       existing.push(policy)
@@ -117,12 +117,13 @@ export function PolicyList({
   }
 
   const groups = groupPoliciesByFolder(policies)
+  const showFolderHeaders = groups.size > 1
 
   return (
     <div className={styles.root}>
       {Array.from(groups.entries()).map(([folder, items]) => (
         <section key={folder} className={styles.group}>
-          <h2 className={styles.folderName}>{folder}</h2>
+          {showFolderHeaders && <h2 className={styles.folderName}>{folder}</h2>}
           {renderTable(items)}
         </section>
       ))}

@@ -14,6 +14,7 @@ import { usePolicy } from '@/hooks/usePolicy'
 import { useSavePolicy } from '@/hooks/useSavePolicy'
 import { useDeletePolicy } from '@/hooks/useDeletePolicy'
 import { ApiError } from '@/api/fetch'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { DEFAULT_YAML, defaultFormState, FormState, formStateToYaml, yamlToFormState } from './policyEditorUtils'
 import styles from './PolicyEditorPage.module.css'
 
@@ -125,6 +126,8 @@ export function PolicyEditorPage() {
     mode === 'form'
       ? (formState.identity.name || (id ? id : 'New Policy'))
       : (id ? (policy?.name ?? id) : 'New Policy')
+
+  usePageTitle(policyName)
 
   // Show loading/error states only when fetching an existing policy
   if (id && policyStatus === 'pending') {

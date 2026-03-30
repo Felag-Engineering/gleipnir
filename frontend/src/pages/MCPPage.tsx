@@ -7,6 +7,7 @@ import { useDeleteMcpServer } from '@/hooks/useDeleteMcpServer'
 import { useDiscoverMcpServer } from '@/hooks/useDiscoverMcpServer'
 import { useUpdateMcpTool } from '@/hooks/useUpdateMcpTool'
 import { apiFetch } from '@/api/fetch'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 import type { ApiError } from '@/api/fetch'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
@@ -26,6 +27,7 @@ interface DeleteTarget {
 }
 
 export default function MCPPage() {
+  usePageTitle('Tools')
   const [showAddModal, setShowAddModal] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
   const [addDiscoveryWarning, setAddDiscoveryWarning] = useState<string | null>(null)

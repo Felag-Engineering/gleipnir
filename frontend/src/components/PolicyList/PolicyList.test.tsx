@@ -66,7 +66,7 @@ describe('PolicyList', () => {
       </MemoryRouter>,
     )
 
-    expect(screen.getByText('Default')).toBeInTheDocument()
+    expect(screen.getByText('Ungrouped')).toBeInTheDocument()
     expect(screen.getByText('CI/CD')).toBeInTheDocument()
   })
 
@@ -81,7 +81,7 @@ describe('PolicyList', () => {
       </MemoryRouter>,
     )
 
-    expect(screen.queryByText('Default')).toBeNull()
+    expect(screen.queryByText('Ungrouped')).toBeNull()
     expect(screen.queryByText('CI/CD')).toBeNull()
     expect(screen.getByText('vikunja-triage')).toBeInTheDocument()
     expect(screen.getByText('deploy-agent')).toBeInTheDocument()

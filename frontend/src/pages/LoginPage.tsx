@@ -1,11 +1,15 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/Button/Button'
 import { login, getAuthStatus } from '@/api/auth'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import styles from './LoginPage.module.css'
 
 export default function LoginPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const sessionExpired = searchParams.get('expired') === '1'
+  usePageTitle('Sign in')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -69,6 +73,9 @@ export default function LoginPage() {
               disabled={loading}
             />
           </div>
+          {sessionExpired && !error && (
+            <p className={styles.expired}>Session expired. Please sign in again.</p>
+          )}
           {error && <p className={styles.error}>{error}</p>}
           <Button type="submit" className={styles.submit} disabled={loading}>
             {loading ? 'Signing in…' : 'Sign in'}

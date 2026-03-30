@@ -11,6 +11,7 @@ import { usePolicies } from '@/hooks/usePolicies'
 import { useStatsData } from '@/hooks/useStatsData'
 import { useRuns } from '@/hooks/useRuns'
 import { useMcpServers } from '@/hooks/useMcpServers'
+import { usePageTitle } from '@/hooks/usePageTitle'
 import { queryKeys } from '@/hooks/queryKeys'
 import { QueryBoundary } from '@/components/QueryBoundary'
 import buttonStyles from '@/components/Button/Button.module.css'
@@ -25,6 +26,7 @@ export default function DashboardPage() {
   const navigate = useNavigate()
   const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string } | null>(null)
 
+  usePageTitle('Dashboard')
   const mcpServerCount = servers?.length ?? 0
 
   return (
@@ -54,8 +56,10 @@ export default function DashboardPage() {
           />
         }
       >
-        <div className={styles.mainGrid}>
-          <ActivityFeed runs={runs} isLoading={runsLoading} />
+        <div className={!runsLoading && runs.length === 0 ? styles.mainGridSingle : styles.mainGrid}>
+          {(runsLoading || runs.length > 0) && (
+            <ActivityFeed runs={runs} isLoading={runsLoading} />
+          )}
           <StatusBoard
             policies={policies ?? []}
             onTrigger={(id, name) => setTriggerTarget({ id, name })}

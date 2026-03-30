@@ -414,8 +414,8 @@ trigger:
 describe('defaultFormState', () => {
   it('returns a valid FormState matching DEFAULT_YAML expectations', () => {
     const state = defaultFormState()
-    // DEFAULT_YAML has name: new-policy, webhook trigger, empty capabilities
-    expect(state.identity.name).toBe('new-policy')
+    // DEFAULT_YAML has empty name, webhook trigger, empty capabilities
+    expect(state.identity.name).toBe('')
     expect(state.trigger.type).toBe('webhook')
     expect(state.capabilities.tools).toHaveLength(0)
     expect(state.limits.max_tokens_per_run).toBe(20000)

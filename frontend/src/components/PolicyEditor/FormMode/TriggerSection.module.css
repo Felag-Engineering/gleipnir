@@ -21,6 +21,12 @@
   gap: var(--space-3);
 }
 
+@media (max-width: 480px) {
+  .cards {
+    grid-template-columns: 1fr;
+  }
+}
+
 .card {
   position: relative;
   border: 1px solid var(--border-mid);

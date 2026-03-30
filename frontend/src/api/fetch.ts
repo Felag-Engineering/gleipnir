@@ -22,7 +22,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 
   if (!response.ok) {
     if (response.status === 401 && window.location.pathname !== '/login') {
-      window.location.href = '/login'
+      window.location.href = '/login?expired=1'
       return Promise.reject()
     }
     let message = response.statusText
@@ -53,7 +53,7 @@ export async function apiFetchVoid(path: string, init?: RequestInit): Promise<vo
 
   if (!response.ok) {
     if (response.status === 401 && window.location.pathname !== '/login') {
-      window.location.href = '/login'
+      window.location.href = '/login?expired=1'
       return
     }
     let message = response.statusText

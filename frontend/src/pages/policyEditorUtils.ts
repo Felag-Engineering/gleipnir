@@ -24,7 +24,7 @@ export interface FormState {
   _feedbackCapabilities?: unknown[]
 }
 
-export const DEFAULT_YAML = `name: new-policy
+export const DEFAULT_YAML = `name: ''
 description: ''
 model:
   provider: anthropic

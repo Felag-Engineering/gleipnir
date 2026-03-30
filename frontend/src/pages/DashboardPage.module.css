@@ -11,6 +11,12 @@
   align-items: start;
 }
 
+.mainGridSingle {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-6);
+  align-items: start;
+}
 
 @media (max-width: 768px) {
   .mainGrid {
