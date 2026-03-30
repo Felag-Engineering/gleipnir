@@ -19,12 +19,12 @@ UPDATE runs SET status = :status, error = :error, completed_at = :completed_at W
 UPDATE runs SET token_cost = token_cost + :token_cost WHERE id = :id;
 
 -- name: ListOrphanedRuns :many
-SELECT * FROM runs WHERE status IN ('running', 'waiting_for_approval');
+SELECT * FROM runs WHERE status IN ('running', 'waiting_for_approval', 'waiting_for_feedback');
 
 -- name: ListActiveRunsByPolicy :many
 SELECT * FROM runs
 WHERE policy_id = :policy_id
-  AND status IN ('pending', 'running', 'waiting_for_approval')
+  AND status IN ('pending', 'running', 'waiting_for_approval', 'waiting_for_feedback')
 ORDER BY created_at ASC;
 
 -- name: ListRuns :many
@@ -92,7 +92,7 @@ WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))
 UPDATE runs SET system_prompt = :system_prompt WHERE id = :id;
 
 -- name: CountActiveRuns :one
-SELECT COUNT(*) FROM runs WHERE status IN ('pending', 'running', 'waiting_for_approval');
+SELECT COUNT(*) FROM runs WHERE status IN ('pending', 'running', 'waiting_for_approval', 'waiting_for_feedback');
 
 -- name: SumTokensLast24Hours :one
 SELECT CAST(COALESCE(SUM(token_cost), 0) AS INTEGER) FROM runs WHERE created_at >= :since;

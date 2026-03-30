@@ -55,6 +55,11 @@ type ApprovalDecisionRequest struct {
 	Decision string `json:"decision"` // "approved" or "denied"
 }
 
+// FeedbackDecisionRequest is the JSON body for SubmitFeedback.
+type FeedbackDecisionRequest struct {
+	Response string `json:"response"` // operator's freeform text
+}
+
 // RunsHandler serves run inspection and control endpoints.
 type RunsHandler struct {
 	store     *db.Store
@@ -83,7 +88,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	var status interface{}
 	if v := q.Get("status"); v != "" {
 		if !model.RunStatus(v).Valid() {
-			api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid status %q: must be one of pending, running, complete, failed, waiting_for_approval, interrupted", v), "")
+			api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid status %q: must be one of pending, running, complete, failed, waiting_for_approval, waiting_for_feedback, interrupted", v), "")
 			return
 		}
 		status = v
@@ -309,7 +314,14 @@ func (h *RunsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if run.Status != string(model.RunStatusRunning) {
+	// Runs in any blocking state may be cancelled by the operator. This includes
+	// the pre-existing waiting_for_approval case and the new waiting_for_feedback state.
+	cancellableStatuses := map[string]bool{
+		string(model.RunStatusRunning):             true,
+		string(model.RunStatusWaitingForApproval):  true,
+		string(model.RunStatusWaitingForFeedback):  true,
+	}
+	if !cancellableStatuses[run.Status] {
 		api.WriteError(w, http.StatusConflict, "run is not in a cancellable state", run.Status)
 		return
 	}
@@ -404,6 +416,80 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID, "decision": req.Decision})
+}
+
+// SubmitFeedback handles POST /api/v1/runs/{runID}/feedback.
+// It validates the run is waiting for feedback, routes the operator's freeform
+// text response to the BoundAgent via the RunManager, and updates the
+// feedback_requests DB record.
+func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	runID := chi.URLParam(r, "runID")
+
+	var req FeedbackDecisionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.Response == "" {
+		api.WriteError(w, http.StatusBadRequest, "response must not be empty", "")
+		return
+	}
+
+	run, err := h.store.GetRun(ctx, runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		api.WriteError(w, http.StatusNotFound, "run not found", "")
+		return
+	}
+	if err != nil {
+		slog.Error("GetRun query failed", "run_id", runID, "err", err)
+		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		return
+	}
+
+	if run.Status != string(model.RunStatusWaitingForFeedback) {
+		api.WriteError(w, http.StatusConflict, "run is not waiting for feedback", run.Status)
+		return
+	}
+
+	if !h.manager.SendFeedback(runID, req.Response) {
+		// TOCTOU: the run was in waiting_for_feedback in the DB but the agent's
+		// feedback gate is no longer blocking (context cancel, etc.).
+		api.WriteError(w, http.StatusConflict, "no active feedback gate for this run", "")
+		return
+	}
+
+	// Update the pending feedback_request record. Best-effort after the channel
+	// send — DB consistency is secondary to unblocking the agent.
+	pendingFeedbacks, err := h.store.GetPendingFeedbackRequestsByRun(ctx, runID)
+	if err != nil {
+		slog.Warn("GetPendingFeedbackRequestsByRun failed after feedback send", "run_id", runID, "err", err)
+	}
+
+	var feedbackID string
+	if len(pendingFeedbacks) > 0 {
+		feedbackID = pendingFeedbacks[0].ID
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if err := h.store.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
+			Status:     "resolved",
+			Response:   &req.Response,
+			ResolvedAt: &now,
+			ID:         feedbackID,
+		}); err != nil {
+			slog.Warn("UpdateFeedbackRequestStatus failed", "feedback_id", feedbackID, "err", err)
+		}
+	}
+
+	if h.publisher != nil {
+		if data, err := json.Marshal(map[string]string{
+			"feedback_id": feedbackID,
+			"run_id":      runID,
+		}); err == nil {
+			h.publisher.Publish("feedback.resolved", data)
+		}
+	}
+
+	api.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID})
 }
 
 func toRunSummary(r db.Run) RunSummary {

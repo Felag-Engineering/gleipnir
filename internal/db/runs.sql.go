@@ -10,7 +10,7 @@ import (
 )
 
 const countActiveRuns = `-- name: CountActiveRuns :one
-SELECT COUNT(*) FROM runs WHERE status IN ('pending', 'running', 'waiting_for_approval')
+SELECT COUNT(*) FROM runs WHERE status IN ('pending', 'running', 'waiting_for_approval', 'waiting_for_feedback')
 `
 
 func (q *Queries) CountActiveRuns(ctx context.Context) (int64, error) {
@@ -149,7 +149,7 @@ func (q *Queries) IncrementRunTokenCost(ctx context.Context, arg IncrementRunTok
 const listActiveRunsByPolicy = `-- name: ListActiveRunsByPolicy :many
 SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs
 WHERE policy_id = ?1
-  AND status IN ('pending', 'running', 'waiting_for_approval')
+  AND status IN ('pending', 'running', 'waiting_for_approval', 'waiting_for_feedback')
 ORDER BY created_at ASC
 `
 
@@ -190,7 +190,7 @@ func (q *Queries) ListActiveRunsByPolicy(ctx context.Context, policyID string) (
 }
 
 const listOrphanedRuns = `-- name: ListOrphanedRuns :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs WHERE status IN ('running', 'waiting_for_approval')
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt FROM runs WHERE status IN ('running', 'waiting_for_approval', 'waiting_for_feedback')
 `
 
 func (q *Queries) ListOrphanedRuns(ctx context.Context) ([]Run, error) {

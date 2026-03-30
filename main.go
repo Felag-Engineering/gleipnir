@@ -131,6 +131,7 @@ func run(cfg config.Config) error {
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)
 		r.With(auth.RequireRole(model.RoleOperator)).Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
 		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleApprover)).Post("/api/v1/runs/{runID}/approval", runsHandler.SubmitApproval)
+		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleApprover, model.RoleOperator)).Post("/api/v1/runs/{runID}/feedback", runsHandler.SubmitFeedback)
 
 		policySvc := policy.NewService(store, nil, providerRegistry, providerRegistry, cfg.DefaultProvider, cfg.DefaultModel)
 

@@ -1,5 +1,6 @@
 import { CollapsibleJSON } from '@/components/CollapsibleJSON'
 import { ApprovalActions } from './ApprovalActions'
+import { FeedbackActions } from './FeedbackActions'
 import type { ParsedStep, GrantedToolEntry } from './types'
 import styles from './StepCard.module.css'
 
@@ -18,6 +19,7 @@ function StepIcon({ type, role }: { type: string; role?: GrantedToolEntry['Role'
   else if (type === 'error') cls.push(styles.iconError)
   else if (type === 'complete') cls.push(styles.iconComplete)
   else if (type === 'approval_request') cls.push(styles.iconApproval)
+  else if (type === 'feedback_request' || type === 'feedback_response') cls.push(styles.iconFeedback)
   else cls.push(styles.iconDefault)
   return <span className={cls.join(' ')} aria-hidden="true" />
 }
@@ -123,6 +125,40 @@ export function StepCard({ step, toolRoleMap, runId, runStatus }: Props) {
           <span className={`${styles.typeLabel} ${styles.approvalLabel}`}>Approval requested</span>
           <code className={styles.toolName}>{step.content.tool}</code>
           <ApprovalActions runId={runId} runStatus={runStatus} />
+        </div>
+      </div>
+    )
+  }
+
+  if (step.type === 'feedback_request') {
+    return (
+      <div className={styles.card}>
+        <div className={styles.iconCol}>
+          <StepIcon type="feedback_request" />
+        </div>
+        <div className={styles.body}>
+          <span className={`${styles.typeLabel} ${styles.feedbackLabel}`}>Feedback requested</span>
+          <code className={styles.toolName}>{step.content.tool}</code>
+          {step.content.message && (
+            <p className={styles.bodyText}>{step.content.message}</p>
+          )}
+          <FeedbackActions runId={runId} runStatus={runStatus} />
+        </div>
+      </div>
+    )
+  }
+
+  if (step.type === 'feedback_response') {
+    return (
+      <div className={styles.card}>
+        <div className={styles.iconCol}>
+          <StepIcon type="feedback_response" />
+        </div>
+        <div className={styles.body}>
+          <span className={`${styles.typeLabel} ${styles.feedbackLabel}`}>Feedback received</span>
+          {step.content.response && (
+            <p className={styles.bodyText}>{step.content.response}</p>
+          )}
         </div>
       </div>
     )

@@ -104,6 +104,15 @@
   color: var(--color-amber);
 }
 
+.iconFeedback {
+  border-color: var(--color-purple);
+  background: var(--color-purple);
+}
+
+.feedbackLabel {
+  color: var(--color-purple);
+}
+
 .toolName {
   font-size: var(--text-sm);
   font-family: var(--font-mono);

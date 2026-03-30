@@ -17,6 +17,18 @@ type ApprovalRequest struct {
 	CreatedAt        string  `json:"created_at"`
 }
 
+type FeedbackRequest struct {
+	ID            string  `json:"id"`
+	RunID         string  `json:"run_id"`
+	ToolName      string  `json:"tool_name"`
+	ProposedInput string  `json:"proposed_input"`
+	Message       string  `json:"message"`
+	Status        string  `json:"status"`
+	Response      *string `json:"response"`
+	ResolvedAt    *string `json:"resolved_at"`
+	CreatedAt     string  `json:"created_at"`
+}
+
 type McpServer struct {
 	ID               string  `json:"id"`
 	Name             string  `json:"name"`

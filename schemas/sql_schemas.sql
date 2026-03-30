@@ -102,6 +102,7 @@ CREATE TABLE runs (
                         'pending',
                         'running',
                         'waiting_for_approval',
+                        'waiting_for_feedback',
                         'complete',
                         'failed',
                         'interrupted'
@@ -212,6 +213,26 @@ CREATE INDEX idx_approval_requests_run_id         ON approval_requests(run_id);
 CREATE INDEX idx_approval_requests_status         ON approval_requests(status);
 CREATE INDEX idx_approval_requests_status_expires ON approval_requests(status, expires_at);
 CREATE INDEX idx_approval_requests_run_pending    ON approval_requests(run_id, status);
+
+-- ---------------------------------------------------------------------------
+-- Feedback requests
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE feedback_requests (
+    id              TEXT    PRIMARY KEY,  -- ULID
+    run_id          TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    tool_name       TEXT    NOT NULL,
+    proposed_input  TEXT    NOT NULL,     -- JSON blob
+    message         TEXT    NOT NULL,     -- MCP tool output (notification sent to operator)
+    status          TEXT    NOT NULL CHECK(status IN ('pending', 'resolved')),
+    response        TEXT,                 -- nullable, operator's freeform text response
+    resolved_at     TEXT,                 -- nullable, ISO 8601 UTC
+    created_at      TEXT    NOT NULL      -- ISO 8601 UTC
+);
+
+CREATE INDEX idx_feedback_requests_run_id         ON feedback_requests(run_id);
+CREATE INDEX idx_feedback_requests_status         ON feedback_requests(status);
+CREATE INDEX idx_feedback_requests_run_pending    ON feedback_requests(run_id, status);
 
 -- ---------------------------------------------------------------------------
 -- Users

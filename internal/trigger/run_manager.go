@@ -13,6 +13,10 @@ type RunManager struct {
 	// approval gate. The channel is unbuffered; SendApproval sends non-blocking
 	// so it gracefully handles TOCTOU races (approval timed out, context done).
 	approvals map[string]chan bool
+	// feedbacks maps run IDs to the feedback channel for that run's current
+	// feedback gate. The channel is unbuffered; SendFeedback sends non-blocking
+	// so it gracefully handles TOCTOU races (context cancelled, run ended).
+	feedbacks map[string]chan string
 	// active tracks runs that have been registered but whose goroutine has not
 	// yet exited. This is separate from cancels because CancelAll removes from
 	// cancels without signalling the WaitGroup — the goroutine's deferred
@@ -25,21 +29,23 @@ func NewRunManager() *RunManager {
 	return &RunManager{
 		cancels:   make(map[string]context.CancelFunc),
 		approvals: make(map[string]chan bool),
+		feedbacks: make(map[string]chan string),
 		active:    make(map[string]bool),
 	}
 }
 
-// Register stores the cancel func and approval channel for the given run ID
-// and increments the internal WaitGroup. Must be called before the run
-// goroutine is launched. approvalCh is the unbuffered channel that the
-// BoundAgent's approval gate reads from; pass it so SendApproval can route
-// decisions to the waiting goroutine.
-func (m *RunManager) Register(runID string, cancel context.CancelFunc, approvalCh chan bool) {
+// Register stores the cancel func, approval channel, and feedback channel for
+// the given run ID and increments the internal WaitGroup. Must be called before
+// the run goroutine is launched. approvalCh and feedbackCh are the unbuffered
+// channels that the BoundAgent's gates read from; pass them so SendApproval and
+// SendFeedback can route decisions to the waiting goroutine.
+func (m *RunManager) Register(runID string, cancel context.CancelFunc, approvalCh chan bool, feedbackCh chan string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.wg.Add(1)
 	m.cancels[runID] = cancel
 	m.approvals[runID] = approvalCh
+	m.feedbacks[runID] = feedbackCh
 	m.active[runID] = true
 }
 
@@ -74,6 +80,7 @@ func (m *RunManager) Deregister(runID string) {
 		delete(m.cancels, runID)
 	}
 	delete(m.approvals, runID)
+	delete(m.feedbacks, runID)
 	delete(m.active, runID)
 	m.wg.Done()
 }
@@ -98,6 +105,26 @@ func (m *RunManager) SendApproval(runID string, approved bool) bool {
 	}
 }
 
+// SendFeedback routes an operator's freeform response to the run's waiting agent
+// goroutine. Returns true if the response was delivered, false if the run is not
+// registered or no goroutine is currently blocking on the feedback gate (TOCTOU
+// window where the context was cancelled between the caller's status check and
+// this call).
+func (m *RunManager) SendFeedback(runID string, response string) bool {
+	m.mu.Lock()
+	ch, ok := m.feedbacks[runID]
+	m.mu.Unlock()
+	if !ok {
+		return false
+	}
+	select {
+	case ch <- response:
+		return true
+	default:
+		return false
+	}
+}
+
 // CancelAll cancels every in-flight run. It does NOT call wg.Done — each
 // goroutine's deferred Deregister will do that when it exits.
 func (m *RunManager) CancelAll() {
@@ -109,6 +136,9 @@ func (m *RunManager) CancelAll() {
 	}
 	for id := range m.approvals {
 		delete(m.approvals, id)
+	}
+	for id := range m.feedbacks {
+		delete(m.feedbacks, id)
 	}
 }
 

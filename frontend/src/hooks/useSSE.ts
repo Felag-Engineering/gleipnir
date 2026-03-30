@@ -55,6 +55,25 @@ export function useSSE(): { connectionState: ConnectionState } {
       queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
     })
 
+    eventSource.addEventListener('feedback.created', (e: MessageEvent) => {
+      if (e.lastEventId) lastEventIdRef.current = e.lastEventId
+      queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
+    })
+
+    eventSource.addEventListener('feedback.resolved', (e: MessageEvent) => {
+      if (e.lastEventId) lastEventIdRef.current = e.lastEventId
+      try {
+        const data: { run_id: string } = JSON.parse(e.data)
+        queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
+        queryClient.invalidateQueries({ queryKey: queryKeys.runs.detail(data.run_id) })
+        queryClient.invalidateQueries({ queryKey: queryKeys.runs.steps(data.run_id) })
+        queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
+      } catch {
+        console.error('useSSE: failed to parse feedback.resolved payload', e.data)
+      }
+    })
+
     return () => {
       eventSource.close()
     }

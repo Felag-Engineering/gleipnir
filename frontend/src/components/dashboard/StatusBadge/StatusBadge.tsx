@@ -10,6 +10,7 @@ const VARIANT: Record<RunStatus, string> = {
   complete:             styles.complete,
   running:              styles.running,
   waiting_for_approval: styles.waitingForApproval,
+  waiting_for_feedback: styles.waitingForFeedback,
   failed:               styles.failed,
   interrupted:          styles.interrupted,
   pending:              styles.pending,

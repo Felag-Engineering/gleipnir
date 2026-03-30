@@ -42,6 +42,7 @@ func newRunsRouter(h *trigger.RunsHandler) *chi.Mux {
 	r.Get("/api/v1/runs/{runID}/steps", h.ListSteps)
 	r.Post("/api/v1/runs/{runID}/cancel", h.Cancel)
 	r.Post("/api/v1/runs/{runID}/approval", h.SubmitApproval)
+	r.Post("/api/v1/runs/{runID}/feedback", h.SubmitFeedback)
 	return r
 }
 
@@ -721,7 +722,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
 				insertTestPolicy(t, store, "p-cancel-run", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-cancel-running", "p-cancel-run", model.RunStatusRunning)
-				manager.Register("r-cancel-running", func() {}, make(chan bool))
+				manager.Register("r-cancel-running", func() {}, make(chan bool), make(chan string))
 			},
 			runID:    "r-cancel-running",
 			wantCode: http.StatusAccepted,
@@ -789,19 +790,32 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			},
 		},
 		{
-			name: "waiting_for_approval run returns 409 with error and status",
+			name: "waiting_for_approval run returns 202",
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
 				insertTestPolicy(t, store, "p-cancel-waiting", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-cancel-waiting", "p-cancel-waiting", model.RunStatusWaitingForApproval)
+				manager.Register("r-cancel-waiting", func() {}, make(chan bool), make(chan string))
 			},
 			runID:    "r-cancel-waiting",
-			wantCode: http.StatusConflict,
-			checkConflict: func(t *testing.T, body cancelErrorBody) {
-				if body.Error != "run is not in a cancellable state" {
-					t.Errorf("error = %q, want %q", body.Error, "run is not in a cancellable state")
+			wantCode: http.StatusAccepted,
+			checkSuccess: func(t *testing.T, body cancelSuccessBody) {
+				if body.Data["run_id"] != "r-cancel-waiting" {
+					t.Errorf("run_id = %q, want %q", body.Data["run_id"], "r-cancel-waiting")
 				}
-				if body.Detail != string(model.RunStatusWaitingForApproval) {
-					t.Errorf("detail = %q, want %q", body.Detail, model.RunStatusWaitingForApproval)
+			},
+		},
+		{
+			name: "waiting_for_feedback run returns 202",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
+				insertTestPolicy(t, store, "p-cancel-feedback", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-cancel-feedback", "p-cancel-feedback", model.RunStatusWaitingForFeedback)
+				manager.Register("r-cancel-feedback", func() {}, make(chan bool), make(chan string))
+			},
+			runID:    "r-cancel-feedback",
+			wantCode: http.StatusAccepted,
+			checkSuccess: func(t *testing.T, body cancelSuccessBody) {
+				if body.Data["run_id"] != "r-cancel-feedback" {
+					t.Errorf("run_id = %q, want %q", body.Data["run_id"], "r-cancel-feedback")
 				}
 			},
 		},
@@ -958,7 +972,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 				insertTestPolicy(t, store, "p-approval-no-gate", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-approval-no-gate", "p-approval-no-gate", model.RunStatusWaitingForApproval)
 				// Run is registered but nobody is reading from the channel.
-				manager.Register("r-approval-no-gate", func() {}, make(chan bool))
+				manager.Register("r-approval-no-gate", func() {}, make(chan bool), make(chan string))
 				return nil
 			},
 			runID:    "r-approval-no-gate",
@@ -979,7 +993,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 				// Buffered so the non-blocking send in SendApproval succeeds without
 				// needing a goroutine to be scheduled and blocking on the channel.
 				ch := make(chan bool, 1)
-				manager.Register("r-approval-ok", func() {}, ch)
+				manager.Register("r-approval-ok", func() {}, ch, make(chan string))
 				return ch
 			},
 			runID:    "r-approval-ok",
@@ -1003,7 +1017,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 				// Buffered so the non-blocking send in SendApproval succeeds without
 				// needing a goroutine to be scheduled and blocking on the channel.
 				ch := make(chan bool, 1)
-				manager.Register("r-approval-deny", func() {}, ch)
+				manager.Register("r-approval-deny", func() {}, ch, make(chan string))
 				return ch
 			},
 			runID:    "r-approval-deny",
@@ -1061,6 +1075,139 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 			}
 
 			// Clean up any registered runs to drain the WaitGroup.
+			manager.Deregister(tc.runID)
+		})
+	}
+}
+
+func TestRunsHandler_SubmitFeedback(t *testing.T) {
+	type successBody struct {
+		Data map[string]string `json:"data"`
+	}
+	type feedbackErrorBody struct {
+		Error  string `json:"error"`
+		Detail string `json:"detail"`
+	}
+
+	cases := []struct {
+		name         string
+		setup        func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string
+		runID        string
+		body         string
+		wantCode     int
+		checkSuccess func(t *testing.T, body successBody)
+		checkError   func(t *testing.T, body feedbackErrorBody)
+	}{
+		{
+			name: "run not found returns 404",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string {
+				return nil
+			},
+			runID:    "r-feedback-missing",
+			body:     `{"response":"yes proceed"}`,
+			wantCode: http.StatusNotFound,
+		},
+		{
+			name: "run not waiting_for_feedback returns 409",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string {
+				insertTestPolicy(t, store, "p-feedback-running", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-feedback-running", "p-feedback-running", model.RunStatusRunning)
+				return nil
+			},
+			runID:    "r-feedback-running",
+			body:     `{"response":"yes proceed"}`,
+			wantCode: http.StatusConflict,
+			checkError: func(t *testing.T, body feedbackErrorBody) {
+				if body.Error != "run is not waiting for feedback" {
+					t.Errorf("error = %q, want %q", body.Error, "run is not waiting for feedback")
+				}
+			},
+		},
+		{
+			name: "empty response returns 400",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string {
+				return nil
+			},
+			runID:    "r-feedback-empty",
+			body:     `{"response":""}`,
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "waiting_for_feedback but no active gate returns 409",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string {
+				insertTestPolicy(t, store, "p-feedback-no-gate", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-feedback-no-gate", "p-feedback-no-gate", model.RunStatusWaitingForFeedback)
+				// Run is registered but nobody is reading from the channel.
+				manager.Register("r-feedback-no-gate", func() {}, make(chan bool), make(chan string))
+				return nil
+			},
+			runID:    "r-feedback-no-gate",
+			body:     `{"response":"yes proceed"}`,
+			wantCode: http.StatusConflict,
+			checkError: func(t *testing.T, body feedbackErrorBody) {
+				if body.Error != "no active feedback gate for this run" {
+					t.Errorf("error = %q, want %q", body.Error, "no active feedback gate for this run")
+				}
+			},
+		},
+		{
+			name: "response delivered returns 202",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string {
+				insertTestPolicy(t, store, "p-feedback-ok", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-feedback-ok", "p-feedback-ok", model.RunStatusWaitingForFeedback)
+				// Buffered so the non-blocking send in SendFeedback succeeds.
+				ch := make(chan string, 1)
+				manager.Register("r-feedback-ok", func() {}, make(chan bool), ch)
+				return ch
+			},
+			runID:    "r-feedback-ok",
+			body:     `{"response":"yes, proceed with caution"}`,
+			wantCode: http.StatusAccepted,
+			checkSuccess: func(t *testing.T, body successBody) {
+				if body.Data["run_id"] != "r-feedback-ok" {
+					t.Errorf("run_id = %q, want %q", body.Data["run_id"], "r-feedback-ok")
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			manager := trigger.NewRunManager()
+
+			if tc.setup != nil {
+				tc.setup(t, store, manager)
+			}
+
+			h := trigger.NewRunsHandler(store, manager, nil)
+			router := newRunsRouter(h)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+tc.runID+"/feedback", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d; body: %s", w.Code, tc.wantCode, w.Body.String())
+			}
+
+			if tc.checkSuccess != nil {
+				var body successBody
+				if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+					t.Fatalf("decode success response: %v", err)
+				}
+				tc.checkSuccess(t, body)
+			}
+
+			if tc.checkError != nil {
+				var body feedbackErrorBody
+				if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+					t.Fatalf("decode error response: %v", err)
+				}
+				tc.checkError(t, body)
+			}
+
 			manager.Deregister(tc.runID)
 		})
 	}

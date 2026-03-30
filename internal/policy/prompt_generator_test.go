@@ -108,29 +108,61 @@ func TestRenderCapabilitiesBlock_AllRoles(t *testing.T) {
 	if !strings.Contains(result, "deploy.run") {
 		t.Error("expected tool deploy.run")
 	}
-	if !strings.Contains(result, "deploy.rollback") {
-		t.Error("expected tool deploy.rollback")
-	}
 
-	// Approval annotation
-	if !strings.Contains(result, "[requires human approval before execution]") {
-		t.Error("expected approval annotation on deploy.rollback")
-	}
-	// Ensure non-approval tool does NOT have the annotation
-	runLine := ""
+	// deploy.rollback must appear as a plain entry with no approval annotation.
+	// Approval gates must not be visible to the agent — they are a runtime
+	// enforcement detail, not a prompt-based restriction (ADR-001).
+	rollbackLine := ""
 	for _, line := range strings.Split(result, "\n") {
-		if strings.Contains(line, "deploy.run") {
-			runLine = line
+		if strings.Contains(line, "deploy.rollback") {
+			rollbackLine = line
 			break
 		}
 	}
-	if strings.Contains(runLine, "[requires human approval") {
-		t.Error("deploy.run should not have approval annotation")
+	if rollbackLine == "" {
+		t.Error("expected deploy.rollback to be listed")
+	}
+	if strings.Contains(rollbackLine, "[") {
+		t.Errorf("deploy.rollback line must have no annotation, got: %q", rollbackLine)
 	}
 
 	// Feedback
 	if !strings.Contains(result, "slack.send_message") {
 		t.Error("expected feedback tool slack.send_message")
+	}
+}
+
+func TestRenderSystemPrompt_NoApprovalAnnotation(t *testing.T) {
+	p := &model.ParsedPolicy{
+		Agent: model.AgentConfig{
+			Task: "Do something",
+		},
+	}
+	granted := []model.GrantedTool{
+		{ServerName: "deploy", ToolName: "rollback", Role: model.CapabilityRoleTool, Approval: model.ApprovalModeRequired},
+	}
+
+	result := RenderSystemPrompt(p, granted, time.Date(2026, 3, 13, 12, 0, 0, 0, time.UTC))
+
+	if strings.Contains(result, "requires human approval") {
+		t.Error("system prompt must not contain 'requires human approval'")
+	}
+	if strings.Contains(strings.ToLower(result), "approval") {
+		t.Error("system prompt must not contain 'approval' — enforcement is invisible to the agent")
+	}
+}
+
+func TestRenderSystemPrompt_FeedbackPausesDescription(t *testing.T) {
+	p := &model.ParsedPolicy{
+		Agent: model.AgentConfig{
+			Task: "Do something",
+		},
+	}
+
+	result := RenderSystemPrompt(p, nil, time.Date(2026, 3, 13, 12, 0, 0, 0, time.UTC))
+
+	if !strings.Contains(result, "pause this run") {
+		t.Error("default preamble must describe that feedback tools pause the run")
 	}
 }
 

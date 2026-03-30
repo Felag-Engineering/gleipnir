@@ -43,23 +43,30 @@ var legalTransitions = [][2]model.RunStatus{
 	{model.RunStatusRunning, model.RunStatusComplete},
 	{model.RunStatusRunning, model.RunStatusFailed},
 	{model.RunStatusRunning, model.RunStatusWaitingForApproval},
+	{model.RunStatusRunning, model.RunStatusWaitingForFeedback},
 	{model.RunStatusRunning, model.RunStatusInterrupted},
 	{model.RunStatusWaitingForApproval, model.RunStatusRunning},
 	{model.RunStatusWaitingForApproval, model.RunStatusFailed},
 	{model.RunStatusWaitingForApproval, model.RunStatusInterrupted},
+	{model.RunStatusWaitingForFeedback, model.RunStatusRunning},
+	{model.RunStatusWaitingForFeedback, model.RunStatusFailed},
+	{model.RunStatusWaitingForFeedback, model.RunStatusInterrupted},
 }
 
 // illegalTransitions lists a representative set of edges that must fail.
 var illegalTransitions = [][2]model.RunStatus{
 	{model.RunStatusPending, model.RunStatusComplete},
 	{model.RunStatusPending, model.RunStatusWaitingForApproval},
+	{model.RunStatusPending, model.RunStatusWaitingForFeedback},
 	{model.RunStatusPending, model.RunStatusInterrupted},
 	{model.RunStatusComplete, model.RunStatusRunning},
 	{model.RunStatusComplete, model.RunStatusFailed},
+	{model.RunStatusComplete, model.RunStatusWaitingForFeedback},
 	{model.RunStatusFailed, model.RunStatusRunning},
 	{model.RunStatusFailed, model.RunStatusComplete},
 	{model.RunStatusInterrupted, model.RunStatusRunning},
 	{model.RunStatusInterrupted, model.RunStatusComplete},
+	{model.RunStatusWaitingForFeedback, model.RunStatusComplete},
 	{model.RunStatusRunning, model.RunStatusPending},
 }
 
@@ -371,6 +378,100 @@ func TestRunStateMachine_WaitingForApproval_NoPayload(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Errorf("pending approval requests = %d, want 0", len(pending))
+	}
+}
+
+func TestRunStateMachine_WaitingForFeedback_CreatesRecord(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+
+	payload := FeedbackPayload{
+		FeedbackID:    "feedback-001",
+		ToolName:      "slack.send_message",
+		ProposedInput: `{"channel":"ops","text":"Should I proceed?"}`,
+		Message:       "Message sent to #ops",
+	}
+
+	if err := sm.Transition(context.Background(), model.RunStatusWaitingForFeedback, "", WithFeedbackPayload(payload)); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+
+	// Verify the feedback_requests DB record was created.
+	pending, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+	if err != nil {
+		t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending feedback requests = %d, want 1", len(pending))
+	}
+	if pending[0].ID != "feedback-001" {
+		t.Errorf("feedback request ID = %q, want %q", pending[0].ID, "feedback-001")
+	}
+	if pending[0].ToolName != "slack.send_message" {
+		t.Errorf("tool_name = %q, want %q", pending[0].ToolName, "slack.send_message")
+	}
+
+	// Verify both run.status_changed and feedback.created events were published.
+	events := pub.all()
+	var hasStatusChanged, hasFeedbackCreated bool
+	var feedbackCreatedPayload map[string]string
+	for _, ev := range events {
+		switch ev.eventType {
+		case "run.status_changed":
+			hasStatusChanged = true
+		case "feedback.created":
+			hasFeedbackCreated = true
+			if err := json.Unmarshal(ev.data, &feedbackCreatedPayload); err != nil {
+				t.Fatalf("unmarshal feedback.created data: %v", err)
+			}
+		}
+	}
+	if !hasStatusChanged {
+		t.Error("expected run.status_changed event, not found")
+	}
+	if !hasFeedbackCreated {
+		t.Fatal("expected feedback.created event, not found")
+	}
+	if feedbackCreatedPayload["feedback_id"] != "feedback-001" {
+		t.Errorf("feedback.created feedback_id = %q, want %q", feedbackCreatedPayload["feedback_id"], "feedback-001")
+	}
+	if feedbackCreatedPayload["run_id"] != "run1" {
+		t.Errorf("feedback.created run_id = %q, want %q", feedbackCreatedPayload["run_id"], "run1")
+	}
+}
+
+func TestRunStateMachine_WaitingForFeedback_NoPayload(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+
+	// Transition without a payload — should succeed with only run.status_changed.
+	if err := sm.Transition(context.Background(), model.RunStatusWaitingForFeedback, ""); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+
+	events := pub.all()
+	if len(events) != 1 {
+		t.Fatalf("got %d published events, want 1", len(events))
+	}
+	if events[0].eventType != "run.status_changed" {
+		t.Errorf("event type = %q, want %q", events[0].eventType, "run.status_changed")
+	}
+
+	// No feedback_requests record should have been created.
+	pending, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+	if err != nil {
+		t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("pending feedback requests = %d, want 0", len(pending))
 	}
 }
 

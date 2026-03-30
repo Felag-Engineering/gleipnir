@@ -14,16 +14,18 @@ import (
 // Valid transitions: pending → running → complete | failed
 //
 //	running → waiting_for_approval → running (approved) | failed (rejected/timeout)
-//	running | waiting_for_approval → interrupted (on restart, ADR-011)
+//	running → waiting_for_feedback → running (response received) | failed
+//	running | waiting_for_approval | waiting_for_feedback → interrupted (on restart, ADR-011)
 type RunStatus string
 
 const (
-	RunStatusPending            RunStatus = "pending"
-	RunStatusRunning            RunStatus = "running"
-	RunStatusWaitingForApproval RunStatus = "waiting_for_approval"
-	RunStatusComplete           RunStatus = "complete"
-	RunStatusFailed             RunStatus = "failed"
-	RunStatusInterrupted        RunStatus = "interrupted"
+	RunStatusPending             RunStatus = "pending"
+	RunStatusRunning             RunStatus = "running"
+	RunStatusWaitingForApproval  RunStatus = "waiting_for_approval"
+	RunStatusWaitingForFeedback  RunStatus = "waiting_for_feedback"
+	RunStatusComplete            RunStatus = "complete"
+	RunStatusFailed              RunStatus = "failed"
+	RunStatusInterrupted         RunStatus = "interrupted"
 )
 
 // TriggerType identifies how a policy run is initiated.
@@ -94,7 +96,7 @@ func (s RunStatus) String() string { return string(s) }
 func (s RunStatus) Valid() bool {
 	switch s {
 	case RunStatusPending, RunStatusRunning, RunStatusWaitingForApproval,
-		RunStatusComplete, RunStatusFailed, RunStatusInterrupted:
+		RunStatusWaitingForFeedback, RunStatusComplete, RunStatusFailed, RunStatusInterrupted:
 		return true
 	}
 	return false

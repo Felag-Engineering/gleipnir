@@ -1,8 +1,8 @@
-export type RunStatus = 'complete' | 'running' | 'waiting_for_approval' | 'failed' | 'interrupted' | 'pending'
+export type RunStatus = 'complete' | 'running' | 'waiting_for_approval' | 'waiting_for_feedback' | 'failed' | 'interrupted' | 'pending'
 export type TriggerType = 'webhook' | 'manual' | 'scheduled'
 
 export const KNOWN_STATUSES: Set<string> = new Set([
-  'complete', 'running', 'waiting_for_approval', 'failed', 'interrupted', 'pending',
+  'complete', 'running', 'waiting_for_approval', 'waiting_for_feedback', 'failed', 'interrupted', 'pending',
 ])
 
 // NOTE: KNOWN_TRIGGERS includes 'cron' and 'poll' from the backend, but TriggerType

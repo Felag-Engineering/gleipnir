@@ -58,8 +58,18 @@ type ApprovalPayload struct {
 	ExpiresAt     string // RFC3339Nano
 }
 
+// FeedbackPayload carries the data needed to create a feedback_requests DB
+// record when entering waiting_for_feedback.
+type FeedbackPayload struct {
+	FeedbackID    string
+	ToolName      string
+	ProposedInput string // JSON-encoded input the agent sent to the feedback tool
+	Message       string // MCP tool output — the notification text sent to the operator
+}
+
 type transitionOpts struct {
 	approval *ApprovalPayload
+	feedback *FeedbackPayload
 }
 
 // TransitionOption configures optional behavior for a Transition call.
@@ -68,6 +78,11 @@ type TransitionOption func(*transitionOpts)
 // WithApprovalPayload attaches approval context to a waiting_for_approval transition.
 func WithApprovalPayload(p ApprovalPayload) TransitionOption {
 	return func(o *transitionOpts) { o.approval = &p }
+}
+
+// WithFeedbackPayload attaches feedback context to a waiting_for_feedback transition.
+func WithFeedbackPayload(p FeedbackPayload) TransitionOption {
+	return func(o *transitionOpts) { o.feedback = &p }
 }
 
 // Transition validates and persists a run status transition.
@@ -130,6 +145,21 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 		}
 	}
 
+	// Create the feedback_requests DB record when entering waiting_for_feedback.
+	if next == model.RunStatusWaitingForFeedback && topts.feedback != nil {
+		p := topts.feedback
+		if _, err := sm.queries.CreateFeedbackRequest(ctx, db.CreateFeedbackRequestParams{
+			ID:            p.FeedbackID,
+			RunID:         sm.runID,
+			ToolName:      p.ToolName,
+			ProposedInput: p.ProposedInput,
+			Message:       p.Message,
+			CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		}); err != nil {
+			return fmt.Errorf("creating feedback request record: %w", err)
+		}
+	}
+
 	sm.current = next
 	slog.InfoContext(ctx, "run status transition", "run_id", sm.runID, "from", string(from), "to", string(next))
 
@@ -147,6 +177,14 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 			return fmt.Errorf("marshal approval.created payload: %w", err)
 		}
 		sm.publisher.Publish("approval.created", eventData)
+	}
+
+	if sm.publisher != nil && topts.feedback != nil {
+		eventData, err := json.Marshal(map[string]string{"feedback_id": topts.feedback.FeedbackID, "run_id": sm.runID})
+		if err != nil {
+			return fmt.Errorf("marshal feedback.created payload: %w", err)
+		}
+		sm.publisher.Publish("feedback.created", eventData)
 	}
 
 	return nil
@@ -177,10 +215,14 @@ func isLegalTransition(from, to model.RunStatus) bool {
 		{model.RunStatusRunning, model.RunStatusComplete},
 		{model.RunStatusRunning, model.RunStatusFailed},
 		{model.RunStatusRunning, model.RunStatusWaitingForApproval},
+		{model.RunStatusRunning, model.RunStatusWaitingForFeedback},
 		{model.RunStatusRunning, model.RunStatusInterrupted},
 		{model.RunStatusWaitingForApproval, model.RunStatusRunning},
 		{model.RunStatusWaitingForApproval, model.RunStatusFailed},
 		{model.RunStatusWaitingForApproval, model.RunStatusInterrupted},
+		{model.RunStatusWaitingForFeedback, model.RunStatusRunning},
+		{model.RunStatusWaitingForFeedback, model.RunStatusFailed},
+		{model.RunStatusWaitingForFeedback, model.RunStatusInterrupted},
 	}
 	for _, pair := range legal {
 		if pair[0] == from && pair[1] == to {

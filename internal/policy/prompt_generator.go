@@ -14,8 +14,8 @@ const defaultPreamble = `You are a BoundAgent — an autonomous agent operating 
 
 You have two categories of capabilities:
 
-- Tools: your available tools for interacting with systems. Some tools may require human approval before execution — these are marked in your tool list.
-- Feedback: a channel to consult a human operator. Use this when you are uncertain about intended scope, when observations reveal something unexpected, or when proceeding would require an assumption you cannot verify.
+- Tools: your available tools for interacting with systems.
+- Feedback: a channel to consult a human operator. Calling a feedback tool will pause this run until an operator responds. Use this when you are uncertain about intended scope, when observations reveal something unexpected, or when proceeding would require an assumption you cannot verify.
 
 Your operating principles:
 1. Act deliberately. Gather information before making changes. Do not take additional actions because they seem useful.
@@ -67,11 +67,7 @@ func renderCapabilitiesBlock(granted []model.GrantedTool) string {
 		b.WriteString("None.\n")
 	} else {
 		for _, t := range tools {
-			if t.Approval == model.ApprovalModeRequired {
-				fmt.Fprintf(&b, "- %s.%s [requires human approval before execution]\n", t.ServerName, t.ToolName)
-			} else {
-				fmt.Fprintf(&b, "- %s.%s\n", t.ServerName, t.ToolName)
-			}
+			fmt.Fprintf(&b, "- %s.%s\n", t.ServerName, t.ToolName)
 		}
 	}
 

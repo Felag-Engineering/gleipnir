@@ -130,6 +130,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate trigger queue: %w", err)
 	}
 
+	if err := s.migrateAddWaitingForFeedback(ctx); err != nil {
+		return fmt.Errorf("migrate waiting_for_feedback status: %w", err)
+	}
+
+	if err := s.migrateAddFeedbackRequests(ctx); err != nil {
+		return fmt.Errorf("migrate feedback_requests table: %w", err)
+	}
+
 	return nil
 }
 
@@ -235,11 +243,136 @@ CREATE INDEX idx_trigger_queue_policy_position ON trigger_queue(policy_id, posit
 	return nil
 }
 
-// ScanOrphanedRuns finds any runs left in 'running' or 'waiting_for_approval'
-// state from a previous process crash, inserts an error run_step for each,
-// and marks them 'interrupted'. Called once at startup before accepting traffic
-// (ADR-011). Errors for individual runs are logged and skipped — startup must
-// not be blocked by a partially-corrupted run.
+// migrateAddWaitingForFeedback updates the runs table CHECK constraint to include
+// 'waiting_for_feedback' on existing deployments. New deployments get it from
+// 0001_initial.sql directly.
+//
+// SQLite does not support ALTER COLUMN, so we use the table-recreation pattern.
+// The PRAGMA foreign_keys change must be executed OUTSIDE the transaction because
+// SQLite does not permit changing it inside a transaction.
+func (s *Store) migrateAddWaitingForFeedback(ctx context.Context) error {
+	var tableSQL string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='runs'`,
+	).Scan(&tableSQL)
+	if err != nil {
+		return fmt.Errorf("query runs schema: %w", err)
+	}
+
+	if strings.Contains(tableSQL, "'waiting_for_feedback'") {
+		return nil // already present; nothing to do
+	}
+
+	// Disable FK enforcement before the transaction so that the DROP TABLE
+	// inside the transaction does not trigger FK violations from child tables
+	// (run_steps, approval_requests, feedback_requests). Re-enable after commit.
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys before runs migration: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		return fmt.Errorf("begin waiting_for_feedback migration tx: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.Error("waiting_for_feedback migration rollback failed", "err", rbErr)
+		}
+	}()
+
+	ddl := `
+CREATE TABLE runs_new (
+    id              TEXT    PRIMARY KEY,
+    policy_id       TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+    status          TEXT    NOT NULL CHECK(status IN (
+                        'pending',
+                        'running',
+                        'waiting_for_approval',
+                        'waiting_for_feedback',
+                        'complete',
+                        'failed',
+                        'interrupted'
+                    )),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled')),
+    trigger_payload TEXT    NOT NULL,
+    started_at      TEXT    NOT NULL,
+    completed_at    TEXT,
+    token_cost      INTEGER NOT NULL DEFAULT 0,
+    error           TEXT,
+    thread_id       TEXT,
+    created_at      TEXT    NOT NULL,
+    system_prompt   TEXT
+);
+INSERT INTO runs_new SELECT * FROM runs;
+DROP TABLE runs;
+ALTER TABLE runs_new RENAME TO runs;
+CREATE INDEX idx_runs_status         ON runs(status);
+CREATE INDEX idx_runs_created_at     ON runs(created_at DESC);
+CREATE INDEX idx_runs_policy_created ON runs(policy_id, created_at DESC);
+CREATE INDEX idx_runs_policy_status  ON runs(policy_id, status);`
+
+	if _, err := tx.ExecContext(ctx, ddl); err != nil {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		return fmt.Errorf("recreate runs table with waiting_for_feedback: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		return fmt.Errorf("commit waiting_for_feedback migration: %w", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		return fmt.Errorf("re-enable foreign keys after runs migration: %w", err)
+	}
+
+	slog.Info("migrated runs table to include waiting_for_feedback status")
+	return nil
+}
+
+// migrateAddFeedbackRequests creates the feedback_requests table and its indexes on
+// existing deployments. New deployments get it from 0001_initial.sql; this migration
+// is a no-op for them.
+func (s *Store) migrateAddFeedbackRequests(ctx context.Context) error {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='feedback_requests'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check feedback_requests existence: %w", err)
+	}
+	if count > 0 {
+		return nil // already present; nothing to do
+	}
+
+	ddl := `
+CREATE TABLE feedback_requests (
+    id              TEXT    PRIMARY KEY,
+    run_id          TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    tool_name       TEXT    NOT NULL,
+    proposed_input  TEXT    NOT NULL,
+    message         TEXT    NOT NULL,
+    status          TEXT    NOT NULL CHECK(status IN ('pending', 'resolved')),
+    response        TEXT,
+    resolved_at     TEXT,
+    created_at      TEXT    NOT NULL
+);
+CREATE INDEX idx_feedback_requests_run_id         ON feedback_requests(run_id);
+CREATE INDEX idx_feedback_requests_status         ON feedback_requests(status);
+CREATE INDEX idx_feedback_requests_run_pending    ON feedback_requests(run_id, status);`
+
+	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("create feedback_requests: %w", err)
+	}
+
+	slog.Info("migrated: created feedback_requests table")
+	return nil
+}
+
+// ScanOrphanedRuns finds any runs left in 'running', 'waiting_for_approval', or
+// 'waiting_for_feedback' state from a previous process crash, inserts an error
+// run_step for each, and marks them 'interrupted'. Called once at startup before
+// accepting traffic (ADR-011). Errors for individual runs are logged and skipped
+// — startup must not be blocked by a partially-corrupted run.
 func (s *Store) ScanOrphanedRuns(ctx context.Context, logger *slog.Logger) error {
 	runs, err := s.queries.ListOrphanedRuns(ctx)
 	if err != nil {

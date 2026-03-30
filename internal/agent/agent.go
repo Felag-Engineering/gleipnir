@@ -35,6 +35,9 @@ type BoundAgent struct {
 	// approvalCh receives the operator's decision when a run is suspended
 	// waiting_for_approval. Sent by the approval handler in internal/trigger.
 	approvalCh <-chan bool
+	// feedbackCh receives the operator's freeform text response when a run is
+	// suspended waiting_for_feedback. Sent by the feedback handler in internal/trigger.
+	feedbackCh <-chan string
 }
 
 // Config holds the dependencies needed to construct a BoundAgent.
@@ -44,6 +47,7 @@ type Config struct {
 	LLMClient    llm.LLMClient
 	Audit        *AuditWriter
 	ApprovalCh   <-chan bool
+	FeedbackCh   <-chan string
 	StateMachine *RunStateMachine
 }
 
@@ -76,6 +80,7 @@ func New(cfg Config) (*BoundAgent, error) {
 		audit:       cfg.Audit,
 		sm:          cfg.StateMachine,
 		approvalCh:  cfg.ApprovalCh,
+		feedbackCh:  cfg.FeedbackCh,
 	}, nil
 }
 
@@ -220,6 +225,53 @@ func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry re
 	}
 
 	return nil
+}
+
+// waitForFeedback suspends the run waiting for a freeform operator response.
+// It transitions to waiting_for_feedback (which creates the DB record and
+// publishes feedback.created), then blocks on the feedback channel or context
+// cancellation. There is no timeout — the operator can cancel the run if they
+// do not wish to respond. Returns the operator's response text on success.
+func (a *BoundAgent) waitForFeedback(ctx context.Context, runID, toolName, inputJSON, mcpOutput string) (string, error) {
+	feedbackID := model.NewULID()
+
+	if err := a.audit.Write(ctx, Step{
+		RunID: runID,
+		Type:  model.StepTypeFeedbackRequest,
+		Content: map[string]any{
+			"feedback_id": feedbackID,
+			"tool":        toolName,
+			"message":     mcpOutput,
+		},
+	}); err != nil {
+		return "", fmt.Errorf("writing feedback_request step: %w", err)
+	}
+
+	if err := a.sm.Transition(ctx, model.RunStatusWaitingForFeedback, "", WithFeedbackPayload(FeedbackPayload{
+		FeedbackID:    feedbackID,
+		ToolName:      toolName,
+		ProposedInput: inputJSON,
+		Message:       mcpOutput,
+	})); err != nil {
+		return "", fmt.Errorf("transitioning run to waiting_for_feedback: %w", err)
+	}
+
+	select {
+	case responseText := <-a.feedbackCh:
+		if err := a.audit.Write(ctx, Step{
+			RunID:   runID,
+			Type:    model.StepTypeFeedbackResponse,
+			Content: map[string]any{"feedback_id": feedbackID, "response": responseText},
+		}); err != nil {
+			return "", fmt.Errorf("writing feedback_response step: %w", err)
+		}
+		if err := a.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
+			return "", fmt.Errorf("transitioning run back to running after feedback: %w", err)
+		}
+		return responseText, nil
+	case <-ctx.Done():
+		return "", fmt.Errorf("context cancelled waiting for feedback: %w", ctx.Err())
+	}
 }
 
 // runAPILoop drives the LLM API loop until the model returns end_turn,
@@ -580,6 +632,22 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		},
 	}); err != nil {
 		return "", false, fmt.Errorf("writing tool_result step: %w", err)
+	}
+
+	// Feedback tools block execution after the MCP call completes. The MCP call
+	// sends the notification (e.g. Slack message); the run then pauses until the
+	// operator responds through the API. The operator's response becomes the tool
+	// result returned to the LLM in place of the MCP output.
+	if entry.tool.Role == model.CapabilityRoleFeedback {
+		inputJSON, err := json.Marshal(input)
+		if err != nil {
+			return "", false, fmt.Errorf("marshalling feedback tool input: %w", err)
+		}
+		responseText, err := a.waitForFeedback(ctx, runID, toolName, string(inputJSON), outputStr)
+		if err != nil {
+			return "", false, err
+		}
+		return responseText, false, nil
 	}
 
 	return outputStr, result.IsError, nil

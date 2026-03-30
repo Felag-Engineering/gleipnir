@@ -150,18 +150,20 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	sm := agent.NewRunStateMachine(run.ID, model.RunStatusPending, l.store.Queries(), agent.WithStateMachinePublisher(l.publisher))
 
 	approvalCh := make(chan bool)
+	feedbackCh := make(chan string)
 	ba, err := l.newAgent(agent.Config{
 		Tools:        resolvedTools,
 		Policy:       params.ParsedPolicy,
 		Audit:        audit,
 		StateMachine: sm,
 		ApprovalCh:   approvalCh,
+		FeedbackCh:   feedbackCh,
 	})
 	if err != nil {
 		// Mark the run failed — it was created and tools resolved but agent
 		// construction failed (e.g. schema narrowing error). Without this,
 		// the run stays in 'pending' forever since ScanOrphanedRuns only
-		// rescues 'running' and 'waiting_for_approval' states.
+		// rescues 'running', 'waiting_for_approval', and 'waiting_for_feedback' states.
 		markRunFailed(l.store, run.ID, err)
 		if closeErr := audit.Close(); closeErr != nil {
 			slog.Error("audit writer drain error on failed launch", "run_id", run.ID, "err", closeErr)
@@ -173,7 +175,7 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	// the HTTP request that triggered it. RunManager's WaitGroup tracks it for
 	// graceful shutdown; cancellation is performed via the registered cancel func.
 	runCtx, cancel := context.WithCancel(context.Background())
-	l.manager.Register(run.ID, cancel, approvalCh)
+	l.manager.Register(run.ID, cancel, approvalCh, feedbackCh)
 
 	payload := params.TriggerPayload
 	go func() {

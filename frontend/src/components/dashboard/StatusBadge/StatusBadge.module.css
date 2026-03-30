@@ -64,6 +64,13 @@
   border: 1px solid color-mix(in srgb, var(--text-faint) 40%, transparent);
 }
 
+.waitingForFeedback {
+  color: var(--color-purple);
+  background: color-mix(in srgb, var(--color-purple) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-purple) 20%, transparent);
+  animation: feedbackPulse 2.4s ease-in-out infinite;
+}
+
 @keyframes sweep {
   0%   { left: -100%; }
   60%  { left: 100%; }
@@ -83,7 +90,21 @@
   }
 }
 
+@keyframes feedbackPulse {
+  0%, 100% {
+    border-color: color-mix(in srgb, var(--color-purple) 20%, transparent);
+    background: color-mix(in srgb, var(--color-purple) 8%, transparent);
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--color-purple) 60%, transparent);
+    background: color-mix(in srgb, var(--color-purple) 16%, transparent);
+    box-shadow: 0 0 8px 0 color-mix(in srgb, var(--color-purple) 20%, transparent);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .running::after { animation: none; display: none; }
   .waitingForApproval { animation: none; }
+  .waitingForFeedback { animation: none; }
 }
