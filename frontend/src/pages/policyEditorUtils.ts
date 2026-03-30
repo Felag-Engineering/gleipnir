@@ -5,7 +5,6 @@ import type {
   ConcurrencyValue,
   IdentityFormState,
   ModelFormState,
-  ModelValue,
   RunLimitsFormState,
   TaskInstructionsFormState,
   TriggerFormState,
@@ -27,6 +26,9 @@ export interface FormState {
 
 export const DEFAULT_YAML = `name: new-policy
 description: ''
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 trigger:
   type: webhook
 capabilities:
@@ -148,13 +150,14 @@ export function yamlToFormState(yaml: string): FormState | null {
       : 'skip',
   }
 
-  const validModels: ModelValue[] = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001']
-  const modelRaw = agentRaw.model
-  const model: ModelFormState = {
-    model: validModels.includes(modelRaw as ModelValue)
-      ? (modelRaw as ModelValue)
-      : 'claude-sonnet-4-6',
-  }
+  // Read model from top-level model: section
+  const modelRaw = p.model && typeof p.model === 'object' && !Array.isArray(p.model)
+    ? (p.model as Record<string, unknown>)
+    : null
+
+  const model: ModelFormState = modelRaw && typeof modelRaw.provider === 'string' && typeof modelRaw.name === 'string'
+    ? { provider: modelRaw.provider, model: modelRaw.name }
+    : { provider: 'anthropic', model: 'claude-sonnet-4-6' }
 
   const _preamble = typeof agentRaw.preamble === 'string' ? agentRaw.preamble : undefined
   const _feedbackCapabilities = Array.isArray(capsRaw.feedback) ? capsRaw.feedback : undefined
@@ -206,7 +209,6 @@ export function formStateToYaml(state: FormState): string {
   // Build agent block
   const agentObj: Record<string, unknown> = {}
   if (state._preamble !== undefined) agentObj.preamble = state._preamble
-  agentObj.model = model.model
   agentObj.task = task.task
   agentObj.limits = {
     max_tokens_per_run: limits.max_tokens_per_run,
@@ -219,6 +221,7 @@ export function formStateToYaml(state: FormState): string {
   }
   if (identity.description) doc.description = identity.description
   if (identity.folder) doc.folder = identity.folder
+  doc.model = { provider: model.provider, name: model.model }
   doc.trigger = triggerObj
   doc.capabilities = capsObj
   doc.agent = agentObj

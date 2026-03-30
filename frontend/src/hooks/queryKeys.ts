@@ -26,4 +26,7 @@ export const queryKeys = {
   currentUser: {
     all: ['currentUser'] as const,
   },
+  models: {
+    all: ['models'] as const,
+  },
 } as const

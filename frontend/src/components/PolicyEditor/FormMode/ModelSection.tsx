@@ -1,30 +1,47 @@
 import styles from './ModelSection.module.css';
-import type { ModelFormState, ModelValue } from './types';
+import type { ModelFormState } from './types';
+import { useModels } from '@/hooks/useModels';
 
 export interface ModelSectionProps {
   value: ModelFormState;
   onChange: (next: ModelFormState) => void;
 }
 
-const MODEL_OPTIONS: { value: ModelValue; label: string; desc: string }[] = [
-  { value: 'claude-opus-4-6',           label: 'Opus 4.6',        desc: 'Most capable, highest cost' },
-  { value: 'claude-sonnet-4-6',         label: 'Sonnet 4.6',      desc: 'Balanced capability and cost' },
-  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5',       desc: 'Fastest, lowest cost' },
-];
-
 export function ModelSection({ value, onChange }: ModelSectionProps) {
+  const { data: providers, isLoading, isError } = useModels();
+
+  const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const raw = e.target.value; // format: "provider:model"
+    const sep = raw.indexOf(':');
+    if (sep < 0) return;
+    onChange({
+      provider: raw.slice(0, sep),
+      model: raw.slice(sep + 1),
+    });
+  };
+
+  const selected = `${value.provider}:${value.model}`;
+
   return (
     <div className={styles.section}>
       <div className={styles.heading}>Model</div>
       <select
         className={styles.select}
-        value={value.model}
-        onChange={(e) => onChange({ model: e.target.value as ModelValue })}
+        value={selected}
+        onChange={handleChange}
+        disabled={isLoading || isError}
       >
-        {MODEL_OPTIONS.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label} — {option.desc}
-          </option>
+        {isLoading && <option value={selected}>Loading models…</option>}
+        {isError && <option value={selected}>Failed to load models</option>}
+        {providers?.length === 0 && <option value={selected}>No models available</option>}
+        {providers?.map((group) => (
+          <optgroup key={group.provider} label={group.provider}>
+            {group.models.map((m) => (
+              <option key={`${group.provider}:${m.name}`} value={`${group.provider}:${m.name}`}>
+                {m.display_name}
+              </option>
+            ))}
+          </optgroup>
         ))}
       </select>
     </div>

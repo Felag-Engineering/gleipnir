@@ -1104,9 +1104,12 @@ func TestAnthropicClient_ListModels(t *testing.T) {
 	if models[1].Name != "claude-sonnet-4-6" {
 		t.Errorf("models[1].Name = %q, want %q", models[1].Name, "claude-sonnet-4-6")
 	}
-	// Anthropic has no separate display name; Name is used for both.
-	if models[0].DisplayName != models[0].Name {
-		t.Errorf("expected DisplayName == Name for Anthropic, got %q", models[0].DisplayName)
+	// DisplayName should be humanized, not the raw model ID.
+	if models[0].DisplayName != "Claude Opus 4.0" {
+		t.Errorf("models[0].DisplayName = %q, want %q", models[0].DisplayName, "Claude Opus 4.0")
+	}
+	if models[1].DisplayName != "Claude Sonnet 4.6" {
+		t.Errorf("models[1].DisplayName = %q, want %q", models[1].DisplayName, "Claude Sonnet 4.6")
 	}
 }
 
@@ -1151,6 +1154,29 @@ func TestAnthropicClient_InvalidateModelCache(t *testing.T) {
 	}
 	if callCount != 2 {
 		t.Fatalf("expected 2 API calls after invalidation, got %d", callCount)
+	}
+}
+
+func TestHumanizeModelName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"claude-opus-4-6", "Claude Opus 4.6"},
+		{"claude-sonnet-4-6", "Claude Sonnet 4.6"},
+		{"claude-haiku-4-5", "Claude Haiku 4.5"},
+		{"claude-haiku-4-5-20251001", "Claude Haiku 4.5"},
+		{"claude-3-5-sonnet-20241022", "Claude 3 5.sonnet"}, // ugly but irrelevant — old models are excluded by filterAnthropicFeatured
+		{"not-a-claude-model", "not-a-claude-model"},
+		{"claude-opus", "claude-opus"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := humanizeModelName(tt.input)
+			if got != tt.want {
+				t.Errorf("humanizeModelName(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 

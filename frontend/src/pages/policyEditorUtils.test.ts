@@ -38,6 +38,7 @@ describe('yamlToFormState — defaults for missing fields', () => {
     expect(state!.limits.max_tokens_per_run).toBe(20000)
     expect(state!.limits.max_tool_calls_per_run).toBe(50)
     expect(state!.concurrency.concurrency).toBe('skip')
+    expect(state!.model.provider).toBe('anthropic')
     expect(state!.model.model).toBe('claude-sonnet-4-6')
     expect(state!.trigger.type).toBe('webhook')
   })
@@ -179,23 +180,26 @@ agent:
     expect(state!._preamble).toBe('You are a helpful agent.')
   })
 
-  it('parses valid model', () => {
+  it('parses top-level model section with provider and name', () => {
     const yaml = `name: p
+model:
+  provider: google
+  name: gemini-2.0-flash
 agent:
-  model: claude-opus-4-6
   task: do things
 `
     const state = yamlToFormState(yaml)
-    expect(state!.model.model).toBe('claude-opus-4-6')
+    expect(state!.model.provider).toBe('google')
+    expect(state!.model.model).toBe('gemini-2.0-flash')
   })
 
-  it('defaults invalid model to claude-sonnet-4-6', () => {
+  it('defaults missing model section to anthropic claude-sonnet-4-6', () => {
     const yaml = `name: p
 agent:
-  model: gpt-4
   task: do things
 `
     const state = yamlToFormState(yaml)
+    expect(state!.model.provider).toBe('anthropic')
     expect(state!.model.model).toBe('claude-sonnet-4-6')
   })
 
@@ -330,6 +334,9 @@ describe('round-trip fidelity', () => {
   const COMPREHENSIVE_YAML = `name: comprehensive-policy
 description: A comprehensive policy
 folder: ops
+model:
+  provider: anthropic
+  name: claude-opus-4-6
 trigger:
   type: webhook
 capabilities:
@@ -343,7 +350,6 @@ capabilities:
     - channel: slack
 agent:
   preamble: "You are a GitHub automation agent."
-  model: claude-opus-4-6
   task: |
     Process pull requests and merge when approved.
   limits:
@@ -365,6 +371,7 @@ agent:
     expect(second!.limits.max_tokens_per_run).toBe(first!.limits.max_tokens_per_run)
     expect(second!.limits.max_tool_calls_per_run).toBe(first!.limits.max_tool_calls_per_run)
     expect(second!.concurrency.concurrency).toBe(first!.concurrency.concurrency)
+    expect(second!.model.provider).toBe(first!.model.provider)
     expect(second!.model.model).toBe(first!.model.model)
     expect(second!._preamble).toBe(first!._preamble)
     expect(second!._feedbackCapabilities).toBeDefined()

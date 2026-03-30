@@ -9,6 +9,9 @@ services:
       - GLEIPNIR_DB_PATH=${GLEIPNIR_DB_PATH:-/data/gleipnir.db}
       - GLEIPNIR_LISTEN_ADDR=${GLEIPNIR_LISTEN_ADDR:-:8080}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GLEIPNIR_DEFAULT_PROVIDER=${GLEIPNIR_DEFAULT_PROVIDER:-}
+      - GLEIPNIR_DEFAULT_MODEL=${GLEIPNIR_DEFAULT_MODEL:-}
     volumes:
       - gleipnir_data:/data
     restart: unless-stopped

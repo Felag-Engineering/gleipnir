@@ -245,10 +245,44 @@ func (c *AnthropicClient) ListModels(ctx context.Context) ([]llm.ModelInfo, erro
 
 	models := make([]llm.ModelInfo, 0, len(c.modelCache))
 	for name := range c.modelCache {
-		models = append(models, llm.ModelInfo{Name: name, DisplayName: name})
+		models = append(models, llm.ModelInfo{Name: name, DisplayName: humanizeModelName(name)})
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 	return models, nil
+}
+
+// humanizeModelName turns a raw Anthropic model ID into a human-readable label.
+// "claude-opus-4-6" → "Claude Opus 4.6"
+// Models that don't follow the expected pattern are returned unchanged.
+func humanizeModelName(name string) string {
+	s := strings.TrimPrefix(name, "claude-")
+	if s == name {
+		return name
+	}
+
+	parts := strings.SplitN(s, "-", 2)
+	if len(parts) < 2 {
+		return name
+	}
+	family := parts[0]
+	version := parts[1]
+
+	// Convert hyphen-separated version segments to dots, dropping 8-digit date suffixes.
+	vParts := strings.Split(version, "-")
+	var vClean []string
+	for _, p := range vParts {
+		if len(p) == 8 {
+			break
+		}
+		vClean = append(vClean, p)
+	}
+	if len(vClean) == 0 {
+		return name
+	}
+
+	// Title-case: uppercase the first byte (family names are ASCII-only).
+	titleFamily := strings.ToUpper(family[:1]) + family[1:]
+	return fmt.Sprintf("Claude %s %s", titleFamily, strings.Join(vClean, "."))
 }
 
 // InvalidateModelCache clears the cached model list so the next call to

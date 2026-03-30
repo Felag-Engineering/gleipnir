@@ -55,8 +55,7 @@ export interface ConcurrencyFormState {
   concurrency: ConcurrencyValue;
 }
 
-export type ModelValue = 'claude-opus-4-6' | 'claude-sonnet-4-6' | 'claude-haiku-4-5-20251001';
-
 export interface ModelFormState {
-  model: ModelValue;
+  provider: string;
+  model: string;
 }
