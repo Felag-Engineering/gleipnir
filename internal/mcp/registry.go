@@ -126,7 +126,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			GrantedTool: model.GrantedTool{
 				ServerName: serverName,
 				ToolName:   toolName,
-				Role:       model.CapabilityRoleTool,
+				Role:       model.CapabilityRole(tool.CapabilityRole),
 				Approval:   t.Approval,
 				Timeout:    timeout,
 				OnTimeout:  t.OnTimeout,

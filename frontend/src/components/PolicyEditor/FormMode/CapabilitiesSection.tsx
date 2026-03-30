@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { RoleBadge } from '@/components/RoleBadge';
 import { useMcpServers } from '@/hooks/useMcpServers';
@@ -33,7 +33,31 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
     (toolQueries[i]?.data ?? []).map(tool => ({ tool, serverName: srv.name }))
   );
 
-  const assignedIds = new Set(value.tools.map(t => t.toolId));
+  // Reconcile roles: YAML doesn't store capability_role, so tools parsed from
+  // YAML default to 'tool'. Use the registry (the DB source of truth) to fix them.
+  const registryRoleByKey = useMemo(() => {
+    const map = new Map<string, ApiMcpTool['capability_role']>();
+    for (const { tool, serverName } of allRegistryTools) {
+      map.set(`${serverName}.${tool.name}`, tool.capability_role);
+    }
+    return map;
+  }, [allRegistryTools]);
+
+  const reconciledTools = useMemo(() => {
+    let changed = false;
+    const result = value.tools.map(t => {
+      const key = `${t.serverName}.${t.name}`;
+      const registryRole = registryRoleByKey.get(key);
+      if (registryRole && registryRole !== t.role) {
+        changed = true;
+        return { ...t, role: registryRole };
+      }
+      return t;
+    });
+    return changed ? result : value.tools;
+  }, [value.tools, registryRoleByKey]);
+
+  const assignedIds = new Set(reconciledTools.map(t => t.toolId));
   const q = query.toLowerCase().trim();
   const filteredRegistry = allRegistryTools.filter(({ tool, serverName }) => {
     if (assignedIds.has(tool.id)) return false;
@@ -87,13 +111,13 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
 
       <Legend />
 
-      {value.tools.length === 0 ? (
+      {reconciledTools.length === 0 ? (
         <div className={styles.emptyState}>
           No tools added yet. Add tools from the registry below.
         </div>
       ) : (
         <div className={styles.toolList}>
-          {value.tools.map(tool => (
+          {reconciledTools.map(tool => (
             <AssignedToolRow
               key={tool.toolId}
               tool={tool}

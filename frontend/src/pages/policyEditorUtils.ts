@@ -116,7 +116,7 @@ export function yamlToFormState(yaml: string): FormState | null {
           serverName: serverPart,
           name: toolPart,
           description: '',
-          role: 'tool' as const,
+          role: 'tool' as const, // placeholder — CapabilitiesSection reconciles with registry
           approvalRequired,
         }]
       })
