@@ -15,8 +15,7 @@ type Story = StoryObj<typeof FilterBar>
 const COUNTS: Record<FilterKey, number> = {
   all: 24,
   thought: 8,
-  tool_call: 7,
-  tool_result: 7,
+  tool: 7,
   error: 2,
 }
 

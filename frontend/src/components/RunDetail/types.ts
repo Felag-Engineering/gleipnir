@@ -122,3 +122,119 @@ export function parseStep(raw: ApiRunStep): ParsedStep {
       return { type: 'unknown', raw, content }
   }
 }
+
+// ToolBlockData combines a tool_call, its tool_result, and any preceding
+// approval_request into a single visual unit. At least one of `approval` or
+// `call` will be non-null.
+//
+// Possible states:
+//   - approval = null, call set, result null/set  → non-gated tool call
+//   - approval set, call set, result null/set      → approval-gated tool call
+//   - approval set, call = null                    → denied/timed-out approval
+export interface ToolBlockData {
+  approval: (ParsedStep & { type: 'approval_request' }) | null
+  call: (ParsedStep & { type: 'tool_call' }) | null
+  result: (ParsedStep & { type: 'tool_result' }) | null
+}
+
+// isToolBlock distinguishes a ToolBlockData from a ParsedStep. ParsedStep always
+// has a `raw` property; ToolBlockData never does.
+export function isToolBlock(item: ParsedStep | ToolBlockData): item is ToolBlockData {
+  return ('call' in item || 'approval' in item) && !('raw' in item)
+}
+
+// pairToolBlocks walks steps in order and merges sequential tool-related steps
+// into ToolBlockData values. It uses strict positional adjacency — the look-ahead
+// only inspects the immediately next unconsumed step and stops at any boundary type.
+//
+// Backend step ordering for gated tools: approval_request → tool_call → tool_result.
+// When approval is denied/timed-out, tool_call is never written, so a standalone
+// approval_request with no following matching tool_call is a denied/timed-out gate.
+export function pairToolBlocks(steps: ParsedStep[]): (ParsedStep | ToolBlockData)[] {
+  const result: (ParsedStep | ToolBlockData)[] = []
+  const consumed = new Set<number>()
+
+  // Returns the index of the next unconsumed step after `fromIndex`, or -1 if none.
+  function nextUnconsumed(fromIndex: number): number {
+    for (let j = fromIndex + 1; j < steps.length; j++) {
+      if (!consumed.has(j)) return j
+    }
+    return -1
+  }
+
+  for (let i = 0; i < steps.length; i++) {
+    if (consumed.has(i)) continue
+
+    const step = steps[i]
+
+    if (step.type === 'approval_request') {
+      const block: ToolBlockData = {
+        approval: step as ParsedStep & { type: 'approval_request' },
+        call: null,
+        result: null,
+      }
+
+      const nextIdx = nextUnconsumed(i)
+      if (nextIdx !== -1) {
+        const nextStep = steps[nextIdx]
+        if (
+          nextStep.type === 'tool_call' &&
+          nextStep.content.tool_name === step.content.tool
+        ) {
+          // Matching tool_call follows the approval_request — consume it.
+          block.call = nextStep as ParsedStep & { type: 'tool_call' }
+          consumed.add(nextIdx)
+
+          const afterCallIdx = nextUnconsumed(nextIdx)
+          if (afterCallIdx !== -1) {
+            const afterCall = steps[afterCallIdx]
+            if (
+              afterCall.type === 'tool_result' &&
+              afterCall.content.tool_name === step.content.tool
+            ) {
+              block.result = afterCall as ParsedStep & { type: 'tool_result' }
+              consumed.add(afterCallIdx)
+            }
+          }
+        }
+        // If the next unconsumed step is not a matching tool_call, the approval
+        // was denied or timed out. Leave call and result null.
+      }
+
+      result.push(block)
+      continue
+    }
+
+    if (step.type === 'tool_call') {
+      const block: ToolBlockData = {
+        approval: null,
+        call: step as ParsedStep & { type: 'tool_call' },
+        result: null,
+      }
+
+      const nextIdx = nextUnconsumed(i)
+      if (nextIdx !== -1) {
+        const nextStep = steps[nextIdx]
+        // Only pair if the very next unconsumed step is a matching tool_result.
+        // Any boundary type stops the look-ahead because the next step won't be
+        // a tool_result, so the condition naturally fails.
+        if (
+          nextStep.type === 'tool_result' &&
+          nextStep.content.tool_name === step.content.tool_name
+        ) {
+          block.result = nextStep as ParsedStep & { type: 'tool_result' }
+          consumed.add(nextIdx)
+        }
+      }
+
+      result.push(block)
+      continue
+    }
+
+    // tool_result not consumed by a preceding call or approval — pass through as-is.
+    // All other step types also pass through unchanged.
+    result.push(step)
+  }
+
+  return result
+}

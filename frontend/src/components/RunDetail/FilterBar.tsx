@@ -1,6 +1,6 @@
 import styles from './FilterBar.module.css'
 
-export type FilterKey = 'all' | 'thought' | 'tool_call' | 'tool_result' | 'error'
+export type FilterKey = 'all' | 'thought' | 'tool' | 'error'
 
 interface FilterChip {
   key: FilterKey
@@ -10,8 +10,7 @@ interface FilterChip {
 const CHIPS: FilterChip[] = [
   { key: 'all', label: 'All' },
   { key: 'thought', label: 'Thoughts' },
-  { key: 'tool_call', label: 'Calls' },
-  { key: 'tool_result', label: 'Results' },
+  { key: 'tool', label: 'Tools' },
   { key: 'error', label: 'Errors' },
 ]
 

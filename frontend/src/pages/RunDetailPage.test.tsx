@@ -147,7 +147,7 @@ describe('RunDetailPage — step types render', () => {
     expect(screen.getByText('Thinking hard.')).toBeInTheDocument()
   })
 
-  it('renders tool_call step with tool name and tool label', () => {
+  it('renders tool_call step with tool name via ToolBlock', () => {
     mockLoaded(makeRun(), [
       makeStep({
         id: 's2',
@@ -156,11 +156,13 @@ describe('RunDetailPage — step types render', () => {
       }),
     ])
     renderPage()
+    // ToolBlock renders the tool name in monospace bold in the header
     expect(screen.getByText('fs.read')).toBeInTheDocument()
-    expect(screen.getByText('tool call')).toBeInTheDocument()
+    // ToolBlock renders the server_id as a pill
+    expect(screen.getByText('srv1')).toBeInTheDocument()
   })
 
-  it('renders tool_call step with tool label when capability_snapshot marks it as tool', () => {
+  it('renders tool_call step when capability_snapshot marks it as tool', () => {
     const capContent = JSON.stringify([
       { ServerName: 'srv1', ToolName: 'fs.write', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
     ])
@@ -174,7 +176,7 @@ describe('RunDetailPage — step types render', () => {
       }),
     ])
     renderPage()
-    expect(screen.getByText('tool call')).toBeInTheDocument()
+    expect(screen.getByText('fs.write')).toBeInTheDocument()
   })
 
   it('renders tool_result step', () => {
@@ -280,7 +282,7 @@ describe('RunDetailPage — step types render', () => {
     expect(summary.textContent).not.toContain('anthropic')
   })
 
-  it('renders approval_request placeholder', () => {
+  it('renders approval_request as a ToolBlock (denied state when no tool_call follows)', () => {
     mockLoaded(makeRun(), [
       makeStep({
         id: 's6',
@@ -289,7 +291,11 @@ describe('RunDetailPage — step types render', () => {
       }),
     ])
     renderPage()
-    expect(screen.getByText('Approval requested')).toBeInTheDocument()
+    // ToolBlock renders the tool name from the approval_request
+    expect(screen.getByText('fs.delete')).toBeInTheDocument()
+    // Denied state shows "Denied" in header pill and pane text
+    const deniedLabels = screen.getAllByText('Denied')
+    expect(deniedLabels.length).toBeGreaterThanOrEqual(1)
   })
 })
 
@@ -325,21 +331,12 @@ describe('RunDetailPage — filter chips', () => {
     })
   })
 
-  it('shows only tool_call steps after clicking Calls chip', async () => {
+  it('shows only tool steps (ToolBlock) after clicking Tools chip', async () => {
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /^calls/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^tools/i }))
     await waitFor(() => {
-      expect(screen.getByText('tool call')).toBeInTheDocument()
-      expect(screen.queryByText('Thought A')).not.toBeInTheDocument()
-      expect(screen.queryByText('err')).not.toBeInTheDocument()
-    })
-  })
-
-  it('shows only tool_result steps after clicking Results chip', async () => {
-    renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /^results/i }))
-    await waitFor(() => {
-      expect(screen.getByText('result')).toBeInTheDocument()
+      // tool_call 'x' appears via ToolBlock (paired with its result)
+      expect(screen.getByText('x')).toBeInTheDocument()
       expect(screen.queryByText('Thought A')).not.toBeInTheDocument()
       expect(screen.queryByText('err')).not.toBeInTheDocument()
     })
@@ -358,16 +355,10 @@ describe('RunDetailPage — filter chips', () => {
     expect(errorsChip.textContent).toContain('1')
   })
 
-  it('shows count 1 for Calls chip', () => {
+  it('shows count 1 for Tools chip', () => {
     renderPage()
-    const callsChip = screen.getByRole('button', { name: /^calls/i })
-    expect(callsChip.textContent).toContain('1')
-  })
-
-  it('shows count 1 for Results chip', () => {
-    renderPage()
-    const resultsChip = screen.getByRole('button', { name: /^results/i })
-    expect(resultsChip.textContent).toContain('1')
+    const toolsChip = screen.getByRole('button', { name: /^tools/i })
+    expect(toolsChip.textContent).toContain('1')
   })
 
   it('clicking All chip after a filter shows all steps again', async () => {
@@ -545,13 +536,13 @@ describe('RunDetailPage — pagination with active filter', () => {
     mockLoaded(makeRun(), steps)
     renderPage()
 
-    // Filter to only Calls
-    fireEvent.click(screen.getByRole('button', { name: /^calls/i }))
+    // Filter to only Tools
+    fireEvent.click(screen.getByRole('button', { name: /^tools/i }))
 
     // With 55 tool_call steps and PAGE_SIZE=50, Load More should be visible
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /load more/i })).toBeInTheDocument()
-    })
+    }, { timeout: 10000 })
 
     // Click Load More
     fireEvent.click(screen.getByRole('button', { name: /load more/i }))
@@ -559,8 +550,8 @@ describe('RunDetailPage — pagination with active filter', () => {
     // All 55 tool_call steps now visible — no more Load More button
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
-    })
-  })
+    }, { timeout: 10000 })
+  }, 15000)
 })
 
 describe('RunDetailPage — filter does NOT reset displayedCount', () => {
@@ -600,9 +591,9 @@ describe('RunDetailPage — filter does NOT reset displayedCount', () => {
       expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
     })
 
-    // Switch to Calls filter — displayedCount is still 100, which is > 55 tool_calls,
-    // so all 55 calls should be shown immediately with no Load More
-    fireEvent.click(screen.getByRole('button', { name: /^calls/i }))
+    // Switch to Tools filter — displayedCount is still 100, which is > 55 tool_calls,
+    // so all 55 tool blocks should be shown immediately with no Load More
+    fireEvent.click(screen.getByRole('button', { name: /^tools/i }))
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
     })

@@ -57,20 +57,28 @@ export default function RunDetailPage() {
   const nonSnapshotSteps = allParsed.filter((s) => s.type !== 'capability_snapshot')
   const snapshotSteps = allParsed.filter((s) => s.type === 'capability_snapshot')
 
-  // Filter counts
+  // Filter counts. Each tool_call represents one tool interaction (paired with
+  // its result in the timeline), so we count calls only — not results separately.
   const counts: Record<FilterKey, number> = {
     all: nonSnapshotSteps.length,
     thought: nonSnapshotSteps.filter((s) => s.type === 'thought').length,
-    tool_call: nonSnapshotSteps.filter((s) => s.type === 'tool_call').length,
-    tool_result: nonSnapshotSteps.filter((s) => s.type === 'tool_result').length,
+    tool: nonSnapshotSteps.filter((s) => s.type === 'tool_call').length,
     error: nonSnapshotSteps.filter((s) => s.type === 'error').length,
   }
 
-  // Apply filter
+  // Apply filter. When filtering by 'tool', include approval_request and tool_result
+  // steps alongside tool_call so that pairToolBlocks can still form complete blocks.
   const filteredSteps =
     filter === 'all'
       ? nonSnapshotSteps
-      : nonSnapshotSteps.filter((s) => s.type === filter)
+      : filter === 'tool'
+        ? nonSnapshotSteps.filter(
+            (s) =>
+              s.type === 'tool_call' ||
+              s.type === 'tool_result' ||
+              s.type === 'approval_request',
+          )
+        : nonSnapshotSteps.filter((s) => s.type === filter)
 
   // Client-side pagination
   const displayedSteps = filteredSteps.slice(0, displayedCount)
