@@ -2,6 +2,7 @@ import type { ApiRunStep } from '@/api/types'
 
 export type StepType =
   | 'thought'
+  | 'thinking'
   | 'tool_call'
   | 'tool_result'
   | 'capability_snapshot'
@@ -13,6 +14,11 @@ export type StepType =
 
 export interface ThoughtContent {
   text: string
+}
+
+export interface ThinkingContent {
+  text: string
+  redacted: boolean
 }
 
 export interface ToolCallContent {
@@ -72,6 +78,7 @@ export interface FeedbackResponseContent {
 
 export type ParsedStep =
   | { type: 'thought'; raw: ApiRunStep; content: ThoughtContent }
+  | { type: 'thinking'; raw: ApiRunStep; content: ThinkingContent }
   | { type: 'tool_call'; raw: ApiRunStep; content: ToolCallContent }
   | { type: 'tool_result'; raw: ApiRunStep; content: ToolResultContent }
   | { type: 'capability_snapshot'; raw: ApiRunStep; content: CapabilitySnapshotContent }
@@ -93,6 +100,8 @@ export function parseStep(raw: ApiRunStep): ParsedStep {
   switch (raw.type) {
     case 'thought':
       return { type: 'thought', raw, content: content as ThoughtContent }
+    case 'thinking':
+      return { type: 'thinking', raw, content: content as ThinkingContent }
     case 'tool_call':
       return { type: 'tool_call', raw, content: content as ToolCallContent }
     case 'tool_result':
