@@ -1,5 +1,6 @@
 import { CapabilitySnapshotCard } from './CapabilitySnapshotCard'
 import { StepCard } from './StepCard'
+import { ThinkingBlock } from './ThinkingBlock'
 import { ToolBlock } from './ToolBlock'
 import { pairToolBlocks, isToolBlock } from './types'
 import type { ParsedStep, GrantedToolEntry } from './types'
@@ -36,6 +37,8 @@ export function StepTimeline({ steps, toolRoleMap, systemPrompt, runId, runStatu
               <ToolBlock block={item} runId={runId} runStatus={runStatus} />
             ) : item.type === 'capability_snapshot' ? (
               <CapabilitySnapshotCard content={item.content} systemPrompt={systemPrompt} />
+            ) : item.type === 'thinking' ? (
+              <ThinkingBlock step={item} />
             ) : (
               <StepCard step={item} toolRoleMap={toolRoleMap} runId={runId} runStatus={runStatus} />
             )}
