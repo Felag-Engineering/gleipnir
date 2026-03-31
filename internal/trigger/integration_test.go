@@ -89,7 +89,7 @@ agent:
 // RunManager so callers can call manager.Wait() for deterministic cleanup.
 func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, llmClient llm.LLMClient) (http.Handler, *trigger.RunManager) {
 	manager := trigger.NewRunManager()
-	factory := trigger.AgentFactory(func(cfg agent.Config) (*agent.BoundAgent, error) {
+	factory := trigger.AgentFactory(func(cfg agent.Config) (agent.Runner, error) {
 		cfg.LLMClient = llmClient
 		return agent.New(cfg)
 	})

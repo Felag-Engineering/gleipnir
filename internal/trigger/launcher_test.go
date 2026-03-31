@@ -19,7 +19,7 @@ import (
 
 // failingAgentFactory returns an AgentFactory whose New call always fails.
 func failingAgentFactory(err error) trigger.AgentFactory {
-	return func(cfg agent.Config) (*agent.BoundAgent, error) {
+	return func(cfg agent.Config) (agent.Runner, error) {
 		return nil, err
 	}
 }
