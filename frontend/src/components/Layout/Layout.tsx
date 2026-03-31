@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useSSE } from '@/hooks/useSSE'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { ConnectionBanner } from '@/components/ConnectionBanner'
+import { ThemeToggle } from '@/components/ThemeToggle'
 import styles from './Layout.module.css'
 
 const SIDEBAR_STORAGE_KEY = 'gleipnir-sidebar-collapsed'
@@ -89,6 +90,7 @@ export default function Layout() {
         </nav>
 
         <div className={styles.sidebarFooter}>
+          <ThemeToggle compact={collapsed} />
           <ConnectionBanner state={connectionState} compact={collapsed} />
         </div>
       </aside>

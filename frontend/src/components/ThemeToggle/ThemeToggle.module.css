@@ -1,0 +1,40 @@
+.toggleGroup {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+.toggleButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.toggleButton:hover {
+  color: var(--text-second);
+  background: var(--bg-elevated);
+}
+
+.toggleButtonActive {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.compactButton {
+  composes: toggleButton;
+}
+
+.compactButton:hover {
+  color: var(--text-second);
+  background: var(--bg-elevated);
+}

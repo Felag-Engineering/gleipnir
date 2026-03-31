@@ -61,6 +61,15 @@ export interface ApprovalRequestContent {
   input: Record<string, unknown>
 }
 
+export interface FeedbackRequestContent {
+  tool: string
+  message?: string
+}
+
+export interface FeedbackResponseContent {
+  response?: string
+}
+
 export type ParsedStep =
   | { type: 'thought'; raw: ApiRunStep; content: ThoughtContent }
   | { type: 'tool_call'; raw: ApiRunStep; content: ToolCallContent }
@@ -69,6 +78,8 @@ export type ParsedStep =
   | { type: 'error'; raw: ApiRunStep; content: ErrorContent }
   | { type: 'complete'; raw: ApiRunStep; content: CompleteContent }
   | { type: 'approval_request'; raw: ApiRunStep; content: ApprovalRequestContent }
+  | { type: 'feedback_request'; raw: ApiRunStep; content: FeedbackRequestContent }
+  | { type: 'feedback_response'; raw: ApiRunStep; content: FeedbackResponseContent }
   | { type: 'unknown'; raw: ApiRunStep; content: unknown }
 
 export function parseStep(raw: ApiRunStep): ParsedStep {
@@ -94,6 +105,10 @@ export function parseStep(raw: ApiRunStep): ParsedStep {
       return { type: 'complete', raw, content: content as CompleteContent }
     case 'approval_request':
       return { type: 'approval_request', raw, content: content as ApprovalRequestContent }
+    case 'feedback_request':
+      return { type: 'feedback_request', raw, content: content as FeedbackRequestContent }
+    case 'feedback_response':
+      return { type: 'feedback_response', raw, content: content as FeedbackResponseContent }
     default:
       return { type: 'unknown', raw, content }
   }

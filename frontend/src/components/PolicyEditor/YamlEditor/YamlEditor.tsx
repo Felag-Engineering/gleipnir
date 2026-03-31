@@ -4,6 +4,7 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { load } from 'js-yaml'
+import { useTheme } from '@/hooks/useTheme'
 import styles from './YamlEditor.module.css'
 
 interface YamlEditorProps {
@@ -15,6 +16,33 @@ interface YamlEditorProps {
 
 // Stable compartment reference — safe to share across instances
 const editableCompartment = new Compartment()
+
+// Light theme for CodeMirror — background values here are overridden by
+// gleipnirTheme (which uses CSS variables), but the non-background properties
+// (caret, selection, gutter text) are unique to light mode.
+const gleipnirLightTheme = EditorView.theme(
+  {
+    '&': {
+      color: '#1e293b',
+      backgroundColor: '#f1f5f9',
+    },
+    '.cm-content': {
+      caretColor: '#1e293b',
+    },
+    '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#1e293b' },
+    '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
+      backgroundColor: '#bfdbfe',
+    },
+    '.cm-activeLine': { backgroundColor: '#e2e8f040' },
+    '.cm-gutters': {
+      backgroundColor: '#f1f5f9',
+      color: '#94a3b8',
+      borderRight: '1px solid #cbd5e1',
+    },
+    '.cm-lineNumbers .cm-gutterElement': { color: '#94a3b8' },
+  },
+  { dark: false },
+)
 
 // Custom theme override to match project design tokens
 const gleipnirTheme = EditorView.theme({
@@ -40,6 +68,9 @@ export function YamlEditor({ value, onChange, onValidityChange, readOnly = false
   const hostRef = useRef<HTMLDivElement>(null)
   const editorViewRef = useRef<EditorView | null>(null)
   const [validationError, setValidationError] = useState<string | null>(null)
+  const { resolvedTheme } = useTheme()
+  // Each instance needs its own Compartment bound to its own EditorState
+  const themeCompartmentRef = useRef(new Compartment())
 
   // Mount editor once
   useEffect(() => {
@@ -51,7 +82,7 @@ export function YamlEditor({ value, onChange, onValidityChange, readOnly = false
         extensions: [
           lineNumbers(),
           yaml(),
-          oneDark,
+          themeCompartmentRef.current.of(resolvedTheme === 'dark' ? oneDark : gleipnirLightTheme),
           gleipnirTheme,
           editableCompartment.of(EditorView.editable.of(!readOnly)),
           EditorView.updateListener.of(update => {
@@ -89,6 +120,17 @@ export function YamlEditor({ value, onChange, onValidityChange, readOnly = false
       effects: editableCompartment.reconfigure(EditorView.editable.of(!readOnly)),
     })
   }, [readOnly])
+
+  // Reconfigure CodeMirror theme when resolvedTheme changes
+  useEffect(() => {
+    const view = editorViewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: themeCompartmentRef.current.reconfigure(
+        resolvedTheme === 'dark' ? oneDark : gleipnirLightTheme
+      ),
+    })
+  }, [resolvedTheme])
 
   // Validate YAML
   useEffect(() => {

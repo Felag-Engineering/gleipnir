@@ -8,6 +8,10 @@ vi.mock('../../hooks/useSSE', () => ({
   useSSE: vi.fn(() => ({ connectionState: 'connected' })),
 }))
 
+vi.mock('../../hooks/useTheme', () => ({
+  useTheme: vi.fn(() => ({ theme: 'system', setTheme: vi.fn(), resolvedTheme: 'dark' })),
+}))
+
 import Layout from './Layout'
 
 function makeClient() {
@@ -84,5 +88,10 @@ describe('Layout', () => {
     renderLayout()
     // compact mode always renders the dot indicator with role="status"
     expect(screen.getByRole('status')).toBeInTheDocument()
+  })
+
+  it('theme toggle renders in sidebar footer', () => {
+    renderLayout()
+    expect(screen.getByRole('button', { name: /light theme/i })).toBeInTheDocument()
   })
 })
