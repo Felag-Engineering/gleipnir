@@ -41,8 +41,9 @@ type jsonrpcError struct {
 // Gleipnir's approval infrastructure. The caller (ClaudeCodeAgent) provides
 // implementations that close over AuditWriter and RunStateMachine.
 //
-// Using callbacks avoids a circular import: internal/agent/claudecode must not
-// import internal/agent.
+// Using callbacks keeps the gate server decoupled from AuditWriter and
+// RunStateMachine, which simplifies testing and keeps gate.go's import
+// footprint minimal (only internal/model needed).
 type ApprovalBridge struct {
 	// RequestApproval atomically writes the approval_request audit step,
 	// creates the DB approval record, transitions the run to
