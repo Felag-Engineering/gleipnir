@@ -17,6 +17,8 @@ func TestLoad_Defaults(t *testing.T) {
 		"GLEIPNIR_HTTP_WRITE_TIMEOUT",
 		"GLEIPNIR_HTTP_IDLE_TIMEOUT",
 		"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
+		"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT",
+		"GLEIPNIR_FEEDBACK_SCAN_INTERVAL",
 		"GLEIPNIR_DEFAULT_PROVIDER",
 		"GLEIPNIR_DEFAULT_MODEL",
 	} {
@@ -48,6 +50,12 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.ApprovalScanInterval != 30*time.Second {
 		t.Errorf("ApprovalScanInterval: got %v, want 30s", cfg.ApprovalScanInterval)
+	}
+	if cfg.DefaultFeedbackTimeout != 30*time.Minute {
+		t.Errorf("DefaultFeedbackTimeout: got %v, want 30m", cfg.DefaultFeedbackTimeout)
+	}
+	if cfg.FeedbackScanInterval != 30*time.Second {
+		t.Errorf("FeedbackScanInterval: got %v, want 30s", cfg.FeedbackScanInterval)
 	}
 	if cfg.DefaultProvider != "anthropic" {
 		t.Errorf("DefaultProvider: got %q, want anthropic", cfg.DefaultProvider)
@@ -127,6 +135,24 @@ func TestLoad_Overrides(t *testing.T) {
 			},
 		},
 		{
+			name: "default feedback timeout",
+			env:  map[string]string{"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT": "1h"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.DefaultFeedbackTimeout != time.Hour {
+					t.Errorf("got %v, want 1h", cfg.DefaultFeedbackTimeout)
+				}
+			},
+		},
+		{
+			name: "feedback scan interval",
+			env:  map[string]string{"GLEIPNIR_FEEDBACK_SCAN_INTERVAL": "1m"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.FeedbackScanInterval != time.Minute {
+					t.Errorf("got %v, want 1m", cfg.FeedbackScanInterval)
+				}
+			},
+		},
+		{
 			name: "default provider",
 			env:  map[string]string{"GLEIPNIR_DEFAULT_PROVIDER": "google"},
 			check: func(t *testing.T, cfg Config) {
@@ -154,6 +180,7 @@ func TestLoad_Overrides(t *testing.T) {
 				"GLEIPNIR_MCP_TIMEOUT", "GLEIPNIR_HTTP_READ_TIMEOUT",
 				"GLEIPNIR_HTTP_WRITE_TIMEOUT", "GLEIPNIR_HTTP_IDLE_TIMEOUT",
 				"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
+				"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", "GLEIPNIR_FEEDBACK_SCAN_INTERVAL",
 				"GLEIPNIR_DEFAULT_PROVIDER", "GLEIPNIR_DEFAULT_MODEL",
 			} {
 				t.Setenv(key, "")
@@ -207,6 +234,8 @@ func TestLoad_InvalidDuration(t *testing.T) {
 		{"invalid write timeout falls back", "GLEIPNIR_HTTP_WRITE_TIMEOUT", 15 * time.Second},
 		{"invalid idle timeout falls back", "GLEIPNIR_HTTP_IDLE_TIMEOUT", 60 * time.Second},
 		{"invalid approval scan interval falls back", "GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30 * time.Second},
+		{"invalid default feedback timeout falls back", "GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", 30 * time.Minute},
+		{"invalid feedback scan interval falls back", "GLEIPNIR_FEEDBACK_SCAN_INTERVAL", 30 * time.Second},
 	}
 
 	for _, tc := range tests {
@@ -225,6 +254,10 @@ func TestLoad_InvalidDuration(t *testing.T) {
 				got = cfg.IdleTimeout
 			case "GLEIPNIR_APPROVAL_SCAN_INTERVAL":
 				got = cfg.ApprovalScanInterval
+			case "GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT":
+				got = cfg.DefaultFeedbackTimeout
+			case "GLEIPNIR_FEEDBACK_SCAN_INTERVAL":
+				got = cfg.FeedbackScanInterval
 			}
 			if got != tc.want {
 				t.Errorf("%s: got %v, want %v", tc.key, got, tc.want)

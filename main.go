@@ -19,6 +19,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/approval"
 	"github.com/rapp992/gleipnir/internal/auth"
+	"github.com/rapp992/gleipnir/internal/feedback"
 	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/llm"
@@ -77,6 +78,13 @@ func run(cfg config.Config) error {
 		approval.WithPublisher(broadcaster),
 	)
 	approvalScanner.Start(ctx)
+
+	feedbackScanner := feedback.NewScanner(
+		store,
+		cfg.FeedbackScanInterval,
+		feedback.WithPublisher(broadcaster),
+	)
+	feedbackScanner.Start(ctx)
 	// SSE events are unprotected so the UI can receive events before auth UI is
 	// implemented (follow-up issues will add login/logout).
 	r.Get("/api/v1/events", sseHandler.ServeHTTP)
@@ -103,7 +111,7 @@ func run(cfg config.Config) error {
 		})
 	}
 
-	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(providerRegistry, claudeCodeFactory), broadcaster)
+	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(providerRegistry, claudeCodeFactory), broadcaster, cfg.DefaultFeedbackTimeout)
 
 	// Webhooks are unprotected — they are called by external systems with their
 	// own secret-based authentication (policy.trigger.secret in the policy YAML).

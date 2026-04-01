@@ -77,11 +77,12 @@ type LaunchResult struct {
 // resolving tools, constructing the agent, and launching the goroutine.
 // All three trigger handlers (webhook, manual, scheduled) delegate to it.
 type RunLauncher struct {
-	store     *db.Store
-	registry  registryResolver
-	manager   *RunManager
-	newAgent  AgentFactory
-	publisher event.Publisher
+	store                  *db.Store
+	registry               registryResolver
+	manager                *RunManager
+	newAgent               AgentFactory
+	publisher              event.Publisher
+	defaultFeedbackTimeout time.Duration
 }
 
 // registryResolver is the subset of mcp.Registry used by RunLauncher, defined
@@ -92,13 +93,15 @@ type registryResolver interface {
 
 // NewRunLauncher returns a RunLauncher ready to use.
 // publisher may be nil, in which case no real-time events are emitted.
-func NewRunLauncher(store *db.Store, registry registryResolver, manager *RunManager, factory AgentFactory, publisher event.Publisher) *RunLauncher {
+// defaultFeedbackTimeout is used when a policy does not specify its own timeout.
+func NewRunLauncher(store *db.Store, registry registryResolver, manager *RunManager, factory AgentFactory, publisher event.Publisher, defaultFeedbackTimeout time.Duration) *RunLauncher {
 	return &RunLauncher{
-		store:     store,
-		registry:  registry,
-		manager:   manager,
-		newAgent:  factory,
-		publisher: publisher,
+		store:                  store,
+		registry:               registry,
+		manager:                manager,
+		newAgent:               factory,
+		publisher:              publisher,
+		defaultFeedbackTimeout: defaultFeedbackTimeout,
 	}
 }
 
@@ -165,12 +168,13 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	approvalCh := make(chan bool)
 	feedbackCh := make(chan string)
 	ba, err := l.newAgent(agent.Config{
-		Tools:        resolvedTools,
-		Policy:       params.ParsedPolicy,
-		Audit:        audit,
-		StateMachine: sm,
-		ApprovalCh:   approvalCh,
-		FeedbackCh:   feedbackCh,
+		Tools:                  resolvedTools,
+		Policy:                 params.ParsedPolicy,
+		Audit:                  audit,
+		StateMachine:           sm,
+		ApprovalCh:             approvalCh,
+		FeedbackCh:             feedbackCh,
+		DefaultFeedbackTimeout: l.defaultFeedbackTimeout,
 	})
 	if err != nil {
 		// Mark the run failed — it was created and tools resolved but agent

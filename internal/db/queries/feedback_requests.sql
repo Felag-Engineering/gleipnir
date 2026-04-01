@@ -1,6 +1,6 @@
 -- name: CreateFeedbackRequest :one
-INSERT INTO feedback_requests (id, run_id, tool_name, proposed_input, message, status, created_at)
-VALUES (:id, :run_id, :tool_name, :proposed_input, :message, 'pending', :created_at)
+INSERT INTO feedback_requests (id, run_id, tool_name, proposed_input, message, status, expires_at, created_at)
+VALUES (:id, :run_id, :tool_name, :proposed_input, :message, 'pending', :expires_at, :created_at)
 RETURNING *;
 
 -- name: GetFeedbackRequest :one
@@ -16,3 +16,9 @@ WHERE id = :id;
 
 -- name: CountPendingFeedbackRequests :one
 SELECT COUNT(*) FROM feedback_requests WHERE status = 'pending';
+
+-- ListExpiredFeedbackRequests returns all pending feedback requests whose
+-- expires_at is at or before the cutoff. Only rows with a non-NULL expires_at
+-- are candidates (old rows without timeout are excluded).
+-- name: ListExpiredFeedbackRequests :many
+SELECT * FROM feedback_requests WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <= :cutoff;

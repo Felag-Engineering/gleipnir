@@ -93,7 +93,7 @@ func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, llmClient l
 		cfg.LLMClient = llmClient
 		return agent.New(cfg)
 	})
-	launcher := trigger.NewRunLauncher(store, registry, manager, factory, nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, factory, nil, 0)
 	wh := trigger.NewWebhookHandler(store, launcher)
 	rh := trigger.NewRunsHandler(store, manager, nil)
 

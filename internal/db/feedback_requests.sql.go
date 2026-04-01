@@ -21,18 +21,19 @@ func (q *Queries) CountPendingFeedbackRequests(ctx context.Context) (int64, erro
 }
 
 const createFeedbackRequest = `-- name: CreateFeedbackRequest :one
-INSERT INTO feedback_requests (id, run_id, tool_name, proposed_input, message, status, created_at)
-VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)
-RETURNING id, run_id, tool_name, proposed_input, message, status, response, resolved_at, created_at
+INSERT INTO feedback_requests (id, run_id, tool_name, proposed_input, message, status, expires_at, created_at)
+VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)
+RETURNING id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at
 `
 
 type CreateFeedbackRequestParams struct {
-	ID            string `json:"id"`
-	RunID         string `json:"run_id"`
-	ToolName      string `json:"tool_name"`
-	ProposedInput string `json:"proposed_input"`
-	Message       string `json:"message"`
-	CreatedAt     string `json:"created_at"`
+	ID            string  `json:"id"`
+	RunID         string  `json:"run_id"`
+	ToolName      string  `json:"tool_name"`
+	ProposedInput string  `json:"proposed_input"`
+	Message       string  `json:"message"`
+	ExpiresAt     *string `json:"expires_at"`
+	CreatedAt     string  `json:"created_at"`
 }
 
 func (q *Queries) CreateFeedbackRequest(ctx context.Context, arg CreateFeedbackRequestParams) (FeedbackRequest, error) {
@@ -42,6 +43,7 @@ func (q *Queries) CreateFeedbackRequest(ctx context.Context, arg CreateFeedbackR
 		arg.ToolName,
 		arg.ProposedInput,
 		arg.Message,
+		arg.ExpiresAt,
 		arg.CreatedAt,
 	)
 	var i FeedbackRequest
@@ -54,13 +56,14 @@ func (q *Queries) CreateFeedbackRequest(ctx context.Context, arg CreateFeedbackR
 		&i.Status,
 		&i.Response,
 		&i.ResolvedAt,
+		&i.ExpiresAt,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getFeedbackRequest = `-- name: GetFeedbackRequest :one
-SELECT id, run_id, tool_name, proposed_input, message, status, response, resolved_at, created_at FROM feedback_requests WHERE id = ?1
+SELECT id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at FROM feedback_requests WHERE id = ?1
 `
 
 func (q *Queries) GetFeedbackRequest(ctx context.Context, id string) (FeedbackRequest, error) {
@@ -75,13 +78,14 @@ func (q *Queries) GetFeedbackRequest(ctx context.Context, id string) (FeedbackRe
 		&i.Status,
 		&i.Response,
 		&i.ResolvedAt,
+		&i.ExpiresAt,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getPendingFeedbackRequestsByRun = `-- name: GetPendingFeedbackRequestsByRun :many
-SELECT id, run_id, tool_name, proposed_input, message, status, response, resolved_at, created_at FROM feedback_requests WHERE run_id = ?1 AND status = 'pending'
+SELECT id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at FROM feedback_requests WHERE run_id = ?1 AND status = 'pending'
 `
 
 func (q *Queries) GetPendingFeedbackRequestsByRun(ctx context.Context, runID string) ([]FeedbackRequest, error) {
@@ -102,6 +106,48 @@ func (q *Queries) GetPendingFeedbackRequestsByRun(ctx context.Context, runID str
 			&i.Status,
 			&i.Response,
 			&i.ResolvedAt,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExpiredFeedbackRequests = `-- name: ListExpiredFeedbackRequests :many
+SELECT id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at FROM feedback_requests WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?1
+`
+
+// ListExpiredFeedbackRequests returns all pending feedback requests whose
+// expires_at is at or before the cutoff. Only rows with a non-NULL expires_at
+// are candidates (old rows without timeout are excluded).
+func (q *Queries) ListExpiredFeedbackRequests(ctx context.Context, cutoff *string) ([]FeedbackRequest, error) {
+	rows, err := q.db.QueryContext(ctx, listExpiredFeedbackRequests, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FeedbackRequest
+	for rows.Next() {
+		var i FeedbackRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.ToolName,
+			&i.ProposedInput,
+			&i.Message,
+			&i.Status,
+			&i.Response,
+			&i.ResolvedAt,
+			&i.ExpiresAt,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err

@@ -74,6 +74,19 @@ export function useSSE(): { connectionState: ConnectionState } {
       }
     })
 
+    eventSource.addEventListener('feedback.timed_out', (e: MessageEvent) => {
+      if (e.lastEventId) lastEventIdRef.current = e.lastEventId
+      try {
+        const data: { run_id: string } = JSON.parse(e.data)
+        queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
+        queryClient.invalidateQueries({ queryKey: queryKeys.runs.detail(data.run_id) })
+        queryClient.invalidateQueries({ queryKey: queryKeys.runs.steps(data.run_id) })
+        queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
+      } catch {
+        console.error('useSSE: failed to parse feedback.timed_out payload', e.data)
+      }
+    })
+
     return () => {
       eventSource.close()
     }

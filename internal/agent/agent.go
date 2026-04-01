@@ -67,18 +67,20 @@ type BoundAgent struct {
 	approvalCh <-chan bool
 	// feedbackCh receives the operator's freeform text response when a run is
 	// suspended waiting_for_feedback. Sent by the feedback handler in internal/trigger.
-	feedbackCh <-chan string
+	feedbackCh             <-chan string
+	defaultFeedbackTimeout time.Duration
 }
 
 // Config holds the dependencies needed to construct a BoundAgent.
 type Config struct {
-	Policy       *model.ParsedPolicy
-	Tools        []mcp.ResolvedTool
-	LLMClient    llm.LLMClient
-	Audit        *AuditWriter
-	ApprovalCh   <-chan bool
-	FeedbackCh   <-chan string
-	StateMachine *RunStateMachine
+	Policy                 *model.ParsedPolicy
+	Tools                  []mcp.ResolvedTool
+	LLMClient              llm.LLMClient
+	Audit                  *AuditWriter
+	ApprovalCh             <-chan bool
+	FeedbackCh             <-chan string
+	StateMachine           *RunStateMachine
+	DefaultFeedbackTimeout time.Duration
 }
 
 // New returns a BoundAgent ready to run, or an error if schema narrowing fails
@@ -103,14 +105,15 @@ func New(cfg Config) (*BoundAgent, error) {
 	}
 
 	return &BoundAgent{
-		policy:      cfg.Policy,
-		tools:       cfg.Tools,
-		toolsByName: toolsByName,
-		llmClient:   cfg.LLMClient,
-		audit:       cfg.Audit,
-		sm:          cfg.StateMachine,
-		approvalCh:  cfg.ApprovalCh,
-		feedbackCh:  cfg.FeedbackCh,
+		policy:                 cfg.Policy,
+		tools:                  cfg.Tools,
+		toolsByName:            toolsByName,
+		llmClient:              cfg.LLMClient,
+		audit:                  cfg.Audit,
+		sm:                     cfg.StateMachine,
+		approvalCh:             cfg.ApprovalCh,
+		feedbackCh:             cfg.FeedbackCh,
+		defaultFeedbackTimeout: cfg.DefaultFeedbackTimeout,
 	}, nil
 }
 
@@ -264,11 +267,17 @@ func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry re
 
 // waitForFeedback suspends the run waiting for a freeform operator response.
 // It transitions to waiting_for_feedback (which creates the DB record and
-// publishes feedback.created), then blocks on the feedback channel or context
-// cancellation. There is no timeout — the operator can cancel the run if they
-// do not wish to respond. Returns the operator's response text on success.
-func (a *BoundAgent) waitForFeedback(ctx context.Context, runID, toolName, inputJSON, mcpOutput string) (string, error) {
+// publishes feedback.created), then blocks on the feedback channel, the timeout
+// channel, or context cancellation. Returns the operator's response text on success.
+func (a *BoundAgent) waitForFeedback(ctx context.Context, runID, toolName, inputJSON, mcpOutput string, feedbackTimeout time.Duration) (string, error) {
 	feedbackID := model.NewULID()
+
+	// Compute expires_at so the DB record and the audit step both carry the deadline.
+	// An empty string means no timeout — the DB scanner ignores rows with NULL expires_at.
+	var expiresAt string
+	if feedbackTimeout > 0 {
+		expiresAt = time.Now().UTC().Add(feedbackTimeout).Format(time.RFC3339Nano)
+	}
 
 	if err := a.audit.Write(ctx, Step{
 		RunID: runID,
@@ -277,6 +286,7 @@ func (a *BoundAgent) waitForFeedback(ctx context.Context, runID, toolName, input
 			"feedback_id": feedbackID,
 			"tool":        toolName,
 			"message":     mcpOutput,
+			"expires_at":  expiresAt,
 		},
 	}); err != nil {
 		return "", fmt.Errorf("writing feedback_request step: %w", err)
@@ -287,8 +297,19 @@ func (a *BoundAgent) waitForFeedback(ctx context.Context, runID, toolName, input
 		ToolName:      toolName,
 		ProposedInput: inputJSON,
 		Message:       mcpOutput,
+		ExpiresAt:     expiresAt,
 	})); err != nil {
 		return "", fmt.Errorf("transitioning run to waiting_for_feedback: %w", err)
+	}
+
+	// nil timeoutCh (when feedbackTimeout == 0) blocks forever in the select,
+	// meaning no in-process timeout is applied. Use NewTimer so we can Stop it
+	// on early response — time.After leaks until the duration fires.
+	var timeoutCh <-chan time.Time
+	if feedbackTimeout > 0 {
+		timer := time.NewTimer(feedbackTimeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
 	}
 
 	select {
@@ -304,6 +325,19 @@ func (a *BoundAgent) waitForFeedback(ctx context.Context, runID, toolName, input
 			return "", fmt.Errorf("transitioning run back to running after feedback: %w", err)
 		}
 		return responseText, nil
+	case <-timeoutCh:
+		// Race note: the background feedback scanner may have already timed out this
+		// request and transitioned the run to failed. In that case, the error returned
+		// here propagates to Run(), which calls failRun() → sm.Transition(failed).
+		// The state machine rejects this as an illegal failed → failed transition.
+		// failRun() logs the error via slog.ErrorContext and swallows it. This is
+		// expected — the scanner already persisted the correct terminal state.
+		slog.WarnContext(ctx, "feedback timeout reached",
+			"run_id", runID, "tool", toolName,
+			"timeout", feedbackTimeout.String())
+		err := fmt.Errorf("feedback timeout: operator did not respond within %s", feedbackTimeout)
+		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeFeedbackTimeout)
+		return "", err
 	case <-ctx.Done():
 		return "", fmt.Errorf("context cancelled waiting for feedback: %w", ctx.Err())
 	}
@@ -741,7 +775,29 @@ func (a *BoundAgent) handleSyntheticToolCall(ctx context.Context, runID, toolNam
 		message += "\n\n" + detail
 	}
 
-	responseText, err := a.waitForFeedback(ctx, runID, AskOperatorToolName, "", message)
+	// Resolve the feedback timeout. The policy may specify a per-policy value;
+	// if absent or zero, fall back to the system default.
+	//
+	// A parse error here indicates data corruption or a manual DB edit because
+	// the policy validator already rejects invalid durations at save time. Log
+	// loudly rather than silently discarding the misconfigured value.
+	var feedbackTimeout time.Duration
+	if a.policy.Capabilities.Feedback.Timeout != "" {
+		var parseErr error
+		feedbackTimeout, parseErr = time.ParseDuration(a.policy.Capabilities.Feedback.Timeout)
+		if parseErr != nil {
+			slog.WarnContext(ctx, "invalid feedback timeout in policy, falling back to default",
+				"run_id", runID,
+				"timeout_value", a.policy.Capabilities.Feedback.Timeout,
+				"err", parseErr)
+			feedbackTimeout = 0
+		}
+	}
+	if feedbackTimeout == 0 {
+		feedbackTimeout = a.defaultFeedbackTimeout
+	}
+
+	responseText, err := a.waitForFeedback(ctx, runID, AskOperatorToolName, "", message, feedbackTimeout)
 	if err != nil {
 		return "", false, err
 	}

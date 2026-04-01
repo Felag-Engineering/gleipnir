@@ -142,6 +142,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate drop capability_role: %w", err)
 	}
 
+	if err := s.migrateAddFeedbackExpiresAt(ctx); err != nil {
+		return fmt.Errorf("migrate add feedback expires_at: %w", err)
+	}
+
 	return nil
 }
 
@@ -442,6 +446,99 @@ INSERT INTO schema_migrations(version, applied_at) VALUES (10, strftime('%Y-%m-%
 	}
 
 	slog.Info("migrated mcp_tools table to drop capability_role")
+	return nil
+}
+
+// migrateAddFeedbackExpiresAt adds the expires_at column to feedback_requests and
+// updates the status CHECK constraint to include 'timed_out'. New deployments get
+// both from 0001_initial.sql; this migration is a no-op for them.
+//
+// SQLite does not support ALTER COLUMN, so we use the table-recreation pattern.
+// PRAGMA foreign_keys must be set OUTSIDE the transaction (SQLite requirement —
+// see migrateAddWaitingForFeedback for the same pattern).
+func (s *Store) migrateAddFeedbackExpiresAt(ctx context.Context) error {
+	// Check whether expires_at already exists by inspecting the column list.
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info(feedback_requests)")
+	if err != nil {
+		return fmt.Errorf("pragma table_info feedback_requests: %w", err)
+	}
+	defer rows.Close()
+
+	var hasExpiresAt bool
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dflt any
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan pragma row: %w", err)
+		}
+		if name == "expires_at" {
+			hasExpiresAt = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("pragma rows: %w", err)
+	}
+	if hasExpiresAt {
+		return nil // already present; nothing to do
+	}
+
+	// Disable FK enforcement before the transaction so DROP TABLE inside the
+	// transaction does not trigger FK violations from run_steps (which reference runs).
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys before feedback_requests migration: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		return fmt.Errorf("begin feedback expires_at migration tx: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.Error("feedback expires_at migration rollback failed", "err", rbErr)
+		}
+	}()
+
+	ddl := `
+CREATE TABLE feedback_requests_new (
+    id              TEXT    PRIMARY KEY,
+    run_id          TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    tool_name       TEXT    NOT NULL,
+    proposed_input  TEXT    NOT NULL,
+    message         TEXT    NOT NULL,
+    status          TEXT    NOT NULL CHECK(status IN ('pending', 'resolved', 'timed_out')),
+    response        TEXT,
+    resolved_at     TEXT,
+    expires_at      TEXT,
+    created_at      TEXT    NOT NULL
+);
+INSERT INTO feedback_requests_new (id, run_id, tool_name, proposed_input, message, status, response, resolved_at, expires_at, created_at)
+    SELECT id, run_id, tool_name, proposed_input, message, status, response, resolved_at, NULL, created_at
+    FROM feedback_requests;
+DROP TABLE feedback_requests;
+ALTER TABLE feedback_requests_new RENAME TO feedback_requests;
+CREATE INDEX idx_feedback_requests_run_id         ON feedback_requests(run_id);
+CREATE INDEX idx_feedback_requests_status         ON feedback_requests(status);
+CREATE INDEX idx_feedback_requests_run_pending    ON feedback_requests(run_id, status);
+CREATE INDEX idx_feedback_requests_status_expires ON feedback_requests(status, expires_at);`
+
+	if _, err := tx.ExecContext(ctx, ddl); err != nil {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		return fmt.Errorf("recreate feedback_requests with expires_at: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		return fmt.Errorf("commit feedback expires_at migration: %w", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		return fmt.Errorf("re-enable foreign keys after feedback_requests migration: %w", err)
+	}
+
+	slog.Info("migrated feedback_requests table to add expires_at and timed_out status")
 	return nil
 }
 

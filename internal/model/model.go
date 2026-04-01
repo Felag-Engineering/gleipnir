@@ -215,6 +215,7 @@ const (
 	ErrorCodeTokenBudgetExceeded   ErrorCode = "token_budget_exceeded"
 	ErrorCodeToolCallLimitExceeded ErrorCode = "tool_call_limit_exceeded"
 	ErrorCodeSchemaViolation       ErrorCode = "schema_violation"
+	ErrorCodeFeedbackTimeout       ErrorCode = "feedback_timeout"
 )
 
 func (e ErrorCode) String() string { return string(e) }
@@ -222,7 +223,7 @@ func (e ErrorCode) Valid() bool {
 	switch e {
 	case ErrorCodeToolError, ErrorCodeAPIError, ErrorCodeCancelled, ErrorCodeMissingCapability,
 		ErrorCodeApprovalRejected, ErrorCodeTokenBudgetExceeded, ErrorCodeToolCallLimitExceeded,
-		ErrorCodeSchemaViolation:
+		ErrorCodeSchemaViolation, ErrorCodeFeedbackTimeout:
 		return true
 	}
 	return false

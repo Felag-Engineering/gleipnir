@@ -36,7 +36,7 @@ func buildSSERouter(t *testing.T, policyID string, llmClient llm.LLMClient, broa
 		cfg.LLMClient = llmClient
 		return agent.New(cfg)
 	})
-	launcher := trigger.NewRunLauncher(store, registry, manager, factory, broadcaster)
+	launcher := trigger.NewRunLauncher(store, registry, manager, factory, broadcaster, 0)
 	wh := trigger.NewWebhookHandler(store, launcher)
 	rh := trigger.NewRunsHandler(store, manager, broadcaster)
 

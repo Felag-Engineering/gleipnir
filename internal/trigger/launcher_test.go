@@ -86,7 +86,7 @@ func TestCheckConcurrency(t *testing.T) {
 			registry := mcp.NewRegistry(store.Queries())
 			manager := trigger.NewRunManager()
 			// factory is nil — CheckConcurrency never calls it.
-			launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil)
+			launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
 
 			err := launcher.CheckConcurrency(context.Background(), policyID, tc.concurrency)
 			if tc.wantNil {
@@ -109,7 +109,7 @@ func TestLaunch_ToolResolutionFailure(t *testing.T) {
 	// No MCP server registered, so any tool reference will fail resolution.
 	registry := mcp.NewRegistry(store.Queries())
 	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
 
 	const policyWithMissingTool = `
 name: tool-failure-policy
@@ -158,7 +158,7 @@ func TestLaunch_AgentConstructionFailure(t *testing.T) {
 	manager := trigger.NewRunManager()
 
 	agentErr := errors.New("deliberate construction failure")
-	launcher := trigger.NewRunLauncher(store, registry, manager, failingAgentFactory(agentErr), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, failingAgentFactory(agentErr), nil, 0)
 
 	const launchPolicy = `
 name: agent-fail-policy
@@ -206,7 +206,7 @@ func TestLaunch_Successful(t *testing.T) {
 	// and payload, and LaunchResult.RunID should be non-empty.
 	store, registry := setupIntegrationFixture(t)
 	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 
 	const launchPolicy = `
 name: launch-success-policy
@@ -321,7 +321,7 @@ agent:
 			}
 
 			registry := mcp.NewRegistry(store.Queries())
-			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), nil, nil)
+			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), nil, nil, 0)
 
 			parsed, err := policy.Parse(queuePolicyYAML, model.DefaultProvider, model.DefaultModelName)
 			if err != nil {
@@ -367,7 +367,7 @@ agent:
 		testutil.InsertQueueEntry(t, store, "p-drain", "webhook")
 
 		manager := trigger.NewRunManager()
-		launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+		launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 
 		parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
 		if err != nil {
@@ -403,7 +403,7 @@ agent:
 		insertTestPolicy(t, store, "p-drain-empty", policyYAML)
 
 		manager := trigger.NewRunManager()
-		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil)
+		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
 
 		parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
 		if err != nil {
@@ -445,7 +445,7 @@ agent:
 		testutil.InsertQueueEntry(t, store, "p-drain-fail", "webhook")
 
 		manager := trigger.NewRunManager()
-		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil)
+		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
 
 		parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
 		if err != nil {
@@ -497,7 +497,7 @@ agent:
 
 		manager := trigger.NewRunManager()
 		registry := mcp.NewRegistry(store.Queries())
-		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil)
+		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
 
 		parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
 		if err != nil {

@@ -219,15 +219,17 @@ CREATE TABLE feedback_requests (
     tool_name       TEXT    NOT NULL,
     proposed_input  TEXT    NOT NULL,     -- JSON blob
     message         TEXT    NOT NULL,     -- MCP tool output (notification sent to operator)
-    status          TEXT    NOT NULL CHECK(status IN ('pending', 'resolved')),
+    status          TEXT    NOT NULL CHECK(status IN ('pending', 'resolved', 'timed_out')),
     response        TEXT,                 -- nullable, operator's freeform text response
     resolved_at     TEXT,                 -- nullable, ISO 8601 UTC
+    expires_at      TEXT,                 -- nullable, ISO 8601 UTC; set when a timeout is configured
     created_at      TEXT    NOT NULL      -- ISO 8601 UTC
 );
 
 CREATE INDEX idx_feedback_requests_run_id         ON feedback_requests(run_id);
 CREATE INDEX idx_feedback_requests_status         ON feedback_requests(status);
 CREATE INDEX idx_feedback_requests_run_pending    ON feedback_requests(run_id, status);
+CREATE INDEX idx_feedback_requests_status_expires ON feedback_requests(status, expires_at);
 
 -- ---------------------------------------------------------------------------
 -- Users

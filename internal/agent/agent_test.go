@@ -1966,6 +1966,88 @@ func TestBuildToolDefinitions_IncludesAskOperator(t *testing.T) {
 	})
 }
 
+// TestRun_feedback_timeout verifies that when a feedback timeout is configured
+// and the operator does not respond, the run fails with an ErrorCodeFeedbackTimeout
+// error step and the run is marked failed.
+func TestRun_feedback_timeout(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	// Policy has feedback enabled but no per-policy timeout.
+	// The agent is configured with a short DefaultFeedbackTimeout so the test
+	// completes quickly without waiting for a real 30-minute timeout.
+	pol := &model.ParsedPolicy{
+		Name: "test-policy",
+		Agent: model.AgentConfig{
+			Task: "test task",
+		},
+		Capabilities: model.CapabilitiesConfig{
+			Feedback: model.FeedbackConfig{Enabled: true},
+		},
+	}
+
+	// feedbackCh is never sent on — the operator does not respond.
+	feedbackCh := make(chan string)
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		LLMClient: testutil.NewMockLLMClient(
+			testutil.MakeLLMToolCallResponse("tc-1", AskOperatorToolName,
+				map[string]any{"reason": "Need your input"}, 10, 5),
+		),
+		Tools:                  nil,
+		Policy:                 pol,
+		Audit:                  w,
+		FeedbackCh:             feedbackCh,
+		StateMachine:           NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		DefaultFeedbackTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	runErr := ba.Run(context.Background(), "r1", "trigger")
+	if runErr == nil {
+		t.Fatal("expected error on feedback timeout, got nil")
+	}
+	if !strings.Contains(runErr.Error(), "feedback timeout") {
+		t.Errorf("error = %q, want to contain 'feedback timeout'", runErr.Error())
+	}
+
+	// Run must be marked failed.
+	run, dbErr := s.GetRun(context.Background(), "r1")
+	if dbErr != nil {
+		t.Fatalf("GetRun: %v", dbErr)
+	}
+	if run.Status != string(model.RunStatusFailed) {
+		t.Errorf("run status = %q, want %q", run.Status, model.RunStatusFailed)
+	}
+
+	// An error step with feedback_timeout code must exist.
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	steps, err := s.ListRunSteps(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	var timeoutErrFound bool
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeError) {
+			var content map[string]string
+			if err := json.Unmarshal([]byte(step.Content), &content); err == nil {
+				if content["code"] == string(model.ErrorCodeFeedbackTimeout) {
+					timeoutErrFound = true
+				}
+			}
+		}
+	}
+	if !timeoutErrFound {
+		t.Errorf("expected error step with code %q, not found in steps", model.ErrorCodeFeedbackTimeout)
+	}
+}
+
 func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")

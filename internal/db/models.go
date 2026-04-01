@@ -26,6 +26,7 @@ type FeedbackRequest struct {
 	Status        string  `json:"status"`
 	Response      *string `json:"response"`
 	ResolvedAt    *string `json:"resolved_at"`
+	ExpiresAt     *string `json:"expires_at"`
 	CreatedAt     string  `json:"created_at"`
 }
 

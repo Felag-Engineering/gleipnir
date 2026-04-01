@@ -71,6 +71,7 @@ export interface FeedbackRequestContent {
   tool: string
   message?: string
   feedback_id?: string
+  expires_at?: string
 }
 
 export interface FeedbackResponseContent {

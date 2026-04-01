@@ -118,7 +118,7 @@ func TestScheduler_SkipsPastTimestampsOnStartup(t *testing.T) {
 	defer cancel()
 
 	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -152,7 +152,7 @@ func TestScheduler_FiresFutureTimestamp(t *testing.T) {
 	defer cancel()
 
 	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -187,7 +187,7 @@ func TestScheduler_AutoPausesAfterAllTimesConsumed(t *testing.T) {
 	defer cancel()
 
 	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -232,7 +232,7 @@ func TestScheduler_DeduplicatesAlreadyFiredTime(t *testing.T) {
 	defer cancel()
 
 	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -269,7 +269,7 @@ func TestScheduler_ConcurrencySkip_BlocksWhenActive(t *testing.T) {
 	defer cancel()
 
 	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -302,7 +302,7 @@ func TestScheduler_ConcurrencySkip_ProceedsWhenIdle(t *testing.T) {
 	defer cancel()
 
 	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -340,7 +340,7 @@ func TestScheduler_ConcurrencyQueue_EnqueuesWhenActive(t *testing.T) {
 	defer cancel()
 
 	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -383,7 +383,7 @@ func TestScheduler_ConcurrencyQueue_LaunchesWhenIdle(t *testing.T) {
 	defer cancel()
 
 	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil)
+	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {

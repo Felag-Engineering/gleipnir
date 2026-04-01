@@ -65,6 +65,7 @@ type FeedbackPayload struct {
 	ToolName      string
 	ProposedInput string // JSON-encoded input the agent sent to the feedback tool
 	Message       string // MCP tool output — the notification text sent to the operator
+	ExpiresAt     string // RFC3339Nano; empty string means no timeout
 }
 
 type transitionOpts struct {
@@ -148,12 +149,19 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 	// Create the feedback_requests DB record when entering waiting_for_feedback.
 	if next == model.RunStatusWaitingForFeedback && topts.feedback != nil {
 		p := topts.feedback
+		// Only store expires_at when a timeout is set. NULL in the DB means no timeout,
+		// which the feedback scanner uses to exclude old rows from the expired query.
+		var expiresAt *string
+		if p.ExpiresAt != "" {
+			expiresAt = &p.ExpiresAt
+		}
 		if _, err := sm.queries.CreateFeedbackRequest(ctx, db.CreateFeedbackRequestParams{
 			ID:            p.FeedbackID,
 			RunID:         sm.runID,
 			ToolName:      p.ToolName,
 			ProposedInput: p.ProposedInput,
 			Message:       p.Message,
+			ExpiresAt:     expiresAt,
 			CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
 		}); err != nil {
 			return fmt.Errorf("creating feedback request record: %w", err)
