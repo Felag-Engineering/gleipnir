@@ -194,6 +194,89 @@ func TestValidate_ZeroQueueDepthIsValid(t *testing.T) {
 	}
 }
 
+// validClaudeCodePolicy returns a minimal valid ParsedPolicy with provider claude-code.
+// Limits are intentionally zero to confirm they are not validated for this provider.
+func validClaudeCodePolicy() *model.ParsedPolicy {
+	return &model.ParsedPolicy{
+		Name: "cc-test-policy",
+		Trigger: model.TriggerConfig{
+			Type: model.TriggerTypeWebhook,
+		},
+		Capabilities: model.CapabilitiesConfig{
+			Tools: []model.ToolCapability{
+				{Tool: "server.tool", Approval: model.ApprovalModeNone},
+			},
+		},
+		Agent: model.AgentConfig{
+			ModelConfig: model.ModelConfig{
+				Provider: model.ProviderClaudeCode,
+				Name:     model.DefaultModelName,
+			},
+			Task:        "do something",
+			Concurrency: model.ConcurrencySkip,
+			Limits: model.RunLimits{
+				MaxTokensPerRun:    0,
+				MaxToolCallsPerRun: 0,
+			},
+		},
+	}
+}
+
+func TestValidate_ClaudeCodeOptionsValid(t *testing.T) {
+	p := validClaudeCodePolicy()
+	p.Agent.ModelConfig.Options = map[string]any{
+		"max_turns":      20,
+		"max_budget_usd": 1.0,
+	}
+	if err := Validate(p); err != nil {
+		t.Errorf("expected valid claude-code policy, got: %v", err)
+	}
+}
+
+func TestValidate_ClaudeCodeOptionsInvalidMaxTurns(t *testing.T) {
+	p := validClaudeCodePolicy()
+	p.Agent.ModelConfig.Options = map[string]any{"max_turns": -1}
+	assertValidationContains(t, p, "max_turns must be a positive integer")
+}
+
+func TestValidate_ClaudeCodeOptionsInvalidMaxBudget(t *testing.T) {
+	p := validClaudeCodePolicy()
+	p.Agent.ModelConfig.Options = map[string]any{"max_budget_usd": -0.5}
+	assertValidationContains(t, p, "max_budget_usd must be a positive number")
+}
+
+func TestValidate_ClaudeCodeOptionsUnknownKey(t *testing.T) {
+	p := validClaudeCodePolicy()
+	p.Agent.ModelConfig.Options = map[string]any{"temperature": 0.7}
+	assertValidationContains(t, p, "unknown option")
+}
+
+func TestValidate_ClaudeCodeOptionsNil(t *testing.T) {
+	p := validClaudeCodePolicy()
+	p.Agent.ModelConfig.Options = nil
+	if err := Validate(p); err != nil {
+		t.Errorf("expected nil options to be valid for claude-code, got: %v", err)
+	}
+}
+
+func TestValidate_ClaudeCodeOptionsEmpty(t *testing.T) {
+	p := validClaudeCodePolicy()
+	p.Agent.ModelConfig.Options = map[string]any{}
+	if err := Validate(p); err != nil {
+		t.Errorf("expected empty options to be valid for claude-code, got: %v", err)
+	}
+}
+
+func TestValidate_ClaudeCodeSkipsLimitChecks(t *testing.T) {
+	// Zero limits are normally invalid for anthropic but must be accepted for claude-code.
+	p := validClaudeCodePolicy()
+	p.Agent.Limits.MaxTokensPerRun = 0
+	p.Agent.Limits.MaxToolCallsPerRun = 0
+	if err := Validate(p); err != nil {
+		t.Errorf("expected zero limits to be valid for claude-code provider, got: %v", err)
+	}
+}
+
 func assertValidationContains(t *testing.T, p *model.ParsedPolicy, substr string) {
 	t.Helper()
 	err := Validate(p)

@@ -249,6 +249,72 @@ func TestClaudeCodeAgent_BuildArgs(t *testing.T) {
 	})
 }
 
+func TestBuildArgs_MaxTurnsFromOptions(t *testing.T) {
+	p := &model.ParsedPolicy{
+		Agent: model.AgentConfig{
+			ModelConfig: model.ModelConfig{
+				Options: map[string]any{"max_turns": 10},
+			},
+		},
+	}
+	a := &ClaudeCodeAgent{policy: p}
+	joined := strings.Join(a.buildArgs("sp", "payload", "/tmp/mcp.json"), " ")
+	if !strings.Contains(joined, "--max-turns 10") {
+		t.Errorf("expected --max-turns 10 in args: %s", joined)
+	}
+}
+
+func TestBuildArgs_MaxBudgetFromOptions(t *testing.T) {
+	p := &model.ParsedPolicy{
+		Agent: model.AgentConfig{
+			ModelConfig: model.ModelConfig{
+				Options: map[string]any{"max_budget_usd": 1.5},
+			},
+		},
+	}
+	a := &ClaudeCodeAgent{policy: p}
+	joined := strings.Join(a.buildArgs("sp", "payload", "/tmp/mcp.json"), " ")
+	if !strings.Contains(joined, "--max-budget-usd 1.5") {
+		t.Errorf("expected --max-budget-usd 1.5 in args: %s", joined)
+	}
+}
+
+func TestBuildArgs_MaxTurnsOptionOverridesLimits(t *testing.T) {
+	// Options["max_turns"] takes priority over Limits.MaxToolCallsPerRun.
+	p := &model.ParsedPolicy{
+		Agent: model.AgentConfig{
+			ModelConfig: model.ModelConfig{
+				Options: map[string]any{"max_turns": 5},
+			},
+			Limits: model.RunLimits{MaxToolCallsPerRun: 10},
+		},
+	}
+	a := &ClaudeCodeAgent{policy: p}
+	joined := strings.Join(a.buildArgs("sp", "payload", "/tmp/mcp.json"), " ")
+	if !strings.Contains(joined, "--max-turns 5") {
+		t.Errorf("expected --max-turns 5 (from options) in args: %s", joined)
+	}
+	if strings.Contains(joined, "--max-turns 10") {
+		t.Errorf("options[max_turns] should override limits.MaxToolCallsPerRun, got: %s", joined)
+	}
+}
+
+func TestBuildArgs_MaxTurnsFloat64Fallback(t *testing.T) {
+	// YAML may decode integers as float64 (e.g. `max_turns: 20.0`).
+	p := &model.ParsedPolicy{
+		Agent: model.AgentConfig{
+			ModelConfig: model.ModelConfig{
+				Options: map[string]any{"max_turns": float64(15)},
+			},
+		},
+	}
+	a := &ClaudeCodeAgent{policy: p}
+	joined := strings.Join(a.buildArgs("sp", "payload", "/tmp/mcp.json"), " ")
+	if !strings.Contains(joined, "--max-turns 15") {
+		t.Errorf("expected --max-turns 15 from float64 option in args: %s", joined)
+	}
+}
+
 func TestClaudeCodeAgent_NeedsGate(t *testing.T) {
 	cases := []struct {
 		name      string

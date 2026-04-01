@@ -164,11 +164,36 @@ func (a *ClaudeCodeAgent) buildArgs(systemPrompt, triggerPayload, mcpConfigPath 
 		"--mcp-config", mcpConfigPath,
 	}
 
-	// MaxToolCallsPerRun maps to --max-turns as a coarse approximation.
-	// --max-turns counts conversational turns (each may contain multiple tool calls),
-	// so this is an upper bound, not an exact match.
-	if a.policy.Agent.Limits.MaxToolCallsPerRun > 0 {
+	// max_turns from model.options takes priority. If not set, fall back to
+	// MaxToolCallsPerRun as a coarse approximation (--max-turns counts
+	// conversational turns, each of which may contain multiple tool calls).
+	// float64 case handles YAML values like `max_turns: 20.0`.
+	if maxTurns, ok := a.policy.Agent.ModelConfig.Options["max_turns"]; ok {
+		switch v := maxTurns.(type) {
+		case int:
+			if v > 0 {
+				args = append(args, "--max-turns", strconv.Itoa(v))
+			}
+		case float64:
+			if iv := int(v); iv > 0 {
+				args = append(args, "--max-turns", strconv.Itoa(iv))
+			}
+		}
+	} else if a.policy.Agent.Limits.MaxToolCallsPerRun > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(a.policy.Agent.Limits.MaxToolCallsPerRun))
+	}
+
+	if maxBudget, ok := a.policy.Agent.ModelConfig.Options["max_budget_usd"]; ok {
+		switch v := maxBudget.(type) {
+		case float64:
+			if v > 0 {
+				args = append(args, "--max-budget-usd", strconv.FormatFloat(v, 'f', -1, 64))
+			}
+		case int:
+			if v > 0 {
+				args = append(args, "--max-budget-usd", strconv.FormatFloat(float64(v), 'f', -1, 64))
+			}
+		}
 	}
 
 	allowedTools := a.buildAllowedTools()

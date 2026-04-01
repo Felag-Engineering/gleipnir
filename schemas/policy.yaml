@@ -37,7 +37,7 @@ model:
 
   # provider: string — optional, default: "anthropic"
   #   The LLM provider to use for this policy.
-  #   Currently supported: anthropic
+  #   Currently supported: anthropic, claude-code
   provider: anthropic
 
   # name: string — optional, default: claude-sonnet-4-6
@@ -53,6 +53,9 @@ model:
   # options: map — optional, default: empty
   #   Provider-specific options (e.g., enable_prompt_caching).
   #   Preserved as-is and validated downstream by the provider implementation.
+  #   For claude-code:
+  #     max_turns: int           — maximum conversational turns (maps to --max-turns)
+  #     max_budget_usd: float    — maximum spend in USD (maps to --max-budget-usd)
   options:
     enable_prompt_caching: true
 

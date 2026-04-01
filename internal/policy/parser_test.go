@@ -660,6 +660,64 @@ agent:
 	}
 }
 
+func TestParse_ClaudeCodeProvider(t *testing.T) {
+	raw := `
+name: cc-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+model:
+  provider: claude-code
+  options:
+    max_turns: 20
+    max_budget_usd: 1.0
+`
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Agent.ModelConfig.Provider != model.ProviderClaudeCode {
+		t.Errorf("provider = %q, want %q", p.Agent.ModelConfig.Provider, model.ProviderClaudeCode)
+	}
+	if p.Agent.ModelConfig.Options["max_turns"] != 20 {
+		t.Errorf("options[max_turns] = %v, want 20", p.Agent.ModelConfig.Options["max_turns"])
+	}
+	if p.Agent.ModelConfig.Options["max_budget_usd"] != 1.0 {
+		t.Errorf("options[max_budget_usd] = %v, want 1.0", p.Agent.ModelConfig.Options["max_budget_usd"])
+	}
+}
+
+func TestParse_ClaudeCodeProvider_NoModelName(t *testing.T) {
+	// When provider is claude-code and model name is omitted, the parser applies
+	// the default model name (no special-casing for claude-code).
+	raw := `
+name: cc-nomodel
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+model:
+  provider: claude-code
+`
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Agent.ModelConfig.Provider != model.ProviderClaudeCode {
+		t.Errorf("provider = %q, want %q", p.Agent.ModelConfig.Provider, model.ProviderClaudeCode)
+	}
+	if p.Agent.ModelConfig.Name != model.DefaultModelName {
+		t.Errorf("name = %q, want %q (default)", p.Agent.ModelConfig.Name, model.DefaultModelName)
+	}
+}
+
 func TestParse_CustomPreamble(t *testing.T) {
 	raw := `
 name: test

@@ -247,8 +247,15 @@ func toModelPolicy(row db.Policy) (model.Policy, error) {
 // Returns nil when optionsValidator is nil (skips check). The caller treats
 // any returned error as a blocking validation error — invalid options will
 // fail at run time, so catching them at save time is the whole point.
+//
+// claude-code is skipped here because it is not registered in the provider
+// registry (it is a subprocess runner, not an LLMClient). Its options are
+// validated structurally by validateClaudeCodeOptions in validator.go instead.
 func (s *Service) validateProviderOptions(parsed *model.ParsedPolicy) error {
 	if s.optionsValidator == nil {
+		return nil
+	}
+	if parsed.Agent.ModelConfig.Provider == model.ProviderClaudeCode {
 		return nil
 	}
 	return s.optionsValidator.ValidateProviderOptions(
@@ -260,8 +267,14 @@ func (s *Service) validateProviderOptions(parsed *model.ParsedPolicy) error {
 // validateModel calls the modelValidator if one is configured. Returns nil
 // when modelValidator is nil (skips check). The caller treats any returned
 // error as a non-blocking warning — see ModelValidator doc comment.
+//
+// claude-code is skipped here because it does not use an LLM model name that
+// the registry can validate; it invokes the Claude Code CLI directly.
 func (s *Service) validateModel(ctx context.Context, parsed *model.ParsedPolicy) error {
 	if s.modelValidator == nil {
+		return nil
+	}
+	if parsed.Agent.ModelConfig.Provider == model.ProviderClaudeCode {
 		return nil
 	}
 	return s.modelValidator.ValidateModelName(
