@@ -1,16 +1,15 @@
 """
 Gleipnir test MCP server.
 
-Exposes a small set of tools covering both Gleipnir capability roles:
-  tool      — callable tools, optionally approval-gated (tagged in Gleipnir's tool registry)
-  feedback  — human-in-the-loop channel (tagged in Gleipnir's tool registry)
+Exposes a small set of tools for testing Gleipnir's MCP integration:
+  sensor tools  — read-only, safe to call freely
+  write tools   — world-affecting, optionally approval-gated in policy
 
 Run with:  python server.py
 Endpoint:  http://localhost:8090/mcp
 """
 
 import datetime
-import json
 import os
 import random
 
@@ -99,27 +98,6 @@ def write_file(path: str, content: str) -> dict:
     with open(full_path, "w") as f:
         f.write(content)
     return {"ok": True, "path": full_path, "bytes_written": len(content)}
-
-
-# ---------------------------------------------------------------------------
-# Feedback tool — human-in-the-loop; tag as 'feedback' in Gleipnir
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-def request_human_approval(reason: str, context: str = "") -> dict:
-    """
-    Signal that the agent wants explicit human approval before proceeding.
-    In Gleipnir this tool should be tagged as 'feedback' so the runtime routes
-    it through the approval channel.
-    Returns a placeholder — the real response comes from the operator.
-    """
-    print(f"[feedback] reason={reason!r} context={context!r}")
-    return {
-        "status": "pending",
-        "reason": reason,
-        "context": context,
-        "submitted_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
 
 
 if __name__ == "__main__":

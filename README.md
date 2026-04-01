@@ -10,11 +10,10 @@ Named after the Norse mythological binding that held Fenrir: smooth as silk, str
 
 Gleipnir lets you define **policies** — YAML configurations that describe what an agent is allowed to do, what triggers it, and what constraints apply. When a trigger fires, Gleipnir launches a BoundAgent that can only use the tools you explicitly granted it.
 
-Agents operate with three categories of tools:
+Agents operate with two kinds of capabilities:
 
-- **Sensors** — read-only tools for observing the world. Called freely.
-- **Actuators** — world-affecting tools. Can be approval-gated.
-- **Feedback** — a channel to consult a human operator when uncertain.
+- **Tools** — MCP tools granted to the agent. Tools can optionally be approval-gated so the operator must confirm before execution.
+- **Feedback** — a built-in channel (`gleipnir.ask_operator`) that lets the agent consult a human operator when uncertain. This is a Gleipnir-native feature, not an MCP tool.
 
 Capability enforcement is hard: tools not granted to an agent for a run are never registered with it. They don't exist from the agent's perspective. Prompt-based restrictions are not used.
 
@@ -53,7 +52,7 @@ Every agent run produces a full reasoning trace — thoughts, tool calls, tool r
 
 **Storage:** SQLite with WAL mode. Single file, zero ops, ships in the container.
 
-**Tools:** All tools are MCP tools over HTTP transport. Gleipnir maintains its own capability tag registry (sensor/actuator/feedback) — this metadata lives in Gleipnir's DB, not in the MCP server. For stdio-only MCP servers, see the [Supergateway sidecar guide](docs/stdio-mcp-servers.md).
+**Tools:** All tools are MCP tools over HTTP transport. Gleipnir maintains its own capability metadata (tool approval gates, feedback channel) — this metadata lives in Gleipnir's DB, not in the MCP server. For stdio-only MCP servers, see the [Supergateway sidecar guide](docs/stdio-mcp-servers.md).
 
 ---
 
@@ -89,7 +88,7 @@ docker compose up -d
 
 1. **Register an MCP server** — go to Settings → MCP Servers, add the URL of your MCP server. Gleipnir will discover its available tools.
 
-2. **Tag capabilities** — assign each discovered tool a role: `sensor`, `actuator`, or `feedback`.
+2. **Tag capabilities** — mark tools that require operator approval before execution.
 
 3. **Create a policy** — go to Policies → New, write your policy YAML. The policy defines the trigger, which tools the agent can use, and what the agent should do.
 
@@ -154,7 +153,7 @@ See [`policy-schema.yaml`](docs/policy-schema.yaml) for the full schema referenc
 
 Gleipnir supports two approval modes simultaneously:
 
-**Agent-initiated** — the agent voluntarily uses the feedback tool when uncertain. Encouraged via the system prompt. The agent sends a message, the operator responds via the UI, and the agent continues with the response as a tool result.
+**Agent-initiated** — the agent voluntarily calls `gleipnir.ask_operator` when uncertain. Encouraged via the system prompt. The agent sends a message, the operator responds via the UI, and the agent continues with the response as a tool result.
 
 **Policy-gated** — actuators marked `approval: required` in the policy are intercepted by the runtime before execution. The run suspends, an approval request appears in the UI, and the run resumes or fails based on the operator's decision. This is a hard guarantee — it applies regardless of the agent's reasoning.
 
@@ -354,15 +353,17 @@ trigger:
   type: webhook
 
 capabilities:
-  sensors:
+  tools:
     - tool: todoist.get_projects
     - tool: todoist.get_tasks
+  feedback:
+    enabled: true
 
 agent:
   task: |
     You have received a webhook trigger. Fetch all open tasks from Todoist
     across all projects. Group them by project. Send a concise summary of
-    what is open via the feedback tool so the operator can review it.
+    what is open via gleipnir.ask_operator so the operator can review it.
   limits:
     max_tokens_per_run: 20000
     max_tool_calls_per_run: 20
@@ -381,9 +382,8 @@ trigger:
   type: webhook
 
 capabilities:
-  sensors:
+  tools:
     - tool: todoist.get_task
-  actuators:
     - tool: todoist.create_task
     - tool: todoist.close_task
       approval: required
@@ -417,15 +417,17 @@ trigger:
   type: webhook
 
 capabilities:
-  sensors:
+  tools:
     - tool: mealie.search_recipes
+  feedback:
+    enabled: true
 
 agent:
   task: |
     The webhook payload contains a field "query" — a search term.
     Search for recipes in Mealie that match this query.
     Format the results as a numbered list with the recipe name and a brief
-    description for each result. Send the formatted list via the feedback tool.
+    description for each result. Send the formatted list via gleipnir.ask_operator.
   limits:
     max_tokens_per_run: 20000
     max_tool_calls_per_run: 10

@@ -161,7 +161,7 @@ agent:
   # preamble: multiline string — optional
   #   Behavioral instructions for the agent. Operator-editable.
   #   If absent, the Gleipnir default BoundAgent preamble is used (ADR-012).
-  #   The generated capabilities block (sensor/actuator/feedback tool lists)
+  #   The generated capabilities block (tool list and feedback status)
   #   is appended after the preamble at run start — do not duplicate tool
   #   names here.
   preamble: |

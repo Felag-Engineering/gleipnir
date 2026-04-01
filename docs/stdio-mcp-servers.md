@@ -59,7 +59,7 @@ Once the sidecar is running, register it in Gleipnir exactly like any HTTP MCP s
 3. URL: `http://my-mcp:8093/` (use the Docker Compose service name as the hostname)
 4. Click **Discover** to pull the tool list
 
-From this point on, the server's tools are available for policies. Tag them as sensors/actuators/feedback and reference them in policy YAML using the usual dot notation (e.g., `my-mcp.some_tool`).
+From this point on, the server's tools are available for policies. Reference them in policy YAML using the usual dot notation (e.g., `my-mcp.some_tool`). Mark tools that need operator approval with `approval: required`.
 
 ## Credentials and auth
 

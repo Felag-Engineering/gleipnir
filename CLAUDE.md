@@ -41,7 +41,7 @@ The Go server handles policy management, agent orchestration, and the reasoning 
 **Run states:** `pending → running → complete | failed | waiting_for_approval → running (approved) | failed (rejected/timeout)`; `interrupted` on restart.
 
 **Approval modes:**
-1. Agent-initiated: agent calls feedback tool voluntarily
+1. Agent-initiated: agent calls gleipnir.ask_operator voluntarily
 2. Policy-gated: tools marked `approval: required` are intercepted by the runtime before execution — hard guarantee, not prompt-based
 
 ## Key packages
