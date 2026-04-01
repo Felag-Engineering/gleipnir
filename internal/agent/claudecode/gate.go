@@ -95,46 +95,77 @@ func NewGateServer(stdin io.Reader, stdout io.Writer, cfg GateConfig) *GateServe
 	}
 }
 
+// scanResult carries one line from the scanner goroutine, or signals EOF/error.
+type scanResult struct {
+	line []byte // nil on EOF
+	err  error  // non-nil only on scanner error
+}
+
 // Run is the main request/response loop. It reads JSON-RPC requests line by
 // line, dispatches each to the appropriate handler, and writes responses.
 // Returns nil on clean EOF (stdin closed). Returns ctx.Err() on cancellation.
+//
+// Scanner reads happen in a separate goroutine so the main loop can select
+// on both incoming lines and context cancellation. Without this, a blocking
+// Scan() call would prevent timely shutdown when the context is cancelled.
 func (g *GateServer) Run(ctx context.Context) error {
+	lines := make(chan scanResult)
+	go func() {
+		defer close(lines)
+		for g.scanner.Scan() {
+			// Copy the line — scanner reuses its buffer.
+			raw := g.scanner.Bytes()
+			cp := make([]byte, len(raw))
+			copy(cp, raw)
+			select {
+			case lines <- scanResult{line: cp}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		// Send EOF sentinel (nil line).
+		select {
+		case lines <- scanResult{err: g.scanner.Err()}:
+		case <-ctx.Done():
+		}
+	}()
+
 	for {
-		// Check for cancellation before blocking on Scan.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
-		}
+		case res, ok := <-lines:
+			if !ok {
+				// Channel closed — scanner goroutine exited.
+				return ctx.Err()
+			}
+			if res.line == nil {
+				// EOF or scanner error — clean shutdown.
+				return nil
+			}
+			if len(res.line) == 0 {
+				continue
+			}
 
-		if !g.scanner.Scan() {
-			// EOF or scanner error — clean shutdown.
-			return nil
-		}
+			var req jsonrpcRequest
+			if err := json.Unmarshal(res.line, &req); err != nil {
+				slog.WarnContext(ctx, "gate: malformed JSON-RPC request", "err", err)
+				continue
+			}
 
-		line := g.scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
+			// Notifications have no ID (nil after unmarshal). Per JSON-RPC 2.0,
+			// a server must not send a response to a notification.
+			isNotification := req.ID == nil || string(req.ID) == "null"
+			if isNotification {
+				// Still dispatch so the server can update any local state if needed,
+				// but the handler must not return a response we should send.
+				continue
+			}
 
-		var req jsonrpcRequest
-		if err := json.Unmarshal(line, &req); err != nil {
-			slog.WarnContext(ctx, "gate: malformed JSON-RPC request", "err", err)
-			continue
-		}
-
-		// Notifications have no ID (nil after unmarshal). Per JSON-RPC 2.0,
-		// a server must not send a response to a notification.
-		isNotification := req.ID == nil || string(req.ID) == "null"
-		if isNotification {
-			// Still dispatch so the server can update any local state if needed,
-			// but the handler must not return a response we should send.
-			continue
-		}
-
-		resp := g.dispatch(ctx, req)
-		if err := g.encoder.Encode(resp); err != nil {
-			slog.WarnContext(ctx, "gate: failed to write response", "err", err)
+			resp := g.dispatch(ctx, req)
+			if err := g.encoder.Encode(resp); err != nil {
+				slog.WarnContext(ctx, "gate: failed to write response", "err", err)
+			}
 		}
 	}
 }

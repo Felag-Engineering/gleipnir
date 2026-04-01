@@ -45,6 +45,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-028 | Tool risk classification model                     | 🟢 Decided    | v1.0   | Policy schema, runtime approval interceptor          |
 | ADR-029 | Approval state machine (v1.0 minimal)              | 🟢 Decided    | v1.0   | BoundAgent runtime, approval handler, SSE, UI        |
 | ADR-030 | UI abstracts over tool transport — Tools page is protocol-agnostic | 🟢 Decided | v0.1 | Frontend nav, routes, MCPPage UI text          |
+| ADR-031 | Native feedback as a Gleipnir runtime primitive | 🟢 Decided | v1.0 | Agent runtime, policy schema, notify package, UI |
 
 ---
 
@@ -817,6 +818,106 @@ transport types are supported.
 **Consequence:** Component directories retain `MCPPage/` names as an internal detail — not
 user-facing. Hook names (`useMcpServers`, `useAddMcpServer`, etc.) are unchanged. All
 user-visible text uses "Tools" and "source" vocabulary. Backend API routes are not affected.
+
+---
+
+## ADR-031: Native feedback as a Gleipnir runtime primitive
+
+**Status:** Decided
+**Date:** 2026-04
+**Supersedes (partially):** ADR-007 (sensor/actuator/feedback role model), ADR-008 (two approval modes), ADR-009 (feedback channel resolution)
+
+### Background
+
+The original design (ADR-007, ADR-008, ADR-009) treated feedback as an MCP tool tagged with `capability_role = feedback`. At runtime, Gleipnir would call the external MCP server, which returned a meaningless `{"status": "pending"}` response. The runtime then wrote three audit steps — `tool_call`, `tool_result`, `feedback_request` — for what is conceptually a single action: pausing the run and asking a human. This conflates notification transport (calling an MCP server) with feedback collection (pausing until a human responds).
+
+Approval gating (ADR-029) is already a runtime primitive: the `BoundAgent` intercepts a tool call before MCP dispatch, pauses the run, and waits for a binary approve/deny decision from the operator. Feedback should follow the same architectural pattern, replacing MCP dispatch with a runtime pause that waits for freeform text.
+
+### Decision
+
+**1. Feedback is a runtime primitive, not an MCP concept.**
+
+The runtime injects a synthetic `gleipnir.ask_operator` tool into the agent's tool list at run start (when feedback is enabled). This tool is never dispatched to an MCP server. When the agent calls it, `BoundAgent` intercepts the call — exactly as it intercepts approval-gated tools — pauses the run (`waiting_for_feedback`), and blocks on a `feedbackCh <-chan string` until the operator responds. The agent sees `gleipnir.ask_operator` as a normal tool with a defined input schema; it has no knowledge that the tool is synthetic.
+
+Both agent implementations (`internal/agent/agent.go` and `internal/agent/claudecode/agent.go`) use the `feedbackCh` channel pattern for blocking on operator response.
+
+**2. MCP tools are always tools.**
+
+The `capability_role` column distinction between `tool` and `feedback` is removed for new tool registrations. All MCP tools discovered from external servers have the role `tool`. The `CapabilityRoleFeedback` constant and `MCPTool.CapabilityRole` filtering for feedback are superseded. The `capability_role` column on `mcp_tools` is retained in the DB for backward compatibility with existing rows but is no longer assigned to new tools.
+
+**3. Notification is orthogonal.**
+
+When the runtime creates a feedback request, the `notify` package dispatches outbound alerts (SSE event to the UI, and future Slack/webhook callbacks). The agent does not know about notification transport. This decouples the feedback collection mechanism (synthetic tool + runtime pause) from the notification delivery mechanism (notify package).
+
+**4. Response ingress is pluggable.**
+
+The current ingress channel is the UI (`POST /api/v1/runs/:run_id/feedback`). Future channels — Slack callbacks, email reply parsing — converge to the same API endpoint or an internal resolution interface. The `BoundAgent` blocks on `feedbackCh <-chan string` regardless of which ingress source delivers the response.
+
+**5. Feedback is synchronous from the agent's perspective.**
+
+The run pauses (`waiting_for_feedback`) until the operator responds or the run's context is cancelled. In v1.0 there is no per-feedback timeout: the default is no timeout, consistent with the current `waitForFeedback` implementation. The policy schema supports a `timeout` field (see below) but v1.0 implementation defers enforcement of it. When timeout enforcement is added, expiry resolves the feedback request with a canned "no response received" message and the run continues.
+
+**Note on two modes:** The behavioral distinction between voluntary feedback and policy-gated approval is preserved. What changes is the mechanism, not the concept. Agent-initiated feedback is simply the agent calling `gleipnir.ask_operator`; policy-gated approval remains the runtime interceptor checking `approval: required` flags on MCP tool calls. These are two separate paths through `BoundAgent`.
+
+### `gleipnir.ask_operator` tool contract
+
+The `gleipnir.` prefix signals that this is a runtime-provided tool, not an MCP server tool. Its input schema:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string",
+      "description": "The question or information to present to the human operator."
+    }
+  },
+  "required": ["message"]
+}
+```
+
+The tool returns a single string: the operator's freeform text response. It appears in the capability snapshot (ADR-018) with no `approval_required` flag and no `presented_schema` narrowing.
+
+### Policy schema change — `capabilities.feedback`
+
+`capabilities.feedback` changes from a list of MCP tool references (the previous `feedback: []` list) to an optional configuration block:
+
+```yaml
+capabilities:
+  feedback:
+    enabled: true   # optional; default: true
+    timeout: 30m    # optional; Go duration string; default: no timeout (v1.0 defers enforcement)
+```
+
+When `feedback.enabled` is true, or when the block is omitted entirely (which defaults to enabled), the runtime injects `gleipnir.ask_operator` into the agent's tool list. When `feedback.enabled` is false, no feedback tool is available — this supports fully autonomous cron policies that should have no feedback channel.
+
+The `timeout` field, if set, applies a deadline to each individual feedback request, not to the whole run. The schema supports the field now so existing policies do not need to be migrated when timeout enforcement is implemented.
+
+### Reasoning
+
+- The current approach conflates notification transport with feedback collection. The MCP call returns `{"status": "pending"}`, and the run writes three steps (`tool_call`, `tool_result`, `feedback_request`) for what is conceptually one action.
+- Approval gating is already a runtime primitive that intercepts before MCP dispatch. Feedback follows the same pattern but collects freeform text rather than a binary decision. Consistency between the two mechanisms reduces implementation surface area.
+- Removing the `capability_role` distinction simplifies the MCP registry. Tools are tools. The feedback channel is orthogonal to tool transport.
+
+### Rejected alternatives
+
+- **Keep feedback as an MCP tool with special handling.** Rejected because it conflates transport with collection, produces confusing triple-rendered audit steps, and requires MCP server cooperation (returning `{"status": "pending"}`) for what is entirely a Gleipnir runtime concern.
+- **Make feedback a system prompt instruction only.** Rejected per ADR-001 — prompt-based restrictions are not controls. The agent must be able to pause a run deterministically, not just because the system prompt suggests it.
+- **Auto-inject feedback into all runs without policy opt-out.** Rejected because some policies (fully autonomous cron jobs) should not expose a feedback channel at all.
+
+### Consequences
+
+- `internal/model`: `CapabilityRoleFeedback` is deprecated (retained for backward compatibility with existing DB rows) but no longer assigned to new tools. The `CapabilitiesConfig.Feedback` field changes from `[]string` to a `FeedbackConfig` struct (`Enabled bool`, `Timeout duration`).
+- `internal/agent`: Both `BoundAgent` implementations inject `gleipnir.ask_operator` as a synthetic tool at run start when feedback is enabled. The `dispatchToolCall` method intercepts calls to `gleipnir.ask_operator` before MCP dispatch, the same way it intercepts approval-gated tools. The existing `waitForFeedback` method is reused with the `message` field from the tool input.
+- `internal/mcp`: No changes to the MCP client or registry. Feedback is no longer an MCP concept.
+- `internal/policy`: Parser updated to handle the new `capabilities.feedback` config block shape. Prompt generator updated to remove feedback-role tool listing logic.
+- `internal/notify`: Remains the outbound notification dispatch point. Receives a `feedback.created` event and fans out to configured channels.
+- `schemas/policy.yaml`: Updated to reflect the new `capabilities.feedback` block shape.
+- Capability snapshot (ADR-018): `gleipnir.ask_operator` appears in the snapshot tool list with a synthetic marker.
+- `internal/db`: The `feedback_requests` table is unchanged — it already stores the feedback lifecycle independently of MCP.
+- ADR-007 is partially superseded: the sensor/actuator/feedback three-role model collapses to tools (with optional approval) plus the runtime feedback primitive.
+- ADR-008 is partially superseded: "agent-initiated feedback" is no longer a separate mode — it is simply the agent calling `gleipnir.ask_operator`. "Policy-gated approval" is unchanged.
+- ADR-009 is superseded in mechanism: the feedback channel resolution (policy-first, system fallback) now applies to the `notify` package configuration rather than to MCP tool selection.
 
 ---
 
