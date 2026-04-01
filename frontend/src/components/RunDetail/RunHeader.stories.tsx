@@ -28,25 +28,57 @@ const BASE_RUN: ApiRun = {
   system_prompt: null,
 }
 
-export const Complete: Story = { args: { run: BASE_RUN } }
+export const Complete: Story = {
+  args: {
+    run: BASE_RUN,
+    toolCallCount: 7,
+    tokenTotal: 2340,
+    duration: 225_000,
+  },
+}
 
 export const Running: Story = {
-  args: { run: { ...BASE_RUN, status: 'running', completed_at: null } },
+  args: {
+    run: { ...BASE_RUN, status: 'running', completed_at: null },
+    toolCallCount: 3,
+    tokenTotal: 890,
+    duration: null,
+  },
 }
 
 export const Failed: Story = {
-  args: { run: { ...BASE_RUN, status: 'failed', error: 'MCP server unreachable after 3 retries' } },
+  args: {
+    run: { ...BASE_RUN, status: 'failed', error: 'MCP server unreachable after 3 retries' },
+    toolCallCount: 5,
+    tokenTotal: 1800,
+    duration: 120_000,
+  },
 }
 
 export const WaitingForApproval: Story = {
-  args: { run: { ...BASE_RUN, status: 'waiting_for_approval', trigger_type: 'webhook' } },
+  args: {
+    run: { ...BASE_RUN, status: 'waiting_for_approval', trigger_type: 'webhook' },
+    toolCallCount: 2,
+    tokenTotal: 450,
+    duration: null,
+  },
 }
 
 export const WebhookTrigger: Story = {
-  args: { run: { ...BASE_RUN, trigger_type: 'webhook', status: 'complete' } },
+  args: {
+    run: { ...BASE_RUN, trigger_type: 'webhook', status: 'complete' },
+    toolCallCount: 7,
+    tokenTotal: 2340,
+    duration: 225_000,
+  },
 }
 
 export const DeletedPolicy: Story = {
   name: 'Deleted policy (falls back to policy_id)',
-  args: { run: { ...BASE_RUN, policy_name: '' } },
+  args: {
+    run: { ...BASE_RUN, policy_name: '' },
+    toolCallCount: 7,
+    tokenTotal: 2340,
+    duration: 225_000,
+  },
 }

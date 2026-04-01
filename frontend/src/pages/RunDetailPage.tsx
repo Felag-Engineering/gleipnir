@@ -9,7 +9,6 @@ import { CollapsibleJSON } from '@/components/CollapsibleJSON'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import {
   RunHeader,
-  MetadataGrid,
   FilterBar,
   StepTimeline,
   parseStep,
@@ -161,9 +160,7 @@ export default function RunDetailPage() {
       >
         {run && (
           <ErrorBoundary>
-            <RunHeader run={run} />
-
-            <MetadataGrid
+            <RunHeader
               run={run}
               toolCallCount={toolCallCount}
               tokenTotal={tokenTotal}
