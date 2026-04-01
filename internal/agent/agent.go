@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/config"
@@ -15,6 +16,35 @@ import (
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
 )
+
+// SyntheticToolPrefix is the namespace prefix for tools injected by the Gleipnir
+// runtime. These tools are never registered in the MCP registry and must never
+// be dispatched to an MCP server.
+const SyntheticToolPrefix = "gleipnir."
+
+// AskOperatorToolName is the name of the synthetic feedback tool the agent can
+// call to pause the run and wait for a human operator response.
+const AskOperatorToolName = "gleipnir.ask_operator"
+
+// askOperatorSchema is the static JSON schema for the gleipnir.ask_operator tool.
+var askOperatorSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "reason": {"type": "string", "description": "Why the agent is asking. Displayed as the headline in the UI."},
+    "context": {"type": "string", "description": "Supporting detail the operator might need to make a decision."}
+  },
+  "required": ["reason"]
+}`)
+
+// askOperatorToolDefinition returns the provider-neutral tool definition for the
+// gleipnir.ask_operator synthetic tool.
+func askOperatorToolDefinition() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        AskOperatorToolName,
+		Description: "Ask the human operator a question. The run will pause until the operator responds with freeform text.",
+		InputSchema: askOperatorSchema,
+	}
+}
 
 // resolvedToolEntry holds a ResolvedTool paired with its narrowed JSON schema.
 type resolvedToolEntry struct {
@@ -144,7 +174,8 @@ func (a *BoundAgent) checkCapabilities() error {
 
 // buildToolDefinitions builds the provider-neutral tool definitions from the
 // agent's registered tools. The LLMClient handles provider-specific name
-// sanitization and schema formatting.
+// sanitization and schema formatting. When feedback is enabled, the synthetic
+// gleipnir.ask_operator tool is appended so the LLM can call it directly.
 func (a *BoundAgent) buildToolDefinitions() []llm.ToolDefinition {
 	defs := make([]llm.ToolDefinition, 0, len(a.toolsByName))
 	for dotName, entry := range a.toolsByName {
@@ -153,6 +184,9 @@ func (a *BoundAgent) buildToolDefinitions() []llm.ToolDefinition {
 			Description: entry.tool.Description,
 			InputSchema: entry.narrowedSchema,
 		})
+	}
+	if a.policy.Capabilities.Feedback.Enabled {
+		defs = append(defs, askOperatorToolDefinition())
 	}
 	return defs
 }
@@ -516,6 +550,15 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	for i, rt := range a.tools {
 		grantedTools[i] = rt.GrantedTool
 	}
+	// Include the synthetic ask_operator tool in the capability snapshot when
+	// feedback is enabled, so the audit trail reflects the full set of tools
+	// available to the agent at run start.
+	if a.policy.Capabilities.Feedback.Enabled {
+		grantedTools = append(grantedTools, model.GrantedTool{
+			ServerName: "gleipnir",
+			ToolName:   "ask_operator",
+		})
+	}
 
 	// Render system prompt (ADR-001: only granted tools are visible to the agent).
 	systemPrompt := policy.RenderSystemPrompt(a.policy, grantedTools, time.Now().UTC())
@@ -571,6 +614,13 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 	// written and no MCP call should be made.
 	if err := ctx.Err(); err != nil {
 		return "", false, fmt.Errorf("context cancelled before tool dispatch: %w", err)
+	}
+
+	// Route synthetic tools (gleipnir.* namespace) to the internal handler
+	// before attempting any MCP registry lookup. Synthetic tools are never
+	// registered in toolsByName and must never be dispatched to an MCP server.
+	if strings.HasPrefix(toolName, SyntheticToolPrefix) {
+		return a.handleSyntheticToolCall(ctx, runID, toolName, input)
 	}
 
 	entry, ok := a.toolsByName[toolName]
@@ -636,4 +686,64 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 	}
 
 	return outputStr, result.IsError, nil
+}
+
+// handleSyntheticToolCall dispatches tool calls in the gleipnir.* namespace.
+// Synthetic tools are injected by the Gleipnir runtime and are never registered
+// in toolsByName — they must never reach the MCP dispatch path.
+//
+// The feedback capability check here is defense-in-depth: buildToolDefinitions
+// already excludes gleipnir.ask_operator when feedback is disabled, so the LLM
+// cannot call it through normal reasoning. This guard handles the case where the
+// LLM hallucinates the call despite it not being in the tool list (ADR-001).
+func (a *BoundAgent) handleSyntheticToolCall(ctx context.Context, runID, toolName string, input map[string]any) (string, bool, error) {
+	// Hard capability enforcement: reject synthetic tool calls when the
+	// corresponding capability is not enabled for this policy.
+	if !a.policy.Capabilities.Feedback.Enabled {
+		err := fmt.Errorf("synthetic tool %s is not enabled for this policy", toolName)
+		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeToolError)
+		return "", false, err
+	}
+
+	if toolName != AskOperatorToolName {
+		err := fmt.Errorf("unknown synthetic tool: %s", toolName)
+		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeToolError)
+		return "", false, err
+	}
+
+	// Extract required "reason" field. A missing or non-string reason is a
+	// schema violation — fail the run, consistent with MCP schema violations.
+	reasonRaw, ok := input["reason"]
+	if !ok {
+		err := fmt.Errorf("gleipnir.ask_operator: missing required field 'reason'")
+		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeSchemaViolation)
+		return "", false, err
+	}
+	reason, ok := reasonRaw.(string)
+	if !ok {
+		err := fmt.Errorf("gleipnir.ask_operator: field 'reason' must be a string")
+		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeSchemaViolation)
+		return "", false, err
+	}
+
+	// Extract optional "context" field.
+	detail := ""
+	if contextRaw, ok := input["context"]; ok {
+		if s, ok := contextRaw.(string); ok {
+			detail = s
+		}
+	}
+
+	// Build the message sent to the feedback_request step: reason is the
+	// headline; context (if present) is the supporting detail.
+	message := reason
+	if detail != "" {
+		message += "\n\n" + detail
+	}
+
+	responseText, err := a.waitForFeedback(ctx, runID, AskOperatorToolName, "", message)
+	if err != nil {
+		return "", false, err
+	}
+	return responseText, false, nil
 }

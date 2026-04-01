@@ -21,7 +21,7 @@ You have two categories of capabilities:
 // policy has feedback enabled. Omitting it when feedback is disabled avoids
 // misleading the agent about capabilities it does not have.
 const feedbackPreambleAddendum = `
-- Feedback: a channel to consult a human operator. Calling a feedback tool will pause this run until an operator responds. Use this when you are uncertain about intended scope, when observations reveal something unexpected, or when proceeding would require an assumption you cannot verify.`
+- Feedback: a channel to consult a human operator. Calling gleipnir.ask_operator will pause this run until an operator responds. Use this when you are uncertain about intended scope, when observations reveal something unexpected, or when proceeding would require an assumption you cannot verify.`
 
 // defaultPreambleSuffix is the operating principles block, always appended after
 // the capability list in the default preamble.
@@ -82,7 +82,8 @@ func renderCapabilitiesBlock(granted []model.GrantedTool, feedback model.Feedbac
 
 	if feedback.Enabled {
 		b.WriteString("\n### Feedback (human-in-the-loop)\n")
-		b.WriteString("Use the built-in feedback channel to consult a human operator.\n")
+		b.WriteString("Call `gleipnir.ask_operator` to consult a human operator. ")
+		b.WriteString("The run will pause until the operator responds.\n")
 	}
 
 	return b.String()

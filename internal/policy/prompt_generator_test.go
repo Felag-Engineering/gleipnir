@@ -168,6 +168,9 @@ func TestRenderSystemPrompt_FeedbackPausesDescription(t *testing.T) {
 	if !strings.Contains(result, "pause this run") {
 		t.Error("default preamble must describe that feedback tools pause the run when feedback is enabled")
 	}
+	if !strings.Contains(result, "gleipnir.ask_operator") {
+		t.Error("default preamble must reference gleipnir.ask_operator by name when feedback is enabled")
+	}
 }
 
 func TestRenderCapabilitiesBlock_EmptyTools(t *testing.T) {
@@ -176,8 +179,8 @@ func TestRenderCapabilitiesBlock_EmptyTools(t *testing.T) {
 	if !strings.Contains(result, "### Tools\nNone.") {
 		t.Error("expected 'None.' for empty tools section")
 	}
-	if !strings.Contains(result, "built-in feedback channel") {
-		t.Error("expected built-in feedback channel line when feedback is enabled and no tools granted")
+	if !strings.Contains(result, "gleipnir.ask_operator") {
+		t.Error("expected gleipnir.ask_operator reference when feedback is enabled and no tools granted")
 	}
 }
 
@@ -188,8 +191,8 @@ func TestRenderCapabilitiesBlock_FeedbackChannelAlwaysPresent(t *testing.T) {
 
 	result := renderCapabilitiesBlock(granted, model.FeedbackConfig{Enabled: true})
 
-	if !strings.Contains(result, "built-in feedback channel") {
-		t.Error("expected built-in feedback channel line when feedback is enabled")
+	if !strings.Contains(result, "gleipnir.ask_operator") {
+		t.Error("expected gleipnir.ask_operator reference when feedback is enabled")
 	}
 }
 
@@ -242,6 +245,9 @@ func TestRenderSystemPrompt_FeedbackEnabled_DefaultPreamble(t *testing.T) {
 
 	if !strings.Contains(result, "Feedback: a channel to consult a human operator") {
 		t.Error("default preamble must include feedback paragraph when feedback is enabled")
+	}
+	if !strings.Contains(result, "gleipnir.ask_operator") {
+		t.Error("default preamble must reference gleipnir.ask_operator when feedback is enabled")
 	}
 	if !strings.Contains(result, "### Feedback") {
 		t.Error("capabilities block must include feedback section when feedback is enabled")

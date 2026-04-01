@@ -1655,3 +1655,367 @@ func TestLogAuditError(t *testing.T) {
 		t.Errorf("code = %q, want %q", content["code"], "test_code")
 	}
 }
+
+// feedbackPolicy returns a ParsedPolicy with feedback enabled.
+func feedbackPolicy() *model.ParsedPolicy {
+	return &model.ParsedPolicy{
+		Name: "test-policy",
+		Agent: model.AgentConfig{
+			Task: "test task",
+		},
+		Capabilities: model.CapabilitiesConfig{
+			Feedback: model.FeedbackConfig{Enabled: true},
+		},
+	}
+}
+
+func TestHandleToolCall_AskOperator_Success(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	feedbackCh := make(chan string, 1)
+	feedbackCh <- "operator says hello"
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		LLMClient: testutil.NewMockLLMClient(
+			testutil.MakeLLMToolCallResponse("tc-1", AskOperatorToolName,
+				map[string]any{"reason": "Need clarification", "context": "Some details"}, 10, 5),
+			testutil.MakeLLMTextResponse("All done.", llm.StopReasonEndTurn, 5, 3),
+		),
+		Tools:        nil,
+		Policy:       feedbackPolicy(),
+		Audit:        w,
+		FeedbackCh:   feedbackCh,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := ba.Run(context.Background(), "r1", "trigger"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+
+	// Verify run completed successfully.
+	run, dbErr := s.GetRun(context.Background(), "r1")
+	if dbErr != nil {
+		t.Fatalf("GetRun: %v", dbErr)
+	}
+	if run.Status != string(model.RunStatusComplete) {
+		t.Errorf("run status = %q, want %q", run.Status, model.RunStatusComplete)
+	}
+
+	// Verify audit trail: feedback_request and feedback_response must exist;
+	// tool_call and tool_result must not exist for synthetic tool calls.
+	var hasFeedbackRequest, hasFeedbackResponse, hasToolCall, hasToolResult bool
+	var feedbackRequestContent map[string]any
+	var feedbackResponseContent map[string]any
+
+	for _, step := range steps {
+		switch step.Type {
+		case string(model.StepTypeFeedbackRequest):
+			hasFeedbackRequest = true
+			json.Unmarshal([]byte(step.Content), &feedbackRequestContent) //nolint:errcheck
+		case string(model.StepTypeFeedbackResponse):
+			hasFeedbackResponse = true
+			json.Unmarshal([]byte(step.Content), &feedbackResponseContent) //nolint:errcheck
+		case string(model.StepTypeToolCall):
+			hasToolCall = true
+		case string(model.StepTypeToolResult):
+			hasToolResult = true
+		}
+	}
+
+	if !hasFeedbackRequest {
+		t.Error("expected feedback_request step in audit trail")
+	}
+	if !hasFeedbackResponse {
+		t.Error("expected feedback_response step in audit trail")
+	}
+	if hasToolCall {
+		t.Error("unexpected tool_call step for synthetic tool — synthetic tools bypass MCP")
+	}
+	if hasToolResult {
+		t.Error("unexpected tool_result step for synthetic tool — synthetic tools bypass MCP")
+	}
+
+	// Verify feedback_request content contains the message built from reason+context.
+	if feedbackRequestContent != nil {
+		msg, _ := feedbackRequestContent["message"].(string)
+		if !strings.Contains(msg, "Need clarification") {
+			t.Errorf("feedback_request message %q does not contain 'Need clarification'", msg)
+		}
+		if !strings.Contains(msg, "Some details") {
+			t.Errorf("feedback_request message %q does not contain 'Some details'", msg)
+		}
+	}
+
+	// Verify feedback_response content contains the operator's response.
+	if feedbackResponseContent != nil {
+		resp, _ := feedbackResponseContent["response"].(string)
+		if resp != "operator says hello" {
+			t.Errorf("feedback_response response = %q, want %q", resp, "operator says hello")
+		}
+	}
+}
+
+func TestHandleToolCall_AskOperator_NotAvailableWhenDisabled(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	// Policy has feedback disabled — gleipnir.ask_operator must not be offered to the LLM.
+	mockClient := testutil.NewMockLLMClient(
+		// LLM hallucinates a call to gleipnir.ask_operator even though it was never registered.
+		testutil.MakeLLMToolCallResponse("tc-1", AskOperatorToolName,
+			map[string]any{"reason": "something"}, 10, 5),
+	)
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		LLMClient:    mockClient,
+		Tools:        nil,
+		Policy:       minimalPolicy(), // feedback disabled
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	runErr := ba.Run(context.Background(), "r1", "trigger")
+	if runErr == nil {
+		t.Fatal("expected error when feedback is disabled, got nil")
+	}
+	if !strings.Contains(runErr.Error(), "not enabled") {
+		t.Errorf("error = %q, want to contain 'not enabled'", runErr.Error())
+	}
+
+	// Run must be marked failed.
+	run, dbErr := s.GetRun(context.Background(), "r1")
+	if dbErr != nil {
+		t.Fatalf("GetRun: %v", dbErr)
+	}
+	if run.Status != string(model.RunStatusFailed) {
+		t.Errorf("run status = %q, want %q", run.Status, model.RunStatusFailed)
+	}
+
+	// At least one error step must exist.
+	steps, err := s.ListRunSteps(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	var hasError bool
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeError) {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Error("expected at least one error step in audit trail")
+	}
+
+	// Verify gleipnir.ask_operator was not in the tools sent to the LLM.
+	requests := mockClient.Requests()
+	if len(requests) == 0 {
+		t.Fatal("expected at least one API request")
+	}
+	for _, tool := range requests[0].Tools {
+		if tool.Name == AskOperatorToolName {
+			t.Errorf("gleipnir.ask_operator must not be in tool list when feedback is disabled")
+		}
+	}
+}
+
+func TestHandleToolCall_AskOperator_ReasonRequired(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	feedbackCh := make(chan string, 1)
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		LLMClient: testutil.NewMockLLMClient(
+			// Missing required "reason" field — only "context" provided.
+			testutil.MakeLLMToolCallResponse("tc-1", AskOperatorToolName,
+				map[string]any{"context": "only context, no reason"}, 10, 5),
+		),
+		Tools:        nil,
+		Policy:       feedbackPolicy(),
+		Audit:        w,
+		FeedbackCh:   feedbackCh,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	runErr := ba.Run(context.Background(), "r1", "trigger")
+	if runErr == nil {
+		t.Fatal("expected schema violation error, got nil")
+	}
+
+	// Run must be marked failed.
+	run, dbErr := s.GetRun(context.Background(), "r1")
+	if dbErr != nil {
+		t.Fatalf("GetRun: %v", dbErr)
+	}
+	if run.Status != string(model.RunStatusFailed) {
+		t.Errorf("run status = %q, want %q", run.Status, model.RunStatusFailed)
+	}
+
+	// An error step with schema_violation code must exist.
+	steps, err := s.ListRunSteps(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	var schemaErrFound bool
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeError) {
+			var content map[string]string
+			if err := json.Unmarshal([]byte(step.Content), &content); err == nil {
+				if content["code"] == "schema_violation" {
+					schemaErrFound = true
+				}
+			}
+		}
+	}
+	if !schemaErrFound {
+		t.Error("expected error step with code 'schema_violation'")
+	}
+}
+
+func TestBuildToolDefinitions_IncludesAskOperator(t *testing.T) {
+	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer mcpSrv.Close()
+
+	mcpTool := mcp.ResolvedTool{
+		GrantedTool: model.GrantedTool{
+			ServerName: "my-server",
+			ToolName:   "read_data",
+		},
+		Client:      mcp.NewClient(mcpSrv.URL),
+		Description: "reads data",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+	}
+
+	t.Run("feedback_enabled_includes_ask_operator", func(t *testing.T) {
+		s := testutil.NewTestStore(t)
+		testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+		testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+		ba, err := New(Config{
+			Policy:       feedbackPolicy(),
+			Tools:        []mcp.ResolvedTool{mcpTool},
+			LLMClient:    testutil.NewNoopLLMClient(),
+			Audit:        NewAuditWriter(s.Queries()),
+			StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.Queries()),
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		defs := ba.buildToolDefinitions()
+		if len(defs) != 2 {
+			t.Fatalf("len(defs) = %d, want 2 (MCP tool + gleipnir.ask_operator)", len(defs))
+		}
+		var hasAskOperator bool
+		for _, def := range defs {
+			if def.Name == AskOperatorToolName {
+				hasAskOperator = true
+			}
+		}
+		if !hasAskOperator {
+			t.Error("expected gleipnir.ask_operator in tool definitions when feedback is enabled")
+		}
+	})
+
+	t.Run("feedback_disabled_excludes_ask_operator", func(t *testing.T) {
+		s := testutil.NewTestStore(t)
+		testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+		testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+		ba, err := New(Config{
+			Policy:       minimalPolicy(), // feedback disabled
+			Tools:        []mcp.ResolvedTool{mcpTool},
+			LLMClient:    testutil.NewNoopLLMClient(),
+			Audit:        NewAuditWriter(s.Queries()),
+			StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.Queries()),
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		defs := ba.buildToolDefinitions()
+		if len(defs) != 1 {
+			t.Fatalf("len(defs) = %d, want 1 (only MCP tool)", len(defs))
+		}
+		for _, def := range defs {
+			if def.Name == AskOperatorToolName {
+				t.Error("gleipnir.ask_operator must not be in tool definitions when feedback is disabled")
+			}
+		}
+	})
+}
+
+func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		LLMClient:    testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 5, 3)),
+		Tools:        nil,
+		Policy:       feedbackPolicy(),
+		Audit:        w,
+		FeedbackCh:   make(chan string),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := ba.Run(context.Background(), "r1", "trigger"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	if len(steps) == 0 {
+		t.Fatal("no steps written")
+	}
+
+	// The first step must be the capability snapshot.
+	if steps[0].Type != string(model.StepTypeCapabilitySnapshot) {
+		t.Fatalf("first step type = %q, want %q", steps[0].Type, model.StepTypeCapabilitySnapshot)
+	}
+
+	// The snapshot tools list must include gleipnir.ask_operator.
+	type snapshotContent struct {
+		Tools []model.GrantedTool `json:"tools"`
+	}
+	var snap snapshotContent
+	if err := json.Unmarshal([]byte(steps[0].Content), &snap); err != nil {
+		t.Fatalf("unmarshal snapshot content: %v", err)
+	}
+	var found bool
+	for _, gt := range snap.Tools {
+		if gt.ServerName == "gleipnir" && gt.ToolName == "ask_operator" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("gleipnir.ask_operator not found in capability snapshot tools: %v", snap.Tools)
+	}
+}
