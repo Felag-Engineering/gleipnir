@@ -16,17 +16,11 @@ const MIXED_TOOLS: CapabilitySnapshotContent = [
   { ServerName: 'fs-server', ToolName: 'list_files', Role: 'tool', Approval: 'none', Timeout: 30, OnTimeout: 'fail' },
   { ServerName: 'fs-server', ToolName: 'write_file', Role: 'tool', Approval: 'required', Timeout: 60, OnTimeout: 'fail' },
   { ServerName: 'slack-server', ToolName: 'send_message', Role: 'tool', Approval: 'required', Timeout: 15, OnTimeout: 'fail' },
-  { ServerName: 'slack-server', ToolName: 'post_feedback', Role: 'feedback', Approval: 'none', Timeout: 300, OnTimeout: 'skip' },
+  { ServerName: 'slack-server', ToolName: 'post_feedback', Role: 'tool', Approval: 'none', Timeout: 300, OnTimeout: 'skip' },
 ]
 
 export const Default: Story = {
   args: { content: MIXED_TOOLS },
-}
-
-export const ToolOnly: Story = {
-  args: {
-    content: MIXED_TOOLS.filter((t) => t.Role === 'tool'),
-  },
 }
 
 export const SingleTool: Story = {

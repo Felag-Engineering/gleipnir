@@ -70,9 +70,11 @@ export interface ApprovalRequestContent {
 export interface FeedbackRequestContent {
   tool: string
   message?: string
+  feedback_id?: string
 }
 
 export interface FeedbackResponseContent {
+  feedback_id?: string
   response?: string
 }
 

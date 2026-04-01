@@ -7,9 +7,10 @@ import styles from './FeedbackActions.module.css'
 interface Props {
   runId: string
   runStatus: string
+  feedbackId?: string
 }
 
-export function FeedbackActions({ runId, runStatus }: Props) {
+export function FeedbackActions({ runId, runStatus, feedbackId }: Props) {
   const { data: user } = useCurrentUser()
   const submitFeedback = useSubmitFeedback()
   const [response, setResponse] = useState('')
@@ -26,7 +27,7 @@ export function FeedbackActions({ runId, runStatus }: Props) {
 
   const handleSubmit = () => {
     if (!response.trim()) return
-    submitFeedback.mutate({ runId, response })
+    submitFeedback.mutate({ runId, response, feedbackId })
   }
 
   return (

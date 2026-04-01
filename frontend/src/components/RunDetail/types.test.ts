@@ -55,6 +55,50 @@ describe('parseStep', () => {
       expect(step.type).toBe('unknown')
     })
   })
+
+  describe('feedback steps', () => {
+    it('parses feedback_request with new native format', () => {
+      const raw = makeRawStep('feedback_request', { feedback_id: 'fb-1', tool: 'gleipnir.ask_operator', message: 'Reason\n\nContext' })
+      const step = parseStep(raw)
+      expect(step.type).toBe('feedback_request')
+      if (step.type === 'feedback_request') {
+        expect(step.content.feedback_id).toBe('fb-1')
+        expect(step.content.tool).toBe('gleipnir.ask_operator')
+        expect(step.content.message).toBe('Reason\n\nContext')
+      }
+    })
+
+    it('parses feedback_request with old MCP format (no feedback_id)', () => {
+      const raw = makeRawStep('feedback_request', { tool: 'slack.ask_human', message: 'Please confirm' })
+      const step = parseStep(raw)
+      expect(step.type).toBe('feedback_request')
+      if (step.type === 'feedback_request') {
+        expect(step.content.feedback_id).toBeUndefined()
+        expect(step.content.tool).toBe('slack.ask_human')
+        expect(step.content.message).toBe('Please confirm')
+      }
+    })
+
+    it('parses feedback_response with feedback_id', () => {
+      const raw = makeRawStep('feedback_response', { feedback_id: 'fb-1', response: 'Yes' })
+      const step = parseStep(raw)
+      expect(step.type).toBe('feedback_response')
+      if (step.type === 'feedback_response') {
+        expect(step.content.feedback_id).toBe('fb-1')
+        expect(step.content.response).toBe('Yes')
+      }
+    })
+
+    it('parses feedback_response without feedback_id (old format)', () => {
+      const raw = makeRawStep('feedback_response', { response: 'Looks good' })
+      const step = parseStep(raw)
+      expect(step.type).toBe('feedback_response')
+      if (step.type === 'feedback_response') {
+        expect(step.content.feedback_id).toBeUndefined()
+        expect(step.content.response).toBe('Looks good')
+      }
+    })
+  })
 })
 
 describe('pairToolBlocks', () => {

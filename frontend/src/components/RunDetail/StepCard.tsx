@@ -40,11 +40,10 @@ export function StepCard({ step, toolRoleMap, runId, runStatus }: Props) {
   }
 
   if (step.type === 'tool_call') {
-    const role = toolRoleMap.get(`${step.content.server_id}.${step.content.tool_name}`) ?? 'tool'
     return (
       <div className={styles.card}>
         <div className={styles.iconCol}>
-          <StepIcon type="tool_call" role={role} />
+          <StepIcon type="tool_call" role="tool" />
         </div>
         <div className={styles.body}>
           <div className={styles.row}>
@@ -131,6 +130,13 @@ export function StepCard({ step, toolRoleMap, runId, runStatus }: Props) {
   }
 
   if (step.type === 'feedback_request') {
+    // Split message on first \n\n to extract reason (headline) and optional context (body).
+    // If no \n\n, the entire message is the reason. Old steps without message fall back to the tool name.
+    const message = step.content.message ?? step.content.tool
+    const separatorIndex = message.indexOf('\n\n')
+    const reason = separatorIndex !== -1 ? message.slice(0, separatorIndex) : message
+    const context = separatorIndex !== -1 ? message.slice(separatorIndex + 2) : undefined
+
     return (
       <div className={styles.card}>
         <div className={styles.iconCol}>
@@ -138,11 +144,11 @@ export function StepCard({ step, toolRoleMap, runId, runStatus }: Props) {
         </div>
         <div className={styles.body}>
           <span className={`${styles.typeLabel} ${styles.feedbackLabel}`}>Feedback requested</span>
-          <code className={styles.toolName}>{step.content.tool}</code>
-          {step.content.message && (
-            <p className={styles.bodyText}>{step.content.message}</p>
+          <p className={styles.feedbackReason}>{reason}</p>
+          {context && (
+            <p className={styles.bodyText}>{context}</p>
           )}
-          <FeedbackActions runId={runId} runStatus={runStatus} />
+          <FeedbackActions runId={runId} runStatus={runStatus} feedbackId={step.content.feedback_id} />
         </div>
       </div>
     )

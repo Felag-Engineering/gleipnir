@@ -39,7 +39,6 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
               <tr>
                 <th>Server</th>
                 <th>Tool</th>
-                <th>Role</th>
                 <th>Approval</th>
               </tr>
             </thead>
@@ -48,11 +47,6 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
                 <tr key={i}>
                   <td className={styles.mono}>{t.ServerName}</td>
                   <td className={styles.mono}>{t.ToolName}</td>
-                  <td>
-                    <span className={`${styles.roleBadge} ${styles[t.Role]}`}>
-                      {t.Role}
-                    </span>
-                  </td>
                   <td className={styles.mono}>{t.Approval}</td>
                 </tr>
               ))}

@@ -62,18 +62,6 @@ export const ToolCallTool: Story = {
   },
 }
 
-export const ToolCallFeedback: Story = {
-  name: 'Tool call — feedback (purple)',
-  args: {
-    step: parseStep(makeRaw({
-      type: 'tool_call',
-      content: JSON.stringify({ tool_name: 'write_file', server_id: 'fs-server', input: { path: '/tmp/report.txt', content: 'All checks passed.' } }),
-    })),
-    toolRoleMap: roleMap,
-    ...defaultRunProps,
-  },
-}
-
 export const ToolResultOk: Story = {
   name: 'Tool result — success',
   args: {
@@ -132,6 +120,47 @@ export const ApprovalRequest: Story = {
   },
 }
 
+// New native feedback format: feedback_id present, message contains reason\n\ncontext.
+export const FeedbackRequestNew: Story = {
+  name: 'Feedback request — new native format',
+  args: {
+    step: parseStep(makeRaw({
+      type: 'feedback_request',
+      content: JSON.stringify({ feedback_id: 'fb-001', tool: 'gleipnir.ask_operator', message: 'Need clarification\n\nSome additional context here' }),
+    })),
+    toolRoleMap: emptyRoleMap,
+    runId: 'run-1',
+    runStatus: 'waiting_for_feedback',
+  },
+}
+
+// Old MCP-based feedback format: no feedback_id, message is a plain string.
+// The tool name becomes the reason since there is no \n\n separator.
+export const FeedbackRequestOld: Story = {
+  name: 'Feedback request — old MCP format (backward compat)',
+  args: {
+    step: parseStep(makeRaw({
+      type: 'feedback_request',
+      content: JSON.stringify({ tool: 'slack-server.post_feedback', message: 'Please confirm the deployment' }),
+    })),
+    toolRoleMap: emptyRoleMap,
+    runId: 'run-1',
+    runStatus: 'complete',
+  },
+}
+
+export const FeedbackResponse: Story = {
+  name: 'Feedback response',
+  args: {
+    step: parseStep(makeRaw({
+      type: 'feedback_response',
+      content: JSON.stringify({ feedback_id: 'fb-001', response: 'Approved, go ahead.' }),
+    })),
+    toolRoleMap: emptyRoleMap,
+    ...defaultRunProps,
+  },
+}
+
 export const AllTypes: Story = {
   render: () => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -167,6 +196,18 @@ export const AllTypes: Story = {
       />
       <StepCard
         step={parseStep(makeRaw({ type: 'complete', content: JSON.stringify({ message: 'Done.' }) }))}
+        toolRoleMap={emptyRoleMap}
+        runId="run-1"
+        runStatus="complete"
+      />
+      <StepCard
+        step={parseStep(makeRaw({ type: 'feedback_request', content: JSON.stringify({ feedback_id: 'fb-001', tool: 'gleipnir.ask_operator', message: 'Should I proceed?\n\nThe deployment target is production.' }) }))}
+        toolRoleMap={emptyRoleMap}
+        runId="run-1"
+        runStatus="waiting_for_feedback"
+      />
+      <StepCard
+        step={parseStep(makeRaw({ type: 'feedback_response', content: JSON.stringify({ feedback_id: 'fb-001', response: 'Yes, proceed.' }) }))}
         toolRoleMap={emptyRoleMap}
         runId="run-1"
         runStatus="complete"

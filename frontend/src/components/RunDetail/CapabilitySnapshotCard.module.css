@@ -76,23 +76,6 @@
   font-family: var(--font-mono);
 }
 
-.roleBadge {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  padding: 2px var(--space-1);
-  border-radius: 3px;
-}
-
-.tool {
-  color: var(--color-tool);
-  background: color-mix(in srgb, var(--color-tool) 10%, transparent);
-}
-
-.feedback {
-  color: var(--color-feedback);
-  background: color-mix(in srgb, var(--color-feedback) 10%, transparent);
-}
-
 .promptToggle {
   display: block;
   width: 100%;
