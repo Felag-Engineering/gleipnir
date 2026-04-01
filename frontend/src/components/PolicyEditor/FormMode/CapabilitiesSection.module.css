@@ -269,3 +269,51 @@
 .resultRow:hover {
   background: var(--bg-elevated);
 }
+
+/* Feedback section */
+
+.feedbackSection {
+  margin-top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.feedbackRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.feedbackFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-left: var(--space-4);
+}
+
+.feedbackLabel {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.feedbackInput {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  transition: border-color var(--duration-fast) var(--ease-out);
+  box-sizing: border-box;
+  width: 120px;
+}
+
+.feedbackInput:focus {
+  outline: none;
+  border-color: var(--color-blue);
+}
+
+.feedbackInput::placeholder {
+  color: var(--text-muted);
+}

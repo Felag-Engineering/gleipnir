@@ -68,6 +68,24 @@ const (
 	OnTimeoutReject OnTimeout = "reject"
 )
 
+// FeedbackOnTimeout controls what happens when a feedback request times out
+// without an operator response. This is distinct from OnTimeout (which applies
+// to approval gates) because the actions and semantics differ.
+type FeedbackOnTimeout string
+
+const (
+	FeedbackOnTimeoutFail FeedbackOnTimeout = "fail"
+)
+
+func (f FeedbackOnTimeout) String() string { return string(f) }
+func (f FeedbackOnTimeout) Valid() bool {
+	switch f {
+	case FeedbackOnTimeoutFail:
+		return true
+	}
+	return false
+}
+
 // ConcurrencyPolicy controls behaviour when a trigger fires while a run is active.
 type ConcurrencyPolicy string
 
@@ -235,11 +253,20 @@ type TriggerConfig struct {
 	WebhookSecret string      `json:"-"` // webhook only; excluded from JSON to prevent secret leakage
 }
 
+// FeedbackConfig controls the native human-in-the-loop feedback channel.
+// When Enabled is true, the runtime injects gleipnir.ask_operator into the
+// agent's tool list, allowing it to pause the run and wait for an operator response.
+type FeedbackConfig struct {
+	Enabled   bool
+	Timeout   string            // Go duration string (e.g. "30m"), optional
+	OnTimeout FeedbackOnTimeout // default: fail
+}
+
 // CapabilitiesConfig defines the tool envelope granted to an agent for this run.
 // Tools not listed here are never registered with the agent (ADR-001).
 type CapabilitiesConfig struct {
 	Tools    []ToolCapability
-	Feedback []string // reserved for future explicit feedback tools
+	Feedback FeedbackConfig
 }
 
 // ToolCapability grants a tool to the agent, optionally with a hard approval gate.

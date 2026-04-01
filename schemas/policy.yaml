@@ -135,11 +135,21 @@ capabilities:
       on_timeout: reject
 
 
-  # feedback: list — optional, defaults to empty list
-  #   Reserved for future explicit non-UI feedback tools.
-  #   UI feedback is always implicitly available and never configured here.
-  #   Leave empty or omit entirely in v0.1.
-  feedback: []
+  # feedback: block — optional
+  #   Enables the native feedback channel (gleipnir.ask_operator).
+  #   When enabled, the agent can pause the run to consult a human operator.
+  #   Omit entirely or set enabled: false to disable (default).
+  feedback:
+    # enabled: bool — required within feedback block
+    #   When true, injects gleipnir.ask_operator into the agent's tool list.
+    enabled: true
+    # timeout: duration — optional, Go time.ParseDuration format (e.g. "30m", "1h")
+    #   How long to wait for an operator response before taking the on_timeout action.
+    #   Typed as a string for consistency with tool capability timeout fields.
+    timeout: 30m
+    # on_timeout: fail — optional, default: fail
+    #   Action when the feedback timeout expires without a response.
+    on_timeout: fail
 
 
 # ---------------------------------------------------------------------------

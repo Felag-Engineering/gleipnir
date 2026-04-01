@@ -45,11 +45,12 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
   });
 
   function handleRemove(toolId: string) {
-    onChange({ tools: value.tools.filter(t => t.toolId !== toolId) });
+    onChange({ ...value, tools: value.tools.filter(t => t.toolId !== toolId) });
   }
 
   function handleToggleApproval(toolId: string) {
     onChange({
+      ...value,
       tools: value.tools.map(t =>
         t.toolId === toolId ? { ...t, approvalRequired: !t.approvalRequired } : t
       ),
@@ -65,9 +66,23 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
       description: tool.description,
       approvalRequired: false,
     };
-    onChange({ tools: [...value.tools, assigned] });
+    onChange({ ...value, tools: [...value.tools, assigned] });
     setSearchOpen(false);
     setQuery('');
+  }
+
+  function handleFeedbackToggle() {
+    onChange({
+      ...value,
+      feedback: { ...value.feedback, enabled: !value.feedback.enabled },
+    });
+  }
+
+  function handleFeedbackTimeoutChange(timeout: string) {
+    onChange({
+      ...value,
+      feedback: { ...value.feedback, timeout },
+    });
   }
 
   function handleSearchOpen() {
@@ -113,6 +128,44 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
           + Add tool from registry
         </button>
       )}
+
+      <div className={styles.feedbackSection}>
+        <div className={styles.heading}>Feedback</div>
+        <div className={styles.feedbackRow}>
+          <button
+            role="switch"
+            aria-checked={value.feedback.enabled}
+            className={styles.toggleButton}
+            onClick={handleFeedbackToggle}
+            title={value.feedback.enabled ? 'Feedback enabled — click to disable' : 'Feedback disabled — click to enable'}
+          >
+            <span className={`${styles.toggleTrack} ${value.feedback.enabled ? styles.toggleTrackOn : styles.toggleTrackOff}`}>
+              <span className={`${styles.toggleThumb} ${value.feedback.enabled ? styles.toggleThumbOn : styles.toggleThumbOff}`} />
+            </span>
+          </button>
+          <span className={styles.feedbackLabel}>
+            {value.feedback.enabled ? 'Enabled — agent can consult a human operator' : 'Disabled'}
+          </span>
+        </div>
+        {value.feedback.enabled && (
+          <div className={styles.feedbackFields}>
+            <div className={styles.feedbackRow}>
+              <span className={styles.feedbackLabel}>Timeout</span>
+              <input
+                className={styles.feedbackInput}
+                type="text"
+                placeholder="e.g. 30m"
+                value={value.feedback.timeout}
+                onChange={e => handleFeedbackTimeoutChange(e.target.value)}
+              />
+            </div>
+            <div className={styles.feedbackRow}>
+              <span className={styles.feedbackLabel}>On timeout</span>
+              <span className={styles.feedbackLabel}>fail</span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -277,6 +277,36 @@ func TestValidate_ClaudeCodeSkipsLimitChecks(t *testing.T) {
 	}
 }
 
+func TestValidate_FeedbackValidTimeout(t *testing.T) {
+	p := validPolicy()
+	p.Capabilities.Feedback = model.FeedbackConfig{
+		Enabled:   true,
+		Timeout:   "30m",
+		OnTimeout: model.FeedbackOnTimeoutFail,
+	}
+	if err := Validate(p); err != nil {
+		t.Errorf("expected valid feedback config, got: %v", err)
+	}
+}
+
+func TestValidate_FeedbackInvalidTimeout(t *testing.T) {
+	p := validPolicy()
+	p.Capabilities.Feedback = model.FeedbackConfig{
+		Enabled:   true,
+		Timeout:   "bad-duration",
+		OnTimeout: model.FeedbackOnTimeoutFail,
+	}
+	assertValidationContains(t, p, "not a valid duration")
+}
+
+func TestValidate_FeedbackDisabledIsValid(t *testing.T) {
+	p := validPolicy()
+	p.Capabilities.Feedback = model.FeedbackConfig{Enabled: false}
+	if err := Validate(p); err != nil {
+		t.Errorf("expected disabled feedback to be valid regardless, got: %v", err)
+	}
+}
+
 func assertValidationContains(t *testing.T, p *model.ParsedPolicy, substr string) {
 	t.Helper()
 	err := Validate(p)

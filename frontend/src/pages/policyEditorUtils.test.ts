@@ -142,17 +142,41 @@ capabilities:
     expect(state!._toolExtras!['myserver.deploy']).toEqual({ timeout: 300, on_timeout: 'fail' })
   })
 
-  it('preserves _feedbackCapabilities passthrough', () => {
+  it('parses new feedback config block with enabled, timeout, on_timeout', () => {
     const yaml = `name: p
 capabilities:
   tools: []
   feedback:
-    - channel: slack
+    enabled: true
+    timeout: 30m
+    on_timeout: fail
 `
     const state = yamlToFormState(yaml)
-    expect(state!._feedbackCapabilities).toBeDefined()
-    expect(Array.isArray(state!._feedbackCapabilities)).toBe(true)
-    expect((state!._feedbackCapabilities as unknown[])).toHaveLength(1)
+    expect(state!.capabilities.feedback.enabled).toBe(true)
+    expect(state!.capabilities.feedback.timeout).toBe('30m')
+    expect(state!.capabilities.feedback.onTimeout).toBe('fail')
+  })
+
+  it('parses old list feedback format as enabled: true (backward compat)', () => {
+    const yaml = `name: p
+capabilities:
+  tools: []
+  feedback:
+    - server.feedback_tool
+`
+    const state = yamlToFormState(yaml)
+    expect(state!.capabilities.feedback.enabled).toBe(true)
+  })
+
+  it('defaults absent feedback to enabled: false', () => {
+    const yaml = `name: p
+capabilities:
+  tools: []
+`
+    const state = yamlToFormState(yaml)
+    expect(state!.capabilities.feedback.enabled).toBe(false)
+    expect(state!.capabilities.feedback.timeout).toBe('')
+    expect(state!.capabilities.feedback.onTimeout).toBe('fail')
   })
 
   it('handles empty tools array', () => {
@@ -274,16 +298,31 @@ agent:
     expect(output).toContain('System context.')
   })
 
-  it('includes _feedbackCapabilities in capabilities', () => {
+  it('emits feedback block when feedback.enabled is true', () => {
     const yaml = `name: p
 capabilities:
   tools: []
   feedback:
-    - channel: email
+    enabled: true
+    timeout: 30m
+    on_timeout: fail
 `
     const state = yamlToFormState(yaml)!
     const output = formStateToYaml(state)
     expect(output).toContain('feedback')
+    expect(output).toContain('enabled: true')
+    expect(output).toContain('timeout: 30m')
+    expect(output).toContain('on_timeout: fail')
+  })
+
+  it('omits feedback block when feedback.enabled is false', () => {
+    const yaml = `name: p
+capabilities:
+  tools: []
+`
+    const state = yamlToFormState(yaml)!
+    const output = formStateToYaml(state)
+    expect(output).not.toContain('feedback')
   })
 
   it('preserves _toolExtras (timeout and on_timeout) in output', () => {
@@ -345,7 +384,9 @@ capabilities:
       timeout: 300
       on_timeout: fail
   feedback:
-    - channel: slack
+    enabled: true
+    timeout: 30m
+    on_timeout: fail
 agent:
   preamble: "You are a GitHub automation agent."
   task: |
@@ -372,7 +413,8 @@ agent:
     expect(second!.model.provider).toBe(first!.model.provider)
     expect(second!.model.model).toBe(first!.model.model)
     expect(second!._preamble).toBe(first!._preamble)
-    expect(second!._feedbackCapabilities).toBeDefined()
+    expect(second!.capabilities.feedback.enabled).toBe(first!.capabilities.feedback.enabled)
+    expect(second!.capabilities.feedback.timeout).toBe(first!.capabilities.feedback.timeout)
 
     expect(second!.capabilities.tools).toHaveLength(first!.capabilities.tools.length)
     first!.capabilities.tools.forEach((t, i) => {

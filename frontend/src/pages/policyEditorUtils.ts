@@ -3,6 +3,7 @@ import type {
   CapabilitiesFormState,
   ConcurrencyFormState,
   ConcurrencyValue,
+  FeedbackFormState,
   IdentityFormState,
   ModelFormState,
   RunLimitsFormState,
@@ -21,7 +22,6 @@ export interface FormState {
   // Passthrough fields preserved across round-trips but not editable in form UI
   _preamble?: string
   _toolExtras?: Record<string, { timeout?: number; on_timeout?: string }>
-  _feedbackCapabilities?: unknown[]
 }
 
 export const DEFAULT_YAML = `name: ''
@@ -122,7 +122,27 @@ export function yamlToFormState(yaml: string): FormState | null {
       })
     : []
 
-  const capabilities: CapabilitiesFormState = { tools }
+  // Parse feedback config block. Supports:
+  //   - new format: { enabled: true, timeout: "30m", on_timeout: "fail" }
+  //   - old list format: ["server.tool"] → treated as enabled: true (backward compat)
+  //   - absent/null → disabled
+  const feedbackRaw = capsRaw.feedback
+  let feedback: FeedbackFormState
+  if (Array.isArray(feedbackRaw)) {
+    // Old list format — backward compat, treat as enabled with no extras
+    feedback = { enabled: true, timeout: '', onTimeout: 'fail' }
+  } else if (feedbackRaw && typeof feedbackRaw === 'object' && !Array.isArray(feedbackRaw)) {
+    const fb = feedbackRaw as Record<string, unknown>
+    feedback = {
+      enabled: fb.enabled === true,
+      timeout: typeof fb.timeout === 'string' ? fb.timeout : '',
+      onTimeout: typeof fb.on_timeout === 'string' ? fb.on_timeout : 'fail',
+    }
+  } else {
+    feedback = { enabled: false, timeout: '', onTimeout: 'fail' }
+  }
+
+  const capabilities: CapabilitiesFormState = { tools, feedback }
 
   // Agent block
   const agentRaw = p.agent && typeof p.agent === 'object' && !Array.isArray(p.agent)
@@ -160,7 +180,6 @@ export function yamlToFormState(yaml: string): FormState | null {
     : { provider: 'anthropic', model: 'claude-sonnet-4-6' }
 
   const _preamble = typeof agentRaw.preamble === 'string' ? agentRaw.preamble : undefined
-  const _feedbackCapabilities = Array.isArray(capsRaw.feedback) ? capsRaw.feedback : undefined
 
   return {
     identity,
@@ -172,7 +191,6 @@ export function yamlToFormState(yaml: string): FormState | null {
     model,
     _preamble,
     _toolExtras: Object.keys(toolExtras).length > 0 ? toolExtras : undefined,
-    _feedbackCapabilities,
   }
 }
 
@@ -202,8 +220,13 @@ export function formStateToYaml(state: FormState): string {
   })
 
   const capsObj: Record<string, unknown> = { tools }
-  if (state._feedbackCapabilities !== undefined) {
-    capsObj.feedback = state._feedbackCapabilities
+  // Emit the feedback block only when enabled — omitting it means disabled,
+  // following the same pattern as other optional fields (description, folder).
+  if (capabilities.feedback.enabled) {
+    const feedbackObj: Record<string, unknown> = { enabled: true }
+    if (capabilities.feedback.timeout) feedbackObj.timeout = capabilities.feedback.timeout
+    if (capabilities.feedback.onTimeout) feedbackObj.on_timeout = capabilities.feedback.onTimeout
+    capsObj.feedback = feedbackObj
   }
 
   // Build agent block

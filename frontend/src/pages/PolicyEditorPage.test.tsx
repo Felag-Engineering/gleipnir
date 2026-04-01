@@ -148,10 +148,11 @@ describe('PolicyEditorUtils — formStateToYaml approval output', () => {
   it('emits approval: required in YAML when approvalRequired is true on a tool', () => {
     const state = yamlToFormState(WEBHOOK_YAML)!
     // filesystem.write_file already has approval: required in WEBHOOK_YAML
-    // Clone and set approvalRequired = true explicitly on all tools
+    // Clone and set approvalRequired = true explicitly on all tools; spread feedback to preserve it
     const modified = {
       ...state,
       capabilities: {
+        ...state.capabilities,
         tools: state.capabilities.tools.map(t => ({ ...t, approvalRequired: true })),
       },
     }
@@ -164,6 +165,7 @@ describe('PolicyEditorUtils — formStateToYaml approval output', () => {
     const modified = {
       ...state,
       capabilities: {
+        ...state.capabilities,
         tools: state.capabilities.tools.map(t => ({ ...t, approvalRequired: false })),
       },
     }

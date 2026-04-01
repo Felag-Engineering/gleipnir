@@ -75,7 +75,7 @@ func validateTrigger(t model.TriggerConfig) []string {
 
 // validateCapabilities checks that at least one tool is present,
 // tool references use valid dot notation, there are no duplicates,
-// and approval/timeout fields are well-formed.
+// and approval/timeout and feedback fields are well-formed.
 func validateCapabilities(c model.CapabilitiesConfig) []string {
 	var errs []string
 
@@ -114,6 +114,28 @@ func validateCapabilities(c model.CapabilitiesConfig) []string {
 		}
 	}
 
+	errs = append(errs, validateFeedback(c.Feedback)...)
+
+	return errs
+}
+
+// validateFeedback checks the feedback config block for valid duration and
+// on_timeout values. Fields are only validated when feedback is enabled; the
+// parser already clears timeout/on_timeout when disabled so there is nothing
+// to validate in the disabled case.
+func validateFeedback(f model.FeedbackConfig) []string {
+	if !f.Enabled {
+		return nil
+	}
+	var errs []string
+	if f.Timeout != "" {
+		if _, err := time.ParseDuration(f.Timeout); err != nil {
+			errs = append(errs, fmt.Sprintf("capabilities.feedback.timeout %q is not a valid duration", f.Timeout))
+		}
+	}
+	if f.OnTimeout != "" && !f.OnTimeout.Valid() {
+		errs = append(errs, fmt.Sprintf("capabilities.feedback.on_timeout %q is invalid; must be fail", f.OnTimeout))
+	}
 	return errs
 }
 

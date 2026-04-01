@@ -4,6 +4,7 @@ package policy
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -108,7 +109,7 @@ func convertTrigger(r rawTrigger) model.TriggerConfig {
 // Defaults: approval → none, on_timeout → reject (only for approval: required).
 func convertCapabilities(r rawCapabilities) model.CapabilitiesConfig {
 	cc := model.CapabilitiesConfig{
-		Feedback: r.Feedback,
+		Feedback: convertFeedback(r.Feedback),
 	}
 
 	for _, t := range r.Tools {
@@ -139,6 +140,49 @@ func convertCapabilities(r rawCapabilities) model.CapabilitiesConfig {
 	}
 
 	return cc
+}
+
+// convertFeedback maps the raw YAML feedback node to a FeedbackConfig.
+// It supports the new config-block format and backward-compatible old list format.
+// Old format: feedback: ["server.tool", ...] — treated as enabled: true with a
+// deprecation warning logged. The old tool refs are discarded since they were MCP
+// tool references that have no meaning in the new model.
+func convertFeedback(node yaml.Node) model.FeedbackConfig {
+	// Kind 0 means the field was absent from the YAML document.
+	if node.Kind == 0 || node.Tag == "!!null" {
+		return model.FeedbackConfig{Enabled: false}
+	}
+
+	switch node.Kind {
+	case yaml.SequenceNode:
+		// Old list format: capabilities.feedback: ["server.tool", ...]
+		slog.Warn("capabilities.feedback list format is deprecated; use feedback: { enabled: true }")
+		return model.FeedbackConfig{Enabled: true}
+
+	case yaml.MappingNode:
+		var rf rawFeedback
+		if err := node.Decode(&rf); err != nil {
+			// Malformed mapping — treat as disabled.
+			return model.FeedbackConfig{Enabled: false}
+		}
+		if !rf.Enabled {
+			// When disabled, clear timeout/on_timeout silently regardless of
+			// what the operator wrote. This avoids confusing validation errors
+			// for fields that have no effect.
+			return model.FeedbackConfig{Enabled: false}
+		}
+		onTimeout := model.FeedbackOnTimeout(rf.OnTimeout)
+		if onTimeout == "" {
+			onTimeout = model.FeedbackOnTimeoutFail
+		}
+		return model.FeedbackConfig{
+			Enabled:   true,
+			Timeout:   rf.Timeout,
+			OnTimeout: onTimeout,
+		}
+	}
+
+	return model.FeedbackConfig{Enabled: false}
 }
 
 // convertAgent maps raw YAML agent config to typed AgentConfig.
@@ -202,7 +246,14 @@ type rawTrigger struct {
 
 type rawCapabilities struct {
 	Tools    []rawTool `yaml:"tools"`
-	Feedback []string  `yaml:"feedback"`
+	Feedback yaml.Node `yaml:"feedback"`
+}
+
+// rawFeedback is the new config-block format for capabilities.feedback.
+type rawFeedback struct {
+	Enabled   bool   `yaml:"enabled"`
+	Timeout   string `yaml:"timeout"`
+	OnTimeout string `yaml:"on_timeout"`
 }
 
 type rawTool struct {

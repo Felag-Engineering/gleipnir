@@ -132,22 +132,27 @@ const meta: Meta<typeof CapabilitiesSection> = {
 export default meta;
 type Story = StoryObj<typeof CapabilitiesSection>;
 
+const DEFAULT_FEEDBACK = { enabled: false, timeout: '', onTimeout: 'fail' };
+
 export const Empty: Story = {
   args: {
-    value: { tools: [] },
+    value: { tools: [], feedback: DEFAULT_FEEDBACK },
     onChange: () => {},
   },
 };
 
 export const WithTools: Story = {
   args: {
-    value: { tools: FIXTURE_ASSIGNED_TOOLS },
+    value: { tools: FIXTURE_ASSIGNED_TOOLS, feedback: DEFAULT_FEEDBACK },
     onChange: () => {},
   },
 };
 
 function InteractiveCapabilitiesSection() {
-  const [value, setValue] = useState<CapabilitiesFormState>({ tools: [] });
+  const [value, setValue] = useState<CapabilitiesFormState>({
+    tools: [],
+    feedback: DEFAULT_FEEDBACK,
+  });
   return <CapabilitiesSection value={value} onChange={setValue} />;
 }
 

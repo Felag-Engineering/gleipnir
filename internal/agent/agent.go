@@ -126,12 +126,13 @@ func (a *BoundAgent) logTransitionError(ctx context.Context, runErr error) {
 // Run(), before the pending→running transition, so a run with unresolvable
 // capabilities fails immediately without ever appearing as running.
 func (a *BoundAgent) checkCapabilities() error {
-	// Collect all referenced tool names from both capability categories.
+	// Collect all tool names referenced in the policy's tool capability list.
+	// The feedback channel (FeedbackConfig) is not an MCP tool and requires no
+	// registry check — it is injected by the runtime when Enabled is true.
 	var toolNames []string
 	for _, t := range a.policy.Capabilities.Tools {
 		toolNames = append(toolNames, t.Tool)
 	}
-	toolNames = append(toolNames, a.policy.Capabilities.Feedback...)
 
 	for _, name := range toolNames {
 		if _, ok := a.toolsByName[name]; !ok {

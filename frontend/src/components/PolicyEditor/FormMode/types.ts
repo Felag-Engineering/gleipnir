@@ -7,8 +7,15 @@ export interface AssignedTool {
   approvalRequired: boolean;
 }
 
+export interface FeedbackFormState {
+  enabled: boolean;
+  timeout: string;   // Go duration string (e.g. "30m"), empty string if not set
+  onTimeout: string; // "fail" (currently the only valid value)
+}
+
 export interface CapabilitiesFormState {
   tools: AssignedTool[];
+  feedback: FeedbackFormState;
 }
 
 export interface IdentityFormState {

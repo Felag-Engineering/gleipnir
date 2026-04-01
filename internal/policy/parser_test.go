@@ -718,6 +718,170 @@ model:
 	}
 }
 
+func TestParse_FeedbackEnabled(t *testing.T) {
+	raw := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+  feedback:
+    enabled: true
+    timeout: 30m
+    on_timeout: fail
+agent:
+  task: do it
+`
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !p.Capabilities.Feedback.Enabled {
+		t.Error("expected Feedback.Enabled = true")
+	}
+	if p.Capabilities.Feedback.Timeout != "30m" {
+		t.Errorf("timeout = %q, want %q", p.Capabilities.Feedback.Timeout, "30m")
+	}
+	if p.Capabilities.Feedback.OnTimeout != model.FeedbackOnTimeoutFail {
+		t.Errorf("on_timeout = %q, want %q", p.Capabilities.Feedback.OnTimeout, model.FeedbackOnTimeoutFail)
+	}
+}
+
+func TestParse_FeedbackDisabled(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "explicit enabled: false",
+			yaml: `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+  feedback:
+    enabled: false
+agent:
+  task: do it
+`,
+		},
+		{
+			name: "feedback key absent",
+			yaml: `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := Parse(tc.yaml, model.DefaultProvider, model.DefaultModelName)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if p.Capabilities.Feedback.Enabled {
+				t.Error("expected Feedback.Enabled = false")
+			}
+		})
+	}
+}
+
+func TestParse_FeedbackOldFormat(t *testing.T) {
+	// Old list format is accepted for backward compatibility.
+	// The list refs are discarded; Enabled is set to true.
+	raw := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+  feedback:
+    - server.feedback_tool
+agent:
+  task: do it
+`
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !p.Capabilities.Feedback.Enabled {
+		t.Error("expected Feedback.Enabled = true for old list format (backward compat)")
+	}
+}
+
+func TestParse_FeedbackDefaults(t *testing.T) {
+	// When enabled: true but no timeout/on_timeout specified, on_timeout defaults to "fail"
+	// and timeout is empty.
+	raw := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+  feedback:
+    enabled: true
+agent:
+  task: do it
+`
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !p.Capabilities.Feedback.Enabled {
+		t.Error("expected Feedback.Enabled = true")
+	}
+	if p.Capabilities.Feedback.Timeout != "" {
+		t.Errorf("timeout = %q, want empty", p.Capabilities.Feedback.Timeout)
+	}
+	if p.Capabilities.Feedback.OnTimeout != model.FeedbackOnTimeoutFail {
+		t.Errorf("on_timeout = %q, want %q (default)", p.Capabilities.Feedback.OnTimeout, model.FeedbackOnTimeoutFail)
+	}
+}
+
+func TestParse_FeedbackDisabledClearsFields(t *testing.T) {
+	// When enabled: false, timeout and on_timeout are cleared by the parser
+	// even if the operator wrote them, avoiding confusing validation errors.
+	raw := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+  feedback:
+    enabled: false
+    timeout: 30m
+    on_timeout: fail
+agent:
+  task: do it
+`
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Capabilities.Feedback.Enabled {
+		t.Error("expected Feedback.Enabled = false")
+	}
+	if p.Capabilities.Feedback.Timeout != "" {
+		t.Errorf("timeout = %q, want empty (cleared when disabled)", p.Capabilities.Feedback.Timeout)
+	}
+	if p.Capabilities.Feedback.OnTimeout != "" {
+		t.Errorf("on_timeout = %q, want empty (cleared when disabled)", p.Capabilities.Feedback.OnTimeout)
+	}
+}
+
 func TestParse_CustomPreamble(t *testing.T) {
 	raw := `
 name: test

@@ -274,15 +274,14 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 // policyReferencesServer returns true if the raw policy YAML contains any tool
 // reference starting with the given server name prefix (e.g. "myserver.").
 // Parse failures are treated as no match — a corrupt policy YAML cannot block deletion.
+// The feedback block is not checked because the new FeedbackConfig does not reference
+// MCP servers — it enables a native runtime channel.
 func policyReferencesServer(rawYAML, serverPrefix string) bool {
 	var v struct {
 		Capabilities struct {
 			Tools []struct {
 				Tool string `yaml:"tool"`
 			} `yaml:"tools"`
-			Feedback []struct {
-				Tool string `yaml:"tool"`
-			} `yaml:"feedback"`
 		} `yaml:"capabilities"`
 	}
 	if err := yaml.Unmarshal([]byte(rawYAML), &v); err != nil {
@@ -290,14 +289,6 @@ func policyReferencesServer(rawYAML, serverPrefix string) bool {
 	}
 	for _, t := range v.Capabilities.Tools {
 		if strings.HasPrefix(t.Tool, serverPrefix) {
-			return true
-		}
-	}
-	// Keep feedback loop for backward compat — existing policies may reference
-	// servers via capabilities.feedback entries until those policies are
-	// re-saved without feedback capabilities.
-	for _, f := range v.Capabilities.Feedback {
-		if strings.HasPrefix(f.Tool, serverPrefix) {
 			return true
 		}
 	}

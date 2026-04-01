@@ -96,7 +96,7 @@ func TestRenderCapabilitiesBlock_AllRoles(t *testing.T) {
 		{ServerName: "slack", ToolName: "send_message"},
 	}
 
-	result := renderCapabilitiesBlock(granted)
+	result := renderCapabilitiesBlock(granted, model.FeedbackConfig{Enabled: true})
 
 	// All tools appear in the ### Tools section.
 	if !strings.Contains(result, "github.list_repos") {
@@ -157,23 +157,27 @@ func TestRenderSystemPrompt_FeedbackPausesDescription(t *testing.T) {
 		Agent: model.AgentConfig{
 			Task: "Do something",
 		},
+		// Feedback must be enabled for the preamble to include the feedback paragraph.
+		Capabilities: model.CapabilitiesConfig{
+			Feedback: model.FeedbackConfig{Enabled: true},
+		},
 	}
 
 	result := RenderSystemPrompt(p, nil, time.Date(2026, 3, 13, 12, 0, 0, 0, time.UTC))
 
 	if !strings.Contains(result, "pause this run") {
-		t.Error("default preamble must describe that feedback tools pause the run")
+		t.Error("default preamble must describe that feedback tools pause the run when feedback is enabled")
 	}
 }
 
 func TestRenderCapabilitiesBlock_EmptyTools(t *testing.T) {
-	result := renderCapabilitiesBlock(nil)
+	result := renderCapabilitiesBlock(nil, model.FeedbackConfig{Enabled: true})
 
 	if !strings.Contains(result, "### Tools\nNone.") {
 		t.Error("expected 'None.' for empty tools section")
 	}
 	if !strings.Contains(result, "built-in feedback channel") {
-		t.Error("expected built-in feedback channel line even when no tools granted")
+		t.Error("expected built-in feedback channel line when feedback is enabled and no tools granted")
 	}
 }
 
@@ -182,9 +186,64 @@ func TestRenderCapabilitiesBlock_FeedbackChannelAlwaysPresent(t *testing.T) {
 		{ServerName: "s", ToolName: "t"},
 	}
 
-	result := renderCapabilitiesBlock(granted)
+	result := renderCapabilitiesBlock(granted, model.FeedbackConfig{Enabled: true})
 
 	if !strings.Contains(result, "built-in feedback channel") {
-		t.Error("expected built-in feedback channel line regardless of granted tools")
+		t.Error("expected built-in feedback channel line when feedback is enabled")
+	}
+}
+
+func TestRenderCapabilitiesBlock_FeedbackDisabled(t *testing.T) {
+	granted := []model.GrantedTool{
+		{ServerName: "s", ToolName: "t"},
+	}
+
+	result := renderCapabilitiesBlock(granted, model.FeedbackConfig{Enabled: false})
+
+	if strings.Contains(result, "### Feedback") {
+		t.Error("feedback section must not appear when feedback is disabled")
+	}
+	if strings.Contains(result, "built-in feedback channel") {
+		t.Error("feedback channel text must not appear when feedback is disabled")
+	}
+}
+
+func TestRenderSystemPrompt_FeedbackDisabled_DefaultPreamble(t *testing.T) {
+	p := &model.ParsedPolicy{
+		Agent: model.AgentConfig{
+			Task: "Do something",
+		},
+		Capabilities: model.CapabilitiesConfig{
+			Feedback: model.FeedbackConfig{Enabled: false},
+		},
+	}
+
+	result := RenderSystemPrompt(p, nil, time.Date(2026, 3, 13, 12, 0, 0, 0, time.UTC))
+
+	if strings.Contains(result, "Feedback: a channel to consult a human operator") {
+		t.Error("default preamble must not include feedback paragraph when feedback is disabled")
+	}
+	if strings.Contains(result, "### Feedback") {
+		t.Error("capabilities block must not include feedback section when feedback is disabled")
+	}
+}
+
+func TestRenderSystemPrompt_FeedbackEnabled_DefaultPreamble(t *testing.T) {
+	p := &model.ParsedPolicy{
+		Agent: model.AgentConfig{
+			Task: "Do something",
+		},
+		Capabilities: model.CapabilitiesConfig{
+			Feedback: model.FeedbackConfig{Enabled: true},
+		},
+	}
+
+	result := RenderSystemPrompt(p, nil, time.Date(2026, 3, 13, 12, 0, 0, 0, time.UTC))
+
+	if !strings.Contains(result, "Feedback: a channel to consult a human operator") {
+		t.Error("default preamble must include feedback paragraph when feedback is enabled")
+	}
+	if !strings.Contains(result, "### Feedback") {
+		t.Error("capabilities block must include feedback section when feedback is enabled")
 	}
 }

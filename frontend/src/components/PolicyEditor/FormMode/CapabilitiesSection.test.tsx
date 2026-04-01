@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { queryKeys } from '@/hooks/queryKeys'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 import { CapabilitiesSection } from './CapabilitiesSection'
-import type { CapabilitiesFormState, AssignedTool } from './types'
+import type { CapabilitiesFormState, AssignedTool, FeedbackFormState } from './types'
 
 // --- Fixtures (mirrored from CapabilitiesSection.stories.tsx) ---
 
@@ -72,15 +72,22 @@ function makeQueryClient(): QueryClient {
   return qc
 }
 
+const DEFAULT_FEEDBACK: FeedbackFormState = { enabled: false, timeout: '', onTimeout: 'fail' }
+
 // Controlled wrapper so we can track onChange calls and reflect state changes
 function ControlledCapabilitiesSection({
   initialTools = [],
+  initialFeedback = DEFAULT_FEEDBACK,
   onChange,
 }: {
   initialTools?: AssignedTool[]
+  initialFeedback?: FeedbackFormState
   onChange?: (next: CapabilitiesFormState) => void
 }) {
-  const [value, setValue] = useState<CapabilitiesFormState>({ tools: initialTools })
+  const [value, setValue] = useState<CapabilitiesFormState>({
+    tools: initialTools,
+    feedback: initialFeedback,
+  })
 
   function handleChange(next: CapabilitiesFormState) {
     setValue(next)
@@ -238,6 +245,99 @@ describe('CapabilitiesSection — tool picker search filter', () => {
   })
 })
 
+describe('CapabilitiesSection — feedback section', () => {
+  it('renders "Feedback" heading', () => {
+    renderSection()
+    expect(screen.getByText('Feedback')).toBeInTheDocument()
+  })
+
+  it('toggling the feedback switch calls onChange with feedback.enabled flipped AND tools preserved', async () => {
+    const onChange = vi.fn()
+    const initialTools: AssignedTool[] = [
+      {
+        toolId: 'tool-1',
+        serverId: 'srv-1',
+        serverName: 'Filesystem Tools',
+        name: 'read_file',
+        description: 'Read a file',
+        approvalRequired: false,
+      },
+    ]
+    render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <ControlledCapabilitiesSection
+          initialTools={initialTools}
+          initialFeedback={{ enabled: false, timeout: '', onTimeout: 'fail' }}
+          onChange={onChange}
+        />
+      </QueryClientProvider>,
+    )
+
+    // Click the feedback toggle (role="switch" — there are two: one for feedback, approval
+    // toggle is inside individual tool rows; here we look for the feedback-specific one
+    // by filtering switches that are NOT inside tool rows)
+    const switches = screen.getAllByRole('switch')
+    // The feedback switch is the one not associated with a specific tool name,
+    // i.e. the last one or the one outside the tool list. Since there's one tool
+    // with an approval toggle and one feedback toggle, find the feedback one by title.
+    const feedbackSwitch = switches.find(s =>
+      s.getAttribute('title')?.includes('Feedback') ||
+      s.getAttribute('title')?.includes('feedback')
+    )
+    expect(feedbackSwitch).toBeDefined()
+    fireEvent.click(feedbackSwitch!)
+
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledTimes(1)
+    })
+
+    const lastCall = onChange.mock.calls[0][0] as CapabilitiesFormState
+    // feedback.enabled must be flipped
+    expect(lastCall.feedback.enabled).toBe(true)
+    // tools must be preserved (Blocking Issue 1 fix)
+    expect(lastCall.tools).toHaveLength(1)
+    expect(lastCall.tools[0].toolId).toBe('tool-1')
+  })
+
+  it('shows timeout input when feedback is enabled', () => {
+    render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <ControlledCapabilitiesSection
+          initialFeedback={{ enabled: true, timeout: '', onTimeout: 'fail' }}
+        />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByPlaceholderText('e.g. 30m')).toBeInTheDocument()
+  })
+
+  it('does not show timeout input when feedback is disabled', () => {
+    renderSection()
+    expect(screen.queryByPlaceholderText('e.g. 30m')).toBeNull()
+  })
+
+  it('typing in timeout input calls onChange with updated feedback.timeout', async () => {
+    const onChange = vi.fn()
+    render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <ControlledCapabilitiesSection
+          initialFeedback={{ enabled: true, timeout: '', onTimeout: 'fail' }}
+          onChange={onChange}
+        />
+      </QueryClientProvider>,
+    )
+
+    const timeoutInput = screen.getByPlaceholderText('e.g. 30m')
+    fireEvent.change(timeoutInput, { target: { value: '1h' } })
+
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledTimes(1)
+    })
+
+    const lastCall = onChange.mock.calls[0][0] as CapabilitiesFormState
+    expect(lastCall.feedback.timeout).toBe('1h')
+  })
+})
+
 describe('CapabilitiesSection — approval toggle', () => {
   it('toggling approval on a tool calls onChange with approvalRequired flipped', async () => {
     const onChange = vi.fn()
@@ -254,8 +354,8 @@ describe('CapabilitiesSection — approval toggle', () => {
 
     renderSection(assignedTools, onChange)
 
-    // Find the approval toggle switch
-    const toggle = screen.getByRole('switch')
+    // Find the approval toggle switch by its title attribute (distinct from the feedback toggle)
+    const toggle = screen.getByTitle('No approval required — click to enable')
     expect(toggle).toHaveAttribute('aria-checked', 'false')
 
     // Click it
@@ -284,7 +384,7 @@ describe('CapabilitiesSection — approval toggle', () => {
 
     renderSection(assignedTools, onChange)
 
-    const toggle = screen.getByRole('switch')
+    const toggle = screen.getByTitle('Approval required — click to disable')
     expect(toggle).toHaveAttribute('aria-checked', 'true')
 
     fireEvent.click(toggle)
