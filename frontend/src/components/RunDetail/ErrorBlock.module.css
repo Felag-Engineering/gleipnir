@@ -1,0 +1,52 @@
+.block {
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-red) 6%, var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--color-red) 30%, transparent);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Filled red dot signals a hard error, matching ToolBlock's dotError pattern. */
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--color-red);
+}
+
+.label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-red);
+  font-family: var(--font-mono);
+}
+
+/* Error code pill, shown only when a code is present. */
+.code {
+  margin-left: auto;
+  background: color-mix(in srgb, var(--color-red) 15%, transparent);
+  color: var(--color-red);
+  border-radius: 12px;
+  padding: 4px 8px;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+}
+
+.content {
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--color-red);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
