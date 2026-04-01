@@ -50,7 +50,6 @@ func makeResolvedTool(serverURL, serverName, toolName string) mcp.ResolvedTool {
 		GrantedTool: model.GrantedTool{
 			ServerName: serverName,
 			ToolName:   toolName,
-			Role:       model.CapabilityRoleTool,
 			Approval:   model.ApprovalModeNone,
 		},
 		Client:      mcp.NewClient(serverURL),
@@ -270,7 +269,6 @@ func toolForRun(serverURL, serverName, toolName string) mcp.ResolvedTool {
 		GrantedTool: model.GrantedTool{
 			ServerName: serverName,
 			ToolName:   toolName,
-			Role:       model.CapabilityRoleTool,
 			Approval:   model.ApprovalModeNone,
 		},
 		Client:      mcp.NewClient(serverURL),
@@ -570,7 +568,6 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 		GrantedTool: model.GrantedTool{
 			ServerName: "my-server",
 			ToolName:   "read_data",
-			Role:       model.CapabilityRoleTool,
 			Approval:   model.ApprovalModeNone,
 		},
 		Client:      mcp.NewClient(mcpSrv.URL),
@@ -756,7 +753,6 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 		GrantedTool: model.GrantedTool{
 			ServerName: "my-server",
 			ToolName:   "do_thing",
-			Role:       model.CapabilityRoleTool,
 			Approval:   model.ApprovalModeRequired,
 		},
 		Client:      mcp.NewClient(fakeSrv.URL),
@@ -844,7 +840,6 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 		GrantedTool: model.GrantedTool{
 			ServerName: "my-server",
 			ToolName:   "read_data",
-			Role:       model.CapabilityRoleTool,
 			Approval:   model.ApprovalModeNone,
 		},
 		Client:      mcp.NewClient(mcpSrv.URL),
@@ -915,7 +910,6 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 		GrantedTool: model.GrantedTool{
 			ServerName: "my-server",
 			ToolName:   "read_data",
-			Role:       model.CapabilityRoleTool,
 			Approval:   model.ApprovalModeNone,
 		},
 		Client:      mcp.NewClient(mcpSrv.URL),
@@ -1244,7 +1238,6 @@ func makeApprovalTool(serverURL, serverName, toolName string, approval model.App
 		GrantedTool: model.GrantedTool{
 			ServerName: serverName,
 			ToolName:   toolName,
-			Role:       model.CapabilityRoleTool,
 			Approval:   approval,
 			Timeout:    timeout,
 			OnTimeout:  onTimeout,
@@ -1298,8 +1291,7 @@ func TestBuildToolDefinitions(t *testing.T) {
 					GrantedTool: model.GrantedTool{
 						ServerName: "my-server",
 						ToolName:   "read.data",
-						Role:       model.CapabilityRoleTool,
-					},
+								},
 					Description: "reads some data",
 					InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 				},

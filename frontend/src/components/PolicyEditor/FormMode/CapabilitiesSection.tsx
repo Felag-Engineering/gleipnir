@@ -1,6 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useQueries } from '@tanstack/react-query';
-import { RoleBadge } from '@/components/RoleBadge';
 import { useMcpServers } from '@/hooks/useMcpServers';
 import { queryKeys } from '@/hooks/queryKeys';
 import { apiFetch } from '@/api/fetch';
@@ -33,31 +32,7 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
     (toolQueries[i]?.data ?? []).map(tool => ({ tool, serverName: srv.name }))
   );
 
-  // Reconcile roles: YAML doesn't store capability_role, so tools parsed from
-  // YAML default to 'tool'. Use the registry (the DB source of truth) to fix them.
-  const registryRoleByKey = useMemo(() => {
-    const map = new Map<string, ApiMcpTool['capability_role']>();
-    for (const { tool, serverName } of allRegistryTools) {
-      map.set(`${serverName}.${tool.name}`, tool.capability_role);
-    }
-    return map;
-  }, [allRegistryTools]);
-
-  const reconciledTools = useMemo(() => {
-    let changed = false;
-    const result = value.tools.map(t => {
-      const key = `${t.serverName}.${t.name}`;
-      const registryRole = registryRoleByKey.get(key);
-      if (registryRole && registryRole !== t.role) {
-        changed = true;
-        return { ...t, role: registryRole };
-      }
-      return t;
-    });
-    return changed ? result : value.tools;
-  }, [value.tools, registryRoleByKey]);
-
-  const assignedIds = new Set(reconciledTools.map(t => t.toolId));
+  const assignedIds = new Set(value.tools.map(t => t.toolId));
   const q = query.toLowerCase().trim();
   const filteredRegistry = allRegistryTools.filter(({ tool, serverName }) => {
     if (assignedIds.has(tool.id)) return false;
@@ -88,7 +63,6 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
       serverName,
       name: tool.name,
       description: tool.description,
-      role: tool.capability_role,
       approvalRequired: false,
     };
     onChange({ tools: [...value.tools, assigned] });
@@ -109,15 +83,13 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
     <div className={styles.section}>
       <div className={styles.heading}>Capabilities</div>
 
-      <Legend />
-
-      {reconciledTools.length === 0 ? (
+      {value.tools.length === 0 ? (
         <div className={styles.emptyState}>
           No tools added yet. Add tools from the registry below.
         </div>
       ) : (
         <div className={styles.toolList}>
-          {reconciledTools.map(tool => (
+          {value.tools.map(tool => (
             <AssignedToolRow
               key={tool.toolId}
               tool={tool}
@@ -145,21 +117,6 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
   );
 }
 
-function Legend() {
-  return (
-    <div className={styles.legend}>
-      <div className={styles.legendItem}>
-        <RoleBadge role="tool" />
-        <span className={styles.legendDesc}>available tools, optionally approval-gated</span>
-      </div>
-      <div className={styles.legendItem}>
-        <RoleBadge role="feedback" />
-        <span className={styles.legendDesc}>human-in-the-loop channel</span>
-      </div>
-    </div>
-  );
-}
-
 interface AssignedToolRowProps {
   tool: AssignedTool;
   onRemove: (toolId: string) => void;
@@ -171,25 +128,22 @@ function AssignedToolRow({ tool, onRemove, onToggleApproval }: AssignedToolRowPr
 
   return (
     <div className={styles.toolRow}>
-      <RoleBadge role={tool.role} />
       <span className={styles.toolName}>{displayName}</span>
       <span className={styles.toolDesc}>{tool.description}</span>
-      {tool.role === 'tool' && (
-        <div className={styles.approvalToggle}>
-          <span className={styles.approvalLabel}>approval</span>
-          <button
-            role="switch"
-            aria-checked={tool.approvalRequired}
-            className={styles.toggleButton}
-            onClick={() => onToggleApproval(tool.toolId)}
-            title={tool.approvalRequired ? 'Approval required — click to disable' : 'No approval required — click to enable'}
-          >
-            <span className={`${styles.toggleTrack} ${tool.approvalRequired ? styles.toggleTrackOn : styles.toggleTrackOff}`}>
-              <span className={`${styles.toggleThumb} ${tool.approvalRequired ? styles.toggleThumbOn : styles.toggleThumbOff}`} />
-            </span>
-          </button>
-        </div>
-      )}
+      <div className={styles.approvalToggle}>
+        <span className={styles.approvalLabel}>approval</span>
+        <button
+          role="switch"
+          aria-checked={tool.approvalRequired}
+          className={styles.toggleButton}
+          onClick={() => onToggleApproval(tool.toolId)}
+          title={tool.approvalRequired ? 'Approval required — click to disable' : 'No approval required — click to enable'}
+        >
+          <span className={`${styles.toggleTrack} ${tool.approvalRequired ? styles.toggleTrackOn : styles.toggleTrackOff}`}>
+            <span className={`${styles.toggleThumb} ${tool.approvalRequired ? styles.toggleThumbOn : styles.toggleThumbOff}`} />
+          </span>
+        </button>
+      </div>
       <button
         className={styles.removeButton}
         onClick={() => onRemove(tool.toolId)}
@@ -236,7 +190,6 @@ function SearchPanel({ query, onQueryChange, results, onAdd, onClose }: SearchPa
               className={styles.resultRow}
               onClick={() => onAdd(tool, serverName)}
             >
-              <RoleBadge role={tool.capability_role} />
               <span className={styles.toolName}>{serverName}.{tool.name}</span>
               <span className={styles.toolDesc}>{tool.description}</span>
             </button>

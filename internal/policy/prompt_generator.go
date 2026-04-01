@@ -47,38 +47,22 @@ func RenderSystemPrompt(p *model.ParsedPolicy, granted []model.GrantedTool, now 
 }
 
 // renderCapabilitiesBlock produces the "## Capabilities" section of the
-// system prompt listing each granted tool by role.
+// system prompt listing all granted tools and the built-in feedback channel.
 func renderCapabilitiesBlock(granted []model.GrantedTool) string {
-	var tools, feedback []model.GrantedTool
-	for _, g := range granted {
-		switch g.Role {
-		case model.CapabilityRoleTool:
-			tools = append(tools, g)
-		case model.CapabilityRoleFeedback:
-			feedback = append(feedback, g)
-		}
-	}
-
 	var b strings.Builder
 	b.WriteString("## Capabilities\n\n")
 
 	b.WriteString("### Tools\n")
-	if len(tools) == 0 {
+	if len(granted) == 0 {
 		b.WriteString("None.\n")
 	} else {
-		for _, t := range tools {
+		for _, t := range granted {
 			fmt.Fprintf(&b, "- %s.%s\n", t.ServerName, t.ToolName)
 		}
 	}
 
 	b.WriteString("\n### Feedback (human-in-the-loop)\n")
-	if len(feedback) == 0 {
-		b.WriteString("Use the built-in feedback channel to consult a human operator.\n")
-	} else {
-		for _, f := range feedback {
-			fmt.Fprintf(&b, "- %s.%s\n", f.ServerName, f.ToolName)
-		}
-	}
+	b.WriteString("Use the built-in feedback channel to consult a human operator.\n")
 
 	return b.String()
 }

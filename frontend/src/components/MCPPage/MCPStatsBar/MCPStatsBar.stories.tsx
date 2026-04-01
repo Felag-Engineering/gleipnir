@@ -11,9 +11,9 @@ export default meta
 type Story = StoryObj<typeof MCPStatsBar>
 
 export const Loaded: Story = {
-  args: { totalTools: 15, tools: 14, feedback: 1, isLoading: false },
+  args: { totalTools: 15, isLoading: false },
 }
 
 export const Loading: Story = {
-  args: { totalTools: 0, tools: 0, feedback: 0, isLoading: true },
+  args: { totalTools: 0, isLoading: true },
 }

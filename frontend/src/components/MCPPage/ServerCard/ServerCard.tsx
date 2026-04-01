@@ -12,8 +12,6 @@ interface Props {
   isDiscovering: boolean
   onDiscover: (serverId: string) => void
   onDelete: (server: ApiMcpServer, toolCount: number) => void
-  onRoleChange: (toolId: string, serverId: string, role: 'tool' | 'feedback') => void
-  updatingToolId: string | null
 }
 
 export function ServerCard({
@@ -23,8 +21,6 @@ export function ServerCard({
   isDiscovering,
   onDiscover,
   onDelete,
-  onRoleChange,
-  updatingToolId,
 }: Props) {
   const health: HealthStatus = isDiscovering
     ? 'discovering'
@@ -87,8 +83,6 @@ export function ServerCard({
       <ToolList
         tools={tools}
         isLoading={toolsLoading}
-        onRoleChange={onRoleChange}
-        updatingToolId={updatingToolId}
       />
     </div>
   )

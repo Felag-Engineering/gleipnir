@@ -843,7 +843,7 @@ Both agent implementations (`internal/agent/agent.go` and `internal/agent/claude
 
 **2. MCP tools are always tools.**
 
-The `capability_role` column distinction between `tool` and `feedback` is removed for new tool registrations. All MCP tools discovered from external servers have the role `tool`. The `CapabilityRoleFeedback` constant and `MCPTool.CapabilityRole` filtering for feedback are superseded. The `capability_role` column on `mcp_tools` is retained in the DB for backward compatibility with existing rows but is no longer assigned to new tools.
+The `capability_role` column has been fully removed from the `mcp_tools` table. All MCP tools discovered from external servers are tools without any role distinction. The `CapabilityRole` type, `CapabilityRoleTool`/`CapabilityRoleFeedback` constants, and `MCPTool.CapabilityRole` field have been removed from `internal/model`. A runtime migration (`migrateDropCapabilityRole`) recreates the table without the column for existing databases.
 
 **3. Notification is orthogonal.**
 
@@ -907,7 +907,7 @@ The `timeout` field, if set, applies a deadline to each individual feedback requ
 
 ### Consequences
 
-- `internal/model`: `CapabilityRoleFeedback` is deprecated (retained for backward compatibility with existing DB rows) but no longer assigned to new tools. The `CapabilitiesConfig.Feedback` field changes from `[]string` to a `FeedbackConfig` struct (`Enabled bool`, `Timeout duration`).
+- `internal/model`: `CapabilityRole` type and all associated constants (`CapabilityRoleTool`, `CapabilityRoleFeedback`) removed. `GrantedTool.Role` and `MCPTool.CapabilityRole` fields removed. The `CapabilitiesConfig.Feedback` field changes from `[]string` to a `FeedbackConfig` struct (`Enabled bool`, `Timeout duration`).
 - `internal/agent`: Both `BoundAgent` implementations inject `gleipnir.ask_operator` as a synthetic tool at run start when feedback is enabled. The `dispatchToolCall` method intercepts calls to `gleipnir.ask_operator` before MCP dispatch, the same way it intercepts approval-gated tools. The existing `waitForFeedback` method is reused with the `message` field from the tool input.
 - `internal/mcp`: No changes to the MCP client or registry. Feedback is no longer an MCP concept.
 - `internal/policy`: Parser updated to handle the new `capabilities.feedback` config block shape. Prompt generator updated to remove feedback-role tool listing logic.

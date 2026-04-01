@@ -6,8 +6,6 @@
 --   ADR-002: Policy-as-YAML stored in DB. name and trigger_type as columns for
 --            list views and trigger routing; everything else lives in the YAML.
 --   ADR-003: SQLite, WAL mode enabled at the application layer on startup.
---   ADR-007: tool / feedback roles stored as capability_role on
---            mcp_tools (denormalized — each tool has exactly one role).
 --   ADR-011: interrupted is a valid terminal run state. Startup scan marks any
 --            run in running or waiting_for_approval as interrupted.
 --   ADR-012: Prompt fields (preamble, task instructions) live in the policy YAML.
@@ -40,10 +38,6 @@ CREATE TABLE mcp_servers (
 
 -- ---------------------------------------------------------------------------
 -- MCP tools
---
--- capability_role is denormalized onto the tool row. Each tool has exactly
--- one role. The separate capability_tags table mentioned in early design docs
--- was collapsed here — a join table bought nothing given the 1:1 relationship.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE mcp_tools (
@@ -52,7 +46,6 @@ CREATE TABLE mcp_tools (
     name            TEXT    NOT NULL,
     description     TEXT    NOT NULL,
     input_schema    TEXT    NOT NULL,     -- JSON blob (MCP tool input schema)
-    capability_role TEXT    NOT NULL CHECK(capability_role IN ('tool', 'feedback')),
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     UNIQUE(server_id, name)
 );

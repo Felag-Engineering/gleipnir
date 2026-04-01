@@ -14,7 +14,6 @@ vi.mock('@/hooks/useMcpTools')
 vi.mock('@/hooks/useAddMcpServer')
 vi.mock('@/hooks/useDeleteMcpServer')
 vi.mock('@/hooks/useDiscoverMcpServer')
-vi.mock('@/hooks/useUpdateMcpTool')
 // useQueries is used for eager tool fetching — mock at the module level
 vi.mock('@tanstack/react-query', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-query')>()
@@ -28,7 +27,6 @@ import { useMcpServers } from '@/hooks/useMcpServers'
 import { useAddMcpServer } from '@/hooks/useAddMcpServer'
 import { useDeleteMcpServer } from '@/hooks/useDeleteMcpServer'
 import { useDiscoverMcpServer } from '@/hooks/useDiscoverMcpServer'
-import { useUpdateMcpTool } from '@/hooks/useUpdateMcpTool'
 import { useQueries } from '@tanstack/react-query'
 
 // --- Fixtures ---
@@ -56,7 +54,6 @@ const TOOL_1: ApiMcpTool = {
   server_id: 'srv-1',
   name: 'kubectl.get_pods',
   description: 'List pods.',
-  capability_role: 'tool',
   input_schema: { namespace: { type: 'string' } },
 }
 
@@ -65,7 +62,6 @@ const TOOL_2: ApiMcpTool = {
   server_id: 'srv-1',
   name: 'kubectl.delete_pod',
   description: 'Delete a pod.',
-  capability_role: 'tool',
   input_schema: {},
 }
 
@@ -90,7 +86,6 @@ function mockNoopMutations() {
   vi.mocked(useAddMcpServer).mockReturnValue(noop as unknown as ReturnType<typeof useAddMcpServer>)
   vi.mocked(useDeleteMcpServer).mockReturnValue(noop as unknown as ReturnType<typeof useDeleteMcpServer>)
   vi.mocked(useDiscoverMcpServer).mockReturnValue(noop as unknown as ReturnType<typeof useDiscoverMcpServer>)
-  vi.mocked(useUpdateMcpTool).mockReturnValue(noop as unknown as ReturnType<typeof useUpdateMcpTool>)
 }
 
 function mockServersLoaded(servers: ApiMcpServer[], toolsByServer: Map<string, ApiMcpTool[]> = new Map()) {
@@ -189,7 +184,7 @@ describe('ToolsPage — stats bar', () => {
     mockNoopMutations()
 
     renderPage()
-    // Total tools = 2 (both TOOL_1 and TOOL_2 are 'tool' role)
+    // Total tools = 2
     const twos = screen.getAllByText('2')
     expect(twos.length).toBeGreaterThan(0)
   })
@@ -359,75 +354,6 @@ describe('ToolsPage — discover button', () => {
     expect(discoverBtn).toBeInTheDocument()
     fireEvent.click(discoverBtn)
     expect(mutateMock).toHaveBeenCalledWith('srv-1', expect.any(Object))
-  })
-})
-
-describe('ToolsPage — tool role dropdown', () => {
-  it('calls updateTool.mutate with correct args on role change', async () => {
-    const tools = new Map([['srv-1', [TOOL_1, TOOL_2]]])
-    mockServersLoaded([SERVER_1], tools)
-    mockNoopMutations()
-
-    const mutateMock = vi.fn()
-    vi.mocked(useUpdateMcpTool).mockReturnValue({
-      mutate: mutateMock,
-      isPending: false,
-      error: null,
-      reset: vi.fn(),
-    } as unknown as ReturnType<typeof useUpdateMcpTool>)
-
-    renderPage()
-    // Expand the tool list first
-    fireEvent.click(screen.getByRole('button', { name: /2 tools/i }))
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(`Role for ${TOOL_1.name}`)).toBeInTheDocument()
-    })
-
-    const select = screen.getByLabelText(`Role for ${TOOL_1.name}`)
-    fireEvent.change(select, { target: { value: 'feedback' } })
-
-    expect(mutateMock).toHaveBeenCalledWith(
-      { toolId: 't1', serverId: 'srv-1', capability_role: 'feedback' },
-      expect.any(Object),
-    )
-  })
-})
-
-describe('ToolsPage — unassigned banner', () => {
-  it('is hidden when all tools have valid roles', () => {
-    const tools = new Map([['srv-1', [TOOL_1, TOOL_2]]])
-    mockServersLoaded([SERVER_1], tools)
-    mockNoopMutations()
-
-    renderPage()
-    // Both tools have valid roles (tool)
-    expect(screen.queryByRole('status', { name: /unassigned/i })).not.toBeInTheDocument()
-  })
-
-  it('does not show unassigned banner when servers list is empty', () => {
-    mockServersLoaded([])
-    mockNoopMutations()
-    renderPage()
-    expect(screen.queryByText(/no capability role assigned/i)).not.toBeInTheDocument()
-  })
-
-  it('shows banner when a tool has no valid capability role', () => {
-    const unassignedTool: ApiMcpTool = {
-      id: 't-unassigned',
-      server_id: 'srv-1',
-      name: 'kubectl.exec',
-      description: 'Execute a command.',
-      capability_role: '' as ApiMcpTool['capability_role'],
-      input_schema: {},
-    }
-    const tools = new Map([['srv-1', [unassignedTool]]])
-    mockServersLoaded([SERVER_1], tools)
-    mockNoopMutations()
-
-    renderPage()
-    expect(screen.getByRole('status')).toBeInTheDocument()
-    expect(screen.getByText(/no capability role assigned/i)).toBeInTheDocument()
   })
 })
 

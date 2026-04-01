@@ -28,22 +28,20 @@ func newMCPRouter(store *db.Store, registry *mcp.Registry) http.Handler {
 	r.Delete("/servers/{id}", h.Delete)
 	r.Post("/servers/{id}/discover", h.Discover)
 	r.Get("/servers/{id}/tools", h.ListTools)
-	r.Patch("/tools/{id}", h.UpdateToolRole)
 	return r
 }
 
 // insertTestMCPTool inserts an MCP tool row directly via the store.
-func insertTestMCPTool(t *testing.T, s *db.Store, serverID, name, role string) string {
+func insertTestMCPTool(t *testing.T, s *db.Store, serverID, name string) string {
 	t.Helper()
 	id := model.NewULID()
 	_, err := s.UpsertMCPTool(context.Background(), db.UpsertMCPToolParams{
-		ID:             id,
-		ServerID:       serverID,
-		Name:           name,
-		Description:    name + " description",
-		InputSchema:    `{"type":"object"}`,
-		CapabilityRole: role,
-		CreatedAt:      "2024-01-01T00:00:00Z",
+		ID:          id,
+		ServerID:    serverID,
+		Name:        name,
+		Description: name + " description",
+		InputSchema: `{"type":"object"}`,
+		CreatedAt:   "2024-01-01T00:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("insertTestMCPTool %s: %v", name, err)
@@ -522,8 +520,8 @@ func TestMCPToolListHandler(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.Queries())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
-		insertTestMCPTool(t, store, serverID, "tool-alpha", "tool")
-		insertTestMCPTool(t, store, serverID, "tool-beta", "tool")
+		insertTestMCPTool(t, store, serverID, "tool-alpha")
+		insertTestMCPTool(t, store, serverID, "tool-beta")
 
 		srv := httptest.NewServer(newMCPRouter(store, registry))
 		t.Cleanup(srv.Close)
@@ -540,12 +538,11 @@ func TestMCPToolListHandler(t *testing.T) {
 
 		var envelope struct {
 			Data []struct {
-				ID             string          `json:"id"`
-				ServerID       string          `json:"server_id"`
-				Name           string          `json:"name"`
-				Description    string          `json:"description"`
-				CapabilityRole string          `json:"capability_role"`
-				InputSchema    json.RawMessage `json:"input_schema"`
+				ID          string          `json:"id"`
+				ServerID    string          `json:"server_id"`
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				InputSchema json.RawMessage `json:"input_schema"`
 			} `json:"data"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
@@ -557,9 +554,6 @@ func TestMCPToolListHandler(t *testing.T) {
 		// Results are ordered by name ASC.
 		if envelope.Data[0].Name != "tool-alpha" {
 			t.Errorf("data[0].name = %q, want tool-alpha", envelope.Data[0].Name)
-		}
-		if envelope.Data[0].CapabilityRole != "tool" {
-			t.Errorf("data[0].capability_role = %q, want tool", envelope.Data[0].CapabilityRole)
 		}
 		if envelope.Data[0].ServerID != serverID {
 			t.Errorf("data[0].server_id = %q, want %q", envelope.Data[0].ServerID, serverID)
@@ -589,160 +583,3 @@ func TestMCPToolListHandler(t *testing.T) {
 	})
 }
 
-func TestMCPToolUpdateRoleHandler(t *testing.T) {
-	patchRole := func(t *testing.T, baseURL, toolID string, body any) *http.Response {
-		t.Helper()
-		var reqBody []byte
-		if body != nil {
-			reqBody, _ = json.Marshal(body)
-		}
-		req, _ := http.NewRequest(http.MethodPatch, baseURL+"/tools/"+toolID, bytes.NewReader(reqBody))
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("PATCH /tools/%s: %v", toolID, err)
-		}
-		return resp
-	}
-
-	t.Run("update role to valid value", func(t *testing.T) {
-		store := testutil.NewTestStore(t)
-		registry := mcp.NewRegistry(store.Queries())
-		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
-		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "tool")
-
-		srv := httptest.NewServer(newMCPRouter(store, registry))
-		t.Cleanup(srv.Close)
-
-		resp := patchRole(t, srv.URL, toolID, map[string]string{"capability_role": "feedback"})
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("status = %d, want 200", resp.StatusCode)
-		}
-
-		var envelope struct {
-			Data struct {
-				ID             string `json:"id"`
-				CapabilityRole string `json:"capability_role"`
-			} `json:"data"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-			t.Fatalf("decode response: %v", err)
-		}
-		if envelope.Data.ID != toolID {
-			t.Errorf("id = %q, want %q", envelope.Data.ID, toolID)
-		}
-		if envelope.Data.CapabilityRole != "feedback" {
-			t.Errorf("capability_role = %q, want feedback", envelope.Data.CapabilityRole)
-		}
-	})
-
-	t.Run("update role persists", func(t *testing.T) {
-		store := testutil.NewTestStore(t)
-		registry := mcp.NewRegistry(store.Queries())
-		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
-		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "tool")
-
-		srv := httptest.NewServer(newMCPRouter(store, registry))
-		t.Cleanup(srv.Close)
-
-		patchResp := patchRole(t, srv.URL, toolID, map[string]string{"capability_role": "feedback"})
-		patchResp.Body.Close()
-		if patchResp.StatusCode != http.StatusOK {
-			t.Fatalf("PATCH status = %d, want 200", patchResp.StatusCode)
-		}
-
-		listResp, err := http.Get(srv.URL + "/servers/" + serverID + "/tools")
-		if err != nil {
-			t.Fatalf("GET tools: %v", err)
-		}
-		defer listResp.Body.Close()
-
-		var envelope struct {
-			Data []struct {
-				ID             string `json:"id"`
-				CapabilityRole string `json:"capability_role"`
-			} `json:"data"`
-		}
-		if err := json.NewDecoder(listResp.Body).Decode(&envelope); err != nil {
-			t.Fatalf("decode list response: %v", err)
-		}
-		if len(envelope.Data) != 1 {
-			t.Fatalf("len(data) = %d, want 1", len(envelope.Data))
-		}
-		if envelope.Data[0].CapabilityRole != "feedback" {
-			t.Errorf("capability_role after update = %q, want feedback", envelope.Data[0].CapabilityRole)
-		}
-	})
-
-	t.Run("invalid role returns 400", func(t *testing.T) {
-		store := testutil.NewTestStore(t)
-		registry := mcp.NewRegistry(store.Queries())
-		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
-		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "tool")
-
-		srv := httptest.NewServer(newMCPRouter(store, registry))
-		t.Cleanup(srv.Close)
-
-		resp := patchRole(t, srv.URL, toolID, map[string]string{"capability_role": "invalid_role"})
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400", resp.StatusCode)
-		}
-	})
-
-	t.Run("empty string role returns 400", func(t *testing.T) {
-		store := testutil.NewTestStore(t)
-		registry := mcp.NewRegistry(store.Queries())
-		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
-		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "tool")
-
-		srv := httptest.NewServer(newMCPRouter(store, registry))
-		t.Cleanup(srv.Close)
-
-		resp := patchRole(t, srv.URL, toolID, map[string]string{"capability_role": ""})
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400", resp.StatusCode)
-		}
-	})
-
-	t.Run("empty body returns 400", func(t *testing.T) {
-		store := testutil.NewTestStore(t)
-		registry := mcp.NewRegistry(store.Queries())
-		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
-		toolID := insertTestMCPTool(t, store, serverID, "my-tool", "tool")
-
-		srv := httptest.NewServer(newMCPRouter(store, registry))
-		t.Cleanup(srv.Close)
-
-		req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/tools/"+toolID, nil)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("PATCH /tools/%s: %v", toolID, err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400", resp.StatusCode)
-		}
-	})
-
-	t.Run("non-existent tool returns 404", func(t *testing.T) {
-		store := testutil.NewTestStore(t)
-		registry := mcp.NewRegistry(store.Queries())
-		srv := httptest.NewServer(newMCPRouter(store, registry))
-		t.Cleanup(srv.Close)
-
-		resp := patchRole(t, srv.URL, "does-not-exist", map[string]string{"capability_role": "tool"})
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusNotFound {
-			t.Fatalf("status = %d, want 404", resp.StatusCode)
-		}
-	})
-}

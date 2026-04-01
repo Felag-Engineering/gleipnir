@@ -20,5 +20,3 @@ export function isTriggerType(s: string): s is TriggerType {
   return KNOWN_TRIGGERS.has(s)
 }
 
-export const CAPABILITY_ROLES = ['tool', 'feedback'] as const
-export type CapabilityRole = typeof CAPABILITY_ROLES[number]

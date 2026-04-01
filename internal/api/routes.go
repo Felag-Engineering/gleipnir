@@ -47,7 +47,6 @@ func NewRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, mod
 			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/{id}/discover", mcpH.Discover)
 			r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/{id}/tools", mcpH.ListTools)
 		})
-		r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Patch("/tools/{id}", mcpH.UpdateToolRole)
 	})
 
 	return r

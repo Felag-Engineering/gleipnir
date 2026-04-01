@@ -15,7 +15,7 @@ graph TD
     subgraph pkgs["internal/"]
         direction TB
 
-        MODEL["<b>model</b><br/>─────────────────────────────<br/>Domain enums: RunStatus · TriggerType<br/>CapabilityRole · StepType · ApprovalStatus<br/>+ 3 more, all with String() / Valid()<br/>─────────────────────────────<br/>Config structs: ParsedPolicy · AgentConfig<br/>CapabilitiesConfig · GrantedTool · ...<br/>─────────────────────────────<br/>Domain entities: Run · RunStep · Policy<br/>ApprovalRequest · MCPServer · MCPTool<br/>─────────────────────────────<br/>NewULID() — monotonic, goroutine-safe"]
+        MODEL["<b>model</b><br/>─────────────────────────────<br/>Domain enums: RunStatus · TriggerType<br/>StepType · ApprovalStatus<br/>+ 3 more, all with String() / Valid()<br/>─────────────────────────────<br/>Config structs: ParsedPolicy · AgentConfig<br/>CapabilitiesConfig · GrantedTool · ...<br/>─────────────────────────────<br/>Domain entities: Run · RunStep · Policy<br/>ApprovalRequest · MCPServer · MCPTool<br/>─────────────────────────────<br/>NewULID() — monotonic, goroutine-safe"]
 
         DB["<b>db</b><br/>─────────────────────────<br/>Store: opens SQLite, enables WAL<br/>mode and foreign keys on startup<br/>─────────────────────────<br/>Migrate(): idempotent schema<br/>migration on every startup<br/>─────────────────────────<br/>ScanOrphanedRuns(): resets any<br/>running/waiting runs to interrupted<br/>─────────────────────────<br/>Queries (sqlc-generated):<br/>all fields are plain string / int64"]
 

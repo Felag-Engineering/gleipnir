@@ -138,6 +138,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate feedback_requests table: %w", err)
 	}
 
+	if err := s.migrateDropCapabilityRole(ctx); err != nil {
+		return fmt.Errorf("migrate drop capability_role: %w", err)
+	}
+
 	return nil
 }
 
@@ -365,6 +369,79 @@ CREATE INDEX idx_feedback_requests_run_pending    ON feedback_requests(run_id, s
 	}
 
 	slog.Info("migrated: created feedback_requests table")
+	return nil
+}
+
+// migrateDropCapabilityRole drops the capability_role column from mcp_tools on
+// existing deployments where it was present. New deployments get the schema
+// without it from 0001_initial.sql. The tool/feedback distinction is now handled
+// by the Gleipnir runtime as a native feedback primitive (ADR-031).
+//
+// SQLite does not support DROP COLUMN in older versions, so we use the
+// table-recreation pattern. PRAGMA foreign_keys must be set OUTSIDE the
+// transaction (SQLite requirement — see migrateAddWaitingForFeedback pattern).
+func (s *Store) migrateDropCapabilityRole(ctx context.Context) error {
+	var tableSQL string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='mcp_tools'`,
+	).Scan(&tableSQL)
+	if err != nil {
+		return fmt.Errorf("query mcp_tools schema: %w", err)
+	}
+
+	if !strings.Contains(tableSQL, "capability_role") {
+		return nil // already dropped; nothing to do
+	}
+
+	// Disable FK enforcement before the transaction so that DROP TABLE inside
+	// the transaction does not trigger FK violations from child tables.
+	// mcp_tools itself has an FK to mcp_servers; we need FK off during the drop.
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys before mcp_tools migration: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		return fmt.Errorf("begin drop capability_role migration tx: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.Error("drop capability_role migration rollback failed", "err", rbErr)
+		}
+	}()
+
+	ddl := `
+CREATE TABLE mcp_tools_new (
+    id              TEXT    PRIMARY KEY,
+    server_id       TEXT    NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+    name            TEXT    NOT NULL,
+    description     TEXT    NOT NULL,
+    input_schema    TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL,
+    UNIQUE(server_id, name)
+);
+INSERT INTO mcp_tools_new (id, server_id, name, description, input_schema, created_at)
+    SELECT id, server_id, name, description, input_schema, created_at FROM mcp_tools;
+DROP TABLE mcp_tools;
+ALTER TABLE mcp_tools_new RENAME TO mcp_tools;
+CREATE INDEX idx_mcp_tools_server_id ON mcp_tools(server_id);
+INSERT INTO schema_migrations(version, applied_at) VALUES (10, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));`
+
+	if _, err := tx.ExecContext(ctx, ddl); err != nil {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		return fmt.Errorf("recreate mcp_tools without capability_role: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		return fmt.Errorf("commit drop capability_role migration: %w", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		return fmt.Errorf("re-enable foreign keys after mcp_tools migration: %w", err)
+	}
+
+	slog.Info("migrated mcp_tools table to drop capability_role")
 	return nil
 }
 

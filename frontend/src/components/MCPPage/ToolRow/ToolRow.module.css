@@ -47,36 +47,3 @@
   margin-top: var(--space-1);
 }
 
-.roleSelect {
-  appearance: none;
-  -webkit-appearance: none;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-mid);
-  border-radius: 4px;
-  padding: var(--space-1) var(--space-2);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--text-second);
-  cursor: pointer;
-  outline: none;
-  width: 80px;
-  flex-shrink: 0;
-  transition: border-color var(--duration-fast) var(--ease-out);
-}
-
-.roleSelect:focus {
-  border-color: var(--text-faint);
-}
-
-.roleSelect:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.roleSelect.tool {
-  color: var(--color-tool);
-}
-
-.roleSelect.feedback {
-  color: var(--color-feedback);
-}

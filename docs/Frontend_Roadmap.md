@@ -550,8 +550,7 @@ For runs with many steps, load the first 50 steps. Show a "Load more" button at 
 - `POST /api/v1/mcp/servers` — register new server
 - `DELETE /api/v1/mcp/servers/:id` — remove server
 - `POST /api/v1/mcp/servers/:id/discover` — trigger re-discovery
-- `GET /api/v1/mcp/servers/:id/tools` — list tools with capability roles
-- `PATCH /api/v1/mcp/tools/:id` — update capability role
+- `GET /api/v1/mcp/servers/:id/tools` — list tools for a server
 
 **Layout:** Full-page view with global tool stats, an "Add Server" button, and expandable server cards.
 
@@ -561,7 +560,7 @@ Skeleton screens: stat counters as skeleton blocks + 2-3 skeleton server cards.
 
 #### Global Stats
 
-- Total tools count, sensors count, actuators count, unassigned count
+- Total tools count
 - "Add Server" button → opens modal
 
 #### Add Server Modal
@@ -583,25 +582,19 @@ One card per registered MCP server:
 - Expand/collapse chevron for tool list
 - Delete button (trash icon) — with confirmation modal ("This will remove N tools from the registry.")
 
-**Unassigned role warning:**
-If any tools on the server have no capability role assigned, show an amber banner: "N tools need a capability role assigned before they can be used in policies"
-
 **Tool list (per server, expandable):**
 
 Each tool row:
 - Tool name (`server.tool_name`, monospace)
 - Description
 - Input schema: expandable JSON block
-- Capability role: **inline dropdown** to change role (`sensor` | `actuator` | `feedback`). Saves on change via `PATCH /api/v1/mcp/tools/:id`.
 
 Re-discovery simply refreshes the tool list in place. The user sees the updated list and can check what changed. A structured diff view is a v0.1-polish enhancement (see section 10).
 
 **Test requirements (Vitest + RTL):**
 - Server list: renders server cards with health indicator, name, URL, last discovered time
 - Add server modal: submitting the form calls POST endpoint, new server appears in list
-- Tool list: expanding a server card shows its tools with names, descriptions, and role dropdowns
-- Role change: selecting a new capability role from dropdown calls PATCH endpoint
-- Unassigned warning: amber banner appears when tools have no role assigned
+- Tool list: expanding a server card shows its tools with names and descriptions
 - Delete server: confirmation modal appears, confirming calls DELETE endpoint and removes card
 - Re-discovery: clicking "Discover" button shows spinner, updates tool list on completion
 
@@ -609,8 +602,6 @@ Re-discovery simply refreshes the tool list in place. The user sees the updated 
 - Skeleton screens on initial load
 - Servers listed with health indicator (text + dot) and last discovery time
 - Add server modal works, auto-discovers on creation
-- Tool capability roles editable via inline dropdown
-- Unassigned role warning banner when applicable
 - Delete server works with confirmation
 - Re-discovery refreshes the tool list
 
@@ -745,7 +736,7 @@ This is the right time for folder grouping because v0.1 established the policy l
 Upgrade re-discovery from "refresh in place" to a structured diff:
 
 - After re-discovery, if tools changed, show a diff section on the server card:
-  - **Added tools** — green left-border, `+` icon, tool name + description + role dropdown
+  - **Added tools** — green left-border, `+` icon, tool name + description
   - **Removed tools** — red left-border, `−` icon, tool name + description, strikethrough
   - **Modified tools** — amber left-border, `~` icon, tool name + old→new description
 - Each section has an "Accept" action
@@ -895,8 +886,6 @@ POST   /api/v1/mcp/servers
 DELETE /api/v1/mcp/servers/:id
 POST   /api/v1/mcp/servers/:id/discover
 GET    /api/v1/mcp/servers/:id/tools
-PATCH  /api/v1/mcp/tools/:id              — update capability_role
-
 GET    /api/v1/approvals                   — [v0.2]
 POST   /api/v1/approvals/:id/approve       — [v0.2]
 POST   /api/v1/approvals/:id/reject        — [v0.2]

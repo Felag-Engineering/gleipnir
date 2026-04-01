@@ -197,7 +197,6 @@ describe('PolicyEditorUtils — YAML ↔ form round-trip (pure functions)', () =
     origTools.forEach((t, i) => {
       expect(rtTools[i].serverName).toBe(t.serverName)
       expect(rtTools[i].name).toBe(t.name)
-      expect(rtTools[i].role).toBe(t.role)
       expect(rtTools[i].approvalRequired).toBe(t.approvalRequired)
     })
   })

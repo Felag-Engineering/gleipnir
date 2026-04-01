@@ -15,7 +15,7 @@ func TestRenderSystemPrompt_DefaultPreamble(t *testing.T) {
 		},
 	}
 	granted := []model.GrantedTool{
-		{ServerName: "github", ToolName: "list_repos", Role: model.CapabilityRoleTool},
+		{ServerName: "github", ToolName: "list_repos"},
 	}
 
 	result := RenderSystemPrompt(p, granted, time.Date(2026, 3, 13, 12, 0, 0, 0, time.UTC))
@@ -61,7 +61,7 @@ func TestRenderSystemPrompt_TimestampInjected(t *testing.T) {
 			Agent: model.AgentConfig{Task: "Do something"},
 		}
 		granted := []model.GrantedTool{
-			{ServerName: "s", ToolName: "t", Role: model.CapabilityRoleTool},
+			{ServerName: "s", ToolName: "t"},
 		}
 		result := RenderSystemPrompt(p, granted, fixedTime)
 
@@ -89,16 +89,16 @@ func TestRenderSystemPrompt_TimestampInjected(t *testing.T) {
 
 func TestRenderCapabilitiesBlock_AllRoles(t *testing.T) {
 	granted := []model.GrantedTool{
-		{ServerName: "github", ToolName: "list_repos", Role: model.CapabilityRoleTool},
-		{ServerName: "github", ToolName: "list_issues", Role: model.CapabilityRoleTool},
-		{ServerName: "deploy", ToolName: "run", Role: model.CapabilityRoleTool, Approval: model.ApprovalModeNone},
-		{ServerName: "deploy", ToolName: "rollback", Role: model.CapabilityRoleTool, Approval: model.ApprovalModeRequired},
-		{ServerName: "slack", ToolName: "send_message", Role: model.CapabilityRoleFeedback},
+		{ServerName: "github", ToolName: "list_repos"},
+		{ServerName: "github", ToolName: "list_issues"},
+		{ServerName: "deploy", ToolName: "run", Approval: model.ApprovalModeNone},
+		{ServerName: "deploy", ToolName: "rollback", Approval: model.ApprovalModeRequired},
+		{ServerName: "slack", ToolName: "send_message"},
 	}
 
 	result := renderCapabilitiesBlock(granted)
 
-	// Tools
+	// All tools appear in the ### Tools section.
 	if !strings.Contains(result, "github.list_repos") {
 		t.Error("expected tool github.list_repos")
 	}
@@ -126,9 +126,9 @@ func TestRenderCapabilitiesBlock_AllRoles(t *testing.T) {
 		t.Errorf("deploy.rollback line must have no annotation, got: %q", rollbackLine)
 	}
 
-	// Feedback
+	// Tools formerly tagged feedback now appear in ### Tools section.
 	if !strings.Contains(result, "slack.send_message") {
-		t.Error("expected feedback tool slack.send_message")
+		t.Error("expected slack.send_message listed under ### Tools")
 	}
 }
 
@@ -139,7 +139,7 @@ func TestRenderSystemPrompt_NoApprovalAnnotation(t *testing.T) {
 		},
 	}
 	granted := []model.GrantedTool{
-		{ServerName: "deploy", ToolName: "rollback", Role: model.CapabilityRoleTool, Approval: model.ApprovalModeRequired},
+		{ServerName: "deploy", ToolName: "rollback", Approval: model.ApprovalModeRequired},
 	}
 
 	result := RenderSystemPrompt(p, granted, time.Date(2026, 3, 13, 12, 0, 0, 0, time.UTC))
@@ -167,25 +167,24 @@ func TestRenderSystemPrompt_FeedbackPausesDescription(t *testing.T) {
 }
 
 func TestRenderCapabilitiesBlock_EmptyTools(t *testing.T) {
-	granted := []model.GrantedTool{
-		{ServerName: "slack", ToolName: "send_message", Role: model.CapabilityRoleFeedback},
-	}
-
-	result := renderCapabilitiesBlock(granted)
+	result := renderCapabilitiesBlock(nil)
 
 	if !strings.Contains(result, "### Tools\nNone.") {
 		t.Error("expected 'None.' for empty tools section")
 	}
+	if !strings.Contains(result, "built-in feedback channel") {
+		t.Error("expected built-in feedback channel line even when no tools granted")
+	}
 }
 
-func TestRenderCapabilitiesBlock_NoFeedbackTools(t *testing.T) {
+func TestRenderCapabilitiesBlock_FeedbackChannelAlwaysPresent(t *testing.T) {
 	granted := []model.GrantedTool{
-		{ServerName: "s", ToolName: "t", Role: model.CapabilityRoleTool},
+		{ServerName: "s", ToolName: "t"},
 	}
 
 	result := renderCapabilitiesBlock(granted)
 
 	if !strings.Contains(result, "built-in feedback channel") {
-		t.Error("expected default feedback message when no feedback tools granted")
+		t.Error("expected built-in feedback channel line regardless of granted tools")
 	}
 }

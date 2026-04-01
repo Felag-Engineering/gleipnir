@@ -1,13 +1,10 @@
-import type { CapabilityRole } from '@/components/RoleBadge';
-
 export interface AssignedTool {
   toolId: string;
   serverId: string;
   serverName: string;
   name: string;
   description: string;
-  role: CapabilityRole;
-  approvalRequired: boolean; // only meaningful for tools
+  approvalRequired: boolean;
 }
 
 export interface CapabilitiesFormState {

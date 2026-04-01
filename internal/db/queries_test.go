@@ -436,18 +436,17 @@ func TestMCPToolQueries(t *testing.T) {
 	insertMcpServer(t, s, "srv1")
 
 	tool, err := s.UpsertMCPTool(ctx, UpsertMCPToolParams{
-		ID:             "tool1",
-		ServerID:       "srv1",
-		Name:           "alpha",
-		Description:    "first tool",
-		InputSchema:    "{}",
-		CapabilityRole: "tool",
-		CreatedAt:      now,
+		ID:          "tool1",
+		ServerID:    "srv1",
+		Name:        "alpha",
+		Description: "first tool",
+		InputSchema: "{}",
+		CreatedAt:   now,
 	})
 	if err != nil {
 		t.Fatalf("UpsertMCPTool: %v", err)
 	}
-	if tool.ID != "tool1" || tool.CapabilityRole != "tool" {
+	if tool.ID != "tool1" {
 		t.Errorf("UpsertMCPTool fields mismatch: %+v", tool)
 	}
 
@@ -460,13 +459,12 @@ func TestMCPToolQueries(t *testing.T) {
 	}
 
 	if _, err := s.UpsertMCPTool(ctx, UpsertMCPToolParams{
-		ID:             "tool2",
-		ServerID:       "srv1",
-		Name:           "beta",
-		Description:    "second tool",
-		InputSchema:    "{}",
-		CapabilityRole: "tool",
-		CreatedAt:      now,
+		ID:          "tool2",
+		ServerID:    "srv1",
+		Name:        "beta",
+		Description: "second tool",
+		InputSchema: "{}",
+		CreatedAt:   now,
 	}); err != nil {
 		t.Fatalf("UpsertMCPTool tool2: %v", err)
 	}
@@ -483,36 +481,20 @@ func TestMCPToolQueries(t *testing.T) {
 		t.Errorf("ListMCPToolsByServer order wrong: %v, %v", tools[0].Name, tools[1].Name)
 	}
 
-	if err := s.UpdateMCPToolCapabilityRole(ctx, UpdateMCPToolCapabilityRoleParams{
-		CapabilityRole: "feedback",
-		ID:             "tool1",
-	}); err != nil {
-		t.Fatalf("UpdateMCPToolCapabilityRole: %v", err)
-	}
-
-	got, err = s.GetMCPTool(ctx, "tool1")
-	if err != nil {
-		t.Fatalf("GetMCPTool after update: %v", err)
-	}
-	if got.CapabilityRole != "feedback" {
-		t.Errorf("CapabilityRole after update: got %q, want %q", got.CapabilityRole, "feedback")
-	}
-
 	// Conflict/update path: upsert same server+name — should update, not insert.
 	upserted, err := s.UpsertMCPTool(ctx, UpsertMCPToolParams{
-		ID:             "tool3",
-		ServerID:       "srv1",
-		Name:           "alpha", // same server+name as tool1
-		Description:    "updated desc",
-		InputSchema:    `{"type":"object"}`,
-		CapabilityRole: "tool",
-		CreatedAt:      now,
+		ID:          "tool3",
+		ServerID:    "srv1",
+		Name:        "alpha", // same server+name as tool1
+		Description: "updated desc",
+		InputSchema: `{"type":"object"}`,
+		CreatedAt:   now,
 	})
 	if err != nil {
 		t.Fatalf("UpsertMCPTool conflict path: %v", err)
 	}
 	// RETURNING * must reflect the updated columns, not the attempted insert values.
-	if upserted.Description != "updated desc" || upserted.InputSchema != `{"type":"object"}` || upserted.CapabilityRole != "tool" {
+	if upserted.Description != "updated desc" || upserted.InputSchema != `{"type":"object"}` {
 		t.Errorf("UpsertMCPTool conflict path: returned row wrong: %+v", upserted)
 	}
 

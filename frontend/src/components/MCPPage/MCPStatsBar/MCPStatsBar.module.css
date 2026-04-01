@@ -1,6 +1,6 @@
 .grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr;
   gap: var(--space-3);
 }
 
@@ -25,28 +25,4 @@
   font-weight: var(--weight-light);
   line-height: 1;
   color: var(--text-second);
-}
-
-.sub {
-  font-size: var(--text-xs);
-  color: var(--text-faint);
-  margin-top: var(--space-1);
-}
-
-.blue .value {
-  color: var(--color-blue);
-}
-
-.orange .value {
-  color: var(--color-orange);
-}
-
-.purple .value {
-  color: var(--color-purple);
-}
-
-@media (max-width: 480px) {
-  .grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
 }

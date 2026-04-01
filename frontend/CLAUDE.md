@@ -115,7 +115,7 @@ GET    /api/v1/runs/:id/steps           POST   /api/v1/runs/:id/cancel
 GET    /api/v1/mcp/servers              POST   /api/v1/mcp/servers
 DELETE /api/v1/mcp/servers/:id
 POST   /api/v1/mcp/servers/:id/discover
-GET    /api/v1/mcp/servers/:id/tools    PATCH  /api/v1/mcp/tools/:id
+GET    /api/v1/mcp/servers/:id/tools
 
 GET    /api/v1/approvals                (v0.2)
 POST   /api/v1/approvals/:id/approve    (v0.2)
@@ -153,6 +153,6 @@ Types in `types.ts`, fixtures in `fixtures.ts`, helpers in `styles.ts` (`fmtDur`
 2. **Dashboard** — stats bar, policy list with folder grouping, skeleton screens, empty states
 3. **Policy editor** — CodeMirror 6 YAML editor, form mode, tool picker, bidirectional sync
 4. **Run detail** — reasoning timeline, filter chips, step pagination, live SSE updates
-5. **MCP management** — server list, add modal, tool list, capability role dropdown, discovery
+5. **MCP management** — server list, add modal, tool list, discovery
 
 See `docs/Frontend_Roadmap.md` for full details on each phase.

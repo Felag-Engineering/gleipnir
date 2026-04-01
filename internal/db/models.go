@@ -39,13 +39,12 @@ type McpServer struct {
 }
 
 type McpTool struct {
-	ID             string `json:"id"`
-	ServerID       string `json:"server_id"`
-	Name           string `json:"name"`
-	Description    string `json:"description"`
-	InputSchema    string `json:"input_schema"`
-	CapabilityRole string `json:"capability_role"`
-	CreatedAt      string `json:"created_at"`
+	ID          string `json:"id"`
+	ServerID    string `json:"server_id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	InputSchema string `json:"input_schema"`
+	CreatedAt   string `json:"created_at"`
 }
 
 type Policy struct {

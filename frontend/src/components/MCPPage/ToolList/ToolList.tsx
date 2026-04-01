@@ -7,11 +7,9 @@ import styles from './ToolList.module.css'
 interface Props {
   tools: ApiMcpTool[] | undefined
   isLoading: boolean
-  onRoleChange: (toolId: string, serverId: string, role: 'tool' | 'feedback') => void
-  updatingToolId: string | null
 }
 
-export function ToolList({ tools, isLoading, onRoleChange, updatingToolId }: Props) {
+export function ToolList({ tools, isLoading }: Props) {
   const [expanded, setExpanded] = useState(false)
 
   const toolCount = tools?.length ?? 0
@@ -42,8 +40,6 @@ export function ToolList({ tools, isLoading, onRoleChange, updatingToolId }: Pro
               <ToolRow
                 key={tool.id}
                 tool={tool}
-                onRoleChange={(toolId, role) => onRoleChange(toolId, tool.server_id, role)}
-                isUpdating={updatingToolId === tool.id}
               />
             ))
           ) : (

@@ -126,7 +126,6 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			GrantedTool: model.GrantedTool{
 				ServerName: serverName,
 				ToolName:   toolName,
-				Role:       model.CapabilityRole(tool.CapabilityRole),
 				Approval:   t.Approval,
 				Timeout:    timeout,
 				OnTimeout:  t.OnTimeout,
@@ -142,9 +141,8 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 }
 
 // RegisterServer stores a new MCP server record, discovers its tools via the
-// MCP client, and upserts all discovered tools into mcp_tools with
-// capability_role defaulting to 'tool'. last_discovered_at is intentionally
-// left NULL here — it is set only by RefreshTools.
+// MCP client, and upserts all discovered tools into mcp_tools.
+// last_discovered_at is intentionally left NULL here — it is set only by RefreshTools.
 func (r *Registry) RegisterServer(ctx context.Context, name, url string) error {
 	if err := ValidateServerURL(ctx, url); err != nil {
 		return fmt.Errorf("invalid server url: %w", err)
@@ -169,13 +167,12 @@ func (r *Registry) RegisterServer(ctx context.Context, name, url string) error {
 
 	for _, t := range tools {
 		if _, err := r.queries.UpsertMCPTool(ctx, db.UpsertMCPToolParams{
-			ID:             model.NewULID(),
-			ServerID:       serverID,
-			Name:           t.Name,
-			Description:    t.Description,
-			InputSchema:    string(t.InputSchema),
-			CapabilityRole: string(model.CapabilityRoleTool),
-			CreatedAt:      now,
+			ID:          model.NewULID(),
+			ServerID:    serverID,
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: string(t.InputSchema),
+			CreatedAt:   now,
 		}); err != nil {
 			return fmt.Errorf("upsert tool %q: %w", t.Name, err)
 		}
@@ -185,15 +182,11 @@ func (r *Registry) RegisterServer(ctx context.Context, name, url string) error {
 }
 
 // RefreshTools re-discovers tools for a registered server, computes the diff
-// against the current DB state, upserts all fresh tools (preserving any
-// operator-assigned capability_role for existing tools), deletes tools that
+// against the current DB state, upserts all fresh tools, deletes tools that
 // have disappeared, and updates last_discovered_at.
-//
-// Selective per-name deletes are used rather than bulk DeleteMCPToolsByServer
-// so that operator-assigned capability roles on unchanged tools are preserved.
 func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff, error) {
 	// Fetch current tool state from DB so we can compute the diff and
-	// preserve existing capability_role values for unchanged tools.
+	// preserve tool IDs for existing tools.
 	oldTools, err := r.queries.ListMCPToolsByServer(ctx, serverID)
 	if err != nil {
 		return ToolDiff{}, fmt.Errorf("list existing tools: %w", err)
@@ -232,8 +225,6 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 			diff.Removed = append(diff.Removed, name)
 			continue
 		}
-		// Modified means description or input_schema changed — capability_role
-		// changes are not modifications in ToolDiff (they are operator-controlled).
 		if old.Description != fresh.Description || old.InputSchema != string(fresh.InputSchema) {
 			diff.Modified = append(diff.Modified, name)
 		}
@@ -245,37 +236,27 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
-	// Upsert all fresh tools. Preserve the existing capability_role for tools
-	// already known to the DB so operator overrides survive re-discovery;
-	// default to 'tool' for newly discovered tools.
+	// Upsert all fresh tools. Preserve the existing ID for tools already in the
+	// DB so foreign key references (e.g. in audit steps) remain stable.
 	for _, t := range freshTools {
-		role := string(model.CapabilityRoleTool)
-		if old, exists := oldByName[t.Name]; exists {
-			role = old.CapabilityRole
-		}
-
 		toolID := model.NewULID()
 		if old, exists := oldByName[t.Name]; exists {
 			toolID = old.ID
 		}
 
 		if _, err := r.queries.UpsertMCPTool(ctx, db.UpsertMCPToolParams{
-			ID:             toolID,
-			ServerID:       serverID,
-			Name:           t.Name,
-			Description:    t.Description,
-			InputSchema:    string(t.InputSchema),
-			CapabilityRole: role,
-			CreatedAt:      now,
+			ID:          toolID,
+			ServerID:    serverID,
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: string(t.InputSchema),
+			CreatedAt:   now,
 		}); err != nil {
 			return ToolDiff{}, fmt.Errorf("upsert tool %q: %w", t.Name, err)
 		}
 	}
 
-	// Delete tools that are no longer present on the server. Per-name deletes
-	// (rather than bulk DeleteMCPToolsByServer) are used here so that any
-	// operator-assigned capability roles on still-present tools survive. The
-	// upsert above already handles those — only missing ones are deleted.
+	// Delete tools that are no longer present on the server.
 	for _, name := range diff.Removed {
 		if err := r.queries.DeleteMCPToolByServerAndName(ctx, db.DeleteMCPToolByServerAndNameParams{
 			ServerID: serverID,

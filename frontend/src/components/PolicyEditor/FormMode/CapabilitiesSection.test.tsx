@@ -35,7 +35,6 @@ const FIXTURE_TOOLS_SRV1: ApiMcpTool[] = [
     server_id: 'srv-1',
     name: 'read_file',
     description: 'Read the contents of a file at the given path',
-    capability_role: 'tool',
     input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
   },
   {
@@ -43,7 +42,6 @@ const FIXTURE_TOOLS_SRV1: ApiMcpTool[] = [
     server_id: 'srv-1',
     name: 'write_file',
     description: 'Write content to a file at the given path',
-    capability_role: 'tool',
     input_schema: {
       type: 'object',
       properties: { path: { type: 'string' }, content: { type: 'string' } },
@@ -58,7 +56,6 @@ const FIXTURE_TOOLS_SRV2: ApiMcpTool[] = [
     server_id: 'srv-2',
     name: 'create_issue',
     description: 'Create a new GitHub issue in a repository',
-    capability_role: 'tool',
     input_schema: {
       type: 'object',
       properties: { repo: { type: 'string' }, title: { type: 'string' } },
@@ -151,7 +148,6 @@ describe('CapabilitiesSection — tool picker remove', () => {
         serverName: 'Filesystem Tools',
         name: 'read_file',
         description: 'Read the contents of a file at the given path',
-        role: 'tool',
         approvalRequired: false,
       },
     ]
@@ -252,7 +248,6 @@ describe('CapabilitiesSection — approval toggle', () => {
         serverName: 'Filesystem Tools',
         name: 'write_file',
         description: 'Write content to a file at the given path',
-        role: 'tool',
         approvalRequired: false,
       },
     ]
@@ -283,7 +278,6 @@ describe('CapabilitiesSection — approval toggle', () => {
         serverName: 'Filesystem Tools',
         name: 'write_file',
         description: 'Write content to a file at the given path',
-        role: 'tool',
         approvalRequired: true,
       },
     ]

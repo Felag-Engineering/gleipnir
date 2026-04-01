@@ -19,13 +19,13 @@ import (
 type RunStatus string
 
 const (
-	RunStatusPending             RunStatus = "pending"
-	RunStatusRunning             RunStatus = "running"
-	RunStatusWaitingForApproval  RunStatus = "waiting_for_approval"
-	RunStatusWaitingForFeedback  RunStatus = "waiting_for_feedback"
-	RunStatusComplete            RunStatus = "complete"
-	RunStatusFailed              RunStatus = "failed"
-	RunStatusInterrupted         RunStatus = "interrupted"
+	RunStatusPending            RunStatus = "pending"
+	RunStatusRunning            RunStatus = "running"
+	RunStatusWaitingForApproval RunStatus = "waiting_for_approval"
+	RunStatusWaitingForFeedback RunStatus = "waiting_for_feedback"
+	RunStatusComplete           RunStatus = "complete"
+	RunStatusFailed             RunStatus = "failed"
+	RunStatusInterrupted        RunStatus = "interrupted"
 )
 
 // TriggerType identifies how a policy run is initiated.
@@ -35,14 +35,6 @@ const (
 	TriggerTypeWebhook   TriggerType = "webhook"
 	TriggerTypeManual    TriggerType = "manual"
 	TriggerTypeScheduled TriggerType = "scheduled"
-)
-
-// CapabilityRole classifies a tool's access level within a run.
-type CapabilityRole string
-
-const (
-	CapabilityRoleTool     CapabilityRole = "tool"
-	CapabilityRoleFeedback CapabilityRole = "feedback"
 )
 
 // StepType identifies the kind of event recorded in a run's reasoning trace.
@@ -110,15 +102,6 @@ func (t TriggerType) String() string { return string(t) }
 func (t TriggerType) Valid() bool {
 	switch t {
 	case TriggerTypeWebhook, TriggerTypeManual, TriggerTypeScheduled:
-		return true
-	}
-	return false
-}
-
-func (r CapabilityRole) String() string { return string(r) }
-func (r CapabilityRole) Valid() bool {
-	switch r {
-	case CapabilityRoleTool, CapabilityRoleFeedback:
 		return true
 	}
 	return false
@@ -296,12 +279,10 @@ type RunLimits struct {
 	MaxToolCallsPerRun int
 }
 
-// GrantedTool is a resolved tool entry used by the agent runner. It pairs the
-// tool's MCP identity with its capability classification for this run.
+// GrantedTool is a resolved tool entry used by the agent runner.
 type GrantedTool struct {
 	ServerName string
 	ToolName   string
-	Role       CapabilityRole
 	Approval   ApprovalMode
 	Timeout    time.Duration // zero means no timeout
 	OnTimeout  OnTimeout
@@ -319,13 +300,12 @@ type MCPServer struct {
 
 // MCPTool is a tool discovered from an MCP server.
 type MCPTool struct {
-	ID             string
-	ServerID       string
-	Name           string
-	Description    string
-	InputSchema    string // JSON blob
-	CapabilityRole CapabilityRole
-	CreatedAt      time.Time
+	ID          string
+	ServerID    string
+	Name        string
+	Description string
+	InputSchema string // JSON blob
+	CreatedAt   time.Time
 }
 
 // Policy is the domain entity for a stored policy record.

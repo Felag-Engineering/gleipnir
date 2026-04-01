@@ -317,10 +317,8 @@ _Labels: `backend`, `data-model` — No upstream dependencies._
 
 #### [BE] Core schema: mcp_servers, mcp_tools
 Create tables per `0001_initial_schema.sql`. ULID primary keys. ISO 8601 UTC timestamps throughout.
-`mcp_tools.capability_role` enforced with a CHECK constraint: `sensor | actuator | feedback`.
 Index on `mcp_tools.server_id`.
-One capability role per tool (denormalized — the separate `capability_tags` join table design was
-rejected; a join bought nothing given the 1:1 relationship).
+Note: `capability_role` column was removed in v1.0 (ADR-031). All discovered tools are tools; feedback is a runtime primitive, not an MCP concept.
 _Labels: `backend`, `data-model` — Depends on: SQLite init._
 
 #### [BE] Core schema: policies
@@ -538,19 +536,8 @@ _Labels: `backend`, `mcp` — Depends on: MCP client tool discovery, EPIC-001 da
 
 #### [BE] Tool discovery: fetch and store tool list
 On server registration and on manual re-discovery: call `tools/list`, upsert tool records into
-`mcp_tools`. New tools: inserted with `capability_role` defaulting to `actuator` (safest default —
-the operator explicitly assigns sensor/feedback roles). Removed tools: deleted. Modified tools
-(schema change): updated.
+`mcp_tools`. New tools: inserted without any role — all discovered tools are tools. Removed tools: deleted. Modified tools (schema change): updated.
 _Labels: `backend`, `mcp` — Depends on: MCP client connect, server registration API._
-
-#### [BE] Capability role assignment API
-```
-PATCH  /api/v1/mcp-tools/:id      — update capability_role: sensor | actuator | feedback
-GET    /api/v1/mcp-tools          — list tools for a server with their current capability_role
-```
-Role assignment is manual — the operator decides which tools are sensors, actuators, or feedback
-channels. Gleipnir cannot infer this from tool names or descriptions reliably.
-_Labels: `backend`, `mcp` — Depends on: tool discovery._
 
 #### [BE] Manual re-discovery endpoint
 ```

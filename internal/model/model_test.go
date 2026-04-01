@@ -41,20 +41,6 @@ func TestEnumValid(t *testing.T) {
 		}
 	})
 
-	t.Run("CapabilityRole", func(t *testing.T) {
-		valid := []CapabilityRole{CapabilityRoleTool, CapabilityRoleFeedback}
-		for _, v := range valid {
-			if !v.Valid() {
-				t.Errorf("expected %q to be valid", v)
-			}
-		}
-		for _, bad := range []CapabilityRole{"", "invalid"} {
-			if bad.Valid() {
-				t.Errorf("expected %q to be invalid", bad)
-			}
-		}
-	})
-
 	t.Run("StepType", func(t *testing.T) {
 		valid := []StepType{
 			StepTypeThought, StepTypeToolCall, StepTypeToolResult,

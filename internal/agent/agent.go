@@ -634,21 +634,5 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		return "", false, fmt.Errorf("writing tool_result step: %w", err)
 	}
 
-	// Feedback tools block execution after the MCP call completes. The MCP call
-	// sends the notification (e.g. Slack message); the run then pauses until the
-	// operator responds through the API. The operator's response becomes the tool
-	// result returned to the LLM in place of the MCP output.
-	if entry.tool.Role == model.CapabilityRoleFeedback {
-		inputJSON, err := json.Marshal(input)
-		if err != nil {
-			return "", false, fmt.Errorf("marshalling feedback tool input: %w", err)
-		}
-		responseText, err := a.waitForFeedback(ctx, runID, toolName, string(inputJSON), outputStr)
-		if err != nil {
-			return "", false, err
-		}
-		return responseText, false, nil
-	}
-
 	return outputStr, result.IsError, nil
 }

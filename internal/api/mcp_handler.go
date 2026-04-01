@@ -224,21 +224,19 @@ func (h *MCPHandler) Discover(w http.ResponseWriter, r *http.Request) {
 }
 
 type mcpToolResponse struct {
-	ID             string          `json:"id"`
-	ServerID       string          `json:"server_id"`
-	Name           string          `json:"name"`
-	Description    string          `json:"description"`
-	CapabilityRole string          `json:"capability_role"`
-	InputSchema    json.RawMessage `json:"input_schema"`
+	ID          string          `json:"id"`
+	ServerID    string          `json:"server_id"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"input_schema"`
 }
 
 func toolToResponse(t db.McpTool) mcpToolResponse {
 	return mcpToolResponse{
-		ID:             t.ID,
-		ServerID:       t.ServerID,
-		Name:           t.Name,
-		Description:    t.Description,
-		CapabilityRole: t.CapabilityRole,
+		ID:          t.ID,
+		ServerID:    t.ServerID,
+		Name:        t.Name,
+		Description: t.Description,
 		// InputSchema is stored as a JSON string in the DB; cast directly to
 		// json.RawMessage to avoid double-encoding it as a JSON string in the response.
 		InputSchema: json.RawMessage(t.InputSchema),
@@ -273,50 +271,6 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, items)
 }
 
-// UpdateToolRole handles PATCH /api/v1/mcp/tools/{id}.
-func (h *MCPHandler) UpdateToolRole(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	ctx := r.Context()
-
-	var body struct {
-		CapabilityRole string `json:"capability_role"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
-		return
-	}
-
-	if !model.CapabilityRole(body.CapabilityRole).Valid() {
-		WriteError(w, http.StatusBadRequest, "invalid capability_role, must be one of: tool, feedback", "")
-		return
-	}
-
-	if _, err := h.store.GetMCPTool(ctx, id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			WriteError(w, http.StatusNotFound, "MCP tool not found", "")
-			return
-		}
-		WriteError(w, http.StatusInternalServerError, "failed to get MCP tool", err.Error())
-		return
-	}
-
-	if err := h.store.UpdateMCPToolCapabilityRole(ctx, db.UpdateMCPToolCapabilityRoleParams{
-		CapabilityRole: body.CapabilityRole,
-		ID:             id,
-	}); err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to update capability role", err.Error())
-		return
-	}
-
-	updated, err := h.store.GetMCPTool(ctx, id)
-	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to fetch updated MCP tool", err.Error())
-		return
-	}
-
-	WriteJSON(w, http.StatusOK, toolToResponse(updated))
-}
-
 // policyReferencesServer returns true if the raw policy YAML contains any tool
 // reference starting with the given server name prefix (e.g. "myserver.").
 // Parse failures are treated as no match — a corrupt policy YAML cannot block deletion.
@@ -339,6 +293,9 @@ func policyReferencesServer(rawYAML, serverPrefix string) bool {
 			return true
 		}
 	}
+	// Keep feedback loop for backward compat — existing policies may reference
+	// servers via capabilities.feedback entries until those policies are
+	// re-saved without feedback capabilities.
 	for _, f := range v.Capabilities.Feedback {
 		if strings.HasPrefix(f.Tool, serverPrefix) {
 			return true

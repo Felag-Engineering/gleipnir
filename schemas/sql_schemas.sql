@@ -40,10 +40,6 @@ CREATE TABLE mcp_servers (
 
 -- ---------------------------------------------------------------------------
 -- MCP tools
---
--- capability_role is denormalized onto the tool row. Each tool has exactly
--- one role. The separate capability_tags table mentioned in early design docs
--- was collapsed here — a join table bought nothing given the 1:1 relationship.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE mcp_tools (
@@ -52,7 +48,6 @@ CREATE TABLE mcp_tools (
     name            TEXT    NOT NULL,
     description     TEXT    NOT NULL,
     input_schema    TEXT    NOT NULL,     -- JSON blob (MCP tool input schema)
-    capability_role TEXT    NOT NULL CHECK(capability_role IN ('tool', 'feedback')),
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     UNIQUE(server_id, name)
 );

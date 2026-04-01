@@ -65,40 +65,34 @@ func TestRegisterServer_HappyPath(t *testing.T) {
 		t.Fatalf("query server: %v", err)
 	}
 
-	// Verify exactly 2 tool rows with capability_role='tool'.
+	// Verify exactly 2 tool rows.
 	rows, err := rawDB.QueryContext(context.Background(),
-		`SELECT name, capability_role FROM mcp_tools WHERE server_id = ? ORDER BY name`, serverID)
+		`SELECT name FROM mcp_tools WHERE server_id = ? ORDER BY name`, serverID)
 	if err != nil {
 		t.Fatalf("query tools: %v", err)
 	}
 	defer rows.Close()
 
-	type toolRow struct{ name, role string }
-	var got []toolRow
+	var gotNames []string
 	for rows.Next() {
-		var tr toolRow
-		if err := rows.Scan(&tr.name, &tr.role); err != nil {
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			t.Fatalf("scan tool row: %v", err)
 		}
-		got = append(got, tr)
+		gotNames = append(gotNames, name)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows err: %v", err)
 	}
 
-	if len(got) != 2 {
-		t.Fatalf("len(tools) = %d, want 2", len(got))
+	if len(gotNames) != 2 {
+		t.Fatalf("len(tools) = %d, want 2", len(gotNames))
 	}
-	for _, tr := range got {
-		if tr.role != "tool" {
-			t.Errorf("tool %q: capability_role = %q, want %q", tr.name, tr.role, "tool")
-		}
+	if gotNames[0] != "tool-a" {
+		t.Errorf("tools[0].name = %q, want %q", gotNames[0], "tool-a")
 	}
-	if got[0].name != "tool-a" {
-		t.Errorf("tools[0].name = %q, want %q", got[0].name, "tool-a")
-	}
-	if got[1].name != "tool-b" {
-		t.Errorf("tools[1].name = %q, want %q", got[1].name, "tool-b")
+	if gotNames[1] != "tool-b" {
+		t.Errorf("tools[1].name = %q, want %q", gotNames[1], "tool-b")
 	}
 
 	// last_discovered_at must be NULL after RegisterServer — only RefreshTools sets it.
@@ -407,53 +401,6 @@ func TestRefreshTools_MCPServerUnreachable(t *testing.T) {
 	}
 	if countAfter != countBefore {
 		t.Errorf("tool count changed from %d to %d after failed refresh", countBefore, countAfter)
-	}
-}
-
-func TestRefreshTools_CapabilityRolePreserved(t *testing.T) {
-	reg, store := newTestRegistry(t)
-	rawDB := store.DB()
-
-	tools := []map[string]any{
-		{"name": "tool-a", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
-	}
-	srv := makeMCPServer(t, tools)
-
-	if err := reg.RegisterServer(context.Background(), "test-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
-	}
-
-	var serverID string
-	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
-		t.Fatalf("query server id: %v", err)
-	}
-
-	// Simulate operator overriding the capability_role to 'feedback'.
-	if _, err := rawDB.Exec(
-		`UPDATE mcp_tools SET capability_role = 'feedback' WHERE server_id = ? AND name = 'tool-a'`,
-		serverID,
-	); err != nil {
-		t.Fatalf("update capability_role: %v", err)
-	}
-
-	// Refresh with the same tools — the role must survive.
-	diff, err := reg.RefreshTools(context.Background(), serverID)
-	if err != nil {
-		t.Fatalf("RefreshTools: %v", err)
-	}
-
-	if len(diff.Added) != 0 || len(diff.Removed) != 0 || len(diff.Modified) != 0 {
-		t.Errorf("expected empty diff, got %+v", diff)
-	}
-
-	var role string
-	if err := rawDB.QueryRow(
-		`SELECT capability_role FROM mcp_tools WHERE server_id = ? AND name = 'tool-a'`, serverID,
-	).Scan(&role); err != nil {
-		t.Fatalf("query role: %v", err)
-	}
-	if role != "feedback" {
-		t.Errorf("capability_role = %q, want %q (operator override should be preserved)", role, "feedback")
 	}
 }
 

@@ -5,7 +5,6 @@ import { queryKeys } from '@/hooks/queryKeys'
 import { useAddMcpServer } from '@/hooks/useAddMcpServer'
 import { useDeleteMcpServer } from '@/hooks/useDeleteMcpServer'
 import { useDiscoverMcpServer } from '@/hooks/useDiscoverMcpServer'
-import { useUpdateMcpTool } from '@/hooks/useUpdateMcpTool'
 import { apiFetch } from '@/api/fetch'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
@@ -13,7 +12,6 @@ import type { ApiError } from '@/api/fetch'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { MCPStatsBar } from '@/components/MCPPage/MCPStatsBar'
-import { UnassignedBanner } from '@/components/MCPPage/UnassignedBanner'
 import { ServerCard } from '@/components/MCPPage/ServerCard'
 import { AddServerModal } from '@/components/MCPPage/AddServerModal'
 import { DeleteServerModal } from '@/components/MCPPage/DeleteServerModal'
@@ -31,12 +29,11 @@ export default function MCPPage() {
   const [showAddModal, setShowAddModal] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
   const [addDiscoveryWarning, setAddDiscoveryWarning] = useState<string | null>(null)
-  const [updatingToolId, setUpdatingToolId] = useState<string | null>(null)
   const [discoveringServerId, setDiscoveringServerId] = useState<string | null>(null)
 
   const { data: servers, status: serversStatus } = useMcpServers()
 
-  // Eagerly fetch all server tool lists so stats are accurate.
+  // Eagerly fetch all server tool lists so the total count is accurate.
   const toolResults = useQueries({
     queries: (servers ?? []).map((server) => ({
       queryKey: queryKeys.servers.tools(server.id),
@@ -49,7 +46,6 @@ export default function MCPPage() {
   const addMutation = useAddMcpServer()
   const deleteMutation = useDeleteMcpServer()
   const discoverMutation = useDiscoverMcpServer()
-  const updateToolMutation = useUpdateMcpTool()
 
   // Build per-server tool map from eager queries
   const toolsByServer = new Map<string, ApiMcpTool[]>()
@@ -60,19 +56,11 @@ export default function MCPPage() {
     }
   })
 
-  // Compute stats from all loaded tools
   const allTools = Array.from(toolsByServer.values()).flat()
   // Show cached tool data immediately on re-navigation instead of showing
   // dashes while a background refetch is in flight. Only show loading state
   // when there is genuinely no data yet (first load).
   const toolsFullyLoaded = toolResults.length === 0 || toolResults.every((r) => r.data !== undefined)
-  const toolCount = allTools.filter((t) => t.capability_role === 'tool').length
-  const feedback = allTools.filter((t) => t.capability_role === 'feedback').length
-
-  // Unassigned: tools that have no valid role (defensive, DB constraint prevents this normally)
-  const unassignedCount = allTools.filter(
-    (t) => !['tool', 'feedback'].includes(t.capability_role),
-  ).length
 
   function handleAddSubmit(name: string, url: string) {
     setAddDiscoveryWarning(null)
@@ -123,14 +111,6 @@ export default function MCPPage() {
     })
   }
 
-  function handleRoleChange(toolId: string, serverId: string, role: 'tool' | 'feedback') {
-    setUpdatingToolId(toolId)
-    updateToolMutation.mutate(
-      { toolId, serverId, capability_role: role },
-      { onSettled: () => setUpdatingToolId(null) },
-    )
-  }
-
   return (
     <div className={styles.page}>
       <PageHeader title="Tools">
@@ -149,12 +129,8 @@ export default function MCPPage() {
       <ErrorBoundary>
         <MCPStatsBar
           totalTools={allTools.length}
-          tools={toolCount}
-          feedback={feedback}
           isLoading={!toolsFullyLoaded}
         />
-
-        {unassignedCount > 0 && <UnassignedBanner count={unassignedCount} />}
 
         <QueryBoundary
           status={serversStatus}
@@ -180,8 +156,6 @@ export default function MCPPage() {
                   isDiscovering={discoveringServerId === server.id}
                   onDiscover={handleDiscover}
                   onDelete={handleDeleteOpen}
-                  onRoleChange={handleRoleChange}
-                  updatingToolId={updatingToolId}
                 />
               )
             })}

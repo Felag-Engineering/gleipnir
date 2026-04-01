@@ -413,19 +413,6 @@ func TestSchemaConstraints(t *testing.T) {
 					return err
 				},
 			},
-			{
-				name: "mcp_tools.capability_role invalid",
-				setup: func(t *testing.T, s *Store) {
-					insertMcpServer(t, s, "srv1")
-				},
-				exec: func(s *Store) error {
-					_, err := s.DB().Exec(
-						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, capability_role, created_at)
-						 VALUES ('t1', 'srv1', 'tool', 'desc', '{}', 'invalid_role', '2024-01-01T00:00:00Z')`,
-					)
-					return err
-				},
-			},
 		}
 
 		for _, tc := range cases {
@@ -450,8 +437,8 @@ func TestSchemaConstraints(t *testing.T) {
 				name: "mcp_tools.server_id nonexistent",
 				exec: func(s *Store) error {
 					_, err := s.DB().Exec(
-						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, capability_role, created_at)
-						 VALUES ('t1', 'nonexistent', 'tool', 'desc', '{}', 'tool', '2024-01-01T00:00:00Z')`,
+						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, created_at)
+						 VALUES ('t1', 'nonexistent', 'tool', 'desc', '{}', '2024-01-01T00:00:00Z')`,
 					)
 					return err
 				},
@@ -546,15 +533,15 @@ func TestSchemaConstraints(t *testing.T) {
 				},
 				first: func(s *Store) error {
 					_, err := s.DB().Exec(
-						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, capability_role, created_at)
-						 VALUES ('t1', 'srv1', 'tool', 'desc', '{}', 'tool', '2024-01-01T00:00:00Z')`,
+						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, created_at)
+						 VALUES ('t1', 'srv1', 'tool', 'desc', '{}', '2024-01-01T00:00:00Z')`,
 					)
 					return err
 				},
 				second: func(s *Store) error {
 					_, err := s.DB().Exec(
-						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, capability_role, created_at)
-						 VALUES ('t2', 'srv1', 'tool', 'desc', '{}', 'tool', '2024-01-01T00:00:00Z')`,
+						`INSERT INTO mcp_tools(id, server_id, name, description, input_schema, created_at)
+						 VALUES ('t2', 'srv1', 'tool', 'desc', '{}', '2024-01-01T00:00:00Z')`,
 					)
 					return err
 				},

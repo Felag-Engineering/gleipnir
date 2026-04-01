@@ -47,9 +47,6 @@ func TestResolveForPolicy_AllToolsFound(t *testing.T) {
 	}
 
 	tool0 := result[0]
-	if tool0.Role != model.CapabilityRoleTool {
-		t.Errorf("result[0].Role = %q, want %q", tool0.Role, model.CapabilityRoleTool)
-	}
 	if tool0.ServerName != "my-server" {
 		t.Errorf("result[0].ServerName = %q, want %q", tool0.ServerName, "my-server")
 	}
@@ -67,9 +64,6 @@ func TestResolveForPolicy_AllToolsFound(t *testing.T) {
 	}
 
 	tool1 := result[1]
-	if tool1.Role != model.CapabilityRoleTool {
-		t.Errorf("result[1].Role = %q, want %q", tool1.Role, model.CapabilityRoleTool)
-	}
 	if tool1.Approval != model.ApprovalModeRequired {
 		t.Errorf("result[1].Approval = %q, want %q", tool1.Approval, model.ApprovalModeRequired)
 	}
@@ -272,13 +266,14 @@ func TestResolveForPolicy_ToolsOrdered(t *testing.T) {
 	if len(result) != 3 {
 		t.Fatalf("len(result) = %d, want 3", len(result))
 	}
-	if result[0].Role != model.CapabilityRoleTool {
-		t.Errorf("result[0].Role = %q, want tool", result[0].Role)
+	// Verify results are returned in policy order.
+	if result[0].ToolName != "tool_a" {
+		t.Errorf("result[0].ToolName = %q, want tool_a", result[0].ToolName)
 	}
-	if result[1].Role != model.CapabilityRoleTool {
-		t.Errorf("result[1].Role = %q, want tool", result[1].Role)
+	if result[1].ToolName != "tool_b" {
+		t.Errorf("result[1].ToolName = %q, want tool_b", result[1].ToolName)
 	}
-	if result[2].Role != model.CapabilityRoleTool {
-		t.Errorf("result[2].Role = %q, want tool", result[2].Role)
+	if result[2].ToolName != "tool_c" {
+		t.Errorf("result[2].ToolName = %q, want tool_c", result[2].ToolName)
 	}
 }

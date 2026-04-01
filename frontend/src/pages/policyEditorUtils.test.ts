@@ -102,7 +102,6 @@ capabilities:
     expect(tool.serverId).toBe('myserver')
     expect(tool.serverName).toBe('myserver')
     expect(tool.name).toBe('read_file')
-    expect(tool.role).toBe('tool')
     expect(tool.approvalRequired).toBe(false)
   })
 
@@ -116,7 +115,6 @@ capabilities:
     const state = yamlToFormState(yaml)
     expect(state!.capabilities.tools).toHaveLength(1)
     const tool = state!.capabilities.tools[0]
-    expect(tool.role).toBe('tool')
     expect(tool.approvalRequired).toBe(true)
   })
 
@@ -380,7 +378,6 @@ agent:
     first!.capabilities.tools.forEach((t, i) => {
       expect(second!.capabilities.tools[i].serverName).toBe(t.serverName)
       expect(second!.capabilities.tools[i].name).toBe(t.name)
-      expect(second!.capabilities.tools[i].role).toBe(t.role)
       expect(second!.capabilities.tools[i].approvalRequired).toBe(t.approvalRequired)
     })
   })

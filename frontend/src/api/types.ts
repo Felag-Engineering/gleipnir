@@ -106,6 +106,5 @@ export interface ApiMcpTool {
   server_id: string
   name: string
   description: string
-  capability_role: 'tool' | 'feedback'
   input_schema: Record<string, unknown>
 }

@@ -33,7 +33,7 @@ func (q *Queries) DeleteMCPToolsByServer(ctx context.Context, serverID string) e
 }
 
 const getMCPTool = `-- name: GetMCPTool :one
-SELECT id, server_id, name, description, input_schema, capability_role, created_at FROM mcp_tools WHERE id = ?1
+SELECT id, server_id, name, description, input_schema, created_at FROM mcp_tools WHERE id = ?1
 `
 
 func (q *Queries) GetMCPTool(ctx context.Context, id string) (McpTool, error) {
@@ -45,14 +45,13 @@ func (q *Queries) GetMCPTool(ctx context.Context, id string) (McpTool, error) {
 		&i.Name,
 		&i.Description,
 		&i.InputSchema,
-		&i.CapabilityRole,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getMCPToolByServerAndName = `-- name: GetMCPToolByServerAndName :one
-SELECT t.id, t.server_id, t.name, t.description, t.input_schema, t.capability_role, t.created_at
+SELECT t.id, t.server_id, t.name, t.description, t.input_schema, t.created_at
 FROM mcp_tools t
 JOIN mcp_servers s ON t.server_id = s.id
 WHERE s.name = ?1 AND t.name = ?2
@@ -72,14 +71,13 @@ func (q *Queries) GetMCPToolByServerAndName(ctx context.Context, arg GetMCPToolB
 		&i.Name,
 		&i.Description,
 		&i.InputSchema,
-		&i.CapabilityRole,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const listMCPToolsByServer = `-- name: ListMCPToolsByServer :many
-SELECT id, server_id, name, description, input_schema, capability_role, created_at FROM mcp_tools WHERE server_id = ?1 ORDER BY name ASC
+SELECT id, server_id, name, description, input_schema, created_at FROM mcp_tools WHERE server_id = ?1 ORDER BY name ASC
 `
 
 func (q *Queries) ListMCPToolsByServer(ctx context.Context, serverID string) ([]McpTool, error) {
@@ -97,7 +95,6 @@ func (q *Queries) ListMCPToolsByServer(ctx context.Context, serverID string) ([]
 			&i.Name,
 			&i.Description,
 			&i.InputSchema,
-			&i.CapabilityRole,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -113,38 +110,22 @@ func (q *Queries) ListMCPToolsByServer(ctx context.Context, serverID string) ([]
 	return items, nil
 }
 
-const updateMCPToolCapabilityRole = `-- name: UpdateMCPToolCapabilityRole :exec
-UPDATE mcp_tools SET capability_role = ?1 WHERE id = ?2
-`
-
-type UpdateMCPToolCapabilityRoleParams struct {
-	CapabilityRole string `json:"capability_role"`
-	ID             string `json:"id"`
-}
-
-func (q *Queries) UpdateMCPToolCapabilityRole(ctx context.Context, arg UpdateMCPToolCapabilityRoleParams) error {
-	_, err := q.db.ExecContext(ctx, updateMCPToolCapabilityRole, arg.CapabilityRole, arg.ID)
-	return err
-}
-
 const upsertMCPTool = `-- name: UpsertMCPTool :one
-INSERT INTO mcp_tools (id, server_id, name, description, input_schema, capability_role, created_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+INSERT INTO mcp_tools (id, server_id, name, description, input_schema, created_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 ON CONFLICT (server_id, name) DO UPDATE SET
-    description     = excluded.description,
-    input_schema    = excluded.input_schema,
-    capability_role = excluded.capability_role
-RETURNING id, server_id, name, description, input_schema, capability_role, created_at
+    description  = excluded.description,
+    input_schema = excluded.input_schema
+RETURNING id, server_id, name, description, input_schema, created_at
 `
 
 type UpsertMCPToolParams struct {
-	ID             string `json:"id"`
-	ServerID       string `json:"server_id"`
-	Name           string `json:"name"`
-	Description    string `json:"description"`
-	InputSchema    string `json:"input_schema"`
-	CapabilityRole string `json:"capability_role"`
-	CreatedAt      string `json:"created_at"`
+	ID          string `json:"id"`
+	ServerID    string `json:"server_id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	InputSchema string `json:"input_schema"`
+	CreatedAt   string `json:"created_at"`
 }
 
 func (q *Queries) UpsertMCPTool(ctx context.Context, arg UpsertMCPToolParams) (McpTool, error) {
@@ -154,7 +135,6 @@ func (q *Queries) UpsertMCPTool(ctx context.Context, arg UpsertMCPToolParams) (M
 		arg.Name,
 		arg.Description,
 		arg.InputSchema,
-		arg.CapabilityRole,
 		arg.CreatedAt,
 	)
 	var i McpTool
@@ -164,7 +144,6 @@ func (q *Queries) UpsertMCPTool(ctx context.Context, arg UpsertMCPToolParams) (M
 		&i.Name,
 		&i.Description,
 		&i.InputSchema,
-		&i.CapabilityRole,
 		&i.CreatedAt,
 	)
 	return i, err
