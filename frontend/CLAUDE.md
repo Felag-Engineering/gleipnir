@@ -8,41 +8,43 @@ React + TypeScript UI for Gleipnir. In production, `npm run build` produces `fro
 npm run dev              # Vite dev server (proxies /api → localhost:8080)
 npm run build            # TypeScript check + production build
 npm run preview          # preview production build
+npm run test:unit        # Vitest unit tests (jsdom)
 npm run storybook        # Storybook on port 6006
 npm run build-storybook  # static Storybook build
 ```
 
-## Design reference
-
-Visual language and interaction patterns are defined in `docs/frontend_mockups/`:
-
-- `gleipnir-dashboard.jsx` — dashboard layout, stats bar, policy list, folder grouping
-- `gleipnir-policy-editor.jsx` — dual-mode YAML/form editor, tool picker
-- `gleipnir-reasoning-timeline.jsx` — run detail view, step timeline, filter chips
-- `gleipnir-mcp-registry.jsx` — MCP server management, tool list, capability roles
-
-These are JSX reference mockups (not runnable components). Use them as the authoritative source for layout, spacing, color usage, and interaction behavior when building real components.
-
 ## Route structure
 
 ```
+/login              → login page (unauthenticated)
+/setup              → initial admin account setup (unauthenticated)
 /                   → redirect to /dashboard
 /dashboard          → stats bar, policy list grouped by folder
+/runs               → paginated run history with filters
+/policies           → policy list
 /policies/new       → dual-mode policy editor (create)
 /policies/:id       → dual-mode policy editor (edit)
+/policies/:id/runs  → redirect to /runs?policy=:id
 /runs/:id           → reasoning timeline with live SSE updates
-/mcp                → MCP server management + tool registry
+/tools              → tool management + server registry
+/mcp                → redirect to /tools (legacy path)
+/users              → user management (admin)
+*                   → 404 not found
 ```
+
+All authenticated routes render inside a shared `Layout` component (sidebar + content area). Each route has its own `errorElement` boundary.
 
 ## Design system
 
-### Color palette (dark theme)
+Design tokens live in `src/tokens.css`. The system supports dark, light, and system-preference themes via `data-theme` attribute on `:root`.
+
+### Color palette (dark theme defaults)
 
 ```
 --bg-canvas:     #0F1117      --color-blue:    #60A5FA  (tools, running)
 --bg-surface:    #131720      --color-orange:  #FB923C
 --bg-elevated:   #1E2330      --color-amber:   #F59E0B  (approvals)
---bg-topbar:     #0D1018      --color-green:   #4ADE80  (success, complete)
+--bg-sidebar:    #0D1018      --color-green:   #4ADE80  (success, complete)
 --bg-code:       #090C12      --color-red:     #F87171  (errors, failed)
 --border-subtle: #1E2330      --color-purple:  #A78BFA  (feedback, interrupted)
 --border-mid:    #253044      --color-teal:    #34D399  (poll triggers)
@@ -52,16 +54,18 @@ These are JSX reference mockups (not runnable components). Use them as the autho
 --text-primary:  #E2E8F0
 ```
 
+Capability aliases: `--color-tool: var(--color-blue)`, `--color-feedback: var(--color-purple)`.
+
 ### Typography
 
-- Body: `IBM Plex Sans, system-ui, sans-serif`
-- Mono: `IBM Plex Mono, monospace`
-- Scale: 11 / 13 / 15 / 18 / 24 / 32 px
-- Weights: 400 (normal), 500 (medium), 600 (semibold), 700 (GLEIPNIR wordmark only)
+- Body: `IBM Plex Sans, system-ui, sans-serif` (`--font-body`)
+- Mono: `IBM Plex Mono, monospace` (`--font-mono`)
+- Scale: 11 / 13 / 15 / 18 / 24 / 32 px (`--text-xs` through `--text-2xl`)
+- Weights: 300 (light), 400 (normal), 500 (medium), 600 (semibold), 700 (bold, wordmark only)
 
 ### Spacing
 
-4px base grid. All margins, padding, and gaps snap to: 4, 8, 12, 16, 24, 32, 48, 64 px.
+4px base grid via CSS custom properties (`--space-1` through `--space-16`). All margins, padding, and gaps snap to: 4, 8, 12, 16, 24, 32, 48, 64 px.
 
 ### Motion
 
@@ -74,6 +78,12 @@ These are JSX reference mockups (not runnable components). Use them as the autho
 --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1)
 ```
 
+Reduced-motion media query sets all durations to 0ms.
+
+### Layout tokens
+
+Sidebar: `--sidebar-width: 232px`, `--sidebar-collapsed: 48px`.
+
 ## Import paths
 
 Use the `@/` alias for all imports from `src/`. Prefer `@/tokens.css`, `@/components/Foo`, `@/hooks/useBar` over relative `../../` paths.
@@ -83,18 +93,37 @@ This alias is configured in `tsconfig.json` (`paths`) and `vite.config.ts` (`res
 ## Styling rules
 
 - **CSS Modules only** — no inline `style={}` attributes. Components get `ComponentName.module.css`.
-- CSS Modules consume CSS custom properties defined in a global stylesheet.
-- Existing components in `src/components/dashboard/` use inline styles and need migration.
+- CSS Modules consume CSS custom properties defined in `src/tokens.css`.
+- Shared utility styles live in `src/styles/` (table, forms, alerts, spinner modules) and are imported directly by components that need them.
+- Storybook stories may have their own `.stories.module.css` for layout wrappers.
 
 ## State management
 
-- **Server state:** TanStack Query. Query key families: `['policies']`, `['runs', runId]`, `['servers', serverId, 'tools']`, etc.
+- **Server state:** TanStack Query. All query keys are centralized in `src/hooks/queryKeys.ts`.
 - **UI state:** React `useState`/`useReducer`, local to owning component. Lift only when siblings share state.
 - **No global store** (no Redux/Zustand) unless a clear need emerges.
 
+### Query key families
+
+```typescript
+queryKeys.policies.all          // ['policies']
+queryKeys.policies.detail(id)   // ['policies', id]
+queryKeys.runs.all              // ['runs']
+queryKeys.runs.detail(id)       // ['runs', id]
+queryKeys.runs.steps(id)        // ['runs', id, 'steps']
+queryKeys.runs.list(params)     // ['runs', 'list', params]
+queryKeys.servers.all           // ['servers']
+queryKeys.servers.tools(id)     // ['servers', id, 'tools']
+queryKeys.stats.all             // ['stats']
+queryKeys.approvals.all         // ['approvals']
+queryKeys.users.all             // ['users']
+queryKeys.currentUser.all       // ['currentUser']
+queryKeys.models.all            // ['models']
+```
+
 ### Data fetching
 
-All API calls go through a shared `apiFetch<T>(path, init?)` wrapper that unwraps `{ data: T }` envelopes and throws typed `ApiError` on failure. TanStack Query hooks wrap `apiFetch`.
+All API calls go through a shared `apiFetch<T>(path, init?)` wrapper (`src/api/fetch.ts`) that unwraps `{ data: T }` envelopes and throws typed `ApiError` on failure. TanStack Query hooks wrap `apiFetch`.
 
 ### SSE integration
 
@@ -102,57 +131,101 @@ A single `useSSE` hook at the root layout connects to `GET /api/v1/events`. On e
 
 Event types: `run.status_changed`, `run.step_added`, `approval.created`, `approval.resolved`.
 
+## Formatting utilities
+
+Canonical formatting helpers live in `src/utils/format.ts`:
+
+- `formatDuration(s)` — seconds to human-readable (`42s`, `3m 12s`)
+- `formatDurationMs(ms)` — milliseconds variant
+- `formatTokens(n)` — token counts (`1.2k`, `3.5M`)
+- `formatTimestamp(iso)` — absolute timestamp (`Apr 1, 14:30`)
+- `formatTimeAgo(iso)` — relative time (`5m ago`, `2h ago`)
+- `formatCountdown(expiresAt)` — countdown with urgency flag
+- `computeRunDuration(run)` — derives duration from started/completed timestamps
+
+## API types
+
+All API response types are defined in `src/api/types.ts`, with comments mapping each type to its Go backend counterpart (e.g., `ApiRun` matches `trigger/runs_handler.go → RunSummary`).
+
 ## API surface
 
 ```
-GET    /api/v1/policies                 POST   /api/v1/policies
-GET    /api/v1/policies/:id             PUT    /api/v1/policies/:id
+Auth:
+POST   /api/v1/auth/setup              POST   /api/v1/auth/login
+POST   /api/v1/auth/logout             GET    /api/v1/auth/status
+
+Policies:
+GET    /api/v1/policies                POST   /api/v1/policies
+GET    /api/v1/policies/:id            PUT    /api/v1/policies/:id
 DELETE /api/v1/policies/:id
 
-GET    /api/v1/runs                     GET    /api/v1/runs/:id
-GET    /api/v1/runs/:id/steps           POST   /api/v1/runs/:id/cancel
+Runs:
+GET    /api/v1/runs                    GET    /api/v1/runs/:id
+GET    /api/v1/runs/:id/steps          POST   /api/v1/runs/:id/cancel
 
-GET    /api/v1/mcp/servers              POST   /api/v1/mcp/servers
+MCP / Tools:
+GET    /api/v1/mcp/servers             POST   /api/v1/mcp/servers
 DELETE /api/v1/mcp/servers/:id
 POST   /api/v1/mcp/servers/:id/discover
 GET    /api/v1/mcp/servers/:id/tools
 
-GET    /api/v1/approvals                (v0.2)
-POST   /api/v1/approvals/:id/approve    (v0.2)
-POST   /api/v1/approvals/:id/reject     (v0.2)
+Approvals:
+GET    /api/v1/approvals
+POST   /api/v1/approvals/:id/approve
+POST   /api/v1/approvals/:id/reject
 
-POST   /api/v1/webhooks/:policyID       (trigger endpoint)
-GET    /api/v1/events                    (SSE stream)
+Users:
+GET    /api/v1/users                   POST   /api/v1/users
+PUT    /api/v1/users/:id
+
+Models:
+GET    /api/v1/models
+
+Triggers + Events:
+POST   /api/v1/webhooks/:policyID      (trigger endpoint)
+GET    /api/v1/events                   (SSE stream)
 GET    /api/v1/health
 ```
 
 Response envelope: `{ data: T }` for success, `{ error: string, detail?: string }` for failure.
 
-## Existing components
+## Component structure
 
-Components in `src/components/dashboard/` are Storybook-ready prototypes:
+### Pages (`src/pages/`)
 
-- **StatusBadge** — colored dot + label for run status (complete/running/waiting/failed/interrupted)
-- **TriggerChip** — monospace label for trigger type (webhook=blue, cron=purple, poll=teal)
-- **StatsBar** — 4-card grid (active runs, pending approvals, policies, tokens today)
-- **ApprovalCard** — approval request with countdown, reasoning toggle, approve/reject actions
-- **ReasoningTrace** — vertical timeline of thought/tool_call/tool_result steps
+10 page components, each with a corresponding `.module.css`. Pages are thin wrappers that compose hooks and components.
 
-Types in `types.ts`, fixtures in `fixtures.ts`, helpers in `styles.ts` (`fmtDur`, `fmtTok`, `fmtAbs`, `fmtRel`, `timeLeft`).
+### Components (`src/components/`)
+
+Organized by feature area:
+
+- **Layout** — sidebar navigation, content area, theme toggle, connection status banner
+- **dashboard/** — StatsBar, StatusBadge, StatusBoard, TriggerChip, ActivityFeed, OnboardingSteps
+- **PolicyEditor/** — EditorTopBar, FormMode (7 form sections), YamlEditor
+- **PolicyList** — policy table with folder grouping
+- **RunDetail/** — RunHeader, StepTimeline, FilterBar, MetadataGrid, CapabilitySnapshotCard, ThoughtBlock, ThinkingBlock, ToolBlock, CompleteBlock, ErrorBlock, FeedbackBlock, ApprovalActions, FeedbackActions
+- **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal
+- **Shared** — Button, Modal, ModalFooter, EmptyState, ErrorBoundary, QueryBoundary, CopyBlock, CollapsibleJSON, SkeletonBlock, PageHeader, ApprovalBanner, ConnectionBanner, TriggerRunModal
+
+### Hooks (`src/hooks/`)
+
+~28 custom hooks. Data-fetching hooks follow the pattern: `use{Resource}` wraps a TanStack `useQuery`, `use{Action}` wraps a `useMutation`. All query keys go through `queryKeys.ts`.
+
+### Storybook
+
+45 story files covering components, dashboard widgets, form sections, and hook demonstrations. Stories use MSW for API mocking and have their own `.stories.module.css` for layout scaffolding where needed.
 
 ## Key architectural decisions
 
 - **ADR-016:** SSE for real-time transport, not WebSockets. The Go SSE handler sets `X-Accel-Buffering: no` directly for compatibility with upstream reverse proxies.
 - **ADR-019:** Dual-mode policy editor. Form view + YAML view edit the same YAML string. YAML is the API payload.
 - **ADR-020:** Policy folders are a YAML-only `folder` field for UI grouping. No DB column.
+- **ADR-030:** UI abstracts over tool transport — the Tools page is protocol-agnostic (not "MCP page").
 - **Hard capability enforcement:** disallowed tools are never registered with the agent. The UI displays what the runtime enforces.
 
-## Implementation phases (v0.1)
+## Testing
 
-1. **Scaffolding** — global CSS tokens, TanStack Query provider, `apiFetch`, `useSSE`, root layout, error boundaries
-2. **Dashboard** — stats bar, policy list with folder grouping, skeleton screens, empty states
-3. **Policy editor** — CodeMirror 6 YAML editor, form mode, tool picker, bidirectional sync
-4. **Run detail** — reasoning timeline, filter chips, step pagination, live SSE updates
-5. **MCP management** — server list, add modal, tool list, discovery
-
-See `docs/Frontend_Roadmap.md` for full details on each phase.
+- **Unit tests:** Vitest with jsdom, `npm run test:unit`. Tests live alongside components (`*.test.tsx`).
+- **Component stories:** Storybook with `@storybook/addon-vitest` for story-level assertions.
+- **API mocking:** MSW (Mock Service Worker) for both tests and Storybook stories.
+- **Browser tests:** Playwright via `@vitest/browser-playwright` (not yet widely used).

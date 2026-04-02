@@ -5,7 +5,7 @@
 **Response envelope:** `{ data: T }` for success (HTTP 2xx), `{ error: string, detail?: string }` for failure (HTTP 4xx/5xx)
 **Deployment:** Embedded in the Go binary; served directly by the chi router. No separate frontend container.
 **Source of truth for data shapes:** `0001_initial_schema.sql`
-**Design reference:** `docs/frontend_mockups/` — four JSX mockups defining the visual language and interaction patterns
+**Design reference:** Design tokens and visual language are defined in `frontend/src/tokens.css` and documented in `frontend/CLAUDE.md`.
 **Phase scope:** This document covers EPIC-007 across v0.1 (foundation), v0.2 (approval UI), and v0.1-polish (design quality pass)
 
 **Guiding principle:** Ship views first, extract shared patterns from working code, then polish. Every section in v0.1 should produce a usable screen. Shared components are extracted *from* views, not designed in isolation before views exist.

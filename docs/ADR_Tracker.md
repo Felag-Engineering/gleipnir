@@ -345,8 +345,7 @@ backgrounds (`#0F1117` → `#131720` → `#1E2330`). Semantic colors: blue (sens
 orange (actuators), amber (approvals), green (success), red (errors), purple (feedback/interrupted),
 teal (poll). Full design token reference in `docs/Frontend_Roadmap.md`.
 
-**Design reference:** `docs/frontend_mockups/` contains four JSX mockups (dashboard, policy editor,
-reasoning timeline, MCP registry) that define the visual language and interaction patterns.
+**Design reference:** Design tokens and visual language are defined in `frontend/src/tokens.css` and documented in `frontend/CLAUDE.md`.
 
 **Reasoning:** Eliminates the nginx container, reducing the deployment footprint to a single
 container. The Go binary becomes the sole deliverable — simpler ops for homelab deployments.

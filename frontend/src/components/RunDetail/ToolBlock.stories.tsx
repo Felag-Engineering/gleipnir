@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/tokens.css'
 import type { ApiRunStep } from '@/api/types'
+import { queryKeys } from '@/hooks/queryKeys'
 import { parseStep } from './types'
 import type { ToolBlockData } from './types'
 import { ToolBlock } from './ToolBlock'
@@ -9,6 +10,18 @@ import { ToolBlock } from './ToolBlock'
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false } },
 })
+
+function makeApproverQueryClient() {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  qc.setQueryData(queryKeys.currentUser.all, {
+    id: 'user-1',
+    username: 'admin',
+    roles: ['admin'],
+  })
+  return qc
+}
 
 const meta: Meta<typeof ToolBlock> = {
   title: 'RunDetail/ToolBlock',
@@ -120,6 +133,13 @@ export const NoResult: Story = {
 
 export const ApprovalPending: Story = {
   name: 'Approval pending',
+  decorators: [
+    (Story) => (
+      <QueryClientProvider client={makeApproverQueryClient()}>
+        <Story />
+      </QueryClientProvider>
+    ),
+  ],
   args: {
     block: {
       approval: parseStep(makeRaw({
