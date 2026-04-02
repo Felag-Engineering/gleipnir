@@ -1,26 +1,6 @@
 import type { RunStatus, TriggerType } from '@/constants/status'
 export type { RunStatus, TriggerType }
 
-export interface ReasoningStep {
-  type: 'thought' | 'tool_call' | 'tool_result';
-  text: string;
-  detail?: string;
-}
-
-export interface ApprovalDef {
-  id: string;
-  runId: string;
-  policyId: string;
-  policyName: string;
-  folder: string;
-  toolName: string;
-  proposedInput: Record<string, unknown>;
-  agentSummary: string;
-  reasoning: ReasoningStep[];
-  expiresAt: string;
-  startedAt: string;
-}
-
 export const STATUS_CONFIG: Record<RunStatus, { label: string }> = {
   complete:             { label: 'Complete' },
   running:              { label: 'Running' },

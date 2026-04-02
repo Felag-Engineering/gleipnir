@@ -1,13 +1,25 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/tokens.css'
 import type { ApiRunStep } from '@/api/types'
 import { parseStep } from './types'
 import type { ToolBlockData } from './types'
 import { ToolBlock } from './ToolBlock'
 
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+})
+
 const meta: Meta<typeof ToolBlock> = {
   title: 'RunDetail/ToolBlock',
   component: ToolBlock,
+  decorators: [
+    (Story) => (
+      <QueryClientProvider client={queryClient}>
+        <Story />
+      </QueryClientProvider>
+    ),
+  ],
 }
 
 export default meta

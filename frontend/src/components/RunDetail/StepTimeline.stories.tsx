@@ -1,12 +1,24 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/tokens.css'
 import type { ApiRunStep } from '@/api/types'
 import { parseStep, pairToolBlocks } from './types'
 import { StepTimeline } from './StepTimeline'
 
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+})
+
 const meta: Meta<typeof StepTimeline> = {
   title: 'RunDetail/StepTimeline',
   component: StepTimeline,
+  decorators: [
+    (Story) => (
+      <QueryClientProvider client={queryClient}>
+        <Story />
+      </QueryClientProvider>
+    ),
+  ],
 }
 
 export default meta
