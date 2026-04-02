@@ -146,6 +146,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate add feedback expires_at: %w", err)
 	}
 
+	if err := s.migrateAddRunModel(ctx); err != nil {
+		return fmt.Errorf("migrate add run model: %w", err)
+	}
+
 	return nil
 }
 
@@ -539,6 +543,46 @@ CREATE INDEX idx_feedback_requests_status_expires ON feedback_requests(status, e
 	}
 
 	slog.Info("migrated feedback_requests table to add expires_at and timed_out status")
+	return nil
+}
+
+// migrateAddRunModel adds the model column to the runs table on existing deployments.
+// New deployments get it from 0001_initial.sql; this migration is a no-op for them.
+// SQLite supports ALTER TABLE ADD COLUMN for simple NOT NULL DEFAULT columns without
+// needing table recreation.
+func (s *Store) migrateAddRunModel(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info(runs)")
+	if err != nil {
+		return fmt.Errorf("pragma table_info runs: %w", err)
+	}
+	defer rows.Close()
+
+	var hasModel bool
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dflt any
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan pragma row: %w", err)
+		}
+		if name == "model" {
+			hasModel = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("pragma rows: %w", err)
+	}
+	if hasModel {
+		return nil // already present; nothing to do
+	}
+
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE runs ADD COLUMN model TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("alter table runs add model: %w", err)
+	}
+
+	slog.Info("migrated runs table to add model column")
 	return nil
 }
 

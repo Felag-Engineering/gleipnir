@@ -110,7 +110,8 @@ CREATE TABLE runs (
     error           TEXT,                 -- nullable, terminal error message
     thread_id       TEXT,                 -- nullable, Slack thread_ts
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
-    system_prompt   TEXT                  -- nullable, rendered system prompt at run start
+    system_prompt   TEXT,                 -- nullable, rendered system prompt at run start
+    model           TEXT    NOT NULL DEFAULT ''  -- API model ID (e.g. claude-sonnet-4-6); empty for legacy runs
 );
 
 CREATE INDEX idx_runs_status         ON runs(status);

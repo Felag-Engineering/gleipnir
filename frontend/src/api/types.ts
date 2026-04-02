@@ -38,6 +38,7 @@ export interface ApiRun {
   error: string | null
   created_at: string
   system_prompt: string | null
+  model: string
 }
 
 // Matches trigger/runs_handler.go → StepSummary struct
@@ -87,8 +88,42 @@ export interface ApiMcpServerCreateResponse extends ApiMcpServer {
 export interface ApiStats {
   active_runs: number
   pending_approvals: number
+  pending_feedback: number
   policy_count: number
   tokens_last_24h: number
+}
+
+// Matches api/timeseries_handler.go → TimeSeriesBucket
+export interface ApiTimeSeriesBucket {
+  timestamp: string
+  completed: number
+  failed: number
+  waiting_for_approval: number
+  waiting_for_feedback: number
+  cost_by_model: Record<string, number>
+}
+
+// Matches api/timeseries_handler.go → TimeSeriesResponse
+export interface ApiTimeSeriesResponse {
+  buckets: ApiTimeSeriesBucket[]
+}
+
+// Matches api/attention_handler.go → AttentionItem
+export interface ApiAttentionItem {
+  type: 'approval' | 'feedback' | 'failure'
+  request_id: string
+  run_id: string
+  policy_id: string
+  policy_name: string
+  tool_name: string
+  message: string
+  expires_at: string | null
+  created_at: string
+}
+
+// Matches api/attention_handler.go → AttentionResponse
+export interface ApiAttentionResponse {
+  items: ApiAttentionItem[]
 }
 
 // Matches auth/handler.go → userResponse (GET /api/v1/users)

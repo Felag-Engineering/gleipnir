@@ -15,6 +15,10 @@ export const queryKeys = {
   },
   stats: {
     all: ['stats'] as const,
+    timeseries: (window: string) => ['stats', 'timeseries', window] as const,
+  },
+  attention: {
+    all: ['attention'] as const,
   },
   approvals: {
     all: ['approvals'] as const,

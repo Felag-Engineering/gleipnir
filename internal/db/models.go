@@ -71,6 +71,7 @@ type Run struct {
 	ThreadID       *string `json:"thread_id"`
 	CreatedAt      string  `json:"created_at"`
 	SystemPrompt   *string `json:"system_prompt"`
+	Model          string  `json:"model"`
 }
 
 type RunStep struct {

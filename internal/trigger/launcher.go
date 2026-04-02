@@ -146,6 +146,7 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	run, err := l.store.CreateRun(ctx, db.CreateRunParams{
 		ID:             model.NewULID(),
 		PolicyID:       params.PolicyID,
+		Model:          params.ParsedPolicy.Agent.ModelConfig.Name,
 		TriggerType:    string(params.TriggerType),
 		TriggerPayload: params.TriggerPayload,
 		StartedAt:      now,

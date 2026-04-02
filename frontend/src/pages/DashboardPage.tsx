@@ -1,82 +1,33 @@
-import { useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from 'react-router-dom'
-import { ActivityFeed } from '@/components/dashboard/ActivityFeed'
-import { StatusBoard } from '@/components/dashboard/StatusBoard'
-import { OnboardingSteps } from '@/components/dashboard/OnboardingSteps'
-import { StatsBar } from '@/components/dashboard/StatsBar'
-import { TriggerRunModal } from '@/components/TriggerRunModal'
 import { PageHeader } from '@/components/PageHeader'
-import { usePolicies } from '@/hooks/usePolicies'
-import { useStatsData } from '@/hooks/useStatsData'
-import { useRuns } from '@/hooks/useRuns'
-import { useMcpServers } from '@/hooks/useMcpServers'
 import { usePageTitle } from '@/hooks/usePageTitle'
-import { queryKeys } from '@/hooks/queryKeys'
-import { QueryBoundary } from '@/components/QueryBoundary'
-import buttonStyles from '@/components/Button/Button.module.css'
+import { RunActivityChart } from '@/components/dashboard/RunActivityChart'
+import { CostByModelChart } from '@/components/dashboard/CostByModelChart'
+import { AttentionQueue } from '@/components/dashboard/AttentionQueue'
+import { RecentRunsFeed } from '@/components/dashboard/RecentRunsFeed'
+import { useTimeSeriesStats } from '@/hooks/useTimeSeriesStats'
+import { useAttentionItems } from '@/hooks/useAttentionItems'
 import styles from './DashboardPage.module.css'
 
 export default function DashboardPage() {
-  const { activeRuns, pendingApprovals } = useStatsData()
-  const { data: policies, status: policiesStatus } = usePolicies()
-  const { runs, isLoading: runsLoading } = useRuns({ limit: 20 })
-  const { data: servers, isLoading: serversLoading } = useMcpServers()
-  const queryClient = useQueryClient()
-  const navigate = useNavigate()
-  const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string } | null>(null)
-
-  usePageTitle('Dashboard')
-  const mcpServerCount = servers?.length ?? 0
+  usePageTitle('Control Center')
+  const timeSeries = useTimeSeriesStats()
+  const attention = useAttentionItems()
 
   return (
     <div className={styles.page}>
-      <PageHeader title="Dashboard">
-        <Link to="/policies/new" className={`${buttonStyles.button} ${buttonStyles.primary}`}>
-          New Policy
-        </Link>
-      </PageHeader>
-      <StatsBar
-        activeRuns={activeRuns}
-        pendingApprovals={pendingApprovals}
-        mcpServerCount={mcpServerCount}
-        mcpServersLoading={serversLoading}
-      />
-      <QueryBoundary
-        status={policiesStatus}
-        isEmpty={(policies ?? []).length === 0}
-        errorMessage="Failed to load policies."
-        onRetry={() => queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })}
-        skeleton={null}
-        emptyState={
-          <OnboardingSteps
-            hasServers={mcpServerCount > 0}
-            hasPolicies={false}
-            hasRuns={runs.length > 0}
-          />
-        }
-      >
-        <div className={!runsLoading && runs.length === 0 ? styles.mainGridSingle : styles.mainGrid}>
-          {(runsLoading || runs.length > 0) && (
-            <ActivityFeed runs={runs} isLoading={runsLoading} />
-          )}
-          <StatusBoard
-            policies={policies ?? []}
-            onTrigger={(id, name) => setTriggerTarget({ id, name })}
-          />
-        </div>
-      </QueryBoundary>
-      {triggerTarget && (
-        <TriggerRunModal
-          policyId={triggerTarget.id}
-          policyName={triggerTarget.name}
-          onClose={() => setTriggerTarget(null)}
-          onSuccess={(runId) => {
-            setTriggerTarget(null)
-            navigate(`/runs/${runId}`)
-          }}
+      <PageHeader title="Control Center" />
+      <div className={styles.chartGrid}>
+        <RunActivityChart data={timeSeries.data} isLoading={timeSeries.isLoading} />
+        <CostByModelChart data={timeSeries.data} isLoading={timeSeries.isLoading} />
+      </div>
+      {attention.count > 0 && (
+        <AttentionQueue
+          items={attention.items}
+          count={attention.count}
+          onDismiss={attention.dismissFailure}
         />
       )}
+      <RecentRunsFeed />
     </div>
   )
 }

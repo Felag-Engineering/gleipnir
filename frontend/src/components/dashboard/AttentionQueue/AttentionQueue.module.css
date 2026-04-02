@@ -1,0 +1,278 @@
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* ---- Section header (collapsible trigger) ---- */
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  width: 100%;
+  text-align: left;
+}
+
+.sectionTitle {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: var(--text-second);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.countBadge {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 15%, transparent);
+  border-radius: 10px;
+  padding: 1px var(--space-2);
+  line-height: 1.6;
+}
+
+.chevron {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  margin-left: auto;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.chevronCollapsed {
+  transform: rotate(-90deg);
+}
+
+/* ---- Item list ---- */
+
+.itemList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* ---- Individual item card ---- */
+
+.item {
+  display: grid;
+  grid-template-columns: 4px 1fr;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.accent {
+  border-radius: 2px 0 0 2px;
+}
+
+.accentApproval { background: var(--color-orange); }
+.accentFeedback { background: var(--color-purple); }
+.accentFailure  { background: var(--color-red); }
+
+.itemBody {
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.itemHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* ---- Type badge ---- */
+
+.badge {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  border-radius: 3px;
+  padding: 1px var(--space-2);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.badgeApproval {
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 12%, transparent);
+}
+
+.badgeFeedback {
+  color: var(--color-purple);
+  background: color-mix(in srgb, var(--color-purple) 12%, transparent);
+}
+
+.badgeFailure {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 12%, transparent);
+}
+
+/* ---- Policy link ---- */
+
+.policyLink {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+  text-decoration: none;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.policyLink:hover {
+  color: var(--color-blue);
+}
+
+/* ---- Countdown ---- */
+
+.countdown {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-amber);
+  flex-shrink: 0;
+}
+
+.countdownUrgent {
+  color: var(--color-red);
+  animation: urgentPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes urgentPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ---- Actions ---- */
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.actionButton {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  border-radius: 4px;
+  padding: 3px var(--space-2);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+.actionButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.actionApprove {
+  color: var(--color-green);
+  border-color: color-mix(in srgb, var(--color-green) 30%, transparent);
+  background: color-mix(in srgb, var(--color-green) 8%, transparent);
+}
+
+.actionApprove:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-green) 16%, transparent);
+}
+
+.actionReject {
+  color: var(--text-second);
+  border-color: var(--border-mid);
+  background: transparent;
+}
+
+.actionReject:hover:not(:disabled) {
+  color: var(--color-red);
+  border-color: color-mix(in srgb, var(--color-red) 30%, transparent);
+  background: color-mix(in srgb, var(--color-red) 8%, transparent);
+}
+
+.actionFeedback {
+  color: var(--color-purple);
+  border-color: color-mix(in srgb, var(--color-purple) 30%, transparent);
+  background: color-mix(in srgb, var(--color-purple) 8%, transparent);
+}
+
+.actionFeedback:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-purple) 16%, transparent);
+}
+
+.actionView {
+  color: var(--text-second);
+  border-color: var(--border-mid);
+  background: transparent;
+}
+
+.actionView:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.dismissButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--text-base);
+  line-height: 1;
+  padding: 0;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.dismissButton:hover {
+  color: var(--color-red);
+}
+
+/* ---- Detail line ---- */
+
+.detail {
+  font-size: var(--text-xs);
+  color: var(--text-second);
+  line-height: 1.5;
+}
+
+.toolName {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--bg-elevated);
+  padding: 1px var(--space-1);
+  border-radius: 3px;
+}
+
+/* ---- Inline error ---- */
+
+.inlineError {
+  font-size: var(--text-xs);
+  color: var(--color-red);
+  margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .urgentPulse,
+  .countdownUrgent {
+    animation: none;
+  }
+}

@@ -18,10 +18,11 @@ func NewStatsService(store *db.Store) *StatsService {
 	return &StatsService{store: store}
 }
 
-// DashboardStats holds the four counters returned by GET /api/v1/stats.
+// DashboardStats holds the counters returned by GET /api/v1/stats.
 type DashboardStats struct {
 	ActiveRuns       int64 `json:"active_runs"`
 	PendingApprovals int64 `json:"pending_approvals"`
+	PendingFeedback  int64 `json:"pending_feedback"`
 	PolicyCount      int64 `json:"policy_count"`
 	TokensLast24h    int64 `json:"tokens_last_24h"`
 }
@@ -38,6 +39,11 @@ func (s *StatsService) Compute(ctx context.Context) (DashboardStats, error) {
 		return DashboardStats{}, fmt.Errorf("count pending approvals: %w", err)
 	}
 
+	pendingFeedback, err := s.store.CountPendingFeedbackRequests(ctx)
+	if err != nil {
+		return DashboardStats{}, fmt.Errorf("count pending feedback: %w", err)
+	}
+
 	policyCount, err := s.store.CountPolicies(ctx)
 	if err != nil {
 		return DashboardStats{}, fmt.Errorf("count policies: %w", err)
@@ -52,6 +58,7 @@ func (s *StatsService) Compute(ctx context.Context) (DashboardStats, error) {
 	return DashboardStats{
 		ActiveRuns:       activeRuns,
 		PendingApprovals: pendingApprovals,
+		PendingFeedback:  pendingFeedback,
 		PolicyCount:      policyCount,
 		TokensLast24h:    tokens,
 	}, nil

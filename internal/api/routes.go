@@ -24,6 +24,12 @@ func NewRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, mod
 	statsHandler := NewStatsHandler(NewStatsService(store))
 	r.Get("/stats", statsHandler.Get)
 
+	timeseriesHandler := NewTimeSeriesHandler(store)
+	r.Get("/stats/timeseries", timeseriesHandler.Get)
+
+	attentionHandler := NewAttentionHandler(store)
+	r.Get("/attention", attentionHandler.Get)
+
 	policies := NewPolicyHandler(store, svc)
 	r.Route("/policies", func(r chi.Router) {
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/", policies.List)

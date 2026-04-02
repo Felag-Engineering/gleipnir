@@ -1291,7 +1291,7 @@ func TestBuildToolDefinitions(t *testing.T) {
 					GrantedTool: model.GrantedTool{
 						ServerName: "my-server",
 						ToolName:   "read.data",
-								},
+					},
 					Description: "reads some data",
 					InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 				},

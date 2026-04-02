@@ -37,13 +37,13 @@ type Config struct {
 // through AuditWriter. It manages a gate MCP server co-process for
 // approval-gated tools.
 type ClaudeCodeAgent struct {
-	policy      *model.ParsedPolicy
-	tools       []mcp.ResolvedTool
-	audit       *agent.AuditWriter
-	sm          *agent.RunStateMachine
-	approvalCh  <-chan bool
-	feedbackCh  <-chan string
-	claudeBin   string // "claude" by default; overridable in tests
+	policy     *model.ParsedPolicy
+	tools      []mcp.ResolvedTool
+	audit      *agent.AuditWriter
+	sm         *agent.RunStateMachine
+	approvalCh <-chan bool
+	feedbackCh <-chan string
+	claudeBin  string // "claude" by default; overridable in tests
 }
 
 // New returns a ClaudeCodeAgent ready to run.

@@ -582,4 +582,3 @@ func TestMCPToolListHandler(t *testing.T) {
 		}
 	})
 }
-

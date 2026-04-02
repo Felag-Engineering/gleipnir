@@ -28,7 +28,7 @@ func TestStatsServiceCompute(t *testing.T) {
 			t.Fatalf("Compute: %v", err)
 		}
 		if stats.ActiveRuns != 0 || stats.PendingApprovals != 0 ||
-			stats.PolicyCount != 0 || stats.TokensLast24h != 0 {
+			stats.PendingFeedback != 0 || stats.PolicyCount != 0 || stats.TokensLast24h != 0 {
 			t.Errorf("expected all zeros, got %+v", stats)
 		}
 	})
@@ -84,6 +84,23 @@ func TestStatsServiceCompute(t *testing.T) {
 		}
 		if stats.TokensLast24h != 2000 {
 			t.Errorf("TokensLast24h = %d, want 2000 (old run should be excluded)", stats.TokensLast24h)
+		}
+	})
+
+	t.Run("pending_feedback counts pending feedback requests", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		insertTestPolicy(t, store, "p1", "pol1", "")
+		insertTestRun(t, store, "r1", "p1", "waiting_for_feedback")
+		insertFeedbackRequest(t, store, "fr1", "r1", "notify", "msg1")
+		insertFeedbackRequest(t, store, "fr2", "r1", "notify", "msg2")
+
+		svc := api.NewStatsService(store)
+		stats, err := svc.Compute(ctx)
+		if err != nil {
+			t.Fatalf("Compute: %v", err)
+		}
+		if stats.PendingFeedback != 2 {
+			t.Errorf("PendingFeedback = %d, want 2", stats.PendingFeedback)
 		}
 	})
 

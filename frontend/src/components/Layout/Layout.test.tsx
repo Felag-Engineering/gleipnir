@@ -36,7 +36,7 @@ describe('Layout', () => {
 
   it('renders 4 nav items', () => {
     renderLayout()
-    expect(screen.getByRole('link', { name: /dashboard/i })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /control center/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /runs/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /policies/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /tools/i })).toBeInTheDocument()
@@ -67,7 +67,7 @@ describe('Layout', () => {
 
   it('active nav item has active class', () => {
     renderLayout('/dashboard')
-    const dashboardLink = screen.getByRole('link', { name: /dashboard/i })
+    const dashboardLink = screen.getByRole('link', { name: /control center/i })
     expect(dashboardLink.className).toContain('navLinkActive')
   })
 

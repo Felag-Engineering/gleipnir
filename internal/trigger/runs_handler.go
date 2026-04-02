@@ -37,6 +37,7 @@ type RunSummary struct {
 	Error          *string `json:"error"`
 	CreatedAt      string  `json:"created_at"`
 	SystemPrompt   *string `json:"system_prompt"`
+	Model          string  `json:"model"`
 }
 
 // StepSummary is the JSON shape returned for a single run step.
@@ -317,9 +318,9 @@ func (h *RunsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	// Runs in any blocking state may be cancelled by the operator. This includes
 	// the pre-existing waiting_for_approval case and the new waiting_for_feedback state.
 	cancellableStatuses := map[string]bool{
-		string(model.RunStatusRunning):             true,
-		string(model.RunStatusWaitingForApproval):  true,
-		string(model.RunStatusWaitingForFeedback):  true,
+		string(model.RunStatusRunning):            true,
+		string(model.RunStatusWaitingForApproval): true,
+		string(model.RunStatusWaitingForFeedback): true,
 	}
 	if !cancellableStatuses[run.Status] {
 		api.WriteError(w, http.StatusConflict, "run is not in a cancellable state", run.Status)
@@ -505,5 +506,6 @@ func toRunSummary(r db.Run) RunSummary {
 		Error:          r.Error,
 		CreatedAt:      r.CreatedAt,
 		SystemPrompt:   r.SystemPrompt,
+		Model:          r.Model,
 	}
 }

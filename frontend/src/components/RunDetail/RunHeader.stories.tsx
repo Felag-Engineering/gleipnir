@@ -26,6 +26,7 @@ const BASE_RUN: ApiRun = {
   error: null,
   created_at: '2026-03-10T02:00:00Z',
   system_prompt: null,
+  model: 'claude-sonnet-4-6',
 }
 
 export const Complete: Story = {

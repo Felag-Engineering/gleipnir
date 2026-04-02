@@ -1,16 +1,17 @@
 import { useState } from 'react'
-import { ChevronLeft, ChevronRight, CircleGauge, History, ScrollText, Users, Wrench } from 'lucide-react'
+import { Activity, ChevronLeft, ChevronRight, History, ScrollText, Users, Wrench } from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useSSE } from '@/hooks/useSSE'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { ConnectionBanner } from '@/components/ConnectionBanner'
 import { ThemeToggle } from '@/components/ThemeToggle'
+import { McpHealthDot } from './McpHealthDot'
 import styles from './Layout.module.css'
 
 const SIDEBAR_STORAGE_KEY = 'gleipnir-sidebar-collapsed'
 
 const NAV_ITEMS = [
-  { label: 'Dashboard', to: '/dashboard', Icon: CircleGauge, requiredRole: undefined },
+  { label: 'Control Center', to: '/dashboard', Icon: Activity, requiredRole: undefined },
   { label: 'Runs', to: '/runs', Icon: History, requiredRole: undefined },
   { label: 'Policies', to: '/policies', Icon: ScrollText, requiredRole: undefined },
   { label: 'Tools', to: '/tools', Icon: Wrench, requiredRole: undefined },
@@ -85,6 +86,7 @@ export default function Layout() {
               <span className={collapsed ? `${styles.navLabel} ${styles.navLabelHidden}` : styles.navLabel}>
                 {label}
               </span>
+              {to === '/tools' && !collapsed && <McpHealthDot />}
             </NavLink>
           ))}
         </nav>

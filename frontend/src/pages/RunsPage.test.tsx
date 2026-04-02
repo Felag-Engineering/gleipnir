@@ -35,6 +35,7 @@ function makeRun(overrides?: Partial<ApiRun>): ApiRun {
     error: null,
     created_at: new Date().toISOString(),
     system_prompt: null,
+    model: '',
     ...overrides,
   }
 }

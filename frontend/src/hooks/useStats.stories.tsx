@@ -8,6 +8,7 @@ import { queryKeys } from './queryKeys'
 const FIXTURE_STATS: ApiStats = {
   active_runs: 2,
   pending_approvals: 1,
+  pending_feedback: 1,
   policy_count: 5,
   tokens_last_24h: 23680,
 }
@@ -15,6 +16,7 @@ const FIXTURE_STATS: ApiStats = {
 const FIXTURE_STATS_IDLE: ApiStats = {
   active_runs: 0,
   pending_approvals: 0,
+  pending_feedback: 0,
   policy_count: 3,
   tokens_last_24h: 0,
 }

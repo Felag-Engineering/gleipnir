@@ -645,6 +645,7 @@ func TestRunQueries(t *testing.T) {
 	run, err := s.CreateRun(ctx, CreateRunParams{
 		ID:             "run1",
 		PolicyID:       "pol1",
+		Model:          "claude-sonnet-4-6",
 		TriggerType:    "webhook",
 		TriggerPayload: `{"event":"push"}`,
 		StartedAt:      now,
@@ -680,6 +681,7 @@ func TestRunQueries(t *testing.T) {
 	if _, err := s.CreateRun(ctx, CreateRunParams{
 		ID:             "run2",
 		PolicyID:       "pol1",
+		Model:          "claude-sonnet-4-6",
 		TriggerType:    "webhook",
 		TriggerPayload: `{}`,
 		StartedAt:      now,

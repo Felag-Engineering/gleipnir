@@ -317,9 +317,9 @@ func TestBuildArgs_MaxTurnsFloat64Fallback(t *testing.T) {
 
 func TestClaudeCodeAgent_NeedsGate(t *testing.T) {
 	cases := []struct {
-		name      string
-		tools     []mcp.ResolvedTool
-		wantGate  bool
+		name     string
+		tools    []mcp.ResolvedTool
+		wantGate bool
 	}{
 		{
 			name:     "no tools",

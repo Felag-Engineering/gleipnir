@@ -210,9 +210,9 @@ func TestGateServer_PermissionCheck(t *testing.T) {
 			wantResumes:    0,
 		},
 		{
-			name:     "not_granted",
-			toolName: "mcp__s__unknown",
-			grants:   map[string]ToolGrant{},
+			name:           "not_granted",
+			toolName:       "mcp__s__unknown",
+			grants:         map[string]ToolGrant{},
 			wantBehavior:   "deny",
 			wantMsgContain: "not granted",
 			wantRequests:   0,
@@ -236,10 +236,10 @@ func TestGateServer_PermissionCheck(t *testing.T) {
 			grants: map[string]ToolGrant{
 				"mcp__s__t": {Approval: model.ApprovalModeRequired},
 			},
-			closeChBefore:  true,
-			wantBehavior:   "deny",
-			wantRequests:   1,
-			wantResumes:    0,
+			closeChBefore: true,
+			wantBehavior:  "deny",
+			wantRequests:  1,
+			wantResumes:   0,
 		},
 	}
 

@@ -160,9 +160,9 @@ func handleEvent(ctx context.Context, ev rawEvent, state *streamState, ch chan<-
 type contentBlockStartEvent struct {
 	Index        int `json:"index"`
 	ContentBlock struct {
-		Type  string `json:"type"`
-		ID    string `json:"id"`
-		Name  string `json:"name"`
+		Type string `json:"type"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
 	} `json:"content_block"`
 }
 

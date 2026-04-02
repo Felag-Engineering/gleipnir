@@ -30,6 +30,7 @@ export function useSSE(): { connectionState: ConnectionState } {
       queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention.all })
     })
 
     eventSource.addEventListener('run.step_added', (e: MessageEvent) => {
@@ -46,6 +47,7 @@ export function useSSE(): { connectionState: ConnectionState } {
       if (e.lastEventId) lastEventIdRef.current = e.lastEventId
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention.all })
     })
 
     eventSource.addEventListener('approval.resolved', (e: MessageEvent) => {
@@ -53,12 +55,14 @@ export function useSSE(): { connectionState: ConnectionState } {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention.all })
     })
 
     eventSource.addEventListener('feedback.created', (e: MessageEvent) => {
       if (e.lastEventId) lastEventIdRef.current = e.lastEventId
       queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention.all })
     })
 
     eventSource.addEventListener('feedback.resolved', (e: MessageEvent) => {
@@ -69,6 +73,7 @@ export function useSSE(): { connectionState: ConnectionState } {
         queryClient.invalidateQueries({ queryKey: queryKeys.runs.detail(data.run_id) })
         queryClient.invalidateQueries({ queryKey: queryKeys.runs.steps(data.run_id) })
         queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
+        queryClient.invalidateQueries({ queryKey: queryKeys.attention.all })
       } catch {
         console.error('useSSE: failed to parse feedback.resolved payload', e.data)
       }
@@ -82,6 +87,7 @@ export function useSSE(): { connectionState: ConnectionState } {
         queryClient.invalidateQueries({ queryKey: queryKeys.runs.detail(data.run_id) })
         queryClient.invalidateQueries({ queryKey: queryKeys.runs.steps(data.run_id) })
         queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
+        queryClient.invalidateQueries({ queryKey: queryKeys.attention.all })
       } catch {
         console.error('useSSE: failed to parse feedback.timed_out payload', e.data)
       }
