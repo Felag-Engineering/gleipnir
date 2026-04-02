@@ -1,43 +1,22 @@
 .timeline {
   list-style: none;
-  padding: 0;
+  padding: var(--space-4) 20px;
   margin: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  background: var(--bg-surface);
+  border-radius: 8px;
 }
 
 .item {
   position: relative;
-  padding-left: var(--space-6);
 }
 
-/* Vertical connector line running through all items */
-.item::before {
-  content: '';
-  position: absolute;
-  left: 16px;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--border-mid);
-}
-
-.item:last-child::before {
-  display: none;
-}
-
-/* The connector dot is rendered via the icon inside StepCard/CapabilitySnapshotCard.
-   The .connector element exists as a visual anchor for the line. */
-.connector {
-  position: absolute;
-  left: 12px;
-  top: 16px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--border-mid);
-  z-index: 1;
+.fallback {
+  background: var(--bg-elevated);
+  border-radius: 8px;
+  padding: var(--space-3) var(--space-4);
 }
 
 .empty {

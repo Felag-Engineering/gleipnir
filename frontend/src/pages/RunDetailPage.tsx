@@ -16,7 +16,7 @@ import {
   isToolBlock,
 } from '@/components/RunDetail'
 import type { FilterKey } from '@/components/RunDetail'
-import type { ParsedStep, ToolBlockData, CapabilitySnapshotContent, CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
+import type { ParsedStep, ToolBlockData } from '@/components/RunDetail/types'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import styles from './RunDetailPage.module.css'
 
@@ -38,21 +38,6 @@ export default function RunDetailPage() {
 
   // Parse all steps once
   const allParsed: ParsedStep[] = rawSteps.map(parseStep)
-
-  // Build tool role map from capability_snapshot steps. Handles both the
-  // legacy array shape (pre-ADR-023) and the V2 object shape { model, tools }.
-  const toolRoleMap = new Map<string, GrantedToolEntry['Role']>()
-  for (const step of allParsed) {
-    if (step.type === 'capability_snapshot') {
-      const raw = step.content as CapabilitySnapshotContent
-      const tools: GrantedToolEntry[] = Array.isArray(raw)
-        ? raw
-        : (raw as CapabilitySnapshotV2).tools ?? []
-      for (const entry of tools) {
-        toolRoleMap.set(`${entry.ServerName}.${entry.ToolName}`, entry.Role)
-      }
-    }
-  }
 
   // Separate capability_snapshot steps; filter counts exclude them (ADR-018)
   const nonSnapshotSteps = allParsed.filter((s) => s.type !== 'capability_snapshot')
@@ -103,6 +88,9 @@ export default function RunDetailPage() {
             case 'thinking': return item.type === 'thinking'
             case 'error': return item.type === 'error'
             case 'approval': return item.type === 'approval_request'
+            // Types without a dedicated filter category (feedback_request, feedback_response,
+            // complete, orphan tool_result) are only visible under the 'all' filter. This is
+            // intentional — these are rare step types that don't warrant their own chip.
             default: return false
           }
         })
@@ -152,6 +140,7 @@ export default function RunDetailPage() {
         ? new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()
         : Date.now() - new Date(run.started_at).getTime()
       : null
+  const durationSeconds = duration !== null ? duration / 1000 : null
 
   const toolCallCount = allParsed.filter((s) => s.type === 'tool_call').length
   const tokenTotal = rawSteps.reduce((acc, s) => acc + s.token_cost, 0)
@@ -218,7 +207,7 @@ export default function RunDetailPage() {
             <FilterBar active={filter} counts={counts} onChange={setFilter} />
 
             <div className={styles.timeline}>
-              <StepTimeline items={timelineItems} toolRoleMap={toolRoleMap} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} />
+              <StepTimeline items={timelineItems} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} durationSeconds={durationSeconds} />
 
               {hasMore && (
                 <button

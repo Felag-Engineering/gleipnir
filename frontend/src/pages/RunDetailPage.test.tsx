@@ -180,6 +180,8 @@ describe('RunDetailPage — step types render', () => {
   })
 
   it('renders tool_result step', () => {
+    // An orphan tool_result (no preceding tool_call) falls back to CollapsibleJSON rendering.
+    // The JSON content is visible as a pre/code block — check for a key value in the output.
     mockLoaded(makeRun(), [
       makeStep({
         id: 's3',
@@ -188,8 +190,8 @@ describe('RunDetailPage — step types render', () => {
       }),
     ])
     renderPage()
-    expect(screen.getByText('fs.read')).toBeInTheDocument()
-    expect(screen.getByText('result')).toBeInTheDocument()
+    // The tool_name value appears inside the JSON pre block
+    expect(screen.getByText(/fs\.read/)).toBeInTheDocument()
   })
 
   it('renders error step with red label and message', () => {
@@ -214,11 +216,8 @@ describe('RunDetailPage — step types render', () => {
       }),
     ])
     renderPage()
-    // "Complete" appears in both the filter bar and step card; check message is there
-    expect(screen.getByText('Done successfully.')).toBeInTheDocument()
-    // At least one "Complete" label exists (the step type label)
-    const completeLabels = screen.getAllByText('Complete')
-    expect(completeLabels.length).toBeGreaterThanOrEqual(1)
+    // CompleteBlock renders "Run complete" as its label (message content is not shown)
+    expect(screen.getByText('Run complete')).toBeInTheDocument()
   })
 
   it('renders capability_snapshot step collapsed by default', () => {
