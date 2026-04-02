@@ -5,16 +5,30 @@ import { usePolicies } from '@/hooks/usePolicies'
 import { queryKeys } from '@/hooks/queryKeys'
 import { QueryBoundary } from '@/components/QueryBoundary'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'
-import { TriggerChip } from '@/components/dashboard/TriggerChip'
-import type { RunStatus, TriggerType } from '@/constants/status'
-import { KNOWN_STATUSES, KNOWN_TRIGGERS } from '@/constants/status'
+import EmptyState from '@/components/EmptyState/EmptyState'
+import type { RunStatus } from '@/constants/status'
 import { formatTimeAgo, formatTokens, formatDuration, formatTimestamp, computeRunDuration } from '@/utils/format'
-import { PageHeader } from '@/components/PageHeader'
-import { Button } from '@/components/Button'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import styles from './RunsPage.module.css'
 
 const PAGE_SIZE = 25
+
+// Status filter definitions for the chip bar
+const STATUS_FILTERS = [
+  { key: '', label: 'All' },
+  { key: 'complete', label: 'Complete' },
+  { key: 'running', label: 'Running' },
+  { key: 'failed', label: 'Failed' },
+  { key: 'waiting_for_approval', label: 'Approval' },
+] as const
+
+// Date range options for the secondary filter chip
+const DATE_RANGES = [
+  { key: 'all', label: 'All time' },
+  { key: '1h', label: 'Last hour' },
+  { key: '24h', label: 'Last 24h' },
+  { key: '7d', label: 'Last 7 days' },
+] as const
 
 function rangeToSince(range: string): string | undefined {
   const now = Date.now()
@@ -24,6 +38,69 @@ function rangeToSince(range: string): string | undefined {
   return undefined
 }
 
+// Returns page numbers to display, inserting 'ellipsis' for gaps.
+// Always shows first and last page, current page ±1, with ellipsis between non-adjacent groups.
+export function computePageNumbers(currentPage: number, totalPages: number): (number | 'ellipsis')[] {
+  if (totalPages <= 1) return [1]
+
+  // For small page counts, show all pages with no ellipsis needed
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1)
+  }
+
+  const result: (number | 'ellipsis')[] = []
+
+  // The window of pages to always show: current ±1
+  const windowStart = Math.max(2, currentPage - 1)
+  const windowEnd = Math.min(totalPages - 1, currentPage + 1)
+
+  result.push(1)
+
+  if (windowStart > 2) {
+    result.push('ellipsis')
+  }
+
+  for (let p = windowStart; p <= windowEnd; p++) {
+    result.push(p)
+  }
+
+  if (windowEnd < totalPages - 1) {
+    result.push('ellipsis')
+  }
+
+  result.push(totalPages)
+
+  return result
+}
+
+// Maps a run status to the stripe CSS class that colors the left border bar.
+function getStripeClass(status: string): string {
+  const map: Record<string, string> = {
+    complete: styles.stripeComplete,
+    running: styles.stripeRunning,
+    failed: styles.stripeFailed,
+    waiting_for_approval: styles.stripeApproval,
+    waiting_for_feedback: styles.stripeApproval,
+    interrupted: styles.stripeInterrupted,
+    pending: styles.stripePending,
+  }
+  return map[status] ?? styles.stripePending
+}
+
+// Maps a run status to the row background CSS class.
+function getRowBgClass(status: string): string {
+  const map: Record<string, string> = {
+    complete: styles.rowComplete,
+    running: styles.rowRunning,
+    failed: styles.rowFailed,
+    waiting_for_approval: styles.rowApproval,
+    waiting_for_feedback: styles.rowApproval,
+    interrupted: styles.rowInterrupted,
+    pending: styles.rowPending,
+  }
+  return map[status] ?? styles.rowComplete
+}
+
 export default function RunsPage() {
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -31,9 +108,13 @@ export default function RunsPage() {
   const status = searchParams.get('status') ?? ''
   const policy = searchParams.get('policy') ?? ''
   const range = searchParams.get('range') ?? 'all'
-  const sort = searchParams.get('sort') ?? 'started'
-  const order = searchParams.get('order') ?? 'desc'
+  // 'sort' encodes direction as 'newest' (default) or 'oldest'
+  const sort = searchParams.get('sort') ?? 'newest'
   const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10))
+
+  // Map the sort chip value to the API's sort/order params
+  const apiSort = 'started'
+  const apiOrder = sort === 'oldest' ? 'asc' : 'desc'
 
   const since = range !== 'all' ? rangeToSince(range) : undefined
   const offset = (page - 1) * PAGE_SIZE
@@ -42,14 +123,23 @@ export default function RunsPage() {
     status: status || undefined,
     policy_id: policy || undefined,
     since,
-    sort,
-    order,
+    sort: apiSort,
+    order: apiOrder,
     limit: PAGE_SIZE,
     offset,
   })
 
-  usePageTitle('Runs')
+  usePageTitle('Run History')
   const { data: policies } = usePolicies()
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const firstItem = offset + 1
+  const lastItem = Math.min(offset + runs.length, total)
+  const pageNumbers = computePageNumbers(page, totalPages)
+
+  // Stats subtitle — deferred mode shows total count since backend doesn't
+  // yet return per-status counts or token sums in the stats field.
+  const statsLine = total > 0 ? `${total} runs` : ''
 
   function setFilter(key: string, value: string) {
     setSearchParams((prev) => {
@@ -59,64 +149,76 @@ export default function RunsPage() {
       } else {
         next.delete(key)
       }
+      // Reset to page 1 whenever a filter changes
       next.delete('page')
       return next
     })
   }
 
-  function toggleSort(field: string) {
+  function goToPage(p: number) {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev)
-      const currentSort = prev.get('sort') ?? 'started'
-      const currentOrder = prev.get('order') ?? 'desc'
-      if (currentSort === field) {
-        next.set('order', currentOrder === 'desc' ? 'asc' : 'desc')
-      } else {
-        next.set('sort', field)
-        next.set('order', 'desc')
-      }
+      next.set('page', String(p))
+      return next
+    })
+  }
+
+  function toggleSort() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      const current = prev.get('sort') ?? 'newest'
+      next.set('sort', current === 'newest' ? 'oldest' : 'newest')
       next.delete('page')
       return next
     })
   }
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const sortLabel = sort === 'oldest' ? 'Oldest ▲' : 'Newest ▼'
+  const sortAriaLabel =
+    sort === 'oldest' ? 'Sort by date, currently oldest first' : 'Sort by date, currently newest first'
 
-  const firstItem = offset + 1
-  const lastItem = Math.min(offset + runs.length, total)
-
-  function sortIndicator(field: string) {
-    if (sort !== field) return ''
-    return order === 'asc' ? ' ▲' : ' ▼'
-  }
+  const selectedDateLabel = DATE_RANGES.find((d) => d.key === range)?.label ?? 'All time'
+  const selectedPolicyName = policies?.find((p) => p.id === policy)?.name
 
   return (
     <div className={styles.page}>
-      <PageHeader title="Runs" />
+      {/* Title row with contextual stats on the right */}
+      <div className={styles.titleRow}>
+        <h1 className={styles.titleText}>Run History</h1>
+        {fetchStatus === 'success' && statsLine && (
+          <span className={styles.titleStats}>{statsLine}</span>
+        )}
+      </div>
 
-      <div className={styles.filters}>
-        <select
-          className={styles.filterSelect}
-          value={status}
-          onChange={(e) => setFilter('status', e.target.value)}
-          aria-label="Filter by status"
-        >
-          <option value="">All statuses</option>
-          <option value="complete">Complete</option>
-          <option value="running">Running</option>
-          <option value="failed">Failed</option>
-          <option value="pending">Pending</option>
-          <option value="waiting_for_approval">Waiting for approval</option>
-          <option value="interrupted">Interrupted</option>
-        </select>
+      {/* Filter bar: status chip group | divider | policy + date selects | sort chip */}
+      <div className={styles.filterBar}>
+        <div role="radiogroup" aria-label="Filter by status" className={styles.statusGroup}>
+          {STATUS_FILTERS.map(({ key, label }) => {
+            const isActive = status === key
+            return (
+              <button
+                key={key}
+                role="radio"
+                aria-checked={isActive}
+                className={isActive ? `${styles.chip} ${styles.chipActive}` : styles.chip}
+                onClick={() => setFilter('status', key)}
+              >
+                {label}
+              </button>
+            )
+          })}
+        </div>
 
+        <div className={styles.filterDivider} aria-hidden="true" />
+
+        {/* Policy filter: styled native select to get accessibility for free */}
         <select
-          className={styles.filterSelect}
+          className={policy ? `${styles.chip} ${styles.chipActive}` : styles.chip}
           value={policy}
           onChange={(e) => setFilter('policy', e.target.value)}
           aria-label="Filter by policy"
         >
-          <option value="">All policies</option>
+          <option value="">All policies ▾</option>
           {(policies ?? []).map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
@@ -124,17 +226,28 @@ export default function RunsPage() {
           ))}
         </select>
 
+        {/* Date range filter: styled native select */}
         <select
-          className={styles.filterSelect}
+          className={range !== 'all' ? `${styles.chip} ${styles.chipActive}` : styles.chip}
           value={range}
           onChange={(e) => setFilter('range', e.target.value)}
           aria-label="Filter by date range"
         >
-          <option value="all">All time</option>
-          <option value="1h">Last hour</option>
-          <option value="24h">Last 24 hours</option>
-          <option value="7d">Last 7 days</option>
+          {DATE_RANGES.map(({ key, label }) => (
+            <option key={key} value={key}>
+              {label} ▾
+            </option>
+          ))}
         </select>
+
+        {/* Sort chip — pushed to far right via margin-left: auto in CSS */}
+        <button
+          className={styles.sortChip}
+          onClick={toggleSort}
+          aria-label={sortAriaLabel}
+        >
+          {sortLabel}
+        </button>
       </div>
 
       <QueryBoundary
@@ -143,94 +256,95 @@ export default function RunsPage() {
         errorMessage="Failed to load runs."
         onRetry={() => queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })}
         emptyState={
-          <div className={styles.emptyRuns}>
-            <span>No runs found.</span>
-            <span>Try adjusting the filters, or <Link to="/policies">go to Policies</Link> to trigger a run.</span>
-          </div>
+          <EmptyState
+            headline="No runs found"
+            subtext="Try adjusting the filters, or go to Policies to trigger a run."
+            ctaLabel="Go to Policies"
+            ctaTo="/policies"
+          />
         }
       >
-        <div className={styles.table}>
-          <div className={styles.headerRow}>
-            <span>Run ID</span>
-            <span>Policy</span>
-            <span>Status</span>
-            <span>Trigger</span>
-            <span
-              className={`${styles.sortable} ${sort === 'started' ? styles.sortActive : ''}`}
-              onClick={() => toggleSort('started')}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => e.key === 'Enter' && toggleSort('started')}
-            >
-              Started{sortIndicator('started')}
-            </span>
-            <span>Duration</span>
-            <span>Tokens</span>
-            <span>Error</span>
-          </div>
+        <div className={styles.runList}>
           {runs.map((run) => (
-            <Link key={run.id} to={`/runs/${run.id}`} className={styles.row}>
-              <span className={styles.runId} title={run.id}>
-                {run.id.slice(0, 8)}
+            <Link
+              key={run.id}
+              to={`/runs/${run.id}`}
+              className={`${styles.row} ${getRowBgClass(run.status)}`}
+            >
+              {/* Left stripe encodes status visually; badge communicates it in text */}
+              <div className={`${styles.stripe} ${getStripeClass(run.status)}`} aria-hidden="true" />
+
+              {/* Policy name (primary) + run ID and trigger type (secondary) */}
+              <div className={styles.identity}>
+                <div className={styles.policyName} title={run.policy_name ?? run.policy_id}>
+                  {run.policy_name || run.policy_id}
+                </div>
+                <div className={styles.subtext}>
+                  {run.id.slice(0, 8)} · {run.trigger_type}
+                </div>
+              </div>
+
+              <StatusBadge status={run.status as RunStatus} />
+
+              <span className={styles.duration}>
+                {formatDuration(computeRunDuration(run))}
               </span>
-              <span className={styles.policyName} title={run.policy_name ?? run.policy_id}>
-                {run.policy_name || run.policy_id}
-              </span>
-              <span>
-                {KNOWN_STATUSES.has(run.status) && (
-                  <StatusBadge status={run.status as RunStatus} />
-                )}
-              </span>
-              <span>
-                {KNOWN_TRIGGERS.has(run.trigger_type) && (
-                  <TriggerChip type={run.trigger_type as TriggerType} />
-                )}
-              </span>
-              <span className={styles.mono} title={formatTimestamp(run.started_at)}>
-                {formatTimeAgo(run.started_at)}
-              </span>
-              <span className={styles.mono}>{formatDuration(computeRunDuration(run))}</span>
-              <span className={styles.tokensCell}>{formatTokens(run.token_cost)}</span>
-              <span className={styles.errorCell} title={run.error ?? undefined}>
-                {run.error ?? ''}
-              </span>
+
+              <div className={styles.timeTokens}>
+                <div className={styles.timeAgo} title={formatTimestamp(run.started_at)}>
+                  {formatTimeAgo(run.started_at)}
+                </div>
+                <div className={styles.tokens}>{formatTokens(run.token_cost)} tok</div>
+              </div>
+
+              <span className={styles.arrow} aria-hidden="true">›</span>
             </Link>
           ))}
         </div>
       </QueryBoundary>
 
+      {/* Pagination — only shown when there are runs to paginate */}
       {fetchStatus === 'success' && total > 0 && (
         <div className={styles.pagination}>
           <span className={styles.pageInfo}>
-            Showing {firstItem}–{lastItem} of {total} runs
+            {firstItem}–{lastItem} of {total}
           </span>
-          <div>
-            <Button
-              variant="ghost"
+          <div className={styles.pageButtons}>
+            <button
               disabled={page <= 1}
-              onClick={() =>
-                setSearchParams((prev) => {
-                  const next = new URLSearchParams(prev)
-                  next.set('page', String(page - 1))
-                  return next
-                })
-              }
+              aria-label="Previous page"
+              className={`${styles.pageButton} ${page <= 1 ? styles.pageButtonDisabled : ''}`}
+              onClick={() => goToPage(page - 1)}
             >
-              Previous
-            </Button>{' '}
-            <Button
-              variant="ghost"
+              ←
+            </button>
+
+            {pageNumbers.map((n, i) =>
+              n === 'ellipsis' ? (
+                <span key={`e${i}`} className={styles.pageEllipsis}>
+                  …
+                </span>
+              ) : (
+                <button
+                  key={n}
+                  aria-label={`Page ${n}`}
+                  aria-current={n === page ? 'page' : undefined}
+                  className={`${styles.pageButton} ${n === page ? styles.pageButtonActive : ''}`}
+                  onClick={() => goToPage(n)}
+                >
+                  {n}
+                </button>
+              )
+            )}
+
+            <button
               disabled={page >= totalPages}
-              onClick={() =>
-                setSearchParams((prev) => {
-                  const next = new URLSearchParams(prev)
-                  next.set('page', String(page + 1))
-                  return next
-                })
-              }
+              aria-label="Next page"
+              className={`${styles.pageButton} ${page >= totalPages ? styles.pageButtonDisabled : ''}`}
+              onClick={() => goToPage(page + 1)}
             >
-              Next
-            </Button>
+              →
+            </button>
           </div>
         </div>
       )}

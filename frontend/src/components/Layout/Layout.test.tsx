@@ -53,7 +53,7 @@ describe('Layout', () => {
   it('renders 4 nav items', () => {
     renderLayout()
     expect(screen.getByRole('link', { name: /control center/i })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /runs/i })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /run history/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /policies/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /tools/i })).toBeInTheDocument()
   })
@@ -89,13 +89,13 @@ describe('Layout', () => {
 
   it('runs link is active when path is exactly /runs', () => {
     renderLayout('/runs')
-    const runsLink = screen.getByRole('link', { name: /runs/i })
+    const runsLink = screen.getByRole('link', { name: /run history/i })
     expect(runsLink.className).toContain('navLinkActive')
   })
 
   it('runs link is NOT active for nested paths like /runs/some-id', () => {
     renderLayout('/runs/some-id')
-    const runsLink = screen.getByRole('link', { name: /runs/i })
+    const runsLink = screen.getByRole('link', { name: /run history/i })
     expect(runsLink.className).not.toContain('navLinkActive')
   })
 

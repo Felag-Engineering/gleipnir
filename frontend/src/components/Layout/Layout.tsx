@@ -11,7 +11,7 @@ const SIDEBAR_STORAGE_KEY = 'gleipnir-sidebar-collapsed'
 
 const NAV_ITEMS = [
   { label: 'Control Center', to: '/dashboard', Icon: Activity, requiredRole: undefined },
-  { label: 'Runs', to: '/runs', Icon: History, requiredRole: undefined },
+  { label: 'Run History', to: '/runs', Icon: History, requiredRole: undefined },
   { label: 'Policies', to: '/policies', Icon: ScrollText, requiredRole: undefined },
   { label: 'Tools', to: '/tools', Icon: Wrench, requiredRole: undefined },
   { label: 'Users', to: '/users', Icon: Users, requiredRole: 'admin' },
