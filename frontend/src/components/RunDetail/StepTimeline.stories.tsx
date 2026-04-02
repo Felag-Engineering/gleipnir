@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import '@/tokens.css'
 import type { ApiRunStep } from '@/api/types'
-import { parseStep } from './types'
+import { parseStep, pairToolBlocks } from './types'
 import type { GrantedToolEntry } from './types'
 import { StepTimeline } from './StepTimeline'
 
@@ -51,27 +51,27 @@ const defaultRunProps = {
 }
 
 export const FullRun: Story = {
-  args: { steps: FULL_STEPS, toolRoleMap: roleMap, ...defaultRunProps },
+  args: { items: pairToolBlocks(FULL_STEPS), toolRoleMap: roleMap, ...defaultRunProps },
 }
 
 export const WithError: Story = {
   args: {
-    steps: [
+    items: pairToolBlocks([
       ...FULL_STEPS.slice(0, 4),
       parseStep(makeRaw({ id: 's5e', step_number: 4, type: 'error', content: JSON.stringify({ message: 'write_file: permission denied', code: 'FS_PERMISSION' }) })),
-    ],
+    ]),
     toolRoleMap: roleMap,
     ...defaultRunProps,
   },
 }
 
 export const Empty: Story = {
-  args: { steps: [], toolRoleMap: roleMap, ...defaultRunProps },
+  args: { items: [], toolRoleMap: roleMap, ...defaultRunProps },
 }
 
 export const OnlyCapabilitySnapshot: Story = {
   args: {
-    steps: [FULL_STEPS[0]],
+    items: pairToolBlocks([FULL_STEPS[0]]),
     toolRoleMap: roleMap,
     ...defaultRunProps,
   },

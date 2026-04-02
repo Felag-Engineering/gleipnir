@@ -2,30 +2,28 @@ import { CapabilitySnapshotCard } from './CapabilitySnapshotCard'
 import { StepCard } from './StepCard'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolBlock } from './ToolBlock'
-import { pairToolBlocks, isToolBlock } from './types'
-import type { ParsedStep, GrantedToolEntry } from './types'
+import { isToolBlock } from './types'
+import type { ParsedStep, ToolBlockData, GrantedToolEntry } from './types'
 import styles from './StepTimeline.module.css'
 
 interface Props {
-  steps: ParsedStep[]
+  items: (ParsedStep | ToolBlockData)[]
   toolRoleMap: Map<string, GrantedToolEntry['Role']>
   systemPrompt?: string | null
   runId: string
   runStatus: string
 }
 
-export function StepTimeline({ steps, toolRoleMap, systemPrompt, runId, runStatus }: Props) {
-  if (steps.length === 0) {
+export function StepTimeline({ items, toolRoleMap, systemPrompt, runId, runStatus }: Props) {
+  if (items.length === 0) {
     return (
       <p className={styles.empty}>No steps to display.</p>
     )
   }
 
-  const pairedSteps = pairToolBlocks(steps)
-
   return (
     <ol className={styles.timeline} aria-label="Run steps">
-      {pairedSteps.map((item, idx) => {
+      {items.map((item, idx) => {
         const key = isToolBlock(item)
           ? (item.approval?.raw.id ?? item.call?.raw.id ?? String(idx))
           : item.raw.id

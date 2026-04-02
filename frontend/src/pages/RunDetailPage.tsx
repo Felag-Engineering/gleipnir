@@ -12,9 +12,11 @@ import {
   FilterBar,
   StepTimeline,
   parseStep,
+  pairToolBlocks,
+  isToolBlock,
 } from '@/components/RunDetail'
 import type { FilterKey } from '@/components/RunDetail'
-import type { ParsedStep, CapabilitySnapshotContent, CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
+import type { ParsedStep, ToolBlockData, CapabilitySnapshotContent, CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import styles from './RunDetailPage.module.css'
 
@@ -56,37 +58,63 @@ export default function RunDetailPage() {
   const nonSnapshotSteps = allParsed.filter((s) => s.type !== 'capability_snapshot')
   const snapshotSteps = allParsed.filter((s) => s.type === 'capability_snapshot')
 
-  // Filter counts. Each tool_call represents one tool interaction (paired with
-  // its result in the timeline), so we count calls only — not results separately.
+  // Pair tool_call/tool_result/approval_request steps into visual ToolBlock units.
+  // Filtering and pagination operate on these paired items so that a tool interaction
+  // counts as one item regardless of how many raw steps it spans.
+  const pairedItems = pairToolBlocks(nonSnapshotSteps)
+
+  // Count each filter category over paired visual items (not raw steps).
+  // "All" reflects what the user sees on screen — one entry per visual block.
   const counts: Record<FilterKey, number> = {
-    all: nonSnapshotSteps.length,
-    thought: nonSnapshotSteps.filter((s) => s.type === 'thought').length,
-    tool: nonSnapshotSteps.filter((s) => s.type === 'tool_call').length,
-    error: nonSnapshotSteps.filter((s) => s.type === 'error').length,
+    all: pairedItems.length,
+    tool: pairedItems.filter(isToolBlock).length,
+    thought: pairedItems.filter((item) => !isToolBlock(item) && item.type === 'thought').length,
+    thinking: pairedItems.filter((item) => !isToolBlock(item) && item.type === 'thinking').length,
+    error: pairedItems.filter((item) =>
+      isToolBlock(item)
+        ? item.result?.content.is_error === true
+        : item.type === 'error'
+    ).length,
+    approval: pairedItems.filter((item) =>
+      isToolBlock(item)
+        ? item.approval !== null
+        : item.type === 'approval_request'
+    ).length,
   }
 
-  // Apply filter. When filtering by 'tool', include approval_request and tool_result
-  // steps alongside tool_call so that pairToolBlocks can still form complete blocks.
-  const filteredSteps =
+  // Apply filter to paired items. ToolBlockData always matches 'tool'. Filtering by
+  // 'error' includes both standalone error steps and tool blocks with an error result.
+  // Filtering by 'approval' includes blocks with any approval state plus standalone
+  // approval_request steps.
+  const filteredItems =
     filter === 'all'
-      ? nonSnapshotSteps
-      : filter === 'tool'
-        ? nonSnapshotSteps.filter(
-            (s) =>
-              s.type === 'tool_call' ||
-              s.type === 'tool_result' ||
-              s.type === 'approval_request',
-          )
-        : nonSnapshotSteps.filter((s) => s.type === filter)
+      ? pairedItems
+      : pairedItems.filter((item) => {
+          if (isToolBlock(item)) {
+            switch (filter) {
+              case 'tool': return true
+              case 'error': return item.result?.content.is_error === true
+              case 'approval': return item.approval !== null
+              default: return false
+            }
+          }
+          switch (filter) {
+            case 'thought': return item.type === 'thought'
+            case 'thinking': return item.type === 'thinking'
+            case 'error': return item.type === 'error'
+            case 'approval': return item.type === 'approval_request'
+            default: return false
+          }
+        })
 
   // Client-side pagination
-  const displayedSteps = filteredSteps.slice(0, displayedCount)
-  const hasMore = filteredSteps.length > displayedCount
+  const displayedItems = filteredItems.slice(0, displayedCount)
+  const hasMore = filteredItems.length > displayedCount
 
-  // Show capability snapshot at the top always
-  const timelineSteps: ParsedStep[] = [
+  // Show capability snapshots at the top always; then the paginated filtered items.
+  const timelineItems: (ParsedStep | ToolBlockData)[] = [
     ...snapshotSteps,
-    ...displayedSteps,
+    ...displayedItems,
   ]
 
   // IntersectionObserver for scroll detection (not available in all test environments)
@@ -190,7 +218,7 @@ export default function RunDetailPage() {
             <FilterBar active={filter} counts={counts} onChange={setFilter} />
 
             <div className={styles.timeline}>
-              <StepTimeline steps={timelineSteps} toolRoleMap={toolRoleMap} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} />
+              <StepTimeline items={timelineItems} toolRoleMap={toolRoleMap} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} />
 
               {hasMore && (
                 <button
@@ -198,7 +226,7 @@ export default function RunDetailPage() {
                   className={styles.loadMoreBtn}
                   onClick={() => setDisplayedCount((c) => c + PAGE_SIZE)}
                 >
-                  Load more ({filteredSteps.length - displayedCount} remaining)
+                  Load more ({filteredItems.length - displayedCount} remaining)
                 </button>
               )}
             </div>

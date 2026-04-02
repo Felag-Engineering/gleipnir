@@ -13,10 +13,12 @@ export default meta
 type Story = StoryObj<typeof FilterBar>
 
 const COUNTS: Record<FilterKey, number> = {
-  all: 24,
+  all: 42,
+  tool: 12,
   thought: 8,
-  tool: 7,
-  error: 2,
+  thinking: 6,
+  error: 3,
+  approval: 2,
 }
 
 export const AllActive: Story = {
@@ -35,6 +37,30 @@ export const ThoughtsActive: Story = {
   },
 }
 
+export const ThinkingActive: Story = {
+  args: {
+    active: 'thinking',
+    counts: COUNTS,
+    onChange: () => {},
+  },
+}
+
+export const ApprovalsActive: Story = {
+  args: {
+    active: 'approval',
+    counts: COUNTS,
+    onChange: () => {},
+  },
+}
+
+export const ToolsActive: Story = {
+  args: {
+    active: 'tool',
+    counts: COUNTS,
+    onChange: () => {},
+  },
+}
+
 export const ErrorsActive: Story = {
   args: {
     active: 'error',
@@ -47,6 +73,24 @@ export const NoErrors: Story = {
   args: {
     active: 'all',
     counts: { ...COUNTS, error: 0 },
+    onChange: () => {},
+  },
+}
+
+// All counts are zero — badges should be hidden for every chip.
+export const AllZeroCounts: Story = {
+  args: {
+    active: 'all',
+    counts: { all: 0, tool: 0, thought: 0, thinking: 0, error: 0, approval: 0 },
+    onChange: () => {},
+  },
+}
+
+// Active chip with non-zero count demonstrates the inverted blue background styling.
+export const InvertedActiveStyle: Story = {
+  args: {
+    active: 'tool',
+    counts: COUNTS,
     onChange: () => {},
   },
 }

@@ -300,12 +300,18 @@ describe('RunDetailPage — step types render', () => {
 })
 
 describe('RunDetailPage — filter chips', () => {
+  // After pairToolBlocks this fixture produces 7 visual blocks:
+  //   thought A, thought B, ToolBlock(x, ok), error, thinking, ToolBlock(y, error), ToolBlock(approval z denied)
   const steps: ApiRunStep[] = [
     makeStep({ id: 's1', type: 'thought', content: JSON.stringify({ text: 'Thought A' }) }),
     makeStep({ id: 's2', step_number: 1, type: 'thought', content: JSON.stringify({ text: 'Thought B' }) }),
     makeStep({ id: 's3', step_number: 2, type: 'tool_call', content: JSON.stringify({ tool_name: 'x', server_id: 'srv', input: {} }) }),
-    makeStep({ id: 's4', step_number: 3, type: 'error', content: JSON.stringify({ message: 'err', code: 'E' }) }),
-    makeStep({ id: 's5', step_number: 4, type: 'tool_result', content: JSON.stringify({ tool_name: 'x', output: '"ok"', is_error: false }) }),
+    makeStep({ id: 's4', step_number: 3, type: 'tool_result', content: JSON.stringify({ tool_name: 'x', output: '"ok"', is_error: false }) }),
+    makeStep({ id: 's5', step_number: 4, type: 'error', content: JSON.stringify({ message: 'err', code: 'E' }) }),
+    makeStep({ id: 's6', step_number: 5, type: 'thinking', content: JSON.stringify({ text: 'Deep thinking', redacted: false }) }),
+    makeStep({ id: 's7', step_number: 6, type: 'tool_call', content: JSON.stringify({ tool_name: 'y', server_id: 'srv', input: {} }) }),
+    makeStep({ id: 's8', step_number: 7, type: 'tool_result', content: JSON.stringify({ tool_name: 'y', output: '"fail"', is_error: true }) }),
+    makeStep({ id: 's9', step_number: 8, type: 'approval_request', content: JSON.stringify({ tool: 'z', input: {} }) }),
   ]
 
   beforeEach(() => {
@@ -314,7 +320,7 @@ describe('RunDetailPage — filter chips', () => {
 
   it('shows all non-snapshot steps on "All" filter', () => {
     renderPage()
-    // 2 thoughts + 1 tool_call + 1 error + 1 tool_result = 5 visible
+    // 7 visual blocks: thought A, thought B, ToolBlock(x), error, thinking, ToolBlock(y), ToolBlock(z)
     expect(screen.getByText('Thought A')).toBeInTheDocument()
     expect(screen.getByText('Thought B')).toBeInTheDocument()
   })
@@ -325,7 +331,7 @@ describe('RunDetailPage — filter chips', () => {
     await waitFor(() => {
       expect(screen.getByText('Thought A')).toBeInTheDocument()
       expect(screen.getByText('Thought B')).toBeInTheDocument()
-      // tool_call and error should be gone
+      // tool blocks and error should be gone
       expect(screen.queryByText('tool call')).not.toBeInTheDocument()
       expect(screen.queryByText('err')).not.toBeInTheDocument()
     })
@@ -335,9 +341,63 @@ describe('RunDetailPage — filter chips', () => {
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: /^tools/i }))
     await waitFor(() => {
-      // tool_call 'x' appears via ToolBlock (paired with its result)
+      // All 3 tool blocks should be visible: x (ok), y (error), z (approval denied)
       expect(screen.getByText('x')).toBeInTheDocument()
+      expect(screen.getByText('y')).toBeInTheDocument()
+      expect(screen.getByText('z')).toBeInTheDocument()
+      // Non-tool items hidden
       expect(screen.queryByText('Thought A')).not.toBeInTheDocument()
+      expect(screen.queryByText('err')).not.toBeInTheDocument()
+      expect(screen.queryByText('Deep thinking')).not.toBeInTheDocument()
+    })
+  })
+
+  it('shows error steps and tool blocks with is_error after clicking Errors chip', async () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /errors/i }))
+    await waitFor(() => {
+      // Standalone error step visible
+      expect(screen.getByText('err')).toBeInTheDocument()
+      // Tool block y has is_error result — visible
+      expect(screen.getByText('y')).toBeInTheDocument()
+      // Thoughts, thinking, non-error tool blocks hidden
+      expect(screen.queryByText('Thought A')).not.toBeInTheDocument()
+      expect(screen.queryByText('Deep thinking')).not.toBeInTheDocument()
+      expect(screen.queryByText('x')).not.toBeInTheDocument()
+    })
+  })
+
+  it('shows only thinking steps after clicking Thinking chip', async () => {
+    renderPage()
+    // Use getAllByRole because ThinkingBlock also renders a div[role="button"] with
+    // "Thinking" in its label. We want the <button> chip, which is the first match.
+    const thinkingButtons = screen.getAllByRole('button', { name: /^thinking/i })
+    const thinkingChip = thinkingButtons.find((el) => el.tagName === 'BUTTON')!
+    fireEvent.click(thinkingChip)
+    await waitFor(() => {
+      // ThinkingBlock renders a collapsible div[role="button"] with label "Thinking"
+      // (the content "Deep thinking" is only visible when expanded).
+      // Verify the ThinkingBlock is present by checking its collapsed header is rendered.
+      const rendered = screen.getAllByRole('button', { name: /^thinking/i })
+      const thinkingBlock = rendered.find((el) => el.tagName !== 'BUTTON')
+      expect(thinkingBlock).toBeInTheDocument()
+      // Other step types hidden
+      expect(screen.queryByText('Thought A')).not.toBeInTheDocument()
+      expect(screen.queryByText('err')).not.toBeInTheDocument()
+      expect(screen.queryByText('x')).not.toBeInTheDocument()
+    })
+  })
+
+  it('shows approval blocks after clicking Approvals chip', async () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /approvals/i }))
+    await waitFor(() => {
+      // ToolBlock z has a non-null approval — visible
+      expect(screen.getByText('z')).toBeInTheDocument()
+      // Other blocks hidden
+      expect(screen.queryByText('Thought A')).not.toBeInTheDocument()
+      expect(screen.queryByText('x')).not.toBeInTheDocument()
+      expect(screen.queryByText('y')).not.toBeInTheDocument()
       expect(screen.queryByText('err')).not.toBeInTheDocument()
     })
   })
@@ -349,16 +409,30 @@ describe('RunDetailPage — filter chips', () => {
     expect(thoughtsChip.textContent).toContain('2')
   })
 
-  it('shows count 1 for Errors chip', () => {
+  it('shows count 2 for Errors chip (1 standalone + 1 tool block with is_error)', () => {
     renderPage()
     const errorsChip = screen.getByRole('button', { name: /errors/i })
-    expect(errorsChip.textContent).toContain('1')
+    expect(errorsChip.textContent).toContain('2')
   })
 
-  it('shows count 1 for Tools chip', () => {
+  it('shows count 3 for Tools chip (ToolBlock x + ToolBlock y + ToolBlock z)', () => {
     renderPage()
     const toolsChip = screen.getByRole('button', { name: /^tools/i })
-    expect(toolsChip.textContent).toContain('1')
+    expect(toolsChip.textContent).toContain('3')
+  })
+
+  it('shows count 1 for Thinking chip', () => {
+    renderPage()
+    // ThinkingBlock also has a div[role="button"] labelled "Thinking"; find the <button> chip.
+    const thinkingButtons = screen.getAllByRole('button', { name: /^thinking/i })
+    const thinkingChip = thinkingButtons.find((el) => el.tagName === 'BUTTON')!
+    expect(thinkingChip.textContent).toContain('1')
+  })
+
+  it('shows count 1 for Approvals chip', () => {
+    renderPage()
+    const approvalsChip = screen.getByRole('button', { name: /approvals/i })
+    expect(approvalsChip.textContent).toContain('1')
   })
 
   it('clicking All chip after a filter shows all steps again', async () => {

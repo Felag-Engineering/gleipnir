@@ -29,9 +29,15 @@
 }
 
 .chip.active {
-  color: var(--text-primary);
-  background: color-mix(in srgb, var(--color-blue) 10%, transparent);
+  color: var(--bg-canvas);
+  background: var(--color-blue);
   border-color: var(--color-blue);
+}
+
+.chip.active:hover {
+  color: var(--bg-canvas);
+  background: color-mix(in srgb, var(--color-blue) 85%, white);
+  border-color: color-mix(in srgb, var(--color-blue) 85%, white);
 }
 
 .badge {
@@ -49,6 +55,6 @@
 }
 
 .chip.active .badge {
-  color: var(--color-blue);
-  background: color-mix(in srgb, var(--color-blue) 15%, transparent);
+  color: var(--bg-canvas);
+  background: color-mix(in srgb, white 20%, transparent);
 }
