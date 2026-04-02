@@ -95,6 +95,8 @@ type Session struct {
 	Token     string `json:"token"`
 	CreatedAt string `json:"created_at"`
 	ExpiresAt string `json:"expires_at"`
+	UserAgent string `json:"user_agent"`
+	IpAddress string `json:"ip_address"`
 }
 
 type TriggerQueue struct {
@@ -112,6 +114,13 @@ type User struct {
 	PasswordHash  string  `json:"password_hash"`
 	CreatedAt     string  `json:"created_at"`
 	DeactivatedAt *string `json:"deactivated_at"`
+}
+
+type UserPreference struct {
+	UserID          string `json:"user_id"`
+	PreferenceKey   string `json:"preference_key"`
+	PreferenceValue string `json:"preference_value"`
+	UpdatedAt       string `json:"updated_at"`
 }
 
 type UserRole struct {

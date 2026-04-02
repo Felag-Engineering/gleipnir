@@ -24,3 +24,6 @@ RETURNING *;
 
 -- name: ListUsers :many
 SELECT id, username, created_at, deactivated_at FROM users ORDER BY created_at;
+
+-- name: UpdateUserPassword :exec
+UPDATE users SET password_hash = :password_hash WHERE id = :id;

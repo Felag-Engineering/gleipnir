@@ -46,6 +46,12 @@ type mockAuthQuerier struct {
 	removeRolesErr      error
 	createUserUser      db.User
 	createUserErr       error
+
+	// Fields for password/session tests
+	updatePasswordErr    error
+	sessions             []db.ListSessionsByUserRow
+	listSessionsErr      error
+	deleteSessionByIDErr error
 }
 
 func (m *mockAuthQuerier) GetUserByUsername(_ context.Context, _ string) (db.User, error) {
@@ -123,6 +129,18 @@ func (m *mockAuthQuerier) ListUsersByRole(_ context.Context, _ string) ([]db.Lis
 
 func (m *mockAuthQuerier) ListActiveUsersByRole(_ context.Context, _ string) ([]db.ListActiveUsersByRoleRow, error) {
 	return m.activeUsersByRole, m.listActiveByRoleErr
+}
+
+func (m *mockAuthQuerier) UpdateUserPassword(_ context.Context, _ db.UpdateUserPasswordParams) error {
+	return m.updatePasswordErr
+}
+
+func (m *mockAuthQuerier) ListSessionsByUser(_ context.Context, _ db.ListSessionsByUserParams) ([]db.ListSessionsByUserRow, error) {
+	return m.sessions, m.listSessionsErr
+}
+
+func (m *mockAuthQuerier) DeleteSessionByID(_ context.Context, _ db.DeleteSessionByIDParams) error {
+	return m.deleteSessionByIDErr
 }
 
 func makeUser(username string, deactivated bool) db.User {
@@ -1028,4 +1046,142 @@ func TestUpdateUserHandler(t *testing.T) {
 			t.Errorf("status = %d, want 400 (last-admin protection); body: %s", rec.Code, rec.Body.String())
 		}
 	})
+}
+
+func TestChangePasswordHandler(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		querier    *mockAuthQuerier
+		wantStatus int
+	}{
+		{
+			name: "success returns 204",
+			body: `{"current_password":"correct-password","new_password":"newpassword123"}`,
+			querier: &mockAuthQuerier{
+				getUser: makeUser("alice", false),
+			},
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name: "wrong current password returns 401",
+			body: `{"current_password":"wrong-password","new_password":"newpassword123"}`,
+			querier: &mockAuthQuerier{
+				getUser: makeUser("alice", false),
+			},
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "new password too short returns 400",
+			body:       `{"current_password":"correct-password","new_password":"short"}`,
+			querier:    &mockAuthQuerier{getUser: makeUser("alice", false)},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "missing current_password returns 400",
+			body:       `{"new_password":"newpassword123"}`,
+			querier:    &mockAuthQuerier{getUser: makeUser("alice", false)},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid JSON returns 400",
+			body:       "not-json",
+			querier:    &mockAuthQuerier{},
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHandler(tc.querier, nil)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/password", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			req = withCallerContext(req, "user-1", "alice", []string{"admin"})
+			rec := httptest.NewRecorder()
+
+			h.ChangePasswordHandler(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d; body: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestListSessionsHandler(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(24 * time.Hour).Format(time.RFC3339)
+
+	sessions := []db.ListSessionsByUserRow{
+		{
+			ID:        "sess-1",
+			UserID:    "user-1",
+			Token:     "token-current",
+			UserAgent: "Mozilla/5.0",
+			IpAddress: "127.0.0.1",
+			CreatedAt: now.Format(time.RFC3339),
+			ExpiresAt: future,
+		},
+		{
+			ID:        "sess-2",
+			UserID:    "user-1",
+			Token:     "token-other",
+			UserAgent: "curl/7.0",
+			IpAddress: "10.0.0.1",
+			CreatedAt: now.Add(-1 * time.Hour).Format(time.RFC3339),
+			ExpiresAt: future,
+		},
+	}
+
+	q := &mockAuthQuerier{sessions: sessions}
+	h := NewHandler(q, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/sessions", nil)
+	req = withCallerContext(req, "user-1", "alice", []string{"admin"})
+	// Add the session cookie so the current session is marked.
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "token-current"})
+	rec := httptest.NewRecorder()
+
+	h.ListSessionsHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Data []sessionResponse `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("session count = %d, want 2", len(resp.Data))
+	}
+
+	// The first session should be marked as current.
+	if !resp.Data[0].IsCurrent {
+		t.Error("first session should be marked as current")
+	}
+	if resp.Data[1].IsCurrent {
+		t.Error("second session should not be marked as current")
+	}
+}
+
+func TestRevokeSessionHandler(t *testing.T) {
+	q := &mockAuthQuerier{}
+	h := NewHandler(q, nil)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionID", "sess-to-revoke")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/auth/sessions/sess-to-revoke", nil)
+	req = withCallerContext(req, "user-1", "alice", []string{"admin"})
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	h.RevokeSessionHandler(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204; body: %s", rec.Code, rec.Body.String())
+	}
 }

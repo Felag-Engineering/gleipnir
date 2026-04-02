@@ -32,4 +32,10 @@ export const queryKeys = {
   models: {
     all: ['models'] as const,
   },
+  preferences: {
+    all: ['preferences'] as const,
+  },
+  sessions: {
+    all: ['sessions'] as const,
+  },
 } as const

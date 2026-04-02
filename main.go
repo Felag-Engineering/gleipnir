@@ -124,6 +124,7 @@ func run(cfg config.Config) error {
 	}
 
 	authHandler := auth.NewHandler(store.Queries(), store.DB())
+	settingsHandler := auth.NewSettingsHandler(store.Queries())
 	r.Route("/api/v1/auth", func(r chi.Router) {
 		r.Get("/status", authHandler.Status)
 		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/setup", authHandler.Setup)
@@ -138,6 +139,12 @@ func run(cfg config.Config) error {
 		r.Use(requireAuth)
 
 		r.Get("/api/v1/auth/me", authHandler.Me)
+		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/api/v1/auth/password", authHandler.ChangePasswordHandler)
+		r.Get("/api/v1/auth/sessions", authHandler.ListSessionsHandler)
+		r.Delete("/api/v1/auth/sessions/{sessionID}", authHandler.RevokeSessionHandler)
+
+		r.Get("/api/v1/settings/preferences", settingsHandler.GetPreferences)
+		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Put("/api/v1/settings/preferences", settingsHandler.UpdatePreferences)
 
 		r.Route("/api/v1/users", func(r chi.Router) {
 			r.Use(auth.RequireRole(model.RoleAdmin))

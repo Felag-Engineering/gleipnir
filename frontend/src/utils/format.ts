@@ -1,6 +1,45 @@
 // Canonical formatting helpers for the Gleipnir frontend.
 // All duration, token, timestamp, and relative-time formatting lives here.
 
+const TZ_KEY = 'gleipnir-timezone'
+const DATE_FORMAT_KEY = 'gleipnir-date-format'
+
+export type DateFormat = 'relative' | 'absolute' | 'iso'
+
+function readStorageKey(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+export function getPreferredTimezone(): string {
+  return readStorageKey(TZ_KEY) ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+}
+
+export function getPreferredDateFormat(): DateFormat {
+  const raw = readStorageKey(DATE_FORMAT_KEY)
+  if (raw === 'relative' || raw === 'absolute' || raw === 'iso') return raw
+  return 'absolute'
+}
+
+export function saveTimezonePreference(tz: string): void {
+  try {
+    localStorage.setItem(TZ_KEY, tz)
+  } catch {
+    // localStorage unavailable
+  }
+}
+
+export function saveDateFormatPreference(fmt: DateFormat): void {
+  try {
+    localStorage.setItem(DATE_FORMAT_KEY, fmt)
+  } catch {
+    // localStorage unavailable
+  }
+}
+
 export const formatDuration = (s: number | null) =>
   s == null ? '—' : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
 
@@ -18,7 +57,34 @@ export function formatTokens(n: number): string {
 
 export const formatTimestamp = (iso: string) => {
   try {
+    const fmt = getPreferredDateFormat()
+    const tz = getPreferredTimezone()
+
+    if (fmt === 'iso') {
+      // Re-render in the preferred timezone as ISO-like string
+      const d = new Date(iso)
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).formatToParts(d)
+      const p: Record<string, string> = {}
+      for (const { type, value } of parts) p[type] = value
+      return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}`
+    }
+
+    if (fmt === 'relative') {
+      return formatTimeAgo(iso)
+    }
+
+    // absolute (default)
     return new Date(iso).toLocaleString('en-US', {
+      timeZone: tz,
       month: 'short',
       day: 'numeric',
       hour: '2-digit',

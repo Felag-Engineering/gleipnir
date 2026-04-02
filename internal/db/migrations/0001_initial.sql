@@ -267,7 +267,9 @@ CREATE TABLE sessions (
     user_id     TEXT    NOT NULL REFERENCES users(id),
     token       TEXT    NOT NULL UNIQUE,
     created_at  TEXT    NOT NULL,     -- ISO 8601 UTC
-    expires_at  TEXT    NOT NULL      -- ISO 8601 UTC
+    expires_at  TEXT    NOT NULL,     -- ISO 8601 UTC
+    user_agent  TEXT    NOT NULL DEFAULT '',
+    ip_address  TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX idx_sessions_user_id    ON sessions(user_id);
@@ -309,6 +311,21 @@ CREATE TABLE trigger_queue (
 );
 
 CREATE INDEX idx_trigger_queue_policy_position ON trigger_queue(policy_id, position);
+
+-- ---------------------------------------------------------------------------
+-- User preferences
+--
+-- Key-value store for per-user UI preferences (e.g. default_model, timezone).
+-- Keys are validated at the application layer; not constrained in the schema.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE user_preferences (
+    user_id          TEXT NOT NULL REFERENCES users(id),
+    preference_key   TEXT NOT NULL,
+    preference_value TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,  -- ISO 8601 UTC
+    UNIQUE(user_id, preference_key)
+);
 
 -- ---------------------------------------------------------------------------
 -- Seed migration version

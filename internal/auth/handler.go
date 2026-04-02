@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -46,6 +47,9 @@ type AuthQuerier interface {
 	ListRolesByUser(ctx context.Context, userID string) ([]string, error)
 	ListUsersByRole(ctx context.Context, role string) ([]db.ListUsersByRoleRow, error)
 	ListActiveUsersByRole(ctx context.Context, role string) ([]db.ListActiveUsersByRoleRow, error)
+	UpdateUserPassword(ctx context.Context, arg db.UpdateUserPasswordParams) error
+	ListSessionsByUser(ctx context.Context, arg db.ListSessionsByUserParams) ([]db.ListSessionsByUserRow, error)
+	DeleteSessionByID(ctx context.Context, arg db.DeleteSessionByIDParams) error
 }
 
 // Handler handles the login and logout HTTP endpoints.
@@ -135,12 +139,21 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(SessionDuration)
 
+	// Capture the client's IP (RemoteAddr may be "host:port") and User-Agent
+	// for session management UI display.
+	ipAddress := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		ipAddress = host
+	}
+
 	_, err = h.q.CreateSession(r.Context(), db.CreateSessionParams{
 		ID:        model.NewULID(),
 		UserID:    user.ID,
 		Token:     token,
 		CreatedAt: now.Format(time.RFC3339),
 		ExpiresAt: expiresAt.Format(time.RFC3339),
+		UserAgent: r.Header.Get("User-Agent"),
+		IpAddress: ipAddress,
 	})
 	if err != nil {
 		slog.Error("login: failed to create session", "err", err)
@@ -708,4 +721,141 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	if err := json.NewEncoder(w).Encode(errorResponse{Error: msg}); err != nil {
 		slog.Error("failed to write error response", "err", err)
 	}
+}
+
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+// ChangePasswordHandler changes the current user's password.
+// POST /api/v1/auth/password
+func (h *Handler) ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
+	user, ok := UserFromContext(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	var req changePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.CurrentPassword == "" {
+		writeJSONError(w, http.StatusBadRequest, "current_password is required")
+		return
+	}
+	if len(req.NewPassword) < 8 {
+		writeJSONError(w, http.StatusBadRequest, "new_password must be at least 8 characters")
+		return
+	}
+
+	dbUser, err := h.q.GetUser(r.Context(), user.ID)
+	if err != nil {
+		slog.Error("change password: get user failed", "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	if err := CheckPassword(dbUser.PasswordHash, req.CurrentPassword); err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "current password is incorrect")
+		return
+	}
+
+	newHash, err := HashPassword(req.NewPassword)
+	if err != nil {
+		slog.Error("change password: hash failed", "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	if err := h.q.UpdateUserPassword(r.Context(), db.UpdateUserPasswordParams{
+		PasswordHash: newHash,
+		ID:           user.ID,
+	}); err != nil {
+		slog.Error("change password: update failed", "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type sessionResponse struct {
+	ID        string `json:"id"`
+	UserAgent string `json:"user_agent"`
+	IPAddress string `json:"ip_address"`
+	CreatedAt string `json:"created_at"`
+	ExpiresAt string `json:"expires_at"`
+	IsCurrent bool   `json:"is_current"`
+}
+
+// ListSessionsHandler returns all active sessions for the current user.
+// GET /api/v1/auth/sessions
+func (h *Handler) ListSessionsHandler(w http.ResponseWriter, r *http.Request) {
+	user, ok := UserFromContext(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	sessions, err := h.q.ListSessionsByUser(r.Context(), db.ListSessionsByUserParams{
+		UserID: user.ID,
+		Now:    now,
+	})
+	if err != nil {
+		slog.Error("list sessions: DB error", "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Identify the current session token from the cookie so we can mark it.
+	currentToken := ""
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		currentToken = cookie.Value
+	}
+
+	resp := make([]sessionResponse, 0, len(sessions))
+	for _, s := range sessions {
+		resp = append(resp, sessionResponse{
+			ID:        s.ID,
+			UserAgent: s.UserAgent,
+			IPAddress: s.IpAddress,
+			CreatedAt: s.CreatedAt,
+			ExpiresAt: s.ExpiresAt,
+			IsCurrent: s.Token == currentToken,
+		})
+	}
+
+	writeJSONSuccess(w, http.StatusOK, resp)
+}
+
+// RevokeSessionHandler deletes a specific session for the current user.
+// DELETE /api/v1/auth/sessions/{sessionID}
+func (h *Handler) RevokeSessionHandler(w http.ResponseWriter, r *http.Request) {
+	user, ok := UserFromContext(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	sessionID := chi.URLParam(r, "sessionID")
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "sessionID is required")
+		return
+	}
+
+	if err := h.q.DeleteSessionByID(r.Context(), db.DeleteSessionByIDParams{
+		ID:     sessionID,
+		UserID: user.ID,
+	}); err != nil {
+		slog.Error("revoke session: DB error", "id", sessionID, "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
