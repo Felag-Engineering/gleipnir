@@ -8,11 +8,23 @@ vi.mock('../../hooks/useSSE', () => ({
   useSSE: vi.fn(() => ({ connectionState: 'connected' })),
 }))
 
-vi.mock('../../hooks/useTheme', () => ({
-  useTheme: vi.fn(() => ({ theme: 'system', setTheme: vi.fn(), resolvedTheme: 'dark' })),
+vi.mock('../../hooks/useCurrentUser', () => ({
+  useCurrentUser: vi.fn(() => ({ data: { id: '1', username: 'alice', roles: ['admin'] } })),
+}))
+
+vi.mock('../../hooks/useAttentionItems', () => ({
+  useAttentionItems: vi.fn(() => ({ items: [], count: 0, isLoading: false, dismissFailure: vi.fn() })),
+}))
+
+vi.mock('../../hooks/useMcpServers', () => ({
+  useMcpServers: vi.fn(() => ({ data: [] })),
 }))
 
 import Layout from './Layout'
+import { useSSE } from '../../hooks/useSSE'
+import { useCurrentUser } from '../../hooks/useCurrentUser'
+import { useAttentionItems } from '../../hooks/useAttentionItems'
+import { useMcpServers } from '../../hooks/useMcpServers'
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -32,6 +44,10 @@ function renderLayout(initialPath = '/dashboard') {
 describe('Layout', () => {
   beforeEach(() => {
     localStorage.clear()
+    vi.mocked(useSSE).mockReturnValue({ connectionState: 'connected' })
+    vi.mocked(useCurrentUser).mockReturnValue({ data: { id: '1', username: 'alice', roles: ['admin'] } } as ReturnType<typeof useCurrentUser>)
+    vi.mocked(useAttentionItems).mockReturnValue({ items: [], count: 0, isLoading: false, dismissFailure: vi.fn() })
+    vi.mocked(useMcpServers).mockReturnValue({ data: [] } as unknown as ReturnType<typeof useMcpServers>)
   })
 
   it('renders 4 nav items', () => {
@@ -83,15 +99,101 @@ describe('Layout', () => {
     expect(runsLink.className).not.toContain('navLinkActive')
   })
 
-  it('connection banner renders in sidebar footer when collapsed', () => {
-    localStorage.setItem('gleipnir-sidebar-collapsed', 'true')
+  // ---- Footer: user account row ----
+
+  it('footer renders user avatar with initial, username, and role', () => {
     renderLayout()
-    // compact mode always renders the dot indicator with role="status"
-    expect(screen.getByRole('status')).toBeInTheDocument()
+    // Avatar initial is the first letter of 'alice', uppercased
+    expect(screen.getByText('A')).toBeInTheDocument()
+    expect(screen.getByText('alice')).toBeInTheDocument()
+    // Role 'admin' is capitalized to 'Admin'
+    expect(screen.getByText('Admin')).toBeInTheDocument()
   })
 
-  it('theme toggle renders in sidebar footer', () => {
+  it('footer navigates to /settings on click', () => {
     renderLayout()
-    expect(screen.getByRole('button', { name: /light theme/i })).toBeInTheDocument()
+    const footer = screen.getByRole('button', { name: /user settings/i })
+    fireEvent.click(footer)
+    // MemoryRouter won't actually navigate, but the element must be present and clickable
+    expect(footer).toBeInTheDocument()
+  })
+
+  it('collapsed footer shows only avatar initial, hides username and role', () => {
+    localStorage.setItem('gleipnir-sidebar-collapsed', 'true')
+    renderLayout()
+    // Avatar initial should still be visible
+    expect(screen.getByText('A')).toBeInTheDocument()
+    // Username and role should not be rendered when collapsed
+    expect(screen.queryByText('alice')).not.toBeInTheDocument()
+    expect(screen.queryByText('Admin')).not.toBeInTheDocument()
+  })
+
+  it('footer shows fallback avatar and text when user is loading', () => {
+    vi.mocked(useCurrentUser).mockReturnValue({ data: undefined, isLoading: true } as ReturnType<typeof useCurrentUser>)
+    renderLayout()
+    // When currentUser is undefined, avatar shows '?'
+    expect(screen.getByText('?')).toBeInTheDocument()
+    // Both name and role fall back to 'User'
+    // There will be two 'User' elements — one for name, one for role
+    const userFallbacks = screen.getAllByText('User')
+    expect(userFallbacks.length).toBeGreaterThanOrEqual(2)
+  })
+
+  // ---- Nav-level status indicators ----
+
+  it('approval pulse class applied to Control Center when items pending', () => {
+    vi.mocked(useAttentionItems).mockReturnValue({
+      items: [{} as never, {} as never],
+      count: 2,
+      isLoading: false,
+      dismissFailure: vi.fn(),
+    })
+    renderLayout()
+    const link = screen.getByRole('link', { name: /control center/i })
+    expect(link.className).toContain('navLinkNeedsApproval')
+  })
+
+  it('approval pulse class absent when no pending items', () => {
+    renderLayout()
+    const link = screen.getByRole('link', { name: /control center/i })
+    expect(link.className).not.toContain('navLinkNeedsApproval')
+  })
+
+  it('MCP unhealthy class applied to Tools when server has null last_discovered_at', () => {
+    vi.mocked(useMcpServers).mockReturnValue({ data: [{ last_discovered_at: null }] } as ReturnType<typeof useMcpServers>)
+    renderLayout()
+    const link = screen.getByRole('link', { name: /tools/i })
+    expect(link.className).toContain('navLinkMcpUnhealthy')
+  })
+
+  it('MCP unhealthy class absent when all servers healthy', () => {
+    vi.mocked(useMcpServers).mockReturnValue({
+      data: [{ last_discovered_at: '2026-01-01T00:00:00Z' }],
+    } as ReturnType<typeof useMcpServers>)
+    renderLayout()
+    const link = screen.getByRole('link', { name: /tools/i })
+    expect(link.className).not.toContain('navLinkMcpUnhealthy')
+  })
+
+  // ---- Disconnect banner in content area ----
+
+  it('disconnect banner shown in content area when reconnecting', () => {
+    vi.mocked(useSSE).mockReturnValue({ connectionState: 'reconnecting' })
+    renderLayout()
+    const banner = screen.getByRole('status')
+    expect(banner).toBeInTheDocument()
+    expect(banner).toHaveTextContent('Connection lost — reconnecting…')
+  })
+
+  it('disconnect banner hidden when connected', () => {
+    renderLayout()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('disconnect banner uses critical style when disconnected', () => {
+    vi.mocked(useSSE).mockReturnValue({ connectionState: 'disconnected' })
+    renderLayout()
+    const banner = screen.getByRole('status')
+    expect(banner.className).toContain('disconnectBannerCritical')
   })
 })

@@ -29,6 +29,7 @@ function SidebarStory({ initialPath = '/dashboard' }: { initialPath?: string }) 
             <Route path="/policies" element={<PageContent title="Policies" />} />
             <Route path="/policies/new" element={<PageContent title="New Policy" />} />
             <Route path="/tools" element={<PageContent title="Tools" />} />
+            <Route path="/settings" element={<PageContent title="Settings" />} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -77,4 +78,95 @@ export const ActivePolicies: Story = {
 
 export const ActiveTools: Story = {
   render: () => <SidebarStory initialPath="/tools" />,
+}
+
+export const WithPendingApprovals: Story = {
+  render: () => <SidebarStory initialPath="/dashboard" />,
+  beforeEach: async () => {
+    const { vi } = await import('vitest')
+    const mod = await import('../../hooks/useAttentionItems')
+    vi.spyOn(mod, 'useAttentionItems').mockReturnValue({
+      items: [{} as never, {} as never, {} as never],
+      count: 3,
+      isLoading: false,
+      dismissFailure: vi.fn(),
+    })
+    return () => vi.restoreAllMocks()
+  },
+}
+
+export const WithUnhealthyServers: Story = {
+  render: () => <SidebarStory initialPath="/tools" />,
+  beforeEach: async () => {
+    const { vi } = await import('vitest')
+    const mod = await import('../../hooks/useMcpServers')
+    vi.spyOn(mod, 'useMcpServers').mockReturnValue({
+      data: [{ id: '1', url: 'http://example.com', last_discovered_at: null }],
+    } as ReturnType<typeof mod.useMcpServers>)
+    return () => vi.restoreAllMocks()
+  },
+}
+
+export const WithBothAlerts: Story = {
+  render: () => <SidebarStory initialPath="/dashboard" />,
+  beforeEach: async () => {
+    const { vi } = await import('vitest')
+    const attMod = await import('../../hooks/useAttentionItems')
+    const mcpMod = await import('../../hooks/useMcpServers')
+    vi.spyOn(attMod, 'useAttentionItems').mockReturnValue({
+      items: [{} as never],
+      count: 1,
+      isLoading: false,
+      dismissFailure: vi.fn(),
+    })
+    vi.spyOn(mcpMod, 'useMcpServers').mockReturnValue({
+      data: [{ id: '1', url: 'http://example.com', last_discovered_at: null }],
+    } as ReturnType<typeof mcpMod.useMcpServers>)
+    return () => vi.restoreAllMocks()
+  },
+}
+
+export const Disconnected: Story = {
+  render: () => <SidebarStory initialPath="/dashboard" />,
+  beforeEach: async () => {
+    const { vi } = await import('vitest')
+    const mod = await import('../../hooks/useSSE')
+    vi.spyOn(mod, 'useSSE').mockReturnValue({ connectionState: 'disconnected' })
+    return () => vi.restoreAllMocks()
+  },
+}
+
+export const Reconnecting: Story = {
+  render: () => <SidebarStory initialPath="/dashboard" />,
+  beforeEach: async () => {
+    const { vi } = await import('vitest')
+    const mod = await import('../../hooks/useSSE')
+    vi.spyOn(mod, 'useSSE').mockReturnValue({ connectionState: 'reconnecting' })
+    return () => vi.restoreAllMocks()
+  },
+}
+
+export const CollapsedWithAlerts: Story = {
+  render: () => <SidebarStory initialPath="/dashboard" />,
+  loaders: [
+    async () => {
+      localStorage.setItem('gleipnir-sidebar-collapsed', 'true')
+      return {}
+    },
+  ],
+  beforeEach: async () => {
+    const { vi } = await import('vitest')
+    const attMod = await import('../../hooks/useAttentionItems')
+    const mcpMod = await import('../../hooks/useMcpServers')
+    vi.spyOn(attMod, 'useAttentionItems').mockReturnValue({
+      items: [{} as never, {} as never],
+      count: 2,
+      isLoading: false,
+      dismissFailure: vi.fn(),
+    })
+    vi.spyOn(mcpMod, 'useMcpServers').mockReturnValue({
+      data: [{ id: '1', url: 'http://example.com', last_discovered_at: null }],
+    } as ReturnType<typeof mcpMod.useMcpServers>)
+    return () => vi.restoreAllMocks()
+  },
 }

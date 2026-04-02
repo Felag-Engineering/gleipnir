@@ -153,11 +153,187 @@
 
 .sidebarFooter {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
+  align-items: center;
+  gap: var(--space-3);
+  padding: 12px;
   border-top: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+  text-decoration: none;
   flex-shrink: 0;
+}
+
+.sidebarFooter:hover {
+  background: var(--bg-elevated);
+}
+
+.sidebarFooterCollapsed {
+  padding: 12px 0;
+  justify-content: center;
+}
+
+.userAvatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-blue) 20%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-blue);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.userAvatarCollapsed {
+  width: 24px;
+  height: 24px;
+}
+
+.onlineDot {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-green);
+  border: 2px solid var(--bg-sidebar);
+}
+
+.onlineDotCollapsed {
+  width: 6px;
+  height: 6px;
+  border-width: 1.5px;
+}
+
+.userInfo {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.userName {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userRole {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settingsGear {
+  display: flex;
+  align-items: center;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.sidebarFooter:hover .settingsGear {
+  color: var(--text-muted);
+}
+
+/* ---- Nav-level status indicators ---- */
+
+/* Opacity breathes between 1.0 and 0.4 — visible but not aggressive */
+@keyframes statusPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Pending approvals — amber override */
+.navLinkNeedsApproval {
+  color: var(--color-amber);
+  animation: statusPulse 2s ease-in-out infinite;
+}
+
+.navLinkActive.navLinkNeedsApproval {
+  background: color-mix(in srgb, var(--color-amber) 8%, transparent);
+}
+
+.navLinkActive.navLinkNeedsApproval::before {
+  background: var(--color-amber);
+}
+
+/* MCP unhealthy — orange override */
+.navLinkMcpUnhealthy {
+  color: var(--color-orange);
+  animation: statusPulse 2s ease-in-out infinite;
+}
+
+.navLinkActive.navLinkMcpUnhealthy {
+  background: color-mix(in srgb, var(--color-orange) 8%, transparent);
+}
+
+.navLinkActive.navLinkMcpUnhealthy::before {
+  background: var(--color-orange);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .navLinkNeedsApproval,
+  .navLinkMcpUnhealthy {
+    animation: none;
+  }
+}
+
+/* ---- Disconnect banner (content area) ---- */
+
+/* Slides in from the top when connection is lost */
+@keyframes slideDown {
+  from { transform: translateY(-100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* Pulse for the dot indicator — defined locally to stay self-contained */
+@keyframes disconnectPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+.disconnectBanner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background: color-mix(in srgb, var(--color-amber) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-amber) 25%, transparent);
+  color: var(--color-amber);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  animation: slideDown var(--duration-normal) var(--ease-out);
+}
+
+.disconnectBannerCritical {
+  background: color-mix(in srgb, var(--color-red) 12%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--color-red) 25%, transparent);
+  color: var(--color-red);
+}
+
+.disconnectDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-amber);
+  flex-shrink: 0;
+  animation: disconnectPulse 1.2s ease-in-out infinite;
+}
+
+.disconnectDotCritical {
+  background: var(--color-red);
+  animation: none;
 }
 
 /* ---- Main content area ---- */
@@ -207,5 +383,14 @@
 
   .collapseButton {
     display: none;
+  }
+
+  .userInfo,
+  .settingsGear {
+    display: none;
+  }
+
+  .sidebarFooter {
+    justify-content: center;
   }
 }
