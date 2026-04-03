@@ -1,21 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, apiFetchVoid } from '@/api/fetch'
+import type { ApiPreferences, ApiSession } from '@/api/types'
 import { queryKeys } from './queryKeys'
-
-export interface ApiPreferences {
-  default_model?: string
-  timezone?: string
-  date_format?: string
-}
-
-export interface ApiSession {
-  id: string
-  user_agent: string
-  ip_address: string
-  created_at: string
-  expires_at: string
-  is_current: boolean
-}
 
 export function usePreferences() {
   return useQuery({

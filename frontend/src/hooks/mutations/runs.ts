@@ -1,22 +1,13 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/api/fetch'
+import type { ApproveRunRequest, ApproveRunResponse, SubmitFeedbackRequest, SubmitFeedbackResponse } from '@/api/types'
 import { queryKeys } from '../queryKeys'
-
-interface ApproveRunArgs {
-  runId: string
-  decision: 'approved' | 'denied'
-}
-
-interface ApproveRunResponse {
-  run_id: string
-  decision: string
-}
 
 export function useApproveRun() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: ({ runId, decision }: ApproveRunArgs) =>
+    mutationFn: ({ runId, decision }: ApproveRunRequest) =>
       apiFetch<ApproveRunResponse>(`/runs/${encodeURIComponent(runId)}/approval`, {
         method: 'POST',
         body: JSON.stringify({ decision }),
@@ -32,21 +23,11 @@ export function useApproveRun() {
   })
 }
 
-interface SubmitFeedbackArgs {
-  runId: string
-  response: string
-  feedbackId?: string
-}
-
-interface SubmitFeedbackResponse {
-  run_id: string
-}
-
 export function useSubmitFeedback() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: ({ runId, response, feedbackId }: SubmitFeedbackArgs) =>
+    mutationFn: ({ runId, response, feedbackId }: SubmitFeedbackRequest) =>
       apiFetch<SubmitFeedbackResponse>(`/runs/${encodeURIComponent(runId)}/feedback`, {
         method: 'POST',
         body: JSON.stringify({ response, ...(feedbackId ? { feedback_id: feedbackId } : {}) }),

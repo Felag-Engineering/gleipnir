@@ -143,3 +143,87 @@ export interface ApiMcpTool {
   description: string
   input_schema: Record<string, unknown>
 }
+
+// --- Settings ---
+
+// Matches auth/settings_handler.go → map[string]string (GET/PUT /api/v1/settings/preferences)
+export interface ApiPreferences {
+  default_model?: string
+  timezone?: string
+  date_format?: string
+}
+
+// Matches auth/handler.go → sessionResponse (GET /api/v1/auth/sessions)
+export interface ApiSession {
+  id: string
+  user_agent: string
+  ip_address: string
+  created_at: string
+  expires_at: string
+  is_current: boolean
+}
+
+// --- Approvals ---
+
+// Matches trigger/runs_handler.go → ApprovalDecisionRequest (POST /api/v1/runs/:id/approval)
+export interface ApproveRunRequest {
+  runId: string
+  decision: 'approved' | 'denied'
+}
+
+// Matches trigger/runs_handler.go → map[string]string approval response
+export interface ApproveRunResponse {
+  run_id: string
+  decision: string
+}
+
+// --- Feedback ---
+
+// Matches trigger/runs_handler.go → FeedbackDecisionRequest (POST /api/v1/runs/:id/feedback)
+export interface SubmitFeedbackRequest {
+  runId: string
+  response: string
+  feedbackId?: string
+}
+
+// Matches trigger/runs_handler.go → map[string]string feedback response
+export interface SubmitFeedbackResponse {
+  run_id: string
+}
+
+// --- Policy trigger ---
+
+// Matches trigger/manual.go → Handle (POST /api/v1/policies/:id/trigger)
+export interface TriggerPolicyRequest {
+  policyId: string
+  message?: string
+}
+
+// Matches trigger/manual.go → map[string]string {"run_id": ...}
+export interface TriggerPolicyResponse {
+  run_id: string
+}
+
+// --- MCP servers ---
+
+// Matches api/mcp_handler.go → Create body (POST /api/v1/mcp/servers)
+export interface AddMcpServerRequest {
+  name: string
+  url: string
+}
+
+// --- Users ---
+
+// Matches auth/handler.go → createUserRequest (POST /api/v1/users)
+export interface CreateUserRequest {
+  username: string
+  password: string
+  roles: string[]
+}
+
+// Matches auth/handler.go → updateUserRequest (PATCH /api/v1/users/:id)
+export interface UpdateUserRequest {
+  id: string
+  deactivated?: boolean
+  roles?: string[]
+}

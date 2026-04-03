@@ -1,18 +1,13 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, apiFetchVoid } from '@/api/fetch'
-import type { ApiMcpServerCreateResponse } from '@/api/types'
+import type { ApiMcpServerCreateResponse, AddMcpServerRequest } from '@/api/types'
 import { queryKeys } from '../queryKeys'
-
-interface AddServerParams {
-  name: string
-  url: string
-}
 
 export function useAddMcpServer() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (params: AddServerParams) =>
+    mutationFn: (params: AddMcpServerRequest) =>
       apiFetch<ApiMcpServerCreateResponse>('/mcp/servers', {
         method: 'POST',
         body: JSON.stringify(params),

@@ -1,19 +1,13 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/api/fetch'
-import type { ApiUser } from '@/api/types'
+import type { ApiUser, CreateUserRequest, UpdateUserRequest } from '@/api/types'
 import { queryKeys } from '../queryKeys'
-
-interface CreateUserParams {
-  username: string
-  password: string
-  roles: string[]
-}
 
 export function useCreateUser() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (params: CreateUserParams) =>
+    mutationFn: (params: CreateUserRequest) =>
       apiFetch<ApiUser>('/users', {
         method: 'POST',
         body: JSON.stringify(params),
@@ -24,17 +18,11 @@ export function useCreateUser() {
   })
 }
 
-interface UpdateUserParams {
-  id: string
-  deactivated?: boolean
-  roles?: string[]
-}
-
 export function useUpdateUser() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: ({ id, ...body }: UpdateUserParams) =>
+    mutationFn: ({ id, ...body }: UpdateUserRequest) =>
       apiFetch<ApiUser>(`/users/${encodeURIComponent(id)}`, {
         method: 'PATCH',
         body: JSON.stringify(body),

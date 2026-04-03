@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, apiFetchVoid } from '@/api/fetch'
-import type { ApiPolicySaveResponse } from '@/api/types'
+import type { ApiPolicySaveResponse, TriggerPolicyRequest, TriggerPolicyResponse } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
 interface SavePolicyArgs {
@@ -42,18 +42,9 @@ export function useDeletePolicy() {
   })
 }
 
-interface TriggerPolicyArgs {
-  policyId: string
-  message?: string
-}
-
-export interface TriggerPolicyResponse {
-  run_id: string
-}
-
 export function useTriggerPolicy() {
   return useMutation({
-    mutationFn: ({ policyId, message }: TriggerPolicyArgs) => {
+    mutationFn: ({ policyId, message }: TriggerPolicyRequest) => {
       const body = message ? JSON.stringify({ message }) : '{}'
       return apiFetch<TriggerPolicyResponse>(`/policies/${encodeURIComponent(policyId)}/trigger`, {
         method: 'POST',
