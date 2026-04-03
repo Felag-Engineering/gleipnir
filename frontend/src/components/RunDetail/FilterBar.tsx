@@ -29,7 +29,7 @@ export function FilterBar({ active, counts, onChange }: Props) {
         <button
           key={key}
           type="button"
-          className={`${styles.chip} ${active === key ? styles.active : ''}`}
+          className={`${styles.chip} ${active === key ? styles.active : counts[key] === 0 && key !== 'all' ? styles.chipEmpty : ''}`}
           onClick={() => onChange(key)}
         >
           {label}

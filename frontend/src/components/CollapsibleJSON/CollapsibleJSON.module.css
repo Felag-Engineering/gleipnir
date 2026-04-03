@@ -6,8 +6,9 @@
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--text-second);
-  overflow-x: auto;
-  white-space: pre;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
 }
 
 .ellipsis {

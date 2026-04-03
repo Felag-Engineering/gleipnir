@@ -1,13 +1,27 @@
 .block {
+  position: relative;
   border-radius: 6px;
   background: var(--bg-surface);
   /* border shorthand first so border-left can override the left side */
   border: 1px solid var(--border-subtle);
   border-left: 2px solid var(--border-mid);
   opacity: 0.6;
-  overflow: hidden;
   cursor: pointer;
   transition: opacity var(--duration-normal) var(--ease-out);
+}
+
+/* Dot on the timeline connector line */
+.block::after {
+  content: '';
+  position: absolute;
+  left: -25px;
+  top: 12px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--text-faint);
+  background: var(--bg-canvas);
+  z-index: 1;
 }
 
 .blockExpanded {

@@ -1,8 +1,21 @@
 .block {
+  position: relative;
   border-radius: 6px;
   background: color-mix(in srgb, var(--color-red) 6%, var(--bg-surface));
   border: 1px solid color-mix(in srgb, var(--color-red) 30%, transparent);
-  overflow: hidden;
+}
+
+/* Dot on the timeline connector line */
+.block::after {
+  content: '';
+  position: absolute;
+  left: -26px;
+  top: 16px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-red);
+  z-index: 1;
 }
 
 .header {

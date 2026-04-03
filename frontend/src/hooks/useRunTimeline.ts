@@ -90,11 +90,8 @@ export function useRunTimeline(
   const displayedItems = filteredItems.slice(0, displayedCount)
   const hasMore = filteredItems.length > displayedCount
 
-  // Show capability snapshots at the top always; then the paginated filtered items.
-  const timelineItems: (ParsedStep | ToolBlockData)[] = [
-    ...snapshotSteps,
-    ...displayedItems,
-  ]
+  // Capability snapshots are now rendered in the header, not in the timeline.
+  const timelineItems: (ParsedStep | ToolBlockData)[] = displayedItems
 
   const remainingCount = filteredItems.length - displayedItems.length
 

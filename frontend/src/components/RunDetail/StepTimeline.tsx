@@ -6,6 +6,7 @@ import { FeedbackBlock } from './FeedbackBlock'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ThoughtBlock } from './ThoughtBlock'
 import { ToolBlock } from './ToolBlock'
+import { TriggerBlock } from './TriggerBlock'
 import { isToolBlock } from './types'
 import type { ParsedStep, ToolBlockData } from './types'
 import styles from './StepTimeline.module.css'
@@ -15,13 +16,15 @@ interface Props {
   systemPrompt?: string | null
   runId: string
   runStatus: string
+  triggerType?: string
+  triggerPayload?: string | null
   // durationSeconds is optional — Storybook stories and test contexts may omit it.
   // CompleteBlock renders without a duration when this is undefined or null.
   durationSeconds?: number | null
 }
 
-export function StepTimeline({ items, systemPrompt, runId, runStatus, durationSeconds }: Props) {
-  if (items.length === 0) {
+export function StepTimeline({ items, systemPrompt, runId, runStatus, triggerType, triggerPayload, durationSeconds }: Props) {
+  if (items.length === 0 && !triggerType) {
     return (
       <p className={styles.empty}>No steps to display.</p>
     )
@@ -29,6 +32,11 @@ export function StepTimeline({ items, systemPrompt, runId, runStatus, durationSe
 
   return (
     <ol className={styles.timeline} aria-label="Run steps">
+      {triggerType && (
+        <li className={styles.item}>
+          <TriggerBlock triggerType={triggerType} payload={triggerPayload ?? null} />
+        </li>
+      )}
       {items.map((item, idx) => {
         const key = isToolBlock(item)
           ? (item.approval?.raw.id ?? item.call?.raw.id ?? String(idx))

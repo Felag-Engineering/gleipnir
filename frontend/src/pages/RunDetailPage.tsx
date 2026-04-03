@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { useRun } from '@/hooks/queries/runs'
 import { useRunSteps } from '@/hooks/queries/runs'
@@ -7,7 +7,6 @@ import { useScrollSentinel } from '@/hooks/useScrollSentinel'
 import SkeletonBlock from '@/components/SkeletonBlock/SkeletonBlock'
 import { QueryBoundary } from '@/components/QueryBoundary'
 import { EmptyState } from '@/components/EmptyState'
-import { CollapsibleJSON } from '@/components/CollapsibleJSON'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import {
   RunHeader,
@@ -15,6 +14,7 @@ import {
   StepTimeline,
 } from '@/components/RunDetail'
 import type { FilterKey } from '@/components/RunDetail'
+import type { CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import styles from './RunDetailPage.module.css'
 
@@ -26,8 +26,22 @@ export default function RunDetailPage() {
   usePageTitle(id ? `Run ${id.slice(0, 8)}` : 'Run')
   const [filter, setFilter] = useState<FilterKey>('all')
 
-  const { timelineItems, counts, hasMore, remainingCount, loadMore } = useRunTimeline(rawSteps, filter)
+  const { timelineItems, counts, snapshotSteps, hasMore, remainingCount, loadMore } = useRunTimeline(rawSteps, filter)
   const { sentinelRef, showNewPill, scrollToBottom } = useScrollSentinel(rawSteps.length)
+
+  // Extract capability snapshot for the header
+  const capabilitySnapshot = useMemo(() => {
+    if (snapshotSteps.length === 0) return null
+    const content = snapshotSteps[0].content
+    const isV2 = !Array.isArray(content) && content !== null && typeof content === 'object'
+    const tools = isV2 ? (content as CapabilitySnapshotV2).tools : (content as GrantedToolEntry[])
+    return {
+      provider: isV2 ? (content as CapabilitySnapshotV2).provider : undefined,
+      model: isV2 ? (content as CapabilitySnapshotV2).model : undefined,
+      toolCount: tools?.length ?? 0,
+      tools: tools ?? [],
+    }
+  }, [snapshotSteps])
 
   // Duration computation
   const duration =
@@ -78,6 +92,7 @@ export default function RunDetailPage() {
               toolCallCount={toolCallCount}
               tokenTotal={tokenTotal}
               duration={duration}
+              capabilitySnapshot={capabilitySnapshot}
             />
 
             {(run.status === 'failed' || run.status === 'interrupted') && run.error && (
@@ -89,21 +104,10 @@ export default function RunDetailPage() {
               </div>
             )}
 
-            {run.trigger_payload && run.trigger_payload !== '{}' && run.trigger_payload !== 'null' && (
-              <div className={styles.triggerPayload}>
-                <h2 className={styles.sectionTitle}>Trigger payload</h2>
-                <CollapsibleJSON
-                  value={(() => {
-                    try { return JSON.parse(run.trigger_payload!) } catch { return run.trigger_payload }
-                  })()}
-                />
-              </div>
-            )}
-
             <FilterBar active={filter} counts={counts} onChange={setFilter} />
 
             <div className={styles.timeline}>
-              <StepTimeline items={timelineItems} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} durationSeconds={durationSeconds} />
+              <StepTimeline items={timelineItems} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} triggerType={run.trigger_type} triggerPayload={run.trigger_payload} durationSeconds={durationSeconds} />
 
               {hasMore && (
                 <button

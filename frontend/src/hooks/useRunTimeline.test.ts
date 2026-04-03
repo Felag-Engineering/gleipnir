@@ -38,7 +38,7 @@ describe('useRunTimeline — initial state', () => {
 })
 
 describe('useRunTimeline — snapshot separation', () => {
-  it('places capability_snapshot at the head of timelineItems', () => {
+  it('separates capability_snapshot into snapshotSteps, not timelineItems', () => {
     const steps: ApiRunStep[] = [
       makeStep({ id: 's1', type: 'thought', content: JSON.stringify({ text: 'A' }) }),
       makeStep({
@@ -51,9 +51,10 @@ describe('useRunTimeline — snapshot separation', () => {
       }),
     ]
     const { result } = renderHook(() => useRunTimeline(steps, 'all'))
-    // snapshot goes first
-    expect(result.current.timelineItems[0]).toMatchObject({ type: 'capability_snapshot' })
+    // snapshot is in snapshotSteps, not in timelineItems (rendered in header instead)
     expect(result.current.snapshotSteps).toHaveLength(1)
+    expect(result.current.timelineItems).toHaveLength(1)
+    expect(result.current.timelineItems[0]).toMatchObject({ type: 'thought' })
     // snapshot does not count in filteredItems
     expect(result.current.filteredItems).toHaveLength(1)
   })

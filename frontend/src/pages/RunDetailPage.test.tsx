@@ -215,7 +215,7 @@ describe('RunDetailPage — step types render', () => {
     expect(screen.getByText('Run complete')).toBeInTheDocument()
   })
 
-  it('renders capability_snapshot step collapsed by default', () => {
+  it('renders capability_snapshot info in header bar (collapsed by default)', () => {
     const capContent = JSON.stringify([
       { ServerName: 'srv1', ToolName: 'fs.read', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
     ])
@@ -223,12 +223,13 @@ describe('RunDetailPage — step types render', () => {
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
     ])
     renderPage()
-    expect(screen.getByText(/Capability snapshot/)).toBeInTheDocument()
-    // Table should not be visible yet
+    // Capability info is shown in header bar, not as a timeline card
+    expect(screen.getByText(/1 tool/)).toBeInTheDocument()
+    // Table should not be visible by default
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
 
-  it('expands capability_snapshot on click', async () => {
+  it('expands capability bar to show tool table on click', async () => {
     const capContent = JSON.stringify([
       { ServerName: 'srv1', ToolName: 'fs.read', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
     ])
@@ -236,13 +237,13 @@ describe('RunDetailPage — step types render', () => {
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
     ])
     renderPage()
-    fireEvent.click(screen.getByText(/Capability snapshot/))
+    fireEvent.click(screen.getByText(/1 tool/))
     await waitFor(() => {
       expect(screen.getByRole('table')).toBeInTheDocument()
     })
   })
 
-  it('renders capability_snapshot V2 with provider in summary label', () => {
+  it('renders capability_snapshot V2 with provider in header bar', () => {
     const capContent = JSON.stringify({
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',
@@ -254,9 +255,9 @@ describe('RunDetailPage — step types render', () => {
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
     ])
     renderPage()
-    const summary = screen.getByText(/Capability snapshot/)
-    expect(summary.textContent).toContain('anthropic')
-    expect(summary.textContent).toContain('claude-sonnet-4-6')
+    const bar = screen.getByText(/1 tool/)
+    expect(bar.textContent).toContain('anthropic')
+    expect(bar.textContent).toContain('claude-sonnet-4-6')
   })
 
   it('renders capability_snapshot V2 without provider (backward compat)', () => {
@@ -270,10 +271,10 @@ describe('RunDetailPage — step types render', () => {
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
     ])
     renderPage()
-    const summary = screen.getByText(/Capability snapshot/)
-    expect(summary.textContent).toContain('claude-sonnet-4-6')
-    // provider omitted — should not appear in summary
-    expect(summary.textContent).not.toContain('anthropic')
+    const bar = screen.getByText(/1 tool/)
+    expect(bar.textContent).toContain('claude-sonnet-4-6')
+    // provider omitted — should not appear
+    expect(bar.textContent).not.toContain('anthropic')
   })
 
   it('renders approval_request as a ToolBlock (denied state when no tool_call follows)', () => {
@@ -424,7 +425,8 @@ describe('RunDetailPage — filter chips', () => {
 
 describe('CollapsibleJSON — isolated', () => {
   it('shows truncated content when collapsed', () => {
-    const bigObj = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7 }
+    // Object must exceed 12 preview lines when pretty-printed (14 keys + braces = 16 lines)
+    const bigObj = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9, j: 10, k: 11, l: 12, m: 13, n: 14 }
     render(<CollapsibleJSON value={bigObj} defaultCollapsed={true} />)
     // Should show "more lines" text
     expect(screen.getByText(/more line/i)).toBeInTheDocument()
@@ -432,7 +434,7 @@ describe('CollapsibleJSON — isolated', () => {
   })
 
   it('shows full content when expanded', async () => {
-    const bigObj = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7 }
+    const bigObj = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9, j: 10, k: 11, l: 12, m: 13, n: 14 }
     render(<CollapsibleJSON value={bigObj} defaultCollapsed={true} />)
     fireEvent.click(screen.getByRole('button', { name: /show all/i }))
     await waitFor(() => {

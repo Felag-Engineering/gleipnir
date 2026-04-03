@@ -1,8 +1,21 @@
 .block {
+  position: relative;
   border-radius: 6px;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  overflow: hidden;
+}
+
+/* Dot on the timeline connector line */
+.block::after {
+  content: '';
+  position: absolute;
+  left: -26px;
+  top: 16px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-purple);
+  z-index: 1;
 }
 
 .header {

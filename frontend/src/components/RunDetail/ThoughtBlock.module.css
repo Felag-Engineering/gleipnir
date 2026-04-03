@@ -1,42 +1,58 @@
 .block {
+  position: relative;
   border-radius: 6px;
-  background: var(--bg-surface);
+  background: transparent;
   border: 1px solid var(--border-subtle);
-  overflow: hidden;
 }
 
-.header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-/* Hollow dot distinguishes thoughts from tool blocks, which use filled dots. */
-.dot {
+/* Timeline dot — hollow to distinguish from action blocks */
+.block::after {
+  content: '';
+  position: absolute;
+  left: -25px;
+  top: 14px;
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  flex-shrink: 0;
-  border: 2px solid var(--text-muted);
-  background: transparent;
+  border: 2px solid var(--text-faint);
+  background: var(--bg-canvas);
+  z-index: 1;
+}
+
+.header {
+  padding: var(--space-2) var(--space-4);
 }
 
 .label {
   font-size: var(--text-xs);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
   font-family: var(--font-mono);
 }
 
 .content {
-  padding: 12px 16px;
-  color: var(--text-primary);
-  font-weight: var(--weight-normal);
+  padding: 0 var(--space-4) var(--space-3);
+  color: var(--text-second);
   font-size: var(--text-sm);
-  line-height: 1.5;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.toggle {
+  display: inline;
+  margin-left: var(--space-2);
+  padding: 0;
+  font-size: var(--text-xs);
+  color: var(--color-blue);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.toggle:hover {
+  color: var(--text-primary);
 }

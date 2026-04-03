@@ -28,6 +28,17 @@
   border-color: var(--text-muted);
 }
 
+/* Zero-count chips are visually dimmed but still clickable */
+.chipEmpty {
+  color: var(--text-faint);
+  border-color: var(--border-subtle);
+}
+
+.chipEmpty:hover {
+  color: var(--text-muted);
+  border-color: var(--border-mid);
+}
+
 .chip.active {
   color: var(--bg-canvas);
   background: var(--color-blue);

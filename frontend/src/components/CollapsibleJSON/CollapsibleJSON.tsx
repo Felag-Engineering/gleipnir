@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { CopyBlock } from '@/components/CopyBlock'
 import styles from './CollapsibleJSON.module.css'
 
-const PREVIEW_LINES = 5
+const PREVIEW_LINES = 12
 
 interface Props {
   value: unknown

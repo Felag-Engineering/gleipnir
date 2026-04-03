@@ -45,6 +45,7 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
   // Input to display: use call.content.input if available, fall back to approval.content.input.
   const inputValue: Record<string, unknown> =
     block.call?.content.input ?? block.approval?.content.input ?? {}
+  const inputEmpty = Object.keys(inputValue).length === 0
 
   // Output: parse the JSON string from tool_result.
   let outputValue: unknown = null
@@ -102,7 +103,10 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
         {/* Left pane: INPUT */}
         <div className={styles.pane}>
           <div className={styles.paneLabel}>Input</div>
-          <CollapsibleJSON value={inputValue} />
+          {inputEmpty
+            ? <span className={styles.emptyInput}>No parameters</span>
+            : <CollapsibleJSON value={inputValue} />
+          }
         </div>
 
         {/* Right pane: OUTPUT (conditional on status) */}

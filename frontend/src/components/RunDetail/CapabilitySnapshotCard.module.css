@@ -1,8 +1,22 @@
 .card {
+  position: relative;
   background: var(--bg-elevated);
   border: 1px solid var(--border-mid);
   border-radius: 6px;
   overflow: hidden;
+}
+
+/* Dot on the timeline connector line */
+.card::after {
+  content: '';
+  position: absolute;
+  left: -24px;
+  top: 11px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  z-index: 1;
 }
 
 .summary {
