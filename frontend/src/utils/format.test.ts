@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { formatDuration, formatDurationMs, formatTokens, formatTimestamp, formatTimeAgo, formatCountdown, computeRunDuration } from '@/utils/format'
+import { formatDuration, formatDurationMs, formatTokens, formatTimestamp, formatTimeAgo, formatCountdown, computeRunDuration, formatDate } from '@/utils/format'
 
 describe('formatDuration', () => {
   it('returns — for null', () => {
@@ -169,6 +169,20 @@ describe('formatCountdown', () => {
     vi.setSystemTime(new Date('2024-01-01T12:00:00Z'))
     const iso = new Date(Date.now() + 600 * 1000).toISOString()
     expect(formatCountdown(iso)).toEqual({ str: '10:00', urgent: false })
+  })
+})
+
+describe('formatDate', () => {
+  it('returns a string containing the year and day', () => {
+    const result = formatDate('2026-01-15T10:00:00Z')
+    expect(result).toContain('2026')
+    expect(result).toContain('15')
+  })
+
+  it('does not include time components', () => {
+    const result = formatDate('2026-06-01T23:59:59Z')
+    // Should not contain hour:minute patterns
+    expect(result).not.toMatch(/\d{1,2}:\d{2}/)
   })
 })
 

@@ -110,6 +110,22 @@ export const formatCountdown = (expiresAt: string) => {
   return { str: `${m}:${String(s).padStart(2, '0')}`, urgent: secs < 300 }
 }
 
+// formatDate formats an ISO timestamp as a short date (e.g. "Jan 1, 2026").
+// Unlike formatTimestamp, it omits the time portion — suitable for "Created" columns.
+export function formatDate(iso: string): string {
+  try {
+    const tz = getPreferredTimezone()
+    return new Date(iso).toLocaleDateString(undefined, {
+      timeZone: tz,
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    })
+  } catch {
+    return iso
+  }
+}
+
 // computeRunDuration returns the run duration in seconds, or null if the run has not completed.
 // started_at is required on ApiRun (non-nullable).
 export function computeRunDuration(run: { completed_at: string | null; started_at: string }): number | null {
