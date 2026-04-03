@@ -1,7 +1,9 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useRun } from '@/hooks/queries/runs'
 import { useRunSteps } from '@/hooks/queries/runs'
+import { useRunTimeline } from '@/hooks/useRunTimeline'
+import { useScrollSentinel } from '@/hooks/useScrollSentinel'
 import SkeletonBlock from '@/components/SkeletonBlock/SkeletonBlock'
 import { QueryBoundary } from '@/components/QueryBoundary'
 import { EmptyState } from '@/components/EmptyState'
@@ -11,16 +13,10 @@ import {
   RunHeader,
   FilterBar,
   StepTimeline,
-  parseStep,
-  pairToolBlocks,
-  isToolBlock,
 } from '@/components/RunDetail'
 import type { FilterKey } from '@/components/RunDetail'
-import type { ParsedStep, ToolBlockData } from '@/components/RunDetail/types'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import styles from './RunDetailPage.module.css'
-
-const PAGE_SIZE = 50
 
 export default function RunDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -29,109 +25,9 @@ export default function RunDetailPage() {
 
   usePageTitle(id ? `Run ${id.slice(0, 8)}` : 'Run')
   const [filter, setFilter] = useState<FilterKey>('all')
-  const [displayedCount, setDisplayedCount] = useState(PAGE_SIZE)
-  const [showNewPill, setShowNewPill] = useState(false)
-  const [isNearBottom, setIsNearBottom] = useState(true)
 
-  const sentinelRef = useRef<HTMLDivElement>(null)
-  const prevStepCount = useRef(0)
-
-  // Parse all steps once
-  const allParsed: ParsedStep[] = rawSteps.map(parseStep)
-
-  // Separate capability_snapshot steps; filter counts exclude them (ADR-018)
-  const nonSnapshotSteps = allParsed.filter((s) => s.type !== 'capability_snapshot')
-  const snapshotSteps = allParsed.filter((s) => s.type === 'capability_snapshot')
-
-  // Pair tool_call/tool_result/approval_request steps into visual ToolBlock units.
-  // Filtering and pagination operate on these paired items so that a tool interaction
-  // counts as one item regardless of how many raw steps it spans.
-  const pairedItems = pairToolBlocks(nonSnapshotSteps)
-
-  // Count each filter category over paired visual items (not raw steps).
-  // "All" reflects what the user sees on screen — one entry per visual block.
-  const counts: Record<FilterKey, number> = {
-    all: pairedItems.length,
-    tool: pairedItems.filter(isToolBlock).length,
-    thought: pairedItems.filter((item) => !isToolBlock(item) && item.type === 'thought').length,
-    thinking: pairedItems.filter((item) => !isToolBlock(item) && item.type === 'thinking').length,
-    error: pairedItems.filter((item) =>
-      isToolBlock(item)
-        ? item.result?.content.is_error === true
-        : item.type === 'error'
-    ).length,
-    approval: pairedItems.filter((item) =>
-      isToolBlock(item)
-        ? item.approval !== null
-        : item.type === 'approval_request'
-    ).length,
-  }
-
-  // Apply filter to paired items. ToolBlockData always matches 'tool'. Filtering by
-  // 'error' includes both standalone error steps and tool blocks with an error result.
-  // Filtering by 'approval' includes blocks with any approval state plus standalone
-  // approval_request steps.
-  const filteredItems =
-    filter === 'all'
-      ? pairedItems
-      : pairedItems.filter((item) => {
-          if (isToolBlock(item)) {
-            switch (filter) {
-              case 'tool': return true
-              case 'error': return item.result?.content.is_error === true
-              case 'approval': return item.approval !== null
-              default: return false
-            }
-          }
-          switch (filter) {
-            case 'thought': return item.type === 'thought'
-            case 'thinking': return item.type === 'thinking'
-            case 'error': return item.type === 'error'
-            case 'approval': return item.type === 'approval_request'
-            // Types without a dedicated filter category (feedback_request, feedback_response,
-            // complete, orphan tool_result) are only visible under the 'all' filter. This is
-            // intentional — these are rare step types that don't warrant their own chip.
-            default: return false
-          }
-        })
-
-  // Client-side pagination
-  const displayedItems = filteredItems.slice(0, displayedCount)
-  const hasMore = filteredItems.length > displayedCount
-
-  // Show capability snapshots at the top always; then the paginated filtered items.
-  const timelineItems: (ParsedStep | ToolBlockData)[] = [
-    ...snapshotSteps,
-    ...displayedItems,
-  ]
-
-  // IntersectionObserver for scroll detection (not available in all test environments)
-  useEffect(() => {
-    const sentinel = sentinelRef.current
-    if (!sentinel || typeof IntersectionObserver === 'undefined') return
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        setIsNearBottom(entry.isIntersecting)
-      },
-      { threshold: 0.1 },
-    )
-    observer.observe(sentinel)
-    return () => observer.disconnect()
-  }, [])
-
-  // Show "New steps ↓" pill when steps grow and user isn't near bottom
-  useEffect(() => {
-    const newCount = rawSteps.length
-    if (newCount > prevStepCount.current && !isNearBottom) {
-      setShowNewPill(true)
-    }
-    prevStepCount.current = newCount
-  }, [rawSteps.length, isNearBottom])
-
-  const scrollToBottom = useCallback(() => {
-    sentinelRef.current?.scrollIntoView({ behavior: 'smooth' })
-    setShowNewPill(false)
-  }, [])
+  const { timelineItems, counts, hasMore, remainingCount, loadMore } = useRunTimeline(rawSteps, filter)
+  const { sentinelRef, showNewPill, scrollToBottom } = useScrollSentinel(rawSteps.length)
 
   // Duration computation
   const duration =
@@ -142,7 +38,7 @@ export default function RunDetailPage() {
       : null
   const durationSeconds = duration !== null ? duration / 1000 : null
 
-  const toolCallCount = allParsed.filter((s) => s.type === 'tool_call').length
+  const toolCallCount = rawSteps.filter((s) => s.type === 'tool_call').length
   const tokenTotal = rawSteps.reduce((acc, s) => acc + s.token_cost, 0)
 
   const isLoading = runStatus === 'pending' || stepsStatus === 'pending'
@@ -213,9 +109,9 @@ export default function RunDetailPage() {
                 <button
                   type="button"
                   className={styles.loadMoreBtn}
-                  onClick={() => setDisplayedCount((c) => c + PAGE_SIZE)}
+                  onClick={loadMore}
                 >
-                  Load more ({filteredItems.length - displayedCount} remaining)
+                  Load more ({remainingCount} remaining)
                 </button>
               )}
             </div>
