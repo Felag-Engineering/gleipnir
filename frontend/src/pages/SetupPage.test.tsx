@@ -63,6 +63,19 @@ describe('SetupPage', () => {
     })
   })
 
+  it('shows error when password is shorter than 8 characters', async () => {
+    renderSetupPage()
+
+    await userEvent.type(screen.getByLabelText(/username/i), 'admin')
+    await userEvent.type(screen.getByLabelText(/^password$/i), 'short')
+    await userEvent.type(screen.getByLabelText(/confirm password/i), 'short')
+    await userEvent.click(screen.getByRole('button', { name: /create account/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Password must be at least 8 characters')).toBeInTheDocument()
+    })
+  })
+
   it('shows error on 403 when setup already completed', async () => {
     server.use(
       http.post('/api/v1/auth/setup', () =>

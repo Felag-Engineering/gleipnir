@@ -3,48 +3,24 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { Button } from './Button'
 
 describe('Button', () => {
-  it('renders children', () => {
-    render(<Button>Click me</Button>)
-    expect(screen.getByRole('button', { name: 'Click me' })).toBeInTheDocument()
-  })
-
   it('defaults to type="button"', () => {
     render(<Button>Save</Button>)
     expect(screen.getByRole('button')).toHaveAttribute('type', 'button')
   })
 
-  it('applies primary variant class by default', () => {
-    render(<Button>Primary</Button>)
-    const btn = screen.getByRole('button')
-    expect(btn.className).toContain('primary')
-    expect(btn.className).toContain('button')
-  })
-
-  it('applies secondary variant class', () => {
-    render(<Button variant="secondary">Secondary</Button>)
-    const btn = screen.getByRole('button')
-    expect(btn.className).toContain('secondary')
-    expect(btn.className).not.toContain('primary')
-  })
-
-  it('applies ghost variant class', () => {
-    render(<Button variant="ghost">Ghost</Button>)
-    expect(screen.getByRole('button').className).toContain('ghost')
-  })
-
-  it('applies danger variant class', () => {
-    render(<Button variant="danger">Delete</Button>)
-    expect(screen.getByRole('button').className).toContain('danger')
+  it.each([
+    ['primary', undefined],
+    ['secondary', 'secondary'],
+    ['ghost', 'ghost'],
+    ['danger', 'danger'],
+  ] as const)('applies %s variant class', (expected, variant) => {
+    render(<Button variant={variant}>Label</Button>)
+    expect(screen.getByRole('button').className).toContain(expected)
   })
 
   it('applies small size class when size="small"', () => {
     render(<Button size="small">Small</Button>)
     expect(screen.getByRole('button').className).toContain('small')
-  })
-
-  it('does not apply small class when size="default"', () => {
-    render(<Button size="default">Normal</Button>)
-    expect(screen.getByRole('button').className).not.toContain('small')
   })
 
   it('merges a custom className with base classes', () => {

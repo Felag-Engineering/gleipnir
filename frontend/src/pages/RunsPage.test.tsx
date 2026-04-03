@@ -151,16 +151,6 @@ describe('RunsPage — run rows', () => {
     expect(hrefs).toContain('/runs/bbbbcccc-dddd-eeee-ffff-000000000000')
   })
 
-  it('row links to /runs/:id', () => {
-    const run = makeRun({ id: 'aaaabbbb-cccc-dddd-eeee-ffffffffffff' })
-    mockLoaded([run])
-    renderPage()
-    // The run list renders each run as a Link. Verify by href.
-    const links = screen.getAllByRole('link')
-    const runLink = links.find((l) => l.getAttribute('href') === '/runs/aaaabbbb-cccc-dddd-eeee-ffffffffffff')
-    expect(runLink).toBeInTheDocument()
-  })
-
   it('shows policy name in row with title attribute for overflow tooltip', () => {
     const run = makeRun({ policy_name: 'My Special Policy' })
     mockLoaded([run])
@@ -225,19 +215,14 @@ describe('RunsPage — filters', () => {
     expect(screen.getByRole('radiogroup', { name: /filter by status/i })).toBeInTheDocument()
   })
 
-  it('all status filter chips are present', () => {
+  it('all status filter chips are present with "All" checked by default', () => {
     renderPage()
     expect(screen.getByRole('radio', { name: 'All' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Complete' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Running' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Failed' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Approval' })).toBeInTheDocument()
-  })
-
-  it('"All" chip is checked by default', () => {
-    renderPage()
-    const allChip = screen.getByRole('radio', { name: 'All' })
-    expect(allChip).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'All' })).toHaveAttribute('aria-checked', 'true')
   })
 
   it('policy filter select is present', () => {
@@ -260,19 +245,11 @@ describe('RunsPage — filters', () => {
 })
 
 describe('RunsPage — pagination', () => {
-  it('next page arrow is disabled on the last page', () => {
-    // 10 runs total, PAGE_SIZE is 25, so only 1 page
+  it('both page arrows are disabled on a single-page result', () => {
     mockLoaded([makeRun()], 10)
     renderPage()
-    const nextBtn = screen.getByRole('button', { name: /next page/i })
-    expect(nextBtn).toBeDisabled()
-  })
-
-  it('previous page arrow is disabled on the first page', () => {
-    mockLoaded([makeRun()], 10)
-    renderPage()
-    const prevBtn = screen.getByRole('button', { name: /previous page/i })
-    expect(prevBtn).toBeDisabled()
+    expect(screen.getByRole('button', { name: /next page/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /previous page/i })).toBeDisabled()
   })
 
   it('shows "X–Y of Z" page info when runs are present', () => {

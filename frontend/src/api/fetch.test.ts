@@ -80,6 +80,72 @@ describe('apiFetch', () => {
     expect(result).toEqual({ ok: true })
     expect(capturedContentType).toBe('application/json')
   })
+
+  it('sets window.location.href on 401 when not on login page', async () => {
+    const originalLocation = window.location
+    let capturedHref = 'http://localhost:3000/dashboard'
+    const mockLocation = { pathname: '/dashboard' }
+    Object.defineProperty(mockLocation, 'href', {
+      get: () => capturedHref,
+      set: (v: string) => { capturedHref = v },
+      configurable: true,
+    })
+    Object.defineProperty(window, 'location', {
+      value: mockLocation,
+      writable: true,
+      configurable: true,
+    })
+
+    server.use(
+      http.get(TEST_URL, () =>
+        HttpResponse.json({ error: 'unauthorized' }, { status: 401 })
+      )
+    )
+
+    try {
+      let caught: unknown
+      try { await apiFetch(TEST_PATH) } catch (err) { caught = err }
+      // The code now throws ApiError(401, 'Session expired') after setting href
+      expect(caught).toBeInstanceOf(ApiError)
+      expect((caught as ApiError).status).toBe(401)
+      expect(capturedHref).toBe('/login?expired=1')
+    } finally {
+      Object.defineProperty(window, 'location', {
+        value: originalLocation,
+        writable: true,
+        configurable: true,
+      })
+    }
+  })
+
+  it('throws ApiError on 401 when already on /login (no redirect)', async () => {
+    const originalLocation = window.location
+    Object.defineProperty(window, 'location', {
+      value: { pathname: '/login', href: 'http://localhost:3000/login' },
+      writable: true,
+      configurable: true,
+    })
+
+    try {
+      server.use(
+        http.get(TEST_URL, () =>
+          HttpResponse.json({ error: 'unauthorized' }, { status: 401 })
+        )
+      )
+
+      let caught: unknown
+      try { await apiFetch(TEST_PATH) } catch (err) { caught = err }
+      expect(caught).toBeInstanceOf(ApiError)
+      expect((caught as ApiError).status).toBe(401)
+      expect((caught as ApiError).message).toBe('unauthorized')
+    } finally {
+      Object.defineProperty(window, 'location', {
+        value: originalLocation,
+        writable: true,
+        configurable: true,
+      })
+    }
+  })
 })
 
 describe('apiFetchVoid', () => {

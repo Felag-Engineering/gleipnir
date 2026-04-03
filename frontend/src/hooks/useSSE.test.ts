@@ -62,7 +62,45 @@ describe('useSSE', () => {
     })
   })
 
-  it('invalidates runs and policies queries on run.status_changed', async () => {
+  it.each([
+    ['run.status_changed', JSON.stringify({ runId: 'r1' }), [queryKeys.runs.all, queryKeys.policies.all]],
+    ['run.step_added', JSON.stringify({ run_id: 'r1', step_id: 's1', step_number: 0, type: 'thought' }), [queryKeys.runs.steps('r1')]],
+    ['approval.created', JSON.stringify({ approvalId: 'a1' }), [queryKeys.approvals.all]],
+    ['approval.resolved', JSON.stringify({ approvalId: 'a1' }), [queryKeys.approvals.all, queryKeys.runs.all]],
+    ['feedback.created', JSON.stringify({ run_id: 'r1' }), [queryKeys.runs.all, queryKeys.stats.all, queryKeys.attention.all]],
+    ['feedback.resolved', JSON.stringify({ run_id: 'r1' }), [queryKeys.runs.all, queryKeys.runs.detail('r1'), queryKeys.runs.steps('r1'), queryKeys.stats.all, queryKeys.attention.all]],
+    ['feedback.timed_out', JSON.stringify({ run_id: 'r1' }), [queryKeys.runs.all, queryKeys.runs.detail('r1'), queryKeys.runs.steps('r1'), queryKeys.stats.all, queryKeys.attention.all]],
+  ] as [string, string, unknown[]][])(
+    'invalidates correct query keys on %s',
+    async (eventType, payload, expectedKeys) => {
+      let pushEvent!: (type: string, data: string) => void
+
+      server.use(
+        sse<TestSSEEventMap>('/api/v1/events', ({ client }) => {
+          pushEvent = (type, data) => client.send({ event: type as keyof TestSSEEventMap, data })
+        }),
+      )
+
+      const qc = makeQueryClient()
+      const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
+
+      const { result } = renderHook(() => useSSE(), { wrapper: makeWrapper(qc) })
+      await waitFor(() => expect(result.current.connectionState).toBe('connected'))
+
+      act(() => {
+        pushEvent(eventType, payload)
+      })
+
+      await waitFor(() => {
+        const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
+        for (const expected of expectedKeys) {
+          expect(keys).toContainEqual(expected)
+        }
+      })
+    },
+  )
+
+  it('logs error and does not crash on malformed event data', async () => {
     let pushEvent!: (type: string, data: string) => void
 
     server.use(
@@ -72,181 +110,27 @@ describe('useSSE', () => {
     )
 
     const qc = makeQueryClient()
-    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     const { result } = renderHook(() => useSSE(), { wrapper: makeWrapper(qc) })
     await waitFor(() => expect(result.current.connectionState).toBe('connected'))
 
+    // run.step_added has parseRunId: true, so malformed JSON triggers the catch block
     act(() => {
-      pushEvent('run.status_changed', JSON.stringify({ runId: 'r1' }))
+      pushEvent('run.step_added', 'not valid json')
     })
 
     await waitFor(() => {
-      const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
-      expect(keys).toContainEqual(queryKeys.runs.all)
-      expect(keys).toContainEqual(queryKeys.policies.all)
-    })
-  })
-
-  it('invalidates the run steps query cache on run.step_added', async () => {
-    let pushEvent!: (type: string, data: string) => void
-
-    server.use(
-      sse<TestSSEEventMap>('/api/v1/events', ({ client }) => {
-        pushEvent = (type, data) => client.send({ event: type as keyof TestSSEEventMap, data })
-      }),
-    )
-
-    const qc = makeQueryClient()
-    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
-
-    const { result } = renderHook(() => useSSE(), { wrapper: makeWrapper(qc) })
-    await waitFor(() => expect(result.current.connectionState).toBe('connected'))
-
-    act(() => {
-      pushEvent('run.step_added', JSON.stringify({ run_id: 'r1', step_id: 's1', step_number: 0, type: 'thought' }))
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('useSSE: failed to parse run.step_added payload'),
+        'not valid json',
+      )
     })
 
-    await waitFor(() => {
-      const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
-      expect(keys).toContainEqual(queryKeys.runs.steps('r1'))
-    })
-  })
+    // Hook should still be connected — not crashed
+    expect(result.current.connectionState).toBe('connected')
 
-  it('invalidates approvals query on approval.created', async () => {
-    let pushEvent!: (type: string, data: string) => void
-
-    server.use(
-      sse<TestSSEEventMap>('/api/v1/events', ({ client }) => {
-        pushEvent = (type, data) => client.send({ event: type as keyof TestSSEEventMap, data })
-      }),
-    )
-
-    const qc = makeQueryClient()
-    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
-
-    const { result } = renderHook(() => useSSE(), { wrapper: makeWrapper(qc) })
-    await waitFor(() => expect(result.current.connectionState).toBe('connected'))
-
-    act(() => {
-      pushEvent('approval.created', JSON.stringify({ approvalId: 'a1' }))
-    })
-
-    await waitFor(() => {
-      const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
-      expect(keys).toContainEqual(queryKeys.approvals.all)
-    })
-  })
-
-  it('invalidates approvals and runs queries on approval.resolved', async () => {
-    let pushEvent!: (type: string, data: string) => void
-
-    server.use(
-      sse<TestSSEEventMap>('/api/v1/events', ({ client }) => {
-        pushEvent = (type, data) => client.send({ event: type as keyof TestSSEEventMap, data })
-      }),
-    )
-
-    const qc = makeQueryClient()
-    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
-
-    const { result } = renderHook(() => useSSE(), { wrapper: makeWrapper(qc) })
-    await waitFor(() => expect(result.current.connectionState).toBe('connected'))
-
-    act(() => {
-      pushEvent('approval.resolved', JSON.stringify({ approvalId: 'a1' }))
-    })
-
-    await waitFor(() => {
-      const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
-      expect(keys).toContainEqual(queryKeys.approvals.all)
-      expect(keys).toContainEqual(queryKeys.runs.all)
-    })
-  })
-
-  it('invalidates runs queries on feedback.created', async () => {
-    let pushEvent!: (type: string, data: string) => void
-
-    server.use(
-      sse<TestSSEEventMap>('/api/v1/events', ({ client }) => {
-        pushEvent = (type, data) => client.send({ event: type as keyof TestSSEEventMap, data })
-      }),
-    )
-
-    const qc = makeQueryClient()
-    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
-
-    const { result } = renderHook(() => useSSE(), { wrapper: makeWrapper(qc) })
-    await waitFor(() => expect(result.current.connectionState).toBe('connected'))
-
-    act(() => {
-      pushEvent('feedback.created', JSON.stringify({ run_id: 'r1' }))
-    })
-
-    await waitFor(() => {
-      const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
-      expect(keys).toContainEqual(queryKeys.runs.all)
-      expect(keys).toContainEqual(queryKeys.stats.all)
-      expect(keys).toContainEqual(queryKeys.attention.all)
-    })
-  })
-
-  it('invalidates run detail and steps queries on feedback.resolved', async () => {
-    let pushEvent!: (type: string, data: string) => void
-
-    server.use(
-      sse<TestSSEEventMap>('/api/v1/events', ({ client }) => {
-        pushEvent = (type, data) => client.send({ event: type as keyof TestSSEEventMap, data })
-      }),
-    )
-
-    const qc = makeQueryClient()
-    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
-
-    const { result } = renderHook(() => useSSE(), { wrapper: makeWrapper(qc) })
-    await waitFor(() => expect(result.current.connectionState).toBe('connected'))
-
-    act(() => {
-      pushEvent('feedback.resolved', JSON.stringify({ run_id: 'r1' }))
-    })
-
-    await waitFor(() => {
-      const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
-      expect(keys).toContainEqual(queryKeys.runs.all)
-      expect(keys).toContainEqual(queryKeys.runs.detail('r1'))
-      expect(keys).toContainEqual(queryKeys.runs.steps('r1'))
-      expect(keys).toContainEqual(queryKeys.stats.all)
-      expect(keys).toContainEqual(queryKeys.attention.all)
-    })
-  })
-
-  it('invalidates the same keys as feedback.resolved on feedback.timed_out', async () => {
-    let pushEvent!: (type: string, data: string) => void
-
-    server.use(
-      sse<TestSSEEventMap>('/api/v1/events', ({ client }) => {
-        pushEvent = (type, data) => client.send({ event: type as keyof TestSSEEventMap, data })
-      }),
-    )
-
-    const qc = makeQueryClient()
-    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
-
-    const { result } = renderHook(() => useSSE(), { wrapper: makeWrapper(qc) })
-    await waitFor(() => expect(result.current.connectionState).toBe('connected'))
-
-    act(() => {
-      pushEvent('feedback.timed_out', JSON.stringify({ run_id: 'r1' }))
-    })
-
-    await waitFor(() => {
-      const keys = invalidateSpy.mock.calls.map((c) => (c[0] as { queryKey: unknown[] }).queryKey)
-      expect(keys).toContainEqual(queryKeys.runs.all)
-      expect(keys).toContainEqual(queryKeys.runs.detail('r1'))
-      expect(keys).toContainEqual(queryKeys.runs.steps('r1'))
-      expect(keys).toContainEqual(queryKeys.stats.all)
-      expect(keys).toContainEqual(queryKeys.attention.all)
-    })
+    consoleSpy.mockRestore()
   })
 
   it('closes the EventSource when the hook unmounts', async () => {

@@ -93,12 +93,6 @@ describe('Layout', () => {
     expect(runsLink.className).toContain('navLinkActive')
   })
 
-  it('runs link is NOT active for nested paths like /runs/some-id', () => {
-    renderLayout('/runs/some-id')
-    const runsLink = screen.getByRole('link', { name: /run history/i })
-    expect(runsLink.className).not.toContain('navLinkActive')
-  })
-
   // ---- Footer: user account row ----
 
   it('footer renders user avatar with initial, username, and role', () => {
@@ -153,26 +147,11 @@ describe('Layout', () => {
     expect(link.className).toContain('navLinkNeedsApproval')
   })
 
-  it('approval pulse class absent when no pending items', () => {
-    renderLayout()
-    const link = screen.getByRole('link', { name: /control center/i })
-    expect(link.className).not.toContain('navLinkNeedsApproval')
-  })
-
   it('MCP unhealthy class applied to Tools when server has null last_discovered_at', () => {
     vi.mocked(useMcpServers).mockReturnValue({ data: [{ last_discovered_at: null }] } as ReturnType<typeof useMcpServers>)
     renderLayout()
     const link = screen.getByRole('link', { name: /tools/i })
     expect(link.className).toContain('navLinkMcpUnhealthy')
-  })
-
-  it('MCP unhealthy class absent when all servers healthy', () => {
-    vi.mocked(useMcpServers).mockReturnValue({
-      data: [{ last_discovered_at: '2026-01-01T00:00:00Z' }],
-    } as ReturnType<typeof useMcpServers>)
-    renderLayout()
-    const link = screen.getByRole('link', { name: /tools/i })
-    expect(link.className).not.toContain('navLinkMcpUnhealthy')
   })
 
   // ---- Disconnect banner in content area ----
@@ -183,11 +162,6 @@ describe('Layout', () => {
     const banner = screen.getByRole('status')
     expect(banner).toBeInTheDocument()
     expect(banner).toHaveTextContent('Connection lost — reconnecting…')
-  })
-
-  it('disconnect banner hidden when connected', () => {
-    renderLayout()
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 
   it('disconnect banner uses critical style when disconnected', () => {

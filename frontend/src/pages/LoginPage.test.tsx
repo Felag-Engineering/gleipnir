@@ -84,4 +84,54 @@ describe('LoginPage', () => {
       expect(screen.getByRole('button', { name: /signing in/i })).toBeDisabled()
     })
   })
+
+  it('shows session expired banner when ?expired=1 is in the URL', () => {
+    render(
+      <MemoryRouter initialEntries={['/login?expired=1']}>
+        <LoginPage />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('Session expired. Please sign in again.')).toBeInTheDocument()
+  })
+
+  it('hides session expired banner once an error is shown', async () => {
+    server.use(
+      http.post('/api/v1/auth/login', () =>
+        HttpResponse.json({ error: 'invalid credentials' }, { status: 401 }),
+      ),
+    )
+
+    render(
+      <MemoryRouter initialEntries={['/login?expired=1']}>
+        <LoginPage />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('Session expired. Please sign in again.')).toBeInTheDocument()
+
+    await userEvent.type(screen.getByLabelText(/username/i), 'alice')
+    await userEvent.type(screen.getByLabelText(/password/i), 'wrong')
+    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('invalid credentials')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('Session expired. Please sign in again.')).not.toBeInTheDocument()
+  })
+
+  it('disables input fields while loading', async () => {
+    server.use(
+      http.post('/api/v1/auth/login', () => new Promise(() => {})),
+    )
+
+    renderLoginPage()
+
+    await userEvent.type(screen.getByLabelText(/username/i), 'alice')
+    await userEvent.type(screen.getByLabelText(/password/i), 'pass')
+    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/username/i)).toBeDisabled()
+      expect(screen.getByLabelText(/password/i)).toBeDisabled()
+    })
+  })
 })

@@ -77,40 +77,16 @@ function setupDefaultHandlers() {
 }
 
 describe('DashboardPage', () => {
-  it('renders the Control Center title', async () => {
+  it('renders all dashboard sections', async () => {
     setupDefaultHandlers()
     renderDashboard(makeClient())
 
     await waitFor(() => {
       expect(screen.getByText('Control Center')).toBeInTheDocument()
     })
-  })
-
-  it('renders the Run Activity chart section', async () => {
-    setupDefaultHandlers()
-    renderDashboard(makeClient())
-
-    await waitFor(() => {
-      expect(screen.getByText('RUN ACTIVITY')).toBeInTheDocument()
-    })
-  })
-
-  it('renders the Cost by Model chart section', async () => {
-    setupDefaultHandlers()
-    renderDashboard(makeClient())
-
-    await waitFor(() => {
-      expect(screen.getByText('COST BY MODEL')).toBeInTheDocument()
-    })
-  })
-
-  it('renders the Recent Runs section', async () => {
-    setupDefaultHandlers()
-    renderDashboard(makeClient())
-
-    await waitFor(() => {
-      expect(screen.getByText('RECENT RUNS')).toBeInTheDocument()
-    })
+    expect(screen.getByText('RUN ACTIVITY')).toBeInTheDocument()
+    expect(screen.getByText('COST BY MODEL')).toBeInTheDocument()
+    expect(screen.getByText('RECENT RUNS')).toBeInTheDocument()
   })
 
   it('does not render the attention queue when there are no items', async () => {

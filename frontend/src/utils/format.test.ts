@@ -79,6 +79,12 @@ describe('formatTimestamp', () => {
     expect(result).toContain('Jun')
     expect(result).toContain('15')
   })
+
+  it('returns "Invalid Date" for an invalid ISO input', () => {
+    // new Date('not-a-date').toLocaleString() returns "Invalid Date" rather than throwing,
+    // so the try/catch passthrough never fires — the function returns "Invalid Date"
+    expect(formatTimestamp('not-a-date')).toBe('Invalid Date')
+  })
 })
 
 describe('formatTimeAgo', () => {
@@ -135,6 +141,11 @@ describe('formatTimeAgo', () => {
     // At 25h, formatTimeAgo returns toLocaleDateString, not "Xh ago"
     expect(result).not.toMatch(/h ago$/)
     expect(result).not.toBe('just now')
+  })
+
+  it('returns "Invalid Date" for an invalid ISO string', () => {
+    const result = formatTimeAgo('not-a-date')
+    expect(result).toBe('Invalid Date')
   })
 })
 
@@ -206,5 +217,10 @@ describe('computeRunDuration', () => {
       completed_at: '2024-01-01T12:00:00Z',
     }
     expect(computeRunDuration(run)).toBe(0)
+  })
+
+  it('returns NaN for invalid timestamps', () => {
+    const run = { started_at: 'bad', completed_at: 'also-bad' }
+    expect(computeRunDuration(run)).toBeNaN()
   })
 })

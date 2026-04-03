@@ -125,15 +125,10 @@ describe('RunDetailPage — skeleton on load', () => {
     mockPending()
   })
 
-  it('renders skeleton blocks while data is loading', () => {
+  it('renders skeleton blocks and hides run header while pending', () => {
     renderPage()
-    // SkeletonBlock renders with aria-hidden="true"
     const skeletons = document.querySelectorAll('[aria-hidden="true"]')
     expect(skeletons.length).toBeGreaterThan(0)
-  })
-
-  it('does not render run header while pending', () => {
-    renderPage()
     expect(screen.queryByRole('button', { name: /back/i })).not.toBeInTheDocument()
   })
 })
@@ -401,37 +396,16 @@ describe('RunDetailPage — filter chips', () => {
     })
   })
 
-  it('shows count badge on filter chips', () => {
+  it.each([
+    [/thoughts/i, '2'],
+    [/errors/i, '2'],
+    [/^tools/i, '3'],
+    [/approvals/i, '1'],
+  ])('shows correct count badge for %s chip', (chipPattern, expectedCount) => {
     renderPage()
-    // "Thoughts" chip should show count 2
-    const thoughtsChip = screen.getByRole('button', { name: /thoughts/i })
-    expect(thoughtsChip.textContent).toContain('2')
-  })
-
-  it('shows count 2 for Errors chip (1 standalone + 1 tool block with is_error)', () => {
-    renderPage()
-    const errorsChip = screen.getByRole('button', { name: /errors/i })
-    expect(errorsChip.textContent).toContain('2')
-  })
-
-  it('shows count 3 for Tools chip (ToolBlock x + ToolBlock y + ToolBlock z)', () => {
-    renderPage()
-    const toolsChip = screen.getByRole('button', { name: /^tools/i })
-    expect(toolsChip.textContent).toContain('3')
-  })
-
-  it('shows count 1 for Thinking chip', () => {
-    renderPage()
-    // ThinkingBlock also has a div[role="button"] labelled "Thinking"; find the <button> chip.
-    const thinkingButtons = screen.getAllByRole('button', { name: /^thinking/i })
-    const thinkingChip = thinkingButtons.find((el) => el.tagName === 'BUTTON')!
-    expect(thinkingChip.textContent).toContain('1')
-  })
-
-  it('shows count 1 for Approvals chip', () => {
-    renderPage()
-    const approvalsChip = screen.getByRole('button', { name: /approvals/i })
-    expect(approvalsChip.textContent).toContain('1')
+    const allMatches = screen.getAllByRole('button', { name: chipPattern })
+    const chip = allMatches.find((el) => el.tagName === 'BUTTON') ?? allMatches[0]
+    expect(chip.textContent).toContain(expectedCount)
   })
 
   it('clicking All chip after a filter shows all steps again', async () => {
@@ -535,8 +509,11 @@ describe('CopyBlock', () => {
 })
 
 describe('RunDetailPage — Load more', () => {
-  it('shows Load more button when there are more than 50 steps', () => {
-    const steps: ApiRunStep[] = Array.from({ length: 55 }, (_, i) =>
+  it.each([
+    [55, true],
+    [10, false],
+  ])('with %i steps, Load more button present=%s', (count, shouldExist) => {
+    const steps: ApiRunStep[] = Array.from({ length: count }, (_, i) =>
       makeStep({
         id: `s${i}`,
         step_number: i,
@@ -546,21 +523,11 @@ describe('RunDetailPage — Load more', () => {
     )
     mockLoaded(makeRun(), steps)
     renderPage()
-    expect(screen.getByRole('button', { name: /load more/i })).toBeInTheDocument()
-  })
-
-  it('does not show Load more button when there are fewer than 50 steps', () => {
-    const steps: ApiRunStep[] = Array.from({ length: 10 }, (_, i) =>
-      makeStep({
-        id: `s${i}`,
-        step_number: i,
-        type: 'thought',
-        content: JSON.stringify({ text: `Thought ${i}` }),
-      }),
-    )
-    mockLoaded(makeRun(), steps)
-    renderPage()
-    expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
+    if (shouldExist) {
+      expect(screen.getByRole('button', { name: /load more/i })).toBeInTheDocument()
+    } else {
+      expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
+    }
   })
 
   it('loads more steps when button is clicked', async () => {
@@ -674,28 +641,21 @@ describe('RunDetailPage — filter does NOT reset displayedCount', () => {
 })
 
 describe('RunDetailPage — error box', () => {
-  it('shows error box when run status is failed', () => {
-    mockLoaded(makeRun({ status: 'failed', error: 'agent timed out' }))
+  it.each([
+    ['failed', 'agent timed out'],
+    ['interrupted', 'process restarted'],
+  ] as const)('shows error box when run status is %s', (status, errorMsg) => {
+    mockLoaded(makeRun({ status, error: errorMsg }))
     renderPage()
     expect(screen.getByRole('alert')).toBeInTheDocument()
-    expect(screen.getByText('agent timed out')).toBeInTheDocument()
+    expect(screen.getByText(errorMsg)).toBeInTheDocument()
   })
 
-  it('shows error box when run status is interrupted', () => {
-    mockLoaded(makeRun({ status: 'interrupted', error: 'process restarted' }))
-    renderPage()
-    expect(screen.getByRole('alert')).toBeInTheDocument()
-    expect(screen.getByText('process restarted')).toBeInTheDocument()
-  })
-
-  it('does not show error box when run status is running', () => {
-    mockLoaded(makeRun({ status: 'running', error: null, completed_at: null }))
-    renderPage()
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-  })
-
-  it('does not show error box when run is complete', () => {
-    mockLoaded(makeRun({ status: 'complete', error: null }))
+  it.each([
+    ['running', { completed_at: null }],
+    ['complete', {}],
+  ] as const)('does not show error box when run status is %s', (status, overrides) => {
+    mockLoaded(makeRun({ status, error: null, ...overrides }))
     renderPage()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
