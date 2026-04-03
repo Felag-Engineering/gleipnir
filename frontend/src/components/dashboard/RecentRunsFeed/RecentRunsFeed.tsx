@@ -1,5 +1,5 @@
 import { Link, useNavigate } from 'react-router-dom'
-import { useRuns } from '@/hooks/useRuns'
+import { useRuns } from '@/hooks/queries/runs'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'
 import { EmptyState } from '@/components/EmptyState'
 import { SkeletonBlock } from '@/components/SkeletonBlock'

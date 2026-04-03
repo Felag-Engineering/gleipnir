@@ -4,16 +4,17 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 
-import RunsPage, { computePageNumbers } from './RunsPage'
+import RunsPage from './RunsPage'
+import { computePageNumbers } from '@/utils/pagination'
 import type { ApiRun, ApiPolicyListItem } from '@/api/types'
 
 // --- Mocks ---
 
-vi.mock('@/hooks/useRuns')
-vi.mock('@/hooks/usePolicies')
+vi.mock('@/hooks/queries/runs')
+vi.mock('@/hooks/queries/policies')
 
-import { useRuns } from '@/hooks/useRuns'
-import { usePolicies } from '@/hooks/usePolicies'
+import { useRuns } from '@/hooks/queries/runs'
+import { usePolicies } from '@/hooks/queries/policies'
 
 // --- Helpers ---
 

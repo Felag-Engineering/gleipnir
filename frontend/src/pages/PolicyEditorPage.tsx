@@ -10,12 +10,12 @@ import { RunLimitsSection } from '@/components/PolicyEditor/FormMode/RunLimitsSe
 import { ConcurrencySection } from '@/components/PolicyEditor/FormMode/ConcurrencySection'
 import { ModelSection } from '@/components/PolicyEditor/FormMode/ModelSection'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import { usePolicy } from '@/hooks/usePolicy'
-import { useSavePolicy } from '@/hooks/useSavePolicy'
-import { useDeletePolicy } from '@/hooks/useDeletePolicy'
+import { usePolicy } from '@/hooks/queries/policies'
+import { useSavePolicy } from '@/hooks/mutations/policies'
+import { useDeletePolicy } from '@/hooks/mutations/policies'
 import { ApiError } from '@/api/fetch'
 import { usePageTitle } from '@/hooks/usePageTitle'
-import { DEFAULT_YAML, defaultFormState, FormState, formStateToYaml, yamlToFormState } from './policyEditorUtils'
+import { DEFAULT_YAML, defaultFormState, FormState, formStateToYaml, yamlToFormState } from '@/components/PolicyEditor/policyEditorUtils'
 import styles from './PolicyEditorPage.module.css'
 
 export function PolicyEditorPage() {

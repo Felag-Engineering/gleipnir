@@ -11,11 +11,10 @@ import type { ApiRun, ApiRunStep } from '@/api/types'
 
 // --- Mocks ---
 
-vi.mock('@/hooks/useRun')
-vi.mock('@/hooks/useRunSteps')
+vi.mock('@/hooks/queries/runs')
 
-import { useRun } from '@/hooks/useRun'
-import { useRunSteps } from '@/hooks/useRunSteps'
+import { useRun } from '@/hooks/queries/runs'
+import { useRunSteps } from '@/hooks/queries/runs'
 
 // --- Helpers ---
 

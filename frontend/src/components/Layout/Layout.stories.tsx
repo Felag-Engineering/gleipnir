@@ -99,7 +99,7 @@ export const WithUnhealthyServers: Story = {
   render: () => <SidebarStory initialPath="/tools" />,
   beforeEach: async () => {
     const { vi } = await import('vitest')
-    const mod = await import('../../hooks/useMcpServers')
+    const mod = await import('../../hooks/queries/servers')
     vi.spyOn(mod, 'useMcpServers').mockReturnValue({
       data: [{ id: '1', url: 'http://example.com', last_discovered_at: null }],
     } as ReturnType<typeof mod.useMcpServers>)
@@ -112,7 +112,7 @@ export const WithBothAlerts: Story = {
   beforeEach: async () => {
     const { vi } = await import('vitest')
     const attMod = await import('../../hooks/useAttentionItems')
-    const mcpMod = await import('../../hooks/useMcpServers')
+    const mcpMod = await import('../../hooks/queries/servers')
     vi.spyOn(attMod, 'useAttentionItems').mockReturnValue({
       items: [{} as never],
       count: 1,
@@ -157,7 +157,7 @@ export const CollapsedWithAlerts: Story = {
   beforeEach: async () => {
     const { vi } = await import('vitest')
     const attMod = await import('../../hooks/useAttentionItems')
-    const mcpMod = await import('../../hooks/useMcpServers')
+    const mcpMod = await import('../../hooks/queries/servers')
     vi.spyOn(attMod, 'useAttentionItems').mockReturnValue({
       items: [{} as never, {} as never],
       count: 2,

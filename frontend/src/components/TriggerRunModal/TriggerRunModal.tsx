@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Modal } from '@/components/Modal/Modal'
 import { ModalFooter } from '@/components/ModalFooter'
-import { useTriggerPolicy } from '@/hooks/useTriggerPolicy'
+import { useTriggerPolicy } from '@/hooks/mutations/policies'
 import formStyles from '@/styles/forms.module.css'
 import alertStyles from '@/styles/alerts.module.css'
 

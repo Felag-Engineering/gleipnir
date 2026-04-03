@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQueries } from '@tanstack/react-query';
-import { useMcpServers } from '@/hooks/useMcpServers';
+import { useMcpServers } from '@/hooks/queries/servers';
 import { queryKeys } from '@/hooks/queryKeys';
 import { apiFetch } from '@/api/fetch';
 import type { ApiMcpTool } from '@/api/types';

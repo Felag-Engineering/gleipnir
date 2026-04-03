@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/tokens.css'
 import type { ApiStats } from '@/api/types'
-import { useStats } from './useStats'
+import { useStats } from './queries/stats'
 import { queryKeys } from './queryKeys'
 
 const FIXTURE_STATS: ApiStats = {

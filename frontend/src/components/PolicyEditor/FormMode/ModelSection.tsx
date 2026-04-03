@@ -1,6 +1,6 @@
 import styles from './ModelSection.module.css';
 import type { ModelFormState } from './types';
-import { useModels } from '@/hooks/useModels';
+import { useModels } from '@/hooks/queries/users';
 
 export interface ModelSectionProps {
   value: ModelFormState;

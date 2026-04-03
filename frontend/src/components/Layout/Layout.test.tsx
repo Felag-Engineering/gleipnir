@@ -8,7 +8,7 @@ vi.mock('../../hooks/useSSE', () => ({
   useSSE: vi.fn(() => ({ connectionState: 'connected' })),
 }))
 
-vi.mock('../../hooks/useCurrentUser', () => ({
+vi.mock('../../hooks/queries/users', () => ({
   useCurrentUser: vi.fn(() => ({ data: { id: '1', username: 'alice', roles: ['admin'] } })),
 }))
 
@@ -16,15 +16,15 @@ vi.mock('../../hooks/useAttentionItems', () => ({
   useAttentionItems: vi.fn(() => ({ items: [], count: 0, isLoading: false, dismissFailure: vi.fn() })),
 }))
 
-vi.mock('../../hooks/useMcpServers', () => ({
+vi.mock('../../hooks/queries/servers', () => ({
   useMcpServers: vi.fn(() => ({ data: [] })),
 }))
 
 import Layout from './Layout'
 import { useSSE } from '../../hooks/useSSE'
-import { useCurrentUser } from '../../hooks/useCurrentUser'
+import { useCurrentUser } from '../../hooks/queries/users'
 import { useAttentionItems } from '../../hooks/useAttentionItems'
-import { useMcpServers } from '../../hooks/useMcpServers'
+import { useMcpServers } from '../../hooks/queries/servers'
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })

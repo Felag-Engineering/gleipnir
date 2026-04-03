@@ -9,13 +9,12 @@ import type { ApiUser } from '@/api/types'
 
 // --- Mocks ---
 
-vi.mock('@/hooks/useUsers')
-vi.mock('@/hooks/useCreateUser')
-vi.mock('@/hooks/useUpdateUser')
+vi.mock('@/hooks/queries/users')
+vi.mock('@/hooks/mutations/users')
 
-import { useUsers } from '@/hooks/useUsers'
-import { useCreateUser } from '@/hooks/useCreateUser'
-import { useUpdateUser } from '@/hooks/useUpdateUser'
+import { useUsers } from '@/hooks/queries/users'
+import { useCreateUser } from '@/hooks/mutations/users'
+import { useUpdateUser } from '@/hooks/mutations/users'
 
 // --- Fixtures ---
 

@@ -4,7 +4,7 @@ import { RunActivityChart } from '@/components/dashboard/RunActivityChart'
 import { CostByModelChart } from '@/components/dashboard/CostByModelChart'
 import { AttentionQueue } from '@/components/dashboard/AttentionQueue'
 import { RecentRunsFeed } from '@/components/dashboard/RecentRunsFeed'
-import { useTimeSeriesStats } from '@/hooks/useTimeSeriesStats'
+import { useTimeSeriesStats } from '@/hooks/queries/stats'
 import { useAttentionItems } from '@/hooks/useAttentionItems'
 import styles from './DashboardPage.module.css'
 

@@ -9,11 +9,8 @@ import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 
 // --- Mocks ---
 
-vi.mock('@/hooks/useMcpServers')
-vi.mock('@/hooks/useMcpTools')
-vi.mock('@/hooks/useAddMcpServer')
-vi.mock('@/hooks/useDeleteMcpServer')
-vi.mock('@/hooks/useDiscoverMcpServer')
+vi.mock('@/hooks/queries/servers')
+vi.mock('@/hooks/mutations/servers')
 // useQueries is used for eager tool fetching — mock at the module level
 vi.mock('@tanstack/react-query', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-query')>()
@@ -23,10 +20,10 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
   }
 })
 
-import { useMcpServers } from '@/hooks/useMcpServers'
-import { useAddMcpServer } from '@/hooks/useAddMcpServer'
-import { useDeleteMcpServer } from '@/hooks/useDeleteMcpServer'
-import { useDiscoverMcpServer } from '@/hooks/useDiscoverMcpServer'
+import { useMcpServers } from '@/hooks/queries/servers'
+import { useAddMcpServer } from '@/hooks/mutations/servers'
+import { useDeleteMcpServer } from '@/hooks/mutations/servers'
+import { useDiscoverMcpServer } from '@/hooks/mutations/servers'
 import { useQueries } from '@tanstack/react-query'
 
 // --- Fixtures ---

@@ -1,7 +1,15 @@
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { apiFetch } from '@/api/fetch'
-import type { ApiRunsResponse } from '@/api/types'
-import { queryKeys } from './queryKeys'
+import type { ApiRun, ApiRunsResponse, ApiRunStep } from '@/api/types'
+import { queryKeys } from '../queryKeys'
+
+export function useRun(id?: string) {
+  return useQuery({
+    queryKey: queryKeys.runs.detail(id ?? ''),
+    queryFn: () => apiFetch<ApiRun>(`/runs/${encodeURIComponent(id!)}`),
+    enabled: Boolean(id),
+  })
+}
 
 export interface RunsFilterParams {
   status?: string
@@ -38,4 +46,12 @@ export function useRuns(params: RunsFilterParams) {
     runs: query.data?.runs ?? [],
     total: query.data?.total ?? 0,
   }
+}
+
+export function useRunSteps(id?: string) {
+  return useQuery({
+    queryKey: queryKeys.runs.steps(id ?? ''),
+    queryFn: () => apiFetch<ApiRunStep[]>(`/runs/${encodeURIComponent(id!)}/steps`),
+    enabled: Boolean(id),
+  })
 }

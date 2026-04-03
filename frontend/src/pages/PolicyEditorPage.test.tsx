@@ -6,14 +6,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 
 import { PolicyEditorPage } from './PolicyEditorPage'
-import { yamlToFormState, formStateToYaml } from './policyEditorUtils'
+import { yamlToFormState, formStateToYaml } from '@/components/PolicyEditor/policyEditorUtils'
 
 // --- Mocks ---
 
-vi.mock('@/hooks/usePolicy')
-vi.mock('@/hooks/useSavePolicy')
-vi.mock('@/hooks/useDeletePolicy')
-vi.mock('@/hooks/useMcpServers')
+vi.mock('@/hooks/queries/policies')
+vi.mock('@/hooks/mutations/policies')
+vi.mock('@/hooks/queries/servers')
 
 vi.mock('@/components/PolicyEditor/YamlEditor/YamlEditor', () => ({
   YamlEditor: ({ value, onChange, onValidityChange }: {
@@ -33,10 +32,10 @@ vi.mock('@/components/PolicyEditor/YamlEditor/YamlEditor', () => ({
   },
 }))
 
-import { usePolicy } from '@/hooks/usePolicy'
-import { useSavePolicy } from '@/hooks/useSavePolicy'
-import { useDeletePolicy } from '@/hooks/useDeletePolicy'
-import { useMcpServers } from '@/hooks/useMcpServers'
+import { usePolicy } from '@/hooks/queries/policies'
+import { useSavePolicy } from '@/hooks/mutations/policies'
+import { useDeletePolicy } from '@/hooks/mutations/policies'
+import { useMcpServers } from '@/hooks/queries/servers'
 
 // --- Fixtures ---
 

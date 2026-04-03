@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { useApproveRun } from '@/hooks/useApproveRun'
+import { useApproveRun } from '@/hooks/mutations/runs'
 import { formatCountdown } from '@/utils/format'
 import type { AttentionItem as AttentionItemType } from '@/hooks/useAttentionItems'
 import styles from './AttentionQueue.module.css'

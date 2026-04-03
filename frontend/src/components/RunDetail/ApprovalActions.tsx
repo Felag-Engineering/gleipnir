@@ -1,6 +1,6 @@
 import { Button } from '@/components/Button/Button'
-import { useApproveRun } from '@/hooks/useApproveRun'
-import { useCurrentUser } from '@/hooks/useCurrentUser'
+import { useApproveRun } from '@/hooks/mutations/runs'
+import { useCurrentUser } from '@/hooks/queries/users'
 import styles from './ApprovalActions.module.css'
 
 interface Props {

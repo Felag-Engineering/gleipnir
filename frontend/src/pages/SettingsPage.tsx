@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { useModels } from '@/hooks/useModels'
+import { useModels } from '@/hooks/queries/users'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import {
   usePreferences,

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Button } from '@/components/Button/Button'
-import { useSubmitFeedback } from '@/hooks/useSubmitFeedback'
-import { useCurrentUser } from '@/hooks/useCurrentUser'
+import { useSubmitFeedback } from '@/hooks/mutations/runs'
+import { useCurrentUser } from '@/hooks/queries/users'
 import styles from './FeedbackActions.module.css'
 
 interface Props {
