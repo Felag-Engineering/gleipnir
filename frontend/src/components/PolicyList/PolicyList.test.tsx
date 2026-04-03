@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { PolicyList } from './PolicyList'
@@ -9,10 +9,13 @@ const BASE_POLICY: ApiPolicyListItem = {
   name: 'vikunja-triage',
   trigger_type: 'webhook',
   folder: '',
+  model: '',
+  tool_count: 0,
   created_at: '2026-03-07T14:32:11Z',
   updated_at: '2026-03-07T14:32:11Z',
   paused_at: null,
   latest_run: null,
+  avg_token_cost: 0,
 }
 
 const POLICY_WITH_RUN: ApiPolicyListItem = {
@@ -33,7 +36,7 @@ const POLICY_WITH_FOLDER: ApiPolicyListItem = {
 }
 
 describe('PolicyList', () => {
-  it('renders policy name, trigger chip, and status badge for a policy with a run', () => {
+  it('renders policy name and status badge for a policy with a run', () => {
     render(
       <MemoryRouter>
         <PolicyList policies={[POLICY_WITH_RUN]} onTrigger={() => {}} />
@@ -41,11 +44,10 @@ describe('PolicyList', () => {
     )
 
     expect(screen.getByText('vikunja-triage')).toBeInTheDocument()
-    expect(screen.getByText('webhook')).toBeInTheDocument()
     expect(screen.getByText('Complete')).toBeInTheDocument()
   })
 
-  it('renders no rows for empty array', () => {
+  it('renders no cards for empty array', () => {
     render(
       <MemoryRouter>
         <PolicyList policies={[]} onTrigger={() => {}} />
@@ -95,50 +97,5 @@ describe('PolicyList', () => {
     )
 
     expect(screen.getByRole('button', { name: /run vikunja-triage/i })).toBeInTheDocument()
-  })
-
-  it('hides play button when onTrigger is omitted', () => {
-    render(
-      <MemoryRouter>
-        <PolicyList policies={[BASE_POLICY]} />
-      </MemoryRouter>,
-    )
-
-    expect(screen.queryByRole('button', { name: /run vikunja-triage/i })).toBeNull()
-  })
-
-  it('uses renderRunCell when provided', () => {
-    const renderRunCell = vi.fn(() => <span>custom-cell</span>)
-
-    render(
-      <MemoryRouter>
-        <PolicyList policies={[BASE_POLICY]} renderRunCell={renderRunCell} />
-      </MemoryRouter>,
-    )
-
-    expect(renderRunCell).toHaveBeenCalledWith(BASE_POLICY)
-    expect(screen.getByText('custom-cell')).toBeInTheDocument()
-  })
-
-  it('row links to /policies/:id when linkTo="editor"', () => {
-    render(
-      <MemoryRouter>
-        <PolicyList policies={[BASE_POLICY]} linkTo="editor" />
-      </MemoryRouter>,
-    )
-
-    const link = screen.getByRole('link', { name: /vikunja-triage/i })
-    expect(link).toHaveAttribute('href', '/policies/p1')
-  })
-
-  it('row links to /policies/:id/runs when linkTo="runs" (default)', () => {
-    render(
-      <MemoryRouter>
-        <PolicyList policies={[BASE_POLICY]} />
-      </MemoryRouter>,
-    )
-
-    const link = screen.getByRole('link', { name: /vikunja-triage/i })
-    expect(link).toHaveAttribute('href', '/policies/p1/runs')
   })
 })

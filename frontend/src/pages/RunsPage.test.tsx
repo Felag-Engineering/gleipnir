@@ -47,10 +47,13 @@ function makePolicy(overrides?: Partial<ApiPolicyListItem>): ApiPolicyListItem {
     name: 'My Policy',
     trigger_type: 'webhook',
     folder: '',
+    model: '',
+    tool_count: 0,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     paused_at: null,
     latest_run: null,
+    avg_token_cost: 0,
     ...overrides,
   }
 }

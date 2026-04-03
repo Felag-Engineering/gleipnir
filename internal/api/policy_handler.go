@@ -35,14 +35,17 @@ type runSummary struct {
 }
 
 type policyListItem struct {
-	ID          string      `json:"id"`
-	Name        string      `json:"name"`
-	TriggerType string      `json:"trigger_type"`
-	Folder      string      `json:"folder"`
-	CreatedAt   string      `json:"created_at"`
-	UpdatedAt   string      `json:"updated_at"`
-	PausedAt    *string     `json:"paused_at"`
-	LatestRun   *runSummary `json:"latest_run"`
+	ID           string      `json:"id"`
+	Name         string      `json:"name"`
+	TriggerType  string      `json:"trigger_type"`
+	Folder       string      `json:"folder"`
+	Model        string      `json:"model"`
+	ToolCount    int         `json:"tool_count"`
+	AvgTokenCost int64       `json:"avg_token_cost"`
+	CreatedAt    string      `json:"created_at"`
+	UpdatedAt    string      `json:"updated_at"`
+	PausedAt     *string     `json:"paused_at"`
+	LatestRun    *runSummary `json:"latest_run"`
 }
 
 type policyDetail struct {
@@ -66,14 +69,18 @@ func (h *PolicyHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]policyListItem, 0, len(rows))
 	for _, row := range rows {
+		summary := parsePolicySummary(row.Yaml)
 		item := policyListItem{
-			ID:          row.ID,
-			Name:        row.Name,
-			TriggerType: row.TriggerType,
-			Folder:      extractFolder(row.Yaml),
-			CreatedAt:   row.CreatedAt,
-			UpdatedAt:   row.UpdatedAt,
-			PausedAt:    row.PausedAt,
+			ID:           row.ID,
+			Name:         row.Name,
+			TriggerType:  row.TriggerType,
+			Folder:       summary.Folder,
+			Model:        summary.Model,
+			ToolCount:    len(summary.Capabilities.Tools),
+			AvgTokenCost: row.AvgTokenCost,
+			CreatedAt:    row.CreatedAt,
+			UpdatedAt:    row.UpdatedAt,
+			PausedAt:     row.PausedAt,
 		}
 
 		// Build latest_run only when the LEFT JOIN matched a run row.
@@ -119,14 +126,30 @@ func (h *PolicyHandler) Get(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// policyYAMLSummary holds the fields extracted from a raw policy YAML blob
+// for list responses. Parsing once and reading multiple fields avoids repeated
+// unmarshal calls per row in the List handler.
+type policyYAMLSummary struct {
+	Folder       string `yaml:"folder"`
+	Model        string `yaml:"model"`
+	Capabilities struct {
+		Tools []any `yaml:"tools"`
+	} `yaml:"capabilities"`
+}
+
+// parsePolicySummary unmarshals rawYAML into a policyYAMLSummary.
+// Parse errors are silently ignored — missing/invalid fields return zero values.
+func parsePolicySummary(rawYAML string) policyYAMLSummary {
+	var v policyYAMLSummary
+	_ = yaml.Unmarshal([]byte(rawYAML), &v)
+	return v
+}
+
 // extractFolder parses the folder field from a raw policy YAML blob.
 // Folder is cosmetic/UI-only (ADR-020); returns "" on parse failure.
+// Used by Get and buildMutateResponse where only the folder field is needed.
 func extractFolder(rawYAML string) string {
-	var v struct {
-		Folder string `yaml:"folder"`
-	}
-	_ = yaml.Unmarshal([]byte(rawYAML), &v)
-	return v.Folder
+	return parsePolicySummary(rawYAML).Folder
 }
 
 // policyMutateResponse is the response body for Create and Update, extending

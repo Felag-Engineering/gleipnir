@@ -54,7 +54,7 @@ describe('Layout', () => {
     renderLayout()
     expect(screen.getByRole('link', { name: /control center/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /run history/i })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /policies/i })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /agents/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /tools/i })).toBeInTheDocument()
   })
 

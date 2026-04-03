@@ -21,25 +21,27 @@ export function PolicyIdentitySection({ value, onChange }: PolicyIdentitySection
         />
       </div>
 
-      <div className={styles.field}>
-        <label className={styles.label}>Description</label>
-        <input
-          className={styles.input}
-          type="text"
-          value={value.description}
-          onChange={(e) => onChange({ ...value, description: e.target.value })}
-        />
-      </div>
+      <div className={styles.inlineRow}>
+        <div className={styles.field}>
+          <label className={styles.label}>Description</label>
+          <input
+            className={styles.input}
+            type="text"
+            value={value.description}
+            onChange={(e) => onChange({ ...value, description: e.target.value })}
+          />
+        </div>
 
-      <div className={styles.field}>
-        <label className={styles.label}>Folder</label>
-        <input
-          className={styles.input}
-          type="text"
-          value={value.folder}
-          placeholder="Ungrouped"
-          onChange={(e) => onChange({ ...value, folder: e.target.value })}
-        />
+        <div className={styles.field}>
+          <label className={styles.label}>Folder</label>
+          <input
+            className={styles.input}
+            type="text"
+            value={value.folder}
+            placeholder="Ungrouped"
+            onChange={(e) => onChange({ ...value, folder: e.target.value })}
+          />
+        </div>
       </div>
     </div>
   );

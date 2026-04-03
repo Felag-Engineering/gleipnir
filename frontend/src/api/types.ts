@@ -12,6 +12,9 @@ export interface ApiPolicyListItem {
   name: string
   trigger_type: string
   folder: string
+  model: string
+  tool_count: number
+  avg_token_cost: number
   created_at: string
   updated_at: string
   paused_at: string | null

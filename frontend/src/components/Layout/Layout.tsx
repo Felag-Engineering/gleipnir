@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Activity, ChevronLeft, ChevronRight, History, ScrollText, Settings, Users, Wrench } from 'lucide-react'
+import { Activity, Bot, ChevronLeft, ChevronRight, History, Settings, Users, Wrench } from 'lucide-react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useSSE } from '@/hooks/useSSE'
 import { useCurrentUser } from '@/hooks/queries/users'
@@ -12,7 +12,7 @@ const SIDEBAR_STORAGE_KEY = 'gleipnir-sidebar-collapsed'
 const NAV_ITEMS = [
   { label: 'Control Center', to: '/dashboard', Icon: Activity, requiredRole: undefined },
   { label: 'Run History', to: '/runs', Icon: History, requiredRole: undefined },
-  { label: 'Policies', to: '/policies', Icon: ScrollText, requiredRole: undefined },
+  { label: 'Agents', to: '/policies', Icon: Bot, requiredRole: undefined },
   { label: 'Tools', to: '/tools', Icon: Wrench, requiredRole: undefined },
   { label: 'Users', to: '/users', Icon: Users, requiredRole: 'admin' },
 ]

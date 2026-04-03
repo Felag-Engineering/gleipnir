@@ -13,7 +13,7 @@ import buttonStyles from '@/components/Button/Button.module.css'
 import styles from './PoliciesPage.module.css'
 
 export default function PoliciesPage() {
-  usePageTitle('Policies')
+  usePageTitle('Agents')
   const { data: policies, status: policiesStatus } = usePolicies()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -21,28 +21,27 @@ export default function PoliciesPage() {
 
   return (
     <div className={styles.page}>
-      <PageHeader title="Policies">
+      <PageHeader title="Agents">
         <Link to="/policies/new" className={`${buttonStyles.button} ${buttonStyles.primary}`}>
-          New Policy
+          New Agent
         </Link>
       </PageHeader>
       <QueryBoundary
         status={policiesStatus}
         isEmpty={(policies ?? []).length === 0}
-        errorMessage="Failed to load policies."
+        errorMessage="Failed to load agents."
         onRetry={() => queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })}
         emptyState={
           <EmptyState
-            headline="No policies yet"
-            subtext="Create your first policy to get started"
-            ctaLabel="New Policy"
+            headline="No agents yet"
+            subtext="Create your first agent to get started"
+            ctaLabel="New Agent"
             ctaTo="/policies/new"
           />
         }
       >
         <PolicyList
           policies={policies ?? []}
-          linkTo="editor"
           onTrigger={(id: string, name: string) => setTriggerTarget({ id, name })}
         />
       </QueryBoundary>

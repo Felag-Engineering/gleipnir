@@ -57,7 +57,7 @@ func TestBuildContents_TextHistory(t *testing.T) {
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock{Text: "world"}}},
 	}
 
-	contents := buildContents(history)
+	contents := buildContents(history, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 
 	if len(contents) != 2 {
 		t.Fatalf("expected 2 contents, got %d", len(contents))
@@ -87,7 +87,7 @@ func TestBuildContents_ToolCallBlock(t *testing.T) {
 		},
 	}
 
-	contents := buildContents(history)
+	contents := buildContents(history, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 
 	if len(contents) != 1 {
 		t.Fatalf("expected 1 content, got %d", len(contents))
@@ -127,7 +127,7 @@ func TestBuildContents_ToolResultBlock(t *testing.T) {
 		},
 	}
 
-	contents := buildContents(history)
+	contents := buildContents(history, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 
 	if len(contents) != 2 {
 		t.Fatalf("expected 2 contents, got %d", len(contents))
@@ -165,7 +165,7 @@ func TestBuildContents_ToolResultBlock(t *testing.T) {
 			},
 		},
 	}
-	contentsErr := buildContents(historyErr)
+	contentsErr := buildContents(historyErr, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 	frErr := contentsErr[1].Parts[0].FunctionResponse
 	if frErr.Response["error"] != "failed" {
 		t.Errorf("expected error='failed', got %v", frErr.Response)
@@ -183,7 +183,7 @@ func TestBuildContents_ToolResultBlock_FallbackName(t *testing.T) {
 		},
 	}
 
-	contents := buildContents(history)
+	contents := buildContents(history, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 
 	fr := contents[0].Parts[0].FunctionResponse
 	if fr.Name != "orphan-call-id" {
@@ -216,7 +216,7 @@ func TestBuildConfig_SystemPrompt(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req := llm.MessageRequest{SystemPrompt: tc.systemPrompt}
-			config := buildConfig(req, nil)
+			config := buildConfig(req, nil, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 
 			if tc.wantNil {
 				if config.SystemInstruction != nil {
@@ -243,7 +243,7 @@ func TestBuildConfig_SystemPrompt(t *testing.T) {
 
 func TestBuildConfig_MaxTokens(t *testing.T) {
 	req := llm.MessageRequest{MaxTokens: 1024}
-	config := buildConfig(req, nil)
+	config := buildConfig(req, nil, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 
 	if config.MaxOutputTokens != 1024 {
 		t.Errorf("expected MaxOutputTokens=1024, got %d", config.MaxOutputTokens)
@@ -251,7 +251,7 @@ func TestBuildConfig_MaxTokens(t *testing.T) {
 
 	// Zero MaxTokens should leave MaxOutputTokens unset.
 	reqZero := llm.MessageRequest{MaxTokens: 0}
-	configZero := buildConfig(reqZero, nil)
+	configZero := buildConfig(reqZero, nil, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 	if configZero.MaxOutputTokens != 0 {
 		t.Errorf("expected MaxOutputTokens=0 when MaxTokens is zero, got %d", configZero.MaxOutputTokens)
 	}
@@ -291,7 +291,7 @@ func TestBuildTools(t *testing.T) {
 func TestTranslateResponse_TextParts(t *testing.T) {
 	resp := makeTextResponse("hello world", genai.FinishReasonStop, 10, 5)
 
-	result, err := translateResponse(resp)
+	result, err := translateResponse(resp, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestTranslateResponse_FunctionCallParts(t *testing.T) {
 		},
 	}
 
-	result, err := translateResponse(resp)
+	result, err := translateResponse(resp, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestTranslateResponse_SyntheticID(t *testing.T) {
 		},
 	}
 
-	result, err := translateResponse(resp)
+	result, err := translateResponse(resp, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestTranslateResponse_ThoughtPartsAsThinking(t *testing.T) {
 		},
 	}
 
-	result, err := translateResponse(resp)
+	result, err := translateResponse(resp, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -428,7 +428,7 @@ func TestTranslateResponse_ThinkingTokenUsage(t *testing.T) {
 		},
 	}
 
-	result, err := translateResponse(resp)
+	result, err := translateResponse(resp, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -564,7 +564,7 @@ func TestTranslateResponse_StopReasons(t *testing.T) {
 					},
 				},
 			}
-			result, err := translateResponse(resp)
+			result, err := translateResponse(resp, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -578,7 +578,7 @@ func TestTranslateResponse_StopReasons(t *testing.T) {
 func TestTranslateResponse_TokenUsage(t *testing.T) {
 	resp := makeTextResponse("hi", genai.FinishReasonStop, 42, 17)
 
-	result, err := translateResponse(resp)
+	result, err := translateResponse(resp, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -599,7 +599,7 @@ func TestTranslateResponse_NilCandidates(t *testing.T) {
 		},
 	}
 
-	result, err := translateResponse(resp)
+	result, err := translateResponse(resp, toolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

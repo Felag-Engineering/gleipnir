@@ -14,6 +14,28 @@ import (
 	"google.golang.org/genai"
 )
 
+// sanitizeToolName replaces any character outside [a-zA-Z0-9_] with '_' and
+// truncates to 128 characters. The Gemini API rejects tool names containing
+// dots, hyphens, or other special characters.
+func sanitizeToolName(name string) string {
+	sanitized := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			return r
+		}
+		return '_'
+	}, name)
+	if len(sanitized) > 128 {
+		sanitized = sanitized[:128]
+	}
+	return sanitized
+}
+
+// toolNameMapping holds both directions of the MCP-name ↔ wire-name mapping.
+type toolNameMapping struct {
+	SanitizedToOriginal map[string]string
+	OriginalToSanitized map[string]string
+}
+
 // contentGenerator abstracts genai.Models.GenerateContent for test injection.
 // genai.Models has a value receiver on GenerateContent, so *genai.Models
 // satisfies this interface because value-receiver methods are in the pointer's
@@ -64,15 +86,18 @@ func newClientWithGenerator(gen contentGenerator, lister modelLister) *GeminiCli
 func (c *GeminiClient) CreateMessage(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
 	hints, _ := req.Hints.(*GeminiHints)
 
-	contents := buildContents(req.History)
-	config := buildConfig(req, hints)
+	// Build name mapping before translating history so tool names in
+	// ToolCallBlock/ToolResultBlock use the sanitized wire-format names.
+	names := buildNameMapping(req.Tools)
+	contents := buildContents(req.History, names)
+	config := buildConfig(req, hints, names)
 
 	resp, err := c.generator.GenerateContent(ctx, req.Model, contents, config)
 	if err != nil {
 		return nil, wrapSDKError(err)
 	}
 
-	return translateResponse(resp)
+	return translateResponse(resp, names)
 }
 
 // StreamMessage wraps CreateMessage and emits the complete response as a single
@@ -251,16 +276,38 @@ func (c *GeminiClient) InvalidateModelCache() {
 	c.modelLoaded = false
 }
 
+// buildNameMapping creates the bidirectional mapping between original MCP tool
+// names (which may contain dots/hyphens) and the sanitized wire-format names
+// that the Gemini API accepts.
+func buildNameMapping(tools []llm.ToolDefinition) toolNameMapping {
+	names := toolNameMapping{
+		SanitizedToOriginal: make(map[string]string, len(tools)),
+		OriginalToSanitized: make(map[string]string, len(tools)),
+	}
+	for _, t := range tools {
+		sanitized := sanitizeToolName(t.Name)
+		names.SanitizedToOriginal[sanitized] = t.Name
+		names.OriginalToSanitized[t.Name] = sanitized
+	}
+	return names
+}
+
 // buildContents translates the provider-neutral conversation history into
 // genai Content structs. It performs a two-pass approach: first collecting
 // a callID→name map from all ToolCallBlocks, then translating each turn.
-func buildContents(history []llm.ConversationTurn) []*genai.Content {
+// Tool names in ToolCallBlock and ToolResultBlock are mapped to their
+// sanitized wire-format equivalents using the provided name mapping.
+func buildContents(history []llm.ConversationTurn, names toolNameMapping) []*genai.Content {
 	// First pass: build callID→tool name map for ToolResultBlock resolution.
 	callIDToName := make(map[string]string)
 	for _, turn := range history {
 		for _, cb := range turn.Content {
 			if tc, ok := cb.(llm.ToolCallBlock); ok {
-				callIDToName[tc.ID] = tc.Name
+				wireName := tc.Name
+				if mapped, ok := names.OriginalToSanitized[tc.Name]; ok {
+					wireName = mapped
+				}
+				callIDToName[tc.ID] = wireName
 			}
 		}
 	}
@@ -277,10 +324,14 @@ func buildContents(history []llm.ConversationTurn) []*genai.Content {
 				if len(b.Input) > 0 {
 					_ = json.Unmarshal(b.Input, &argsMap)
 				}
+				wireName := b.Name
+				if mapped, ok := names.OriginalToSanitized[b.Name]; ok {
+					wireName = mapped
+				}
 				parts = append(parts, &genai.Part{
 					FunctionCall: &genai.FunctionCall{
 						ID:   b.ID,
-						Name: b.Name,
+						Name: wireName,
 						Args: argsMap,
 					},
 				})
@@ -324,7 +375,7 @@ func mapRoleToGenai(role llm.Role) string {
 }
 
 // buildConfig constructs the GenerateContentConfig for a request.
-func buildConfig(req llm.MessageRequest, hints *GeminiHints) *genai.GenerateContentConfig {
+func buildConfig(req llm.MessageRequest, hints *GeminiHints, names toolNameMapping) *genai.GenerateContentConfig {
 	config := &genai.GenerateContentConfig{}
 
 	if req.MaxTokens > 0 {
@@ -356,12 +407,13 @@ func buildConfig(req llm.MessageRequest, hints *GeminiHints) *genai.GenerateCont
 }
 
 // buildTools groups all ToolDefinitions into a single genai.Tool with all
-// FunctionDeclarations. Gemini expects all functions grouped under one Tool.
+// FunctionDeclarations. Tool names are sanitized to comply with Gemini's
+// naming requirements (alphanumeric + underscore only).
 func buildTools(tools []llm.ToolDefinition) []*genai.Tool {
 	decls := make([]*genai.FunctionDeclaration, 0, len(tools))
 	for _, t := range tools {
 		decl := &genai.FunctionDeclaration{
-			Name:        t.Name,
+			Name:        sanitizeToolName(t.Name),
 			Description: t.Description,
 		}
 		if len(t.InputSchema) > 0 {
@@ -384,7 +436,7 @@ func buildTools(tools []llm.ToolDefinition) []*genai.Tool {
 // Known gap: part.ThoughtSignature bytes are discarded here. When full thinking
 // continuity is implemented, ThoughtSignature must be echoed back in subsequent
 // requests to maintain the thinking chain. A follow-up issue is needed.
-func translateResponse(resp *genai.GenerateContentResponse) (*llm.MessageResponse, error) {
+func translateResponse(resp *genai.GenerateContentResponse, names toolNameMapping) (*llm.MessageResponse, error) {
 	var result llm.MessageResponse
 
 	if resp.UsageMetadata != nil {
@@ -415,9 +467,14 @@ func translateResponse(resp *genai.GenerateContentResponse) (*llm.MessageRespons
 				id = uuid.NewString()
 			}
 			argsJSON, _ := json.Marshal(part.FunctionCall.Args)
+			// Reverse-map from sanitized wire name to original MCP name.
+			originalName := part.FunctionCall.Name
+			if mapped, ok := names.SanitizedToOriginal[part.FunctionCall.Name]; ok {
+				originalName = mapped
+			}
 			result.ToolCalls = append(result.ToolCalls, llm.ToolCallBlock{
 				ID:    id,
-				Name:  part.FunctionCall.Name,
+				Name:  originalName,
 				Input: json.RawMessage(argsJSON),
 			})
 		} else if part.Text != "" {

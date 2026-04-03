@@ -59,7 +59,7 @@ export const YamlInvalid: Story = {
 
 export const CreateMode: Story = {
   args: {
-    policyName: 'New Policy',
+    policyName: 'New Agent',
     isDirty: true,
     mode: 'form',
     canSave: true,

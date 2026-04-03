@@ -195,7 +195,9 @@ SELECT
     r.id          AS run_id,
     r.status      AS run_status,
     r.started_at  AS run_started_at,
-    r.token_cost  AS run_token_cost
+    r.token_cost  AS run_token_cost,
+    (SELECT CAST(COALESCE(AVG(token_cost), 0) AS INTEGER)
+     FROM runs WHERE policy_id = p.id) AS avg_token_cost
 FROM policies p
 LEFT JOIN runs r ON r.id = (
     SELECT id FROM runs
@@ -218,6 +220,7 @@ type ListPoliciesWithLatestRunRow struct {
 	RunStatus    *string `json:"run_status"`
 	RunStartedAt *string `json:"run_started_at"`
 	RunTokenCost *int64  `json:"run_token_cost"`
+	AvgTokenCost int64   `json:"avg_token_cost"`
 }
 
 func (q *Queries) ListPoliciesWithLatestRun(ctx context.Context) ([]ListPoliciesWithLatestRunRow, error) {
@@ -241,6 +244,7 @@ func (q *Queries) ListPoliciesWithLatestRun(ctx context.Context) ([]ListPolicies
 			&i.RunStatus,
 			&i.RunStartedAt,
 			&i.RunTokenCost,
+			&i.AvgTokenCost,
 		); err != nil {
 			return nil, err
 		}

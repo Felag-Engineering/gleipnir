@@ -15,10 +15,13 @@ const POLICIES: ApiPolicyListItem[] = [
     name: 'vikunja-triage',
     trigger_type: 'webhook',
     folder: '',
+    model: '',
+    tool_count: 0,
     created_at: '2026-03-07T14:32:11Z',
     updated_at: '2026-03-07T14:32:11Z',
     paused_at: null,
     latest_run: { id: 'r101', status: 'complete', started_at: '2026-03-07T14:32:11Z', token_cost: 1000 },
+    avg_token_cost: 0,
   },
 ]
 
@@ -67,18 +70,18 @@ describe('PoliciesPage', () => {
     renderPage(qc)
 
     await waitFor(() => {
-      expect(screen.getByText('No policies yet')).toBeInTheDocument()
+      expect(screen.getByText('No agents yet')).toBeInTheDocument()
     })
 
-    expect(screen.getByText(/create your first policy/i)).toBeInTheDocument()
+    expect(screen.getByText(/create your first agent/i)).toBeInTheDocument()
 
     // CTA links to /policies/new
-    const ctaLinks = screen.getAllByRole('link', { name: /new policy/i })
+    const ctaLinks = screen.getAllByRole('link', { name: /new agent/i })
     const ctaToNew = ctaLinks.some(l => l.getAttribute('href') === '/policies/new')
     expect(ctaToNew).toBe(true)
   })
 
-  it('policy rows link to /policies/:id (editor), not /policies/:id/runs', async () => {
+  it('edit button links to /policies/:id (editor)', async () => {
     server.use(
       http.get('/api/v1/policies', () => {
         return HttpResponse.json({ data: POLICIES })
@@ -90,12 +93,11 @@ describe('PoliciesPage', () => {
 
     await waitFor(() => expect(screen.getByText('vikunja-triage')).toBeInTheDocument())
 
-    const policyLink = screen.getByText('vikunja-triage').closest('a')
-    expect(policyLink).toHaveAttribute('href', '/policies/p1')
-    expect(policyLink).not.toHaveAttribute('href', '/policies/p1/runs')
+    const editLink = screen.getByRole('link', { name: /edit vikunja-triage/i })
+    expect(editLink).toHaveAttribute('href', '/policies/p1')
   })
 
-  it('"New Policy" button in header links to /policies/new', async () => {
+  it('"New Agent" button in header links to /policies/new', async () => {
     server.use(
       http.get('/api/v1/policies', () => {
         return HttpResponse.json({ data: POLICIES })
@@ -108,7 +110,7 @@ describe('PoliciesPage', () => {
     await waitFor(() => expect(screen.getByText('vikunja-triage')).toBeInTheDocument())
 
     // The header New Policy link is a direct child of the header section
-    const headerLink = screen.getByRole('link', { name: 'New Policy' })
+    const headerLink = screen.getByRole('link', { name: 'New Agent' })
     expect(headerLink).toHaveAttribute('href', '/policies/new')
   })
 
@@ -123,7 +125,7 @@ describe('PoliciesPage', () => {
     renderPage(qc)
 
     await waitFor(() => {
-      expect(screen.getByText(/failed to load policies/i)).toBeInTheDocument()
+      expect(screen.getByText(/failed to load agents/i)).toBeInTheDocument()
     })
 
     expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()

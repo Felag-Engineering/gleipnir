@@ -1,0 +1,92 @@
+.expanded {
+  border-top: 1px solid var(--border-subtle);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.description {
+  font-size: var(--text-sm);
+  color: var(--text-second);
+  line-height: 1.5;
+}
+
+.statBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-canvas);
+  border-radius: 6px;
+}
+
+.stat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.statLabel {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.statValue {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border-subtle);
+}
+
+.capLabel {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.capPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: var(--space-2);
+}
+
+.capPill {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  padding: 2px var(--space-2);
+  border-radius: 3px;
+  color: var(--color-blue);
+  background: color-mix(in srgb, var(--color-blue) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-blue) 12%, transparent);
+}
+
+.recentDots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.recentDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dot-color, var(--text-muted));
+}
+
+.loading {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  padding: var(--space-4);
+}

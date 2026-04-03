@@ -1,0 +1,90 @@
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+.card:hover { border-color: var(--border-mid); }
+.cardExpanded { border-color: var(--color-blue); }
+.cardExpanded:hover { border-color: var(--color-blue); }
+
+.collapsed {
+  display: flex;
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+  gap: var(--space-3);
+  cursor: pointer;
+}
+
+.leftZone { flex: 1; display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+
+.statusDot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.dotComplete { background: var(--color-green); }
+.dotFailed { background: var(--color-red); }
+.dotRunning { background: var(--color-blue); }
+.dotWaiting { background: var(--color-amber); }
+.dotNone { background: var(--text-muted); }
+
+.policyName {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pill {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  padding: 2px var(--space-2);
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.triggerPill {
+  composes: pill;
+  color: var(--color-teal);
+  background: color-mix(in srgb, var(--color-teal) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-teal) 15%, transparent);
+}
+.modelPill {
+  composes: pill;
+  color: var(--text-second);
+  background: color-mix(in srgb, var(--text-second) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-second) 10%, transparent);
+}
+.toolCount {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--color-blue);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.rightZone { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
+
+.timeAgo {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.actionBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid var(--border-mid);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color var(--duration-fast) var(--ease-out),
+              color var(--duration-fast) var(--ease-out);
+}
+.playBtn:hover { border-color: var(--color-green); color: var(--color-green); }
+.editBtn:hover { border-color: var(--text-primary); color: var(--text-primary); }

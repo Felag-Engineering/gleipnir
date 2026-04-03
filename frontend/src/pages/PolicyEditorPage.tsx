@@ -124,8 +124,8 @@ export function PolicyEditorPage() {
 
   const policyName =
     mode === 'form'
-      ? (formState.identity.name || (id ? id : 'New Policy'))
-      : (id ? (policy?.name ?? id) : 'New Policy')
+      ? (formState.identity.name || (id ? id : 'New Agent'))
+      : (id ? (policy?.name ?? id) : 'New Agent')
 
   usePageTitle(policyName)
 

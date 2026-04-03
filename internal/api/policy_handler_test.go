@@ -201,6 +201,145 @@ func TestPolicyListHandler(t *testing.T) {
 	})
 }
 
+func TestPolicyListAvgTokenCost(t *testing.T) {
+	t.Run("avg_token_cost is average of all runs for the policy", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		insertTestPolicy(t, store, "pol1", "my-policy", "trigger: webhook\n")
+		testutil.InsertRunWithTime(t, store, "run1", "pol1", model.RunStatusComplete, "2026-01-01T00:00:00Z", 1000)
+		testutil.InsertRunWithTime(t, store, "run2", "pol1", model.RunStatusComplete, "2026-01-02T00:00:00Z", 3000)
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/policies")
+		if err != nil {
+			t.Fatalf("GET /policies: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []struct {
+				ID           string `json:"id"`
+				AvgTokenCost int64  `json:"avg_token_cost"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data) != 1 {
+			t.Fatalf("got %d items, want 1", len(envelope.Data))
+		}
+		if envelope.Data[0].AvgTokenCost != 2000 {
+			t.Errorf("avg_token_cost = %d, want 2000", envelope.Data[0].AvgTokenCost)
+		}
+	})
+
+	t.Run("avg_token_cost is 0 when policy has no runs", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		insertTestPolicy(t, store, "pol1", "my-policy", "trigger: webhook\n")
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/policies")
+		if err != nil {
+			t.Fatalf("GET /policies: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []struct {
+				AvgTokenCost int64 `json:"avg_token_cost"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data) != 1 {
+			t.Fatalf("got %d items, want 1", len(envelope.Data))
+		}
+		if envelope.Data[0].AvgTokenCost != 0 {
+			t.Errorf("avg_token_cost = %d, want 0", envelope.Data[0].AvgTokenCost)
+		}
+	})
+}
+
+func TestPolicyListModelAndToolCount(t *testing.T) {
+	t.Run("model and tool_count extracted from YAML", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		yaml := `
+model: claude-opus-4-5
+trigger: webhook
+capabilities:
+  tools:
+    - tool: github.list_repos
+    - tool: github.create_issue
+`
+		insertTestPolicy(t, store, "pol1", "my-policy", yaml)
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/policies")
+		if err != nil {
+			t.Fatalf("GET /policies: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []struct {
+				Model     string `json:"model"`
+				ToolCount int    `json:"tool_count"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data) != 1 {
+			t.Fatalf("got %d items, want 1", len(envelope.Data))
+		}
+		if envelope.Data[0].Model != "claude-opus-4-5" {
+			t.Errorf("model = %q, want claude-opus-4-5", envelope.Data[0].Model)
+		}
+		if envelope.Data[0].ToolCount != 2 {
+			t.Errorf("tool_count = %d, want 2", envelope.Data[0].ToolCount)
+		}
+	})
+
+	t.Run("model is empty and tool_count is 0 when not in YAML", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		insertTestPolicy(t, store, "pol1", "my-policy", "trigger: webhook\n")
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/policies")
+		if err != nil {
+			t.Fatalf("GET /policies: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []struct {
+				Model     string `json:"model"`
+				ToolCount int    `json:"tool_count"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data) != 1 {
+			t.Fatalf("got %d items, want 1", len(envelope.Data))
+		}
+		if envelope.Data[0].Model != "" {
+			t.Errorf("model = %q, want empty string", envelope.Data[0].Model)
+		}
+		if envelope.Data[0].ToolCount != 0 {
+			t.Errorf("tool_count = %d, want 0", envelope.Data[0].ToolCount)
+		}
+	})
+}
+
 func TestPolicyGetHandler(t *testing.T) {
 	t.Run("valid ID returns 200 with policy detail", func(t *testing.T) {
 		store := newPolicyHandlerStore(t)
