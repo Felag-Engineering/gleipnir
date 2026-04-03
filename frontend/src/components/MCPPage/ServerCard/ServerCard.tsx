@@ -1,17 +1,16 @@
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
-import { HealthIndicator } from '@/components/MCPPage/HealthIndicator'
-import type { HealthStatus } from '@/components/MCPPage/HealthIndicator'
-import { ToolList } from '@/components/MCPPage/ToolList'
+import { SkeletonBlock } from '@/components/SkeletonBlock'
 import { formatTimeAgo } from '@/utils/format'
 import styles from './ServerCard.module.css'
+
+const TOOL_CHIP_LIMIT = 4
 
 interface Props {
   server: ApiMcpServer
   tools: ApiMcpTool[] | undefined
   toolsLoading: boolean
   isDiscovering: boolean
-  onDiscover: (serverId: string) => void
-  onDelete: (server: ApiMcpServer, toolCount: number) => void
+  onClick: () => void
 }
 
 export function ServerCard({
@@ -19,71 +18,63 @@ export function ServerCard({
   tools,
   toolsLoading,
   isDiscovering,
-  onDiscover,
-  onDelete,
+  onClick,
 }: Props) {
-  const health: HealthStatus = isDiscovering
-    ? 'discovering'
-    : server.last_discovered_at === null
-    ? 'unreachable'
-    : 'connected'
-
+  const isUnreachable = server.last_discovered_at === null
+  const hasDrift = server.has_drift
   const toolCount = tools?.length ?? 0
+  const previewTools = tools?.slice(0, TOOL_CHIP_LIMIT) ?? []
+  const remaining = toolCount - previewTools.length
 
   return (
-    <div className={styles.card}>
-      <div className={styles.header}>
-        <div className={styles.info}>
-          <div className={styles.titleRow}>
-            <HealthIndicator status={health} />
-            <h2 className={styles.name}>{server.name}</h2>
-            {server.has_drift && (
-              <span className={styles.driftBadge} title="Tools have changed since last acknowledged discovery">
-                Drift
-              </span>
-            )}
-          </div>
-          <div className={styles.url}>{server.url}</div>
-          {server.last_discovered_at && (
-            <div className={styles.meta}>
-              Discovered {formatTimeAgo(server.last_discovered_at)}
-            </div>
+    <div
+      className={`${styles.card} ${isUnreachable ? styles.cardUnreachable : ''}`}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onClick()
+        }
+      }}
+      role="button"
+      tabIndex={0}
+      aria-label={`${server.name}, ${toolCount} tools`}
+    >
+      <div className={styles.topRow}>
+        <div className={styles.titleGroup}>
+          <span className={styles.name}>{server.name}</span>
+          <span className={styles.toolCountBadge}>
+            {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
+          </span>
+          {isDiscovering && <span className={styles.discoveringBadge}>Discovering...</span>}
+          {!isDiscovering && hasDrift && <span className={styles.driftBadge}>Drift</span>}
+          {!isDiscovering && isUnreachable && (
+            <span className={styles.unreachableBadge}>Unreachable</span>
           )}
         </div>
-        <div className={styles.actions}>
-          <button
-            type="button"
-            className={styles.discoverBtn}
-            onClick={() => onDiscover(server.id)}
-            disabled={isDiscovering}
-            aria-label={`Discover tools for ${server.name}`}
-          >
-            {isDiscovering ? (
-              <>
-                <span className={styles.spinner} aria-hidden="true" />
-                Discovering…
-              </>
-            ) : (
-              <>
-                <span className={styles.discoverIcon} aria-hidden="true">↻</span>
-                Discover
-              </>
-            )}
-          </button>
-          <button
-            type="button"
-            className={styles.deleteBtn}
-            onClick={() => onDelete(server, toolCount)}
-            aria-label={`Delete ${server.name}`}
-          >
-            Delete
-          </button>
-        </div>
+        {server.last_discovered_at && (
+          <span className={styles.discoveredAt}>
+            Discovered {formatTimeAgo(server.last_discovered_at)}
+          </span>
+        )}
       </div>
-      <ToolList
-        tools={tools}
-        isLoading={toolsLoading}
-      />
+      <div className={styles.url}>{server.url}</div>
+      <div className={styles.toolChips}>
+        {isDiscovering || toolsLoading ? (
+          <SkeletonBlock height={22} />
+        ) : (
+          <>
+            {previewTools.map((tool) => (
+              <span key={tool.id} className={styles.chip}>
+                {tool.name}
+              </span>
+            ))}
+            {remaining > 0 && (
+              <span className={styles.chipMore}>+{remaining} more</span>
+            )}
+          </>
+        )}
+      </div>
     </div>
   )
 }

@@ -49,6 +49,7 @@ function makePolicy(overrides?: Partial<ApiPolicyListItem>): ApiPolicyListItem {
     folder: '',
     model: '',
     tool_count: 0,
+    tool_refs: [],
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     paused_at: null,

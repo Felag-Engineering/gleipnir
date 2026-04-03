@@ -340,6 +340,86 @@ capabilities:
 	})
 }
 
+func TestPolicyListToolRefs(t *testing.T) {
+	t.Run("tool_refs extracted from capabilities YAML", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		yaml := `
+model: claude-opus-4-5
+trigger: webhook
+capabilities:
+  tools:
+    - tool: github.list_repos
+    - tool: github.create_issue
+      approval: required
+`
+		insertTestPolicy(t, store, "pol1", "my-policy", yaml)
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/policies")
+		if err != nil {
+			t.Fatalf("GET /policies: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []struct {
+				ToolCount int      `json:"tool_count"`
+				ToolRefs  []string `json:"tool_refs"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data) != 1 {
+			t.Fatalf("got %d items, want 1", len(envelope.Data))
+		}
+		item := envelope.Data[0]
+		if item.ToolCount != 2 {
+			t.Errorf("tool_count = %d, want 2", item.ToolCount)
+		}
+		if len(item.ToolRefs) != 2 {
+			t.Fatalf("tool_refs length = %d, want 2", len(item.ToolRefs))
+		}
+		if item.ToolRefs[0] != "github.list_repos" {
+			t.Errorf("tool_refs[0] = %q, want github.list_repos", item.ToolRefs[0])
+		}
+		if item.ToolRefs[1] != "github.create_issue" {
+			t.Errorf("tool_refs[1] = %q, want github.create_issue", item.ToolRefs[1])
+		}
+	})
+
+	t.Run("tool_refs is empty array when no tools defined", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		insertTestPolicy(t, store, "pol1", "my-policy", "trigger: webhook\n")
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/policies")
+		if err != nil {
+			t.Fatalf("GET /policies: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []json.RawMessage `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data) != 1 {
+			t.Fatalf("got %d items, want 1", len(envelope.Data))
+		}
+		// Verify tool_refs is "[]" not "null" in JSON.
+		raw := string(envelope.Data[0])
+		if !strings.Contains(raw, `"tool_refs":[]`) {
+			t.Errorf("expected tool_refs:[] in JSON, got: %s", raw)
+		}
+	})
+}
+
 func TestPolicyGetHandler(t *testing.T) {
 	t.Run("valid ID returns 200 with policy detail", func(t *testing.T) {
 		store := newPolicyHandlerStore(t)

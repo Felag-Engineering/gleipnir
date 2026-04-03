@@ -34,6 +34,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
       started_at: '2026-03-10T02:00:00Z',
       token_cost: 2340,
     },
+    tool_refs: [],
     avg_token_cost: 2340,
   },
   {
@@ -52,6 +53,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
       started_at: '2026-03-10T12:45:00Z',
       token_cost: 870,
     },
+    tool_refs: [],
     avg_token_cost: 870,
   },
   {
@@ -70,6 +72,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
       started_at: '2026-03-10T01:00:00Z',
       token_cost: 1100,
     },
+    tool_refs: [],
     avg_token_cost: 1100,
   },
   {
@@ -88,6 +91,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
       started_at: '2026-03-10T11:30:00Z',
       token_cost: 560,
     },
+    tool_refs: [],
     avg_token_cost: 560,
   },
   {
@@ -106,6 +110,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
       started_at: '2026-03-09T23:15:00Z',
       token_cost: 430,
     },
+    tool_refs: [],
     avg_token_cost: 430,
   },
   {
@@ -124,6 +129,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
       started_at: '2026-03-10T12:50:00Z',
       token_cost: 0,
     },
+    tool_refs: [],
     avg_token_cost: 0,
   },
   {
@@ -137,6 +143,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     updated_at: '2026-01-10T00:00:00Z',
     paused_at: null,
     latest_run: null,
+    tool_refs: [],
     avg_token_cost: 0,
   },
   {
@@ -155,6 +162,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
       started_at: '2026-03-10T14:00:00Z',
       token_cost: 980,
     },
+    tool_refs: [],
     avg_token_cost: 980,
   },
 ]

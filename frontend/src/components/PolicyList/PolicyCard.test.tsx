@@ -64,6 +64,7 @@ const POLICY: ApiPolicyListItem = {
   folder: '',
   model: 'gemini-2.5-flash',
   tool_count: 5,
+  tool_refs: [],
   avg_token_cost: 4500,
   created_at: '2026-04-03T14:00:00Z',
   updated_at: '2026-04-03T14:00:00Z',

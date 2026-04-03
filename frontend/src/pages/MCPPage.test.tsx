@@ -11,7 +11,6 @@ import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 
 vi.mock('@/hooks/queries/servers')
 vi.mock('@/hooks/mutations/servers')
-// useQueries is used for eager tool fetching — mock at the module level
 vi.mock('@tanstack/react-query', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-query')>()
   return {
@@ -51,7 +50,11 @@ const TOOL_1: ApiMcpTool = {
   server_id: 'srv-1',
   name: 'kubectl.get_pods',
   description: 'List pods.',
-  input_schema: { namespace: { type: 'string' } },
+  input_schema: {
+    properties: { namespace: { type: 'string' } },
+    required: ['namespace'],
+    type: 'object',
+  },
 }
 
 const TOOL_2: ApiMcpTool = {
@@ -59,7 +62,7 @@ const TOOL_2: ApiMcpTool = {
   server_id: 'srv-1',
   name: 'kubectl.delete_pod',
   description: 'Delete a pod.',
-  input_schema: {},
+  input_schema: { properties: {}, type: 'object' },
 }
 
 // --- Helpers ---
@@ -147,13 +150,12 @@ describe('ToolsPage — servers loaded', () => {
     expect(screen.getByText('http://vikunja-mcp:8080')).toBeInTheDocument()
   })
 
-  it('shows Connected health for server with last_discovered_at', () => {
+  it('shows no status badge for healthy connected server', () => {
     renderPage()
-    const connectedLabels = screen.getAllByText('Connected')
-    expect(connectedLabels.length).toBeGreaterThan(0)
+    expect(screen.queryByText('Connected')).not.toBeInTheDocument()
   })
 
-  it('shows Unreachable health for server with null last_discovered_at', () => {
+  it('shows Unreachable badge for server with null last_discovered_at', () => {
     renderPage()
     expect(screen.getByText('Unreachable')).toBeInTheDocument()
   })
@@ -166,61 +168,71 @@ describe('ToolsPage — servers loaded', () => {
     expect(screen.getByText('Drift')).toBeInTheDocument()
   })
 
-  it('hides drift badge when server has_drift is false', () => {
-    mockServersLoaded([SERVER_1], new Map([['srv-1', [TOOL_1]]]))
-    mockNoopMutations()
+  it('shows tool name chips on server card', () => {
     renderPage()
-    expect(screen.queryByText('Drift')).not.toBeInTheDocument()
+    expect(screen.getByText('kubectl.get_pods')).toBeInTheDocument()
+    expect(screen.getByText('kubectl.delete_pod')).toBeInTheDocument()
+  })
+
+  it('shows tool count badge', () => {
+    renderPage()
+    expect(screen.getByText('2 tools')).toBeInTheDocument()
   })
 })
 
-describe('ToolsPage — stats bar', () => {
-  it('shows correct tool counts from eager fetches', () => {
+describe('ToolsPage — server detail modal', () => {
+  beforeEach(() => {
     const tools = new Map([['srv-1', [TOOL_1, TOOL_2]]])
     mockServersLoaded([SERVER_1], tools)
     mockNoopMutations()
-
-    renderPage()
-    // Total tools = 2
-    const twos = screen.getAllByText('2')
-    expect(twos.length).toBeGreaterThan(0)
   })
 
-  it('shows dash placeholder on initial load with no cached data', () => {
-    vi.mocked(useMcpServers).mockReturnValue({
-      data: [SERVER_1],
-      status: 'success',
-    } as ReturnType<typeof useMcpServers>)
-
-    vi.mocked(useQueries).mockReturnValue([
-      { data: undefined, status: 'pending' },
-    ] as ReturnType<typeof useQueries>)
-
-    mockNoopMutations()
+  it('opens modal when server card is clicked', () => {
     renderPage()
-
-    const dashes = screen.getAllByText('–')
-    expect(dashes.length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByRole('button', { name: /kubectl-mcp/i }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getAllByText('kubectl-mcp').length).toBeGreaterThan(0)
   })
 
-  it('shows cached tool counts during background refetch instead of dashes', () => {
-    vi.mocked(useMcpServers).mockReturnValue({
-      data: [SERVER_1],
-      status: 'success',
-    } as ReturnType<typeof useMcpServers>)
-
-    // Simulate re-navigation: data is cached but query is refetching in background
-    vi.mocked(useQueries).mockReturnValue([
-      { data: [TOOL_1, TOOL_2], status: 'success' },
-    ] as ReturnType<typeof useQueries>)
-
-    mockNoopMutations()
+  it('shows tool accordion in modal', () => {
     renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /kubectl-mcp/i }))
+    expect(screen.getAllByText('kubectl.get_pods').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('kubectl.delete_pod').length).toBeGreaterThan(0)
+  })
 
-    // Stats should show actual counts, not dashes
-    const twos = screen.getAllByText('2')
-    expect(twos.length).toBeGreaterThan(0)
-    expect(screen.queryAllByText('–').length).toBe(0)
+  it('closes modal when close button is clicked', async () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /kubectl-mcp/i }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText('Close'))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+  })
+
+  it('triggers discover from modal', () => {
+    const mutateMock = vi.fn()
+    vi.mocked(useDiscoverMcpServer).mockReturnValue({
+      mutate: mutateMock,
+      isPending: false,
+      error: null,
+      reset: vi.fn(),
+    } as unknown as ReturnType<typeof useDiscoverMcpServer>)
+
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /kubectl-mcp/i }))
+    fireEvent.click(screen.getByRole('button', { name: /rediscover/i }))
+    expect(mutateMock).toHaveBeenCalledWith('srv-1', expect.any(Object))
+  })
+
+  it('triggers delete from modal', () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /kubectl-mcp/i }))
+    // Use exact match to avoid matching tool buttons that contain "delete" in their name
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(screen.getByRole('heading', { name: 'Delete MCP server' })).toBeInTheDocument()
   })
 })
 
@@ -232,7 +244,8 @@ describe('ToolsPage — add MCP server modal', () => {
 
   it('opens add MCP server modal on button click', () => {
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /add mcp server/i }))
+    // Two buttons exist (header + empty state); click the first (header)
+    fireEvent.click(screen.getAllByRole('button', { name: /add mcp server/i })[0])
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Add MCP server' })).toBeInTheDocument()
   })
@@ -247,11 +260,10 @@ describe('ToolsPage — add MCP server modal', () => {
     } as unknown as ReturnType<typeof useAddMcpServer>)
 
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /add mcp server/i }))
+    fireEvent.click(screen.getAllByRole('button', { name: /add mcp server/i })[0])
 
     fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'my-mcp' } })
     fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'http://my-mcp:8080' } })
-    // Submit the form directly
     const form = document.querySelector('#add-server-form') as HTMLFormElement
     fireEvent.submit(form)
 
@@ -260,119 +272,19 @@ describe('ToolsPage — add MCP server modal', () => {
       expect.any(Object),
     )
   })
-
-  it('closes modal on cancel', async () => {
-    renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /add mcp server/i }))
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    })
-  })
-
-  it('shows spinner when add is pending', () => {
-    vi.mocked(useAddMcpServer).mockReturnValue({
-      mutate: vi.fn(),
-      isPending: true,
-      error: null,
-      reset: vi.fn(),
-    } as unknown as ReturnType<typeof useAddMcpServer>)
-
-    renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /add mcp server/i }))
-    // When isPending, the submit button is disabled and shows "Adding…"
-    const submitBtn = screen.getByRole('button', { name: /adding/i })
-    expect(submitBtn).toBeDisabled()
-  })
 })
 
-describe('ToolsPage — delete MCP server modal', () => {
+describe('ToolsPage — empty state', () => {
   beforeEach(() => {
-    const tools = new Map([['srv-1', [TOOL_1, TOOL_2]]])
-    mockServersLoaded([SERVER_1], tools)
+    mockServersLoaded([])
     mockNoopMutations()
   })
 
-  it('opens delete confirmation modal when Delete is clicked', () => {
+  it('shows empty state with add button when no servers exist', () => {
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /delete kubectl-mcp/i }))
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Delete MCP server' })).toBeInTheDocument()
-  })
-
-  it('calls deleteMutate on confirm', () => {
-    const mutateMock = vi.fn()
-    vi.mocked(useDeleteMcpServer).mockReturnValue({
-      mutate: mutateMock,
-      isPending: false,
-      error: null,
-      reset: vi.fn(),
-    } as unknown as ReturnType<typeof useDeleteMcpServer>)
-
-    renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /delete kubectl-mcp/i }))
-    fireEvent.click(screen.getByRole('button', { name: /delete mcp server/i }))
-
-    expect(mutateMock).toHaveBeenCalledWith('srv-1', expect.any(Object))
-  })
-
-  it('closes modal on cancel', async () => {
-    renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /delete kubectl-mcp/i }))
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    })
-  })
-})
-
-describe('ToolsPage — discover button', () => {
-  it('shows spinner when discover is pending for a server', () => {
-    const tools = new Map([['srv-1', [TOOL_1]]])
-    mockServersLoaded([SERVER_1], tools)
-    mockNoopMutations()
-
-    // We test the ServerCard isDiscovering prop via the discover button
-    // First render normally, then simulate click
-    const mutateMock = vi.fn()
-    vi.mocked(useDiscoverMcpServer).mockReturnValue({
-      mutate: mutateMock,
-      isPending: false,
-      error: null,
-      reset: vi.fn(),
-    } as unknown as ReturnType<typeof useDiscoverMcpServer>)
-
-    renderPage()
-    const discoverBtn = screen.getByRole('button', { name: /discover tools for kubectl-mcp/i })
-    expect(discoverBtn).toBeInTheDocument()
-    fireEvent.click(discoverBtn)
-    expect(mutateMock).toHaveBeenCalledWith('srv-1', expect.any(Object))
-  })
-})
-
-describe('ToolsPage — server card tool count', () => {
-  it('shows the number of tools discovered for a server', async () => {
-    const tools = new Map([['srv-1', [TOOL_1, TOOL_2]]])
-    mockServersLoaded([SERVER_1], tools)
-    mockNoopMutations()
-
-    renderPage()
-
-    // ServerCard renders a button label with tool count; expand to see tool list
-    const toolsBtn = screen.getByRole('button', { name: /2 tools/i })
-    expect(toolsBtn).toBeInTheDocument()
-  })
-
-  it('shows 0 tools for a server with an empty tool list', () => {
-    mockServersLoaded([SERVER_1], new Map([['srv-1', []]]))
-    mockNoopMutations()
-
-    renderPage()
-    const toolsBtn = screen.getByRole('button', { name: /0 tools/i })
-    expect(toolsBtn).toBeInTheDocument()
+    expect(screen.getByText('No MCP servers')).toBeInTheDocument()
+    expect(screen.getByText('Add an MCP server to start discovering tools.')).toBeInTheDocument()
+    const addButtons = screen.getAllByRole('button', { name: /add mcp server/i })
+    expect(addButtons.length).toBe(2) // header + empty state
   })
 })

@@ -14,6 +14,7 @@ export interface ApiPolicyListItem {
   folder: string
   model: string
   tool_count: number
+  tool_refs: string[]
   avg_token_cost: number
   created_at: string
   updated_at: string

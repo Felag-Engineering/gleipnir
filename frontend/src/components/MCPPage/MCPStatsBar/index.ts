@@ -1,1 +1,0 @@
-export { MCPStatsBar } from './MCPStatsBar'

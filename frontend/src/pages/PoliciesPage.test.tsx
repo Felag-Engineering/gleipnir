@@ -17,6 +17,7 @@ const POLICIES: ApiPolicyListItem[] = [
     folder: '',
     model: '',
     tool_count: 0,
+    tool_refs: [],
     created_at: '2026-03-07T14:32:11Z',
     updated_at: '2026-03-07T14:32:11Z',
     paused_at: null,

@@ -41,6 +41,7 @@ type policyListItem struct {
 	Folder       string      `json:"folder"`
 	Model        string      `json:"model"`
 	ToolCount    int         `json:"tool_count"`
+	ToolRefs     []string    `json:"tool_refs"`
 	AvgTokenCost int64       `json:"avg_token_cost"`
 	CreatedAt    string      `json:"created_at"`
 	UpdatedAt    string      `json:"updated_at"`
@@ -70,6 +71,7 @@ func (h *PolicyHandler) List(w http.ResponseWriter, r *http.Request) {
 	items := make([]policyListItem, 0, len(rows))
 	for _, row := range rows {
 		summary := parsePolicySummary(row.Yaml)
+		toolRefs := summary.toolRefs()
 		item := policyListItem{
 			ID:           row.ID,
 			Name:         row.Name,
@@ -77,6 +79,7 @@ func (h *PolicyHandler) List(w http.ResponseWriter, r *http.Request) {
 			Folder:       summary.Folder,
 			Model:        summary.Model,
 			ToolCount:    len(summary.Capabilities.Tools),
+			ToolRefs:     toolRefs,
 			AvgTokenCost: row.AvgTokenCost,
 			CreatedAt:    row.CreatedAt,
 			UpdatedAt:    row.UpdatedAt,
@@ -129,12 +132,28 @@ func (h *PolicyHandler) Get(w http.ResponseWriter, r *http.Request) {
 // policyYAMLSummary holds the fields extracted from a raw policy YAML blob
 // for list responses. Parsing once and reading multiple fields avoids repeated
 // unmarshal calls per row in the List handler.
+type policyToolEntry struct {
+	Tool string `yaml:"tool"`
+}
+
 type policyYAMLSummary struct {
 	Folder       string `yaml:"folder"`
 	Model        string `yaml:"model"`
 	Capabilities struct {
-		Tools []any `yaml:"tools"`
+		Tools []policyToolEntry `yaml:"tools"`
 	} `yaml:"capabilities"`
+}
+
+// toolRefs extracts the tool reference strings (e.g. "server.tool_name")
+// from the parsed capabilities.
+func (s policyYAMLSummary) toolRefs() []string {
+	refs := make([]string, 0, len(s.Capabilities.Tools))
+	for _, t := range s.Capabilities.Tools {
+		if t.Tool != "" {
+			refs = append(refs, t.Tool)
+		}
+	}
+	return refs
 }
 
 // parsePolicySummary unmarshals rawYAML into a policyYAMLSummary.

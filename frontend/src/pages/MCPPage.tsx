@@ -1,18 +1,18 @@
 import { useState } from 'react'
+import { Wrench } from 'lucide-react'
 import { useQueries } from '@tanstack/react-query'
 import { useMcpServers } from '@/hooks/queries/servers'
 import { queryKeys } from '@/hooks/queryKeys'
-import { useAddMcpServer } from '@/hooks/mutations/servers'
-import { useDeleteMcpServer } from '@/hooks/mutations/servers'
-import { useDiscoverMcpServer } from '@/hooks/mutations/servers'
+import { usePolicies } from '@/hooks/queries/policies'
+import { useAddMcpServer, useDeleteMcpServer, useDiscoverMcpServer } from '@/hooks/mutations/servers'
 import { apiFetch } from '@/api/fetch'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 import type { ApiError } from '@/api/fetch'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import { MCPStatsBar } from '@/components/MCPPage/MCPStatsBar'
 import { ServerCard } from '@/components/MCPPage/ServerCard'
+import { ServerDetailModal } from '@/components/MCPPage/ServerDetailModal'
 import { AddServerModal } from '@/components/MCPPage/AddServerModal'
 import { DeleteServerModal } from '@/components/MCPPage/DeleteServerModal'
 import { PageHeader } from '@/components/PageHeader'
@@ -30,10 +30,12 @@ export default function MCPPage() {
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
   const [addDiscoveryWarning, setAddDiscoveryWarning] = useState<string | null>(null)
   const [discoveringServerId, setDiscoveringServerId] = useState<string | null>(null)
+  const [selectedServer, setSelectedServer] = useState<ApiMcpServer | null>(null)
 
   const { data: servers, status: serversStatus } = useMcpServers()
+  const { data: policies } = usePolicies()
 
-  // Eagerly fetch all server tool lists so the total count is accurate.
+  // Eagerly fetch all server tool lists for card chip previews.
   const toolResults = useQueries({
     queries: (servers ?? []).map((server) => ({
       queryKey: queryKeys.servers.tools(server.id),
@@ -55,12 +57,6 @@ export default function MCPPage() {
       toolsByServer.set(server.id, result.data)
     }
   })
-
-  const allTools = Array.from(toolsByServer.values()).flat()
-  // Show cached tool data immediately on re-navigation instead of showing
-  // dashes while a background refetch is in flight. Only show loading state
-  // when there is genuinely no data yet (first load).
-  const toolsFullyLoaded = toolResults.length === 0 || toolResults.every((r) => r.data !== undefined)
 
   function handleAddSubmit(name: string, url: string) {
     setAddDiscoveryWarning(null)
@@ -95,6 +91,10 @@ export default function MCPPage() {
     deleteMutation.mutate(deleteTarget.server.id, {
       onSuccess: () => {
         setDeleteTarget(null)
+        // Close detail modal if the deleted server was open
+        if (selectedServer?.id === deleteTarget.server.id) {
+          setSelectedServer(null)
+        }
       },
     })
   }
@@ -109,6 +109,13 @@ export default function MCPPage() {
     discoverMutation.mutate(serverId, {
       onSettled: () => setDiscoveringServerId(null),
     })
+  }
+
+  // Check whether tools are still loading for a given server.
+  function isToolsLoading(serverId: string): boolean {
+    const serverIndex = (servers ?? []).findIndex((s) => s.id === serverId)
+    if (serverIndex === -1) return false
+    return toolResults[serverIndex]?.status === 'pending'
   }
 
   return (
@@ -127,41 +134,58 @@ export default function MCPPage() {
       </PageHeader>
 
       <ErrorBoundary>
-        <MCPStatsBar
-          totalTools={allTools.length}
-          isLoading={!toolsFullyLoaded}
-        />
-
         <QueryBoundary
           status={serversStatus}
           isEmpty={(servers ?? []).length === 0}
           errorMessage="Failed to load MCP servers."
-          skeleton={<SkeletonList count={3} height={120} gap={12} borderRadius={8} />}
+          skeleton={<SkeletonList count={3} height={100} gap={12} borderRadius={8} />}
           emptyState={
             <div className={styles.emptyState}>
+              <div className={styles.emptyIcon} aria-hidden="true">
+                <Wrench size={48} />
+              </div>
               <p className={styles.emptyHeadline}>No MCP servers</p>
               <p className={styles.emptySubtext}>Add an MCP server to start discovering tools.</p>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setAddDiscoveryWarning(null)
+                  addMutation.reset()
+                  setShowAddModal(true)
+                }}
+              >
+                Add MCP server
+              </Button>
             </div>
           }
         >
           <div className={styles.serverList}>
-            {(servers ?? []).map((server, i) => {
-              const toolResult = toolResults[i]
-              return (
-                <ServerCard
-                  key={server.id}
-                  server={server}
-                  tools={toolsByServer.get(server.id)}
-                  toolsLoading={toolResult?.status === 'pending'}
-                  isDiscovering={discoveringServerId === server.id}
-                  onDiscover={handleDiscover}
-                  onDelete={handleDeleteOpen}
-                />
-              )
-            })}
+            {(servers ?? []).map((server, i) => (
+              <ServerCard
+                key={server.id}
+                server={server}
+                tools={toolsByServer.get(server.id)}
+                toolsLoading={isToolsLoading(server.id)}
+                isDiscovering={discoveringServerId === server.id}
+                onClick={() => setSelectedServer(server)}
+              />
+            ))}
           </div>
         </QueryBoundary>
       </ErrorBoundary>
+
+      {selectedServer && (
+        <ServerDetailModal
+          server={selectedServer}
+          tools={toolsByServer.get(selectedServer.id)}
+          toolsLoading={isToolsLoading(selectedServer.id)}
+          isDiscovering={discoveringServerId === selectedServer.id}
+          policies={policies}
+          onClose={() => setSelectedServer(null)}
+          onDiscover={handleDiscover}
+          onDelete={handleDeleteOpen}
+        />
+      )}
 
       {showAddModal && (
         <AddServerModal

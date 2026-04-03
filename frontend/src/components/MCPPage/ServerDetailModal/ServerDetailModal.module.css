@@ -1,0 +1,231 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: var(--space-6);
+  animation: overlayIn var(--duration-normal) var(--ease-out);
+}
+
+@keyframes overlayIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.box {
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-mid);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 640px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
+  animation: boxIn var(--duration-normal) var(--ease-out);
+}
+
+@keyframes boxIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.header {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-mid);
+  flex-shrink: 0;
+}
+
+.headerTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.titleGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.serverName {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.toolCountBadge {
+  background: var(--bg-elevated);
+  color: var(--text-second);
+  padding: 2px var(--space-2);
+  border-radius: 10px;
+  font-size: var(--text-xs);
+}
+
+.driftBadge {
+  background: color-mix(in srgb, var(--color-orange) 12%, transparent);
+  color: var(--color-orange);
+  padding: 2px var(--space-2);
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: var(--weight-medium);
+}
+
+.unreachableBadge {
+  background: color-mix(in srgb, var(--color-red) 12%, transparent);
+  color: var(--color-red);
+  padding: 2px var(--space-2);
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: var(--weight-medium);
+}
+
+.closeBtn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--text-xl);
+  line-height: 1;
+  padding: var(--space-1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.closeBtn:hover {
+  color: var(--text-primary);
+}
+
+.headerBottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.meta {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.metaSep {
+  margin: 0 var(--space-2);
+  color: var(--text-faint);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.discoverBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--text-second);
+  font-family: var(--font-body);
+  transition: color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.discoverBtn:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-faint);
+}
+
+.discoverBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-mid);
+  border-top-color: var(--text-second);
+  border-radius: 50%;
+  animation: gSpin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.deleteBtn {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--color-red) 30%, transparent);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--color-red);
+  font-family: var(--font-body);
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.deleteBtn:hover {
+  background: color-mix(in srgb, var(--color-red) 10%, transparent);
+}
+
+.filterBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.filterIcon {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.filterInput {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  font-size: var(--text-sm);
+  font-family: var(--font-body);
+  color: var(--text-primary);
+}
+
+.filterInput::placeholder {
+  color: var(--text-faint);
+}
+
+.body {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.loadingContainer {
+  padding: var(--space-4);
+}
+
+.empty {
+  padding: var(--space-8);
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  font-style: italic;
+}
