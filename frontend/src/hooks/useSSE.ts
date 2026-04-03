@@ -1,8 +1,47 @@
 import { useEffect, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQueryClient, QueryKey } from '@tanstack/react-query'
 import { queryKeys } from './queryKeys'
 
 export type ConnectionState = 'connected' | 'disconnected' | 'reconnecting'
+
+type InvalidationSpec = {
+  /** Query keys to always invalidate when this event fires */
+  keys: readonly QueryKey[]
+  /** If true, parse event data as { run_id: string } and also invalidate run-specific keys */
+  parseRunId?: boolean
+  /** Additional run-specific keys to invalidate when parseRunId is true */
+  runKeys?: (runId: string) => QueryKey[]
+}
+
+const SSE_INVALIDATIONS: Record<string, InvalidationSpec> = {
+  'run.status_changed': {
+    keys: [queryKeys.runs.all, queryKeys.policies.all, queryKeys.stats.all, queryKeys.attention.all],
+  },
+  'run.step_added': {
+    keys: [],
+    parseRunId: true,
+    runKeys: (id) => [queryKeys.runs.steps(id)],
+  },
+  'approval.created': {
+    keys: [queryKeys.approvals.all, queryKeys.stats.all, queryKeys.attention.all],
+  },
+  'approval.resolved': {
+    keys: [queryKeys.approvals.all, queryKeys.runs.all, queryKeys.stats.all, queryKeys.attention.all],
+  },
+  'feedback.created': {
+    keys: [queryKeys.runs.all, queryKeys.stats.all, queryKeys.attention.all],
+  },
+  'feedback.resolved': {
+    keys: [queryKeys.runs.all, queryKeys.stats.all, queryKeys.attention.all],
+    parseRunId: true,
+    runKeys: (id) => [queryKeys.runs.detail(id), queryKeys.runs.steps(id)],
+  },
+  'feedback.timed_out': {
+    keys: [queryKeys.runs.all, queryKeys.stats.all, queryKeys.attention.all],
+    parseRunId: true,
+    runKeys: (id) => [queryKeys.runs.detail(id), queryKeys.runs.steps(id)],
+  },
+}
 
 export function useSSE(): { connectionState: ConnectionState } {
   const queryClient = useQueryClient()
@@ -25,73 +64,26 @@ export function useSSE(): { connectionState: ConnectionState } {
       }
     }
 
-    eventSource.addEventListener('run.status_changed', (e: MessageEvent) => {
-      if (e.lastEventId) lastEventIdRef.current = e.lastEventId
-      queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
-      queryClient.invalidateQueries({ queryKey: queryKeys.policies.all })
-      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
-      queryClient.invalidateQueries({ queryKey: queryKeys.attention.all })
-    })
+    for (const [eventType, spec] of Object.entries(SSE_INVALIDATIONS)) {
+      eventSource.addEventListener(eventType, (e: MessageEvent) => {
+        if (e.lastEventId) lastEventIdRef.current = e.lastEventId
 
-    eventSource.addEventListener('run.step_added', (e: MessageEvent) => {
-      if (e.lastEventId) lastEventIdRef.current = e.lastEventId
-      try {
-        const data: { run_id: string } = JSON.parse(e.data)
-        queryClient.invalidateQueries({ queryKey: queryKeys.runs.steps(data.run_id) })
-      } catch {
-        console.error('useSSE: failed to parse run.step_added payload', e.data)
-      }
-    })
+        for (const key of spec.keys) {
+          queryClient.invalidateQueries({ queryKey: key as QueryKey })
+        }
 
-    eventSource.addEventListener('approval.created', (e: MessageEvent) => {
-      if (e.lastEventId) lastEventIdRef.current = e.lastEventId
-      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.all })
-      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
-      queryClient.invalidateQueries({ queryKey: queryKeys.attention.all })
-    })
-
-    eventSource.addEventListener('approval.resolved', (e: MessageEvent) => {
-      if (e.lastEventId) lastEventIdRef.current = e.lastEventId
-      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.all })
-      queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
-      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
-      queryClient.invalidateQueries({ queryKey: queryKeys.attention.all })
-    })
-
-    eventSource.addEventListener('feedback.created', (e: MessageEvent) => {
-      if (e.lastEventId) lastEventIdRef.current = e.lastEventId
-      queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
-      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
-      queryClient.invalidateQueries({ queryKey: queryKeys.attention.all })
-    })
-
-    eventSource.addEventListener('feedback.resolved', (e: MessageEvent) => {
-      if (e.lastEventId) lastEventIdRef.current = e.lastEventId
-      try {
-        const data: { run_id: string } = JSON.parse(e.data)
-        queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
-        queryClient.invalidateQueries({ queryKey: queryKeys.runs.detail(data.run_id) })
-        queryClient.invalidateQueries({ queryKey: queryKeys.runs.steps(data.run_id) })
-        queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
-        queryClient.invalidateQueries({ queryKey: queryKeys.attention.all })
-      } catch {
-        console.error('useSSE: failed to parse feedback.resolved payload', e.data)
-      }
-    })
-
-    eventSource.addEventListener('feedback.timed_out', (e: MessageEvent) => {
-      if (e.lastEventId) lastEventIdRef.current = e.lastEventId
-      try {
-        const data: { run_id: string } = JSON.parse(e.data)
-        queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
-        queryClient.invalidateQueries({ queryKey: queryKeys.runs.detail(data.run_id) })
-        queryClient.invalidateQueries({ queryKey: queryKeys.runs.steps(data.run_id) })
-        queryClient.invalidateQueries({ queryKey: queryKeys.stats.all })
-        queryClient.invalidateQueries({ queryKey: queryKeys.attention.all })
-      } catch {
-        console.error('useSSE: failed to parse feedback.timed_out payload', e.data)
-      }
-    })
+        if (spec.parseRunId) {
+          try {
+            const data: { run_id: string } = JSON.parse(e.data)
+            for (const key of spec.runKeys?.(data.run_id) ?? []) {
+              queryClient.invalidateQueries({ queryKey: key as QueryKey })
+            }
+          } catch {
+            console.error(`useSSE: failed to parse ${eventType} payload`, e.data)
+          }
+        }
+      })
+    }
 
     return () => {
       eventSource.close()
