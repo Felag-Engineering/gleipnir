@@ -35,9 +35,9 @@
   align-items: flex-start;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
-  background: var(--color-error-bg, #fff1f0);
-  border-bottom: 1px solid var(--color-error-border, #ffa39e);
-  color: var(--color-error-text, #cf1322);
+  background: color-mix(in srgb, var(--color-red) 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-red) 25%, transparent);
+  color: var(--color-red);
   font-size: var(--text-sm);
   line-height: 1.5;
 }

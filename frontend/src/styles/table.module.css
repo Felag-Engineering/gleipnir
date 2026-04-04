@@ -15,6 +15,7 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
 }
 
 .row {
@@ -30,6 +31,10 @@
 
 .row:last-child {
   border-bottom: none;
+}
+
+.row:nth-child(even) {
+  background: rgba(255, 255, 255, 0.015);
 }
 
 .row:hover {

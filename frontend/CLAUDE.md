@@ -40,18 +40,20 @@ Design tokens live in `src/tokens.css`. The system supports dark, light, and sys
 
 ### Color palette (dark theme defaults)
 
+Nordic Forest palette. `--color-blue` holds warm orange (see tokens.css comment).
+
 ```
---bg-canvas:     #0F1117      --color-blue:    #60A5FA  (tools, running)
---bg-surface:    #131720      --color-orange:  #FB923C
---bg-elevated:   #1E2330      --color-amber:   #F59E0B  (approvals)
---bg-sidebar:    #0D1018      --color-green:   #4ADE80  (success, complete)
---bg-code:       #090C12      --color-red:     #F87171  (errors, failed)
---border-subtle: #1E2330      --color-purple:  #A78BFA  (feedback, interrupted)
---border-mid:    #253044      --color-teal:    #34D399  (poll triggers)
---text-faint:    #334155
---text-muted:    #475569
---text-second:   #94A3B8
---text-primary:  #E2E8F0
+--bg-canvas:     #141a16      --color-blue:    #d4915a  (tools, running — warm orange)
+--bg-surface:    #1b2420      --color-orange:  #e0a26e
+--bg-elevated:   #243029      --color-amber:   #f0c830  (approvals)
+--bg-sidebar:    #141a16      --color-green:   #4ade6a  (success, complete)
+--bg-code:       #121916      --color-red:     #f05545  (errors, failed)
+--border-subtle: #3a4840      --color-purple:  #a78bfa  (feedback, interrupted)
+--border-mid:    #4d5e54      --color-teal:    #34d399  (poll triggers)
+--text-faint:    #3a4840      --color-info:    #40c8e0
+--text-muted:    #636e62      --accent-hover:  #e0a26e
+--text-second:   #a8a090      --accent-muted:  rgba(212, 145, 90, 0.14)
+--text-primary:  #e4ddd2      --bg-subtle:     #2c3832
 ```
 
 Capability aliases: `--color-tool: var(--color-blue)`, `--color-feedback: var(--color-purple)`.

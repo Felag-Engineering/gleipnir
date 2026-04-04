@@ -23,13 +23,15 @@
 }
 
 .primary {
-  background-color: var(--color-blue);
+  background: linear-gradient(135deg, #d4915a, #c07a48);
+  box-shadow: 0 2px 8px rgba(212, 145, 90, 0.2);
   color: var(--bg-canvas);
   border-color: transparent;
 }
 
 .primary:not(:disabled):hover {
-  opacity: 0.85;
+  background: linear-gradient(135deg, #e0a26e, #d4915a);
+  opacity: 1;
 }
 
 .secondary {
@@ -53,9 +55,9 @@
 }
 
 .danger {
-  background-color: color-mix(in srgb, var(--color-red) 8%, transparent);
+  background-color: color-mix(in srgb, var(--color-red) 14%, transparent);
   color: var(--color-red);
-  border-color: color-mix(in srgb, var(--color-red) 20%, transparent);
+  border-color: color-mix(in srgb, var(--color-red) 28%, transparent);
 }
 
 .danger:not(:disabled):hover {

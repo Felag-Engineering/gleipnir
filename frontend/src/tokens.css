@@ -1,32 +1,40 @@
 :root {
-  /* Background layers — dark palette (default/fallback) */
-  --bg-canvas: #0f1117;
-  --bg-surface: #131720;
-  --bg-elevated: #1e2330;
-  --bg-sidebar: #0d1018;
-  --bg-code: #090c12;
+  /* Background layers — Nordic Forest dark palette (default/fallback) */
+  --bg-canvas: #141a16;
+  --bg-surface: #1b2420;
+  --bg-elevated: #243029;
+  --bg-sidebar: #141a16;
+  --bg-code: #121916;
 
   /* Borders */
-  --border-subtle: #1e2330;
-  --border-mid: #253044;
+  --border-subtle: #3a4840;
+  --border-mid: #4d5e54;
 
   /* Text */
-  --text-faint: #334155;
-  --text-muted: #475569;
-  --text-second: #94a3b8;
-  --text-primary: #e2e8f0;
+  --text-faint: #3a4840;
+  --text-muted: #636e62;
+  --text-second: #a8a090;
+  --text-primary: #e4ddd2;
 
-  /* Semantic colors */
-  --color-blue: #60a5fa;
-  --color-orange: #fb923c;
-  --color-amber: #f59e0b;
-  --color-green: #4ade80;
-  --color-red: #f87171;
+  /* Semantic colors — warm accent replaces cool blue as primary */
+  --color-blue: #d4915a; /* accent — warm orange since Nordic theme; historically blue */
+  --color-orange: #e0a26e;
+  --color-amber: #f0c830;
+  --color-green: #4ade6a;
+  --color-red: #f05545;
   --color-purple: #a78bfa;
   --color-teal: #34d399;
+  --color-info: #40c8e0;
+
+  /* Accent aliases for hover and muted states */
+  --accent-hover: #e0a26e;
+  --accent-muted: rgba(212, 145, 90, 0.14);
+
+  /* Background tier between elevated and mid — used for neutral trace dots, subtle fills */
+  --bg-subtle: #2c3832;
 
   /* Scrollbar */
-  --scrollbar-thumb: #1e2330;
+  --scrollbar-thumb: #3a4840;
 
   /* Capability aliases */
   --color-tool: var(--color-blue);
@@ -79,72 +87,84 @@
 
 /* Explicit dark override — same values as :root defaults, for clarity */
 :root[data-theme="dark"] {
-  --bg-canvas: #0f1117;
-  --bg-surface: #131720;
-  --bg-elevated: #1e2330;
-  --bg-sidebar: #0d1018;
-  --bg-code: #090c12;
-  --border-subtle: #1e2330;
-  --border-mid: #253044;
-  --text-faint: #334155;
-  --text-muted: #475569;
-  --text-second: #94a3b8;
-  --text-primary: #e2e8f0;
-  --color-blue: #60a5fa;
-  --color-orange: #fb923c;
-  --color-amber: #f59e0b;
-  --color-green: #4ade80;
-  --color-red: #f87171;
+  --bg-canvas: #141a16;
+  --bg-surface: #1b2420;
+  --bg-elevated: #243029;
+  --bg-sidebar: #141a16;
+  --bg-code: #121916;
+  --border-subtle: #3a4840;
+  --border-mid: #4d5e54;
+  --text-faint: #3a4840;
+  --text-muted: #636e62;
+  --text-second: #a8a090;
+  --text-primary: #e4ddd2;
+  --color-blue: #d4915a;
+  --color-orange: #e0a26e;
+  --color-amber: #f0c830;
+  --color-green: #4ade6a;
+  --color-red: #f05545;
   --color-purple: #a78bfa;
   --color-teal: #34d399;
-  --scrollbar-thumb: #1e2330;
+  --color-info: #40c8e0;
+  --accent-hover: #e0a26e;
+  --accent-muted: rgba(212, 145, 90, 0.14);
+  --bg-subtle: #2c3832;
+  --scrollbar-thumb: #3a4840;
 }
 
-/* Light palette */
+/* Light palette — Nordic Forest: warm parchment surfaces, mossy neutrals */
 :root[data-theme="light"] {
-  --bg-canvas: #f8fafc;
-  --bg-surface: #ffffff;
-  --bg-elevated: #f1f5f9;
-  --bg-sidebar: #f8fafc;
-  --bg-code: #f1f5f9;
-  --border-subtle: #e2e8f0;
-  --border-mid: #cbd5e1;
-  --text-faint: #cbd5e1;
-  --text-muted: #94a3b8;
-  --text-second: #64748b;
-  --text-primary: #1e293b;
-  --color-blue: #2563eb;
-  --color-orange: #ea580c;
-  --color-amber: #d97706;
-  --color-green: #16a34a;
-  --color-red: #dc2626;
-  --color-purple: #7c3aed;
-  --color-teal: #0d9488;
-  --scrollbar-thumb: #cbd5e1;
+  --bg-canvas: #f4f1eb;
+  --bg-surface: #faf8f4;
+  --bg-elevated: #ece8e0;
+  --bg-sidebar: #eae6dd;
+  --bg-code: #e8e4db;
+  --bg-subtle: #e0dbd2;
+  --border-subtle: #d4cfc4;
+  --border-mid: #b8b0a4;
+  --text-faint: #d4cfc4;
+  --text-muted: #8a8474;
+  --text-second: #5c5848;
+  --text-primary: #2c2a24;
+  --color-blue: #b8733e; /* accent — darkened hearth for WCAG contrast on light bg */
+  --color-orange: #c07a48;
+  --color-amber: #a88608;
+  --color-green: #1a9640;
+  --color-red: #d43a2a;
+  --color-purple: #6d3cc7;
+  --color-teal: #0a8276;
+  --color-info: #1a8ea0;
+  --accent-hover: #c07a48;
+  --accent-muted: rgba(184, 115, 62, 0.12);
+  --scrollbar-thumb: #d4cfc4;
 }
 
 /* When OS prefers light and user has chosen "system", apply the light palette */
 @media (prefers-color-scheme: light) {
   :root[data-theme="system"] {
-    --bg-canvas: #f8fafc;
-    --bg-surface: #ffffff;
-    --bg-elevated: #f1f5f9;
-    --bg-sidebar: #f8fafc;
-    --bg-code: #f1f5f9;
-    --border-subtle: #e2e8f0;
-    --border-mid: #cbd5e1;
-    --text-faint: #cbd5e1;
-    --text-muted: #94a3b8;
-    --text-second: #64748b;
-    --text-primary: #1e293b;
-    --color-blue: #2563eb;
-    --color-orange: #ea580c;
-    --color-amber: #d97706;
-    --color-green: #16a34a;
-    --color-red: #dc2626;
-    --color-purple: #7c3aed;
-    --color-teal: #0d9488;
-    --scrollbar-thumb: #cbd5e1;
+    --bg-canvas: #f4f1eb;
+    --bg-surface: #faf8f4;
+    --bg-elevated: #ece8e0;
+    --bg-sidebar: #eae6dd;
+    --bg-code: #e8e4db;
+    --bg-subtle: #e0dbd2;
+    --border-subtle: #d4cfc4;
+    --border-mid: #b8b0a4;
+    --text-faint: #d4cfc4;
+    --text-muted: #8a8474;
+    --text-second: #5c5848;
+    --text-primary: #2c2a24;
+    --color-blue: #b8733e;
+    --color-orange: #c07a48;
+    --color-amber: #a88608;
+    --color-green: #1a9640;
+    --color-red: #d43a2a;
+    --color-purple: #6d3cc7;
+    --color-teal: #0a8276;
+    --color-info: #1a8ea0;
+    --accent-hover: #c07a48;
+    --accent-muted: rgba(184, 115, 62, 0.12);
+    --scrollbar-thumb: #d4cfc4;
   }
 }
 

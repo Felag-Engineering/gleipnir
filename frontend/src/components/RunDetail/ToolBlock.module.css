@@ -6,7 +6,9 @@
 }
 
 .blockApproval {
-  border-color: color-mix(in srgb, var(--color-amber) 40%, transparent);
+  border-color: rgba(240, 200, 48, 0.4);
+  background: linear-gradient(135deg, var(--bg-elevated), rgba(240, 200, 48, 0.05));
+  box-shadow: 0 0 20px rgba(240, 200, 48, 0.08);
 }
 
 .blockError {
@@ -35,20 +37,32 @@
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: var(--color-blue);
+  background: var(--bg-subtle);
+  border: 2px solid var(--border-mid);
+  box-sizing: border-box;
   z-index: 1;
+}
+
+/* Accent dot — used for the currently-active/running tool step */
+.dotAccent {
+  background: var(--color-blue);
+  border-color: var(--color-blue);
+  box-shadow: 0 0 8px var(--accent-muted);
 }
 
 .dotSuccess {
   background: var(--color-green);
+  border-color: var(--color-green);
 }
 
 .dotError {
   background: var(--color-red);
+  border-color: var(--color-red);
 }
 
 .dotApproval {
   background: var(--color-amber);
+  border-color: var(--color-amber);
 }
 
 .dotPending {
