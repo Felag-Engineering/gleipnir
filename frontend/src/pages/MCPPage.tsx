@@ -8,7 +8,6 @@ import { useAddMcpServer, useDeleteMcpServer, useDiscoverMcpServer } from '@/hoo
 import { apiFetch } from '@/api/fetch'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
-import type { ApiError } from '@/api/fetch'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ServerCard } from '@/components/MCPPage/ServerCard'
@@ -192,7 +191,7 @@ export default function MCPPage() {
           onClose={handleAddClose}
           onSubmit={handleAddSubmit}
           isPending={addMutation.isPending}
-          error={addMutation.error as ApiError | null}
+          error={addMutation.error}
           discoveryWarning={addDiscoveryWarning}
         />
       )}
@@ -204,7 +203,7 @@ export default function MCPPage() {
           onClose={handleDeleteClose}
           onConfirm={handleDeleteConfirm}
           isPending={deleteMutation.isPending}
-          error={deleteMutation.error as ApiError | null}
+          error={deleteMutation.error}
         />
       )}
     </div>

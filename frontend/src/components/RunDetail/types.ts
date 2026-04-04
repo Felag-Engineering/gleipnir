@@ -92,6 +92,69 @@ export type ParsedStep =
   | { type: 'feedback_response'; raw: ApiRunStep; content: FeedbackResponseContent }
   | { type: 'unknown'; raw: ApiRunStep; content: unknown }
 
+export function isThoughtContent(x: unknown): x is ThoughtContent {
+  return typeof x === 'object' && x !== null && typeof (x as Record<string, unknown>).text === 'string'
+}
+
+export function isThinkingContent(x: unknown): x is ThinkingContent {
+  if (typeof x !== 'object' || x === null) return false
+  const r = x as Record<string, unknown>
+  return typeof r.text === 'string' && typeof r.redacted === 'boolean'
+}
+
+export function isToolCallContent(x: unknown): x is ToolCallContent {
+  if (typeof x !== 'object' || x === null) return false
+  const r = x as Record<string, unknown>
+  return (
+    typeof r.tool_name === 'string' &&
+    typeof r.server_id === 'string' &&
+    typeof r.input === 'object' &&
+    r.input !== null
+  )
+}
+
+export function isToolResultContent(x: unknown): x is ToolResultContent {
+  if (typeof x !== 'object' || x === null) return false
+  const r = x as Record<string, unknown>
+  return (
+    typeof r.tool_name === 'string' &&
+    typeof r.output === 'string' &&
+    typeof r.is_error === 'boolean'
+  )
+}
+
+export function isErrorContent(x: unknown): x is ErrorContent {
+  if (typeof x !== 'object' || x === null) return false
+  const r = x as Record<string, unknown>
+  return typeof r.message === 'string' && typeof r.code === 'string'
+}
+
+export function isCompleteContent(x: unknown): x is CompleteContent {
+  return typeof x === 'object' && x !== null && typeof (x as Record<string, unknown>).message === 'string'
+}
+
+export function isCapabilitySnapshotContent(x: unknown): x is CapabilitySnapshotContent {
+  if (Array.isArray(x)) return true
+  if (typeof x !== 'object' || x === null) return false
+  const r = x as Record<string, unknown>
+  return typeof r.model === 'string' && Array.isArray(r.tools)
+}
+
+export function isApprovalRequestContent(x: unknown): x is ApprovalRequestContent {
+  if (typeof x !== 'object' || x === null) return false
+  const r = x as Record<string, unknown>
+  return typeof r.tool === 'string' && typeof r.input === 'object' && r.input !== null
+}
+
+export function isFeedbackRequestContent(x: unknown): x is FeedbackRequestContent {
+  return typeof x === 'object' && x !== null && typeof (x as Record<string, unknown>).tool === 'string'
+}
+
+// FeedbackResponseContent has no required fields — any non-null object is valid.
+export function isFeedbackResponseContent(x: unknown): x is FeedbackResponseContent {
+  return typeof x === 'object' && x !== null
+}
+
 export function parseStep(raw: ApiRunStep): ParsedStep {
   let content: unknown
   try {
@@ -102,25 +165,55 @@ export function parseStep(raw: ApiRunStep): ParsedStep {
 
   switch (raw.type) {
     case 'thought':
-      return { type: 'thought', raw, content: content as ThoughtContent }
+      if (isThoughtContent(content)) {
+        return { type: 'thought', raw, content }
+      }
+      return { type: 'unknown', raw, content }
     case 'thinking':
-      return { type: 'thinking', raw, content: content as ThinkingContent }
+      if (isThinkingContent(content)) {
+        return { type: 'thinking', raw, content }
+      }
+      return { type: 'unknown', raw, content }
     case 'tool_call':
-      return { type: 'tool_call', raw, content: content as ToolCallContent }
+      if (isToolCallContent(content)) {
+        return { type: 'tool_call', raw, content }
+      }
+      return { type: 'unknown', raw, content }
     case 'tool_result':
-      return { type: 'tool_result', raw, content: content as ToolResultContent }
+      if (isToolResultContent(content)) {
+        return { type: 'tool_result', raw, content }
+      }
+      return { type: 'unknown', raw, content }
     case 'capability_snapshot':
-      return { type: 'capability_snapshot', raw, content: content as CapabilitySnapshotContent }
+      if (isCapabilitySnapshotContent(content)) {
+        return { type: 'capability_snapshot', raw, content }
+      }
+      return { type: 'unknown', raw, content }
     case 'error':
-      return { type: 'error', raw, content: content as ErrorContent }
+      if (isErrorContent(content)) {
+        return { type: 'error', raw, content }
+      }
+      return { type: 'unknown', raw, content }
     case 'complete':
-      return { type: 'complete', raw, content: content as CompleteContent }
+      if (isCompleteContent(content)) {
+        return { type: 'complete', raw, content }
+      }
+      return { type: 'unknown', raw, content }
     case 'approval_request':
-      return { type: 'approval_request', raw, content: content as ApprovalRequestContent }
+      if (isApprovalRequestContent(content)) {
+        return { type: 'approval_request', raw, content }
+      }
+      return { type: 'unknown', raw, content }
     case 'feedback_request':
-      return { type: 'feedback_request', raw, content: content as FeedbackRequestContent }
+      if (isFeedbackRequestContent(content)) {
+        return { type: 'feedback_request', raw, content }
+      }
+      return { type: 'unknown', raw, content }
     case 'feedback_response':
-      return { type: 'feedback_response', raw, content: content as FeedbackResponseContent }
+      if (isFeedbackResponseContent(content)) {
+        return { type: 'feedback_response', raw, content }
+      }
+      return { type: 'unknown', raw, content }
     default:
       return { type: 'unknown', raw, content }
   }

@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vitest'
-import { parseStep, pairToolBlocks, isToolBlock } from './types'
+import {
+  parseStep,
+  pairToolBlocks,
+  isToolBlock,
+  isThoughtContent,
+  isThinkingContent,
+  isToolCallContent,
+  isToolResultContent,
+  isErrorContent,
+  isCompleteContent,
+  isCapabilitySnapshotContent,
+  isApprovalRequestContent,
+  isFeedbackRequestContent,
+  isFeedbackResponseContent,
+} from './types'
 import type { ApiRunStep } from '@/api/types'
 
 let stepIdCounter = 0
@@ -280,5 +294,200 @@ describe('isToolBlock', () => {
   it('returns false for a ParsedStep object', () => {
     const step = parseStep(makeRawStep('thought', { text: 'hello' }))
     expect(isToolBlock(step)).toBe(false)
+  })
+})
+
+describe('parseStep type guards', () => {
+  it('returns unknown when thought content lacks text field', () => {
+    const raw = makeRawStep('thought', { notText: 123 })
+    const step = parseStep(raw)
+    expect(step.type).toBe('unknown')
+  })
+
+  it('returns unknown when thinking content has wrong redacted type', () => {
+    const raw = makeRawStep('thinking', { text: 'ok', redacted: 'yes' })
+    const step = parseStep(raw)
+    expect(step.type).toBe('unknown')
+  })
+
+  it('returns unknown when tool_call content lacks tool_name', () => {
+    const raw = makeRawStep('tool_call', { server_id: 'fs', input: {} })
+    const step = parseStep(raw)
+    expect(step.type).toBe('unknown')
+  })
+
+  it('returns unknown when tool_result content lacks is_error', () => {
+    const raw = makeRawStep('tool_result', { tool_name: 'read_file', output: '"x"' })
+    const step = parseStep(raw)
+    expect(step.type).toBe('unknown')
+  })
+
+  it('returns unknown when error content lacks message', () => {
+    const raw = makeRawStep('error', { code: 'E001' })
+    const step = parseStep(raw)
+    expect(step.type).toBe('unknown')
+  })
+
+  it('returns unknown when complete content lacks message', () => {
+    const raw = makeRawStep('complete', { result: 'done' })
+    const step = parseStep(raw)
+    expect(step.type).toBe('unknown')
+  })
+
+  it('returns unknown when approval_request content lacks input', () => {
+    const raw = makeRawStep('approval_request', { tool: 'send_slack' })
+    const step = parseStep(raw)
+    expect(step.type).toBe('unknown')
+  })
+
+  it('returns unknown when feedback_request content lacks tool', () => {
+    const raw = makeRawStep('feedback_request', { message: 'hello' })
+    const step = parseStep(raw)
+    expect(step.type).toBe('unknown')
+  })
+
+  it('returns unknown when feedback_response content is not an object', () => {
+    const raw = makeRawStep('feedback_response', null)
+    // null is JSON-parseable but isFeedbackResponseContent rejects it
+    const step = parseStep(raw)
+    expect(step.type).toBe('unknown')
+  })
+
+  it('still parses all valid content types correctly after adding guards', () => {
+    expect(parseStep(makeRawStep('thought', { text: 'hi' })).type).toBe('thought')
+    expect(parseStep(makeRawStep('thinking', { text: 'hi', redacted: false })).type).toBe('thinking')
+    expect(parseStep(makeRawStep('tool_call', { tool_name: 'f', server_id: 's', input: {} })).type).toBe('tool_call')
+    expect(parseStep(makeRawStep('tool_result', { tool_name: 'f', output: '"x"', is_error: false })).type).toBe('tool_result')
+    expect(parseStep(makeRawStep('error', { message: 'oops', code: 'E1' })).type).toBe('error')
+    expect(parseStep(makeRawStep('complete', { message: 'done' })).type).toBe('complete')
+    expect(parseStep(makeRawStep('approval_request', { tool: 't', input: {} })).type).toBe('approval_request')
+    expect(parseStep(makeRawStep('feedback_request', { tool: 't' })).type).toBe('feedback_request')
+    expect(parseStep(makeRawStep('feedback_response', {})).type).toBe('feedback_response')
+  })
+})
+
+describe('type guard functions', () => {
+  describe('isThoughtContent', () => {
+    it('returns false for non-objects', () => {
+      expect(isThoughtContent(null)).toBe(false)
+      expect(isThoughtContent(42)).toBe(false)
+      expect(isThoughtContent('string')).toBe(false)
+      expect(isThoughtContent(undefined)).toBe(false)
+    })
+
+    it('returns false when text field is missing', () => {
+      expect(isThoughtContent({ notText: 'hi' })).toBe(false)
+    })
+
+    it('returns true for valid shape', () => {
+      expect(isThoughtContent({ text: 'hello' })).toBe(true)
+    })
+  })
+
+  describe('isThinkingContent', () => {
+    it('returns false when redacted is not boolean', () => {
+      expect(isThinkingContent({ text: 'ok', redacted: 'yes' })).toBe(false)
+      expect(isThinkingContent({ text: 'ok', redacted: 1 })).toBe(false)
+    })
+
+    it('returns true for valid shape', () => {
+      expect(isThinkingContent({ text: 'ok', redacted: false })).toBe(true)
+    })
+  })
+
+  describe('isCapabilitySnapshotContent', () => {
+    it('returns true for V1 array shape', () => {
+      expect(isCapabilitySnapshotContent([])).toBe(true)
+      expect(isCapabilitySnapshotContent([{ ServerName: 's', ToolName: 't' }])).toBe(true)
+    })
+
+    it('returns true for V2 object shape with model and tools', () => {
+      expect(isCapabilitySnapshotContent({ model: 'claude-3', tools: [] })).toBe(true)
+      expect(isCapabilitySnapshotContent({ provider: 'anthropic', model: 'claude-3', tools: [] })).toBe(true)
+    })
+
+    it('returns false when neither shape matches', () => {
+      expect(isCapabilitySnapshotContent(null)).toBe(false)
+      expect(isCapabilitySnapshotContent({ model: 'claude-3' })).toBe(false)
+      expect(isCapabilitySnapshotContent({ tools: [] })).toBe(false)
+    })
+  })
+
+  describe('isToolCallContent', () => {
+    it('returns false when required fields are missing', () => {
+      expect(isToolCallContent({ server_id: 'fs', input: {} })).toBe(false)
+      expect(isToolCallContent({ tool_name: 'f', input: {} })).toBe(false)
+      expect(isToolCallContent({ tool_name: 'f', server_id: 'fs' })).toBe(false)
+    })
+
+    it('returns true for valid shape', () => {
+      expect(isToolCallContent({ tool_name: 'f', server_id: 'fs', input: {} })).toBe(true)
+    })
+  })
+
+  describe('isErrorContent', () => {
+    it('returns false when message or code is missing', () => {
+      expect(isErrorContent({ code: 'E1' })).toBe(false)
+      expect(isErrorContent({ message: 'oops' })).toBe(false)
+    })
+
+    it('returns true for valid shape', () => {
+      expect(isErrorContent({ message: 'oops', code: 'E1' })).toBe(true)
+    })
+  })
+
+  describe('isApprovalRequestContent', () => {
+    it('returns false when tool or input is missing', () => {
+      expect(isApprovalRequestContent({ tool: 'send_slack' })).toBe(false)
+      expect(isApprovalRequestContent({ input: {} })).toBe(false)
+    })
+
+    it('returns true for valid shape', () => {
+      expect(isApprovalRequestContent({ tool: 'send_slack', input: {} })).toBe(true)
+    })
+  })
+
+  describe('isFeedbackRequestContent', () => {
+    it('returns false when tool is missing', () => {
+      expect(isFeedbackRequestContent({ message: 'hello' })).toBe(false)
+    })
+
+    it('returns true when tool is present (other fields are optional)', () => {
+      expect(isFeedbackRequestContent({ tool: 'ask_operator' })).toBe(true)
+      expect(isFeedbackRequestContent({ tool: 'ask_operator', message: 'hi', feedback_id: 'fb-1' })).toBe(true)
+    })
+  })
+
+  describe('isFeedbackResponseContent', () => {
+    it('returns false for null and non-objects', () => {
+      expect(isFeedbackResponseContent(null)).toBe(false)
+      expect(isFeedbackResponseContent(42)).toBe(false)
+    })
+
+    it('returns true for any non-null object (both fields are optional)', () => {
+      expect(isFeedbackResponseContent({})).toBe(true)
+      expect(isFeedbackResponseContent({ feedback_id: 'fb-1', response: 'yes' })).toBe(true)
+    })
+  })
+
+  describe('isToolResultContent', () => {
+    it('returns false when required fields are missing', () => {
+      expect(isToolResultContent({ tool_name: 'f', output: '"x"' })).toBe(false)
+      expect(isToolResultContent({ output: '"x"', is_error: false })).toBe(false)
+    })
+
+    it('returns true for valid shape', () => {
+      expect(isToolResultContent({ tool_name: 'f', output: '"x"', is_error: false })).toBe(true)
+    })
+  })
+
+  describe('isCompleteContent', () => {
+    it('returns false when message is missing', () => {
+      expect(isCompleteContent({ result: 'done' })).toBe(false)
+    })
+
+    it('returns true for valid shape', () => {
+      expect(isCompleteContent({ message: 'done' })).toBe(true)
+    })
   })
 })

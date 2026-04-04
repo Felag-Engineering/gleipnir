@@ -14,6 +14,21 @@ interface BaseRequestOptions {
   skipAuthRedirect?: boolean
 }
 
+function parseApiErrorBody(body: unknown): { error: string; detail?: string } | null {
+  if (
+    typeof body === 'object' &&
+    body !== null &&
+    typeof (body as Record<string, unknown>).error === 'string'
+  ) {
+    const b = body as Record<string, unknown>
+    return {
+      error: b.error as string,
+      detail: typeof b.detail === 'string' ? b.detail : undefined,
+    }
+  }
+  return null
+}
+
 async function baseRequest(
   path: string,
   init?: RequestInit,
@@ -35,9 +50,12 @@ async function baseRequest(
     let message = response.statusText
     let detail: string | undefined
     try {
-      const body = await response.json() as { error: string; detail?: string }
-      message = body.error
-      detail = body.detail
+      const body = await response.json()
+      const parsed = parseApiErrorBody(body)
+      if (parsed) {
+        message = parsed.error
+        detail = parsed.detail
+      }
     } catch {
       // JSON parse failed, fall back to statusText already set above
     }

@@ -11,6 +11,10 @@ import type {
   TriggerFormState,
 } from '@/components/PolicyEditor/FormMode/types'
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
 export interface FormState {
   identity: IdentityFormState
   trigger: TriggerFormState
@@ -52,11 +56,11 @@ export function yamlToFormState(yaml: string): FormState | null {
     return null
   }
 
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+  if (!isRecord(parsed)) {
     return null
   }
 
-  const p = parsed as Record<string, unknown>
+  const p = parsed
 
   // Identity
   const identity: IdentityFormState = {
@@ -66,9 +70,7 @@ export function yamlToFormState(yaml: string): FormState | null {
   }
 
   // Trigger
-  const triggerRaw = p.trigger && typeof p.trigger === 'object' && !Array.isArray(p.trigger)
-    ? (p.trigger as Record<string, unknown>)
-    : {}
+  const triggerRaw = isRecord(p.trigger) ? p.trigger : {}
 
   let trigger: TriggerFormState
   const triggerType = triggerRaw.type
@@ -85,16 +87,14 @@ export function yamlToFormState(yaml: string): FormState | null {
   }
 
   // Capabilities
-  const capsRaw = p.capabilities && typeof p.capabilities === 'object' && !Array.isArray(p.capabilities)
-    ? (p.capabilities as Record<string, unknown>)
-    : {}
+  const capsRaw = isRecord(p.capabilities) ? p.capabilities : {}
 
   const toolExtras: Record<string, { timeout?: number; on_timeout?: string }> = {}
 
   const tools = Array.isArray(capsRaw.tools)
     ? capsRaw.tools.flatMap((entry: unknown) => {
-        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
-        const e = entry as Record<string, unknown>
+        if (!isRecord(entry)) return []
+        const e = entry
         const toolStr = typeof e.tool === 'string' ? e.tool : ''
         if (!toolStr) return []
         const dotIdx = toolStr.indexOf('.')
@@ -131,8 +131,8 @@ export function yamlToFormState(yaml: string): FormState | null {
   if (Array.isArray(feedbackRaw)) {
     // Old list format — backward compat, treat as enabled with no extras
     feedback = { enabled: true, timeout: '', onTimeout: 'fail' }
-  } else if (feedbackRaw && typeof feedbackRaw === 'object' && !Array.isArray(feedbackRaw)) {
-    const fb = feedbackRaw as Record<string, unknown>
+  } else if (isRecord(feedbackRaw)) {
+    const fb = feedbackRaw
     feedback = {
       enabled: fb.enabled === true,
       timeout: typeof fb.timeout === 'string' ? fb.timeout : '',
@@ -145,13 +145,9 @@ export function yamlToFormState(yaml: string): FormState | null {
   const capabilities: CapabilitiesFormState = { tools, feedback }
 
   // Agent block
-  const agentRaw = p.agent && typeof p.agent === 'object' && !Array.isArray(p.agent)
-    ? (p.agent as Record<string, unknown>)
-    : {}
+  const agentRaw = isRecord(p.agent) ? p.agent : {}
 
-  const limitsRaw = agentRaw.limits && typeof agentRaw.limits === 'object' && !Array.isArray(agentRaw.limits)
-    ? (agentRaw.limits as Record<string, unknown>)
-    : {}
+  const limitsRaw = isRecord(agentRaw.limits) ? agentRaw.limits : {}
 
   const task: TaskInstructionsFormState = {
     task: typeof agentRaw.task === 'string' ? agentRaw.task : '',
@@ -171,9 +167,7 @@ export function yamlToFormState(yaml: string): FormState | null {
   }
 
   // Read model from top-level model: section
-  const modelRaw = p.model && typeof p.model === 'object' && !Array.isArray(p.model)
-    ? (p.model as Record<string, unknown>)
-    : null
+  const modelRaw = isRecord(p.model) ? p.model : null
 
   const model: ModelFormState = modelRaw && typeof modelRaw.provider === 'string' && typeof modelRaw.name === 'string'
     ? { provider: modelRaw.provider, model: modelRaw.name }

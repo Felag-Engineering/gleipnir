@@ -1,12 +1,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiFetch, apiFetchVoid } from '@/api/fetch'
+import { apiFetch, apiFetchVoid, ApiError } from '@/api/fetch'
 import type { ApiMcpServerCreateResponse, AddMcpServerRequest } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
 export function useAddMcpServer() {
   const queryClient = useQueryClient()
 
-  return useMutation({
+  return useMutation<ApiMcpServerCreateResponse, ApiError, AddMcpServerRequest>({
     mutationFn: (params: AddMcpServerRequest) =>
       apiFetch<ApiMcpServerCreateResponse>('/mcp/servers', {
         method: 'POST',
@@ -21,7 +21,7 @@ export function useAddMcpServer() {
 export function useDeleteMcpServer() {
   const queryClient = useQueryClient()
 
-  return useMutation({
+  return useMutation<void, ApiError, string>({
     mutationFn: (serverId: string) =>
       apiFetchVoid(`/mcp/servers/${encodeURIComponent(serverId)}`, {
         method: 'DELETE',
@@ -41,7 +41,7 @@ interface ToolDiff {
 export function useDiscoverMcpServer() {
   const queryClient = useQueryClient()
 
-  return useMutation({
+  return useMutation<ToolDiff, ApiError, string>({
     mutationFn: (serverId: string) =>
       apiFetch<ToolDiff>(`/mcp/servers/${encodeURIComponent(serverId)}/discover`, {
         method: 'POST',

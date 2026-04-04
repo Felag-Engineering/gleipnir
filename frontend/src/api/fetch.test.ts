@@ -63,6 +63,35 @@ describe('apiFetch', () => {
     expect(apiErr.status).toBe(401)
   })
 
+  it('falls back to statusText when error body has unexpected shape', async () => {
+    server.use(
+      http.get(TEST_URL, () =>
+        HttpResponse.json({ message: 'oops' }, { status: 400, statusText: 'Bad Request' })
+      )
+    )
+    let caught: unknown
+    try { await apiFetch(TEST_PATH) } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(ApiError)
+    const apiErr = caught as ApiError
+    expect(apiErr.status).toBe(400)
+    // body has no 'error' key, so statusText is used
+    expect(apiErr.message).toBe('Bad Request')
+  })
+
+  it('ignores detail when detail is not a string', async () => {
+    server.use(
+      http.get(TEST_URL, () =>
+        HttpResponse.json({ error: 'bad', detail: 42 }, { status: 400 })
+      )
+    )
+    let caught: unknown
+    try { await apiFetch(TEST_PATH) } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(ApiError)
+    const apiErr = caught as ApiError
+    expect(apiErr.message).toBe('bad')
+    expect(apiErr.detail).toBeUndefined()
+  })
+
   it('propagates fetch rejection on network failure', async () => {
     server.use(http.get(TEST_URL, () => HttpResponse.error()))
     await expect(apiFetch(TEST_PATH)).rejects.toThrow()
