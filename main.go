@@ -32,6 +32,16 @@ import (
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
+const (
+	// drainTimeout is how long we wait for in-flight agent runs to finish
+	// before proceeding with HTTP server shutdown.
+	drainTimeout = 25 * time.Second
+
+	// shutdownTimeout is the time budget for the HTTP server's graceful
+	// shutdown after agent runs have drained (or timed out).
+	shutdownTimeout = 5 * time.Second
+)
+
 func main() {
 	cfg := config.Load()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
@@ -211,7 +221,6 @@ func run(cfg config.Config) error {
 		close(runsDrained)
 	}()
 
-	drainTimeout := 25 * time.Second
 	select {
 	case <-runsDrained:
 		slog.Info("all agent runs drained")
@@ -219,7 +228,7 @@ func run(cfg config.Config) error {
 		slog.Warn("agent run drain timed out, proceeding with server shutdown")
 	}
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
 
 	return srv.Shutdown(shutdownCtx)

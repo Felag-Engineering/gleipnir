@@ -16,6 +16,14 @@ import (
 	"time"
 )
 
+const (
+	// maxRedirects is the maximum number of HTTP redirects the MCP client will follow.
+	maxRedirects = 10
+
+	// mcpProtocolVersion is the MCP protocol version sent during the initialize handshake.
+	mcpProtocolVersion = "2024-11-05"
+)
+
 // Tool is a tool discovered from an MCP server.
 type Tool struct {
 	Name        string
@@ -129,8 +137,8 @@ func NewClient(serverURL string, opts ...ClientOption) *Client {
 				if err := checkRedirectTarget(req.URL); err != nil {
 					return err
 				}
-				if len(via) >= 10 {
-					return fmt.Errorf("stopped after 10 redirects")
+				if len(via) >= maxRedirects {
+					return fmt.Errorf("stopped after %d redirects", maxRedirects)
 				}
 				return nil
 			},
@@ -162,7 +170,7 @@ func (c *Client) initialize(ctx context.Context) (string, error) {
 		ID:      1,
 		Method:  "initialize",
 		Params: map[string]any{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": mcpProtocolVersion,
 			"capabilities":    map[string]any{},
 			"clientInfo": map[string]any{
 				"name":    "gleipnir",
@@ -203,8 +211,7 @@ func (c *Client) initialize(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("notifications/initialized: %w", err)
 	}
-	io.Copy(io.Discard, nresp.Body) //nolint:errcheck
-	nresp.Body.Close()
+	drainResponseBody(nresp.Body)
 
 	return sessionID, nil
 }
@@ -407,10 +414,17 @@ func (c *Client) postRaw(ctx context.Context, body []byte, sessionID string) (*h
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		// Drain and close the body so the connection can be reused.
-		io.Copy(io.Discard, resp.Body) //nolint:errcheck
-		resp.Body.Close()
+		drainResponseBody(resp.Body)
 		return nil, &httpStatusError{StatusCode: resp.StatusCode}
 	}
 
 	return resp, nil
+}
+
+// drainResponseBody reads any remaining data from rc and closes it.
+// This ensures the underlying TCP connection can be reused by the HTTP
+// transport's connection pool.
+func drainResponseBody(rc io.ReadCloser) {
+	io.Copy(io.Discard, rc) //nolint:errcheck
+	rc.Close()
 }
