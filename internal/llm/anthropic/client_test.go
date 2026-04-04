@@ -333,59 +333,6 @@ func TestBuildTools_EmptyDescription(t *testing.T) {
 	}
 }
 
-func TestSanitizeToolName(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{
-			name:  "dot_separator_replaced",
-			input: "my-server.tool_name",
-			want:  "my-server_tool_name",
-		},
-		{
-			name:  "multiple_dots_replaced",
-			input: "server.tool.with.many.dots",
-			want:  "server_tool_with_many_dots",
-		},
-		{
-			name:  "already_valid_unchanged",
-			input: "already_valid-name",
-			want:  "already_valid-name",
-		},
-		{
-			name:  "spaces_replaced",
-			input: "server name with spaces",
-			want:  "server_name_with_spaces",
-		},
-		{
-			name:  "truncated_to_128_chars",
-			input: strings.Repeat("a", 200),
-			want:  strings.Repeat("a", 128),
-		},
-		{
-			name:  "empty_string",
-			input: "",
-			want:  "",
-		},
-		{
-			name:  "all_invalid_chars",
-			input: "...",
-			want:  "___",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := sanitizeToolName(tc.input)
-			if got != tc.want {
-				t.Errorf("sanitizeToolName(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestBuildTools_SanitizesNames(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{}}`)
 	tools := []llm.ToolDefinition{

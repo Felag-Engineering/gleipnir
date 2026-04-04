@@ -9,41 +9,12 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/rapp992/gleipnir/internal/llm"
 )
-
-// sanitizeToolName replaces any character outside [a-zA-Z0-9_-] with '_' and
-// truncates to 128 characters. The Claude API rejects tool names containing
-// dots or other special characters.
-func sanitizeToolName(name string) string {
-	sanitized := strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-			return r
-		}
-		return '_'
-	}, name)
-	if len(sanitized) > 128 {
-		sanitized = sanitized[:128]
-	}
-	return sanitized
-}
-
-// toolNameMapping holds both directions of the MCP-name ↔ wire-name mapping
-// produced by buildTools. Named fields prevent callers from confusing the two
-// maps, which would otherwise both be map[string]string.
-type toolNameMapping struct {
-	// SanitizedToOriginal maps Claude-facing wire names back to original MCP
-	// names. Used by translateResponse to reverse-map API responses.
-	SanitizedToOriginal map[string]string
-	// OriginalToSanitized maps original MCP names to Claude-facing wire names.
-	// Used by buildMessages to forward-map conversation history.
-	OriginalToSanitized map[string]string
-}
 
 const defaultMaxTokens = 4096
 
@@ -58,11 +29,7 @@ var _ llm.LLMClient = (*AnthropicClient)(nil)
 // AnthropicClient implements llm.LLMClient using the Anthropic Claude API.
 type AnthropicClient struct {
 	client *anthropic.Client
-
-	modelMu     sync.RWMutex
-	modelCache  map[string]bool
-	modelErr    error
-	modelLoaded bool
+	models llm.ModelCache
 }
 
 // NewClient constructs an AnthropicClient with the given API key.
@@ -72,7 +39,7 @@ type AnthropicClient struct {
 func NewClient(apiKey string, opts ...option.RequestOption) *AnthropicClient {
 	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
 	c := anthropic.NewClient(allOpts...)
-	return &AnthropicClient{client: &c}
+	return &AnthropicClient{client: &c, models: llm.NewModelCache("Anthropic")}
 }
 
 // NewClientFromEnv constructs an AnthropicClient using only the default SDK
@@ -80,7 +47,7 @@ func NewClient(apiKey string, opts ...option.RequestOption) *AnthropicClient {
 // is read from the environment without an empty string override.
 func NewClientFromEnv(opts ...option.RequestOption) *AnthropicClient {
 	c := anthropic.NewClient(opts...)
-	return &AnthropicClient{client: &c}
+	return &AnthropicClient{client: &c, models: llm.NewModelCache("Anthropic")}
 }
 
 // CreateMessage sends a single synchronous request to the Anthropic API and
@@ -179,29 +146,21 @@ func (c *AnthropicClient) ValidateOptions(options map[string]any) error {
 	return nil
 }
 
-// fetchModels calls the Anthropic Models API and populates modelCache.
+// fetchModels calls the Anthropic Models API and populates the model cache.
 // It is a no-op if the cache is already loaded.
 func (c *AnthropicClient) fetchModels(ctx context.Context) {
-	c.modelMu.Lock()
-	defer c.modelMu.Unlock()
-
-	if c.modelLoaded {
-		return
-	}
-
-	pager := c.client.Models.ListAutoPaging(ctx, anthropic.ModelListParams{})
-	cache := make(map[string]bool)
-	for pager.Next() {
-		cache[pager.Current().ID] = true
-	}
-	if err := pager.Err(); err != nil {
-		c.modelErr = fmt.Errorf("anthropic: fetching available models: %w", err)
-		c.modelLoaded = true
-		return
-	}
-	c.modelCache = cache
-	c.modelErr = nil
-	c.modelLoaded = true
+	c.models.LoadOnce(func() (map[string]string, error) {
+		pager := c.client.Models.ListAutoPaging(ctx, anthropic.ModelListParams{})
+		cache := make(map[string]string)
+		for pager.Next() {
+			id := pager.Current().ID
+			cache[id] = humanizeModelName(id)
+		}
+		if err := pager.Err(); err != nil {
+			return nil, fmt.Errorf("anthropic: fetching available models: %w", err)
+		}
+		return cache, nil
+	})
 }
 
 // ValidateModelName returns nil if modelName is recognized by the Anthropic
@@ -211,44 +170,14 @@ func (c *AnthropicClient) fetchModels(ctx context.Context) {
 // caller can treat it as a non-blocking warning.
 func (c *AnthropicClient) ValidateModelName(ctx context.Context, modelName string) error {
 	c.fetchModels(ctx)
-
-	c.modelMu.RLock()
-	defer c.modelMu.RUnlock()
-
-	if c.modelErr != nil {
-		return fmt.Errorf("could not validate model name: %w", c.modelErr)
-	}
-
-	if c.modelCache[modelName] {
-		return nil
-	}
-
-	known := make([]string, 0, len(c.modelCache))
-	for name := range c.modelCache {
-		known = append(known, name)
-	}
-	sort.Strings(known)
-	return fmt.Errorf("unknown Anthropic model %q; known models: %s", modelName, strings.Join(known, ", "))
+	return c.models.ValidateModelName(modelName)
 }
 
 // ListModels returns the models available from the Anthropic API. Results are
 // cached; call InvalidateModelCache to force a refresh on the next call.
 func (c *AnthropicClient) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	c.fetchModels(ctx)
-
-	c.modelMu.RLock()
-	defer c.modelMu.RUnlock()
-
-	if c.modelErr != nil {
-		return nil, c.modelErr
-	}
-
-	models := make([]llm.ModelInfo, 0, len(c.modelCache))
-	for name := range c.modelCache {
-		models = append(models, llm.ModelInfo{Name: name, DisplayName: humanizeModelName(name)})
-	}
-	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
-	return models, nil
+	return c.models.ListModels()
 }
 
 // humanizeModelName turns a raw Anthropic model ID into a human-readable label.
@@ -288,11 +217,7 @@ func humanizeModelName(name string) string {
 // InvalidateModelCache clears the cached model list so the next call to
 // ListModels or ValidateModelName fetches fresh data from the API.
 func (c *AnthropicClient) InvalidateModelCache() {
-	c.modelMu.Lock()
-	defer c.modelMu.Unlock()
-	c.modelCache = nil
-	c.modelErr = nil
-	c.modelLoaded = false
+	c.models.Invalidate()
 }
 
 // resolveMaxTokens determines the effective max_tokens for a request.
@@ -337,7 +262,7 @@ func buildMessages(history []llm.ConversationTurn, originalToSanitized map[strin
 				blocks = append(blocks, anthropic.NewTextBlock(b.Text))
 			case llm.ToolCallBlock:
 				// Look up the sanitized wire name from the map built by buildTools.
-				// If the name is not in the map, fall back to sanitizeToolName so
+				// If the name is not in the map, fall back to llm.SanitizeToolName so
 				// the API never receives an invalid name (e.g. dots from MCP names).
 				name := b.Name
 				if wire, ok := originalToSanitized[name]; ok {
@@ -345,7 +270,7 @@ func buildMessages(history []llm.ConversationTurn, originalToSanitized map[strin
 				} else if originalToSanitized != nil {
 					slog.Warn("buildMessages: tool name not found in name map; sanitizing as fallback",
 						"tool_name", b.Name, "tool_call_id", b.ID)
-					name = sanitizeToolName(name)
+					name = llm.SanitizeToolName(name, "-")
 				}
 				blocks = append(blocks, anthropic.NewToolUseBlock(b.ID, b.Input, name))
 			case llm.ToolResultBlock:
@@ -366,29 +291,29 @@ func buildMessages(history []llm.ConversationTurn, originalToSanitized map[strin
 
 // buildTools translates the provider-neutral tool definitions into the
 // Anthropic ToolUnionParam slice. It sanitizes tool names for the Claude API
-// and returns a toolNameMapping with both directions so translateResponse can
+// and returns a ToolNameMapping with both directions so translateResponse can
 // reverse-map API responses and buildMessages can forward-map conversation
 // history. Returns an error if two tools collide after sanitization.
-func buildTools(tools []llm.ToolDefinition) ([]anthropic.ToolUnionParam, toolNameMapping, error) {
+func buildTools(tools []llm.ToolDefinition) ([]anthropic.ToolUnionParam, llm.ToolNameMapping, error) {
 	result := make([]anthropic.ToolUnionParam, 0, len(tools))
-	names := toolNameMapping{
+	names := llm.ToolNameMapping{
 		SanitizedToOriginal: make(map[string]string, len(tools)),
 		OriginalToSanitized: make(map[string]string, len(tools)),
 	}
 
 	for _, t := range tools {
-		sanitized := sanitizeToolName(t.Name)
+		sanitized := llm.SanitizeToolName(t.Name, "-")
 
 		// Collision: two distinct original names map to the same sanitized name.
 		if existing, conflict := names.SanitizedToOriginal[sanitized]; conflict && existing != t.Name {
-			return nil, toolNameMapping{}, fmt.Errorf("tool name collision after sanitization: %q and %q both become %q", existing, t.Name, sanitized)
+			return nil, llm.ToolNameMapping{}, fmt.Errorf("tool name collision after sanitization: %q and %q both become %q", existing, t.Name, sanitized)
 		}
 		names.SanitizedToOriginal[sanitized] = t.Name
 		names.OriginalToSanitized[t.Name] = sanitized
 
 		schema, err := buildToolInputSchema(t.InputSchema)
 		if err != nil {
-			return nil, toolNameMapping{}, fmt.Errorf("building schema for tool %s: %w", t.Name, err)
+			return nil, llm.ToolNameMapping{}, fmt.Errorf("building schema for tool %s: %w", t.Name, err)
 		}
 		tool := anthropic.ToolUnionParamOfTool(schema, sanitized)
 		// OfTool is the active variant after ToolUnionParamOfTool; guard is

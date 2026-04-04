@@ -7,34 +7,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/google/uuid"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"google.golang.org/genai"
 )
-
-// sanitizeToolName replaces any character outside [a-zA-Z0-9_] with '_' and
-// truncates to 128 characters. The Gemini API rejects tool names containing
-// dots, hyphens, or other special characters.
-func sanitizeToolName(name string) string {
-	sanitized := strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
-			return r
-		}
-		return '_'
-	}, name)
-	if len(sanitized) > 128 {
-		sanitized = sanitized[:128]
-	}
-	return sanitized
-}
-
-// toolNameMapping holds both directions of the MCP-name ↔ wire-name mapping.
-type toolNameMapping struct {
-	SanitizedToOriginal map[string]string
-	OriginalToSanitized map[string]string
-}
 
 // contentGenerator abstracts genai.Models.GenerateContent for test injection.
 // genai.Models has a value receiver on GenerateContent, so *genai.Models
@@ -56,11 +33,7 @@ var _ llm.LLMClient = (*GeminiClient)(nil)
 type GeminiClient struct {
 	generator contentGenerator
 	lister    modelLister
-
-	modelMu     sync.RWMutex
-	modelCache  map[string]string // model name → display name
-	modelErr    error
-	modelLoaded bool
+	models    llm.ModelCache
 }
 
 // NewClient constructs a GeminiClient with the given API key.
@@ -72,13 +45,17 @@ func NewClient(ctx context.Context, apiKey string) (*GeminiClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("google: creating client: %w", err)
 	}
-	return &GeminiClient{generator: client.Models, lister: client.Models}, nil
+	return &GeminiClient{
+		generator: client.Models,
+		lister:    client.Models,
+		models:    llm.NewModelCache("Google"),
+	}, nil
 }
 
 // newClientWithGenerator constructs a GeminiClient with an injected generator and lister.
 // Used in tests to avoid real API calls.
 func newClientWithGenerator(gen contentGenerator, lister modelLister) *GeminiClient {
-	return &GeminiClient{generator: gen, lister: lister}
+	return &GeminiClient{generator: gen, lister: lister, models: llm.NewModelCache("Google")}
 }
 
 // CreateMessage sends a single synchronous request to the Gemini API and
@@ -88,7 +65,7 @@ func (c *GeminiClient) CreateMessage(ctx context.Context, req llm.MessageRequest
 
 	// Build name mapping before translating history so tool names in
 	// ToolCallBlock/ToolResultBlock use the sanitized wire-format names.
-	names := buildNameMapping(req.Tools)
+	names := llm.BuildNameMapping(req.Tools, "")
 	contents := buildContents(req.History, names)
 	config := buildConfig(req, hints, names)
 
@@ -172,41 +149,16 @@ func (c *GeminiClient) ValidateOptions(options map[string]any) error {
 
 // fetchModels populates the model cache from the API if not already loaded.
 func (c *GeminiClient) fetchModels(ctx context.Context) {
-	c.modelMu.Lock()
-	defer c.modelMu.Unlock()
-
-	if c.modelLoaded {
-		return
-	}
-
-	cache := make(map[string]string)
-	page, err := c.lister.List(ctx, nil)
-	if err != nil {
-		c.modelErr = fmt.Errorf("google: fetching available models: %w", err)
-		c.modelLoaded = true
-		return
-	}
-
-	for _, m := range page.Items {
-		// The API returns names like "models/gemini-2.0-flash".
-		// Strip the "models/" prefix so users write just "gemini-2.0-flash" in policy YAML.
-		name := strings.TrimPrefix(m.Name, "models/")
-		displayName := m.DisplayName
-		if displayName == "" {
-			displayName = name
-		}
-		cache[name] = displayName
-	}
-
-	// Paginate through all pages.
-	for page.NextPageToken != "" {
-		page, err = page.Next(ctx)
+	c.models.LoadOnce(func() (map[string]string, error) {
+		page, err := c.lister.List(ctx, nil)
 		if err != nil {
-			c.modelErr = fmt.Errorf("google: fetching available models (pagination): %w", err)
-			c.modelLoaded = true
-			return
+			return nil, fmt.Errorf("google: fetching available models: %w", err)
 		}
+
+		cache := make(map[string]string)
 		for _, m := range page.Items {
+			// The API returns names like "models/gemini-2.0-flash".
+			// Strip the "models/" prefix so users write just "gemini-2.0-flash" in policy YAML.
 			name := strings.TrimPrefix(m.Name, "models/")
 			displayName := m.DisplayName
 			if displayName == "" {
@@ -214,11 +166,25 @@ func (c *GeminiClient) fetchModels(ctx context.Context) {
 			}
 			cache[name] = displayName
 		}
-	}
 
-	c.modelCache = cache
-	c.modelErr = nil
-	c.modelLoaded = true
+		// Paginate through all pages.
+		for page.NextPageToken != "" {
+			page, err = page.Next(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("google: fetching available models (pagination): %w", err)
+			}
+			for _, m := range page.Items {
+				name := strings.TrimPrefix(m.Name, "models/")
+				displayName := m.DisplayName
+				if displayName == "" {
+					displayName = name
+				}
+				cache[name] = displayName
+			}
+		}
+
+		return cache, nil
+	})
 }
 
 // ValidateModelName returns nil if modelName is recognized by the Gemini API,
@@ -226,70 +192,20 @@ func (c *GeminiClient) fetchModels(ctx context.Context) {
 // first call and cached until InvalidateModelCache is called.
 func (c *GeminiClient) ValidateModelName(ctx context.Context, modelName string) error {
 	c.fetchModels(ctx)
-
-	c.modelMu.RLock()
-	defer c.modelMu.RUnlock()
-
-	if c.modelErr != nil {
-		return fmt.Errorf("could not validate model name: %w", c.modelErr)
-	}
-
-	if _, ok := c.modelCache[modelName]; ok {
-		return nil
-	}
-
-	known := make([]string, 0, len(c.modelCache))
-	for name := range c.modelCache {
-		known = append(known, name)
-	}
-	sort.Strings(known)
-	return fmt.Errorf("unknown Google model %q; known models: %s", modelName, strings.Join(known, ", "))
+	return c.models.ValidateModelName(modelName)
 }
 
 // ListModels returns the models available from the Gemini API. Results are
 // cached; call InvalidateModelCache to force a refresh on the next call.
 func (c *GeminiClient) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	c.fetchModels(ctx)
-
-	c.modelMu.RLock()
-	defer c.modelMu.RUnlock()
-
-	if c.modelErr != nil {
-		return nil, c.modelErr
-	}
-
-	models := make([]llm.ModelInfo, 0, len(c.modelCache))
-	for name, displayName := range c.modelCache {
-		models = append(models, llm.ModelInfo{Name: name, DisplayName: displayName})
-	}
-	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
-	return models, nil
+	return c.models.ListModels()
 }
 
 // InvalidateModelCache clears the cached model list so the next call to
 // ListModels or ValidateModelName fetches fresh data from the API.
 func (c *GeminiClient) InvalidateModelCache() {
-	c.modelMu.Lock()
-	defer c.modelMu.Unlock()
-	c.modelCache = nil
-	c.modelErr = nil
-	c.modelLoaded = false
-}
-
-// buildNameMapping creates the bidirectional mapping between original MCP tool
-// names (which may contain dots/hyphens) and the sanitized wire-format names
-// that the Gemini API accepts.
-func buildNameMapping(tools []llm.ToolDefinition) toolNameMapping {
-	names := toolNameMapping{
-		SanitizedToOriginal: make(map[string]string, len(tools)),
-		OriginalToSanitized: make(map[string]string, len(tools)),
-	}
-	for _, t := range tools {
-		sanitized := sanitizeToolName(t.Name)
-		names.SanitizedToOriginal[sanitized] = t.Name
-		names.OriginalToSanitized[t.Name] = sanitized
-	}
-	return names
+	c.models.Invalidate()
 }
 
 // buildContents translates the provider-neutral conversation history into
@@ -297,7 +213,7 @@ func buildNameMapping(tools []llm.ToolDefinition) toolNameMapping {
 // a callID→name map from all ToolCallBlocks, then translating each turn.
 // Tool names in ToolCallBlock and ToolResultBlock are mapped to their
 // sanitized wire-format equivalents using the provided name mapping.
-func buildContents(history []llm.ConversationTurn, names toolNameMapping) []*genai.Content {
+func buildContents(history []llm.ConversationTurn, names llm.ToolNameMapping) []*genai.Content {
 	// First pass: build callID→tool name map for ToolResultBlock resolution.
 	callIDToName := make(map[string]string)
 	for _, turn := range history {
@@ -375,7 +291,7 @@ func mapRoleToGenai(role llm.Role) string {
 }
 
 // buildConfig constructs the GenerateContentConfig for a request.
-func buildConfig(req llm.MessageRequest, hints *GeminiHints, names toolNameMapping) *genai.GenerateContentConfig {
+func buildConfig(req llm.MessageRequest, hints *GeminiHints, names llm.ToolNameMapping) *genai.GenerateContentConfig {
 	config := &genai.GenerateContentConfig{}
 
 	if req.MaxTokens > 0 {
@@ -413,7 +329,7 @@ func buildTools(tools []llm.ToolDefinition) []*genai.Tool {
 	decls := make([]*genai.FunctionDeclaration, 0, len(tools))
 	for _, t := range tools {
 		decl := &genai.FunctionDeclaration{
-			Name:        sanitizeToolName(t.Name),
+			Name:        llm.SanitizeToolName(t.Name, ""),
 			Description: t.Description,
 		}
 		if len(t.InputSchema) > 0 {
@@ -436,7 +352,7 @@ func buildTools(tools []llm.ToolDefinition) []*genai.Tool {
 // Known gap: part.ThoughtSignature bytes are discarded here. When full thinking
 // continuity is implemented, ThoughtSignature must be echoed back in subsequent
 // requests to maintain the thinking chain. A follow-up issue is needed.
-func translateResponse(resp *genai.GenerateContentResponse, names toolNameMapping) (*llm.MessageResponse, error) {
+func translateResponse(resp *genai.GenerateContentResponse, names llm.ToolNameMapping) (*llm.MessageResponse, error) {
 	var result llm.MessageResponse
 
 	if resp.UsageMetadata != nil {
