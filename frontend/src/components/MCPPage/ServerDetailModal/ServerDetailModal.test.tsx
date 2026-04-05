@@ -119,3 +119,28 @@ describe('ServerDetailModal', () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 })
+
+describe('ServerDetailModal — accessibility', () => {
+  it("has role='dialog' and aria-modal='true' on the content box", () => {
+    render(<ServerDetailModal {...defaultProps} />)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+  })
+
+  it('dialog has accessible name via aria-label', () => {
+    render(<ServerDetailModal {...defaultProps} />)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.getAttribute('aria-label')).toBe('test-server details')
+  })
+
+  it('wraps content in FocusTrap (all interactive elements inside dialog)', () => {
+    render(<ServerDetailModal {...defaultProps} />)
+    const dialog = screen.getByRole('dialog')
+    const closeBtn = screen.getByRole('button', { name: 'Close' })
+    const rediscoverBtn = screen.getByRole('button', { name: /rediscover/i })
+    const deleteBtn = screen.getByRole('button', { name: /delete/i })
+    expect(dialog.contains(closeBtn)).toBe(true)
+    expect(dialog.contains(rediscoverBtn)).toBe(true)
+    expect(dialog.contains(deleteBtn)).toBe(true)
+  })
+})

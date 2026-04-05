@@ -21,15 +21,19 @@ export function Modal({ title, onClose, children, footer }: Props) {
   }, [onClose])
 
   return (
-    <FocusTrap focusTrapOptions={{ initialFocus: false, allowOutsideClick: true, returnFocusOnDeactivate: true, fallbackFocus: '[role="dialog"]' }}>
+    <FocusTrap focusTrapOptions={{ initialFocus: false, allowOutsideClick: true, returnFocusOnDeactivate: true, fallbackFocus: '[role="dialog"]', escapeDeactivates: false }}>
       <div
         className={styles.overlay}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
+        data-testid="modal-overlay"
         onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
       >
-        <div className={styles.box}>
+        <div
+          className={styles.box}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          tabIndex={-1}
+        >
           <div className={styles.header}>
             <h2 id={titleId} className={styles.title}>{title}</h2>
             <button

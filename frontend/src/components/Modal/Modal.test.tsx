@@ -49,10 +49,10 @@ describe('Modal — close interactions', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it('calls onClose when overlay (dialog element) is clicked directly', () => {
+  it('calls onClose when overlay is clicked directly', () => {
     const onClose = vi.fn()
     render(<Modal title="T" onClose={onClose}><p>Body</p></Modal>)
-    const overlay = screen.getByRole('dialog')
+    const overlay = screen.getByTestId('modal-overlay')
     // Simulate a click where currentTarget === target (direct overlay click)
     fireEvent.click(overlay)
     expect(onClose).toHaveBeenCalledTimes(1)

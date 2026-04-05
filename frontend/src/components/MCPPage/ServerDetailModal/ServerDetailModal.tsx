@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import FocusTrap from 'focus-trap-react'
 import { Search } from 'lucide-react'
 import type { ApiMcpServer, ApiMcpTool, ApiPolicyListItem } from '@/api/types'
 import { ToolAccordionRow } from '@/components/MCPPage/ToolAccordionRow'
@@ -87,116 +88,121 @@ export function ServerDetailModal({
   const showFilter = !toolsLoading && toolCount > 5
 
   return (
-    <div
-      className={styles.overlay}
-      role="dialog"
-      aria-modal="true"
-      aria-label={`${server.name} details`}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
-    >
-      <div className={styles.box}>
-        <div className={styles.header}>
-          <div className={styles.headerTop}>
-            <div className={styles.titleGroup}>
-              <h2 className={styles.serverName}>{server.name}</h2>
-              <span className={styles.toolCountBadge}>
-                {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
-              </span>
-              {hasDrift && <span className={styles.driftBadge}>Drift</span>}
-              {isUnreachable && <span className={styles.unreachableBadge}>Unreachable</span>}
-            </div>
-            <button
-              type="button"
-              className={styles.closeBtn}
-              aria-label="Close"
-              onClick={onClose}
-            >
-              &times;
-            </button>
-          </div>
-          <div className={styles.headerBottom}>
-            <div className={styles.meta}>
-              <span>{server.url}</span>
-              {server.last_discovered_at && (
-                <>
-                  <span className={styles.metaSep}>&middot;</span>
-                  <span>Discovered {formatTimeAgo(server.last_discovered_at)}</span>
-                </>
-              )}
-            </div>
-            <div className={styles.actions}>
+    <FocusTrap focusTrapOptions={{ initialFocus: false, allowOutsideClick: true, returnFocusOnDeactivate: true, fallbackFocus: '[role="dialog"]', escapeDeactivates: false }}>
+      <div
+        className={styles.overlay}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose()
+        }}
+      >
+        <div
+          className={styles.box}
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${server.name} details`}
+          tabIndex={-1}
+        >
+          <div className={styles.header}>
+            <div className={styles.headerTop}>
+              <div className={styles.titleGroup}>
+                <h2 className={styles.serverName}>{server.name}</h2>
+                <span className={styles.toolCountBadge}>
+                  {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
+                </span>
+                {hasDrift && <span className={styles.driftBadge}>Drift</span>}
+                {isUnreachable && <span className={styles.unreachableBadge}>Unreachable</span>}
+              </div>
               <button
                 type="button"
-                className={styles.discoverBtn}
-                onClick={() => onDiscover(server.id)}
-                disabled={isDiscovering}
+                className={styles.closeBtn}
+                aria-label="Close"
+                onClick={onClose}
               >
-                {isDiscovering ? (
+                &times;
+              </button>
+            </div>
+            <div className={styles.headerBottom}>
+              <div className={styles.meta}>
+                <span>{server.url}</span>
+                {server.last_discovered_at && (
                   <>
-                    <span className={styles.spinner} aria-hidden="true" />
-                    Discovering...
+                    <span className={styles.metaSep}>&middot;</span>
+                    <span>Discovered {formatTimeAgo(server.last_discovered_at)}</span>
                   </>
-                ) : (
-                  <>&#x21bb; Rediscover</>
                 )}
-              </button>
-              <button
-                type="button"
-                className={styles.deleteBtn}
-                onClick={() => onDelete(server, toolCount)}
-              >
-                Delete
-              </button>
+              </div>
+              <div className={styles.actions}>
+                <button
+                  type="button"
+                  className={styles.discoverBtn}
+                  onClick={() => onDiscover(server.id)}
+                  disabled={isDiscovering}
+                >
+                  {isDiscovering ? (
+                    <>
+                      <span className={styles.spinner} aria-hidden="true" />
+                      Discovering...
+                    </>
+                  ) : (
+                    <>&#x21bb; Rediscover</>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className={styles.deleteBtn}
+                  onClick={() => onDelete(server, toolCount)}
+                >
+                  Delete
+                </button>
+              </div>
             </div>
           </div>
-        </div>
 
-        {showFilter && (
-          <div className={styles.filterBar}>
-            <Search size={14} className={styles.filterIcon} />
-            <input
-              type="text"
-              className={styles.filterInput}
-              placeholder="Filter tools..."
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              aria-label="Filter tools"
-            />
-          </div>
-        )}
-
-        <div className={styles.body}>
-          {toolsLoading ? (
-            <div className={styles.loadingContainer}>
-              <SkeletonBlock height={44} />
-              <SkeletonBlock height={44} />
-              <SkeletonBlock height={44} />
-            </div>
-          ) : filteredTools && filteredTools.length > 0 ? (
-            filteredTools.map((tool) => {
-              const ref = `${server.name}.${tool.name}`
-              const usedBy = toolUsageMap.get(ref)
-              return (
-                <ToolAccordionRow
-                  key={tool.id}
-                  tool={tool}
-                  expanded={expandedToolId === tool.id}
-                  onToggle={() => setExpandedToolId(expandedToolId === tool.id ? null : tool.id)}
-                  usedBy={usedBy}
-                />
-              )
-            })
-          ) : filter && tools && tools.length > 0 ? (
-            <div className={styles.empty}>No tools matching "{filter}"</div>
-          ) : (
-            <div className={styles.empty}>
-              No tools discovered. Click Rediscover to fetch tools from this server.
+          {showFilter && (
+            <div className={styles.filterBar}>
+              <Search size={14} className={styles.filterIcon} />
+              <input
+                type="text"
+                className={styles.filterInput}
+                placeholder="Filter tools..."
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                aria-label="Filter tools"
+              />
             </div>
           )}
+
+          <div className={styles.body}>
+            {toolsLoading ? (
+              <div className={styles.loadingContainer}>
+                <SkeletonBlock height={44} />
+                <SkeletonBlock height={44} />
+                <SkeletonBlock height={44} />
+              </div>
+            ) : filteredTools && filteredTools.length > 0 ? (
+              filteredTools.map((tool) => {
+                const ref = `${server.name}.${tool.name}`
+                const usedBy = toolUsageMap.get(ref)
+                return (
+                  <ToolAccordionRow
+                    key={tool.id}
+                    tool={tool}
+                    expanded={expandedToolId === tool.id}
+                    onToggle={() => setExpandedToolId(expandedToolId === tool.id ? null : tool.id)}
+                    usedBy={usedBy}
+                  />
+                )
+              })
+            ) : filter && tools && tools.length > 0 ? (
+              <div className={styles.empty}>No tools matching "{filter}"</div>
+            ) : (
+              <div className={styles.empty}>
+                No tools discovered. Click Rediscover to fetch tools from this server.
+              </div>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </FocusTrap>
   )
 }
