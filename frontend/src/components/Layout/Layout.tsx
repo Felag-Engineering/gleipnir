@@ -1,10 +1,11 @@
-import { useState } from 'react'
-import { Activity, Bot, ChevronLeft, ChevronRight, History, Settings, Users, Wrench } from 'lucide-react'
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { useCallback, useState } from 'react'
+import { Activity, Bot, ChevronLeft, ChevronRight, ChevronUp, History, Users, Wrench } from 'lucide-react'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useSSE } from '@/hooks/useSSE'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { useAttentionItems } from '@/hooks/useAttentionItems'
 import { useMcpServers } from '@/hooks/queries/servers'
+import { UserMenu } from './UserMenu'
 import styles from './Layout.module.css'
 
 const SIDEBAR_STORAGE_KEY = 'gleipnir-sidebar-collapsed'
@@ -19,9 +20,9 @@ const NAV_ITEMS = [
 
 export default function Layout() {
   const location = useLocation()
-  const navigate = useNavigate()
   const { connectionState } = useSSE()
   const { data: currentUser } = useCurrentUser()
+  const [menuOpen, setMenuOpen] = useState(false)
   const { items: attentionItems } = useAttentionItems()
   const { data: mcpServers } = useMcpServers()
 
@@ -116,33 +117,42 @@ export default function Layout() {
           })}
         </nav>
 
-        <div
-          className={collapsed ? `${styles.sidebarFooter} ${styles.sidebarFooterCollapsed}` : styles.sidebarFooter}
-          role="button"
-          tabIndex={0}
-          onClick={() => navigate('/settings')}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/settings') } }}
-          aria-label="User settings"
-        >
-          <div className={collapsed ? `${styles.userAvatar} ${styles.userAvatarCollapsed}` : styles.userAvatar}>
-            {(currentUser?.username?.[0] ?? '?').toUpperCase()}
-            <span className={collapsed ? `${styles.onlineDot} ${styles.onlineDotCollapsed}` : styles.onlineDot} aria-hidden="true" />
-          </div>
-          {!collapsed && (
-            <>
-              <div className={styles.userInfo}>
-                <span className={styles.userName}>{currentUser?.username ?? 'User'}</span>
-                <span className={styles.userRole}>
-                  {currentUser?.roles?.[0]
-                    ? currentUser.roles[0].charAt(0).toUpperCase() + currentUser.roles[0].slice(1)
-                    : 'User'}
+        <div className={styles.sidebarFooterWrapper}>
+          <UserMenu
+            open={menuOpen}
+            onClose={useCallback(() => setMenuOpen(false), [])}
+            isAdmin={currentUser?.roles?.includes('admin') ?? false}
+          />
+          <div
+            className={collapsed ? `${styles.sidebarFooter} ${styles.sidebarFooterCollapsed}` : styles.sidebarFooter}
+            role="button"
+            tabIndex={0}
+            onClick={() => setMenuOpen(prev => !prev)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setMenuOpen(prev => !prev) } }}
+            aria-label="User menu"
+            aria-expanded={menuOpen}
+            aria-haspopup="menu"
+          >
+            <div className={collapsed ? `${styles.userAvatar} ${styles.userAvatarCollapsed}` : styles.userAvatar}>
+              {(currentUser?.username?.[0] ?? '?').toUpperCase()}
+              <span className={collapsed ? `${styles.onlineDot} ${styles.onlineDotCollapsed}` : styles.onlineDot} aria-hidden="true" />
+            </div>
+            {!collapsed && (
+              <>
+                <div className={styles.userInfo}>
+                  <span className={styles.userName}>{currentUser?.username ?? 'User'}</span>
+                  <span className={styles.userRole}>
+                    {currentUser?.roles?.[0]
+                      ? currentUser.roles[0].charAt(0).toUpperCase() + currentUser.roles[0].slice(1)
+                      : 'User'}
+                  </span>
+                </div>
+                <span className={menuOpen ? `${styles.menuChevron} ${styles.menuChevronOpen}` : styles.menuChevron} aria-hidden="true">
+                  <ChevronUp size={16} strokeWidth={1.5} />
                 </span>
-              </div>
-              <span className={styles.settingsGear} aria-hidden="true">
-                <Settings size={16} strokeWidth={1.5} />
-              </span>
-            </>
-          )}
+              </>
+            )}
+          </div>
         </div>
       </aside>
 

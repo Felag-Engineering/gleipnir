@@ -25,6 +25,35 @@
   width: var(--sidebar-collapsed);
 }
 
+/* Collapsed overrides — center icons and reposition accent bar */
+.sidebarCollapsed .sidebarHeader {
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebarCollapsed .navLink {
+  margin: 0 4px;
+  padding: var(--space-2) 0;
+  justify-content: center;
+  gap: 0;
+}
+
+.sidebarCollapsed .navLinkActive::before {
+  left: -4px;
+  top: 6px;
+  bottom: 6px;
+}
+
+/* Remove the inset box-shadow in collapsed mode — it crowds the small icon cell */
+:global(:root[data-theme="light"]) .sidebarCollapsed .navLinkActive,
+:global(:root[data-theme="system"]) .sidebarCollapsed .navLinkActive {
+  box-shadow: none;
+}
+
+.sidebarCollapsed .collapseButton {
+  margin: 0 auto;
+}
+
 /* ---- Sidebar header ---- */
 
 .sidebarHeader {
@@ -164,6 +193,11 @@
 
 /* ---- Sidebar footer ---- */
 
+.sidebarFooterWrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
 .sidebarFooter {
   display: flex;
   align-items: center;
@@ -248,15 +282,22 @@
   white-space: nowrap;
 }
 
-.settingsGear {
+.menuChevron {
   display: flex;
   align-items: center;
   color: var(--text-faint);
   flex-shrink: 0;
-  transition: color var(--duration-fast) var(--ease-out);
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    transform var(--duration-normal) var(--ease-out);
+  transform: rotate(0deg);
 }
 
-.sidebarFooter:hover .settingsGear {
+.menuChevronOpen {
+  transform: rotate(180deg);
+}
+
+.sidebarFooter:hover .menuChevron {
   color: var(--text-muted);
 }
 
@@ -400,7 +441,7 @@
   }
 
   .userInfo,
-  .settingsGear {
+  .menuChevron {
     display: none;
   }
 

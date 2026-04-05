@@ -1,3 +1,4 @@
+import { Monitor } from 'lucide-react'
 import { useSessions, useRevokeSession } from '@/hooks/useSettings'
 import { formatTimestamp } from '@/utils/format'
 import { parseUserAgent } from '@/utils/userAgent'
@@ -11,7 +12,10 @@ export function SessionsSection() {
     return (
       <section className={styles.card}>
         <div className={styles.cardHeader}>
-          <h2 className={styles.cardTitle}>Active Sessions</h2>
+          <h2 className={styles.cardTitle}>
+          <Monitor size={16} strokeWidth={1.5} className={styles.cardTitleIcon} />
+          Active Sessions
+        </h2>
         </div>
         <div className={styles.cardBody}>
           <span className={styles.appearanceLabel}>Loading…</span>
@@ -23,7 +27,10 @@ export function SessionsSection() {
   return (
     <section className={styles.card}>
       <div className={styles.cardHeader}>
-        <h2 className={styles.cardTitle}>Active Sessions</h2>
+        <h2 className={styles.cardTitle}>
+          <Monitor size={16} strokeWidth={1.5} className={styles.cardTitleIcon} />
+          Active Sessions
+        </h2>
       </div>
       <div className={styles.cardBody}>
         {(sessions ?? []).length === 0 ? (

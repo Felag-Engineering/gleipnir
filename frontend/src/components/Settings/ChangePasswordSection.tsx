@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Lock } from 'lucide-react'
 import { Button } from '@/components/Button'
 import { useChangePassword } from '@/hooks/useSettings'
 import type { ApiError } from '@/api/fetch'
@@ -46,7 +47,10 @@ export function ChangePasswordSection() {
   return (
     <section className={styles.card}>
       <div className={styles.cardHeader}>
-        <h2 className={styles.cardTitle}>Change Password</h2>
+        <h2 className={styles.cardTitle}>
+          <Lock size={16} strokeWidth={1.5} className={styles.cardTitleIcon} />
+          Change Password
+        </h2>
       </div>
       <div className={styles.cardBody}>
         <form onSubmit={handleSubmit}>

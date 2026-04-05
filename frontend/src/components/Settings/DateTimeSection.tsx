@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Clock } from 'lucide-react'
 import { usePreferences, useUpdatePreferences } from '@/hooks/useSettings'
 import {
   formatTimestamp,
@@ -53,7 +54,10 @@ export function DateTimeSection() {
   return (
     <section className={styles.card}>
       <div className={styles.cardHeader}>
-        <h2 className={styles.cardTitle}>Date &amp; Time</h2>
+        <h2 className={styles.cardTitle}>
+          <Clock size={16} strokeWidth={1.5} className={styles.cardTitleIcon} />
+          Date &amp; Time
+        </h2>
       </div>
       <div className={styles.cardBody}>
         <div className={styles.fieldGroup}>

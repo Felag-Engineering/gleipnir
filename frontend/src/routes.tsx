@@ -10,6 +10,7 @@ import RunsPage from './pages/RunsPage'
 import MCPPage from './pages/MCPPage'
 import UsersPage from './pages/UsersPage'
 import SettingsPage from './pages/SettingsPage'
+import SystemSettingsPage from './pages/SystemSettingsPage'
 import NotFoundPage from './pages/NotFoundPage'
 import { RouteErrorFallback } from './components/ErrorBoundary'
 
@@ -38,6 +39,7 @@ const router = createBrowserRouter([
       { path: 'mcp', element: <Navigate to="/tools" replace /> },
       { path: 'users', element: <UsersPage />, errorElement: <RouteErrorFallback /> },
       { path: 'settings', element: <SettingsPage />, errorElement: <RouteErrorFallback /> },
+      { path: 'settings/system', element: <SystemSettingsPage />, errorElement: <RouteErrorFallback /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

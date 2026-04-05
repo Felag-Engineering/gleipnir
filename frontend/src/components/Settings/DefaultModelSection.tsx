@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Bot } from 'lucide-react'
 import { useModels, type ProviderModels } from '@/hooks/queries/users'
 import { usePreferences, useUpdatePreferences } from '@/hooks/useSettings'
 import styles from './Settings.module.css'
@@ -25,8 +26,11 @@ export function DefaultModelSection() {
   return (
     <section className={styles.card}>
       <div className={styles.cardHeader}>
-        <h2 className={styles.cardTitle}>Default Model</h2>
-        <p className={styles.cardDesc}>Used when a policy does not specify a model.</p>
+        <h2 className={styles.cardTitle}>
+          <Bot size={16} strokeWidth={1.5} className={styles.cardTitleIcon} />
+          Default Model
+        </h2>
+        <p className={styles.cardDesc}>Used when an agent does not specify a model.</p>
       </div>
       <div className={styles.cardBody}>
         <div className={styles.fieldGroup}>

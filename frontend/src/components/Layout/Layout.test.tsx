@@ -104,12 +104,14 @@ describe('Layout', () => {
     expect(screen.getByText('Admin')).toBeInTheDocument()
   })
 
-  it('footer navigates to /settings on click', () => {
+  it('footer opens user menu on click', () => {
     renderLayout()
-    const footer = screen.getByRole('button', { name: /user settings/i })
+    const footer = screen.getByRole('button', { name: /user menu/i })
     fireEvent.click(footer)
-    // MemoryRouter won't actually navigate, but the element must be present and clickable
-    expect(footer).toBeInTheDocument()
+    // Menu should appear with Settings, System Settings (admin), and Log out
+    expect(screen.getByRole('menuitem', { name: /^settings$/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /system settings/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /log out/i })).toBeInTheDocument()
   })
 
   it('collapsed footer shows only avatar initial, hides username and role', () => {
