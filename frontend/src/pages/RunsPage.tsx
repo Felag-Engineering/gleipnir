@@ -106,9 +106,9 @@ export default function RunsPage() {
           className={policy ? `${styles.chip} ${styles.chipActive}` : styles.chip}
           value={policy}
           onChange={(e) => setFilter('policy', e.target.value)}
-          aria-label="Filter by policy"
+          aria-label="Filter by agent"
         >
-          <option value="">All policies ▾</option>
+          <option value="">All agents ▾</option>
           {(policies ?? []).map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
@@ -148,9 +148,9 @@ export default function RunsPage() {
         emptyState={
           <EmptyState
             headline="No runs found"
-            subtext="Try adjusting the filters, or go to Policies to trigger a run."
-            ctaLabel="Go to Policies"
-            ctaTo="/policies"
+            subtext="Try adjusting the filters, or go to Agents to trigger a run."
+            ctaLabel="Go to Agents"
+            ctaTo="/agents"
           />
         }
       >

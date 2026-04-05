@@ -76,13 +76,13 @@ describe('PoliciesPage', () => {
 
     expect(screen.getByText(/create your first agent/i)).toBeInTheDocument()
 
-    // CTA links to /policies/new
+    // CTA links to /agents/new
     const ctaLinks = screen.getAllByRole('link', { name: /new agent/i })
-    const ctaToNew = ctaLinks.some(l => l.getAttribute('href') === '/policies/new')
+    const ctaToNew = ctaLinks.some(l => l.getAttribute('href') === '/agents/new')
     expect(ctaToNew).toBe(true)
   })
 
-  it('edit button links to /policies/:id (editor)', async () => {
+  it('edit button links to /agents/:id (editor)', async () => {
     server.use(
       http.get('/api/v1/policies', () => {
         return HttpResponse.json({ data: POLICIES })
@@ -95,10 +95,10 @@ describe('PoliciesPage', () => {
     await waitFor(() => expect(screen.getByText('vikunja-triage')).toBeInTheDocument())
 
     const editLink = screen.getByRole('link', { name: /edit vikunja-triage/i })
-    expect(editLink).toHaveAttribute('href', '/policies/p1')
+    expect(editLink).toHaveAttribute('href', '/agents/p1')
   })
 
-  it('"New Agent" button in header links to /policies/new', async () => {
+  it('"New Agent" button in header links to /agents/new', async () => {
     server.use(
       http.get('/api/v1/policies', () => {
         return HttpResponse.json({ data: POLICIES })
@@ -112,7 +112,7 @@ describe('PoliciesPage', () => {
 
     // The header New Policy link is a direct child of the header section
     const headerLink = screen.getByRole('link', { name: 'New Agent' })
-    expect(headerLink).toHaveAttribute('href', '/policies/new')
+    expect(headerLink).toHaveAttribute('href', '/agents/new')
   })
 
   it('shows error state with Retry button on API failure', async () => {

@@ -21,10 +21,10 @@ npm run build-storybook  # static Storybook build
 /                   → redirect to /dashboard
 /dashboard          → stats bar, policy list grouped by folder
 /runs               → paginated run history with filters
-/policies           → policy list
-/policies/new       → dual-mode policy editor (create)
-/policies/:id       → dual-mode policy editor (edit)
-/policies/:id/runs  → redirect to /runs?policy=:id
+/agents             → agent (policy) list
+/agents/new         → dual-mode policy editor (create)
+/agents/:id         → dual-mode policy editor (edit)
+/agents/:id/runs    → redirect to /runs?policy=:id
 /runs/:id           → reasoning timeline with live SSE updates
 /tools              → tool management + server registry
 /mcp                → redirect to /tools (legacy path)

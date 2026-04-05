@@ -67,7 +67,7 @@ export function PolicyCard({ policy, onTrigger }: Props) {
             ▶
           </button>
           <Link
-            to={`/policies/${policy.id}`}
+            to={`/agents/${policy.id}`}
             className={`${styles.actionBtn} ${styles.editBtn}`}
             onClick={(e) => e.stopPropagation()}
             aria-label={`Edit ${policy.name}`}

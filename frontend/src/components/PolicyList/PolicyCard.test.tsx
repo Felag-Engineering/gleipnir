@@ -125,13 +125,13 @@ describe('PolicyCard', () => {
     expect(screen.getByRole('link', { name: /edit system-health-check/i })).toBeInTheDocument()
   })
 
-  it('edit button links to /policies/:id', () => {
+  it('edit button links to /agents/:id', () => {
     render(
       <MemoryRouter>
         <PolicyCard policy={POLICY} onTrigger={() => {}} />
       </MemoryRouter>,
     )
-    expect(screen.getByRole('link', { name: /edit system-health-check/i })).toHaveAttribute('href', '/policies/p1')
+    expect(screen.getByRole('link', { name: /edit system-health-check/i })).toHaveAttribute('href', '/agents/p1')
   })
 
   it('hides model pill when model is empty', () => {

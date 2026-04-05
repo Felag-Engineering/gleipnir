@@ -186,11 +186,11 @@ describe('RunsPage — empty state', () => {
     expect(screen.getByRole('heading', { name: /no runs found/i })).toBeInTheDocument()
   })
 
-  it('empty state includes a link to Policies', () => {
+  it('empty state includes a link to Agents', () => {
     mockLoaded([])
     renderPage()
-    const cta = screen.getByRole('link', { name: /go to policies/i })
-    expect(cta).toHaveAttribute('href', '/policies')
+    const cta = screen.getByRole('link', { name: /go to agents/i })
+    expect(cta).toHaveAttribute('href', '/agents')
   })
 })
 
@@ -229,9 +229,9 @@ describe('RunsPage — filters', () => {
     expect(screen.getByRole('radio', { name: 'All' })).toHaveAttribute('aria-checked', 'true')
   })
 
-  it('policy filter select is present', () => {
+  it('agent filter select is present', () => {
     renderPage()
-    expect(screen.getByRole('combobox', { name: /filter by policy/i })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: /filter by agent/i })).toBeInTheDocument()
   })
 
   it('date range filter select is present', () => {

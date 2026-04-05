@@ -14,10 +14,10 @@ type Story = StoryObj<typeof EmptyState>
 
 export const Default: Story = {
   args: {
-    headline: 'No policies yet',
-    subtext: 'Create your first policy to start running agents',
-    ctaLabel: 'Create policy',
-    ctaTo: '/policies/new',
+    headline: 'No agents yet',
+    subtext: 'Create your first agent to start running',
+    ctaLabel: 'Create agent',
+    ctaTo: '/agents/new',
   },
 }
 
@@ -25,7 +25,7 @@ export const CustomMessage: Story = {
   args: {
     headline: 'No runs yet',
     subtext: 'Trigger a webhook or enable a cron policy to see runs here',
-    ctaLabel: 'Go to policies',
+    ctaLabel: 'Go to Agents',
     ctaTo: '/dashboard',
   },
 }

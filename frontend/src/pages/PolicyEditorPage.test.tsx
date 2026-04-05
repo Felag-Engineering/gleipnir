@@ -93,13 +93,13 @@ function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function renderEditor(path = '/policies/new', queryClient = makeQueryClient()) {
+function renderEditor(path = '/agents/new', queryClient = makeQueryClient()) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/policies/new" element={<PolicyEditorPage />} />
-          <Route path="/policies/:id" element={<PolicyEditorPage />} />
+          <Route path="/agents/new" element={<PolicyEditorPage />} />
+          <Route path="/agents/:id" element={<PolicyEditorPage />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -300,7 +300,7 @@ describe('PolicyEditorPage — dirty state and save', () => {
       isLoading: false,
     } as unknown as ReturnType<typeof useMcpServers>)
 
-    renderEditor('/policies/existing-id')
+    renderEditor('/agents/existing-id')
 
     // Initially save button is disabled (not dirty)
     const saveBtn = screen.getByRole('button', { name: 'Save' })

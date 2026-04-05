@@ -31,7 +31,7 @@ export function EditorTopBar({
         <div className={styles.breadcrumb}>
           <span className={`${styles.crumb} ${styles.crumbGleipnir}`}>GLEIPNIR</span>
           <span className={styles.separator}>›</span>
-          <Link to="/policies" className={`${styles.crumb} ${styles.crumbPolicies} ${styles.crumbLink}`}>Agents</Link>
+          <Link to="/agents" className={`${styles.crumb} ${styles.crumbPolicies} ${styles.crumbLink}`}>Agents</Link>
           <span className={styles.separator}>›</span>
           <span className={`${styles.crumb} ${styles.crumbPolicy}`}>{policyName}</span>
           {isDirty && <span className={styles.dirtyDot} />}

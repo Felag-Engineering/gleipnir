@@ -22,7 +22,7 @@ export default function PoliciesPage() {
   return (
     <div className={styles.page}>
       <PageHeader title="Agents">
-        <Link to="/policies/new" className={`${buttonStyles.button} ${buttonStyles.primary}`}>
+        <Link to="/agents/new" className={`${buttonStyles.button} ${buttonStyles.primary}`}>
           New Agent
         </Link>
       </PageHeader>
@@ -36,7 +36,7 @@ export default function PoliciesPage() {
             headline="No agents yet"
             subtext="Create your first agent to get started"
             ctaLabel="New Agent"
-            ctaTo="/policies/new"
+            ctaTo="/agents/new"
           />
         }
       >

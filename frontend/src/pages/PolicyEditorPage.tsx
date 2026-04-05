@@ -85,7 +85,7 @@ export function PolicyEditorPage() {
       setIsDirty(false)
       setSavedPolicyId(result.id)
       if (!id) {
-        navigate(`/policies/${result.id}`, { replace: true })
+        navigate(`/agents/${result.id}`, { replace: true })
       }
     } catch (e) {
       const err = e as ApiError
@@ -97,7 +97,7 @@ export function PolicyEditorPage() {
     if (!id) return
     try {
       await deletePolicy.mutateAsync(id)
-      navigate('/policies')
+      navigate('/agents')
     } catch (e) {
       const err = e as ApiError
       setSaveError(err?.detail ?? err?.message ?? 'Delete failed. Please try again.')

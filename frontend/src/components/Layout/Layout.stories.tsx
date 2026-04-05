@@ -26,8 +26,8 @@ function SidebarStory({ initialPath = '/dashboard' }: { initialPath?: string }) 
             <Route path="/dashboard" element={<PageContent title="Dashboard" />} />
             <Route path="/runs" element={<PageContent title="Runs" />} />
             <Route path="/runs/:id" element={<PageContent title="Run Detail" />} />
-            <Route path="/policies" element={<PageContent title="Agents" />} />
-            <Route path="/policies/new" element={<PageContent title="New Agent" />} />
+            <Route path="/agents" element={<PageContent title="Agents" />} />
+            <Route path="/agents/new" element={<PageContent title="New Agent" />} />
             <Route path="/tools" element={<PageContent title="Tools" />} />
             <Route path="/settings" element={<PageContent title="Settings" />} />
           </Route>
@@ -73,7 +73,7 @@ export const ActiveRuns: Story = {
 }
 
 export const ActiveAgents: Story = {
-  render: () => <SidebarStory initialPath="/policies" />,
+  render: () => <SidebarStory initialPath="/agents" />,
 }
 
 export const ActiveTools: Story = {

@@ -12,7 +12,7 @@ const SIDEBAR_STORAGE_KEY = 'gleipnir-sidebar-collapsed'
 const NAV_ITEMS = [
   { label: 'Control Center', to: '/dashboard', Icon: Activity, requiredRole: undefined },
   { label: 'Run History', to: '/runs', Icon: History, requiredRole: undefined },
-  { label: 'Agents', to: '/policies', Icon: Bot, requiredRole: undefined },
+  { label: 'Agents', to: '/agents', Icon: Bot, requiredRole: undefined },
   { label: 'Tools', to: '/tools', Icon: Wrench, requiredRole: undefined },
   { label: 'Users', to: '/users', Icon: Users, requiredRole: 'admin' },
 ]
@@ -49,10 +49,10 @@ export default function Layout() {
   }
 
   function navLinkClass(to: string, statusClass?: string): string {
-    // /policies should match all nested routes like /policies/new and /policies/:id
+    // /agents should match all nested routes like /agents/new and /agents/:id
     const active =
-      to === '/policies'
-        ? location.pathname.startsWith('/policies')
+      to === '/agents'
+        ? location.pathname.startsWith('/agents')
         : location.pathname === to
     const base = active ? `${styles.navLink} ${styles.navLinkActive}` : styles.navLink
     return statusClass ? `${base} ${statusClass}` : base

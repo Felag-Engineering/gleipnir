@@ -43,9 +43,9 @@ export function RecentRunsFeed() {
         {!isLoading && runs.length === 0 && (
           <EmptyState
             headline="No runs yet"
-            subtext="Create a policy and trigger your first run."
-            ctaLabel="Go to Policies"
-            ctaTo="/policies"
+            subtext="Create an agent and trigger your first run."
+            ctaLabel="Go to Agents"
+            ctaTo="/agents"
           />
         )}
 
