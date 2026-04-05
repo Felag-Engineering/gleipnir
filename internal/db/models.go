@@ -58,6 +58,16 @@ type Policy struct {
 	PausedAt    *string `json:"paused_at"`
 }
 
+type PollState struct {
+	PolicyID            string  `json:"policy_id"`
+	LastPollAt          *string `json:"last_poll_at"`
+	LastResultHash      *string `json:"last_result_hash"`
+	ConsecutiveFailures int64   `json:"consecutive_failures"`
+	NextPollAt          string  `json:"next_poll_at"`
+	CreatedAt           string  `json:"created_at"`
+	UpdatedAt           string  `json:"updated_at"`
+}
+
 type Run struct {
 	ID             string  `json:"id"`
 	PolicyID       string  `json:"policy_id"`

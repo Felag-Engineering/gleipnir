@@ -154,6 +154,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate add user preferences and session ua: %w", err)
 	}
 
+	if err := s.migrateAddPollTriggerType(ctx); err != nil {
+		return fmt.Errorf("migrate add poll trigger type: %w", err)
+	}
+
 	return nil
 }
 
@@ -659,6 +663,130 @@ func (s *Store) migrateAddUserPreferencesAndSessionUA(ctx context.Context) error
 		slog.Info("migrated sessions table to add ip_address column")
 	}
 
+	return nil
+}
+
+// migrateAddPollTriggerType updates the CHECK constraints on policies, runs,
+// and trigger_queue to include 'poll', and creates the poll_states table.
+// New deployments get all of this from 0001_initial.sql; this migration is a
+// no-op for them.
+//
+// SQLite cannot ALTER CHECK constraints, so we use the table-recreation pattern
+// established by migrateAddWaitingForFeedback. PRAGMA foreign_keys must be
+// toggled OUTSIDE the transaction (SQLite requirement).
+func (s *Store) migrateAddPollTriggerType(ctx context.Context) error {
+	// Check whether 'poll' is already present in the policies DDL. If so, all
+	// three tables and the poll_states table have already been migrated.
+	var policiesSQL string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='policies'`,
+	).Scan(&policiesSQL)
+	if err != nil {
+		return fmt.Errorf("query policies schema: %w", err)
+	}
+	if strings.Contains(policiesSQL, "'poll'") {
+		return nil // already migrated; nothing to do
+	}
+
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys before poll migration: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		return fmt.Errorf("begin poll migration tx: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.Error("poll migration rollback failed", "err", rbErr)
+		}
+	}()
+
+	ddl := `
+CREATE TABLE policies_new (
+    id              TEXT    PRIMARY KEY,
+    name            TEXT    NOT NULL UNIQUE,
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll')),
+    yaml            TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL,
+    paused_at       TEXT
+);
+INSERT INTO policies_new SELECT * FROM policies;
+DROP TABLE policies;
+ALTER TABLE policies_new RENAME TO policies;
+CREATE INDEX idx_policies_trigger_type ON policies(trigger_type);
+
+CREATE TABLE runs_new (
+    id              TEXT    PRIMARY KEY,
+    policy_id       TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+    status          TEXT    NOT NULL CHECK(status IN (
+                        'pending',
+                        'running',
+                        'waiting_for_approval',
+                        'waiting_for_feedback',
+                        'complete',
+                        'failed',
+                        'interrupted'
+                    )),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll')),
+    trigger_payload TEXT    NOT NULL,
+    started_at      TEXT    NOT NULL,
+    completed_at    TEXT,
+    token_cost      INTEGER NOT NULL DEFAULT 0,
+    error           TEXT,
+    thread_id       TEXT,
+    created_at      TEXT    NOT NULL,
+    system_prompt   TEXT,
+    model           TEXT    NOT NULL DEFAULT ''
+);
+INSERT INTO runs_new SELECT * FROM runs;
+DROP TABLE runs;
+ALTER TABLE runs_new RENAME TO runs;
+CREATE INDEX idx_runs_status         ON runs(status);
+CREATE INDEX idx_runs_created_at     ON runs(created_at DESC);
+CREATE INDEX idx_runs_policy_created ON runs(policy_id, created_at DESC);
+CREATE INDEX idx_runs_policy_status  ON runs(policy_id, status);
+
+CREATE TABLE trigger_queue_new (
+    id              TEXT    PRIMARY KEY,
+    policy_id       TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll')),
+    trigger_payload TEXT    NOT NULL,
+    position        INTEGER NOT NULL,
+    created_at      TEXT    NOT NULL,
+    UNIQUE(policy_id, position)
+);
+INSERT INTO trigger_queue_new SELECT * FROM trigger_queue;
+DROP TABLE trigger_queue;
+ALTER TABLE trigger_queue_new RENAME TO trigger_queue;
+CREATE INDEX idx_trigger_queue_policy_position ON trigger_queue(policy_id, position);
+
+CREATE TABLE IF NOT EXISTS poll_states (
+    policy_id            TEXT    PRIMARY KEY REFERENCES policies(id) ON DELETE CASCADE,
+    last_poll_at         TEXT,
+    last_result_hash     TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    next_poll_at         TEXT    NOT NULL,
+    created_at           TEXT    NOT NULL,
+    updated_at           TEXT    NOT NULL
+);`
+
+	if _, err := tx.ExecContext(ctx, ddl); err != nil {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		return fmt.Errorf("recreate tables for poll trigger type: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		return fmt.Errorf("commit poll migration: %w", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		return fmt.Errorf("re-enable foreign keys after poll migration: %w", err)
+	}
+
+	slog.Info("migrated tables to include poll trigger type and created poll_states table")
 	return nil
 }
 

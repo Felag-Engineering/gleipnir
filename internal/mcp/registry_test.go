@@ -404,6 +404,63 @@ func TestRefreshTools_MCPServerUnreachable(t *testing.T) {
 	}
 }
 
+// TestResolveToolByName_HappyPath verifies that a registered tool can be
+// resolved to a ready Client and bare tool name.
+func TestResolveToolByName_HappyPath(t *testing.T) {
+	reg, _ := newTestRegistry(t)
+
+	tools := []map[string]any{
+		{"name": "my-tool", "description": "a tool", "inputSchema": map[string]any{"type": "object"}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServer: %v", err)
+	}
+
+	client, toolName, err := reg.ResolveToolByName(context.Background(), "my-server.my-tool")
+	if err != nil {
+		t.Fatalf("ResolveToolByName: %v", err)
+	}
+	if toolName != "my-tool" {
+		t.Errorf("toolName = %q, want %q", toolName, "my-tool")
+	}
+	if client == nil {
+		t.Error("expected a non-nil Client")
+	}
+}
+
+// TestResolveToolByName_UnknownTool verifies that resolving a tool that is not
+// in the registry returns an error.
+func TestResolveToolByName_UnknownTool(t *testing.T) {
+	reg, _ := newTestRegistry(t)
+
+	tools := []map[string]any{
+		{"name": "real-tool", "description": "exists", "inputSchema": map[string]any{"type": "object"}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServer: %v", err)
+	}
+
+	_, _, err := reg.ResolveToolByName(context.Background(), "my-server.nonexistent")
+	if err == nil {
+		t.Fatal("expected error for unknown tool, got nil")
+	}
+}
+
+// TestResolveToolByName_BadDotNotation verifies that a malformed tool name
+// (no dot separator) returns an error.
+func TestResolveToolByName_BadDotNotation(t *testing.T) {
+	reg, _ := newTestRegistry(t)
+
+	_, _, err := reg.ResolveToolByName(context.Background(), "nodothere")
+	if err == nil {
+		t.Fatal("expected error for bad dot-notation, got nil")
+	}
+}
+
 // TestRefreshTools_DriftClearedOnCleanRefresh verifies the full drift lifecycle:
 // a discovery with changes sets has_drift=1, and a subsequent discovery that
 // finds no changes clears it back to has_drift=0.

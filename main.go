@@ -133,6 +133,11 @@ func run(cfg config.Config) error {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
 
+	poller := trigger.NewPoller(store, launcher, registry)
+	if err := poller.Start(ctx); err != nil {
+		return fmt.Errorf("start poller: %w", err)
+	}
+
 	authHandler := auth.NewHandler(store.Queries(), store.DB())
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
 	r.Route("/api/v1/auth", func(r chi.Router) {
@@ -205,7 +210,7 @@ func run(cfg config.Config) error {
 	<-quit
 	slog.Info("shutting down")
 
-	// Cancel the root context to stop the scheduler and any background timers.
+	// Cancel the root context to stop the scheduler, poller, and any background timers.
 	// Note: run contexts derive from context.Background() (see launcher.go), so
 	// this does NOT cancel in-flight agent runs — CancelAll handles that below.
 	cancel()
@@ -213,10 +218,12 @@ func run(cfg config.Config) error {
 	// Signal all in-flight agent runs to stop.
 	runManager.CancelAll()
 
-	// Wait for agent runs to drain, with a timeout. We give runs 25 s so the
-	// remaining 5 s budget can be used for the HTTP server shutdown.
+	// Wait for poll loops and agent runs to drain, with a timeout. Poll loops
+	// should exit quickly (they are just sleeping timers). Agent runs may take
+	// longer, so both are waited concurrently.
 	runsDrained := make(chan struct{})
 	go func() {
+		poller.Wait()
 		runManager.Wait()
 		close(runsDrained)
 	}()

@@ -65,7 +65,7 @@ CREATE INDEX idx_mcp_tools_server_id ON mcp_tools(server_id);
 CREATE TABLE policies (
     id              TEXT    PRIMARY KEY,  -- ULID
     name            TEXT    NOT NULL UNIQUE,
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll')),
     yaml            TEXT    NOT NULL,
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     updated_at      TEXT    NOT NULL,     -- ISO 8601 UTC
@@ -102,7 +102,7 @@ CREATE TABLE runs (
                         'failed',
                         'interrupted'
                     )),
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll')),
     trigger_payload TEXT    NOT NULL,     -- JSON blob
     started_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     completed_at    TEXT,                 -- nullable, ISO 8601 UTC
@@ -293,7 +293,7 @@ CREATE TABLE user_roles (
 CREATE TABLE trigger_queue (
     id              TEXT    PRIMARY KEY,  -- ULID
     policy_id       TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll')),
     trigger_payload TEXT    NOT NULL,     -- JSON blob
     position        INTEGER NOT NULL,     -- monotonically increasing per-policy ordering
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
@@ -301,6 +301,25 @@ CREATE TABLE trigger_queue (
 );
 
 CREATE INDEX idx_trigger_queue_policy_position ON trigger_queue(policy_id, position);
+
+-- ---------------------------------------------------------------------------
+-- Poll states
+--
+-- Tracks per-policy polling state for policies with trigger_type = 'poll'.
+-- next_poll_at drives scheduling; last_result_hash prevents re-triggering
+-- an identical result on restart.
+-- consecutive_failures drives exponential back-off.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE poll_states (
+    policy_id            TEXT    PRIMARY KEY REFERENCES policies(id) ON DELETE CASCADE,
+    last_poll_at         TEXT,                 -- nullable, ISO 8601 UTC
+    last_result_hash     TEXT,                 -- nullable, SHA-256 hex of last non-empty result
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    next_poll_at         TEXT    NOT NULL,      -- ISO 8601 UTC, used by the poller to schedule
+    created_at           TEXT    NOT NULL,      -- ISO 8601 UTC
+    updated_at           TEXT    NOT NULL       -- ISO 8601 UTC
+);
 
 -- ---------------------------------------------------------------------------
 -- Seed migration version

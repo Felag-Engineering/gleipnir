@@ -91,6 +91,12 @@ type registryResolver interface {
 	ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) ([]mcp.ResolvedTool, error)
 }
 
+// toolResolver resolves a single MCP tool by dot-notation name. Used by
+// the poll engine to call a tool outside any agent run.
+type toolResolver interface {
+	ResolveToolByName(ctx context.Context, dotName string) (*mcp.Client, string, error)
+}
+
 // NewRunLauncher returns a RunLauncher ready to use.
 // publisher may be nil, in which case no real-time events are emitted.
 // defaultFeedbackTimeout is used when a policy does not specify its own timeout.

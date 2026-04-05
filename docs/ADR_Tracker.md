@@ -30,7 +30,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-011 | v1 approval path (UI vs Slack callbacks)           | 🟡 In Progress | v0.2   | Approval UX, inbound network model                   |
 | ADR-012 | Run persistence and recovery behavior              | 🟢 Decided    | v0.1   | Run executor, storage layer, startup sequence        |
 | ADR-013 | System prompt default template                     | 🟢 Decided    | v0.1   | Agent runtime, policy schema, UI prompt editor       |
-| ADR-014 | Poll trigger MCP client architecture               | 🔴 Unresolved | v0.3   | Trigger engine, MCP client, package structure        |
+| ADR-014 | Poll trigger MCP client architecture               | 🟢 Decided    | v0.3   | Trigger engine, MCP client, package structure        |
 | ADR-015 | Policy concurrency model                           | 🟢 Decided    | v1.0   | Trigger engine, run executor, policy schema          |
 | ADR-016 | Real-time UI transport: SSE over WebSockets        | 🟢 Decided    | v0.1   | Frontend, Go API, HA scaling path                    |
 | ADR-017 | Policy-level parameter scoping for MCP tools       | 🟢 Decided    | v0.1   | Policy schema, MCP client, agent runtime, audit log  |

@@ -43,7 +43,7 @@ func validateTrigger(t model.TriggerConfig) []string {
 	var errs []string
 
 	if !t.Type.Valid() {
-		errs = append(errs, fmt.Sprintf("trigger.type %q is invalid; must be webhook, manual, or scheduled", t.Type))
+		errs = append(errs, fmt.Sprintf("trigger.type %q is invalid; must be webhook, manual, scheduled, or poll", t.Type))
 		return errs // can't validate type-specific fields without a valid type
 	}
 
@@ -64,6 +64,18 @@ func validateTrigger(t model.TriggerConfig) []string {
 		// so an entry count mismatch signals parse failures).
 		// Note: we do not validate that timestamps are in the future here, because
 		// historical timestamps in existing policies are valid on read.
+
+	case model.TriggerTypePoll:
+		if t.Interval <= 0 {
+			errs = append(errs, "trigger.interval is required for poll triggers and must be a positive duration (e.g. \"5m\", \"1h\")")
+		} else if t.Interval < 30*time.Second {
+			errs = append(errs, "trigger.interval must be at least 30s to prevent excessive polling")
+		}
+		if t.PollTool == "" {
+			errs = append(errs, "trigger.tool is required for poll triggers")
+		} else if !isValidToolRef(t.PollTool) {
+			errs = append(errs, fmt.Sprintf("trigger.tool %q must use dot notation (server_name.tool_name)", t.PollTool))
+		}
 	}
 
 	if t.WebhookSecret != "" && t.Type != model.TriggerTypeWebhook {

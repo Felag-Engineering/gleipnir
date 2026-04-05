@@ -84,7 +84,7 @@ func resolveModelConfig(topLevel *rawModel, defaultProvider, defaultModel string
 }
 
 // convertTrigger maps the raw YAML trigger block to a typed TriggerConfig.
-// Scheduled-specific fields are only populated when the trigger type is "scheduled".
+// Type-specific fields are only populated for their respective trigger types.
 func convertTrigger(r rawTrigger) model.TriggerConfig {
 	tc := model.TriggerConfig{
 		Type:          model.TriggerType(r.Type),
@@ -100,6 +100,18 @@ func convertTrigger(r rawTrigger) model.TriggerConfig {
 			}
 			tc.FireAt = append(tc.FireAt, t.UTC())
 		}
+	}
+
+	if tc.Type == model.TriggerTypePoll {
+		if r.Interval != "" {
+			d, err := time.ParseDuration(r.Interval)
+			if err == nil {
+				tc.Interval = d
+			}
+			// If parse fails, leave zero — validator will catch it.
+		}
+		tc.PollTool = r.PollTool
+		tc.PollInput = r.PollInput
 	}
 
 	return tc
@@ -239,9 +251,12 @@ type rawModel struct {
 }
 
 type rawTrigger struct {
-	Type          string   `yaml:"type"`
-	FireAt        []string `yaml:"fire_at"`        // scheduled only, RFC3339 timestamps
-	WebhookSecret string   `yaml:"webhook_secret"` // webhook only
+	Type          string         `yaml:"type"`
+	FireAt        []string       `yaml:"fire_at"`        // scheduled only, RFC3339 timestamps
+	WebhookSecret string         `yaml:"webhook_secret"` // webhook only
+	Interval      string         `yaml:"interval"`       // poll only, Go duration string (e.g. "5m")
+	PollTool      string         `yaml:"tool"`           // poll only, dot-notation server.tool_name
+	PollInput     map[string]any `yaml:"input"`          // poll only, static input passed to the tool
 }
 
 type rawCapabilities struct {

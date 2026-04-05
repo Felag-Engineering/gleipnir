@@ -55,10 +55,46 @@ func TestValidate_CronTriggerIsInvalid(t *testing.T) {
 	assertValidationContains(t, p, "trigger.type")
 }
 
-func TestValidate_PollTriggerIsInvalid(t *testing.T) {
+func TestValidate_PollTrigger_Valid(t *testing.T) {
 	p := validPolicy()
-	p.Trigger.Type = "poll"
-	assertValidationContains(t, p, "trigger.type")
+	p.Trigger.Type = model.TriggerTypePoll
+	p.Trigger.Interval = 5 * time.Minute
+	p.Trigger.PollTool = "server.check"
+	if err := Validate(p); err != nil {
+		t.Errorf("expected valid poll trigger, got: %v", err)
+	}
+}
+
+func TestValidate_PollTrigger_MissingInterval(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypePoll
+	p.Trigger.PollTool = "server.check"
+	// Interval is zero (not set)
+	assertValidationContains(t, p, "trigger.interval is required")
+}
+
+func TestValidate_PollTrigger_IntervalTooShort(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypePoll
+	p.Trigger.Interval = 10 * time.Second
+	p.Trigger.PollTool = "server.check"
+	assertValidationContains(t, p, "at least 30s")
+}
+
+func TestValidate_PollTrigger_MissingTool(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypePoll
+	p.Trigger.Interval = 5 * time.Minute
+	// PollTool is empty
+	assertValidationContains(t, p, "trigger.tool is required")
+}
+
+func TestValidate_PollTrigger_BadToolDotNotation(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypePoll
+	p.Trigger.Interval = 5 * time.Minute
+	p.Trigger.PollTool = "no-dot-here"
+	assertValidationContains(t, p, "dot notation")
 }
 
 func TestValidate_NoTools(t *testing.T) {

@@ -113,6 +113,41 @@ func (q *Queries) GetPolicyByName(ctx context.Context, name string) (Policy, err
 	return i, err
 }
 
+const getPollActivePolicies = `-- name: GetPollActivePolicies :many
+SELECT id, name, trigger_type, yaml, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'poll' AND paused_at IS NULL
+`
+
+func (q *Queries) GetPollActivePolicies(ctx context.Context) ([]Policy, error) {
+	rows, err := q.db.QueryContext(ctx, getPollActivePolicies)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Policy
+	for rows.Next() {
+		var i Policy
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.TriggerType,
+			&i.Yaml,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.PausedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getScheduledActivePolicies = `-- name: GetScheduledActivePolicies :many
 SELECT id, name, trigger_type, yaml, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'scheduled' AND paused_at IS NULL
 `

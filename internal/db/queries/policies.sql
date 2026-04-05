@@ -33,6 +33,9 @@ UPDATE policies SET paused_at = NULL WHERE id = :id;
 -- name: CountPolicies :one
 SELECT COUNT(*) FROM policies;
 
+-- name: GetPollActivePolicies :many
+SELECT * FROM policies WHERE trigger_type = 'poll' AND paused_at IS NULL;
+
 -- name: ListPoliciesWithLatestRun :many
 SELECT
     p.id,

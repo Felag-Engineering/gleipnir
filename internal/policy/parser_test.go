@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -879,6 +880,66 @@ agent:
 	}
 	if p.Capabilities.Feedback.OnTimeout != "" {
 		t.Errorf("on_timeout = %q, want empty (cleared when disabled)", p.Capabilities.Feedback.OnTimeout)
+	}
+}
+
+func TestParse_PollTrigger(t *testing.T) {
+	raw := `
+name: poll-test
+trigger:
+  type: poll
+  interval: 5m
+  tool: my-server.check_items
+  input:
+    repo: gleipnir
+capabilities:
+  tools:
+    - tool: my-server.check_items
+agent:
+  task: process poll result
+`
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if p.Trigger.Type != model.TriggerTypePoll {
+		t.Errorf("trigger.type = %q, want %q", p.Trigger.Type, model.TriggerTypePoll)
+	}
+	if p.Trigger.Interval != 5*time.Minute {
+		t.Errorf("trigger.interval = %v, want 5m", p.Trigger.Interval)
+	}
+	if p.Trigger.PollTool != "my-server.check_items" {
+		t.Errorf("trigger.tool = %q, want %q", p.Trigger.PollTool, "my-server.check_items")
+	}
+	if p.Trigger.PollInput == nil {
+		t.Fatal("trigger.input is nil, want map with 'repo'")
+	}
+	if p.Trigger.PollInput["repo"] != "gleipnir" {
+		t.Errorf("trigger.input[repo] = %v, want %q", p.Trigger.PollInput["repo"], "gleipnir")
+	}
+}
+
+func TestParse_PollTrigger_BadInterval(t *testing.T) {
+	// An unparseable interval leaves Interval as zero; the validator catches it.
+	raw := `
+name: poll-bad
+trigger:
+  type: poll
+  interval: not-a-duration
+  tool: s.check
+capabilities:
+  tools:
+    - tool: s.check
+agent:
+  task: do it
+`
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Trigger.Interval != 0 {
+		t.Errorf("expected Interval=0 for bad duration, got %v", p.Trigger.Interval)
 	}
 }
 

@@ -35,6 +35,7 @@ const (
 	TriggerTypeWebhook   TriggerType = "webhook"
 	TriggerTypeManual    TriggerType = "manual"
 	TriggerTypeScheduled TriggerType = "scheduled"
+	TriggerTypePoll      TriggerType = "poll"
 )
 
 // StepType identifies the kind of event recorded in a run's reasoning trace.
@@ -119,7 +120,7 @@ func (s RunStatus) Valid() bool {
 func (t TriggerType) String() string { return string(t) }
 func (t TriggerType) Valid() bool {
 	switch t {
-	case TriggerTypeWebhook, TriggerTypeManual, TriggerTypeScheduled:
+	case TriggerTypeWebhook, TriggerTypeManual, TriggerTypeScheduled, TriggerTypePoll:
 		return true
 	}
 	return false
@@ -250,8 +251,11 @@ type ParsedPolicy struct {
 // the active TriggerType are populated.
 type TriggerConfig struct {
 	Type          TriggerType
-	FireAt        []time.Time // scheduled only
-	WebhookSecret string      `json:"-"` // webhook only; excluded from JSON to prevent secret leakage
+	FireAt        []time.Time    // scheduled only
+	WebhookSecret string         `json:"-"`     // webhook only; excluded from JSON to prevent secret leakage
+	Interval      time.Duration  // poll only
+	PollTool      string         // poll only, dot-notation server.tool_name
+	PollInput     map[string]any // poll only, static input passed to the poll tool on each invocation
 }
 
 // FeedbackConfig controls the native human-in-the-loop feedback channel.

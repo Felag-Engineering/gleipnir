@@ -140,6 +140,34 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 	return result, nil
 }
 
+// ResolveToolByName resolves a single tool by dot-notation name and returns
+// a ready MCP Client plus the bare tool name. Used by the poll trigger engine
+// to call a tool outside the agent runtime context.
+func (r *Registry) ResolveToolByName(ctx context.Context, dotName string) (*Client, string, error) {
+	serverName, toolName, err := splitToolName(dotName)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve tool %q: %w", dotName, err)
+	}
+
+	tool, err := r.queries.GetMCPToolByServerAndName(ctx, db.GetMCPToolByServerAndNameParams{
+		ServerName: serverName,
+		ToolName:   toolName,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, "", fmt.Errorf("tool %q not found in registry", dotName)
+		}
+		return nil, "", fmt.Errorf("look up tool %q: %w", dotName, err)
+	}
+
+	srv, err := r.queries.GetMCPServer(ctx, tool.ServerID)
+	if err != nil {
+		return nil, "", fmt.Errorf("get server for tool %q: %w", dotName, err)
+	}
+
+	return r.newClient(srv.Url), toolName, nil
+}
+
 // RegisterServer stores a new MCP server record, discovers its tools via the
 // MCP client, and upserts all discovered tools into mcp_tools.
 // last_discovered_at is intentionally left NULL here — it is set only by RefreshTools.
