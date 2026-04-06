@@ -4,6 +4,7 @@ Gleipnir is a homelab-scale autonomous agent orchestrator. It runs AI agents as 
 
 ## Commands
 
+**Backend:**
 ```bash
 go build ./...           # build
 go test ./...            # run all tests
@@ -12,14 +13,39 @@ sqlc generate            # regenerate internal/db/ from internal/db/queries/*.sq
 docker compose up        # run full stack (Go binary with embedded frontend)
 ```
 
+**Frontend:** (run from `frontend/`)
+```bash
+npm run dev              # Vite dev server (proxies /api → localhost:8080)
+npm run build            # TypeScript check + production build
+npx vitest run           # run Vitest unit tests
+npm run storybook        # Storybook on port 6006
+```
+
 **Environment variables** (with defaults):
-- `GLEIPNIR_DB_PATH` — SQLite file path (default: `/data/gleipnir.db`)
-- `GLEIPNIR_LISTEN_ADDR` — HTTP listen address (default: `:8080`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GLEIPNIR_DB_PATH` | `/data/gleipnir.db` | SQLite file path |
+| `GLEIPNIR_LISTEN_ADDR` | `:8080` | HTTP listen address |
+| `GLEIPNIR_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
+| `GLEIPNIR_MCP_TIMEOUT` | `30s` | Timeout for MCP server calls |
+| `GLEIPNIR_HTTP_READ_TIMEOUT` | `15s` | HTTP server read timeout |
+| `GLEIPNIR_HTTP_WRITE_TIMEOUT` | `15s` | HTTP server write timeout |
+| `GLEIPNIR_HTTP_IDLE_TIMEOUT` | `60s` | HTTP server idle timeout |
+| `GLEIPNIR_APPROVAL_SCAN_INTERVAL` | `30s` | How often to check for timed-out approvals |
+| `GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT` | `30m` | Default timeout for feedback requests |
+| `GLEIPNIR_FEEDBACK_SCAN_INTERVAL` | `30s` | How often to check for timed-out feedback |
+| `GLEIPNIR_DEFAULT_PROVIDER` | `anthropic` | Default LLM provider |
+| `GLEIPNIR_DEFAULT_MODEL` | `claude-sonnet-4-20250514` | Default model |
+
+**Required API keys** (not Gleipnir-prefixed):
+- `ANTHROPIC_API_KEY` — required for Anthropic provider
+- `GOOGLE_API_KEY` — required for Google provider
 
 ## Stack
 
-- **Backend:** Go, [chi](https://github.com/go-chi/chi) router, [sqlc](https://sqlc.dev/) for type-safe queries, official [Anthropic Go SDK](https://github.com/anthropics/anthropic-sdk-go)
-- **Frontend:** React + TypeScript (Vite), CSS Modules, CodeMirror 6 (YAML editor), SSE for real-time updates, Storybook for component dev, embedded in the Go binary via `go:embed` and served directly
+- **Backend:** Go, [chi](https://github.com/go-chi/chi) router, [sqlc](https://sqlc.dev/) for type-safe queries, multi-provider LLM support (Anthropic + Google)
+- **Frontend:** React + TypeScript (Vite), CSS Modules, CodeMirror 6 (YAML editor), TanStack Query, SSE for real-time updates, Storybook for component dev, embedded in the Go binary via `go:embed` and served directly
 - **Storage:** SQLite with WAL mode
 - **Deployment:** Docker Compose
 - **Tool protocol:** MCP over HTTP transport
@@ -28,21 +54,39 @@ docker compose up        # run full stack (Go binary with embedded frontend)
 
 The Go server handles policy management, agent orchestration, and the reasoning trace. It talks to external MCP servers over HTTP to discover and invoke tools. The React frontend is embedded in the Go binary via `go:embed` (built in Docker from `frontend/dist`) and served directly by the Go HTTP server. SQLite (WAL mode) is the only datastore, embedded in the Go container.
 
+See `frontend/CLAUDE.md` for detailed frontend architecture (routes, design system, component structure, hooks, testing).
+
 ## Core domain concepts
 
 **Fetter** — an agent run scoped to a specific policy. Tools not granted to a run are never registered with the agent; they do not exist from the agent's perspective.
 
-**Policy** — YAML config defining trigger, agent task prompt, capability grants, and limits. Three trigger types: `webhook`, `cron`, `poll`.
+**Policy** — YAML config defining trigger, agent task prompt, capability grants, and limits. Four trigger types: `webhook`, `manual`, `scheduled`, `poll`.
+
+**Trigger types:**
+- `webhook` — HTTP POST to `/api/v1/webhooks/{policyID}` fires a run
+- `manual` — operator triggers a run from the UI or API
+- `scheduled` — one-shot runs at specific ISO-8601 timestamps (defined via `fire_at` list in policy YAML; not recurring cron)
+- `poll` — recurring polling with MCP tool invocations and JSONPath condition checks
 
 **Capabilities** — two categories, tracked in Gleipnir's own DB (not in MCP servers):
-- `tool` — MCP tools the agent can call, optionally approval-gated
-- `feedback` — human-in-the-loop channel; agent sends a message and waits for operator response
+- `tool` — MCP tools the agent can call, optionally approval-gated, optionally parameter-scoped (ADR-017)
+- `feedback` — human-in-the-loop channel; agent sends a message and waits for operator response (ADR-031)
 
-**Run states:** `pending → running → complete | failed | waiting_for_approval → running (approved) | failed (rejected/timeout)`; `interrupted` on restart.
+**Run states:**
+```
+pending → running → complete | failed
+                  → waiting_for_approval → running (approved) | failed (rejected/timeout)
+                  → waiting_for_feedback → running (response received) | failed (timeout)
+running | waiting_for_approval | waiting_for_feedback → interrupted (on restart)
+```
+
+**Step types** (reasoning trace entries): `capability_snapshot`, `thought`, `thinking`, `tool_call`, `tool_result`, `approval_request`, `feedback_request`, `feedback_response`, `error`, `complete`.
 
 **Approval modes:**
 1. Agent-initiated: agent calls gleipnir.ask_operator voluntarily
 2. Policy-gated: tools marked `approval: required` are intercepted by the runtime before execution — hard guarantee, not prompt-based
+
+**User roles:** `admin`, `operator`, `approver`, `auditor`. Roles control API endpoint access via middleware.
 
 ## Key packages
 
@@ -50,20 +94,30 @@ See `docs/architecture.md` for the full package dependency graph (Mermaid diagra
 
 ```
 schemas/
-  policy.yaml       — schema that defines how policies will be stored
-  sql_schemas.sql   — schema that explains the different tables in our datastore
+  policy.yaml         — schema that defines how policies will be stored
+  sql_schemas.sql     — schema that explains the different tables in our datastore
 
 internal/
-  db/               — sqlc-generated data access layer; queries live in internal/db/queries/
-  model/            — domain types (Policy, Run, RunStep, ApprovalRequest, ...)
-  policy/           — YAML parser, validator, system prompt renderer
-  mcp/              — MCP HTTP client, tool registry, capability tags
-  agent/            — BoundAgent runner, Claude API loop, audit writer
-  trigger/          — webhook handler; cron/poll stubs (v0.3)
-  notify/           — feedback channel, notification dispatch (stub, v0.2+)
+  api/                — chi route handlers, response helpers, validation middleware
+  agent/              — BoundAgent runner, LLM API loop, audit writer
+  approval/           — approval scanner, timeout enforcement
+  auth/               — authentication, sessions, user management, role middleware
+  config/             — environment variable loading (leaf package, no internal imports)
+  db/                 — sqlc-generated data access layer; queries live in internal/db/queries/
+  event/              — event system for internal pub/sub
+  feedback/           — feedback scanner, timeout enforcement (ADR-031)
+  llm/                — LLM provider abstraction (ADR-026)
+    anthropic/        — Anthropic API client
+    google/           — Google AI client
+  mcp/                — MCP HTTP client, tool registry, capability tags
+  model/              — domain types (Policy, Run, RunStep, ApprovalRequest, enums, ...)
+  policy/             — YAML parser, validator, system prompt renderer
+  sse/                — Server-Sent Events broadcaster
+  testutil/           — shared test helpers
+  trigger/            — webhook, manual, scheduled, and poll trigger handlers
 ```
 
-**ADRs:** Architectural decisions are referenced in docs/ADR_Tracker.md, decisions should be tracked there and this document should be updated anytime architectural decisions are made. Do not refernce in source code but do reference in commit messages and PR messages.
+**ADRs:** Architectural decisions are referenced in docs/ADR_Tracker.md, decisions should be tracked there and this document should be updated anytime architectural decisions are made. Do not reference in source code but do reference in commit messages and PR messages.
 
 ## Code style
 
@@ -71,7 +125,7 @@ internal/
 
 **Explicit over clever.** If there's a straightforward way and a clever way, write the straightforward way.
 
-**Strict error handling.** Never swallow errors. Wrap with context:
+**Strict error handling.** Never swallow errors. Wrap with context: `fmt.Errorf("context: %w", err)`.
 
 **Tests alongside new code.** Table-driven tests for anything with branching logic, error paths, or concurrency behavior. Don't test trivial getters. Do test:
 - State machine transitions
@@ -85,24 +139,45 @@ internal/
 
 ## Key API surface
 
-- `POST /api/v1/webhooks/:policy_id` — fires a webhook-triggered run; request body is the trigger payload
-- `GET /api/v1/events` — SSE stream (`text/event-stream`) for real-time updates to the frontend
-- `POST /api/v1/mcp/servers/:id/discover` — re-discovery endpoint, returns a diff of added/removed/modified tools
-- Response envelope: `{ data: T }` for success, `{ error: string, detail?: string }` for failure
+Routes are registered in `internal/api/routes.go` (policies, mcp, stats, models) and `main.go` (auth, runs, webhooks, SSE, settings, users, triggers).
+
+**Response envelope:** `{ data: T }` for success, `{ error: string, detail?: string }` for failure.
+
+**Key endpoint groups:**
+- `/api/v1/auth/*` — login, logout, setup, sessions, password change
+- `/api/v1/policies/*` — CRUD for policies
+- `/api/v1/runs/*` — list/get runs, steps, cancel, approval, feedback
+- `/api/v1/mcp/servers/*` — MCP server registry, tool discovery
+- `/api/v1/webhooks/{policyID}` — fires a webhook-triggered run
+- `/api/v1/policies/{policyID}/trigger` — fires a manual run
+- `/api/v1/events` — SSE stream (`text/event-stream`) for real-time updates
+- `/api/v1/models` — list/refresh available LLM models
+- `/api/v1/stats`, `/api/v1/stats/timeseries` — dashboard statistics
+- `/api/v1/attention` — items needing operator attention
+- `/api/v1/users/*` — user management (admin)
+- `/api/v1/settings/preferences` — user preferences
+- `/api/v1/health` — health check
 
 ## Settled architectural decisions
 
 These are resolved constraints — do not re-litigate them.
 
-- **Hard capability enforcement:** disallowed tools are never registered with the agent. Prompt-based restrictions are not a control mechanism and must not be used as one.
-- **Policy stored as a YAML blob:** `name` and `trigger_type` are indexed columns for routing and list views; all other policy fields live in the `yaml` column. No separate data model for policy fields.
-- **SQLite, WAL mode, no ORM:** WAL is enabled at the application layer on startup. Audit writes are serialized through an application-layer queue to avoid contention. All queries go through sqlc — raw `.sql` files only.
-- **MCP HTTP transport only:** capability tags (`tool`/`feedback`) are Gleipnir's metadata, stored in Gleipnir's DB — not in the MCP server.
+- **Hard capability enforcement (ADR-001):** disallowed tools are never registered with the agent. Prompt-based restrictions are not a control mechanism and must not be used as one.
+- **Policy stored as a YAML blob (ADR-002):** `name` and `trigger_type` are indexed columns for routing and list views; all other policy fields live in the `yaml` column. No separate data model for policy fields.
+- **SQLite, WAL mode, no ORM (ADR-003):** WAL is enabled at the application layer on startup. Audit writes are serialized through an application-layer queue to avoid contention. All queries go through sqlc — raw `.sql` files only.
+- **MCP HTTP transport only (ADR-004):** capability tags (`tool`/`feedback`) are Gleipnir's metadata, stored in Gleipnir's DB — not in the MCP server.
 - **Package boundary:** `internal/mcp` must not import `internal/agent`.
-- **Policy-gated approval is a hard runtime guarantee:** tools marked `approval: required` are intercepted by the runtime before execution, regardless of agent reasoning.
-- **Feedback channel resolution:** policy-level channel definition falls back to system-level config if absent.
+- **Policy-gated approval is a hard runtime guarantee (ADR-008):** tools marked `approval: required` are intercepted by the runtime before execution, regardless of agent reasoning.
+- **Feedback channel resolution (ADR-009):** policy-level channel definition falls back to system-level config if absent.
 - **SSE for real-time UI transport (ADR-016):** Server-Sent Events push run status changes, new steps, and approval events. Mutations remain REST. No WebSockets.
+- **Policy-level parameter scoping (ADR-017):** tool parameters can be restricted per-policy via `params` blocks. Schema is narrowed before agent sees it — structural enforcement, not prompt-based.
+- **Capability snapshot as first run step (ADR-018):** every run records the exact tools registered at run start.
 - **Dual-mode policy editor (ADR-019):** Form view + YAML view, both editing the same YAML string. YAML is the API payload.
 - **Policy folders are YAML-only (ADR-020):** `folder` is an optional string in the policy YAML for UI grouping. No DB column — purely cosmetic.
+- **Model-agnostic design (ADR-026):** multi-provider support via `internal/llm` interface. Currently Anthropic + Google. Providers implement a common interface; agent runtime is provider-agnostic.
+- **Tool risk classification (ADR-028):** tools categorized by risk level, affecting approval requirements.
+- **Approval state machine (ADR-029):** minimal v1.0 approval lifecycle with timeout enforcement.
+- **Protocol-agnostic tools page (ADR-030):** UI abstracts over tool transport. The Tools page does not expose MCP-specific concepts to users.
+- **Native feedback (ADR-031):** feedback is a first-class runtime primitive. Agent can request operator input via `gleipnir.ask_operator`; the runtime manages the `waiting_for_feedback` state and timeout.
 - **CSS Modules, no inline styles:** All frontend styling goes through CSS Modules consuming CSS custom properties. No inline `style={}` attributes.
 - **4px spacing scale:** All margins, padding, and gaps snap to multiples of 4px (4, 8, 12, 16, 24, 32, 48, 64).

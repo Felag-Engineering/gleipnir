@@ -1,7 +1,7 @@
 ---
 description: "Pull a GitHub issue, architect a solution, review the plan adversarially, implement it, code-review in a loop, and open a PR."
 argument-hint: "<issue-number> [--max-cycles N] [--no-preview]"
-allowed-tools: Bash(*), Read, Edit, Write, Grep, Glob, Agent
+allowed-tools: Bash(*), Read, Edit, Write, Grep, Glob, Agent, AskUserQuestion
 ---
 
 # Agentic Development Loop
@@ -22,6 +22,8 @@ All pipeline artifacts are written to `.dev-loop/` in the repo root. This direct
 
 - `.dev-loop/plan.md` — the architecture plan (written in Stage 3, possibly revised in Stage 4)
 - `.dev-loop/review-feedback.md` — accumulated code-review feedback across cycles (appended in Stage 6)
+- `.dev-loop/refined-spec.md` — refined issue spec from brainstorming (written in Stage 1.5, if triggered)
+- `.dev-loop/cycle-count` — current review cycle number (written in Stage 6)
 
 These files are the source of truth for passing context between agents. When a stage says "pass the plan", tell the agent to read `.dev-loop/plan.md`. Do not paste plan contents into agent prompts — instruct agents to read the file.
 
@@ -34,6 +36,7 @@ Execute these stages **in order**. Report progress clearly between stages.
 ### Stage 0 — Setup
 
 ```bash
+rm -rf .dev-loop
 mkdir -p .dev-loop
 ```
 
@@ -44,6 +47,44 @@ Verify `gh auth status` succeeds. If not, stop immediately and tell the user.
 Run `gh issue view <issue-number> --json title,body,labels,assignees` to get the full issue details.
 Parse the issue number from `$ARGUMENTS` (ignore any flags after it for now).
 Print the issue title and a brief summary so the user can confirm before proceeding.
+
+### Stage 1.5 — Issue Triage
+
+Analyze the issue body to determine if it is well-specified enough to architect from. An issue is **underspecified** if **2 or more** of the following are true:
+
+1. **No acceptance criteria** — no bullets, checkboxes, or "should" statements describing the done-state
+2. **Ambiguous scope** — uses words like "improve", "better", "rework" without specifying what concretely changes
+3. **Missing trigger/input** — doesn't say what triggers the behavior (webhook, cron, user action, API call, etc.)
+4. **No error/edge case consideration** — doesn't mention what happens on failure or with bad input
+5. **Single sentence body** — the entire body (excluding template boilerplate) is under 50 words
+
+**Print your triage assessment:** list which criteria matched and your verdict (`well-specified` or `underspecified`).
+
+**If well-specified** → proceed to Stage 2.
+
+**If underspecified** → enter the brainstorming flow below, then proceed to Stage 2.
+
+#### Brainstorming Flow (underspecified issues only)
+
+The goal is to refine the issue into an actionable spec through a short interactive session with the user. This is NOT a full design phase — Stages 3–4 handle architecture. This is about clarifying **what** needs to happen so the architect can focus on **how**.
+
+1. **Explore the codebase first.** Before asking the user anything, search for files, types, and patterns related to the issue topic. Understand what exists so your questions are informed and specific — don't ask things the code already answers.
+2. **Summarize what's clear** — tell the user what you understood from the issue and codebase exploration.
+3. **Ask clarifying questions one at a time** using `AskUserQuestion`. Focus on the gaps identified by the triage criteria. Prefer multiple-choice questions when possible. Ask a maximum of 5 questions — stop sooner if the spec is clear enough.
+4. **Propose a refined spec** — present a rewritten issue body to the user with:
+   - A clear summary of the change
+   - Acceptance criteria as a checkbox list
+   - Scope boundaries (what's in, what's explicitly out)
+   - Error/edge cases considered
+5. **Get user approval** — ask the user to confirm or adjust the spec.
+6. **Update the GitHub issue:**
+   ```bash
+   # Write the approved spec to a temp file to avoid shell escaping issues
+   gh issue edit <issue-number> --body-file .dev-loop/refined-spec.md
+   ```
+7. **Save locally** — the refined spec is already at `.dev-loop/refined-spec.md` from step 6.
+
+After the brainstorming flow completes, **re-read the updated issue** (the refined body is now the canonical issue body for all subsequent stages).
 
 ### Stage 2 — Create Branch
 
@@ -60,6 +101,7 @@ Keep the branch name under 60 characters. Use lowercase, hyphens only.
 
 Pass it:
 - The full issue title and body
+- Instruction to read `CLAUDE.md` for project constraints, conventions, and settled architectural decisions
 - Instruction to follow its system prompt output format exactly
 
 Write the agent's plan output to `.dev-loop/plan.md`. This file is the canonical plan for all subsequent stages.
@@ -71,6 +113,7 @@ Write the agent's plan output to `.dev-loop/plan.md`. This file is the canonical
 Pass it:
 - The full issue title and body
 - Instruction to read the plan from `.dev-loop/plan.md`
+- Instruction to read `CLAUDE.md` for project constraints — the reviewer must verify the plan doesn't violate any settled architectural decisions
 - Instruction to verify claims against the actual codebase
 
 **Decision point:**
@@ -101,13 +144,21 @@ After the developer finishes, append its implementation summary to `.dev-loop/re
 
 Before entering code review, verify that the implementation compiles and tests pass. This avoids burning a review cycle on broken code.
 
+**Backend (always run):**
 ```bash
 go build ./...
 go test ./...
 ```
 
-- **If both pass** → proceed to Stage 6.
-- **If either fails** → send the failure output back to the `developer` agent to fix, then re-run. This does NOT count as a review cycle.
+**Frontend (run if any files under `frontend/` were modified):**
+```bash
+cd frontend && npm run build && npx vitest run
+```
+
+Check `git diff --name-only` to determine if frontend files were touched. If only backend files changed, skip the frontend checks.
+
+- **If all checks pass** → proceed to Stage 6.
+- **If any check fails** → send the failure output back to the `developer` agent to fix, then re-run. This does NOT count as a review cycle.
 - **Maximum 2 fix attempts.** If it still fails after 2 attempts, proceed to Stage 6 anyway and let the reviewer see the full picture.
 
 ### Stage 6 — Code Review
@@ -123,10 +174,38 @@ Pass it:
 - Instruction to systematically verify each planned change was implemented (plan compliance check)
 - Emphasis that **readability and maintainability are the highest priority** — code must be understandable by someone who has never seen the codebase
 
+**Cycle tracking:** Before the first review, write `review_cycle=1` to `.dev-loop/cycle-count`. Increment this value each time you loop back to Stage 5 from a CHANGES_REQUESTED verdict.
+
 **Decision point:**
-- If verdict is **APPROVE** → proceed to Stage 7
-- If verdict is **CHANGES_REQUESTED** → append the reviewer's feedback to `.dev-loop/review-feedback.md` under a `## Cycle N — Review Feedback` heading, then go back to Stage 5
-- **Maximum 3 review cycles.** If cycle 3 still gets CHANGES_REQUESTED, log a warning and proceed to Stage 7 anyway.
+- If verdict is **APPROVE** → proceed to Stage 6.5
+- If verdict is **CHANGES_REQUESTED** → append the reviewer's feedback to `.dev-loop/review-feedback.md` under a `## Cycle N — Review Feedback` heading (where N is the current cycle number from `.dev-loop/cycle-count`), increment the cycle count, then go back to Stage 5
+- **Maximum 3 review cycles.** If cycle 3 still gets CHANGES_REQUESTED, log a warning and proceed to Stage 6.5 anyway.
+
+### Stage 6.5 — CLAUDE.md Freshness Check
+
+After the implementation is approved, check whether the changes require updates to `CLAUDE.md` or `frontend/CLAUDE.md`. Review the implementation summary and `git diff --name-only` against these categories:
+
+**Check `CLAUDE.md` if any of these changed:**
+- New or renamed packages under `internal/` → update Key packages section
+- New environment variables in `internal/config/config.go` → update Environment variables table
+- New API routes in `internal/api/routes.go` or `main.go` → update Key API surface section
+- New trigger types, run states, step types, or roles in `internal/model/model.go` → update Core domain concepts
+- New settled architectural decisions (new ADR referenced in commit) → update Settled architectural decisions
+
+**Check `frontend/CLAUDE.md` if any of these changed:**
+- New pages in `frontend/src/pages/` → update Pages section
+- New routes in router config → update Route structure
+- New hooks in `frontend/src/hooks/` → update Hooks section
+- New shared components → update Components section
+- New query keys in `queryKeys.ts` → update Query key families
+- New API endpoints consumed → update API surface section
+
+**For each file, read the current contents and compare against what the implementation changed.** If updates are needed:
+1. Make the edits to keep the documentation accurate
+2. Include the updated CLAUDE.md file(s) in the PR commit
+3. Note in the PR body that documentation was updated
+
+If no updates are needed, print: `Stage 6.5: CLAUDE.md files are current — no updates needed.`
 
 ### Stage 7 — Create PR
 
@@ -156,6 +235,7 @@ The PR body should include:
 - A brief summary of what was implemented
 - The architecture plan in a `<details>` block
 - How many review cycles were needed
+- Whether CLAUDE.md was updated
 - A note that this was generated by the agentic dev loop
 
 ### Stage 8 — CI Validation
@@ -163,7 +243,7 @@ The PR body should include:
 After the PR is created, wait for CI checks to complete and fix any failures.
 
 1. **Poll for CI status** using `gh pr checks <pr-number>`. Check every 30 seconds, timeout after 10 minutes. Do not use `--watch` as it blocks without a timeout.
-2. **If all checks pass** → done. Print final success summary.
+2. **If all checks pass** → done. Proceed to Stage 9.
 3. **If any check fails:**
    a. Fetch the failed job logs: `gh run view <run-id> --log-failed`
    b. Analyze the failure output to identify which tests failed and why.
@@ -174,6 +254,16 @@ After the PR is created, wait for CI checks to complete and fix any failures.
       - Instruction to fix the root cause (not skip/disable tests)
    d. Stage specific files, commit the fix, push, and poll CI again.
    e. **Maximum 3 fix cycles.** If cycle 3 still fails, stop and tell the user which checks are still failing so they can intervene.
+
+### Stage 9 — Cleanup
+
+Remove the pipeline working directory:
+
+```bash
+rm -rf .dev-loop
+```
+
+Print a final summary: issue number, PR URL, review cycles used, and whether brainstorming was triggered.
 
 ## Rules
 
