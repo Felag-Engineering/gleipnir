@@ -2,6 +2,13 @@ import type { Preview } from '@storybook/react-vite'
 import '../src/tokens.css'
 
 const preview: Preview = {
+  async beforeAll() {
+    // Start the MSW browser worker before any story renders. Dynamic import
+    // ensures the MSW browser module is only loaded in Storybook context and
+    // never bundled into the production Vite build.
+    const { worker } = await import('../src/mocks/browser')
+    await worker.start({ onUnhandledRequest: 'bypass' })
+  },
   globalTypes: {
     theme: {
       description: 'Theme',
