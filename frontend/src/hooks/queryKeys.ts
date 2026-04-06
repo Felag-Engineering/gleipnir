@@ -38,4 +38,10 @@ export const queryKeys = {
   sessions: {
     all: ['sessions'] as const,
   },
+  admin: {
+    providers: ['admin', 'providers'] as const,
+    models: ['admin', 'models'] as const,
+    settings: ['admin', 'settings'] as const,
+    systemInfo: ['admin', 'system-info'] as const,
+  },
 } as const

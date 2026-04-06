@@ -198,3 +198,50 @@ func TestProviderRegistry_ValidateModelName_UnknownProvider(t *testing.T) {
 		t.Errorf("error %q does not contain provider name %q", err.Error(), "nonexistent")
 	}
 }
+
+func TestRegistryUnregister(t *testing.T) {
+	reg := NewProviderRegistry()
+	reg.Register("anthropic", &stubClient{})
+
+	if _, err := reg.Get("anthropic"); err != nil {
+		t.Fatalf("expected anthropic to be registered: %v", err)
+	}
+
+	reg.Unregister("anthropic")
+
+	if _, err := reg.Get("anthropic"); err == nil {
+		t.Fatal("expected error after unregister")
+	}
+}
+
+func TestRegistryUnregisterNonExistent(t *testing.T) {
+	reg := NewProviderRegistry()
+	reg.Unregister("nonexistent") // should not panic
+}
+
+func TestRegistryProviders(t *testing.T) {
+	reg := NewProviderRegistry()
+	reg.Register("anthropic", &stubClient{})
+	reg.Register("google", &stubClient{})
+
+	names := reg.Providers()
+	if len(names) != 2 {
+		t.Fatalf("expected 2 providers, got %d", len(names))
+	}
+
+	found := map[string]bool{}
+	for _, n := range names {
+		found[n] = true
+	}
+	if !found["anthropic"] || !found["google"] {
+		t.Fatalf("expected anthropic and google, got %v", names)
+	}
+}
+
+func TestRegistryProvidersEmpty(t *testing.T) {
+	reg := NewProviderRegistry()
+	names := reg.Providers()
+	if len(names) != 0 {
+		t.Fatalf("expected 0 providers, got %d", len(names))
+	}
+}

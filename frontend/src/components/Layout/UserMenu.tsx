@@ -1,16 +1,15 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Settings, Shield, LogOut } from 'lucide-react'
+import { Settings, LogOut } from 'lucide-react'
 import { logout } from '@/api/auth'
 import styles from './UserMenu.module.css'
 
 interface UserMenuProps {
   open: boolean
   onClose: () => void
-  isAdmin: boolean
 }
 
-export function UserMenu({ open, onClose, isAdmin }: UserMenuProps) {
+export function UserMenu({ open, onClose }: UserMenuProps) {
   const navigate = useNavigate()
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -55,16 +54,6 @@ export function UserMenu({ open, onClose, isAdmin }: UserMenuProps) {
         <Settings size={16} strokeWidth={1.5} />
         <span>Settings</span>
       </button>
-      {isAdmin && (
-        <button
-          className={styles.menuItem}
-          role="menuitem"
-          onClick={() => { onClose(); navigate('/settings/system') }}
-        >
-          <Shield size={16} strokeWidth={1.5} />
-          <span>System Settings</span>
-        </button>
-      )}
       <div className={styles.separator} />
       <button
         className={`${styles.menuItem} ${styles.menuItemDanger}`}

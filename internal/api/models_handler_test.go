@@ -54,7 +54,7 @@ func (s *stubModelLister) InvalidateAllModelCaches() {
 
 func newModelsRouter(lister api.ModelLister) http.Handler {
 	r := chi.NewRouter()
-	h := api.NewModelsHandler(lister)
+	h := api.NewModelsHandler(lister, nil)
 	r.Get("/models", h.List)
 	r.Post("/models/refresh", h.Refresh)
 	return r

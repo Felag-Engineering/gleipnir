@@ -29,8 +29,7 @@ type Config struct {
 	ApprovalScanInterval   time.Duration
 	DefaultFeedbackTimeout time.Duration
 	FeedbackScanInterval   time.Duration
-	DefaultProvider        string
-	DefaultModel           string
+	EncryptionKey          string
 }
 
 // Load reads configuration from environment variables and applies defaults
@@ -47,8 +46,7 @@ func Load() Config {
 		ApprovalScanInterval:   envDuration("GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30*time.Second),
 		DefaultFeedbackTimeout: envDuration("GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", 30*time.Minute),
 		FeedbackScanInterval:   envDuration("GLEIPNIR_FEEDBACK_SCAN_INTERVAL", 30*time.Second),
-		DefaultProvider:        envOrDefault("GLEIPNIR_DEFAULT_PROVIDER", "anthropic"),
-		DefaultModel:           envOrDefault("GLEIPNIR_DEFAULT_MODEL", "claude-sonnet-4-20250514"),
+		EncryptionKey:          os.Getenv("GLEIPNIR_ENCRYPTION_KEY"),
 	}
 }
 

@@ -30,6 +30,9 @@ function SidebarStory({ initialPath = '/dashboard' }: { initialPath?: string }) 
             <Route path="/agents/new" element={<PageContent title="New Agent" />} />
             <Route path="/tools" element={<PageContent title="Tools" />} />
             <Route path="/settings" element={<PageContent title="Settings" />} />
+            <Route path="/admin/users" element={<PageContent title="Users" />} />
+            <Route path="/admin/models" element={<PageContent title="Models" />} />
+            <Route path="/admin/system" element={<PageContent title="System" />} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -142,6 +145,68 @@ export const Reconnecting: Story = {
     const { vi } = await import('vitest')
     const mod = await import('../../hooks/useSSE')
     vi.spyOn(mod, 'useSSE').mockReturnValue({ connectionState: 'reconnecting' })
+    return () => vi.restoreAllMocks()
+  },
+}
+
+export const AdminUser: Story = {
+  render: () => <SidebarStory initialPath="/dashboard" />,
+  beforeEach: async () => {
+    const { vi } = await import('vitest')
+    const mod = await import('../../hooks/queries/users')
+    vi.spyOn(mod, 'useCurrentUser').mockReturnValue({
+      data: { id: '1', username: 'admin', roles: ['admin'] },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof mod.useCurrentUser>)
+    return () => vi.restoreAllMocks()
+  },
+}
+
+export const AdminUserCollapsed: Story = {
+  render: () => <SidebarStory initialPath="/dashboard" />,
+  loaders: [
+    async () => {
+      localStorage.setItem('gleipnir-sidebar-collapsed', 'true')
+      return {}
+    },
+  ],
+  beforeEach: async () => {
+    const { vi } = await import('vitest')
+    const mod = await import('../../hooks/queries/users')
+    vi.spyOn(mod, 'useCurrentUser').mockReturnValue({
+      data: { id: '1', username: 'admin', roles: ['admin'] },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof mod.useCurrentUser>)
+    return () => vi.restoreAllMocks()
+  },
+}
+
+export const ActiveAdminUsers: Story = {
+  render: () => <SidebarStory initialPath="/admin/users" />,
+  beforeEach: async () => {
+    const { vi } = await import('vitest')
+    const mod = await import('../../hooks/queries/users')
+    vi.spyOn(mod, 'useCurrentUser').mockReturnValue({
+      data: { id: '1', username: 'admin', roles: ['admin'] },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof mod.useCurrentUser>)
+    return () => vi.restoreAllMocks()
+  },
+}
+
+export const ActiveAdminSystem: Story = {
+  render: () => <SidebarStory initialPath="/admin/system" />,
+  beforeEach: async () => {
+    const { vi } = await import('vitest')
+    const mod = await import('../../hooks/queries/users')
+    vi.spyOn(mod, 'useCurrentUser').mockReturnValue({
+      data: { id: '1', username: 'admin', roles: ['admin'] },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof mod.useCurrentUser>)
     return () => vi.restoreAllMocks()
   },
 }

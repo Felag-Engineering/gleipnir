@@ -326,3 +326,19 @@ CREATE TABLE poll_states (
 -- ---------------------------------------------------------------------------
 
 INSERT INTO schema_migrations(version, applied_at) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+
+-- System-wide key-value settings (API keys encrypted, default model, run limits).
+CREATE TABLE system_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+-- Per-model enablement. No row = enabled by default.
+CREATE TABLE model_settings (
+    provider    TEXT    NOT NULL,
+    model_name  TEXT    NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    updated_at  TEXT    NOT NULL,
+    PRIMARY KEY (provider, model_name)
+);

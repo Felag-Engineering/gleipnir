@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rapp992/gleipnir/frontend"
+	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/agent"
 	claudecode "github.com/rapp992/gleipnir/internal/agent/claudecode"
 	"github.com/rapp992/gleipnir/internal/api"
@@ -31,6 +32,12 @@ import (
 	"github.com/rapp992/gleipnir/internal/sse"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
+
+// version is set via ldflags at build time.
+var version = "dev"
+
+// knownProviders is the list of LLM providers the system supports.
+var knownProviders = []string{"anthropic", "google"}
 
 const (
 	// drainTimeout is how long we wait for in-flight agent runs to finish
@@ -54,6 +61,8 @@ func main() {
 }
 
 func run(cfg config.Config) error {
+	startTime := time.Now()
+
 	// Root context cancelled on shutdown so background components (Scheduler) can stop.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -101,11 +110,72 @@ func run(cfg config.Config) error {
 
 	registry := mcp.NewRegistry(store.Queries(), mcp.WithMCPTimeout(cfg.MCPTimeout))
 	runManager := trigger.NewRunManager()
-	providerRegistry, err := buildProviderRegistry(ctx,
-		os.Getenv("ANTHROPIC_API_KEY"), os.Getenv("GOOGLE_API_KEY"),
-		newAnthropicProvider, newGoogleProvider)
-	if err != nil {
-		return err
+	providerRegistry := llm.NewProviderRegistry()
+
+	// Parse the encryption key for admin API key storage.
+	var encryptionKey []byte
+	if raw := cfg.EncryptionKey; raw != "" {
+		var err error
+		encryptionKey, err = admin.ParseEncryptionKey(raw)
+		if err != nil {
+			return fmt.Errorf("parse GLEIPNIR_ENCRYPTION_KEY: %w", err)
+		}
+	}
+
+	if encryptionKey == nil {
+		slog.Warn("GLEIPNIR_ENCRYPTION_KEY not set — admin API key management will be unavailable")
+	}
+
+	// configureProvider creates an LLM client and registers it in the provider
+	// registry. Called both at bootstrap (from DB) and when an admin saves a key.
+	configureProvider := func(ctx context.Context, provider string, apiKey string) error {
+		var client llm.LLMClient
+		var err error
+		switch provider {
+		case "anthropic":
+			client = anthropicllm.NewClient(apiKey)
+		case "google":
+			client, err = googlellm.NewClient(ctx, apiKey)
+			if err != nil {
+				return fmt.Errorf("create google client: %w", err)
+			}
+		default:
+			return fmt.Errorf("unknown provider %q", provider)
+		}
+		providerRegistry.Register(provider, client)
+		return nil
+	}
+
+	removeProvider := func(provider string) {
+		providerRegistry.Unregister(provider)
+	}
+
+	adminQuerier := admin.NewQuerierAdapter(store.Queries())
+	adminHandler := admin.NewHandler(adminQuerier, encryptionKey, knownProviders, configureProvider, removeProvider)
+
+	// Bootstrap providers from DB-stored encrypted API keys.
+	for _, provName := range knownProviders {
+		row, err := store.Queries().GetSystemSetting(ctx, provName+"_api_key")
+		if err != nil {
+			continue
+		}
+		apiKey, err := admin.Decrypt(encryptionKey, row.Value)
+		if err != nil {
+			slog.Error("failed to decrypt stored API key", "provider", provName, "err", err)
+			continue
+		}
+		if err := configureProvider(ctx, provName, apiKey); err != nil {
+			slog.Error("failed to bootstrap provider from DB", "provider", provName, "err", err)
+		} else {
+			slog.Info("bootstrapped provider from stored API key", "provider", provName)
+		}
+	}
+
+	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		slog.Warn("ANTHROPIC_API_KEY env var is set but no longer used — configure API keys through the admin UI at /admin/models")
+	}
+	if key := os.Getenv("GOOGLE_API_KEY"); key != "" {
+		slog.Warn("GOOGLE_API_KEY env var is set but no longer used — configure API keys through the admin UI at /admin/models")
 	}
 
 	// claudeCodeFactory bridges agent.Config to claudecode.Config so the trigger
@@ -179,10 +249,39 @@ func run(cfg config.Config) error {
 		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleApprover)).Post("/api/v1/runs/{runID}/approval", runsHandler.SubmitApproval)
 		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleApprover, model.RoleOperator)).Post("/api/v1/runs/{runID}/feedback", runsHandler.SubmitFeedback)
 
-		policySvc := policy.NewService(store, nil, providerRegistry, providerRegistry, cfg.DefaultProvider, cfg.DefaultModel)
+		policySvc := policy.NewService(store, nil, providerRegistry, providerRegistry, adminHandler)
 
 		// Mount /api/v1/policies, /api/v1/mcp, /api/v1/stats, and /api/v1/health route groups.
-		r.Mount("/api/v1", api.NewRouter(store, policySvc, registry, providerRegistry))
+		r.Mount("/api/v1", api.NewRouter(store, policySvc, registry, providerRegistry, &modelFilterAdapter{q: store.Queries()}))
+
+		r.Route("/api/v1/admin", func(r chi.Router) {
+			r.Use(auth.RequireRole(model.RoleAdmin))
+			r.Use(api.BodySizeLimit(api.MaxRequestBodySize))
+			r.Get("/providers", adminHandler.ListProviders)
+			r.Put("/providers/{name}/key", adminHandler.SetProviderKey)
+			r.Delete("/providers/{name}/key", adminHandler.DeleteProviderKey)
+			r.Get("/settings", adminHandler.GetSettings)
+			r.Put("/settings", adminHandler.UpdateSettings)
+			r.Get("/models", adminHandler.ListModelsAdmin)
+			r.Put("/models/{id}/enabled", adminHandler.SetModelEnabled)
+			r.Get("/system-info", admin.GetSystemInfo(admin.SystemInfoDeps{
+				Version:   version,
+				StartTime: startTime,
+				DBPath:    cfg.DBPath,
+				CountMCPServers: func(ctx context.Context) (int, error) {
+					n, err := store.Queries().CountMCPServers(ctx)
+					return int(n), err
+				},
+				CountPolicies: func(ctx context.Context) (int, error) {
+					n, err := store.Queries().CountPolicies(ctx)
+					return int(n), err
+				},
+				CountUsers: func(ctx context.Context) (int, error) {
+					n, err := store.Queries().CountUsers(ctx)
+					return int(n), err
+				},
+			}))
+		})
 	})
 
 	// Serve the embedded React SPA for all non-API routes.
@@ -241,50 +340,19 @@ func run(cfg config.Config) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-// providerFactory creates an LLMClient from an API key.
-// The context parameter accommodates providers (like Google) that require it
-// during client construction; Anthropic ignores it.
-type providerFactory func(ctx context.Context, apiKey string) (llm.LLMClient, error)
-
-// buildProviderRegistry creates and populates the provider registry based on
-// which API keys are present. Returns an error if no providers are available.
-// Factory functions allow tests to inject stubs without real API calls.
-func buildProviderRegistry(ctx context.Context, anthropicKey, googleKey string, newAnthropic, newGoogle providerFactory) (*llm.ProviderRegistry, error) {
-	reg := llm.NewProviderRegistry()
-	count := 0
-
-	if anthropicKey != "" {
-		client, err := newAnthropic(ctx, anthropicKey)
-		if err != nil {
-			return nil, fmt.Errorf("create anthropic LLM client: %w", err)
-		}
-		reg.Register("anthropic", client)
-		count++
-	} else {
-		slog.Warn("ANTHROPIC_API_KEY not set, Anthropic provider unavailable")
-	}
-
-	if googleKey != "" {
-		client, err := newGoogle(ctx, googleKey)
-		if err != nil {
-			return nil, fmt.Errorf("create google LLM client: %w", err)
-		}
-		reg.Register("google", client)
-		count++
-	} else {
-		slog.Warn("GOOGLE_API_KEY not set, Google provider unavailable")
-	}
-
-	if count == 0 {
-		return nil, fmt.Errorf("no LLM providers available: set ANTHROPIC_API_KEY and/or GOOGLE_API_KEY")
-	}
-	return reg, nil
+// modelFilterAdapter bridges db.Queries to the api.ModelFilter interface.
+type modelFilterAdapter struct {
+	q *db.Queries
 }
 
-func newAnthropicProvider(_ context.Context, apiKey string) (llm.LLMClient, error) {
-	return anthropicllm.NewClient(apiKey), nil
-}
-
-func newGoogleProvider(ctx context.Context, apiKey string) (llm.LLMClient, error) {
-	return googlellm.NewClient(ctx, apiKey)
+func (a *modelFilterAdapter) ListDisabledModels(ctx context.Context) ([]api.DisabledModel, error) {
+	rows, err := a.q.ListDisabledModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]api.DisabledModel, len(rows))
+	for i, r := range rows {
+		result[i] = api.DisabledModel{Provider: r.Provider, ModelName: r.ModelName}
+	}
+	return result, nil
 }

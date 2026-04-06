@@ -19,8 +19,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
 		"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT",
 		"GLEIPNIR_FEEDBACK_SCAN_INTERVAL",
-		"GLEIPNIR_DEFAULT_PROVIDER",
-		"GLEIPNIR_DEFAULT_MODEL",
+		"GLEIPNIR_ENCRYPTION_KEY",
 	} {
 		t.Setenv(key, "")
 	}
@@ -57,11 +56,8 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.FeedbackScanInterval != 30*time.Second {
 		t.Errorf("FeedbackScanInterval: got %v, want 30s", cfg.FeedbackScanInterval)
 	}
-	if cfg.DefaultProvider != "anthropic" {
-		t.Errorf("DefaultProvider: got %q, want anthropic", cfg.DefaultProvider)
-	}
-	if cfg.DefaultModel != "claude-sonnet-4-20250514" {
-		t.Errorf("DefaultModel: got %q, want claude-sonnet-4-20250514", cfg.DefaultModel)
+	if cfg.EncryptionKey != "" {
+		t.Errorf("EncryptionKey: got %q, want empty", cfg.EncryptionKey)
 	}
 }
 
@@ -153,20 +149,11 @@ func TestLoad_Overrides(t *testing.T) {
 			},
 		},
 		{
-			name: "default provider",
-			env:  map[string]string{"GLEIPNIR_DEFAULT_PROVIDER": "google"},
+			name: "encryption key",
+			env:  map[string]string{"GLEIPNIR_ENCRYPTION_KEY": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
 			check: func(t *testing.T, cfg Config) {
-				if cfg.DefaultProvider != "google" {
-					t.Errorf("got %q, want google", cfg.DefaultProvider)
-				}
-			},
-		},
-		{
-			name: "default model",
-			env:  map[string]string{"GLEIPNIR_DEFAULT_MODEL": "gemini-2.0-flash"},
-			check: func(t *testing.T, cfg Config) {
-				if cfg.DefaultModel != "gemini-2.0-flash" {
-					t.Errorf("got %q, want gemini-2.0-flash", cfg.DefaultModel)
+				if cfg.EncryptionKey != "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+					t.Errorf("got %q, want hex key", cfg.EncryptionKey)
 				}
 			},
 		},
@@ -181,7 +168,7 @@ func TestLoad_Overrides(t *testing.T) {
 				"GLEIPNIR_HTTP_WRITE_TIMEOUT", "GLEIPNIR_HTTP_IDLE_TIMEOUT",
 				"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
 				"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", "GLEIPNIR_FEEDBACK_SCAN_INTERVAL",
-				"GLEIPNIR_DEFAULT_PROVIDER", "GLEIPNIR_DEFAULT_MODEL",
+				"GLEIPNIR_ENCRYPTION_KEY",
 			} {
 				t.Setenv(key, "")
 			}

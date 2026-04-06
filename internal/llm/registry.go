@@ -27,6 +27,24 @@ func (r *ProviderRegistry) Register(name string, client LLMClient) {
 	r.providers[name] = client
 }
 
+// Unregister removes the client registered under name. No-op if not present.
+func (r *ProviderRegistry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.providers, name)
+}
+
+// Providers returns the names of all registered providers.
+func (r *ProviderRegistry) Providers() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, 0, len(r.providers))
+	for name := range r.providers {
+		names = append(names, name)
+	}
+	return names
+}
+
 // Get returns the client registered under name.
 // Returns an error containing the provider name if no client is registered.
 func (r *ProviderRegistry) Get(name string) (LLMClient, error) {
@@ -89,7 +107,11 @@ func (r *ProviderRegistry) ListAllModels(ctx context.Context) (map[string][]Mode
 
 	result := make(map[string][]ModelInfo, len(names))
 	for _, name := range names {
-		models, err := r.providers[name].ListModels(ctx)
+		client, err := r.Get(name)
+		if err != nil {
+			continue // provider was unregistered between snapshot and iteration
+		}
+		models, err := client.ListModels(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
 		}

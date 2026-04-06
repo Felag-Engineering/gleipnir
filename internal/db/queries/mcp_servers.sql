@@ -19,3 +19,6 @@ UPDATE mcp_servers SET has_drift = :has_drift WHERE id = :id;
 
 -- name: DeleteMCPServer :exec
 DELETE FROM mcp_servers WHERE id = :id;
+
+-- name: CountMCPServers :one
+SELECT COUNT(*) FROM mcp_servers;

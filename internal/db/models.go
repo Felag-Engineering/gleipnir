@@ -48,6 +48,13 @@ type McpTool struct {
 	CreatedAt   string `json:"created_at"`
 }
 
+type ModelSetting struct {
+	Provider  string `json:"provider"`
+	ModelName string `json:"model_name"`
+	Enabled   int64  `json:"enabled"`
+	UpdatedAt string `json:"updated_at"`
+}
+
 type Policy struct {
 	ID          string  `json:"id"`
 	Name        string  `json:"name"`
@@ -107,6 +114,12 @@ type Session struct {
 	ExpiresAt string `json:"expires_at"`
 	UserAgent string `json:"user_agent"`
 	IpAddress string `json:"ip_address"`
+}
+
+type SystemSetting struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 type TriggerQueue struct {

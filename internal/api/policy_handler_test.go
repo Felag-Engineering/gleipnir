@@ -29,7 +29,7 @@ func newPolicyHandlerStore(t *testing.T) *db.Store {
 // NewRouter mounts the routes in production.
 func newPolicyRouter(store *db.Store) http.Handler {
 	r := chi.NewRouter()
-	svc := policy.NewService(store, nil, nil, nil, model.DefaultProvider, model.DefaultModelName)
+	svc := policy.NewService(store, nil, nil, nil, nil)
 	h := api.NewPolicyHandler(store, svc)
 	r.Get("/policies", h.List)
 	r.Post("/policies", h.Create)
@@ -43,7 +43,7 @@ func newPolicyRouter(store *db.Store) http.Handler {
 // the service so that tool-reference warnings can be exercised in tests.
 func newPolicyRouterWithLookup(store *db.Store, lookup policy.ToolLookup) http.Handler {
 	r := chi.NewRouter()
-	svc := policy.NewService(store, lookup, nil, nil, model.DefaultProvider, model.DefaultModelName)
+	svc := policy.NewService(store, lookup, nil, nil, nil)
 	h := api.NewPolicyHandler(store, svc)
 	r.Get("/policies", h.List)
 	r.Post("/policies", h.Create)

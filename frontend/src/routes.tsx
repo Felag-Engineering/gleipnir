@@ -10,7 +10,8 @@ import RunsPage from './pages/RunsPage'
 import MCPPage from './pages/MCPPage'
 import UsersPage from './pages/UsersPage'
 import SettingsPage from './pages/SettingsPage'
-import SystemSettingsPage from './pages/SystemSettingsPage'
+import AdminModelsPage from './pages/AdminModelsPage'
+import AdminSystemPage from './pages/AdminSystemPage'
 import NotFoundPage from './pages/NotFoundPage'
 import { RouteErrorFallback } from './components/ErrorBoundary'
 
@@ -37,9 +38,12 @@ const router = createBrowserRouter([
       { path: 'runs/:id', element: <RunDetailPage />, errorElement: <RouteErrorFallback /> },
       { path: 'tools', element: <MCPPage />, errorElement: <RouteErrorFallback /> },
       { path: 'mcp', element: <Navigate to="/tools" replace /> },
-      { path: 'users', element: <UsersPage />, errorElement: <RouteErrorFallback /> },
+      { path: 'users', element: <Navigate to="/admin/users" replace /> },
       { path: 'settings', element: <SettingsPage />, errorElement: <RouteErrorFallback /> },
-      { path: 'settings/system', element: <SystemSettingsPage />, errorElement: <RouteErrorFallback /> },
+      { path: 'settings/system', element: <Navigate to="/admin/system" replace /> },
+      { path: 'admin/users', element: <UsersPage />, errorElement: <RouteErrorFallback /> },
+      { path: 'admin/models', element: <AdminModelsPage />, errorElement: <RouteErrorFallback /> },
+      { path: 'admin/system', element: <AdminSystemPage />, errorElement: <RouteErrorFallback /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

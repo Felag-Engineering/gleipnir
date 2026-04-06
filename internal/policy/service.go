@@ -33,6 +33,13 @@ type OptionsValidator interface {
 	ValidateProviderOptions(provider string, options map[string]any) error
 }
 
+// SettingsReader reads the system-wide default provider and model from the
+// admin settings store. The admin.Handler satisfies this interface via its
+// GetSystemDefault method.
+type SettingsReader interface {
+	GetSystemDefault(ctx context.Context) (provider, model string, err error)
+}
+
 // SaveResult holds the outcome of saving a policy, including any non-blocking
 // warnings (e.g. unresolved tool references).
 type SaveResult struct {
@@ -46,31 +53,30 @@ type Service struct {
 	lookup           ToolLookup       // nil if MCP registry is unavailable
 	modelValidator   ModelValidator   // nil skips model name validation
 	optionsValidator OptionsValidator // nil skips provider options validation
-	defaultProvider  string
-	defaultModel     string
+	settings         SettingsReader   // nil falls back to compiled defaults
 }
 
 // NewService returns a policy Service. lookup may be nil if MCP registry
 // checking is not yet available — tool reference warnings will be skipped.
 // modelValidator may be nil — model name validation will be skipped.
 // optionsValidator may be nil — provider options validation will be skipped.
-// defaultProvider and defaultModel are passed through to Parse() for policies
-// that omit the top-level model section.
-func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidator, optionsValidator OptionsValidator, defaultProvider, defaultModel string) *Service {
+// settings may be nil — the compiled-in defaults from model.DefaultProvider
+// and model.DefaultModelName will be used.
+func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidator, optionsValidator OptionsValidator, settings SettingsReader) *Service {
 	return &Service{
 		store:            store,
 		lookup:           lookup,
 		modelValidator:   modelValidator,
 		optionsValidator: optionsValidator,
-		defaultProvider:  defaultProvider,
-		defaultModel:     defaultModel,
+		settings:         settings,
 	}
 }
 
 // Create parses and validates the YAML, checks tool references against the
 // MCP registry (non-blocking warnings), and stores the policy.
 func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, error) {
-	parsed, err := Parse(rawYAML, s.defaultProvider, s.defaultModel)
+	provider, modelName := s.resolveDefaults(ctx)
+	parsed, err := Parse(rawYAML, provider, modelName)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +136,8 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 // Update re-parses and re-validates the YAML, checks tool references, and
 // replaces the stored YAML for the given policy ID.
 func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (*SaveResult, error) {
-	parsed, err := Parse(rawYAML, s.defaultProvider, s.defaultModel)
+	provider, modelName := s.resolveDefaults(ctx)
+	parsed, err := Parse(rawYAML, provider, modelName)
 	if err != nil {
 		return nil, err
 	}
@@ -282,6 +289,18 @@ func (s *Service) validateModel(ctx context.Context, parsed *model.ParsedPolicy)
 		parsed.Agent.ModelConfig.Provider,
 		parsed.Agent.ModelConfig.Name,
 	)
+}
+
+// resolveDefaults returns the default provider and model, preferring DB-stored
+// settings over the compiled-in constants.
+func (s *Service) resolveDefaults(ctx context.Context) (string, string) {
+	provider, modelName := model.DefaultProvider, model.DefaultModelName
+	if s.settings != nil {
+		if p, m, err := s.settings.GetSystemDefault(ctx); err == nil && p != "" {
+			provider, modelName = p, m
+		}
+	}
+	return provider, modelName
 }
 
 // checkToolRefs issues non-blocking warnings for tool references that don't

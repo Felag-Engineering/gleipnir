@@ -9,6 +9,17 @@ import (
 	"context"
 )
 
+const countMCPServers = `-- name: CountMCPServers :one
+SELECT COUNT(*) FROM mcp_servers
+`
+
+func (q *Queries) CountMCPServers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countMCPServers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createMCPServer = `-- name: CreateMCPServer :one
 INSERT INTO mcp_servers (id, name, url, created_at)
 VALUES (?1, ?2, ?3, ?4)

@@ -231,3 +231,35 @@ export interface UpdateUserRequest {
   deactivated?: boolean
   roles?: string[]
 }
+
+// --- Admin ---
+
+// Matches admin/handler.go → providerStatus (GET /api/v1/admin/providers)
+export interface ApiProviderStatus {
+  name: string
+  has_key: boolean
+  masked_key?: string
+}
+
+// Matches admin/handler.go → modelSetting (GET /api/v1/admin/models)
+export interface ApiModelSetting {
+  provider: string
+  model_name: string
+  enabled: boolean
+  updated_at: string
+}
+
+// Matches admin/handler.go → map[string]string (GET/PUT /api/v1/admin/settings)
+export interface ApiSystemSettings {
+  [key: string]: string
+}
+
+// Matches admin/handler.go → systemInfo (GET /api/v1/admin/system-info)
+export interface ApiSystemInfo {
+  version: string
+  uptime: string
+  db_size: string
+  mcp_servers: number
+  policies: number
+  users: number
+}

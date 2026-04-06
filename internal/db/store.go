@@ -158,6 +158,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate add poll trigger type: %w", err)
 	}
 
+	if err := s.migrateAddSystemAndModelSettings(ctx); err != nil {
+		return fmt.Errorf("migrate add system and model settings: %w", err)
+	}
+
 	return nil
 }
 
@@ -787,6 +791,44 @@ CREATE TABLE IF NOT EXISTS poll_states (
 	}
 
 	slog.Info("migrated tables to include poll trigger type and created poll_states table")
+	return nil
+}
+
+// migrateAddSystemAndModelSettings creates the system_settings and model_settings
+// tables on existing deployments. New deployments get both from 0001_initial.sql;
+// this migration is a no-op for them.
+func (s *Store) migrateAddSystemAndModelSettings(ctx context.Context) error {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='system_settings'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check system_settings existence: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	ddl := `
+CREATE TABLE system_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE model_settings (
+    provider    TEXT    NOT NULL,
+    model_name  TEXT    NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    updated_at  TEXT    NOT NULL,
+    PRIMARY KEY (provider, model_name)
+);`
+
+	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("create system_settings and model_settings: %w", err)
+	}
+
+	slog.Info("migrated: created system_settings and model_settings tables")
 	return nil
 }
 

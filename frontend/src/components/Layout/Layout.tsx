@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { Activity, Bot, ChevronLeft, ChevronRight, ChevronUp, History, Users, Wrench } from 'lucide-react'
+import { Activity, Bot, ChevronLeft, ChevronRight, ChevronUp, Cpu, History, Settings2, Users, Wrench } from 'lucide-react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useSSE } from '@/hooks/useSSE'
 import { useCurrentUser } from '@/hooks/queries/users'
@@ -11,11 +11,16 @@ import styles from './Layout.module.css'
 const SIDEBAR_STORAGE_KEY = 'gleipnir-sidebar-collapsed'
 
 const NAV_ITEMS = [
-  { label: 'Control Center', to: '/dashboard', Icon: Activity, requiredRole: undefined },
-  { label: 'Run History', to: '/runs', Icon: History, requiredRole: undefined },
-  { label: 'Agents', to: '/agents', Icon: Bot, requiredRole: undefined },
-  { label: 'Tools', to: '/tools', Icon: Wrench, requiredRole: undefined },
-  { label: 'Users', to: '/users', Icon: Users, requiredRole: 'admin' },
+  { label: 'Control Center', to: '/dashboard', Icon: Activity },
+  { label: 'Run History', to: '/runs', Icon: History },
+  { label: 'Agents', to: '/agents', Icon: Bot },
+  { label: 'Tools', to: '/tools', Icon: Wrench },
+]
+
+const ADMIN_NAV_ITEMS = [
+  { label: 'Users', to: '/admin/users', Icon: Users },
+  { label: 'Models', to: '/admin/models', Icon: Cpu },
+  { label: 'System', to: '/admin/system', Icon: Settings2 },
 ]
 
 export default function Layout() {
@@ -50,11 +55,13 @@ export default function Layout() {
   }
 
   function navLinkClass(to: string, statusClass?: string): string {
-    // /agents should match all nested routes like /agents/new and /agents/:id
+    // /agents matches all nested routes; admin routes match their sub-paths
     const active =
-      to === '/agents'
-        ? location.pathname.startsWith('/agents')
-        : location.pathname === to
+      to === '/agents' ? location.pathname.startsWith('/agents')
+      : to === '/admin/users' ? location.pathname.startsWith('/admin/users')
+      : to === '/admin/models' ? location.pathname.startsWith('/admin/models')
+      : to === '/admin/system' ? location.pathname.startsWith('/admin/system')
+      : location.pathname === to
     const base = active ? `${styles.navLink} ${styles.navLinkActive}` : styles.navLink
     return statusClass ? `${base} ${statusClass}` : base
   }
@@ -90,10 +97,7 @@ export default function Layout() {
         </div>
 
         <nav className={styles.nav} aria-label="Main navigation">
-          {NAV_ITEMS.filter(({ requiredRole }) => {
-            if (!requiredRole) return true
-            return currentUser?.roles.includes(requiredRole) ?? false
-          }).map(({ label, to, Icon }) => {
+          {NAV_ITEMS.map(({ label, to, Icon }) => {
             const statusClass =
               to === '/dashboard' && hasPendingApprovals ? styles.navLinkNeedsApproval
               : to === '/tools' && hasUnhealthyServers ? styles.navLinkMcpUnhealthy
@@ -115,13 +119,34 @@ export default function Layout() {
               </NavLink>
             )
           })}
+          {(currentUser?.roles?.includes('admin') ?? false) && (
+            <>
+              <div className={styles.navSectionHeader}>
+                <span className={styles.navSectionLabel}>Admin</span>
+              </div>
+              {ADMIN_NAV_ITEMS.map(({ label, to, Icon }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  className={() => navLinkClass(to)}
+                  title={collapsed ? label : undefined}
+                >
+                  <span className={styles.navIcon}>
+                    <Icon size={20} aria-hidden strokeWidth={1.5} />
+                  </span>
+                  <span className={collapsed ? `${styles.navLabel} ${styles.navLabelHidden}` : styles.navLabel}>
+                    {label}
+                  </span>
+                </NavLink>
+              ))}
+            </>
+          )}
         </nav>
 
         <div className={styles.sidebarFooterWrapper}>
           <UserMenu
             open={menuOpen}
             onClose={useCallback(() => setMenuOpen(false), [])}
-            isAdmin={currentUser?.roles?.includes('admin') ?? false}
           />
           <div
             className={collapsed ? `${styles.sidebarFooter} ${styles.sidebarFooterCollapsed}` : styles.sidebarFooter}

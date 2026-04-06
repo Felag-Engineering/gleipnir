@@ -4,6 +4,7 @@ sql:
     queries: "internal/db/queries"
     schema:
       - "internal/db/migrations/0001_initial.sql"
+      - "internal/db/migrations/0011_add_system_and_model_settings.sql"
     gen:
       go:
         package: "db"
