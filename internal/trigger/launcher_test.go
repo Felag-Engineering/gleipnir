@@ -62,9 +62,10 @@ func TestCheckConcurrency(t *testing.T) {
 			wantNil:     true,
 		},
 		{
-			name:        "replace returns ErrConcurrencyNotImplemented",
+			name:        "replace with no active runs returns nil",
+			hasActive:   false,
 			concurrency: model.ConcurrencyReplace,
-			wantErr:     trigger.ErrConcurrencyNotImplemented,
+			wantNil:     true,
 		},
 		{
 			name:        "unknown concurrency returns ErrConcurrencyUnrecognised",
@@ -100,6 +101,76 @@ func TestCheckConcurrency(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCheckConcurrency_Replace(t *testing.T) {
+	t.Run("cancels active run and returns nil", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		policyID := "cp-replace"
+		insertTestPolicy(t, store, policyID, minimalWebhookPolicy)
+		insertTestRun(t, store, "r-replace-active", policyID, model.RunStatusRunning)
+
+		manager := trigger.NewRunManager()
+		cancelCalled := false
+		manager.Register("r-replace-active", func() { cancelCalled = true }, make(chan bool), make(chan string))
+
+		// Simulate the agent goroutine acknowledging cancellation quickly.
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			manager.Deregister("r-replace-active")
+		}()
+
+		registry := mcp.NewRegistry(store.Queries())
+		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
+
+		err := launcher.CheckConcurrency(context.Background(), policyID, model.ConcurrencyReplace)
+		if err != nil {
+			t.Errorf("CheckConcurrency() = %v, want nil", err)
+		}
+		if !cancelCalled {
+			t.Error("cancel func was not called for active run")
+		}
+	})
+
+	t.Run("cancels multiple active runs and returns nil", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		policyID := "cp-replace-multi"
+		insertTestPolicy(t, store, policyID, minimalWebhookPolicy)
+
+		runIDs := []string{"r-multi-1", "r-multi-2", "r-multi-3"}
+		for _, id := range runIDs {
+			insertTestRun(t, store, id, policyID, model.RunStatusRunning)
+		}
+
+		manager := trigger.NewRunManager()
+		cancelled := make(map[string]bool)
+		for _, id := range runIDs {
+			id := id
+			manager.Register(id, func() { cancelled[id] = true }, make(chan bool), make(chan string))
+		}
+
+		// Simulate all goroutines exiting after cancellation.
+		for _, id := range runIDs {
+			id := id
+			go func() {
+				time.Sleep(20 * time.Millisecond)
+				manager.Deregister(id)
+			}()
+		}
+
+		registry := mcp.NewRegistry(store.Queries())
+		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
+
+		err := launcher.CheckConcurrency(context.Background(), policyID, model.ConcurrencyReplace)
+		if err != nil {
+			t.Errorf("CheckConcurrency() = %v, want nil", err)
+		}
+		for _, id := range runIDs {
+			if !cancelled[id] {
+				t.Errorf("cancel func was not called for run %s", id)
+			}
+		}
+	})
 }
 
 func TestLaunch_ToolResolutionFailure(t *testing.T) {

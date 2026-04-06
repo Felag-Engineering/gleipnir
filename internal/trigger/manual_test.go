@@ -168,13 +168,13 @@ func TestManualTriggerHandler(t *testing.T) {
 			wantStatus: http.StatusTooManyRequests,
 		},
 		{
-			name: "501 for replace",
+			name: "202 for replace with no active run",
 			setup: func(t *testing.T, store *db.Store) {
 				insertTestManualPolicy(t, store, "mp-replace", replaceManualPolicy)
 			},
 			policyID:   "mp-replace",
 			body:       `{"message": "test"}`,
-			wantStatus: http.StatusNotImplemented,
+			wantStatus: http.StatusAccepted,
 		},
 	}
 

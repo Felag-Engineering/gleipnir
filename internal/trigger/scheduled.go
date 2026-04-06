@@ -127,9 +127,6 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 				// directly and does not invoke pauseIfExhausted.
 				s.pauseIfExhausted(ctx, policyID, parsed)
 			}
-		case errors.Is(err, ErrConcurrencyNotImplemented):
-			slog.Warn("scheduled: concurrency mode not implemented, skipping",
-				"policy_id", policyID, "concurrency", parsed.Agent.Concurrency)
 		default:
 			slog.Error("scheduled: concurrency check failed",
 				"policy_id", policyID, "err", err)

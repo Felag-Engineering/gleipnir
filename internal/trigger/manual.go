@@ -40,7 +40,6 @@ func NewManualTriggerHandler(store *db.Store, launcher *RunLauncher) *ManualTrig
 // Responds 404 if the policy does not exist.
 // Responds 409 if the concurrency policy is skip and a run is already active.
 // Responds 429 if the trigger queue is full (concurrency: queue).
-// Responds 501 if the concurrency policy is replace (not yet implemented).
 func (h *ManualTriggerHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	policyID := chi.URLParam(r, "policyID")
 
@@ -99,8 +98,6 @@ func (h *ManualTriggerHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 			api.WriteJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 			return
-		case errors.Is(err, ErrConcurrencyNotImplemented):
-			api.WriteError(w, http.StatusNotImplemented, "concurrency policy not implemented", "")
 		case errors.Is(err, ErrConcurrencyUnrecognised):
 			api.WriteError(w, http.StatusInternalServerError, "unrecognised concurrency policy", "")
 		default:

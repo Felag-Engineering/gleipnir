@@ -53,12 +53,16 @@ func NewAgentFactory(registry *llm.ProviderRegistry, ccFactory func(cfg agent.Co
 // Sentinel errors returned by CheckConcurrency so callers can map them to HTTP
 // status codes or log appropriately without inspecting error message strings.
 var (
-	ErrConcurrencySkipActive     = errors.New("run already active for this policy (concurrency: skip)")
-	ErrConcurrencyQueueActive    = errors.New("run active, trigger should be queued")
-	ErrConcurrencyQueueFull      = errors.New("trigger queue is full")
-	ErrConcurrencyNotImplemented = errors.New("concurrency policy not implemented")
-	ErrConcurrencyUnrecognised   = errors.New("unrecognised concurrency policy")
+	ErrConcurrencySkipActive   = errors.New("run already active for this policy (concurrency: skip)")
+	ErrConcurrencyQueueActive  = errors.New("run active, trigger should be queued")
+	ErrConcurrencyQueueFull    = errors.New("trigger queue is full")
+	ErrConcurrencyUnrecognised = errors.New("unrecognised concurrency policy")
 )
+
+// replaceCancelTimeout is how long CheckConcurrency waits for a cancelled run's
+// goroutine to exit before proceeding with the new run. Long enough for the agent
+// loop to observe context cancellation; short enough to not stall trigger handlers.
+const replaceCancelTimeout = 5 * time.Second
 
 // LaunchParams carries all the inputs needed to create and start a run.
 type LaunchParams struct {
@@ -113,7 +117,9 @@ func NewRunLauncher(store *db.Store, registry registryResolver, manager *RunMana
 
 // CheckConcurrency enforces the given concurrency policy for the policy
 // identified by policyID. Returns nil if the run should proceed, or one of the
-// sentinel errors if it should be rejected.
+// sentinel errors (ErrConcurrencySkipActive, ErrConcurrencyQueueActive) if the
+// caller must take action (skip or enqueue). For replace mode, any active runs
+// are cancelled and their goroutines are awaited before returning nil.
 func (l *RunLauncher) CheckConcurrency(ctx context.Context, policyID string, concurrency model.ConcurrencyPolicy) error {
 	switch concurrency {
 	case model.ConcurrencySkip:
@@ -137,7 +143,23 @@ func (l *RunLauncher) CheckConcurrency(ctx context.Context, policyID string, con
 		}
 		return nil
 	case model.ConcurrencyReplace:
-		return ErrConcurrencyNotImplemented
+		active, err := l.store.ListActiveRunsByPolicy(ctx, policyID)
+		if err != nil {
+			return fmt.Errorf("list active runs for policy %q: %w", policyID, err)
+		}
+		for _, run := range active {
+			l.manager.Cancel(run.ID)
+			// Wait for the cancelled run's goroutine to exit before starting the new run.
+			// This keeps DB state consistent: the terminal status write from the outgoing
+			// run happens before CreateRun for the incoming run. If the goroutine takes
+			// longer than the deadline, we proceed anyway — don't block indefinitely
+			// (see issue #521).
+			if !l.manager.WaitForDeregistration(run.ID, replaceCancelTimeout) {
+				slog.Warn("replace: cancelled run did not exit within deadline, proceeding",
+					"policy_id", policyID, "cancelled_run_id", run.ID)
+			}
+		}
+		return nil
 	default:
 		return ErrConcurrencyUnrecognised
 	}

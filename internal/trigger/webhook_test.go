@@ -232,13 +232,13 @@ func TestWebhookHandler(t *testing.T) {
 			wantStatus: http.StatusTooManyRequests,
 		},
 		{
-			name: "501 for replace",
+			name: "202 for replace with no active run",
 			setup: func(t *testing.T, store *db.Store) {
 				insertTestPolicy(t, store, "p-replace", replacePolicy)
 			},
 			policyID:   "p-replace",
 			body:       `{"event": "test"}`,
-			wantStatus: http.StatusNotImplemented,
+			wantStatus: http.StatusAccepted,
 		},
 		{
 			name: "401 missing signature when secret configured",

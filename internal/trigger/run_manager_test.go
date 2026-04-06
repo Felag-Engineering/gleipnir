@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -270,6 +271,87 @@ func TestSendFeedback(t *testing.T) {
 		if got {
 			t.Error("SendFeedback returned true after Deregister, want false")
 		}
+	})
+}
+
+func TestWaitForDeregistration(t *testing.T) {
+	t.Run("returns true immediately when run is not active", func(t *testing.T) {
+		m := NewRunManager()
+		m.Register("run-gone", func() {}, noopApprovalCh(), noopFeedbackCh())
+		m.Deregister("run-gone")
+		waitWithTimeout(t, m, "before WaitForDeregistration")
+
+		got := m.WaitForDeregistration("run-gone", 2*time.Second)
+		if !got {
+			t.Error("WaitForDeregistration returned false for already-deregistered run, want true")
+		}
+	})
+
+	t.Run("returns true when run deregisters within timeout", func(t *testing.T) {
+		m := NewRunManager()
+		m.Register("run-delayed", func() {}, noopApprovalCh(), noopFeedbackCh())
+
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			m.Deregister("run-delayed")
+		}()
+
+		got := m.WaitForDeregistration("run-delayed", 2*time.Second)
+		if !got {
+			t.Error("WaitForDeregistration returned false before timeout, want true")
+		}
+		waitWithTimeout(t, m, "after delayed deregister")
+	})
+
+	t.Run("returns false when timeout expires before deregister", func(t *testing.T) {
+		m := NewRunManager()
+		m.Register("run-stuck", func() {}, noopApprovalCh(), noopFeedbackCh())
+
+		got := m.WaitForDeregistration("run-stuck", 50*time.Millisecond)
+		if got {
+			t.Error("WaitForDeregistration returned true on timeout, want false")
+		}
+		// Clean up so the WaitGroup drains.
+		m.Deregister("run-stuck")
+		waitWithTimeout(t, m, "after stuck-run cleanup")
+	})
+
+	t.Run("multiple waiters all notified on deregister", func(t *testing.T) {
+		m := NewRunManager()
+		m.Register("run-multi", func() {}, noopApprovalCh(), noopFeedbackCh())
+
+		results := make([]bool, 3)
+		var wg sync.WaitGroup
+		for i := range results {
+			i := i
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				results[i] = m.WaitForDeregistration("run-multi", 2*time.Second)
+			}()
+		}
+
+		// Give the goroutines time to register their waiter channels.
+		time.Sleep(10 * time.Millisecond)
+		m.Deregister("run-multi")
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("not all waiters were notified within deadline")
+		}
+
+		for i, got := range results {
+			if !got {
+				t.Errorf("waiter %d returned false, want true", i)
+			}
+		}
+		waitWithTimeout(t, m, "after multi-waiter deregister")
 	})
 }
 

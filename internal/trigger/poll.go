@@ -243,10 +243,6 @@ func (p *Poller) poll(ctx context.Context, policyID string, parsed *model.Parsed
 				slog.Info("poller: trigger queued (active run exists)", "policy_id", policyID)
 			}
 			return
-		case errors.Is(err, ErrConcurrencyNotImplemented):
-			slog.Warn("poller: concurrency mode not implemented, skipping",
-				"policy_id", policyID, "concurrency", parsed.Agent.Concurrency)
-			return
 		default:
 			slog.Error("poller: concurrency check failed", "policy_id", policyID, "err", err)
 			return

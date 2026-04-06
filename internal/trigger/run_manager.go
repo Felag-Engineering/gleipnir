@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // RunManager tracks active run goroutines so they can be cancelled on demand.
@@ -22,7 +23,10 @@ type RunManager struct {
 	// cancels without signalling the WaitGroup — the goroutine's deferred
 	// Deregister is the sole owner of wg.Done().
 	active map[string]bool
-	wg     sync.WaitGroup
+	// waiters maps run IDs to channels that are closed when the run deregisters.
+	// Used by WaitForDeregistration to avoid busy-polling.
+	waiters map[string][]chan struct{}
+	wg      sync.WaitGroup
 }
 
 func NewRunManager() *RunManager {
@@ -31,6 +35,7 @@ func NewRunManager() *RunManager {
 		approvals: make(map[string]chan bool),
 		feedbacks: make(map[string]chan string),
 		active:    make(map[string]bool),
+		waiters:   make(map[string][]chan struct{}),
 	}
 }
 
@@ -82,7 +87,40 @@ func (m *RunManager) Deregister(runID string) {
 	delete(m.approvals, runID)
 	delete(m.feedbacks, runID)
 	delete(m.active, runID)
+	// Notify any callers blocked in WaitForDeregistration.
+	for _, ch := range m.waiters[runID] {
+		close(ch)
+	}
+	delete(m.waiters, runID)
 	m.wg.Done()
+}
+
+// WaitForDeregistration blocks until the given run's goroutine calls Deregister
+// or the timeout elapses. Returns true if the run deregistered within the
+// timeout, false if the timeout expired first.
+//
+// If the run is not currently active (already deregistered or never registered),
+// it returns true immediately.
+func (m *RunManager) WaitForDeregistration(runID string, timeout time.Duration) bool {
+	m.mu.Lock()
+	if !m.active[runID] {
+		m.mu.Unlock()
+		return true
+	}
+	// Register a waiter channel before releasing the lock so Deregister cannot
+	// slip in between the lock release and the select below.
+	ch := make(chan struct{})
+	m.waiters[runID] = append(m.waiters[runID], ch)
+	// Unlock before blocking: the goroutine calling Deregister also acquires mu,
+	// so holding it here would deadlock.
+	m.mu.Unlock()
+
+	select {
+	case <-ch:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // SendApproval routes an approval decision to the run's waiting agent goroutine.
