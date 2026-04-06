@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Check } from 'lucide-react';
 import styles from './TriggerSection.module.css';
-import type { TriggerFormState, ManualTriggerState, ScheduledTriggerState } from './types';
+import type { TriggerFormState, ManualTriggerState, ScheduledTriggerState, PollTriggerState, PollCheckState } from './types';
 
 export interface TriggerSectionProps {
   value: TriggerFormState;
@@ -11,6 +11,12 @@ export interface TriggerSectionProps {
 
 const DEFAULT_MANUAL: ManualTriggerState = { type: 'manual' };
 const DEFAULT_SCHEDULED: ScheduledTriggerState = { type: 'scheduled', fireAt: [] };
+const DEFAULT_POLL: PollTriggerState = {
+  type: 'poll',
+  interval: '5m',
+  match: 'all',
+  checks: [{ tool: '', input: '', path: '', comparator: 'equals', value: '' }],
+};
 
 export function TriggerSection({ value, onChange, policyId }: TriggerSectionProps) {
   const [copied, setCopied] = useState(false);
@@ -24,6 +30,7 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
   function handleTypeSelect(type: TriggerFormState['type']) {
     if (type === 'webhook') onChange({ type: 'webhook' });
     else if (type === 'manual') onChange(DEFAULT_MANUAL);
+    else if (type === 'poll') onChange(DEFAULT_POLL);
     else onChange(DEFAULT_SCHEDULED);
   }
 
@@ -43,50 +50,14 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
       <div className={styles.heading}>Trigger</div>
 
       <div className={styles.cards}>
-        <button
-          className={value.type === 'webhook' ? `${styles.card} ${styles.cardActive}` : styles.card}
-          onClick={() => handleTypeSelect('webhook')}
-        >
-          {value.type === 'webhook' && (
-            <span className={styles.checkmark} aria-hidden="true">
-              <Check size={10} color="var(--bg-surface)" strokeWidth={2.5} aria-hidden="true" />
-            </span>
-          )}
-          <div className={value.type === 'webhook' ? `${styles.cardTitle} ${styles.cardTitleActive}` : styles.cardTitle}>
-            Webhook
-          </div>
-          <div className={styles.cardDesc}>Triggered by an incoming HTTP request</div>
-        </button>
-
-        <button
-          className={value.type === 'manual' ? `${styles.card} ${styles.cardActive}` : styles.card}
-          onClick={() => handleTypeSelect('manual')}
-        >
-          {value.type === 'manual' && (
-            <span className={styles.checkmark} aria-hidden="true">
-              <Check size={10} color="var(--bg-surface)" strokeWidth={2.5} aria-hidden="true" />
-            </span>
-          )}
-          <div className={value.type === 'manual' ? `${styles.cardTitle} ${styles.cardTitleActive}` : styles.cardTitle}>
-            Manual
-          </div>
-          <div className={styles.cardDesc}>Triggered on demand from the dashboard</div>
-        </button>
-
-        <button
-          className={value.type === 'scheduled' ? `${styles.card} ${styles.cardActive}` : styles.card}
-          onClick={() => handleTypeSelect('scheduled')}
-        >
-          {value.type === 'scheduled' && (
-            <span className={styles.checkmark} aria-hidden="true">
-              <Check size={10} color="var(--bg-surface)" strokeWidth={2.5} aria-hidden="true" />
-            </span>
-          )}
-          <div className={value.type === 'scheduled' ? `${styles.cardTitle} ${styles.cardTitleActive}` : styles.cardTitle}>
-            Scheduled
-          </div>
-          <div className={styles.cardDesc}>Fires once at each specified date and time, then pauses</div>
-        </button>
+        <TriggerCard type="webhook" selected={value.type} onSelect={handleTypeSelect}
+          title="Webhook" desc="Triggered by an incoming HTTP request" />
+        <TriggerCard type="manual" selected={value.type} onSelect={handleTypeSelect}
+          title="Manual" desc="Triggered on demand from the dashboard" />
+        <TriggerCard type="scheduled" selected={value.type} onSelect={handleTypeSelect}
+          title="Scheduled" desc="Fires once at each specified date and time, then pauses" />
+        <TriggerCard type="poll" selected={value.type} onSelect={handleTypeSelect}
+          title="Poll" desc="Periodically calls MCP tools and fires when conditions match" />
       </div>
 
       <div className={styles.config}>
@@ -97,8 +68,39 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
         {value.type === 'scheduled' && (
           <ScheduledConfig value={value} onChange={onChange} />
         )}
+        {value.type === 'poll' && (
+          <PollConfig value={value} onChange={onChange} />
+        )}
       </div>
     </div>
+  );
+}
+
+interface TriggerCardProps {
+  type: TriggerFormState['type'];
+  selected: TriggerFormState['type'];
+  onSelect: (type: TriggerFormState['type']) => void;
+  title: string;
+  desc: string;
+}
+
+function TriggerCard({ type, selected, onSelect, title, desc }: TriggerCardProps) {
+  const active = type === selected;
+  return (
+    <button
+      className={active ? `${styles.card} ${styles.cardActive}` : styles.card}
+      onClick={() => onSelect(type)}
+    >
+      {active && (
+        <span className={styles.checkmark} aria-hidden="true">
+          <Check size={10} color="var(--bg-surface)" strokeWidth={2.5} aria-hidden="true" />
+        </span>
+      )}
+      <div className={active ? `${styles.cardTitle} ${styles.cardTitleActive}` : styles.cardTitle}>
+        {title}
+      </div>
+      <div className={styles.cardDesc}>{desc}</div>
+    </button>
   );
 }
 
@@ -203,3 +205,162 @@ function ScheduledConfig({ value, onChange }: ScheduledConfigProps) {
   );
 }
 
+interface PollConfigProps {
+  value: PollTriggerState;
+  onChange: (next: TriggerFormState) => void;
+}
+
+const COMPARATOR_LABELS: Record<PollCheckState['comparator'], string> = {
+  equals: 'equals',
+  not_equals: 'not equals',
+  greater_than: 'greater than',
+  less_than: 'less than',
+  contains: 'contains',
+};
+
+function PollConfig({ value, onChange }: PollConfigProps) {
+  function updateInterval(interval: string) {
+    onChange({ ...value, interval });
+  }
+
+  function updateMatch(match: 'all' | 'any') {
+    onChange({ ...value, match });
+  }
+
+  function updateCheck(index: number, updated: PollCheckState) {
+    const next = value.checks.slice();
+    next[index] = updated;
+    onChange({ ...value, checks: next });
+  }
+
+  function addCheck() {
+    onChange({
+      ...value,
+      checks: [...value.checks, { tool: '', input: '', path: '', comparator: 'equals', value: '' }],
+    });
+  }
+
+  function removeCheck(index: number) {
+    onChange({ ...value, checks: value.checks.filter((_, i) => i !== index) });
+  }
+
+  return (
+    <div className={styles.pollConfig}>
+      <div className={styles.field}>
+        <label className={styles.label}>Interval</label>
+        <input
+          className={`${styles.input} ${styles.inputMono}`}
+          type="text"
+          value={value.interval}
+          placeholder="5m"
+          onChange={(e) => updateInterval(e.target.value)}
+        />
+      </div>
+
+      <div className={styles.field}>
+        <label className={styles.label}>Match mode</label>
+        <div className={styles.matchRow}>
+          <button
+            className={value.match === 'all' ? `${styles.copyButton} ${styles.matchButtonActive}` : styles.copyButton}
+            type="button"
+            onClick={() => updateMatch('all')}
+          >
+            All checks (AND)
+          </button>
+          <button
+            className={value.match === 'any' ? `${styles.copyButton} ${styles.matchButtonActive}` : styles.copyButton}
+            type="button"
+            onClick={() => updateMatch('any')}
+          >
+            Any check (OR)
+          </button>
+        </div>
+      </div>
+
+      <div className={styles.checksContainer}>
+        {value.checks.map((check, i) => (
+          <div key={i} className={styles.checkGroup}>
+            <div className={styles.checkHeader}>
+              <span className={styles.checkNumber}>Check {i + 1}</span>
+              {value.checks.length > 1 && (
+                <button
+                  className={styles.copyButton}
+                  type="button"
+                  onClick={() => removeCheck(i)}
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+
+            <div className={styles.field}>
+              <label className={styles.label}>Tool</label>
+              <input
+                className={`${styles.input} ${styles.inputMono}`}
+                type="text"
+                value={check.tool}
+                placeholder="server.tool_name"
+                onChange={(e) => updateCheck(i, { ...check, tool: e.target.value })}
+              />
+            </div>
+
+            <div className={styles.field}>
+              <label className={styles.label}>Input (JSON, optional)</label>
+              <textarea
+                className={styles.textarea}
+                value={check.input}
+                placeholder={'{"key": "value"}'}
+                onChange={(e) => updateCheck(i, { ...check, input: e.target.value })}
+              />
+            </div>
+
+            <div className={styles.field}>
+              <label className={styles.label}>JSONPath</label>
+              <input
+                className={`${styles.input} ${styles.inputMono}`}
+                type="text"
+                value={check.path}
+                placeholder="$.field.path"
+                onChange={(e) => updateCheck(i, { ...check, path: e.target.value })}
+              />
+            </div>
+
+            <div className={styles.fieldRow}>
+              <div className={styles.field}>
+                <label className={styles.label}>Comparator</label>
+                <select
+                  className={styles.select}
+                  value={check.comparator}
+                  onChange={(e) => updateCheck(i, { ...check, comparator: e.target.value as PollCheckState['comparator'] })}
+                >
+                  {(Object.keys(COMPARATOR_LABELS) as PollCheckState['comparator'][]).map((comp) => (
+                    <option key={comp} value={comp}>{COMPARATOR_LABELS[comp]}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className={styles.field}>
+                <label className={styles.label}>Value</label>
+                <input
+                  className={`${styles.input} ${styles.inputMono}`}
+                  type="text"
+                  value={check.value}
+                  placeholder="expected value"
+                  onChange={(e) => updateCheck(i, { ...check, value: e.target.value })}
+                />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <button
+        className={styles.copyButton}
+        type="button"
+        onClick={addCheck}
+      >
+        + Add check
+      </button>
+    </div>
+  );
+}

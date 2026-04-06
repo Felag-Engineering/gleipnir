@@ -87,6 +87,55 @@ func (f FeedbackOnTimeout) Valid() bool {
 	return false
 }
 
+// MatchMode controls how multiple poll checks are combined.
+// all means every check must pass (AND). any means at least one must pass (OR).
+type MatchMode string
+
+const (
+	MatchAll MatchMode = "all"
+	MatchAny MatchMode = "any"
+)
+
+func (m MatchMode) String() string { return string(m) }
+func (m MatchMode) Valid() bool {
+	switch m {
+	case MatchAll, MatchAny:
+		return true
+	}
+	return false
+}
+
+// Comparator identifies which comparison operation a poll check applies.
+type Comparator string
+
+const (
+	ComparatorEquals     Comparator = "equals"
+	ComparatorNotEquals  Comparator = "not_equals"
+	ComparatorGreaterThan Comparator = "greater_than"
+	ComparatorLessThan   Comparator = "less_than"
+	ComparatorContains   Comparator = "contains"
+)
+
+func (c Comparator) String() string { return string(c) }
+func (c Comparator) Valid() bool {
+	switch c {
+	case ComparatorEquals, ComparatorNotEquals, ComparatorGreaterThan, ComparatorLessThan, ComparatorContains:
+		return true
+	}
+	return false
+}
+
+// PollCheck is one condition in a poll trigger. On each polling interval,
+// the specified MCP tool is called, a JSONPath expression is applied to the
+// response, and the resulting value is compared against Value using Comparator.
+type PollCheck struct {
+	Tool       string         // dot-notation server.tool_name
+	Input      map[string]any // static args passed to the MCP tool
+	Path       string         // JSONPath expression (e.g. "$.status")
+	Comparator Comparator
+	Value      any            // comparator operand (string, number, or bool)
+}
+
 // ConcurrencyPolicy controls behaviour when a trigger fires while a run is active.
 type ConcurrencyPolicy string
 
@@ -251,11 +300,11 @@ type ParsedPolicy struct {
 // the active TriggerType are populated.
 type TriggerConfig struct {
 	Type          TriggerType
-	FireAt        []time.Time    // scheduled only
-	WebhookSecret string         `json:"-"`     // webhook only; excluded from JSON to prevent secret leakage
-	Interval      time.Duration  // poll only
-	PollTool      string         // poll only, dot-notation server.tool_name
-	PollInput     map[string]any // poll only, static input passed to the poll tool on each invocation
+	FireAt        []time.Time   // scheduled only
+	WebhookSecret string        `json:"-"` // webhook only; excluded from JSON to prevent secret leakage
+	Interval      time.Duration // poll only
+	Match         MatchMode     // poll only, defaults to MatchAll
+	Checks        []PollCheck   // poll only, at least one required
 }
 
 // FeedbackConfig controls the native human-in-the-loop feedback channel.

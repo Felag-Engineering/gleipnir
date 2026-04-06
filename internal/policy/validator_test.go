@@ -55,11 +55,21 @@ func TestValidate_CronTriggerIsInvalid(t *testing.T) {
 	assertValidationContains(t, p, "trigger.type")
 }
 
+func validPollCheck() model.PollCheck {
+	return model.PollCheck{
+		Tool:       "server.check",
+		Path:       "$.status",
+		Comparator: "equals",
+		Value:      "degraded",
+	}
+}
+
 func TestValidate_PollTrigger_Valid(t *testing.T) {
 	p := validPolicy()
 	p.Trigger.Type = model.TriggerTypePoll
 	p.Trigger.Interval = 5 * time.Minute
-	p.Trigger.PollTool = "server.check"
+	p.Trigger.Match = model.MatchAll
+	p.Trigger.Checks = []model.PollCheck{validPollCheck()}
 	if err := Validate(p); err != nil {
 		t.Errorf("expected valid poll trigger, got: %v", err)
 	}
@@ -68,7 +78,7 @@ func TestValidate_PollTrigger_Valid(t *testing.T) {
 func TestValidate_PollTrigger_MissingInterval(t *testing.T) {
 	p := validPolicy()
 	p.Trigger.Type = model.TriggerTypePoll
-	p.Trigger.PollTool = "server.check"
+	p.Trigger.Checks = []model.PollCheck{validPollCheck()}
 	// Interval is zero (not set)
 	assertValidationContains(t, p, "trigger.interval is required")
 }
@@ -76,25 +86,76 @@ func TestValidate_PollTrigger_MissingInterval(t *testing.T) {
 func TestValidate_PollTrigger_IntervalTooShort(t *testing.T) {
 	p := validPolicy()
 	p.Trigger.Type = model.TriggerTypePoll
-	p.Trigger.Interval = 10 * time.Second
-	p.Trigger.PollTool = "server.check"
-	assertValidationContains(t, p, "at least 30s")
+	p.Trigger.Interval = 30 * time.Second
+	p.Trigger.Checks = []model.PollCheck{validPollCheck()}
+	assertValidationContains(t, p, "at least 1m")
 }
 
-func TestValidate_PollTrigger_MissingTool(t *testing.T) {
+func TestValidate_PollTrigger_NoChecks(t *testing.T) {
 	p := validPolicy()
 	p.Trigger.Type = model.TriggerTypePoll
 	p.Trigger.Interval = 5 * time.Minute
-	// PollTool is empty
-	assertValidationContains(t, p, "trigger.tool is required")
+	// Checks is empty
+	assertValidationContains(t, p, "trigger.checks is required")
 }
 
-func TestValidate_PollTrigger_BadToolDotNotation(t *testing.T) {
+func TestValidate_PollTrigger_CheckMissingTool(t *testing.T) {
 	p := validPolicy()
 	p.Trigger.Type = model.TriggerTypePoll
 	p.Trigger.Interval = 5 * time.Minute
-	p.Trigger.PollTool = "no-dot-here"
+	c := validPollCheck()
+	c.Tool = ""
+	p.Trigger.Checks = []model.PollCheck{c}
+	assertValidationContains(t, p, "trigger.checks[0].tool is required")
+}
+
+func TestValidate_PollTrigger_CheckBadToolDotNotation(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypePoll
+	p.Trigger.Interval = 5 * time.Minute
+	c := validPollCheck()
+	c.Tool = "no-dot-here"
+	p.Trigger.Checks = []model.PollCheck{c}
 	assertValidationContains(t, p, "dot notation")
+}
+
+func TestValidate_PollTrigger_CheckMissingPath(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypePoll
+	p.Trigger.Interval = 5 * time.Minute
+	c := validPollCheck()
+	c.Path = ""
+	p.Trigger.Checks = []model.PollCheck{c}
+	assertValidationContains(t, p, "trigger.checks[0].path is required")
+}
+
+func TestValidate_PollTrigger_CheckNoComparator(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypePoll
+	p.Trigger.Interval = 5 * time.Minute
+	c := validPollCheck()
+	c.Comparator = ""
+	p.Trigger.Checks = []model.PollCheck{c}
+	assertValidationContains(t, p, "must specify exactly one comparator")
+}
+
+func TestValidate_PollTrigger_CheckInvalidComparator(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypePoll
+	p.Trigger.Interval = 5 * time.Minute
+	c := validPollCheck()
+	c.Comparator = "banana"
+	p.Trigger.Checks = []model.PollCheck{c}
+	assertValidationContains(t, p, "comparator")
+}
+
+func TestValidate_PollTrigger_InvalidMatch(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypePoll
+	p.Trigger.Interval = 5 * time.Minute
+	p.Trigger.Match = "xor"
+	p.Trigger.Checks = []model.PollCheck{validPollCheck()}
+	assertValidationContains(t, p, "trigger.match")
 }
 
 func TestValidate_NoTools(t *testing.T) {

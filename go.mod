@@ -6,6 +6,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.26.0
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/google/uuid v1.6.0
+	github.com/ohler55/ojg v1.28.1
 	github.com/oklog/ulid/v2 v2.1.1
 	golang.org/x/crypto v0.49.0
 	google.golang.org/genai v1.52.0

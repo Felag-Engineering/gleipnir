@@ -68,13 +68,32 @@ func validateTrigger(t model.TriggerConfig) []string {
 	case model.TriggerTypePoll:
 		if t.Interval <= 0 {
 			errs = append(errs, "trigger.interval is required for poll triggers and must be a positive duration (e.g. \"5m\", \"1h\")")
-		} else if t.Interval < 30*time.Second {
-			errs = append(errs, "trigger.interval must be at least 30s to prevent excessive polling")
+		} else if t.Interval < time.Minute {
+			errs = append(errs, "trigger.interval must be at least 1m to prevent excessive polling")
 		}
-		if t.PollTool == "" {
-			errs = append(errs, "trigger.tool is required for poll triggers")
-		} else if !isValidToolRef(t.PollTool) {
-			errs = append(errs, fmt.Sprintf("trigger.tool %q must use dot notation (server_name.tool_name)", t.PollTool))
+
+		if t.Match != "" && !t.Match.Valid() {
+			errs = append(errs, fmt.Sprintf("trigger.match %q is invalid; must be all or any", t.Match))
+		}
+
+		if len(t.Checks) == 0 {
+			errs = append(errs, "trigger.checks is required for poll triggers and must contain at least one check")
+		}
+
+		for i, c := range t.Checks {
+			if c.Tool == "" {
+				errs = append(errs, fmt.Sprintf("trigger.checks[%d].tool is required", i))
+			} else if !isValidToolRef(c.Tool) {
+				errs = append(errs, fmt.Sprintf("trigger.checks[%d].tool %q must use dot notation (server_name.tool_name)", i, c.Tool))
+			}
+			if c.Path == "" {
+				errs = append(errs, fmt.Sprintf("trigger.checks[%d].path is required", i))
+			}
+			if c.Comparator == "" {
+				errs = append(errs, fmt.Sprintf("trigger.checks[%d] must specify exactly one comparator (equals, not_equals, greater_than, less_than, contains)", i))
+			} else if !c.Comparator.Valid() {
+				errs = append(errs, fmt.Sprintf("trigger.checks[%d].comparator %q is invalid; must be equals, not_equals, greater_than, less_than, or contains", i, c.Comparator))
+			}
 		}
 	}
 

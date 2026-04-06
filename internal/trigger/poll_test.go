@@ -21,8 +21,7 @@ import (
 
 // pollResultServer starts a test HTTP server that behaves as a minimal MCP server.
 // tools/list returns a single "check" tool. tools/call returns the configured
-// content items. Callers can swap the content at runtime via the setter.
-// content is a slice of MCP content items (e.g. []map[string]any{{"type":"text","text":"data"}}).
+// content items. Callers can swap the content at runtime via the returned setter.
 func pollResultServer(t *testing.T, initialContent []map[string]any) (*httptest.Server, func([]map[string]any)) {
 	t.Helper()
 	var current atomic.Value
@@ -123,11 +122,10 @@ func setupPollerFixture(t *testing.T, mcpSrv *httptest.Server) (*db.Store, *mcp.
 	return store, registry
 }
 
-// pollPolicyYAML builds a minimal poll policy YAML. interval is a Go duration
-// string (e.g. "100ms"). The stub-server tool is "poll-server.check".
-// Tests intentionally pass "100ms" which is below the 30 s validator minimum;
-// that minimum is enforced only at policy creation time, not by the Poller
-// itself, so tests construct the YAML directly to bypass it.
+// pollPolicyYAML builds a poll policy YAML using match=all with a single check
+// that expects $.status to equal "degraded". Tests pass "100ms" which is below
+// the 1m validator minimum, bypassing the minimum by inserting directly into the
+// DB (the Poller does not re-validate at runtime).
 func pollPolicyYAML(name string, intervalStr string) string {
 	return pollPolicyYAMLWithConcurrency(name, intervalStr, "parallel")
 }
@@ -138,7 +136,36 @@ name: %s
 trigger:
   type: poll
   interval: %s
-  tool: poll-server.check
+  match: all
+  checks:
+    - tool: poll-server.check
+      path: "$.status"
+      equals: degraded
+capabilities:
+  tools:
+    - tool: poll-server.check
+agent:
+  task: "process poll result"
+  concurrency: %s
+`, name, intervalStr, concurrency)
+}
+
+// pollPolicyYAMLMatchAny builds a poll policy with match=any and two checks
+// (equals "degraded" or equals "critical").
+func pollPolicyYAMLMatchAny(name, intervalStr, concurrency string) string {
+	return fmt.Sprintf(`
+name: %s
+trigger:
+  type: poll
+  interval: %s
+  match: any
+  checks:
+    - tool: poll-server.check
+      path: "$.status"
+      equals: degraded
+    - tool: poll-server.check
+      path: "$.status"
+      equals: critical
 capabilities:
   tools:
     - tool: poll-server.check
@@ -196,15 +223,15 @@ func waitForRuns(t *testing.T, store *db.Store, policyID string, wantCount int, 
 	return runs
 }
 
-// TestPoller_PollsAndTriggersRun verifies that a non-empty tool result causes
-// a run to be created.
-func TestPoller_PollsAndTriggersRun(t *testing.T) {
-	mcpSrv, _ := pollResultServer(t, textContent("some data"))
+// TestPoller_CheckMatchFires verifies that when the MCP tool returns a JSON
+// response matching the configured check, a run is created.
+func TestPoller_CheckMatchFires(t *testing.T) {
+	// Return {"status":"degraded"} so the check `$.status equals "degraded"` passes.
+	mcpSrv, _ := pollResultServer(t, textContent(`{"status":"degraded"}`))
 	store, registry := setupPollerFixture(t, mcpSrv)
 
-	// Interval of 100ms so the test completes quickly.
-	yamlStr := pollPolicyYAML("poll-trigger-run", "100ms")
-	insertTestPollPolicy(t, store, "pol-trigger-run", "poll-trigger-run", yamlStr)
+	yamlStr := pollPolicyYAML("poll-match-fires", "100ms")
+	insertTestPollPolicy(t, store, "pol-match-fires", "poll-match-fires", yamlStr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -217,113 +244,58 @@ func TestPoller_PollsAndTriggersRun(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	runs := waitForRuns(t, store, "pol-trigger-run", 1, 8*time.Second)
+	runs := waitForRuns(t, store, "pol-match-fires", 1, 8*time.Second)
 	if len(runs) == 0 {
 		t.Fatal("expected at least one run to be created, but none appeared")
 	}
 	manager.Wait()
 }
 
-// TestPoller_SkipsEmptyResult verifies that empty/null MCP tool results do not
-// create runs. Cases cover the actual JSON structures that CallTool can return.
-func TestPoller_SkipsEmptyResult(t *testing.T) {
-	emptyCases := []struct {
-		name    string
-		content []map[string]any
-	}{
-		// No content items at all — the tool returned nothing.
-		{"empty_content_array", []map[string]any{}},
-		// Single text item with empty text.
-		{"empty_text", []map[string]any{{"type": "text", "text": ""}}},
-		// Multiple text items all with empty text.
-		{"all_empty_text", []map[string]any{{"type": "text", "text": ""}, {"type": "text", "text": ""}}},
-	}
-
-	for _, tc := range emptyCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			mcpSrv, _ := pollResultServer(t, tc.content)
-			store, registry := setupPollerFixture(t, mcpSrv)
-
-			yamlStr := pollPolicyYAML("poll-empty-"+tc.name, "100ms")
-			insertTestPollPolicy(t, store, "pol-empty-"+tc.name, "poll-empty-"+tc.name, yamlStr)
-
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-
-			manager := trigger.NewRunManager()
-			launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
-			poller := trigger.NewPoller(store, launcher, registry)
-
-			if err := poller.Start(ctx); err != nil {
-				t.Fatalf("Start: %v", err)
-			}
-
-			// Run for 1.5 seconds (several poll intervals). No run should appear.
-			time.Sleep(1500 * time.Millisecond)
-
-			runs, err := store.ListRuns(context.Background(), db.ListRunsParams{
-				PolicyID: "pol-empty-" + tc.name, Limit: 100,
-			})
-			if err != nil {
-				t.Fatalf("ListRuns: %v", err)
-			}
-			if len(runs) != 0 {
-				t.Errorf("expected no runs for empty result case %q, got %d", tc.name, len(runs))
-			}
-			_ = manager
-		})
-	}
-}
-
-// TestPoller_DoesNotTreatFalseOrZeroAsEmpty verifies that text content "false"
-// and "0" are treated as non-empty results and cause runs to be launched.
-func TestPoller_DoesNotTreatFalseOrZeroAsEmpty(t *testing.T) {
-	cases := []struct {
-		name    string
-		content []map[string]any
-	}{
-		{"false", textContent("false")},
-		{"zero", textContent("0")},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			mcpSrv, _ := pollResultServer(t, tc.content)
-			store, registry := setupPollerFixture(t, mcpSrv)
-
-			yamlStr := pollPolicyYAML("poll-truthy-"+tc.name, "100ms")
-			insertTestPollPolicy(t, store, "pol-truthy-"+tc.name, "poll-truthy-"+tc.name, yamlStr)
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			manager := trigger.NewRunManager()
-			launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
-			poller := trigger.NewPoller(store, launcher, registry)
-
-			if err := poller.Start(ctx); err != nil {
-				t.Fatalf("Start: %v", err)
-			}
-
-			runs := waitForRuns(t, store, "pol-truthy-"+tc.name, 1, 8*time.Second)
-			if len(runs) == 0 {
-				t.Errorf("expected a run for content case %q but none appeared", tc.name)
-			}
-			manager.Wait()
-		})
-	}
-}
-
-// TestPoller_DeduplicatesSameResult verifies that polling the same result twice
-// in a row only creates one run (hash-based dedup).
-func TestPoller_DeduplicatesSameResult(t *testing.T) {
-	mcpSrv, _ := pollResultServer(t, textContent("constant result"))
+// TestPoller_CheckNoMatchNoRun verifies that when the check condition does not
+// match the tool response, no run is created.
+func TestPoller_CheckNoMatchNoRun(t *testing.T) {
+	// Return {"status":"healthy"} — does NOT match equals "degraded".
+	mcpSrv, _ := pollResultServer(t, textContent(`{"status":"healthy"}`))
 	store, registry := setupPollerFixture(t, mcpSrv)
 
-	yamlStr := pollPolicyYAMLWithConcurrency("poll-dedup", "150ms", "parallel")
-	insertTestPollPolicy(t, store, "pol-dedup-poll", "poll-dedup", yamlStr)
+	yamlStr := pollPolicyYAML("poll-no-match", "100ms")
+	insertTestPollPolicy(t, store, "pol-no-match", "poll-no-match", yamlStr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	manager := trigger.NewRunManager()
+	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
+	poller := trigger.NewPoller(store, launcher, registry)
+
+	if err := poller.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait several poll intervals — no run should appear.
+	time.Sleep(800 * time.Millisecond)
+
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{
+		PolicyID: "pol-no-match", Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Errorf("expected no runs when check does not match, got %d", len(runs))
+	}
+	_ = manager
+}
+
+// TestPoller_MatchAny_OnePassFires verifies that match=any fires when at least
+// one check passes. The server returns "degraded"; the first check (equals
+// "degraded") passes even though the second (equals "critical") fails.
+func TestPoller_MatchAny_OnePassFires(t *testing.T) {
+	mcpSrv, _ := pollResultServer(t, textContent(`{"status":"degraded"}`))
+	store, registry := setupPollerFixture(t, mcpSrv)
+
+	yamlStr := pollPolicyYAMLMatchAny("poll-any-pass", "100ms", "parallel")
+	insertTestPollPolicy(t, store, "pol-any-pass", "poll-any-pass", yamlStr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -336,31 +308,109 @@ func TestPoller_DeduplicatesSameResult(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Wait for the first run to appear.
-	runs := waitForRuns(t, store, "pol-dedup-poll", 1, 5*time.Second)
+	runs := waitForRuns(t, store, "pol-any-pass", 1, 8*time.Second)
 	if len(runs) == 0 {
-		t.Fatal("expected at least one run but none appeared")
+		t.Fatal("expected a run when match=any and one check passes, but none appeared")
+	}
+	manager.Wait()
+}
+
+// TestPoller_MatchAll_OneFailNoRun verifies that match=all does not fire when
+// any check fails. The server returns "degraded"; the second check (equals
+// "critical") fails, so with match=all no run fires.
+func TestPoller_MatchAll_OneFailNoRun(t *testing.T) {
+	mcpSrv, _ := pollResultServer(t, textContent(`{"status":"degraded"}`))
+	store, registry := setupPollerFixture(t, mcpSrv)
+
+	// Uses match=any policy shape but we swap to all manually via YAML.
+	// The two checks are: equals "degraded" and equals "critical".
+	// Server returns "degraded": first passes, second fails.
+	yamlStr := fmt.Sprintf(`
+name: poll-all-fail
+trigger:
+  type: poll
+  interval: 100ms
+  match: all
+  checks:
+    - tool: poll-server.check
+      path: "$.status"
+      equals: degraded
+    - tool: poll-server.check
+      path: "$.status"
+      equals: critical
+capabilities:
+  tools:
+    - tool: poll-server.check
+agent:
+  task: "process poll result"
+  concurrency: parallel
+`)
+	insertTestPollPolicy(t, store, "pol-all-fail", "poll-all-fail", yamlStr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	manager := trigger.NewRunManager()
+	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
+	poller := trigger.NewPoller(store, launcher, registry)
+
+	if err := poller.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
 
-	// Wait for several more poll intervals — result is identical so no second run.
-	time.Sleep(600 * time.Millisecond)
-	manager.Wait()
+	time.Sleep(800 * time.Millisecond)
 
-	finalRuns, err := store.ListRuns(context.Background(), db.ListRunsParams{
-		PolicyID: "pol-dedup-poll", Limit: 100,
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{
+		PolicyID: "pol-all-fail", Limit: 100,
 	})
 	if err != nil {
 		t.Fatalf("ListRuns: %v", err)
 	}
-	if len(finalRuns) != 1 {
-		t.Errorf("expected exactly 1 run (dedup), got %d", len(finalRuns))
+	if len(runs) != 0 {
+		t.Errorf("expected no runs when match=all and one check fails, got %d", len(runs))
 	}
+	_ = manager
+}
+
+// TestPoller_ToolErrorTreatedAsNotPassed verifies that when the poll tool
+// returns an error, the check is treated as not-passed. With match=all, no
+// run fires.
+func TestPoller_ToolErrorTreatedAsNotPassed(t *testing.T) {
+	mcpSrv := errorResultServer(t)
+	store, registry := setupPollerFixture(t, mcpSrv)
+
+	yamlStr := pollPolicyYAML("poll-tool-error", "100ms")
+	insertTestPollPolicy(t, store, "pol-tool-error", "poll-tool-error", yamlStr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	manager := trigger.NewRunManager()
+	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
+	poller := trigger.NewPoller(store, launcher, registry)
+
+	if err := poller.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	time.Sleep(800 * time.Millisecond)
+
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{
+		PolicyID: "pol-tool-error", Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Errorf("expected no runs when tool errors with match=all, got %d", len(runs))
+	}
+	_ = manager
 }
 
 // TestPoller_ConcurrencySkip verifies that when an active run already exists,
-// a new poll result does not create a second run under concurrency: skip.
+// a new matching poll result does not create a second run under concurrency: skip.
 func TestPoller_ConcurrencySkip(t *testing.T) {
-	mcpSrv, _ := pollResultServer(t, textContent("data"))
+	mcpSrv, _ := pollResultServer(t, textContent(`{"status":"degraded"}`))
 	store, registry := setupPollerFixture(t, mcpSrv)
 
 	yamlStr := pollPolicyYAMLWithConcurrency("poll-skip", "100ms", "skip")
@@ -395,20 +445,16 @@ func TestPoller_ConcurrencySkip(t *testing.T) {
 	}
 }
 
-// TestPoller_ConcurrencyQueue verifies that when an active run exists, a new
-// poll result is enqueued under concurrency: queue.
-func TestPoller_ConcurrencyQueue(t *testing.T) {
-	mcpSrv, _ := pollResultServer(t, textContent("data"))
+// TestPoller_GracefulShutdown verifies that cancelling the context causes
+// pollLoop goroutines to exit and Wait() returns promptly.
+func TestPoller_GracefulShutdown(t *testing.T) {
+	mcpSrv, _ := pollResultServer(t, textContent(`{"status":"healthy"}`))
 	store, registry := setupPollerFixture(t, mcpSrv)
 
-	yamlStr := pollPolicyYAMLWithConcurrency("poll-queue", "100ms", "queue")
-	insertTestPollPolicy(t, store, "pol-poll-queue", "poll-queue", yamlStr)
+	yamlStr := pollPolicyYAML("poll-shutdown", "100ms")
+	insertTestPollPolicy(t, store, "pol-shutdown", "poll-shutdown", yamlStr)
 
-	// Insert an active run so the concurrency check routes to enqueue.
-	insertTestRun(t, store, "r-poll-queue-active", "pol-poll-queue", model.RunStatusRunning)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	manager := trigger.NewRunManager()
 	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
@@ -418,110 +464,20 @@ func TestPoller_ConcurrencyQueue(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Wait for the trigger to be enqueued.
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		count, err := store.CountQueuedTriggers(context.Background(), "pol-poll-queue")
-		if err != nil {
-			t.Fatalf("CountQueuedTriggers: %v", err)
-		}
-		if count > 0 {
-			return // success — trigger was enqueued
-		}
-		time.Sleep(50 * time.Millisecond)
+	// Let a couple of intervals pass, then cancel.
+	time.Sleep(250 * time.Millisecond)
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		poller.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Goroutines exited cleanly.
+	case <-time.After(5 * time.Second):
+		t.Error("poller.Wait() did not return within 5s after context cancel")
 	}
-	t.Error("expected trigger to be enqueued for queue policy with active run, but queue remained empty")
-}
-
-// TestPoller_BackoffOnFailure verifies that poll tool errors increment
-// consecutive_failures and push next_poll_at into the future.
-func TestPoller_BackoffOnFailure(t *testing.T) {
-	mcpSrv := errorResultServer(t)
-	store, registry := setupPollerFixture(t, mcpSrv)
-
-	yamlStr := pollPolicyYAML("poll-backoff", "100ms")
-	insertTestPollPolicy(t, store, "pol-backoff", "poll-backoff", yamlStr)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
-	poller := trigger.NewPoller(store, launcher, registry)
-
-	if err := poller.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	// Wait a moment for at least one poll attempt and failure to be recorded.
-	deadline := time.Now().Add(4 * time.Second)
-	for time.Now().Before(deadline) {
-		state, err := store.GetPollState(context.Background(), "pol-backoff")
-		if err == nil && state.ConsecutiveFailures > 0 {
-			// Success: failure was recorded.
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	_ = manager
-
-	// Final check: read the state.
-	state, err := store.GetPollState(context.Background(), "pol-backoff")
-	if err != nil {
-		t.Fatalf("GetPollState: %v", err)
-	}
-	if state.ConsecutiveFailures == 0 {
-		t.Error("expected consecutive_failures > 0 after poll tool errors, got 0")
-	}
-}
-
-// TestPoller_ResetBackoffOnSuccess verifies that a successful poll after
-// failures resets consecutive_failures to 0.
-func TestPoller_ResetBackoffOnSuccess(t *testing.T) {
-	mcpSrv, setResult := pollResultServer(t, []map[string]any{{"type": "text", "text": ""}})
-	store, registry := setupPollerFixture(t, mcpSrv)
-
-	yamlStr := pollPolicyYAML("poll-reset", "100ms")
-	insertTestPollPolicy(t, store, "pol-reset", "poll-reset", yamlStr)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Pre-seed the poll state with failures so we can verify the reset.
-	now := time.Now().UTC()
-	nowStr := now.Format(time.RFC3339Nano)
-	nextStr := now.Add(100 * time.Millisecond).Format(time.RFC3339Nano)
-	failures := int64(3)
-	if err := store.UpsertPollState(context.Background(), db.UpsertPollStateParams{
-		PolicyID:            "pol-reset",
-		ConsecutiveFailures: failures,
-		NextPollAt:          nextStr,
-		CreatedAt:           nowStr,
-		UpdatedAt:           nowStr,
-	}); err != nil {
-		t.Fatalf("UpsertPollState: %v", err)
-	}
-
-	// Switch the server to return a non-empty result so the next poll succeeds.
-	setResult(textContent("good data"))
-
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
-	poller := trigger.NewPoller(store, launcher, registry)
-
-	if err := poller.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	// Wait for the success to reset the failure count.
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		state, err := store.GetPollState(context.Background(), "pol-reset")
-		if err == nil && state.ConsecutiveFailures == 0 {
-			manager.Wait()
-			return // success
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Error("expected consecutive_failures to be reset to 0 after successful poll")
 }

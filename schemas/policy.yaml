@@ -98,19 +98,28 @@ trigger:
   # --- poll ---
   # interval: duration — required for poll
   #   Polling frequency. Go time.ParseDuration format (e.g. "5m", "1h").
-  #   Minimum 30s. On each tick, Gleipnir calls the specified MCP tool.
+  #   Minimum 1m.
   interval: 5m
 
-  # tool: string — required for poll
-  #   MCP tool to call for the check, in dot notation (server_name.tool_name).
-  #   The tool result is inspected to decide whether to fire a run.
-  #   Empty results (null, "", [], {}) are treated as "nothing to do".
-  tool: server_name.check_tool
+  # match: all | any — optional, default: all
+  #   How multiple checks are combined.
+  #   all: every check must pass (AND). any: at least one must pass (OR).
+  match: all
 
-  # input: map — optional for poll
-  #   Static input to pass to the poll tool on each invocation.
-  input:
-    key: value
+  # checks: list — required for poll, at least one entry
+  #   Each check calls an MCP tool and evaluates a condition on its response.
+  checks:
+    - tool: server_name.tool_name    # MCP tool in dot notation
+      input:                         # optional, static args passed to tool
+        key: value
+      path: "$.status"               # JSONPath into tool response
+      equals: "degraded"             # exactly one comparator per check
+      # Comparators (exactly one required per check):
+      #   equals:       exact match (string, number, bool)
+      #   not_equals:   negated exact match
+      #   greater_than: numeric greater-than
+      #   less_than:    numeric less-than
+      #   contains:     substring match (strings only)
 
 
 # ---------------------------------------------------------------------------

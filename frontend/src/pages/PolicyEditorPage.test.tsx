@@ -217,11 +217,14 @@ describe('PolicyEditorUtils — YAML ↔ form round-trip (pure functions)', () =
     expect(rt.trigger.fireAt).toEqual(parsed.trigger.fireAt)
   })
 
-  it('cron and poll trigger types fall back to webhook', () => {
+  it('cron trigger type falls back to webhook', () => {
     const cronParsed = yamlToFormState('name: x\ntrigger:\n  type: cron\n  schedule: "0 * * * *"\ncapabilities:\n  tools: []\nagent:\n  task: t\n')
     expect(cronParsed?.trigger.type).toBe('webhook')
-    const pollParsed = yamlToFormState('name: x\ntrigger:\n  type: poll\n  interval: 5m\ncapabilities:\n  tools: []\nagent:\n  task: t\n')
-    expect(pollParsed?.trigger.type).toBe('webhook')
+  })
+
+  it('poll trigger type is parsed as poll (first-class trigger)', () => {
+    const pollParsed = yamlToFormState('name: x\ntrigger:\n  type: poll\n  interval: 5m\n  checks:\n    - tool: s.t\n      path: "$.status"\n      equals: ok\ncapabilities:\n  tools: []\nagent:\n  task: t\n')
+    expect(pollParsed?.trigger.type).toBe('poll')
   })
 })
 

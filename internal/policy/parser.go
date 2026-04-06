@@ -110,8 +110,39 @@ func convertTrigger(r rawTrigger) model.TriggerConfig {
 			}
 			// If parse fails, leave zero — validator will catch it.
 		}
-		tc.PollTool = r.PollTool
-		tc.PollInput = r.PollInput
+
+		tc.Match = model.MatchMode(r.Match)
+		if tc.Match == "" {
+			tc.Match = model.MatchAll
+		}
+
+		for _, rc := range r.Checks {
+			check := model.PollCheck{
+				Tool:  rc.Tool,
+				Input: rc.Input,
+				Path:  rc.Path,
+			}
+			// Determine which comparator field is set. The first non-nil one wins.
+			// The validator enforces that exactly one is set.
+			switch {
+			case rc.Equals != nil:
+				check.Comparator = model.ComparatorEquals
+				check.Value = rc.Equals
+			case rc.NotEquals != nil:
+				check.Comparator = model.ComparatorNotEquals
+				check.Value = rc.NotEquals
+			case rc.GreaterThan != nil:
+				check.Comparator = model.ComparatorGreaterThan
+				check.Value = rc.GreaterThan
+			case rc.LessThan != nil:
+				check.Comparator = model.ComparatorLessThan
+				check.Value = rc.LessThan
+			case rc.Contains != nil:
+				check.Comparator = model.ComparatorContains
+				check.Value = rc.Contains
+			}
+			tc.Checks = append(tc.Checks, check)
+		}
 	}
 
 	return tc
@@ -251,12 +282,25 @@ type rawModel struct {
 }
 
 type rawTrigger struct {
-	Type          string         `yaml:"type"`
-	FireAt        []string       `yaml:"fire_at"`        // scheduled only, RFC3339 timestamps
-	WebhookSecret string         `yaml:"webhook_secret"` // webhook only
-	Interval      string         `yaml:"interval"`       // poll only, Go duration string (e.g. "5m")
-	PollTool      string         `yaml:"tool"`           // poll only, dot-notation server.tool_name
-	PollInput     map[string]any `yaml:"input"`          // poll only, static input passed to the tool
+	Type          string     `yaml:"type"`
+	FireAt        []string   `yaml:"fire_at"`        // scheduled only, RFC3339 timestamps
+	WebhookSecret string     `yaml:"webhook_secret"` // webhook only
+	Interval      string     `yaml:"interval"`       // poll only, Go duration string (e.g. "5m")
+	Match         string     `yaml:"match"`          // poll only, "all" or "any", default: "all"
+	Checks        []rawCheck `yaml:"checks"`         // poll only, at least one required
+}
+
+// rawCheck is one entry in a poll trigger's checks list.
+// Exactly one comparator field (Equals, NotEquals, etc.) should be set per check.
+type rawCheck struct {
+	Tool        string         `yaml:"tool"`
+	Input       map[string]any `yaml:"input"`
+	Path        string         `yaml:"path"`
+	Equals      any            `yaml:"equals"`
+	NotEquals   any            `yaml:"not_equals"`
+	GreaterThan any            `yaml:"greater_than"`
+	LessThan    any            `yaml:"less_than"`
+	Contains    any            `yaml:"contains"`
 }
 
 type rawCapabilities struct {

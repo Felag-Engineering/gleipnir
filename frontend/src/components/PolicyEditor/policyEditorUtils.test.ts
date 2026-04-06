@@ -52,14 +52,32 @@ describe('yamlToFormState — all trigger types', () => {
     expect(state!.trigger.type).toBe('webhook')
   })
 
-  it('defaults cron trigger type to webhook (removed trigger type)', () => {
+  it('defaults cron trigger type to webhook (unsupported trigger type)', () => {
     const state = yamlToFormState('name: p\ntrigger:\n  type: cron\n  schedule: "0 * * * *"\n')
     expect(state!.trigger.type).toBe('webhook')
   })
 
-  it('defaults poll trigger type to webhook (removed trigger type)', () => {
-    const state = yamlToFormState('name: p\ntrigger:\n  type: poll\n  interval: 10m\n')
-    expect(state!.trigger.type).toBe('webhook')
+  it('parses poll trigger with checks', () => {
+    const yaml = `name: p
+trigger:
+  type: poll
+  interval: 5m
+  match: any
+  checks:
+    - tool: srv.check
+      path: "$.status"
+      equals: degraded
+`
+    const state = yamlToFormState(yaml)
+    expect(state!.trigger.type).toBe('poll')
+    if (state!.trigger.type !== 'poll') throw new Error('expected poll')
+    expect(state!.trigger.interval).toBe('5m')
+    expect(state!.trigger.match).toBe('any')
+    expect(state!.trigger.checks).toHaveLength(1)
+    expect(state!.trigger.checks[0].tool).toBe('srv.check')
+    expect(state!.trigger.checks[0].path).toBe('$.status')
+    expect(state!.trigger.checks[0].comparator).toBe('equals')
+    expect(state!.trigger.checks[0].value).toBe('degraded')
   })
 
   it('parses manual trigger', () => {
@@ -273,6 +291,28 @@ describe('formStateToYaml — serialization', () => {
     expect(yaml).toContain('my-folder')
   })
 
+  it('serializes poll trigger with checks', () => {
+    const yaml = `name: p
+trigger:
+  type: poll
+  interval: 10m
+  match: all
+  checks:
+    - tool: srv.check
+      path: "$.count"
+      greater_than: 5
+`
+    const state = yamlToFormState(yaml)!
+    const output = formStateToYaml(state)
+    expect(output).toContain('type: poll')
+    expect(output).toContain('interval: 10m')
+    expect(output).toContain('match: all')
+    expect(output).toContain('srv.check')
+    expect(output).toContain('greater_than')
+    // The number 5 should round-trip as a number not a quoted string
+    expect(output).toContain('5')
+  })
+
   it('serializes scheduled trigger fireAt as fire_at array', () => {
     const yaml = `name: p
 trigger:
@@ -429,6 +469,34 @@ agent:
     const first = yamlToFormState(yaml)!
     const second = yamlToFormState(formStateToYaml(first))!
     expect(second.trigger.type).toBe('manual')
+  })
+
+  it('round-trips poll trigger preserving interval, match, and checks', () => {
+    const yaml = `name: p
+trigger:
+  type: poll
+  interval: 5m
+  match: any
+  checks:
+    - tool: srv.check
+      path: "$.status"
+      equals: degraded
+    - tool: srv.check
+      path: "$.count"
+      greater_than: 10
+`
+    const first = yamlToFormState(yaml)!
+    const second = yamlToFormState(formStateToYaml(first))!
+    expect(second.trigger.type).toBe('poll')
+    if (second.trigger.type !== 'poll') throw new Error('expected poll')
+    expect(second.trigger.interval).toBe('5m')
+    expect(second.trigger.match).toBe('any')
+    expect(second.trigger.checks).toHaveLength(2)
+    expect(second.trigger.checks[0].tool).toBe('srv.check')
+    expect(second.trigger.checks[0].comparator).toBe('equals')
+    expect(second.trigger.checks[0].value).toBe('degraded')
+    expect(second.trigger.checks[1].comparator).toBe('greater_than')
+    expect(second.trigger.checks[1].value).toBe('10')
   })
 
   it('round-trips scheduled trigger preserving fireAt array', () => {

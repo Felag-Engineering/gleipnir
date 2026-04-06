@@ -101,6 +101,34 @@ func TestEnumValid(t *testing.T) {
 		}
 	})
 
+	t.Run("Comparator", func(t *testing.T) {
+		valid := []Comparator{ComparatorEquals, ComparatorNotEquals, ComparatorGreaterThan, ComparatorLessThan, ComparatorContains}
+		for _, v := range valid {
+			if !v.Valid() {
+				t.Errorf("expected %q to be valid", v)
+			}
+		}
+		for _, bad := range []Comparator{"", "invalid", "banana"} {
+			if bad.Valid() {
+				t.Errorf("expected %q to be invalid", bad)
+			}
+		}
+	})
+
+	t.Run("MatchMode", func(t *testing.T) {
+		valid := []MatchMode{MatchAll, MatchAny}
+		for _, v := range valid {
+			if !v.Valid() {
+				t.Errorf("expected %q to be valid", v)
+			}
+		}
+		for _, bad := range []MatchMode{"", "invalid", "xor"} {
+			if bad.Valid() {
+				t.Errorf("expected %q to be invalid", bad)
+			}
+		}
+	})
+
 	t.Run("ApprovalStatus", func(t *testing.T) {
 		valid := []ApprovalStatus{
 			ApprovalStatusPending, ApprovalStatusApproved, ApprovalStatusRejected, ApprovalStatusTimeout,

@@ -883,15 +883,22 @@ agent:
 	}
 }
 
-func TestParse_PollTrigger(t *testing.T) {
+func TestParse_PollTrigger_WithChecks(t *testing.T) {
 	raw := `
 name: poll-test
 trigger:
   type: poll
   interval: 5m
-  tool: my-server.check_items
-  input:
-    repo: gleipnir
+  match: any
+  checks:
+    - tool: my-server.check_items
+      input:
+        repo: gleipnir
+      path: "$.status"
+      equals: degraded
+    - tool: my-server.check_items
+      path: "$.count"
+      greater_than: 10
 capabilities:
   tools:
     - tool: my-server.check_items
@@ -909,14 +916,62 @@ agent:
 	if p.Trigger.Interval != 5*time.Minute {
 		t.Errorf("trigger.interval = %v, want 5m", p.Trigger.Interval)
 	}
-	if p.Trigger.PollTool != "my-server.check_items" {
-		t.Errorf("trigger.tool = %q, want %q", p.Trigger.PollTool, "my-server.check_items")
+	if p.Trigger.Match != model.MatchAny {
+		t.Errorf("trigger.match = %q, want %q", p.Trigger.Match, model.MatchAny)
 	}
-	if p.Trigger.PollInput == nil {
-		t.Fatal("trigger.input is nil, want map with 'repo'")
+	if len(p.Trigger.Checks) != 2 {
+		t.Fatalf("len(checks) = %d, want 2", len(p.Trigger.Checks))
 	}
-	if p.Trigger.PollInput["repo"] != "gleipnir" {
-		t.Errorf("trigger.input[repo] = %v, want %q", p.Trigger.PollInput["repo"], "gleipnir")
+
+	c0 := p.Trigger.Checks[0]
+	if c0.Tool != "my-server.check_items" {
+		t.Errorf("checks[0].tool = %q, want %q", c0.Tool, "my-server.check_items")
+	}
+	if c0.Input["repo"] != "gleipnir" {
+		t.Errorf("checks[0].input[repo] = %v, want %q", c0.Input["repo"], "gleipnir")
+	}
+	if c0.Path != "$.status" {
+		t.Errorf("checks[0].path = %q, want %q", c0.Path, "$.status")
+	}
+	if c0.Comparator != "equals" {
+		t.Errorf("checks[0].comparator = %q, want %q", c0.Comparator, "equals")
+	}
+	if c0.Value != "degraded" {
+		t.Errorf("checks[0].value = %v, want %q", c0.Value, "degraded")
+	}
+
+	c1 := p.Trigger.Checks[1]
+	if c1.Comparator != "greater_than" {
+		t.Errorf("checks[1].comparator = %q, want %q", c1.Comparator, "greater_than")
+	}
+	if c1.Value != 10 {
+		t.Errorf("checks[1].value = %v, want 10", c1.Value)
+	}
+}
+
+func TestParse_PollTrigger_DefaultMatch(t *testing.T) {
+	// When match is omitted it must default to "all".
+	raw := `
+name: poll-default-match
+trigger:
+  type: poll
+  interval: 5m
+  checks:
+    - tool: s.check
+      path: "$.status"
+      equals: ok
+capabilities:
+  tools:
+    - tool: s.check
+agent:
+  task: do it
+`
+	p, err := Parse(raw, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Trigger.Match != model.MatchAll {
+		t.Errorf("trigger.match = %q, want %q (default)", p.Trigger.Match, model.MatchAll)
 	}
 }
 
@@ -927,7 +982,10 @@ name: poll-bad
 trigger:
   type: poll
   interval: not-a-duration
-  tool: s.check
+  checks:
+    - tool: s.check
+      path: "$.status"
+      equals: ok
 capabilities:
   tools:
     - tool: s.check

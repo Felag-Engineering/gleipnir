@@ -82,6 +82,39 @@ export function yamlToFormState(yaml: string): FormState | null {
       type: 'scheduled',
       fireAt: fireAtRaw.filter((v: unknown) => typeof v === 'string') as string[],
     }
+  } else if (triggerType === 'poll') {
+    const interval = typeof triggerRaw.interval === 'string'
+      ? triggerRaw.interval
+      : typeof triggerRaw.interval === 'number'
+        ? `${triggerRaw.interval}m`
+        : '5m'
+    const match = triggerRaw.match === 'any' ? 'any' : 'all'
+    const checksRaw = Array.isArray(triggerRaw.checks) ? triggerRaw.checks : []
+    const comparators = ['equals', 'not_equals', 'greater_than', 'less_than', 'contains']
+    const checks = checksRaw.flatMap((c: unknown) => {
+      if (!isRecord(c)) return []
+      const tool = typeof c.tool === 'string' ? c.tool : ''
+      const input = isRecord(c.input) ? JSON.stringify(c.input) : ''
+      const path = typeof c.path === 'string' ? c.path : ''
+      let comparator = 'equals'
+      let value = ''
+      for (const comp of comparators) {
+        if (c[comp] !== undefined && c[comp] !== null) {
+          comparator = comp
+          value = String(c[comp])
+          break
+        }
+      }
+      return [{ tool, input, path, comparator: comparator as 'equals' | 'not_equals' | 'greater_than' | 'less_than' | 'contains', value }]
+    })
+    trigger = {
+      type: 'poll',
+      interval,
+      match,
+      checks: checks.length > 0
+        ? checks
+        : [{ tool: '', input: '', path: '', comparator: 'equals' as const, value: '' }],
+    }
   } else {
     trigger = { type: 'webhook' }
   }
@@ -198,6 +231,23 @@ export function formStateToYaml(state: FormState): string {
     triggerObj = { type: 'manual' }
   } else if (trigger.type === 'scheduled') {
     triggerObj = { type: 'scheduled', fire_at: trigger.fireAt }
+  } else if (trigger.type === 'poll') {
+    const checks = trigger.checks.map(c => {
+      const entry: Record<string, unknown> = { tool: c.tool }
+      if (c.input) {
+        try { entry.input = JSON.parse(c.input) } catch { /* leave input out if unparseable */ }
+      }
+      entry.path = c.path
+      // Coerce value string to number or bool where applicable so YAML types round-trip
+      let parsedValue: unknown = c.value
+      const num = Number(c.value)
+      if (c.value !== '' && !isNaN(num)) parsedValue = num
+      else if (c.value === 'true') parsedValue = true
+      else if (c.value === 'false') parsedValue = false
+      entry[c.comparator] = parsedValue
+      return entry
+    })
+    triggerObj = { type: 'poll', interval: trigger.interval, match: trigger.match, checks }
   } else {
     triggerObj = { type: 'webhook' }
   }
