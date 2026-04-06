@@ -810,6 +810,8 @@ func TestCreateMessage_WithHints(t *testing.T) {
 // --- StreamMessage tests ---
 
 func TestStreamMessage_SingleChunk(t *testing.T) {
+	// Response contains text and a function call. Multi-chunk emission produces
+	// two separate chunks: one for text, one for the tool call.
 	mock := &mockGenerator{
 		response: &genai.GenerateContentResponse{
 			Candidates: []*genai.Candidate{
@@ -839,40 +841,45 @@ func TestStreamMessage_SingleChunk(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	chunk, ok := <-ch
-	if !ok {
-		t.Fatal("expected chunk from channel, channel was already closed")
+	var chunks []llm.MessageChunk
+	for c := range ch {
+		chunks = append(chunks, c)
 	}
 
-	if chunk.Err != nil {
-		t.Errorf("expected nil Err, got %v", chunk.Err)
+	// Expect: 1 text chunk + 1 tool call chunk.
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
 	}
-	if chunk.Text == nil {
-		t.Fatal("expected non-nil Text")
+
+	textChunk := chunks[0]
+	if textChunk.Err != nil {
+		t.Errorf("expected nil Err, got %v", textChunk.Err)
 	}
-	if *chunk.Text != "hello from stream" {
-		t.Errorf("expected Text=%q, got %q", "hello from stream", *chunk.Text)
+	if textChunk.Text == nil || *textChunk.Text != "hello from stream" {
+		t.Errorf("chunks[0].Text = %v, want %q", textChunk.Text, "hello from stream")
 	}
-	if chunk.ToolCall == nil {
-		t.Fatal("expected non-nil ToolCall")
+	if textChunk.ToolCall != nil {
+		t.Errorf("chunks[0].ToolCall = %v, want nil", textChunk.ToolCall)
 	}
-	if chunk.ToolCall.ID != "fc-1" {
-		t.Errorf("expected ToolCall.ID=%q, got %q", "fc-1", chunk.ToolCall.ID)
+	if textChunk.StopReason != nil {
+		t.Error("chunks[0].StopReason should be nil (not the final chunk)")
 	}
-	if chunk.ToolCall.Name != "search" {
-		t.Errorf("expected ToolCall.Name=%q, got %q", "search", chunk.ToolCall.Name)
+
+	toolChunk := chunks[1]
+	if toolChunk.ToolCall == nil {
+		t.Fatal("chunks[1].ToolCall is nil, want non-nil")
 	}
-	if chunk.StopReason == nil {
-		t.Fatal("expected non-nil StopReason")
+	if toolChunk.ToolCall.ID != "fc-1" {
+		t.Errorf("chunks[1].ToolCall.ID = %q, want %q", toolChunk.ToolCall.ID, "fc-1")
 	}
-	if *chunk.StopReason != llm.StopReasonToolUse {
-		t.Errorf("expected StopReasonToolUse, got %v", *chunk.StopReason)
+	if toolChunk.ToolCall.Name != "search" {
+		t.Errorf("chunks[1].ToolCall.Name = %q, want %q", toolChunk.ToolCall.Name, "search")
 	}
-	if chunk.Usage == nil {
-		t.Fatal("expected non-nil Usage")
+	if toolChunk.StopReason == nil || *toolChunk.StopReason != llm.StopReasonToolUse {
+		t.Errorf("chunks[1].StopReason = %v, want StopReasonToolUse", toolChunk.StopReason)
 	}
-	if chunk.Usage.InputTokens != 25 || chunk.Usage.OutputTokens != 12 {
-		t.Errorf("expected Usage={25,12}, got %+v", *chunk.Usage)
+	if toolChunk.Usage == nil || toolChunk.Usage.InputTokens != 25 || toolChunk.Usage.OutputTokens != 12 {
+		t.Errorf("chunks[1].Usage = %v, want {InputTokens:25, OutputTokens:12}", toolChunk.Usage)
 	}
 }
 
@@ -890,13 +897,14 @@ func TestStreamMessage_ChannelClosed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Consume the single chunk.
-	<-ch
+	// Drain all chunks before checking closure.
+	for range ch {
+	}
 
-	// Channel must be closed — second receive must return ok=false.
+	// Channel must be closed — subsequent receive must return ok=false.
 	_, ok := <-ch
 	if ok {
-		t.Error("expected channel to be closed after single chunk")
+		t.Error("expected channel to be closed after all chunks consumed")
 	}
 }
 

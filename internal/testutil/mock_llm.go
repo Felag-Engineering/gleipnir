@@ -39,27 +39,14 @@ func (m *MockLLMClient) CreateMessage(_ context.Context, req llm.MessageRequest)
 	return resp, nil
 }
 
-// StreamMessage wraps CreateMessage and emits the complete response as a
-// single MessageChunk on a buffered channel.
+// StreamMessage wraps CreateMessage and delegates chunk-building to
+// StubStreamFromResponse, keeping mock behavior consistent with real providers.
 func (m *MockLLMClient) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
 	resp, err := m.CreateMessage(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	var chunk llm.MessageChunk
-	if len(resp.Text) > 0 {
-		text := resp.Text[0].Text
-		chunk.Text = &text
-	}
-	if len(resp.ToolCalls) > 0 {
-		chunk.ToolCall = &resp.ToolCalls[0]
-	}
-	chunk.StopReason = &resp.StopReason
-	chunk.Usage = &resp.Usage
-	ch := make(chan llm.MessageChunk, 1)
-	ch <- chunk
-	close(ch)
-	return ch, nil
+	return llm.StubStreamFromResponse(resp), nil
 }
 
 // ValidateOptions returns nil (no validation in mocks).

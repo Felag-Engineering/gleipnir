@@ -145,11 +145,14 @@ type MessageResponse struct {
 }
 
 // MessageChunk is a single chunk from a streaming response. Fields are pointers
-// because each chunk carries only a subset of the full response. If Err is
+// because each chunk carries only a subset of the full response. At most one of
+// Text, ToolCall, or Thinking is non-nil per chunk — one content block per chunk
+// matches real streaming semantics where blocks arrive incrementally. If Err is
 // non-nil, the stream encountered an error and this is the final chunk.
 type MessageChunk struct {
 	Text       *string
 	ToolCall   *ToolCallBlock
+	Thinking   *ThinkingBlock
 	Usage      *TokenUsage
 	StopReason *StopReason
 	Err        error
