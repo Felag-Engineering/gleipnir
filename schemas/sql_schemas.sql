@@ -342,3 +342,18 @@ CREATE TABLE model_settings (
     updated_at  TEXT    NOT NULL,
     PRIMARY KEY (provider, model_name)
 );
+
+-- OpenAI-compatible provider instances (ADR-032).
+-- Each row is a runtime-registered LLM provider speaking the OpenAI Chat
+-- Completions wire format. Admins create, edit, and delete these from the
+-- admin UI. Names `anthropic` and `google` are reserved by the API layer.
+CREATE TABLE openai_compat_providers (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    name              TEXT    NOT NULL UNIQUE,
+    base_url          TEXT    NOT NULL,
+    api_key_encrypted TEXT    NOT NULL,
+    created_at        TEXT    NOT NULL,
+    updated_at        TEXT    NOT NULL
+);
+
+CREATE INDEX idx_openai_compat_providers_name ON openai_compat_providers(name);
