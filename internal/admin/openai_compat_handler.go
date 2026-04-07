@@ -358,9 +358,56 @@ func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Requ
 
 	api.WriteJSON(w, http.StatusOK, h.rowToResponse(updated))
 }
+// DeleteProvider DELETE /api/v1/admin/openai-providers/{id}
 func (h *OpenAICompatHandler) DeleteProvider(w http.ResponseWriter, r *http.Request) {
-	api.WriteError(w, http.StatusNotImplemented, "not implemented", "")
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	existing, err := h.q.GetOpenAICompatProviderByID(r.Context(), id)
+	if err != nil {
+		api.WriteError(w, http.StatusNotFound, "provider not found", "")
+		return
+	}
+	if err := h.q.DeleteOpenAICompatProvider(r.Context(), id); err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "failed to delete", err.Error())
+		return
+	}
+	// Registry mutation after DB delete succeeds — same order as create/update.
+	h.registry.Unregister(existing.Name)
+	delete(h.modelsAvail, existing.Name)
+	w.WriteHeader(http.StatusNoContent)
 }
+
+// TestProvider POST /api/v1/admin/openai-providers/{id}/test
 func (h *OpenAICompatHandler) TestProvider(w http.ResponseWriter, r *http.Request) {
-	api.WriteError(w, http.StatusNotImplemented, "not implemented", "")
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	existing, err := h.q.GetOpenAICompatProviderByID(r.Context(), id)
+	if err != nil {
+		api.WriteError(w, http.StatusNotFound, "provider not found", "")
+		return
+	}
+	plain, err := Decrypt(h.encKey, existing.APIKeyEncrypted)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "could not decrypt key", "")
+		return
+	}
+	modelsAvail, err := h.tester(r.Context(), existing.BaseURL, plain)
+	if err != nil {
+		// HTTP 200 — tester failure is data, not an HTTP-level error.
+		api.WriteJSON(w, http.StatusOK, map[string]any{
+			"ok":                        false,
+			"models_endpoint_available": false,
+			"error":                     err.Error(),
+		})
+		return
+	}
+	h.modelsAvail[existing.Name] = modelsAvail
+	api.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":                        true,
+		"models_endpoint_available": modelsAvail,
+	})
 }

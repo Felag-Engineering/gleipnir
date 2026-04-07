@@ -331,3 +331,121 @@ func TestUpdate_NameCollision(t *testing.T) {
 		t.Errorf("status: %d, want 409", w.Code)
 	}
 }
+
+func TestDelete_HappyPath(t *testing.T) {
+	h, q, reg := newOpenAICompatTestHandler(okTester)
+	router := mountRouter(h)
+	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
+		map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"})
+
+	w := doRequest(t, router, "DELETE", "/api/v1/admin/openai-providers/1", nil)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status: %d, want 204", w.Code)
+	}
+	if len(q.rows) != 0 {
+		t.Errorf("row should be deleted")
+	}
+	if _, err := reg.Get("openai"); err == nil {
+		t.Errorf("should be unregistered")
+	}
+}
+
+func TestDelete_NotFound(t *testing.T) {
+	h, _, _ := newOpenAICompatTestHandler(okTester)
+	router := mountRouter(h)
+	w := doRequest(t, router, "DELETE", "/api/v1/admin/openai-providers/999", nil)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status: %d, want 404", w.Code)
+	}
+}
+
+func TestList_MasksKeys(t *testing.T) {
+	h, _, _ := newOpenAICompatTestHandler(okTester)
+	router := mountRouter(h)
+	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
+		map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-very-secret-value"})
+
+	w := doRequest(t, router, "GET", "/api/v1/admin/openai-providers", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "sk-very-secret-value") {
+		t.Error("plaintext key leaked in list response")
+	}
+}
+
+func TestGet_MasksKey(t *testing.T) {
+	h, _, _ := newOpenAICompatTestHandler(okTester)
+	router := mountRouter(h)
+	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
+		map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-secret-xyz"})
+
+	w := doRequest(t, router, "GET", "/api/v1/admin/openai-providers/1", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "sk-secret-xyz") {
+		t.Error("plaintext key leaked in get response")
+	}
+}
+
+func TestTestProvider_HappyPath(t *testing.T) {
+	h, _, _ := newOpenAICompatTestHandler(okTester)
+	router := mountRouter(h)
+	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
+		map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"})
+
+	w := doRequest(t, router, "POST", "/api/v1/admin/openai-providers/1/test", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: %d, body: %s", w.Code, w.Body.String())
+	}
+	// WriteJSON wraps in {"data": ...}.
+	var envelope struct {
+		Data struct {
+			OK                      bool   `json:"ok"`
+			ModelsEndpointAvailable bool   `json:"models_endpoint_available"`
+			Error                   string `json:"error"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &envelope)
+	if !envelope.Data.OK {
+		t.Errorf("want ok=true, got %+v", envelope.Data)
+	}
+}
+
+func TestTestProvider_Unreachable(t *testing.T) {
+	h, _, _ := newOpenAICompatTestHandler(okTester)
+	router := mountRouter(h)
+	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
+		map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"})
+
+	// Swap the tester to a failing one for the re-test.
+	h.tester = failTester(errors.New("connection refused"))
+
+	w := doRequest(t, router, "POST", "/api/v1/admin/openai-providers/1/test", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: %d, body: %s", w.Code, w.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &envelope)
+	if envelope.Data.OK {
+		t.Errorf("want ok=false, got %+v", envelope.Data)
+	}
+	if !strings.Contains(envelope.Data.Error, "connection refused") {
+		t.Errorf("error should mention connection refused: %q", envelope.Data.Error)
+	}
+}
+
+func TestTestProvider_NotFound(t *testing.T) {
+	h, _, _ := newOpenAICompatTestHandler(okTester)
+	router := mountRouter(h)
+	w := doRequest(t, router, "POST", "/api/v1/admin/openai-providers/999/test", nil)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status: %d, want 404", w.Code)
+	}
+}
