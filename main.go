@@ -26,6 +26,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/llm"
 	anthropicllm "github.com/rapp992/gleipnir/internal/llm/anthropic"
 	googlellm "github.com/rapp992/gleipnir/internal/llm/google"
+	openaillm "github.com/rapp992/gleipnir/internal/llm/openai"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
@@ -178,6 +179,19 @@ func run(cfg config.Config) error {
 		slog.Warn("GOOGLE_API_KEY env var is set but no longer used — configure API keys through the admin UI at /admin/models")
 	}
 
+	// Wire up the OpenAI-compatible provider handler. The adapter bridges
+	// sqlc-generated rows to the handler and loader interfaces. nil tester
+	// causes NewOpenAICompatHandler to substitute DefaultConnectionTester.
+	openaiAdapter := &openaiCompatAdapter{q: store.Queries()}
+	openaiCompatHandler := admin.NewOpenAICompatHandler(openaiAdapter, encryptionKey, providerRegistry, nil)
+
+	// Load any previously-saved OpenAI-compat providers from the DB into the
+	// registry at startup. Failure is non-fatal (mirrors bootstrap-providers
+	// loop above) — a log entry is sufficient.
+	if err := openaillm.LoadAndRegister(ctx, openaiAdapter, encryptionKey, providerRegistry, admin.Decrypt); err != nil {
+		slog.Error("failed to load openai-compat providers at startup", "err", err)
+	}
+
 	// claudeCodeFactory bridges agent.Config to claudecode.Config so the trigger
 	// layer does not need to import internal/agent/claudecode directly.
 	claudeCodeFactory := func(cfg agent.Config) (agent.Runner, error) {
@@ -281,6 +295,15 @@ func run(cfg config.Config) error {
 					return int(n), err
 				},
 			}))
+
+			r.Route("/openai-providers", func(r chi.Router) {
+				r.Get("/", openaiCompatHandler.ListProviders)
+				r.Post("/", openaiCompatHandler.CreateProvider)
+				r.Get("/{id}", openaiCompatHandler.GetProvider)
+				r.Put("/{id}", openaiCompatHandler.UpdateProvider)
+				r.Delete("/{id}", openaiCompatHandler.DeleteProvider)
+				r.Post("/{id}/test", openaiCompatHandler.TestProvider)
+			})
 		})
 	})
 
@@ -343,6 +366,108 @@ func run(cfg config.Config) error {
 // modelFilterAdapter bridges db.Queries to the api.ModelFilter interface.
 type modelFilterAdapter struct {
 	q *db.Queries
+}
+
+// openaiCompatAdapter bridges *db.Queries to both admin.OpenAICompatQuerier
+// and openai.LoaderQuerier. It translates between the sqlc-generated
+// db.OpenaiCompatProvider struct (snake_case fields like BaseUrl,
+// ApiKeyEncrypted) and the handler/loader interfaces (CamelCase: BaseURL,
+// APIKeyEncrypted).
+type openaiCompatAdapter struct {
+	q *db.Queries
+}
+
+func (a *openaiCompatAdapter) ListOpenAICompatProviders(ctx context.Context) ([]admin.OpenAICompatRow, error) {
+	rows, err := a.q.ListOpenAICompatProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]admin.OpenAICompatRow, len(rows))
+	for i, r := range rows {
+		result[i] = sqlcRowToAdminRow(r)
+	}
+	return result, nil
+}
+
+func (a *openaiCompatAdapter) GetOpenAICompatProviderByID(ctx context.Context, id int64) (admin.OpenAICompatRow, error) {
+	r, err := a.q.GetOpenAICompatProviderByID(ctx, id)
+	if err != nil {
+		return admin.OpenAICompatRow{}, err
+	}
+	return sqlcRowToAdminRow(r), nil
+}
+
+func (a *openaiCompatAdapter) GetOpenAICompatProviderByName(ctx context.Context, name string) (admin.OpenAICompatRow, error) {
+	r, err := a.q.GetOpenAICompatProviderByName(ctx, name)
+	if err != nil {
+		return admin.OpenAICompatRow{}, err
+	}
+	return sqlcRowToAdminRow(r), nil
+}
+
+func (a *openaiCompatAdapter) CreateOpenAICompatProvider(ctx context.Context, row admin.OpenAICompatRow) (admin.OpenAICompatRow, error) {
+	r, err := a.q.CreateOpenAICompatProvider(ctx, db.CreateOpenAICompatProviderParams{
+		Name:            row.Name,
+		BaseUrl:         row.BaseURL,
+		ApiKeyEncrypted: row.APIKeyEncrypted,
+		CreatedAt:       row.CreatedAt,
+		UpdatedAt:       row.UpdatedAt,
+	})
+	if err != nil {
+		return admin.OpenAICompatRow{}, err
+	}
+	return sqlcRowToAdminRow(r), nil
+}
+
+func (a *openaiCompatAdapter) UpdateOpenAICompatProvider(ctx context.Context, row admin.OpenAICompatRow) (admin.OpenAICompatRow, error) {
+	r, err := a.q.UpdateOpenAICompatProvider(ctx, db.UpdateOpenAICompatProviderParams{
+		ID:              row.ID,
+		Name:            row.Name,
+		BaseUrl:         row.BaseURL,
+		ApiKeyEncrypted: row.APIKeyEncrypted,
+		UpdatedAt:       row.UpdatedAt,
+	})
+	if err != nil {
+		return admin.OpenAICompatRow{}, err
+	}
+	return sqlcRowToAdminRow(r), nil
+}
+
+func (a *openaiCompatAdapter) DeleteOpenAICompatProvider(ctx context.Context, id int64) error {
+	return a.q.DeleteOpenAICompatProvider(ctx, id)
+}
+
+// ListOpenAICompatProvidersForLoader satisfies openai.LoaderQuerier. It
+// returns only the fields the loader needs (name, base URL, encrypted key).
+func (a *openaiCompatAdapter) ListOpenAICompatProvidersForLoader(ctx context.Context) ([]openaillm.LoaderRow, error) {
+	rows, err := a.q.ListOpenAICompatProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]openaillm.LoaderRow, len(rows))
+	for i, r := range rows {
+		result[i] = openaillm.LoaderRow{
+			Name:            r.Name,
+			BaseURL:         r.BaseUrl,
+			APIKeyEncrypted: r.ApiKeyEncrypted,
+		}
+	}
+	return result, nil
+}
+
+// sqlcRowToAdminRow converts a sqlc-generated db.OpenaiCompatProvider to the
+// admin.OpenAICompatRow shape used by the handler and adapter interfaces.
+// The field name mapping (BaseUrl→BaseURL, ApiKeyEncrypted→APIKeyEncrypted)
+// is the only translation needed.
+func sqlcRowToAdminRow(r db.OpenaiCompatProvider) admin.OpenAICompatRow {
+	return admin.OpenAICompatRow{
+		ID:              r.ID,
+		Name:            r.Name,
+		BaseURL:         r.BaseUrl,
+		APIKeyEncrypted: r.ApiKeyEncrypted,
+		CreatedAt:       r.CreatedAt,
+		UpdatedAt:       r.UpdatedAt,
+	}
 }
 
 func (a *modelFilterAdapter) ListDisabledModels(ctx context.Context) ([]api.DisabledModel, error) {
