@@ -55,6 +55,15 @@ type ModelSetting struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+type OpenaiCompatProvider struct {
+	ID              int64  `json:"id"`
+	Name            string `json:"name"`
+	BaseUrl         string `json:"base_url"`
+	ApiKeyEncrypted string `json:"api_key_encrypted"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+}
+
 type Policy struct {
 	ID          string  `json:"id"`
 	Name        string  `json:"name"`
