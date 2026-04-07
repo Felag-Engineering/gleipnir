@@ -262,9 +262,101 @@ func (h *OpenAICompatHandler) CreateProvider(w http.ResponseWriter, r *http.Requ
 	api.WriteJSON(w, http.StatusCreated, h.rowToResponse(row))
 }
 
-// Stubs — implemented in subsequent tasks.
+// UpdateProvider PUT /api/v1/admin/openai-providers/{id}
 func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Request) {
-	api.WriteError(w, http.StatusNotImplemented, "not implemented", "")
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	var body createRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid JSON body", err.Error())
+		return
+	}
+	if err := validateNameFormat(body.Name); err != nil {
+		api.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	base, err := validateBaseURL(body.BaseURL)
+	if err != nil {
+		api.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+
+	existing, err := h.q.GetOpenAICompatProviderByID(r.Context(), id)
+	if err != nil {
+		api.WriteError(w, http.StatusNotFound, "provider not found", "")
+		return
+	}
+
+	// Name collision with a *different* row. Skip when name is unchanged so a
+	// row updating only its base_url or key does not collide with itself.
+	if body.Name != existing.Name {
+		if _, err := h.q.GetOpenAICompatProviderByName(r.Context(), body.Name); err == nil {
+			api.WriteError(w, http.StatusConflict, "name already in use", "")
+			return
+		}
+	}
+
+	// Resolve the effective plaintext key and the ciphertext to persist.
+	// If the client echoes back the masked value (e.g. "sk-...wxyz") or sends
+	// an empty string, we treat it as "keep the existing key" — the stored
+	// ciphertext is preserved unchanged. Otherwise, we treat the value as a
+	// new plaintext key and re-encrypt it. This is the sentinel behavior that
+	// lets the UI round-trip without ever exposing the real plaintext.
+	var effectiveKey string
+	var newCiphertext string
+	if isMaskedKey(body.APIKey) || body.APIKey == "" {
+		plain, err := Decrypt(h.encKey, existing.APIKeyEncrypted)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "could not decrypt existing key", "")
+			return
+		}
+		effectiveKey = plain
+		newCiphertext = existing.APIKeyEncrypted
+	} else {
+		effectiveKey = body.APIKey
+		enc, err := Encrypt(h.encKey, body.APIKey)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "encryption failed", "")
+			return
+		}
+		newCiphertext = enc
+	}
+
+	modelsAvail, err := h.tester(r.Context(), base, effectiveKey)
+	if err != nil {
+		api.WriteError(w, http.StatusBadRequest,
+			fmt.Sprintf("connection test failed: %v", err), "")
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	updated, err := h.q.UpdateOpenAICompatProvider(r.Context(), OpenAICompatRow{
+		ID:              id,
+		Name:            body.Name,
+		BaseURL:         base,
+		APIKeyEncrypted: newCiphertext,
+		CreatedAt:       existing.CreatedAt,
+		UpdatedAt:       now,
+	})
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "failed to update provider", err.Error())
+		return
+	}
+
+	// Mutate the registry only after the DB write succeeds (matches create-path
+	// invariant). Unregister the old name first if it changed, then register
+	// under the new name.
+	if body.Name != existing.Name {
+		h.registry.Unregister(existing.Name)
+		delete(h.modelsAvail, existing.Name)
+	}
+	client := openai.NewClient(base, effectiveKey)
+	h.registry.Register(body.Name, client)
+	h.modelsAvail[body.Name] = modelsAvail
+
+	api.WriteJSON(w, http.StatusOK, h.rowToResponse(updated))
 }
 func (h *OpenAICompatHandler) DeleteProvider(w http.ResponseWriter, r *http.Request) {
 	api.WriteError(w, http.StatusNotImplemented, "not implemented", "")

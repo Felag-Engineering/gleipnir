@@ -242,3 +242,92 @@ func TestCreate_ConnectionTest404AcceptsWithFlag(t *testing.T) {
 		t.Errorf("models_endpoint_available should be false")
 	}
 }
+
+func TestUpdate_MaskedKeyKeepsCiphertext(t *testing.T) {
+	h, q, _ := newOpenAICompatTestHandler(okTester)
+	router := mountRouter(h)
+
+	// Create a provider.
+	create := map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-original"}
+	wc := doRequest(t, router, "POST", "/api/v1/admin/openai-providers", create)
+	if wc.Code != http.StatusCreated {
+		t.Fatalf("create: %d", wc.Code)
+	}
+	// Response is wrapped in {"data": ...}; unwrap to read the masked key.
+	var envelope struct {
+		Data providerResponse `json:"data"`
+	}
+	_ = json.Unmarshal(wc.Body.Bytes(), &envelope)
+	created := envelope.Data
+
+	originalCiphertext := q.rows[created.ID].APIKeyEncrypted
+	originalMasked := created.MaskedKey
+
+	// PUT with the masked value — should keep ciphertext unchanged.
+	upd := map[string]string{"name": "openai", "base_url": "https://api.openai.com/v2", "api_key": originalMasked}
+	wu := doRequest(t, router, "PUT", "/api/v1/admin/openai-providers/1", upd)
+	if wu.Code != http.StatusOK {
+		t.Fatalf("update: %d, body: %s", wu.Code, wu.Body.String())
+	}
+	if got := q.rows[created.ID].APIKeyEncrypted; got != originalCiphertext {
+		t.Errorf("ciphertext should be unchanged, got different bytes")
+	}
+	if got := q.rows[created.ID].BaseURL; got != "https://api.openai.com/v2" {
+		t.Errorf("base_url not updated: %q", got)
+	}
+}
+
+func TestUpdate_NewKeyReencrypts(t *testing.T) {
+	h, q, _ := newOpenAICompatTestHandler(okTester)
+	router := mountRouter(h)
+
+	create := map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-original"}
+	doRequest(t, router, "POST", "/api/v1/admin/openai-providers", create)
+	originalCiphertext := q.rows[1].APIKeyEncrypted
+
+	upd := map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-new-key-xyz"}
+	wu := doRequest(t, router, "PUT", "/api/v1/admin/openai-providers/1", upd)
+	if wu.Code != http.StatusOK {
+		t.Fatalf("update: %d", wu.Code)
+	}
+	if q.rows[1].APIKeyEncrypted == originalCiphertext {
+		t.Errorf("ciphertext should have changed")
+	}
+	plain, _ := Decrypt(testKey, q.rows[1].APIKeyEncrypted)
+	if plain != "sk-new-key-xyz" {
+		t.Errorf("plaintext after decrypt: %q", plain)
+	}
+}
+
+func TestUpdate_NameChangeReregisters(t *testing.T) {
+	h, _, reg := newOpenAICompatTestHandler(okTester)
+	router := mountRouter(h)
+	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
+		map[string]string{"name": "old-name", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"})
+
+	upd := map[string]string{"name": "new-name", "base_url": "https://api.openai.com/v1", "api_key": "sk-...abc"}
+	_ = doRequest(t, router, "PUT", "/api/v1/admin/openai-providers/1", upd)
+
+	if _, err := reg.Get("new-name"); err != nil {
+		t.Errorf("new-name not registered: %v", err)
+	}
+	if _, err := reg.Get("old-name"); err == nil {
+		t.Errorf("old-name should have been unregistered")
+	}
+}
+
+func TestUpdate_NameCollision(t *testing.T) {
+	h, _, _ := newOpenAICompatTestHandler(okTester)
+	router := mountRouter(h)
+	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
+		map[string]string{"name": "a", "base_url": "https://api.openai.com/v1", "api_key": "sk-1"})
+	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
+		map[string]string{"name": "b", "base_url": "https://api.openai.com/v1", "api_key": "sk-2"})
+
+	// Try to rename row 2 to "a".
+	upd := map[string]string{"name": "a", "base_url": "https://api.openai.com/v1", "api_key": "sk-...sk-2"}
+	w := doRequest(t, router, "PUT", "/api/v1/admin/openai-providers/2", upd)
+	if w.Code != http.StatusConflict {
+		t.Errorf("status: %d, want 409", w.Code)
+	}
+}
