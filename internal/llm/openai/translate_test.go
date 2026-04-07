@@ -2,6 +2,8 @@ package openai
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -415,5 +417,154 @@ func TestBuildChatCompletionRequest_JSONRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(req.Messages, back.Messages) {
 		t.Errorf("round-trip mismatch:\nwant %+v\ngot  %+v", req.Messages, back.Messages)
+	}
+}
+
+func TestParseChatCompletionResponse(t *testing.T) {
+	cases := []struct {
+		name        string
+		fixture     string
+		wantText    string
+		wantCalls   int
+		wantStop    llm.StopReason
+		wantInTok   int
+		wantOutTok  int
+		wantThinkTk int
+		wantErr     bool
+	}{
+		{
+			name: "text only",
+			fixture: "chat_response_text_only.json",
+			wantText: "Hello from OpenAI.", wantStop: llm.StopReasonEndTurn,
+			wantInTok: 12, wantOutTok: 5,
+		},
+		{
+			name: "single tool call",
+			fixture: "chat_response_with_tool_calls.json",
+			wantCalls: 1, wantStop: llm.StopReasonToolUse,
+			wantInTok: 40, wantOutTok: 15,
+		},
+		{
+			name: "parallel tool calls",
+			fixture: "chat_response_parallel_tool_calls.json",
+			wantCalls: 2, wantStop: llm.StopReasonToolUse,
+			wantInTok: 50, wantOutTok: 20,
+		},
+		{
+			name: "o-series reasoning tokens",
+			fixture: "chat_response_o_series_with_reasoning_tokens.json",
+			wantText: "42", wantStop: llm.StopReasonEndTurn,
+			wantInTok: 30, wantOutTok: 150, wantThinkTk: 120,
+		},
+		{
+			name: "length truncation",
+			fixture: "chat_response_finish_length.json",
+			wantText: "truncated...", wantStop: llm.StopReasonMaxTokens,
+			wantInTok: 10, wantOutTok: 100,
+		},
+		{
+			name: "content filter maps to error",
+			fixture: "chat_response_finish_content_filter.json",
+			wantStop: llm.StopReasonError,
+			wantInTok: 10,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("testdata", tc.fixture))
+			if err != nil {
+				t.Fatalf("fixture: %v", err)
+			}
+			var wire chatResponse
+			if err := json.Unmarshal(raw, &wire); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			resp, err := ParseChatCompletionResponse(&wire)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if tc.wantText != "" {
+				if len(resp.Text) != 1 || resp.Text[0].Text != tc.wantText {
+					t.Errorf("text: %+v", resp.Text)
+				}
+			}
+			if tc.name == "content filter maps to error" && len(resp.Text) != 0 {
+				t.Errorf("content_filter: expected no text, got %+v", resp.Text)
+			}
+			if len(resp.ToolCalls) != tc.wantCalls {
+				t.Errorf("tool calls: got %d, want %d", len(resp.ToolCalls), tc.wantCalls)
+			}
+			if resp.StopReason != tc.wantStop {
+				t.Errorf("stop reason: got %v, want %v", resp.StopReason, tc.wantStop)
+			}
+			if resp.Usage.InputTokens != tc.wantInTok {
+				t.Errorf("input tokens: got %d, want %d", resp.Usage.InputTokens, tc.wantInTok)
+			}
+			if resp.Usage.OutputTokens != tc.wantOutTok {
+				t.Errorf("output tokens: got %d, want %d", resp.Usage.OutputTokens, tc.wantOutTok)
+			}
+			if resp.Usage.ThinkingTokens != tc.wantThinkTk {
+				t.Errorf("thinking tokens: got %d, want %d", resp.Usage.ThinkingTokens, tc.wantThinkTk)
+			}
+			if resp.Thinking != nil {
+				t.Errorf("Thinking should always be nil for OpenAI, got %+v", resp.Thinking)
+			}
+		})
+	}
+}
+
+func TestParseChatCompletionResponse_MalformedToolArguments(t *testing.T) {
+	content := (*string)(nil)
+	wire := &chatResponse{
+		Choices: []chatChoice{{
+			Message: chatMessage{
+				Role:    "assistant",
+				Content: content,
+				ToolCalls: []chatToolCall{{
+					ID:   "c1",
+					Type: "function",
+					Function: chatToolCallFunc{Name: "t", Arguments: "not-json"},
+				}},
+			},
+			FinishReason: "tool_calls",
+		}},
+	}
+	if _, err := ParseChatCompletionResponse(wire); err == nil {
+		t.Error("expected error for malformed tool arguments")
+	}
+}
+
+func TestParseChatCompletionResponse_UnknownFinishReason(t *testing.T) {
+	s := "hi"
+	wire := &chatResponse{
+		Choices: []chatChoice{{
+			Message:      chatMessage{Role: "assistant", Content: &s},
+			FinishReason: "something_new",
+		}},
+	}
+	resp, err := ParseChatCompletionResponse(wire)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if resp.StopReason != llm.StopReasonError {
+		t.Errorf("unknown finish should map to Error, got %v", resp.StopReason)
+	}
+}
+
+func TestParseChatCompletionResponse_MissingUsageDetails(t *testing.T) {
+	s := "hi"
+	wire := &chatResponse{
+		Choices: []chatChoice{{
+			Message:      chatMessage{Role: "assistant", Content: &s},
+			FinishReason: "stop",
+		}},
+		Usage: &chatUsage{PromptTokens: 5, CompletionTokens: 10},
+	}
+	resp, err := ParseChatCompletionResponse(wire)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if resp.Usage.ThinkingTokens != 0 {
+		t.Errorf("thinking tokens should be 0, got %d", resp.Usage.ThinkingTokens)
 	}
 }

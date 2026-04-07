@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/rapp992/gleipnir/internal/llm"
@@ -145,6 +147,64 @@ func translateUserTurn(blocks []llm.ContentBlock) []chatMessage {
 		out = append(out, chatMessage{Role: "user", Content: &joined})
 	}
 	return out
+}
+
+// ParseChatCompletionResponse translates a wire response into the normalized
+// llm.MessageResponse. Returns an error only on malformed tool call
+// arguments — all other abnormalities (unknown finish reasons, missing
+// usage details) degrade gracefully.
+func ParseChatCompletionResponse(wire *chatResponse) (*llm.MessageResponse, error) {
+	out := &llm.MessageResponse{}
+	if len(wire.Choices) == 0 {
+		return out, nil
+	}
+	choice := wire.Choices[0]
+
+	// Content is omitted (nil) when the response is tool-calls-only; an empty
+	// string string also carries no useful text and would create a spurious block
+	// that confuses callers expecting at least one real token.
+	if choice.Message.Content != nil && *choice.Message.Content != "" {
+		out.Text = []llm.TextBlock{{Text: *choice.Message.Content}}
+	}
+
+	for _, tc := range choice.Message.ToolCalls {
+		// Validate that Arguments is parseable JSON — callers trust Input is.
+		if !json.Valid([]byte(tc.Function.Arguments)) {
+			return nil, fmt.Errorf("openai: tool call %q: arguments is not valid JSON: %q",
+				tc.Function.Name, tc.Function.Arguments)
+		}
+		out.ToolCalls = append(out.ToolCalls, llm.ToolCallBlock{
+			ID:    tc.ID,
+			Name:  tc.Function.Name,
+			Input: json.RawMessage(tc.Function.Arguments),
+		})
+	}
+
+	switch choice.FinishReason {
+	case "stop":
+		out.StopReason = llm.StopReasonEndTurn
+	case "tool_calls":
+		out.StopReason = llm.StopReasonToolUse
+	case "length":
+		out.StopReason = llm.StopReasonMaxTokens
+	default:
+		// "content_filter" and any future finish reasons are mapped to Error so
+		// the agent runtime can surface them rather than silently continuing.
+		out.StopReason = llm.StopReasonError
+	}
+
+	if wire.Usage != nil {
+		out.Usage.InputTokens = wire.Usage.PromptTokens
+		out.Usage.OutputTokens = wire.Usage.CompletionTokens
+		if wire.Usage.CompletionTokensDetails != nil {
+			out.Usage.ThinkingTokens = wire.Usage.CompletionTokensDetails.ReasoningTokens
+		}
+	}
+
+	// Thinking is always nil for OpenAI — reasoning content is not surfaced
+	// by the Chat Completions endpoint. See ADR-032 §2 ("Why Chat Completions
+	// only, not the Responses API").
+	return out, nil
 }
 
 // isOSeriesModel returns true when the model should route max_tokens to
