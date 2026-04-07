@@ -46,6 +46,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-029 | Approval state machine (v1.0 minimal)              | 🟢 Decided    | v1.0   | BoundAgent runtime, approval handler, SSE, UI        |
 | ADR-030 | UI abstracts over tool transport — Tools page is protocol-agnostic | 🟢 Decided | v0.1 | Frontend nav, routes, MCPPage UI text          |
 | ADR-031 | Native feedback as a Gleipnir runtime primitive | 🟢 Decided | v1.0 | Agent runtime, policy schema, notify package, UI |
+| ADR-032 | Admin-managed OpenAI-compatible LLM provider instances | 🟡 Proposed | v1.0 | internal/llm/openai, admin API, admin UI |
 
 ---
 
@@ -917,6 +918,105 @@ The `timeout` field, if set, applies a deadline to each individual feedback requ
 - ADR-007 is partially superseded: the sensor/actuator/feedback three-role model collapses to tools (with optional approval) plus the runtime feedback primitive.
 - ADR-008 is partially superseded: "agent-initiated feedback" is no longer a separate mode — it is simply the agent calling `gleipnir.ask_operator`. "Policy-gated approval" is unchanged.
 - ADR-009 is superseded in mechanism: the feedback channel resolution (policy-first, system fallback) now applies to the `notify` package configuration rather than to MCP tool selection.
+
+---
+
+## ADR-032: Admin-managed OpenAI-compatible LLM provider instances
+
+**Status:** Proposed (will be marked Accepted when the implementation of spec
+`docs/superpowers/specs/2026-04-06-openai-compatible-llm-client-design.md` lands).
+
+**Context.** Gleipnir's existing LLM provider model (ADR-026) supports two
+providers — Anthropic and Google — each backed by a vendor SDK and configured
+via a single fixed `<provider>_api_key` row in `system_settings`. The provider
+list is a static `knownProviders` slice baked in at startup. This does not
+extend to adding OpenAI as a third first-class provider (issue #533), letting
+operators point Gleipnir at OpenAI-compatible backends (Ollama, vLLM,
+OpenRouter, LM Studio, Together, Groq, Azure-via-compat), or allowing
+administrators to add or change LLM endpoints at runtime without redeploying.
+
+**Decision.** Introduce a second provider mechanism that coexists with the
+existing SDK-backed mechanism:
+
+- **SDK providers (`anthropic`, `google`)** remain exactly as today. One row
+  per provider in `system_settings`. Static `knownProviders` slice. Vendor
+  SDKs. They are inherently special — vendor-specific features (prompt
+  caching, signed thinking blocks, citations, structured outputs) justify
+  per-provider client code.
+- **OpenAI-compatible provider instances** are admin-managed, persisted in a
+  new `openai_compat_providers` table, and registered into the existing
+  `ProviderRegistry` at startup and on every admin mutation. Each row is an
+  *instance* of one shared client implementation: a single hand-rolled
+  `*openai.Client` constructed with the row's `base_url` and decrypted
+  `api_key`. The same client serves OpenAI itself
+  (`base_url = https://api.openai.com/v1`) and any compatible third-party
+  backend.
+
+**Why hand-rolled, not the official OpenAI Go SDK.** OpenAI Chat Completions
+is small, stable, and re-implemented by dozens of third-party backends. A
+hand-rolled client (~500 lines) permits permissive deserialization that
+tolerates compat-backend quirks (omitted fields, slightly different streaming
+chunks, missing `/models`). A strict typed SDK would reject responses a
+permissive client accepts. Maintaining one client for both OpenAI proper and
+compat backends avoids the drift and bug surface of two parallel
+implementations of the same protocol. The SDK's value is concentrated in
+non-Chat-Completions surfaces (Realtime, Assistants, Responses) that
+Gleipnir does not need.
+
+**Why Chat Completions only, not the Responses API.** The Responses API is
+OpenAI-only (compat backends do not implement it). Surfacing reasoning
+content from o-series models requires it; we accept that reasoning content
+is hidden and only reasoning token counts are recorded, via
+`TokenUsage.ThinkingTokens`. Standard chat models have no hidden reasoning,
+so nothing is lost there.
+
+**Why two mechanisms instead of unifying everything in one table.**
+Migrating Anthropic and Google into the new table was rejected because they
+are legitimately special: vendor SDKs with features that don't fit a uniform
+shape. The two-mechanism approach is honest about the underlying difference.
+
+**Why the reserved-name rule.** The names `anthropic` and `google` are
+reserved at the API layer. Without this, an admin could create an
+`openai_compat_providers` row named `anthropic` and silently shadow the
+SDK-backed Anthropic provider in the registry.
+
+**Why API keys are encrypted at rest.** Reuses the existing
+`internal/admin/crypto.go` and `GLEIPNIR_SECRET_KEY` infrastructure already
+used for Anthropic and Google keys. No new key-management story.
+
+**Why deletion is destructive without policy checks.** A policy referencing
+an unknown provider already fails at run-start with a clear error. A
+"references" check can be added later without changing this ADR. In-flight
+runs that already hold a client reference complete their current API call
+and only fail when their next run starts and tries to look up the provider
+in the registry.
+
+**Why connection-test-on-save (with a 404 escape hatch).** Surfacing bad
+config to the admin at save time — rather than to a policy author hours
+later in a failed run — is the better operator experience. The 404 escape
+hatch exists because some compat backends do not implement `/v1/models`;
+they should still be usable, with the trade-off that model-name autocomplete
+is unavailable for those instances.
+
+**Consequences.**
+
+- New table `openai_compat_providers`. Migration is additive.
+- New admin endpoints under `/api/v1/admin/openai-providers`, admin-role gated.
+- New section on the existing admin LLM Providers page. Anthropic and Google
+  sections unchanged.
+- New Go package `internal/llm/openai`, mirroring `internal/llm/anthropic`
+  and `internal/llm/google`.
+- Policy YAML unchanged. Policies continue to say `provider: <name>`.
+- Two parallel provider mechanisms exist after this change. Future LLM
+  providers that also speak OpenAI Chat Completions require zero new code
+  (just an admin-created instance). Future LLM providers that need a vendor
+  SDK require a new package alongside `anthropic` and `google` and an entry
+  in `knownProviders`.
+
+**Supersedes / amends.** Builds on ADR-026 (Model-Agnostic Design); does not
+supersede it. Adds a second registration mechanism alongside the existing
+static one. ADR-001 (hard capability enforcement) is unchanged — the new
+client never sees policy details; it only receives filtered tool lists.
 
 ---
 
