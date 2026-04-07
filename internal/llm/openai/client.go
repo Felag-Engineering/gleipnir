@@ -108,10 +108,33 @@ func (c *Client) CreateMessage(ctx context.Context, req llm.MessageRequest) (*ll
 	return ParseChatCompletionResponse(&wire)
 }
 
-// StreamMessage is a stub that returns an error. Full streaming support is
-// implemented in Task 9 (#555).
-func (c *Client) StreamMessage(_ context.Context, _ llm.MessageRequest) (<-chan llm.MessageChunk, error) {
-	return nil, errors.New("openai: StreamMessage not yet implemented")
+// StreamMessage sends a streaming Chat Completions request and returns a
+// channel that delivers chunks as they arrive. Pre-stream HTTP errors (e.g.
+// 401, 429) are returned synchronously; mid-stream errors arrive on the
+// channel as MessageChunk{Err: err}. parseSSEStream owns closing resp.Body
+// and the out channel, so callers must not close either.
+func (c *Client) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
+	wireReq := BuildChatCompletionRequest(req, true)
+
+	body, err := json.Marshal(wireReq)
+	if err != nil {
+		return nil, fmt.Errorf("openai: marshal stream request: %w", err)
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, wrapHTTPError(resp.StatusCode, raw)
+	}
+
+	out := make(chan llm.MessageChunk, 16)
+	go parseSSEStream(ctx, resp.Body, out)
+	return out, nil
 }
 
 // ValidateOptions validates provider-specific options from the policy YAML.

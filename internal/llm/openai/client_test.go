@@ -272,6 +272,76 @@ func TestValidateModelName_KnownAndUnknown(t *testing.T) {
 	}
 }
 
+func TestStreamMessage_HappyPath(t *testing.T) {
+	fixture := loadFixture(t, "stream_chunks_text.txt")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+
+		var wireReq chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&wireReq); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if !wireReq.Stream {
+			t.Error("expected stream=true in request body")
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write(fixture)
+	}))
+	defer srv.Close()
+
+	ch, err := newTestClient(srv).StreamMessage(context.Background(), llm.MessageRequest{Model: "gpt-4o"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var accumulated string
+	sawStop := false
+	for chunk := range ch {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		if chunk.Text != nil {
+			accumulated += *chunk.Text
+		}
+		if chunk.StopReason != nil {
+			sawStop = true
+		}
+	}
+
+	if accumulated != "Hello world" {
+		t.Errorf("accumulated text = %q; want %q", accumulated, "Hello world")
+	}
+	if !sawStop {
+		t.Error("expected a stop chunk, got none")
+	}
+}
+
+func TestStreamMessage_HTTPErrorBeforeStream(t *testing.T) {
+	fixture := loadFixture(t, "chat_response_error_401.json")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write(fixture)
+	}))
+	defer srv.Close()
+
+	ch, err := newTestClient(srv).StreamMessage(context.Background(), llm.MessageRequest{Model: "gpt-4o"})
+	if err == nil {
+		t.Fatal("expected error for 401 response, got nil")
+	}
+	if ch != nil {
+		t.Error("expected nil channel on error")
+	}
+	if !containsString(err.Error(), "401") {
+		t.Errorf("error %q does not contain status 401", err.Error())
+	}
+}
+
 // containsString is a helper that avoids importing strings in test bodies.
 func containsString(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
