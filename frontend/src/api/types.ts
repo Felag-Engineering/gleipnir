@@ -263,3 +263,30 @@ export interface ApiSystemInfo {
   policies: number
   users: number
 }
+
+// --- OpenAI-compatible providers ---
+
+// Matches internal/admin/openai_compat_handler.go → providerResponse (GET/POST/PUT /api/v1/admin/openai-providers)
+export interface ApiOpenAICompatProvider {
+  id: number
+  name: string
+  base_url: string
+  masked_key: string
+  models_endpoint_available: boolean
+  created_at: string
+  updated_at: string
+}
+
+// Matches internal/admin/openai_compat_handler.go → upsertRequest body (POST/PUT /api/v1/admin/openai-providers)
+export interface ApiOpenAICompatProviderUpsert {
+  name: string
+  base_url: string
+  api_key: string
+}
+
+// Matches internal/admin/openai_compat_handler.go → testResponse (POST /api/v1/admin/openai-providers/:id/test)
+export interface ApiOpenAICompatProviderTestResult {
+  ok: boolean
+  models_endpoint_available?: boolean
+  error?: string
+}
