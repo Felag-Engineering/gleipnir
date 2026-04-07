@@ -1,0 +1,11 @@
+{
+  "id": "chatcmpl-len",
+  "choices": [
+    {
+      "index": 0,
+      "message": { "role": "assistant", "content": "truncated..." },
+      "finish_reason": "length"
+    }
+  ],
+  "usage": { "prompt_tokens": 10, "completion_tokens": 100 }
+}
