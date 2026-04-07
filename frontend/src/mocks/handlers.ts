@@ -1,13 +1,15 @@
 import { http, HttpResponse } from 'msw'
+import { openaiCompatProvidersHandlers } from '@/mocks/openaiCompatProviders'
 
-// Default handlers for the three endpoints that the Layout component's hooks
-// call on every render. These are registered globally in Storybook so that
-// all stories involving Layout get safe empty responses without triggering
-// network errors.
+// Default handlers registered globally in Storybook so that all stories
+// involving the Layout component get safe responses without triggering network
+// errors.
 //
-// Admin endpoint handlers (/api/v1/admin/...) are intentionally excluded:
-// admin page stories pre-seed their QueryClients via setQueryData, so those
-// queries never fire and global handlers would be redundant maintenance.
+// Most admin endpoint handlers (/api/v1/admin/...) are excluded because admin
+// page stories pre-seed their QueryClients via setQueryData and never fire
+// those queries. The openai-compat handlers are an exception: they are
+// included here to support future stories and tests that render the new
+// OpenAI-compatible provider components without pre-seeding the QueryClient.
 //
 // /api/v1/events (SSE) is excluded because MSW v2 does not intercept
 // EventSource connections. The useSSE hook will show reconnecting state in
@@ -21,4 +23,6 @@ export const defaultHandlers = [
   http.get('/api/v1/attention', () => HttpResponse.json({ data: { items: [] } })),
 
   http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: [] })),
+
+  ...openaiCompatProvidersHandlers,
 ]
