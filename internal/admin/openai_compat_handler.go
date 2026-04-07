@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -194,4 +195,80 @@ func validateBaseURL(raw string) (string, error) {
 // as "don't change the stored key."
 func isMaskedKey(key string) bool {
 	return strings.Contains(key, "...")
+}
+
+// createRequest is the JSON body accepted by POST and PUT.
+type createRequest struct {
+	Name    string `json:"name"`
+	BaseURL string `json:"base_url"`
+	APIKey  string `json:"api_key"`
+}
+
+// CreateProvider POST /api/v1/admin/openai-providers
+func (h *OpenAICompatHandler) CreateProvider(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var body createRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "invalid JSON body", err.Error())
+		return
+	}
+	if err := validateNameFormat(body.Name); err != nil {
+		api.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	base, err := validateBaseURL(body.BaseURL)
+	if err != nil {
+		api.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+	if body.APIKey == "" {
+		api.WriteError(w, http.StatusBadRequest, "api_key is required", "")
+		return
+	}
+	// Any error from GetOpenAICompatProviderByName is treated as "name available" for v1.
+	if _, err := h.q.GetOpenAICompatProviderByName(ctx, body.Name); err == nil {
+		api.WriteError(w, http.StatusConflict, "name already in use", "")
+		return
+	}
+	modelsAvail, err := h.tester(ctx, base, body.APIKey)
+	if err != nil {
+		api.WriteError(w, http.StatusBadRequest,
+			fmt.Sprintf("connection test failed: %v", err), "")
+		return
+	}
+	enc, err := Encrypt(h.encKey, body.APIKey)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "encryption failed", "")
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	row, err := h.q.CreateOpenAICompatProvider(ctx, OpenAICompatRow{
+		Name:            body.Name,
+		BaseURL:         base,
+		APIKeyEncrypted: enc,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	})
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "failed to create provider", err.Error())
+		return
+	}
+	// Only mutate the registry after the DB write succeeds.
+	client := openai.NewClient(base, body.APIKey)
+	h.registry.Register(body.Name, client)
+	h.modelsAvail[body.Name] = modelsAvail
+
+	api.WriteJSON(w, http.StatusCreated, h.rowToResponse(row))
+}
+
+// Stubs — implemented in subsequent tasks.
+func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Request) {
+	api.WriteError(w, http.StatusNotImplemented, "not implemented", "")
+}
+func (h *OpenAICompatHandler) DeleteProvider(w http.ResponseWriter, r *http.Request) {
+	api.WriteError(w, http.StatusNotImplemented, "not implemented", "")
+}
+func (h *OpenAICompatHandler) TestProvider(w http.ResponseWriter, r *http.Request) {
+	api.WriteError(w, http.StatusNotImplemented, "not implemented", "")
 }
