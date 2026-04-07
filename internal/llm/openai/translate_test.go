@@ -1,0 +1,419 @@
+package openai
+
+import (
+	"encoding/json"
+	"reflect"
+	"testing"
+
+	"github.com/rapp992/gleipnir/internal/llm"
+)
+
+func strp(s string) *string   { return &s }
+func f64p(f float64) *float64 { return &f }
+
+func TestBuildChatCompletionRequest(t *testing.T) {
+	cases := []struct {
+		name string
+		in   llm.MessageRequest
+		// Assertions on the resulting wire request.
+		check func(t *testing.T, req chatRequest)
+	}{
+		{
+			name: "empty system prompt omits system message",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				History: []llm.ConversationTurn{
+					{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}},
+				},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if len(req.Messages) != 1 {
+					t.Fatalf("want 1 message, got %d", len(req.Messages))
+				}
+				if req.Messages[0].Role != "user" {
+					t.Errorf("want user, got %q", req.Messages[0].Role)
+				}
+			},
+		},
+		{
+			name: "non-empty system prompt becomes first message",
+			in: llm.MessageRequest{
+				Model:        "gpt-4o",
+				SystemPrompt: "You are helpful.",
+				History: []llm.ConversationTurn{
+					{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}},
+				},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if len(req.Messages) != 2 {
+					t.Fatalf("want 2 messages, got %d", len(req.Messages))
+				}
+				if req.Messages[0].Role != "system" {
+					t.Errorf("want system, got %q", req.Messages[0].Role)
+				}
+				if req.Messages[0].Content == nil || *req.Messages[0].Content != "You are helpful." {
+					t.Errorf("system content mismatch: %+v", req.Messages[0].Content)
+				}
+			},
+		},
+		{
+			name: "user turn with multiple text blocks concatenates",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				History: []llm.ConversationTurn{
+					{Role: llm.RoleUser, Content: []llm.ContentBlock{
+						llm.TextBlock{Text: "part one"},
+						llm.TextBlock{Text: "part two"},
+					}},
+				},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if req.Messages[0].Content == nil || *req.Messages[0].Content != "part one\n\npart two" {
+					t.Errorf("concatenation mismatch: %+v", req.Messages[0].Content)
+				}
+			},
+		},
+		{
+			name: "assistant turn with text only emits string content no tool_calls",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				History: []llm.ConversationTurn{
+					{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+						llm.TextBlock{Text: "sure thing"},
+					}},
+				},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				m := req.Messages[0]
+				if m.Role != "assistant" {
+					t.Errorf("role: %q", m.Role)
+				}
+				if m.Content == nil || *m.Content != "sure thing" {
+					t.Errorf("content: %+v", m.Content)
+				}
+				if len(m.ToolCalls) != 0 {
+					t.Errorf("want no tool_calls, got %d", len(m.ToolCalls))
+				}
+			},
+		},
+		{
+			name: "assistant turn with tool calls only emits null content",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				History: []llm.ConversationTurn{
+					{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+						llm.ToolCallBlock{ID: "call_1", Name: "get_weather", Input: json.RawMessage(`{"city":"SF"}`)},
+					}},
+				},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				m := req.Messages[0]
+				if m.Content != nil {
+					t.Errorf("want nil content (JSON null), got %+v", m.Content)
+				}
+				if len(m.ToolCalls) != 1 {
+					t.Fatalf("want 1 tool_call, got %d", len(m.ToolCalls))
+				}
+				if m.ToolCalls[0].ID != "call_1" {
+					t.Errorf("id: %q", m.ToolCalls[0].ID)
+				}
+				if m.ToolCalls[0].Function.Name != "get_weather" {
+					t.Errorf("name: %q", m.ToolCalls[0].Function.Name)
+				}
+				if m.ToolCalls[0].Function.Arguments != `{"city":"SF"}` {
+					t.Errorf("arguments: %q", m.ToolCalls[0].Function.Arguments)
+				}
+			},
+		},
+		{
+			name: "assistant turn with both text and tool calls emits both",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				History: []llm.ConversationTurn{
+					{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+						llm.TextBlock{Text: "let me check"},
+						llm.ToolCallBlock{ID: "c1", Name: "t", Input: json.RawMessage(`{}`)},
+					}},
+				},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				m := req.Messages[0]
+				if m.Content == nil || *m.Content != "let me check" {
+					t.Errorf("content: %+v", m.Content)
+				}
+				if len(m.ToolCalls) != 1 {
+					t.Errorf("want 1 tool_call, got %d", len(m.ToolCalls))
+				}
+			},
+		},
+		{
+			name: "user turn with single tool result becomes role:tool message",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				History: []llm.ConversationTurn{
+					{Role: llm.RoleUser, Content: []llm.ContentBlock{
+						llm.ToolResultBlock{ToolCallID: "c1", Content: "72F sunny"},
+					}},
+				},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if len(req.Messages) != 1 {
+					t.Fatalf("want 1 message, got %d", len(req.Messages))
+				}
+				m := req.Messages[0]
+				if m.Role != "tool" {
+					t.Errorf("want role tool, got %q", m.Role)
+				}
+				if m.ToolCallID != "c1" {
+					t.Errorf("tool_call_id: %q", m.ToolCallID)
+				}
+				if m.Content == nil || *m.Content != "72F sunny" {
+					t.Errorf("content: %+v", m.Content)
+				}
+			},
+		},
+		{
+			name: "user turn with multiple tool results becomes N tool messages",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				History: []llm.ConversationTurn{
+					{Role: llm.RoleUser, Content: []llm.ContentBlock{
+						llm.ToolResultBlock{ToolCallID: "a", Content: "1"},
+						llm.ToolResultBlock{ToolCallID: "b", Content: "2"},
+					}},
+				},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if len(req.Messages) != 2 {
+					t.Fatalf("want 2 messages, got %d", len(req.Messages))
+				}
+				if req.Messages[0].ToolCallID != "a" || req.Messages[1].ToolCallID != "b" {
+					t.Errorf("order wrong: %s, %s", req.Messages[0].ToolCallID, req.Messages[1].ToolCallID)
+				}
+			},
+		},
+		{
+			name: "tool result with IsError true prefixes content",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				History: []llm.ConversationTurn{
+					{Role: llm.RoleUser, Content: []llm.ContentBlock{
+						llm.ToolResultBlock{ToolCallID: "c1", Content: "file not found", IsError: true},
+					}},
+				},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if req.Messages[0].Content == nil || *req.Messages[0].Content != "[error] file not found" {
+					t.Errorf("want error-prefixed content, got %+v", req.Messages[0].Content)
+				}
+			},
+		},
+		{
+			name: "mixed text and tool results: tool messages first, then user text",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				History: []llm.ConversationTurn{
+					{Role: llm.RoleUser, Content: []llm.ContentBlock{
+						llm.ToolResultBlock{ToolCallID: "c1", Content: "ok"},
+						llm.TextBlock{Text: "thanks"},
+					}},
+				},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if len(req.Messages) != 2 {
+					t.Fatalf("want 2 messages, got %d", len(req.Messages))
+				}
+				if req.Messages[0].Role != "tool" {
+					t.Errorf("first should be tool, got %q", req.Messages[0].Role)
+				}
+				if req.Messages[1].Role != "user" {
+					t.Errorf("second should be user, got %q", req.Messages[1].Role)
+				}
+			},
+		},
+		{
+			name: "tool definitions become function tools",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				Tools: []llm.ToolDefinition{
+					{Name: "get_weather", Description: "fetch weather", InputSchema: json.RawMessage(`{"type":"object"}`)},
+				},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if len(req.Tools) != 1 {
+					t.Fatalf("want 1 tool, got %d", len(req.Tools))
+				}
+				if req.Tools[0].Type != "function" {
+					t.Errorf("type: %q", req.Tools[0].Type)
+				}
+				if req.Tools[0].Function.Name != "get_weather" {
+					t.Errorf("name: %q", req.Tools[0].Function.Name)
+				}
+				if string(req.Tools[0].Function.Parameters) != `{"type":"object"}` {
+					t.Errorf("parameters: %s", req.Tools[0].Function.Parameters)
+				}
+			},
+		},
+		{
+			name: "MaxTokens with non-o-series uses max_tokens",
+			in: llm.MessageRequest{
+				Model:     "gpt-4o",
+				MaxTokens: 1024,
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if req.MaxTokens == nil || *req.MaxTokens != 1024 {
+					t.Errorf("MaxTokens: %+v", req.MaxTokens)
+				}
+				if req.MaxCompletionTokens != nil {
+					t.Errorf("MaxCompletionTokens should be nil, got %+v", req.MaxCompletionTokens)
+				}
+			},
+		},
+		{
+			name: "MaxTokens with o-series uses max_completion_tokens",
+			in: llm.MessageRequest{
+				Model:     "o3-mini",
+				MaxTokens: 1024,
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if req.MaxTokens != nil {
+					t.Errorf("MaxTokens should be nil, got %+v", req.MaxTokens)
+				}
+				if req.MaxCompletionTokens == nil || *req.MaxCompletionTokens != 1024 {
+					t.Errorf("MaxCompletionTokens: %+v", req.MaxCompletionTokens)
+				}
+			},
+		},
+		{
+			name: "hints populate temperature and top_p",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				Hints: &OpenAIHints{Temperature: f64p(0.3), TopP: f64p(0.9)},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if req.Temperature == nil || *req.Temperature != 0.3 {
+					t.Errorf("temperature: %+v", req.Temperature)
+				}
+				if req.TopP == nil || *req.TopP != 0.9 {
+					t.Errorf("top_p: %+v", req.TopP)
+				}
+			},
+		},
+		{
+			name: "reasoning_effort only sent for o-series",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				Hints: &OpenAIHints{ReasoningEffort: strp("high")},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if req.ReasoningEffort != nil {
+					t.Errorf("reasoning_effort should be omitted for non-o-series, got %+v", req.ReasoningEffort)
+				}
+			},
+		},
+		{
+			name: "reasoning_effort passed through for o-series",
+			in: llm.MessageRequest{
+				Model: "o3-mini",
+				Hints: &OpenAIHints{ReasoningEffort: strp("high")},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if req.ReasoningEffort == nil || *req.ReasoningEffort != "high" {
+					t.Errorf("reasoning_effort: %+v", req.ReasoningEffort)
+				}
+			},
+		},
+		{
+			name: "unknown Hints type is silently ignored",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				Hints: "not-a-hints-struct",
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if req.Temperature != nil || req.TopP != nil || req.ReasoningEffort != nil {
+					t.Errorf("unknown hints should have been ignored, got %+v", req)
+				}
+			},
+		},
+		{
+			name: "thinking blocks are dropped",
+			in: llm.MessageRequest{
+				Model: "gpt-4o",
+				History: []llm.ConversationTurn{
+					{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+						llm.TextBlock{Text: "answer"},
+						// ThinkingBlock would go here if it were a ContentBlock; it's not.
+						// The translator sees only TextBlock/ToolCallBlock/ToolResultBlock.
+					}},
+				},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if req.Messages[0].Content == nil || *req.Messages[0].Content != "answer" {
+					t.Errorf("content: %+v", req.Messages[0].Content)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := BuildChatCompletionRequest(tc.in, false)
+			tc.check(t, req)
+		})
+	}
+}
+
+func TestBuildChatCompletionRequest_StreamFlag(t *testing.T) {
+	req := BuildChatCompletionRequest(llm.MessageRequest{Model: "gpt-4o"}, true)
+	if !req.Stream {
+		t.Error("want Stream true")
+	}
+	if req.StreamOptions == nil || !req.StreamOptions.IncludeUsage {
+		t.Errorf("want stream_options.include_usage true, got %+v", req.StreamOptions)
+	}
+}
+
+// isOSeriesModel is exported via test helper to lock the heuristic.
+func TestIsOSeriesModel(t *testing.T) {
+	cases := map[string]bool{
+		"o1":              true,
+		"o1-mini":         true,
+		"o3":              true,
+		"o3-mini":         true,
+		"o4-mini":         true,
+		"gpt-5-reasoning": true,
+		"gpt-4o":          false,
+		"gpt-4o-mini":     false,
+		"gpt-4.1":         false,
+		"llama3.1:70b":    false,
+	}
+	for model, want := range cases {
+		if got := isOSeriesModel(model); got != want {
+			t.Errorf("isOSeriesModel(%q) = %v, want %v", model, got, want)
+		}
+	}
+}
+
+// ensure BuildChatCompletionRequest produces JSON that round-trips through
+// encoding/json without losing information.
+func TestBuildChatCompletionRequest_JSONRoundTrip(t *testing.T) {
+	in := llm.MessageRequest{
+		Model:        "gpt-4o",
+		SystemPrompt: "s",
+		MaxTokens:    100,
+		History: []llm.ConversationTurn{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}},
+		},
+	}
+	req := BuildChatCompletionRequest(in, false)
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back chatRequest
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(req.Messages, back.Messages) {
+		t.Errorf("round-trip mismatch:\nwant %+v\ngot  %+v", req.Messages, back.Messages)
+	}
+}
