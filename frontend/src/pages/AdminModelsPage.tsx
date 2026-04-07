@@ -8,6 +8,7 @@ import { useModels, type ProviderModels } from '@/hooks/queries/users'
 import { useSetProviderKey } from '@/hooks/mutations/admin'
 import { useUpdateAdminSettings, useSetModelEnabled } from '@/hooks/mutations/admin'
 import type { ApiProviderStatus, ApiModelSetting } from '@/api/types'
+import { OpenAICompatProvidersSection } from '@/components/admin/OpenAICompatProvidersSection'
 import cardStyles from '@/components/Settings/Settings.module.css'
 import styles from './AdminModelsPage.module.css'
 
@@ -347,6 +348,7 @@ export default function AdminModelsPage() {
     <div className={styles.page}>
       <PageHeader title="Models" />
       <ApiKeysSection />
+      <OpenAICompatProvidersSection />
       <SystemDefaultSection />
       <AvailableModelsSection />
     </div>
