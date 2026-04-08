@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -321,7 +322,13 @@ func run(cfg config.Config) error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
+	// httpWG tracks the ListenAndServe goroutine so main can confirm it has
+	// exited after Shutdown returns. Without this, a late panic from the listener
+	// could race the process exit.
+	var httpWG sync.WaitGroup
+	httpWG.Add(1)
 	go func() {
+		defer httpWG.Done()
 		slog.Info("server listening", "addr", cfg.ListenAddr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server error", "err", err)
@@ -360,7 +367,13 @@ func run(cfg config.Config) error {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
 
-	return srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+	// Wait() guarantees the listener goroutine has observed ErrServerClosed (or a
+	// panic recovery) before main returns, so a late crash cannot race shutdown.
+	httpWG.Wait()
+	return nil
 }
 
 // ensureDefaultModelEnabled upserts an enabled=1 row for the configured

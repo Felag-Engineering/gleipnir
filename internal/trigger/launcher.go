@@ -181,8 +181,12 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	audit := agent.NewAuditWriter(l.store.Queries(), agent.WithPublisher(l.publisher))
 	sm := agent.NewRunStateMachine(run.ID, model.RunStatusPending, l.store.Queries(), agent.WithStateMachinePublisher(l.publisher))
 
-	approvalCh := make(chan bool)
-	feedbackCh := make(chan string)
+	// Cap 1 so SendApproval/SendFeedback (non-blocking select) can deliver a
+	// decision that arrives in the narrow window between the agent unparking and
+	// reading the channel. Protocol is single-producer/single-consumer per gate,
+	// so cap 1 is sufficient and extra sends are still correctly dropped.
+	approvalCh := make(chan bool, 1)
+	feedbackCh := make(chan string, 1)
 	ba, err := l.newAgent(agent.Config{
 		Tools:                  resolvedTools,
 		Policy:                 params.ParsedPolicy,

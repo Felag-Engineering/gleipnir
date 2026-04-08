@@ -6,13 +6,13 @@ import (
 	"time"
 )
 
-// noopApprovalCh returns a new unbuffered channel suitable for passing to
+// noopApprovalCh returns a new cap-1 buffered channel suitable for passing to
 // Register when tests don't exercise the approval path.
-func noopApprovalCh() chan bool { return make(chan bool) }
+func noopApprovalCh() chan bool { return make(chan bool, 1) }
 
-// noopFeedbackCh returns a new unbuffered channel suitable for passing to
+// noopFeedbackCh returns a new cap-1 buffered channel suitable for passing to
 // Register when tests don't exercise the feedback path.
-func noopFeedbackCh() chan string { return make(chan string) }
+func noopFeedbackCh() chan string { return make(chan string, 1) }
 
 func TestRunManager(t *testing.T) {
 	cases := []struct {
@@ -125,13 +125,19 @@ func TestSendApproval(t *testing.T) {
 		}
 	})
 
-	t.Run("registered but nobody reading returns false", func(t *testing.T) {
+	t.Run("registered with full buffer returns false", func(t *testing.T) {
 		m := NewRunManager()
-		m.Register("run-blocked", func() {}, noopApprovalCh(), noopFeedbackCh())
-		// Channel is unbuffered and nobody is reading — non-blocking send must fail.
+		// Cap-1 channel: the first send fills the buffer (returns true).
+		// The second send with a full buffer and no reader must fail (returns false).
+		approvalCh := make(chan bool, 1)
+		m.Register("run-blocked", func() {}, approvalCh, noopFeedbackCh())
+		first := m.SendApproval("run-blocked", true)
+		if !first {
+			t.Error("first SendApproval returned false, want true (buffer was empty)")
+		}
 		got := m.SendApproval("run-blocked", true)
 		if got {
-			t.Error("SendApproval returned true with no reader, want false")
+			t.Error("second SendApproval returned true with full buffer, want false")
 		}
 		m.Deregister("run-blocked")
 		waitWithTimeout(t, m, "blocked run")
@@ -139,7 +145,7 @@ func TestSendApproval(t *testing.T) {
 
 	t.Run("approved delivered to waiting goroutine returns true", func(t *testing.T) {
 		m := NewRunManager()
-		ch := make(chan bool)
+		ch := make(chan bool, 1) // cap 1: matches production channel from launcher.go
 		m.Register("run-approve", func() {}, ch, noopFeedbackCh())
 
 		received := make(chan bool, 1)
@@ -170,7 +176,7 @@ func TestSendApproval(t *testing.T) {
 
 	t.Run("denied delivered to waiting goroutine returns true", func(t *testing.T) {
 		m := NewRunManager()
-		ch := make(chan bool)
+		ch := make(chan bool, 1) // cap 1: matches production channel from launcher.go
 		m.Register("run-deny", func() {}, ch, noopFeedbackCh())
 
 		received := make(chan bool, 1)
@@ -220,13 +226,19 @@ func TestSendFeedback(t *testing.T) {
 		}
 	})
 
-	t.Run("registered but nobody reading returns false", func(t *testing.T) {
+	t.Run("registered with full buffer returns false", func(t *testing.T) {
 		m := NewRunManager()
-		m.Register("run-blocked", func() {}, noopApprovalCh(), noopFeedbackCh())
-		// Channel is unbuffered and nobody is reading — non-blocking send must fail.
-		got := m.SendFeedback("run-blocked", "some response")
+		// Cap-1 channel: the first send fills the buffer (returns true).
+		// The second send with a full buffer and no reader must fail (returns false).
+		feedbackCh := make(chan string, 1)
+		m.Register("run-blocked", func() {}, noopApprovalCh(), feedbackCh)
+		first := m.SendFeedback("run-blocked", "first response")
+		if !first {
+			t.Error("first SendFeedback returned false, want true (buffer was empty)")
+		}
+		got := m.SendFeedback("run-blocked", "second response")
 		if got {
-			t.Error("SendFeedback returned true with no reader, want false")
+			t.Error("second SendFeedback returned true with full buffer, want false")
 		}
 		m.Deregister("run-blocked")
 		waitWithTimeout(t, m, "blocked run")
@@ -234,7 +246,7 @@ func TestSendFeedback(t *testing.T) {
 
 	t.Run("response delivered to waiting goroutine returns true", func(t *testing.T) {
 		m := NewRunManager()
-		ch := make(chan string)
+		ch := make(chan string, 1) // cap 1: matches production channel from launcher.go
 		m.Register("run-feedback", func() {}, noopApprovalCh(), ch)
 
 		received := make(chan string, 1)
@@ -353,6 +365,65 @@ func TestWaitForDeregistration(t *testing.T) {
 		}
 		waitWithTimeout(t, m, "after multi-waiter deregister")
 	})
+}
+
+// TestSendApproval_BufferedDeliversAcrossGoroutineScheduling proves that the
+// cap-1 buffer allows SendApproval to deliver a decision before the agent
+// goroutine blocks on the channel. Without the buffer, the non-blocking select
+// in SendApproval would drop the decision in this window.
+func TestSendApproval_BufferedDeliversAcrossGoroutineScheduling(t *testing.T) {
+	m := NewRunManager()
+	ch := make(chan bool, 1) // cap 1: same as production
+	m.Register("run-buf-approve", func() {}, ch, noopFeedbackCh())
+
+	// Deliver the decision before any goroutine is reading the channel.
+	// With an unbuffered channel this would return false; cap 1 must return true.
+	got := m.SendApproval("run-buf-approve", true)
+	if !got {
+		t.Fatal("SendApproval returned false before reader started, want true (buffer should hold the value)")
+	}
+
+	// The value must be present in the buffer for the agent to receive later.
+	select {
+	case val := <-ch:
+		if !val {
+			t.Errorf("received %v from channel, want true", val)
+		}
+	default:
+		t.Fatal("channel was empty after SendApproval returned true — buffer did not hold the value")
+	}
+
+	m.Deregister("run-buf-approve")
+	waitWithTimeout(t, m, "buffered approval")
+}
+
+// TestSendFeedback_BufferedDeliversAcrossGoroutineScheduling is the symmetric
+// version of TestSendApproval_BufferedDeliversAcrossGoroutineScheduling for the
+// feedback channel.
+func TestSendFeedback_BufferedDeliversAcrossGoroutineScheduling(t *testing.T) {
+	m := NewRunManager()
+	ch := make(chan string, 1) // cap 1: same as production
+	m.Register("run-buf-feedback", func() {}, noopApprovalCh(), ch)
+
+	// Deliver the response before any goroutine is reading the channel.
+	// With an unbuffered channel this would return false; cap 1 must return true.
+	got := m.SendFeedback("run-buf-feedback", "proceed")
+	if !got {
+		t.Fatal("SendFeedback returned false before reader started, want true (buffer should hold the value)")
+	}
+
+	// The value must be present in the buffer for the agent to receive later.
+	select {
+	case val := <-ch:
+		if val != "proceed" {
+			t.Errorf("received %q from channel, want %q", val, "proceed")
+		}
+	default:
+		t.Fatal("channel was empty after SendFeedback returned true — buffer did not hold the value")
+	}
+
+	m.Deregister("run-buf-feedback")
+	waitWithTimeout(t, m, "buffered feedback")
 }
 
 // waitWithTimeout calls m.Wait() in a goroutine and fails the test if it does

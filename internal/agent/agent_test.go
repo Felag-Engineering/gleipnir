@@ -179,7 +179,7 @@ func TestHandleToolCall(t *testing.T) {
 				Tools:        tools,
 				Audit:        w,
 				LLMClient:    testutil.NewNoopLLMClient(),
-				ApprovalCh:   make(chan bool),
+				ApprovalCh:   make(chan bool), // unbuffered — these tests don't exercise the approval gate
 				StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
 			})
 			if err != nil {
@@ -1340,7 +1340,7 @@ func TestBuildToolDefinitions(t *testing.T) {
 
 func TestWaitForApproval(t *testing.T) {
 	t.Run("Timeout_Reject", func(t *testing.T) {
-		approvalCh := make(chan bool)
+		approvalCh := make(chan bool) // unbuffered — timeout fires before any send
 		ba, _, w := makeAgentWithTools(t, nil, approvalCh)
 		defer w.Close()
 
@@ -1365,7 +1365,7 @@ func TestWaitForApproval(t *testing.T) {
 	t.Run("Timeout_AlwaysRejects", func(t *testing.T) {
 		// Verify that timeout always results in an error regardless of OnTimeout value,
 		// since on_timeout: approve was removed (issue #313).
-		approvalCh := make(chan bool)
+		approvalCh := make(chan bool) // unbuffered — timeout fires before any send
 		ba, _, w := makeAgentWithTools(t, nil, approvalCh)
 		defer w.Close()
 
@@ -1987,8 +1987,8 @@ func TestRun_feedback_timeout(t *testing.T) {
 		},
 	}
 
-	// feedbackCh is never sent on — the operator does not respond.
-	feedbackCh := make(chan string)
+	// feedbackCh is never sent on — the operator does not respond (testing timeout path).
+	feedbackCh := make(chan string) // unbuffered — nothing sends on this channel in this test
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
@@ -2059,7 +2059,7 @@ func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 		Tools:        nil,
 		Policy:       feedbackPolicy(),
 		Audit:        w,
-		FeedbackCh:   make(chan string),
+		FeedbackCh:   make(chan string), // unbuffered — test verifies run completes without feedback
 		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
 	})
 	if err != nil {

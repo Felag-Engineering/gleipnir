@@ -722,7 +722,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
 				insertTestPolicy(t, store, "p-cancel-run", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-cancel-running", "p-cancel-run", model.RunStatusRunning)
-				manager.Register("r-cancel-running", func() {}, make(chan bool), make(chan string))
+				manager.Register("r-cancel-running", func() {}, make(chan bool, 1), make(chan string, 1))
 			},
 			runID:    "r-cancel-running",
 			wantCode: http.StatusAccepted,
@@ -794,7 +794,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
 				insertTestPolicy(t, store, "p-cancel-waiting", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-cancel-waiting", "p-cancel-waiting", model.RunStatusWaitingForApproval)
-				manager.Register("r-cancel-waiting", func() {}, make(chan bool), make(chan string))
+				manager.Register("r-cancel-waiting", func() {}, make(chan bool, 1), make(chan string, 1))
 			},
 			runID:    "r-cancel-waiting",
 			wantCode: http.StatusAccepted,
@@ -809,7 +809,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
 				insertTestPolicy(t, store, "p-cancel-feedback", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-cancel-feedback", "p-cancel-feedback", model.RunStatusWaitingForFeedback)
-				manager.Register("r-cancel-feedback", func() {}, make(chan bool), make(chan string))
+				manager.Register("r-cancel-feedback", func() {}, make(chan bool, 1), make(chan string, 1))
 			},
 			runID:    "r-cancel-feedback",
 			wantCode: http.StatusAccepted,
@@ -971,8 +971,12 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
 				insertTestPolicy(t, store, "p-approval-no-gate", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-approval-no-gate", "p-approval-no-gate", model.RunStatusWaitingForApproval)
-				// Run is registered but nobody is reading from the channel.
-				manager.Register("r-approval-no-gate", func() {}, make(chan bool), make(chan string))
+				// Pre-fill the buffer to simulate a gate that has already closed
+				// (e.g. the agent's approval timeout fired before the operator
+				// responded). The handler's non-blocking send must fail and return 409.
+				ch := make(chan bool, 1)
+				ch <- false // fill the buffer
+				manager.Register("r-approval-no-gate", func() {}, ch, make(chan string, 1))
 				return nil
 			},
 			runID:    "r-approval-no-gate",
@@ -993,7 +997,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 				// Buffered so the non-blocking send in SendApproval succeeds without
 				// needing a goroutine to be scheduled and blocking on the channel.
 				ch := make(chan bool, 1)
-				manager.Register("r-approval-ok", func() {}, ch, make(chan string))
+				manager.Register("r-approval-ok", func() {}, ch, make(chan string, 1))
 				return ch
 			},
 			runID:    "r-approval-ok",
@@ -1017,7 +1021,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 				// Buffered so the non-blocking send in SendApproval succeeds without
 				// needing a goroutine to be scheduled and blocking on the channel.
 				ch := make(chan bool, 1)
-				manager.Register("r-approval-deny", func() {}, ch, make(chan string))
+				manager.Register("r-approval-deny", func() {}, ch, make(chan string, 1))
 				return ch
 			},
 			runID:    "r-approval-deny",
@@ -1137,8 +1141,12 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string {
 				insertTestPolicy(t, store, "p-feedback-no-gate", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-feedback-no-gate", "p-feedback-no-gate", model.RunStatusWaitingForFeedback)
-				// Run is registered but nobody is reading from the channel.
-				manager.Register("r-feedback-no-gate", func() {}, make(chan bool), make(chan string))
+				// Pre-fill the buffer to simulate a gate that has already closed
+				// (e.g. the agent's feedback timeout fired before the operator
+				// responded). The handler's non-blocking send must fail and return 409.
+				ch := make(chan string, 1)
+				ch <- "" // fill the buffer
+				manager.Register("r-feedback-no-gate", func() {}, make(chan bool, 1), ch)
 				return nil
 			},
 			runID:    "r-feedback-no-gate",
@@ -1157,7 +1165,7 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 				insertTestRun(t, store, "r-feedback-ok", "p-feedback-ok", model.RunStatusWaitingForFeedback)
 				// Buffered so the non-blocking send in SendFeedback succeeds.
 				ch := make(chan string, 1)
-				manager.Register("r-feedback-ok", func() {}, make(chan bool), ch)
+				manager.Register("r-feedback-ok", func() {}, make(chan bool, 1), ch)
 				return ch
 			},
 			runID:    "r-feedback-ok",

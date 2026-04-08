@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -112,10 +113,17 @@ func TestCheckConcurrency_Replace(t *testing.T) {
 
 		manager := trigger.NewRunManager()
 		cancelCalled := false
-		manager.Register("r-replace-active", func() { cancelCalled = true }, make(chan bool), make(chan string))
+		// Cap-1 channels match the production channels created by launcher.go.
+		manager.Register("r-replace-active", func() { cancelCalled = true }, make(chan bool, 1), make(chan string, 1))
 
 		// Simulate the agent goroutine acknowledging cancellation quickly.
+		// WaitGroup + t.Cleanup ensures the goroutine has exited before the test
+		// is considered done, preventing a race on manager state under -race.
+		var wg sync.WaitGroup
+		wg.Add(1)
+		t.Cleanup(wg.Wait)
 		go func() {
+			defer wg.Done()
 			time.Sleep(20 * time.Millisecond)
 			manager.Deregister("r-replace-active")
 		}()
@@ -146,13 +154,20 @@ func TestCheckConcurrency_Replace(t *testing.T) {
 		cancelled := make(map[string]bool)
 		for _, id := range runIDs {
 			id := id
-			manager.Register(id, func() { cancelled[id] = true }, make(chan bool), make(chan string))
+			// Cap-1 channels match the production channels created by launcher.go.
+			manager.Register(id, func() { cancelled[id] = true }, make(chan bool, 1), make(chan string, 1))
 		}
 
 		// Simulate all goroutines exiting after cancellation.
+		// WaitGroup + t.Cleanup ensures all goroutines have exited before the test
+		// is considered done, preventing a race on manager state under -race.
+		var wg sync.WaitGroup
+		t.Cleanup(wg.Wait)
 		for _, id := range runIDs {
 			id := id
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				time.Sleep(20 * time.Millisecond)
 				manager.Deregister(id)
 			}()
@@ -658,4 +673,3 @@ func TestNewAgentFactory_ProviderLookup(t *testing.T) {
 		})
 	}
 }
-

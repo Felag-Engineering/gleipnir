@@ -11,12 +11,16 @@ type RunManager struct {
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
 	// approvals maps run IDs to the approval channel for that run's current
-	// approval gate. The channel is unbuffered; SendApproval sends non-blocking
-	// so it gracefully handles TOCTOU races (approval timed out, context done).
+	// approval gate. The channel is buffered (cap 1); SendApproval sends
+	// non-blocking so it gracefully handles TOCTOU races (approval timed out,
+	// context done). Cap 1 means a decision delivered before the agent reads
+	// is held in the buffer rather than dropped.
 	approvals map[string]chan bool
 	// feedbacks maps run IDs to the feedback channel for that run's current
-	// feedback gate. The channel is unbuffered; SendFeedback sends non-blocking
-	// so it gracefully handles TOCTOU races (context cancelled, run ended).
+	// feedback gate. The channel is buffered (cap 1); SendFeedback sends
+	// non-blocking so it gracefully handles TOCTOU races (context cancelled,
+	// run ended). Cap 1 means a response delivered before the agent reads is
+	// held in the buffer rather than dropped.
 	feedbacks map[string]chan string
 	// active tracks runs that have been registered but whose goroutine has not
 	// yet exited. This is separate from cancels because CancelAll removes from
@@ -41,9 +45,11 @@ func NewRunManager() *RunManager {
 
 // Register stores the cancel func, approval channel, and feedback channel for
 // the given run ID and increments the internal WaitGroup. Must be called before
-// the run goroutine is launched. approvalCh and feedbackCh are the unbuffered
-// channels that the BoundAgent's gates read from; pass them so SendApproval and
-// SendFeedback can route decisions to the waiting goroutine.
+// the run goroutine is launched. approvalCh and feedbackCh must be buffered
+// (cap 1) channels that the BoundAgent's gates read from; the cap-1 buffer is
+// what makes the non-blocking select in SendApproval/SendFeedback correct
+// rather than lossy when the decision arrives before the agent blocks on the
+// channel.
 func (m *RunManager) Register(runID string, cancel context.CancelFunc, approvalCh chan bool, feedbackCh chan string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
