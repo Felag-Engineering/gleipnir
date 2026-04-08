@@ -106,6 +106,7 @@ export function OpenAICompatProviderModal({ mode, provider, onClose }: Props) {
           <input
             id="provider-name"
             type="text"
+            className={styles.input}
             placeholder="openai"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -121,6 +122,7 @@ export function OpenAICompatProviderModal({ mode, provider, onClose }: Props) {
           <input
             id="provider-base-url"
             type="url"
+            className={styles.input}
             placeholder="https://api.openai.com/v1"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
@@ -135,6 +137,7 @@ export function OpenAICompatProviderModal({ mode, provider, onClose }: Props) {
           <input
             id="provider-api-key"
             type="password"
+            className={styles.input}
             placeholder={mode === 'edit' ? '••••••••' : 'sk-...'}
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
