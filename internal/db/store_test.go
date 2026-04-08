@@ -344,6 +344,154 @@ func TestMigrate(t *testing.T) {
 	})
 }
 
+// TestMigrate_FreshAndUpgradePathsConverge verifies that a fresh DB and an
+// upgrading DB (one that had only the initial schema applied before the Go
+// migrations were introduced) end up with identical schemas after Migrate.
+//
+// This is a regression guard for the bug where Store.Migrate returned early on
+// the fresh-DB path, skipping Go migrations that add tables absent from the
+// initial schema (e.g. system_settings, openai_compat_providers).
+func TestMigrate_FreshAndUpgradePathsConverge(t *testing.T) {
+	newStore := func(t *testing.T) *Store {
+		t.Helper()
+		s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		t.Cleanup(func() { s.Close() })
+		return s
+	}
+
+	// DB A: fresh path — Store.Migrate on a brand-new database.
+	dbA := newStore(t)
+	if err := dbA.Migrate(context.Background()); err != nil {
+		t.Fatalf("fresh-path Migrate: %v", err)
+	}
+
+	// DB B: upgrade path — apply only the initial schema manually (simulating a
+	// pre-Go-migrations snapshot), then call Store.Migrate.
+	dbB := newStore(t)
+	if _, err := dbB.db.Exec(initialSchema); err != nil {
+		t.Fatalf("apply initialSchema to upgrade-path DB: %v", err)
+	}
+	if err := dbB.Migrate(context.Background()); err != nil {
+		t.Fatalf("upgrade-path Migrate: %v", err)
+	}
+
+	// Snapshot the sorted (type, name) pairs from sqlite_master for both DBs.
+	// sqlite_% internals are excluded since they are not user-defined schema objects.
+	snapshot := func(t *testing.T, s *Store, label string) [][2]string {
+		t.Helper()
+		rows, err := s.db.QueryContext(context.Background(),
+			`SELECT type, name FROM sqlite_master
+			 WHERE name NOT LIKE 'sqlite_%'
+			 ORDER BY type, name`,
+		)
+		if err != nil {
+			t.Fatalf("%s: query sqlite_master: %v", label, err)
+		}
+		defer rows.Close()
+		var result [][2]string
+		for rows.Next() {
+			var typ, name string
+			if err := rows.Scan(&typ, &name); err != nil {
+				t.Fatalf("%s: scan row: %v", label, err)
+			}
+			result = append(result, [2]string{typ, name})
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("%s: rows.Err: %v", label, err)
+		}
+		return result
+	}
+
+	schemaA := snapshot(t, dbA, "fresh-path")
+	schemaB := snapshot(t, dbB, "upgrade-path")
+
+	if len(schemaA) != len(schemaB) {
+		t.Errorf("schema object count: fresh-path=%d upgrade-path=%d", len(schemaA), len(schemaB))
+	}
+	for i := range schemaA {
+		if i >= len(schemaB) {
+			break
+		}
+		if schemaA[i] != schemaB[i] {
+			t.Errorf("schema object[%d]: fresh-path=%v upgrade-path=%v", i, schemaA[i], schemaB[i])
+		}
+	}
+
+	// Assert the tables that were specifically broken by the early-return bug.
+	for _, table := range []string{"system_settings", "model_settings", "openai_compat_providers"} {
+		for _, tc := range []struct {
+			label string
+			s     *Store
+		}{
+			{"fresh-path", dbA},
+			{"upgrade-path", dbB},
+		} {
+			var count int
+			err := tc.s.db.QueryRowContext(context.Background(),
+				`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table,
+			).Scan(&count)
+			if err != nil {
+				t.Fatalf("%s: check table %s: %v", tc.label, table, err)
+			}
+			if count != 1 {
+				t.Errorf("%s: table %q missing from schema", tc.label, table)
+			}
+		}
+	}
+}
+
+// TestMigrate_FreshDBCanWriteSystemSettings verifies that the tables added by
+// Go migrations are writable after a fresh Migrate — the direct regression guard
+// for the reported bug where fresh DBs were missing these tables entirely.
+func TestMigrate_FreshDBCanWriteSystemSettings(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	_, err = s.db.ExecContext(context.Background(),
+		`INSERT INTO system_settings(key, value, updated_at)
+		 VALUES ('test_key', 'test_value', '2024-01-01T00:00:00Z')`,
+	)
+	if err != nil {
+		t.Errorf("INSERT into system_settings failed (table missing on fresh DB?): %v", err)
+	}
+
+	_, err = s.db.ExecContext(context.Background(),
+		`INSERT INTO openai_compat_providers(name, base_url, api_key_encrypted, created_at, updated_at)
+		 VALUES ('test-provider', 'http://localhost:11434', 'encrypted', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+	)
+	if err != nil {
+		t.Errorf("INSERT into openai_compat_providers failed (table missing on fresh DB?): %v", err)
+	}
+}
+
+// TestMigrate_CalledTwiceOnFreshDB verifies that calling Migrate twice on a
+// brand-new database is a no-op — idempotency must hold for the fresh-DB path
+// now that it runs Go migrations.
+func TestMigrate_CalledTwiceOnFreshDB(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatalf("first Migrate: %v", err)
+	}
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatalf("second Migrate (must be no-op): %v", err)
+	}
+}
+
 func TestSchemaConstraints(t *testing.T) {
 	t.Run("CHECK constraints reject invalid enum values", func(t *testing.T) {
 		cases := []struct {

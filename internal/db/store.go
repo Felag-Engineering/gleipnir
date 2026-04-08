@@ -75,7 +75,16 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// Migrate applies the embedded initial schema if it has not been applied.
+// Migrate applies the embedded initial schema if it has not been applied, then
+// runs all Go migrations in internal/db/migrations.
+//
+// Go migrations MUST run on both the fresh-DB path and the upgrading-DB path.
+// The initial schema (0001_initial.sql) does not contain DDL for tables added
+// by later Go migrations (e.g. system_settings, openai_compat_providers). Each
+// migration's ShouldSkip method checks sqlite_master, so migrations that are
+// already present in the schema are skipped safely — this is what makes calling
+// migrations.Apply on a fresh DB a no-op for those migrations.
+//
 // It is idempotent — safe to call on every startup.
 func (s *Store) Migrate(ctx context.Context) error {
 	// Check whether schema_migrations exists. If it doesn't, the schema has
@@ -107,19 +116,20 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration tx: %w", err)
 		}
-		return nil
-	}
-
-	// Table exists — verify version 1 was recorded.
-	var applied int
-	err = s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM schema_migrations WHERE version = 1`,
-	).Scan(&applied)
-	if err != nil {
-		return fmt.Errorf("check migration version: %w", err)
-	}
-	if applied == 0 {
-		return fmt.Errorf("schema_migrations exists but version 1 is not recorded")
+		// Fall through to run Go migrations — they add tables not present in
+		// the initial schema and use ShouldSkip to no-op when already present.
+	} else {
+		// Table exists — verify version 1 was recorded.
+		var applied int
+		err = s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM schema_migrations WHERE version = 1`,
+		).Scan(&applied)
+		if err != nil {
+			return fmt.Errorf("check migration version: %w", err)
+		}
+		if applied == 0 {
+			return fmt.Errorf("schema_migrations exists but version 1 is not recorded")
+		}
 	}
 
 	return migrations.Apply(ctx, s.db, migrations.All(), slog.Default())
