@@ -9,9 +9,9 @@ import "strings"
 // replace this in a later release.
 //
 // Emission order:
-//   1. One chunk per ThinkingBlock (Thinking field set).
-//   2. One text chunk if resp.Text is non-empty (all TextBlocks joined into one string).
-//   3. One chunk per ToolCallBlock (ToolCall field set).
+//  1. One chunk per ThinkingBlock (Thinking field set).
+//  2. One text chunk if resp.Text is non-empty (all TextBlocks joined into one string).
+//  3. One chunk per ToolCallBlock (ToolCall field set).
 //
 // StopReason and Usage are attached only to the final chunk so consumers can
 // treat a non-nil StopReason as the "stream complete" signal — matching real

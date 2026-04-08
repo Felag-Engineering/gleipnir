@@ -9,10 +9,10 @@ import (
 
 func TestSanitizeToolName(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       string
+		name         string
+		input        string
 		allowedExtra string
-		want        string
+		want         string
 	}{
 		// Alphanumeric and underscore pass through for both variants.
 		{

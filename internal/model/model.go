@@ -109,11 +109,11 @@ func (m MatchMode) Valid() bool {
 type Comparator string
 
 const (
-	ComparatorEquals     Comparator = "equals"
-	ComparatorNotEquals  Comparator = "not_equals"
+	ComparatorEquals      Comparator = "equals"
+	ComparatorNotEquals   Comparator = "not_equals"
 	ComparatorGreaterThan Comparator = "greater_than"
-	ComparatorLessThan   Comparator = "less_than"
-	ComparatorContains   Comparator = "contains"
+	ComparatorLessThan    Comparator = "less_than"
+	ComparatorContains    Comparator = "contains"
 )
 
 func (c Comparator) String() string { return string(c) }
@@ -133,7 +133,7 @@ type PollCheck struct {
 	Input      map[string]any // static args passed to the MCP tool
 	Path       string         // JSONPath expression (e.g. "$.status")
 	Comparator Comparator
-	Value      any            // comparator operand (string, number, or bool)
+	Value      any // comparator operand (string, number, or bool)
 }
 
 // ConcurrencyPolicy controls behaviour when a trigger fires while a run is active.

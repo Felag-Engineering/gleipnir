@@ -358,6 +358,7 @@ func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Requ
 
 	api.WriteJSON(w, http.StatusOK, h.rowToResponse(updated))
 }
+
 // DeleteProvider DELETE /api/v1/admin/openai-providers/{id}
 func (h *OpenAICompatHandler) DeleteProvider(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)

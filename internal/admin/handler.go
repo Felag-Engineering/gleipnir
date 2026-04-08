@@ -383,4 +383,3 @@ func formatDBSize(path string) string {
 		return fmt.Sprintf("%d B", size)
 	}
 }
-

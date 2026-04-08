@@ -61,7 +61,7 @@ func TestLoadAndRegister_CorruptCiphertextRowIsSkipped(t *testing.T) {
 	reg := llm.NewProviderRegistry()
 	q := &fakeLoaderQuerier{rows: []openai.LoaderRow{
 		{Name: "corrupt", BaseURL: "https://api.openai.com/v1", APIKeyEncrypted: "not-valid-ciphertext"},
-		{Name: "good",    BaseURL: "https://api.openai.com/v1", APIKeyEncrypted: enc},
+		{Name: "good", BaseURL: "https://api.openai.com/v1", APIKeyEncrypted: enc},
 	}}
 	if err := openai.LoadAndRegister(context.Background(), q, key, reg, admin.Decrypt); err != nil {
 		t.Fatalf("LoadAndRegister should not abort on corrupt row: %v", err)
