@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import styles from './ModelSection.module.css';
 import type { ModelFormState } from './types';
 import { useModels } from '@/hooks/queries/users';
@@ -9,6 +10,23 @@ export interface ModelSectionProps {
 
 export function ModelSection({ value, onChange }: ModelSectionProps) {
   const { data: providers, isLoading, isError } = useModels();
+
+  // If the current (provider, model) is not present in the loaded list — e.g.
+  // a new policy whose hardcoded default is "anthropic:claude-sonnet-4-6" but
+  // the operator only has Google enabled — silently snap to the first
+  // available option. Without this, the <select> visually shows the first
+  // option but no change event fires, so the form submits the stale provider
+  // and the backend rejects it with "unknown provider".
+  useEffect(() => {
+    if (!providers || providers.length === 0) return;
+    const exists = providers.some(
+      (g) => g.provider === value.provider && g.models.some((m) => m.name === value.model),
+    );
+    if (exists) return;
+    const firstGroup = providers.find((g) => g.models.length > 0);
+    if (!firstGroup) return;
+    onChange({ provider: firstGroup.provider, model: firstGroup.models[0].name });
+  }, [providers, value.provider, value.model, onChange]);
 
   const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const raw = e.target.value; // format: "provider:model"

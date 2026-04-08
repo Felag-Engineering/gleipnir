@@ -661,7 +661,6 @@ agent:
 	}
 }
 
-
 func TestParse_FeedbackEnabled(t *testing.T) {
 	raw := `
 name: test
