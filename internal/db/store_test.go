@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/rapp992/gleipnir/internal/db/migrations"
 )
 
 func TestOpen(t *testing.T) {
@@ -586,6 +588,13 @@ func TestSchemaConstraints(t *testing.T) {
 	})
 }
 
+// runMigration applies a single migration against the store's *sql.DB.
+// Used by per-migration tests that exercise a migration in isolation.
+func runMigration(t *testing.T, s *Store, m migrations.Migration) error {
+	t.Helper()
+	return migrations.Apply(context.Background(), s.DB(), []migrations.Migration{m}, nil)
+}
+
 func TestMigrateAddThinkingStepType(t *testing.T) {
 	t.Run("adds thinking to CHECK constraint when absent", func(t *testing.T) {
 		s, err := Open(filepath.Join(t.TempDir(), "test.db"))
@@ -616,9 +625,9 @@ CREATE INDEX idx_run_steps_run_step ON run_steps(run_id, step_number);
 			t.Fatalf("apply old schema: %v", err)
 		}
 
-		// Run the inline migration.
-		if err := s.migrateAddThinkingStepType(context.Background()); err != nil {
-			t.Fatalf("migrateAddThinkingStepType: %v", err)
+		// Run the migration via the exported runner.
+		if err := runMigration(t, s, &migrations.AddThinkingStepType{}); err != nil {
+			t.Fatalf("AddThinkingStepType: %v", err)
 		}
 
 		// Insert a policy and run so we can insert a run_step.
@@ -638,11 +647,11 @@ CREATE INDEX idx_run_steps_run_step ON run_steps(run_id, step_number);
 	t.Run("idempotent when thinking already present", func(t *testing.T) {
 		s := newTestStore(t) // schema already includes 'thinking'
 
-		if err := s.migrateAddThinkingStepType(context.Background()); err != nil {
-			t.Fatalf("first migrateAddThinkingStepType: %v", err)
+		if err := runMigration(t, s, &migrations.AddThinkingStepType{}); err != nil {
+			t.Fatalf("first AddThinkingStepType: %v", err)
 		}
-		if err := s.migrateAddThinkingStepType(context.Background()); err != nil {
-			t.Fatalf("second migrateAddThinkingStepType: %v", err)
+		if err := runMigration(t, s, &migrations.AddThinkingStepType{}); err != nil {
+			t.Fatalf("second AddThinkingStepType: %v", err)
 		}
 	})
 }
