@@ -174,9 +174,6 @@ func validateFeedback(f model.FeedbackConfig) []string {
 // Specifically: replace concurrency is not valid if any tool has
 // approval: required (the in-flight run cannot be safely cancelled mid-approval).
 // Model/provider validation is handled at the service layer via OptionsValidator.
-// For claude-code policies, limit checks are skipped because those limits are
-// meaningless for subprocess runners; max_turns and max_budget_usd from options
-// are validated instead.
 func validateAgent(a model.AgentConfig, c model.CapabilitiesConfig) []string {
 	var errs []string
 
@@ -184,15 +181,18 @@ func validateAgent(a model.AgentConfig, c model.CapabilitiesConfig) []string {
 		errs = append(errs, "agent.task is required")
 	}
 
-	if a.ModelConfig.Provider == model.ProviderClaudeCode {
-		errs = append(errs, validateClaudeCodeOptions(a.ModelConfig.Options)...)
-	} else {
-		if a.Limits.MaxTokensPerRun <= 0 {
-			errs = append(errs, "agent.limits.max_tokens_per_run must be positive")
-		}
-		if a.Limits.MaxToolCallsPerRun <= 0 {
-			errs = append(errs, "agent.limits.max_tool_calls_per_run must be positive")
-		}
+	// "claude-code" was a subprocess runner removed in issue #611. Policies that
+	// still declare this provider must fail with an actionable error rather than
+	// silently misbehaving at run time.
+	if a.ModelConfig.Provider == "claude-code" {
+		errs = append(errs, `model.provider "claude-code" is no longer supported; remove the policy or switch to an llm provider (anthropic, google, openai, openaicompat)`)
+	}
+
+	if a.Limits.MaxTokensPerRun <= 0 {
+		errs = append(errs, "agent.limits.max_tokens_per_run must be positive")
+	}
+	if a.Limits.MaxToolCallsPerRun <= 0 {
+		errs = append(errs, "agent.limits.max_tool_calls_per_run must be positive")
 	}
 
 	if !a.Concurrency.Valid() {
@@ -214,59 +214,6 @@ func validateAgent(a model.AgentConfig, c model.CapabilitiesConfig) []string {
 				errs = append(errs, "agent.concurrency \"replace\" is not valid when any tool has approval: required")
 				break
 			}
-		}
-	}
-
-	return errs
-}
-
-// validateClaudeCodeOptions checks that options provided for a claude-code policy
-// are valid. Only max_turns and max_budget_usd are accepted. Both are optional —
-// returning nil when options is nil or empty is correct.
-func validateClaudeCodeOptions(options map[string]any) []string {
-	if len(options) == 0 {
-		return nil
-	}
-
-	allowed := map[string]bool{
-		"max_turns":      true,
-		"max_budget_usd": true,
-	}
-
-	var errs []string
-	for k := range options {
-		if !allowed[k] {
-			errs = append(errs, fmt.Sprintf("model.options: unknown option %q for claude-code provider", k))
-		}
-	}
-
-	if v, ok := options["max_turns"]; ok {
-		switch n := v.(type) {
-		case int:
-			if n <= 0 {
-				errs = append(errs, "model.options.max_turns must be a positive integer")
-			}
-		case float64:
-			if int(n) <= 0 {
-				errs = append(errs, "model.options.max_turns must be a positive integer")
-			}
-		default:
-			errs = append(errs, "model.options.max_turns must be a positive integer")
-		}
-	}
-
-	if v, ok := options["max_budget_usd"]; ok {
-		switch n := v.(type) {
-		case float64:
-			if n <= 0 {
-				errs = append(errs, "model.options.max_budget_usd must be a positive number")
-			}
-		case int:
-			if n <= 0 {
-				errs = append(errs, "model.options.max_budget_usd must be a positive number")
-			}
-		default:
-			errs = append(errs, "model.options.max_budget_usd must be a positive number")
 		}
 	}
 

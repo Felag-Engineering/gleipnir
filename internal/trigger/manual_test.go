@@ -189,7 +189,7 @@ func TestManualTriggerHandler(t *testing.T) {
 			noopClient := testutil.NewNoopLLMClient()
 			providerReg := llm.NewProviderRegistry()
 			providerReg.Register("anthropic", noopClient)
-			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg, nil), nil, 0)
+			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil, 0)
 			h := trigger.NewManualTriggerHandler(store, launcher)
 
 			w := callManualHandler(t, h, tc.policyID, tc.body)
@@ -208,7 +208,7 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg, nil), nil, 0)
+	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil, 0)
 	h := trigger.NewManualTriggerHandler(store, launcher)
 
 	w := callManualHandler(t, h, "mp-run-created", `{"message": "test"}`)
@@ -242,7 +242,7 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg, nil), nil, 0)
+	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil, 0)
 	h := trigger.NewManualTriggerHandler(store, launcher)
 
 	// Empty body should be accepted (treated as '{}')

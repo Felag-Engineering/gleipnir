@@ -48,6 +48,23 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-031 | Native feedback as a Gleipnir runtime primitive | 🟢 Decided | v1.0 | Agent runtime, policy schema, notify package, UI |
 | ADR-032 | Admin-managed OpenAI-compatible LLM provider instances | 🟢 Decided | v1.0 | internal/llm/openaicompat, admin API, admin UI |
 | ADR-033 | Premium OpenAI client split from compat client         | 🟢 Decided | v1.0 | internal/llm/openai, internal/llm/openaicompat, main.go |
+| #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
+
+---
+
+## Issue #611: Remove claudecode agent runtime
+
+**Status:** Decided
+**Date:** 2026-04
+**Supersedes:** any reference to `internal/agent/claudecode/` or the `claude-code` provider
+
+### Decision
+
+The `internal/agent/claudecode/` subprocess runner has been deleted. The `claude-code` provider is no longer a supported policy provider. Policies that declare `model.provider: claude-code` fail at validation time with an actionable error message listing the supported LLM providers (anthropic, google, openai, openaicompat).
+
+Existing policies stored in the database with `provider: claude-code` are not auto-migrated. They will produce a validation error on first load after deploy, prompting the operator to update the YAML. This follows ADR-001's philosophy of explicit operator action over silent behaviour changes.
+
+`(c *Client) ServerURL()` in `internal/mcp/client.go` was also removed as it was only consumed by the deleted ClaudeCodeAgent.
 
 ---
 
@@ -840,7 +857,7 @@ Approval gating (ADR-029) is already a runtime primitive: the `BoundAgent` inter
 
 The runtime injects a synthetic `gleipnir.ask_operator` tool into the agent's tool list at run start (when feedback is enabled). This tool is never dispatched to an MCP server. When the agent calls it, `BoundAgent` intercepts the call — exactly as it intercepts approval-gated tools — pauses the run (`waiting_for_feedback`), and blocks on a `feedbackCh <-chan string` until the operator responds. The agent sees `gleipnir.ask_operator` as a normal tool with a defined input schema; it has no knowledge that the tool is synthetic.
 
-Both agent implementations (`internal/agent/agent.go` and `internal/agent/claudecode/agent.go`) use the `feedbackCh` channel pattern for blocking on operator response.
+Both agent implementations (`internal/agent/agent.go` and `internal/agent/claudecode/agent.go`) use the `feedbackCh` channel pattern for blocking on operator response. (Note: `internal/agent/claudecode/` was removed in issue #611; only `internal/agent/agent.go` remains.)
 
 **2. MCP tools are always tools.**
 

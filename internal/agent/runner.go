@@ -3,8 +3,7 @@ package agent
 import "context"
 
 // Runner is the interface satisfied by any agent implementation that can
-// execute a policy run. BoundAgent is the canonical implementation; future
-// providers (e.g. ClaudeCodeAgent) will also satisfy this interface.
+// execute a policy run. BoundAgent is the sole implementation.
 type Runner interface {
 	Run(ctx context.Context, runID string, triggerPayload string) error
 }

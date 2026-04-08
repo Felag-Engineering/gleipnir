@@ -15,8 +15,6 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rapp992/gleipnir/frontend"
 	"github.com/rapp992/gleipnir/internal/admin"
-	"github.com/rapp992/gleipnir/internal/agent"
-	claudecode "github.com/rapp992/gleipnir/internal/agent/claudecode"
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/approval"
 	"github.com/rapp992/gleipnir/internal/auth"
@@ -206,20 +204,7 @@ func run(cfg config.Config) error {
 		slog.Warn("could not ensure default model is enabled", "err", err)
 	}
 
-	// claudeCodeFactory bridges agent.Config to claudecode.Config so the trigger
-	// layer does not need to import internal/agent/claudecode directly.
-	claudeCodeFactory := func(cfg agent.Config) (agent.Runner, error) {
-		return claudecode.New(claudecode.Config{
-			Policy:       cfg.Policy,
-			Tools:        cfg.Tools,
-			Audit:        cfg.Audit,
-			StateMachine: cfg.StateMachine,
-			ApprovalCh:   cfg.ApprovalCh,
-			FeedbackCh:   cfg.FeedbackCh,
-		})
-	}
-
-	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(providerRegistry, claudeCodeFactory), broadcaster, cfg.DefaultFeedbackTimeout)
+	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(providerRegistry), broadcaster, cfg.DefaultFeedbackTimeout)
 
 	// Webhooks are unprotected — they are called by external systems with their
 	// own secret-based authentication (policy.trigger.secret in the policy YAML).

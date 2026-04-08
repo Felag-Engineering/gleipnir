@@ -149,10 +149,6 @@ const (
 // DefaultProvider is the LLM provider used when the policy omits the provider field.
 const DefaultProvider = "anthropic"
 
-// ProviderClaudeCode is the provider identifier for Claude Code subprocess runs.
-// Policies using this provider launch a ClaudeCodeAgent instead of a BoundAgent.
-const ProviderClaudeCode = "claude-code"
-
 // DefaultModelName is the model ID used when the policy omits the model field.
 const DefaultModelName = "claude-sonnet-4-6"
 

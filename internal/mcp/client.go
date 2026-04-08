@@ -122,10 +122,6 @@ func WithTimeout(d time.Duration) ClientOption {
 	}
 }
 
-// ServerURL returns the MCP server URL this client targets.
-// Used by ClaudeCodeAgent to build the --mcp-config JSON blob.
-func (c *Client) ServerURL() string { return c.serverURL }
-
 // NewClient returns a Client targeting serverURL. Optional ClientOptions are
 // applied in order after the default Client is constructed.
 func NewClient(serverURL string, opts ...ClientOption) *Client {

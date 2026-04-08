@@ -22,25 +22,12 @@ import (
 // test doubles — callers have no knowledge of either.
 type AgentFactory func(cfg agent.Config) (agent.Runner, error)
 
-// NewAgentFactory returns an AgentFactory that routes to the appropriate runner
-// based on the policy's provider field.
-//
-// For claude-code policies, ccFactory is called directly. ccFactory may be nil
-// if the deployment does not support claude-code (the factory will return an
-// error if a claude-code policy is launched when ccFactory is nil).
-//
-// For all other providers, the LLM client is resolved from registry and
-// agent.New is called. If the provider is not registered, the factory returns
-// an error containing the provider name so the run can be marked failed with
-// a clear message.
-func NewAgentFactory(registry *llm.ProviderRegistry, ccFactory func(cfg agent.Config) (agent.Runner, error)) AgentFactory {
+// NewAgentFactory returns an AgentFactory that resolves the correct LLM client
+// from registry and constructs a BoundAgent for the run. If the policy's
+// provider is not registered, the factory returns a descriptive error so the
+// run record can be marked failed with a clear message.
+func NewAgentFactory(registry *llm.ProviderRegistry) AgentFactory {
 	return func(cfg agent.Config) (agent.Runner, error) {
-		if cfg.Policy.Agent.ModelConfig.Provider == model.ProviderClaudeCode {
-			if ccFactory == nil {
-				return nil, fmt.Errorf("claude-code provider is not available in this deployment")
-			}
-			return ccFactory(cfg)
-		}
 		client, err := registry.Get(cfg.Policy.Agent.ModelConfig.Provider)
 		if err != nil {
 			return nil, fmt.Errorf("provider lookup: %w", err)

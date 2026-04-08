@@ -628,7 +628,7 @@ func TestNewAgentFactory_ProviderLookup(t *testing.T) {
 				reg.Register(name, client)
 			}
 
-			factory := trigger.NewAgentFactory(reg, nil)
+			factory := trigger.NewAgentFactory(reg)
 
 			cfg := agent.Config{
 				Policy: &model.ParsedPolicy{
@@ -659,86 +659,3 @@ func TestNewAgentFactory_ProviderLookup(t *testing.T) {
 	}
 }
 
-// TestNewAgentFactory_ClaudeCodeRouting verifies that NewAgentFactory routes
-// claude-code policies to the ccFactory and non-claude-code policies to the
-// registry path.
-func TestNewAgentFactory_ClaudeCodeRouting(t *testing.T) {
-	t.Run("claude-code policy calls ccFactory", func(t *testing.T) {
-		reg := llm.NewProviderRegistry()
-		reg.Register("anthropic", testutil.NewNoopLLMClient())
-
-		ccCalled := false
-		mockCCFactory := func(cfg agent.Config) (agent.Runner, error) {
-			ccCalled = true
-			// Return a stub error so we can confirm routing without needing a real runner.
-			return nil, errors.New("stub cc runner")
-		}
-
-		factory := trigger.NewAgentFactory(reg, mockCCFactory)
-		cfg := agent.Config{
-			Policy: &model.ParsedPolicy{
-				Agent: model.AgentConfig{
-					ModelConfig: model.ModelConfig{Provider: model.ProviderClaudeCode},
-				},
-			},
-		}
-
-		_, err := factory(cfg)
-		if err == nil || !strings.Contains(err.Error(), "stub cc runner") {
-			t.Fatalf("expected stub cc runner error, got: %v", err)
-		}
-		if !ccCalled {
-			t.Error("expected ccFactory to be called for claude-code provider, but it was not")
-		}
-	})
-
-	t.Run("anthropic policy uses registry not ccFactory", func(t *testing.T) {
-		reg := llm.NewProviderRegistry()
-		reg.Register("anthropic", testutil.NewNoopLLMClient())
-
-		ccCalled := false
-		mockCCFactory := func(cfg agent.Config) (agent.Runner, error) {
-			ccCalled = true
-			return nil, errors.New("stub cc runner")
-		}
-
-		factory := trigger.NewAgentFactory(reg, mockCCFactory)
-		cfg := agent.Config{
-			Policy: &model.ParsedPolicy{
-				Agent: model.AgentConfig{
-					ModelConfig: model.ModelConfig{Provider: "anthropic"},
-				},
-			},
-		}
-
-		_, err := factory(cfg)
-		// agent.New will fail due to minimal config, but that is expected.
-		// The important thing is that ccFactory was NOT called.
-		if ccCalled {
-			t.Error("ccFactory must not be called for anthropic provider")
-		}
-		if err != nil && strings.Contains(err.Error(), "unknown LLM provider") {
-			t.Errorf("unexpected provider lookup error for anthropic: %v", err)
-		}
-	})
-
-	t.Run("claude-code policy with nil ccFactory returns error", func(t *testing.T) {
-		reg := llm.NewProviderRegistry()
-		factory := trigger.NewAgentFactory(reg, nil)
-		cfg := agent.Config{
-			Policy: &model.ParsedPolicy{
-				Agent: model.AgentConfig{
-					ModelConfig: model.ModelConfig{Provider: model.ProviderClaudeCode},
-				},
-			},
-		}
-
-		_, err := factory(cfg)
-		if err == nil {
-			t.Fatal("expected error when ccFactory is nil for claude-code policy, got nil")
-		}
-		if !strings.Contains(err.Error(), "claude-code") {
-			t.Errorf("error %q does not mention claude-code", err.Error())
-		}
-	})
-}
