@@ -1,3 +1,4 @@
+import { Check, X } from 'lucide-react'
 import { CollapsibleJSON } from '@/components/CollapsibleJSON'
 import { ApprovalActions } from './ApprovalActions'
 import type { ToolBlockData } from './types'
@@ -90,10 +91,10 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
         )}
         <div className={styles.headerRight}>
           {status === 'success' && (
-            <span className={styles.statusIcon} aria-label="Success">✓</span>
+            <Check size={14} strokeWidth={2} className={styles.statusIconSuccess} aria-label="Success" />
           )}
           {status === 'error' && (
-            <span className={styles.statusIcon} aria-label="Error">✗</span>
+            <X size={14} strokeWidth={2} className={styles.statusIconError} aria-label="Error" />
           )}
           {duration && <span className={styles.duration}>{duration}</span>}
         </div>

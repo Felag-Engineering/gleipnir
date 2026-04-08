@@ -497,14 +497,14 @@ describe('CopyBlock', () => {
       await Promise.resolve()
     })
 
-    expect(screen.getByRole('button').textContent).toContain('✓')
+    expect(screen.getByRole('button').textContent).toContain('Copied')
 
     // Advance timers past the 1800ms reset delay
     await act(async () => {
       vi.advanceTimersByTime(1800)
     })
 
-    expect(screen.getByRole('button').textContent).toContain('Copy')
+    expect(screen.getByRole('button').textContent?.trim()).toBe('Copy')
 
     vi.useRealTimers()
   })

@@ -4,6 +4,7 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { load } from 'js-yaml'
+import { AlertCircle, CheckCircle2 } from 'lucide-react'
 import { useTheme } from '@/hooks/useTheme'
 import styles from './YamlEditor.module.css'
 
@@ -155,7 +156,17 @@ export function YamlEditor({ value, onChange, onValidityChange, readOnly = false
     <div className={styles.root}>
       <div ref={hostRef} className={styles.editorHost} />
       <div className={`${styles.indicator} ${isValid ? styles.valid : styles.invalid}`}>
-        {isValid ? '● Valid YAML' : `✕ Invalid YAML: ${validationError}`}
+        {isValid ? (
+          <>
+            <CheckCircle2 size={14} strokeWidth={2} aria-hidden />
+            Valid YAML
+          </>
+        ) : (
+          <>
+            <AlertCircle size={14} strokeWidth={2} aria-hidden />
+            {`Invalid YAML: ${validationError}`}
+          </>
+        )}
       </div>
     </div>
   )

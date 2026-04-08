@@ -1,4 +1,5 @@
 import { Link, useNavigate } from 'react-router-dom'
+import { ArrowRight } from 'lucide-react'
 import { useRuns } from '@/hooks/queries/runs'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'
 import { EmptyState } from '@/components/EmptyState'
@@ -21,7 +22,8 @@ export function RecentRunsFeed() {
       <div className={styles.header}>
         <span className={styles.title}>RECENT RUNS</span>
         <Link to="/runs" className={styles.viewAll}>
-          View all runs →
+          View all runs
+          <ArrowRight size={12} aria-hidden strokeWidth={1.5} />
         </Link>
       </div>
 

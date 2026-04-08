@@ -96,10 +96,14 @@
   gap: var(--space-2);
 }
 
-.statusIcon {
-  font-size: var(--text-xs);
-  font-family: var(--font-mono);
+.statusIconSuccess {
+  display: block;
   color: var(--color-green);
+}
+
+.statusIconError {
+  display: block;
+  color: var(--color-red);
 }
 
 .duration {

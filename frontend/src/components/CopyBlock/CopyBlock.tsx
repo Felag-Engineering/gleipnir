@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Check, Copy } from 'lucide-react'
 import styles from './CopyBlock.module.css'
 
 interface Props {
@@ -21,11 +22,21 @@ export function CopyBlock({ text, children }: Props) {
       {children}
       <button
         type="button"
-        className={styles.copyBtn}
+        className={copied ? `${styles.copyBtn} ${styles.copyBtnCopied}` : styles.copyBtn}
         onClick={handleCopy}
-        aria-label="Copy to clipboard"
+        aria-label={copied ? 'Copied' : 'Copy to clipboard'}
       >
-        {copied ? '✓' : 'Copy'}
+        {copied ? (
+          <>
+            <Check size={12} aria-hidden strokeWidth={2} />
+            Copied
+          </>
+        ) : (
+          <>
+            <Copy size={12} aria-hidden strokeWidth={2} />
+            Copy
+          </>
+        )}
       </button>
     </div>
   )
