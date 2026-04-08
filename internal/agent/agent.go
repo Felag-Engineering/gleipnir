@@ -11,47 +11,11 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/config"
-	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
 )
-
-// SyntheticToolPrefix is the namespace prefix for tools injected by the Gleipnir
-// runtime. These tools are never registered in the MCP registry and must never
-// be dispatched to an MCP server.
-const SyntheticToolPrefix = "gleipnir."
-
-// AskOperatorToolName is the name of the synthetic feedback tool the agent can
-// call to pause the run and wait for a human operator response.
-const AskOperatorToolName = "gleipnir.ask_operator"
-
-// askOperatorSchema is the static JSON schema for the gleipnir.ask_operator tool.
-var askOperatorSchema = json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "reason": {"type": "string", "description": "Why the agent is asking. Displayed as the headline in the UI."},
-    "context": {"type": "string", "description": "Supporting detail the operator might need to make a decision."}
-  },
-  "required": ["reason"]
-}`)
-
-// askOperatorToolDefinition returns the provider-neutral tool definition for the
-// gleipnir.ask_operator synthetic tool.
-func askOperatorToolDefinition() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Name:        AskOperatorToolName,
-		Description: "Ask the human operator a question. The run will pause until the operator responds with freeform text.",
-		InputSchema: askOperatorSchema,
-	}
-}
-
-// resolvedToolEntry holds a ResolvedTool paired with its narrowed JSON schema.
-type resolvedToolEntry struct {
-	tool           mcp.ResolvedTool
-	narrowedSchema json.RawMessage
-}
 
 // BoundAgent executes a single policy run. It owns the LLM API loop,
 // dispatches tool calls to MCP clients, intercepts approval-gated tools,
@@ -63,13 +27,8 @@ type BoundAgent struct {
 	llmClient   llm.LLMClient
 	audit       *AuditWriter
 	sm          *RunStateMachine
-	// approvalCh receives the operator's decision when a run is suspended
-	// waiting_for_approval. Sent by the approval handler in internal/trigger.
-	approvalCh <-chan bool
-	// feedbackCh receives the operator's freeform text response when a run is
-	// suspended waiting_for_feedback. Sent by the feedback handler in internal/trigger.
-	feedbackCh             <-chan string
-	defaultFeedbackTimeout time.Duration
+	approvals   *ApprovalHandler
+	feedback    *FeedbackHandler
 }
 
 // Config holds the dependencies needed to construct a BoundAgent.
@@ -91,295 +50,63 @@ func New(cfg Config) (*BoundAgent, error) {
 		return nil, fmt.Errorf("config.StateMachine is required")
 	}
 
-	toolsByName := make(map[string]resolvedToolEntry, len(cfg.Tools))
-	for _, rt := range cfg.Tools {
-		dotName := rt.ServerName + "." + rt.ToolName
-
-		narrowed, err := mcp.NarrowSchema(rt.InputSchema, rt.Params)
-		if err != nil {
-			return nil, fmt.Errorf("narrowing schema for tool %s.%s: %w", rt.ServerName, rt.ToolName, err)
-		}
-		toolsByName[dotName] = resolvedToolEntry{
-			tool:           rt,
-			narrowedSchema: narrowed,
-		}
+	toolsByName, err := buildResolvedToolMap(cfg.Tools)
+	if err != nil {
+		return nil, err
 	}
 
 	return &BoundAgent{
-		policy:                 cfg.Policy,
-		tools:                  cfg.Tools,
-		toolsByName:            toolsByName,
-		llmClient:              cfg.LLMClient,
-		audit:                  cfg.Audit,
-		sm:                     cfg.StateMachine,
-		approvalCh:             cfg.ApprovalCh,
-		feedbackCh:             cfg.FeedbackCh,
-		defaultFeedbackTimeout: cfg.DefaultFeedbackTimeout,
+		policy:      cfg.Policy,
+		tools:       cfg.Tools,
+		toolsByName: toolsByName,
+		llmClient:   cfg.LLMClient,
+		audit:       cfg.Audit,
+		sm:          cfg.StateMachine,
+		approvals:   NewApprovalHandler(cfg.Audit, cfg.StateMachine, cfg.ApprovalCh),
+		feedback:    NewFeedbackHandler(cfg.Audit, cfg.StateMachine, cfg.FeedbackCh, cfg.DefaultFeedbackTimeout),
 	}, nil
 }
 
-// failRun transitions the run to failed status and returns the original error.
-// If the context is already cancelled, a background context is used so the DB
-// write still lands.
+// failRun delegates to the package-level free function in errors.go.
 func (a *BoundAgent) failRun(ctx context.Context, runErr error) error {
-	transCtx := ctx
-	if ctx.Err() != nil {
-		transCtx = context.Background()
-	}
-	if tErr := a.sm.Transition(transCtx, model.RunStatusFailed, runErr.Error()); tErr != nil {
-		slog.ErrorContext(transCtx, "failed to persist run failure status",
-			"run_err", runErr, "transition_err", tErr)
-	}
-	return runErr
+	return failRun(ctx, a.sm, runErr)
 }
 
 // logAuditError writes an error step to the audit trail with the given message and code.
+// It is kept as a shim method so existing call sites in agent_test.go continue to
+// compile unmodified.
 // Callers that pass context.Background() do so intentionally — DB writes must complete
 // even after the caller's context is cancelled (e.g. cancellation-path error steps).
+//
+// Test seam — delegates to package-level logAuditError in audit.go.
+// Safe to inline the free function call once agent_test.go migrates away from this method.
 func (a *BoundAgent) logAuditError(ctx context.Context, runID string, msg string, code model.ErrorCode) {
-	if err := a.audit.Write(ctx, Step{
+	logAuditError(ctx, a.audit, Step{
 		RunID:   runID,
 		Type:    model.StepTypeError,
 		Content: model.ErrorStepContent{Message: msg, Code: code},
-	}); err != nil {
-		slog.WarnContext(ctx, "audit write failed", "run_id", runID, "err", err)
-	}
+	})
 }
 
-// logTransitionError wraps a failRun call that intentionally discards errors from
-// state transitions that fail after the run itself has already failed. Logs via
-// slog when the transition itself errors so the failure is not silently swallowed.
+// logTransitionError delegates to the package-level free function in errors.go.
 func (a *BoundAgent) logTransitionError(ctx context.Context, runErr error) {
-	if tErr := a.failRun(ctx, runErr); tErr != nil && tErr != runErr {
-		slog.ErrorContext(ctx, "run transition failed", "err", tErr)
-	}
+	logTransitionError(ctx, a.sm, runErr)
 }
 
-// checkCapabilities verifies every capability reference in the policy resolves
-// to a tool registered at BoundAgent construction time. Called at the start of
-// Run(), before the pending→running transition, so a run with unresolvable
-// capabilities fails immediately without ever appearing as running.
-func (a *BoundAgent) checkCapabilities() error {
-	// Collect all tool names referenced in the policy's tool capability list.
-	// The feedback channel (FeedbackConfig) is not an MCP tool and requires no
-	// registry check — it is injected by the runtime when Enabled is true.
-	var toolNames []string
-	for _, t := range a.policy.Capabilities.Tools {
-		toolNames = append(toolNames, t.Tool)
-	}
-
-	for _, name := range toolNames {
-		if _, ok := a.toolsByName[name]; !ok {
-			return fmt.Errorf("capability '%s' not found in MCP registry — verify the MCP server is registered and the tool exists", name)
-		}
-	}
-	return nil
-}
-
-// buildToolDefinitions builds the provider-neutral tool definitions from the
-// agent's registered tools. The LLMClient handles provider-specific name
-// sanitization and schema formatting. When feedback is enabled, the synthetic
-// gleipnir.ask_operator tool is appended so the LLM can call it directly.
-func (a *BoundAgent) buildToolDefinitions() []llm.ToolDefinition {
-	defs := make([]llm.ToolDefinition, 0, len(a.toolsByName))
-	for dotName, entry := range a.toolsByName {
-		defs = append(defs, llm.ToolDefinition{
-			Name:        dotName,
-			Description: entry.tool.Description,
-			InputSchema: entry.narrowedSchema,
-		})
-	}
-	if a.policy.Capabilities.Feedback.Enabled {
-		defs = append(defs, askOperatorToolDefinition())
-	}
-	return defs
-}
-
-// waitForApproval suspends the run at an approval gate for the given tool entry.
-// It writes the approval_request audit step, transitions the run to
-// waiting_for_approval (which creates the DB record and publishes approval.created
-// via the state machine), then blocks on the approval channel, a timeout, or
-// context cancellation. Returns nil if approved, error otherwise.
+// waitForApproval delegates to the ApprovalHandler.
+//
+// Test seam — delegates to handler. Safe to delete once agent_test.go migrates
+// to handler-level tests.
 func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry resolvedToolEntry, internalName string, input map[string]any) error {
-	approvalID := model.NewULID()
-
-	proposedInput, err := json.Marshal(input)
-	if err != nil {
-		return fmt.Errorf("marshalling proposed input for approval request: %w", err)
-	}
-
-	var expiresAt string
-	if entry.tool.Timeout > 0 {
-		expiresAt = time.Now().UTC().Add(entry.tool.Timeout).Format(time.RFC3339Nano)
-	} else {
-		expiresAt = time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
-	}
-
-	if err := a.audit.Write(ctx, Step{
-		RunID:   runID,
-		Type:    model.StepTypeApprovalRequest,
-		Content: map[string]any{"tool": internalName, "input": input},
-	}); err != nil {
-		return fmt.Errorf("writing approval request step: %w", err)
-	}
-
-	if err := a.sm.Transition(ctx, model.RunStatusWaitingForApproval, "", WithApprovalPayload(ApprovalPayload{
-		ApprovalID:    approvalID,
-		ToolName:      internalName,
-		ProposedInput: string(proposedInput),
-		ExpiresAt:     expiresAt,
-	})); err != nil {
-		return fmt.Errorf("transitioning run to waiting_for_approval: %w", err)
-	}
-
-	// nil timeoutCh (when Timeout == 0) blocks forever in the select,
-	// meaning no timeout is applied. Use NewTimer so we can Stop it
-	// on early approval — time.After leaks until the duration fires.
-	var timeoutCh <-chan time.Time
-	if entry.tool.Timeout > 0 {
-		timer := time.NewTimer(entry.tool.Timeout)
-		defer timer.Stop()
-		timeoutCh = timer.C
-	}
-
-	select {
-	case approved := <-a.approvalCh:
-		if !approved {
-			err := fmt.Errorf("tool call %s rejected by operator", internalName)
-			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeApprovalRejected)
-			return err
-		}
-		if err := a.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
-			return fmt.Errorf("transitioning run back to running after approval: %w", err)
-		}
-	case <-timeoutCh:
-		slog.WarnContext(ctx, "approval timeout reached",
-			"run_id", runID, "tool", internalName,
-			"timeout", entry.tool.Timeout.String())
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		// Race the scanner: only the first writer (rows==1) owns the error step.
-		// If the scanner already resolved it (rows==0), return a sentinel error so
-		// Run() still terminates, but skip logAuditError to avoid a duplicate step.
-		rows, dbErr := a.sm.Queries().UpdateApprovalRequestStatus(
-			context.Background(),
-			db.UpdateApprovalRequestStatusParams{
-				Status:    string(model.ApprovalStatusTimeout),
-				DecidedAt: &now,
-				Note:      nil,
-				ID:        approvalID,
-			},
-		)
-		if dbErr != nil {
-			slog.WarnContext(ctx, "failed to update approval status on timeout", "approval_id", approvalID, "err", dbErr)
-		}
-		if rows == 1 {
-			err := fmt.Errorf("approval timeout for tool %s", internalName)
-			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeApprovalRejected)
-			return err
-		}
-		// Scanner won the race: it already wrote the error step and transitioned
-		// the run. Return a sentinel so Run() knows to stop, but avoid a duplicate step.
-		slog.DebugContext(ctx, "approval already resolved by scanner", "approval_id", approvalID)
-		return fmt.Errorf("approval timeout for tool %s: already resolved by scanner", internalName)
-	case <-ctx.Done():
-		return fmt.Errorf("context cancelled waiting for approval: %w", ctx.Err())
-	}
-
-	return nil
+	return a.approvals.Wait(ctx, runID, entry, internalName, input)
 }
 
-// waitForFeedback suspends the run waiting for a freeform operator response.
-// It transitions to waiting_for_feedback (which creates the DB record and
-// publishes feedback.created), then blocks on the feedback channel, the timeout
-// channel, or context cancellation. Returns the operator's response text on success.
+// waitForFeedback delegates to the FeedbackHandler.
+//
+// Test seam — delegates to handler. Safe to delete once agent_test.go migrates
+// to handler-level tests.
 func (a *BoundAgent) waitForFeedback(ctx context.Context, runID, toolName, inputJSON, mcpOutput string, feedbackTimeout time.Duration) (string, error) {
-	feedbackID := model.NewULID()
-
-	// Compute expires_at so the DB record and the audit step both carry the deadline.
-	// An empty string means no timeout — the DB scanner ignores rows with NULL expires_at.
-	var expiresAt string
-	if feedbackTimeout > 0 {
-		expiresAt = time.Now().UTC().Add(feedbackTimeout).Format(time.RFC3339Nano)
-	}
-
-	if err := a.audit.Write(ctx, Step{
-		RunID: runID,
-		Type:  model.StepTypeFeedbackRequest,
-		Content: map[string]any{
-			"feedback_id": feedbackID,
-			"tool":        toolName,
-			"message":     mcpOutput,
-			"expires_at":  expiresAt,
-		},
-	}); err != nil {
-		return "", fmt.Errorf("writing feedback_request step: %w", err)
-	}
-
-	if err := a.sm.Transition(ctx, model.RunStatusWaitingForFeedback, "", WithFeedbackPayload(FeedbackPayload{
-		FeedbackID:    feedbackID,
-		ToolName:      toolName,
-		ProposedInput: inputJSON,
-		Message:       mcpOutput,
-		ExpiresAt:     expiresAt,
-	})); err != nil {
-		return "", fmt.Errorf("transitioning run to waiting_for_feedback: %w", err)
-	}
-
-	// nil timeoutCh (when feedbackTimeout == 0) blocks forever in the select,
-	// meaning no in-process timeout is applied. Use NewTimer so we can Stop it
-	// on early response — time.After leaks until the duration fires.
-	var timeoutCh <-chan time.Time
-	if feedbackTimeout > 0 {
-		timer := time.NewTimer(feedbackTimeout)
-		defer timer.Stop()
-		timeoutCh = timer.C
-	}
-
-	select {
-	case responseText := <-a.feedbackCh:
-		if err := a.audit.Write(ctx, Step{
-			RunID:   runID,
-			Type:    model.StepTypeFeedbackResponse,
-			Content: map[string]any{"feedback_id": feedbackID, "response": responseText},
-		}); err != nil {
-			return "", fmt.Errorf("writing feedback_response step: %w", err)
-		}
-		if err := a.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
-			return "", fmt.Errorf("transitioning run back to running after feedback: %w", err)
-		}
-		return responseText, nil
-	case <-timeoutCh:
-		slog.WarnContext(ctx, "feedback timeout reached",
-			"run_id", runID, "tool", toolName,
-			"timeout", feedbackTimeout.String())
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		// Race the scanner: only the first writer (rows==1) owns the error step.
-		// If the scanner already resolved it (rows==0), return a sentinel error so
-		// Run() still terminates, but skip logAuditError to avoid a duplicate step.
-		rows, dbErr := a.sm.Queries().UpdateFeedbackRequestStatus(
-			context.Background(),
-			db.UpdateFeedbackRequestStatusParams{
-				Status:     "timed_out",
-				Response:   nil,
-				ResolvedAt: &now,
-				ID:         feedbackID,
-			},
-		)
-		if dbErr != nil {
-			slog.WarnContext(ctx, "failed to update feedback status on timeout", "feedback_id", feedbackID, "err", dbErr)
-		}
-		if rows == 1 {
-			err := fmt.Errorf("feedback timeout: operator did not respond within %s", feedbackTimeout)
-			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeFeedbackTimeout)
-			return "", err
-		}
-		// Scanner won the race: it already wrote the error step and transitioned
-		// the run. Return a sentinel so Run() knows to stop, but avoid a duplicate step.
-		slog.DebugContext(ctx, "feedback already resolved by scanner", "feedback_id", feedbackID)
-		return "", fmt.Errorf("feedback timeout: already resolved by scanner for tool %s", toolName)
-	case <-ctx.Done():
-		return "", fmt.Errorf("context cancelled waiting for feedback: %w", ctx.Err())
-	}
+	return a.feedback.Wait(ctx, runID, toolName, inputJSON, mcpOutput, feedbackTimeout)
 }
 
 // runAPILoop drives the LLM API loop until the model returns end_turn,
@@ -689,11 +416,11 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		return "", false, fmt.Errorf("context cancelled before tool dispatch: %w", err)
 	}
 
-	// Route synthetic tools (gleipnir.* namespace) to the internal handler
+	// Route synthetic tools (gleipnir.* namespace) to the feedback handler
 	// before attempting any MCP registry lookup. Synthetic tools are never
 	// registered in toolsByName and must never be dispatched to an MCP server.
 	if strings.HasPrefix(toolName, SyntheticToolPrefix) {
-		return a.handleSyntheticToolCall(ctx, runID, toolName, input)
+		return a.feedback.HandleAskOperator(ctx, runID, toolName, input, a.policy.Capabilities.Feedback)
 	}
 
 	entry, ok := a.toolsByName[toolName]
@@ -709,9 +436,11 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		return "", false, fmt.Errorf("schema validation for %s: %w", toolName, err)
 	}
 
-	// Approval gating for tools with approval: required.
+	// Approval gating for tools with approval: required (ADR-008).
+	// This interception must remain BEFORE the tool_call step is written and
+	// BEFORE MCP dispatch — it is the hard runtime guarantee.
 	if entry.tool.Approval == model.ApprovalModeRequired {
-		if err := a.waitForApproval(ctx, runID, entry, toolName, input); err != nil {
+		if err := a.approvals.Wait(ctx, runID, entry, toolName, input); err != nil {
 			return "", false, err
 		}
 	}
@@ -759,86 +488,4 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 	}
 
 	return outputStr, result.IsError, nil
-}
-
-// handleSyntheticToolCall dispatches tool calls in the gleipnir.* namespace.
-// Synthetic tools are injected by the Gleipnir runtime and are never registered
-// in toolsByName — they must never reach the MCP dispatch path.
-//
-// The feedback capability check here is defense-in-depth: buildToolDefinitions
-// already excludes gleipnir.ask_operator when feedback is disabled, so the LLM
-// cannot call it through normal reasoning. This guard handles the case where the
-// LLM hallucinates the call despite it not being in the tool list (ADR-001).
-func (a *BoundAgent) handleSyntheticToolCall(ctx context.Context, runID, toolName string, input map[string]any) (string, bool, error) {
-	// Hard capability enforcement: reject synthetic tool calls when the
-	// corresponding capability is not enabled for this policy.
-	if !a.policy.Capabilities.Feedback.Enabled {
-		err := fmt.Errorf("synthetic tool %s is not enabled for this policy", toolName)
-		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeToolError)
-		return "", false, err
-	}
-
-	if toolName != AskOperatorToolName {
-		err := fmt.Errorf("unknown synthetic tool: %s", toolName)
-		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeToolError)
-		return "", false, err
-	}
-
-	// Extract required "reason" field. A missing or non-string reason is a
-	// schema violation — fail the run, consistent with MCP schema violations.
-	reasonRaw, ok := input["reason"]
-	if !ok {
-		err := fmt.Errorf("gleipnir.ask_operator: missing required field 'reason'")
-		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeSchemaViolation)
-		return "", false, err
-	}
-	reason, ok := reasonRaw.(string)
-	if !ok {
-		err := fmt.Errorf("gleipnir.ask_operator: field 'reason' must be a string")
-		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeSchemaViolation)
-		return "", false, err
-	}
-
-	// Extract optional "context" field.
-	detail := ""
-	if contextRaw, ok := input["context"]; ok {
-		if s, ok := contextRaw.(string); ok {
-			detail = s
-		}
-	}
-
-	// Build the message sent to the feedback_request step: reason is the
-	// headline; context (if present) is the supporting detail.
-	message := reason
-	if detail != "" {
-		message += "\n\n" + detail
-	}
-
-	// Resolve the feedback timeout. The policy may specify a per-policy value;
-	// if absent or zero, fall back to the system default.
-	//
-	// A parse error here indicates data corruption or a manual DB edit because
-	// the policy validator already rejects invalid durations at save time. Log
-	// loudly rather than silently discarding the misconfigured value.
-	var feedbackTimeout time.Duration
-	if a.policy.Capabilities.Feedback.Timeout != "" {
-		var parseErr error
-		feedbackTimeout, parseErr = time.ParseDuration(a.policy.Capabilities.Feedback.Timeout)
-		if parseErr != nil {
-			slog.WarnContext(ctx, "invalid feedback timeout in policy, falling back to default",
-				"run_id", runID,
-				"timeout_value", a.policy.Capabilities.Feedback.Timeout,
-				"err", parseErr)
-			feedbackTimeout = 0
-		}
-	}
-	if feedbackTimeout == 0 {
-		feedbackTimeout = a.defaultFeedbackTimeout
-	}
-
-	responseText, err := a.waitForFeedback(ctx, runID, AskOperatorToolName, "", message, feedbackTimeout)
-	if err != nil {
-		return "", false, err
-	}
-	return responseText, false, nil
 }
