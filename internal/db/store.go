@@ -162,6 +162,45 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate add system and model settings: %w", err)
 	}
 
+	if err := s.migrateAddOpenAICompatProviders(ctx); err != nil {
+		return fmt.Errorf("migrate add openai_compat_providers: %w", err)
+	}
+
+	return nil
+}
+
+// migrateAddOpenAICompatProviders creates the openai_compat_providers table
+// on existing deployments. New deployments get it from 0001_initial.sql; this
+// migration is a no-op for them.
+func (s *Store) migrateAddOpenAICompatProviders(ctx context.Context) error {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='openai_compat_providers'`,
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check openai_compat_providers existence: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	ddl := `
+CREATE TABLE openai_compat_providers (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    name              TEXT    NOT NULL UNIQUE,
+    base_url          TEXT    NOT NULL,
+    api_key_encrypted TEXT    NOT NULL,
+    created_at        TEXT    NOT NULL,
+    updated_at        TEXT    NOT NULL
+);
+
+CREATE INDEX idx_openai_compat_providers_name ON openai_compat_providers(name);`
+
+	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("create openai_compat_providers: %w", err)
+	}
+
+	slog.Info("migrated: created openai_compat_providers table")
 	return nil
 }
 
