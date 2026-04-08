@@ -5,7 +5,7 @@
   right: var(--space-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-mid);
-  border-radius: 8px;
+  border-radius: var(--radius-section);
   padding: var(--space-1);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
   z-index: 200;

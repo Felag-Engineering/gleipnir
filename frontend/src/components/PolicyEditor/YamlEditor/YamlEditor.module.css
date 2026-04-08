@@ -9,7 +9,7 @@
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border-mid);
-  border-radius: 8px 8px 0 0;
+  border-radius: var(--radius-section) var(--radius-section) 0 0;
 }
 
 /* CodeMirror renders its own DOM — scoped global is the standard pattern for third-party DOM */
@@ -27,7 +27,7 @@
   font-family: var(--font-mono);
   border: 1px solid var(--border-mid);
   border-top: none;
-  border-radius: 0 0 8px 8px;
+  border-radius: 0 0 var(--radius-section) var(--radius-section);
   background: var(--bg-elevated);
   white-space: nowrap;
   overflow: hidden;

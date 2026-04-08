@@ -10,7 +10,7 @@
 .card {
   background: var(--bg-surface);
   border: 1px solid var(--border-mid);
-  border-radius: 8px;
+  border-radius: var(--radius-section);
   padding: var(--space-8);
   max-width: 480px;
   width: 100%;

@@ -4,7 +4,7 @@
   gap: var(--space-4);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--radius-section);
   padding: var(--space-5);
 }
 
@@ -98,6 +98,13 @@
 }
 
 .toggleButton {
+  /* Control proportions — intentionally off the 4px grid to preserve thumb geometry */
+  --toggle-rail-width: 28px;
+  --toggle-rail-height: 16px;
+  --toggle-thumb-size: 10px;
+  --toggle-thumb-inset: 3px;
+  --toggle-thumb-travel: 14px;
+
   background: none;
   border: none;
   padding: 0;
@@ -107,9 +114,9 @@
 }
 
 .toggleTrack {
-  width: 28px;
-  height: 16px;
-  border-radius: 8px;
+  width: var(--toggle-rail-width);
+  height: var(--toggle-rail-height);
+  border-radius: var(--radius-section);
   position: relative;
   transition: background var(--duration-fast) var(--ease-out),
               border-color var(--duration-fast) var(--ease-out);
@@ -127,8 +134,8 @@
 
 .toggleThumb {
   position: absolute;
-  width: 10px;
-  height: 10px;
+  width: var(--toggle-thumb-size);
+  height: var(--toggle-thumb-size);
   border-radius: 50%;
   top: 2px;
   transition: left var(--duration-fast) var(--ease-out),
@@ -141,7 +148,7 @@
 }
 
 .toggleThumbOn {
-  left: 14px;
+  left: var(--toggle-thumb-travel);
   background: var(--color-amber);
 }
 

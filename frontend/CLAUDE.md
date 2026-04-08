@@ -67,7 +67,7 @@ Capability aliases: `--color-tool: var(--color-blue)`, `--color-feedback: var(--
 
 ### Spacing
 
-4px base grid via CSS custom properties (`--space-1` through `--space-16`). All margins, padding, and gaps snap to: 4, 8, 12, 16, 24, 32, 48, 64 px.
+4px base grid via CSS custom properties (`--space-1` through `--space-16`, plus `--space-20` and `--space-32` for larger fixed sizes). All margins, padding, and gaps snap to multiples of 4px. Section radii use `--radius-section`.
 
 ### Motion
 

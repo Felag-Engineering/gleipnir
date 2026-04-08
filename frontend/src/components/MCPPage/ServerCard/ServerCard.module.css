@@ -1,7 +1,7 @@
 .card {
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--radius-section);
   padding: var(--space-4) var(--space-5);
   cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-out);

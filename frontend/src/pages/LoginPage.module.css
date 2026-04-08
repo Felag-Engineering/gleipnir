@@ -51,7 +51,7 @@
   background: var(--bg-canvas);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
-  padding: 10px var(--space-3);
+  padding: var(--space-3) var(--space-3);
   font-size: var(--text-base);
   font-family: var(--font-body);
   color: var(--text-primary);

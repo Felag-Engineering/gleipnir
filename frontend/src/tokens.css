@@ -54,6 +54,11 @@
   --space-8: 32px;
   --space-12: 48px;
   --space-16: 64px;
+  --space-20: 80px;
+  --space-32: 128px;
+
+  /* Radii */
+  --radius-section: 8px;
 
   /* Typography families */
   --font-body: 'IBM Plex Sans', system-ui, sans-serif;

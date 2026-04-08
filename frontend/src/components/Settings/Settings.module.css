@@ -3,7 +3,7 @@
 .card {
   background: var(--bg-surface);
   border: 1px solid var(--border-mid);
-  border-radius: 8px;
+  border-radius: var(--radius-section);
   overflow: hidden;
 }
 
@@ -55,7 +55,7 @@
 }
 
 .input {
-  padding: 10px var(--space-3);
+  padding: var(--space-3) var(--space-3);
   background: var(--bg-canvas);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
@@ -76,7 +76,7 @@
 }
 
 .select {
-  padding: 10px var(--space-3);
+  padding: var(--space-3) var(--space-3);
   background: var(--bg-canvas);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;

@@ -38,7 +38,7 @@
 
 .fallback {
   background: var(--bg-elevated);
-  border-radius: 8px;
+  border-radius: var(--radius-section);
   padding: var(--space-3) var(--space-4);
 }
 

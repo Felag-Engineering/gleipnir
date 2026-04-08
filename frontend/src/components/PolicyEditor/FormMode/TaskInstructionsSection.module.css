@@ -4,7 +4,7 @@
   gap: var(--space-4);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--radius-section);
   padding: var(--space-5);
 }
 
@@ -38,7 +38,7 @@
   color: var(--text-primary);
   width: 100%;
   resize: vertical;
-  min-height: 128px; /* 4px * 32 — no --space-32 token exists */
+  min-height: var(--space-32);
   transition: border-color var(--duration-fast) var(--ease-out);
   box-sizing: border-box;
 }
