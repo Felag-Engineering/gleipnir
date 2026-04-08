@@ -52,9 +52,27 @@ func (s *stubModelLister) InvalidateAllModelCaches() {
 	s.invalidateAll++
 }
 
+// stubModelFilter implements api.ModelFilter for tests.
+type stubModelFilter struct {
+	enabled []api.EnabledModel
+	err     error
+}
+
+func (s *stubModelFilter) ListEnabledModels(_ context.Context) ([]api.EnabledModel, error) {
+	return s.enabled, s.err
+}
+
 func newModelsRouter(lister api.ModelLister) http.Handler {
 	r := chi.NewRouter()
 	h := api.NewModelsHandler(lister, nil)
+	r.Get("/models", h.List)
+	r.Post("/models/refresh", h.Refresh)
+	return r
+}
+
+func newModelsRouterWithFilter(lister api.ModelLister, filter api.ModelFilter) http.Handler {
+	r := chi.NewRouter()
+	h := api.NewModelsHandler(lister, filter)
 	r.Get("/models", h.List)
 	r.Post("/models/refresh", h.Refresh)
 	return r
@@ -309,4 +327,129 @@ func TestModelsHandler_ResponseShape(t *testing.T) {
 	if envelope.Data[0].Models[0].DisplayName != "Gemini 2.0 Flash" {
 		t.Errorf("display_name = %q, want %q", envelope.Data[0].Models[0].DisplayName, "Gemini 2.0 Flash")
 	}
+}
+
+func TestModelsHandler_FilterSemantics(t *testing.T) {
+	lister := &stubModelLister{
+		models: map[string][]llm.ModelInfo{
+			"anthropic": {
+				{Name: "claude-sonnet-4", DisplayName: "Claude Sonnet 4"},
+				{Name: "claude-haiku-4", DisplayName: "Claude Haiku 4"},
+			},
+			"google": {
+				{Name: "gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"},
+			},
+		},
+	}
+
+	t.Run("nil filter returns all models", func(t *testing.T) {
+		srv := httptest.NewServer(newModelsRouter(lister))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/models?provider=anthropic")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []struct {
+				Models []struct {
+					Name string `json:"name"`
+				} `json:"models"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(envelope.Data[0].Models) != 2 {
+			t.Errorf("expected 2 models with nil filter, got %d", len(envelope.Data[0].Models))
+		}
+	})
+
+	t.Run("filter with enabled models shows only those models", func(t *testing.T) {
+		filter := &stubModelFilter{
+			enabled: []api.EnabledModel{
+				{Provider: "anthropic", ModelName: "claude-sonnet-4"},
+			},
+		}
+		srv := httptest.NewServer(newModelsRouterWithFilter(lister, filter))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/models?provider=anthropic")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []struct {
+				Models []struct {
+					Name string `json:"name"`
+				} `json:"models"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(envelope.Data[0].Models) != 1 {
+			t.Errorf("expected 1 enabled model, got %d", len(envelope.Data[0].Models))
+		}
+		if envelope.Data[0].Models[0].Name != "claude-sonnet-4" {
+			t.Errorf("expected claude-sonnet-4, got %q", envelope.Data[0].Models[0].Name)
+		}
+	})
+
+	t.Run("filter with empty enabled set returns no models", func(t *testing.T) {
+		filter := &stubModelFilter{enabled: []api.EnabledModel{}}
+		srv := httptest.NewServer(newModelsRouterWithFilter(lister, filter))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/models?provider=anthropic")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []struct {
+				Models []struct {
+					Name string `json:"name"`
+				} `json:"models"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(envelope.Data[0].Models) != 0 {
+			t.Errorf("expected 0 models with empty enabled set, got %d", len(envelope.Data[0].Models))
+		}
+	})
+
+	t.Run("filter error falls back to nil (no restriction)", func(t *testing.T) {
+		filter := &stubModelFilter{err: fmt.Errorf("db down")}
+		srv := httptest.NewServer(newModelsRouterWithFilter(lister, filter))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/models?provider=anthropic")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []struct {
+				Models []struct {
+					Name string `json:"name"`
+				} `json:"models"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		// On filter error, loadEnabledSet returns nil → all models pass through.
+		if len(envelope.Data[0].Models) != 2 {
+			t.Errorf("expected 2 models on filter error, got %d", len(envelope.Data[0].Models))
+		}
+	})
 }

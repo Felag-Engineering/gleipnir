@@ -15,7 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/llm"
-	"github.com/rapp992/gleipnir/internal/llm/openai"
+	"github.com/rapp992/gleipnir/internal/llm/openaicompat"
 )
 
 // OpenAICompatRow is the in-memory representation of one row. Decouples the
@@ -53,7 +53,7 @@ type ConnectionTester func(ctx context.Context, baseURL, apiKey string) (bool, e
 func DefaultConnectionTester(ctx context.Context, baseURL, apiKey string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	client := openai.NewClient(baseURL, apiKey, openai.WithTimeout(5*time.Second))
+	client := openaicompat.NewClient(baseURL, apiKey, openaicompat.WithTimeout(5*time.Second))
 	models, err := client.ListModels(ctx)
 	if err != nil {
 		return false, err
@@ -64,7 +64,7 @@ func DefaultConnectionTester(ctx context.Context, baseURL, apiKey string) (bool,
 }
 
 var nameRegexp = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
-var reservedNames = map[string]bool{"anthropic": true, "google": true}
+var reservedNames = map[string]bool{"anthropic": true, "google": true, "openai": true}
 
 // OpenAICompatHandler handles /api/v1/admin/openai-providers/*.
 type OpenAICompatHandler struct {
@@ -255,7 +255,7 @@ func (h *OpenAICompatHandler) CreateProvider(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	// Only mutate the registry after the DB write succeeds.
-	client := openai.NewClient(base, body.APIKey)
+	client := openaicompat.NewClient(base, body.APIKey)
 	h.registry.Register(body.Name, client)
 	h.modelsAvail[body.Name] = modelsAvail
 
@@ -352,7 +352,7 @@ func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Requ
 		h.registry.Unregister(existing.Name)
 		delete(h.modelsAvail, existing.Name)
 	}
-	client := openai.NewClient(base, effectiveKey)
+	client := openaicompat.NewClient(base, effectiveKey)
 	h.registry.Register(body.Name, client)
 	h.modelsAvail[body.Name] = modelsAvail
 

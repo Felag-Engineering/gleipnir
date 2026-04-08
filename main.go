@@ -27,6 +27,7 @@ import (
 	anthropicllm "github.com/rapp992/gleipnir/internal/llm/anthropic"
 	googlellm "github.com/rapp992/gleipnir/internal/llm/google"
 	openaillm "github.com/rapp992/gleipnir/internal/llm/openai"
+	openaicompatllm "github.com/rapp992/gleipnir/internal/llm/openaicompat"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
@@ -38,7 +39,7 @@ import (
 var version = "dev"
 
 // knownProviders is the list of LLM providers the system supports.
-var knownProviders = []string{"anthropic", "google"}
+var knownProviders = []string{"anthropic", "google", "openai"}
 
 const (
 	// drainTimeout is how long we wait for in-flight agent runs to finish
@@ -140,6 +141,8 @@ func run(cfg config.Config) error {
 			if err != nil {
 				return fmt.Errorf("create google client: %w", err)
 			}
+		case "openai":
+			client = openaillm.NewClient(apiKey)
 		default:
 			return fmt.Errorf("unknown provider %q", provider)
 		}
@@ -178,6 +181,9 @@ func run(cfg config.Config) error {
 	if key := os.Getenv("GOOGLE_API_KEY"); key != "" {
 		slog.Warn("GOOGLE_API_KEY env var is set but no longer used — configure API keys through the admin UI at /admin/models")
 	}
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		slog.Warn("OPENAI_API_KEY env var is set but no longer used — configure API keys through the admin UI at /admin/models")
+	}
 
 	// Wire up the OpenAI-compatible provider handler. The adapter bridges
 	// sqlc-generated rows to the handler and loader interfaces. nil tester
@@ -188,8 +194,16 @@ func run(cfg config.Config) error {
 	// Load any previously-saved OpenAI-compat providers from the DB into the
 	// registry at startup. Failure is non-fatal (mirrors bootstrap-providers
 	// loop above) — a log entry is sufficient.
-	if err := openaillm.LoadAndRegister(ctx, openaiAdapter, encryptionKey, providerRegistry, admin.Decrypt); err != nil {
+	if err := openaicompatllm.LoadAndRegister(ctx, openaiAdapter, encryptionKey, providerRegistry, admin.Decrypt); err != nil {
 		slog.Error("failed to load openai-compat providers at startup", "err", err)
+	}
+
+	// Ensure the configured default model has an enabled=1 row so that existing
+	// deployments are not locked out after the semantic flip (new/unseen models
+	// now default to disabled). If the row already exists with enabled=1, the
+	// upsert is a no-op.
+	if err := ensureDefaultModelEnabled(ctx, store.Queries(), adminHandler); err != nil {
+		slog.Warn("could not ensure default model is enabled", "err", err)
 	}
 
 	// claudeCodeFactory bridges agent.Config to claudecode.Config so the trigger
@@ -277,6 +291,7 @@ func run(cfg config.Config) error {
 			r.Get("/settings", adminHandler.GetSettings)
 			r.Put("/settings", adminHandler.UpdateSettings)
 			r.Get("/models", adminHandler.ListModelsAdmin)
+			r.Get("/models/all", adminHandler.ListAllModels(providerRegistry))
 			r.Put("/models/{id}/enabled", adminHandler.SetModelEnabled)
 			r.Get("/system-info", admin.GetSystemInfo(admin.SystemInfoDeps{
 				Version:   version,
@@ -363,6 +378,29 @@ func run(cfg config.Config) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
+// ensureDefaultModelEnabled upserts an enabled=1 row for the configured
+// default model. This prevents existing deployments from being locked out
+// after the semantic flip where new/unseen models default to disabled.
+// If no default_model setting exists, the function is a no-op.
+func ensureDefaultModelEnabled(ctx context.Context, q *db.Queries, h *admin.Handler) error {
+	provider, model, err := h.GetSystemDefault(ctx)
+	if err != nil {
+		// No default model configured — nothing to do.
+		return nil
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := q.UpsertModelSetting(ctx, db.UpsertModelSettingParams{
+		Provider:  provider,
+		ModelName: model,
+		Enabled:   1,
+		UpdatedAt: now,
+	}); err != nil {
+		return fmt.Errorf("upsert default model enabled row: %w", err)
+	}
+	return nil
+}
+
 // modelFilterAdapter bridges db.Queries to the api.ModelFilter interface.
 type modelFilterAdapter struct {
 	q *db.Queries
@@ -439,14 +477,14 @@ func (a *openaiCompatAdapter) DeleteOpenAICompatProvider(ctx context.Context, id
 
 // ListOpenAICompatProvidersForLoader satisfies openai.LoaderQuerier. It
 // returns only the fields the loader needs (name, base URL, encrypted key).
-func (a *openaiCompatAdapter) ListOpenAICompatProvidersForLoader(ctx context.Context) ([]openaillm.LoaderRow, error) {
+func (a *openaiCompatAdapter) ListOpenAICompatProvidersForLoader(ctx context.Context) ([]openaicompatllm.LoaderRow, error) {
 	rows, err := a.q.ListOpenAICompatProviders(ctx)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]openaillm.LoaderRow, len(rows))
+	result := make([]openaicompatllm.LoaderRow, len(rows))
 	for i, r := range rows {
-		result[i] = openaillm.LoaderRow{
+		result[i] = openaicompatllm.LoaderRow{
 			Name:            r.Name,
 			BaseURL:         r.BaseUrl,
 			APIKeyEncrypted: r.ApiKeyEncrypted,
@@ -470,14 +508,14 @@ func sqlcRowToAdminRow(r db.OpenaiCompatProvider) admin.OpenAICompatRow {
 	}
 }
 
-func (a *modelFilterAdapter) ListDisabledModels(ctx context.Context) ([]api.DisabledModel, error) {
-	rows, err := a.q.ListDisabledModels(ctx)
+func (a *modelFilterAdapter) ListEnabledModels(ctx context.Context) ([]api.EnabledModel, error) {
+	rows, err := a.q.ListEnabledModels(ctx)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]api.DisabledModel, len(rows))
+	result := make([]api.EnabledModel, len(rows))
 	for i, r := range rows {
-		result[i] = api.DisabledModel{Provider: r.Provider, ModelName: r.ModelName}
+		result[i] = api.EnabledModel{Provider: r.Provider, ModelName: r.ModelName}
 	}
 	return result, nil
 }

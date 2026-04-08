@@ -1,4 +1,4 @@
-package openai
+package openaicompat
 
 import (
 	"strings"
@@ -9,7 +9,7 @@ func TestValidateOptions(t *testing.T) {
 	cases := []struct {
 		name    string
 		input   map[string]any
-		wantErr string
+		wantErr string // substring to match; "" means no error
 	}{
 		{"nil", nil, ""},
 		{"empty", map[string]any{}, ""},
@@ -30,7 +30,7 @@ func TestValidateOptions(t *testing.T) {
 		{"max_output_tokens negative", map[string]any{"max_output_tokens": -1}, "max_output_tokens"},
 		{"unknown key", map[string]any{"frequency_penalty": 1.0}, "unknown option"},
 	}
-	c := &Client{}
+	c := &Client{} // ValidateOptions has no dependencies
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := c.ValidateOptions(tc.input)

@@ -2,23 +2,88 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"io"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
+	"github.com/openai/openai-go/responses"
 	"github.com/rapp992/gleipnir/internal/llm"
 )
 
-func loadStreamFixture(t *testing.T, name string) io.ReadCloser {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("testdata", name))
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
+// fakeStream implements streamIterator for tests.
+type fakeStream struct {
+	events []responses.ResponseStreamEventUnion
+	idx    int
+	err    error
+}
+
+func newFakeStream(events ...responses.ResponseStreamEventUnion) *fakeStream {
+	return &fakeStream{events: events}
+}
+
+func (f *fakeStream) Next() bool {
+	if f.err != nil || f.idx >= len(f.events) {
+		return false
 	}
-	return io.NopCloser(strings.NewReader(string(raw)))
+	f.idx++
+	return true
+}
+
+func (f *fakeStream) Current() responses.ResponseStreamEventUnion {
+	return f.events[f.idx-1]
+}
+
+func (f *fakeStream) Err() error { return f.err }
+
+// makeTextDeltaEvent builds a ResponseStreamEventUnion for a text delta.
+func makeTextDeltaEvent(itemID, delta string) responses.ResponseStreamEventUnion {
+	raw := json.RawMessage(`{"type":"response.output_text.delta","item_id":"` + itemID + `","output_index":0,"content_index":0,"delta":"` + delta + `","sequence_number":1,"logprobs":[]}`)
+	var evt responses.ResponseStreamEventUnion
+	_ = json.Unmarshal(raw, &evt)
+	return evt
+}
+
+// makeToolArgsDeltaEvent builds an event for function call argument deltas.
+func makeToolArgsDeltaEvent(itemID, delta string) responses.ResponseStreamEventUnion {
+	raw := json.RawMessage(`{"type":"response.function_call_arguments.delta","item_id":"` + itemID + `","output_index":0,"delta":"` + delta + `","sequence_number":2}`)
+	var evt responses.ResponseStreamEventUnion
+	_ = json.Unmarshal(raw, &evt)
+	return evt
+}
+
+// makeOutputItemDoneEvent builds a done event for a function_call item.
+func makeOutputItemDoneEvent(callID, name, args string) responses.ResponseStreamEventUnion {
+	payload := map[string]any{
+		"type":            "response.output_item.done",
+		"output_index":    0,
+		"sequence_number": 3,
+		"item": map[string]any{
+			"id":        "fc_" + callID,
+			"type":      "function_call",
+			"call_id":   callID,
+			"name":      name,
+			"arguments": args,
+			"status":    "completed",
+		},
+	}
+	raw, _ := json.Marshal(payload)
+	var evt responses.ResponseStreamEventUnion
+	_ = json.Unmarshal(raw, &evt)
+	return evt
+}
+
+// makeCompletedEvent builds a response.completed event.
+func makeCompletedEvent(hasToolCall bool) responses.ResponseStreamEventUnion {
+	output := `[]`
+	if hasToolCall {
+		output = `[{"id":"fc_001","type":"function_call","call_id":"call_001","name":"get_data","arguments":"{}","status":"completed"}]`
+	} else {
+		output = `[{"id":"msg_001","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done","annotations":[]}]}]`
+	}
+	raw := json.RawMessage(`{"type":"response.completed","sequence_number":10,"response":{"id":"resp_001","object":"response","created_at":1700000000,"model":"gpt-4o","status":"completed","output":` + output + `,"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}}}`)
+	var evt responses.ResponseStreamEventUnion
+	_ = json.Unmarshal(raw, &evt)
+	return evt
 }
 
 func collectChunks(t *testing.T, ch <-chan llm.MessageChunk) []llm.MessageChunk {
@@ -30,181 +95,164 @@ func collectChunks(t *testing.T, ch <-chan llm.MessageChunk) []llm.MessageChunk 
 	return out
 }
 
-func TestParseSSEStream_TextOnly(t *testing.T) {
-	body := loadStreamFixture(t, "stream_chunks_text.txt")
-	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
-	chunks := collectChunks(t, ch)
+func TestConsumeStream_TextDeltas(t *testing.T) {
+	stream := newFakeStream(
+		makeTextDeltaEvent("msg_001", "Hello"),
+		makeTextDeltaEvent("msg_001", " world"),
+		makeCompletedEvent(false),
+	)
 
-	var text strings.Builder
-	var sawStop bool
+	out := make(chan llm.MessageChunk, 16)
+	go consumeStream(context.Background(), stream, out, llm.ToolNameMapping{})
+	chunks := collectChunks(t, out)
+
+	var text string
 	for _, c := range chunks {
 		if c.Err != nil {
 			t.Fatalf("unexpected error chunk: %v", c.Err)
 		}
 		if c.Text != nil {
-			text.WriteString(*c.Text)
+			text += *c.Text
 		}
+	}
+	if text != "Hello world" {
+		t.Errorf("assembled text = %q; want %q", text, "Hello world")
+	}
+}
+
+func TestConsumeStream_ToolCallEmitted(t *testing.T) {
+	stream := newFakeStream(
+		makeToolArgsDeltaEvent("fc_001", `{"city`),
+		makeToolArgsDeltaEvent("fc_001", `":"SF"}`),
+		makeOutputItemDoneEvent("call_abc", "get_weather", `{"city":"SF"}`),
+		makeCompletedEvent(true),
+	)
+
+	out := make(chan llm.MessageChunk, 16)
+	go consumeStream(context.Background(), stream, out, llm.ToolNameMapping{})
+	chunks := collectChunks(t, out)
+
+	var toolChunk *llm.ToolCallBlock
+	for _, c := range chunks {
+		if c.Err != nil {
+			t.Fatalf("unexpected error chunk: %v", c.Err)
+		}
+		if c.ToolCall != nil {
+			toolChunk = c.ToolCall
+		}
+	}
+	if toolChunk == nil {
+		t.Fatal("expected a tool call chunk")
+	}
+	if toolChunk.ID != "call_abc" {
+		t.Errorf("call_id = %q; want call_abc", toolChunk.ID)
+	}
+	if toolChunk.Name != "get_weather" {
+		t.Errorf("name = %q; want get_weather", toolChunk.Name)
+	}
+}
+
+func TestConsumeStream_StopReasonEmitted(t *testing.T) {
+	stream := newFakeStream(makeCompletedEvent(false))
+
+	out := make(chan llm.MessageChunk, 16)
+	go consumeStream(context.Background(), stream, out, llm.ToolNameMapping{})
+	chunks := collectChunks(t, out)
+
+	var sawStop bool
+	for _, c := range chunks {
 		if c.StopReason != nil {
 			sawStop = true
 			if *c.StopReason != llm.StopReasonEndTurn {
-				t.Errorf("stop reason: got %v, want EndTurn", *c.StopReason)
+				t.Errorf("StopReason = %v; want EndTurn", *c.StopReason)
 			}
 		}
 	}
-	if text.String() != "Hello world" {
-		t.Errorf("assembled text: %q", text.String())
-	}
 	if !sawStop {
-		t.Error("no stop chunk emitted")
+		t.Error("expected a stop chunk")
 	}
 }
 
-func TestParseSSEStream_ToolCallsAreEmittedComplete(t *testing.T) {
-	body := loadStreamFixture(t, "stream_chunks_with_tool_calls.txt")
-	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
-	chunks := collectChunks(t, ch)
+func TestConsumeStream_UsageEmitted(t *testing.T) {
+	stream := newFakeStream(makeCompletedEvent(false))
 
-	var toolCallChunks int
-	var finalCall *llm.ToolCallBlock
-	for _, c := range chunks {
-		if c.Err != nil {
-			t.Fatalf("unexpected error: %v", c.Err)
-		}
-		if c.ToolCall != nil {
-			toolCallChunks++
-			finalCall = c.ToolCall
-		}
-	}
-	if toolCallChunks != 1 {
-		t.Fatalf("want exactly 1 tool-call chunk, got %d", toolCallChunks)
-	}
-	if finalCall.ID != "call_abc" {
-		t.Errorf("id: %q", finalCall.ID)
-	}
-	if finalCall.Name != "get_weather" {
-		t.Errorf("name: %q", finalCall.Name)
-	}
-	if string(finalCall.Input) != `{"city":"SF"}` {
-		t.Errorf("arguments not reassembled: %q", finalCall.Input)
-	}
-}
+	out := make(chan llm.MessageChunk, 16)
+	go consumeStream(context.Background(), stream, out, llm.ToolNameMapping{})
+	chunks := collectChunks(t, out)
 
-func TestParseSSEStream_UsageChunkPopulatesFinalUsage(t *testing.T) {
-	body := loadStreamFixture(t, "stream_chunks_with_usage.txt")
-	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
-	chunks := collectChunks(t, ch)
-
-	var gotUsage *llm.TokenUsage
+	var usage *llm.TokenUsage
 	for _, c := range chunks {
 		if c.Usage != nil {
-			gotUsage = c.Usage
+			usage = c.Usage
 		}
 	}
-	if gotUsage == nil {
-		t.Fatal("no usage chunk emitted")
+	if usage == nil {
+		t.Fatal("expected usage chunk")
 	}
-	if gotUsage.InputTokens != 7 || gotUsage.OutputTokens != 1 {
-		t.Errorf("usage: %+v", gotUsage)
-	}
-}
-
-func TestParseSSEStream_NoDoneTerminatorIsError(t *testing.T) {
-	body := io.NopCloser(strings.NewReader(
-		`data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}` + "\n\n",
-	))
-	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
-	chunks := collectChunks(t, ch)
-
-	// Stream ends without [DONE] → final chunk should carry an error.
-	if len(chunks) == 0 {
-		t.Fatal("expected at least one chunk")
-	}
-	last := chunks[len(chunks)-1]
-	if last.Err == nil {
-		t.Errorf("expected error on incomplete stream, got %+v", last)
+	if usage.InputTokens != 5 || usage.OutputTokens != 3 {
+		t.Errorf("usage = %+v", usage)
 	}
 }
 
-func TestParseSSEStream_MalformedJSONIsError(t *testing.T) {
-	body := io.NopCloser(strings.NewReader(
-		`data: {not-valid-json` + "\n\n" + `data: [DONE]` + "\n\n",
-	))
-	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
-	chunks := collectChunks(t, ch)
+func TestConsumeStream_StreamError(t *testing.T) {
+	stream := &fakeStream{err: errors.New("network error")}
+
+	out := make(chan llm.MessageChunk, 16)
+	go consumeStream(context.Background(), stream, out, llm.ToolNameMapping{})
+	chunks := collectChunks(t, out)
+
 	var sawErr bool
 	for _, c := range chunks {
 		if c.Err != nil {
 			sawErr = true
-			break
 		}
 	}
 	if !sawErr {
-		t.Error("expected error chunk for malformed JSON")
+		t.Error("expected error chunk")
 	}
 }
 
-func TestParseSSEStream_ContextCancellation(t *testing.T) {
-	// A slow reader that blocks until its context is cancelled or Close is called.
-	// The Read method selects on ctx.Done() so that context cancellation unblocks
-	// the scanner even before body.Close() runs — without this, scanner.Scan()
-	// would block forever and parseSSEStream would never reach the ctx.Done()
-	// check at the top of the loop. (Deviation from plan noted in implementation
-	// summary.)
+func TestConsumeStream_ContextCancellation(t *testing.T) {
+	// Pre-cancel the context. The select at the top of the for-loop in
+	// consumeStream should detect it on the first iteration and emit an error.
 	ctx, cancel := context.WithCancel(context.Background())
-	slow := &blockingReader{done: ctx.Done()}
-	out := make(chan llm.MessageChunk, 4)
-
-	go parseSSEStream(ctx, slow, out, llm.ToolNameMapping{})
 	cancel()
 
-	// Expect the channel to close; expect a context-related error on the last chunk.
+	// Provide one event so the loop body runs at least once and hits the select.
+	stream := newFakeStream(makeTextDeltaEvent("msg_001", "hi"))
+
+	out := make(chan llm.MessageChunk, 4)
+	go consumeStream(ctx, stream, out, llm.ToolNameMapping{})
+
 	var chunks []llm.MessageChunk
 	for c := range out {
 		chunks = append(chunks, c)
 	}
-	if len(chunks) == 0 {
-		t.Fatal("expected at least one chunk (the cancellation error)")
+	// We expect at least the cancellation error chunk.
+	var sawCancel bool
+	for _, c := range chunks {
+		if errors.Is(c.Err, context.Canceled) {
+			sawCancel = true
+		}
 	}
-	last := chunks[len(chunks)-1]
-	if !errors.Is(last.Err, context.Canceled) {
-		t.Errorf("expected context.Canceled, got %v", last.Err)
+	if !sawCancel {
+		t.Errorf("expected context.Canceled in chunks, got: %+v", chunks)
 	}
 }
 
-// blockingReader.Read blocks until done is closed (e.g. ctx cancellation)
-// or Close is called. This ensures context cancellation unblocks the scanner
-// without relying on body.Close() being called first.
-type blockingReader struct {
-	done <-chan struct{}
-}
-
-func (b *blockingReader) Read(p []byte) (int, error) {
-	<-b.done
-	return 0, io.EOF
-}
-
-func (b *blockingReader) Close() error {
-	return nil
-}
-
-func TestParseSSEStream_ChannelClosedExactlyOnce(t *testing.T) {
-	body := loadStreamFixture(t, "stream_chunks_text.txt")
-	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
-	for range ch {
+func TestConsumeStream_ChannelClosedExactlyOnce(t *testing.T) {
+	stream := newFakeStream(makeCompletedEvent(false))
+	out := make(chan llm.MessageChunk, 16)
+	go consumeStream(context.Background(), stream, out, llm.ToolNameMapping{})
+	for range out {
 	}
-	// Second receive on a closed channel must not panic.
+	// Second receive on closed channel must not panic.
 	defer func() {
 		if r := recover(); r != nil {
 			t.Errorf("second receive panicked: %v", r)
 		}
 	}()
-	_, ok := <-ch
+	_, ok := <-out
 	if ok {
 		t.Error("channel should be closed")
 	}

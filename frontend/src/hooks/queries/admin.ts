@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/api/fetch'
-import type { ApiProviderStatus, ApiModelSetting, ApiSystemSettings, ApiSystemInfo } from '@/api/types'
+import type { ApiProviderStatus, ApiModelSetting, ApiAllModelEntry, ApiSystemSettings, ApiSystemInfo } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
 export function useProviders() {
@@ -14,6 +14,13 @@ export function useAdminModels() {
   return useQuery({
     queryKey: queryKeys.admin.models,
     queryFn: () => apiFetch<ApiModelSetting[]>('/admin/models'),
+  })
+}
+
+export function useAllAdminModels() {
+  return useQuery({
+    queryKey: queryKeys.admin.modelsAll,
+    queryFn: () => apiFetch<ApiAllModelEntry[]>('/admin/models/all'),
   })
 }
 

@@ -2,12 +2,11 @@ import { useState, useCallback } from 'react'
 import { KeyRound, Bot, Layers } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { usePageTitle } from '@/hooks/usePageTitle'
-import { useProviders } from '@/hooks/queries/admin'
-import { useAdminModels, useAdminSettings } from '@/hooks/queries/admin'
-import { useModels, type ProviderModels } from '@/hooks/queries/users'
+import { useProviders, useAllAdminModels, useAdminSettings } from '@/hooks/queries/admin'
+import { useModels } from '@/hooks/queries/users'
+import type { ApiProviderStatus, ApiAllModelEntry } from '@/api/types'
 import { useSetProviderKey } from '@/hooks/mutations/admin'
 import { useUpdateAdminSettings, useSetModelEnabled } from '@/hooks/mutations/admin'
-import type { ApiProviderStatus, ApiModelSetting } from '@/api/types'
 import { OpenAICompatProvidersSection } from '@/components/admin/OpenAICompatProvidersSection'
 import { useOpenAICompatProviders } from '@/hooks/queries/openaiCompatProviders'
 import cardStyles from '@/components/Settings/Settings.module.css'
@@ -185,42 +184,19 @@ interface MergedModel {
   enabled: boolean
 }
 
-function mergeModels(
-  providerModels: ProviderModels[] | undefined,
-  adminModels: ApiModelSetting[] | undefined,
-): Map<string, MergedModel[]> {
+function groupAllModels(allModels: ApiAllModelEntry[] | undefined): Map<string, MergedModel[]> {
   const grouped = new Map<string, MergedModel[]>()
+  if (!allModels) return grouped
 
-  // Enabled models from the regular endpoint
-  if (providerModels) {
-    for (const pg of providerModels) {
-      const models: MergedModel[] = pg.models.map((m) => ({
-        provider: pg.provider,
-        modelName: m.name,
-        displayName: m.display_name,
-        enabled: true,
-      }))
-      grouped.set(pg.provider, models)
-    }
-  }
-
-  // Disabled models from the admin endpoint
-  if (adminModels) {
-    for (const am of adminModels) {
-      if (!am.enabled) {
-        const existing = grouped.get(am.provider) ?? []
-        const alreadyListed = existing.some((m) => m.modelName === am.model_name)
-        if (!alreadyListed) {
-          existing.push({
-            provider: am.provider,
-            modelName: am.model_name,
-            displayName: am.model_name,
-            enabled: false,
-          })
-          grouped.set(am.provider, existing)
-        }
-      }
-    }
+  for (const m of allModels) {
+    const list = grouped.get(m.provider) ?? []
+    list.push({
+      provider: m.provider,
+      modelName: m.model_name,
+      displayName: m.display_name,
+      enabled: m.enabled,
+    })
+    grouped.set(m.provider, list)
   }
 
   return grouped
@@ -249,8 +225,7 @@ function ToggleSwitch({
 }
 
 function AvailableModelsSection() {
-  const { data: providerModels } = useModels()
-  const { data: adminModels } = useAdminModels()
+  const { data: allModels } = useAllAdminModels()
   const { data: providers } = useProviders()
   const { data: compatProviders } = useOpenAICompatProviders()
   const { data: settings } = useAdminSettings()
@@ -269,16 +244,18 @@ function AvailableModelsSection() {
     providerKeyMap.set(p.name, true)
   }
 
-  const grouped = mergeModels(providerModels, adminModels)
+  const grouped = groupAllModels(allModels)
 
-  // Merge hardcoded provider names with admin-managed openai-compat provider
-  // names. A Set guards against the (unlikely) case where a compat provider
-  // was named identically to a hardcoded one.
+  // Render the three primary providers (Anthropic, Google, OpenAI) first in a
+  // fixed order so the UI doesn't depend on API response ordering, then append
+  // any admin-managed openai-compat providers. The Set guards against the
+  // (unlikely) case where a compat provider was named identically to a primary.
+  const PRIMARY_PROVIDERS = ["anthropic", "google", "openai"] as const
+  const primary = PRIMARY_PROVIDERS.filter((name) =>
+    providers?.some((p) => p.name === name),
+  )
   const allProviders = Array.from(
-    new Set([
-      ...(providers?.map((p) => p.name) ?? []),
-      ...(compatProviders?.map((p) => p.name) ?? []),
-    ]),
+    new Set([...primary, ...(compatProviders?.map((p) => p.name) ?? [])]),
   )
 
   return (

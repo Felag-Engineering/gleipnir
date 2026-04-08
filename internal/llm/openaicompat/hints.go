@@ -1,15 +1,15 @@
-package openai
+package openaicompat
 
 import "fmt"
 
-// OpenAIHints carries optional tuning fields that map to the Responses API
-// request parameters. All fields are pointers so "unset" is distinct from
-// "zero" — nil means the translator omits the field.
+// OpenAIHints carries optional tuning fields that map to OpenAI Chat
+// Completions request parameters. All fields are pointers so "unset" is
+// distinct from "zero" — nil means the translator omits the field.
 type OpenAIHints struct {
 	Temperature     *float64
 	TopP            *float64
 	ReasoningEffort *string // "low" | "medium" | "high"
-	MaxOutputTokens *int64
+	MaxOutputTokens *int
 }
 
 var validReasoningEfforts = map[string]bool{"low": true, "medium": true, "high": true}
@@ -48,7 +48,7 @@ func parseHints(options map[string]any) (*OpenAIHints, error) {
 			}
 			h.ReasoningEffort = &s
 		case "max_output_tokens":
-			n, ok := toInt64(raw)
+			n, ok := toInt(raw)
 			if !ok {
 				return nil, fmt.Errorf("max_output_tokens: must be an integer, got %T", raw)
 			}
@@ -78,17 +78,17 @@ func toFloat64(v any) (float64, bool) {
 	}
 }
 
-func toInt64(v any) (int64, bool) {
+func toInt(v any) (int, bool) {
 	switch x := v.(type) {
 	case int:
-		return int64(x), true
-	case int64:
 		return x, true
+	case int64:
+		return int(x), true
 	case float64:
-		if x != float64(int64(x)) {
+		if x != float64(int(x)) {
 			return 0, false
 		}
-		return int64(x), true
+		return int(x), true
 	default:
 		return 0, false
 	}

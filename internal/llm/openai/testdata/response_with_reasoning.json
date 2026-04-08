@@ -1,0 +1,44 @@
+{
+  "id": "resp_003",
+  "object": "response",
+  "created_at": 1700000000,
+  "model": "o3-mini",
+  "status": "completed",
+  "output": [
+    {
+      "id": "rs_001",
+      "type": "reasoning",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "I need to compute the answer."
+        }
+      ],
+      "status": "completed"
+    },
+    {
+      "id": "msg_002",
+      "type": "message",
+      "role": "assistant",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "The answer is 42.",
+          "annotations": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 5,
+    "output_tokens": 20,
+    "total_tokens": 25,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 15
+    }
+  }
+}

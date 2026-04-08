@@ -3,98 +3,32 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
+	openaisdk "github.com/openai/openai-go"
+	"github.com/openai/openai-go/responses"
 	"github.com/rapp992/gleipnir/internal/llm"
 )
 
-// BuildChatCompletionRequest translates an llm.MessageRequest into an OpenAI
-// Chat Completions wire request. The `stream` argument sets Stream and
-// StreamOptions; the translator is otherwise identical for sync and streaming.
-//
-// OpenAI restricts tool names to `^[a-zA-Z0-9_-]+$`. Gleipnir tool names
-// routinely contain other characters (most notably '.' as an MCP namespace
-// separator), so names must be sanitized before they hit the wire. Callers
-// pass a ToolNameMapping built with llm.BuildNameMapping(req.Tools, "-"); an
-// empty mapping is safe and disables rewriting (used by tests that don't
-// exercise tool calls). See spec §7.6 for the full translation rules.
-func BuildChatCompletionRequest(req llm.MessageRequest, stream bool, names llm.ToolNameMapping) chatRequest {
-	out := chatRequest{
-		Model:    req.Model,
-		Messages: make([]chatMessage, 0, len(req.History)+1),
-	}
-	if stream {
-		out.Stream = true
-		out.StreamOptions = &streamOptions{IncludeUsage: true}
-	}
-
-	if req.SystemPrompt != "" {
-		s := req.SystemPrompt
-		out.Messages = append(out.Messages, chatMessage{Role: "system", Content: &s})
-	}
-
+// buildInput translates the provider-neutral MessageRequest history into the
+// Responses API input list. The system prompt is passed separately as
+// ResponseNewParams.Instructions; it is not included in the input list here.
+func buildInput(req llm.MessageRequest, names llm.ToolNameMapping) []responses.ResponseInputItemUnionParam {
+	var items []responses.ResponseInputItemUnionParam
 	for _, turn := range req.History {
-		out.Messages = append(out.Messages, translateTurn(turn, names)...)
+		items = append(items, translateTurn(turn, names)...)
 	}
-
-	for _, td := range req.Tools {
-		name := td.Name
-		if mapped, ok := names.OriginalToSanitized[name]; ok {
-			name = mapped
-		}
-		out.Tools = append(out.Tools, chatTool{
-			Type: "function",
-			Function: chatToolFunc{
-				Name:        name,
-				Description: td.Description,
-				Parameters:  td.InputSchema,
-			},
-		})
-	}
-
-	// MaxTokens: route to the right field depending on the model family.
-	hints, _ := req.Hints.(*OpenAIHints)
-	effectiveMax := req.MaxTokens
-	if hints != nil && hints.MaxOutputTokens != nil {
-		effectiveMax = *hints.MaxOutputTokens
-	}
-	if effectiveMax > 0 {
-		v := effectiveMax
-		if isOSeriesModel(req.Model) {
-			out.MaxCompletionTokens = &v
-		} else {
-			out.MaxTokens = &v
-		}
-	}
-
-	if hints != nil {
-		if hints.Temperature != nil {
-			t := *hints.Temperature
-			out.Temperature = &t
-		}
-		if hints.TopP != nil {
-			p := *hints.TopP
-			out.TopP = &p
-		}
-		// reasoning_effort is an o-series-only parameter; sending it to other
-		// models causes a 400 error from OpenAI.
-		if hints.ReasoningEffort != nil && isOSeriesModel(req.Model) {
-			e := *hints.ReasoningEffort
-			out.ReasoningEffort = &e
-		}
-	}
-
-	return out
+	return items
 }
 
-// translateTurn maps one Gleipnir ConversationTurn into one or more wire
-// messages. A user turn containing tool results produces N role:"tool"
-// messages; a user turn mixing text and tool results emits tool messages
-// first, then a user message with the concatenated text.
-func translateTurn(turn llm.ConversationTurn, names llm.ToolNameMapping) []chatMessage {
+// translateTurn converts a single ConversationTurn into one or more input
+// items. The Responses API represents tool calls and results as separate
+// top-level items, not as nested content within a single message.
+func translateTurn(turn llm.ConversationTurn, names llm.ToolNameMapping) []responses.ResponseInputItemUnionParam {
 	switch turn.Role {
 	case llm.RoleAssistant:
-		return []chatMessage{translateAssistantTurn(turn.Content, names)}
+		return translateAssistantTurn(turn.Content, names)
 	case llm.RoleUser:
 		return translateUserTurn(turn.Content)
 	default:
@@ -102,147 +36,182 @@ func translateTurn(turn llm.ConversationTurn, names llm.ToolNameMapping) []chatM
 	}
 }
 
-func translateAssistantTurn(blocks []llm.ContentBlock, names llm.ToolNameMapping) chatMessage {
-	msg := chatMessage{Role: "assistant"}
-	var texts []string
+func translateAssistantTurn(blocks []llm.ContentBlock, names llm.ToolNameMapping) []responses.ResponseInputItemUnionParam {
+	var items []responses.ResponseInputItemUnionParam
+	var textParts []string
+
 	for _, b := range blocks {
 		switch v := b.(type) {
 		case llm.TextBlock:
-			texts = append(texts, v.Text)
+			textParts = append(textParts, v.Text)
 		case llm.ToolCallBlock:
+			// Flush accumulated text first, then emit the function call item.
+			if len(textParts) > 0 {
+				items = append(items, assistantTextItem(strings.Join(textParts, "\n\n")))
+				textParts = nil
+			}
 			name := v.Name
 			if mapped, ok := names.OriginalToSanitized[name]; ok {
 				name = mapped
 			}
-			msg.ToolCalls = append(msg.ToolCalls, chatToolCall{
-				ID:   v.ID,
-				Type: "function",
-				Function: chatToolCallFunc{
-					Name:      name,
-					Arguments: string(v.Input),
-				},
-			})
+			args := string(v.Input)
+			if args == "" {
+				args = "{}"
+			}
+			items = append(items, responses.ResponseInputItemParamOfFunctionCall(args, v.ID, name))
 		}
-		// ToolResultBlock is not valid in an assistant turn; silently ignored.
 	}
-	if len(texts) > 0 {
-		joined := strings.Join(texts, "\n\n")
-		msg.Content = &joined
+	if len(textParts) > 0 {
+		items = append(items, assistantTextItem(strings.Join(textParts, "\n\n")))
 	}
-	// Content stays nil (JSON null) when there are tool calls and no text.
-	return msg
+	return items
 }
 
-func translateUserTurn(blocks []llm.ContentBlock) []chatMessage {
-	var toolMsgs []chatMessage
-	var texts []string
+// assistantTextItem encodes a plain assistant text turn as an EasyInputMessage
+// with role "assistant". The Responses API accepts this for prior turns.
+func assistantTextItem(text string) responses.ResponseInputItemUnionParam {
+	return responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleAssistant)
+}
+
+func translateUserTurn(blocks []llm.ContentBlock) []responses.ResponseInputItemUnionParam {
+	var items []responses.ResponseInputItemUnionParam
+	var textParts []string
+
 	for _, b := range blocks {
 		switch v := b.(type) {
 		case llm.TextBlock:
-			texts = append(texts, v.Text)
+			textParts = append(textParts, v.Text)
 		case llm.ToolResultBlock:
+			// Flush text before tool results so tool results appear in order.
+			if len(textParts) > 0 {
+				items = append(items, userTextItem(strings.Join(textParts, "\n\n")))
+				textParts = nil
+			}
 			content := v.Content
 			if v.IsError {
 				content = "[error] " + content
 			}
-			c := content
-			toolMsgs = append(toolMsgs, chatMessage{
-				Role:       "tool",
-				Content:    &c,
-				ToolCallID: v.ToolCallID,
-			})
+			items = append(items, responses.ResponseInputItemParamOfFunctionCallOutput(v.ToolCallID, content))
 		}
 	}
-	// Tool messages must come before any user text message so the model sees
-	// results in the same order the calls were made.
-	out := toolMsgs
-	if len(texts) > 0 {
-		joined := strings.Join(texts, "\n\n")
-		out = append(out, chatMessage{Role: "user", Content: &joined})
+	if len(textParts) > 0 {
+		items = append(items, userTextItem(strings.Join(textParts, "\n\n")))
 	}
-	return out
+	return items
 }
 
-// ParseChatCompletionResponse translates a wire response into the normalized
-// llm.MessageResponse. Tool-call names returned by OpenAI are the sanitized
-// wire form; the `names` mapping reverses them back to the original Gleipnir
-// names so the agent runtime can dispatch them. An empty mapping passes names
-// through unchanged (used by tests that don't exercise tool calls). Returns
-// an error only on malformed tool call arguments — all other abnormalities
-// (unknown finish reasons, missing usage details) degrade gracefully.
-func ParseChatCompletionResponse(wire *chatResponse, names llm.ToolNameMapping) (*llm.MessageResponse, error) {
+func userTextItem(text string) responses.ResponseInputItemUnionParam {
+	return responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleUser)
+}
+
+// buildTools translates provider-neutral ToolDefinitions into Responses API
+// ToolUnionParams. Returns the tool list and a name mapping for round-trip
+// sanitization. Returns an error on name collisions after sanitization.
+func buildTools(tools []llm.ToolDefinition) ([]responses.ToolUnionParam, llm.ToolNameMapping, error) {
+	result := make([]responses.ToolUnionParam, 0, len(tools))
+	names := llm.ToolNameMapping{
+		SanitizedToOriginal: make(map[string]string, len(tools)),
+		OriginalToSanitized: make(map[string]string, len(tools)),
+	}
+
+	for _, t := range tools {
+		sanitized := llm.SanitizeToolName(t.Name, "-")
+
+		if existing, conflict := names.SanitizedToOriginal[sanitized]; conflict && existing != t.Name {
+			return nil, llm.ToolNameMapping{}, fmt.Errorf(
+				"tool name collision after sanitization: %q and %q both become %q",
+				existing, t.Name, sanitized,
+			)
+		}
+		names.SanitizedToOriginal[sanitized] = t.Name
+		names.OriginalToSanitized[t.Name] = sanitized
+
+		// The SDK's FunctionToolParam.Parameters is map[string]any.
+		var params map[string]any
+		if len(t.InputSchema) > 0 {
+			if err := json.Unmarshal(t.InputSchema, &params); err != nil {
+				return nil, llm.ToolNameMapping{}, fmt.Errorf("unmarshalling schema for tool %s: %w", t.Name, err)
+			}
+		}
+
+		tool := responses.ToolUnionParam{
+			OfFunction: &responses.FunctionToolParam{
+				Name:        sanitized,
+				Description: openaisdk.String(t.Description),
+				Parameters:  params,
+			},
+		}
+		result = append(result, tool)
+	}
+	return result, names, nil
+}
+
+// translateResponse converts a Responses API response into the provider-neutral
+// MessageResponse. sanitizedToOriginal reverses tool name sanitization.
+func translateResponse(resp *responses.Response, names llm.ToolNameMapping) (*llm.MessageResponse, error) {
 	out := &llm.MessageResponse{}
-	if len(wire.Choices) == 0 {
-		return out, nil
-	}
-	choice := wire.Choices[0]
 
-	// Content is omitted (nil) when the response is tool-calls-only; an empty
-	// string string also carries no useful text and would create a spurious block
-	// that confuses callers expecting at least one real token.
-	if choice.Message.Content != nil && *choice.Message.Content != "" {
-		out.Text = []llm.TextBlock{{Text: *choice.Message.Content}}
-	}
-
-	for _, tc := range choice.Message.ToolCalls {
-		// Validate that Arguments is parseable JSON — callers trust Input is.
-		if !json.Valid([]byte(tc.Function.Arguments)) {
-			return nil, fmt.Errorf("openai: tool call %q: arguments is not valid JSON: %q",
-				tc.Function.Name, tc.Function.Arguments)
+	for _, item := range resp.Output {
+		switch v := item.AsAny().(type) {
+		case responses.ResponseOutputMessage:
+			for _, part := range v.Content {
+				switch p := part.AsAny().(type) {
+				case responses.ResponseOutputText:
+					out.Text = append(out.Text, llm.TextBlock{Text: p.Text})
+				}
+			}
+		case responses.ResponseFunctionToolCall:
+			if !json.Valid([]byte(v.Arguments)) {
+				return nil, fmt.Errorf("openai: tool call %q: arguments is not valid JSON: %q", v.Name, v.Arguments)
+			}
+			name := v.Name
+			if original, ok := names.SanitizedToOriginal[name]; ok {
+				name = original
+			}
+			out.ToolCalls = append(out.ToolCalls, llm.ToolCallBlock{
+				ID:    v.CallID,
+				Name:  name,
+				Input: json.RawMessage(v.Arguments),
+			})
+		case responses.ResponseReasoningItem:
+			// Collect summary texts as a thinking block representing the model's
+			// visible reasoning summary (encrypted_content is not surfaced here).
+			var parts []string
+			for _, s := range v.Summary {
+				parts = append(parts, s.Text)
+			}
+			if len(parts) > 0 {
+				out.Thinking = append(out.Thinking, llm.ThinkingBlock{
+					Text: strings.Join(parts, "\n"),
+				})
+			}
+		default:
+			slog.Debug("openai: skipping unhandled output item", "type", item.Type)
 		}
-		name := tc.Function.Name
-		if original, ok := names.SanitizedToOriginal[name]; ok {
-			name = original
-		}
-		out.ToolCalls = append(out.ToolCalls, llm.ToolCallBlock{
-			ID:    tc.ID,
-			Name:  name,
-			Input: json.RawMessage(tc.Function.Arguments),
-		})
 	}
 
-	switch choice.FinishReason {
-	case "stop":
-		out.StopReason = llm.StopReasonEndTurn
-	case "tool_calls":
-		out.StopReason = llm.StopReasonToolUse
-	case "length":
+	// Map Responses API status to provider-neutral stop reasons. We check for
+	// tool calls first because a "completed" status can coexist with tool_use
+	// when the model stops after requesting tools (Responses API always sets
+	// status=completed when it finishes its turn, even with tool calls).
+	switch resp.Status {
+	case responses.ResponseStatusCompleted:
+		if len(out.ToolCalls) > 0 {
+			out.StopReason = llm.StopReasonToolUse
+		} else {
+			out.StopReason = llm.StopReasonEndTurn
+		}
+	case responses.ResponseStatusIncomplete:
 		out.StopReason = llm.StopReasonMaxTokens
 	default:
-		// "content_filter" and any future finish reasons are mapped to Error so
-		// the agent runtime can surface them rather than silently continuing.
-		out.StopReason = llm.StopReasonError
+		out.StopReason = llm.StopReasonUnknown
 	}
 
-	if wire.Usage != nil {
-		out.Usage.InputTokens = wire.Usage.PromptTokens
-		out.Usage.OutputTokens = wire.Usage.CompletionTokens
-		if wire.Usage.CompletionTokensDetails != nil {
-			out.Usage.ThinkingTokens = wire.Usage.CompletionTokensDetails.ReasoningTokens
-		}
+	out.Usage = llm.TokenUsage{
+		InputTokens:    int(resp.Usage.InputTokens),
+		OutputTokens:   int(resp.Usage.OutputTokens),
+		ThinkingTokens: int(resp.Usage.OutputTokensDetails.ReasoningTokens),
 	}
 
-	// Thinking is always nil for OpenAI — reasoning content is not surfaced
-	// by the Chat Completions endpoint. See ADR-032 §2 ("Why Chat Completions
-	// only, not the Responses API").
 	return out, nil
-}
-
-// isOSeriesModel returns true when the model should route max_tokens to
-// max_completion_tokens and honor reasoning_effort. The heuristic is:
-// name starts with "o<digit>" (o1, o3, o4) or contains "reasoning".
-// Contained to this function; no other place in the package pattern-matches
-// on model names.
-func isOSeriesModel(model string) bool {
-	if strings.Contains(model, "reasoning") {
-		return true
-	}
-	if len(model) < 2 {
-		return false
-	}
-	if model[0] != 'o' {
-		return false
-	}
-	c := model[1]
-	return c >= '0' && c <= '9'
 }

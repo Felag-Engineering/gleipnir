@@ -41,6 +41,7 @@ export const queryKeys = {
   admin: {
     providers: ['admin', 'providers'] as const,
     models: ['admin', 'models'] as const,
+    modelsAll: ['admin', 'models', 'all'] as const,
     settings: ['admin', 'settings'] as const,
     systemInfo: ['admin', 'system-info'] as const,
     openaiCompatProviders: ['admin', 'openai-compat-providers'] as const,

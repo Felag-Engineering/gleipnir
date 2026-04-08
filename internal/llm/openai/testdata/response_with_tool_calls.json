@@ -1,0 +1,28 @@
+{
+  "id": "resp_002",
+  "object": "response",
+  "created_at": 1700000000,
+  "model": "gpt-4o",
+  "status": "completed",
+  "output": [
+    {
+      "id": "fc_001",
+      "type": "function_call",
+      "call_id": "call_abc123",
+      "name": "get_weather",
+      "arguments": "{\"city\":\"SF\"}",
+      "status": "completed"
+    }
+  ],
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 8,
+    "total_tokens": 18,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  }
+}

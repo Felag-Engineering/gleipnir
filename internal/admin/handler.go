@@ -23,7 +23,7 @@ type SystemSettingRow struct {
 	UpdatedAt string
 }
 
-type DisabledModelRow struct {
+type EnabledModelRow struct {
 	Provider  string
 	ModelName string
 }
@@ -40,7 +40,7 @@ type AdminQuerier interface {
 	UpsertSystemSetting(ctx context.Context, key, value, updatedAt string) error
 	DeleteSystemSetting(ctx context.Context, key string) error
 	ListSystemSettings(ctx context.Context) ([]SystemSettingRow, error)
-	ListDisabledModels(ctx context.Context) ([]DisabledModelRow, error)
+	ListEnabledModels(ctx context.Context) ([]EnabledModelRow, error)
 	UpsertModelSetting(ctx context.Context, provider, modelName string, enabled int64, updatedAt string) error
 	ListModelSettings(ctx context.Context) ([]ModelSettingRow, error)
 }
@@ -238,6 +238,55 @@ func (h *Handler) ListModelsAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.WriteJSON(w, http.StatusOK, models)
+}
+
+// ListAllModels handles GET /api/v1/admin/models/all.
+// It returns every model from every registered provider joined with their
+// enabled state from model_settings. Models with no row in model_settings
+// default to enabled=false (new/unseen models are disabled by default).
+func (h *Handler) ListAllModels(lister api.ModelLister) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		all, err := lister.ListAllModels(ctx)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "failed to list models", "")
+			return
+		}
+
+		enabledRows, err := h.q.ListEnabledModels(ctx)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "failed to load model settings", "")
+			return
+		}
+
+		enabledSet := make(map[string]struct{}, len(enabledRows))
+		for _, r := range enabledRows {
+			enabledSet[r.Provider+":"+r.ModelName] = struct{}{}
+		}
+
+		type allModelResponse struct {
+			Provider    string `json:"provider"`
+			ModelName   string `json:"model_name"`
+			DisplayName string `json:"display_name"`
+			Enabled     bool   `json:"enabled"`
+		}
+
+		var result []allModelResponse
+		for prov, models := range all {
+			for _, m := range models {
+				_, isEnabled := enabledSet[prov+":"+m.Name]
+				result = append(result, allModelResponse{
+					Provider:    prov,
+					ModelName:   m.Name,
+					DisplayName: m.DisplayName,
+					Enabled:     isEnabled,
+				})
+			}
+		}
+
+		api.WriteJSON(w, http.StatusOK, result)
+	}
 }
 
 // SetModelEnabled enables or disables a model. Disabling the current default model returns 409.

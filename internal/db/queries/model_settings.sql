@@ -13,7 +13,7 @@ SELECT provider, model_name, enabled, updated_at
 FROM model_settings
 ORDER BY provider, model_name;
 
--- name: ListDisabledModels :many
+-- name: ListEnabledModels :many
 SELECT provider, model_name
 FROM model_settings
-WHERE enabled = 0;
+WHERE enabled = 1;

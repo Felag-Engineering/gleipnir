@@ -55,14 +55,14 @@ func (a *QuerierAdapter) ListSystemSettings(ctx context.Context) ([]SystemSettin
 	return result, nil
 }
 
-func (a *QuerierAdapter) ListDisabledModels(ctx context.Context) ([]DisabledModelRow, error) {
-	rows, err := a.q.ListDisabledModels(ctx)
+func (a *QuerierAdapter) ListEnabledModels(ctx context.Context) ([]EnabledModelRow, error) {
+	rows, err := a.q.ListEnabledModels(ctx)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]DisabledModelRow, len(rows))
+	result := make([]EnabledModelRow, len(rows))
 	for i, row := range rows {
-		result[i] = DisabledModelRow{
+		result[i] = EnabledModelRow{
 			Provider:  row.Provider,
 			ModelName: row.ModelName,
 		}

@@ -1,25 +1,27 @@
-package openai
+package openaicompat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/openai/openai-go/option"
 	"github.com/rapp992/gleipnir/internal/llm"
 )
 
 // newTestClient builds a Client pointed at the given httptest.Server.
 func newTestClient(srv *httptest.Server) *Client {
-	return NewClient("test-key",
-		option.WithHTTPClient(srv.Client()),
-		option.WithBaseURL(srv.URL),
+	return NewClient(srv.URL, "test-key",
+		WithHTTPClient(srv.Client()),
+		WithTimeout(5*time.Second),
 	)
 }
 
@@ -34,10 +36,10 @@ func loadFixture(t *testing.T, name string) []byte {
 }
 
 func TestCreateMessage_HappyPath(t *testing.T) {
-	fixture := loadFixture(t, "response_text_only.json")
+	fixture := loadFixture(t, "chat_response_text_only.json")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/responses" {
+		if r.URL.Path != "/chat/completions" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
@@ -69,91 +71,96 @@ func TestCreateMessage_HappyPath(t *testing.T) {
 	}
 }
 
-func TestCreateMessage_ToolCalls(t *testing.T) {
-	fixture := loadFixture(t, "response_with_tool_calls.json")
+func TestCreateMessage_SendsToolsInBody(t *testing.T) {
+	fixture := loadFixture(t, "chat_response_text_only.json")
 
+	var gotBody chatRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(fixture)
 	}))
 	defer srv.Close()
 
 	client := newTestClient(srv)
-	resp, err := client.CreateMessage(context.Background(), llm.MessageRequest{
+	_, err := client.CreateMessage(context.Background(), llm.MessageRequest{
 		Model: "gpt-4o",
-		Tools: []llm.ToolDefinition{{Name: "get_weather", Description: "get weather"}},
+		Tools: []llm.ToolDefinition{
+			{
+				Name:        "echo",
+				Description: "Echoes its input",
+				InputSchema: json.RawMessage(`{"type":"object"}`),
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(resp.ToolCalls) == 0 {
-		t.Fatal("expected at least one tool call")
+	if len(gotBody.Tools) == 0 {
+		t.Fatal("expected tools in request body")
 	}
-	tc := resp.ToolCalls[0]
-	if tc.Name != "get_weather" {
-		t.Errorf("tool name = %q; want get_weather", tc.Name)
-	}
-	if tc.ID != "call_abc123" {
-		t.Errorf("tool call_id = %q; want call_abc123", tc.ID)
-	}
-	if resp.StopReason != llm.StopReasonToolUse {
-		t.Errorf("StopReason = %v; want StopReasonToolUse", resp.StopReason)
+	if got := gotBody.Tools[0].Function.Name; got != "echo" {
+		t.Errorf("tool name = %q; want %q", got, "echo")
 	}
 }
 
-func TestCreateMessage_ReasoningTokens(t *testing.T) {
-	fixture := loadFixture(t, "response_with_reasoning.json")
+func TestCreateMessage_ErrorStatuses(t *testing.T) {
+	cases := []struct {
+		status  int
+		fixture string
+	}{
+		{401, "chat_response_error_401.json"},
+		{429, "chat_response_error_429.json"},
+		{500, "chat_response_error_500.json"},
+	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(fixture)
-	}))
-	defer srv.Close()
+	for _, tc := range cases {
+		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
+			fixture := loadFixture(t, tc.fixture)
 
-	client := newTestClient(srv)
-	resp, err := client.CreateMessage(context.Background(), llm.MessageRequest{Model: "o3-mini"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp.Usage.ThinkingTokens != 15 {
-		t.Errorf("ThinkingTokens = %d; want 15", resp.Usage.ThinkingTokens)
-	}
-	if len(resp.Thinking) == 0 {
-		t.Fatal("expected at least one thinking block")
-	}
-	if resp.Thinking[0].Text != "I need to compute the answer." {
-		t.Errorf("thinking text = %q", resp.Thinking[0].Text)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				w.Write(fixture)
+			}))
+			defer srv.Close()
+
+			client := newTestClient(srv)
+			_, err := client.CreateMessage(context.Background(), llm.MessageRequest{Model: "gpt-4o"})
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			want := fmt.Sprintf("%d", tc.status)
+			if !containsString(err.Error(), want) {
+				t.Errorf("error %q does not contain status %s", err.Error(), want)
+			}
+		})
 	}
 }
 
-func TestCreateMessage_ErrorStatus(t *testing.T) {
-	fixture := loadFixture(t, "response_error_401.json")
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		w.Write(fixture)
-	}))
-	defer srv.Close()
-
+func TestCreateMessage_NetworkError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	client := newTestClient(srv)
+	// Close the server before the request — the dial will fail.
+	srv.Close()
+
 	_, err := client.CreateMessage(context.Background(), llm.MessageRequest{Model: "gpt-4o"})
 	if err == nil {
-		t.Fatal("expected error for 401, got nil")
-	}
-	if !containsString(err.Error(), "401") {
-		t.Errorf("error %q does not contain 401", err.Error())
+		t.Fatal("expected error on closed server")
 	}
 }
 
 func TestCreateMessage_ContextCancellation(t *testing.T) {
+	// The handler sleeps long enough that the pre-cancelled context fires first.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(500 * time.Millisecond)
 	}))
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	cancel() // cancel before the request is made
 
 	client := newTestClient(srv)
 	_, err := client.CreateMessage(ctx, llm.MessageRequest{Model: "gpt-4o"})
@@ -162,17 +169,6 @@ func TestCreateMessage_ContextCancellation(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got: %v", err)
-	}
-}
-
-func TestCreateMessage_NetworkError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	client := newTestClient(srv)
-	srv.Close()
-
-	_, err := client.CreateMessage(context.Background(), llm.MessageRequest{Model: "gpt-4o"})
-	if err == nil {
-		t.Fatal("expected error on closed server")
 	}
 }
 
@@ -192,6 +188,7 @@ func TestListModels_HappyPathAndCache(t *testing.T) {
 
 	client := newTestClient(srv)
 
+	// First call: fetches from server.
 	models, err := client.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -203,6 +200,7 @@ func TestListModels_HappyPathAndCache(t *testing.T) {
 		t.Errorf("server hits after first call = %d; want 1", hits.Load())
 	}
 
+	// Second call: served from cache, no additional server hit.
 	_, err = client.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error on second call: %v", err)
@@ -211,6 +209,7 @@ func TestListModels_HappyPathAndCache(t *testing.T) {
 		t.Errorf("server hits after second call = %d; want still 1", hits.Load())
 	}
 
+	// After invalidation, the next call must hit the server again.
 	client.InvalidateModelCache()
 	_, err = client.ListModels(context.Background())
 	if err != nil {
@@ -218,6 +217,36 @@ func TestListModels_HappyPathAndCache(t *testing.T) {
 	}
 	if hits.Load() != 2 {
 		t.Errorf("server hits after invalidation + third call = %d; want 2", hits.Load())
+	}
+}
+
+func TestListModels_404IsEmptySlice(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(srv)
+	models, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(models) != 0 {
+		t.Errorf("expected empty slice, got %d models", len(models))
+	}
+}
+
+func TestValidateModelName_AgainstUnknownBackendAccepts(t *testing.T) {
+	// A 404 from /models means the backend doesn't expose the endpoint.
+	// Any non-empty model name must be accepted in that case (ADR-032).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(srv)
+	if err := client.ValidateModelName(context.Background(), "any-model-name"); err != nil {
+		t.Errorf("expected nil for unknown-backend, got: %v", err)
 	}
 }
 
@@ -232,37 +261,39 @@ func TestValidateModelName_KnownAndUnknown(t *testing.T) {
 
 	client := newTestClient(srv)
 
+	// "gpt-4o" is in models_response.json — should be accepted.
 	if err := client.ValidateModelName(context.Background(), "gpt-4o"); err != nil {
 		t.Errorf("expected nil for known model, got: %v", err)
 	}
+
+	// "does-not-exist" is not in the fixture — should be rejected.
 	if err := client.ValidateModelName(context.Background(), "does-not-exist"); err == nil {
 		t.Error("expected error for unknown model, got nil")
 	}
 }
 
-func TestValidateModelName_Empty(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer srv.Close()
-
-	client := newTestClient(srv)
-	if err := client.ValidateModelName(context.Background(), ""); err == nil {
-		t.Error("expected error for empty model name, got nil")
-	}
-}
-
 func TestStreamMessage_HappyPath(t *testing.T) {
-	// The Responses API streaming returns SSE events. Each data line contains a
-	// JSON object whose "type" field discriminates the event kind.
-	stream := buildTextSSE()
+	fixture := loadFixture(t, "stream_chunks_text.txt")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+
+		var wireReq chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&wireReq); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if !wireReq.Stream {
+			t.Error("expected stream=true in request body")
+		}
+
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Write(stream)
+		w.Write(fixture)
 	}))
 	defer srv.Close()
 
-	client := newTestClient(srv)
-	ch, err := client.StreamMessage(context.Background(), llm.MessageRequest{Model: "gpt-4o"})
+	ch, err := newTestClient(srv).StreamMessage(context.Background(), llm.MessageRequest{Model: "gpt-4o"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -290,7 +321,7 @@ func TestStreamMessage_HappyPath(t *testing.T) {
 }
 
 func TestStreamMessage_HTTPErrorBeforeStream(t *testing.T) {
-	fixture := loadFixture(t, "response_error_401.json")
+	fixture := loadFixture(t, "chat_response_error_401.json")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -299,62 +330,27 @@ func TestStreamMessage_HTTPErrorBeforeStream(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// SDK's NewStreaming defers the error handling to the stream iteration.
-	// We drain the channel and expect an error chunk.
-	client := newTestClient(srv)
-	ch, err := client.StreamMessage(context.Background(), llm.MessageRequest{Model: "gpt-4o"})
-	// The SDK may return the error synchronously or on first Next() call.
-	if err != nil {
-		// synchronous error path — acceptable
-		if !containsString(err.Error(), "401") {
-			t.Errorf("error %q does not contain 401", err.Error())
-		}
-		return
+	ch, err := newTestClient(srv).StreamMessage(context.Background(), llm.MessageRequest{Model: "gpt-4o"})
+	if err == nil {
+		t.Fatal("expected error for 401 response, got nil")
 	}
-	// Async error path — drain channel and look for an error chunk.
-	var sawErr bool
-	for chunk := range ch {
-		if chunk.Err != nil {
-			sawErr = true
-			if !containsString(chunk.Err.Error(), "401") {
-				t.Errorf("error chunk %q does not contain 401", chunk.Err.Error())
-			}
-		}
+	if ch != nil {
+		t.Error("expected nil channel on error")
 	}
-	if !sawErr {
-		t.Error("expected an error chunk for 401, got none")
+	if !containsString(err.Error(), "401") {
+		t.Errorf("error %q does not contain status 401", err.Error())
 	}
-}
-
-// buildTextSSE constructs a minimal Responses API SSE stream that delivers
-// "Hello" + " world" text deltas and a completed event.
-func buildTextSSE() []byte {
-	events := []string{
-		`data: {"type":"response.output_text.delta","item_id":"msg_001","output_index":0,"content_index":0,"delta":"Hello","sequence_number":1}`,
-		``,
-		`data: {"type":"response.output_text.delta","item_id":"msg_001","output_index":0,"content_index":0,"delta":" world","sequence_number":2}`,
-		``,
-		`data: {"type":"response.completed","response":{"id":"resp_001","object":"response","created_at":1700000000,"model":"gpt-4o","status":"completed","output":[{"id":"msg_001","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hello world","annotations":[]}]}],"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}},"sequence_number":3}`,
-		``,
-		`data: [DONE]`,
-		``,
-	}
-	var out []byte
-	for _, e := range events {
-		out = append(out, []byte(e+"\n")...)
-	}
-	return out
 }
 
 // containsString is a helper that avoids importing strings in test bodies.
 func containsString(s, sub string) bool {
-	if len(sub) == 0 {
-		return true
-	}
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
+	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+			return false
+		}())
 }

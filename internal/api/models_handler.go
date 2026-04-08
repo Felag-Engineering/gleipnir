@@ -16,16 +16,16 @@ type ModelLister interface {
 	InvalidateAllModelCaches()
 }
 
-// DisabledModel identifies a model that has been disabled by an admin.
-type DisabledModel struct {
+// EnabledModel identifies a model that has been explicitly enabled by an admin.
+type EnabledModel struct {
 	Provider  string
 	ModelName string
 }
 
-// ModelFilter provides the set of disabled models so the public /models
-// endpoint can exclude them.
+// ModelFilter provides the set of enabled models so the public /models
+// endpoint can restrict to only those models.
 type ModelFilter interface {
-	ListDisabledModels(ctx context.Context) ([]DisabledModel, error)
+	ListEnabledModels(ctx context.Context) ([]EnabledModel, error)
 }
 
 // ModelsHandler serves the /api/v1/models endpoints.
@@ -55,7 +55,7 @@ type modelsListResponse struct {
 func (h *ModelsHandler) List(w http.ResponseWriter, r *http.Request) {
 	provider := r.URL.Query().Get("provider")
 
-	disabled := h.loadDisabledSet(r.Context())
+	enabled := h.loadEnabledSet(r.Context())
 
 	if provider != "" {
 		models, err := h.lister.ListModels(r.Context(), provider)
@@ -64,7 +64,7 @@ func (h *ModelsHandler) List(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		WriteJSON(w, http.StatusOK, []modelsListResponse{
-			{Provider: provider, Models: filterModels(toModelResponses(models), provider, disabled)},
+			{Provider: provider, Models: filterModels(toModelResponses(models), provider, enabled)},
 		})
 		return
 	}
@@ -79,7 +79,7 @@ func (h *ModelsHandler) List(w http.ResponseWriter, r *http.Request) {
 	for prov, models := range all {
 		result = append(result, modelsListResponse{
 			Provider: prov,
-			Models:   filterModels(toModelResponses(models), prov, disabled),
+			Models:   filterModels(toModelResponses(models), prov, enabled),
 		})
 	}
 	WriteJSON(w, http.StatusOK, result)
@@ -133,13 +133,14 @@ func toModelResponses(models []llm.ModelInfo) []modelResponse {
 	return resp
 }
 
-// loadDisabledSet builds a set of "provider:model" keys from the filter.
-// Returns nil if no filter is configured or the query fails.
-func (h *ModelsHandler) loadDisabledSet(ctx context.Context) map[string]struct{} {
+// loadEnabledSet builds a set of "provider:model" keys from the filter.
+// Returns nil if no filter is configured or the query fails (nil means no
+// restriction — all models pass through).
+func (h *ModelsHandler) loadEnabledSet(ctx context.Context) map[string]struct{} {
 	if h.filter == nil {
 		return nil
 	}
-	rows, err := h.filter.ListDisabledModels(ctx)
+	rows, err := h.filter.ListEnabledModels(ctx)
 	if err != nil {
 		return nil
 	}
@@ -150,14 +151,16 @@ func (h *ModelsHandler) loadDisabledSet(ctx context.Context) map[string]struct{}
 	return set
 }
 
-// filterModels removes disabled models from the response slice.
-func filterModels(models []modelResponse, provider string, disabled map[string]struct{}) []modelResponse {
-	if len(disabled) == 0 {
+// filterModels keeps only models whose "provider:name" key appears in the
+// enabled set. When enabled is nil (no filter configured), all models are
+// returned unchanged. When enabled is non-nil but empty, no models are returned.
+func filterModels(models []modelResponse, provider string, enabled map[string]struct{}) []modelResponse {
+	if enabled == nil {
 		return models
 	}
 	filtered := make([]modelResponse, 0, len(models))
 	for _, m := range models {
-		if _, ok := disabled[provider+":"+m.Name]; !ok {
+		if _, ok := enabled[provider+":"+m.Name]; ok {
 			filtered = append(filtered, m)
 		}
 	}

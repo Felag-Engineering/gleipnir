@@ -32,26 +32,26 @@ func (q *Queries) GetModelSetting(ctx context.Context, arg GetModelSettingParams
 	return i, err
 }
 
-const listDisabledModels = `-- name: ListDisabledModels :many
+const listEnabledModels = `-- name: ListEnabledModels :many
 SELECT provider, model_name
 FROM model_settings
-WHERE enabled = 0
+WHERE enabled = 1
 `
 
-type ListDisabledModelsRow struct {
+type ListEnabledModelsRow struct {
 	Provider  string `json:"provider"`
 	ModelName string `json:"model_name"`
 }
 
-func (q *Queries) ListDisabledModels(ctx context.Context) ([]ListDisabledModelsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listDisabledModels)
+func (q *Queries) ListEnabledModels(ctx context.Context) ([]ListEnabledModelsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listEnabledModels)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListDisabledModelsRow
+	var items []ListEnabledModelsRow
 	for rows.Next() {
-		var i ListDisabledModelsRow
+		var i ListEnabledModelsRow
 		if err := rows.Scan(&i.Provider, &i.ModelName); err != nil {
 			return nil, err
 		}

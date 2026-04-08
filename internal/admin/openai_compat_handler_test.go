@@ -133,7 +133,7 @@ func TestCreate_HappyPath(t *testing.T) {
 	h, q, reg := newOpenAICompatTestHandler(okTester)
 	router := mountRouter(h)
 
-	body := map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"}
+	body := map[string]string{"name": "ollama", "base_url": "http://ollama:11434/v1", "api_key": "sk-abc"}
 	w := doRequest(t, router, "POST", "/api/v1/admin/openai-providers", body)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status: %d, body: %s", w.Code, w.Body.String())
@@ -141,7 +141,7 @@ func TestCreate_HappyPath(t *testing.T) {
 	if len(q.rows) != 1 {
 		t.Errorf("row not persisted")
 	}
-	if _, err := reg.Get("openai"); err != nil {
+	if _, err := reg.Get("ollama"); err != nil {
 		t.Errorf("not registered: %v", err)
 	}
 }
@@ -149,7 +149,7 @@ func TestCreate_HappyPath(t *testing.T) {
 func TestCreate_ReservedName(t *testing.T) {
 	h, _, _ := newOpenAICompatTestHandler(okTester)
 	router := mountRouter(h)
-	for _, name := range []string{"anthropic", "google"} {
+	for _, name := range []string{"anthropic", "google", "openai"} {
 		body := map[string]string{"name": name, "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"}
 		w := doRequest(t, router, "POST", "/api/v1/admin/openai-providers", body)
 		if w.Code != http.StatusBadRequest {
@@ -195,7 +195,7 @@ func TestCreate_EmptyAPIKey(t *testing.T) {
 func TestCreate_DuplicateName(t *testing.T) {
 	h, _, _ := newOpenAICompatTestHandler(okTester)
 	router := mountRouter(h)
-	body := map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"}
+	body := map[string]string{"name": "my-openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"}
 	_ = doRequest(t, router, "POST", "/api/v1/admin/openai-providers", body)
 	w := doRequest(t, router, "POST", "/api/v1/admin/openai-providers", body)
 	if w.Code != http.StatusConflict {
@@ -206,7 +206,7 @@ func TestCreate_DuplicateName(t *testing.T) {
 func TestCreate_ConnectionTestFails(t *testing.T) {
 	h, q, reg := newOpenAICompatTestHandler(failTester(errors.New("connection refused")))
 	router := mountRouter(h)
-	body := map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"}
+	body := map[string]string{"name": "my-openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"}
 	w := doRequest(t, router, "POST", "/api/v1/admin/openai-providers", body)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status: %d, want 400", w.Code)
@@ -248,7 +248,7 @@ func TestUpdate_MaskedKeyKeepsCiphertext(t *testing.T) {
 	router := mountRouter(h)
 
 	// Create a provider.
-	create := map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-original"}
+	create := map[string]string{"name": "my-openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-original"}
 	wc := doRequest(t, router, "POST", "/api/v1/admin/openai-providers", create)
 	if wc.Code != http.StatusCreated {
 		t.Fatalf("create: %d", wc.Code)
@@ -264,7 +264,7 @@ func TestUpdate_MaskedKeyKeepsCiphertext(t *testing.T) {
 	originalMasked := created.MaskedKey
 
 	// PUT with the masked value — should keep ciphertext unchanged.
-	upd := map[string]string{"name": "openai", "base_url": "https://api.openai.com/v2", "api_key": originalMasked}
+	upd := map[string]string{"name": "my-openai", "base_url": "https://api.openai.com/v2", "api_key": originalMasked}
 	wu := doRequest(t, router, "PUT", "/api/v1/admin/openai-providers/1", upd)
 	if wu.Code != http.StatusOK {
 		t.Fatalf("update: %d, body: %s", wu.Code, wu.Body.String())
@@ -281,11 +281,11 @@ func TestUpdate_NewKeyReencrypts(t *testing.T) {
 	h, q, _ := newOpenAICompatTestHandler(okTester)
 	router := mountRouter(h)
 
-	create := map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-original"}
+	create := map[string]string{"name": "my-openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-original"}
 	doRequest(t, router, "POST", "/api/v1/admin/openai-providers", create)
 	originalCiphertext := q.rows[1].APIKeyEncrypted
 
-	upd := map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-new-key-xyz"}
+	upd := map[string]string{"name": "my-openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-new-key-xyz"}
 	wu := doRequest(t, router, "PUT", "/api/v1/admin/openai-providers/1", upd)
 	if wu.Code != http.StatusOK {
 		t.Fatalf("update: %d", wu.Code)
@@ -336,7 +336,7 @@ func TestDelete_HappyPath(t *testing.T) {
 	h, q, reg := newOpenAICompatTestHandler(okTester)
 	router := mountRouter(h)
 	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
-		map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"})
+		map[string]string{"name": "my-openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"})
 
 	w := doRequest(t, router, "DELETE", "/api/v1/admin/openai-providers/1", nil)
 	if w.Code != http.StatusNoContent {
@@ -345,7 +345,7 @@ func TestDelete_HappyPath(t *testing.T) {
 	if len(q.rows) != 0 {
 		t.Errorf("row should be deleted")
 	}
-	if _, err := reg.Get("openai"); err == nil {
+	if _, err := reg.Get("my-openai"); err == nil {
 		t.Errorf("should be unregistered")
 	}
 }
@@ -363,7 +363,7 @@ func TestList_MasksKeys(t *testing.T) {
 	h, _, _ := newOpenAICompatTestHandler(okTester)
 	router := mountRouter(h)
 	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
-		map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-very-secret-value"})
+		map[string]string{"name": "my-openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-very-secret-value"})
 
 	w := doRequest(t, router, "GET", "/api/v1/admin/openai-providers", nil)
 	if w.Code != http.StatusOK {
@@ -378,7 +378,7 @@ func TestGet_MasksKey(t *testing.T) {
 	h, _, _ := newOpenAICompatTestHandler(okTester)
 	router := mountRouter(h)
 	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
-		map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-secret-xyz"})
+		map[string]string{"name": "my-openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-secret-xyz"})
 
 	w := doRequest(t, router, "GET", "/api/v1/admin/openai-providers/1", nil)
 	if w.Code != http.StatusOK {
@@ -393,7 +393,7 @@ func TestTestProvider_HappyPath(t *testing.T) {
 	h, _, _ := newOpenAICompatTestHandler(okTester)
 	router := mountRouter(h)
 	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
-		map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"})
+		map[string]string{"name": "my-openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"})
 
 	w := doRequest(t, router, "POST", "/api/v1/admin/openai-providers/1/test", nil)
 	if w.Code != http.StatusOK {
@@ -417,7 +417,7 @@ func TestTestProvider_Unreachable(t *testing.T) {
 	h, _, _ := newOpenAICompatTestHandler(okTester)
 	router := mountRouter(h)
 	doRequest(t, router, "POST", "/api/v1/admin/openai-providers",
-		map[string]string{"name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"})
+		map[string]string{"name": "my-openai", "base_url": "https://api.openai.com/v1", "api_key": "sk-abc"})
 
 	// Swap the tester to a failing one for the re-test.
 	h.tester = failTester(errors.New("connection refused"))

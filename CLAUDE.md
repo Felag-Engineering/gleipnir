@@ -38,9 +38,7 @@ npm run storybook        # Storybook on port 6006
 | `GLEIPNIR_DEFAULT_PROVIDER` | `anthropic` | Default LLM provider |
 | `GLEIPNIR_DEFAULT_MODEL` | `claude-sonnet-4-20250514` | Default model |
 
-**Required API keys** (not Gleipnir-prefixed):
-- `ANTHROPIC_API_KEY` — required for Anthropic provider
-- `GOOGLE_API_KEY` — required for Google provider
+**Provider API keys:** All LLM provider API keys (Anthropic, Google, OpenAI, and any OpenAI-compatible backends) are configured through the admin UI at `/admin/models` and stored encrypted in the database. Env vars like `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` are intentionally ignored — a startup warning is logged if they are set.
 
 ## Stack
 

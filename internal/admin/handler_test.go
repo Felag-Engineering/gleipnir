@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/rapp992/gleipnir/internal/llm"
 )
 
 // mockQuerier is an in-memory AdminQuerier for tests.
@@ -52,11 +53,11 @@ func (m *mockQuerier) ListSystemSettings(_ context.Context) ([]SystemSettingRow,
 	return rows, nil
 }
 
-func (m *mockQuerier) ListDisabledModels(_ context.Context) ([]DisabledModelRow, error) {
-	var rows []DisabledModelRow
+func (m *mockQuerier) ListEnabledModels(_ context.Context) ([]EnabledModelRow, error) {
+	var rows []EnabledModelRow
 	for _, row := range m.models {
-		if row.Enabled == 0 {
-			rows = append(rows, DisabledModelRow{Provider: row.Provider, ModelName: row.ModelName})
+		if row.Enabled != 0 {
+			rows = append(rows, EnabledModelRow{Provider: row.Provider, ModelName: row.ModelName})
 		}
 	}
 	return rows, nil
@@ -387,6 +388,104 @@ func TestDeleteProviderKey(t *testing.T) {
 	if removedProvider != "anthropic" {
 		t.Errorf("removeProvider not called with 'anthropic', got %q", removedProvider)
 	}
+}
+
+// stubLister satisfies api.ModelLister for ListAllModels tests.
+type stubLister struct {
+	models  map[string][]llm.ModelInfo
+	listErr error
+}
+
+func (s *stubLister) ListModels(_ context.Context, provider string) ([]llm.ModelInfo, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	return s.models[provider], nil
+}
+
+func (s *stubLister) ListAllModels(_ context.Context) (map[string][]llm.ModelInfo, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	return s.models, nil
+}
+
+func (s *stubLister) InvalidateModelCache(_ string) error { return nil }
+func (s *stubLister) InvalidateAllModelCaches()           {}
+
+func TestListAllModels(t *testing.T) {
+	t.Run("returns all models with correct enabled state", func(t *testing.T) {
+		q := newMockQuerier()
+		h := newTestHandler(q)
+
+		lister := &stubLister{
+			models: map[string][]llm.ModelInfo{
+				"anthropic": {
+					{Name: "claude-sonnet-4", DisplayName: "Claude Sonnet 4"},
+					{Name: "claude-haiku-4", DisplayName: "Claude Haiku 4"},
+				},
+				"google": {
+					{Name: "gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"},
+				},
+			},
+		}
+
+		// Enable one anthropic model.
+		_ = q.UpsertModelSetting(context.Background(), "anthropic", "claude-sonnet-4", 1, "2024-01-01T00:00:00Z")
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/admin/models/all", nil)
+		h.ListAllModels(lister)(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+		}
+
+		data := parseDataResponse(t, rec)
+		var models []struct {
+			Provider    string `json:"provider"`
+			ModelName   string `json:"model_name"`
+			DisplayName string `json:"display_name"`
+			Enabled     bool   `json:"enabled"`
+		}
+		if err := json.Unmarshal(data, &models); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if len(models) != 3 {
+			t.Fatalf("expected 3 models, got %d", len(models))
+		}
+
+		byKey := make(map[string]bool)
+		for _, m := range models {
+			byKey[m.Provider+":"+m.ModelName] = m.Enabled
+		}
+
+		if !byKey["anthropic:claude-sonnet-4"] {
+			t.Error("claude-sonnet-4 should be enabled")
+		}
+		if byKey["anthropic:claude-haiku-4"] {
+			t.Error("claude-haiku-4 should be disabled (no enabled row)")
+		}
+		if byKey["google:gemini-2.0-flash"] {
+			t.Error("gemini-2.0-flash should be disabled (no enabled row)")
+		}
+	})
+
+	t.Run("lister error returns 500", func(t *testing.T) {
+		q := newMockQuerier()
+		h := newTestHandler(q)
+
+		lister := &stubLister{listErr: fmt.Errorf("provider unreachable")}
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/admin/models/all", nil)
+		h.ListAllModels(lister)(rec, req)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d", rec.Code)
+		}
+	})
 }
 
 func TestFormatUptime(t *testing.T) {

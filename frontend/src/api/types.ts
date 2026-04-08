@@ -249,6 +249,14 @@ export interface ApiModelSetting {
   updated_at: string
 }
 
+// Matches admin/handler.go → allModelResponse (GET /api/v1/admin/models/all)
+export interface ApiAllModelEntry {
+  provider: string
+  model_name: string
+  display_name: string
+  enabled: boolean
+}
+
 // Matches admin/handler.go → map[string]string (GET/PUT /api/v1/admin/settings)
 export interface ApiSystemSettings {
   [key: string]: string

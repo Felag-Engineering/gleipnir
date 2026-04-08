@@ -46,7 +46,8 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-029 | Approval state machine (v1.0 minimal)              | 🟢 Decided    | v1.0   | BoundAgent runtime, approval handler, SSE, UI        |
 | ADR-030 | UI abstracts over tool transport — Tools page is protocol-agnostic | 🟢 Decided | v0.1 | Frontend nav, routes, MCPPage UI text          |
 | ADR-031 | Native feedback as a Gleipnir runtime primitive | 🟢 Decided | v1.0 | Agent runtime, policy schema, notify package, UI |
-| ADR-032 | Admin-managed OpenAI-compatible LLM provider instances | 🟡 Proposed | v1.0 | internal/llm/openai, admin API, admin UI |
+| ADR-032 | Admin-managed OpenAI-compatible LLM provider instances | 🟢 Decided | v1.0 | internal/llm/openaicompat, admin API, admin UI |
+| ADR-033 | Premium OpenAI client split from compat client         | 🟢 Decided | v1.0 | internal/llm/openai, internal/llm/openaicompat, main.go |
 
 ---
 
@@ -1017,6 +1018,70 @@ is unavailable for those instances.
 supersede it. Adds a second registration mechanism alongside the existing
 static one. ADR-001 (hard capability enforcement) is unchanged — the new
 client never sees policy details; it only receives filtered tool lists.
+
+**Superseded in part by ADR-033.** The hand-rolled Chat Completions client
+described here was renamed to `internal/llm/openaicompat` and is now used
+exclusively for admin-managed third-party backends. OpenAI's own API now uses
+the official `openai-go` SDK targeting the Responses API (`internal/llm/openai`).
+The reserved-name list was extended with `"openai"` to prevent compat rows from
+shadowing the premium provider.
+
+---
+
+## ADR-033: Premium OpenAI client split from OpenAI-compatible client
+
+**Status:** Accepted
+**Date:** 2026-04
+
+**Context.** ADR-032 introduced a single hand-rolled Chat Completions client
+(`internal/llm/openai`) serving both OpenAI's own API and any OpenAI-compatible
+third-party backend. This provided compat tolerance but left OpenAI as a
+second-class provider — unlike Anthropic and Google, it had no built-in startup
+registration and no access to OpenAI-specific features (Responses API, reasoning
+tokens, structured outputs).
+
+**Decision.** Split the single role into two:
+
+- **`internal/llm/openai`** — a premium OpenAI client using the official
+  `github.com/openai/openai-go` SDK targeting the **Responses API**. Registered
+  at startup from the `openai` entry in `knownProviders`, exactly like Anthropic
+  and Google. The API key is stored in `system_settings` via the existing admin
+  key-management flow.
+- **`internal/llm/openaicompat`** — the renamed hand-rolled Chat Completions
+  client, used exclusively by `LoadAndRegister` for admin-managed compat rows
+  (Ollama, vLLM, OpenRouter, etc.). No behavioral change to the compat path.
+
+**Why now.** The Responses API provides first-class reasoning tokens
+(`OutputTokensDetails.ReasoningTokens`), a typed output surface, and reasoning
+summary blocks — capabilities unavailable via Chat Completions. The symmetry
+with Anthropic and Google (three premium SDK clients + one generic compat
+loader) makes the provider model immediately readable.
+
+**Why the Responses API, not Chat Completions.** The Responses API is OpenAI's
+current-generation interface. It exposes reasoning items natively, handles
+multi-turn state cleanly via the input list, and surfaces per-turn token usage
+including reasoning tokens. Chat Completions does not expose reasoning content.
+The compat client's Chat Completions path remains available for backends that
+need it (compat backends do not implement the Responses API).
+
+**Why reserve `"openai"` at the admin layer.** Without this, an admin could
+create a compat row named `"openai"` and, depending on load order, shadow the
+premium provider in the registry. The premium providers are registered first;
+the compat loader runs after. The reserved-name check makes the invariant
+explicit and prevents the ambiguity entirely.
+
+**Consequences.**
+
+- `internal/llm/openai` — new package, `openai-go` SDK, Responses API.
+- `internal/llm/openaicompat` — renamed from `internal/llm/openai`. Hand-rolled
+  Chat Completions. Compat behavior unchanged.
+- `main.go` — `"openai"` added to `knownProviders`; `case "openai"` added to
+  the provider-construction switch.
+- `internal/admin/openai_compat_handler.go` — `"openai"` added to `reservedNames`.
+- `OPENAI_API_KEY` is the env variable whose presence at startup is warned about
+  (matches Anthropic/Google pattern — keys are managed through the admin UI).
+
+**Builds on.** ADR-026 (model-agnostic design), ADR-032 (OpenAI-compat loader).
 
 ---
 

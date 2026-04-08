@@ -1,8 +1,8 @@
-// Package openai implements an LLMClient against the OpenAI Chat Completions
+// Package openaicompat implements an LLMClient against the OpenAI Chat Completions
 // API. The same client serves OpenAI itself and any OpenAI-compatible backend
 // (Ollama, vLLM, OpenRouter, Azure-via-compat, etc.) — the only differences
 // are base_url and api_key, both set at construction time. See ADR-032.
-package openai
+package openaicompat
 
 import "encoding/json"
 
