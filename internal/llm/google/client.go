@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -238,7 +239,10 @@ func buildContents(history []llm.ConversationTurn, names llm.ToolNameMapping) []
 			case llm.ToolCallBlock:
 				var argsMap map[string]any
 				if len(b.Input) > 0 {
-					_ = json.Unmarshal(b.Input, &argsMap)
+					if err := json.Unmarshal(b.Input, &argsMap); err != nil {
+						// Sending nil args is safer than failing the whole request.
+						slog.Warn("google: failed to unmarshal tool call args", "tool", b.Name, "err", err)
+					}
 				}
 				wireName := b.Name
 				if mapped, ok := names.OriginalToSanitized[b.Name]; ok {

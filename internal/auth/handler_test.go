@@ -1185,3 +1185,11 @@ func TestRevokeSessionHandler(t *testing.T) {
 		t.Errorf("status = %d, want 204; body: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestDummyHashInit verifies that the package-level dummyHash is populated by
+// the init() function so constant-time enumeration defense works at startup.
+func TestDummyHashInit(t *testing.T) {
+	if len(dummyHash) == 0 {
+		t.Fatal("dummyHash must not be empty after init()")
+	}
+}

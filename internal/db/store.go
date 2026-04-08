@@ -335,7 +335,7 @@ func (s *Store) migrateAddWaitingForFeedback(ctx context.Context) error {
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		s.reenableForeignKeys(ctx)
 		return fmt.Errorf("begin waiting_for_feedback migration tx: %w", err)
 	}
 	defer func() {
@@ -376,11 +376,11 @@ CREATE INDEX idx_runs_policy_created ON runs(policy_id, created_at DESC);
 CREATE INDEX idx_runs_policy_status  ON runs(policy_id, status);`
 
 	if _, err := tx.ExecContext(ctx, ddl); err != nil {
-		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		s.reenableForeignKeys(ctx)
 		return fmt.Errorf("recreate runs table with waiting_for_feedback: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		s.reenableForeignKeys(ctx)
 		return fmt.Errorf("commit waiting_for_feedback migration: %w", err)
 	}
 
@@ -461,7 +461,7 @@ func (s *Store) migrateDropCapabilityRole(ctx context.Context) error {
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		s.reenableForeignKeys(ctx)
 		return fmt.Errorf("begin drop capability_role migration tx: %w", err)
 	}
 	defer func() {
@@ -488,11 +488,11 @@ CREATE INDEX idx_mcp_tools_server_id ON mcp_tools(server_id);
 INSERT INTO schema_migrations(version, applied_at) VALUES (10, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));`
 
 	if _, err := tx.ExecContext(ctx, ddl); err != nil {
-		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		s.reenableForeignKeys(ctx)
 		return fmt.Errorf("recreate mcp_tools without capability_role: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		s.reenableForeignKeys(ctx)
 		return fmt.Errorf("commit drop capability_role migration: %w", err)
 	}
 
@@ -548,7 +548,7 @@ func (s *Store) migrateAddFeedbackExpiresAt(ctx context.Context) error {
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		s.reenableForeignKeys(ctx)
 		return fmt.Errorf("begin feedback expires_at migration tx: %w", err)
 	}
 	defer func() {
@@ -581,11 +581,11 @@ CREATE INDEX idx_feedback_requests_run_pending    ON feedback_requests(run_id, s
 CREATE INDEX idx_feedback_requests_status_expires ON feedback_requests(status, expires_at);`
 
 	if _, err := tx.ExecContext(ctx, ddl); err != nil {
-		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		s.reenableForeignKeys(ctx)
 		return fmt.Errorf("recreate feedback_requests with expires_at: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		s.reenableForeignKeys(ctx)
 		return fmt.Errorf("commit feedback expires_at migration: %w", err)
 	}
 
@@ -737,7 +737,7 @@ func (s *Store) migrateAddPollTriggerType(ctx context.Context) error {
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		s.reenableForeignKeys(ctx)
 		return fmt.Errorf("begin poll migration tx: %w", err)
 	}
 	defer func() {
@@ -817,11 +817,11 @@ CREATE TABLE IF NOT EXISTS poll_states (
 );`
 
 	if _, err := tx.ExecContext(ctx, ddl); err != nil {
-		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		s.reenableForeignKeys(ctx)
 		return fmt.Errorf("recreate tables for poll trigger type: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		_, _ = s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		s.reenableForeignKeys(ctx)
 		return fmt.Errorf("commit poll migration: %w", err)
 	}
 
@@ -869,6 +869,17 @@ CREATE TABLE model_settings (
 
 	slog.Info("migrated: created system_settings and model_settings tables")
 	return nil
+}
+
+// reenableForeignKeys re-enables the SQLite foreign_keys pragma after a
+// table-recreation migration disables it. The error is logged rather than
+// returned because at this point the migration itself has already succeeded —
+// FK enforcement will be restored on the next connection anyway, but we want
+// visibility if something unusual goes wrong.
+func (s *Store) reenableForeignKeys(ctx context.Context) {
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		slog.Warn("failed to re-enable foreign_keys pragma after migration error", "err", err)
+	}
 }
 
 // ScanOrphanedRuns finds any runs left in 'running', 'waiting_for_approval', or

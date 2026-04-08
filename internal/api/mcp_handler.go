@@ -142,8 +142,6 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("MCP auto-discovery failed on server create", "server_id", server.ID, "server_name", body.Name, "err", err)
 		errStr := err.Error()
 		resp.DiscoveryError = &errStr
-		slog.Warn("MCP auto-discovery failed during server creation",
-			"server_id", server.ID, "server_name", server.Name, "err", err)
 	} else {
 		// Re-fetch so the response reflects the updated last_discovered_at.
 		if updated, err := h.store.GetMCPServer(r.Context(), server.ID); err == nil {

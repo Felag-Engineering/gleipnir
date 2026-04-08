@@ -67,7 +67,17 @@ func NewHandler(q AuthQuerier, database *sql.DB) *Handler {
 
 // dummyHash is used for constant-time password checking when a user is not
 // found, to prevent timing-based user enumeration attacks.
-var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("gleipnir-dummy-password"), bcrypt.DefaultCost)
+var dummyHash []byte
+
+func init() {
+	h, err := bcrypt.GenerateFromPassword([]byte("gleipnir-dummy-password"), bcrypt.DefaultCost)
+	if err != nil {
+		// bcrypt.GenerateFromPassword only fails if the cost is out of range.
+		// bcrypt.DefaultCost is always valid, so this is unreachable in practice.
+		panic("failed to generate dummy bcrypt hash: " + err.Error())
+	}
+	dummyHash = h
+}
 
 type loginRequest struct {
 	Username string `json:"username"`
@@ -105,8 +115,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	user, err := h.q.GetUserByUsername(r.Context(), req.Username)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			// Run bcrypt against a dummy hash so this path takes the same time
-			// as a wrong-password path (prevents user enumeration via timing).
+			// Run bcrypt against a dummy hash so this path takes the same wall-clock
+			// time as the wrong-password path. The error is intentionally discarded —
+			// the only purpose is the constant-time delay to prevent user enumeration.
 			_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(req.Password))
 			writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
 			return
@@ -117,7 +128,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user.DeactivatedAt != nil {
-		// Still check the password to avoid leaking that the account exists.
+		// Still run a real bcrypt comparison to avoid leaking via timing that the
+		// account exists at all. The error is intentionally discarded — constant-time
+		// enumeration defense only.
 		_ = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password))
 		writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
 		return

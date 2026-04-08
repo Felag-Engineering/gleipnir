@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -157,10 +158,13 @@ func (s policyYAMLSummary) toolRefs() []string {
 }
 
 // parsePolicySummary unmarshals rawYAML into a policyYAMLSummary.
-// Parse errors are silently ignored — missing/invalid fields return zero values.
+// Parse errors are logged at warn and return zero values — a corrupt YAML blob
+// in the DB should not crash the list endpoint.
 func parsePolicySummary(rawYAML string) policyYAMLSummary {
 	var v policyYAMLSummary
-	_ = yaml.Unmarshal([]byte(rawYAML), &v)
+	if err := yaml.Unmarshal([]byte(rawYAML), &v); err != nil {
+		slog.Warn("parsePolicySummary: failed to parse policy YAML", "err", err)
+	}
 	return v
 }
 

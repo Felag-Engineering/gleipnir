@@ -2,6 +2,7 @@ package sse
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -42,8 +43,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Disable the server WriteTimeout for this connection. Without this, the
 	// server would close the SSE stream after WriteTimeout (typically 15 s).
+	// Some ResponseWriter wrappers (e.g. test recorders) don't support deadlines;
+	// that's fine — we log the failure and continue rather than killing the stream.
 	rc := http.NewResponseController(w)
-	_ = rc.SetWriteDeadline(time.Time{})
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		slog.Warn("sse: could not clear write deadline", "err", err)
+	}
 
 	// Subscribe first so we don't miss events published during replay.
 	sub := h.broadcaster.Subscribe()

@@ -973,3 +973,46 @@ agent:
 		t.Fatalf("get-after-delete: status = %d, want 404", getAfterResp.StatusCode)
 	}
 }
+
+// TestParsePolicySummary_InvalidYAML verifies that a policy row whose YAML blob
+// is corrupt does not crash the list endpoint — it should still return 200 with
+// zero-value summary fields for that row.
+func TestParsePolicySummary_InvalidYAML(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	// Insert a policy with deliberately malformed YAML directly so we bypass
+	// policy.Service validation (which would normally reject bad YAML).
+	insertTestPolicy(t, store, "bad-yaml-id", "corrupt-policy", "{{not: valid: yaml: [}")
+
+	srv := httptest.NewServer(newPolicyRouter(store))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/policies")
+	if err != nil {
+		t.Fatalf("GET /policies: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; corrupt YAML must not crash the list endpoint", resp.StatusCode)
+	}
+
+	var envelope struct {
+		Data []struct {
+			ID    string `json:"id"`
+			Model string `json:"model"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(envelope.Data) != 1 {
+		t.Fatalf("got %d items, want 1", len(envelope.Data))
+	}
+	if envelope.Data[0].ID != "bad-yaml-id" {
+		t.Errorf("id = %q, want %q", envelope.Data[0].ID, "bad-yaml-id")
+	}
+	// Model should be empty string (zero value) when YAML parse fails.
+	if envelope.Data[0].Model != "" {
+		t.Errorf("model = %q, want empty string for corrupt YAML", envelope.Data[0].Model)
+	}
+}
