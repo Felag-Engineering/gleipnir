@@ -9,6 +9,7 @@ import { useSetProviderKey } from '@/hooks/mutations/admin'
 import { useUpdateAdminSettings, useSetModelEnabled } from '@/hooks/mutations/admin'
 import type { ApiProviderStatus, ApiModelSetting } from '@/api/types'
 import { OpenAICompatProvidersSection } from '@/components/admin/OpenAICompatProvidersSection'
+import { useOpenAICompatProviders } from '@/hooks/queries/openaiCompatProviders'
 import cardStyles from '@/components/Settings/Settings.module.css'
 import styles from './AdminModelsPage.module.css'
 
@@ -251,15 +252,34 @@ function AvailableModelsSection() {
   const { data: providerModels } = useModels()
   const { data: adminModels } = useAdminModels()
   const { data: providers } = useProviders()
+  const { data: compatProviders } = useOpenAICompatProviders()
   const { data: settings } = useAdminSettings()
   const toggleModel = useSetModelEnabled()
 
   const currentDefault = settings?.default_model ?? ''
-  const providerKeyMap = new Map(providers?.map((p) => [p.name, p.has_key]) ?? [])
+
+  // Hardcoded providers (Anthropic, Google) carry a has_key flag from
+  // /admin/providers. Admin-managed OpenAI-compat providers always have a key
+  // by construction — the row cannot exist in the DB without one — so they
+  // are treated as has_key=true here.
+  const providerKeyMap = new Map<string, boolean>(
+    providers?.map((p) => [p.name, p.has_key]) ?? [],
+  )
+  for (const p of compatProviders ?? []) {
+    providerKeyMap.set(p.name, true)
+  }
+
   const grouped = mergeModels(providerModels, adminModels)
 
-  // Get all provider names (from providers endpoint, which lists all even without keys)
-  const allProviders = providers?.map((p) => p.name) ?? []
+  // Merge hardcoded provider names with admin-managed openai-compat provider
+  // names. A Set guards against the (unlikely) case where a compat provider
+  // was named identically to a hardcoded one.
+  const allProviders = Array.from(
+    new Set([
+      ...(providers?.map((p) => p.name) ?? []),
+      ...(compatProviders?.map((p) => p.name) ?? []),
+    ]),
+  )
 
   return (
     <section className={cardStyles.card}>
