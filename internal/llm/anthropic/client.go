@@ -29,7 +29,6 @@ var _ llm.LLMClient = (*AnthropicClient)(nil)
 // AnthropicClient implements llm.LLMClient using the Anthropic Claude API.
 type AnthropicClient struct {
 	client *anthropic.Client
-	models llm.ModelCache
 }
 
 // NewClient constructs an AnthropicClient with the given API key.
@@ -39,7 +38,7 @@ type AnthropicClient struct {
 func NewClient(apiKey string, opts ...option.RequestOption) *AnthropicClient {
 	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
 	c := anthropic.NewClient(allOpts...)
-	return &AnthropicClient{client: &c, models: llm.NewModelCache("Anthropic")}
+	return &AnthropicClient{client: &c}
 }
 
 // NewClientFromEnv constructs an AnthropicClient using only the default SDK
@@ -47,7 +46,7 @@ func NewClient(apiKey string, opts ...option.RequestOption) *AnthropicClient {
 // is read from the environment without an empty string override.
 func NewClientFromEnv(opts ...option.RequestOption) *AnthropicClient {
 	c := anthropic.NewClient(opts...)
-	return &AnthropicClient{client: &c, models: llm.NewModelCache("Anthropic")}
+	return &AnthropicClient{client: &c}
 }
 
 // CreateMessage sends a single synchronous request to the Anthropic API and
@@ -146,38 +145,32 @@ func (c *AnthropicClient) ValidateOptions(options map[string]any) error {
 	return nil
 }
 
-// fetchModels calls the Anthropic Models API and populates the model cache.
-// It is a no-op if the cache is already loaded.
-func (c *AnthropicClient) fetchModels(ctx context.Context) {
-	c.models.LoadOnce(func() (map[string]string, error) {
-		pager := c.client.Models.ListAutoPaging(ctx, anthropic.ModelListParams{})
-		cache := make(map[string]string)
-		for pager.Next() {
-			id := pager.Current().ID
-			cache[id] = humanizeModelName(id)
+// ValidateModelName returns nil if modelName is in the curated model list or in
+// validationAliases (for backward compat with stored policies using dated pins).
+// No network call is made — validation is purely against the curated list.
+func (c *AnthropicClient) ValidateModelName(_ context.Context, modelName string) error {
+	for _, m := range curatedModels {
+		if m.Name == modelName {
+			return nil
 		}
-		if err := pager.Err(); err != nil {
-			return nil, fmt.Errorf("anthropic: fetching available models: %w", err)
-		}
-		return cache, nil
-	})
+	}
+	if _, ok := validationAliases[modelName]; ok {
+		return nil
+	}
+
+	names := make([]string, len(curatedModels))
+	for i, m := range curatedModels {
+		names[i] = m.DisplayName
+	}
+	return fmt.Errorf("unknown Anthropic model %q; available models: %s", modelName, strings.Join(names, ", "))
 }
 
-// ValidateModelName returns nil if modelName is recognized by the Anthropic
-// Models API, or a descriptive error if not. The model list is fetched from
-// the API on the first call and cached until InvalidateModelCache is called.
-// If the API call fails, an error describing the failure is returned so the
-// caller can treat it as a non-blocking warning.
-func (c *AnthropicClient) ValidateModelName(ctx context.Context, modelName string) error {
-	c.fetchModels(ctx)
-	return c.models.ValidateModelName(modelName)
-}
-
-// ListModels returns the models available from the Anthropic API. Results are
-// cached; call InvalidateModelCache to force a refresh on the next call.
-func (c *AnthropicClient) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
-	c.fetchModels(ctx)
-	return c.models.ListModels()
+// ListModels returns a defensive copy of the curated Anthropic model list.
+// No network call is made — this never panics even on a zero-value client.
+func (c *AnthropicClient) ListModels(_ context.Context) ([]llm.ModelInfo, error) {
+	result := make([]llm.ModelInfo, len(curatedModels))
+	copy(result, curatedModels)
+	return result, nil
 }
 
 // humanizeModelName turns a raw Anthropic model ID into a human-readable label.
@@ -214,11 +207,10 @@ func humanizeModelName(name string) string {
 	return fmt.Sprintf("Claude %s %s", titleFamily, strings.Join(vClean, "."))
 }
 
-// InvalidateModelCache clears the cached model list so the next call to
-// ListModels or ValidateModelName fetches fresh data from the API.
-func (c *AnthropicClient) InvalidateModelCache() {
-	c.models.Invalidate()
-}
+// InvalidateModelCache is a no-op: the curated model list is static and
+// requires no cache invalidation. The method exists to satisfy the LLMClient
+// interface so the provider registry's /api/v1/models/refresh path works.
+func (c *AnthropicClient) InvalidateModelCache() {}
 
 // resolveMaxTokens determines the effective max_tokens for a request.
 // Precedence (highest to lowest):

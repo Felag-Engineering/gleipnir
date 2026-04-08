@@ -22,19 +22,12 @@ type contentGenerator interface {
 	GenerateContent(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error)
 }
 
-// modelLister abstracts genai.Models.List for test injection.
-type modelLister interface {
-	List(ctx context.Context, config *genai.ListModelsConfig) (genai.Page[genai.Model], error)
-}
-
 // Compile-time check that GeminiClient satisfies the LLMClient interface.
 var _ llm.LLMClient = (*GeminiClient)(nil)
 
 // GeminiClient implements llm.LLMClient using the Google Gemini API.
 type GeminiClient struct {
 	generator contentGenerator
-	lister    modelLister
-	models    llm.ModelCache
 }
 
 // NewClient constructs a GeminiClient with the given API key.
@@ -46,17 +39,13 @@ func NewClient(ctx context.Context, apiKey string) (*GeminiClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("google: creating client: %w", err)
 	}
-	return &GeminiClient{
-		generator: client.Models,
-		lister:    client.Models,
-		models:    llm.NewModelCache("Google"),
-	}, nil
+	return &GeminiClient{generator: client.Models}, nil
 }
 
-// newClientWithGenerator constructs a GeminiClient with an injected generator and lister.
+// newClientWithGenerator constructs a GeminiClient with an injected generator.
 // Used in tests to avoid real API calls.
-func newClientWithGenerator(gen contentGenerator, lister modelLister) *GeminiClient {
-	return &GeminiClient{generator: gen, lister: lister, models: llm.NewModelCache("Google")}
+func newClientWithGenerator(gen contentGenerator) *GeminiClient {
+	return &GeminiClient{generator: gen}
 }
 
 // CreateMessage sends a single synchronous request to the Gemini API and
@@ -148,66 +137,33 @@ func (c *GeminiClient) ValidateOptions(options map[string]any) error {
 	return nil
 }
 
-// fetchModels populates the model cache from the API if not already loaded.
-func (c *GeminiClient) fetchModels(ctx context.Context) {
-	c.models.LoadOnce(func() (map[string]string, error) {
-		page, err := c.lister.List(ctx, nil)
-		if err != nil {
-			return nil, fmt.Errorf("google: fetching available models: %w", err)
+// ValidateModelName returns nil if modelName is in the curated model list, or
+// a descriptive error if not. No network call is made.
+func (c *GeminiClient) ValidateModelName(_ context.Context, modelName string) error {
+	for _, m := range curatedModels {
+		if m.Name == modelName {
+			return nil
 		}
-
-		cache := make(map[string]string)
-		for _, m := range page.Items {
-			// The API returns names like "models/gemini-2.0-flash".
-			// Strip the "models/" prefix so users write just "gemini-2.0-flash" in policy YAML.
-			name := strings.TrimPrefix(m.Name, "models/")
-			displayName := m.DisplayName
-			if displayName == "" {
-				displayName = name
-			}
-			cache[name] = displayName
-		}
-
-		// Paginate through all pages.
-		for page.NextPageToken != "" {
-			page, err = page.Next(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("google: fetching available models (pagination): %w", err)
-			}
-			for _, m := range page.Items {
-				name := strings.TrimPrefix(m.Name, "models/")
-				displayName := m.DisplayName
-				if displayName == "" {
-					displayName = name
-				}
-				cache[name] = displayName
-			}
-		}
-
-		return cache, nil
-	})
+	}
+	names := make([]string, len(curatedModels))
+	for i, m := range curatedModels {
+		names[i] = m.DisplayName
+	}
+	return fmt.Errorf("unknown Google model %q; available models: %s", modelName, strings.Join(names, ", "))
 }
 
-// ValidateModelName returns nil if modelName is recognized by the Gemini API,
-// or a descriptive error if not. The model list is fetched from the API on the
-// first call and cached until InvalidateModelCache is called.
-func (c *GeminiClient) ValidateModelName(ctx context.Context, modelName string) error {
-	c.fetchModels(ctx)
-	return c.models.ValidateModelName(modelName)
+// ListModels returns a defensive copy of the curated Gemini model list.
+// No network call is made — this never panics even on a zero-value client.
+func (c *GeminiClient) ListModels(_ context.Context) ([]llm.ModelInfo, error) {
+	result := make([]llm.ModelInfo, len(curatedModels))
+	copy(result, curatedModels)
+	return result, nil
 }
 
-// ListModels returns the models available from the Gemini API. Results are
-// cached; call InvalidateModelCache to force a refresh on the next call.
-func (c *GeminiClient) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
-	c.fetchModels(ctx)
-	return c.models.ListModels()
-}
-
-// InvalidateModelCache clears the cached model list so the next call to
-// ListModels or ValidateModelName fetches fresh data from the API.
-func (c *GeminiClient) InvalidateModelCache() {
-	c.models.Invalidate()
-}
+// InvalidateModelCache is a no-op: the curated model list is static and
+// requires no cache invalidation. The method exists to satisfy the LLMClient
+// interface so the provider registry's /api/v1/models/refresh path works.
+func (c *GeminiClient) InvalidateModelCache() {}
 
 // buildContents translates the provider-neutral conversation history into
 // genai Content structs. It performs a two-pass approach: first collecting

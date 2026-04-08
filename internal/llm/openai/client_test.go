@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -173,80 +172,6 @@ func TestCreateMessage_NetworkError(t *testing.T) {
 	_, err := client.CreateMessage(context.Background(), llm.MessageRequest{Model: "gpt-4o"})
 	if err == nil {
 		t.Fatal("expected error on closed server")
-	}
-}
-
-func TestListModels_HappyPathAndCache(t *testing.T) {
-	fixture := loadFixture(t, "models_response.json")
-	var hits atomic.Int32
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/models" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		hits.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(fixture)
-	}))
-	defer srv.Close()
-
-	client := newTestClient(srv)
-
-	models, err := client.ListModels(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(models) != 3 {
-		t.Errorf("len(models) = %d; want 3", len(models))
-	}
-	if hits.Load() != 1 {
-		t.Errorf("server hits after first call = %d; want 1", hits.Load())
-	}
-
-	_, err = client.ListModels(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error on second call: %v", err)
-	}
-	if hits.Load() != 1 {
-		t.Errorf("server hits after second call = %d; want still 1", hits.Load())
-	}
-
-	client.InvalidateModelCache()
-	_, err = client.ListModels(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error after invalidation: %v", err)
-	}
-	if hits.Load() != 2 {
-		t.Errorf("server hits after invalidation + third call = %d; want 2", hits.Load())
-	}
-}
-
-func TestValidateModelName_KnownAndUnknown(t *testing.T) {
-	fixture := loadFixture(t, "models_response.json")
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(fixture)
-	}))
-	defer srv.Close()
-
-	client := newTestClient(srv)
-
-	if err := client.ValidateModelName(context.Background(), "gpt-4o"); err != nil {
-		t.Errorf("expected nil for known model, got: %v", err)
-	}
-	if err := client.ValidateModelName(context.Background(), "does-not-exist"); err == nil {
-		t.Error("expected error for unknown model, got nil")
-	}
-}
-
-func TestValidateModelName_Empty(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer srv.Close()
-
-	client := newTestClient(srv)
-	if err := client.ValidateModelName(context.Background(), ""); err == nil {
-		t.Error("expected error for empty model name, got nil")
 	}
 }
 

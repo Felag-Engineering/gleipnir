@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -464,7 +463,7 @@ func TestCreateMessage_ThinkingBlocks(t *testing.T) {
 			},
 		},
 	}
-	client := newClientWithGenerator(mock, nil)
+	client := newClientWithGenerator(mock)
 
 	resp, err := client.CreateMessage(context.Background(), llm.MessageRequest{
 		Model: "gemini-2.0-flash",
@@ -674,7 +673,7 @@ func TestCreateMessage_Success(t *testing.T) {
 	mock := &mockGenerator{
 		response: makeTextResponse("hello from Gemini", genai.FinishReasonStop, 20, 10),
 	}
-	client := newClientWithGenerator(mock, nil)
+	client := newClientWithGenerator(mock)
 
 	req := llm.MessageRequest{
 		Model:        "gemini-2.0-flash",
@@ -726,7 +725,7 @@ func TestCreateMessage_ToolCallResponse(t *testing.T) {
 			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 5, CandidatesTokenCount: 15},
 		},
 	}
-	client := newClientWithGenerator(mock, nil)
+	client := newClientWithGenerator(mock)
 
 	resp, err := client.CreateMessage(context.Background(), llm.MessageRequest{
 		Model: "gemini-2.0-flash",
@@ -751,7 +750,7 @@ func TestCreateMessage_ToolCallResponse(t *testing.T) {
 func TestCreateMessage_SDKError(t *testing.T) {
 	apiErr := genai.APIError{Code: 500, Message: "internal error"}
 	mock := &mockGenerator{err: apiErr}
-	client := newClientWithGenerator(mock, nil)
+	client := newClientWithGenerator(mock)
 
 	_, err := client.CreateMessage(context.Background(), llm.MessageRequest{
 		Model:   "gemini-2.0-flash",
@@ -775,7 +774,7 @@ func TestCreateMessage_WithHints(t *testing.T) {
 	mock := &mockGenerator{
 		response: makeTextResponse("response", genai.FinishReasonStop, 10, 5),
 	}
-	client := newClientWithGenerator(mock, nil)
+	client := newClientWithGenerator(mock)
 
 	_, err := client.CreateMessage(context.Background(), llm.MessageRequest{
 		Model:   "gemini-2.0-flash",
@@ -831,7 +830,7 @@ func TestStreamMessage_SingleChunk(t *testing.T) {
 			},
 		},
 	}
-	client := newClientWithGenerator(mock, nil)
+	client := newClientWithGenerator(mock)
 
 	ch, err := client.StreamMessage(context.Background(), llm.MessageRequest{
 		Model:   "gemini-2.0-flash",
@@ -887,7 +886,7 @@ func TestStreamMessage_ChannelClosed(t *testing.T) {
 	mock := &mockGenerator{
 		response: makeTextResponse("hi", genai.FinishReasonStop, 5, 3),
 	}
-	client := newClientWithGenerator(mock, nil)
+	client := newClientWithGenerator(mock)
 
 	ch, err := client.StreamMessage(context.Background(), llm.MessageRequest{
 		Model:   "gemini-2.0-flash",
@@ -912,7 +911,7 @@ func TestStreamMessage_ErrorPropagation(t *testing.T) {
 	mock := &mockGenerator{
 		err: genai.APIError{Code: 500, Message: "boom"},
 	}
-	client := newClientWithGenerator(mock, nil)
+	client := newClientWithGenerator(mock)
 
 	ch, err := client.StreamMessage(context.Background(), llm.MessageRequest{
 		Model:   "gemini-2.0-flash",
@@ -938,7 +937,7 @@ func TestStreamMessage_ContextCancellation(t *testing.T) {
 	mock := &mockGenerator{
 		err: context.Canceled,
 	}
-	client := newClientWithGenerator(mock, nil)
+	client := newClientWithGenerator(mock)
 
 	ch, err := client.StreamMessage(ctx, llm.MessageRequest{
 		Model:   "gemini-2.0-flash",
@@ -1062,169 +1061,3 @@ func TestValidateOptions(t *testing.T) {
 	}
 }
 
-// --- Model listing and validation tests ---
-
-// mockModelLister implements modelLister for tests.
-type mockModelLister struct {
-	models []genai.Model
-	err    error
-	calls  int
-}
-
-func (m *mockModelLister) List(_ context.Context, _ *genai.ListModelsConfig) (genai.Page[genai.Model], error) {
-	m.calls++
-	if m.err != nil {
-		return genai.Page[genai.Model]{}, m.err
-	}
-	items := make([]*genai.Model, len(m.models))
-	for i := range m.models {
-		items[i] = &m.models[i]
-	}
-	return genai.Page[genai.Model]{Items: items}, nil
-}
-
-func TestGeminiClient_ValidateModelName(t *testing.T) {
-	tests := []struct {
-		name       string
-		models     []genai.Model
-		listerErr  error
-		modelName  string
-		wantErr    bool
-		wantSubstr string
-	}{
-		{
-			name: "known model passes",
-			models: []genai.Model{
-				{Name: "models/gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"},
-				{Name: "models/gemini-1.5-pro", DisplayName: "Gemini 1.5 Pro"},
-			},
-			modelName: "gemini-2.0-flash",
-			wantErr:   false,
-		},
-		{
-			name: "unknown model fails with list",
-			models: []genai.Model{
-				{Name: "models/gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"},
-			},
-			modelName:  "gemini-99",
-			wantErr:    true,
-			wantSubstr: "unknown Google model",
-		},
-		{
-			name:       "API error surfaces",
-			listerErr:  fmt.Errorf("network timeout"),
-			modelName:  "gemini-2.0-flash",
-			wantErr:    true,
-			wantSubstr: "could not validate",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			lister := &mockModelLister{models: tc.models, err: tc.listerErr}
-			client := newClientWithGenerator(&mockGenerator{}, lister)
-
-			err := client.ValidateModelName(context.Background(), tc.modelName)
-			if tc.wantErr && err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("expected no error, got: %v", err)
-			}
-			if tc.wantSubstr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantSubstr)) {
-				t.Errorf("error %q does not contain %q", err, tc.wantSubstr)
-			}
-		})
-	}
-}
-
-func TestGeminiClient_ListModels(t *testing.T) {
-	lister := &mockModelLister{
-		models: []genai.Model{
-			{Name: "models/gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"},
-			{Name: "models/gemini-1.5-pro", DisplayName: "Gemini 1.5 Pro"},
-		},
-	}
-	client := newClientWithGenerator(&mockGenerator{}, lister)
-
-	models, err := client.ListModels(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(models) != 2 {
-		t.Fatalf("expected 2 models, got %d", len(models))
-	}
-	// Sorted by name.
-	if models[0].Name != "gemini-1.5-pro" {
-		t.Errorf("models[0].Name = %q, want %q", models[0].Name, "gemini-1.5-pro")
-	}
-	if models[1].Name != "gemini-2.0-flash" {
-		t.Errorf("models[1].Name = %q, want %q", models[1].Name, "gemini-2.0-flash")
-	}
-	if models[1].DisplayName != "Gemini 2.0 Flash" {
-		t.Errorf("models[1].DisplayName = %q, want %q", models[1].DisplayName, "Gemini 2.0 Flash")
-	}
-}
-
-func TestGeminiClient_InvalidateModelCache(t *testing.T) {
-	lister := &mockModelLister{
-		models: []genai.Model{
-			{Name: "models/gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"},
-		},
-	}
-	client := newClientWithGenerator(&mockGenerator{}, lister)
-
-	// First call populates cache.
-	_, err := client.ListModels(context.Background())
-	if err != nil {
-		t.Fatalf("first ListModels: %v", err)
-	}
-	if lister.calls != 1 {
-		t.Fatalf("expected 1 API call, got %d", lister.calls)
-	}
-
-	// Second call uses cache.
-	_, err = client.ListModels(context.Background())
-	if err != nil {
-		t.Fatalf("second ListModels: %v", err)
-	}
-	if lister.calls != 1 {
-		t.Fatalf("expected still 1 API call (cached), got %d", lister.calls)
-	}
-
-	// Invalidate and call again — should re-fetch.
-	client.InvalidateModelCache()
-	_, err = client.ListModels(context.Background())
-	if err != nil {
-		t.Fatalf("third ListModels: %v", err)
-	}
-	if lister.calls != 2 {
-		t.Fatalf("expected 2 API calls after invalidation, got %d", lister.calls)
-	}
-}
-
-func TestGeminiClient_StripModelsPrefix(t *testing.T) {
-	lister := &mockModelLister{
-		models: []genai.Model{
-			{Name: "models/gemini-2.0-flash"},
-			{Name: "gemini-no-prefix"},
-		},
-	}
-	client := newClientWithGenerator(&mockGenerator{}, lister)
-
-	models, err := client.ListModels(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	names := make(map[string]bool)
-	for _, m := range models {
-		names[m.Name] = true
-	}
-	if !names["gemini-2.0-flash"] {
-		t.Error("expected 'gemini-2.0-flash' (prefix stripped), not found")
-	}
-	if !names["gemini-no-prefix"] {
-		t.Error("expected 'gemini-no-prefix' (no prefix to strip), not found")
-	}
-}

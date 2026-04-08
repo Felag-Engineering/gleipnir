@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	openaisdk "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -24,8 +25,7 @@ var _ llm.LLMClient = (*Client)(nil)
 // official openai-go SDK. Unlike the compat client, it uses the stateless
 // Responses API which provides native reasoning tokens and a typed surface.
 type Client struct {
-	sdk    *openaisdk.Client
-	models llm.ModelCache
+	sdk *openaisdk.Client
 }
 
 // NewClient constructs a Client for the given API key. The variadic opts are
@@ -35,7 +35,7 @@ type Client struct {
 func NewClient(apiKey string, opts ...option.RequestOption) *Client {
 	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
 	sdk := openaisdk.NewClient(allOpts...)
-	return &Client{sdk: &sdk, models: llm.NewModelCache("OpenAI")}
+	return &Client{sdk: &sdk}
 }
 
 // CreateMessage sends a single synchronous Responses API request and returns
@@ -135,45 +135,36 @@ func (c *Client) ValidateOptions(options map[string]any) error {
 	return err
 }
 
-// ListModels returns the models available from the OpenAI API. Results are
-// cached; call InvalidateModelCache to force a refresh.
-func (c *Client) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
-	c.models.LoadOnce(func() (map[string]string, error) {
-		return c.fetchModels(ctx)
-	})
-	return c.models.ListModels()
+// ListModels returns a defensive copy of the curated OpenAI model list.
+// No network call is made — this never panics even on a zero-value client.
+func (c *Client) ListModels(_ context.Context) ([]llm.ModelInfo, error) {
+	result := make([]llm.ModelInfo, len(curatedModels))
+	copy(result, curatedModels)
+	return result, nil
 }
 
-// ValidateModelName returns nil if name is recognized by the OpenAI Models API.
-func (c *Client) ValidateModelName(ctx context.Context, name string) error {
+// ValidateModelName returns nil if name is in the curated model list, or a
+// descriptive error if not. No network call is made.
+func (c *Client) ValidateModelName(_ context.Context, name string) error {
 	if name == "" {
 		return errors.New("openai: model name is empty")
 	}
-	c.models.LoadOnce(func() (map[string]string, error) {
-		return c.fetchModels(ctx)
-	})
-	return c.models.ValidateModelName(name)
+	for _, m := range curatedModels {
+		if m.Name == name {
+			return nil
+		}
+	}
+	names := make([]string, len(curatedModels))
+	for i, m := range curatedModels {
+		names[i] = m.DisplayName
+	}
+	return fmt.Errorf("unknown OpenAI model %q; available models: %s", name, strings.Join(names, ", "))
 }
 
-// InvalidateModelCache clears the cached model list so the next call to
-// ListModels or ValidateModelName fetches fresh data from the API.
-func (c *Client) InvalidateModelCache() {
-	c.models.Invalidate()
-}
-
-// fetchModels calls the OpenAI Models API and returns a map of id → display name.
-func (c *Client) fetchModels(ctx context.Context) (map[string]string, error) {
-	pager := c.sdk.Models.ListAutoPaging(ctx)
-	cache := make(map[string]string)
-	for pager.Next() {
-		m := pager.Current()
-		cache[m.ID] = m.ID
-	}
-	if err := pager.Err(); err != nil {
-		return nil, fmt.Errorf("openai: fetching available models: %w", err)
-	}
-	return cache, nil
-}
+// InvalidateModelCache is a no-op: the curated model list is static and
+// requires no cache invalidation. The method exists to satisfy the LLMClient
+// interface so the provider registry's /api/v1/models/refresh path works.
+func (c *Client) InvalidateModelCache() {}
 
 // wrapSDKError wraps an openai-go SDK error with HTTP status context so callers
 // can produce meaningful log messages.
