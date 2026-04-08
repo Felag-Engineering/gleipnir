@@ -233,7 +233,7 @@ func TestCountPendingApprovalRequests(t *testing.T) {
 		}
 		decidedAt := now
 		note := "ok"
-		if err := s.UpdateApprovalRequestStatus(ctx, UpdateApprovalRequestStatusParams{
+		if _, err := s.UpdateApprovalRequestStatus(ctx, UpdateApprovalRequestStatusParams{
 			Status:    "approved",
 			DecidedAt: &decidedAt,
 			Note:      &note,
@@ -1094,7 +1094,7 @@ func TestApprovalRequestQueries(t *testing.T) {
 
 	decidedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	note := "looks good"
-	if err := s.UpdateApprovalRequestStatus(ctx, UpdateApprovalRequestStatusParams{
+	if _, err := s.UpdateApprovalRequestStatus(ctx, UpdateApprovalRequestStatusParams{
 		Status:    "approved",
 		DecidedAt: &decidedAt,
 		Note:      &note,
@@ -1159,7 +1159,7 @@ func TestApprovalRequestQueries(t *testing.T) {
 	// rejected transition: status, decided_at, and note are all recorded.
 	decidedAt2 := time.Now().UTC().Format(time.RFC3339Nano)
 	note2 := "too risky"
-	if err := s.UpdateApprovalRequestStatus(ctx, UpdateApprovalRequestStatusParams{
+	if _, err := s.UpdateApprovalRequestStatus(ctx, UpdateApprovalRequestStatusParams{
 		Status:    "rejected",
 		DecidedAt: &decidedAt2,
 		Note:      &note2,
@@ -1193,7 +1193,7 @@ func TestApprovalRequestQueries(t *testing.T) {
 		t.Fatalf("CreateApprovalRequest ar4: %v", err)
 	}
 	decidedAt3 := time.Now().UTC().Format(time.RFC3339Nano)
-	if err := s.UpdateApprovalRequestStatus(ctx, UpdateApprovalRequestStatusParams{
+	if _, err := s.UpdateApprovalRequestStatus(ctx, UpdateApprovalRequestStatusParams{
 		Status:    "timeout",
 		DecidedAt: &decidedAt3,
 		Note:      nil,

@@ -9,10 +9,13 @@ SELECT * FROM feedback_requests WHERE id = :id;
 -- name: GetPendingFeedbackRequestsByRun :many
 SELECT * FROM feedback_requests WHERE run_id = :run_id AND status = 'pending';
 
--- name: UpdateFeedbackRequestStatus :exec
+-- UpdateFeedbackRequestStatus transitions a pending feedback request to a terminal
+-- status. The WHERE clause guards against double-transition: rows_affected == 0
+-- means another writer already resolved the request.
+-- name: UpdateFeedbackRequestStatus :execrows
 UPDATE feedback_requests
 SET status = :status, response = :response, resolved_at = :resolved_at
-WHERE id = :id;
+WHERE id = :id AND status = 'pending';
 
 -- name: CountPendingFeedbackRequests :one
 SELECT COUNT(*) FROM feedback_requests WHERE status = 'pending';

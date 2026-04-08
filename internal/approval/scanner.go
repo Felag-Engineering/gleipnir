@@ -71,9 +71,14 @@ func (s *Scanner) Start(ctx context.Context) {
 	}()
 }
 
-// scan finds all pending approval requests whose expires_at is in the past and
+// Scan finds all pending approval requests whose expires_at is in the past and
 // resolves each one as a timeout. Errors on individual requests are logged and
 // skipped so the ticker continues on subsequent intervals.
+// Exported so tests and callers outside the package can drive a synchronous scan.
+func (s *Scanner) Scan(ctx context.Context) error {
+	return s.scan(ctx)
+}
+
 func (s *Scanner) scan(ctx context.Context) error {
 	cutoff := time.Now().UTC().Format(time.RFC3339Nano)
 	expired, err := s.store.Queries().ListExpiredApprovalRequests(ctx, cutoff)
@@ -100,14 +105,23 @@ func (s *Scanner) resolveTimeout(ctx context.Context, req db.ApprovalRequest) er
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	timeoutStatus := string(model.ApprovalStatusTimeout)
 
-	// Mark the approval as timeout.
-	if err := s.store.Queries().UpdateApprovalRequestStatus(ctx, db.UpdateApprovalRequestStatusParams{
+	// Attempt to claim this timeout with a conditional update. The WHERE status='pending'
+	// guard ensures exactly one writer wins when concurrent scanners race on the same row.
+	rows, err := s.store.Queries().UpdateApprovalRequestStatus(ctx, db.UpdateApprovalRequestStatusParams{
 		Status:    timeoutStatus,
 		DecidedAt: &now,
 		Note:      nil,
 		ID:        req.ID,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("update approval status: %w", err)
+	}
+	if rows == 0 {
+		// Another writer (concurrent scanner or agent timer) already resolved this
+		// request. Skip all downstream side-effects to prevent duplicate error steps
+		// and spurious run-status events.
+		slog.Debug("approval already resolved, skipping", "approval_id", req.ID, "run_id", req.RunID)
+		return nil
 	}
 
 	// Check whether the run is still waiting for approval. ScanOrphanedRuns may

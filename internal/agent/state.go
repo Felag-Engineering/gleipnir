@@ -214,6 +214,13 @@ func (sm *RunStateMachine) Current() model.RunStatus {
 	return sm.current
 }
 
+// Queries returns the db.Queries handle used by the state machine.
+// Needed by BoundAgent's timeout branches to perform guarded status updates
+// without duplicating DB dependencies in the Config struct.
+func (sm *RunStateMachine) Queries() *db.Queries {
+	return sm.queries
+}
+
 // isLegalTransition reports whether transitioning from → to is permitted by the
 // run state machine graph (see model.RunStatus for the full transition diagram).
 func isLegalTransition(from, to model.RunStatus) bool {

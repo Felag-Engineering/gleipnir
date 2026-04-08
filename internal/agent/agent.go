@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/config"
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
@@ -255,9 +256,31 @@ func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry re
 		slog.WarnContext(ctx, "approval timeout reached",
 			"run_id", runID, "tool", internalName,
 			"timeout", entry.tool.Timeout.String())
-		err := fmt.Errorf("approval timeout for tool %s", internalName)
-		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeApprovalRejected)
-		return err
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		// Race the scanner: only the first writer (rows==1) owns the error step.
+		// If the scanner already resolved it (rows==0), return a sentinel error so
+		// Run() still terminates, but skip logAuditError to avoid a duplicate step.
+		rows, dbErr := a.sm.Queries().UpdateApprovalRequestStatus(
+			context.Background(),
+			db.UpdateApprovalRequestStatusParams{
+				Status:    string(model.ApprovalStatusTimeout),
+				DecidedAt: &now,
+				Note:      nil,
+				ID:        approvalID,
+			},
+		)
+		if dbErr != nil {
+			slog.WarnContext(ctx, "failed to update approval status on timeout", "approval_id", approvalID, "err", dbErr)
+		}
+		if rows == 1 {
+			err := fmt.Errorf("approval timeout for tool %s", internalName)
+			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeApprovalRejected)
+			return err
+		}
+		// Scanner won the race: it already wrote the error step and transitioned
+		// the run. Return a sentinel so Run() knows to stop, but avoid a duplicate step.
+		slog.DebugContext(ctx, "approval already resolved by scanner", "approval_id", approvalID)
+		return fmt.Errorf("approval timeout for tool %s: already resolved by scanner", internalName)
 	case <-ctx.Done():
 		return fmt.Errorf("context cancelled waiting for approval: %w", ctx.Err())
 	}
@@ -326,18 +349,34 @@ func (a *BoundAgent) waitForFeedback(ctx context.Context, runID, toolName, input
 		}
 		return responseText, nil
 	case <-timeoutCh:
-		// Race note: the background feedback scanner may have already timed out this
-		// request and transitioned the run to failed. In that case, the error returned
-		// here propagates to Run(), which calls failRun() → sm.Transition(failed).
-		// The state machine rejects this as an illegal failed → failed transition.
-		// failRun() logs the error via slog.ErrorContext and swallows it. This is
-		// expected — the scanner already persisted the correct terminal state.
 		slog.WarnContext(ctx, "feedback timeout reached",
 			"run_id", runID, "tool", toolName,
 			"timeout", feedbackTimeout.String())
-		err := fmt.Errorf("feedback timeout: operator did not respond within %s", feedbackTimeout)
-		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeFeedbackTimeout)
-		return "", err
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		// Race the scanner: only the first writer (rows==1) owns the error step.
+		// If the scanner already resolved it (rows==0), return a sentinel error so
+		// Run() still terminates, but skip logAuditError to avoid a duplicate step.
+		rows, dbErr := a.sm.Queries().UpdateFeedbackRequestStatus(
+			context.Background(),
+			db.UpdateFeedbackRequestStatusParams{
+				Status:     "timed_out",
+				Response:   nil,
+				ResolvedAt: &now,
+				ID:         feedbackID,
+			},
+		)
+		if dbErr != nil {
+			slog.WarnContext(ctx, "failed to update feedback status on timeout", "feedback_id", feedbackID, "err", dbErr)
+		}
+		if rows == 1 {
+			err := fmt.Errorf("feedback timeout: operator did not respond within %s", feedbackTimeout)
+			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeFeedbackTimeout)
+			return "", err
+		}
+		// Scanner won the race: it already wrote the error step and transitioned
+		// the run. Return a sentinel so Run() knows to stop, but avoid a duplicate step.
+		slog.DebugContext(ctx, "feedback already resolved by scanner", "feedback_id", feedbackID)
+		return "", fmt.Errorf("feedback timeout: already resolved by scanner for tool %s", toolName)
 	case <-ctx.Done():
 		return "", fmt.Errorf("context cancelled waiting for feedback: %w", ctx.Err())
 	}

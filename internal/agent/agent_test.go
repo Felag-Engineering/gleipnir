@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rapp992/gleipnir/internal/approval"
 	"github.com/rapp992/gleipnir/internal/db"
+	feedbackscanner "github.com/rapp992/gleipnir/internal/feedback"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
@@ -2099,5 +2101,380 @@ func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("gleipnir.ask_operator not found in capability snapshot tools: %v", snap.Tools)
+	}
+}
+
+// makeAgentWithFeedback builds a BoundAgent with feedback enabled and a fresh test store.
+// The run starts in RunStatusRunning (same as makeAgentWithTools).
+func makeAgentWithFeedback(t *testing.T, feedbackCh chan string, feedbackTimeout time.Duration) (*BoundAgent, *db.Store, *AuditWriter) {
+	t.Helper()
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy:                 feedbackPolicy(),
+		Tools:                  nil,
+		LLMClient:              testutil.NewNoopLLMClient(),
+		Audit:                  w,
+		FeedbackCh:             (<-chan string)(feedbackCh),
+		DefaultFeedbackTimeout: feedbackTimeout,
+		StateMachine:           NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return ba, s, w
+}
+
+// pollForApprovalRow polls the DB until an approval request exists for run1,
+// or the deadline is exceeded. It returns the approval row ID.
+// Synchronous polling avoids time.Sleep for the common case (row appears quickly).
+func pollForApprovalRow(t *testing.T, s *db.Store, deadline time.Time) string {
+	t.Helper()
+	for time.Now().Before(deadline) {
+		rows, err := s.GetPendingApprovalRequestsByRun(context.Background(), "run1")
+		if err != nil {
+			t.Fatalf("GetPendingApprovalRequestsByRun: %v", err)
+		}
+		if len(rows) > 0 {
+			return rows[0].ID
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for approval row to appear in DB")
+	return ""
+}
+
+// pollForFeedbackRow polls the DB until a feedback request exists for run1.
+func pollForFeedbackRow(t *testing.T, s *db.Store, deadline time.Time) string {
+	t.Helper()
+	for time.Now().Before(deadline) {
+		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+		if err != nil {
+			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+		}
+		if len(rows) > 0 {
+			return rows[0].ID
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for feedback row to appear in DB")
+	return ""
+}
+
+// countErrorStepsForRun returns the number of error-type run_steps for a run.
+func countErrorStepsForRun(t *testing.T, s *db.Store, runID string) int {
+	t.Helper()
+	n, err := s.CountRunSteps(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("CountRunSteps %s: %v", runID, err)
+	}
+	// CountRunSteps returns all steps; we need only error steps.
+	steps, err := s.ListRunSteps(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("ListRunSteps %s: %v", runID, err)
+	}
+	_ = n
+	count := 0
+	for _, st := range steps {
+		if st.Type == string(model.StepTypeError) {
+			count++
+		}
+	}
+	return count
+}
+
+// TestWaitForApproval_BufferedLateRejection verifies that a late rejection send
+// (after the timeout has already returned) lands safely in the buffered channel
+// without blocking, and that exactly one error step is written.
+func TestWaitForApproval_BufferedLateRejection(t *testing.T) {
+	approvalCh := make(chan bool, 1) // buffered cap-1, owned by this test
+	ba, s, w := makeAgentWithTools(t, nil, approvalCh)
+	defer w.Close()
+
+	entry := resolvedToolEntry{
+		tool: mcp.ResolvedTool{
+			GrantedTool: model.GrantedTool{
+				Timeout:   50 * time.Millisecond,
+				OnTimeout: model.OnTimeoutReject,
+			},
+		},
+	}
+
+	// waitForApproval times out and returns an error.
+	err := ba.waitForApproval(context.Background(), "run1", entry, "my-server.do_thing", map[string]any{})
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+
+	// Now send a late rejection on the buffered channel. Because the channel has
+	// capacity 1 and the receiver has already exited, the send must land in the
+	// buffer (not hit the default arm). This proves the buffer absorbs late sends
+	// without goroutine leaks or panics.
+	sentToBuffer := false
+	select {
+	case approvalCh <- false:
+		sentToBuffer = true
+	default:
+	}
+	if !sentToBuffer {
+		t.Error("late rejection send hit default arm; expected it to land in the cap-1 buffer")
+	}
+
+	// Flush the audit writer and assert exactly one error step.
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if n := countErrorStepsForRun(t, s, "run1"); n != 1 {
+		t.Errorf("error steps = %d, want 1", n)
+	}
+}
+
+// TestWaitForApproval_ScannerWins verifies that when the background scanner
+// resolves an approval request before the in-agent timer fires, the agent's
+// timeout branch detects rows==0 and returns a sentinel error without writing a
+// duplicate error step.
+//
+// The scanner is driven synchronously (no Start/ticker) to avoid wall-clock races
+// under -race. The sequence is:
+//  1. waitForApproval starts in a goroutine (Timeout=200ms).
+//  2. The main goroutine polls until the approval row appears, then back-dates it.
+//  3. scanner.scan() is called synchronously — it wins the guarded UPDATE (rows=1),
+//     writes the error step, and transitions the run to failed.
+//  4. The agent's 200ms timer fires; its guarded UPDATE gets rows=0; it returns
+//     a sentinel error without writing a second error step.
+func TestWaitForApproval_ScannerWins(t *testing.T) {
+	approvalCh := make(chan bool, 1)
+	ba, s, w := makeAgentWithTools(t, nil, approvalCh)
+	// Use a publisher so we can count run.status_changed events.
+	pub := &capturePublisher{}
+	ba.sm = NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+
+	entry := resolvedToolEntry{
+		tool: mcp.ResolvedTool{
+			GrantedTool: model.GrantedTool{
+				Timeout:   200 * time.Millisecond,
+				OnTimeout: model.OnTimeoutReject,
+			},
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ba.waitForApproval(context.Background(), "run1", entry, "my-server.do_thing", map[string]any{})
+	}()
+
+	// Poll until the approval row appears in the DB (waitForApproval creates it
+	// inside sm.Transition). Bounded at 100ms to keep the test fast.
+	approvalID := pollForApprovalRow(t, s, time.Now().Add(100*time.Millisecond))
+
+	// Back-date the approval so the scanner picks it up as expired.
+	past := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := s.DB().Exec(
+		`UPDATE approval_requests SET expires_at = ? WHERE id = ?`, past, approvalID,
+	); err != nil {
+		t.Fatalf("back-date approval: %v", err)
+	}
+
+	// Drive the scanner synchronously. It wins the guarded UPDATE (rows=1).
+	sc := approval.NewScanner(s, time.Minute, approval.WithPublisher(pub))
+	if err := sc.Scan(context.Background()); err != nil {
+		t.Fatalf("scanner.Scan: %v", err)
+	}
+
+	// Wait for waitForApproval to return (the 200ms timer fires).
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("waitForApproval expected error, got nil")
+		}
+		// The sentinel error does not contain "approval timeout" as a standalone
+		// phrase — it indicates the scanner won the race.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("waitForApproval did not return within 500ms")
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Exactly one error step: written by the scanner, not by the agent.
+	if n := countErrorStepsForRun(t, s, "run1"); n != 1 {
+		t.Errorf("error steps = %d, want exactly 1 (scanner wins)", n)
+	}
+
+	// Approval row must be timeout.
+	var approvalStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM approval_requests WHERE id = ?`, approvalID).Scan(&approvalStatus); err != nil {
+		t.Fatalf("query approval: %v", err)
+	}
+	if approvalStatus != "timeout" {
+		t.Errorf("approval status = %q, want timeout", approvalStatus)
+	}
+
+	// Run must be failed.
+	var runStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = 'run1'`).Scan(&runStatus); err != nil {
+		t.Fatalf("query run: %v", err)
+	}
+	if runStatus != "failed" {
+		t.Errorf("run status = %q, want failed", runStatus)
+	}
+
+	// Exactly one run.status_changed event with status="failed" (from the scanner).
+	// The SM also emits one for the waiting_for_approval transition, so total >= 2.
+	if n := pub.countByStatus("run.status_changed", "failed"); n != 1 {
+		t.Errorf("run.status_changed(failed) events = %d, want 1", n)
+	}
+}
+
+// TestWaitForFeedback_BufferedLateResponse mirrors TestWaitForApproval_BufferedLateRejection:
+// after feedback timeout fires and the function returns, a late response send lands
+// safely in the buffered channel without blocking.
+func TestWaitForFeedback_BufferedLateResponse(t *testing.T) {
+	feedbackCh := make(chan string, 1)
+	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 50*time.Millisecond)
+	defer w.Close()
+
+	_, err := ba.waitForFeedback(context.Background(), "run1", "ask_operator", "{}", "please answer", 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+
+	// Late response must land in the cap-1 buffer after the receiver exits.
+	sentToBuffer := false
+	select {
+	case feedbackCh <- "late response":
+		sentToBuffer = true
+	default:
+	}
+	if !sentToBuffer {
+		t.Error("late response send hit default arm; expected it to land in the cap-1 buffer")
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if n := countErrorStepsForRun(t, s, "run1"); n != 1 {
+		t.Errorf("error steps = %d, want 1", n)
+	}
+}
+
+// TestWaitForFeedback_ScannerWins mirrors TestWaitForApproval_ScannerWins for the
+// feedback path: the scanner resolves the feedback row before the in-agent timer
+// fires, leaving exactly one error step.
+func TestWaitForFeedback_ScannerWins(t *testing.T) {
+	feedbackCh := make(chan string, 1)
+	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 200*time.Millisecond)
+	pub := &capturePublisher{}
+	ba.sm = NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := ba.waitForFeedback(context.Background(), "run1", "ask_operator", "{}", "please answer", 200*time.Millisecond)
+		done <- err
+	}()
+
+	// Poll until the feedback row appears in the DB.
+	feedbackID := pollForFeedbackRow(t, s, time.Now().Add(100*time.Millisecond))
+
+	// Back-date the feedback row so the scanner picks it up as expired.
+	past := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := s.DB().Exec(
+		`UPDATE feedback_requests SET expires_at = ? WHERE id = ?`, past, feedbackID,
+	); err != nil {
+		t.Fatalf("back-date feedback: %v", err)
+	}
+
+	// Drive the scanner synchronously. It wins the guarded UPDATE (rows=1).
+	sc := feedbackscanner.NewScanner(s, time.Minute, feedbackscanner.WithPublisher(pub))
+	if err := sc.Scan(context.Background()); err != nil {
+		t.Fatalf("scanner.Scan: %v", err)
+	}
+
+	// Wait for waitForFeedback to return (the 200ms timer fires).
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("waitForFeedback expected error, got nil")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("waitForFeedback did not return within 500ms")
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Exactly one error step: written by the scanner.
+	if n := countErrorStepsForRun(t, s, "run1"); n != 1 {
+		t.Errorf("error steps = %d, want exactly 1 (scanner wins)", n)
+	}
+
+	// Feedback row must be timed_out.
+	var feedbackStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM feedback_requests WHERE id = ?`, feedbackID).Scan(&feedbackStatus); err != nil {
+		t.Fatalf("query feedback: %v", err)
+	}
+	if feedbackStatus != "timed_out" {
+		t.Errorf("feedback status = %q, want timed_out", feedbackStatus)
+	}
+
+	// Run must be failed.
+	var runStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = 'run1'`).Scan(&runStatus); err != nil {
+		t.Fatalf("query run: %v", err)
+	}
+	if runStatus != "failed" {
+		t.Errorf("run status = %q, want failed", runStatus)
+	}
+
+	// Exactly one run.status_changed event with status="failed" (from the scanner).
+	// The SM also emits one for the waiting_for_feedback transition, so total >= 2.
+	if n := pub.countByStatus("run.status_changed", "failed"); n != 1 {
+		t.Errorf("run.status_changed(failed) events = %d, want 1", n)
+	}
+}
+
+// TestWaitForFeedback_ResponseWins verifies the happy path: a response arrives
+// before the timer fires, and subsequent scanner.scan() is a no-op (the row is
+// no longer pending).
+func TestWaitForFeedback_ResponseWins(t *testing.T) {
+	feedbackCh := make(chan string, 1)
+	feedbackCh <- "operator's answer" // pre-fill so the channel is ready immediately
+	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 200*time.Millisecond)
+	defer w.Close()
+
+	response, err := ba.waitForFeedback(context.Background(), "run1", "ask_operator", "{}", "please answer", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("waitForFeedback: %v", err)
+	}
+	if response != "operator's answer" {
+		t.Errorf("response = %q, want %q", response, "operator's answer")
+	}
+
+	// Run must be back to running (sm transitioned back).
+	var runStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = 'run1'`).Scan(&runStatus); err != nil {
+		t.Fatalf("query run: %v", err)
+	}
+	if runStatus != "running" {
+		t.Errorf("run status = %q, want running (response arrived before timeout)", runStatus)
+	}
+
+	// The feedback row is still 'pending' (the handler updates it, not waitForFeedback).
+	// Verify the scanner does nothing when it runs — no error steps, no events.
+	pub := &capturePublisher{}
+	sc := feedbackscanner.NewScanner(s, time.Minute, feedbackscanner.WithPublisher(pub))
+	if err := sc.Scan(context.Background()); err != nil {
+		t.Fatalf("scanner.Scan after response: %v", err)
+	}
+
+	// The scanner must not have published events — the row was resolved by the
+	// operator response before it expired, so it should not be expired now.
+	if n := pub.countByType("run.status_changed"); n != 0 {
+		t.Errorf("run.status_changed events after scan = %d, want 0", n)
 	}
 }

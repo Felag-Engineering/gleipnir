@@ -36,6 +36,38 @@ func (p *capturePublisher) all() []capturedEvent {
 	return out
 }
 
+// countByType returns the number of events with the given eventType.
+func (p *capturePublisher) countByType(eventType string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for _, e := range p.events {
+		if e.eventType == eventType {
+			n++
+		}
+	}
+	return n
+}
+
+// countByStatus returns the number of eventType events whose JSON payload has
+// a "status" field equal to the given value. Used to distinguish e.g. the
+// waiting_for_approval transition event from the failed transition event.
+func (p *capturePublisher) countByStatus(eventType, status string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for _, e := range p.events {
+		if e.eventType != eventType {
+			continue
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(e.data, &payload); err == nil && payload["status"] == status {
+			n++
+		}
+	}
+	return n
+}
+
 // legalTransitions lists every edge that must succeed.
 var legalTransitions = [][2]model.RunStatus{
 	{model.RunStatusPending, model.RunStatusRunning},

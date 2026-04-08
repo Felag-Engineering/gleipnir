@@ -163,10 +163,10 @@ func (q *Queries) ListExpiredFeedbackRequests(ctx context.Context, cutoff *strin
 	return items, nil
 }
 
-const updateFeedbackRequestStatus = `-- name: UpdateFeedbackRequestStatus :exec
+const updateFeedbackRequestStatus = `-- name: UpdateFeedbackRequestStatus :execrows
 UPDATE feedback_requests
 SET status = ?1, response = ?2, resolved_at = ?3
-WHERE id = ?4
+WHERE id = ?4 AND status = 'pending'
 `
 
 type UpdateFeedbackRequestStatusParams struct {
@@ -176,12 +176,18 @@ type UpdateFeedbackRequestStatusParams struct {
 	ID         string  `json:"id"`
 }
 
-func (q *Queries) UpdateFeedbackRequestStatus(ctx context.Context, arg UpdateFeedbackRequestStatusParams) error {
-	_, err := q.db.ExecContext(ctx, updateFeedbackRequestStatus,
+// UpdateFeedbackRequestStatus transitions a pending feedback request to a terminal
+// status. The WHERE clause guards against double-transition: rows_affected == 0
+// means another writer already resolved the request.
+func (q *Queries) UpdateFeedbackRequestStatus(ctx context.Context, arg UpdateFeedbackRequestStatusParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateFeedbackRequestStatus,
 		arg.Status,
 		arg.Response,
 		arg.ResolvedAt,
 		arg.ID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

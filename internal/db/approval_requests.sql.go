@@ -203,10 +203,10 @@ func (q *Queries) ListPendingApprovalRequests(ctx context.Context) ([]ApprovalRe
 	return items, nil
 }
 
-const updateApprovalRequestStatus = `-- name: UpdateApprovalRequestStatus :exec
+const updateApprovalRequestStatus = `-- name: UpdateApprovalRequestStatus :execrows
 UPDATE approval_requests
 SET status = ?1, decided_at = ?2, note = ?3
-WHERE id = ?4
+WHERE id = ?4 AND status = 'pending'
 `
 
 type UpdateApprovalRequestStatusParams struct {
@@ -216,15 +216,19 @@ type UpdateApprovalRequestStatusParams struct {
 	ID        string  `json:"id"`
 }
 
-// UpdateApprovalRequestStatus: caller is responsible for valid state transitions
-// (pending -> approved / rejected / timeout). The schema CHECK constraint
-// enforces enum membership but not transition ordering.
-func (q *Queries) UpdateApprovalRequestStatus(ctx context.Context, arg UpdateApprovalRequestStatusParams) error {
-	_, err := q.db.ExecContext(ctx, updateApprovalRequestStatus,
+// UpdateApprovalRequestStatus transitions a pending approval to a terminal status.
+// The WHERE clause guards against double-transition: if another writer (scanner
+// or agent timer) already resolved the request, rows_affected == 0 and the
+// caller must treat that as "already resolved, skip downstream side-effects".
+func (q *Queries) UpdateApprovalRequestStatus(ctx context.Context, arg UpdateApprovalRequestStatusParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateApprovalRequestStatus,
 		arg.Status,
 		arg.DecidedAt,
 		arg.Note,
 		arg.ID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

@@ -396,13 +396,19 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 	if len(pendingApprovals) > 0 {
 		approvalID = pendingApprovals[0].ID
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		if err := h.store.UpdateApprovalRequestStatus(ctx, db.UpdateApprovalRequestStatusParams{
+		rows, err := h.store.UpdateApprovalRequestStatus(ctx, db.UpdateApprovalRequestStatusParams{
 			Status:    dbStatus,
 			DecidedAt: &now,
 			Note:      nil,
 			ID:        approvalID,
-		}); err != nil {
+		})
+		if err != nil {
 			slog.Warn("UpdateApprovalRequestStatus failed", "approval_id", approvalID, "err", err)
+		} else if rows == 0 {
+			// The scanner already resolved this request (e.g. timeout raced with the
+			// operator's decision). Return 409 so the caller knows the action is too late.
+			api.WriteError(w, http.StatusConflict, "approval request already resolved", approvalID)
+			return
 		}
 	}
 
@@ -471,13 +477,19 @@ func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 	if len(pendingFeedbacks) > 0 {
 		feedbackID = pendingFeedbacks[0].ID
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		if err := h.store.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
+		rows, err := h.store.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
 			Status:     "resolved",
 			Response:   &req.Response,
 			ResolvedAt: &now,
 			ID:         feedbackID,
-		}); err != nil {
+		})
+		if err != nil {
 			slog.Warn("UpdateFeedbackRequestStatus failed", "feedback_id", feedbackID, "err", err)
+		} else if rows == 0 {
+			// The scanner already resolved this request (timeout raced with the
+			// operator's response). Return 409 so the caller knows the action is too late.
+			api.WriteError(w, http.StatusConflict, "feedback request already resolved", feedbackID)
+			return
 		}
 	}
 

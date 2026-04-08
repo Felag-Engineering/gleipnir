@@ -3,6 +3,8 @@ package feedback
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -338,5 +340,262 @@ func TestScanner_StepNumberContinuesExistingSteps(t *testing.T) {
 	}
 	if stepNumber != 2 {
 		t.Errorf("error step step_number = %d, want 2", stepNumber)
+	}
+}
+
+// countErrorSteps returns the number of error-type run_steps for a run.
+func countErrorSteps(t *testing.T, s *db.Store, runID string) int {
+	t.Helper()
+	var count int
+	if err := s.DB().QueryRow(
+		`SELECT COUNT(*) FROM run_steps WHERE run_id = ? AND type = 'error'`, runID,
+	).Scan(&count); err != nil {
+		t.Fatalf("countErrorSteps %s: %v", runID, err)
+	}
+	return count
+}
+
+// countEventsByType counts how many published events of a specific type exist in pubs.
+func countEventsByType(pubs *capturePublisher, eventType string) int {
+	pubs.mu.Lock()
+	defer pubs.mu.Unlock()
+	n := 0
+	for _, e := range pubs.events {
+		if e.eventType == eventType {
+			n++
+		}
+	}
+	return n
+}
+
+// TestScanner_ConcurrentScans_SingleTimeout verifies that N concurrent scanner.scan
+// calls racing on a single expired feedback row each produce exactly one timed_out
+// feedback, one failed run, one error step, and one run.status_changed event.
+//
+// This test is the authoritative proof that the rows==0 guard in resolveTimeout
+// prevents duplicate side-effects under concurrency.
+func TestScanner_ConcurrentScans_SingleTimeout(t *testing.T) {
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	insertRun(t, s, "r1", "p1", "waiting_for_feedback")
+	insertFeedbackRequest(t, s, "f1", "r1", "ask_operator", pastTimestamp())
+
+	pub := &capturePublisher{}
+	scanner := NewScanner(s, time.Minute, WithPublisher(pub))
+
+	const goroutines = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start // wait for all goroutines to be ready before racing
+			if err := scanner.scan(context.Background()); err != nil {
+				t.Errorf("scan: %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	// Feedback must be timed_out.
+	var feedbackStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM feedback_requests WHERE id = 'f1'`).Scan(&feedbackStatus); err != nil {
+		t.Fatalf("query feedback: %v", err)
+	}
+	if feedbackStatus != "timed_out" {
+		t.Errorf("feedback status = %q, want timed_out", feedbackStatus)
+	}
+
+	// Run must be failed.
+	var runStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = 'r1'`).Scan(&runStatus); err != nil {
+		t.Fatalf("query run: %v", err)
+	}
+	if runStatus != "failed" {
+		t.Errorf("run status = %q, want failed", runStatus)
+	}
+
+	// Exactly one error step must exist — duplicate writes would indicate a race.
+	if n := countErrorSteps(t, s, "r1"); n != 1 {
+		t.Errorf("error steps = %d, want exactly 1 (duplicate indicates race)", n)
+	}
+
+	// Exactly one run.status_changed event — duplicate would indicate a race.
+	if n := countEventsByType(pub, "run.status_changed"); n != 1 {
+		t.Errorf("run.status_changed events = %d, want exactly 1", n)
+	}
+}
+
+// TestScanner_ConcurrentScans_MultipleRuns_SingleTimeoutEach verifies that N
+// concurrent scanner.scan calls each produce the correct outcome (exactly one
+// error step and one event) for every one of M distinct run+feedback pairs.
+func TestScanner_ConcurrentScans_MultipleRuns_SingleTimeoutEach(t *testing.T) {
+	const numRuns = 5
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	for i := 0; i < numRuns; i++ {
+		runID := fmt.Sprintf("r%d", i)
+		feedbackID := fmt.Sprintf("f%d", i)
+		insertRun(t, s, runID, "p1", "waiting_for_feedback")
+		insertFeedbackRequest(t, s, feedbackID, runID, "ask_operator", pastTimestamp())
+	}
+
+	pub := &capturePublisher{}
+	scanner := NewScanner(s, time.Minute, WithPublisher(pub))
+
+	const goroutines = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			if err := scanner.scan(context.Background()); err != nil {
+				t.Errorf("scan: %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i := 0; i < numRuns; i++ {
+		runID := fmt.Sprintf("r%d", i)
+		feedbackID := fmt.Sprintf("f%d", i)
+
+		var feedbackStatus string
+		if err := s.DB().QueryRow(`SELECT status FROM feedback_requests WHERE id = ?`, feedbackID).Scan(&feedbackStatus); err != nil {
+			t.Fatalf("query feedback %s: %v", feedbackID, err)
+		}
+		if feedbackStatus != "timed_out" {
+			t.Errorf("feedback %s status = %q, want timed_out", feedbackID, feedbackStatus)
+		}
+
+		var runStatus string
+		if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = ?`, runID).Scan(&runStatus); err != nil {
+			t.Fatalf("query run %s: %v", runID, err)
+		}
+		if runStatus != "failed" {
+			t.Errorf("run %s status = %q, want failed", runID, runStatus)
+		}
+
+		if n := countErrorSteps(t, s, runID); n != 1 {
+			t.Errorf("run %s: error steps = %d, want exactly 1", runID, n)
+		}
+	}
+
+	// Each of the 5 runs should produce exactly one run.status_changed event.
+	if n := countEventsByType(pub, "run.status_changed"); n != numRuns {
+		t.Errorf("run.status_changed events = %d, want %d", n, numRuns)
+	}
+}
+
+// TestScanner_DoubleTransitionProtection_RunAlreadyFailed verifies that when the
+// run is already failed, the scanner's early-return branch prevents a second error
+// step or event from being written.
+func TestScanner_DoubleTransitionProtection_RunAlreadyFailed(t *testing.T) {
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	// Run is already in a terminal state — scanner must not write another error step.
+	insertRun(t, s, "r1", "p1", "failed")
+	insertFeedbackRequest(t, s, "f1", "r1", "ask_operator", pastTimestamp())
+
+	pub := &capturePublisher{}
+	scanner := NewScanner(s, time.Minute, WithPublisher(pub))
+	if err := scanner.scan(context.Background()); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	// The feedback request is resolved (status transitions to timed_out via the guarded UPDATE).
+	var feedbackStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM feedback_requests WHERE id = 'f1'`).Scan(&feedbackStatus); err != nil {
+		t.Fatalf("query feedback: %v", err)
+	}
+	if feedbackStatus != "timed_out" {
+		t.Errorf("feedback status = %q, want timed_out", feedbackStatus)
+	}
+
+	// Run remains failed — scanner must not add another error step or change status.
+	var runStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = 'r1'`).Scan(&runStatus); err != nil {
+		t.Fatalf("query run: %v", err)
+	}
+	if runStatus != "failed" {
+		t.Errorf("run status = %q, want failed (must not change)", runStatus)
+	}
+
+	// No new error step should have been added.
+	if n := countErrorSteps(t, s, "r1"); n != 0 {
+		t.Errorf("error steps = %d, want 0 (run was already failed)", n)
+	}
+
+	// No events should be published because the run was not in waiting_for_feedback.
+	if n := countEventsByType(pub, "run.status_changed"); n != 0 {
+		t.Errorf("run.status_changed events = %d, want 0", n)
+	}
+}
+
+// TestScanner_RestartInterrupted_ThenTimeout exercises the path where
+// ScanOrphanedRuns marks the run 'interrupted' on startup, and then the
+// feedback scanner runs afterwards. The scanner must mark the feedback timed_out
+// but must NOT add a second error step or transition the run again.
+func TestScanner_RestartInterrupted_ThenTimeout(t *testing.T) {
+	s := newTestStore(t)
+	insertPolicy(t, s, "p1")
+	insertRun(t, s, "r1", "p1", "waiting_for_feedback")
+	insertFeedbackRequest(t, s, "f1", "r1", "ask_operator", pastTimestamp())
+
+	// Simulate what ScanOrphanedRuns does on process restart: mark the run
+	// interrupted and insert an error step with code='interrupted'.
+	if err := s.ScanOrphanedRuns(context.Background(), slog.Default()); err != nil {
+		t.Fatalf("ScanOrphanedRuns: %v", err)
+	}
+
+	// Confirm run is now interrupted with one error step.
+	var runStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = 'r1'`).Scan(&runStatus); err != nil {
+		t.Fatalf("query run after ScanOrphanedRuns: %v", err)
+	}
+	if runStatus != "interrupted" {
+		t.Fatalf("run status after ScanOrphanedRuns = %q, want interrupted", runStatus)
+	}
+	if n := countErrorSteps(t, s, "r1"); n != 1 {
+		t.Fatalf("error steps after ScanOrphanedRuns = %d, want 1", n)
+	}
+
+	pub := &capturePublisher{}
+	scanner := NewScanner(s, time.Minute, WithPublisher(pub))
+	// scan() called synchronously — avoids wall-clock races under -race.
+	if err := scanner.scan(context.Background()); err != nil {
+		t.Fatalf("scan after restart: %v", err)
+	}
+
+	// Feedback must be timed_out — the scanner still resolves its status.
+	var feedbackStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM feedback_requests WHERE id = 'f1'`).Scan(&feedbackStatus); err != nil {
+		t.Fatalf("query feedback: %v", err)
+	}
+	if feedbackStatus != "timed_out" {
+		t.Errorf("feedback status = %q, want timed_out", feedbackStatus)
+	}
+
+	// Run must remain interrupted — scanner skips the run update for non-waiting runs.
+	if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = 'r1'`).Scan(&runStatus); err != nil {
+		t.Fatalf("query run after scan: %v", err)
+	}
+	if runStatus != "interrupted" {
+		t.Errorf("run status = %q, want interrupted (must not change)", runStatus)
+	}
+
+	// Still exactly one error step (only from ScanOrphanedRuns, not from the scanner).
+	if n := countErrorSteps(t, s, "r1"); n != 1 {
+		t.Errorf("error steps = %d, want 1 (scanner must not add a second)", n)
+	}
+
+	// Scanner must not publish events when the run is not in waiting_for_feedback.
+	if n := countEventsByType(pub, "run.status_changed"); n != 0 {
+		t.Errorf("run.status_changed events from scanner = %d, want 0", n)
 	}
 }
