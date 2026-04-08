@@ -127,3 +127,36 @@ sequenceDiagram
 - **`internal/db` types stay as plain strings.** sqlc generates them from SQLite TEXT columns. Conversion to typed model enums happens once in the caller (trigger/agent), never inside `db`.
 - **Approval interception is a hard runtime guarantee.** `BoundAgent.handleToolCall` blocks on `approvalCh` before forwarding to the MCP server — it is not prompt-based and cannot be bypassed by the model.
 - **Audit writes are serialized.** `AuditWriter` funnels all `run_steps` inserts through a single goroutine to avoid SQLite write contention under parallel runs.
+
+## Stack overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Docker Compose                                         │
+│                                                         │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │                  Go Binary                        │  │
+│  │  chi · sqlc · Anthropic · go:embed (React UI)    │  │
+│  │                       │                           │  │
+│  │                  ┌────▼───┐                       │  │
+│  │                  │ SQLite │                       │  │
+│  │                  │  WAL   │                       │  │
+│  │                  └────────┘                       │  │
+│  └──────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+                              │
+                    MCP HTTP transport
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+         MCP Server      MCP Server      MCP Server
+        (Vikunja)       (Grafana)       (kubectl)
+```
+
+**Backend:** Go, [chi](https://github.com/go-chi/chi) router, [sqlc](https://sqlc.dev/) for type-safe queries, official [Anthropic Go SDK](https://github.com/anthropics/anthropic-sdk-go).
+
+**Frontend:** React, embedded in the Go binary via `go:embed` and served directly by the chi router.
+
+**Storage:** SQLite with WAL mode. Single file, zero ops, ships in the container.
+
+**Tools:** All tools are MCP tools over HTTP transport. Gleipnir maintains its own capability metadata (tool approval gates, feedback channel) — this metadata lives in Gleipnir's DB, not in the MCP server. For stdio-only MCP servers, see the [Supergateway sidecar guide](../stdio-mcp-servers.md).
