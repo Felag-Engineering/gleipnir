@@ -71,7 +71,7 @@ Existing policies stored in the database with `provider: claude-code` are not au
 ## ADR-016: Real-time UI transport: SSE over WebSockets
 
 **Status:** Decided
-**Date:** 2026-03
+**Date:** 2026-03 (addendum 2026-04)
 
 **Decision:** Server-Sent Events (SSE) is the real-time transport for pushing run state changes,
 new approval requests, and reasoning steps from the Go backend to the React frontend.
@@ -110,6 +110,22 @@ in Redis Pub/Sub or NATS a seam, not a rewrite, when the HA tier is introduced.
 **Consequence:** The Go SSE handler must flush each event immediately. Since the frontend is
 now served directly by the Go HTTP server (ADR-006 revised), there is no nginx buffering layer
 to contend with — the `http.Flusher` interface in the SSE handler is sufficient.
+
+**Addendum (2026-04): Reconnection semantics**
+
+Native `EventSource` cannot set request headers, so it cannot send `Last-Event-ID` on
+reconnect. The frontend reconnection path is therefore implemented with `fetch` +
+`ReadableStream` in the `useSSE` hook. Every event carries a monotonic `id:` field; on
+reconnect the client sends `Last-Event-ID: <id>` and the server replays any buffered events
+with a higher id.
+
+Backoff schedule: 1s → 2s → 5s → 15s, held at 15s on further failures, reset to 1s on any
+successful connect. The UI shows `reconnecting` for failures 1–4 and transitions to
+`disconnected` only on the 5th consecutive failure (i.e. after the first 15s retry itself
+fails). An idle watchdog aborts and reconnects the stream if no bytes (including the 15s
+`: keepalive` heartbeats) arrive within 30 seconds — this recovers from silent TCP half-close
+on mobile / VPN paths. This addendum does not supersede ADR-016; it documents the
+client-side contract the Go handler already implements.
 
 ---
 
