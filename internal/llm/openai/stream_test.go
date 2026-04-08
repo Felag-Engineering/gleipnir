@@ -33,7 +33,7 @@ func collectChunks(t *testing.T, ch <-chan llm.MessageChunk) []llm.MessageChunk 
 func TestParseSSEStream_TextOnly(t *testing.T) {
 	body := loadStreamFixture(t, "stream_chunks_text.txt")
 	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch)
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
 	chunks := collectChunks(t, ch)
 
 	var text strings.Builder
@@ -63,7 +63,7 @@ func TestParseSSEStream_TextOnly(t *testing.T) {
 func TestParseSSEStream_ToolCallsAreEmittedComplete(t *testing.T) {
 	body := loadStreamFixture(t, "stream_chunks_with_tool_calls.txt")
 	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch)
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
 	chunks := collectChunks(t, ch)
 
 	var toolCallChunks int
@@ -94,7 +94,7 @@ func TestParseSSEStream_ToolCallsAreEmittedComplete(t *testing.T) {
 func TestParseSSEStream_UsageChunkPopulatesFinalUsage(t *testing.T) {
 	body := loadStreamFixture(t, "stream_chunks_with_usage.txt")
 	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch)
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
 	chunks := collectChunks(t, ch)
 
 	var gotUsage *llm.TokenUsage
@@ -116,7 +116,7 @@ func TestParseSSEStream_NoDoneTerminatorIsError(t *testing.T) {
 		`data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}` + "\n\n",
 	))
 	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch)
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
 	chunks := collectChunks(t, ch)
 
 	// Stream ends without [DONE] → final chunk should carry an error.
@@ -134,7 +134,7 @@ func TestParseSSEStream_MalformedJSONIsError(t *testing.T) {
 		`data: {not-valid-json` + "\n\n" + `data: [DONE]` + "\n\n",
 	))
 	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch)
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
 	chunks := collectChunks(t, ch)
 	var sawErr bool
 	for _, c := range chunks {
@@ -159,7 +159,7 @@ func TestParseSSEStream_ContextCancellation(t *testing.T) {
 	slow := &blockingReader{done: ctx.Done()}
 	out := make(chan llm.MessageChunk, 4)
 
-	go parseSSEStream(ctx, slow, out)
+	go parseSSEStream(ctx, slow, out, llm.ToolNameMapping{})
 	cancel()
 
 	// Expect the channel to close; expect a context-related error on the last chunk.
@@ -195,7 +195,7 @@ func (b *blockingReader) Close() error {
 func TestParseSSEStream_ChannelClosedExactlyOnce(t *testing.T) {
 	body := loadStreamFixture(t, "stream_chunks_text.txt")
 	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch)
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
 	for range ch {
 	}
 	// Second receive on a closed channel must not panic.

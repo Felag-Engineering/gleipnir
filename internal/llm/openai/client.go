@@ -78,7 +78,10 @@ func NewClient(baseURL, apiKey string, opts ...Option) *Client {
 // CreateMessage sends a single synchronous Chat Completions request and returns
 // the normalized response.
 func (c *Client) CreateMessage(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
-	wireReq := BuildChatCompletionRequest(req, false)
+	// OpenAI allows [a-zA-Z0-9_-] in tool names; build the mapping once and
+	// use it for both outbound sanitization and inbound reversal.
+	names := llm.BuildNameMapping(req.Tools, "-")
+	wireReq := BuildChatCompletionRequest(req, false, names)
 
 	body, err := json.Marshal(wireReq)
 	if err != nil {
@@ -105,7 +108,7 @@ func (c *Client) CreateMessage(ctx context.Context, req llm.MessageRequest) (*ll
 		return nil, fmt.Errorf("openai: decoding response: %w", err)
 	}
 
-	return ParseChatCompletionResponse(&wire)
+	return ParseChatCompletionResponse(&wire, names)
 }
 
 // StreamMessage sends a streaming Chat Completions request and returns a
@@ -114,7 +117,8 @@ func (c *Client) CreateMessage(ctx context.Context, req llm.MessageRequest) (*ll
 // channel as MessageChunk{Err: err}. parseSSEStream owns closing resp.Body
 // and the out channel, so callers must not close either.
 func (c *Client) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
-	wireReq := BuildChatCompletionRequest(req, true)
+	names := llm.BuildNameMapping(req.Tools, "-")
+	wireReq := BuildChatCompletionRequest(req, true, names)
 
 	body, err := json.Marshal(wireReq)
 	if err != nil {
@@ -133,7 +137,7 @@ func (c *Client) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-c
 	}
 
 	out := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(ctx, resp.Body, out)
+	go parseSSEStream(ctx, resp.Body, out, names)
 	return out, nil
 }
 

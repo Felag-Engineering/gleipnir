@@ -16,13 +16,15 @@ import (
 // llm.MessageChunk values on out. The channel is always closed exactly once.
 // Text deltas are emitted as they arrive; tool calls are buffered per
 // delta.index and emitted as complete blocks when the stream's
-// finish_reason arrives.
+// finish_reason arrives. The `names` mapping reverses sanitized wire-format
+// tool names back to the original Gleipnir names when flushing tool calls;
+// pass an empty mapping to disable rewriting.
 //
 // Error handling: any parse or I/O error emits a final MessageChunk{Err: err}
 // and closes the channel. Context cancellation emits {Err: ctx.Err()} and
 // closes the channel. A stream that ends without a [DONE] terminator is
 // treated as an error.
-func parseSSEStream(ctx context.Context, body io.ReadCloser, out chan<- llm.MessageChunk) {
+func parseSSEStream(ctx context.Context, body io.ReadCloser, out chan<- llm.MessageChunk, names llm.ToolNameMapping) {
 	defer close(out)
 	defer body.Close()
 
@@ -61,7 +63,7 @@ func parseSSEStream(ctx context.Context, body io.ReadCloser, out chan<- llm.Mess
 		if data == "[DONE]" {
 			sawDone = true
 			// Flush any complete tool calls first, then the stop + usage.
-			flushToolCalls(partials, out)
+			flushToolCalls(partials, out, names)
 			if pendingStop != nil || pendingUsage != nil {
 				out <- llm.MessageChunk{StopReason: pendingStop, Usage: pendingUsage}
 			}
@@ -127,7 +129,7 @@ type partialToolCall struct {
 	Arguments bytes.Buffer
 }
 
-func flushToolCalls(partials map[int]*partialToolCall, out chan<- llm.MessageChunk) {
+func flushToolCalls(partials map[int]*partialToolCall, out chan<- llm.MessageChunk, names llm.ToolNameMapping) {
 	// Emit in deterministic order by index.
 	indices := make([]int, 0, len(partials))
 	for i := range partials {
@@ -148,9 +150,13 @@ func flushToolCalls(partials map[int]*partialToolCall, out chan<- llm.MessageChu
 		if args == "" {
 			args = "{}"
 		}
+		name := p.Name
+		if original, ok := names.SanitizedToOriginal[name]; ok {
+			name = original
+		}
 		out <- llm.MessageChunk{ToolCall: &llm.ToolCallBlock{
 			ID:    p.ID,
-			Name:  p.Name,
+			Name:  name,
 			Input: json.RawMessage(args),
 		}}
 	}

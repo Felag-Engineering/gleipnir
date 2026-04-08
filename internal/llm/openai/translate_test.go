@@ -358,14 +358,14 @@ func TestBuildChatCompletionRequest(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := BuildChatCompletionRequest(tc.in, false)
+			req := BuildChatCompletionRequest(tc.in, false, llm.ToolNameMapping{})
 			tc.check(t, req)
 		})
 	}
 }
 
 func TestBuildChatCompletionRequest_StreamFlag(t *testing.T) {
-	req := BuildChatCompletionRequest(llm.MessageRequest{Model: "gpt-4o"}, true)
+	req := BuildChatCompletionRequest(llm.MessageRequest{Model: "gpt-4o"}, true, llm.ToolNameMapping{})
 	if !req.Stream {
 		t.Error("want Stream true")
 	}
@@ -406,7 +406,7 @@ func TestBuildChatCompletionRequest_JSONRoundTrip(t *testing.T) {
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}},
 		},
 	}
-	req := BuildChatCompletionRequest(in, false)
+	req := BuildChatCompletionRequest(in, false, llm.ToolNameMapping{})
 	raw, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -433,39 +433,39 @@ func TestParseChatCompletionResponse(t *testing.T) {
 		wantErr     bool
 	}{
 		{
-			name: "text only",
-			fixture: "chat_response_text_only.json",
+			name:     "text only",
+			fixture:  "chat_response_text_only.json",
 			wantText: "Hello from OpenAI.", wantStop: llm.StopReasonEndTurn,
 			wantInTok: 12, wantOutTok: 5,
 		},
 		{
-			name: "single tool call",
-			fixture: "chat_response_with_tool_calls.json",
+			name:      "single tool call",
+			fixture:   "chat_response_with_tool_calls.json",
 			wantCalls: 1, wantStop: llm.StopReasonToolUse,
 			wantInTok: 40, wantOutTok: 15,
 		},
 		{
-			name: "parallel tool calls",
-			fixture: "chat_response_parallel_tool_calls.json",
+			name:      "parallel tool calls",
+			fixture:   "chat_response_parallel_tool_calls.json",
 			wantCalls: 2, wantStop: llm.StopReasonToolUse,
 			wantInTok: 50, wantOutTok: 20,
 		},
 		{
-			name: "o-series reasoning tokens",
-			fixture: "chat_response_o_series_with_reasoning_tokens.json",
+			name:     "o-series reasoning tokens",
+			fixture:  "chat_response_o_series_with_reasoning_tokens.json",
 			wantText: "42", wantStop: llm.StopReasonEndTurn,
 			wantInTok: 30, wantOutTok: 150, wantThinkTk: 120,
 		},
 		{
-			name: "length truncation",
-			fixture: "chat_response_finish_length.json",
+			name:     "length truncation",
+			fixture:  "chat_response_finish_length.json",
 			wantText: "truncated...", wantStop: llm.StopReasonMaxTokens,
 			wantInTok: 10, wantOutTok: 100,
 		},
 		{
-			name: "content filter maps to error",
-			fixture: "chat_response_finish_content_filter.json",
-			wantStop: llm.StopReasonError,
+			name:      "content filter maps to error",
+			fixture:   "chat_response_finish_content_filter.json",
+			wantStop:  llm.StopReasonError,
 			wantInTok: 10,
 		},
 	}
@@ -479,7 +479,7 @@ func TestParseChatCompletionResponse(t *testing.T) {
 			if err := json.Unmarshal(raw, &wire); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			resp, err := ParseChatCompletionResponse(&wire)
+			resp, err := ParseChatCompletionResponse(&wire, llm.ToolNameMapping{})
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
@@ -521,15 +521,15 @@ func TestParseChatCompletionResponse_MalformedToolArguments(t *testing.T) {
 				Role:    "assistant",
 				Content: content,
 				ToolCalls: []chatToolCall{{
-					ID:   "c1",
-					Type: "function",
+					ID:       "c1",
+					Type:     "function",
 					Function: chatToolCallFunc{Name: "t", Arguments: "not-json"},
 				}},
 			},
 			FinishReason: "tool_calls",
 		}},
 	}
-	if _, err := ParseChatCompletionResponse(wire); err == nil {
+	if _, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{}); err == nil {
 		t.Error("expected error for malformed tool arguments")
 	}
 }
@@ -542,7 +542,7 @@ func TestParseChatCompletionResponse_UnknownFinishReason(t *testing.T) {
 			FinishReason: "something_new",
 		}},
 	}
-	resp, err := ParseChatCompletionResponse(wire)
+	resp, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -560,11 +560,74 @@ func TestParseChatCompletionResponse_MissingUsageDetails(t *testing.T) {
 		}},
 		Usage: &chatUsage{PromptTokens: 5, CompletionTokens: 10},
 	}
-	resp, err := ParseChatCompletionResponse(wire)
+	resp, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if resp.Usage.ThinkingTokens != 0 {
 		t.Errorf("thinking tokens should be 0, got %d", resp.Usage.ThinkingTokens)
+	}
+}
+
+// TestToolNameSanitization_RoundTrip verifies that tool names containing
+// characters outside OpenAI's allowed set (`^[a-zA-Z0-9_-]+$`) are sanitized
+// on the way out and reversed on the way back — including the name that
+// appears in the assistant's tool_call history entry. Without this the live
+// OpenAI API returns 400 Invalid 'tools[0].function.name' for any Gleipnir
+// tool that uses '.' as an MCP namespace separator.
+func TestToolNameSanitization_RoundTrip(t *testing.T) {
+	originalName := "gleipnir.ask_operator"
+	names := llm.BuildNameMapping([]llm.ToolDefinition{{Name: originalName}}, "-")
+
+	sanitized, ok := names.OriginalToSanitized[originalName]
+	if !ok {
+		t.Fatal("sanitized name missing from mapping")
+	}
+	// '.' is not in [a-zA-Z0-9_-], so it must have been rewritten.
+	if sanitized == originalName {
+		t.Fatalf("expected sanitization, got unchanged name %q", sanitized)
+	}
+
+	// Outbound: the wire tool list must carry the sanitized name, and an
+	// assistant history turn referencing the tool by its original name must
+	// also be rewritten.
+	req := llm.MessageRequest{
+		Model: "gpt-4.1-nano",
+		Tools: []llm.ToolDefinition{{Name: originalName, Description: "ask"}},
+		History: []llm.ConversationTurn{{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentBlock{llm.ToolCallBlock{
+				ID: "call_1", Name: originalName, Input: json.RawMessage(`{}`),
+			}},
+		}},
+	}
+	wire := BuildChatCompletionRequest(req, false, names)
+	if got := wire.Tools[0].Function.Name; got != sanitized {
+		t.Errorf("outbound tool name = %q, want %q", got, sanitized)
+	}
+	if got := wire.Messages[0].ToolCalls[0].Function.Name; got != sanitized {
+		t.Errorf("outbound history tool_call name = %q, want %q", got, sanitized)
+	}
+
+	// Inbound (sync): OpenAI echoes the sanitized name back; the parser must
+	// reverse it to the original so the agent runtime can dispatch the call.
+	resp := &chatResponse{Choices: []chatChoice{{
+		Message: chatMessage{
+			ToolCalls: []chatToolCall{{
+				ID: "call_1", Type: "function",
+				Function: chatToolCallFunc{Name: sanitized, Arguments: "{}"},
+			}},
+		},
+		FinishReason: "tool_calls",
+	}}}
+	parsed, err := ParseChatCompletionResponse(resp, names)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(parsed.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(parsed.ToolCalls))
+	}
+	if parsed.ToolCalls[0].Name != originalName {
+		t.Errorf("reversed name = %q, want %q", parsed.ToolCalls[0].Name, originalName)
 	}
 }

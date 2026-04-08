@@ -11,8 +11,14 @@ import (
 // BuildChatCompletionRequest translates an llm.MessageRequest into an OpenAI
 // Chat Completions wire request. The `stream` argument sets Stream and
 // StreamOptions; the translator is otherwise identical for sync and streaming.
-// See spec §7.6 for the full translation rules.
-func BuildChatCompletionRequest(req llm.MessageRequest, stream bool) chatRequest {
+//
+// OpenAI restricts tool names to `^[a-zA-Z0-9_-]+$`. Gleipnir tool names
+// routinely contain other characters (most notably '.' as an MCP namespace
+// separator), so names must be sanitized before they hit the wire. Callers
+// pass a ToolNameMapping built with llm.BuildNameMapping(req.Tools, "-"); an
+// empty mapping is safe and disables rewriting (used by tests that don't
+// exercise tool calls). See spec §7.6 for the full translation rules.
+func BuildChatCompletionRequest(req llm.MessageRequest, stream bool, names llm.ToolNameMapping) chatRequest {
 	out := chatRequest{
 		Model:    req.Model,
 		Messages: make([]chatMessage, 0, len(req.History)+1),
@@ -28,14 +34,18 @@ func BuildChatCompletionRequest(req llm.MessageRequest, stream bool) chatRequest
 	}
 
 	for _, turn := range req.History {
-		out.Messages = append(out.Messages, translateTurn(turn)...)
+		out.Messages = append(out.Messages, translateTurn(turn, names)...)
 	}
 
 	for _, td := range req.Tools {
+		name := td.Name
+		if mapped, ok := names.OriginalToSanitized[name]; ok {
+			name = mapped
+		}
 		out.Tools = append(out.Tools, chatTool{
 			Type: "function",
 			Function: chatToolFunc{
-				Name:        td.Name,
+				Name:        name,
 				Description: td.Description,
 				Parameters:  td.InputSchema,
 			},
@@ -81,10 +91,10 @@ func BuildChatCompletionRequest(req llm.MessageRequest, stream bool) chatRequest
 // messages. A user turn containing tool results produces N role:"tool"
 // messages; a user turn mixing text and tool results emits tool messages
 // first, then a user message with the concatenated text.
-func translateTurn(turn llm.ConversationTurn) []chatMessage {
+func translateTurn(turn llm.ConversationTurn, names llm.ToolNameMapping) []chatMessage {
 	switch turn.Role {
 	case llm.RoleAssistant:
-		return []chatMessage{translateAssistantTurn(turn.Content)}
+		return []chatMessage{translateAssistantTurn(turn.Content, names)}
 	case llm.RoleUser:
 		return translateUserTurn(turn.Content)
 	default:
@@ -92,7 +102,7 @@ func translateTurn(turn llm.ConversationTurn) []chatMessage {
 	}
 }
 
-func translateAssistantTurn(blocks []llm.ContentBlock) chatMessage {
+func translateAssistantTurn(blocks []llm.ContentBlock, names llm.ToolNameMapping) chatMessage {
 	msg := chatMessage{Role: "assistant"}
 	var texts []string
 	for _, b := range blocks {
@@ -100,11 +110,15 @@ func translateAssistantTurn(blocks []llm.ContentBlock) chatMessage {
 		case llm.TextBlock:
 			texts = append(texts, v.Text)
 		case llm.ToolCallBlock:
+			name := v.Name
+			if mapped, ok := names.OriginalToSanitized[name]; ok {
+				name = mapped
+			}
 			msg.ToolCalls = append(msg.ToolCalls, chatToolCall{
 				ID:   v.ID,
 				Type: "function",
 				Function: chatToolCallFunc{
-					Name:      v.Name,
+					Name:      name,
 					Arguments: string(v.Input),
 				},
 			})
@@ -150,10 +164,13 @@ func translateUserTurn(blocks []llm.ContentBlock) []chatMessage {
 }
 
 // ParseChatCompletionResponse translates a wire response into the normalized
-// llm.MessageResponse. Returns an error only on malformed tool call
-// arguments — all other abnormalities (unknown finish reasons, missing
-// usage details) degrade gracefully.
-func ParseChatCompletionResponse(wire *chatResponse) (*llm.MessageResponse, error) {
+// llm.MessageResponse. Tool-call names returned by OpenAI are the sanitized
+// wire form; the `names` mapping reverses them back to the original Gleipnir
+// names so the agent runtime can dispatch them. An empty mapping passes names
+// through unchanged (used by tests that don't exercise tool calls). Returns
+// an error only on malformed tool call arguments — all other abnormalities
+// (unknown finish reasons, missing usage details) degrade gracefully.
+func ParseChatCompletionResponse(wire *chatResponse, names llm.ToolNameMapping) (*llm.MessageResponse, error) {
 	out := &llm.MessageResponse{}
 	if len(wire.Choices) == 0 {
 		return out, nil
@@ -173,9 +190,13 @@ func ParseChatCompletionResponse(wire *chatResponse) (*llm.MessageResponse, erro
 			return nil, fmt.Errorf("openai: tool call %q: arguments is not valid JSON: %q",
 				tc.Function.Name, tc.Function.Arguments)
 		}
+		name := tc.Function.Name
+		if original, ok := names.SanitizedToOriginal[name]; ok {
+			name = original
+		}
 		out.ToolCalls = append(out.ToolCalls, llm.ToolCallBlock{
 			ID:    tc.ID,
-			Name:  tc.Function.Name,
+			Name:  name,
 			Input: json.RawMessage(tc.Function.Arguments),
 		})
 	}
