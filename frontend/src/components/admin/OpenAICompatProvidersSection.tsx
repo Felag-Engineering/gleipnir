@@ -1,30 +1,15 @@
 import { useState } from 'react'
 import type { ApiOpenAICompatProvider } from '@/api/types'
+import type { ApiError } from '@/api/fetch'
 import { useOpenAICompatProviders } from '@/hooks/queries/openaiCompatProviders'
 import {
   useDeleteOpenAICompatProvider,
   useTestOpenAICompatProvider,
 } from '@/hooks/mutations/openaiCompatProviders'
 import { formatTimestamp } from '@/utils/format'
+import { OpenAICompatProviderModal } from './OpenAICompatProviderModal'
+import { OpenAICompatProviderDeleteDialog } from './OpenAICompatProviderDeleteDialog'
 import styles from './OpenAICompatProvidersSection.module.css'
-
-// TODO(task 21/22): replace with real Modal/DeleteDialog
-function OpenAICompatProviderModalPlaceholder(_props: {
-  mode: 'create' | 'edit'
-  provider?: ApiOpenAICompatProvider
-  onClose: () => void
-}) {
-  return null
-}
-
-// TODO(task 21/22): replace with real Modal/DeleteDialog
-function OpenAICompatProviderDeleteDialogPlaceholder(_props: {
-  provider: ApiOpenAICompatProvider
-  onClose: () => void
-  onConfirm: () => void
-}) {
-  return null
-}
 
 type ModalState =
   | { mode: 'create' }
@@ -124,7 +109,7 @@ export function OpenAICompatProvidersSection() {
       )}
 
       {modalState !== null && (
-        <OpenAICompatProviderModalPlaceholder
+        <OpenAICompatProviderModal
           mode={modalState.mode}
           provider={modalState.mode === 'edit' ? modalState.provider : undefined}
           onClose={() => setModalState(null)}
@@ -132,12 +117,18 @@ export function OpenAICompatProvidersSection() {
       )}
 
       {deleteTarget !== null && (
-        <OpenAICompatProviderDeleteDialogPlaceholder
+        <OpenAICompatProviderDeleteDialog
           provider={deleteTarget}
-          onClose={() => setDeleteTarget(null)}
-          onConfirm={() => {
-            deleteMut.mutate(deleteTarget.id)
+          isPending={deleteMut.isPending}
+          error={deleteMut.error as ApiError | null}
+          onClose={() => {
             setDeleteTarget(null)
+            deleteMut.reset()
+          }}
+          onConfirm={() => {
+            deleteMut.mutate(deleteTarget.id, {
+              onSuccess: () => setDeleteTarget(null),
+            })
           }}
         />
       )}
