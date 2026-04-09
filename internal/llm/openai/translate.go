@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	openaisdk "github.com/openai/openai-go"
+	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/responses"
 	"github.com/rapp992/gleipnir/internal/llm"
 )
@@ -59,6 +60,27 @@ func translateAssistantTurn(blocks []llm.ContentBlock, names llm.ToolNameMapping
 				args = "{}"
 			}
 			items = append(items, responses.ResponseInputItemParamOfFunctionCall(args, v.ID, name))
+		case llm.ThinkingBlock:
+			if v.ID == "" && v.EncryptedContent == "" {
+				// Non-OpenAI thinking block (e.g. from Anthropic). The Responses API
+				// requires an ID and reasoning content to round-trip, so skip it.
+				slog.Debug("openai: skipping ThinkingBlock with no ID and no encrypted_content (non-OpenAI source)")
+				continue
+			}
+			// Flush accumulated text before emitting the reasoning item.
+			if len(textParts) > 0 {
+				items = append(items, assistantTextItem(strings.Join(textParts, "\n\n")))
+				textParts = nil
+			}
+			var summaryParams []responses.ResponseReasoningItemSummaryParam
+			if v.Text != "" {
+				summaryParams = []responses.ResponseReasoningItemSummaryParam{{Text: v.Text}}
+			}
+			item := responses.ResponseInputItemParamOfReasoning(v.ID, summaryParams)
+			if v.EncryptedContent != "" {
+				item.OfReasoning.EncryptedContent = param.NewOpt(v.EncryptedContent)
+			}
+			items = append(items, item)
 		}
 	}
 	if len(textParts) > 0 {
@@ -174,15 +196,18 @@ func translateResponse(resp *responses.Response, names llm.ToolNameMapping) (*ll
 				Input: json.RawMessage(v.Arguments),
 			})
 		case responses.ResponseReasoningItem:
-			// Collect summary texts as a thinking block representing the model's
-			// visible reasoning summary (encrypted_content is not surfaced here).
 			var parts []string
 			for _, s := range v.Summary {
 				parts = append(parts, s.Text)
 			}
-			if len(parts) > 0 {
+			summaryText := strings.Join(parts, "\n")
+			// Only append when there is something to round-trip: encrypted content
+			// for multi-turn continuity, or summary text for audit display.
+			if v.EncryptedContent != "" || summaryText != "" {
 				out.Thinking = append(out.Thinking, llm.ThinkingBlock{
-					Text: strings.Join(parts, "\n"),
+					ID:               v.ID,
+					Text:             summaryText,
+					EncryptedContent: v.EncryptedContent,
 				})
 			}
 		default:

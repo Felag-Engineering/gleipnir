@@ -8,6 +8,7 @@
     {
       "id": "rs_001",
       "type": "reasoning",
+      "encrypted_content": "enc_abc123",
       "summary": [
         {
           "type": "summary_text",

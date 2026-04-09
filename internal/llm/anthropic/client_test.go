@@ -1241,3 +1241,149 @@ func TestBuildMessages_IgnoresProviderMetadata(t *testing.T) {
 		t.Errorf("Name mismatch: %q vs %q", blockWith.OfToolUse.Name, blockWithout.OfToolUse.Name)
 	}
 }
+
+func TestTranslateResponse_ThinkingBlock_CapturesSignature(t *testing.T) {
+	body := messageRespJSON(
+		`[{"type":"thinking","thinking":"let me think","signature":"sig_abc"}]`,
+		"end_turn", 10, 5,
+	)
+	srv := serveJSON(t, 200, body)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	resp, err := client.CreateMessage(context.Background(), minimalRequest())
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	if len(resp.Thinking) != 1 {
+		t.Fatalf("Thinking len = %d, want 1", len(resp.Thinking))
+	}
+	tb := resp.Thinking[0]
+	if tb.Signature != "sig_abc" {
+		t.Errorf("Signature = %q, want %q", tb.Signature, "sig_abc")
+	}
+	if tb.Text != "let me think" {
+		t.Errorf("Text = %q, want %q", tb.Text, "let me think")
+	}
+	if tb.Redacted {
+		t.Error("Redacted should be false for a thinking block")
+	}
+}
+
+func TestTranslateResponse_RedactedThinkingBlock_CapturesData(t *testing.T) {
+	body := messageRespJSON(
+		`[{"type":"redacted_thinking","data":"opaque_data_xyz"}]`,
+		"end_turn", 10, 5,
+	)
+	srv := serveJSON(t, 200, body)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	resp, err := client.CreateMessage(context.Background(), minimalRequest())
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	if len(resp.Thinking) != 1 {
+		t.Fatalf("Thinking len = %d, want 1", len(resp.Thinking))
+	}
+	tb := resp.Thinking[0]
+	if tb.RedactedData != "opaque_data_xyz" {
+		t.Errorf("RedactedData = %q, want %q", tb.RedactedData, "opaque_data_xyz")
+	}
+	if tb.Text != "[redacted]" {
+		t.Errorf("Text = %q, want [redacted]", tb.Text)
+	}
+	if !tb.Redacted {
+		t.Error("Redacted should be true for a redacted_thinking block")
+	}
+}
+
+func TestBuildMessages_ThinkingBlockRoundTrip(t *testing.T) {
+	history := []llm.ConversationTurn{
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentBlock{
+				llm.ThinkingBlock{Text: "reasoning", Signature: "sig123"},
+				llm.TextBlock{Text: "answer"},
+			},
+		},
+	}
+	msgs := buildMessages(history, nil)
+	if len(msgs) != 1 {
+		t.Fatalf("msgs len = %d, want 1", len(msgs))
+	}
+	if len(msgs[0].Content) != 2 {
+		t.Fatalf("content blocks = %d, want 2", len(msgs[0].Content))
+	}
+
+	raw, err := json.Marshal(msgs[0].Content[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `"type":"thinking"`) {
+		t.Errorf("expected type=thinking in %s", s)
+	}
+	if !strings.Contains(s, `"signature":"sig123"`) {
+		t.Errorf("expected signature=sig123 in %s", s)
+	}
+	if !strings.Contains(s, `"thinking":"reasoning"`) {
+		t.Errorf("expected thinking=reasoning in %s", s)
+	}
+}
+
+func TestBuildMessages_RedactedThinkingBlockRoundTrip(t *testing.T) {
+	history := []llm.ConversationTurn{
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentBlock{
+				llm.ThinkingBlock{Text: "[redacted]", Redacted: true, RedactedData: "xyz_data"},
+			},
+		},
+	}
+	msgs := buildMessages(history, nil)
+	if len(msgs) != 1 || len(msgs[0].Content) != 1 {
+		t.Fatalf("expected 1 message with 1 content block")
+	}
+
+	raw, err := json.Marshal(msgs[0].Content[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `"type":"redacted_thinking"`) {
+		t.Errorf("expected type=redacted_thinking in %s", s)
+	}
+	if !strings.Contains(s, `"data":"xyz_data"`) {
+		t.Errorf("expected data=xyz_data in %s", s)
+	}
+	// The audit display text must never be sent to the API.
+	if strings.Contains(s, "[redacted]") {
+		t.Errorf("audit display text '[redacted]' must not appear in wire payload: %s", s)
+	}
+}
+
+func TestBuildMessages_ThinkingBlockNoSignature_Skipped(t *testing.T) {
+	// A ThinkingBlock with an empty Signature (from a non-Anthropic provider)
+	// must be silently skipped — Anthropic requires a non-empty signature.
+	history := []llm.ConversationTurn{
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentBlock{
+				llm.ThinkingBlock{Text: "reasoning", Signature: ""},
+				llm.TextBlock{Text: "answer"},
+			},
+		},
+	}
+	msgs := buildMessages(history, nil)
+	if len(msgs) != 1 {
+		t.Fatalf("msgs len = %d, want 1", len(msgs))
+	}
+	// Only the TextBlock should remain; the ThinkingBlock is dropped.
+	if len(msgs[0].Content) != 1 {
+		t.Fatalf("content blocks = %d, want 1 (ThinkingBlock with empty signature should be skipped)", len(msgs[0].Content))
+	}
+	if msgs[0].Content[0].OfText == nil {
+		t.Error("expected remaining block to be a text block")
+	}
+}

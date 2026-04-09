@@ -252,8 +252,13 @@ func (a *BoundAgent) runAPILoop(
 			})
 		}
 
-		// Append assistant turn to history (reconstruct from resp fields).
-		assistantContent := make([]llm.ContentBlock, 0, len(resp.Text)+len(resp.ToolCalls))
+		// Append assistant turn to history. ThinkingBlocks are prepended before
+		// text and tool calls because Anthropic's API requires thinking blocks to
+		// appear first in the content array.
+		assistantContent := make([]llm.ContentBlock, 0, len(resp.Thinking)+len(resp.Text)+len(resp.ToolCalls))
+		for _, tb := range resp.Thinking {
+			assistantContent = append(assistantContent, tb)
+		}
 		for _, tb := range resp.Text {
 			assistantContent = append(assistantContent, tb)
 		}

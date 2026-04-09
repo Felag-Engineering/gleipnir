@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/openai/openai-go/responses"
@@ -235,5 +236,198 @@ func TestTranslate_IgnoresProviderMetadata(t *testing.T) {
 	}
 	if string(rawWith) != string(rawWithout) {
 		t.Errorf("wire payload differs:\nwith    metadata: %s\nwithout metadata: %s", rawWith, rawWithout)
+	}
+}
+
+func TestTranslateResponse_ReasoningWithEncryptedContent(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "response_with_reasoning.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var resp responses.Response
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	out, err := translateResponse(&resp, llm.ToolNameMapping{})
+	if err != nil {
+		t.Fatalf("translateResponse: %v", err)
+	}
+	if len(out.Thinking) == 0 {
+		t.Fatal("expected at least one thinking block")
+	}
+	tb := out.Thinking[0]
+	if tb.EncryptedContent != "enc_abc123" {
+		t.Errorf("EncryptedContent = %q, want enc_abc123", tb.EncryptedContent)
+	}
+	if tb.ID != "rs_001" {
+		t.Errorf("ID = %q, want rs_001", tb.ID)
+	}
+}
+
+func TestTranslateResponse_ReasoningNoEncryptedContent_WithSummary(t *testing.T) {
+	// Build a response with a reasoning item that has summary but no encrypted_content.
+	fixture := `{
+		"id": "resp_x",
+		"object": "response",
+		"created_at": 1700000000,
+		"model": "o3-mini",
+		"status": "completed",
+		"output": [
+			{
+				"id": "rs_002",
+				"type": "reasoning",
+				"summary": [{"type": "summary_text", "text": "thinking hard"}],
+				"status": "completed"
+			}
+		],
+		"usage": {"input_tokens": 5, "output_tokens": 10, "total_tokens": 15,
+			"input_tokens_details": {"cached_tokens": 0},
+			"output_tokens_details": {"reasoning_tokens": 5}}
+	}`
+	var resp responses.Response
+	if err := json.Unmarshal([]byte(fixture), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	out, err := translateResponse(&resp, llm.ToolNameMapping{})
+	if err != nil {
+		t.Fatalf("translateResponse: %v", err)
+	}
+	if len(out.Thinking) == 0 {
+		t.Fatal("expected thinking block when summary text is present")
+	}
+	tb := out.Thinking[0]
+	if tb.Text != "thinking hard" {
+		t.Errorf("Text = %q, want thinking hard", tb.Text)
+	}
+	if tb.EncryptedContent != "" {
+		t.Errorf("EncryptedContent should be empty, got %q", tb.EncryptedContent)
+	}
+}
+
+func TestTranslateResponse_ReasoningEmpty_Skipped(t *testing.T) {
+	// A reasoning item with no summary and no encrypted_content should be dropped.
+	fixture := `{
+		"id": "resp_x",
+		"object": "response",
+		"created_at": 1700000000,
+		"model": "o3-mini",
+		"status": "completed",
+		"output": [
+			{
+				"id": "rs_003",
+				"type": "reasoning",
+				"summary": [],
+				"status": "completed"
+			}
+		],
+		"usage": {"input_tokens": 5, "output_tokens": 5, "total_tokens": 10,
+			"input_tokens_details": {"cached_tokens": 0},
+			"output_tokens_details": {"reasoning_tokens": 0}}
+	}`
+	var resp responses.Response
+	if err := json.Unmarshal([]byte(fixture), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	out, err := translateResponse(&resp, llm.ToolNameMapping{})
+	if err != nil {
+		t.Fatalf("translateResponse: %v", err)
+	}
+	if len(out.Thinking) != 0 {
+		t.Errorf("expected no thinking blocks, got %d", len(out.Thinking))
+	}
+}
+
+func TestBuildInput_ThinkingBlockRoundTrip(t *testing.T) {
+	req := llm.MessageRequest{
+		Model: "o3-mini",
+		History: []llm.ConversationTurn{
+			{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentBlock{
+					llm.ThinkingBlock{ID: "rs_001", Text: "summary text", EncryptedContent: "enc123"},
+					llm.TextBlock{Text: "the answer"},
+				},
+			},
+		},
+	}
+	items := buildInput(req, llm.ToolNameMapping{})
+	// Expect two items: reasoning item + assistant text item.
+	if len(items) != 2 {
+		t.Fatalf("len(items) = %d, want 2", len(items))
+	}
+
+	raw, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `"id":"rs_001"`) {
+		t.Errorf("expected id=rs_001 in %s", s)
+	}
+	if !strings.Contains(s, `"enc123"`) {
+		t.Errorf("expected encrypted_content in %s", s)
+	}
+	if !strings.Contains(s, `"summary text"`) {
+		t.Errorf("expected summary text in %s", s)
+	}
+}
+
+func TestBuildInput_ThinkingBlockNoEncryptedContent(t *testing.T) {
+	// A ThinkingBlock with only summary text (no EncryptedContent) should still
+	// emit a reasoning input item.
+	req := llm.MessageRequest{
+		Model: "o3-mini",
+		History: []llm.ConversationTurn{
+			{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentBlock{
+					llm.ThinkingBlock{ID: "rs_002", Text: "some reasoning"},
+				},
+			},
+		},
+	}
+	items := buildInput(req, llm.ToolNameMapping{})
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	raw, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `"rs_002"`) {
+		t.Errorf("expected id rs_002 in %s", s)
+	}
+}
+
+func TestBuildInput_ThinkingBlockNoIDNoEncrypted_Skipped(t *testing.T) {
+	// A ThinkingBlock with empty ID and empty EncryptedContent is a non-OpenAI
+	// block (e.g. from Anthropic). It should be silently dropped.
+	req := llm.MessageRequest{
+		Model: "o3-mini",
+		History: []llm.ConversationTurn{
+			{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentBlock{
+					llm.ThinkingBlock{Text: "anthropic reasoning", Signature: "sig_xyz"},
+					llm.TextBlock{Text: "answer"},
+				},
+			},
+		},
+	}
+	items := buildInput(req, llm.ToolNameMapping{})
+	// Only the text block should produce an item; ThinkingBlock is skipped.
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1 (ThinkingBlock with no ID/EncryptedContent should be skipped)", len(items))
+	}
+	raw, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), "answer") {
+		t.Errorf("expected text 'answer' in item, got %s", raw)
 	}
 }

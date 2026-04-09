@@ -61,11 +61,28 @@ type TokenUsage struct {
 }
 
 // ThinkingBlock is an internal reasoning block returned by the model.
-// It is audit-only — thinking blocks are never included in conversation history
-// sent back to the LLM (providers handle continuity internally via signatures).
+// ThinkingBlock is included in conversation history for providers that require it
+// for multi-turn continuity (Anthropic via Signature, OpenAI via EncryptedContent).
+// Providers that don't need it (Google, OpenAI-compat) silently skip it during
+// message translation.
 type ThinkingBlock struct {
 	Text     string
 	Redacted bool
+
+	// Signature carries the Anthropic-issued signature for a non-redacted thinking
+	// block. Required to round-trip it in subsequent Anthropic requests.
+	Signature string
+
+	// RedactedData carries the opaque data for an Anthropic redacted thinking
+	// block. This is never displayed — it is only echoed back to the API.
+	RedactedData string
+
+	// EncryptedContent carries the OpenAI encrypted reasoning content. Required
+	// to round-trip it in subsequent OpenAI Responses API requests.
+	EncryptedContent string
+
+	// ID is the OpenAI reasoning item ID. Required when echoing back to the API.
+	ID string
 }
 
 // TextBlock is a plain text content block from the model's response.
@@ -96,8 +113,8 @@ type ToolResultBlock struct {
 }
 
 // ContentBlock is a single block within a conversation turn.
-// Valid implementations: TextBlock, ToolCallBlock, ToolResultBlock.
-// The unexported method seals the interface so only these three types satisfy it.
+// Valid implementations: TextBlock, ToolCallBlock, ToolResultBlock, ThinkingBlock.
+// The unexported method seals the interface so only these four types satisfy it.
 type ContentBlock interface {
 	contentBlock()
 }
@@ -105,6 +122,7 @@ type ContentBlock interface {
 func (TextBlock) contentBlock()       {}
 func (ToolCallBlock) contentBlock()   {}
 func (ToolResultBlock) contentBlock() {}
+func (ThinkingBlock) contentBlock()   {}
 
 // ConversationTurn is a single turn in the conversation history.
 // Tool results are content blocks within a user turn — there is no separate

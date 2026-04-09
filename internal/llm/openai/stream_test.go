@@ -257,3 +257,87 @@ func TestConsumeStream_ChannelClosedExactlyOnce(t *testing.T) {
 		t.Error("channel should be closed")
 	}
 }
+
+// makeReasoningOutputItemDoneEvent builds a ResponseOutputItemDoneEvent with a
+// reasoning item. Used to test that consumeStream emits ThinkingBlock chunks.
+func makeReasoningOutputItemDoneEvent(id, summaryText, encryptedContent string) responses.ResponseStreamEventUnion {
+	summary := ""
+	if summaryText != "" {
+		summary = `,"summary":[{"type":"summary_text","text":"` + summaryText + `"}]`
+	} else {
+		summary = `,"summary":[]`
+	}
+	encField := ""
+	if encryptedContent != "" {
+		encField = `,"encrypted_content":"` + encryptedContent + `"`
+	}
+	payload := `{"type":"response.output_item.done","output_index":0,"sequence_number":5,"item":{"id":"` + id + `","type":"reasoning","status":"completed"` + summary + encField + `}}`
+	var evt responses.ResponseStreamEventUnion
+	_ = json.Unmarshal([]byte(payload), &evt)
+	return evt
+}
+
+func TestConsumeStream_ReasoningItemEmitted(t *testing.T) {
+	stream := newFakeStream(
+		makeReasoningOutputItemDoneEvent("rs_001", "I should reason about this", "enc_token_abc"),
+		makeCompletedEvent(false),
+	)
+
+	out := make(chan llm.MessageChunk, 16)
+	go consumeStream(context.Background(), stream, out, llm.ToolNameMapping{})
+	chunks := collectChunks(t, out)
+
+	var thinkChunk *llm.ThinkingBlock
+	for _, c := range chunks {
+		if c.Err != nil {
+			t.Fatalf("unexpected error: %v", c.Err)
+		}
+		if c.Thinking != nil {
+			thinkChunk = c.Thinking
+		}
+	}
+	if thinkChunk == nil {
+		t.Fatal("expected a thinking chunk from reasoning item")
+	}
+	if thinkChunk.ID != "rs_001" {
+		t.Errorf("ID = %q, want rs_001", thinkChunk.ID)
+	}
+	if thinkChunk.Text != "I should reason about this" {
+		t.Errorf("Text = %q, want 'I should reason about this'", thinkChunk.Text)
+	}
+	if thinkChunk.EncryptedContent != "enc_token_abc" {
+		t.Errorf("EncryptedContent = %q, want enc_token_abc", thinkChunk.EncryptedContent)
+	}
+}
+
+func TestConsumeStream_ReasoningItemNoEncryptedContent(t *testing.T) {
+	// Even without encrypted_content, a reasoning item with summary text should
+	// emit a ThinkingBlock chunk.
+	stream := newFakeStream(
+		makeReasoningOutputItemDoneEvent("rs_002", "summary only", ""),
+		makeCompletedEvent(false),
+	)
+
+	out := make(chan llm.MessageChunk, 16)
+	go consumeStream(context.Background(), stream, out, llm.ToolNameMapping{})
+	chunks := collectChunks(t, out)
+
+	var thinkChunk *llm.ThinkingBlock
+	for _, c := range chunks {
+		if c.Err != nil {
+			t.Fatalf("unexpected error: %v", c.Err)
+		}
+		if c.Thinking != nil {
+			thinkChunk = c.Thinking
+		}
+	}
+	if thinkChunk == nil {
+		t.Fatal("expected a thinking chunk from reasoning item with summary text")
+	}
+	if thinkChunk.Text != "summary only" {
+		t.Errorf("Text = %q, want 'summary only'", thinkChunk.Text)
+	}
+	if thinkChunk.EncryptedContent != "" {
+		t.Errorf("EncryptedContent should be empty, got %q", thinkChunk.EncryptedContent)
+	}
+}

@@ -190,6 +190,10 @@ func buildContents(history []llm.ConversationTurn, names llm.ToolNameMapping) []
 		parts := make([]*genai.Part, 0, len(turn.Content))
 		for _, cb := range turn.Content {
 			switch b := cb.(type) {
+			case llm.ThinkingBlock:
+				// Google thinking continuity uses ProviderMetadata on ToolCallBlock
+				// (thought_signature), not ThinkingBlock. Skip.
+				continue
 			case llm.TextBlock:
 				parts = append(parts, &genai.Part{Text: b.Text})
 			case llm.ToolCallBlock:

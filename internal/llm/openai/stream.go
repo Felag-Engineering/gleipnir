@@ -81,6 +81,22 @@ func consumeStream(
 					Name:  name,
 					Input: json.RawMessage(argsStr),
 				}}
+			} else if ri, ok := v.Item.AsAny().(responses.ResponseReasoningItem); ok {
+				// encrypted_content is present for reasoning models when the Include
+				// param is set (see buildParams). Non-reasoning models return only
+				// summary text.
+				var parts []string
+				for _, s := range ri.Summary {
+					parts = append(parts, s.Text)
+				}
+				summaryText := strings.Join(parts, "\n")
+				if ri.EncryptedContent != "" || summaryText != "" {
+					out <- llm.MessageChunk{Thinking: &llm.ThinkingBlock{
+						ID:               ri.ID,
+						Text:             summaryText,
+						EncryptedContent: ri.EncryptedContent,
+					}}
+				}
 			}
 
 		case responses.ResponseCompletedEvent:

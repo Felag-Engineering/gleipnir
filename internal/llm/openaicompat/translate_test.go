@@ -343,9 +343,8 @@ func TestBuildChatCompletionRequest(t *testing.T) {
 				Model: "gpt-4o",
 				History: []llm.ConversationTurn{
 					{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+						llm.ThinkingBlock{Text: "reasoning", Signature: "sig"},
 						llm.TextBlock{Text: "answer"},
-						// ThinkingBlock would go here if it were a ContentBlock; it's not.
-						// The translator sees only TextBlock/ToolCallBlock/ToolResultBlock.
 					}},
 				},
 			},

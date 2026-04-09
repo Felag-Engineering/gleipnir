@@ -122,6 +122,8 @@ func translateAssistantTurn(blocks []llm.ContentBlock, names llm.ToolNameMapping
 					Arguments: string(v.Input),
 				},
 			})
+		case llm.ThinkingBlock:
+			// Chat Completions API has no reasoning content round-trip; skip.
 		}
 		// ToolResultBlock is not valid in an assistant turn; silently ignored.
 	}

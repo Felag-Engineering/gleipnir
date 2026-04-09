@@ -89,6 +89,9 @@ func (c *Client) buildParams(
 	params := responses.ResponseNewParams{
 		Model: shared.ResponsesModel(req.Model),
 		Tools: tools,
+		// Request encrypted_content so reasoning items can be round-tripped in
+		// subsequent requests. The API ignores this for non-reasoning models.
+		Include: []responses.ResponseIncludable{responses.ResponseIncludableReasoningEncryptedContent},
 	}
 
 	input := buildInput(req, names)

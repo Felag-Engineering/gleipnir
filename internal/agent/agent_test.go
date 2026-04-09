@@ -2478,3 +2478,86 @@ func TestWaitForFeedback_ResponseWins(t *testing.T) {
 		t.Errorf("run.status_changed events after scan = %d, want 0", n)
 	}
 }
+
+// TestRun_ThinkingBlocksIncludedInHistory verifies that ThinkingBlocks returned
+// by the LLM are prepended into the assistant turn history passed to the next
+// API call. This enables multi-turn thinking continuity for providers that
+// require it (e.g. Anthropic via Signature).
+func TestRun_ThinkingBlocksIncludedInHistory(t *testing.T) {
+	mcpSrv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"result"}]`), false)
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	tools := []mcp.ResolvedTool{toolForRun(mcpSrv.URL, "my-server", "read_data")}
+
+	// First response: tool call with a ThinkingBlock carrying a Signature.
+	firstResp := &llm.MessageResponse{
+		Thinking:   []llm.ThinkingBlock{{Text: "I need to call the tool", Signature: "sig_turn1"}},
+		ToolCalls:  []llm.ToolCallBlock{{ID: "tc-1", Name: "my-server.read_data", Input: json.RawMessage(`{}`)}},
+		StopReason: llm.StopReasonToolUse,
+		Usage:      llm.TokenUsage{InputTokens: 10, OutputTokens: 5},
+	}
+
+	mock := testutil.NewMockLLMClient(
+		firstResp,
+		testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 3),
+	)
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		LLMClient:    mock,
+		Tools:        tools,
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := ba.Run(context.Background(), "r1", "use the tool"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if mock.Calls() != 2 {
+		t.Fatalf("expected 2 API calls, got %d", mock.Calls())
+	}
+
+	// The second request's history should include the assistant turn from the
+	// first response. That turn must contain the ThinkingBlock before the tool call.
+	reqs := mock.Requests()
+	secondReq := reqs[1]
+
+	// Find the assistant turn in history.
+	var assistantTurn *llm.ConversationTurn
+	for i := range secondReq.History {
+		if secondReq.History[i].Role == llm.RoleAssistant {
+			assistantTurn = &secondReq.History[i]
+			break
+		}
+	}
+	if assistantTurn == nil {
+		t.Fatal("expected assistant turn in second request's history")
+	}
+
+	// The first block must be the ThinkingBlock.
+	if len(assistantTurn.Content) < 2 {
+		t.Fatalf("assistant turn content len = %d, want >= 2", len(assistantTurn.Content))
+	}
+	tb, ok := assistantTurn.Content[0].(llm.ThinkingBlock)
+	if !ok {
+		t.Fatalf("first content block type = %T, want llm.ThinkingBlock", assistantTurn.Content[0])
+	}
+	if tb.Signature != "sig_turn1" {
+		t.Errorf("ThinkingBlock.Signature = %q, want sig_turn1", tb.Signature)
+	}
+	if tb.Text != "I need to call the tool" {
+		t.Errorf("ThinkingBlock.Text = %q, want 'I need to call the tool'", tb.Text)
+	}
+
+	// The second block must be the ToolCallBlock.
+	if _, ok := assistantTurn.Content[1].(llm.ToolCallBlock); !ok {
+		t.Fatalf("second content block type = %T, want llm.ToolCallBlock", assistantTurn.Content[1])
+	}
+}

@@ -267,6 +267,16 @@ func buildMessages(history []llm.ConversationTurn, originalToSanitized map[strin
 				blocks = append(blocks, anthropic.NewToolUseBlock(b.ID, b.Input, name))
 			case llm.ToolResultBlock:
 				blocks = append(blocks, anthropic.NewToolResultBlock(b.ToolCallID, b.Content, b.IsError))
+			case llm.ThinkingBlock:
+				if b.Redacted {
+					blocks = append(blocks, anthropic.NewRedactedThinkingBlock(b.RedactedData))
+				} else if b.Signature != "" {
+					blocks = append(blocks, anthropic.NewThinkingBlock(b.Signature, b.Text))
+				} else {
+					// Empty signature means this block came from a non-Anthropic provider.
+					// Anthropic's API requires a non-empty signature, so skip it.
+					slog.Debug("buildMessages: skipping ThinkingBlock with empty signature (non-Anthropic source)")
+				}
 			default:
 				slog.Warn("buildMessages: skipping unknown content block type", "type", fmt.Sprintf("%T", cb))
 			}
@@ -391,13 +401,17 @@ func translateResponse(resp *anthropic.Message, sanitizedToOriginal map[string]s
 			})
 		case anthropic.ThinkingBlock:
 			result.Thinking = append(result.Thinking, llm.ThinkingBlock{
-				Text:     b.Thinking,
-				Redacted: false,
+				Text:      b.Thinking,
+				Redacted:  false,
+				Signature: b.Signature,
 			})
 		case anthropic.RedactedThinkingBlock:
+			// Text is set to "[redacted]" for audit display only — it is never
+			// sent back to the API. Only RedactedData is echoed on subsequent requests.
 			result.Thinking = append(result.Thinking, llm.ThinkingBlock{
-				Text:     "[redacted]",
-				Redacted: true,
+				Text:         "[redacted]",
+				Redacted:     true,
+				RedactedData: b.Data,
 			})
 		default:
 			slog.Warn("translateResponse: skipping unhandled content block type", "type", fmt.Sprintf("%T", b))
