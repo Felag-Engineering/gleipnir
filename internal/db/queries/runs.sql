@@ -18,9 +18,12 @@ UPDATE runs SET status = :status, error = :error, completed_at = :completed_at W
 -- name: IncrementRunTokenCost :exec
 UPDATE runs SET token_cost = token_cost + :token_cost WHERE id = :id;
 
+-- Source of truth for terminal statuses: model.IsTerminalStatus (internal/model/model.go).
+-- Pending is excluded because pending->interrupted is not a legal state transition.
 -- name: ListOrphanedRuns :many
 SELECT * FROM runs WHERE status IN ('running', 'waiting_for_approval', 'waiting_for_feedback');
 
+-- Active = !model.IsTerminalStatus (internal/model/model.go). Keep this IN list in sync.
 -- name: ListActiveRunsByPolicy :many
 SELECT * FROM runs
 WHERE policy_id = :policy_id
@@ -91,6 +94,7 @@ WHERE (sqlc.narg('policy_id') IS NULL OR policy_id = sqlc.narg('policy_id'))
 -- name: UpdateRunSystemPrompt :exec
 UPDATE runs SET system_prompt = :system_prompt WHERE id = :id;
 
+-- Active = !model.IsTerminalStatus (internal/model/model.go). Keep this IN list in sync.
 -- name: CountActiveRuns :one
 SELECT COUNT(*) FROM runs WHERE status IN ('pending', 'running', 'waiting_for_approval', 'waiting_for_feedback');
 

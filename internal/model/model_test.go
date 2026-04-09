@@ -242,6 +242,26 @@ func TestModelConfig_Defaults(t *testing.T) {
 	}
 }
 
+func TestIsTerminalStatus(t *testing.T) {
+	cases := []struct {
+		status   RunStatus
+		terminal bool
+	}{
+		{RunStatusComplete, true},
+		{RunStatusFailed, true},
+		{RunStatusInterrupted, true},
+		{RunStatusPending, false},
+		{RunStatusRunning, false},
+		{RunStatusWaitingForApproval, false},
+		{RunStatusWaitingForFeedback, false},
+	}
+	for _, tc := range cases {
+		if got := IsTerminalStatus(tc.status); got != tc.terminal {
+			t.Errorf("IsTerminalStatus(%q) = %v, want %v", tc.status, got, tc.terminal)
+		}
+	}
+}
+
 func TestNewULID(t *testing.T) {
 	const n = 100
 	ids := make([]string, n)

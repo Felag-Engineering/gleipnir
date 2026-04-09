@@ -152,6 +152,13 @@ const DefaultProvider = "anthropic"
 // DefaultModelName is the model ID used when the policy omits the model field.
 const DefaultModelName = "claude-sonnet-4-6"
 
+// IsTerminalStatus reports whether the given status is a terminal state
+// (no further transitions are possible). This is the single source of truth
+// for "is this run active?" — active means !IsTerminalStatus(s).
+func IsTerminalStatus(s RunStatus) bool {
+	return s == RunStatusComplete || s == RunStatusFailed || s == RunStatusInterrupted
+}
+
 func (s RunStatus) String() string { return string(s) }
 func (s RunStatus) Valid() bool {
 	switch s {

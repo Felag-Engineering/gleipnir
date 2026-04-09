@@ -13,6 +13,7 @@ const countActiveRuns = `-- name: CountActiveRuns :one
 SELECT COUNT(*) FROM runs WHERE status IN ('pending', 'running', 'waiting_for_approval', 'waiting_for_feedback')
 `
 
+// Active = !model.IsTerminalStatus (internal/model/model.go). Keep this IN list in sync.
 func (q *Queries) CountActiveRuns(ctx context.Context) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countActiveRuns)
 	var count int64
@@ -211,6 +212,7 @@ WHERE policy_id = ?1
 ORDER BY created_at ASC
 `
 
+// Active = !model.IsTerminalStatus (internal/model/model.go). Keep this IN list in sync.
 func (q *Queries) ListActiveRunsByPolicy(ctx context.Context, policyID string) ([]Run, error) {
 	rows, err := q.db.QueryContext(ctx, listActiveRunsByPolicy, policyID)
 	if err != nil {
@@ -334,6 +336,8 @@ const listOrphanedRuns = `-- name: ListOrphanedRuns :many
 SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model FROM runs WHERE status IN ('running', 'waiting_for_approval', 'waiting_for_feedback')
 `
 
+// Source of truth for terminal statuses: model.IsTerminalStatus (internal/model/model.go).
+// Pending is excluded because pending->interrupted is not a legal state transition.
 func (q *Queries) ListOrphanedRuns(ctx context.Context) ([]Run, error) {
 	rows, err := q.db.QueryContext(ctx, listOrphanedRuns)
 	if err != nil {

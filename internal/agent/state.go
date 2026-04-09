@@ -100,7 +100,7 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 	}
 
 	var completedAt *string
-	if isTerminalStatus(next) {
+	if model.IsTerminalStatus(next) {
 		t := time.Now().UTC().Format(time.RFC3339Nano)
 		completedAt = &t
 	}
@@ -247,8 +247,3 @@ func isLegalTransition(from, to model.RunStatus) bool {
 	return false
 }
 
-// isTerminalStatus reports whether the given status is a terminal state (no
-// further transitions are possible after reaching it).
-func isTerminalStatus(s model.RunStatus) bool {
-	return s == model.RunStatusComplete || s == model.RunStatusFailed || s == model.RunStatusInterrupted
-}

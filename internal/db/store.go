@@ -135,11 +135,13 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return migrations.Apply(ctx, s.db, migrations.All(), slog.Default())
 }
 
-// ScanOrphanedRuns finds any runs left in 'running', 'waiting_for_approval', or
-// 'waiting_for_feedback' state from a previous process crash, inserts an error
-// run_step for each, and marks them 'interrupted'. Called once at startup before
-// accepting traffic (ADR-011). Errors for individual runs are logged and skipped
-// — startup must not be blocked by a partially-corrupted run.
+// ScanOrphanedRuns finds any runs left in a non-terminal, non-pending state
+// from a previous process crash (i.e. 'running', 'waiting_for_approval', or
+// 'waiting_for_feedback' — the active states per model.IsTerminalStatus), inserts
+// an error run_step for each, and marks them 'interrupted'. 'pending' is excluded
+// because pending → interrupted is not a legal state transition. Called once at
+// startup before accepting traffic (ADR-011). Errors for individual runs are
+// logged and skipped — startup must not be blocked by a partially-corrupted run.
 func (s *Store) ScanOrphanedRuns(ctx context.Context, logger *slog.Logger) error {
 	runs, err := s.queries.ListOrphanedRuns(ctx)
 	if err != nil {
