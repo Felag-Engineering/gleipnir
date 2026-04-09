@@ -2561,3 +2561,67 @@ func TestRun_ThinkingBlocksIncludedInHistory(t *testing.T) {
 		t.Fatalf("second content block type = %T, want llm.ToolCallBlock", assistantTurn.Content[1])
 	}
 }
+
+func TestRun_ThinkingTokensIncludedInCost(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	// Simulate a Gemini-style response where thinking tokens are reported
+	// separately from output tokens (Anthropic includes them in OutputTokens
+	// and sets ThinkingTokens to 0).
+	resp := &llm.MessageResponse{
+		Text:       []llm.TextBlock{{Text: "Done."}},
+		StopReason: llm.StopReasonEndTurn,
+		Usage: llm.TokenUsage{
+			InputTokens:    100,
+			OutputTokens:   50,
+			ThinkingTokens: 30,
+		},
+	}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		LLMClient:    testutil.NewMockLLMClient(resp),
+		Tools:        nil,
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := ba.Run(context.Background(), "r1", "trigger"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+
+	// Find the thought step that should carry the token cost.
+	var thoughtCost int64
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeThought) {
+			thoughtCost = step.TokenCost
+			break
+		}
+	}
+
+	// Token cost should be input + output + thinking = 100 + 50 + 30 = 180.
+	wantCost := int64(180)
+	if thoughtCost != wantCost {
+		t.Errorf("thought step token cost = %d, want %d (should include thinking tokens)", thoughtCost, wantCost)
+	}
+
+	// Also verify the run-level total includes thinking tokens.
+	run, err := s.GetRun(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if run.TokenCost != wantCost {
+		t.Errorf("run token cost = %d, want %d", run.TokenCost, wantCost)
+	}
+}

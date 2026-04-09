@@ -174,7 +174,7 @@ func (a *BoundAgent) runAPILoop(
 			return a.failRun(ctx, fmt.Errorf("LLM API call: %w", err))
 		}
 
-		tokenCost := resp.Usage.InputTokens + resp.Usage.OutputTokens
+		tokenCost := resp.Usage.InputTokens + resp.Usage.OutputTokens + resp.Usage.ThinkingTokens
 		totalTokens += tokenCost
 
 		// costAssigned tracks whether the per-turn token cost has been attributed
