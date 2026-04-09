@@ -109,6 +109,7 @@ internal/
   mcp/                — MCP HTTP client, tool registry, capability tags
   model/              — domain types (Policy, Run, RunStep, ApprovalRequest, enums, ...)
   policy/             — YAML parser, validator, system prompt renderer
+  runstate/           — canonical run status transition table and TransitionRunFailed helper
   sse/                — Server-Sent Events broadcaster
   testutil/           — shared test helpers
   trigger/            — webhook, manual, scheduled, and poll trigger handlers

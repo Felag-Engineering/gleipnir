@@ -6,6 +6,7 @@ package feedback
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/event"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/runstate"
 )
 
 // Scanner periodically scans for expired pending feedback requests and resolves
@@ -168,30 +170,27 @@ func (s *Scanner) resolveTimeout(ctx context.Context, req db.FeedbackRequest) er
 		return fmt.Errorf("create error step: %w", err)
 	}
 
-	// Mark the run as failed.
-	if err := s.store.Queries().UpdateRunError(ctx, db.UpdateRunErrorParams{
-		Status:      string(model.RunStatusFailed),
-		Error:       &errMsg,
-		CompletedAt: &now,
-		ID:          req.RunID,
-	}); err != nil {
-		return fmt.Errorf("update run status to failed: %w", err)
-	}
-
-	if s.publisher != nil {
-		s.publishEvents(req.RunID, req.ID)
+	if err := runstate.TransitionRunFailed(ctx, s.store.Queries(), s.publisher, req.RunID, errMsg); errors.Is(err, runstate.ErrIllegalTransition) {
+		// The scanner already verified status == waiting_for_feedback above.
+		// An illegal-transition error here means another component moved the
+		// run between our GetRun and this call. Benign race — skip silently.
+		slog.Debug("TransitionRunFailed race: run already moved",
+			"run_id", req.RunID,
+			"err", err,
+		)
+	} else if err != nil {
+		return fmt.Errorf("transition run to failed: %w", err)
+	} else if s.publisher != nil {
+		// Publish the domain-specific feedback.timed_out event. The generic
+		// run.status_changed event was already published by transitionFailed.
+		if data, err := json.Marshal(map[string]string{
+			"feedback_id": req.ID,
+			"run_id":      req.RunID,
+			"status":      "timed_out",
+		}); err == nil {
+			s.publisher.Publish("feedback.timed_out", data)
+		}
 	}
 
 	return nil
-}
-
-// publishEvents emits SSE events for a resolved feedback timeout. Marshalling
-// errors are not fatal — the DB state is already consistent at this point.
-func (s *Scanner) publishEvents(runID, feedbackID string) {
-	if data, err := json.Marshal(map[string]string{"run_id": runID, "status": string(model.RunStatusFailed)}); err == nil {
-		s.publisher.Publish("run.status_changed", data)
-	}
-	if data, err := json.Marshal(map[string]string{"feedback_id": feedbackID, "run_id": runID, "status": "timed_out"}); err == nil {
-		s.publisher.Publish("feedback.timed_out", data)
-	}
 }

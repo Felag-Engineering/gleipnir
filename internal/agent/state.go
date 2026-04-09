@@ -10,6 +10,7 @@ import (
 
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/runstate"
 )
 
 // RunStateMachine tracks and persists the status of a single agent run.
@@ -95,7 +96,7 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 
 	from := sm.current
 
-	if !isLegalTransition(from, next) {
+	if !runstate.IsLegalTransition(from, next) {
 		return fmt.Errorf("illegal run status transition: %s → %s", from, next)
 	}
 
@@ -220,30 +221,3 @@ func (sm *RunStateMachine) Current() model.RunStatus {
 func (sm *RunStateMachine) Queries() *db.Queries {
 	return sm.queries
 }
-
-// isLegalTransition reports whether transitioning from → to is permitted by the
-// run state machine graph (see model.RunStatus for the full transition diagram).
-func isLegalTransition(from, to model.RunStatus) bool {
-	legal := [][2]model.RunStatus{
-		{model.RunStatusPending, model.RunStatusRunning},
-		{model.RunStatusPending, model.RunStatusFailed}, // DB write failure before the run starts
-		{model.RunStatusRunning, model.RunStatusComplete},
-		{model.RunStatusRunning, model.RunStatusFailed},
-		{model.RunStatusRunning, model.RunStatusWaitingForApproval},
-		{model.RunStatusRunning, model.RunStatusWaitingForFeedback},
-		{model.RunStatusRunning, model.RunStatusInterrupted},
-		{model.RunStatusWaitingForApproval, model.RunStatusRunning},
-		{model.RunStatusWaitingForApproval, model.RunStatusFailed},
-		{model.RunStatusWaitingForApproval, model.RunStatusInterrupted},
-		{model.RunStatusWaitingForFeedback, model.RunStatusRunning},
-		{model.RunStatusWaitingForFeedback, model.RunStatusFailed},
-		{model.RunStatusWaitingForFeedback, model.RunStatusInterrupted},
-	}
-	for _, pair := range legal {
-		if pair[0] == from && pair[1] == to {
-			return true
-		}
-	}
-	return false
-}
-
