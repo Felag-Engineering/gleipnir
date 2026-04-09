@@ -631,3 +631,55 @@ func TestToolNameSanitization_RoundTrip(t *testing.T) {
 		t.Errorf("reversed name = %q, want %q", parsed.ToolCalls[0].Name, originalName)
 	}
 }
+
+func TestTranslate_IgnoresProviderMetadata(t *testing.T) {
+	// A ToolCallBlock carrying Google-specific metadata must produce the same
+	// OpenAI-compat wire message as one without. The translator reads only
+	// ID, Name, and Input.
+	input := json.RawMessage(`{"city":"SF"}`)
+
+	withMeta := llm.ToolCallBlock{
+		ID:    "call_1",
+		Name:  "get_weather",
+		Input: input,
+		ProviderMetadata: map[string][]byte{
+			"google.thought_signature": {0xca, 0xfe},
+		},
+	}
+	withoutMeta := llm.ToolCallBlock{
+		ID:    "call_1",
+		Name:  "get_weather",
+		Input: input,
+	}
+
+	makeReq := func(block llm.ToolCallBlock) chatRequest {
+		return BuildChatCompletionRequest(llm.MessageRequest{
+			Model: "gpt-4o",
+			History: []llm.ConversationTurn{
+				{Role: llm.RoleAssistant, Content: []llm.ContentBlock{block}},
+			},
+		}, false, llm.ToolNameMapping{})
+	}
+
+	reqWith := makeReq(withMeta)
+	reqWithout := makeReq(withoutMeta)
+
+	if len(reqWith.Messages) != 1 || len(reqWithout.Messages) != 1 {
+		t.Fatal("expected 1 message each")
+	}
+	mWith := reqWith.Messages[0]
+	mWithout := reqWithout.Messages[0]
+
+	if len(mWith.ToolCalls) != 1 || len(mWithout.ToolCalls) != 1 {
+		t.Fatal("expected 1 tool_call each")
+	}
+	if mWith.ToolCalls[0].ID != mWithout.ToolCalls[0].ID {
+		t.Errorf("ID mismatch: %q vs %q", mWith.ToolCalls[0].ID, mWithout.ToolCalls[0].ID)
+	}
+	if mWith.ToolCalls[0].Function.Name != mWithout.ToolCalls[0].Function.Name {
+		t.Errorf("Name mismatch: %q vs %q", mWith.ToolCalls[0].Function.Name, mWithout.ToolCalls[0].Function.Name)
+	}
+	if mWith.ToolCalls[0].Function.Arguments != mWithout.ToolCalls[0].Function.Arguments {
+		t.Errorf("Arguments mismatch: %q vs %q", mWith.ToolCalls[0].Function.Arguments, mWithout.ToolCalls[0].Function.Arguments)
+	}
+}

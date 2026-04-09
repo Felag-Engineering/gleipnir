@@ -204,13 +204,17 @@ func buildContents(history []llm.ConversationTurn, names llm.ToolNameMapping) []
 				if mapped, ok := names.OriginalToSanitized[b.Name]; ok {
 					wireName = mapped
 				}
-				parts = append(parts, &genai.Part{
+				part := &genai.Part{
 					FunctionCall: &genai.FunctionCall{
 						ID:   b.ID,
 						Name: wireName,
 						Args: argsMap,
 					},
-				})
+				}
+				if sig := b.ProviderMetadata["google.thought_signature"]; len(sig) > 0 {
+					part.ThoughtSignature = sig
+				}
+				parts = append(parts, part)
 			case llm.ToolResultBlock:
 				name, ok := callIDToName[b.ToolCallID]
 				if !ok {
@@ -308,10 +312,6 @@ func buildTools(tools []llm.ToolDefinition) []*genai.Tool {
 // translateResponse converts a Gemini API response into the provider-neutral
 // MessageResponse. Thought parts (part.Thought == true) are captured as
 // ThinkingBlocks for audit purposes and excluded from the visible text response.
-//
-// Known gap: part.ThoughtSignature bytes are discarded here. When full thinking
-// continuity is implemented, ThoughtSignature must be echoed back in subsequent
-// requests to maintain the thinking chain. A follow-up issue is needed.
 func translateResponse(resp *genai.GenerateContentResponse, names llm.ToolNameMapping) (*llm.MessageResponse, error) {
 	var result llm.MessageResponse
 
@@ -348,11 +348,20 @@ func translateResponse(resp *genai.GenerateContentResponse, names llm.ToolNameMa
 			if mapped, ok := names.SanitizedToOriginal[part.FunctionCall.Name]; ok {
 				originalName = mapped
 			}
-			result.ToolCalls = append(result.ToolCalls, llm.ToolCallBlock{
+			block := llm.ToolCallBlock{
 				ID:    id,
 				Name:  originalName,
 				Input: json.RawMessage(argsJSON),
-			})
+			}
+			// Gemini 3 attaches a ThoughtSignature to the Part (not the inner
+			// FunctionCall). It must be echoed back on subsequent turns or the
+			// API rejects the replayed function call.
+			if len(part.ThoughtSignature) > 0 {
+				block.ProviderMetadata = map[string][]byte{
+					"google.thought_signature": part.ThoughtSignature,
+				}
+			}
+			result.ToolCalls = append(result.ToolCalls, block)
 		} else if part.Text != "" {
 			result.Text = append(result.Text, llm.TextBlock{Text: part.Text})
 		}

@@ -1194,3 +1194,50 @@ func TestToolNameRoundTrip(t *testing.T) {
 		t.Errorf("rebuilt name %q not found in SanitizedToOriginal map", block.OfToolUse.Name)
 	}
 }
+
+func TestBuildMessages_IgnoresProviderMetadata(t *testing.T) {
+	// A ToolCallBlock with Google-specific metadata must produce the same
+	// Anthropic wire payload as one without. The Anthropic translator reads
+	// only ID, Name, and Input.
+	input := json.RawMessage(`{"q":"test"}`)
+
+	withMeta := llm.ToolCallBlock{
+		ID:    "tu_1",
+		Name:  "search",
+		Input: input,
+		ProviderMetadata: map[string][]byte{
+			"google.thought_signature": {0xde, 0xad},
+		},
+	}
+	withoutMeta := llm.ToolCallBlock{
+		ID:    "tu_1",
+		Name:  "search",
+		Input: input,
+	}
+
+	histWith := []llm.ConversationTurn{
+		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{withMeta}},
+	}
+	histWithout := []llm.ConversationTurn{
+		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{withoutMeta}},
+	}
+
+	msgsWith := buildMessages(histWith, nil)
+	msgsWithout := buildMessages(histWithout, nil)
+
+	if len(msgsWith) != 1 || len(msgsWithout) != 1 {
+		t.Fatal("expected 1 message for each history")
+	}
+	blockWith := msgsWith[0].Content[0]
+	blockWithout := msgsWithout[0].Content[0]
+
+	if blockWith.OfToolUse == nil || blockWithout.OfToolUse == nil {
+		t.Fatal("expected OfToolUse blocks")
+	}
+	if blockWith.OfToolUse.ID != blockWithout.OfToolUse.ID {
+		t.Errorf("ID mismatch: %q vs %q", blockWith.OfToolUse.ID, blockWithout.OfToolUse.ID)
+	}
+	if blockWith.OfToolUse.Name != blockWithout.OfToolUse.Name {
+		t.Errorf("Name mismatch: %q vs %q", blockWith.OfToolUse.Name, blockWithout.OfToolUse.Name)
+	}
+}

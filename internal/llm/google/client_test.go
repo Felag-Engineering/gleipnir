@@ -491,6 +491,181 @@ func TestCreateMessage_ThinkingBlocks(t *testing.T) {
 	}
 }
 
+// --- ThoughtSignature round-trip tests ---
+
+func TestTranslateResponse_CapturesThoughtSignature(t *testing.T) {
+	sig := []byte{0xde, 0xad, 0xbe, 0xef}
+	resp := &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{
+			{
+				Content: &genai.Content{
+					Parts: []*genai.Part{
+						{
+							FunctionCall:    &genai.FunctionCall{ID: "fc-1", Name: "do_thing", Args: nil},
+							ThoughtSignature: sig,
+						},
+					},
+				},
+				FinishReason: genai.FinishReasonStop,
+			},
+		},
+	}
+
+	result, err := translateResponse(resp, llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	got := result.ToolCalls[0].ProviderMetadata["google.thought_signature"]
+	if string(got) != string(sig) {
+		t.Errorf("thought_signature = %v, want %v", got, sig)
+	}
+}
+
+func TestTranslateResponse_NoThoughtSignature_NilMetadata(t *testing.T) {
+	resp := &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{
+			{
+				Content: &genai.Content{
+					Parts: []*genai.Part{
+						{FunctionCall: &genai.FunctionCall{ID: "fc-1", Name: "do_thing", Args: nil}},
+					},
+				},
+				FinishReason: genai.FinishReasonStop,
+			},
+		},
+	}
+
+	result, err := translateResponse(resp, llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].ProviderMetadata != nil {
+		t.Errorf("expected nil ProviderMetadata when no ThoughtSignature, got %v", result.ToolCalls[0].ProviderMetadata)
+	}
+}
+
+func TestBuildContents_ToolCallBlock_WithThoughtSignature(t *testing.T) {
+	sig := []byte{0x01, 0x02, 0x03}
+	history := []llm.ConversationTurn{
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentBlock{
+				llm.ToolCallBlock{
+					ID:    "call-1",
+					Name:  "my_tool",
+					Input: json.RawMessage(`{"key":"value"}`),
+					ProviderMetadata: map[string][]byte{
+						"google.thought_signature": sig,
+					},
+				},
+			},
+		},
+	}
+
+	contents := buildContents(history, llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
+
+	if len(contents) != 1 {
+		t.Fatalf("expected 1 content, got %d", len(contents))
+	}
+	parts := contents[0].Parts
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(parts))
+	}
+	part := parts[0]
+	if part.FunctionCall == nil {
+		t.Fatal("expected FunctionCall part, got nil")
+	}
+	if part.FunctionCall.ID != "call-1" {
+		t.Errorf("expected ID 'call-1', got %q", part.FunctionCall.ID)
+	}
+	if part.FunctionCall.Name != "my_tool" {
+		t.Errorf("expected Name 'my_tool', got %q", part.FunctionCall.Name)
+	}
+	if string(part.ThoughtSignature) != string(sig) {
+		t.Errorf("ThoughtSignature = %v, want %v", part.ThoughtSignature, sig)
+	}
+}
+
+func TestBuildContents_ToolCallBlock_NilMetadata_NoSignature(t *testing.T) {
+	history := []llm.ConversationTurn{
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentBlock{
+				llm.ToolCallBlock{ID: "call-1", Name: "my_tool", Input: json.RawMessage(`{}`)},
+			},
+		},
+	}
+
+	contents := buildContents(history, llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
+
+	if len(contents[0].Parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(contents[0].Parts))
+	}
+	part := contents[0].Parts[0]
+	if len(part.ThoughtSignature) != 0 {
+		t.Errorf("expected empty ThoughtSignature, got %v", part.ThoughtSignature)
+	}
+}
+
+func TestGoogle_ThoughtSignature_InMemoryRoundTrip(t *testing.T) {
+	sig := []byte{0xca, 0xfe, 0xba, 0xbe}
+
+	// Step a: build a fake response carrying a FunctionCall with a ThoughtSignature.
+	fakeResp := &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{
+			{
+				Content: &genai.Content{
+					Parts: []*genai.Part{
+						{
+							FunctionCall:    &genai.FunctionCall{ID: "fc-99", Name: "run_task", Args: map[string]any{"x": "1"}},
+							ThoughtSignature: sig,
+						},
+					},
+				},
+				FinishReason: genai.FinishReasonStop,
+			},
+		},
+	}
+
+	names := llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}}
+
+	msgResp, err := translateResponse(fakeResp, names)
+	if err != nil {
+		t.Fatalf("translateResponse: %v", err)
+	}
+	if len(msgResp.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(msgResp.ToolCalls))
+	}
+
+	// Step b: construct the history turn as the agent loop would.
+	historyTurn := llm.ConversationTurn{
+		Role:    llm.RoleAssistant,
+		Content: []llm.ContentBlock{msgResp.ToolCalls[0]},
+	}
+
+	// Step c: call buildContents with that history.
+	contents := buildContents([]llm.ConversationTurn{historyTurn}, names)
+
+	if len(contents) != 1 || len(contents[0].Parts) != 1 {
+		t.Fatalf("expected 1 content with 1 part, got contents=%d", len(contents))
+	}
+
+	// Step d: assert the outgoing Part carries the original signature bytes.
+	outPart := contents[0].Parts[0]
+	if string(outPart.ThoughtSignature) != string(sig) {
+		t.Errorf("round-tripped ThoughtSignature = %v, want %v", outPart.ThoughtSignature, sig)
+	}
+	if outPart.FunctionCall == nil || outPart.FunctionCall.ID != "fc-99" {
+		t.Errorf("FunctionCall fields altered: %+v", outPart.FunctionCall)
+	}
+}
+
 func TestTranslateResponse_StopReasons(t *testing.T) {
 	toolCallPart := &genai.Part{
 		FunctionCall: &genai.FunctionCall{ID: "id-1", Name: "tool"},

@@ -187,3 +187,53 @@ func TestBuildInput_ToolResultTurn(t *testing.T) {
 		t.Fatalf("len(items) = %d; want 1", len(items))
 	}
 }
+
+func TestTranslate_IgnoresProviderMetadata(t *testing.T) {
+	// A ToolCallBlock carrying Google-specific metadata must produce the same
+	// OpenAI Responses API input item as one without. The translator reads
+	// only ID, Name, and Input.
+	input := json.RawMessage(`{"city":"SF"}`)
+
+	withMeta := llm.ToolCallBlock{
+		ID:    "call_1",
+		Name:  "get_weather",
+		Input: input,
+		ProviderMetadata: map[string][]byte{
+			"google.thought_signature": {0xca, 0xfe},
+		},
+	}
+	withoutMeta := llm.ToolCallBlock{
+		ID:    "call_1",
+		Name:  "get_weather",
+		Input: input,
+	}
+
+	makeReq := func(block llm.ToolCallBlock) llm.MessageRequest {
+		return llm.MessageRequest{
+			Model: "gpt-4o",
+			History: []llm.ConversationTurn{
+				{Role: llm.RoleAssistant, Content: []llm.ContentBlock{block}},
+			},
+		}
+	}
+
+	itemsWith := buildInput(makeReq(withMeta), llm.ToolNameMapping{})
+	itemsWithout := buildInput(makeReq(withoutMeta), llm.ToolNameMapping{})
+
+	if len(itemsWith) != 1 || len(itemsWithout) != 1 {
+		t.Fatalf("expected 1 item each, got %d and %d", len(itemsWith), len(itemsWithout))
+	}
+
+	// Both should produce a FunctionCall item; marshal both and compare.
+	rawWith, err := json.Marshal(itemsWith[0])
+	if err != nil {
+		t.Fatalf("marshal with meta: %v", err)
+	}
+	rawWithout, err := json.Marshal(itemsWithout[0])
+	if err != nil {
+		t.Fatalf("marshal without meta: %v", err)
+	}
+	if string(rawWith) != string(rawWithout) {
+		t.Errorf("wire payload differs:\nwith    metadata: %s\nwithout metadata: %s", rawWith, rawWithout)
+	}
+}

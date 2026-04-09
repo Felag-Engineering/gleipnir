@@ -81,6 +81,11 @@ type ToolCallBlock struct {
 	ID    string
 	Name  string
 	Input json.RawMessage
+
+	// ProviderMetadata holds opaque provider-specific bytes that must be
+	// round-tripped on subsequent requests. Non-Google providers ignore this
+	// field. Current keys: "google.thought_signature".
+	ProviderMetadata map[string][]byte
 }
 
 // ToolResultBlock is the result of a tool invocation, sent back in a user turn.
