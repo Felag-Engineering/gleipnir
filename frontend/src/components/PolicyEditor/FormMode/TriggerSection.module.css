@@ -1,22 +1,3 @@
-.section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-section);
-  padding: var(--space-5);
-}
-
-.heading {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-faint);
-  margin-bottom: var(--space-2);
-}
-
 /* Trigger type cards */
 
 .cards {
@@ -165,44 +146,6 @@
 .copyButtonDone:hover:not(:disabled) {
   color: var(--color-green);
   border-color: color-mix(in srgb, var(--color-green) 60%, transparent);
-}
-
-/* Shared form field styles */
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.label {
-  font-size: var(--text-xs);
-  color: var(--text-second);
-}
-
-.input {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-mid);
-  border-radius: 6px;
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-  width: 100%;
-  transition: border-color var(--duration-fast) var(--ease-out);
-  box-sizing: border-box;
-}
-
-.input:focus {
-  outline: none;
-  border-color: var(--color-blue);
-}
-
-.input::placeholder {
-  color: var(--text-muted);
-}
-
-.inputMono {
-  font-family: var(--font-mono);
 }
 
 .select {

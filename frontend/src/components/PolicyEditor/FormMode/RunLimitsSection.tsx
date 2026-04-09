@@ -1,3 +1,4 @@
+import shared from './FormSections.module.css';
 import styles from './RunLimitsSection.module.css';
 import type { RunLimitsFormState } from './types';
 
@@ -20,14 +21,14 @@ export function RunLimitsSection({ value, onChange }: RunLimitsSectionProps) {
   }
 
   return (
-    <div className={styles.section}>
-      <div className={styles.heading}>Run Limits</div>
+    <div className={shared.section}>
+      <div className={shared.heading}>Run Limits</div>
 
       <div className={styles.fieldRow}>
-        <div className={styles.field}>
-          <label className={styles.label}>Max tokens per run</label>
+        <div className={shared.field}>
+          <label className={shared.label}>Max tokens per run</label>
           <input
-            className={styles.input}
+            className={shared.input}
             type="number"
             min="1"
             value={value.max_tokens_per_run}
@@ -35,10 +36,10 @@ export function RunLimitsSection({ value, onChange }: RunLimitsSectionProps) {
           />
         </div>
 
-        <div className={styles.field}>
-          <label className={styles.label}>Max tool calls per run</label>
+        <div className={shared.field}>
+          <label className={shared.label}>Max tool calls per run</label>
           <input
-            className={styles.input}
+            className={shared.input}
             type="number"
             min="1"
             value={value.max_tool_calls_per_run}

@@ -1,3 +1,4 @@
+import shared from '../FormSections.module.css';
 import styles from '../TriggerSection.module.css';
 import type { ScheduledTriggerState, TriggerFormState } from '../types';
 
@@ -40,12 +41,12 @@ export function ScheduledConfig({ value, onChange }: ScheduledConfigProps) {
   }
 
   return (
-    <div className={styles.field}>
-      <label className={styles.label}>Fire at (UTC)</label>
+    <div className={shared.field}>
+      <label className={shared.label}>Fire at (UTC)</label>
       {value.fireAt.map((ts, i) => (
         <div key={i} className={styles.fieldRow}>
           <input
-            className={styles.input}
+            className={shared.input}
             type="datetime-local"
             value={toInputValue(ts)}
             onChange={(e) => updateEntry(i, e.target.value)}

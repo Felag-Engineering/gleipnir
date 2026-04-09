@@ -1,3 +1,4 @@
+import shared from './FormSections.module.css';
 import styles from './TriggerSection.module.css';
 import type { TriggerFormState, ManualTriggerState, ScheduledTriggerState, PollTriggerState } from './types';
 import { TriggerCard } from './triggers/TriggerCard';
@@ -29,8 +30,8 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
   }
 
   return (
-    <div className={styles.section}>
-      <div className={styles.heading}>Trigger</div>
+    <div className={shared.section}>
+      <div className={shared.heading}>Trigger</div>
 
       <div className={styles.cards}>
         <TriggerCard type="webhook" selected={value.type} onSelect={handleTypeSelect}

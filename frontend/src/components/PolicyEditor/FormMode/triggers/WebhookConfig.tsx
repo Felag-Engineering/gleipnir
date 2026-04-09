@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import shared from '../FormSections.module.css';
 import styles from '../TriggerSection.module.css';
 
 export interface WebhookConfigProps {
@@ -29,8 +30,8 @@ export function WebhookConfig({ policyId }: WebhookConfigProps) {
   const displayValue = url ?? 'POST /api/v1/webhooks/<policy-id>';
 
   return (
-    <div className={styles.field}>
-      <label className={styles.label}>Webhook URL</label>
+    <div className={shared.field}>
+      <label className={shared.label}>Webhook URL</label>
       <div className={styles.webhookUrl}>
         <input
           className={policyId ? styles.webhookInput : `${styles.webhookInput} ${styles.webhookInputPlaceholder}`}

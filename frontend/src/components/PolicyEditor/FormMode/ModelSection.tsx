@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import shared from './FormSections.module.css';
 import styles from './ModelSection.module.css';
 import type { ModelFormState } from './types';
 import { useModels } from '@/hooks/queries/users';
@@ -41,8 +42,8 @@ export function ModelSection({ value, onChange }: ModelSectionProps) {
   const selected = `${value.provider}:${value.model}`;
 
   return (
-    <div className={styles.section}>
-      <div className={styles.heading}>Model</div>
+    <div className={shared.section}>
+      <div className={shared.heading}>Model</div>
       <select
         className={styles.select}
         value={selected}

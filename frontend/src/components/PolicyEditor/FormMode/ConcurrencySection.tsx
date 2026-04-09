@@ -1,4 +1,5 @@
 import { Check } from 'lucide-react';
+import shared from './FormSections.module.css';
 import styles from './ConcurrencySection.module.css';
 import type { ConcurrencyFormState, ConcurrencyValue } from './types';
 
@@ -16,8 +17,8 @@ const CONCURRENCY_OPTIONS: { value: ConcurrencyValue; label: string; desc: strin
 
 export function ConcurrencySection({ value, onChange }: ConcurrencySectionProps) {
   return (
-    <div className={styles.section}>
-      <div className={styles.heading}>Concurrency</div>
+    <div className={shared.section}>
+      <div className={shared.heading}>Concurrency</div>
 
       <div className={styles.cards}>
         {CONCURRENCY_OPTIONS.map((option) => {

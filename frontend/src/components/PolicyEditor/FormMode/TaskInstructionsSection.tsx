@@ -1,3 +1,4 @@
+import shared from './FormSections.module.css';
 import styles from './TaskInstructionsSection.module.css';
 import type { TaskInstructionsFormState } from './types';
 
@@ -8,11 +9,11 @@ export interface TaskInstructionsSectionProps {
 
 export function TaskInstructionsSection({ value, onChange }: TaskInstructionsSectionProps) {
   return (
-    <div className={styles.section}>
-      <div className={styles.heading}>Task Instructions</div>
+    <div className={shared.section}>
+      <div className={shared.heading}>Task Instructions</div>
 
-      <div className={styles.field}>
-        <label className={styles.label}>Task</label>
+      <div className={shared.field}>
+        <label className={shared.label}>Task</label>
         <textarea
           className={styles.textarea}
           value={value.task}

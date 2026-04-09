@@ -5,6 +5,7 @@ import { queryKeys } from '@/hooks/queryKeys';
 import { apiFetch } from '@/api/fetch';
 import type { ApiMcpTool } from '@/api/types';
 import type { AssignedTool, CapabilitiesFormState } from './types';
+import shared from './FormSections.module.css';
 import styles from './CapabilitiesSection.module.css';
 
 export interface CapabilitiesSectionProps {
@@ -86,8 +87,8 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
   }
 
   return (
-    <div className={styles.section}>
-      <div className={styles.heading}>Capabilities</div>
+    <div className={shared.section}>
+      <div className={shared.heading}>Capabilities</div>
 
       {value.tools.length === 0 ? (
         <div className={styles.emptyState}>
@@ -121,7 +122,7 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
       )}
 
       <div className={styles.feedbackSection}>
-        <div className={styles.heading}>Feedback</div>
+        <div className={shared.heading}>Feedback</div>
         <div className={styles.feedbackRow}>
           <button
             role="switch"

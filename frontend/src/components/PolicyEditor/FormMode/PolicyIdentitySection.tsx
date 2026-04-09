@@ -1,3 +1,4 @@
+import shared from './FormSections.module.css';
 import styles from './PolicyIdentitySection.module.css';
 import type { IdentityFormState } from './types';
 
@@ -8,13 +9,13 @@ export interface PolicyIdentitySectionProps {
 
 export function PolicyIdentitySection({ value, onChange }: PolicyIdentitySectionProps) {
   return (
-    <div className={styles.section}>
-      <div className={styles.heading}>Identity</div>
+    <div className={shared.section}>
+      <div className={shared.heading}>Identity</div>
 
-      <div className={styles.field}>
-        <label className={styles.label}>Name</label>
+      <div className={shared.field}>
+        <label className={shared.label}>Name</label>
         <input
-          className={`${styles.input} ${styles.inputMono}`}
+          className={`${shared.input} ${shared.inputMono}`}
           type="text"
           value={value.name}
           onChange={(e) => onChange({ ...value, name: e.target.value })}
@@ -22,20 +23,20 @@ export function PolicyIdentitySection({ value, onChange }: PolicyIdentitySection
       </div>
 
       <div className={styles.inlineRow}>
-        <div className={styles.field}>
-          <label className={styles.label}>Description</label>
+        <div className={shared.field}>
+          <label className={shared.label}>Description</label>
           <input
-            className={styles.input}
+            className={shared.input}
             type="text"
             value={value.description}
             onChange={(e) => onChange({ ...value, description: e.target.value })}
           />
         </div>
 
-        <div className={styles.field}>
-          <label className={styles.label}>Folder</label>
+        <div className={shared.field}>
+          <label className={shared.label}>Folder</label>
           <input
-            className={styles.input}
+            className={shared.input}
             type="text"
             value={value.folder}
             placeholder="Ungrouped"

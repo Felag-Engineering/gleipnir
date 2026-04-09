@@ -1,3 +1,4 @@
+import shared from '../FormSections.module.css';
 import styles from '../TriggerSection.module.css';
 import type { PollCheckState, PollTriggerState, TriggerFormState } from '../types';
 
@@ -42,10 +43,10 @@ export function PollConfig({ value, onChange }: PollConfigProps) {
 
   return (
     <div className={styles.pollConfig}>
-      <div className={styles.field}>
-        <label className={styles.label}>Interval</label>
+      <div className={shared.field}>
+        <label className={shared.label}>Interval</label>
         <input
-          className={`${styles.input} ${styles.inputMono}`}
+          className={`${shared.input} ${shared.inputMono}`}
           type="text"
           value={value.interval}
           placeholder="5m"
@@ -53,8 +54,8 @@ export function PollConfig({ value, onChange }: PollConfigProps) {
         />
       </div>
 
-      <div className={styles.field}>
-        <label className={styles.label}>Match mode</label>
+      <div className={shared.field}>
+        <label className={shared.label}>Match mode</label>
         <div className={styles.matchRow}>
           <button
             className={value.match === 'all' ? `${styles.copyButton} ${styles.matchButtonActive}` : styles.copyButton}
@@ -89,10 +90,10 @@ export function PollConfig({ value, onChange }: PollConfigProps) {
               )}
             </div>
 
-            <div className={styles.field}>
-              <label className={styles.label}>Tool</label>
+            <div className={shared.field}>
+              <label className={shared.label}>Tool</label>
               <input
-                className={`${styles.input} ${styles.inputMono}`}
+                className={`${shared.input} ${shared.inputMono}`}
                 type="text"
                 value={check.tool}
                 placeholder="server.tool_name"
@@ -100,8 +101,8 @@ export function PollConfig({ value, onChange }: PollConfigProps) {
               />
             </div>
 
-            <div className={styles.field}>
-              <label className={styles.label}>Input (JSON, optional)</label>
+            <div className={shared.field}>
+              <label className={shared.label}>Input (JSON, optional)</label>
               <textarea
                 className={styles.textarea}
                 value={check.input}
@@ -110,10 +111,10 @@ export function PollConfig({ value, onChange }: PollConfigProps) {
               />
             </div>
 
-            <div className={styles.field}>
-              <label className={styles.label}>JSONPath</label>
+            <div className={shared.field}>
+              <label className={shared.label}>JSONPath</label>
               <input
-                className={`${styles.input} ${styles.inputMono}`}
+                className={`${shared.input} ${shared.inputMono}`}
                 type="text"
                 value={check.path}
                 placeholder="$.field.path"
@@ -122,8 +123,8 @@ export function PollConfig({ value, onChange }: PollConfigProps) {
             </div>
 
             <div className={styles.fieldRow}>
-              <div className={styles.field}>
-                <label className={styles.label}>Comparator</label>
+              <div className={shared.field}>
+                <label className={shared.label}>Comparator</label>
                 <select
                   className={styles.select}
                   value={check.comparator}
@@ -135,10 +136,10 @@ export function PollConfig({ value, onChange }: PollConfigProps) {
                 </select>
               </div>
 
-              <div className={styles.field}>
-                <label className={styles.label}>Value</label>
+              <div className={shared.field}>
+                <label className={shared.label}>Value</label>
                 <input
-                  className={`${styles.input} ${styles.inputMono}`}
+                  className={`${shared.input} ${shared.inputMono}`}
                   type="text"
                   value={check.value}
                   placeholder="expected value"
