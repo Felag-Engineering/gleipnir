@@ -1,7 +1,7 @@
 .spinner {
   display: inline-block;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border: 2px solid rgba(0, 0, 0, 0.2);
   border-top-color: var(--bg-canvas);
   border-radius: 50%;
@@ -11,8 +11,8 @@
 
 .spinnerDanger {
   display: inline-block;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border: 2px solid color-mix(in srgb, var(--color-red) 30%, transparent);
   border-top-color: var(--color-red);
   border-radius: 50%;

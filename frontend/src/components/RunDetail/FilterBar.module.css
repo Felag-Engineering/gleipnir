@@ -55,14 +55,14 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  height: 18px;
+  min-width: 20px;
+  height: 20px;
   padding: 0 var(--space-1);
   font-size: var(--text-xs);
   font-family: var(--font-mono);
   color: var(--text-muted);
   background: var(--bg-elevated);
-  border-radius: 9px;
+  border-radius: 10px;
 }
 
 .chip.active .badge {
