@@ -97,6 +97,7 @@ export const InvertedActiveStyle: Story = {
 
 export const Interactive: Story = {
   render: () => {
+    // Storybook render function runs as a component, so hooks are valid here.
     // eslint-disable-next-line react-hooks/rules-of-hooks
     const [active, setActive] = useState<FilterKey>('all')
     return <FilterBar active={active} counts={COUNTS} onChange={setActive} />

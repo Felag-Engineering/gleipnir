@@ -101,7 +101,9 @@ export function YamlEditor({ value, onChange, onValidityChange, readOnly = false
       view.destroy()
       editorViewRef.current = null
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    // Mount editor once; controlled value sync happens in the separate effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Sync value from outside (controlled component guard)
   useEffect(() => {

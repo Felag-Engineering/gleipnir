@@ -85,15 +85,6 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
     });
   }
 
-  function handleSearchOpen() {
-    setSearchOpen(true);
-  }
-
-  function handleSearchClose() {
-    setSearchOpen(false);
-    setQuery('');
-  }
-
   return (
     <div className={styles.section}>
       <div className={styles.heading}>Capabilities</div>
@@ -121,10 +112,10 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
           onQueryChange={setQuery}
           results={filteredRegistry}
           onAdd={handleAddTool}
-          onClose={handleSearchClose}
+          onClose={() => { setSearchOpen(false); setQuery(''); }}
         />
       ) : (
-        <button className={styles.addButton} onClick={handleSearchOpen}>
+        <button className={styles.addButton} onClick={() => setSearchOpen(true)}>
           + Add tool from registry
         </button>
       )}

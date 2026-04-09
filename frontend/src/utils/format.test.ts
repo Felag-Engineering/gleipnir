@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { formatDuration, formatDurationMs, formatTokens, formatTimestamp, formatTimeAgo, formatCountdown, computeRunDuration, formatDate } from '@/utils/format'
+import { formatDuration, formatDurationMs, formatTokens, formatTimestamp, formatTimeAgo, formatCountdown, computeRunDuration, formatDate, getPreferredTimezone } from '@/utils/format'
 
 describe('formatDuration', () => {
   it('returns — for null', () => {
@@ -25,6 +25,28 @@ describe('formatDuration', () => {
 
   it('formats 3661 seconds as 61m 1s', () => {
     expect(formatDuration(3661)).toBe('61m 1s')
+  })
+})
+
+describe('readStorageKey (via getPreferredTimezone)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('logs console.warn when localStorage.getItem throws', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage unavailable')
+    })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    getPreferredTimezone()
+
+    expect(warnSpy).toHaveBeenCalledOnce()
+    expect(warnSpy).toHaveBeenCalledWith(
+      'localStorage read failed for key',
+      'gleipnir-timezone',
+      expect.any(Error),
+    )
   })
 })
 

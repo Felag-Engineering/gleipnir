@@ -9,7 +9,8 @@ export type DateFormat = 'relative' | 'absolute' | 'iso'
 function readStorageKey(key: string): string | null {
   try {
     return localStorage.getItem(key)
-  } catch {
+  } catch (err) {
+    console.warn('localStorage read failed for key', key, err)
     return null
   }
 }
@@ -27,20 +28,20 @@ export function getPreferredDateFormat(): DateFormat {
 export function saveTimezonePreference(tz: string): void {
   try {
     localStorage.setItem(TZ_KEY, tz)
-  } catch {
-    // localStorage unavailable
+  } catch (err) {
+    console.warn('localStorage write failed for key', TZ_KEY, err)
   }
 }
 
 export function saveDateFormatPreference(fmt: DateFormat): void {
   try {
     localStorage.setItem(DATE_FORMAT_KEY, fmt)
-  } catch {
-    // localStorage unavailable
+  } catch (err) {
+    console.warn('localStorage write failed for key', DATE_FORMAT_KEY, err)
   }
 }
 
-export const formatDuration = (s: number | null) =>
+export const formatDuration = (s: number | null): string =>
   s == null ? '—' : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
 
 // formatDurationMs accepts milliseconds (e.g. from Date arithmetic) and delegates to formatDuration.
@@ -55,7 +56,7 @@ export function formatTokens(n: number): string {
   return String(n)
 }
 
-export const formatTimestamp = (iso: string) => {
+export const formatTimestamp = (iso: string): string => {
   try {
     const fmt = getPreferredDateFormat()
     const tz = getPreferredTimezone()
@@ -96,7 +97,7 @@ export const formatTimestamp = (iso: string) => {
   }
 }
 
-export const formatTimeAgo = (iso: string) => {
+export const formatTimeAgo = (iso: string): string => {
   const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
   if (m < 1) return 'just now'
   if (m < 60) return `${m}m ago`
@@ -104,7 +105,7 @@ export const formatTimeAgo = (iso: string) => {
   return h < 24 ? `${h}h ago` : new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
-export const formatCountdown = (expiresAt: string) => {
+export const formatCountdown = (expiresAt: string): { str: string; urgent: boolean } => {
   const secs = Math.max(0, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000))
   const m = Math.floor(secs / 60), s = secs % 60
   return { str: `${m}:${String(s).padStart(2, '0')}`, urgent: secs < 300 }

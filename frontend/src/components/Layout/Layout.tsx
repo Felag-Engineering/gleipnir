@@ -28,6 +28,7 @@ export default function Layout() {
   const { connectionState } = useSSE()
   const { data: currentUser } = useCurrentUser()
   const [menuOpen, setMenuOpen] = useState(false)
+  const handleMenuClose = useCallback(() => setMenuOpen(false), [])
   const { items: attentionItems } = useAttentionItems()
   const { data: mcpServers } = useMcpServers()
 
@@ -146,7 +147,7 @@ export default function Layout() {
         <div className={styles.sidebarFooterWrapper}>
           <UserMenu
             open={menuOpen}
-            onClose={useCallback(() => setMenuOpen(false), [])}
+            onClose={handleMenuClose}
           />
           <div
             className={collapsed ? `${styles.sidebarFooter} ${styles.sidebarFooterCollapsed}` : styles.sidebarFooter}
