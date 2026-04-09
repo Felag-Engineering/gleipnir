@@ -598,6 +598,89 @@ agent:
 	})
 }
 
+func TestLaunch_ToolResolutionFailure_PublishesEvent(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	registry := mcp.NewRegistry(store.Queries())
+	manager := trigger.NewRunManager()
+	pub := &testutil.RecordingPublisher{}
+	launcher := trigger.NewRunLauncher(store, registry, manager, nil, pub, 0)
+
+	const policyYAML = `
+name: tool-failure-event-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: nonexistent-server.some_tool
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: parallel
+`
+	insertTestPolicy(t, store, "p-tool-fail-evt", policyYAML)
+	parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("policy.Parse: %v", err)
+	}
+
+	_, launchErr := launcher.Launch(context.Background(), trigger.LaunchParams{
+		PolicyID:       "p-tool-fail-evt",
+		TriggerType:    model.TriggerTypeWebhook,
+		TriggerPayload: `{}`,
+		ParsedPolicy:   parsed,
+	})
+	if launchErr == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	events := pub.EventsByType("run.status_changed")
+	if len(events) == 0 {
+		t.Fatal("expected run.status_changed event on tool resolution failure, got none")
+	}
+}
+
+func TestLaunch_AgentConstructionFailure_PublishesEvent(t *testing.T) {
+	store, registry := setupIntegrationFixture(t)
+	manager := trigger.NewRunManager()
+	pub := &testutil.RecordingPublisher{}
+
+	agentErr := errors.New("deliberate construction failure")
+	launcher := trigger.NewRunLauncher(store, registry, manager, failingAgentFactory(agentErr), pub, 0)
+
+	const policyYAML = `
+name: agent-fail-event-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: stub-server.read_data
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: parallel
+`
+	insertTestPolicy(t, store, "p-agent-fail-evt", policyYAML)
+	parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		t.Fatalf("policy.Parse: %v", err)
+	}
+
+	_, launchErr := launcher.Launch(context.Background(), trigger.LaunchParams{
+		PolicyID:       "p-agent-fail-evt",
+		TriggerType:    model.TriggerTypeWebhook,
+		TriggerPayload: `{}`,
+		ParsedPolicy:   parsed,
+	})
+	if launchErr == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	events := pub.EventsByType("run.status_changed")
+	if len(events) == 0 {
+		t.Fatal("expected run.status_changed event on agent construction failure, got none")
+	}
+}
+
 // TestNewAgentFactory_ProviderLookup verifies that NewAgentFactory resolves the
 // correct LLMClient from the registry using the policy's Agent.Provider field,
 // and returns a descriptive error for unknown providers.

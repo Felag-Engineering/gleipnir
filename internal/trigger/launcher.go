@@ -171,15 +171,20 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		return LaunchResult{}, fmt.Errorf("create run for policy %q: %w", params.PolicyID, err)
 	}
 
+	sm := agent.NewRunStateMachine(run.ID, model.RunStatusPending, l.store.Queries(), agent.WithStateMachinePublisher(l.publisher))
+
 	resolvedTools, err := l.registry.ResolveForPolicy(ctx, params.ParsedPolicy)
 	if err != nil {
-		// Mark the run failed before returning — it was created but cannot proceed.
-		markRunFailed(l.store, run.ID, err)
+		// context.Background(): the HTTP request context that produced ctx may
+		// already be cancelled, but the DB write must complete so the run does
+		// not linger in 'pending' indefinitely.
+		if tErr := sm.Transition(context.Background(), model.RunStatusFailed, err.Error()); tErr != nil {
+			slog.Error("transition to failed on tool resolution error", "run_id", run.ID, "err", tErr)
+		}
 		return LaunchResult{}, err
 	}
 
 	audit := agent.NewAuditWriter(l.store.Queries(), agent.WithPublisher(l.publisher))
-	sm := agent.NewRunStateMachine(run.ID, model.RunStatusPending, l.store.Queries(), agent.WithStateMachinePublisher(l.publisher))
 
 	// Cap 1 so SendApproval/SendFeedback (non-blocking select) can deliver a
 	// decision that arrives in the narrow window between the agent unparking and
@@ -197,11 +202,12 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		DefaultFeedbackTimeout: l.defaultFeedbackTimeout,
 	})
 	if err != nil {
-		// Mark the run failed — it was created and tools resolved but agent
-		// construction failed (e.g. schema narrowing error). Without this,
-		// the run stays in 'pending' forever since ScanOrphanedRuns only
-		// rescues 'running', 'waiting_for_approval', and 'waiting_for_feedback' states.
-		markRunFailed(l.store, run.ID, err)
+		// context.Background(): the HTTP request context that produced ctx may
+		// already be cancelled, but the DB write must complete so the run does
+		// not linger in 'pending' indefinitely.
+		if tErr := sm.Transition(context.Background(), model.RunStatusFailed, err.Error()); tErr != nil {
+			slog.Error("transition to failed on agent construction error", "run_id", run.ID, "err", tErr)
+		}
 		if closeErr := audit.Close(); closeErr != nil {
 			slog.Error("audit writer drain error on failed launch", "run_id", run.ID, "err", closeErr)
 		}
@@ -315,22 +321,3 @@ func (l *RunLauncher) DrainQueue(ctx context.Context, policyID string, parsedPol
 	}
 }
 
-// markRunFailed transitions a run that was created but cannot proceed to the
-// failed state. Called on error paths after CreateRun succeeds so the run
-// does not linger in 'pending' indefinitely.
-func markRunFailed(store *db.Store, runID string, origErr error) {
-	failedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	errMsg := origErr.Error()
-	// context.Background() strategy: called on error paths after the HTTP request
-	// context may have been cancelled. The DB write must complete so the run does
-	// not linger in 'pending' indefinitely.
-	if err := store.UpdateRunError(context.Background(), db.UpdateRunErrorParams{
-		Status:      string(model.RunStatusFailed),
-		Error:       &errMsg,
-		CompletedAt: &failedAt,
-		ID:          runID,
-	}); err != nil {
-		slog.Error("mark run failed: persist status failed",
-			"run_id", runID, "cause", origErr, "err", err)
-	}
-}

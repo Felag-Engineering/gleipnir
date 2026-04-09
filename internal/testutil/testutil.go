@@ -4,7 +4,9 @@ package testutil
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -138,4 +140,37 @@ func InsertMcpServer(tb testing.TB, s *db.Store, id, name, url string) {
 	if err != nil {
 		tb.Fatalf("InsertMcpServer %s: %v", id, err)
 	}
+}
+
+// RecordingPublisher is a thread-safe event.Publisher that records all
+// published events for test assertions.
+type RecordingPublisher struct {
+	mu     sync.Mutex
+	Events []RecordedEvent
+}
+
+// RecordedEvent holds a single captured event type and its raw payload.
+type RecordedEvent struct {
+	Type string
+	Data json.RawMessage
+}
+
+// Publish records the event. It satisfies the event.Publisher interface.
+func (p *RecordingPublisher) Publish(eventType string, data json.RawMessage) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Events = append(p.Events, RecordedEvent{Type: eventType, Data: data})
+}
+
+// EventsByType returns all recorded events matching the given type.
+func (p *RecordingPublisher) EventsByType(eventType string) []RecordedEvent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []RecordedEvent
+	for _, e := range p.Events {
+		if e.Type == eventType {
+			out = append(out, e)
+		}
+	}
+	return out
 }
