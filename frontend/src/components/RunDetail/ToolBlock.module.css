@@ -6,9 +6,9 @@
 }
 
 .blockApproval {
-  border-color: rgba(240, 200, 48, 0.4);
-  background: linear-gradient(135deg, var(--bg-elevated), rgba(240, 200, 48, 0.05));
-  box-shadow: 0 0 20px rgba(240, 200, 48, 0.08);
+  border-color: color-mix(in srgb, var(--color-amber) 40%, transparent);
+  background: linear-gradient(135deg, var(--bg-elevated), color-mix(in srgb, var(--color-amber) 5%, transparent));
+  box-shadow: 0 0 20px color-mix(in srgb, var(--color-amber) 8%, transparent);
 }
 
 .blockError {
@@ -83,7 +83,7 @@
 .serverPill {
   background: var(--bg-elevated);
   border-radius: 12px;
-  padding: 2px var(--space-2);
+  padding: var(--space-1) var(--space-2);
   font-size: var(--text-xs);
   font-family: var(--font-mono);
   color: var(--text-faint);
@@ -116,7 +116,7 @@
   background: color-mix(in srgb, var(--color-amber) 15%, transparent);
   color: var(--color-amber);
   border-radius: 12px;
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   font-size: var(--text-xs);
   font-weight: 500;
 }
@@ -125,7 +125,7 @@
   background: color-mix(in srgb, var(--color-red) 15%, transparent);
   color: var(--color-red);
   border-radius: 12px;
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   font-size: var(--text-xs);
   font-weight: 500;
 }
@@ -180,10 +180,10 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: var(--space-3);
   background: color-mix(in srgb, var(--color-amber) 4%, var(--bg-surface));
   border-left: 1px solid var(--border-subtle);
-  padding: 16px;
+  padding: var(--space-4);
 }
 
 .awaitingText {

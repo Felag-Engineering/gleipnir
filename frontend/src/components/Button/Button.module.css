@@ -23,14 +23,14 @@
 }
 
 .primary {
-  background: linear-gradient(135deg, #d4915a, #c07a48);
-  box-shadow: 0 2px 8px rgba(212, 145, 90, 0.2);
+  background: linear-gradient(135deg, var(--color-blue), #c07a48);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-blue) 20%, transparent);
   color: var(--bg-canvas);
   border-color: transparent;
 }
 
 .primary:not(:disabled):hover {
-  background: linear-gradient(135deg, #e0a26e, #d4915a);
+  background: linear-gradient(135deg, var(--accent-hover), var(--color-blue));
   opacity: 1;
 }
 

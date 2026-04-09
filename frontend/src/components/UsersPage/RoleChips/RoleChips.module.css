@@ -28,9 +28,9 @@
 }
 
 .roleChipAdmin {
-  background: rgba(167, 139, 250, 0.15);
+  background: color-mix(in srgb, var(--color-purple) 15%, transparent);
   color: var(--color-purple);
-  border-color: rgba(167, 139, 250, 0.3);
+  border-color: color-mix(in srgb, var(--color-purple) 30%, transparent);
 }
 
 .roleChipOperator {
@@ -46,9 +46,9 @@
 }
 
 .roleChipAuditor {
-  background: rgba(52, 211, 153, 0.15);
+  background: color-mix(in srgb, var(--color-teal) 15%, transparent);
   color: var(--color-teal);
-  border-color: rgba(52, 211, 153, 0.3);
+  border-color: color-mix(in srgb, var(--color-teal) 30%, transparent);
 }
 
 .roleChipInactive {

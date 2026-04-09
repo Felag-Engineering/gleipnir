@@ -248,7 +248,7 @@
   border-radius: 50%;
   background: var(--color-green);
   border: 2px solid var(--bg-sidebar);
-  box-shadow: 0 0 8px rgba(74, 222, 106, 0.5);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-green) 50%, transparent);
 }
 
 .onlineDotCollapsed {
