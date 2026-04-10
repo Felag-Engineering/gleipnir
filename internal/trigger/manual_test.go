@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
@@ -76,7 +76,7 @@ func insertTestManualPolicy(t *testing.T, store *db.Store, policyID, yaml string
 func callManualHandler(t *testing.T, h *trigger.ManualTriggerHandler, policyID, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
-	r.Use(api.BodySizeLimit(api.MaxRequestBodySize))
+	r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
 	r.Post("/api/v1/policies/{policyID}/trigger", h.Handle)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/"+policyID+"/trigger", strings.NewReader(body))
@@ -250,7 +250,7 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	r := chi.NewRouter()
-	r.Use(api.BodySizeLimit(api.MaxRequestBodySize))
+	r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
 	r.Post("/api/v1/policies/{policyID}/trigger", h.Handle)
 	r.ServeHTTP(w, req)
 

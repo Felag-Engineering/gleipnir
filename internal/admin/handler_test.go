@@ -390,7 +390,7 @@ func TestDeleteProviderKey(t *testing.T) {
 	}
 }
 
-// stubLister satisfies api.ModelLister for ListAllModels tests.
+// stubLister satisfies llm.ModelLister for ListAllModels tests.
 type stubLister struct {
 	models  map[string][]llm.ModelInfo
 	listErr error

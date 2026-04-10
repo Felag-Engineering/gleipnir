@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
@@ -107,7 +107,7 @@ func callHandler(t *testing.T, h *trigger.WebhookHandler, policyID, body string)
 func callHandlerWithHeaders(t *testing.T, h *trigger.WebhookHandler, policyID, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
-	r.Use(api.BodySizeLimit(api.MaxRequestBodySize))
+	r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
 	r.Post("/api/v1/webhooks/{policyID}", h.Handle)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/"+policyID, strings.NewReader(body))

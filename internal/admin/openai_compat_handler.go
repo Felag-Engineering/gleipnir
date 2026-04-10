@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/rapp992/gleipnir/internal/api"
+	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/llm/openaicompat"
 )
@@ -124,14 +124,14 @@ func (h *OpenAICompatHandler) rowToResponse(row OpenAICompatRow) providerRespons
 func (h *OpenAICompatHandler) ListProviders(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.q.ListOpenAICompatProviders(r.Context())
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "failed to list providers", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list providers", err.Error())
 		return
 	}
 	out := make([]providerResponse, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, h.rowToResponse(row))
 	}
-	api.WriteJSON(w, http.StatusOK, out)
+	httputil.WriteJSON(w, http.StatusOK, out)
 }
 
 // GetProvider GET /api/v1/admin/openai-providers/{id}
@@ -142,17 +142,17 @@ func (h *OpenAICompatHandler) GetProvider(w http.ResponseWriter, r *http.Request
 	}
 	row, err := h.q.GetOpenAICompatProviderByID(r.Context(), id)
 	if err != nil {
-		api.WriteError(w, http.StatusNotFound, "provider not found", "")
+		httputil.WriteError(w, http.StatusNotFound, "provider not found", "")
 		return
 	}
-	api.WriteJSON(w, http.StatusOK, h.rowToResponse(row))
+	httputil.WriteJSON(w, http.StatusOK, h.rowToResponse(row))
 }
 
 func parseID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	raw := chi.URLParam(r, "id")
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid id", raw)
+		httputil.WriteError(w, http.StatusBadRequest, "invalid id", raw)
 		return 0, false
 	}
 	return id, true
@@ -210,36 +210,36 @@ func (h *OpenAICompatHandler) CreateProvider(w http.ResponseWriter, r *http.Requ
 
 	var body createRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid JSON body", err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid JSON body", err.Error())
 		return
 	}
 	if err := validateNameFormat(body.Name); err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
 		return
 	}
 	base, err := validateBaseURL(body.BaseURL)
 	if err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
 		return
 	}
 	if body.APIKey == "" {
-		api.WriteError(w, http.StatusBadRequest, "api_key is required", "")
+		httputil.WriteError(w, http.StatusBadRequest, "api_key is required", "")
 		return
 	}
 	// Any error from GetOpenAICompatProviderByName is treated as "name available" for v1.
 	if _, err := h.q.GetOpenAICompatProviderByName(ctx, body.Name); err == nil {
-		api.WriteError(w, http.StatusConflict, "name already in use", "")
+		httputil.WriteError(w, http.StatusConflict, "name already in use", "")
 		return
 	}
 	modelsAvail, err := h.tester(ctx, base, body.APIKey)
 	if err != nil {
-		api.WriteError(w, http.StatusBadRequest,
+		httputil.WriteError(w, http.StatusBadRequest,
 			fmt.Sprintf("connection test failed: %v", err), "")
 		return
 	}
 	enc, err := Encrypt(h.encKey, body.APIKey)
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "encryption failed", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "encryption failed", "")
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -251,7 +251,7 @@ func (h *OpenAICompatHandler) CreateProvider(w http.ResponseWriter, r *http.Requ
 		UpdatedAt:       now,
 	})
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "failed to create provider", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create provider", err.Error())
 		return
 	}
 	// Only mutate the registry after the DB write succeeds.
@@ -259,7 +259,7 @@ func (h *OpenAICompatHandler) CreateProvider(w http.ResponseWriter, r *http.Requ
 	h.registry.Register(body.Name, client)
 	h.modelsAvail[body.Name] = modelsAvail
 
-	api.WriteJSON(w, http.StatusCreated, h.rowToResponse(row))
+	httputil.WriteJSON(w, http.StatusCreated, h.rowToResponse(row))
 }
 
 // UpdateProvider PUT /api/v1/admin/openai-providers/{id}
@@ -270,22 +270,22 @@ func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Requ
 	}
 	var body createRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid JSON body", err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid JSON body", err.Error())
 		return
 	}
 	if err := validateNameFormat(body.Name); err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
 		return
 	}
 	base, err := validateBaseURL(body.BaseURL)
 	if err != nil {
-		api.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
 		return
 	}
 
 	existing, err := h.q.GetOpenAICompatProviderByID(r.Context(), id)
 	if err != nil {
-		api.WriteError(w, http.StatusNotFound, "provider not found", "")
+		httputil.WriteError(w, http.StatusNotFound, "provider not found", "")
 		return
 	}
 
@@ -293,7 +293,7 @@ func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Requ
 	// row updating only its base_url or key does not collide with itself.
 	if body.Name != existing.Name {
 		if _, err := h.q.GetOpenAICompatProviderByName(r.Context(), body.Name); err == nil {
-			api.WriteError(w, http.StatusConflict, "name already in use", "")
+			httputil.WriteError(w, http.StatusConflict, "name already in use", "")
 			return
 		}
 	}
@@ -309,7 +309,7 @@ func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Requ
 	if isMaskedKey(body.APIKey) || body.APIKey == "" {
 		plain, err := Decrypt(h.encKey, existing.APIKeyEncrypted)
 		if err != nil {
-			api.WriteError(w, http.StatusInternalServerError, "could not decrypt existing key", "")
+			httputil.WriteError(w, http.StatusInternalServerError, "could not decrypt existing key", "")
 			return
 		}
 		effectiveKey = plain
@@ -318,7 +318,7 @@ func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Requ
 		effectiveKey = body.APIKey
 		enc, err := Encrypt(h.encKey, body.APIKey)
 		if err != nil {
-			api.WriteError(w, http.StatusInternalServerError, "encryption failed", "")
+			httputil.WriteError(w, http.StatusInternalServerError, "encryption failed", "")
 			return
 		}
 		newCiphertext = enc
@@ -326,7 +326,7 @@ func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Requ
 
 	modelsAvail, err := h.tester(r.Context(), base, effectiveKey)
 	if err != nil {
-		api.WriteError(w, http.StatusBadRequest,
+		httputil.WriteError(w, http.StatusBadRequest,
 			fmt.Sprintf("connection test failed: %v", err), "")
 		return
 	}
@@ -341,7 +341,7 @@ func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Requ
 		UpdatedAt:       now,
 	})
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "failed to update provider", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update provider", err.Error())
 		return
 	}
 
@@ -356,7 +356,7 @@ func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Requ
 	h.registry.Register(body.Name, client)
 	h.modelsAvail[body.Name] = modelsAvail
 
-	api.WriteJSON(w, http.StatusOK, h.rowToResponse(updated))
+	httputil.WriteJSON(w, http.StatusOK, h.rowToResponse(updated))
 }
 
 // DeleteProvider DELETE /api/v1/admin/openai-providers/{id}
@@ -367,11 +367,11 @@ func (h *OpenAICompatHandler) DeleteProvider(w http.ResponseWriter, r *http.Requ
 	}
 	existing, err := h.q.GetOpenAICompatProviderByID(r.Context(), id)
 	if err != nil {
-		api.WriteError(w, http.StatusNotFound, "provider not found", "")
+		httputil.WriteError(w, http.StatusNotFound, "provider not found", "")
 		return
 	}
 	if err := h.q.DeleteOpenAICompatProvider(r.Context(), id); err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "failed to delete", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete", err.Error())
 		return
 	}
 	// Registry mutation after DB delete succeeds — same order as create/update.
@@ -388,18 +388,18 @@ func (h *OpenAICompatHandler) TestProvider(w http.ResponseWriter, r *http.Reques
 	}
 	existing, err := h.q.GetOpenAICompatProviderByID(r.Context(), id)
 	if err != nil {
-		api.WriteError(w, http.StatusNotFound, "provider not found", "")
+		httputil.WriteError(w, http.StatusNotFound, "provider not found", "")
 		return
 	}
 	plain, err := Decrypt(h.encKey, existing.APIKeyEncrypted)
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "could not decrypt key", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "could not decrypt key", "")
 		return
 	}
 	modelsAvail, err := h.tester(r.Context(), existing.BaseURL, plain)
 	if err != nil {
 		// HTTP 200 — tester failure is data, not an HTTP-level error.
-		api.WriteJSON(w, http.StatusOK, map[string]any{
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
 			"ok":                        false,
 			"models_endpoint_available": false,
 			"error":                     err.Error(),
@@ -407,7 +407,7 @@ func (h *OpenAICompatHandler) TestProvider(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	h.modelsAvail[existing.Name] = modelsAvail
-	api.WriteJSON(w, http.StatusOK, map[string]any{
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok":                        true,
 		"models_endpoint_available": modelsAvail,
 	})

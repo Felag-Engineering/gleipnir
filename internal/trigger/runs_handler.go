@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/event"
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -89,7 +89,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	var status interface{}
 	if v := q.Get("status"); v != "" {
 		if !model.RunStatus(v).Valid() {
-			api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid status %q: must be one of pending, running, complete, failed, waiting_for_approval, waiting_for_feedback, interrupted", v), "")
+			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid status %q: must be one of pending, running, complete, failed, waiting_for_approval, waiting_for_feedback, interrupted", v), "")
 			return
 		}
 		status = v
@@ -98,7 +98,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	var since interface{}
 	if v := q.Get("since"); v != "" {
 		if _, err := time.Parse(time.RFC3339, v); err != nil {
-			api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid since %q: must be RFC3339", v), "")
+			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid since %q: must be RFC3339", v), "")
 			return
 		}
 		since = v
@@ -107,7 +107,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	var until interface{}
 	if v := q.Get("until"); v != "" {
 		if _, err := time.Parse(time.RFC3339, v); err != nil {
-			api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid until %q: must be RFC3339", v), "")
+			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid until %q: must be RFC3339", v), "")
 			return
 		}
 		until = v
@@ -122,7 +122,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	case "started_at", "started", "duration", "token_cost":
 		// valid
 	default:
-		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid sort %q: must be one of started_at, duration, token_cost", sort), "")
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid sort %q: must be one of started_at, duration, token_cost", sort), "")
 		return
 	}
 
@@ -131,7 +131,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 		order = "desc"
 	}
 	if order != "asc" && order != "desc" {
-		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order), "")
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order), "")
 		return
 	}
 
@@ -184,7 +184,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Error("ListRuns query failed", "err", err)
-		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
@@ -196,7 +196,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		slog.Error("CountRuns query failed", "err", err)
-		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
@@ -224,7 +224,7 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 		result = append(result, s)
 	}
 
-	api.WriteJSON(w, http.StatusOK, PaginatedRunsResponse{Runs: result, Total: total})
+	httputil.WriteJSON(w, http.StatusOK, PaginatedRunsResponse{Runs: result, Total: total})
 }
 
 // Get handles GET /api/v1/runs/{runID}.
@@ -234,12 +234,12 @@ func (h *RunsHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	run, err := h.store.GetRun(ctx, runID)
 	if errors.Is(err, sql.ErrNoRows) {
-		api.WriteError(w, http.StatusNotFound, "run not found", "")
+		httputil.WriteError(w, http.StatusNotFound, "run not found", "")
 		return
 	}
 	if err != nil {
 		slog.Error("GetRun query failed", "run_id", runID, "err", err)
-		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
@@ -255,7 +255,7 @@ func (h *RunsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("GetPolicy for run detail failed", "policy_id", run.PolicyID, "err", err)
 	}
 
-	api.WriteJSON(w, http.StatusOK, summary)
+	httputil.WriteJSON(w, http.StatusOK, summary)
 }
 
 // ListSteps handles GET /api/v1/runs/{runID}/steps.
@@ -267,18 +267,18 @@ func (h *RunsHandler) ListSteps(w http.ResponseWriter, r *http.Request) {
 	// need a separate existence check to distinguish "no steps" from "no run".
 	if _, err := h.store.GetRun(ctx, runID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			api.WriteError(w, http.StatusNotFound, "run not found", "")
+			httputil.WriteError(w, http.StatusNotFound, "run not found", "")
 			return
 		}
 		slog.Error("GetRun query failed", "run_id", runID, "err", err)
-		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
 	steps, err := h.store.ListRunSteps(ctx, runID)
 	if err != nil {
 		slog.Error("ListRunSteps query failed", "run_id", runID, "err", err)
-		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
@@ -295,7 +295,7 @@ func (h *RunsHandler) ListSteps(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	api.WriteJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 // Cancel handles POST /api/v1/runs/{runID}/cancel.
@@ -306,20 +306,20 @@ func (h *RunsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := h.store.GetRun(r.Context(), runID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			api.WriteError(w, http.StatusNotFound, "run not found", "")
+			httputil.WriteError(w, http.StatusNotFound, "run not found", "")
 			return
 		}
 		slog.Error("GetRun query failed", "run_id", runID, "err", err)
-		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
 	if err := h.manager.Cancel(runID); err != nil {
-		api.WriteError(w, http.StatusConflict, "run is not in a cancellable state", "")
+		httputil.WriteError(w, http.StatusConflict, "run is not in a cancellable state", "")
 		return
 	}
 
-	api.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID})
+	httputil.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID})
 }
 
 // SubmitApproval handles POST /api/v1/runs/{runID}/approval.
@@ -332,26 +332,26 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 
 	var req ApprovalDecisionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
 	if req.Decision != "approved" && req.Decision != "denied" {
-		api.WriteError(w, http.StatusBadRequest, `decision must be "approved" or "denied"`, req.Decision)
+		httputil.WriteError(w, http.StatusBadRequest, `decision must be "approved" or "denied"`, req.Decision)
 		return
 	}
 
 	if _, err := h.store.GetRun(ctx, runID); errors.Is(err, sql.ErrNoRows) {
-		api.WriteError(w, http.StatusNotFound, "run not found", "")
+		httputil.WriteError(w, http.StatusNotFound, "run not found", "")
 		return
 	} else if err != nil {
 		slog.Error("GetRun query failed", "run_id", runID, "err", err)
-		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
 	approved := req.Decision == "approved"
 	if err := h.manager.SendApproval(runID, approved); err != nil {
-		api.WriteError(w, http.StatusConflict, "no active approval gate for this run", "")
+		httputil.WriteError(w, http.StatusConflict, "no active approval gate for this run", "")
 		return
 	}
 
@@ -383,7 +383,7 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 		} else if rows == 0 {
 			// The scanner already resolved this request (e.g. timeout raced with the
 			// operator's decision). Return 409 so the caller knows the action is too late.
-			api.WriteError(w, http.StatusConflict, "approval request already resolved", approvalID)
+			httputil.WriteError(w, http.StatusConflict, "approval request already resolved", approvalID)
 			return
 		}
 	}
@@ -398,7 +398,7 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	api.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID, "decision": req.Decision})
+	httputil.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID, "decision": req.Decision})
 }
 
 // SubmitFeedback handles POST /api/v1/runs/{runID}/feedback.
@@ -411,25 +411,25 @@ func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 
 	var req FeedbackDecisionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
 	if req.Response == "" {
-		api.WriteError(w, http.StatusBadRequest, "response must not be empty", "")
+		httputil.WriteError(w, http.StatusBadRequest, "response must not be empty", "")
 		return
 	}
 
 	if _, err := h.store.GetRun(ctx, runID); errors.Is(err, sql.ErrNoRows) {
-		api.WriteError(w, http.StatusNotFound, "run not found", "")
+		httputil.WriteError(w, http.StatusNotFound, "run not found", "")
 		return
 	} else if err != nil {
 		slog.Error("GetRun query failed", "run_id", runID, "err", err)
-		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
 	if err := h.manager.SendFeedback(runID, req.Response); err != nil {
-		api.WriteError(w, http.StatusConflict, "no active feedback gate for this run", "")
+		httputil.WriteError(w, http.StatusConflict, "no active feedback gate for this run", "")
 		return
 	}
 
@@ -455,7 +455,7 @@ func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 		} else if rows == 0 {
 			// The scanner already resolved this request (timeout raced with the
 			// operator's response). Return 409 so the caller knows the action is too late.
-			api.WriteError(w, http.StatusConflict, "feedback request already resolved", feedbackID)
+			httputil.WriteError(w, http.StatusConflict, "feedback request already resolved", feedbackID)
 			return
 		}
 	}
@@ -469,7 +469,7 @@ func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	api.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID})
+	httputil.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID})
 }
 
 func toRunSummary(r db.Run) RunSummary {

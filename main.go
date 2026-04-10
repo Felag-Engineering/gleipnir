@@ -12,9 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/rapp992/gleipnir/frontend"
 	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/approval"
@@ -28,8 +25,6 @@ import (
 	openaillm "github.com/rapp992/gleipnir/internal/llm/openai"
 	openaicompatllm "github.com/rapp992/gleipnir/internal/llm/openaicompat"
 	"github.com/rapp992/gleipnir/internal/mcp"
-	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/policy"
 	"github.com/rapp992/gleipnir/internal/sse"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
@@ -83,12 +78,6 @@ func run(cfg config.Config) error {
 		return fmt.Errorf("scan orphaned runs: %w", err)
 	}
 
-	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
-
 	broadcaster := sse.NewBroadcaster()
 	sseHandler := sse.NewHandler(broadcaster)
 
@@ -105,9 +94,6 @@ func run(cfg config.Config) error {
 		feedback.WithPublisher(broadcaster),
 	)
 	feedbackScanner.Start(ctx)
-	// SSE events are unprotected so the UI can receive events before auth UI is
-	// implemented (follow-up issues will add login/logout).
-	r.Get("/api/v1/events", sseHandler.ServeHTTP)
 
 	registry := mcp.NewRegistry(store.Queries(), mcp.WithMCPTimeout(cfg.MCPTimeout))
 	runManager := trigger.NewRunManager()
@@ -207,10 +193,7 @@ func run(cfg config.Config) error {
 
 	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(providerRegistry), broadcaster, cfg.DefaultFeedbackTimeout)
 
-	// Webhooks are unprotected — they are called by external systems with their
-	// own secret-based authentication (policy.trigger.secret in the policy YAML).
 	webhookHandler := trigger.NewWebhookHandler(store, launcher)
-	r.With(middleware.Throttle(10), api.BodySizeLimit(api.MaxRequestBodySize)).Post("/api/v1/webhooks/{policyID}", webhookHandler.Handle)
 
 	scheduler := trigger.NewScheduler(store, launcher)
 	if err := scheduler.Start(ctx); err != nil {
@@ -224,92 +207,26 @@ func run(cfg config.Config) error {
 
 	authHandler := auth.NewHandler(store.Queries(), store.DB())
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
-	r.Route("/api/v1/auth", func(r chi.Router) {
-		r.Get("/status", authHandler.Status)
-		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/setup", authHandler.Setup)
-		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/login", authHandler.Login)
-		r.Post("/logout", authHandler.Logout)
+
+	r := api.BuildRouter(api.RouterConfig{
+		Store:               store,
+		Broadcaster:         broadcaster,
+		Registry:            registry,
+		RunManager:          runManager,
+		Launcher:            launcher,
+		ModelLister:         providerRegistry,
+		ProviderRegistry:    providerRegistry,
+		ModelFilter:         &modelFilterAdapter{q: store.Queries()},
+		AuthHandler:         authHandler,
+		SettingsHandler:     settingsHandler,
+		AdminHandler:        adminHandler,
+		OpenAICompatHandler: openaiCompatHandler,
+		WebhookHandler:      webhookHandler,
+		SSEHandler:          sseHandler,
+		Version:             version,
+		StartTime:           startTime,
+		DBPath:              cfg.DBPath,
 	})
-
-	requireAuth := auth.RequireAuth(store.Queries())
-
-	// Protected routes: all UI-facing API endpoints require a valid session cookie.
-	r.Group(func(r chi.Router) {
-		r.Use(requireAuth)
-
-		r.Get("/api/v1/auth/me", authHandler.Me)
-		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/api/v1/auth/password", authHandler.ChangePasswordHandler)
-		r.Get("/api/v1/auth/sessions", authHandler.ListSessionsHandler)
-		r.Delete("/api/v1/auth/sessions/{sessionID}", authHandler.RevokeSessionHandler)
-
-		r.Get("/api/v1/settings/preferences", settingsHandler.GetPreferences)
-		r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Put("/api/v1/settings/preferences", settingsHandler.UpdatePreferences)
-
-		r.Route("/api/v1/users", func(r chi.Router) {
-			r.Use(auth.RequireRole(model.RoleAdmin))
-			r.Get("/", authHandler.ListUsersHandler)
-			r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Post("/", authHandler.CreateUserHandler)
-			r.With(api.BodySizeLimit(api.MaxRequestBodySize)).Patch("/{id}", authHandler.UpdateUserHandler)
-		})
-
-		manualTriggerHandler := trigger.NewManualTriggerHandler(store, launcher)
-		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleOperator)).Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
-
-		runsHandler := trigger.NewRunsHandler(store, runManager, broadcaster)
-		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs", runsHandler.List)
-		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}", runsHandler.Get)
-		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)
-		r.With(auth.RequireRole(model.RoleOperator)).Post("/api/v1/runs/{runID}/cancel", runsHandler.Cancel)
-		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleApprover)).Post("/api/v1/runs/{runID}/approval", runsHandler.SubmitApproval)
-		r.With(api.BodySizeLimit(api.MaxRequestBodySize), auth.RequireRole(model.RoleApprover, model.RoleOperator)).Post("/api/v1/runs/{runID}/feedback", runsHandler.SubmitFeedback)
-
-		policySvc := policy.NewService(store, nil, providerRegistry, providerRegistry, adminHandler)
-
-		// Mount /api/v1/policies, /api/v1/mcp, /api/v1/stats, and /api/v1/health route groups.
-		r.Mount("/api/v1", api.NewRouter(store, policySvc, registry, providerRegistry, &modelFilterAdapter{q: store.Queries()}))
-
-		r.Route("/api/v1/admin", func(r chi.Router) {
-			r.Use(auth.RequireRole(model.RoleAdmin))
-			r.Use(api.BodySizeLimit(api.MaxRequestBodySize))
-			r.Get("/providers", adminHandler.ListProviders)
-			r.Put("/providers/{name}/key", adminHandler.SetProviderKey)
-			r.Delete("/providers/{name}/key", adminHandler.DeleteProviderKey)
-			r.Get("/settings", adminHandler.GetSettings)
-			r.Put("/settings", adminHandler.UpdateSettings)
-			r.Get("/models", adminHandler.ListModelsAdmin)
-			r.Get("/models/all", adminHandler.ListAllModels(providerRegistry))
-			r.Put("/models/{id}/enabled", adminHandler.SetModelEnabled)
-			r.Get("/system-info", admin.GetSystemInfo(admin.SystemInfoDeps{
-				Version:   version,
-				StartTime: startTime,
-				DBPath:    cfg.DBPath,
-				CountMCPServers: func(ctx context.Context) (int, error) {
-					n, err := store.Queries().CountMCPServers(ctx)
-					return int(n), err
-				},
-				CountPolicies: func(ctx context.Context) (int, error) {
-					n, err := store.Queries().CountPolicies(ctx)
-					return int(n), err
-				},
-				CountUsers: func(ctx context.Context) (int, error) {
-					n, err := store.Queries().CountUsers(ctx)
-					return int(n), err
-				},
-			}))
-
-			r.Route("/openai-providers", func(r chi.Router) {
-				r.Get("/", openaiCompatHandler.ListProviders)
-				r.Post("/", openaiCompatHandler.CreateProvider)
-				r.Get("/{id}", openaiCompatHandler.GetProvider)
-				r.Put("/{id}", openaiCompatHandler.UpdateProvider)
-				r.Delete("/{id}", openaiCompatHandler.DeleteProvider)
-				r.Post("/{id}/test", openaiCompatHandler.TestProvider)
-			})
-		})
-	})
-
-	// Serve the embedded React SPA for all non-API routes.
-	r.Handle("/*", frontend.NewSPAHandler())
 
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,

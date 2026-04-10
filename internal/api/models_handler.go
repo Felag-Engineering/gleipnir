@@ -7,14 +7,9 @@ import (
 	"github.com/rapp992/gleipnir/internal/llm"
 )
 
-// ModelLister is the subset of llm.ProviderRegistry used by ModelsHandler.
-// Defined as an interface so the api package does not depend on the concrete registry.
-type ModelLister interface {
-	ListModels(ctx context.Context, provider string) ([]llm.ModelInfo, error)
-	ListAllModels(ctx context.Context) (map[string][]llm.ModelInfo, error)
-	InvalidateModelCache(provider string) error
-	InvalidateAllModelCaches()
-}
+// ModelLister is an alias for llm.ModelLister, kept here so existing callers
+// that reference api.ModelLister continue to compile without changes.
+type ModelLister = llm.ModelLister
 
 // EnabledModel identifies a model that has been explicitly enabled by an admin.
 type EnabledModel struct {

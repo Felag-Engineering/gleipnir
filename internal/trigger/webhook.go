@@ -10,8 +10,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
 )
@@ -44,12 +44,12 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		api.WriteError(w, http.StatusBadRequest, "failed to read body", "")
+		httputil.WriteError(w, http.StatusBadRequest, "failed to read body", "")
 		return
 	}
 
 	if !json.Valid(body) {
-		api.WriteError(w, http.StatusBadRequest, "request body must be valid JSON", "")
+		httputil.WriteError(w, http.StatusBadRequest, "request body must be valid JSON", "")
 		return
 	}
 
@@ -58,16 +58,16 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	dbPolicy, err := h.store.GetPolicy(ctx, policyID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			api.WriteError(w, http.StatusNotFound, "policy not found", "")
+			httputil.WriteError(w, http.StatusNotFound, "policy not found", "")
 			return
 		}
-		api.WriteError(w, http.StatusInternalServerError, "failed to load policy", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to load policy", "")
 		return
 	}
 
 	parsed, err := policy.Parse(dbPolicy.Yaml, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "failed to parse policy", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse policy", "")
 		return
 	}
 
@@ -75,9 +75,9 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		sigHeader := r.Header.Get(SignatureHeader)
 		if err := ValidateSignature(parsed.Trigger.WebhookSecret, body, sigHeader); err != nil {
 			if errors.Is(err, errMissingSignature) {
-				api.WriteError(w, http.StatusUnauthorized, "missing signature", "")
+				httputil.WriteError(w, http.StatusUnauthorized, "missing signature", "")
 			} else {
-				api.WriteError(w, http.StatusForbidden, "invalid signature", "")
+				httputil.WriteError(w, http.StatusForbidden, "invalid signature", "")
 			}
 			return
 		}
@@ -86,7 +86,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if err := h.launcher.CheckConcurrency(ctx, policyID, parsed.Agent.Concurrency); err != nil {
 		switch {
 		case errors.Is(err, ErrConcurrencySkipActive):
-			api.WriteError(w, http.StatusConflict, "run already active for this policy (concurrency: skip)", "")
+			httputil.WriteError(w, http.StatusConflict, "run already active for this policy (concurrency: skip)", "")
 		case errors.Is(err, ErrConcurrencyQueueActive):
 			if enqErr := h.launcher.Enqueue(ctx, LaunchParams{
 				PolicyID:       policyID,
@@ -95,20 +95,20 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				ParsedPolicy:   parsed,
 			}, parsed.Agent.QueueDepth); enqErr != nil {
 				if errors.Is(enqErr, ErrConcurrencyQueueFull) {
-					api.WriteError(w, http.StatusTooManyRequests, "trigger queue is full", "")
+					httputil.WriteError(w, http.StatusTooManyRequests, "trigger queue is full", "")
 				} else {
 					slog.ErrorContext(ctx, "webhook: failed to enqueue trigger", "policy_id", policyID, "err", enqErr)
-					api.WriteError(w, http.StatusInternalServerError, "failed to enqueue trigger", "")
+					httputil.WriteError(w, http.StatusInternalServerError, "failed to enqueue trigger", "")
 				}
 				return
 			}
-			api.WriteJSON(w, http.StatusAccepted, map[string]any{"queued": true})
+			httputil.WriteJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 			return
 		case errors.Is(err, ErrConcurrencyUnrecognised):
-			api.WriteError(w, http.StatusInternalServerError, "unrecognised concurrency policy", "")
+			httputil.WriteError(w, http.StatusInternalServerError, "unrecognised concurrency policy", "")
 		default:
 			slog.ErrorContext(ctx, "webhook: failed to check active runs", "policy_id", policyID, "err", err)
-			api.WriteError(w, http.StatusInternalServerError, "failed to check active runs", "")
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to check active runs", "")
 		}
 		return
 	}
@@ -120,9 +120,9 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		ParsedPolicy:   parsed,
 	})
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "failed to launch run", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to launch run", "")
 		return
 	}
 
-	api.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": result.RunID})
+	httputil.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": result.RunID})
 }

@@ -12,7 +12,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/rapp992/gleipnir/internal/api"
+	"github.com/rapp992/gleipnir/internal/httputil"
+	"github.com/rapp992/gleipnir/internal/llm"
 )
 
 var ErrNotFound = sql.ErrNoRows
@@ -99,14 +100,14 @@ func (h *Handler) ListProviders(w http.ResponseWriter, r *http.Request) {
 		statuses = append(statuses, ps)
 	}
 
-	api.WriteJSON(w, http.StatusOK, statuses)
+	httputil.WriteJSON(w, http.StatusOK, statuses)
 }
 
 // SetProviderKey encrypts and stores an API key for the given provider.
 func (h *Handler) SetProviderKey(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if !h.isKnownProvider(name) {
-		api.WriteError(w, http.StatusBadRequest, "unknown provider", "")
+		httputil.WriteError(w, http.StatusBadRequest, "unknown provider", "")
 		return
 	}
 
@@ -114,46 +115,46 @@ func (h *Handler) SetProviderKey(w http.ResponseWriter, r *http.Request) {
 		Key string `json:"key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid JSON body", "")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid JSON body", "")
 		return
 	}
 	if body.Key == "" {
-		api.WriteError(w, http.StatusBadRequest, "key is required", "")
+		httputil.WriteError(w, http.StatusBadRequest, "key is required", "")
 		return
 	}
 
 	if h.configureProvider != nil {
 		if err := h.configureProvider(r.Context(), name, body.Key); err != nil {
-			api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("provider configuration failed: %v", err), "")
+			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("provider configuration failed: %v", err), "")
 			return
 		}
 	}
 
 	encrypted, err := Encrypt(h.encryptionKey, body.Key)
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "encryption failed", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "encryption failed", "")
 		return
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	if err := h.q.UpsertSystemSetting(r.Context(), name+"_api_key", encrypted, now); err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "failed to save key", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to save key", "")
 		return
 	}
 
-	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // DeleteProviderKey removes an API key for the given provider.
 func (h *Handler) DeleteProviderKey(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if !h.isKnownProvider(name) {
-		api.WriteError(w, http.StatusBadRequest, "unknown provider", "")
+		httputil.WriteError(w, http.StatusBadRequest, "unknown provider", "")
 		return
 	}
 
 	if err := h.q.DeleteSystemSetting(r.Context(), name+"_api_key"); err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "failed to delete key", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete key", "")
 		return
 	}
 
@@ -161,14 +162,14 @@ func (h *Handler) DeleteProviderKey(w http.ResponseWriter, r *http.Request) {
 		h.removeProvider(name)
 	}
 
-	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // GetSettings returns all system settings except API keys.
 func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.q.ListSystemSettings(r.Context())
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "failed to list settings", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list settings", "")
 		return
 	}
 
@@ -180,20 +181,20 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 		settings[row.Key] = row.Value
 	}
 
-	api.WriteJSON(w, http.StatusOK, settings)
+	httputil.WriteJSON(w, http.StatusOK, settings)
 }
 
 // UpdateSettings upserts system settings, rejecting any _api_key keys.
 func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var body map[string]string
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid JSON body", "")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid JSON body", "")
 		return
 	}
 
 	for key := range body {
 		if strings.HasSuffix(key, "_api_key") {
-			api.WriteError(w, http.StatusBadRequest, "cannot set API keys through settings endpoint", "")
+			httputil.WriteError(w, http.StatusBadRequest, "cannot set API keys through settings endpoint", "")
 			return
 		}
 	}
@@ -204,19 +205,19 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	for key, value := range body {
 		if err := h.q.UpsertSystemSetting(r.Context(), key, value, now); err != nil {
-			api.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save setting %q", key), "")
+			httputil.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save setting %q", key), "")
 			return
 		}
 	}
 
-	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // ListModelsAdmin returns all model settings.
 func (h *Handler) ListModelsAdmin(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.q.ListModelSettings(r.Context())
 	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "failed to list models", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list models", "")
 		return
 	}
 
@@ -237,26 +238,26 @@ func (h *Handler) ListModelsAdmin(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	api.WriteJSON(w, http.StatusOK, models)
+	httputil.WriteJSON(w, http.StatusOK, models)
 }
 
 // ListAllModels handles GET /api/v1/admin/models/all.
 // It returns every model from every registered provider joined with their
 // enabled state from model_settings. Models with no row in model_settings
 // default to enabled=false (new/unseen models are disabled by default).
-func (h *Handler) ListAllModels(lister api.ModelLister) http.HandlerFunc {
+func (h *Handler) ListAllModels(lister llm.ModelLister) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
 		all, err := lister.ListAllModels(ctx)
 		if err != nil {
-			api.WriteError(w, http.StatusInternalServerError, "failed to list models", "")
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to list models", "")
 			return
 		}
 
 		enabledRows, err := h.q.ListEnabledModels(ctx)
 		if err != nil {
-			api.WriteError(w, http.StatusInternalServerError, "failed to load model settings", "")
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to load model settings", "")
 			return
 		}
 
@@ -285,7 +286,7 @@ func (h *Handler) ListAllModels(lister api.ModelLister) http.HandlerFunc {
 			}
 		}
 
-		api.WriteJSON(w, http.StatusOK, result)
+		httputil.WriteJSON(w, http.StatusOK, result)
 	}
 }
 
@@ -298,7 +299,7 @@ func (h *Handler) SetModelEnabled(w http.ResponseWriter, r *http.Request) {
 		Enabled  bool   `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "invalid JSON body", "")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid JSON body", "")
 		return
 	}
 
@@ -308,7 +309,7 @@ func (h *Handler) SetModelEnabled(w http.ResponseWriter, r *http.Request) {
 			defaultVal := defaultRow.Value
 			candidate := body.Provider + ":" + modelID
 			if defaultVal == candidate {
-				api.WriteError(w, http.StatusConflict, "cannot disable the current default model", "")
+				httputil.WriteError(w, http.StatusConflict, "cannot disable the current default model", "")
 				return
 			}
 		}
@@ -321,11 +322,11 @@ func (h *Handler) SetModelEnabled(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	if err := h.q.UpsertModelSetting(r.Context(), body.Provider, modelID, enabled, now); err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "failed to update model setting", "")
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update model setting", "")
 		return
 	}
 
-	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // GetSystemDefault returns the provider and model name from the default_model setting.
@@ -394,7 +395,7 @@ func GetSystemInfo(deps SystemInfoDeps) http.HandlerFunc {
 			info.Users = userCount
 		}
 
-		api.WriteJSON(w, http.StatusOK, info)
+		httputil.WriteJSON(w, http.StatusOK, info)
 	}
 }
 

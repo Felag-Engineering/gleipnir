@@ -95,7 +95,7 @@ schemas/
   sql_schemas.sql     — schema that explains the different tables in our datastore
 
 internal/
-  api/                — chi route handlers, validation middleware, response helper re-exports
+  api/                — router builder (RouterConfig + BuildRouter), chi route handlers, validation middleware, response helper re-exports
   agent/              — BoundAgent runner, LLM API loop, audit writer
   approval/           — approval-specific timeout wiring (thin wrapper over timeout/)
   auth/               — authentication, sessions, user management, role middleware
@@ -139,7 +139,7 @@ internal/
 
 ## Key API surface
 
-Routes are registered in `internal/api/routes.go` (policies, mcp, stats, models) and `main.go` (auth, runs, webhooks, SSE, settings, users, triggers).
+Routes are registered in `internal/api/router.go` via `BuildRouter`, which constructs the complete route tree from a `RouterConfig` struct. `main.go` constructs dependencies and passes them to `BuildRouter`.
 
 **Response envelope:** `{ data: T }` for success, `{ error: string, detail?: string }` for failure.
 
