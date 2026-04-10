@@ -3,13 +3,13 @@ package auth
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/model"
 )
 
@@ -60,52 +60,52 @@ func RequireAuth(querier SessionQuerier) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie(sessionCookieName)
 			if err != nil || cookie.Value == "" {
-				writeUnauthorized(w, "authentication required")
+				httputil.WriteError(w, http.StatusUnauthorized, "authentication required", "")
 				return
 			}
 
 			session, err := querier.GetSessionByToken(r.Context(), cookie.Value)
 			if err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
-					writeUnauthorized(w, "invalid or expired session")
+					httputil.WriteError(w, http.StatusUnauthorized, "invalid or expired session", "")
 					return
 				}
 				slog.Error("session lookup failed", "err", err)
-				writeUnauthorized(w, "authentication error")
+				httputil.WriteError(w, http.StatusUnauthorized, "authentication error", "")
 				return
 			}
 
 			expires, err := time.Parse(time.RFC3339, session.ExpiresAt)
 			if err != nil {
 				slog.Error("session expires_at parse failed", "expires_at", session.ExpiresAt, "err", err)
-				writeUnauthorized(w, "authentication error")
+				httputil.WriteError(w, http.StatusUnauthorized, "authentication error", "")
 				return
 			}
 			if time.Now().UTC().After(expires) {
-				writeUnauthorized(w, "invalid or expired session")
+				httputil.WriteError(w, http.StatusUnauthorized, "invalid or expired session", "")
 				return
 			}
 
 			user, err := querier.GetUser(r.Context(), session.UserID)
 			if err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
-					writeUnauthorized(w, "invalid or expired session")
+					httputil.WriteError(w, http.StatusUnauthorized, "invalid or expired session", "")
 					return
 				}
 				slog.Error("user lookup failed", "user_id", session.UserID, "err", err)
-				writeUnauthorized(w, "authentication error")
+				httputil.WriteError(w, http.StatusUnauthorized, "authentication error", "")
 				return
 			}
 
 			if user.DeactivatedAt != nil {
-				writeUnauthorized(w, "account deactivated")
+				httputil.WriteError(w, http.StatusUnauthorized, "account deactivated", "")
 				return
 			}
 
 			roles, err := querier.ListRolesByUser(r.Context(), user.ID)
 			if err != nil {
 				slog.Error("role lookup failed", "user_id", user.ID, "err", err)
-				writeUnauthorized(w, "authentication error")
+				httputil.WriteError(w, http.StatusUnauthorized, "authentication error", "")
 				return
 			}
 
@@ -127,7 +127,7 @@ func RequireRole(roles ...model.Role) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user, ok := UserFromContext(r.Context())
 			if !ok {
-				writeUnauthorized(w, "authentication required")
+				httputil.WriteError(w, http.StatusUnauthorized, "authentication required", "")
 				return
 			}
 
@@ -144,27 +144,7 @@ func RequireRole(roles ...model.Role) func(http.Handler) http.Handler {
 				}
 			}
 
-			writeForbidden(w, "insufficient permissions")
+			httputil.WriteError(w, http.StatusForbidden, "insufficient permissions", "")
 		})
-	}
-}
-
-type unauthorizedEnvelope struct {
-	Error string `json:"error"`
-}
-
-func writeUnauthorized(w http.ResponseWriter, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
-	if err := json.NewEncoder(w).Encode(unauthorizedEnvelope{Error: msg}); err != nil {
-		slog.Error("failed to encode 401 response", "err", err)
-	}
-}
-
-func writeForbidden(w http.ResponseWriter, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusForbidden)
-	if err := json.NewEncoder(w).Encode(unauthorizedEnvelope{Error: msg}); err != nil {
-		slog.Error("failed to encode 403 response", "err", err)
 	}
 }

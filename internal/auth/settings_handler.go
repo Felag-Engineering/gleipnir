@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/httputil"
 )
 
 // allowedPreferenceKeys is the set of user preference keys accepted by the API.
@@ -38,14 +39,14 @@ func NewSettingsHandler(q SettingsQuerier) *SettingsHandler {
 func (h *SettingsHandler) GetPreferences(w http.ResponseWriter, r *http.Request) {
 	user, ok := UserFromContext(r.Context())
 	if !ok {
-		writeJSONError(w, http.StatusUnauthorized, "authentication required")
+		httputil.WriteError(w, http.StatusUnauthorized, "authentication required", "")
 		return
 	}
 
 	prefs, err := h.q.ListUserPreferences(r.Context(), user.ID)
 	if err != nil {
 		slog.Error("get preferences: DB error", "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
 		return
 	}
 
@@ -54,7 +55,7 @@ func (h *SettingsHandler) GetPreferences(w http.ResponseWriter, r *http.Request)
 		result[p.PreferenceKey] = p.PreferenceValue
 	}
 
-	writeJSONSuccess(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 // UpdatePreferences upserts a set of preferences for the current user.
@@ -63,19 +64,19 @@ func (h *SettingsHandler) GetPreferences(w http.ResponseWriter, r *http.Request)
 func (h *SettingsHandler) UpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	user, ok := UserFromContext(r.Context())
 	if !ok {
-		writeJSONError(w, http.StatusUnauthorized, "authentication required")
+		httputil.WriteError(w, http.StatusUnauthorized, "authentication required", "")
 		return
 	}
 
 	var body map[string]string
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
 		return
 	}
 
 	for key := range body {
 		if !allowedPreferenceKeys[key] {
-			writeJSONError(w, http.StatusBadRequest, "unknown preference key: "+key)
+			httputil.WriteError(w, http.StatusBadRequest, "unknown preference key: "+key, "")
 			return
 		}
 	}
@@ -89,7 +90,7 @@ func (h *SettingsHandler) UpdatePreferences(w http.ResponseWriter, r *http.Reque
 			UpdatedAt:       now,
 		}); err != nil {
 			slog.Error("update preferences: upsert failed", "key", key, "err", err)
-			writeJSONError(w, http.StatusInternalServerError, "internal error")
+			httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
 			return
 		}
 	}
@@ -98,7 +99,7 @@ func (h *SettingsHandler) UpdatePreferences(w http.ResponseWriter, r *http.Reque
 	prefs, err := h.q.ListUserPreferences(r.Context(), user.ID)
 	if err != nil {
 		slog.Error("update preferences: list after upsert failed", "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal error")
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
 		return
 	}
 
@@ -107,5 +108,5 @@ func (h *SettingsHandler) UpdatePreferences(w http.ResponseWriter, r *http.Reque
 		result[p.PreferenceKey] = p.PreferenceValue
 	}
 
-	writeJSONSuccess(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }

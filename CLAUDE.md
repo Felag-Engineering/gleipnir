@@ -95,7 +95,7 @@ schemas/
   sql_schemas.sql     — schema that explains the different tables in our datastore
 
 internal/
-  api/                — chi route handlers, response helpers, validation middleware
+  api/                — chi route handlers, validation middleware, response helper re-exports
   agent/              — BoundAgent runner, LLM API loop, audit writer
   approval/           — approval scanner, timeout enforcement
   auth/               — authentication, sessions, user management, role middleware
@@ -103,6 +103,7 @@ internal/
   db/                 — sqlc-generated data access layer; queries live in internal/db/queries/
   event/              — event system for internal pub/sub
   feedback/           — feedback scanner, timeout enforcement (ADR-031)
+  httputil/           — shared HTTP response helpers (JSON envelope encoding)
   llm/                — LLM provider abstraction (ADR-026)
     anthropic/        — Anthropic API client
     google/           — Google AI client
