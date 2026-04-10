@@ -21,26 +21,39 @@ import (
 // permitted by the run state machine graph.
 var ErrIllegalTransition = errors.New("illegal run status transition")
 
+// legalTransitions is the run state machine graph. Each key is a non-terminal
+// status; its value lists every status it may transition to. Terminal statuses
+// (complete, failed, interrupted) have no entry — lookup returns nil, causing
+// IsLegalTransition to return false for any transition out of a terminal state.
+var legalTransitions = map[model.RunStatus][]model.RunStatus{
+	model.RunStatusPending: {
+		model.RunStatusRunning,
+		model.RunStatusFailed, // DB write failure before the run starts
+	},
+	model.RunStatusRunning: {
+		model.RunStatusComplete,
+		model.RunStatusFailed,
+		model.RunStatusWaitingForApproval,
+		model.RunStatusWaitingForFeedback,
+		model.RunStatusInterrupted,
+	},
+	model.RunStatusWaitingForApproval: {
+		model.RunStatusRunning,
+		model.RunStatusFailed,
+		model.RunStatusInterrupted,
+	},
+	model.RunStatusWaitingForFeedback: {
+		model.RunStatusRunning,
+		model.RunStatusFailed,
+		model.RunStatusInterrupted,
+	},
+}
+
 // IsLegalTransition reports whether transitioning from → to is permitted by the
 // run state machine graph (see model.RunStatus for the full transition diagram).
 func IsLegalTransition(from, to model.RunStatus) bool {
-	legal := [][2]model.RunStatus{
-		{model.RunStatusPending, model.RunStatusRunning},
-		{model.RunStatusPending, model.RunStatusFailed}, // DB write failure before the run starts
-		{model.RunStatusRunning, model.RunStatusComplete},
-		{model.RunStatusRunning, model.RunStatusFailed},
-		{model.RunStatusRunning, model.RunStatusWaitingForApproval},
-		{model.RunStatusRunning, model.RunStatusWaitingForFeedback},
-		{model.RunStatusRunning, model.RunStatusInterrupted},
-		{model.RunStatusWaitingForApproval, model.RunStatusRunning},
-		{model.RunStatusWaitingForApproval, model.RunStatusFailed},
-		{model.RunStatusWaitingForApproval, model.RunStatusInterrupted},
-		{model.RunStatusWaitingForFeedback, model.RunStatusRunning},
-		{model.RunStatusWaitingForFeedback, model.RunStatusFailed},
-		{model.RunStatusWaitingForFeedback, model.RunStatusInterrupted},
-	}
-	for _, pair := range legal {
-		if pair[0] == from && pair[1] == to {
+	for _, allowed := range legalTransitions[from] {
+		if allowed == to {
 			return true
 		}
 	}

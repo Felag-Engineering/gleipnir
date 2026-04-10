@@ -193,3 +193,26 @@ func TestIsLegalTransition(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalStates_NoOutgoingTransitions(t *testing.T) {
+	allStatuses := []model.RunStatus{
+		model.RunStatusPending,
+		model.RunStatusRunning,
+		model.RunStatusComplete,
+		model.RunStatusFailed,
+		model.RunStatusWaitingForApproval,
+		model.RunStatusWaitingForFeedback,
+		model.RunStatusInterrupted,
+	}
+
+	for _, from := range allStatuses {
+		if !model.IsTerminalStatus(from) {
+			continue
+		}
+		for _, to := range allStatuses {
+			if IsLegalTransition(from, to) {
+				t.Errorf("IsLegalTransition(%s, %s) = true, want false: terminal states have no outgoing transitions", from, to)
+			}
+		}
+	}
+}
