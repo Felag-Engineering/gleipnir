@@ -73,6 +73,85 @@ func TestNew_RequiresStateMachine(t *testing.T) {
 	}
 }
 
+func TestAssignTokenCost(t *testing.T) {
+	tests := []struct {
+		name           string
+		cost           int
+		thinkingCount  int
+		textCount      int
+		wantThinking   []int
+		wantText       []int
+	}{
+		{
+			name:          "thinking_only",
+			cost:          100,
+			thinkingCount: 2,
+			textCount:     0,
+			wantThinking:  []int{100, 0},
+			wantText:      []int{},
+		},
+		{
+			name:          "text_only",
+			cost:          200,
+			thinkingCount: 0,
+			textCount:     3,
+			wantThinking:  []int{},
+			wantText:      []int{200, 0, 0},
+		},
+		{
+			// Tool-only turns produce no thinking or text steps, so cost is tracked
+			// in the run total but intentionally not attributed to any individual step.
+			// Tool call steps are never the canonical bearer of token cost.
+			name:          "tool_only",
+			cost:          150,
+			thinkingCount: 0,
+			textCount:     0,
+			wantThinking:  []int{},
+			wantText:      []int{},
+		},
+		{
+			name:          "mixed_thinking_and_text",
+			cost:          300,
+			thinkingCount: 1,
+			textCount:     2,
+			wantThinking:  []int{300},
+			wantText:      []int{0, 0},
+		},
+		{
+			name:          "zero_cost",
+			cost:          0,
+			thinkingCount: 1,
+			textCount:     1,
+			wantThinking:  []int{0},
+			wantText:      []int{0},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotThinking, gotText := assignTokenCost(tt.cost, tt.thinkingCount, tt.textCount)
+
+			if len(gotThinking) != len(tt.wantThinking) {
+				t.Fatalf("thinkingCosts length = %d, want %d", len(gotThinking), len(tt.wantThinking))
+			}
+			for i, v := range tt.wantThinking {
+				if gotThinking[i] != v {
+					t.Errorf("thinkingCosts[%d] = %d, want %d", i, gotThinking[i], v)
+				}
+			}
+
+			if len(gotText) != len(tt.wantText) {
+				t.Fatalf("textCosts length = %d, want %d", len(gotText), len(tt.wantText))
+			}
+			for i, v := range tt.wantText {
+				if gotText[i] != v {
+					t.Errorf("textCosts[%d] = %d, want %d", i, gotText[i], v)
+				}
+			}
+		})
+	}
+}
+
 func TestHandleToolCall(t *testing.T) {
 	successContent := json.RawMessage(`[{"type":"text","text":"result data"}]`)
 

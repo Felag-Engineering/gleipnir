@@ -107,6 +107,23 @@ func (a *BoundAgent) waitForFeedback(ctx context.Context, runID, toolName, input
 	return a.feedback.Wait(ctx, runID, toolName, inputJSON, mcpOutput, feedbackTimeout)
 }
 
+// assignTokenCost computes per-step token cost allocation for a single LLM turn.
+// The full turn cost is assigned to the first available step in priority order:
+// thinking blocks first, then text blocks. Tool call steps never carry token cost —
+// the thought or thinking step is the canonical bearer of the per-turn cost.
+// For tool-only turns (no thinking or text blocks), cost is tracked in the run
+// total but not attributed to any individual step; this is intentional.
+func assignTokenCost(cost int, thinkingCount, textCount int) (thinkingCosts, textCosts []int) {
+	thinkingCosts = make([]int, thinkingCount)
+	textCosts = make([]int, textCount)
+	if thinkingCount > 0 {
+		thinkingCosts[0] = cost
+	} else if textCount > 0 {
+		textCosts[0] = cost
+	}
+	return
+}
+
 // runAPILoop drives the LLM API loop until the model returns end_turn,
 // a limit is exceeded, or an error occurs. It owns the token and tool-call
 // counters for the run.
@@ -168,57 +185,37 @@ func (a *BoundAgent) runAPILoop(
 		tokenCost := resp.Usage.InputTokens + resp.Usage.OutputTokens + resp.Usage.ThinkingTokens
 		totalTokens += tokenCost
 
-		// costAssigned tracks whether the per-turn token cost has been attributed
-		// to an audit step yet. We assign it to the first text block so that
-		// tool-use-only turns don't silently drop the cost.
-		costAssigned := false
+		thinkingCosts, textCosts := assignTokenCost(tokenCost, len(resp.Thinking), len(resp.Text))
 		var toolResultBlocks []llm.ContentBlock
 
 		// Process thinking blocks: write thinking audit steps before text blocks
 		// so the first thinking block carries the token cost on thinking-heavy turns.
-		for _, tb := range resp.Thinking {
-			cost := 0
-			if !costAssigned {
-				cost = tokenCost
-				costAssigned = true
-			}
+		for i, tb := range resp.Thinking {
 			if err := a.audit.Write(ctx, Step{
 				RunID:     runID,
 				Type:      model.StepTypeThinking,
 				Content:   map[string]any{"text": tb.Text, "redacted": tb.Redacted},
-				TokenCost: cost,
+				TokenCost: thinkingCosts[i],
 			}); err != nil {
 				return a.failRun(ctx, fmt.Errorf("writing thinking step: %w", err))
 			}
 		}
 
 		// Process text blocks: write thought audit steps.
-		for _, tb := range resp.Text {
-			cost := 0
-			if !costAssigned {
-				cost = tokenCost
-				costAssigned = true
-			}
+		for i, tb := range resp.Text {
 			if err := a.audit.Write(ctx, Step{
 				RunID:     runID,
 				Type:      model.StepTypeThought,
 				Content:   map[string]string{"text": tb.Text},
-				TokenCost: cost,
+				TokenCost: textCosts[i],
 			}); err != nil {
 				return a.failRun(ctx, fmt.Errorf("writing thought step: %w", err))
 			}
 		}
 
 		// Process tool calls: dispatch and collect results.
+		// Tool call steps carry zero token cost — see assignTokenCost.
 		for _, tc := range resp.ToolCalls {
-			if !costAssigned {
-				// Assign cost to the first tool call block when there are no text blocks.
-				costAssigned = true
-				// Cost was already added to totalTokens; the audit step for tool_call
-				// will carry zero cost. The token cost is reflected in the total only.
-				// (The thought audit step is the canonical bearer of token cost.)
-			}
-
 			totalToolCalls++
 			if maxToolCalls > 0 && totalToolCalls > maxToolCalls {
 				err := fmt.Errorf("tool call limit exceeded: %d calls, limit %d", totalToolCalls, maxToolCalls)
