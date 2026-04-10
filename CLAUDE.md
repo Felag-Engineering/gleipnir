@@ -97,12 +97,12 @@ schemas/
 internal/
   api/                — chi route handlers, validation middleware, response helper re-exports
   agent/              — BoundAgent runner, LLM API loop, audit writer
-  approval/           — approval scanner, timeout enforcement
+  approval/           — approval-specific timeout wiring (thin wrapper over timeout/)
   auth/               — authentication, sessions, user management, role middleware
   config/             — environment variable loading (leaf package, no internal imports)
   db/                 — sqlc-generated data access layer; queries live in internal/db/queries/
   event/              — event system for internal pub/sub
-  feedback/           — feedback scanner, timeout enforcement (ADR-031)
+  feedback/           — feedback-specific timeout wiring (thin wrapper over timeout/, ADR-031)
   httputil/           — shared HTTP response helpers (JSON envelope encoding)
   llm/                — LLM provider abstraction (ADR-026)
     anthropic/        — Anthropic API client
@@ -113,6 +113,7 @@ internal/
   runstate/           — canonical run status transition table and TransitionRunFailed helper
   sse/                — Server-Sent Events broadcaster
   testutil/           — shared test helpers
+  timeout/            — generic scan-and-resolve loop for expiring requests (used by approval/ and feedback/)
   trigger/            — webhook, manual, scheduled, and poll trigger handlers
 ```
 
