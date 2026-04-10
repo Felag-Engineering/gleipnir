@@ -739,7 +739,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			wantCode: http.StatusNotFound,
 		},
 		{
-			name: "complete run returns 409 with error and status",
+			name: "complete run returns 409",
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
 				insertTestPolicy(t, store, "p-cancel-complete", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-cancel-complete", "p-cancel-complete", model.RunStatusComplete)
@@ -750,13 +750,13 @@ func TestRunsHandler_Cancel(t *testing.T) {
 				if body.Error != "run is not in a cancellable state" {
 					t.Errorf("error = %q, want %q", body.Error, "run is not in a cancellable state")
 				}
-				if body.Detail != string(model.RunStatusComplete) {
-					t.Errorf("detail = %q, want %q", body.Detail, model.RunStatusComplete)
+				if body.Detail != "" {
+					t.Errorf("detail = %q, want empty string", body.Detail)
 				}
 			},
 		},
 		{
-			name: "pending run returns 409 with error and status",
+			name: "pending run returns 409",
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
 				insertTestPolicy(t, store, "p-cancel-pending", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-cancel-pending", "p-cancel-pending", model.RunStatusPending)
@@ -767,13 +767,13 @@ func TestRunsHandler_Cancel(t *testing.T) {
 				if body.Error != "run is not in a cancellable state" {
 					t.Errorf("error = %q, want %q", body.Error, "run is not in a cancellable state")
 				}
-				if body.Detail != string(model.RunStatusPending) {
-					t.Errorf("detail = %q, want %q", body.Detail, model.RunStatusPending)
+				if body.Detail != "" {
+					t.Errorf("detail = %q, want empty string", body.Detail)
 				}
 			},
 		},
 		{
-			name: "failed run returns 409 with error and status",
+			name: "failed run returns 409",
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
 				insertTestPolicy(t, store, "p-cancel-failed", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-cancel-failed", "p-cancel-failed", model.RunStatusFailed)
@@ -784,8 +784,8 @@ func TestRunsHandler_Cancel(t *testing.T) {
 				if body.Error != "run is not in a cancellable state" {
 					t.Errorf("error = %q, want %q", body.Error, "run is not in a cancellable state")
 				}
-				if body.Detail != string(model.RunStatusFailed) {
-					t.Errorf("detail = %q, want %q", body.Detail, model.RunStatusFailed)
+				if body.Detail != "" {
+					t.Errorf("detail = %q, want empty string", body.Detail)
 				}
 			},
 		},
@@ -820,7 +820,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			},
 		},
 		{
-			name: "interrupted run returns 409 with error and status",
+			name: "interrupted run returns 409",
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
 				insertTestPolicy(t, store, "p-cancel-interrupted", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-cancel-interrupted", "p-cancel-interrupted", model.RunStatusInterrupted)
@@ -831,8 +831,31 @@ func TestRunsHandler_Cancel(t *testing.T) {
 				if body.Error != "run is not in a cancellable state" {
 					t.Errorf("error = %q, want %q", body.Error, "run is not in a cancellable state")
 				}
-				if body.Detail != string(model.RunStatusInterrupted) {
-					t.Errorf("detail = %q, want %q", body.Detail, model.RunStatusInterrupted)
+				if body.Detail != "" {
+					t.Errorf("detail = %q, want empty string", body.Detail)
+				}
+			},
+		},
+		{
+			// This covers the TOCTOU race where a run's goroutine exits and deregisters
+			// itself from the manager before the HTTP handler calls Cancel. Previously
+			// this returned 202 Accepted (misleading — nothing was cancelled); it now
+			// correctly returns 409 Conflict.
+			name: "running run not registered in manager returns 409",
+			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
+				insertTestPolicy(t, store, "p-cancel-toctou", minimalWebhookPolicy)
+				insertTestRun(t, store, "r-cancel-toctou", "p-cancel-toctou", model.RunStatusRunning)
+				// Intentionally do NOT register the run in the manager, simulating
+				// the goroutine having already exited and deregistered.
+			},
+			runID:    "r-cancel-toctou",
+			wantCode: http.StatusConflict,
+			checkConflict: func(t *testing.T, body cancelErrorBody) {
+				if body.Error != "run is not in a cancellable state" {
+					t.Errorf("error = %q, want %q", body.Error, "run is not in a cancellable state")
+				}
+				if body.Detail != "" {
+					t.Errorf("detail = %q, want empty string", body.Detail)
 				}
 			},
 		},
@@ -915,17 +938,18 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
 				insertTestPolicy(t, store, "p-approval-running", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-approval-running", "p-approval-running", model.RunStatusRunning)
+				// Intentionally do NOT register the run — it is not in an approval gate.
 				return nil
 			},
 			runID:    "r-approval-running",
 			body:     `{"decision":"approved"}`,
 			wantCode: http.StatusConflict,
 			checkError: func(t *testing.T, body approvalErrorBody) {
-				if body.Error != "run is not waiting for approval" {
-					t.Errorf("error = %q, want %q", body.Error, "run is not waiting for approval")
+				if body.Error != "no active approval gate for this run" {
+					t.Errorf("error = %q, want %q", body.Error, "no active approval gate for this run")
 				}
-				if body.Detail != string(model.RunStatusRunning) {
-					t.Errorf("detail = %q, want %q", body.Detail, model.RunStatusRunning)
+				if body.Detail != "" {
+					t.Errorf("detail = %q, want empty string", body.Detail)
 				}
 			},
 		},
@@ -1116,14 +1140,18 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string {
 				insertTestPolicy(t, store, "p-feedback-running", minimalWebhookPolicy)
 				insertTestRun(t, store, "r-feedback-running", "p-feedback-running", model.RunStatusRunning)
+				// Intentionally do NOT register the run — it is not in a feedback gate.
 				return nil
 			},
 			runID:    "r-feedback-running",
 			body:     `{"response":"yes proceed"}`,
 			wantCode: http.StatusConflict,
 			checkError: func(t *testing.T, body feedbackErrorBody) {
-				if body.Error != "run is not waiting for feedback" {
-					t.Errorf("error = %q, want %q", body.Error, "run is not waiting for feedback")
+				if body.Error != "no active feedback gate for this run" {
+					t.Errorf("error = %q, want %q", body.Error, "no active feedback gate for this run")
+				}
+				if body.Detail != "" {
+					t.Errorf("detail = %q, want empty string", body.Detail)
 				}
 			},
 		},

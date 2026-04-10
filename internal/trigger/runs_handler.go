@@ -304,8 +304,7 @@ func (h *RunsHandler) ListSteps(w http.ResponseWriter, r *http.Request) {
 func (h *RunsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "runID")
 
-	run, err := h.store.GetRun(r.Context(), runID)
-	if err != nil {
+	if _, err := h.store.GetRun(r.Context(), runID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			api.WriteError(w, http.StatusNotFound, "run not found", "")
 			return
@@ -315,28 +314,18 @@ func (h *RunsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cancellable = not terminal AND not pending. Pending runs have no goroutine
-	// to signal yet, and terminal runs cannot transition further.
-	status := model.RunStatus(run.Status)
-	if model.IsTerminalStatus(status) || status == model.RunStatusPending {
-		api.WriteError(w, http.StatusConflict, "run is not in a cancellable state", run.Status)
+	if err := h.manager.Cancel(runID); err != nil {
+		api.WriteError(w, http.StatusConflict, "run is not in a cancellable state", "")
 		return
-	}
-
-	if !h.manager.Cancel(runID) {
-		// Run is in running state in the DB but has no registered cancel func.
-		// This can happen during the TOCTOU window where the goroutine completed
-		// and deregistered itself between our GetRun check and this call.
-		slog.Warn("cancel called for running run with no registered goroutine", "run_id", runID)
 	}
 
 	api.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID})
 }
 
 // SubmitApproval handles POST /api/v1/runs/{runID}/approval.
-// It validates the run is waiting for approval and routes the decision to the
-// BoundAgent's approval gate via the RunManager. The Approver role is required
-// (enforced at the router level).
+// It routes the approval decision to the BoundAgent's approval gate via the
+// RunManager. Returns 409 if no goroutine is waiting on the approval gate.
+// The Approver role is required (enforced at the router level).
 func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	runID := chi.URLParam(r, "runID")
@@ -351,26 +340,17 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := h.store.GetRun(ctx, runID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if _, err := h.store.GetRun(ctx, runID); errors.Is(err, sql.ErrNoRows) {
 		api.WriteError(w, http.StatusNotFound, "run not found", "")
 		return
-	}
-	if err != nil {
+	} else if err != nil {
 		slog.Error("GetRun query failed", "run_id", runID, "err", err)
 		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
-	if run.Status != string(model.RunStatusWaitingForApproval) {
-		api.WriteError(w, http.StatusConflict, "run is not waiting for approval", run.Status)
-		return
-	}
-
 	approved := req.Decision == "approved"
-	if !h.manager.SendApproval(runID, approved) {
-		// TOCTOU: the run was in waiting_for_approval in the DB but the agent's
-		// approval gate is no longer blocking (timeout, context cancel, etc.).
+	if err := h.manager.SendApproval(runID, approved); err != nil {
 		api.WriteError(w, http.StatusConflict, "no active approval gate for this run", "")
 		return
 	}
@@ -422,9 +402,9 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 }
 
 // SubmitFeedback handles POST /api/v1/runs/{runID}/feedback.
-// It validates the run is waiting for feedback, routes the operator's freeform
-// text response to the BoundAgent via the RunManager, and updates the
-// feedback_requests DB record.
+// It routes the operator's freeform text response to the BoundAgent via the
+// RunManager and updates the feedback_requests DB record. Returns 409 if no
+// goroutine is waiting on the feedback gate.
 func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	runID := chi.URLParam(r, "runID")
@@ -439,25 +419,16 @@ func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := h.store.GetRun(ctx, runID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if _, err := h.store.GetRun(ctx, runID); errors.Is(err, sql.ErrNoRows) {
 		api.WriteError(w, http.StatusNotFound, "run not found", "")
 		return
-	}
-	if err != nil {
+	} else if err != nil {
 		slog.Error("GetRun query failed", "run_id", runID, "err", err)
 		api.WriteError(w, http.StatusInternalServerError, "internal server error", "")
 		return
 	}
 
-	if run.Status != string(model.RunStatusWaitingForFeedback) {
-		api.WriteError(w, http.StatusConflict, "run is not waiting for feedback", run.Status)
-		return
-	}
-
-	if !h.manager.SendFeedback(runID, req.Response) {
-		// TOCTOU: the run was in waiting_for_feedback in the DB but the agent's
-		// feedback gate is no longer blocking (context cancel, etc.).
+	if err := h.manager.SendFeedback(runID, req.Response); err != nil {
 		api.WriteError(w, http.StatusConflict, "no active feedback gate for this run", "")
 		return
 	}

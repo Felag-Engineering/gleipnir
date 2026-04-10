@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -20,13 +21,13 @@ func TestRunManager(t *testing.T) {
 		run  func(t *testing.T, m *RunManager)
 	}{
 		{
-			name: "register then cancel returns true and calls cancel func",
+			name: "register then cancel returns nil and calls cancel func",
 			run: func(t *testing.T, m *RunManager) {
 				cancelled := false
 				m.Register("run-1", func() { cancelled = true }, noopApprovalCh(), noopFeedbackCh())
 				got := m.Cancel("run-1")
-				if !got {
-					t.Error("Cancel returned false, want true")
+				if got != nil {
+					t.Errorf("Cancel returned %v, want nil", got)
 				}
 				if !cancelled {
 					t.Error("cancel func was not called")
@@ -37,16 +38,16 @@ func TestRunManager(t *testing.T) {
 			},
 		},
 		{
-			name: "cancel unknown run returns false",
+			name: "cancel unknown run returns ErrRunNotFound",
 			run: func(t *testing.T, m *RunManager) {
 				got := m.Cancel("unknown-run")
-				if got {
-					t.Error("Cancel returned true for unknown run, want false")
+				if !errors.Is(got, ErrRunNotFound) {
+					t.Errorf("Cancel returned %v, want ErrRunNotFound", got)
 				}
 			},
 		},
 		{
-			name: "deregister calls cancel func then cancel returns false",
+			name: "deregister calls cancel func then cancel returns ErrRunNotFound",
 			run: func(t *testing.T, m *RunManager) {
 				cancelled := false
 				m.Register("run-2", func() { cancelled = true }, noopApprovalCh(), noopFeedbackCh())
@@ -56,10 +57,10 @@ func TestRunManager(t *testing.T) {
 				if !cancelled {
 					t.Error("cancel func was not called by Deregister")
 				}
-				// The entry has been removed, so Cancel should be a no-op.
+				// The entry has been removed, so Cancel must return ErrRunNotFound.
 				got := m.Cancel("run-2")
-				if got {
-					t.Error("Cancel returned true after Deregister, want false")
+				if !errors.Is(got, ErrRunNotFound) {
+					t.Errorf("Cancel returned %v after Deregister, want ErrRunNotFound", got)
 				}
 				waitWithTimeout(t, m, "after deregister")
 			},
@@ -79,9 +80,9 @@ func TestRunManager(t *testing.T) {
 					if !called[i] {
 						t.Errorf("cancel func for %s was not called", id)
 					}
-					// Cancel should return false — CancelAll already removed the entries.
-					if m.Cancel(id) {
-						t.Errorf("Cancel(%s) returned true after CancelAll, want false", id)
+					// Cancel should return ErrRunNotFound — CancelAll already removed the entries.
+					if m.Cancel(id) == nil {
+						t.Errorf("Cancel(%s) returned nil after CancelAll, want ErrRunNotFound", id)
 					}
 				}
 
@@ -117,27 +118,27 @@ func TestRunManager(t *testing.T) {
 }
 
 func TestSendApproval(t *testing.T) {
-	t.Run("run not registered returns false", func(t *testing.T) {
+	t.Run("run not registered returns ErrRunNotFound", func(t *testing.T) {
 		m := NewRunManager()
 		got := m.SendApproval("unknown-run", true)
-		if got {
-			t.Error("SendApproval returned true for unregistered run, want false")
+		if !errors.Is(got, ErrRunNotFound) {
+			t.Errorf("SendApproval returned %v for unregistered run, want ErrRunNotFound", got)
 		}
 	})
 
-	t.Run("registered with full buffer returns false", func(t *testing.T) {
+	t.Run("registered with full buffer returns ErrNoReceiver", func(t *testing.T) {
 		m := NewRunManager()
-		// Cap-1 channel: the first send fills the buffer (returns true).
-		// The second send with a full buffer and no reader must fail (returns false).
+		// Cap-1 channel: the first send fills the buffer (returns nil).
+		// The second send with a full buffer and no reader must return ErrNoReceiver.
 		approvalCh := make(chan bool, 1)
 		m.Register("run-blocked", func() {}, approvalCh, noopFeedbackCh())
 		first := m.SendApproval("run-blocked", true)
-		if !first {
-			t.Error("first SendApproval returned false, want true (buffer was empty)")
+		if first != nil {
+			t.Errorf("first SendApproval returned %v, want nil (buffer was empty)", first)
 		}
 		got := m.SendApproval("run-blocked", true)
-		if got {
-			t.Error("second SendApproval returned true with full buffer, want false")
+		if !errors.Is(got, ErrNoReceiver) {
+			t.Errorf("second SendApproval returned %v with full buffer, want ErrNoReceiver", got)
 		}
 		m.Deregister("run-blocked")
 		waitWithTimeout(t, m, "blocked run")
@@ -159,8 +160,8 @@ func TestSendApproval(t *testing.T) {
 		time.Sleep(time.Millisecond)
 
 		got := m.SendApproval("run-approve", true)
-		if !got {
-			t.Error("SendApproval returned false, want true")
+		if got != nil {
+			t.Errorf("SendApproval returned %v, want nil", got)
 		}
 		select {
 		case val := <-received:
@@ -190,8 +191,8 @@ func TestSendApproval(t *testing.T) {
 		time.Sleep(time.Millisecond)
 
 		got := m.SendApproval("run-deny", false)
-		if !got {
-			t.Error("SendApproval returned false, want true")
+		if got != nil {
+			t.Errorf("SendApproval returned %v, want nil", got)
 		}
 		select {
 		case val := <-received:
@@ -205,40 +206,40 @@ func TestSendApproval(t *testing.T) {
 		waitWithTimeout(t, m, "deny run")
 	})
 
-	t.Run("deregistered run returns false", func(t *testing.T) {
+	t.Run("deregistered run returns ErrRunNotFound", func(t *testing.T) {
 		m := NewRunManager()
 		m.Register("run-dereg", func() {}, noopApprovalCh(), noopFeedbackCh())
 		m.Deregister("run-dereg")
 		waitWithTimeout(t, m, "deregistered run")
 		got := m.SendApproval("run-dereg", true)
-		if got {
-			t.Error("SendApproval returned true after Deregister, want false")
+		if !errors.Is(got, ErrRunNotFound) {
+			t.Errorf("SendApproval returned %v after Deregister, want ErrRunNotFound", got)
 		}
 	})
 }
 
 func TestSendFeedback(t *testing.T) {
-	t.Run("run not registered returns false", func(t *testing.T) {
+	t.Run("run not registered returns ErrRunNotFound", func(t *testing.T) {
 		m := NewRunManager()
 		got := m.SendFeedback("unknown-run", "hello")
-		if got {
-			t.Error("SendFeedback returned true for unregistered run, want false")
+		if !errors.Is(got, ErrRunNotFound) {
+			t.Errorf("SendFeedback returned %v for unregistered run, want ErrRunNotFound", got)
 		}
 	})
 
-	t.Run("registered with full buffer returns false", func(t *testing.T) {
+	t.Run("registered with full buffer returns ErrNoReceiver", func(t *testing.T) {
 		m := NewRunManager()
-		// Cap-1 channel: the first send fills the buffer (returns true).
-		// The second send with a full buffer and no reader must fail (returns false).
+		// Cap-1 channel: the first send fills the buffer (returns nil).
+		// The second send with a full buffer and no reader must return ErrNoReceiver.
 		feedbackCh := make(chan string, 1)
 		m.Register("run-blocked", func() {}, noopApprovalCh(), feedbackCh)
 		first := m.SendFeedback("run-blocked", "first response")
-		if !first {
-			t.Error("first SendFeedback returned false, want true (buffer was empty)")
+		if first != nil {
+			t.Errorf("first SendFeedback returned %v, want nil (buffer was empty)", first)
 		}
 		got := m.SendFeedback("run-blocked", "second response")
-		if got {
-			t.Error("second SendFeedback returned true with full buffer, want false")
+		if !errors.Is(got, ErrNoReceiver) {
+			t.Errorf("second SendFeedback returned %v with full buffer, want ErrNoReceiver", got)
 		}
 		m.Deregister("run-blocked")
 		waitWithTimeout(t, m, "blocked run")
@@ -259,8 +260,8 @@ func TestSendFeedback(t *testing.T) {
 		time.Sleep(time.Millisecond)
 
 		got := m.SendFeedback("run-feedback", "yes, proceed")
-		if !got {
-			t.Error("SendFeedback returned false, want true")
+		if got != nil {
+			t.Errorf("SendFeedback returned %v, want nil", got)
 		}
 		select {
 		case val := <-received:
@@ -274,14 +275,14 @@ func TestSendFeedback(t *testing.T) {
 		waitWithTimeout(t, m, "feedback run")
 	})
 
-	t.Run("deregistered run returns false", func(t *testing.T) {
+	t.Run("deregistered run returns ErrRunNotFound", func(t *testing.T) {
 		m := NewRunManager()
 		m.Register("run-dereg-fb", func() {}, noopApprovalCh(), noopFeedbackCh())
 		m.Deregister("run-dereg-fb")
 		waitWithTimeout(t, m, "deregistered run")
 		got := m.SendFeedback("run-dereg-fb", "hello")
-		if got {
-			t.Error("SendFeedback returned true after Deregister, want false")
+		if !errors.Is(got, ErrRunNotFound) {
+			t.Errorf("SendFeedback returned %v after Deregister, want ErrRunNotFound", got)
 		}
 	})
 }
@@ -377,10 +378,10 @@ func TestSendApproval_BufferedDeliversAcrossGoroutineScheduling(t *testing.T) {
 	m.Register("run-buf-approve", func() {}, ch, noopFeedbackCh())
 
 	// Deliver the decision before any goroutine is reading the channel.
-	// With an unbuffered channel this would return false; cap 1 must return true.
+	// With an unbuffered channel this would return ErrNoReceiver; cap 1 must return nil.
 	got := m.SendApproval("run-buf-approve", true)
-	if !got {
-		t.Fatal("SendApproval returned false before reader started, want true (buffer should hold the value)")
+	if got != nil {
+		t.Fatalf("SendApproval returned %v before reader started, want nil (buffer should hold the value)", got)
 	}
 
 	// The value must be present in the buffer for the agent to receive later.
@@ -406,10 +407,10 @@ func TestSendFeedback_BufferedDeliversAcrossGoroutineScheduling(t *testing.T) {
 	m.Register("run-buf-feedback", func() {}, noopApprovalCh(), ch)
 
 	// Deliver the response before any goroutine is reading the channel.
-	// With an unbuffered channel this would return false; cap 1 must return true.
+	// With an unbuffered channel this would return ErrNoReceiver; cap 1 must return nil.
 	got := m.SendFeedback("run-buf-feedback", "proceed")
-	if !got {
-		t.Fatal("SendFeedback returned false before reader started, want true (buffer should hold the value)")
+	if got != nil {
+		t.Fatalf("SendFeedback returned %v before reader started, want nil (buffer should hold the value)", got)
 	}
 
 	// The value must be present in the buffer for the agent to receive later.

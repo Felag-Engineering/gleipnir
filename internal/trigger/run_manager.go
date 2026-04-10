@@ -2,8 +2,18 @@ package trigger
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
+)
+
+var (
+	// ErrRunNotFound is returned when the run ID is not registered in the manager.
+	ErrRunNotFound = errors.New("run not registered")
+	// ErrNoReceiver is returned when the run is registered but no goroutine is
+	// currently blocking on the relevant gate (TOCTOU: gate timed out or context
+	// was cancelled between the caller's check and the channel send).
+	ErrNoReceiver = errors.New("run is not waiting for this operation")
 )
 
 // RunManager tracks active run goroutines so they can be cancelled on demand.
@@ -61,18 +71,18 @@ func (m *RunManager) Register(runID string, cancel context.CancelFunc, approvalC
 }
 
 // Cancel calls the cancel func for the given run ID and removes the entry.
-// Returns false if the run ID is not found. Does NOT call wg.Done — the
-// goroutine's deferred Deregister is responsible for that.
-func (m *RunManager) Cancel(runID string) bool {
+// Returns ErrRunNotFound if the run ID is not registered. Does NOT call
+// wg.Done — the goroutine's deferred Deregister is responsible for that.
+func (m *RunManager) Cancel(runID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cancel, ok := m.cancels[runID]
 	if !ok {
-		return false
+		return ErrRunNotFound
 	}
 	cancel()
 	delete(m.cancels, runID)
-	return true
+	return nil
 }
 
 // Deregister removes the entry for the given run ID and signals the WaitGroup.
@@ -130,42 +140,40 @@ func (m *RunManager) WaitForDeregistration(runID string, timeout time.Duration) 
 }
 
 // SendApproval routes an approval decision to the run's waiting agent goroutine.
-// Returns true if the decision was delivered, false if the run is not registered
-// or no goroutine is currently blocking on the approval gate (TOCTOU window where
-// the approval timed out or the context was cancelled between the caller's status
-// check and this call).
-func (m *RunManager) SendApproval(runID string, approved bool) bool {
+// Returns ErrRunNotFound if the run is not registered, or ErrNoReceiver if the
+// channel buffer is full (TOCTOU: approval gate timed out or context was
+// cancelled between the caller's status check and this call).
+func (m *RunManager) SendApproval(runID string, approved bool) error {
 	m.mu.Lock()
 	ch, ok := m.approvals[runID]
 	m.mu.Unlock()
 	if !ok {
-		return false
+		return ErrRunNotFound
 	}
 	select {
 	case ch <- approved:
-		return true
+		return nil
 	default:
-		return false
+		return ErrNoReceiver
 	}
 }
 
 // SendFeedback routes an operator's freeform response to the run's waiting agent
-// goroutine. Returns true if the response was delivered, false if the run is not
-// registered or no goroutine is currently blocking on the feedback gate (TOCTOU
-// window where the context was cancelled between the caller's status check and
-// this call).
-func (m *RunManager) SendFeedback(runID string, response string) bool {
+// goroutine. Returns ErrRunNotFound if the run is not registered, or
+// ErrNoReceiver if the channel buffer is full (TOCTOU: context was cancelled
+// between the caller's status check and this call).
+func (m *RunManager) SendFeedback(runID string, response string) error {
 	m.mu.Lock()
 	ch, ok := m.feedbacks[runID]
 	m.mu.Unlock()
 	if !ok {
-		return false
+		return ErrRunNotFound
 	}
 	select {
 	case ch <- response:
-		return true
+		return nil
 	default:
-		return false
+		return ErrNoReceiver
 	}
 }
 
