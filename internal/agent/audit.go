@@ -104,9 +104,18 @@ func (w *AuditWriter) Close() error {
 // logAuditError writes an audit step on error paths where the write is best-effort.
 // The primary error is already being returned to the caller, so a failed audit write
 // is logged rather than propagated.
+//
+// Safe to call with a cancelled context — if ctx is already done, a background
+// context is substituted so the DB write still lands. This is the single place
+// that enforces the "audit writes must survive cancellation" invariant for error
+// steps; callers should always pass their original ctx.
 func logAuditError(ctx context.Context, w *AuditWriter, step Step) {
-	if err := w.Write(ctx, step); err != nil {
-		slog.WarnContext(ctx, "audit write failed on error path", "step_type", step.Type.String(), "run_id", step.RunID, "err", err)
+	writeCtx := ctx
+	if ctx.Err() != nil {
+		writeCtx = context.Background()
+	}
+	if err := w.Write(writeCtx, step); err != nil {
+		slog.WarnContext(writeCtx, "audit write failed on error path", "step_type", step.Type.String(), "run_id", step.RunID, "err", err)
 	}
 }
 

@@ -73,10 +73,8 @@ func (a *BoundAgent) failRun(ctx context.Context, runErr error) error {
 }
 
 // logAuditError writes an error step to the audit trail with the given message and code.
-// It is kept as a shim method so existing call sites in agent_test.go continue to
-// compile unmodified.
-// Callers that pass context.Background() do so intentionally — DB writes must complete
-// even after the caller's context is cancelled (e.g. cancellation-path error steps).
+// Safe to call with a cancelled context — the underlying function swaps to a
+// background context when needed.
 //
 // Test seam — delegates to package-level logAuditError in audit.go.
 // Safe to inline the free function call once agent_test.go migrates away from this method.
@@ -129,12 +127,8 @@ func (a *BoundAgent) runAPILoop(
 
 	for {
 		// Respect context cancellation before each API call.
-		// context.Background() is used intentionally: the caller's context is
-		// already cancelled, so writing with ctx would silently drop the step.
-		// These DB writes MUST succeed regardless of caller cancellation to preserve
-		// audit trail completeness and final state persistence.
 		if err := ctx.Err(); err != nil {
-			a.logAuditError(context.Background(), runID, "run cancelled", model.ErrorCodeCancelled)
+			a.logAuditError(ctx, runID, "run cancelled", model.ErrorCodeCancelled)
 			return a.failRun(ctx, fmt.Errorf("agent run cancelled: %w", err))
 		}
 
@@ -163,13 +157,10 @@ func (a *BoundAgent) runAPILoop(
 
 		resp, err := a.llmClient.CreateMessage(ctx, req)
 		if err != nil {
-			// If the context was cancelled, the API error is a consequence of
-			// cancellation. Write a CANCELLED step so the audit trail is clear.
-			// context.Background() is used in all cases — ctx may already be done.
 			if ctx.Err() != nil {
-				a.logAuditError(context.Background(), runID, "run cancelled", model.ErrorCodeCancelled)
+				a.logAuditError(ctx, runID, "run cancelled", model.ErrorCodeCancelled)
 			} else {
-				a.logAuditError(context.Background(), runID, err.Error(), model.ErrorCodeAPIError)
+				a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeAPIError)
 			}
 			return a.failRun(ctx, fmt.Errorf("LLM API call: %w", err))
 		}
@@ -339,14 +330,12 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		return a.failRun(ctx, err)
 	}
 
-	// Transition to running only after pre-flight checks pass. Use
-	// context.Background() so the DB write lands even if the caller's context
-	// is already cancelled — the loop will detect cancellation immediately.
-	if err := a.sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
-		// Best-effort: attempt to mark the run failed. If this also fails, log and
-		// return the original transition error — the run will be cleaned up by the
-		// startup scan on next restart.
-		a.logTransitionError(context.Background(), err)
+	// Transition to running only after pre-flight checks pass.
+	if err := a.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
+		if ctx.Err() != nil {
+			a.logAuditError(ctx, runID, "run cancelled", model.ErrorCodeCancelled)
+		}
+		a.logTransitionError(ctx, err)
 		return fmt.Errorf("transitioning run to running: %w", err)
 	}
 
@@ -384,9 +373,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	}
 
 	// Write capability snapshot step (ADR-018) — always the first step.
-	// Use context.Background() so this initialization step always lands, even if
-	// the caller's context was already cancelled before Run was entered.
-	if err := a.audit.Write(context.Background(), Step{
+	if err := a.audit.Write(ctx, Step{
 		RunID: runID,
 		Type:  model.StepTypeCapabilitySnapshot,
 		Content: capabilitySnapshot{
@@ -466,13 +453,10 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 	// Dispatch to MCP server.
 	result, err := entry.tool.Client.CallTool(ctx, entry.tool.ToolName, input)
 	if err != nil {
-		// If the context was cancelled, write a canonical CANCELLED step rather
-		// than a tool_error so all cancellation paths produce consistent audit output.
-		// context.Background() is used because ctx may already be done.
 		if ctx.Err() != nil {
-			a.logAuditError(context.Background(), runID, "run cancelled", model.ErrorCodeCancelled)
+			a.logAuditError(ctx, runID, "run cancelled", model.ErrorCodeCancelled)
 		} else {
-			a.logAuditError(context.Background(), runID, err.Error(), model.ErrorCodeToolError)
+			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeToolError)
 		}
 		return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
 	}
