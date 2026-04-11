@@ -25,6 +25,7 @@ import (
 	openaillm "github.com/rapp992/gleipnir/internal/llm/openai"
 	openaicompatllm "github.com/rapp992/gleipnir/internal/llm/openaicompat"
 	"github.com/rapp992/gleipnir/internal/mcp"
+	runpkg "github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/sse"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
@@ -96,7 +97,7 @@ func run(cfg config.Config) error {
 	feedbackScanner.Start(ctx)
 
 	registry := mcp.NewRegistry(store.Queries(), mcp.WithMCPTimeout(cfg.MCPTimeout))
-	runManager := trigger.NewRunManager()
+	runManager := runpkg.NewRunManager()
 	providerRegistry := llm.NewProviderRegistry()
 
 	// Parse the encryption key for admin API key storage.
@@ -191,7 +192,7 @@ func run(cfg config.Config) error {
 		slog.Warn("could not ensure default model is enabled", "err", err)
 	}
 
-	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(providerRegistry), broadcaster, cfg.DefaultFeedbackTimeout)
+	launcher := runpkg.NewRunLauncher(store, registry, runManager, runpkg.NewAgentFactory(providerRegistry), broadcaster, cfg.DefaultFeedbackTimeout)
 
 	webhookHandler := trigger.NewWebhookHandler(store, launcher)
 

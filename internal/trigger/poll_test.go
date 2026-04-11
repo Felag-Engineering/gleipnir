@@ -15,6 +15,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
@@ -194,7 +195,7 @@ func insertTestPollPolicy(t *testing.T, store *db.Store, policyID, name, yamlStr
 
 // pollerFactory returns an AgentFactory backed by a mock LLM so tests do not
 // make real Claude API calls.
-func pollerFactory() trigger.AgentFactory {
+func pollerFactory() run.AgentFactory {
 	return func(cfg agent.Config) (agent.Runner, error) {
 		cfg.LLMClient = testutil.NewMockLLMClient(
 			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
@@ -236,8 +237,8 @@ func TestPoller_CheckMatchFires(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
 	poller := trigger.NewPoller(store, launcher, registry)
 
 	if err := poller.Start(ctx); err != nil {
@@ -264,8 +265,8 @@ func TestPoller_CheckNoMatchNoRun(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
 	poller := trigger.NewPoller(store, launcher, registry)
 
 	if err := poller.Start(ctx); err != nil {
@@ -300,8 +301,8 @@ func TestPoller_MatchAny_OnePassFires(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
 	poller := trigger.NewPoller(store, launcher, registry)
 
 	if err := poller.Start(ctx); err != nil {
@@ -350,8 +351,8 @@ agent:
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
 	poller := trigger.NewPoller(store, launcher, registry)
 
 	if err := poller.Start(ctx); err != nil {
@@ -385,8 +386,8 @@ func TestPoller_ToolErrorTreatedAsNotPassed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
 	poller := trigger.NewPoller(store, launcher, registry)
 
 	if err := poller.Start(ctx); err != nil {
@@ -422,8 +423,8 @@ func TestPoller_ConcurrencySkip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
 	poller := trigger.NewPoller(store, launcher, registry)
 
 	if err := poller.Start(ctx); err != nil {
@@ -456,8 +457,8 @@ func TestPoller_GracefulShutdown(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
 	poller := trigger.NewPoller(store, launcher, registry)
 
 	if err := poller.Start(ctx); err != nil {

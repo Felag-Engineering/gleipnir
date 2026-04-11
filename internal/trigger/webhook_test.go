@@ -17,20 +17,10 @@ import (
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
-
-// minimalWebhookPolicy is the smallest YAML that parses cleanly with trigger type webhook
-// and the default concurrency (skip).
-const minimalWebhookPolicy = `
-name: test-policy
-trigger:
-  type: webhook
-agent:
-  model: claude-opus-4-5
-  task: "test task"
-`
 
 const parallelPolicy = `
 name: test-parallel-policy
@@ -82,18 +72,6 @@ agent:
   model: claude-opus-4-5
   task: "test task"
 `
-
-// insertTestPolicy inserts a webhook policy with the given ID and YAML.
-func insertTestPolicy(t *testing.T, store *db.Store, policyID, yaml string) {
-	t.Helper()
-	testutil.InsertPolicy(t, store, policyID, "policy-"+policyID, "webhook", yaml)
-}
-
-// insertTestRun inserts a run with the given IDs and status.
-func insertTestRun(t *testing.T, store *db.Store, runID, policyID string, status model.RunStatus) {
-	t.Helper()
-	testutil.InsertRun(t, store, runID, policyID, status)
-}
 
 // callHandler builds a chi router, registers the handler, and fires a request.
 // Returns the recorded response.
@@ -298,7 +276,7 @@ func TestWebhookHandler(t *testing.T) {
 			noopClient := testutil.NewNoopLLMClient()
 			providerReg := llm.NewProviderRegistry()
 			providerReg.Register("anthropic", noopClient)
-			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil, 0)
+			launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
 			h := trigger.NewWebhookHandler(store, launcher)
 
 			w := callHandlerWithHeaders(t, h, tc.policyID, tc.body, tc.headers)
@@ -317,7 +295,7 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil, 0)
+	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
 	h := trigger.NewWebhookHandler(store, launcher)
 
 	w := callHandler(t, h, "p-run-created", `{"event": "test"}`)

@@ -14,6 +14,18 @@ import (
 	"github.com/rapp992/gleipnir/internal/model"
 )
 
+// MinimalWebhookPolicy is the smallest YAML that parses cleanly with trigger
+// type webhook and the default concurrency (skip). Shared across test packages
+// that need a valid policy to insert without caring about its specific settings.
+const MinimalWebhookPolicy = `
+name: test-policy
+trigger:
+  type: webhook
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+`
+
 // NewTestStore opens a TempDir-backed SQLite DB, applies the schema, and
 // registers cleanup. Using a temp file (not :memory:) ensures WAL mode and
 // foreign-key constraints behave identically to production.

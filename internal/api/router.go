@@ -16,6 +16,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/sse"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
@@ -27,8 +28,8 @@ type RouterConfig struct {
 	Store               *db.Store
 	Broadcaster         *sse.Broadcaster
 	Registry            *mcp.Registry
-	RunManager          *trigger.RunManager
-	Launcher            *trigger.RunLauncher
+	RunManager          *run.RunManager
+	Launcher            *run.RunLauncher
 	ModelLister         llm.ModelLister       // interface for listing available models
 	ProviderRegistry    *llm.ProviderRegistry  // concrete registry for policy validation
 	ModelFilter         ModelFilter
@@ -99,7 +100,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
 
 		// Runs: list, inspect, cancel, and submit approval/feedback decisions.
-		runsHandler := trigger.NewRunsHandler(cfg.Store, cfg.RunManager, cfg.Broadcaster)
+		runsHandler := run.NewRunsHandler(cfg.Store, cfg.RunManager, cfg.Broadcaster)
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs", runsHandler.List)
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}", runsHandler.Get)
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)

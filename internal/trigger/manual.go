@@ -13,6 +13,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/rapp992/gleipnir/internal/run"
 )
 
 // ManualTriggerHandler handles POST /api/v1/policies/{policyID}/trigger.
@@ -20,11 +21,11 @@ import (
 // run record with trigger_type: manual, and launches the agent in a goroutine.
 type ManualTriggerHandler struct {
 	store    *db.Store
-	launcher *RunLauncher
+	launcher *run.RunLauncher
 }
 
 // NewManualTriggerHandler returns a ManualTriggerHandler backed by store and launcher.
-func NewManualTriggerHandler(store *db.Store, launcher *RunLauncher) *ManualTriggerHandler {
+func NewManualTriggerHandler(store *db.Store, launcher *run.RunLauncher) *ManualTriggerHandler {
 	return &ManualTriggerHandler{
 		store:    store,
 		launcher: launcher,
@@ -79,16 +80,16 @@ func (h *ManualTriggerHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.launcher.CheckConcurrency(ctx, policyID, parsed.Agent.Concurrency); err != nil {
 		switch {
-		case errors.Is(err, ErrConcurrencySkipActive):
+		case errors.Is(err, run.ErrConcurrencySkipActive):
 			httputil.WriteError(w, http.StatusConflict, "run already active for this policy (concurrency: skip)", "")
-		case errors.Is(err, ErrConcurrencyQueueActive):
-			if enqErr := h.launcher.Enqueue(ctx, LaunchParams{
+		case errors.Is(err, run.ErrConcurrencyQueueActive):
+			if enqErr := h.launcher.Enqueue(ctx, run.LaunchParams{
 				PolicyID:       policyID,
 				TriggerType:    model.TriggerTypeManual,
 				TriggerPayload: string(body),
 				ParsedPolicy:   parsed,
 			}, parsed.Agent.QueueDepth); enqErr != nil {
-				if errors.Is(enqErr, ErrConcurrencyQueueFull) {
+				if errors.Is(enqErr, run.ErrConcurrencyQueueFull) {
 					httputil.WriteError(w, http.StatusTooManyRequests, "trigger queue is full", "")
 				} else {
 					slog.ErrorContext(ctx, "manual trigger: failed to enqueue trigger", "policy_id", policyID, "err", enqErr)
@@ -98,7 +99,7 @@ func (h *ManualTriggerHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 			httputil.WriteJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 			return
-		case errors.Is(err, ErrConcurrencyUnrecognised):
+		case errors.Is(err, run.ErrConcurrencyUnrecognised):
 			httputil.WriteError(w, http.StatusInternalServerError, "unrecognised concurrency policy", "")
 		default:
 			slog.ErrorContext(ctx, "manual trigger: failed to check active runs", "policy_id", policyID, "err", err)
@@ -107,7 +108,7 @@ func (h *ManualTriggerHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.launcher.Launch(ctx, LaunchParams{
+	result, err := h.launcher.Launch(ctx, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypeManual,
 		TriggerPayload: string(body),

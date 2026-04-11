@@ -14,6 +14,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/rapp992/gleipnir/internal/run"
 )
 
 // WebhookHandler handles POST /api/v1/webhooks/{policyID}.
@@ -21,11 +22,11 @@ import (
 // run record, and launches the agent in a goroutine.
 type WebhookHandler struct {
 	store    *db.Store
-	launcher *RunLauncher
+	launcher *run.RunLauncher
 }
 
 // NewWebhookHandler returns a WebhookHandler backed by store and launcher.
-func NewWebhookHandler(store *db.Store, launcher *RunLauncher) *WebhookHandler {
+func NewWebhookHandler(store *db.Store, launcher *run.RunLauncher) *WebhookHandler {
 	return &WebhookHandler{
 		store:    store,
 		launcher: launcher,
@@ -85,16 +86,16 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.launcher.CheckConcurrency(ctx, policyID, parsed.Agent.Concurrency); err != nil {
 		switch {
-		case errors.Is(err, ErrConcurrencySkipActive):
+		case errors.Is(err, run.ErrConcurrencySkipActive):
 			httputil.WriteError(w, http.StatusConflict, "run already active for this policy (concurrency: skip)", "")
-		case errors.Is(err, ErrConcurrencyQueueActive):
-			if enqErr := h.launcher.Enqueue(ctx, LaunchParams{
+		case errors.Is(err, run.ErrConcurrencyQueueActive):
+			if enqErr := h.launcher.Enqueue(ctx, run.LaunchParams{
 				PolicyID:       policyID,
 				TriggerType:    model.TriggerTypeWebhook,
 				TriggerPayload: string(body),
 				ParsedPolicy:   parsed,
 			}, parsed.Agent.QueueDepth); enqErr != nil {
-				if errors.Is(enqErr, ErrConcurrencyQueueFull) {
+				if errors.Is(enqErr, run.ErrConcurrencyQueueFull) {
 					httputil.WriteError(w, http.StatusTooManyRequests, "trigger queue is full", "")
 				} else {
 					slog.ErrorContext(ctx, "webhook: failed to enqueue trigger", "policy_id", policyID, "err", enqErr)
@@ -104,7 +105,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 			httputil.WriteJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 			return
-		case errors.Is(err, ErrConcurrencyUnrecognised):
+		case errors.Is(err, run.ErrConcurrencyUnrecognised):
 			httputil.WriteError(w, http.StatusInternalServerError, "unrecognised concurrency policy", "")
 		default:
 			slog.ErrorContext(ctx, "webhook: failed to check active runs", "policy_id", policyID, "err", err)
@@ -113,7 +114,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.launcher.Launch(ctx, LaunchParams{
+	result, err := h.launcher.Launch(ctx, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypeWebhook,
 		TriggerPayload: string(body),

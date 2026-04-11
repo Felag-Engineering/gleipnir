@@ -11,6 +11,7 @@ import (
 
 	"github.com/rapp992/gleipnir/internal/agent"
 	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/sse"
 	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
@@ -26,19 +27,19 @@ type sseEvent struct {
 // buildSSERouter wires a WebhookHandler (with broadcaster as publisher), a
 // RunsHandler, and the SSE handler together into a single chi router.
 // It inserts integrationPolicy under policyID into a fresh store.
-func buildSSERouter(t *testing.T, policyID string, llmClient llm.LLMClient, broadcaster *sse.Broadcaster) (http.Handler, *trigger.RunManager) {
+func buildSSERouter(t *testing.T, policyID string, llmClient llm.LLMClient, broadcaster *sse.Broadcaster) (http.Handler, *run.RunManager) {
 	t.Helper()
 	store, registry := setupIntegrationFixture(t)
 	insertTestPolicy(t, store, policyID, integrationPolicy)
 
-	manager := trigger.NewRunManager()
-	factory := trigger.AgentFactory(func(cfg agent.Config) (agent.Runner, error) {
+	manager := run.NewRunManager()
+	factory := run.AgentFactory(func(cfg agent.Config) (agent.Runner, error) {
 		cfg.LLMClient = llmClient
 		return agent.New(cfg)
 	})
-	launcher := trigger.NewRunLauncher(store, registry, manager, factory, broadcaster, 0)
+	launcher := run.NewRunLauncher(store, registry, manager, factory, broadcaster, 0)
 	wh := trigger.NewWebhookHandler(store, launcher)
-	rh := trigger.NewRunsHandler(store, manager, broadcaster)
+	rh := run.NewRunsHandler(store, manager, broadcaster)
 
 	r := newRunsRouter(rh)
 	r.Post("/api/v1/webhooks/{policyID}", wh.Handle)

@@ -1,7 +1,6 @@
 package trigger_test
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,60 +12,10 @@ import (
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
-
-// newStubMCPServer starts an httptest.Server that handles MCP JSON-RPC over
-// HTTP. It responds to tools/list with a single "read_data" tool and to all
-// other methods with a stub result.
-func newStubMCPServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]any
-		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
-		w.Header().Set("Content-Type", "application/json")
-		method, _ := req["method"].(string)
-		switch method {
-		case "tools/list":
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]any{
-					"tools": []map[string]any{{
-						"name":        "read_data",
-						"description": "reads data",
-						"inputSchema": map[string]any{
-							"type": "object", "properties": map[string]any{},
-						},
-					}},
-				},
-			})
-		default:
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"jsonrpc": "2.0", "id": req["id"],
-				"result": map[string]any{
-					"content": []map[string]any{{"type": "text", "text": "stub result"}},
-					"isError": false,
-				},
-			})
-		}
-	}))
-}
-
-// setupIntegrationFixture opens a temp SQLite store, starts a stub MCP server,
-// and registers it with a fresh Registry. Cleanup for both is registered via
-// t.Cleanup — callers do not need to close anything manually.
-func setupIntegrationFixture(t *testing.T) (*db.Store, *mcp.Registry) {
-	t.Helper()
-	store := testutil.NewTestStore(t)
-	mcpSrv := newStubMCPServer(t)
-	t.Cleanup(mcpSrv.Close)
-	registry := mcp.NewRegistry(store.Queries())
-	if err := registry.RegisterServer(context.Background(), "stub-server", mcpSrv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
-	}
-	return store, registry
-}
 
 // integrationPolicy is a policy YAML that grants the stub-server.read_data
 // tool to the agent, with parallel concurrency so sub-tests can fire
@@ -87,15 +36,15 @@ agent:
 // buildIntegrationRouter wires a WebhookHandler and RunsHandler together into
 // a chi router suitable for httptest requests. It returns the router and the
 // RunManager so callers can call manager.Wait() for deterministic cleanup.
-func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, llmClient llm.LLMClient) (http.Handler, *trigger.RunManager) {
-	manager := trigger.NewRunManager()
-	factory := trigger.AgentFactory(func(cfg agent.Config) (agent.Runner, error) {
+func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, llmClient llm.LLMClient) (http.Handler, *run.RunManager) {
+	manager := run.NewRunManager()
+	factory := run.AgentFactory(func(cfg agent.Config) (agent.Runner, error) {
 		cfg.LLMClient = llmClient
 		return agent.New(cfg)
 	})
-	launcher := trigger.NewRunLauncher(store, registry, manager, factory, nil, 0)
+	launcher := run.NewRunLauncher(store, registry, manager, factory, nil, 0)
 	wh := trigger.NewWebhookHandler(store, launcher)
-	rh := trigger.NewRunsHandler(store, manager, nil)
+	rh := run.NewRunsHandler(store, manager, nil)
 
 	// Reuse newRunsRouter for the runs routes so both stay in sync automatically.
 	r := newRunsRouter(rh)
@@ -107,7 +56,7 @@ func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, llmClient l
 // fetches and returns the run summary in a single GET. Because the goroutine
 // writes the terminal DB status before calling Deregister, the GET after Wait()
 // is guaranteed to observe the final status — no polling loop needed.
-func waitForRun(t *testing.T, manager *trigger.RunManager, router http.Handler, runID string) trigger.RunSummary {
+func waitForRun(t *testing.T, manager *run.RunManager, router http.Handler, runID string) run.RunSummary {
 	t.Helper()
 	manager.Wait()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+runID, nil)
@@ -117,7 +66,7 @@ func waitForRun(t *testing.T, manager *trigger.RunManager, router http.Handler, 
 		t.Fatalf("GET /runs/%s: status %d", runID, rec.Code)
 	}
 	var env struct {
-		Data trigger.RunSummary `json:"data"`
+		Data run.RunSummary `json:"data"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&env); err != nil {
 		t.Fatalf("decode run summary: %v", err)
@@ -179,7 +128,7 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("GET steps: status %d", rec.Code)
 		}
 		var stepsEnv struct {
-			Data []trigger.StepSummary `json:"data"`
+			Data []run.StepSummary `json:"data"`
 		}
 		if err := json.NewDecoder(rec.Body).Decode(&stepsEnv); err != nil {
 			t.Fatalf("decode steps: %v", err)
@@ -246,7 +195,7 @@ func TestIntegration(t *testing.T) {
 		// goroutines finish — so the first call waits for both runs.
 		summaryA := waitForRun(t, manager, router, idA)
 		summaryB := waitForRun(t, manager, router, idB)
-		for _, summary := range []trigger.RunSummary{summaryA, summaryB} {
+		for _, summary := range []run.RunSummary{summaryA, summaryB} {
 			if summary.Status != string(model.RunStatusComplete) {
 				t.Errorf("run %s status = %q, want %q", summary.ID, summary.Status, model.RunStatusComplete)
 			}
@@ -261,7 +210,7 @@ func TestIntegration(t *testing.T) {
 				t.Fatalf("GET steps for %s: status %d", id, rec.Code)
 			}
 			var stepsEnv struct {
-				Data []trigger.StepSummary `json:"data"`
+				Data []run.StepSummary `json:"data"`
 			}
 			if err := json.NewDecoder(rec.Body).Decode(&stepsEnv); err != nil {
 				t.Fatalf("decode steps for %s: %v", id, err)

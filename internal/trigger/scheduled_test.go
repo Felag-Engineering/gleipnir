@@ -12,6 +12,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
@@ -47,7 +48,7 @@ agent:
 
 // schedulerFactory returns an AgentFactory that uses a mock LLM client so
 // no real Claude API calls are made during scheduler tests.
-func schedulerFactory() trigger.AgentFactory {
+func schedulerFactory() run.AgentFactory {
 	return func(cfg agent.Config) (agent.Runner, error) {
 		cfg.LLMClient = testutil.NewMockLLMClient(
 			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
@@ -117,8 +118,8 @@ func TestScheduler_SkipsPastTimestampsOnStartup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -151,8 +152,8 @@ func TestScheduler_FiresFutureTimestamp(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -186,8 +187,8 @@ func TestScheduler_AutoPausesAfterAllTimesConsumed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -231,8 +232,8 @@ func TestScheduler_DeduplicatesAlreadyFiredTime(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -268,8 +269,8 @@ func TestScheduler_ConcurrencySkip_BlocksWhenActive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -301,8 +302,8 @@ func TestScheduler_ConcurrencySkip_ProceedsWhenIdle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -339,8 +340,8 @@ func TestScheduler_ConcurrencyQueue_EnqueuesWhenActive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -382,8 +383,8 @@ func TestScheduler_ConcurrencyQueue_LaunchesWhenIdle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
 	scheduler := trigger.NewScheduler(store, launcher)
 
 	if err := scheduler.Start(ctx); err != nil {

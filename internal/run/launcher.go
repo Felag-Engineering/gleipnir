@@ -1,4 +1,4 @@
-package trigger
+package run
 
 import (
 	"context"
@@ -80,12 +80,6 @@ type RunLauncher struct {
 // as an interface so tests can supply a stub without importing internal/mcp directly.
 type registryResolver interface {
 	ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) ([]mcp.ResolvedTool, error)
-}
-
-// toolResolver resolves a single MCP tool by dot-notation name. Used by
-// the poll engine to call a tool outside any agent run.
-type toolResolver interface {
-	ResolveToolByName(ctx context.Context, dotName string) (*mcp.Client, string, error)
 }
 
 // NewRunLauncher returns a RunLauncher ready to use.
@@ -320,4 +314,3 @@ func (l *RunLauncher) DrainQueue(ctx context.Context, policyID string, parsedPol
 		}
 	}
 }
-

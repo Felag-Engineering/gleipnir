@@ -12,6 +12,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/rapp992/gleipnir/internal/run"
 )
 
 // Scheduler watches scheduled policies and fires runs at their configured fire_at times.
@@ -20,11 +21,11 @@ import (
 // a policy it pauses the policy so it is not re-loaded on the next restart.
 type Scheduler struct {
 	store    *db.Store
-	launcher *RunLauncher
+	launcher *run.RunLauncher
 }
 
 // NewScheduler returns a Scheduler ready to be started.
-func NewScheduler(store *db.Store, launcher *RunLauncher) *Scheduler {
+func NewScheduler(store *db.Store, launcher *run.RunLauncher) *Scheduler {
 	return &Scheduler{
 		store:    store,
 		launcher: launcher,
@@ -102,17 +103,17 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 	// manual triggers. All non-nil errors prevent the run from firing.
 	if err := s.launcher.CheckConcurrency(ctx, policyID, parsed.Agent.Concurrency); err != nil {
 		switch {
-		case errors.Is(err, ErrConcurrencySkipActive):
+		case errors.Is(err, run.ErrConcurrencySkipActive):
 			slog.Info("scheduled: skipping fire, active run exists (concurrency: skip)",
 				"policy_id", policyID, "fire_at", fireTime)
-		case errors.Is(err, ErrConcurrencyQueueActive):
-			if enqErr := s.launcher.Enqueue(ctx, LaunchParams{
+		case errors.Is(err, run.ErrConcurrencyQueueActive):
+			if enqErr := s.launcher.Enqueue(ctx, run.LaunchParams{
 				PolicyID:       policyID,
 				TriggerType:    model.TriggerTypeScheduled,
 				TriggerPayload: string(payload),
 				ParsedPolicy:   parsed,
 			}, parsed.Agent.QueueDepth); enqErr != nil {
-				if errors.Is(enqErr, ErrConcurrencyQueueFull) {
+				if errors.Is(enqErr, run.ErrConcurrencyQueueFull) {
 					slog.Warn("scheduled: trigger queue is full",
 						"policy_id", policyID, "fire_at", fireTime)
 				} else {
@@ -134,7 +135,7 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 		return
 	}
 
-	result, err := s.launcher.Launch(ctx, LaunchParams{
+	result, err := s.launcher.Launch(ctx, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypeScheduled,
 		TriggerPayload: string(payload),

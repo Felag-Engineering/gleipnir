@@ -1,4 +1,4 @@
-package trigger_test
+package run_test
 
 import (
 	"context"
@@ -13,8 +13,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/testutil"
-	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
 // insertTestStep adds a run_step directly via CreateRunStep.
@@ -35,7 +35,7 @@ func insertTestStep(t *testing.T, store *db.Store, stepID, runID string, stepNum
 	}
 }
 
-func newRunsRouter(h *trigger.RunsHandler) *chi.Mux {
+func newRunsRouter(h *run.RunsHandler) *chi.Mux {
 	r := chi.NewRouter()
 	r.Get("/api/v1/runs", h.List)
 	r.Get("/api/v1/runs/{runID}", h.Get)
@@ -55,15 +55,15 @@ func TestRunsHandler_List(t *testing.T) {
 		wantTotal        int64
 		wantCode         int
 		wantBodyContains string
-		checkFn          func(t *testing.T, resp trigger.PaginatedRunsResponse)
+		checkFn          func(t *testing.T, resp run.PaginatedRunsResponse)
 	}{
 		{
 			name: "no filters returns all runs",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-list-1", minimalWebhookPolicy)
-				insertTestPolicy(t, store, "p-list-2", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-list-a", "p-list-1", model.RunStatusComplete)
-				insertTestRun(t, store, "r-list-b", "p-list-2", model.RunStatusFailed)
+				testutil.InsertPolicy(t, store, "p-list-1", "policy-"+"p-list-1", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-list-2", "policy-"+"p-list-2", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-list-a", "p-list-1", model.RunStatusComplete)
+				testutil.InsertRun(t, store, "r-list-b", "p-list-2", model.RunStatusFailed)
 			},
 			query:     "",
 			wantCount: 2,
@@ -73,11 +73,11 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "filter by policy_id returns only matching runs",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-filter-pol", minimalWebhookPolicy)
-				insertTestPolicy(t, store, "p-other-pol", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-filter-pol-1", "p-filter-pol", model.RunStatusComplete)
-				insertTestRun(t, store, "r-filter-pol-2", "p-filter-pol", model.RunStatusFailed)
-				insertTestRun(t, store, "r-other-pol-1", "p-other-pol", model.RunStatusComplete)
+				testutil.InsertPolicy(t, store, "p-filter-pol", "policy-"+"p-filter-pol", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-other-pol", "policy-"+"p-other-pol", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-filter-pol-1", "p-filter-pol", model.RunStatusComplete)
+				testutil.InsertRun(t, store, "r-filter-pol-2", "p-filter-pol", model.RunStatusFailed)
+				testutil.InsertRun(t, store, "r-other-pol-1", "p-other-pol", model.RunStatusComplete)
 			},
 			query:     "?policy_id=p-filter-pol",
 			wantCount: 2,
@@ -87,10 +87,10 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "filter by status returns only matching runs",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-filter-status", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-filter-status-1", "p-filter-status", model.RunStatusComplete)
-				insertTestRun(t, store, "r-filter-status-2", "p-filter-status", model.RunStatusComplete)
-				insertTestRun(t, store, "r-filter-status-3", "p-filter-status", model.RunStatusFailed)
+				testutil.InsertPolicy(t, store, "p-filter-status", "policy-"+"p-filter-status", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-filter-status-1", "p-filter-status", model.RunStatusComplete)
+				testutil.InsertRun(t, store, "r-filter-status-2", "p-filter-status", model.RunStatusComplete)
+				testutil.InsertRun(t, store, "r-filter-status-3", "p-filter-status", model.RunStatusFailed)
 			},
 			query:     "?status=complete",
 			wantCount: 2,
@@ -100,11 +100,11 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "combined filter returns intersection",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-combined", minimalWebhookPolicy)
-				insertTestPolicy(t, store, "p-combined-other", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-combined-1", "p-combined", model.RunStatusComplete)
-				insertTestRun(t, store, "r-combined-2", "p-combined", model.RunStatusFailed)
-				insertTestRun(t, store, "r-combined-3", "p-combined-other", model.RunStatusComplete)
+				testutil.InsertPolicy(t, store, "p-combined", "policy-"+"p-combined", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-combined-other", "policy-"+"p-combined-other", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-combined-1", "p-combined", model.RunStatusComplete)
+				testutil.InsertRun(t, store, "r-combined-2", "p-combined", model.RunStatusFailed)
+				testutil.InsertRun(t, store, "r-combined-3", "p-combined-other", model.RunStatusComplete)
 			},
 			query:     "?policy_id=p-combined&status=complete",
 			wantCount: 1,
@@ -114,7 +114,7 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "no matching runs returns empty array not 404",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-empty", minimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-empty", "policy-"+"p-empty", "webhook", testutil.MinimalWebhookPolicy)
 			},
 			query:     "?policy_id=p-empty",
 			wantCount: 0,
@@ -132,10 +132,10 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "limit=2 with 3 runs returns 2 results but total=3",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-limit2", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-limit2-1", "p-limit2", model.RunStatusComplete)
-				insertTestRun(t, store, "r-limit2-2", "p-limit2", model.RunStatusComplete)
-				insertTestRun(t, store, "r-limit2-3", "p-limit2", model.RunStatusComplete)
+				testutil.InsertPolicy(t, store, "p-limit2", "policy-"+"p-limit2", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-limit2-1", "p-limit2", model.RunStatusComplete)
+				testutil.InsertRun(t, store, "r-limit2-2", "p-limit2", model.RunStatusComplete)
+				testutil.InsertRun(t, store, "r-limit2-3", "p-limit2", model.RunStatusComplete)
 			},
 			query:     "?policy_id=p-limit2&limit=2",
 			wantCount: 2,
@@ -145,9 +145,9 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "limit=0 clamped to default returns all seeded runs",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-limit0", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-limit0-1", "p-limit0", model.RunStatusComplete)
-				insertTestRun(t, store, "r-limit0-2", "p-limit0", model.RunStatusComplete)
+				testutil.InsertPolicy(t, store, "p-limit0", "policy-"+"p-limit0", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-limit0-1", "p-limit0", model.RunStatusComplete)
+				testutil.InsertRun(t, store, "r-limit0-2", "p-limit0", model.RunStatusComplete)
 			},
 			query:     "?policy_id=p-limit0&limit=0",
 			wantCount: 2,
@@ -157,8 +157,8 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "limit=999 clamped to 100 returns 200 status",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-limit999", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-limit999-1", "p-limit999", model.RunStatusComplete)
+				testutil.InsertPolicy(t, store, "p-limit999", "policy-"+"p-limit999", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-limit999-1", "p-limit999", model.RunStatusComplete)
 			},
 			query:     "?policy_id=p-limit999&limit=999",
 			wantCount: 1,
@@ -168,9 +168,9 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "offset=1 with 2 runs returns 1 result",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-offset1", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-offset1-a", "p-offset1", model.RunStatusComplete)
-				insertTestRun(t, store, "r-offset1-b", "p-offset1", model.RunStatusComplete)
+				testutil.InsertPolicy(t, store, "p-offset1", "policy-"+"p-offset1", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-offset1-a", "p-offset1", model.RunStatusComplete)
+				testutil.InsertRun(t, store, "r-offset1-b", "p-offset1", model.RunStatusComplete)
 			},
 			query:     "?policy_id=p-offset1&offset=1",
 			wantCount: 1,
@@ -180,7 +180,7 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "filter by since returns only recent runs",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-since", minimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-since", "policy-"+"p-since", "webhook", testutil.MinimalWebhookPolicy)
 				old := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
 				testutil.InsertRunWithTime(t, store, "r-since-old", "p-since", model.RunStatusComplete, old, 0)
 				recent := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
@@ -194,7 +194,7 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "filter by until returns only older runs",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-until", minimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-until", "policy-"+"p-until", "webhook", testutil.MinimalWebhookPolicy)
 				old := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
 				testutil.InsertRunWithTime(t, store, "r-until-old", "p-until", model.RunStatusComplete, old, 0)
 				recent := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
@@ -216,7 +216,7 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "order=asc returns runs in ascending created_at order",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-asc", minimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-asc", "policy-"+"p-asc", "webhook", testutil.MinimalWebhookPolicy)
 				t1 := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 				t2 := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
 				testutil.InsertRunWithTime(t, store, "r-asc-older", "p-asc", model.RunStatusComplete, t1, 0)
@@ -226,7 +226,7 @@ func TestRunsHandler_List(t *testing.T) {
 			wantCount: 2,
 			wantTotal: 2,
 			wantCode:  http.StatusOK,
-			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+			checkFn: func(t *testing.T, resp run.PaginatedRunsResponse) {
 				if len(resp.Runs) != 2 {
 					t.Fatalf("expected 2 runs, got %d", len(resp.Runs))
 				}
@@ -249,7 +249,7 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "sort=started_at is accepted as canonical alias",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-sort-started-at", minimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-sort-started-at", "policy-"+"p-sort-started-at", "webhook", testutil.MinimalWebhookPolicy)
 				t1 := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 				t2 := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
 				testutil.InsertRunWithTime(t, store, "r-sort-started-at-older", "p-sort-started-at", model.RunStatusComplete, t1, 0)
@@ -259,7 +259,7 @@ func TestRunsHandler_List(t *testing.T) {
 			wantCount: 2,
 			wantTotal: 2,
 			wantCode:  http.StatusOK,
-			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+			checkFn: func(t *testing.T, resp run.PaginatedRunsResponse) {
 				if len(resp.Runs) != 2 {
 					t.Fatalf("expected 2 runs, got %d", len(resp.Runs))
 				}
@@ -271,7 +271,7 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "sort=token_cost desc returns runs with highest token_cost first",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-sort-tc-desc", minimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-sort-tc-desc", "policy-"+"p-sort-tc-desc", "webhook", testutil.MinimalWebhookPolicy)
 				now := time.Now().UTC().Format(time.RFC3339)
 				testutil.InsertRunWithTime(t, store, "r-sort-tc-low", "p-sort-tc-desc", model.RunStatusComplete, now, 10)
 				testutil.InsertRunWithTime(t, store, "r-sort-tc-high", "p-sort-tc-desc", model.RunStatusComplete, now, 100)
@@ -280,7 +280,7 @@ func TestRunsHandler_List(t *testing.T) {
 			wantCount: 2,
 			wantTotal: 2,
 			wantCode:  http.StatusOK,
-			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+			checkFn: func(t *testing.T, resp run.PaginatedRunsResponse) {
 				if len(resp.Runs) != 2 {
 					t.Fatalf("expected 2 runs, got %d", len(resp.Runs))
 				}
@@ -295,7 +295,7 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "sort=token_cost asc returns runs with lowest token_cost first",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-sort-tc-asc", minimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-sort-tc-asc", "policy-"+"p-sort-tc-asc", "webhook", testutil.MinimalWebhookPolicy)
 				now := time.Now().UTC().Format(time.RFC3339)
 				testutil.InsertRunWithTime(t, store, "r-sort-tc-asc-low", "p-sort-tc-asc", model.RunStatusComplete, now, 10)
 				testutil.InsertRunWithTime(t, store, "r-sort-tc-asc-high", "p-sort-tc-asc", model.RunStatusComplete, now, 100)
@@ -304,7 +304,7 @@ func TestRunsHandler_List(t *testing.T) {
 			wantCount: 2,
 			wantTotal: 2,
 			wantCode:  http.StatusOK,
-			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+			checkFn: func(t *testing.T, resp run.PaginatedRunsResponse) {
 				if len(resp.Runs) != 2 {
 					t.Fatalf("expected 2 runs, got %d", len(resp.Runs))
 				}
@@ -319,7 +319,7 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "sort=duration desc returns completed runs with longest duration first",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-sort-dur-desc", minimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-sort-dur-desc", "policy-"+"p-sort-dur-desc", "webhook", testutil.MinimalWebhookPolicy)
 				base := time.Now().Add(-10 * time.Minute).UTC()
 				// short run: started 5 min ago, completed 4 min ago (1 min duration)
 				shortStart := base.Add(5 * time.Minute).Format(time.RFC3339)
@@ -342,7 +342,7 @@ func TestRunsHandler_List(t *testing.T) {
 			wantCount: 2,
 			wantTotal: 2,
 			wantCode:  http.StatusOK,
-			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+			checkFn: func(t *testing.T, resp run.PaginatedRunsResponse) {
 				if len(resp.Runs) != 2 {
 					t.Fatalf("expected 2 runs, got %d", len(resp.Runs))
 				}
@@ -354,7 +354,7 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "sort=duration asc returns completed runs with shortest duration first",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-sort-dur-asc", minimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-sort-dur-asc", "policy-"+"p-sort-dur-asc", "webhook", testutil.MinimalWebhookPolicy)
 				base := time.Now().Add(-10 * time.Minute).UTC()
 				shortStart := base.Add(5 * time.Minute).Format(time.RFC3339)
 				shortEnd := base.Add(6 * time.Minute).Format(time.RFC3339)
@@ -375,7 +375,7 @@ func TestRunsHandler_List(t *testing.T) {
 			wantCount: 2,
 			wantTotal: 2,
 			wantCode:  http.StatusOK,
-			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+			checkFn: func(t *testing.T, resp run.PaginatedRunsResponse) {
 				if len(resp.Runs) != 2 {
 					t.Fatalf("expected 2 runs, got %d", len(resp.Runs))
 				}
@@ -387,7 +387,7 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "default limit is 25",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-default-limit", minimalWebhookPolicy)
+				testutil.InsertPolicy(t, store, "p-default-limit", "policy-"+"p-default-limit", "webhook", testutil.MinimalWebhookPolicy)
 				now := time.Now().UTC().Format(time.RFC3339)
 				for i := 0; i < 30; i++ {
 					id := fmt.Sprintf("r-default-limit-%02d", i)
@@ -402,14 +402,14 @@ func TestRunsHandler_List(t *testing.T) {
 		{
 			name: "policy_name is populated in list results",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-name-check", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-name-check", "p-name-check", model.RunStatusComplete)
+				testutil.InsertPolicy(t, store, "p-name-check", "policy-"+"p-name-check", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-name-check", "p-name-check", model.RunStatusComplete)
 			},
 			query:     "?policy_id=p-name-check",
 			wantCount: 1,
 			wantTotal: 1,
 			wantCode:  http.StatusOK,
-			checkFn: func(t *testing.T, resp trigger.PaginatedRunsResponse) {
+			checkFn: func(t *testing.T, resp run.PaginatedRunsResponse) {
 				if len(resp.Runs) == 0 {
 					t.Fatal("expected at least 1 run")
 				}
@@ -427,7 +427,7 @@ func TestRunsHandler_List(t *testing.T) {
 				tc.setup(t, store)
 			}
 
-			h := trigger.NewRunsHandler(store, trigger.NewRunManager(), nil)
+			h := run.NewRunsHandler(store, run.NewRunManager(), nil)
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/runs"+tc.query, nil)
@@ -448,7 +448,7 @@ func TestRunsHandler_List(t *testing.T) {
 				}
 
 				var env struct {
-					Data trigger.PaginatedRunsResponse `json:"data"`
+					Data run.PaginatedRunsResponse `json:"data"`
 				}
 				if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
 					t.Fatalf("decode response: %v", err)
@@ -469,10 +469,10 @@ func TestRunsHandler_List(t *testing.T) {
 
 func TestRunsHandler_List_PolicyName(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	insertTestPolicy(t, store, "p-pname-test", minimalWebhookPolicy)
-	insertTestRun(t, store, "r-pname-test-1", "p-pname-test", model.RunStatusComplete)
+	testutil.InsertPolicy(t, store, "p-pname-test", "policy-"+"p-pname-test", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-pname-test-1", "p-pname-test", model.RunStatusComplete)
 
-	h := trigger.NewRunsHandler(store, trigger.NewRunManager(), nil)
+	h := run.NewRunsHandler(store, run.NewRunManager(), nil)
 	router := newRunsRouter(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs?policy_id=p-pname-test", nil)
@@ -484,7 +484,7 @@ func TestRunsHandler_List_PolicyName(t *testing.T) {
 	}
 
 	var env struct {
-		Data trigger.PaginatedRunsResponse `json:"data"`
+		Data run.PaginatedRunsResponse `json:"data"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -506,17 +506,17 @@ func TestRunsHandler_Get(t *testing.T) {
 		runID    string
 		wantCode int
 		// checkFn is called on the decoded RunSummary when wantCode == 200
-		checkFn func(t *testing.T, run trigger.RunSummary)
+		checkFn func(t *testing.T, run run.RunSummary)
 	}{
 		{
 			name: "known ID returns 200 with correct fields",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-get", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-get-known", "p-get", model.RunStatusComplete)
+				testutil.InsertPolicy(t, store, "p-get", "policy-"+"p-get", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-get-known", "p-get", model.RunStatusComplete)
 			},
 			runID:    "r-get-known",
 			wantCode: http.StatusOK,
-			checkFn: func(t *testing.T, run trigger.RunSummary) {
+			checkFn: func(t *testing.T, run run.RunSummary) {
 				if run.ID != "r-get-known" {
 					t.Errorf("run.ID = %q, want %q", run.ID, "r-get-known")
 				}
@@ -534,8 +534,8 @@ func TestRunsHandler_Get(t *testing.T) {
 		{
 			name: "system_prompt is returned when set",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-get-prompt", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-get-prompt", "p-get-prompt", model.RunStatusComplete)
+				testutil.InsertPolicy(t, store, "p-get-prompt", "policy-"+"p-get-prompt", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-get-prompt", "p-get-prompt", model.RunStatusComplete)
 				_, err := store.DB().Exec(
 					`UPDATE runs SET system_prompt = ? WHERE id = ?`,
 					"You are a helpful agent.", "r-get-prompt",
@@ -546,7 +546,7 @@ func TestRunsHandler_Get(t *testing.T) {
 			},
 			runID:    "r-get-prompt",
 			wantCode: http.StatusOK,
-			checkFn: func(t *testing.T, run trigger.RunSummary) {
+			checkFn: func(t *testing.T, run run.RunSummary) {
 				if run.SystemPrompt == nil {
 					t.Fatal("system_prompt is nil, want non-nil")
 				}
@@ -558,12 +558,12 @@ func TestRunsHandler_Get(t *testing.T) {
 		{
 			name: "system_prompt is null for old runs",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-get-no-prompt", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-get-no-prompt", "p-get-no-prompt", model.RunStatusComplete)
+				testutil.InsertPolicy(t, store, "p-get-no-prompt", "policy-"+"p-get-no-prompt", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-get-no-prompt", "p-get-no-prompt", model.RunStatusComplete)
 			},
 			runID:    "r-get-no-prompt",
 			wantCode: http.StatusOK,
-			checkFn: func(t *testing.T, run trigger.RunSummary) {
+			checkFn: func(t *testing.T, run run.RunSummary) {
 				if run.SystemPrompt != nil {
 					t.Errorf("system_prompt = %q, want nil", *run.SystemPrompt)
 				}
@@ -583,7 +583,7 @@ func TestRunsHandler_Get(t *testing.T) {
 				tc.setup(t, store)
 			}
 
-			h := trigger.NewRunsHandler(store, trigger.NewRunManager(), nil)
+			h := run.NewRunsHandler(store, run.NewRunManager(), nil)
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+tc.runID, nil)
@@ -601,7 +601,7 @@ func TestRunsHandler_Get(t *testing.T) {
 				}
 
 				var env struct {
-					Data trigger.RunSummary `json:"data"`
+					Data run.RunSummary `json:"data"`
 				}
 				if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
 					t.Fatalf("decode response: %v", err)
@@ -620,13 +620,13 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 		wantCode  int
 		wantCount int
 		// checkFn is called when wantCode == 200 and wantCount > 0
-		checkFn func(t *testing.T, steps []trigger.StepSummary)
+		checkFn func(t *testing.T, steps []run.StepSummary)
 	}{
 		{
 			name: "run with steps returns 200 and steps in ascending order",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-steps", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-steps", "p-steps", model.RunStatusComplete)
+				testutil.InsertPolicy(t, store, "p-steps", "policy-"+"p-steps", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-steps", "p-steps", model.RunStatusComplete)
 				insertTestStep(t, store, "s-steps-1", "r-steps", 0)
 				insertTestStep(t, store, "s-steps-2", "r-steps", 1)
 				insertTestStep(t, store, "s-steps-3", "r-steps", 2)
@@ -634,7 +634,7 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 			runID:     "r-steps",
 			wantCode:  http.StatusOK,
 			wantCount: 3,
-			checkFn: func(t *testing.T, steps []trigger.StepSummary) {
+			checkFn: func(t *testing.T, steps []run.StepSummary) {
 				for i, s := range steps {
 					if s.StepNumber != int64(i) {
 						t.Errorf("steps[%d].StepNumber = %d, want %d", i, s.StepNumber, i)
@@ -645,8 +645,8 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 		{
 			name: "run with no steps returns 200 and empty array",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-no-steps", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-no-steps", "p-no-steps", model.RunStatusPending)
+				testutil.InsertPolicy(t, store, "p-no-steps", "policy-"+"p-no-steps", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-no-steps", "p-no-steps", model.RunStatusPending)
 			},
 			runID:     "r-no-steps",
 			wantCode:  http.StatusOK,
@@ -666,7 +666,7 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 				tc.setup(t, store)
 			}
 
-			h := trigger.NewRunsHandler(store, trigger.NewRunManager(), nil)
+			h := run.NewRunsHandler(store, run.NewRunManager(), nil)
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+tc.runID+"/steps", nil)
@@ -684,7 +684,7 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 				}
 
 				var env struct {
-					Data []trigger.StepSummary `json:"data"`
+					Data []run.StepSummary `json:"data"`
 				}
 				if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
 					t.Fatalf("decode response: %v", err)
@@ -711,7 +711,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 
 	cases := []struct {
 		name          string
-		setup         func(t *testing.T, store *db.Store, manager *trigger.RunManager)
+		setup         func(t *testing.T, store *db.Store, manager *run.RunManager)
 		runID         string
 		wantCode      int
 		checkSuccess  func(t *testing.T, body cancelSuccessBody)
@@ -719,9 +719,9 @@ func TestRunsHandler_Cancel(t *testing.T) {
 	}{
 		{
 			name: "running run returns 202 with run_id",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
-				insertTestPolicy(t, store, "p-cancel-run", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-cancel-running", "p-cancel-run", model.RunStatusRunning)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
+				testutil.InsertPolicy(t, store, "p-cancel-run", "policy-"+"p-cancel-run", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-cancel-running", "p-cancel-run", model.RunStatusRunning)
 				manager.Register("r-cancel-running", func() {}, make(chan bool, 1), make(chan string, 1))
 			},
 			runID:    "r-cancel-running",
@@ -734,15 +734,15 @@ func TestRunsHandler_Cancel(t *testing.T) {
 		},
 		{
 			name:     "unknown run ID returns 404",
-			setup:    func(t *testing.T, store *db.Store, manager *trigger.RunManager) {},
+			setup:    func(t *testing.T, store *db.Store, manager *run.RunManager) {},
 			runID:    "r-cancel-nonexistent",
 			wantCode: http.StatusNotFound,
 		},
 		{
 			name: "complete run returns 409",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
-				insertTestPolicy(t, store, "p-cancel-complete", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-cancel-complete", "p-cancel-complete", model.RunStatusComplete)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
+				testutil.InsertPolicy(t, store, "p-cancel-complete", "policy-"+"p-cancel-complete", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-cancel-complete", "p-cancel-complete", model.RunStatusComplete)
 			},
 			runID:    "r-cancel-complete",
 			wantCode: http.StatusConflict,
@@ -757,9 +757,9 @@ func TestRunsHandler_Cancel(t *testing.T) {
 		},
 		{
 			name: "pending run returns 409",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
-				insertTestPolicy(t, store, "p-cancel-pending", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-cancel-pending", "p-cancel-pending", model.RunStatusPending)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
+				testutil.InsertPolicy(t, store, "p-cancel-pending", "policy-"+"p-cancel-pending", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-cancel-pending", "p-cancel-pending", model.RunStatusPending)
 			},
 			runID:    "r-cancel-pending",
 			wantCode: http.StatusConflict,
@@ -774,9 +774,9 @@ func TestRunsHandler_Cancel(t *testing.T) {
 		},
 		{
 			name: "failed run returns 409",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
-				insertTestPolicy(t, store, "p-cancel-failed", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-cancel-failed", "p-cancel-failed", model.RunStatusFailed)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
+				testutil.InsertPolicy(t, store, "p-cancel-failed", "policy-"+"p-cancel-failed", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-cancel-failed", "p-cancel-failed", model.RunStatusFailed)
 			},
 			runID:    "r-cancel-failed",
 			wantCode: http.StatusConflict,
@@ -791,9 +791,9 @@ func TestRunsHandler_Cancel(t *testing.T) {
 		},
 		{
 			name: "waiting_for_approval run returns 202",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
-				insertTestPolicy(t, store, "p-cancel-waiting", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-cancel-waiting", "p-cancel-waiting", model.RunStatusWaitingForApproval)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
+				testutil.InsertPolicy(t, store, "p-cancel-waiting", "policy-"+"p-cancel-waiting", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-cancel-waiting", "p-cancel-waiting", model.RunStatusWaitingForApproval)
 				manager.Register("r-cancel-waiting", func() {}, make(chan bool, 1), make(chan string, 1))
 			},
 			runID:    "r-cancel-waiting",
@@ -806,9 +806,9 @@ func TestRunsHandler_Cancel(t *testing.T) {
 		},
 		{
 			name: "waiting_for_feedback run returns 202",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
-				insertTestPolicy(t, store, "p-cancel-feedback", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-cancel-feedback", "p-cancel-feedback", model.RunStatusWaitingForFeedback)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
+				testutil.InsertPolicy(t, store, "p-cancel-feedback", "policy-"+"p-cancel-feedback", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-cancel-feedback", "p-cancel-feedback", model.RunStatusWaitingForFeedback)
 				manager.Register("r-cancel-feedback", func() {}, make(chan bool, 1), make(chan string, 1))
 			},
 			runID:    "r-cancel-feedback",
@@ -821,9 +821,9 @@ func TestRunsHandler_Cancel(t *testing.T) {
 		},
 		{
 			name: "interrupted run returns 409",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
-				insertTestPolicy(t, store, "p-cancel-interrupted", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-cancel-interrupted", "p-cancel-interrupted", model.RunStatusInterrupted)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
+				testutil.InsertPolicy(t, store, "p-cancel-interrupted", "policy-"+"p-cancel-interrupted", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-cancel-interrupted", "p-cancel-interrupted", model.RunStatusInterrupted)
 			},
 			runID:    "r-cancel-interrupted",
 			wantCode: http.StatusConflict,
@@ -842,9 +842,9 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			// this returned 202 Accepted (misleading — nothing was cancelled); it now
 			// correctly returns 409 Conflict.
 			name: "running run not registered in manager returns 409",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) {
-				insertTestPolicy(t, store, "p-cancel-toctou", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-cancel-toctou", "p-cancel-toctou", model.RunStatusRunning)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
+				testutil.InsertPolicy(t, store, "p-cancel-toctou", "policy-"+"p-cancel-toctou", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-cancel-toctou", "p-cancel-toctou", model.RunStatusRunning)
 				// Intentionally do NOT register the run in the manager, simulating
 				// the goroutine having already exited and deregistered.
 			},
@@ -864,12 +864,12 @@ func TestRunsHandler_Cancel(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := testutil.NewTestStore(t)
-			manager := trigger.NewRunManager()
+			manager := run.NewRunManager()
 			if tc.setup != nil {
 				tc.setup(t, store, manager)
 			}
 
-			h := trigger.NewRunsHandler(store, manager, nil)
+			h := run.NewRunsHandler(store, manager, nil)
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+tc.runID+"/cancel", nil)
@@ -917,7 +917,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 
 	cases := []struct {
 		name         string
-		setup        func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool
+		setup        func(t *testing.T, store *db.Store, manager *run.RunManager) chan bool
 		runID        string
 		body         string
 		wantCode     int
@@ -926,7 +926,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 	}{
 		{
 			name: "run not found returns 404",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan bool {
 				return nil
 			},
 			runID:    "r-approval-missing",
@@ -935,9 +935,9 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 		},
 		{
 			name: "run not waiting_for_approval returns 409",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
-				insertTestPolicy(t, store, "p-approval-running", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-approval-running", "p-approval-running", model.RunStatusRunning)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan bool {
+				testutil.InsertPolicy(t, store, "p-approval-running", "policy-"+"p-approval-running", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-approval-running", "p-approval-running", model.RunStatusRunning)
 				// Intentionally do NOT register the run — it is not in an approval gate.
 				return nil
 			},
@@ -955,7 +955,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 		},
 		{
 			name: "missing decision field returns 400",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan bool {
 				return nil
 			},
 			runID:    "r-approval-bad-body",
@@ -969,7 +969,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 		},
 		{
 			name: "invalid decision value returns 400",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan bool {
 				return nil
 			},
 			runID:    "r-approval-bad-decision",
@@ -983,7 +983,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 		},
 		{
 			name: "invalid JSON body returns 400",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan bool {
 				return nil
 			},
 			runID:    "r-approval-bad-json",
@@ -992,9 +992,9 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 		},
 		{
 			name: "waiting_for_approval but no active gate returns 409",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
-				insertTestPolicy(t, store, "p-approval-no-gate", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-approval-no-gate", "p-approval-no-gate", model.RunStatusWaitingForApproval)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan bool {
+				testutil.InsertPolicy(t, store, "p-approval-no-gate", "policy-"+"p-approval-no-gate", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-approval-no-gate", "p-approval-no-gate", model.RunStatusWaitingForApproval)
 				// Pre-fill the buffer to simulate a gate that has already closed
 				// (e.g. the agent's approval timeout fired before the operator
 				// responded). The handler's non-blocking send must fail and return 409.
@@ -1014,9 +1014,9 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 		},
 		{
 			name: "approved decision delivered returns 202",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
-				insertTestPolicy(t, store, "p-approval-ok", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-approval-ok", "p-approval-ok", model.RunStatusWaitingForApproval)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan bool {
+				testutil.InsertPolicy(t, store, "p-approval-ok", "policy-"+"p-approval-ok", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-approval-ok", "p-approval-ok", model.RunStatusWaitingForApproval)
 				testutil.InsertApprovalRequest(t, store, "ar-approval-ok", "r-approval-ok", "some_tool")
 				// Buffered so the non-blocking send in SendApproval succeeds without
 				// needing a goroutine to be scheduled and blocking on the channel.
@@ -1038,9 +1038,9 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 		},
 		{
 			name: "denied decision delivered returns 202",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan bool {
-				insertTestPolicy(t, store, "p-approval-deny", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-approval-deny", "p-approval-deny", model.RunStatusWaitingForApproval)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan bool {
+				testutil.InsertPolicy(t, store, "p-approval-deny", "policy-"+"p-approval-deny", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-approval-deny", "p-approval-deny", model.RunStatusWaitingForApproval)
 				testutil.InsertApprovalRequest(t, store, "ar-approval-deny", "r-approval-deny", "some_tool")
 				// Buffered so the non-blocking send in SendApproval succeeds without
 				// needing a goroutine to be scheduled and blocking on the channel.
@@ -1062,7 +1062,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := testutil.NewTestStore(t)
-			manager := trigger.NewRunManager()
+			manager := run.NewRunManager()
 
 			var approvalCh chan bool
 			if tc.setup != nil {
@@ -1074,7 +1074,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 				go func() { <-approvalCh }()
 			}
 
-			h := trigger.NewRunsHandler(store, manager, nil)
+			h := run.NewRunsHandler(store, manager, nil)
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+tc.runID+"/approval", strings.NewReader(tc.body))
@@ -1119,7 +1119,7 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 
 	cases := []struct {
 		name         string
-		setup        func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string
+		setup        func(t *testing.T, store *db.Store, manager *run.RunManager) chan string
 		runID        string
 		body         string
 		wantCode     int
@@ -1128,7 +1128,7 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 	}{
 		{
 			name: "run not found returns 404",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string {
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan string {
 				return nil
 			},
 			runID:    "r-feedback-missing",
@@ -1137,9 +1137,9 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 		},
 		{
 			name: "run not waiting_for_feedback returns 409",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string {
-				insertTestPolicy(t, store, "p-feedback-running", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-feedback-running", "p-feedback-running", model.RunStatusRunning)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan string {
+				testutil.InsertPolicy(t, store, "p-feedback-running", "policy-"+"p-feedback-running", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-feedback-running", "p-feedback-running", model.RunStatusRunning)
 				// Intentionally do NOT register the run — it is not in a feedback gate.
 				return nil
 			},
@@ -1157,7 +1157,7 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 		},
 		{
 			name: "empty response returns 400",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string {
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan string {
 				return nil
 			},
 			runID:    "r-feedback-empty",
@@ -1166,9 +1166,9 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 		},
 		{
 			name: "waiting_for_feedback but no active gate returns 409",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string {
-				insertTestPolicy(t, store, "p-feedback-no-gate", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-feedback-no-gate", "p-feedback-no-gate", model.RunStatusWaitingForFeedback)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan string {
+				testutil.InsertPolicy(t, store, "p-feedback-no-gate", "policy-"+"p-feedback-no-gate", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-feedback-no-gate", "p-feedback-no-gate", model.RunStatusWaitingForFeedback)
 				// Pre-fill the buffer to simulate a gate that has already closed
 				// (e.g. the agent's feedback timeout fired before the operator
 				// responded). The handler's non-blocking send must fail and return 409.
@@ -1188,9 +1188,9 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 		},
 		{
 			name: "response delivered returns 202",
-			setup: func(t *testing.T, store *db.Store, manager *trigger.RunManager) chan string {
-				insertTestPolicy(t, store, "p-feedback-ok", minimalWebhookPolicy)
-				insertTestRun(t, store, "r-feedback-ok", "p-feedback-ok", model.RunStatusWaitingForFeedback)
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan string {
+				testutil.InsertPolicy(t, store, "p-feedback-ok", "policy-"+"p-feedback-ok", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-feedback-ok", "p-feedback-ok", model.RunStatusWaitingForFeedback)
 				// Buffered so the non-blocking send in SendFeedback succeeds.
 				ch := make(chan string, 1)
 				manager.Register("r-feedback-ok", func() {}, make(chan bool, 1), ch)
@@ -1210,13 +1210,13 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := testutil.NewTestStore(t)
-			manager := trigger.NewRunManager()
+			manager := run.NewRunManager()
 
 			if tc.setup != nil {
 				tc.setup(t, store, manager)
 			}
 
-			h := trigger.NewRunsHandler(store, manager, nil)
+			h := run.NewRunsHandler(store, manager, nil)
 			router := newRunsRouter(h)
 
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+tc.runID+"/feedback", strings.NewReader(tc.body))

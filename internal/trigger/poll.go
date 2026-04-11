@@ -10,9 +10,17 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/rapp992/gleipnir/internal/run"
 )
+
+// toolResolver resolves a single MCP tool by dot-notation name. Used by
+// the poll engine to call a tool outside any agent run.
+type toolResolver interface {
+	ResolveToolByName(ctx context.Context, dotName string) (*mcp.Client, string, error)
+}
 
 const (
 	// reconcileInterval is how often the Poller checks for newly created,
@@ -27,7 +35,7 @@ const (
 // run is launched. Polling is stateless — no deduplication or backoff.
 type Poller struct {
 	store        *db.Store
-	launcher     *RunLauncher
+	launcher     *run.RunLauncher
 	toolResolver toolResolver
 	mu           sync.Mutex                    // protects the loops map
 	loops        map[string]context.CancelFunc // policyID -> cancel func for that goroutine
@@ -36,7 +44,7 @@ type Poller struct {
 
 // NewPoller returns a Poller ready to be started. resolver is used to call
 // poll tools outside of any agent run context.
-func NewPoller(store *db.Store, launcher *RunLauncher, resolver toolResolver) *Poller {
+func NewPoller(store *db.Store, launcher *run.RunLauncher, resolver toolResolver) *Poller {
 	return &Poller{
 		store:        store,
 		launcher:     launcher,
@@ -224,17 +232,17 @@ func (p *Poller) poll(ctx context.Context, policyID string, parsed *model.Parsed
 
 	if err := p.launcher.CheckConcurrency(ctx, policyID, parsed.Agent.Concurrency); err != nil {
 		switch {
-		case errors.Is(err, ErrConcurrencySkipActive):
+		case errors.Is(err, run.ErrConcurrencySkipActive):
 			slog.Info("poller: skipping run, active run exists (concurrency: skip)", "policy_id", policyID)
 			return
-		case errors.Is(err, ErrConcurrencyQueueActive):
-			if enqErr := p.launcher.Enqueue(ctx, LaunchParams{
+		case errors.Is(err, run.ErrConcurrencyQueueActive):
+			if enqErr := p.launcher.Enqueue(ctx, run.LaunchParams{
 				PolicyID:       policyID,
 				TriggerType:    model.TriggerTypePoll,
 				TriggerPayload: payload,
 				ParsedPolicy:   parsed,
 			}, parsed.Agent.QueueDepth); enqErr != nil {
-				if errors.Is(enqErr, ErrConcurrencyQueueFull) {
+				if errors.Is(enqErr, run.ErrConcurrencyQueueFull) {
 					slog.Warn("poller: trigger queue is full", "policy_id", policyID)
 				} else {
 					slog.Error("poller: failed to enqueue trigger", "policy_id", policyID, "err", enqErr)
@@ -249,7 +257,7 @@ func (p *Poller) poll(ctx context.Context, policyID string, parsed *model.Parsed
 		}
 	}
 
-	launchResult, err := p.launcher.Launch(ctx, LaunchParams{
+	launchResult, err := p.launcher.Launch(ctx, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypePoll,
 		TriggerPayload: payload,

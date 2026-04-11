@@ -13,6 +13,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/auth"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
+	"github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/sse"
 	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
@@ -30,13 +31,13 @@ func buildTestRouter(t *testing.T) http.Handler {
 	sseHandler := sse.NewHandler(broadcaster)
 
 	registry := mcp.NewRegistry(store.Queries())
-	runManager := trigger.NewRunManager()
+	runManager := run.NewRunManager()
 
 	noopClient := testutil.NewNoopLLMClient()
 	providerRegistry := llm.NewProviderRegistry()
 	providerRegistry.Register("anthropic", noopClient)
 
-	launcher := trigger.NewRunLauncher(store, registry, runManager, trigger.NewAgentFactory(providerRegistry), broadcaster, 30*time.Minute)
+	launcher := run.NewRunLauncher(store, registry, runManager, run.NewAgentFactory(providerRegistry), broadcaster, 30*time.Minute)
 	webhookHandler := trigger.NewWebhookHandler(store, launcher)
 
 	adminQuerier := admin.NewQuerierAdapter(store.Queries())

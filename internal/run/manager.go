@@ -1,4 +1,6 @@
-package trigger
+// Package run owns the run lifecycle: launching runs, tracking in-flight
+// goroutines, and serving HTTP inspection and control endpoints.
+package run
 
 import (
 	"context"

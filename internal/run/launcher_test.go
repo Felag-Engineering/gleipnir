@@ -1,8 +1,11 @@
-package trigger_test
+package run_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -14,14 +17,75 @@ import (
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/testutil"
-	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
 // failingAgentFactory returns an AgentFactory whose New call always fails.
-func failingAgentFactory(err error) trigger.AgentFactory {
+func failingAgentFactory(err error) run.AgentFactory {
 	return func(cfg agent.Config) (agent.Runner, error) {
 		return nil, err
+	}
+}
+
+// newStubMCPServer starts an httptest.Server that handles MCP JSON-RPC over HTTP.
+// It responds to tools/list with a single "read_data" tool and to all other
+// methods with a stub result.
+func newStubMCPServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		method, _ := req["method"].(string)
+		switch method {
+		case "tools/list":
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]any{
+					"tools": []map[string]any{{
+						"name":        "read_data",
+						"description": "reads data",
+						"inputSchema": map[string]any{
+							"type": "object", "properties": map[string]any{},
+						},
+					}},
+				},
+			})
+		default:
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]any{
+					"content": []map[string]any{{"type": "text", "text": "stub result"}},
+					"isError": false,
+				},
+			})
+		}
+	}))
+}
+
+// setupIntegrationFixture opens a temp SQLite store, starts a stub MCP server,
+// and registers it with a fresh Registry.
+func setupIntegrationFixture(t *testing.T) (*db.Store, *mcp.Registry) {
+	t.Helper()
+	store := testutil.NewTestStore(t)
+	mcpSrv := newStubMCPServer(t)
+	t.Cleanup(mcpSrv.Close)
+	registry := mcp.NewRegistry(store.Queries())
+	if err := registry.RegisterServer(context.Background(), "stub-server", mcpSrv.URL); err != nil {
+		t.Fatalf("RegisterServer: %v", err)
+	}
+	return store, registry
+}
+
+// localAgentFactory returns an AgentFactory that uses a mock LLM client so
+// no real API calls are made during launcher tests.
+func localAgentFactory() run.AgentFactory {
+	return func(cfg agent.Config) (agent.Runner, error) {
+		cfg.LLMClient = testutil.NewMockLLMClient(
+			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
+		)
+		return agent.New(cfg)
 	}
 }
 
@@ -37,7 +101,7 @@ func TestCheckConcurrency(t *testing.T) {
 			name:        "skip with active run returns ErrConcurrencySkipActive",
 			hasActive:   true,
 			concurrency: model.ConcurrencySkip,
-			wantErr:     trigger.ErrConcurrencySkipActive,
+			wantErr:     run.ErrConcurrencySkipActive,
 		},
 		{
 			name:        "skip with no active runs returns nil",
@@ -54,7 +118,7 @@ func TestCheckConcurrency(t *testing.T) {
 			name:        "queue with active run returns ErrConcurrencyQueueActive",
 			hasActive:   true,
 			concurrency: model.ConcurrencyQueue,
-			wantErr:     trigger.ErrConcurrencyQueueActive,
+			wantErr:     run.ErrConcurrencyQueueActive,
 		},
 		{
 			name:        "queue with no active run returns nil",
@@ -71,7 +135,7 @@ func TestCheckConcurrency(t *testing.T) {
 		{
 			name:        "unknown concurrency returns ErrConcurrencyUnrecognised",
 			concurrency: model.ConcurrencyPolicy("unknown"),
-			wantErr:     trigger.ErrConcurrencyUnrecognised,
+			wantErr:     run.ErrConcurrencyUnrecognised,
 		},
 	}
 
@@ -79,16 +143,16 @@ func TestCheckConcurrency(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := testutil.NewTestStore(t)
 			policyID := "cp-test"
-			insertTestPolicy(t, store, policyID, minimalWebhookPolicy)
+			testutil.InsertPolicy(t, store, policyID, "policy-"+policyID, "webhook", testutil.MinimalWebhookPolicy)
 
 			if tc.hasActive {
-				insertTestRun(t, store, "r-active", policyID, model.RunStatusRunning)
+				testutil.InsertRun(t, store, "r-active", policyID, model.RunStatusRunning)
 			}
 
 			registry := mcp.NewRegistry(store.Queries())
-			manager := trigger.NewRunManager()
+			manager := run.NewRunManager()
 			// factory is nil — CheckConcurrency never calls it.
-			launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
+			launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0)
 
 			err := launcher.CheckConcurrency(context.Background(), policyID, tc.concurrency)
 			if tc.wantNil {
@@ -108,10 +172,10 @@ func TestCheckConcurrency_Replace(t *testing.T) {
 	t.Run("cancels active run and returns nil", func(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		policyID := "cp-replace"
-		insertTestPolicy(t, store, policyID, minimalWebhookPolicy)
-		insertTestRun(t, store, "r-replace-active", policyID, model.RunStatusRunning)
+		testutil.InsertPolicy(t, store, policyID, "policy-"+policyID, "webhook", testutil.MinimalWebhookPolicy)
+		testutil.InsertRun(t, store, "r-replace-active", policyID, model.RunStatusRunning)
 
-		manager := trigger.NewRunManager()
+		manager := run.NewRunManager()
 		cancelCalled := false
 		// Cap-1 channels match the production channels created by launcher.go.
 		manager.Register("r-replace-active", func() { cancelCalled = true }, make(chan bool, 1), make(chan string, 1))
@@ -129,7 +193,7 @@ func TestCheckConcurrency_Replace(t *testing.T) {
 		}()
 
 		registry := mcp.NewRegistry(store.Queries())
-		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
+		launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0)
 
 		err := launcher.CheckConcurrency(context.Background(), policyID, model.ConcurrencyReplace)
 		if err != nil {
@@ -143,14 +207,14 @@ func TestCheckConcurrency_Replace(t *testing.T) {
 	t.Run("cancels multiple active runs and returns nil", func(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		policyID := "cp-replace-multi"
-		insertTestPolicy(t, store, policyID, minimalWebhookPolicy)
+		testutil.InsertPolicy(t, store, policyID, "policy-"+policyID, "webhook", testutil.MinimalWebhookPolicy)
 
 		runIDs := []string{"r-multi-1", "r-multi-2", "r-multi-3"}
 		for _, id := range runIDs {
-			insertTestRun(t, store, id, policyID, model.RunStatusRunning)
+			testutil.InsertRun(t, store, id, policyID, model.RunStatusRunning)
 		}
 
-		manager := trigger.NewRunManager()
+		manager := run.NewRunManager()
 		cancelled := make(map[string]bool)
 		for _, id := range runIDs {
 			id := id
@@ -174,7 +238,7 @@ func TestCheckConcurrency_Replace(t *testing.T) {
 		}
 
 		registry := mcp.NewRegistry(store.Queries())
-		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
+		launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0)
 
 		err := launcher.CheckConcurrency(context.Background(), policyID, model.ConcurrencyReplace)
 		if err != nil {
@@ -194,8 +258,8 @@ func TestLaunch_ToolResolutionFailure(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	// No MCP server registered, so any tool reference will fail resolution.
 	registry := mcp.NewRegistry(store.Queries())
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0)
 
 	const policyWithMissingTool = `
 name: tool-failure-policy
@@ -209,13 +273,13 @@ agent:
   task: "test task"
   concurrency: parallel
 `
-	insertTestPolicy(t, store, "p-tool-fail", policyWithMissingTool)
+	testutil.InsertPolicy(t, store, "p-tool-fail", "policy-p-tool-fail", "webhook", policyWithMissingTool)
 	parsed, err := policy.Parse(policyWithMissingTool, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("policy.Parse: %v", err)
 	}
 
-	_, launchErr := launcher.Launch(context.Background(), trigger.LaunchParams{
+	_, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
 		PolicyID:       "p-tool-fail",
 		TriggerType:    model.TriggerTypeWebhook,
 		TriggerPayload: `{}`,
@@ -241,10 +305,10 @@ agent:
 func TestLaunch_AgentConstructionFailure(t *testing.T) {
 	// Factory always returns an error — agent construction fails after tools are resolved.
 	store, registry := setupIntegrationFixture(t)
-	manager := trigger.NewRunManager()
+	manager := run.NewRunManager()
 
 	agentErr := errors.New("deliberate construction failure")
-	launcher := trigger.NewRunLauncher(store, registry, manager, failingAgentFactory(agentErr), nil, 0)
+	launcher := run.NewRunLauncher(store, registry, manager, failingAgentFactory(agentErr), nil, 0)
 
 	const launchPolicy = `
 name: agent-fail-policy
@@ -258,13 +322,13 @@ agent:
   task: "test task"
   concurrency: parallel
 `
-	insertTestPolicy(t, store, "p-agent-fail", launchPolicy)
+	testutil.InsertPolicy(t, store, "p-agent-fail", "policy-p-agent-fail", "webhook", launchPolicy)
 	parsed, err := policy.Parse(launchPolicy, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("policy.Parse: %v", err)
 	}
 
-	_, launchErr := launcher.Launch(context.Background(), trigger.LaunchParams{
+	_, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
 		PolicyID:       "p-agent-fail",
 		TriggerType:    model.TriggerTypeWebhook,
 		TriggerPayload: `{}`,
@@ -291,8 +355,8 @@ func TestLaunch_Successful(t *testing.T) {
 	// Full happy-path launch: run should appear in DB with correct trigger_type
 	// and payload, and LaunchResult.RunID should be non-empty.
 	store, registry := setupIntegrationFixture(t)
-	manager := trigger.NewRunManager()
-	launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
+	manager := run.NewRunManager()
+	launcher := run.NewRunLauncher(store, registry, manager, localAgentFactory(), nil, 0)
 
 	const launchPolicy = `
 name: launch-success-policy
@@ -306,13 +370,13 @@ agent:
   task: "test task"
   concurrency: parallel
 `
-	insertTestPolicy(t, store, "p-launch-ok", launchPolicy)
+	testutil.InsertPolicy(t, store, "p-launch-ok", "policy-p-launch-ok", "webhook", launchPolicy)
 	parsed, err := policy.Parse(launchPolicy, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("policy.Parse: %v", err)
 	}
 
-	result, err := launcher.Launch(context.Background(), trigger.LaunchParams{
+	result, err := launcher.Launch(context.Background(), run.LaunchParams{
 		PolicyID:       "p-launch-ok",
 		TriggerType:    model.TriggerTypeWebhook,
 		TriggerPayload: `{"event":"test"}`,
@@ -333,15 +397,15 @@ agent:
 	if len(runs) == 0 {
 		t.Fatal("expected run in DB after successful Launch, got 0")
 	}
-	run := runs[0]
-	if run.ID != result.RunID {
-		t.Errorf("run.ID = %q, want %q", run.ID, result.RunID)
+	r := runs[0]
+	if r.ID != result.RunID {
+		t.Errorf("run.ID = %q, want %q", r.ID, result.RunID)
 	}
-	if run.TriggerType != string(model.TriggerTypeWebhook) {
-		t.Errorf("run.TriggerType = %q, want %q", run.TriggerType, model.TriggerTypeWebhook)
+	if r.TriggerType != string(model.TriggerTypeWebhook) {
+		t.Errorf("run.TriggerType = %q, want %q", r.TriggerType, model.TriggerTypeWebhook)
 	}
-	if run.TriggerPayload != `{"event":"test"}` {
-		t.Errorf("run.TriggerPayload = %q, want %q", run.TriggerPayload, `{"event":"test"}`)
+	if r.TriggerPayload != `{"event":"test"}` {
+		t.Errorf("run.TriggerPayload = %q, want %q", r.TriggerPayload, `{"event":"test"}`)
 	}
 
 	// Wait for the background goroutine to finish so the test does not leak goroutines.
@@ -393,28 +457,28 @@ agent:
 			name:           "returns ErrConcurrencyQueueFull when at limit",
 			preloadEntries: 2,
 			queueDepth:     2,
-			wantErr:        trigger.ErrConcurrencyQueueFull,
+			wantErr:        run.ErrConcurrencyQueueFull,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := testutil.NewTestStore(t)
-			insertTestPolicy(t, store, "p-enqueue", queuePolicyYAML)
+			testutil.InsertPolicy(t, store, "p-enqueue", "policy-p-enqueue", "webhook", queuePolicyYAML)
 
 			for i := 0; i < tc.preloadEntries; i++ {
 				testutil.InsertQueueEntry(t, store, "p-enqueue", "webhook")
 			}
 
 			registry := mcp.NewRegistry(store.Queries())
-			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), nil, nil, 0)
+			launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), nil, nil, 0)
 
 			parsed, err := policy.Parse(queuePolicyYAML, model.DefaultProvider, model.DefaultModelName)
 			if err != nil {
 				t.Fatalf("policy.Parse: %v", err)
 			}
 
-			enqErr := launcher.Enqueue(context.Background(), trigger.LaunchParams{
+			enqErr := launcher.Enqueue(context.Background(), run.LaunchParams{
 				PolicyID:       "p-enqueue",
 				TriggerType:    model.TriggerTypeWebhook,
 				TriggerPayload: `{"event":"queued"}`,
@@ -449,11 +513,11 @@ agent:
   task: "test task"
   concurrency: queue
 `
-		insertTestPolicy(t, store, "p-drain", policyYAML)
+		testutil.InsertPolicy(t, store, "p-drain", "policy-p-drain", "webhook", policyYAML)
 		testutil.InsertQueueEntry(t, store, "p-drain", "webhook")
 
-		manager := trigger.NewRunManager()
-		launcher := trigger.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
+		manager := run.NewRunManager()
+		launcher := run.NewRunLauncher(store, registry, manager, localAgentFactory(), nil, 0)
 
 		parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
 		if err != nil {
@@ -486,10 +550,10 @@ agent:
   task: "test task"
   concurrency: queue
 `
-		insertTestPolicy(t, store, "p-drain-empty", policyYAML)
+		testutil.InsertPolicy(t, store, "p-drain-empty", "policy-p-drain-empty", "webhook", policyYAML)
 
-		manager := trigger.NewRunManager()
-		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
+		manager := run.NewRunManager()
+		launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0)
 
 		parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
 		if err != nil {
@@ -525,13 +589,13 @@ agent:
   task: "test task"
   concurrency: queue
 `
-		insertTestPolicy(t, store, "p-drain-fail", policyYAML)
+		testutil.InsertPolicy(t, store, "p-drain-fail", "policy-p-drain-fail", "webhook", policyYAML)
 		// Insert two entries: the first will fail to launch, the second stays.
 		testutil.InsertQueueEntry(t, store, "p-drain-fail", "webhook")
 		testutil.InsertQueueEntry(t, store, "p-drain-fail", "webhook")
 
-		manager := trigger.NewRunManager()
-		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
+		manager := run.NewRunManager()
+		launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0)
 
 		parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
 		if err != nil {
@@ -579,11 +643,11 @@ agent:
   task: "test task"
   concurrency: queue
 `
-		insertTestPolicy(t, store, "p-drain-dberr", policyYAML)
+		testutil.InsertPolicy(t, store, "p-drain-dberr", "policy-p-drain-dberr", "webhook", policyYAML)
 
-		manager := trigger.NewRunManager()
+		manager := run.NewRunManager()
 		registry := mcp.NewRegistry(store.Queries())
-		launcher := trigger.NewRunLauncher(store, registry, manager, nil, nil, 0)
+		launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0)
 
 		parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
 		if err != nil {
@@ -601,9 +665,9 @@ agent:
 func TestLaunch_ToolResolutionFailure_PublishesEvent(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
-	manager := trigger.NewRunManager()
+	manager := run.NewRunManager()
 	pub := &testutil.RecordingPublisher{}
-	launcher := trigger.NewRunLauncher(store, registry, manager, nil, pub, 0)
+	launcher := run.NewRunLauncher(store, registry, manager, nil, pub, 0)
 
 	const policyYAML = `
 name: tool-failure-event-policy
@@ -617,13 +681,13 @@ agent:
   task: "test task"
   concurrency: parallel
 `
-	insertTestPolicy(t, store, "p-tool-fail-evt", policyYAML)
+	testutil.InsertPolicy(t, store, "p-tool-fail-evt", "policy-p-tool-fail-evt", "webhook", policyYAML)
 	parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("policy.Parse: %v", err)
 	}
 
-	_, launchErr := launcher.Launch(context.Background(), trigger.LaunchParams{
+	_, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
 		PolicyID:       "p-tool-fail-evt",
 		TriggerType:    model.TriggerTypeWebhook,
 		TriggerPayload: `{}`,
@@ -641,11 +705,11 @@ agent:
 
 func TestLaunch_AgentConstructionFailure_PublishesEvent(t *testing.T) {
 	store, registry := setupIntegrationFixture(t)
-	manager := trigger.NewRunManager()
+	manager := run.NewRunManager()
 	pub := &testutil.RecordingPublisher{}
 
 	agentErr := errors.New("deliberate construction failure")
-	launcher := trigger.NewRunLauncher(store, registry, manager, failingAgentFactory(agentErr), pub, 0)
+	launcher := run.NewRunLauncher(store, registry, manager, failingAgentFactory(agentErr), pub, 0)
 
 	const policyYAML = `
 name: agent-fail-event-policy
@@ -659,13 +723,13 @@ agent:
   task: "test task"
   concurrency: parallel
 `
-	insertTestPolicy(t, store, "p-agent-fail-evt", policyYAML)
+	testutil.InsertPolicy(t, store, "p-agent-fail-evt", "policy-p-agent-fail-evt", "webhook", policyYAML)
 	parsed, err := policy.Parse(policyYAML, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		t.Fatalf("policy.Parse: %v", err)
 	}
 
-	_, launchErr := launcher.Launch(context.Background(), trigger.LaunchParams{
+	_, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
 		PolicyID:       "p-agent-fail-evt",
 		TriggerType:    model.TriggerTypeWebhook,
 		TriggerPayload: `{}`,
@@ -686,7 +750,7 @@ agent:
 // and returns a descriptive error for unknown providers.
 //
 // Note: TestLaunch_Successful does not exercise the registry path — it uses
-// schedulerFactory(), an inline factory that bypasses NewAgentFactory.
+// localAgentFactory(), an inline factory that bypasses NewAgentFactory.
 func TestNewAgentFactory_ProviderLookup(t *testing.T) {
 	anthropicClient := testutil.NewNoopLLMClient()
 	googleClient := testutil.NewNoopLLMClient()
@@ -726,7 +790,7 @@ func TestNewAgentFactory_ProviderLookup(t *testing.T) {
 				reg.Register(name, client)
 			}
 
-			factory := trigger.NewAgentFactory(reg)
+			factory := run.NewAgentFactory(reg)
 
 			cfg := agent.Config{
 				Policy: &model.ParsedPolicy{

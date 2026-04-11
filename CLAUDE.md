@@ -110,11 +110,12 @@ internal/
   mcp/                — MCP HTTP client, tool registry, capability tags
   model/              — domain types (Policy, Run, RunStep, ApprovalRequest, enums, ...)
   policy/             — YAML parser, validator, system prompt renderer
+  run/                — run lifecycle: RunManager (goroutine tracking), RunLauncher (concurrency + launch), AgentFactory, RunsHandler (HTTP endpoints for run inspection/control), sentinel concurrency errors
   runstate/           — canonical run status transition table and TransitionRunFailed helper
   sse/                — Server-Sent Events broadcaster
   testutil/           — shared test helpers
   timeout/            — generic scan-and-resolve loop for expiring requests (used by approval/ and feedback/)
-  trigger/            — webhook, manual, scheduled, and poll trigger handlers
+  trigger/            — trigger dispatch only: webhook, manual, scheduled, and poll handlers (imports run/ for launching)
 ```
 
 **ADRs:** Architectural decisions are referenced in docs/ADR_Tracker.md, decisions should be tracked there and this document should be updated anytime architectural decisions are made. Do not reference in source code but do reference in commit messages and PR messages.

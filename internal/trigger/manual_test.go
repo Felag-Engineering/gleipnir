@@ -13,6 +13,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
@@ -189,7 +190,7 @@ func TestManualTriggerHandler(t *testing.T) {
 			noopClient := testutil.NewNoopLLMClient()
 			providerReg := llm.NewProviderRegistry()
 			providerReg.Register("anthropic", noopClient)
-			launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil, 0)
+			launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
 			h := trigger.NewManualTriggerHandler(store, launcher)
 
 			w := callManualHandler(t, h, tc.policyID, tc.body)
@@ -208,7 +209,7 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil, 0)
+	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
 	h := trigger.NewManualTriggerHandler(store, launcher)
 
 	w := callManualHandler(t, h, "mp-run-created", `{"message": "test"}`)
@@ -242,7 +243,7 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	launcher := trigger.NewRunLauncher(store, registry, trigger.NewRunManager(), trigger.NewAgentFactory(providerReg), nil, 0)
+	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
 	h := trigger.NewManualTriggerHandler(store, launcher)
 
 	// Empty body should be accepted (treated as '{}')
