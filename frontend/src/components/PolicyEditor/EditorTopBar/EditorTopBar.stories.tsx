@@ -20,7 +20,7 @@ const meta: Meta<typeof EditorTopBar> = {
   args: {
     onModeChange: fn(),
     onSave: fn(),
-    onDelete: fn(),
+    onDeleteClick: fn(),
   },
 };
 

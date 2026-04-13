@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { EditorTopBar } from '@/components/PolicyEditor/EditorTopBar/EditorTopBar'
+import { DeleteAgentModal } from '@/components/PolicyEditor/DeleteAgentModal'
 import { YamlEditor } from '@/components/PolicyEditor/YamlEditor/YamlEditor'
 import { PolicyIdentitySection } from '@/components/PolicyEditor/FormMode/PolicyIdentitySection'
 import { TriggerSection } from '@/components/PolicyEditor/FormMode/TriggerSection'
@@ -33,6 +34,8 @@ export function PolicyEditorPage() {
   const [formState, setFormState] = useState<FormState>(() => defaultFormState())
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedPolicyId, setSavedPolicyId] = useState<string | undefined>(id)
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false)
+  const [deleteError, setDeleteError] = useState<ApiError | null>(null)
 
   // Initialize from fetched policy data
   useEffect(() => {
@@ -95,12 +98,13 @@ export function PolicyEditorPage() {
 
   async function handleDelete() {
     if (!id) return
+    setDeleteError(null)
     try {
       await deletePolicy.mutateAsync(id)
+      setDeleteModalOpen(false)
       navigate('/agents')
     } catch (e) {
-      const err = e as ApiError
-      setSaveError(err?.detail ?? err?.message ?? 'Delete failed. Please try again.')
+      setDeleteError(e as ApiError)
     }
   }
 
@@ -156,8 +160,18 @@ export function PolicyEditorPage() {
         isEditMode={Boolean(id)}
         onModeChange={handleModeChange}
         onSave={handleSave}
-        onDelete={handleDelete}
+        onDeleteClick={() => setDeleteModalOpen(true)}
       />
+      {deleteModalOpen && id && (
+        <DeleteAgentModal
+          policyId={id}
+          policyName={policyName}
+          onClose={() => { setDeleteModalOpen(false); setDeleteError(null) }}
+          onConfirm={handleDelete}
+          isPending={deletePolicy.isPending}
+          error={deleteError}
+        />
+      )}
       <ErrorBoundary>
         <div className={styles.content}>
           {saveError && (
