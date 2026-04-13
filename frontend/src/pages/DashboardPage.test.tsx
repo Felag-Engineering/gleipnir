@@ -102,6 +102,28 @@ describe('DashboardPage', () => {
     expect(screen.queryByText('NEEDS ATTENTION')).not.toBeInTheDocument()
   })
 
+  it('removes the Recharts measurement span from document.body on unmount', async () => {
+    setupDefaultHandlers()
+
+    // Recharts is fully mocked in this test file so the span never appears
+    // naturally. Inject it manually to simulate what Recharts does at runtime.
+    const span = document.createElement('span')
+    span.id = 'recharts_measurement_span'
+    span.textContent = '18:00'
+    document.body.appendChild(span)
+
+    const { unmount } = renderDashboard(makeClient())
+    await waitFor(() => {
+      expect(screen.getByText('Control Center')).toBeInTheDocument()
+    })
+
+    expect(document.getElementById('recharts_measurement_span')).not.toBeNull()
+
+    unmount()
+
+    expect(document.getElementById('recharts_measurement_span')).toBeNull()
+  })
+
   it('renders the attention queue when there are items', async () => {
     server.use(
       http.get('/api/v1/stats', () => HttpResponse.json({ data: STATS })),

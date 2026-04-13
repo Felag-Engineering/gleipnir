@@ -1,5 +1,6 @@
 import { PageHeader } from '@/components/PageHeader'
 import { usePageTitle } from '@/hooks/usePageTitle'
+import { useRechartsCleanup } from '@/hooks/useRechartsCleanup'
 import { RunActivityChart } from '@/components/dashboard/RunActivityChart'
 import { CostByModelChart } from '@/components/dashboard/CostByModelChart'
 import { AttentionQueue } from '@/components/dashboard/AttentionQueue'
@@ -10,6 +11,7 @@ import styles from './DashboardPage.module.css'
 
 export default function DashboardPage() {
   usePageTitle('Control Center')
+  useRechartsCleanup()
   const timeSeries = useTimeSeriesStats()
   const attention = useAttentionItems()
 
