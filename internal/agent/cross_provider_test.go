@@ -147,7 +147,7 @@ func TestCrossProvider_OptionsValidation(t *testing.T) {
 				name:          "google_bad_type",
 				client:        &googlellm.GeminiClient{},
 				options:       map[string]any{"thinking_level": 123},
-				wantErrSubstr: "expected string",
+				wantErrSubstr: "must be a string",
 			},
 		}
 

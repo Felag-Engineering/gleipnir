@@ -501,7 +501,7 @@ func TestTranslateResponse_CapturesThoughtSignature(t *testing.T) {
 				Content: &genai.Content{
 					Parts: []*genai.Part{
 						{
-							FunctionCall:    &genai.FunctionCall{ID: "fc-1", Name: "do_thing", Args: nil},
+							FunctionCall:     &genai.FunctionCall{ID: "fc-1", Name: "do_thing", Args: nil},
 							ThoughtSignature: sig,
 						},
 					},
@@ -623,7 +623,7 @@ func TestGoogle_ThoughtSignature_InMemoryRoundTrip(t *testing.T) {
 				Content: &genai.Content{
 					Parts: []*genai.Part{
 						{
-							FunctionCall:    &genai.FunctionCall{ID: "fc-99", Name: "run_task", Args: map[string]any{"x": "1"}},
+							FunctionCall:     &genai.FunctionCall{ID: "fc-99", Name: "run_task", Args: map[string]any{"x": "1"}},
 							ThoughtSignature: sig,
 						},
 					},
@@ -1148,6 +1148,11 @@ func TestValidateOptions(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "valid thinking_level minimal",
+			options: map[string]any{"thinking_level": "minimal"},
+			wantErr: false,
+		},
+		{
 			name:    "valid thinking_level low",
 			options: map[string]any{"thinking_level": "low"},
 			wantErr: false,
@@ -1163,6 +1168,29 @@ func TestValidateOptions(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "valid thinking_budget",
+			options: map[string]any{"thinking_budget": 1024},
+			wantErr: false,
+		},
+		{
+			name:     "thinking_budget zero",
+			options:  map[string]any{"thinking_budget": 0},
+			wantErr:  true,
+			wantMsgs: []string{"must be > 0"},
+		},
+		{
+			name:     "thinking_budget negative",
+			options:  map[string]any{"thinking_budget": -1},
+			wantErr:  true,
+			wantMsgs: []string{"must be > 0"},
+		},
+		{
+			name:     "thinking_budget non-integer",
+			options:  map[string]any{"thinking_budget": 1.5},
+			wantErr:  true,
+			wantMsgs: []string{"must be an integer"},
+		},
+		{
 			name:    "valid enable_grounding true",
 			options: map[string]any{"enable_grounding": true},
 			wantErr: false,
@@ -1173,15 +1201,15 @@ func TestValidateOptions(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "valid both options",
-			options: map[string]any{"thinking_level": "high", "enable_grounding": true},
+			name:    "valid all three options",
+			options: map[string]any{"thinking_level": "high", "thinking_budget": 512, "enable_grounding": true},
 			wantErr: false,
 		},
 		{
 			name:     "unknown option",
 			options:  map[string]any{"unknown_key": "value"},
 			wantErr:  true,
-			wantMsgs: []string{"unknown option: unknown_key"},
+			wantMsgs: []string{"unknown option"},
 		},
 		{
 			name:     "invalid thinking_level value max",
@@ -1199,19 +1227,20 @@ func TestValidateOptions(t *testing.T) {
 			name:     "wrong type for thinking_level",
 			options:  map[string]any{"thinking_level": 42},
 			wantErr:  true,
-			wantMsgs: []string{"expected string, got int"},
+			wantMsgs: []string{"must be a string"},
 		},
 		{
 			name:     "wrong type for enable_grounding",
 			options:  map[string]any{"enable_grounding": "yes"},
 			wantErr:  true,
-			wantMsgs: []string{"expected bool, got string"},
+			wantMsgs: []string{"must be a bool"},
 		},
 		{
-			name:     "multiple errors collected",
-			options:  map[string]any{"bad_key": 1, "thinking_level": "invalid", "enable_grounding": "not-bool"},
-			wantErr:  true,
-			wantMsgs: []string{"unknown option: bad_key", "must be one of", "expected bool, got string"},
+			// parseHints returns on first error; we only verify an error is returned
+			// since map iteration order is non-deterministic.
+			name:    "multiple invalid options",
+			options: map[string]any{"bad_key": 1, "thinking_level": "invalid", "enable_grounding": "not-bool"},
+			wantErr: true,
 		},
 	}
 
@@ -1236,3 +1265,80 @@ func TestValidateOptions(t *testing.T) {
 	}
 }
 
+func TestBuildConfig_ThinkingLevel(t *testing.T) {
+	noMapping := llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}}
+
+	tests := []struct {
+		name              string
+		hints             *GeminiHints
+		wantThinkingLevel genai.ThinkingLevel
+		wantBudget        *int32
+		wantConfigNil     bool
+	}{
+		{
+			name:          "nil hints — ThinkingConfig not set",
+			hints:         nil,
+			wantConfigNil: true,
+		},
+		{
+			name:          "empty hints — ThinkingConfig not set",
+			hints:         &GeminiHints{},
+			wantConfigNil: true,
+		},
+		{
+			name:              "ThinkingLevel high",
+			hints:             &GeminiHints{ThinkingLevel: ptr("high")},
+			wantThinkingLevel: genai.ThinkingLevelHigh,
+		},
+		{
+			name:              "ThinkingLevel minimal",
+			hints:             &GeminiHints{ThinkingLevel: ptr("minimal")},
+			wantThinkingLevel: genai.ThinkingLevelMinimal,
+		},
+		{
+			name:              "ThinkingLevel low",
+			hints:             &GeminiHints{ThinkingLevel: ptr("low")},
+			wantThinkingLevel: genai.ThinkingLevelLow,
+		},
+		{
+			name: "both ThinkingBudget and ThinkingLevel set",
+			hints: &GeminiHints{
+				ThinkingLevel:  ptr("medium"),
+				ThinkingBudget: ptrInt32(256),
+			},
+			wantThinkingLevel: genai.ThinkingLevelMedium,
+			wantBudget:        ptrInt32(256),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config := buildConfig(llm.MessageRequest{}, tc.hints, noMapping)
+
+			if tc.wantConfigNil {
+				if config.ThinkingConfig != nil {
+					t.Errorf("expected ThinkingConfig to be nil, got %+v", config.ThinkingConfig)
+				}
+				return
+			}
+
+			if config.ThinkingConfig == nil {
+				t.Fatal("expected ThinkingConfig to be set, got nil")
+			}
+			if config.ThinkingConfig.ThinkingLevel != tc.wantThinkingLevel {
+				t.Errorf("ThinkingLevel: got %q, want %q", config.ThinkingConfig.ThinkingLevel, tc.wantThinkingLevel)
+			}
+			if tc.wantBudget != nil {
+				if config.ThinkingConfig.ThinkingBudget == nil || *config.ThinkingConfig.ThinkingBudget != *tc.wantBudget {
+					t.Errorf("ThinkingBudget: got %v, want %d", config.ThinkingConfig.ThinkingBudget, *tc.wantBudget)
+				}
+			}
+		})
+	}
+}
+
+// ptr returns a pointer to the given string value.
+func ptr(s string) *string { return &s }
+
+// ptrInt32 returns a pointer to the given int32 value.
+func ptrInt32(n int32) *int32 { return &n }

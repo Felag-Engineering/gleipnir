@@ -31,7 +31,7 @@ type RouterConfig struct {
 	RunManager          *run.RunManager
 	Launcher            *run.RunLauncher
 	ModelLister         llm.ModelLister       // interface for listing available models
-	ProviderRegistry    *llm.ProviderRegistry  // concrete registry for policy validation
+	ProviderRegistry    *llm.ProviderRegistry // concrete registry for policy validation
 	ModelFilter         ModelFilter
 	AuthHandler         *auth.Handler
 	SettingsHandler     *auth.SettingsHandler

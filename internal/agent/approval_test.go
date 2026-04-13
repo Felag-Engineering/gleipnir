@@ -16,7 +16,6 @@ import (
 	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
-
 // approvalEntry returns a resolvedToolEntry with the given timeout (0 means no timeout).
 func approvalEntry(timeout time.Duration) resolvedToolEntry {
 	return resolvedToolEntry{

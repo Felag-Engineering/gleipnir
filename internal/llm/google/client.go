@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -78,63 +77,12 @@ func (c *GeminiClient) StreamMessage(ctx context.Context, req llm.MessageRequest
 	return llm.StubStreamFromResponse(resp), nil
 }
 
-var validOptions = map[string]bool{
-	"thinking_level":   true,
-	"enable_grounding": true,
-}
-
-var validThinkingLevels = []string{"low", "medium", "high"}
-
 // ValidateOptions validates provider-specific options from the policy YAML.
-// Accepted keys: "thinking_level" (string, one of "low", "medium", "high"), "enable_grounding" (bool).
-// All errors are collected before returning so the caller sees every problem at once.
+// Accepted keys: "thinking_level" (string), "thinking_budget" (int), "enable_grounding" (bool).
+// Delegates to parseHints, which is the single source of truth for validation.
 func (c *GeminiClient) ValidateOptions(options map[string]any) error {
-	if options == nil {
-		return nil
-	}
-
-	var errs []string
-
-	keys := make([]string, 0, len(options))
-	for key := range options {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		if !validOptions[key] {
-			errs = append(errs, fmt.Sprintf("unknown option: %s", key))
-		}
-	}
-
-	if v, ok := options["thinking_level"]; ok {
-		s, isString := v.(string)
-		if !isString {
-			errs = append(errs, fmt.Sprintf("option \"thinking_level\": expected string, got %T", v))
-		} else {
-			validLevel := false
-			for _, level := range validThinkingLevels {
-				if s == level {
-					validLevel = true
-					break
-				}
-			}
-			if !validLevel {
-				errs = append(errs, fmt.Sprintf("option \"thinking_level\": must be one of %q, got %q", validThinkingLevels, s))
-			}
-		}
-	}
-
-	if v, ok := options["enable_grounding"]; ok {
-		if _, isBool := v.(bool); !isBool {
-			errs = append(errs, fmt.Sprintf("option \"enable_grounding\": expected bool, got %T", v))
-		}
-	}
-
-	if len(errs) > 0 {
-		return errors.New(strings.Join(errs, "; "))
-	}
-	return nil
+	_, err := parseHints(options)
+	return err
 }
 
 // ValidateModelName returns nil if modelName is in the curated model list, or
@@ -283,7 +231,18 @@ func buildConfig(req llm.MessageRequest, hints *GeminiHints, names llm.ToolNameM
 			config.Tools = append(config.Tools, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
 		}
 		if hints.ThinkingBudget != nil {
-			config.ThinkingConfig = &genai.ThinkingConfig{ThinkingBudget: hints.ThinkingBudget}
+			if config.ThinkingConfig == nil {
+				config.ThinkingConfig = &genai.ThinkingConfig{}
+			}
+			config.ThinkingConfig.ThinkingBudget = hints.ThinkingBudget
+		}
+		if hints.ThinkingLevel != nil {
+			if config.ThinkingConfig == nil {
+				config.ThinkingConfig = &genai.ThinkingConfig{}
+			}
+			if level, ok := thinkingLevelToGenai[*hints.ThinkingLevel]; ok {
+				config.ThinkingConfig.ThinkingLevel = level
+			}
 		}
 	}
 

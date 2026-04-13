@@ -16,7 +16,6 @@ import (
 	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
-
 // TestFeedbackHandler_Wait_ResponseReceived verifies the happy path: operator
 // responds before timeout; feedback_request and feedback_response steps are written;
 // run transitions back to running.
@@ -352,10 +351,10 @@ func TestFeedbackHandler_HandleAskOperator_TimeoutResolution(t *testing.T) {
 	const defaultTimeout = 100 * time.Millisecond
 
 	cases := []struct {
-		name            string
-		feedbackCfg     model.FeedbackConfig
-		wantFasterThan  time.Duration // rough upper bound for the timeout path
-		wantSlowerThan  time.Duration // lower bound so we know the timeout fired
+		name           string
+		feedbackCfg    model.FeedbackConfig
+		wantFasterThan time.Duration // rough upper bound for the timeout path
+		wantSlowerThan time.Duration // lower bound so we know the timeout fired
 	}{
 		{
 			name:           "empty_timeout_uses_default",

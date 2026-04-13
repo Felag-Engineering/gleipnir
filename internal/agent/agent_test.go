@@ -75,12 +75,12 @@ func TestNew_RequiresStateMachine(t *testing.T) {
 
 func TestAssignTokenCost(t *testing.T) {
 	tests := []struct {
-		name           string
-		cost           int
-		thinkingCount  int
-		textCount      int
-		wantThinking   []int
-		wantText       []int
+		name          string
+		cost          int
+		thinkingCount int
+		textCount     int
+		wantThinking  []int
+		wantText      []int
 	}{
 		{
 			name:          "thinking_only",

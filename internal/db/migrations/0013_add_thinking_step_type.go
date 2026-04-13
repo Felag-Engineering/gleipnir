@@ -16,8 +16,8 @@ import (
 // the table-recreation pattern: create a new table, copy data, drop old, rename.
 type AddThinkingStepType struct{}
 
-func (m *AddThinkingStepType) Version() int  { return 2 }
-func (m *AddThinkingStepType) Name() string  { return "add_thinking_step_type" }
+func (m *AddThinkingStepType) Version() int { return 2 }
+func (m *AddThinkingStepType) Name() string { return "add_thinking_step_type" }
 
 func (m *AddThinkingStepType) ShouldSkip(ctx context.Context, db *sql.DB) (bool, error) {
 	var tableSQL string
