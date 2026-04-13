@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -78,6 +79,66 @@ func diffToResponse(d mcp.ToolDiff) toolDiffResponse {
 		Removed:  removed,
 		Modified: modified,
 	}
+}
+
+// testConnectionResponse is the response body for TestConnection.
+// Always returns HTTP 200; the ok field conveys whether the MCP handshake succeeded.
+type testConnectionResponse struct {
+	OK        bool     `json:"ok"`
+	ToolCount int      `json:"tool_count"`
+	Tools     []string `json:"tools"`
+	Error     string   `json:"error"`
+}
+
+// TestConnection handles POST /api/v1/mcp/servers/test.
+// It performs a one-shot MCP discovery handshake against the provided URL without
+// persisting any data — useful for verifying connectivity before saving a server.
+// Always returns HTTP 200; the ok field in the body distinguishes success from failure.
+func (h *MCPHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if body.URL == "" {
+		WriteError(w, http.StatusBadRequest, "url is required", "")
+		return
+	}
+	if err := mcp.ValidateServerURL(r.Context(), body.URL); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid url", err.Error())
+		return
+	}
+
+	// Throwaway client — never stored in h.registry or h.store.
+	client := mcp.NewClient(body.URL)
+
+	// 5-second deadline governs the entire handshake; no separate client timeout needed.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	tools, err := client.DiscoverTools(ctx)
+	if err != nil {
+		WriteJSON(w, http.StatusOK, testConnectionResponse{
+			OK:        false,
+			ToolCount: 0,
+			Tools:     []string{},
+			Error:     err.Error(),
+		})
+		return
+	}
+
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
+	WriteJSON(w, http.StatusOK, testConnectionResponse{
+		OK:        true,
+		ToolCount: len(tools),
+		Tools:     names,
+		Error:     "",
+	})
 }
 
 // List handles GET /api/v1/mcp/servers.

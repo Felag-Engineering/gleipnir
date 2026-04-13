@@ -25,6 +25,9 @@ func newMCPRouter(store *db.Store, registry *mcp.Registry) http.Handler {
 	h := api.NewMCPHandler(store, registry)
 	r.Get("/servers", h.List)
 	r.Post("/servers", h.Create)
+	// /servers/test must be registered before /servers/{id} so chi does not
+	// capture "test" as an id parameter.
+	r.Post("/servers/test", h.TestConnection)
 	r.Delete("/servers/{id}", h.Delete)
 	r.Post("/servers/{id}/discover", h.Discover)
 	r.Get("/servers/{id}/tools", h.ListTools)
@@ -484,6 +487,158 @@ func TestMCPServerDiscoverHandler(t *testing.T) {
 
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", resp.StatusCode)
+		}
+	})
+}
+
+func TestMCPServerTestConnectionHandler(t *testing.T) {
+	type testResult struct {
+		OK        bool     `json:"ok"`
+		ToolCount int      `json:"tool_count"`
+		Tools     []string `json:"tools"`
+		Error     string   `json:"error"`
+	}
+
+	t.Run("reachable MCP server returns ok with tools", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		fakeMCP := makeFakeMCPServer(t, []string{"tool-a", "tool-b"})
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"url": fakeMCP.URL})
+		resp, err := http.Post(srv.URL+"/servers/test", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers/test: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Data testResult `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if !envelope.Data.OK {
+			t.Errorf("ok = false, want true")
+		}
+		if envelope.Data.ToolCount != 2 {
+			t.Errorf("tool_count = %d, want 2", envelope.Data.ToolCount)
+		}
+		if len(envelope.Data.Tools) != 2 {
+			t.Errorf("tools = %v, want [tool-a tool-b]", envelope.Data.Tools)
+		}
+		if envelope.Data.Error != "" {
+			t.Errorf("error = %q, want empty", envelope.Data.Error)
+		}
+	})
+
+	t.Run("reachable MCP server with zero tools", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		fakeMCP := makeFakeMCPServer(t, []string{})
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"url": fakeMCP.URL})
+		resp, err := http.Post(srv.URL+"/servers/test", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers/test: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Data testResult `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if !envelope.Data.OK {
+			t.Errorf("ok = false, want true")
+		}
+		if envelope.Data.ToolCount != 0 {
+			t.Errorf("tool_count = %d, want 0", envelope.Data.ToolCount)
+		}
+	})
+
+	t.Run("unreachable server returns ok=false with error", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+
+		// Start and immediately close so the URL is valid but the server is gone.
+		dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		deadURL := dead.URL
+		dead.Close()
+
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"url": deadURL})
+		resp, err := http.Post(srv.URL+"/servers/test", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers/test: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Data testResult `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.OK {
+			t.Errorf("ok = true, want false for unreachable server")
+		}
+		if envelope.Data.Error == "" {
+			t.Errorf("error must be non-empty for unreachable server")
+		}
+	})
+
+	t.Run("missing url returns 400", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{})
+		resp, err := http.Post(srv.URL+"/servers/test", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers/test: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", resp.StatusCode)
+		}
+	})
+
+	t.Run("invalid url scheme returns 400", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"url": "ftp://bad-scheme"})
+		resp, err := http.Post(srv.URL+"/servers/test", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers/test: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", resp.StatusCode)
 		}
 	})
 }

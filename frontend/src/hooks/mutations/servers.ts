@@ -1,6 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, apiFetchVoid, ApiError } from '@/api/fetch'
-import type { ApiMcpServerCreateResponse, AddMcpServerRequest } from '@/api/types'
+import type {
+  ApiMcpServerCreateResponse,
+  AddMcpServerRequest,
+  TestMcpConnectionRequest,
+  TestMcpConnectionResponse,
+} from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
 export function useAddMcpServer() {
@@ -36,6 +41,18 @@ interface ToolDiff {
   added: string[]
   removed: string[]
   modified: string[]
+}
+
+// useTestMcpConnection performs an ephemeral MCP discovery handshake without
+// persisting any data. No cache invalidation needed — this is a read-only probe.
+export function useTestMcpConnection() {
+  return useMutation<TestMcpConnectionResponse, ApiError, TestMcpConnectionRequest>({
+    mutationFn: (params: TestMcpConnectionRequest) =>
+      apiFetch<TestMcpConnectionResponse>('/mcp/servers/test', {
+        method: 'POST',
+        body: JSON.stringify(params),
+      }),
+  })
 }
 
 export function useDiscoverMcpServer() {

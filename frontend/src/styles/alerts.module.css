@@ -18,3 +18,10 @@
   border-color: color-mix(in srgb, var(--color-amber) 25%, transparent);
   color: var(--color-amber);
 }
+
+.alertSuccess {
+  composes: alert;
+  background: color-mix(in srgb, var(--color-green) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-green) 25%, transparent);
+  color: var(--color-green);
+}

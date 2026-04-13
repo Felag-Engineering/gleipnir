@@ -20,9 +20,7 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
 })
 
 import { useMcpServers } from '@/hooks/queries/servers'
-import { useAddMcpServer } from '@/hooks/mutations/servers'
-import { useDeleteMcpServer } from '@/hooks/mutations/servers'
-import { useDiscoverMcpServer } from '@/hooks/mutations/servers'
+import { useAddMcpServer, useDeleteMcpServer, useDiscoverMcpServer, useTestMcpConnection } from '@/hooks/mutations/servers'
 import { useQueries } from '@tanstack/react-query'
 
 // --- Fixtures ---
@@ -86,6 +84,7 @@ function mockNoopMutations() {
   vi.mocked(useAddMcpServer).mockReturnValue(noop as unknown as ReturnType<typeof useAddMcpServer>)
   vi.mocked(useDeleteMcpServer).mockReturnValue(noop as unknown as ReturnType<typeof useDeleteMcpServer>)
   vi.mocked(useDiscoverMcpServer).mockReturnValue(noop as unknown as ReturnType<typeof useDiscoverMcpServer>)
+  vi.mocked(useTestMcpConnection).mockReturnValue(noop as unknown as ReturnType<typeof useTestMcpConnection>)
 }
 
 function mockServersLoaded(servers: ApiMcpServer[], toolsByServer: Map<string, ApiMcpTool[]> = new Map()) {

@@ -168,6 +168,7 @@ GET    /api/v1/runs/:id/steps          POST   /api/v1/runs/:id/cancel
 
 MCP / Tools:
 GET    /api/v1/mcp/servers             POST   /api/v1/mcp/servers
+POST   /api/v1/mcp/servers/test
 DELETE /api/v1/mcp/servers/:id
 POST   /api/v1/mcp/servers/:id/discover
 GET    /api/v1/mcp/servers/:id/tools

@@ -216,6 +216,20 @@ export interface AddMcpServerRequest {
   url: string
 }
 
+// Matches api/mcp_handler.go → testConnectionResponse (POST /api/v1/mcp/servers/test)
+export interface TestMcpConnectionRequest {
+  url: string
+}
+
+// ok=true means the handshake succeeded; ok=false means the server was unreachable
+// or returned an error. HTTP 200 is always returned — error is in the body.
+export interface TestMcpConnectionResponse {
+  ok: boolean
+  tool_count: number
+  tools: string[]
+  error: string
+}
+
 // --- Users ---
 
 // Matches auth/handler.go → createUserRequest (POST /api/v1/users)
