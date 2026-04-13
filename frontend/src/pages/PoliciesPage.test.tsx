@@ -23,6 +23,7 @@ const POLICIES: ApiPolicyListItem[] = [
     paused_at: null,
     latest_run: { id: 'r101', status: 'complete', started_at: '2026-03-07T14:32:11Z', token_cost: 1000 },
     avg_token_cost: 0,
+    run_count: 0,
   },
 ]
 

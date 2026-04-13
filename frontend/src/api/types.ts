@@ -16,6 +16,7 @@ export interface ApiPolicyListItem {
   tool_count: number
   tool_refs: string[]
   avg_token_cost: number
+  run_count: number
   created_at: string
   updated_at: string
   paused_at: string | null

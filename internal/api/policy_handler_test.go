@@ -221,6 +221,7 @@ func TestPolicyListAvgTokenCost(t *testing.T) {
 			Data []struct {
 				ID           string `json:"id"`
 				AvgTokenCost int64  `json:"avg_token_cost"`
+				RunCount     int64  `json:"run_count"`
 			} `json:"data"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
@@ -231,6 +232,9 @@ func TestPolicyListAvgTokenCost(t *testing.T) {
 		}
 		if envelope.Data[0].AvgTokenCost != 2000 {
 			t.Errorf("avg_token_cost = %d, want 2000", envelope.Data[0].AvgTokenCost)
+		}
+		if envelope.Data[0].RunCount != 2 {
+			t.Errorf("run_count = %d, want 2", envelope.Data[0].RunCount)
 		}
 	})
 
@@ -250,6 +254,7 @@ func TestPolicyListAvgTokenCost(t *testing.T) {
 		var envelope struct {
 			Data []struct {
 				AvgTokenCost int64 `json:"avg_token_cost"`
+				RunCount     int64 `json:"run_count"`
 			} `json:"data"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
@@ -260,6 +265,9 @@ func TestPolicyListAvgTokenCost(t *testing.T) {
 		}
 		if envelope.Data[0].AvgTokenCost != 0 {
 			t.Errorf("avg_token_cost = %d, want 0", envelope.Data[0].AvgTokenCost)
+		}
+		if envelope.Data[0].RunCount != 0 {
+			t.Errorf("run_count = %d, want 0", envelope.Data[0].RunCount)
 		}
 	})
 }

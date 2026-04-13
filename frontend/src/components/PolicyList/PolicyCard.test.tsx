@@ -66,6 +66,7 @@ const POLICY: ApiPolicyListItem = {
   tool_count: 5,
   tool_refs: [],
   avg_token_cost: 4500,
+  run_count: 3,
   created_at: '2026-04-03T14:00:00Z',
   updated_at: '2026-04-03T14:00:00Z',
   paused_at: null,
@@ -237,7 +238,7 @@ describe('PolicyCard expanded', () => {
     await user.click(screen.getByText('system-health-check'))
 
     await waitFor(() => {
-      expect(screen.getByText('Avg Tokens')).toBeInTheDocument()
+      expect(screen.getByText('Avg Tokens / Run')).toBeInTheDocument()
     })
     expect(screen.getByText('Limits')).toBeInTheDocument()
     expect(screen.getByText('Concurrency')).toBeInTheDocument()
@@ -310,13 +311,13 @@ describe('PolicyCard expanded', () => {
     await user.click(nameEl)
 
     await waitFor(() => {
-      expect(screen.getByText('Avg Tokens')).toBeInTheDocument()
+      expect(screen.getByText('Avg Tokens / Run')).toBeInTheDocument()
     })
 
     await user.click(nameEl)
 
     await waitFor(() => {
-      expect(screen.queryByText('Avg Tokens')).toBeNull()
+      expect(screen.queryByText('Avg Tokens / Run')).toBeNull()
     })
   })
 })

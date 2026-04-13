@@ -50,7 +50,8 @@ SELECT
     r.started_at  AS run_started_at,
     r.token_cost  AS run_token_cost,
     (SELECT CAST(COALESCE(AVG(token_cost), 0) AS INTEGER)
-     FROM runs WHERE policy_id = p.id) AS avg_token_cost
+     FROM runs WHERE policy_id = p.id) AS avg_token_cost,
+    (SELECT COUNT(*) FROM runs WHERE policy_id = p.id) AS run_count
 FROM policies p
 LEFT JOIN runs r ON r.id = (
     SELECT id FROM runs

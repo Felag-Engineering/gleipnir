@@ -67,8 +67,10 @@ export function PolicyCardExpanded({ policy }: Props) {
 
       <div className={styles.statBar}>
         <div className={styles.stat}>
-          <span className={styles.statLabel}>Avg Tokens</span>
-          <span className={styles.statValue}>{formatTokens(policy.avg_token_cost)}</span>
+          <span className={styles.statLabel}>Avg Tokens / Run</span>
+          <span className={styles.statValue}>
+            {policy.run_count === 0 ? '\u2014' : formatTokens(policy.avg_token_cost)}
+          </span>
         </div>
         <div className={styles.divider} />
         <div className={styles.stat}>

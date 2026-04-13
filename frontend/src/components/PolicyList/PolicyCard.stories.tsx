@@ -63,6 +63,7 @@ const BASE_POLICY: ApiPolicyListItem = {
   tool_count: 1,
   tool_refs: ['backup-server.check_status'],
   avg_token_cost: 1060,
+  run_count: 3,
   created_at: '2026-03-01T00:00:00Z',
   updated_at: '2026-04-01T00:00:00Z',
   paused_at: null,

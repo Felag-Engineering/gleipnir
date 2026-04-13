@@ -80,6 +80,7 @@ const BASE_LIST_ITEM: ApiPolicyListItem = {
   tool_count: 3,
   tool_refs: ['k8s-server.rolling_deploy', 'k8s-server.get_pod_status', 'gh-server.post_status_check'],
   avg_token_cost: 4500,
+  run_count: 5,
   created_at: '2026-03-01T00:00:00Z',
   updated_at: '2026-04-01T00:00:00Z',
   paused_at: null,
@@ -176,7 +177,7 @@ export const Empty: Story = {
       </QueryClientProvider>
     ),
   ],
-  args: { policy: { ...BASE_LIST_ITEM, tool_count: 0, tool_refs: [], avg_token_cost: 0, latest_run: null } },
+  args: { policy: { ...BASE_LIST_ITEM, tool_count: 0, tool_refs: [], avg_token_cost: 0, run_count: 0, latest_run: null } },
 }
 
 // ManyTools — exercises the tool grouping by server display.

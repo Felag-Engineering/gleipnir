@@ -44,6 +44,7 @@ type policyListItem struct {
 	ToolCount    int         `json:"tool_count"`
 	ToolRefs     []string    `json:"tool_refs"`
 	AvgTokenCost int64       `json:"avg_token_cost"`
+	RunCount     int64       `json:"run_count"`
 	CreatedAt    string      `json:"created_at"`
 	UpdatedAt    string      `json:"updated_at"`
 	PausedAt     *string     `json:"paused_at"`
@@ -82,6 +83,7 @@ func (h *PolicyHandler) List(w http.ResponseWriter, r *http.Request) {
 			ToolCount:    len(summary.Capabilities.Tools),
 			ToolRefs:     toolRefs,
 			AvgTokenCost: row.AvgTokenCost,
+			RunCount:     row.RunCount,
 			CreatedAt:    row.CreatedAt,
 			UpdatedAt:    row.UpdatedAt,
 			PausedAt:     row.PausedAt,
