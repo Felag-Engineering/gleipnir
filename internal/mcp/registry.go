@@ -302,7 +302,8 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 	}
 
 	hasDrift := int64(0)
-	if len(diff.Added) > 0 || len(diff.Removed) > 0 || len(diff.Modified) > 0 {
+	isFirstDiscovery := len(oldTools) == 0
+	if !isFirstDiscovery && (len(diff.Added) > 0 || len(diff.Removed) > 0 || len(diff.Modified) > 0) {
 		hasDrift = 1
 	}
 	if err := r.queries.UpdateMCPServerDrift(ctx, db.UpdateMCPServerDriftParams{

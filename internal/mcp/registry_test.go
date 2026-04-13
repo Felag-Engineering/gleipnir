@@ -461,6 +461,141 @@ func TestResolveToolByName_BadDotNotation(t *testing.T) {
 	}
 }
 
+// TestRefreshTools_FirstDiscoveryNoDrift verifies that when RefreshTools is
+// called on a server that has no tools in the DB yet (the initial discovery
+// that happens right after server creation), has_drift is NOT set even though
+// all discovered tools appear in diff.Added. The first discovery establishes
+// the baseline and must not be treated as drift.
+func TestRefreshTools_FirstDiscoveryNoDrift(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
+
+	tools := []map[string]any{
+		{"name": "tool-a", "description": "desc a", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "tool-b", "description": "desc b", "inputSchema": map[string]any{"type": "object"}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	// Insert the server row directly — zero tools in DB — mimicking what the
+	// Create handler does before it calls RefreshTools for auto-discovery.
+	now := "2024-01-01T00:00:00Z"
+	var serverID string
+	if err := rawDB.QueryRow(
+		`INSERT INTO mcp_servers (id, name, url, created_at) VALUES ('srv-first', 'test-server', ?, ?) RETURNING id`,
+		srv.URL, now,
+	).Scan(&serverID); err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+
+	diff, err := reg.RefreshTools(context.Background(), serverID)
+	if err != nil {
+		t.Fatalf("RefreshTools: %v", err)
+	}
+
+	// The diff accurately reports both tools as added.
+	if len(diff.Added) != 2 {
+		t.Errorf("diff.Added = %v, want [tool-a tool-b]", diff.Added)
+	}
+	if len(diff.Removed) != 0 {
+		t.Errorf("diff.Removed = %v, want empty", diff.Removed)
+	}
+
+	// First discovery must NOT set has_drift.
+	var hasDrift int64
+	if err := rawDB.QueryRow(`SELECT has_drift FROM mcp_servers WHERE id = ?`, serverID).Scan(&hasDrift); err != nil {
+		t.Fatalf("query has_drift: %v", err)
+	}
+	if hasDrift != 0 {
+		t.Errorf("has_drift = %d, want 0 on first discovery", hasDrift)
+	}
+
+	// last_discovered_at must be set.
+	var lastDiscovered *string
+	if err := rawDB.QueryRow(`SELECT last_discovered_at FROM mcp_servers WHERE id = ?`, serverID).Scan(&lastDiscovered); err != nil {
+		t.Fatalf("query last_discovered_at: %v", err)
+	}
+	if lastDiscovered == nil {
+		t.Error("last_discovered_at is NULL after RefreshTools, want non-nil")
+	}
+
+	// Both tools must exist in the DB.
+	var count int
+	if err := rawDB.QueryRow(`SELECT COUNT(*) FROM mcp_tools WHERE server_id = ?`, serverID).Scan(&count); err != nil {
+		t.Fatalf("count tools: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("tool count = %d, want 2", count)
+	}
+}
+
+// TestRefreshTools_SecondDiscoveryAfterEmptyFirst verifies that once a first
+// discovery has established a non-empty baseline, a subsequent discovery with
+// changed tools correctly sets has_drift=1.
+func TestRefreshTools_SecondDiscoveryAfterEmptyFirst(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
+
+	// First mock returns only tool-a.
+	firstTools := []map[string]any{
+		{"name": "tool-a", "description": "desc a", "inputSchema": map[string]any{"type": "object"}},
+	}
+	firstSrv := makeMCPServer(t, firstTools)
+
+	// Insert server row with zero tools in DB.
+	now := "2024-01-01T00:00:00Z"
+	var serverID string
+	if err := rawDB.QueryRow(
+		`INSERT INTO mcp_servers (id, name, url, created_at) VALUES ('srv-second', 'test-server', ?, ?) RETURNING id`,
+		firstSrv.URL, now,
+	).Scan(&serverID); err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+
+	// First discovery: tool-a is new baseline, must not set has_drift.
+	diff, err := reg.RefreshTools(context.Background(), serverID)
+	if err != nil {
+		t.Fatalf("RefreshTools (first): %v", err)
+	}
+	if len(diff.Added) != 1 || diff.Added[0] != "tool-a" {
+		t.Errorf("first diff.Added = %v, want [tool-a]", diff.Added)
+	}
+
+	var hasDrift int64
+	if err := rawDB.QueryRow(`SELECT has_drift FROM mcp_servers WHERE id = ?`, serverID).Scan(&hasDrift); err != nil {
+		t.Fatalf("query has_drift after first refresh: %v", err)
+	}
+	if hasDrift != 0 {
+		t.Errorf("has_drift = %d after first discovery, want 0", hasDrift)
+	}
+
+	// Second mock returns tool-a + tool-b: a change relative to the baseline.
+	secondTools := []map[string]any{
+		{"name": "tool-a", "description": "desc a", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "tool-b", "description": "desc b", "inputSchema": map[string]any{"type": "object"}},
+	}
+	secondSrv := makeMCPServer(t, secondTools)
+
+	if _, err := rawDB.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, secondSrv.URL, serverID); err != nil {
+		t.Fatalf("update server url: %v", err)
+	}
+
+	// Second discovery: tool-b is new, must set has_drift=1.
+	diff, err = reg.RefreshTools(context.Background(), serverID)
+	if err != nil {
+		t.Fatalf("RefreshTools (second): %v", err)
+	}
+	if len(diff.Added) != 1 || diff.Added[0] != "tool-b" {
+		t.Errorf("second diff.Added = %v, want [tool-b]", diff.Added)
+	}
+
+	if err := rawDB.QueryRow(`SELECT has_drift FROM mcp_servers WHERE id = ?`, serverID).Scan(&hasDrift); err != nil {
+		t.Fatalf("query has_drift after second refresh: %v", err)
+	}
+	if hasDrift != 1 {
+		t.Errorf("has_drift = %d after second discovery, want 1", hasDrift)
+	}
+}
+
 // TestRefreshTools_DriftClearedOnCleanRefresh verifies the full drift lifecycle:
 // a discovery with changes sets has_drift=1, and a subsequent discovery that
 // finds no changes clears it back to has_drift=0.

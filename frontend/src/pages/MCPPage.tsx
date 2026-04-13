@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Wrench } from 'lucide-react'
 import { useQueries } from '@tanstack/react-query'
 import { useMcpServers } from '@/hooks/queries/servers'
@@ -44,6 +44,17 @@ export default function MCPPage() {
     })),
   })
 
+  // Clear the discovering state once the tool query for the new server settles.
+  useEffect(() => {
+    if (!discoveringServerId || !servers) return
+    const idx = servers.findIndex((s) => s.id === discoveringServerId)
+    if (idx === -1) return
+    const result = toolResults[idx]
+    if (result && result.status !== 'pending') {
+      setDiscoveringServerId(null)
+    }
+  }, [discoveringServerId, servers, toolResults])
+
   const addMutation = useAddMcpServer()
   const deleteMutation = useDeleteMcpServer()
   const discoverMutation = useDiscoverMcpServer()
@@ -68,6 +79,7 @@ export default function MCPPage() {
           } else {
             setShowAddModal(false)
             addMutation.reset()
+            setDiscoveringServerId(data.id)
           }
         },
       },

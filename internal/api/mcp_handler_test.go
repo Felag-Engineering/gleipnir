@@ -443,7 +443,9 @@ func TestMCPServerDiscoverHandler(t *testing.T) {
 			t.Error("modified must not be null — want empty array")
 		}
 
-		// After a discovery that adds tools, has_drift should be true in GET /servers.
+		// First discovery establishes the baseline: has_drift must be false even
+		// though both tools appear in diff.Added. Drift only applies once a
+		// baseline exists (i.e. tools were present in the DB before the refresh).
 		listResp, err := http.Get(srv.URL + "/servers")
 		if err != nil {
 			t.Fatalf("GET /servers: %v", err)
@@ -462,8 +464,8 @@ func TestMCPServerDiscoverHandler(t *testing.T) {
 		if len(listEnvelope.Data) != 1 {
 			t.Fatalf("list len = %d, want 1", len(listEnvelope.Data))
 		}
-		if !listEnvelope.Data[0].HasDrift {
-			t.Errorf("has_drift = false after discovery that added tools, want true")
+		if listEnvelope.Data[0].HasDrift {
+			t.Errorf("has_drift = true after first discovery, want false")
 		}
 	})
 
