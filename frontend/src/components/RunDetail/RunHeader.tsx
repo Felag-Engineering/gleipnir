@@ -4,7 +4,7 @@ import type { ApiRun } from '@/api/types'
 import { StatusBadge } from '@/components/dashboard/StatusBadge/StatusBadge'
 import { TriggerChip } from '@/components/dashboard/TriggerChip/TriggerChip'
 import type { RunStatus, TriggerType } from '@/constants/status'
-import { formatDurationMs, formatTokens, formatTimestamp } from '@/utils/format'
+import { formatDurationMs, formatTokens, formatTimestamp, formatProviderName } from '@/utils/format'
 import styles from './RunHeader.module.css'
 
 interface CapabilityTool {
@@ -40,7 +40,7 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
 
   const capabilityParts = capabilitySnapshot
     ? [
-        capabilitySnapshot.provider,
+        capabilitySnapshot.provider ? formatProviderName(capabilitySnapshot.provider) : undefined,
         capabilitySnapshot.model,
         `${capabilitySnapshot.toolCount} ${capabilitySnapshot.toolCount === 1 ? 'tool' : 'tools'}`,
       ].filter(Boolean)

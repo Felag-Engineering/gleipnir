@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { CapabilitySnapshotContent, CapabilitySnapshotV2, GrantedToolEntry } from './types'
+import { formatProviderName } from '@/utils/format'
 import styles from './CapabilitySnapshotCard.module.css'
 
 interface Props {
@@ -28,7 +29,7 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
       >
         <span className={styles.icon}>⚙</span>
         <span className={styles.label}>
-          Capability snapshot — {count} tool{count === 1 ? '' : 's'}{provider ? ` · ${provider}` : ''}{modelName ? ` · ${modelName}` : ''}
+          Capability snapshot — {count} tool{count === 1 ? '' : 's'}{provider ? ` · ${formatProviderName(provider)}` : ''}{modelName ? ` · ${modelName}` : ''}
         </span>
         <span className={styles.chevron}>{expanded ? '▲' : '▼'}</span>
       </button>

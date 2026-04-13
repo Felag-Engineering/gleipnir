@@ -1,6 +1,25 @@
 // Canonical formatting helpers for the Gleipnir frontend.
 // All duration, token, timestamp, and relative-time formatting lives here.
 
+// Known provider display labels. The wire format uses lowercase enum values
+// (e.g. "openai"), but naive title-casing produces "Openai" — wrong for brands
+// like OpenAI. Add entries here whenever a new first-party provider is added.
+const PROVIDER_LABELS: Record<string, string> = {
+  anthropic: 'Anthropic',
+  google: 'Google',
+  openai: 'OpenAI',
+}
+
+// formatProviderName returns a human-readable display label for a provider
+// identifier. Known providers (anthropic, google, openai) use their canonical
+// brand capitalisation. Unknown providers (e.g. admin-managed OpenAI-compat
+// backends with arbitrary names) fall back to simple first-letter capitalisation
+// so something reasonable always renders.
+export function formatProviderName(provider: string): string {
+  if (!provider) return provider
+  return PROVIDER_LABELS[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1)
+}
+
 const TZ_KEY = 'gleipnir-timezone'
 const DATE_FORMAT_KEY = 'gleipnir-date-format'
 

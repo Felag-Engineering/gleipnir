@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { formatDuration, formatDurationMs, formatTokens, formatTimestamp, formatTimeAgo, formatCountdown, computeRunDuration, formatDate, getPreferredTimezone } from '@/utils/format'
+import { formatDuration, formatDurationMs, formatTokens, formatTimestamp, formatTimeAgo, formatCountdown, computeRunDuration, formatDate, getPreferredTimezone, formatProviderName } from '@/utils/format'
 
 describe('formatDuration', () => {
   it('returns — for null', () => {
@@ -233,6 +233,24 @@ describe('formatDate', () => {
     const result = formatDate('2026-06-01T23:59:59Z')
     // Should not contain hour:minute patterns
     expect(result).not.toMatch(/\d{1,2}:\d{2}/)
+  })
+})
+
+describe('formatProviderName', () => {
+  it.each([
+    ['anthropic', 'Anthropic'],
+    ['google', 'Google'],
+    ['openai', 'OpenAI'],
+  ])('formats known provider %s as %s', (input, expected) => {
+    expect(formatProviderName(input)).toBe(expected)
+  })
+
+  it('capitalises the first letter for unknown providers', () => {
+    expect(formatProviderName('my-custom-llm')).toBe('My-custom-llm')
+  })
+
+  it('returns empty string unchanged', () => {
+    expect(formatProviderName('')).toBe('')
   })
 })
 

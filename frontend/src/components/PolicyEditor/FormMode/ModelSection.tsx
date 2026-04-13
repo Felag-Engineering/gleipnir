@@ -3,6 +3,7 @@ import shared from './FormSections.module.css';
 import styles from './ModelSection.module.css';
 import type { ModelFormState } from './types';
 import { useModels } from '@/hooks/queries/users';
+import { formatProviderName } from '@/utils/format';
 
 export interface ModelSectionProps {
   value: ModelFormState;
@@ -54,7 +55,7 @@ export function ModelSection({ value, onChange }: ModelSectionProps) {
         {isError && <option value={selected}>Failed to load models</option>}
         {providers?.length === 0 && <option value={selected}>No models available</option>}
         {providers?.map((group) => (
-          <optgroup key={group.provider} label={group.provider}>
+          <optgroup key={group.provider} label={formatProviderName(group.provider)}>
             {group.models.map((m) => (
               <option key={`${group.provider}:${m.name}`} value={`${group.provider}:${m.name}`}>
                 {m.display_name}

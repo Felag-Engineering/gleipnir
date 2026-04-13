@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Bot } from 'lucide-react'
 import { useModels, type ProviderModels } from '@/hooks/queries/users'
 import { usePreferences, useUpdatePreferences } from '@/hooks/useSettings'
+import { formatProviderName } from '@/utils/format'
 import styles from './Settings.module.css'
 
 export function DefaultModelSection() {
@@ -46,7 +47,7 @@ export function DefaultModelSection() {
           >
             <option value="">— no default —</option>
             {(providerModels ?? []).map((group: ProviderModels) => (
-              <optgroup key={group.provider} label={group.provider}>
+              <optgroup key={group.provider} label={formatProviderName(group.provider)}>
                 {group.models.map((m: { name: string; display_name: string }) => (
                   <option key={m.name} value={m.name}>
                     {m.display_name}

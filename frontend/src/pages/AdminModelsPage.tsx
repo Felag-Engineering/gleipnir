@@ -9,6 +9,7 @@ import { useSetProviderKey } from '@/hooks/mutations/admin'
 import { useUpdateAdminSettings, useSetModelEnabled } from '@/hooks/mutations/admin'
 import { OpenAICompatProvidersSection } from '@/components/admin/OpenAICompatProvidersSection'
 import { useOpenAICompatProviders } from '@/hooks/queries/openaiCompatProviders'
+import { formatProviderName } from '@/utils/format'
 import cardStyles from '@/components/Settings/Settings.module.css'
 import styles from './AdminModelsPage.module.css'
 
@@ -39,7 +40,7 @@ function ProviderKeyRow({ provider }: { provider: ApiProviderStatus }) {
     setKeyValue('')
   }, [])
 
-  const capitalizedName = provider.name.charAt(0).toUpperCase() + provider.name.slice(1)
+  const capitalizedName = formatProviderName(provider.name)
 
   return (
     <div>
@@ -274,8 +275,7 @@ function AvailableModelsSection() {
           {allProviders.map((providerName) => {
             const hasKey = providerKeyMap.get(providerName) ?? false
             const models = grouped.get(providerName) ?? []
-            const capitalizedName =
-              providerName.charAt(0).toUpperCase() + providerName.slice(1)
+            const capitalizedName = formatProviderName(providerName)
 
             return (
               <div key={providerName} className={styles.providerGroup}>

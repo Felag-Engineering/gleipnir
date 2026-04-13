@@ -144,6 +144,7 @@ Canonical formatting helpers live in `src/utils/format.ts`:
 - `formatTimeAgo(iso)` — relative time (`5m ago`, `2h ago`)
 - `formatCountdown(expiresAt)` — countdown with urgency flag
 - `computeRunDuration(run)` — derives duration from started/completed timestamps
+- `formatProviderName(provider)` — display label for LLM providers (`openai` → `OpenAI`)
 
 ## API types
 

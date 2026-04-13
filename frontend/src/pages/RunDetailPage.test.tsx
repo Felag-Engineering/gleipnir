@@ -272,7 +272,7 @@ describe('RunDetailPage — step types render', () => {
     ])
     renderPage()
     const bar = screen.getByText(/1 tool/)
-    expect(bar.textContent).toContain('anthropic')
+    expect(bar.textContent).toContain('Anthropic')
     expect(bar.textContent).toContain('claude-sonnet-4-6')
   })
 
