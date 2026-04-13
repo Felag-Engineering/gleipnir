@@ -100,22 +100,16 @@
 }
 
 .badgeOk {
-  display: inline-block;
-  padding: var(--space-1) var(--space-2);
-  border-radius: 4px;
+  composes: badgeRect from '../../styles/badges.module.css';
   background: color-mix(in srgb, var(--color-green) 14%, transparent);
   color: var(--color-green);
-  font-size: var(--text-xs);
   font-weight: 500;
 }
 
 .badgeWarn {
-  display: inline-block;
-  padding: var(--space-1) var(--space-2);
-  border-radius: 4px;
+  composes: badgeRect from '../../styles/badges.module.css';
   background: color-mix(in srgb, var(--color-amber) 14%, transparent);
   color: var(--color-amber);
-  font-size: var(--text-xs);
   font-weight: 500;
 }
 

@@ -96,7 +96,7 @@ This alias is configured in `tsconfig.json` (`paths`) and `vite.config.ts` (`res
 
 - **CSS Modules only** — no inline `style={}` attributes. Components get `ComponentName.module.css`.
 - CSS Modules consume CSS custom properties defined in `src/tokens.css`.
-- Shared utility styles live in `src/styles/` (table, forms, alerts, spinner modules) and are imported directly by components that need them.
+- Shared utility styles live in `src/styles/` (table, forms, alerts, spinner, badges modules) and are imported directly by components that need them.
 - Storybook stories may have their own `.stories.module.css` for layout wrappers.
 
 ## State management

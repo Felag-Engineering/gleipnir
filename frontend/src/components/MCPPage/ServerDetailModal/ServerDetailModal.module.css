@@ -67,27 +67,20 @@
 }
 
 .toolCountBadge {
-  background: var(--bg-elevated);
-  color: var(--text-second);
-  padding: 2px var(--space-2);
-  border-radius: 10px;
-  font-size: var(--text-xs);
+  composes: badgePill from '../../../styles/badges.module.css';
+  composes: colorMuted from '../../../styles/badges.module.css';
 }
 
 .driftBadge {
-  background: color-mix(in srgb, var(--color-orange) 12%, transparent);
-  color: var(--color-orange);
-  padding: 2px var(--space-2);
-  border-radius: 10px;
+  composes: badgePill from '../../../styles/badges.module.css';
+  composes: colorOrange from '../../../styles/badges.module.css';
   font-size: 10px;
   font-weight: var(--weight-medium);
 }
 
 .unreachableBadge {
-  background: color-mix(in srgb, var(--color-red) 12%, transparent);
-  color: var(--color-red);
-  padding: 2px var(--space-2);
-  border-radius: 10px;
+  composes: badgePill from '../../../styles/badges.module.css';
+  composes: colorRed from '../../../styles/badges.module.css';
   font-size: 10px;
   font-weight: var(--weight-medium);
 }

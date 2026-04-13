@@ -1,0 +1,80 @@
+/*
+ * Shared badge base styles.
+ *
+ * Three shape variants (rect, pill, label) and semantic color helpers.
+ * Components compose from these bases and add local overrides for
+ * domain-specific styling (animations, borders, font-weight, etc.).
+ *
+ * Usage:
+ *   .myBadge {
+ *     composes: badgeRect from '../../styles/badges.module.css';
+ *     composes: colorGreen from '../../styles/badges.module.css';
+ *   }
+ */
+
+/* ---- Shape variants ---- */
+
+/* Rectangular badge (4px radius) — status badges, type badges */
+.badgeRect {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  border-radius: 4px;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+/* Pill badge (fully rounded) — count badges, server status pills */
+.badgePill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-2);
+  border-radius: 10px;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+/* Label badge — uppercase status labels with letter-spacing */
+.badgeLabel {
+  composes: badgeRect;
+  font-weight: var(--weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ---- Semantic color variants ---- */
+
+.colorGreen {
+  color: var(--color-green);
+  background: color-mix(in srgb, var(--color-green) 12%, transparent);
+}
+
+.colorRed {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 12%, transparent);
+}
+
+.colorOrange {
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 12%, transparent);
+}
+
+.colorAmber {
+  color: var(--color-amber);
+  background: color-mix(in srgb, var(--color-amber) 12%, transparent);
+}
+
+.colorBlue {
+  color: var(--color-blue);
+  background: color-mix(in srgb, var(--color-blue) 12%, transparent);
+}
+
+.colorPurple {
+  color: var(--color-purple);
+  background: color-mix(in srgb, var(--color-purple) 12%, transparent);
+}
+
+.colorMuted {
+  color: var(--text-second);
+  background: var(--bg-elevated);
+}

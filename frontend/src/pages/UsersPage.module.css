@@ -49,25 +49,16 @@
 /* Status badges */
 
 .statusBadge {
-  display: inline-flex;
-  align-items: center;
+  composes: badgeLabel from '../styles/badges.module.css';
   gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
-  border-radius: 4px;
-  font-size: var(--text-xs);
-  font-weight: var(--weight-medium);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 .statusActive {
-  background: color-mix(in srgb, var(--color-green) 12%, transparent);
-  color: var(--color-green);
+  composes: colorGreen from '../styles/badges.module.css';
 }
 
 .statusDeactivated {
-  background: color-mix(in srgb, var(--color-red) 12%, transparent);
-  color: var(--color-red);
+  composes: colorRed from '../styles/badges.module.css';
 }
 
 /* Actions */

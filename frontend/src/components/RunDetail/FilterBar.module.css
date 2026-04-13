@@ -52,17 +52,14 @@
 }
 
 .badge {
-  display: inline-flex;
-  align-items: center;
+  composes: badgePill from '../../styles/badges.module.css';
+  composes: colorMuted from '../../styles/badges.module.css';
   justify-content: center;
   min-width: 20px;
   height: 20px;
   padding: 0 var(--space-1);
-  font-size: var(--text-xs);
   font-family: var(--font-mono);
   color: var(--text-muted);
-  background: var(--bg-elevated);
-  border-radius: 10px;
 }
 
 .chip.active .badge {
