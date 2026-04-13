@@ -39,6 +39,14 @@ export const Filled: Story = {
   },
 };
 
+export const WithFolderSuggestions: Story = {
+  args: {
+    value: { name: 'my-agent', description: '', folder: '' },
+    onChange: fn(),
+    existingFolders: ['deployments', 'monitoring', 'automation'],
+  },
+};
+
 function InteractiveIdentitySection() {
   const [value, setValue] = useState<IdentityFormState>({
     name: 'my-policy',

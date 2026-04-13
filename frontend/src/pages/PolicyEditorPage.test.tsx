@@ -32,7 +32,7 @@ vi.mock('@/components/PolicyEditor/YamlEditor/YamlEditor', () => ({
   },
 }))
 
-import { usePolicy } from '@/hooks/queries/policies'
+import { usePolicy, usePolicies } from '@/hooks/queries/policies'
 import { useSavePolicy } from '@/hooks/mutations/policies'
 import { useDeletePolicy } from '@/hooks/mutations/policies'
 import { useMcpServers } from '@/hooks/queries/servers'
@@ -137,6 +137,11 @@ function mockHooksDefault() {
     data: [],
     isLoading: false,
   } as unknown as ReturnType<typeof useMcpServers>)
+
+  vi.mocked(usePolicies).mockReturnValue({
+    data: [],
+    status: 'success',
+  } as unknown as ReturnType<typeof usePolicies>)
 
   return { mutateAsync }
 }

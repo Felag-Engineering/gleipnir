@@ -11,7 +11,7 @@ import { RunLimitsSection } from '@/components/PolicyEditor/FormMode/RunLimitsSe
 import { ConcurrencySection } from '@/components/PolicyEditor/FormMode/ConcurrencySection'
 import { ModelSection } from '@/components/PolicyEditor/FormMode/ModelSection'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import { usePolicy } from '@/hooks/queries/policies'
+import { usePolicy, usePolicies } from '@/hooks/queries/policies'
 import { useSavePolicy } from '@/hooks/mutations/policies'
 import { useDeletePolicy } from '@/hooks/mutations/policies'
 import { ApiError } from '@/api/fetch'
@@ -24,8 +24,13 @@ export function PolicyEditorPage() {
   const navigate = useNavigate()
 
   const { data: policy, status: policyStatus } = usePolicy(id)
+  const { data: allPolicies } = usePolicies()
   const savePolicy = useSavePolicy()
   const deletePolicy = useDeletePolicy()
+
+  const existingFolders: string[] = allPolicies
+    ? [...new Set(allPolicies.map((p) => p.folder).filter((f): f is string => Boolean(f)))]
+    : []
 
   const [mode, setMode] = useState<'form' | 'yaml'>('form')
   const [yamlString, setYamlString] = useState(DEFAULT_YAML)
@@ -193,6 +198,7 @@ export function PolicyEditorPage() {
               <PolicyIdentitySection
                 value={formState.identity}
                 onChange={v => handleFormChange({ identity: v })}
+                existingFolders={existingFolders}
               />
               <TriggerSection
                 value={formState.trigger}

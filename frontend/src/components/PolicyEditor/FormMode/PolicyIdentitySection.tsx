@@ -4,9 +4,12 @@ import type { IdentityFormState } from './types';
 export interface PolicyIdentitySectionProps {
   value: IdentityFormState;
   onChange: (next: IdentityFormState) => void;
+  existingFolders?: string[];
 }
 
-export function PolicyIdentitySection({ value, onChange }: PolicyIdentitySectionProps) {
+export function PolicyIdentitySection({ value, onChange, existingFolders = [] }: PolicyIdentitySectionProps) {
+  const datalistId = 'policy-folder-suggestions';
+
   return (
     <div className={shared.section}>
       <div className={shared.heading}>Identity</div>
@@ -36,10 +39,18 @@ export function PolicyIdentitySection({ value, onChange }: PolicyIdentitySection
         <input
           className={shared.input}
           type="text"
+          list={existingFolders.length > 0 ? datalistId : undefined}
           value={value.folder}
           placeholder="Ungrouped"
           onChange={(e) => onChange({ ...value, folder: e.target.value })}
         />
+        {existingFolders.length > 0 && (
+          <datalist id={datalistId}>
+            {existingFolders.map((folder) => (
+              <option key={folder} value={folder} />
+            ))}
+          </datalist>
+        )}
       </div>
     </div>
   );
