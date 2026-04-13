@@ -11,11 +11,11 @@ describe('PageHeader', () => {
 
   it('renders children in the actions area', () => {
     render(
-      <PageHeader title="Policies">
-        <button>New Policy</button>
+      <PageHeader title="Agents">
+        <button>New Agent</button>
       </PageHeader>,
     )
-    expect(screen.getByRole('button', { name: 'New Policy' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New Agent' })).toBeInTheDocument()
   })
 
   it('renders without an actions wrapper when no children are provided', () => {

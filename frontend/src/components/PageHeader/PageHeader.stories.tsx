@@ -30,6 +30,6 @@ export const WithActions: Story = {
 
 export const LongTitle: Story = {
   args: {
-    title: 'Infrastructure Monitoring and Alerting Policies for Production Environment',
+    title: 'Infrastructure Monitoring and Alerting Agents for Production Environment',
   },
 }

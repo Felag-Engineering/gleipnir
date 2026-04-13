@@ -155,7 +155,7 @@ describe('RunsPage — run rows', () => {
     expect(hrefs).toContain('/runs/bbbbcccc-dddd-eeee-ffff-000000000000')
   })
 
-  it('shows policy name in row with title attribute for overflow tooltip', () => {
+  it('shows agent name in row with title attribute for overflow tooltip', () => {
     const run = makeRun({ policy_name: 'My Special Policy' })
     mockLoaded([run])
     renderPage()

@@ -37,7 +37,7 @@ const POLICY_WITH_FOLDER: ApiPolicyListItem = {
 }
 
 describe('PolicyList', () => {
-  it('renders policy name and status badge for a policy with a run', () => {
+  it('renders agent name and status badge for an agent with a run', () => {
     render(
       <MemoryRouter>
         <PolicyList policies={[POLICY_WITH_RUN]} onTrigger={() => {}} />

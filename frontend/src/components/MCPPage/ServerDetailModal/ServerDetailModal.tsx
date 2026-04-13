@@ -18,7 +18,7 @@ interface Props {
   onDelete: (server: ApiMcpServer, toolCount: number) => void
 }
 
-/** Build a map of "server.tool" → list of policy names that reference it. */
+/** Build a map of "server.tool" → list of agent names that reference it. */
 function buildToolUsageMap(
   serverName: string,
   policies: ApiPolicyListItem[] | undefined,

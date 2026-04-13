@@ -93,7 +93,7 @@ beforeEach(() => {
 })
 
 describe('PolicyCard', () => {
-  it('renders policy name, trigger, model, and tool count', () => {
+  it('renders agent name, trigger, model, and tool count', () => {
     render(
       <MemoryRouter>
         <PolicyCard policy={POLICY} onTrigger={() => {}} />

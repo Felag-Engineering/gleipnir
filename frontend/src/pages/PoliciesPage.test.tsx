@@ -41,7 +41,7 @@ function renderPage(queryClient: QueryClient) {
 }
 
 describe('PoliciesPage', () => {
-  it('shows skeleton blocks while /api/v1/policies is in flight, then shows policies', async () => {
+  it('shows skeleton blocks while /api/v1/policies is in flight, then shows agents', async () => {
     server.use(
       http.get('/api/v1/policies', async () => {
         await delay(200)
@@ -60,7 +60,7 @@ describe('PoliciesPage', () => {
     await waitFor(() => expect(screen.getByText('vikunja-triage')).toBeInTheDocument())
   })
 
-  it('shows empty state when no policies exist', async () => {
+  it('shows empty state when no agents exist', async () => {
     server.use(
       http.get('/api/v1/policies', () => {
         return HttpResponse.json({ data: [] })
@@ -110,7 +110,7 @@ describe('PoliciesPage', () => {
 
     await waitFor(() => expect(screen.getByText('vikunja-triage')).toBeInTheDocument())
 
-    // The header New Policy link is a direct child of the header section
+    // The header New Agent link is a direct child of the header section
     const headerLink = screen.getByRole('link', { name: 'New Agent' })
     expect(headerLink).toHaveAttribute('href', '/agents/new')
   })

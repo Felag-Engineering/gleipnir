@@ -57,7 +57,7 @@ concurrency:
 `
 
 const NO_DESC_YAML = `
-name: Minimal Policy
+name: Minimal Agent
 trigger:
   type: manual
 capabilities:
@@ -200,5 +200,5 @@ export const NoDescription: Story = {
       </QueryClientProvider>
     ),
   ],
-  args: { policy: { ...BASE_LIST_ITEM, name: 'Minimal Policy', trigger_type: 'manual', tool_count: 0, tool_refs: [] } },
+  args: { policy: { ...BASE_LIST_ITEM, name: 'Minimal Agent', trigger_type: 'manual', tool_count: 0, tool_refs: [] } },
 }

@@ -81,7 +81,7 @@ export default function RunsPage() {
         )}
       </div>
 
-      {/* Filter bar: status chip group | divider | policy + date selects | sort chip */}
+      {/* Filter bar: status chip group | divider | agent + date selects | sort chip */}
       <div className={styles.filterBar}>
         <div role="radiogroup" aria-label="Filter by status" className={styles.statusGroup}>
           {STATUS_FILTERS.map(({ key, label }) => {
@@ -102,7 +102,7 @@ export default function RunsPage() {
 
         <div className={styles.filterDivider} aria-hidden="true" />
 
-        {/* Policy filter: styled native select to get accessibility for free */}
+        {/* Agent filter: styled native select to get accessibility for free */}
         <select
           className={policy ? `${styles.chip} ${styles.chipActive}` : styles.chip}
           value={policy}
@@ -167,7 +167,7 @@ export default function RunsPage() {
                 {/* Left stripe encodes status visually; badge communicates it in text */}
                 <div className={`${styles.stripe} ${stripe}`} aria-hidden="true" />
 
-                {/* Policy name (primary) + run ID and trigger type (secondary) */}
+                {/* Agent name (primary) + run ID and trigger type (secondary) */}
                 <div className={styles.identity}>
                   <div className={styles.policyName} title={run.policy_name ?? run.policy_id}>
                     {run.policy_name || run.policy_id}

@@ -118,7 +118,7 @@
   background: color-mix(in srgb, var(--color-red) 12%, transparent);
 }
 
-/* ---- Policy link ---- */
+/* ---- Agent link ---- */
 
 .policyLink {
   font-size: var(--text-sm);

@@ -108,8 +108,8 @@ export const FailureItem: Story = {
   args: { item: FAILURE_ITEM },
 }
 
-// LongPolicyName — exercises text truncation in the header.
-export const LongPolicyName: Story = {
+// LongAgentName — exercises text truncation in the header.
+export const LongAgentName: Story = {
   args: {
     item: {
       ...APPROVAL_ITEM,

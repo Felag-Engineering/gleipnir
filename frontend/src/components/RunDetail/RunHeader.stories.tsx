@@ -74,8 +74,8 @@ export const WebhookTrigger: Story = {
   },
 }
 
-export const DeletedPolicy: Story = {
-  name: 'Deleted policy (falls back to policy_id)',
+export const DeletedAgent: Story = {
+  name: 'Deleted agent (falls back to policy_id)',
   args: {
     run: { ...BASE_RUN, policy_name: '' },
     toolCallCount: 7,

@@ -18,13 +18,13 @@ const meta: Meta<typeof WebhookConfig> = {
 export default meta;
 type Story = StoryObj<typeof WebhookConfig>;
 
-export const WithPolicyId: Story = {
+export const WithAgentId: Story = {
   args: {
     policyId: 'abc-123',
   },
 };
 
-export const NewPolicy: Story = {
+export const NewAgent: Story = {
   args: {
     // No policyId — Copy button is disabled and URL shows placeholder.
   },

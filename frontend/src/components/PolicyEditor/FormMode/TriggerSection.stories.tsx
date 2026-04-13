@@ -29,7 +29,7 @@ export const WebhookSelected: Story = {
   },
 };
 
-export const WebhookNewPolicy: Story = {
+export const WebhookNewAgent: Story = {
   args: {
     value: { type: 'webhook' },
     onChange: fn(),

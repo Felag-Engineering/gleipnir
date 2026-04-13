@@ -33,6 +33,6 @@ export const Default: Story = {}
 
 export const WithLongName: Story = {
   args: {
-    policyName: 'Deploy to Production Environment Agent Policy',
+    policyName: 'Deploy to Production Environment Agent',
   },
 }

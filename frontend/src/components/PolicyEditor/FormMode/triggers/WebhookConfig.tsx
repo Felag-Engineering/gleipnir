@@ -27,7 +27,7 @@ export function WebhookConfig({ policyId }: WebhookConfigProps) {
   }
 
   const url = policyId ? `POST /api/v1/webhooks/${policyId}` : undefined;
-  const displayValue = url ?? 'POST /api/v1/webhooks/<policy-id>';
+  const displayValue = url ?? 'POST /api/v1/webhooks/<agent-id>';
 
   return (
     <div className={shared.field}>
