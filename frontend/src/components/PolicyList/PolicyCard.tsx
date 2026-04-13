@@ -49,7 +49,7 @@ export function PolicyCard({ policy, onTrigger }: Props) {
           <span className={styles.triggerPill}>{policy.trigger_type}</span>
           {policy.model && <span className={styles.modelPill}>{policy.model}</span>}
           {policy.tool_count > 0 && (
-            <span className={styles.toolCount}>{policy.tool_count} tools</span>
+            <span className={styles.toolCount}>{policy.tool_count} {policy.tool_count === 1 ? 'tool' : 'tools'}</span>
           )}
         </div>
         <div className={styles.rightZone}>

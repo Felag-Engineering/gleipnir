@@ -144,6 +144,25 @@ describe('PolicyCard', () => {
     expect(screen.queryByText('gemini-2.5-flash')).toBeNull()
   })
 
+  it('uses plural "tools" for count > 1', () => {
+    render(
+      <MemoryRouter>
+        <PolicyCard policy={POLICY} onTrigger={() => {}} />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('5 tools')).toBeInTheDocument()
+  })
+
+  it('uses singular "tool" for count of 1', () => {
+    const oneTool = { ...POLICY, tool_count: 1 }
+    render(
+      <MemoryRouter>
+        <PolicyCard policy={oneTool} onTrigger={() => {}} />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('1 tool')).toBeInTheDocument()
+  })
+
   it('hides tool count when zero', () => {
     const noTools = { ...POLICY, tool_count: 0 }
     render(

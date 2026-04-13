@@ -42,7 +42,7 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
     ? [
         capabilitySnapshot.provider,
         capabilitySnapshot.model,
-        `${capabilitySnapshot.toolCount} tools`,
+        `${capabilitySnapshot.toolCount} ${capabilitySnapshot.toolCount === 1 ? 'tool' : 'tools'}`,
       ].filter(Boolean)
     : []
 
