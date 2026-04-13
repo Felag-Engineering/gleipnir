@@ -24,6 +24,18 @@ interface ChartRow {
   [model: string]: string | number
 }
 
+// formatYAxisDollars abbreviates dollar amounts for the Y-axis (e.g. 1200 -> "$1.2k").
+function formatYAxisDollars(value: number): string {
+  if (value === 0) return '$0'
+  if (value >= 1000) {
+    const k = value / 1000
+    return k % 1 === 0 ? `$${k}k` : `$${k.toFixed(1)}k`
+  }
+  if (value < 1) return `$${value.toFixed(2)}`
+  if (value % 1 === 0) return `$${value}`
+  return `$${value.toFixed(2)}`
+}
+
 // formatHour turns an ISO timestamp into a short clock label like "14:00".
 function formatHour(iso: string): string {
   try {
@@ -107,7 +119,7 @@ export function CostByModelChart({ data, isLoading }: CostByModelChartProps) {
           <div className={styles.skeleton} />
         ) : (
           <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={rows} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+            <AreaChart data={rows} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
               <defs>
                 {models.map((m, i) => {
                   const color = MODEL_COLORS[i % MODEL_COLORS.length]
@@ -131,7 +143,13 @@ export function CostByModelChart({ data, isLoading }: CostByModelChartProps) {
                 axisLine={false}
                 interval="preserveStartEnd"
               />
-              <YAxis hide />
+              <YAxis
+                tick={{ fontFamily: 'var(--font-mono)', fontSize: 10, fill: 'var(--text-muted)' }}
+                tickLine={false}
+                axisLine={false}
+                width={44}
+                tickFormatter={formatYAxisDollars}
+              />
               <Tooltip
                 formatter={(value: number) => formatDollars(value)}
                 contentStyle={{

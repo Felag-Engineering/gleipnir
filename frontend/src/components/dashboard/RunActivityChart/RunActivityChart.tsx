@@ -22,6 +22,15 @@ interface ChartRow {
   failed: number
 }
 
+// formatYAxisCount abbreviates large run counts for the Y-axis (e.g. 1500 -> "1.5k").
+function formatYAxisCount(value: number): string {
+  if (value >= 1000) {
+    const k = value / 1000
+    return k % 1 === 0 ? `${k}k` : `${k.toFixed(1)}k`
+  }
+  return String(value)
+}
+
 // formatHour turns an ISO timestamp into a short clock label like "14:00".
 function formatHour(iso: string): string {
   try {
@@ -81,7 +90,7 @@ export function RunActivityChart({ data, isLoading }: RunActivityChartProps) {
           <div className={styles.skeleton} />
         ) : (
           <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={rows} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+            <AreaChart data={rows} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="grad-completed" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#4ade80" stopOpacity={0.15} />
@@ -108,7 +117,14 @@ export function RunActivityChart({ data, isLoading }: RunActivityChartProps) {
                 axisLine={false}
                 interval="preserveStartEnd"
               />
-              <YAxis hide />
+              <YAxis
+                tick={{ fontFamily: 'var(--font-mono)', fontSize: 10, fill: 'var(--text-muted)' }}
+                tickLine={false}
+                axisLine={false}
+                width={32}
+                allowDecimals={false}
+                tickFormatter={formatYAxisCount}
+              />
               <Tooltip
                 contentStyle={{
                   background: 'var(--bg-elevated)',
