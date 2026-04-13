@@ -101,12 +101,17 @@ func TestTimeSeriesHandlerModelDisplayNames(t *testing.T) {
 	// Insert runs with different model IDs — they should appear as display names.
 	store.DB().Exec(
 		`INSERT INTO runs(id, policy_id, model, status, trigger_type, trigger_payload, started_at, created_at, token_cost)
-		 VALUES ('r-s4', 'p1', 'claude-sonnet-4-6', 'complete', 'webhook', '{}', ?, ?, 1000)`,
+		 VALUES ('r-s46', 'p1', 'claude-sonnet-4-6', 'complete', 'webhook', '{}', ?, ?, 1000)`,
 		recent, recent,
 	)
 	store.DB().Exec(
 		`INSERT INTO runs(id, policy_id, model, status, trigger_type, trigger_payload, started_at, created_at, token_cost)
 		 VALUES ('r-h35', 'p1', 'claude-haiku-3-5-20241022', 'complete', 'webhook', '{}', ?, ?, 500)`,
+		recent, recent,
+	)
+	store.DB().Exec(
+		`INSERT INTO runs(id, policy_id, model, status, trigger_type, trigger_payload, started_at, created_at, token_cost)
+		 VALUES ('r-h45', 'p1', 'claude-haiku-4-5', 'complete', 'webhook', '{}', ?, ?, 2200)`,
 		recent, recent,
 	)
 
@@ -134,15 +139,19 @@ func TestTimeSeriesHandlerModelDisplayNames(t *testing.T) {
 		}
 	}
 
-	// Keys should use display names, not API model IDs.
+	// Keys should use display names, not raw API model IDs.
 	if _, ok := merged["claude-sonnet-4-6"]; ok {
-		t.Error("expected display name 'Sonnet 4', got raw API ID 'claude-sonnet-4-6'")
+		t.Error("expected display name 'Sonnet 4.6', got raw API ID 'claude-sonnet-4-6'")
 	}
-	if merged["Sonnet 4"] != 1000 {
-		t.Errorf("Sonnet 4 tokens = %d, want 1000", merged["Sonnet 4"])
+	// claude-sonnet-4-6 now maps to "Sonnet 4.6" (not "Sonnet 4"; that is the dated alias).
+	if merged["Sonnet 4.6"] != 1000 {
+		t.Errorf("Sonnet 4.6 tokens = %d, want 1000", merged["Sonnet 4.6"])
 	}
 	if merged["Haiku 3.5"] != 500 {
 		t.Errorf("Haiku 3.5 tokens = %d, want 500", merged["Haiku 3.5"])
+	}
+	if merged["Haiku 4.5"] != 2200 {
+		t.Errorf("Haiku 4.5 tokens = %d, want 2200", merged["Haiku 4.5"])
 	}
 }
 

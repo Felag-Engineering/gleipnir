@@ -88,3 +88,19 @@ export const Empty: Story = {
 export const Loading: Story = {
   args: { data: undefined, isLoading: true },
 }
+
+// SubPennyCosts exercises the sub-penny formatting path (toFixed(4) for
+// costs < $0.01). Uses cheap models with small token counts to produce
+// values like $0.0001 that would previously round to $0.00.
+const SUB_PENNY: ApiTimeSeriesResponse = makeBuckets([
+  {}, {}, {},
+  { cost_by_model: { 'Haiku 4.5': 500, 'GPT-5 Nano': 800 } },
+  { cost_by_model: { 'Haiku 4.5': 750, 'Gemini 2.5 Flash-Lite': 600 } },
+  { cost_by_model: { 'GPT-5 Nano': 1200 } },
+  { cost_by_model: { 'Haiku 4.5': 2200, 'Gemini 2.5 Flash-Lite': 576 } },
+  { cost_by_model: { 'GPT-5 Nano': 1400 } },
+])
+
+export const SubPennyCosts: Story = {
+  args: { data: SUB_PENNY, isLoading: false },
+}

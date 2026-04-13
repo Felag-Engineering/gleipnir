@@ -36,4 +36,33 @@ describe('estimateCost', () => {
     const costOpus = estimateCost('Opus 4', 1_000_000)
     expect(cost4).toBeLessThan(costOpus)
   })
+
+  // Regression tests for issue #669: sub-penny runs were showing $0.00 because
+  // new model names had no pricing entries.
+
+  it('Haiku 4.5 with ~2200 tokens returns non-zero cost', () => {
+    expect(estimateCost('Haiku 4.5', 2200)).toBeGreaterThan(0)
+  })
+
+  it('Sonnet 4.6 with ~1000 tokens returns non-zero cost', () => {
+    expect(estimateCost('Sonnet 4.6', 1000)).toBeGreaterThan(0)
+  })
+
+  it('GPT-5 Nano with ~1400 tokens returns non-zero cost', () => {
+    expect(estimateCost('GPT-5 Nano', 1400)).toBeGreaterThan(0)
+  })
+
+  it('Gemini 2.5 Flash-Lite with ~576 tokens returns non-zero cost', () => {
+    expect(estimateCost('Gemini 2.5 Flash-Lite', 576)).toBeGreaterThan(0)
+  })
+
+  it('Gemini 2.5 Pro with ~5000 tokens returns non-zero cost', () => {
+    expect(estimateCost('Gemini 2.5 Pro', 5000)).toBeGreaterThan(0)
+  })
+
+  it('GPT-4.1 Mini is cheaper than GPT-4.1 per token', () => {
+    expect(estimateCost('GPT-4.1 Mini', 1_000_000)).toBeLessThan(
+      estimateCost('GPT-4.1', 1_000_000),
+    )
+  })
 })
