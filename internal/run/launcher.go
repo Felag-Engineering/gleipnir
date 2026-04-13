@@ -12,6 +12,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/event"
 	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/rapp992/gleipnir/internal/logctx"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
@@ -212,6 +213,9 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	// the HTTP request that triggered it. RunManager's WaitGroup tracks it for
 	// graceful shutdown; cancellation is performed via the registered cancel func.
 	runCtx, cancel := context.WithCancel(context.Background())
+	// Enrich the run context with correlation IDs so all downstream log calls
+	// automatically include run_id and policy_id in structured output.
+	runCtx = logctx.WithRunCorrelation(runCtx, run.ID, params.PolicyID)
 	l.manager.Register(run.ID, cancel, approvalCh, feedbackCh)
 
 	payload := params.TriggerPayload
@@ -219,7 +223,7 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		defer cancel()
 		defer l.manager.Deregister(run.ID)
 		if err := ba.Run(runCtx, run.ID, payload); err != nil {
-			slog.Error("run failed", "run_id", run.ID, "trigger_type", string(params.TriggerType), "err", err)
+			logctx.Logger(runCtx).ErrorContext(runCtx, "run failed", "trigger_type", string(params.TriggerType), "err", err)
 		}
 		// Drain the queue if this policy uses queue concurrency.
 		// ba.Run has completed so the run's DB status is terminal — DrainQueue's

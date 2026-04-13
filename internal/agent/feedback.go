@@ -7,11 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/rapp992/gleipnir/internal/logctx"
 	"github.com/rapp992/gleipnir/internal/model"
 )
 
@@ -126,8 +126,8 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 		}
 		return responseText, nil
 	case <-timeoutCh:
-		slog.WarnContext(ctx, "feedback timeout reached",
-			"run_id", runID, "tool", toolName,
+		logctx.Logger(ctx).WarnContext(ctx, "feedback timeout reached",
+			"tool", toolName,
 			"timeout", feedbackTimeout.String())
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		// Race the scanner: only the first writer (rows==1) owns the error step.
@@ -143,7 +143,7 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 			},
 		)
 		if dbErr != nil {
-			slog.WarnContext(ctx, "failed to update feedback status on timeout", "feedback_id", feedbackID, "err", dbErr)
+			logctx.Logger(ctx).WarnContext(ctx, "failed to update feedback status on timeout", "feedback_id", feedbackID, "err", dbErr)
 		}
 		if rows == 1 {
 			err := fmt.Errorf("feedback timeout: operator did not respond within %s", feedbackTimeout)
@@ -156,7 +156,7 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 		}
 		// Scanner won the race: it already wrote the error step and transitioned
 		// the run. Return a sentinel so Run() knows to stop, but avoid a duplicate step.
-		slog.DebugContext(ctx, "feedback already resolved by scanner", "feedback_id", feedbackID)
+		logctx.Logger(ctx).DebugContext(ctx, "feedback already resolved by scanner", "feedback_id", feedbackID)
 		return "", fmt.Errorf("feedback timeout: already resolved by scanner for tool %s", toolName)
 	case <-ctx.Done():
 		return "", fmt.Errorf("context cancelled waiting for feedback: %w", ctx.Err())
@@ -243,8 +243,7 @@ func (h *FeedbackHandler) HandleAskOperator(ctx context.Context, runID, toolName
 		var parseErr error
 		feedbackTimeout, parseErr = time.ParseDuration(feedbackCfg.Timeout)
 		if parseErr != nil {
-			slog.WarnContext(ctx, "invalid feedback timeout in policy, falling back to default",
-				"run_id", runID,
+			logctx.Logger(ctx).WarnContext(ctx, "invalid feedback timeout in policy, falling back to default",
 				"timeout_value", feedbackCfg.Timeout,
 				"err", parseErr)
 			feedbackTimeout = 0

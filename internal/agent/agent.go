@@ -7,13 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"strings"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/rapp992/gleipnir/internal/logctx"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
@@ -157,7 +157,7 @@ func (a *BoundAgent) runAPILoop(
 			remaining := maxTokensPerRun - totalTokens
 			if remaining <= 0 {
 				err := fmt.Errorf("token budget exceeded: %d tokens used, limit %d", totalTokens, maxTokensPerRun)
-				slog.WarnContext(ctx, "token budget exceeded", "run_id", runID, "tokens_used", totalTokens, "limit", maxTokensPerRun)
+				logctx.Logger(ctx).WarnContext(ctx, "token budget exceeded", "tokens_used", totalTokens, "limit", maxTokensPerRun)
 				a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeTokenBudgetExceeded)
 				return a.failRun(ctx, err)
 			}
@@ -221,7 +221,7 @@ func (a *BoundAgent) runAPILoop(
 			totalToolCalls++
 			if maxToolCalls > 0 && totalToolCalls > maxToolCalls {
 				err := fmt.Errorf("tool call limit exceeded: %d calls, limit %d", totalToolCalls, maxToolCalls)
-				slog.WarnContext(ctx, "tool call limit exceeded", "run_id", runID, "calls", totalToolCalls, "limit", maxToolCalls)
+				logctx.Logger(ctx).WarnContext(ctx, "tool call limit exceeded", "calls", totalToolCalls, "limit", maxToolCalls)
 				a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeToolCallLimitExceeded)
 				return a.failRun(ctx, err)
 			}
@@ -317,7 +317,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	// already held a reference to the writer can still call Close safely.
 	defer func() {
 		if err := a.audit.Close(); err != nil {
-			slog.ErrorContext(ctx, "audit writer drain error", "run_id", runID, "err", err)
+			logctx.Logger(ctx).ErrorContext(ctx, "audit writer drain error", "err", err)
 		}
 	}()
 
@@ -357,7 +357,7 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 	systemPrompt := policy.RenderSystemPrompt(a.policy, grantedTools, time.Now().UTC())
 
 	if err := a.sm.PersistSystemPrompt(ctx, systemPrompt); err != nil {
-		slog.WarnContext(ctx, "failed to persist system prompt", "run_id", runID, "err", err)
+		logctx.Logger(ctx).WarnContext(ctx, "failed to persist system prompt", "err", err)
 	}
 
 	tools := a.buildToolDefinitions()
@@ -461,8 +461,7 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		// Transport/MCP errors become tool_result steps so the agent can reason
 		// about the failure instead of the run aborting.
 		sanitized := classifyMCPError(entry.tool.ServerName, err)
-		slog.ErrorContext(ctx, "MCP tool call failed",
-			"run_id", runID,
+		logctx.Logger(ctx).ErrorContext(ctx, "MCP tool call failed",
 			"tool", toolName,
 			"server", entry.tool.ServerName,
 			"error", err,

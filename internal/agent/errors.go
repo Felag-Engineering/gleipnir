@@ -5,8 +5,8 @@ package agent
 
 import (
 	"context"
-	"log/slog"
 
+	"github.com/rapp992/gleipnir/internal/logctx"
 	"github.com/rapp992/gleipnir/internal/model"
 )
 
@@ -19,7 +19,7 @@ func failRun(ctx context.Context, sm *RunStateMachine, runErr error) error {
 		transCtx = context.Background()
 	}
 	if tErr := sm.Transition(transCtx, model.RunStatusFailed, runErr.Error()); tErr != nil {
-		slog.ErrorContext(transCtx, "failed to persist run failure status",
+		logctx.Logger(transCtx).ErrorContext(transCtx, "failed to persist run failure status",
 			"run_err", runErr, "transition_err", tErr)
 	}
 	return runErr
@@ -30,6 +30,6 @@ func failRun(ctx context.Context, sm *RunStateMachine, runErr error) error {
 // slog when the transition itself errors so the failure is not silently swallowed.
 func logTransitionError(ctx context.Context, sm *RunStateMachine, runErr error) {
 	if tErr := failRun(ctx, sm, runErr); tErr != nil && tErr != runErr {
-		slog.ErrorContext(ctx, "run transition failed", "err", tErr)
+		logctx.Logger(ctx).ErrorContext(ctx, "run transition failed", "err", tErr)
 	}
 }

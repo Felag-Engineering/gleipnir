@@ -9,11 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/event"
+	"github.com/rapp992/gleipnir/internal/logctx"
 	"github.com/rapp992/gleipnir/internal/model"
 )
 
@@ -92,7 +92,7 @@ func TransitionRunFailed(ctx context.Context, queries *db.Queries, publisher eve
 		return fmt.Errorf("persisting run status failed: %w", err)
 	}
 
-	slog.InfoContext(ctx, "run status transition", "run_id", runID, "from", run.Status, "to", "failed")
+	logctx.Logger(ctx).InfoContext(ctx, "run status transition", "run_id", runID, "from", run.Status, "to", "failed")
 
 	if publisher != nil {
 		if data, err := json.Marshal(map[string]string{"run_id": runID, "status": "failed"}); err == nil {

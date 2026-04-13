@@ -7,10 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/logctx"
 	"github.com/rapp992/gleipnir/internal/model"
 )
 
@@ -96,8 +96,8 @@ func (h *ApprovalHandler) Wait(ctx context.Context, runID string, entry resolved
 			return fmt.Errorf("transitioning run back to running after approval: %w", err)
 		}
 	case <-timeoutCh:
-		slog.WarnContext(ctx, "approval timeout reached",
-			"run_id", runID, "tool", internalName,
+		logctx.Logger(ctx).WarnContext(ctx, "approval timeout reached",
+			"tool", internalName,
 			"timeout", entry.tool.Timeout.String())
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		// Race the scanner: only the first writer (rows==1) owns the error step.
@@ -113,7 +113,7 @@ func (h *ApprovalHandler) Wait(ctx context.Context, runID string, entry resolved
 			},
 		)
 		if dbErr != nil {
-			slog.WarnContext(ctx, "failed to update approval status on timeout", "approval_id", approvalID, "err", dbErr)
+			logctx.Logger(ctx).WarnContext(ctx, "failed to update approval status on timeout", "approval_id", approvalID, "err", dbErr)
 		}
 		if rows == 1 {
 			err := fmt.Errorf("approval timeout for tool %s", internalName)
@@ -126,7 +126,7 @@ func (h *ApprovalHandler) Wait(ctx context.Context, runID string, entry resolved
 		}
 		// Scanner won the race: it already wrote the error step and transitioned
 		// the run. Return a sentinel so Run() knows to stop, but avoid a duplicate step.
-		slog.DebugContext(ctx, "approval already resolved by scanner", "approval_id", approvalID)
+		logctx.Logger(ctx).DebugContext(ctx, "approval already resolved by scanner", "approval_id", approvalID)
 		return fmt.Errorf("approval timeout for tool %s: already resolved by scanner", internalName)
 	case <-ctx.Done():
 		return fmt.Errorf("context cancelled waiting for approval: %w", ctx.Err())

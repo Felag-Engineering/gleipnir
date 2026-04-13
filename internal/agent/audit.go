@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/logctx"
 	"github.com/rapp992/gleipnir/internal/model"
 )
 
@@ -115,7 +115,10 @@ func logAuditError(ctx context.Context, w *AuditWriter, step Step) {
 		writeCtx = context.Background()
 	}
 	if err := w.Write(writeCtx, step); err != nil {
-		slog.WarnContext(writeCtx, "audit write failed on error path", "step_type", step.Type.String(), "run_id", step.RunID, "err", err)
+		// Use logctx.Logger for correlation IDs when the original ctx carries them.
+		// When writeCtx is context.Background() (cancelled original ctx), the logger
+		// falls back to slog.Default() and we keep the explicit run_id as a fallback.
+		logctx.Logger(writeCtx).WarnContext(writeCtx, "audit write failed on error path", "step_type", step.Type.String(), "run_id", step.RunID, "err", err)
 	}
 }
 

@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/logctx"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/runstate"
 )
@@ -170,7 +170,7 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 	}
 
 	sm.current = next
-	slog.InfoContext(ctx, "run status transition", "run_id", sm.runID, "from", string(from), "to", string(next))
+	logctx.Logger(ctx).InfoContext(ctx, "run status transition", "from", string(from), "to", string(next))
 
 	if sm.publisher != nil {
 		data, err := json.Marshal(map[string]string{"run_id": sm.runID, "status": string(next)})

@@ -107,6 +107,7 @@ internal/
   llm/                — LLM provider abstraction (ADR-026)
     anthropic/        — Anthropic API client
     google/           — Google AI client
+  logctx/             — context-based structured log correlation (run_id + policy_id); leaf package, no internal imports
   mcp/                — MCP HTTP client, tool registry, capability tags
   model/              — domain types (Policy, Run, RunStep, ApprovalRequest, enums, ...)
   policy/             — YAML parser, validator, system prompt renderer
