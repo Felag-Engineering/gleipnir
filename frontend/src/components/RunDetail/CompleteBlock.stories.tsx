@@ -30,7 +30,7 @@ export const WithDuration: Story = {
     step: parseStep(makeRaw({
       content: JSON.stringify({ message: 'run completed successfully' }),
     })) as ReturnType<typeof parseStep> & { type: 'complete' },
-    durationSeconds: 45,
+    durationMs: 45_000,
   },
 }
 
@@ -39,7 +39,7 @@ export const LongDuration: Story = {
     step: parseStep(makeRaw({
       content: JSON.stringify({ message: 'run completed successfully' }),
     })) as ReturnType<typeof parseStep> & { type: 'complete' },
-    durationSeconds: 3723,
+    durationMs: 3_723_000,
   },
 }
 
@@ -48,6 +48,6 @@ export const NoDuration: Story = {
     step: parseStep(makeRaw({
       content: JSON.stringify({ message: 'run completed successfully' }),
     })) as ReturnType<typeof parseStep> & { type: 'complete' },
-    durationSeconds: null,
+    durationMs: null,
   },
 }

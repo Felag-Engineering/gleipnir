@@ -57,7 +57,7 @@ const defaultRunProps = {
 }
 
 export const FullRun: Story = {
-  args: { items: pairToolBlocks(FULL_STEPS), durationSeconds: 62, ...defaultRunProps },
+  args: { items: pairToolBlocks(FULL_STEPS), durationMs: 62_000, ...defaultRunProps },
 }
 
 export const WithError: Story = {
@@ -66,19 +66,19 @@ export const WithError: Story = {
       ...FULL_STEPS.slice(0, 4),
       parseStep(makeRaw({ id: 's5e', step_number: 4, type: 'error', content: JSON.stringify({ message: 'write_file: permission denied', code: 'FS_PERMISSION' }) })),
     ]),
-    durationSeconds: undefined,
+    durationMs: undefined,
     ...defaultRunProps,
   },
 }
 
 export const Empty: Story = {
-  args: { items: [], durationSeconds: undefined, ...defaultRunProps },
+  args: { items: [], durationMs: undefined, ...defaultRunProps },
 }
 
 export const OnlyCapabilitySnapshot: Story = {
   args: {
     items: pairToolBlocks([FULL_STEPS[0]]),
-    durationSeconds: undefined,
+    durationMs: undefined,
     ...defaultRunProps,
   },
 }
@@ -113,7 +113,7 @@ export const FullRunAllBlockTypes: Story = {
       // Complete block at the end
       parseStep(makeRaw({ id: 'a12', step_number: 11, type: 'complete', content: JSON.stringify({ message: 'Disk cleaned and service restarted successfully.' }) })),
     ]),
-    durationSeconds: 137,
+    durationMs: 137_000,
     runId: 'run-1',
     runStatus: 'complete',
   },

@@ -47,12 +47,12 @@ export default function RunDetailPage() {
 
   // Duration ticks live for non-terminal runs via a 1-second interval inside
   // useLiveDuration. For terminal runs it returns a fixed value with no interval.
+  // The value is in milliseconds — passed directly to RunHeader and StepTimeline.
   const duration = useLiveDuration(
     run?.started_at ?? null,
     run?.completed_at ?? null,
     run?.status ?? 'pending',
   )
-  const durationSeconds = duration !== null ? duration / 1000 : null
 
   const toolCallCount = rawSteps.filter((s) => s.type === 'tool_call').length
   const tokenTotal = rawSteps.reduce((acc, s) => acc + s.token_cost, 0)
@@ -117,7 +117,7 @@ export default function RunDetailPage() {
             <FilterBar active={filter} counts={counts} onChange={setFilter} />
 
             <div className={styles.timeline}>
-              <StepTimeline items={timelineItems} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} triggerType={run.trigger_type} triggerPayload={run.trigger_payload} durationSeconds={durationSeconds} />
+              <StepTimeline items={timelineItems} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} triggerType={run.trigger_type} triggerPayload={run.trigger_payload} durationMs={duration} />
 
               {hasMore && (
                 <button

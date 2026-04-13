@@ -18,12 +18,12 @@ interface Props {
   runStatus: string
   triggerType?: string
   triggerPayload?: string | null
-  // durationSeconds is optional — Storybook stories and test contexts may omit it.
+  // durationMs is optional — Storybook stories and test contexts may omit it.
   // CompleteBlock renders without a duration when this is undefined or null.
-  durationSeconds?: number | null
+  durationMs?: number | null
 }
 
-export function StepTimeline({ items, systemPrompt, runId, runStatus, triggerType, triggerPayload, durationSeconds }: Props) {
+export function StepTimeline({ items, systemPrompt, runId, runStatus, triggerType, triggerPayload, durationMs }: Props) {
   if (items.length === 0 && !triggerType) {
     return (
       <p className={styles.empty}>No steps to display.</p>
@@ -44,7 +44,7 @@ export function StepTimeline({ items, systemPrompt, runId, runStatus, triggerTyp
 
         return (
           <li key={key} className={styles.item}>
-            {renderBlock(item, { runId, runStatus, systemPrompt, durationSeconds })}
+            {renderBlock(item, { runId, runStatus, systemPrompt, durationMs })}
           </li>
         )
       })}
@@ -56,7 +56,7 @@ interface RenderContext {
   runId: string
   runStatus: string
   systemPrompt?: string | null
-  durationSeconds?: number | null
+  durationMs?: number | null
 }
 
 // renderBlock selects the appropriate block component for each item type.
@@ -78,7 +78,7 @@ function renderBlock(item: ParsedStep | ToolBlockData, ctx: RenderContext) {
     case 'error':
       return <ErrorBlock step={item} />
     case 'complete':
-      return <CompleteBlock step={item} durationSeconds={ctx.durationSeconds ?? null} />
+      return <CompleteBlock step={item} durationMs={ctx.durationMs ?? null} />
     case 'feedback_request':
       return <FeedbackBlock step={item} runId={ctx.runId} runStatus={ctx.runStatus} />
     case 'feedback_response':

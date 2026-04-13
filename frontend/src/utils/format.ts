@@ -41,12 +41,22 @@ export function saveDateFormatPreference(fmt: DateFormat): void {
   }
 }
 
-export const formatDuration = (s: number | null): string =>
-  s == null ? '—' : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
+// formatDuration converts a duration in seconds to a human-readable string.
+// The format adapts to the magnitude so short runs don't show misleading "0s":
+//   under 1s  → "841ms"
+//   1s–60s    → "2.5s"  (one decimal place)
+//   60s+      → "3m 12s"
+export function formatDuration(s: number | null): string {
+  if (s == null) return '—'
+  if (s < 1) return `${Math.round(s * 1000)}ms`
+  if (s < 60) return `${s.toFixed(1)}s`
+  return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`
+}
 
-// formatDurationMs accepts milliseconds (e.g. from Date arithmetic) and delegates to formatDuration.
+// formatDurationMs accepts milliseconds (e.g. from Date arithmetic or useLiveDuration)
+// and delegates to formatDuration.
 export function formatDurationMs(ms: number): string {
-  return formatDuration(Math.floor(ms / 1000))
+  return formatDuration(ms / 1000)
 }
 
 // formatTokens handles millions in addition to thousands.
@@ -131,7 +141,5 @@ export function formatDate(iso: string): string {
 // started_at is required on ApiRun (non-nullable).
 export function computeRunDuration(run: { completed_at: string | null; started_at: string }): number | null {
   if (!run.completed_at) return null
-  return Math.floor(
-    (new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()) / 1000,
-  )
+  return (new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()) / 1000
 }

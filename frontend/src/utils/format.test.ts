@@ -6,13 +6,22 @@ describe('formatDuration', () => {
     expect(formatDuration(null)).toBe('—')
   })
 
-  it('formats 0 seconds', () => {
-    expect(formatDuration(0)).toBe('0s')
+  it('formats 0 as 0ms (sub-second tier)', () => {
+    expect(formatDuration(0)).toBe('0ms')
   })
 
-  it('formats seconds below 60', () => {
-    expect(formatDuration(45)).toBe('45s')
-    expect(formatDuration(59)).toBe('59s')
+  it('formats sub-second values in milliseconds', () => {
+    expect(formatDuration(0.841)).toBe('841ms')
+    expect(formatDuration(0.005)).toBe('5ms')
+  })
+
+  it('formats fractional seconds with one decimal place', () => {
+    expect(formatDuration(2.472)).toBe('2.5s')
+  })
+
+  it('formats whole seconds with one decimal place', () => {
+    expect(formatDuration(45)).toBe('45.0s')
+    expect(formatDuration(59.9)).toBe('59.9s')
   })
 
   it('formats exactly 60 seconds as 1m 0s', () => {
@@ -51,12 +60,20 @@ describe('readStorageKey (via getPreferredTimezone)', () => {
 })
 
 describe('formatDurationMs', () => {
-  it('formats 0ms as 0s', () => {
-    expect(formatDurationMs(0)).toBe('0s')
+  it('formats 0ms as 0ms (sub-second tier)', () => {
+    expect(formatDurationMs(0)).toBe('0ms')
   })
 
-  it('formats 45000ms as 45s', () => {
-    expect(formatDurationMs(45000)).toBe('45s')
+  it('formats 500ms as 500ms', () => {
+    expect(formatDurationMs(500)).toBe('500ms')
+  })
+
+  it('formats 2472ms with one decimal second', () => {
+    expect(formatDurationMs(2472)).toBe('2.5s')
+  })
+
+  it('formats 45000ms as 45.0s', () => {
+    expect(formatDurationMs(45000)).toBe('45.0s')
   })
 
   it('formats 90000ms as 1m 30s', () => {
