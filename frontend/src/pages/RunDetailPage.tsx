@@ -4,6 +4,7 @@ import { useRun } from '@/hooks/queries/runs'
 import { useRunSteps } from '@/hooks/queries/runs'
 import { useRunTimeline } from '@/hooks/useRunTimeline'
 import { useScrollSentinel } from '@/hooks/useScrollSentinel'
+import { useLiveDuration } from '@/hooks/useLiveDuration'
 import SkeletonBlock from '@/components/SkeletonBlock/SkeletonBlock'
 import { QueryBoundary } from '@/components/QueryBoundary'
 import { EmptyState } from '@/components/EmptyState'
@@ -44,13 +45,13 @@ export default function RunDetailPage() {
     }
   }, [snapshotSteps])
 
-  // Duration computation
-  const duration =
-    run
-      ? run.completed_at
-        ? new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()
-        : Date.now() - new Date(run.started_at).getTime()
-      : null
+  // Duration ticks live for non-terminal runs via a 1-second interval inside
+  // useLiveDuration. For terminal runs it returns a fixed value with no interval.
+  const duration = useLiveDuration(
+    run?.started_at ?? null,
+    run?.completed_at ?? null,
+    run?.status ?? 'pending',
+  )
   const durationSeconds = duration !== null ? duration / 1000 : null
 
   const toolCallCount = rawSteps.filter((s) => s.type === 'tool_call').length

@@ -845,3 +845,56 @@ describe('RunDetailPage — not found empty state', () => {
     expect(link).toHaveAttribute('href', '/runs')
   })
 })
+
+describe('RunDetailPage — live duration counter', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('duration ticks while run is running', async () => {
+    vi.useFakeTimers()
+    // Set the fake clock before building the run so started_at is relative
+    // to a known reference point and not affected by the fake clock itself.
+    vi.setSystemTime(new Date('2025-01-01T12:01:00Z'))
+
+    const run = makeRun({
+      status: 'running',
+      completed_at: null,
+      started_at: '2025-01-01T12:00:00Z', // 60 seconds before fake now
+    })
+    mockLoaded(run)
+    renderPage()
+
+    // Initial duration should be 60 seconds
+    expect(screen.getByText('1m 0s')).toBeInTheDocument()
+
+    // After 5 more seconds the displayed duration should update
+    await act(async () => {
+      vi.advanceTimersByTime(5000)
+    })
+
+    expect(screen.getByText('1m 5s')).toBeInTheDocument()
+  })
+
+  it('duration is static for a completed run', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2025-01-01T12:01:00Z'))
+
+    const run = makeRun({
+      status: 'complete',
+      started_at: '2025-01-01T12:00:00Z',
+      completed_at: '2025-01-01T12:01:00Z', // exactly 60 seconds
+    })
+    mockLoaded(run)
+    renderPage()
+
+    expect(screen.getByText('1m 0s')).toBeInTheDocument()
+
+    // Advancing the clock should not change the displayed duration
+    await act(async () => {
+      vi.advanceTimersByTime(5000)
+    })
+
+    expect(screen.getByText('1m 0s')).toBeInTheDocument()
+  })
+})
