@@ -12,6 +12,30 @@
   padding: var(--space-6);
 }
 
+.approvalBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-4) var(--space-6);
+  padding: var(--space-3) var(--space-4);
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--color-amber) 30%, transparent);
+  background: color-mix(in srgb, var(--color-amber) 6%, transparent);
+}
+
+.approvalBoxLabel {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--color-amber);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.approvalBoxMsg {
+  font-size: var(--text-sm);
+  color: var(--text-second);
+}
+
 .errorBox {
   display: flex;
   flex-direction: column;

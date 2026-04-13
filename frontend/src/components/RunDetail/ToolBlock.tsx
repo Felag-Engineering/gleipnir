@@ -18,8 +18,13 @@ function fmtDuration(ms: number): string {
 
 type BlockStatus = 'success' | 'error' | 'approval_pending' | 'denied' | 'pending'
 
-function deriveStatus(block: ToolBlockData): BlockStatus {
-  if (block.approval && !block.call) return 'denied'
+function deriveStatus(block: ToolBlockData, runStatus: string): BlockStatus {
+  if (block.approval && !block.call) {
+    // No tool_call follows the approval_request. This is either a pending
+    // approval (run is still waiting) or a denied/timed-out approval (run
+    // moved past this point).
+    return runStatus === 'waiting_for_approval' ? 'approval_pending' : 'denied'
+  }
   if (block.result?.content.is_error) return 'error'
   if (block.result && !block.result.content.is_error) return 'success'
   if (block.approval && block.call && !block.result) return 'approval_pending'
@@ -27,7 +32,7 @@ function deriveStatus(block: ToolBlockData): BlockStatus {
 }
 
 export function ToolBlock({ block, runId, runStatus }: Props) {
-  const status = deriveStatus(block)
+  const status = deriveStatus(block, runStatus)
 
   const toolName = block.call?.content.tool_name ?? block.approval?.content.tool ?? 'unknown'
   const serverId = block.call?.content.server_id

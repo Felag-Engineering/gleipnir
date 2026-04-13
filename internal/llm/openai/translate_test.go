@@ -375,6 +375,39 @@ func TestBuildInput_ThinkingBlockRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBuildInput_ThinkingBlockEmptySummary_IncludesSummaryField(t *testing.T) {
+	// A ThinkingBlock with encrypted_content but no summary text must still
+	// produce a reasoning item with a non-nil summary array. The Responses API
+	// rejects input items where the summary field is absent (nil slice → omitted
+	// via omitzero).
+	req := llm.MessageRequest{
+		Model: "o3-mini",
+		History: []llm.ConversationTurn{
+			{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentBlock{
+					llm.ThinkingBlock{ID: "rs_010", Text: "", EncryptedContent: "enc_opaque"},
+				},
+			},
+		},
+	}
+	items := buildInput(req, llm.ToolNameMapping{})
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	raw, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `"summary"`) {
+		t.Errorf("expected summary field in %s", s)
+	}
+	if !strings.Contains(s, `"enc_opaque"`) {
+		t.Errorf("expected encrypted_content in %s", s)
+	}
+}
+
 func TestBuildInput_ThinkingBlockNoEncryptedContent(t *testing.T) {
 	// A ThinkingBlock with only summary text (no EncryptedContent) should still
 	// emit a reasoning input item.

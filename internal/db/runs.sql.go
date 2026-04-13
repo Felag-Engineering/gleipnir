@@ -264,7 +264,7 @@ SELECT
 FROM approval_requests ar
 JOIN runs r ON ar.run_id = r.id
 JOIN policies p ON r.policy_id = p.id
-WHERE ar.status = 'pending'
+WHERE ar.status = 'pending' AND r.status = 'waiting_for_approval'
 UNION ALL
 SELECT
   'feedback' AS item_type,
@@ -279,7 +279,7 @@ SELECT
 FROM feedback_requests fr
 JOIN runs r ON fr.run_id = r.id
 JOIN policies p ON r.policy_id = p.id
-WHERE fr.status = 'pending'
+WHERE fr.status = 'pending' AND r.status = 'waiting_for_feedback'
 ORDER BY 9 ASC
 `
 

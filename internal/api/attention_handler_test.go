@@ -185,6 +185,38 @@ func TestAttentionHandlerRecentFailures(t *testing.T) {
 	}
 }
 
+func TestAttentionHandlerStaleApprovalExcluded(t *testing.T) {
+	// An approval_request still in 'pending' status whose run has already
+	// moved past waiting_for_approval (e.g. failed due to container restart)
+	// must not appear in the attention queue.
+	store := newPolicyHandlerStore(t)
+	insertTestPolicy(t, store, "p1", "stale-policy", "")
+	insertTestRun(t, store, "r1", "p1", "failed")
+	testutil.InsertApprovalRequest(t, store, "ar1", "r1", "some_tool")
+
+	h := api.NewAttentionHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/attention", nil)
+	rec := httptest.NewRecorder()
+	h.Get(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var env struct {
+		Data api.AttentionResponse `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	for _, item := range env.Data.Items {
+		if item.Type == "approval" {
+			t.Errorf("stale approval should not appear in attention queue: %+v", item)
+		}
+	}
+}
+
 func TestAttentionHandlerResolvedItemsExcluded(t *testing.T) {
 	store := newPolicyHandlerStore(t)
 	insertTestPolicy(t, store, "p1", "pol1", "")

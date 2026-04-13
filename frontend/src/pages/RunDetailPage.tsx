@@ -13,6 +13,7 @@ import {
   FilterBar,
   StepTimeline,
 } from '@/components/RunDetail'
+import { ApprovalActions } from '@/components/RunDetail/ApprovalActions'
 import type { FilterKey } from '@/components/RunDetail'
 import type { CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
 import { usePageTitle } from '@/hooks/usePageTitle'
@@ -94,6 +95,14 @@ export default function RunDetailPage() {
               duration={duration}
               capabilitySnapshot={capabilitySnapshot}
             />
+
+            {run.status === 'waiting_for_approval' && (
+              <div className={styles.approvalBox} role="alert">
+                <span className={styles.approvalBoxLabel}>Awaiting approval</span>
+                <span className={styles.approvalBoxMsg}>A tool call requires operator approval before the run can continue.</span>
+                <ApprovalActions runId={id!} runStatus={run.status} />
+              </div>
+            )}
 
             {(run.status === 'failed' || run.status === 'interrupted') && run.error && (
               <div className={styles.errorBox} role="alert">

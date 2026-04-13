@@ -72,10 +72,11 @@ func translateAssistantTurn(blocks []llm.ContentBlock, names llm.ToolNameMapping
 				items = append(items, assistantTextItem(strings.Join(textParts, "\n\n")))
 				textParts = nil
 			}
-			var summaryParams []responses.ResponseReasoningItemSummaryParam
-			if v.Text != "" {
-				summaryParams = []responses.ResponseReasoningItemSummaryParam{{Text: v.Text}}
-			}
+			// The Responses API requires a non-nil summary array on reasoning
+			// input items, even when the model returned no summary text
+			// (common with encrypted_content-only items). Always include at
+			// least one entry to satisfy the wire format.
+			summaryParams := []responses.ResponseReasoningItemSummaryParam{{Text: v.Text}}
 			item := responses.ResponseInputItemParamOfReasoning(v.ID, summaryParams)
 			if v.EncryptedContent != "" {
 				item.OfReasoning.EncryptedContent = param.NewOpt(v.EncryptedContent)
