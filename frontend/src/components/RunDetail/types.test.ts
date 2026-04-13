@@ -398,7 +398,7 @@ describe('type guard functions', () => {
   describe('isCapabilitySnapshotContent', () => {
     it('returns true for V1 array shape', () => {
       expect(isCapabilitySnapshotContent([])).toBe(true)
-      expect(isCapabilitySnapshotContent([{ ServerName: 's', ToolName: 't' }])).toBe(true)
+      expect(isCapabilitySnapshotContent([{ server_name: 's', tool_name: 't' }])).toBe(true)
     })
 
     it('returns true for V2 object shape with model and tools', () => {

@@ -39,8 +39,8 @@ function makeRaw(overrides: Partial<ApiRunStep> = {}): ApiRunStep {
 
 const FULL_STEPS = [
   parseStep(makeRaw({ id: 's1', step_number: 0, type: 'capability_snapshot', content: JSON.stringify([
-    { ServerName: 'fs-server', ToolName: 'read_file', Role: 'tool', Approval: 'none', Timeout: 30, OnTimeout: 'fail' },
-    { ServerName: 'fs-server', ToolName: 'write_file', Role: 'tool', Approval: 'required', Timeout: 60, OnTimeout: 'fail' },
+    { server_name: 'fs-server', tool_name: 'read_file', approval: 'none', timeout: 30, on_timeout: 'fail' },
+    { server_name: 'fs-server', tool_name: 'write_file', approval: 'required', timeout: 60, on_timeout: 'fail' },
   ]) })),
   parseStep(makeRaw({ id: 's2', step_number: 1, type: 'thought', content: JSON.stringify({ text: 'I should start by reading the log file.' }) })),
   parseStep(makeRaw({ id: 's3', step_number: 2, type: 'tool_call', content: JSON.stringify({ tool_name: 'read_file', server_id: 'fs-server', input: { path: '/var/log/app.log', lines: 100 } }) })),
@@ -90,8 +90,8 @@ export const FullRunAllBlockTypes: Story = {
     items: pairToolBlocks([
       // Capability snapshot at the top (rendered by CapabilitySnapshotCard)
       parseStep(makeRaw({ id: 'a1', step_number: 0, type: 'capability_snapshot', content: JSON.stringify([
-        { ServerName: 'fs-server', ToolName: 'read_file', Role: 'tool', Approval: 'none', Timeout: 30, OnTimeout: 'fail' },
-        { ServerName: 'fs-server', ToolName: 'write_file', Role: 'tool', Approval: 'required', Timeout: 60, OnTimeout: 'fail' },
+        { server_name: 'fs-server', tool_name: 'read_file', approval: 'none', timeout: 30, on_timeout: 'fail' },
+        { server_name: 'fs-server', tool_name: 'write_file', approval: 'required', timeout: 60, on_timeout: 'fail' },
       ]) })),
       // Thinking block (extended thinking from Claude)
       parseStep(makeRaw({ id: 'a2', step_number: 1, type: 'thinking', content: JSON.stringify({ text: 'I need to analyze the situation carefully before acting.', redacted: false }) })),

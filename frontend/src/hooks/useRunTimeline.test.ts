@@ -46,7 +46,7 @@ describe('useRunTimeline — snapshot separation', () => {
         step_number: 1,
         type: 'capability_snapshot',
         content: JSON.stringify([
-          { ServerName: 'srv', ToolName: 'fs.read', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
+          { server_name: 'srv', tool_name: 'fs.read', approval: 'none', timeout: 0, on_timeout: '' },
         ]),
       }),
     ]

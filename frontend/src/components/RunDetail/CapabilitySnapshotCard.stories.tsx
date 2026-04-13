@@ -12,11 +12,11 @@ export default meta
 type Story = StoryObj<typeof CapabilitySnapshotCard>
 
 const MIXED_TOOLS: CapabilitySnapshotContent = [
-  { ServerName: 'fs-server', ToolName: 'read_file', Role: 'tool', Approval: 'none', Timeout: 30, OnTimeout: 'fail' },
-  { ServerName: 'fs-server', ToolName: 'list_files', Role: 'tool', Approval: 'none', Timeout: 30, OnTimeout: 'fail' },
-  { ServerName: 'fs-server', ToolName: 'write_file', Role: 'tool', Approval: 'required', Timeout: 60, OnTimeout: 'fail' },
-  { ServerName: 'slack-server', ToolName: 'send_message', Role: 'tool', Approval: 'required', Timeout: 15, OnTimeout: 'fail' },
-  { ServerName: 'slack-server', ToolName: 'post_feedback', Role: 'tool', Approval: 'none', Timeout: 300, OnTimeout: 'skip' },
+  { server_name: 'fs-server', tool_name: 'read_file', approval: 'none', timeout: 30, on_timeout: 'fail' },
+  { server_name: 'fs-server', tool_name: 'list_files', approval: 'none', timeout: 30, on_timeout: 'fail' },
+  { server_name: 'fs-server', tool_name: 'write_file', approval: 'required', timeout: 60, on_timeout: 'fail' },
+  { server_name: 'slack-server', tool_name: 'send_message', approval: 'required', timeout: 15, on_timeout: 'fail' },
+  { server_name: 'slack-server', tool_name: 'post_feedback', approval: 'none', timeout: 300, on_timeout: 'skip' },
 ]
 
 export const Default: Story = {
@@ -25,7 +25,7 @@ export const Default: Story = {
 
 export const SingleTool: Story = {
   args: {
-    content: [{ ServerName: 'fs-server', ToolName: 'read_file', Role: 'tool', Approval: 'none', Timeout: 30, OnTimeout: 'fail' }],
+    content: [{ server_name: 'fs-server', tool_name: 'read_file', approval: 'none', timeout: 30, on_timeout: 'fail' }],
   },
 }
 
@@ -33,9 +33,9 @@ export const ManyTools: Story = {
   args: {
     content: [
       ...MIXED_TOOLS,
-      { ServerName: 'gh-server', ToolName: 'list_prs', Role: 'tool', Approval: 'none', Timeout: 30, OnTimeout: 'fail' },
-      { ServerName: 'gh-server', ToolName: 'merge_pr', Role: 'tool', Approval: 'required', Timeout: 60, OnTimeout: 'fail' },
-      { ServerName: 'gh-server', ToolName: 'comment', Role: 'tool', Approval: 'none', Timeout: 30, OnTimeout: 'fail' },
+      { server_name: 'gh-server', tool_name: 'list_prs', approval: 'none', timeout: 30, on_timeout: 'fail' },
+      { server_name: 'gh-server', tool_name: 'merge_pr', approval: 'required', timeout: 60, on_timeout: 'fail' },
+      { server_name: 'gh-server', tool_name: 'comment', approval: 'none', timeout: 30, on_timeout: 'fail' },
     ],
   },
 }
@@ -66,7 +66,7 @@ export const V2WithHaiku: Story = {
       provider: 'anthropic',
       model: 'claude-haiku-4-5-20251001',
       tools: [
-        { ServerName: 'fs-server', ToolName: 'read_file', Role: 'tool', Approval: 'none', Timeout: 30, OnTimeout: 'fail' },
+        { server_name: 'fs-server', tool_name: 'read_file', approval: 'none', timeout: 30, on_timeout: 'fail' },
       ],
     },
   },

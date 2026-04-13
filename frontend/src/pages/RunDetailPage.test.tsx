@@ -159,7 +159,7 @@ describe('RunDetailPage — step types render', () => {
 
   it('renders tool_call step when capability_snapshot marks it as tool', () => {
     const capContent = JSON.stringify([
-      { ServerName: 'srv1', ToolName: 'fs.write', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
+      { server_name: 'srv1', tool_name: 'fs.write', approval: 'none', timeout: 0, on_timeout: '' },
     ])
     mockLoaded(makeRun(), [
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
@@ -217,7 +217,7 @@ describe('RunDetailPage — step types render', () => {
 
   it('renders capability_snapshot info in header bar (collapsed by default)', () => {
     const capContent = JSON.stringify([
-      { ServerName: 'srv1', ToolName: 'fs.read', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
+      { server_name: 'srv1', tool_name: 'fs.read', approval: 'none', timeout: 0, on_timeout: '' },
     ])
     mockLoaded(makeRun(), [
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
@@ -231,7 +231,7 @@ describe('RunDetailPage — step types render', () => {
 
   it('expands capability bar to show tool table on click', async () => {
     const capContent = JSON.stringify([
-      { ServerName: 'srv1', ToolName: 'fs.read', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
+      { server_name: 'srv1', tool_name: 'fs.read', approval: 'none', timeout: 0, on_timeout: '' },
     ])
     mockLoaded(makeRun(), [
       makeStep({ id: 'snap', type: 'capability_snapshot', content: capContent }),
@@ -248,7 +248,7 @@ describe('RunDetailPage — step types render', () => {
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',
       tools: [
-        { ServerName: 'srv1', ToolName: 'fs.read', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
+        { server_name: 'srv1', tool_name: 'fs.read', approval: 'none', timeout: 0, on_timeout: '' },
       ],
     })
     mockLoaded(makeRun(), [
@@ -264,7 +264,7 @@ describe('RunDetailPage — step types render', () => {
     const capContent = JSON.stringify({
       model: 'claude-sonnet-4-6',
       tools: [
-        { ServerName: 'srv1', ToolName: 'fs.read', Role: 'tool', Approval: 'none', Timeout: 0, OnTimeout: '' },
+        { server_name: 'srv1', tool_name: 'fs.read', approval: 'none', timeout: 0, on_timeout: '' },
       ],
     })
     mockLoaded(makeRun(), [

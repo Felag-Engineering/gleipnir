@@ -8,9 +8,9 @@ import { formatDurationMs, formatTokens, formatTimestamp } from '@/utils/format'
 import styles from './RunHeader.module.css'
 
 interface CapabilityTool {
-  ServerName: string
-  ToolName: string
-  Approval: string
+  server_name: string
+  tool_name: string
+  approval: string
 }
 
 interface Props {
@@ -97,11 +97,11 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
                 </thead>
                 <tbody>
                   {capabilitySnapshot.tools.map(tool => (
-                    <tr key={`${tool.ServerName}/${tool.ToolName}`}>
-                      <td className={styles.mono}>{tool.ToolName}</td>
-                      <td className={`${styles.mono} ${styles.muted}`}>{tool.ServerName}</td>
+                    <tr key={`${tool.server_name}/${tool.tool_name}`}>
+                      <td className={styles.mono}>{tool.tool_name}</td>
+                      <td className={`${styles.mono} ${styles.muted}`}>{tool.server_name}</td>
                       <td>
-                        {tool.Approval === 'required' ? (
+                        {tool.approval === 'required' ? (
                           <span className={styles.approvalRequired}>required</span>
                         ) : (
                           <span className={styles.approvalNone}>none</span>

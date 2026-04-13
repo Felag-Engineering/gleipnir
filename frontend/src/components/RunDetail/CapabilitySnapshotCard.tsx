@@ -45,9 +45,9 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
             <tbody>
               {tools.map((t, i) => (
                 <tr key={i}>
-                  <td className={styles.mono}>{t.ServerName}</td>
-                  <td className={styles.mono}>{t.ToolName}</td>
-                  <td className={styles.mono}>{t.Approval}</td>
+                  <td className={styles.mono}>{t.server_name}</td>
+                  <td className={styles.mono}>{t.tool_name}</td>
+                  <td className={styles.mono}>{t.approval}</td>
                 </tr>
               ))}
             </tbody>

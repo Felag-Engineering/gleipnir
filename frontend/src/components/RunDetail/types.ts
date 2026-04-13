@@ -43,12 +43,11 @@ export interface CompleteContent {
 }
 
 export interface GrantedToolEntry {
-  ServerName: string
-  ToolName: string
-  Role: 'tool' | 'feedback'
-  Approval: 'none' | 'required'
-  Timeout: number
-  OnTimeout: string
+  server_name: string
+  tool_name: string
+  approval: 'none' | 'required'
+  timeout: number
+  on_timeout: string
 }
 
 // CapabilitySnapshotV2 is the shape written by agent runs after ADR-023.
