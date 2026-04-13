@@ -138,7 +138,7 @@ trigger:
 
 capabilities:
 
-  # tools: list — required (at least one tool must be present)
+  # tools: list — optional (at least one capability — tool or feedback — must be present)
   #   Tools the agent may call during a run. Any tool can optionally be
   #   approval-gated to require human authorization before execution.
   tools:

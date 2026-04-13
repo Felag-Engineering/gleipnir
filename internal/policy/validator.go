@@ -104,14 +104,14 @@ func validateTrigger(t model.TriggerConfig) []string {
 	return errs
 }
 
-// validateCapabilities checks that at least one tool is present,
-// tool references use valid dot notation, there are no duplicates,
+// validateCapabilities checks that at least one capability is present (tool or
+// feedback), tool references use valid dot notation, there are no duplicates,
 // and approval/timeout and feedback fields are well-formed.
 func validateCapabilities(c model.CapabilitiesConfig) []string {
 	var errs []string
 
-	if len(c.Tools) == 0 {
-		errs = append(errs, "at least one tool is required")
+	if len(c.Tools) == 0 && !c.Feedback.Enabled {
+		errs = append(errs, "at least one capability is required (tool or feedback)")
 	}
 
 	seen := make(map[string]bool)

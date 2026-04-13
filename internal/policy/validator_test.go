@@ -158,10 +158,20 @@ func TestValidate_PollTrigger_InvalidMatch(t *testing.T) {
 	assertValidationContains(t, p, "trigger.match")
 }
 
-func TestValidate_NoTools(t *testing.T) {
+func TestValidate_NoCapabilities(t *testing.T) {
 	p := validPolicy()
 	p.Capabilities.Tools = nil
-	assertValidationContains(t, p, "at least one tool is required")
+	p.Capabilities.Feedback = model.FeedbackConfig{Enabled: false}
+	assertValidationContains(t, p, "at least one capability is required")
+}
+
+func TestValidate_FeedbackOnlyPolicy_Valid(t *testing.T) {
+	p := validPolicy()
+	p.Capabilities.Tools = nil
+	p.Capabilities.Feedback = model.FeedbackConfig{Enabled: true}
+	if err := Validate(p); err != nil {
+		t.Errorf("expected feedback-only policy to be valid, got: %v", err)
+	}
 }
 
 func TestValidate_EmptyToolRef(t *testing.T) {
