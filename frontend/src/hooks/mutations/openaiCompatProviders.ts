@@ -11,6 +11,7 @@ import { queryKeys } from '../queryKeys'
 function invalidateProviderCaches(queryClient: ReturnType<typeof useQueryClient>) {
   void queryClient.invalidateQueries({ queryKey: queryKeys.admin.openaiCompatProviders })
   void queryClient.invalidateQueries({ queryKey: queryKeys.models.all })
+  void queryClient.invalidateQueries({ queryKey: queryKeys.admin.modelsAll })
 }
 
 export function useCreateOpenAICompatProvider() {

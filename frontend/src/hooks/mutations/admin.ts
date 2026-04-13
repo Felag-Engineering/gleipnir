@@ -13,6 +13,7 @@ export function useSetProviderKey() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.providers })
       void queryClient.invalidateQueries({ queryKey: queryKeys.models.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.admin.modelsAll })
     },
   })
 }
@@ -27,6 +28,7 @@ export function useDeleteProviderKey() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.providers })
       void queryClient.invalidateQueries({ queryKey: queryKeys.models.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.admin.modelsAll })
     },
   })
 }
