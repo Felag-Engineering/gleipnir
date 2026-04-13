@@ -16,6 +16,7 @@ import { useSavePolicy } from '@/hooks/mutations/policies'
 import { useDeletePolicy } from '@/hooks/mutations/policies'
 import { ApiError } from '@/api/fetch'
 import { usePageTitle } from '@/hooks/usePageTitle'
+import NotFoundPage from '@/pages/NotFoundPage'
 import { DEFAULT_YAML, defaultFormState, FormState, formStateToYaml, yamlToFormState } from '@/components/PolicyEditor/policyEditorUtils'
 import styles from './PolicyEditorPage.module.css'
 
@@ -23,7 +24,7 @@ export function PolicyEditorPage() {
   const { id } = useParams<{ id?: string }>()
   const navigate = useNavigate()
 
-  const { data: policy, status: policyStatus } = usePolicy(id)
+  const { data: policy, status: policyStatus, error: policyErrorObj } = usePolicy(id)
   const { data: allPolicies } = usePolicies()
   const savePolicy = useSavePolicy()
   const deletePolicy = useDeletePolicy()
@@ -136,7 +137,8 @@ export function PolicyEditorPage() {
       ? (formState.identity.name || (id ? id : 'New Agent'))
       : (id ? (policy?.name ?? id) : 'New Agent')
 
-  usePageTitle(policyName)
+  const pageTitle = (id && policyStatus === 'error') ? 'Agent not found' : policyName
+  usePageTitle(pageTitle)
 
   // Show loading/error states only when fetching an existing policy
   if (id && policyStatus === 'pending') {
@@ -148,6 +150,21 @@ export function PolicyEditorPage() {
   }
 
   if (id && policyStatus === 'error') {
+    const is404 = policyErrorObj instanceof ApiError && policyErrorObj.status === 404
+    if (is404) {
+      return (
+        <div className={styles.page}>
+          <NotFoundPage
+            embedded
+            title="Agent not found"
+            message={`No agent with ID ${id}. It may have been deleted.`}
+            primary={{ label: 'Go to Agents', to: '/agents' }}
+            secondary={{ label: 'Go to Dashboard', to: '/dashboard' }}
+          />
+        </div>
+      )
+    }
+    // Non-404 errors keep the original plain text error state
     return (
       <div className={styles.page}>
         <div className={styles.errorState}>Failed to load agent.</div>

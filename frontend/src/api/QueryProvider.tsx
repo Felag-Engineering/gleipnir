@@ -1,11 +1,20 @@
 import React, { Suspense } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { ApiError } from '@/api/fetch'
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
-      retry: 1,
+      // Don't retry on 4xx errors — they indicate a definitive client-side
+      // problem (not found, forbidden) that won't resolve with retries.
+      // Network failures and 5xx errors still get one retry.
+      retry: (failureCount, error) => {
+        if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+          return false
+        }
+        return failureCount < 1
+      },
     },
   },
 })

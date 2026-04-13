@@ -19,14 +19,16 @@ import { CopyBlock } from '@/components/CopyBlock'
 import type { FilterKey } from '@/components/RunDetail'
 import type { CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
 import { usePageTitle } from '@/hooks/usePageTitle'
+import NotFoundPage from '@/pages/NotFoundPage'
+import { ApiError } from '@/api/fetch'
 import styles from './RunDetailPage.module.css'
 
 export default function RunDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const { data: run, status: runStatus, refetch: runRefetch } = useRun(id)
+  const { data: run, status: runStatus, error: runErrorObj, refetch: runRefetch } = useRun(id)
   const { data: rawSteps = [], status: stepsStatus } = useRunSteps(id)
 
-  usePageTitle(id ? `Run ${id.slice(0, 8)}` : 'Run')
+  usePageTitle(runStatus === 'error' ? 'Run not found' : (id ? `Run ${id.slice(0, 8)}` : 'Run'))
   const [filter, setFilter] = useState<FilterKey>('all')
 
   const { timelineItems, counts, snapshotSteps, hasMore, remainingCount, loadMore } = useRunTimeline(rawSteps, filter)
@@ -59,8 +61,28 @@ export default function RunDetailPage() {
   const tokenTotal = rawSteps.reduce((acc, s) => acc + s.token_cost, 0)
 
   const isLoading = runStatus === 'pending' || stepsStatus === 'pending'
-  const runError = runStatus === 'error'
-  const boundaryStatus = isLoading ? 'pending' : runError ? 'error' : 'success'
+  const boundaryStatus = isLoading ? 'pending' : runStatus === 'error' ? 'error' : 'success'
+
+  // Show a tailored not-found page for 404 errors rather than the generic
+  // QueryBoundary error state — this gives users actionable navigation links.
+  if (runStatus === 'error') {
+    const is404 = runErrorObj instanceof ApiError && runErrorObj.status === 404
+    if (is404) {
+      return (
+        <div className={styles.page}>
+          <NotFoundPage
+            embedded
+            title="Run not found"
+            message={`No run with ID ${id}. It may have been deleted.`}
+            primary={{ label: 'Go to Run History', to: '/runs' }}
+            secondary={{ label: 'Go to Dashboard', to: '/dashboard' }}
+          />
+        </div>
+      )
+    }
+    // Non-404 errors (500s, network failures) fall through to QueryBoundary's
+    // generic error state below, which offers a Retry button.
+  }
 
   return (
     <div className={styles.page}>

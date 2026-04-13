@@ -58,3 +58,29 @@
 .link:hover {
   background: var(--border-mid);
 }
+
+.links {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.secondaryLink {
+  display: inline-block;
+  padding: var(--space-2) var(--space-4);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: var(--text-second);
+  font-size: var(--text-sm);
+  font-family: var(--font-body);
+  text-decoration: none;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.secondaryLink:hover {
+  border-color: var(--border-mid);
+  color: var(--text-primary);
+}

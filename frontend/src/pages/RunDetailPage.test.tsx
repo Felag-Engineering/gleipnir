@@ -7,6 +7,7 @@ import React from 'react'
 import RunDetailPage from './RunDetailPage'
 import { CollapsibleJSON } from '@/components/CollapsibleJSON'
 import { CopyBlock } from '@/components/CopyBlock'
+import { ApiError } from '@/api/fetch'
 import type { ApiRun, ApiRunStep } from '@/api/types'
 
 // --- Mocks ---
@@ -70,14 +71,29 @@ function mockError() {
   vi.mocked(useRun).mockReturnValue({
     data: undefined,
     status: 'error',
-    error: new Error('Not Found'),
+    error: new ApiError(404, 'Not Found'),
     refetch: vi.fn(),
   } as unknown as ReturnType<typeof useRun>)
 
   vi.mocked(useRunSteps).mockReturnValue({
     data: undefined,
     status: 'error',
-    error: new Error('Not Found'),
+    error: new ApiError(404, 'Not Found'),
+  } as unknown as ReturnType<typeof useRunSteps>)
+}
+
+function mockServerError() {
+  vi.mocked(useRun).mockReturnValue({
+    data: undefined,
+    status: 'error',
+    error: new ApiError(500, 'Internal Server Error'),
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useRun>)
+
+  vi.mocked(useRunSteps).mockReturnValue({
+    data: undefined,
+    status: 'error',
+    error: new ApiError(500, 'Internal Server Error'),
   } as unknown as ReturnType<typeof useRunSteps>)
 }
 
@@ -827,20 +843,42 @@ describe('RunDetailPage — error state (404)', () => {
     mockError()
   })
 
-  it('shows error message when run fetch fails', () => {
+  it('shows "Run not found" heading when run fetch returns 404', () => {
     renderPage()
-    expect(screen.getByRole('alert')).toBeInTheDocument()
-    expect(screen.getByText(/failed to load run/i)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /run not found/i })).toBeInTheDocument()
   })
 
-  it('shows Retry button when run fetch fails', () => {
+  it('shows navigation links to Run History and Dashboard', () => {
     renderPage()
-    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+    const runsLink = screen.getByRole('link', { name: /go to run history/i })
+    expect(runsLink).toBeInTheDocument()
+    expect(runsLink).toHaveAttribute('href', '/runs')
+
+    const dashboardLink = screen.getByRole('link', { name: /go to dashboard/i })
+    expect(dashboardLink).toBeInTheDocument()
+    expect(dashboardLink).toHaveAttribute('href', '/dashboard')
   })
 
   it('does not render run header when in error state', () => {
     renderPage()
     expect(screen.queryByText(/back/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('RunDetailPage — non-404 error', () => {
+  beforeEach(() => {
+    mockServerError()
+  })
+
+  it('shows QueryBoundary generic error state for 500 errors', () => {
+    renderPage()
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+  })
+
+  it('does not show the NotFoundPage heading for 500 errors', () => {
+    renderPage()
+    expect(screen.queryByRole('heading', { name: /run not found/i })).not.toBeInTheDocument()
   })
 })
 

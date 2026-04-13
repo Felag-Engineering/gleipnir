@@ -7,6 +7,7 @@ import React from 'react'
 
 import { PolicyEditorPage } from './PolicyEditorPage'
 import { yamlToFormState, formStateToYaml } from '@/components/PolicyEditor/policyEditorUtils'
+import { ApiError } from '@/api/fetch'
 
 // --- Mocks ---
 
@@ -454,5 +455,78 @@ describe('PolicyEditorPage — Cmd+S / Ctrl+S fires save', () => {
     await waitFor(() => {
       expect(mutateAsync).toHaveBeenCalled()
     })
+  })
+})
+
+describe('PolicyEditorPage — agent not found (404)', () => {
+  it('renders NotFoundPage with "Agent not found" heading on 404 error', () => {
+    mockHooksDefault()
+    vi.mocked(usePolicy).mockReturnValue({
+      data: undefined,
+      status: 'error',
+      error: new ApiError(404, 'Not Found'),
+    } as unknown as ReturnType<typeof usePolicy>)
+
+    renderEditor('/agents/nonexistent-id')
+
+    expect(screen.getByRole('heading', { name: /agent not found/i })).toBeInTheDocument()
+  })
+
+  it('shows "Go to Agents" link pointing to /agents', () => {
+    mockHooksDefault()
+    vi.mocked(usePolicy).mockReturnValue({
+      data: undefined,
+      status: 'error',
+      error: new ApiError(404, 'Not Found'),
+    } as unknown as ReturnType<typeof usePolicy>)
+
+    renderEditor('/agents/nonexistent-id')
+
+    const link = screen.getByRole('link', { name: /go to agents/i })
+    expect(link).toBeInTheDocument()
+    expect(link).toHaveAttribute('href', '/agents')
+  })
+
+  it('shows "Go to Dashboard" secondary link pointing to /dashboard', () => {
+    mockHooksDefault()
+    vi.mocked(usePolicy).mockReturnValue({
+      data: undefined,
+      status: 'error',
+      error: new ApiError(404, 'Not Found'),
+    } as unknown as ReturnType<typeof usePolicy>)
+
+    renderEditor('/agents/nonexistent-id')
+
+    const link = screen.getByRole('link', { name: /go to dashboard/i })
+    expect(link).toBeInTheDocument()
+    expect(link).toHaveAttribute('href', '/dashboard')
+  })
+})
+
+describe('PolicyEditorPage — non-404 error', () => {
+  it('shows generic "Failed to load agent." message for 500 errors', () => {
+    mockHooksDefault()
+    vi.mocked(usePolicy).mockReturnValue({
+      data: undefined,
+      status: 'error',
+      error: new ApiError(500, 'Internal Server Error'),
+    } as unknown as ReturnType<typeof usePolicy>)
+
+    renderEditor('/agents/nonexistent-id')
+
+    expect(screen.getByText('Failed to load agent.')).toBeInTheDocument()
+  })
+
+  it('does not show the NotFoundPage heading for 500 errors', () => {
+    mockHooksDefault()
+    vi.mocked(usePolicy).mockReturnValue({
+      data: undefined,
+      status: 'error',
+      error: new ApiError(500, 'Internal Server Error'),
+    } as unknown as ReturnType<typeof usePolicy>)
+
+    renderEditor('/agents/nonexistent-id')
+
+    expect(screen.queryByRole('heading', { name: /agent not found/i })).not.toBeInTheDocument()
   })
 })
