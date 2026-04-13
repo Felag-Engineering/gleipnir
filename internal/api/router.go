@@ -53,6 +53,10 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	// Compress API JSON responses and embedded frontend assets. SSE is excluded
+	// automatically because text/event-stream is not in the compressible type
+	// list — the middleware forwards it unmodified.
+	r.Use(middleware.Compress(5))
 
 	// SSE endpoint is unprotected: the UI needs events before and during auth.
 	r.Get("/api/v1/events", cfg.SSEHandler.ServeHTTP)
