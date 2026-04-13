@@ -661,6 +661,22 @@ describe('RunDetailPage — error box', () => {
     renderPage()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
+
+  it('shows a copy button in the error box for a failed run', async () => {
+    const errorMsg = 'context deadline exceeded'
+    const writeMock = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText: writeMock } })
+
+    mockLoaded(makeRun({ status: 'failed', error: errorMsg }))
+    renderPage()
+
+    const copyBtn = screen.getByRole('button', { name: /copy/i })
+    await act(async () => {
+      fireEvent.click(copyBtn)
+    })
+
+    expect(writeMock).toHaveBeenCalledWith(errorMsg)
+  })
 })
 
 describe('RunDetailPage — "New steps" pill', () => {

@@ -15,6 +15,7 @@ import {
   StepTimeline,
 } from '@/components/RunDetail'
 import { ApprovalActions } from '@/components/RunDetail/ApprovalActions'
+import { CopyBlock } from '@/components/CopyBlock'
 import type { FilterKey } from '@/components/RunDetail'
 import type { CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
 import { usePageTitle } from '@/hooks/usePageTitle'
@@ -110,7 +111,9 @@ export default function RunDetailPage() {
                 <span className={styles.errorBoxLabel}>
                   {run.status === 'failed' ? 'Run failed' : 'Run interrupted'}
                 </span>
-                <pre className={styles.errorBoxMsg}>{run.error}</pre>
+                <CopyBlock text={run.error}>
+                  <pre className={styles.errorBoxMsg}>{run.error}</pre>
+                </CopyBlock>
               </div>
             )}
 
