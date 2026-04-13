@@ -34,8 +34,7 @@ vi.mock('@/components/PolicyEditor/YamlEditor/YamlEditor', () => ({
 }))
 
 import { usePolicy, usePolicies } from '@/hooks/queries/policies'
-import { useSavePolicy } from '@/hooks/mutations/policies'
-import { useDeletePolicy } from '@/hooks/mutations/policies'
+import { useSavePolicy, useDeletePolicy, useTriggerPolicy } from '@/hooks/mutations/policies'
 import { useMcpServers } from '@/hooks/queries/servers'
 
 // --- Fixtures ---
@@ -133,6 +132,12 @@ function mockHooksDefault() {
     mutateAsync: vi.fn().mockResolvedValue(undefined),
     isPending: false,
   } as unknown as ReturnType<typeof useDeletePolicy>)
+
+  vi.mocked(useTriggerPolicy).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+    error: null,
+  } as unknown as ReturnType<typeof useTriggerPolicy>)
 
   vi.mocked(useMcpServers).mockReturnValue({
     data: [],
@@ -303,6 +308,12 @@ describe('PolicyEditorPage — dirty state and save', () => {
       mutateAsync: vi.fn().mockResolvedValue(undefined),
       isPending: false,
     } as unknown as ReturnType<typeof useDeletePolicy>)
+
+    vi.mocked(useTriggerPolicy).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      error: null,
+    } as unknown as ReturnType<typeof useTriggerPolicy>)
 
     vi.mocked(useMcpServers).mockReturnValue({
       data: [],
@@ -528,5 +539,79 @@ describe('PolicyEditorPage — non-404 error', () => {
     renderEditor('/agents/nonexistent-id')
 
     expect(screen.queryByRole('heading', { name: /agent not found/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('PolicyEditorPage — Run now button for manual trigger', () => {
+  it('shows Run now button when policy trigger_type is manual', () => {
+    mockHooksDefault()
+    vi.mocked(usePolicy).mockReturnValue({
+      data: {
+        id: 'manual-id',
+        name: 'manual-policy',
+        trigger_type: 'manual',
+        folder: '',
+        yaml: MANUAL_YAML,
+        created_at: '',
+        updated_at: '',
+      },
+      status: 'success',
+    } as ReturnType<typeof usePolicy>)
+
+    renderEditor('/agents/manual-id')
+
+    expect(screen.getByText('Run now')).toBeInTheDocument()
+  })
+
+  it('does not show Run now button when policy trigger_type is webhook', () => {
+    mockHooksDefault()
+    vi.mocked(usePolicy).mockReturnValue({
+      data: {
+        id: 'webhook-id',
+        name: 'webhook-policy',
+        trigger_type: 'webhook',
+        folder: '',
+        yaml: WEBHOOK_YAML,
+        created_at: '',
+        updated_at: '',
+      },
+      status: 'success',
+    } as ReturnType<typeof usePolicy>)
+
+    renderEditor('/agents/webhook-id')
+
+    expect(screen.queryByText('Run now')).not.toBeInTheDocument()
+  })
+
+  it('does not show Run now button for new agent (create mode)', () => {
+    mockHooksDefault()
+
+    renderEditor('/agents/new')
+
+    expect(screen.queryByText('Run now')).not.toBeInTheDocument()
+  })
+
+  it('opens TriggerRunModal when Run now is clicked', async () => {
+    mockHooksDefault()
+    vi.mocked(usePolicy).mockReturnValue({
+      data: {
+        id: 'manual-id',
+        name: 'manual-policy',
+        trigger_type: 'manual',
+        folder: '',
+        yaml: MANUAL_YAML,
+        created_at: '',
+        updated_at: '',
+      },
+      status: 'success',
+    } as ReturnType<typeof usePolicy>)
+
+    renderEditor('/agents/manual-id')
+
+    fireEvent.click(screen.getByText('Run now'))
+
+    await waitFor(() => {
+      expect(screen.getByText(/Run "manual-policy"/)).toBeInTheDocument()
+    })
   })
 })

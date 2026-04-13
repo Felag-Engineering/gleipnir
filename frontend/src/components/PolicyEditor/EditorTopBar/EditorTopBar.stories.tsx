@@ -66,3 +66,14 @@ export const CreateMode: Story = {
     isEditMode: false,
   },
 };
+
+export const ManualTrigger: Story = {
+  args: {
+    policyName: 'on-demand-check',
+    isDirty: false,
+    mode: 'form',
+    canSave: false,
+    isEditMode: true,
+    onRunNowClick: fn(),
+  },
+};

@@ -10,6 +10,7 @@ export interface EditorTopBarProps {
   onModeChange: (m: 'form' | 'yaml') => void;
   onSave: () => void;
   onDeleteClick: () => void;
+  onRunNowClick?: () => void;
 }
 
 export function EditorTopBar({
@@ -21,6 +22,7 @@ export function EditorTopBar({
   onModeChange,
   onSave,
   onDeleteClick,
+  onRunNowClick,
 }: EditorTopBarProps) {
   return (
     <div className={styles.topbar}>
@@ -48,6 +50,15 @@ export function EditorTopBar({
             YAML
           </button>
         </div>
+
+        {isEditMode && onRunNowClick && (
+          <button
+            className={styles.runNowButton}
+            onClick={onRunNowClick}
+          >
+            Run now
+          </button>
+        )}
 
         <button
           className={styles.saveButton}

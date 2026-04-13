@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { EditorTopBar } from '@/components/PolicyEditor/EditorTopBar/EditorTopBar'
 import { DeleteAgentModal } from '@/components/PolicyEditor/DeleteAgentModal'
+import { TriggerRunModal } from '@/components/TriggerRunModal/TriggerRunModal'
 import { YamlEditor } from '@/components/PolicyEditor/YamlEditor/YamlEditor'
 import { PolicyIdentitySection } from '@/components/PolicyEditor/FormMode/PolicyIdentitySection'
 import { TriggerSection } from '@/components/PolicyEditor/FormMode/TriggerSection'
@@ -42,6 +43,7 @@ export function PolicyEditorPage() {
   const [savedPolicyId, setSavedPolicyId] = useState<string | undefined>(id)
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [deleteError, setDeleteError] = useState<ApiError | null>(null)
+  const [triggerModalOpen, setTriggerModalOpen] = useState(false)
 
   // Initialize from fetched policy data
   useEffect(() => {
@@ -132,6 +134,10 @@ export function PolicyEditorPage() {
 
   const canSave = isDirty && (mode === 'form' || yamlValid) && !savePolicy.isPending
 
+  // Only show the Run now button for saved policies with a manual trigger type.
+  // The button reflects the server-side state, not the unsaved YAML in the editor.
+  const isManualTrigger = Boolean(id) && policy?.trigger_type === 'manual'
+
   const policyName =
     mode === 'form'
       ? (formState.identity.name || (id ? id : 'New Agent'))
@@ -183,6 +189,7 @@ export function PolicyEditorPage() {
         onModeChange={handleModeChange}
         onSave={handleSave}
         onDeleteClick={() => setDeleteModalOpen(true)}
+        onRunNowClick={isManualTrigger ? () => setTriggerModalOpen(true) : undefined}
       />
       {deleteModalOpen && id && (
         <DeleteAgentModal
@@ -192,6 +199,17 @@ export function PolicyEditorPage() {
           onConfirm={handleDelete}
           isPending={deletePolicy.isPending}
           error={deleteError}
+        />
+      )}
+      {triggerModalOpen && id && (
+        <TriggerRunModal
+          policyId={id}
+          policyName={policyName}
+          onClose={() => setTriggerModalOpen(false)}
+          onSuccess={(runId) => {
+            setTriggerModalOpen(false)
+            navigate(`/runs/${runId}`)
+          }}
         />
       )}
       <ErrorBoundary>
