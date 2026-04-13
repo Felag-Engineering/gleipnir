@@ -108,6 +108,7 @@ func TestBuildRouter(t *testing.T) {
 		path            string
 		body            string
 		wantStatus      int
+		wantNotStatus   int // assert status != this value (used when exact status depends on build state)
 		wantContentType string
 	}{
 		{
@@ -133,13 +134,14 @@ func TestBuildRouter(t *testing.T) {
 			wantStatus: http.StatusNotFound, // 404 because policy doesn't exist, not because route doesn't exist
 		},
 		{
-			// SPA catch-all: verify the route is registered.
-			// In the test binary there is no embedded dist/, so the handler returns
-			// 500 ("index.html not found") rather than 404 (which would mean no route matched).
-			name:       "SPA catch-all is registered (non-404)",
-			method:     http.MethodGet,
-			path:       "/some-frontend-route",
-			wantStatus: http.StatusInternalServerError,
+			// SPA catch-all: verify the route is registered (not a 404).
+			// With frontend/dist/ built: 200 (index.html served).
+			// Without frontend/dist/: 500 ("index.html not found").
+			// Either proves the catch-all route exists.
+			name:          "SPA catch-all is registered (non-404)",
+			method:        http.MethodGet,
+			path:          "/some-frontend-route",
+			wantNotStatus: http.StatusNotFound,
 		},
 	}
 
@@ -162,7 +164,11 @@ func TestBuildRouter(t *testing.T) {
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
 
-			if w.Code != tc.wantStatus {
+			if tc.wantNotStatus != 0 {
+				if w.Code == tc.wantNotStatus {
+					t.Errorf("status = %d, want anything but %d; body: %s", w.Code, tc.wantNotStatus, w.Body.String())
+				}
+			} else if w.Code != tc.wantStatus {
 				t.Errorf("status = %d, want %d; body: %s", w.Code, tc.wantStatus, w.Body.String())
 			}
 			if tc.wantContentType != "" {

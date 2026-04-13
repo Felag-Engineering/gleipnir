@@ -365,11 +365,11 @@ type RunLimits struct {
 
 // GrantedTool is a resolved tool entry used by the agent runner.
 type GrantedTool struct {
-	ServerName string        `json:"server_name"`
-	ToolName   string        `json:"tool_name"`
-	Approval   ApprovalMode  `json:"approval"`
-	Timeout    time.Duration `json:"timeout"` // zero means no timeout; serializes as nanoseconds
-	OnTimeout  OnTimeout     `json:"on_timeout"`
+	ServerName string         `json:"server_name"`
+	ToolName   string         `json:"tool_name"`
+	Approval   ApprovalMode   `json:"approval"`
+	Timeout    time.Duration  `json:"timeout"` // zero means no timeout; serializes as nanoseconds
+	OnTimeout  OnTimeout      `json:"on_timeout"`
 	Params     map[string]any `json:"params,omitempty"` // policy-level parameter scoping (ADR-017)
 }
 

@@ -50,23 +50,25 @@ type jsonrpcResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      int             `json:"id"`
 	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *jsonrpcError   `json:"error,omitempty"`
+	Error   *JSONRPCError   `json:"error,omitempty"`
 }
 
-type jsonrpcError struct {
+// JSONRPCError represents a JSON-RPC error response from an MCP server.
+type JSONRPCError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
 
-func (e *jsonrpcError) Error() string {
+func (e *JSONRPCError) Error() string {
 	return fmt.Sprintf("json-rpc error %d: %s", e.Code, e.Message)
 }
 
-type httpStatusError struct {
+// HTTPStatusError represents a non-OK HTTP status code from an MCP server.
+type HTTPStatusError struct {
 	StatusCode int
 }
 
-func (e *httpStatusError) Error() string {
+func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("mcp server returned status %d", e.StatusCode)
 }
 
@@ -258,7 +260,7 @@ func (c *Client) callWithSession(ctx context.Context, body []byte) (*http.Respon
 
 	resp, err := c.postRaw(ctx, body, sid)
 	if err != nil {
-		var statusErr *httpStatusError
+		var statusErr *HTTPStatusError
 		if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized {
 			// Session expired — re-initialize once and retry.
 			c.resetSession()
@@ -411,7 +413,7 @@ func (c *Client) postRaw(ctx context.Context, body []byte, sessionID string) (*h
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		// Drain and close the body so the connection can be reused.
 		drainResponseBody(resp.Body)
-		return nil, &httpStatusError{StatusCode: resp.StatusCode}
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode}
 	}
 
 	return resp, nil

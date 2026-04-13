@@ -204,9 +204,10 @@ func TestHandleToolCall(t *testing.T) {
 			},
 			toolName:     "myserver.unreliable_tool", // original MCP dot-separated name
 			input:        map[string]any{},
-			wantNonEmpty: false,
-			wantErr:      true,
-			wantSteps:    2, // tool_call step written, then error step
+			wantNonEmpty: true,  // sanitized error message returned to agent
+			wantIsError:  true,  // flagged as tool error
+			wantErr:      false, // no Go error — agent loop continues
+			wantSteps:    2,     // tool_call + tool_result (is_error=true)
 		},
 		{
 			name: "tool_not_found",
@@ -2702,5 +2703,117 @@ func TestRun_ThinkingTokensIncludedInCost(t *testing.T) {
 	}
 	if run.TokenCost != wantCost {
 		t.Errorf("run token cost = %d, want %d", run.TokenCost, wantCost)
+	}
+}
+
+// TestRun_MCPTransportError_BecomesToolResult verifies that a transport-level
+// MCP failure (HTTP 500) is returned to the agent as a tool_result with
+// is_error: true rather than aborting the run.
+func TestRun_MCPTransportError_BecomesToolResult(t *testing.T) {
+	var callCount int
+	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err == nil {
+			method, _ := req["method"].(string)
+			if method == "tools/call" {
+				callCount++
+				// Return HTTP 500 to simulate a transport failure.
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+		}
+		// Handle MCP initialization handshake normally.
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]any{
+				"protocolVersion": "2025-03-26",
+				"serverInfo":      map[string]any{"name": "test", "version": "1.0"},
+				"capabilities":    map[string]any{},
+			},
+		})
+	}))
+	defer mcpSrv.Close()
+
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	tools := []mcp.ResolvedTool{{
+		GrantedTool: model.GrantedTool{
+			ServerName: "failing-server",
+			ToolName:   "do_thing",
+			Approval:   model.ApprovalModeNone,
+		},
+		Client:      mcp.NewClient(mcpSrv.URL),
+		Description: "a tool that will fail",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+	}}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		LLMClient: testutil.NewMockLLMClient(
+			// LLM issues a tool call.
+			testutil.MakeLLMToolCallResponse("tu-1", "failing-server.do_thing", map[string]any{}, 10, 5),
+			// After receiving the is_error tool result, LLM completes.
+			testutil.MakeLLMTextResponse("The tool is unavailable.", llm.StopReasonEndTurn, 5, 5),
+		),
+		Tools:        tools,
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	runErr := ba.Run(context.Background(), "r1", "trigger")
+	if runErr != nil {
+		t.Fatalf("expected run to complete, got error: %v", runErr)
+	}
+
+	if callCount != 1 {
+		t.Errorf("MCP tools/call count = %d, want 1", callCount)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+
+	var foundErrorToolResult bool
+	var foundErrorStep bool
+	for _, step := range steps {
+		switch step.Type {
+		case string(model.StepTypeToolResult):
+			var content map[string]any
+			if err := json.Unmarshal([]byte(step.Content), &content); err != nil {
+				t.Fatalf("unmarshal tool_result content: %v", err)
+			}
+			if isErr, _ := content["is_error"].(bool); isErr {
+				output, _ := content["output"].(string)
+				if strings.Contains(output, "MCP server failing-server returned HTTP 500") {
+					foundErrorToolResult = true
+				}
+			}
+		case string(model.StepTypeError):
+			var content map[string]string
+			if err := json.Unmarshal([]byte(step.Content), &content); err == nil {
+				if content["code"] == "tool_error" {
+					foundErrorStep = true
+				}
+			}
+		}
+	}
+
+	if !foundErrorToolResult {
+		t.Error("expected tool_result step with is_error=true and sanitized HTTP 500 message")
+	}
+	if foundErrorStep {
+		t.Error("transport error should NOT produce an error step — it should be a tool_result")
 	}
 }

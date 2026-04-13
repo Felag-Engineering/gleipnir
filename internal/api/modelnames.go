@@ -39,10 +39,10 @@ var ModelDisplayNames = map[string]string{
 	"gemini-2.0-flash-lite":  "Gemini 2.0 Flash-Lite",
 
 	// OpenAI curated models (from internal/llm/openai/models.go curatedModels).
-	"gpt-5":       "GPT-5",
-	"gpt-5-mini":  "GPT-5 Mini",
-	"gpt-5-nano":  "GPT-5 Nano",
-	"gpt-4.1":     "GPT-4.1",
+	"gpt-5":        "GPT-5",
+	"gpt-5-mini":   "GPT-5 Mini",
+	"gpt-5-nano":   "GPT-5 Nano",
+	"gpt-4.1":      "GPT-4.1",
 	"gpt-4.1-mini": "GPT-4.1 Mini",
 	"gpt-4.1-nano": "GPT-4.1 Nano",
 }

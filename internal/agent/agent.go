@@ -5,8 +5,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 	"time"
 
@@ -450,12 +452,33 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 	// Dispatch to MCP server.
 	result, err := entry.tool.Client.CallTool(ctx, entry.tool.ToolName, input)
 	if err != nil {
+		// Context cancellation is fatal — operator intent, don't mask it.
 		if ctx.Err() != nil {
 			a.logAuditError(ctx, runID, "run cancelled", model.ErrorCodeCancelled)
-		} else {
-			a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeToolError)
+			return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
 		}
-		return "", false, fmt.Errorf("calling tool %s: %w", toolName, err)
+
+		// Transport/MCP errors become tool_result steps so the agent can reason
+		// about the failure instead of the run aborting.
+		sanitized := classifyMCPError(entry.tool.ServerName, err)
+		slog.ErrorContext(ctx, "MCP tool call failed",
+			"run_id", runID,
+			"tool", toolName,
+			"server", entry.tool.ServerName,
+			"error", err,
+		)
+		if writeErr := a.audit.Write(ctx, Step{
+			RunID: runID,
+			Type:  model.StepTypeToolResult,
+			Content: map[string]any{
+				"tool_name": toolName,
+				"output":    sanitized,
+				"is_error":  true,
+			},
+		}); writeErr != nil {
+			return "", false, fmt.Errorf("writing tool_result step: %w", writeErr)
+		}
+		return sanitized, true, nil
 	}
 
 	outputStr := string(result.Output)
@@ -474,4 +497,31 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 	}
 
 	return outputStr, result.IsError, nil
+}
+
+// classifyMCPError produces a sanitized, agent-facing error message from a raw
+// MCP transport error. The raw error (which may contain internal hostnames, DNS
+// resolver addresses, etc.) is kept out of the audit trail and only logged via
+// slog for operator debugging.
+func classifyMCPError(serverName string, err error) string {
+	var httpErr *mcp.HTTPStatusError
+	if errors.As(err, &httpErr) {
+		return fmt.Sprintf("MCP server %s returned HTTP %d", serverName, httpErr.StatusCode)
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return fmt.Sprintf("MCP server %s DNS resolution failed", serverName)
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return fmt.Sprintf("MCP server %s connection refused", serverName)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Sprintf("MCP server %s timed out", serverName)
+	}
+	var rpcErr *mcp.JSONRPCError
+	if errors.As(err, &rpcErr) {
+		return fmt.Sprintf("MCP server %s returned an error: %s", serverName, rpcErr.Message)
+	}
+	return fmt.Sprintf("MCP server %s is unavailable", serverName)
 }
