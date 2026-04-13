@@ -70,10 +70,11 @@ func NewHandler(q AuthQuerier, database *sql.DB) *Handler {
 var dummyHash []byte
 
 func init() {
-	h, err := bcrypt.GenerateFromPassword([]byte("gleipnir-dummy-password"), bcrypt.DefaultCost)
+	h, err := bcrypt.GenerateFromPassword([]byte("gleipnir-dummy-password"), bcryptCost)
 	if err != nil {
 		// bcrypt.GenerateFromPassword only fails if the cost is out of range.
-		// bcrypt.DefaultCost is always valid, so this is unreachable in practice.
+		// bcryptCost is a compile-time constant within bcrypt's valid range,
+		// so this is unreachable in practice.
 		panic("failed to generate dummy bcrypt hash: " + err.Error())
 	}
 	dummyHash = h

@@ -83,6 +83,20 @@ func TestHashPasswordSaltUniqueness(t *testing.T) {
 	}
 }
 
+func TestHashPasswordCost(t *testing.T) {
+	hash, err := HashPassword("any-password")
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	cost, err := bcrypt.Cost([]byte(hash))
+	if err != nil {
+		t.Fatalf("bcrypt.Cost: %v", err)
+	}
+	if cost != bcryptCost {
+		t.Errorf("bcrypt cost = %d, want %d", cost, bcryptCost)
+	}
+}
+
 func TestCheckPasswordMismatchError(t *testing.T) {
 	hash, err := HashPassword("mypassword")
 	if err != nil {

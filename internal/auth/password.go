@@ -3,9 +3,14 @@ package auth
 
 import "golang.org/x/crypto/bcrypt"
 
-// HashPassword returns a bcrypt hash of plain using the default cost.
+// bcryptCost is the work factor used when hashing passwords. Set to 12 rather
+// than bcrypt.DefaultCost (10) to provide a stronger brute-force resistance
+// margin on modern hardware.
+const bcryptCost = 12
+
+// HashPassword returns a bcrypt hash of plain.
 func HashPassword(plain string) (string, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(plain), bcryptCost)
 	if err != nil {
 		return "", err
 	}
