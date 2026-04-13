@@ -35,7 +35,7 @@ export function DeleteServerModal({ serverName, toolCount, onClose, onConfirm, i
           )}
         </p>
         <p className={styles.warning}>
-          Any policies referencing tools from this server will fail to run.
+          Any agents referencing tools from this server will fail to run.
         </p>
         {error && (
           <div className={alertStyles.alertError} role="alert">

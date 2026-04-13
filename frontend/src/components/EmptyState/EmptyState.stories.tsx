@@ -24,7 +24,7 @@ export const Default: Story = {
 export const CustomMessage: Story = {
   args: {
     headline: 'No runs yet',
-    subtext: 'Trigger a webhook or enable a cron policy to see runs here',
+    subtext: 'Trigger a webhook or enable a scheduled agent to see runs here',
     ctaLabel: 'Go to Agents',
     ctaTo: '/dashboard',
   },

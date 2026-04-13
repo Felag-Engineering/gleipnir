@@ -22,7 +22,7 @@ export const Default: Story = {
 
 export const WithError: Story = {
   args: {
-    error: new Error('Failed to load policy list from the server.'),
+    error: new Error('Failed to load agent list from the server.'),
   },
 }
 

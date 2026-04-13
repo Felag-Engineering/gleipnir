@@ -116,7 +116,7 @@ function SystemInfoSection() {
         { label: 'Uptime', value: info.uptime },
         { label: 'Database Size', value: info.db_size },
         { label: 'MCP Servers', value: String(info.mcp_servers) },
-        { label: 'Policies', value: String(info.policies) },
+        { label: 'Agents', value: String(info.policies) },
         { label: 'Users', value: String(info.users) },
       ]
     : []

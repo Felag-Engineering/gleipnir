@@ -28,7 +28,7 @@ export function OpenAICompatProviderDeleteDialog({ provider, isPending, error, o
     <Modal title="Delete provider" onClose={onClose} footer={footer}>
       <p>
         Deleting <strong>{provider.name}</strong> will not stop any runs currently in progress,
-        but new runs that reference &ldquo;{provider.name}&rdquo; will fail. Policies referencing
+        but new runs that reference &ldquo;{provider.name}&rdquo; will fail. Agents referencing
         this provider will need to be updated manually.
       </p>
       {error && (

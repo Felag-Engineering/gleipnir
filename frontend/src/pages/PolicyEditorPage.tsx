@@ -133,7 +133,7 @@ export function PolicyEditorPage() {
   if (id && policyStatus === 'pending') {
     return (
       <div className={styles.page}>
-        <div className={styles.loadingState}>Loading policy…</div>
+        <div className={styles.loadingState}>Loading agent…</div>
       </div>
     )
   }
@@ -141,7 +141,7 @@ export function PolicyEditorPage() {
   if (id && policyStatus === 'error') {
     return (
       <div className={styles.page}>
-        <div className={styles.errorState}>Failed to load policy.</div>
+        <div className={styles.errorState}>Failed to load agent.</div>
       </div>
     )
   }

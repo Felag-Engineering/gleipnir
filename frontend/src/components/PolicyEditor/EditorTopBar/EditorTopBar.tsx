@@ -75,9 +75,9 @@ export function EditorTopBar({
       {confirmOpen && (
         <div className={styles.overlay}>
           <div className={styles.modal}>
-            <div className={styles.modalTitle}>Delete policy?</div>
+            <div className={styles.modalTitle}>Delete agent?</div>
             <div className={styles.modalBody}>
-              This action cannot be undone. The policy and all associated run history will be
+              This action cannot be undone. The agent and all associated run history will be
               permanently deleted.
             </div>
             <div className={styles.modalActions}>

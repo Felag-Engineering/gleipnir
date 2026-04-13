@@ -26,10 +26,10 @@ export const Default: Story = {
 
 export const WithFooter: Story = {
   args: {
-    title: 'Delete Policy',
+    title: 'Delete Agent',
     children: (
       <p style={{ margin: 0, color: 'var(--text-second)' }}>
-        This will permanently delete the policy and all associated run history. This action cannot be undone.
+        This will permanently delete the agent and all associated run history. This action cannot be undone.
       </p>
     ),
     footer: (
