@@ -69,8 +69,8 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	// Auth routes that do not require an existing session.
 	r.Route("/api/v1/auth", func(r chi.Router) {
 		r.Get("/status", cfg.AuthHandler.Status)
-		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/setup", cfg.AuthHandler.Setup)
-		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/login", cfg.AuthHandler.Login)
+		r.With(middleware.Throttle(5), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/setup", cfg.AuthHandler.Setup)
+		r.With(middleware.Throttle(10), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/login", cfg.AuthHandler.Login)
 		r.Post("/logout", cfg.AuthHandler.Logout)
 	})
 
