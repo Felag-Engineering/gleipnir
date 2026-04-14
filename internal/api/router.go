@@ -25,23 +25,24 @@ import (
 // Every handler is pre-constructed so BuildRouter only wires routes — it does
 // not make construction decisions.
 type RouterConfig struct {
-	Store               *db.Store
-	Broadcaster         *sse.Broadcaster
-	Registry            *mcp.Registry
-	RunManager          *run.RunManager
-	Launcher            *run.RunLauncher
-	ModelLister         llm.ModelLister       // interface for listing available models
-	ProviderRegistry    *llm.ProviderRegistry // concrete registry for policy validation
-	ModelFilter         ModelFilter
-	AuthHandler         *auth.Handler
-	SettingsHandler     *auth.SettingsHandler
-	AdminHandler        *admin.Handler
-	OpenAICompatHandler *admin.OpenAICompatHandler
-	WebhookHandler      *trigger.WebhookHandler
-	SSEHandler          *sse.Handler
-	Version             string
-	StartTime           time.Time
-	DBPath              string
+	Store                *db.Store
+	Broadcaster          *sse.Broadcaster
+	Registry             *mcp.Registry
+	RunManager           *run.RunManager
+	Launcher             *run.RunLauncher
+	ModelLister          llm.ModelLister       // interface for listing available models
+	ProviderRegistry     *llm.ProviderRegistry // concrete registry for policy validation
+	ModelFilter          ModelFilter
+	AuthHandler          *auth.Handler
+	SettingsHandler      *auth.SettingsHandler
+	AdminHandler         *admin.Handler
+	OpenAICompatHandler  *admin.OpenAICompatHandler
+	WebhookHandler       *trigger.WebhookHandler
+	SSEHandler           *sse.Handler
+	PolicyWebhookHandler *PolicyWebhookHandler
+	Version              string
+	StartTime            time.Time
+	DBPath               string
 }
 
 // BuildRouter constructs the complete chi.Router for the application.
@@ -62,8 +63,10 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	// SSE endpoint is unprotected: the UI needs events before and during auth.
 	r.Get("/api/v1/events", cfg.SSEHandler.ServeHTTP)
 
-	// Webhook endpoint is unprotected: external systems authenticate via the
-	// per-policy secret defined in the policy YAML (trigger.secret).
+	// Webhook endpoint is unprotected at the session layer: the WebhookHandler
+	// dispatches authentication based on the trigger.auth mode stored in the
+	// policy YAML (hmac | bearer | none). The shared secret itself lives in the
+	// webhook_secret_encrypted DB column — not in YAML — per ADR-034.
 	r.With(middleware.Throttle(10), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).
 		Post("/api/v1/webhooks/{policyID}", cfg.WebhookHandler.Handle)
 
@@ -117,7 +120,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 		// Policies, MCP, stats, models, health, and attention — mounted under /api/v1.
 		policySvc := policy.NewService(cfg.Store, nil, cfg.ProviderRegistry, cfg.ProviderRegistry, cfg.AdminHandler)
-		r.Mount("/api/v1", newAPISubRouter(cfg.Store, policySvc, cfg.Registry, cfg.ModelLister, cfg.ModelFilter))
+		r.Mount("/api/v1", newAPISubRouter(cfg.Store, policySvc, cfg.Registry, cfg.ModelLister, cfg.ModelFilter, cfg.PolicyWebhookHandler))
 
 		// Admin: provider key management, settings, and model configuration.
 		r.Route("/api/v1/admin", func(r chi.Router) {
@@ -169,7 +172,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 // newAPISubRouter builds the sub-router that was previously returned by NewRouter.
 // It is mounted at /api/v1 inside the authenticated group in BuildRouter.
-func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter) chi.Router {
+func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter, policyWebhook *PolicyWebhookHandler) chi.Router {
 	r := chi.NewRouter()
 	r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
 
@@ -195,6 +198,15 @@ func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registr
 		r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/{id}/pause", policies.Pause)
 		r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/{id}/resume", policies.Resume)
 		r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Delete("/{id}", policies.Delete)
+		// Webhook secret management: rotate and reveal are admin|operator only.
+		// Auditors can see trigger.auth mode via GET /policies/{id} (it's in YAML)
+		// but cannot access the plaintext secret.
+		if policyWebhook != nil {
+			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).
+				Post("/{id}/webhook/rotate", policyWebhook.Rotate)
+			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).
+				Get("/{id}/webhook/secret", policyWebhook.Get)
+		}
 	})
 
 	modelsH := NewModelsHandler(modelLister, modelFilter)

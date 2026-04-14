@@ -21,6 +21,7 @@ const MinimalWebhookPolicy = `
 name: test-policy
 trigger:
   type: webhook
+  auth: none
 agent:
   model: claude-opus-4-5
   task: "test task"

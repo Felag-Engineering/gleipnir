@@ -87,8 +87,15 @@ func resolveModelConfig(topLevel *rawModel, defaultProvider, defaultModel string
 // Type-specific fields are only populated for their respective trigger types.
 func convertTrigger(r rawTrigger) model.TriggerConfig {
 	tc := model.TriggerConfig{
-		Type:          model.TriggerType(r.Type),
-		WebhookSecret: r.WebhookSecret,
+		Type: model.TriggerType(r.Type),
+	}
+
+	if tc.Type == model.TriggerTypeWebhook {
+		if r.Auth != "" {
+			tc.WebhookAuth = model.WebhookAuthMode(r.Auth)
+		} else {
+			tc.WebhookAuth = model.WebhookAuthHMAC
+		}
 	}
 
 	if tc.Type == model.TriggerTypeScheduled {
@@ -284,7 +291,8 @@ type rawModel struct {
 type rawTrigger struct {
 	Type          string     `yaml:"type"`
 	FireAt        []string   `yaml:"fire_at"`        // scheduled only, RFC3339 timestamps
-	WebhookSecret string     `yaml:"webhook_secret"` // webhook only
+	WebhookSecret string     `yaml:"webhook_secret"` // rejected at save time; never propagated to TriggerConfig
+	Auth          string     `yaml:"auth"`           // webhook only: hmac | bearer | none
 	Interval      string     `yaml:"interval"`       // poll only, Go duration string (e.g. "5m")
 	Match         string     `yaml:"match"`          // poll only, "all" or "any", default: "all"
 	Checks        []rawCheck `yaml:"checks"`         // poll only, at least one required

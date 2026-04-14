@@ -87,6 +87,24 @@ func (f FeedbackOnTimeout) Valid() bool {
 	return false
 }
 
+// WebhookAuthMode controls how an incoming webhook request is authenticated.
+type WebhookAuthMode string
+
+const (
+	WebhookAuthHMAC   WebhookAuthMode = "hmac"
+	WebhookAuthBearer WebhookAuthMode = "bearer"
+	WebhookAuthNone   WebhookAuthMode = "none"
+)
+
+func (m WebhookAuthMode) String() string { return string(m) }
+func (m WebhookAuthMode) Valid() bool {
+	switch m {
+	case WebhookAuthHMAC, WebhookAuthBearer, WebhookAuthNone:
+		return true
+	}
+	return false
+}
+
 // MatchMode controls how multiple poll checks are combined.
 // all means every check must pass (AND). any means at least one must pass (OR).
 type MatchMode string
@@ -301,13 +319,17 @@ type ParsedPolicy struct {
 
 // TriggerConfig holds trigger-type-specific fields. Only fields relevant to
 // the active TriggerType are populated.
+//
+// The webhook shared secret is intentionally absent from this struct. It is
+// loaded on demand from the encrypted DB column at verification time so it
+// never appears on a shared in-memory value (ADR-034).
 type TriggerConfig struct {
-	Type          TriggerType
-	FireAt        []time.Time   // scheduled only
-	WebhookSecret string        `json:"-"` // webhook only; excluded from JSON to prevent secret leakage
-	Interval      time.Duration // poll only
-	Match         MatchMode     // poll only, defaults to MatchAll
-	Checks        []PollCheck   // poll only, at least one required
+	Type        TriggerType
+	FireAt      []time.Time     // scheduled only
+	WebhookAuth WebhookAuthMode `json:"webhook_auth,omitempty" yaml:"auth,omitempty"` // webhook only
+	Interval    time.Duration   // poll only
+	Match       MatchMode       // poll only, defaults to MatchAll
+	Checks      []PollCheck     // poll only, at least one required
 }
 
 // FeedbackConfig controls the native human-in-the-loop feedback channel.

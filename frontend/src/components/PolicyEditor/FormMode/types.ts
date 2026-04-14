@@ -26,8 +26,11 @@ export interface IdentityFormState {
 
 export type TriggerType = 'webhook' | 'manual' | 'scheduled' | 'poll';
 
+export type WebhookAuthMode = 'hmac' | 'bearer' | 'none';
+
 export interface WebhookTriggerState {
   type: 'webhook';
+  auth: WebhookAuthMode;
 }
 
 export interface ManualTriggerState {

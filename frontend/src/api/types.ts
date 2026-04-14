@@ -159,6 +159,13 @@ export interface ApiPreferences {
   date_format?: string
 }
 
+// Matches api/policy_webhook_handler.go → map[string]string{"secret": ...}
+// Returned by POST /api/v1/policies/:id/webhook/rotate and
+// GET /api/v1/policies/:id/webhook/secret.
+export interface WebhookSecretResponse {
+  secret: string
+}
+
 // Matches auth/handler.go → sessionResponse (GET /api/v1/auth/sessions)
 export interface ApiSession {
   id: string

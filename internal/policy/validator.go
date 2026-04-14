@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/model"
+	"gopkg.in/yaml.v3"
 )
 
 // ValidationError collects all validation failures for a policy. It is
@@ -49,8 +50,8 @@ func validateTrigger(t model.TriggerConfig) []string {
 
 	switch t.Type {
 	case model.TriggerTypeWebhook:
-		if t.WebhookSecret != "" && len(t.WebhookSecret) < 32 {
-			errs = append(errs, "trigger.webhook_secret must be at least 32 bytes")
+		if t.WebhookAuth != "" && !t.WebhookAuth.Valid() {
+			errs = append(errs, fmt.Sprintf("trigger.auth %q is invalid; must be hmac, bearer, or none", t.WebhookAuth))
 		}
 
 	case model.TriggerTypeManual:
@@ -95,10 +96,6 @@ func validateTrigger(t model.TriggerConfig) []string {
 				errs = append(errs, fmt.Sprintf("trigger.checks[%d].comparator %q is invalid; must be equals, not_equals, greater_than, less_than, or contains", i, c.Comparator))
 			}
 		}
-	}
-
-	if t.WebhookSecret != "" && t.Type != model.TriggerTypeWebhook {
-		errs = append(errs, "trigger.webhook_secret is only valid for webhook triggers")
 	}
 
 	return errs
@@ -218,6 +215,27 @@ func validateAgent(a model.AgentConfig, c model.CapabilitiesConfig) []string {
 	}
 
 	return errs
+}
+
+// CheckLegacyWebhookSecret parses rawYAML and returns an error if the trigger
+// block contains a webhook_secret field. This field is no longer stored in
+// YAML (ADR-034): the secret lives in policies.webhook_secret_encrypted.
+// Called from the service save path (Create / Update) to prevent operators
+// from re-introducing the legacy field.
+func CheckLegacyWebhookSecret(rawYAML string) error {
+	var r rawPolicy
+	if err := yaml.Unmarshal([]byte(rawYAML), &r); err != nil {
+		return nil // parse errors are caught earlier; ignore here
+	}
+	if r.Trigger.WebhookSecret == "" {
+		return nil
+	}
+	if r.Trigger.Type == string(model.TriggerTypeWebhook) {
+		return fmt.Errorf(
+			"trigger.webhook_secret is no longer stored in YAML; remove the field and POST /api/v1/policies/{id}/webhook/rotate to set a secret; select auth: hmac | bearer | none to choose verification mode",
+		)
+	}
+	return fmt.Errorf("trigger.webhook_secret is only valid for webhook triggers; remove the field")
 }
 
 // isValidToolRef checks that a tool reference uses dot notation: server_name.tool_name.

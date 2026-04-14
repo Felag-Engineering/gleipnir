@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, apiFetchVoid } from '@/api/fetch'
-import type { ApiPolicyDetail, ApiPolicySaveResponse, TriggerPolicyRequest, TriggerPolicyResponse } from '@/api/types'
+import type { ApiPolicyDetail, ApiPolicySaveResponse, TriggerPolicyRequest, TriggerPolicyResponse, WebhookSecretResponse } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
 interface SavePolicyArgs {
@@ -77,6 +77,24 @@ export function useTriggerPolicy() {
         body,
         headers: { 'Content-Type': 'application/json' },
       })
+    },
+  })
+}
+
+export function useRotateWebhookSecret() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (policyId: string) =>
+      apiFetch<WebhookSecretResponse>(`/policies/${encodeURIComponent(policyId)}/webhook/rotate`, {
+        method: 'POST',
+      }),
+    onSuccess: (data, policyId) => {
+      // Immediately reveal the new secret in the cache so the UI shows it
+      // without a second round-trip.
+      queryClient.setQueryData(queryKeys.policies.webhookSecret(policyId), data.secret)
+      // The policy's updated_at changed, so invalidate the detail query.
+      queryClient.invalidateQueries({ queryKey: queryKeys.policies.detail(policyId) })
     },
   })
 }

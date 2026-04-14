@@ -2,6 +2,10 @@ package policy
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +13,32 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 )
+
+// Sentinel errors returned by webhook secret methods, exported so handler code
+// can map them to HTTP status codes without string matching.
+var (
+	// ErrNoSuchPolicy is returned when a policy ID is not found in the DB.
+	ErrNoSuchPolicy = errors.New("policy not found")
+
+	// ErrNotWebhookTrigger is returned when a secret operation is called on a
+	// policy whose trigger type is not webhook.
+	ErrNotWebhookTrigger = errors.New("policy is not a webhook trigger")
+
+	// ErrEncryptionUnavailable is returned when the encryption key is not
+	// configured, preventing secret operations.
+	ErrEncryptionUnavailable = errors.New("encryption key not configured")
+
+	// ErrNoSecret is returned by GetWebhookSecret when no secret has been rotated yet.
+	ErrNoSecret = errors.New("no webhook secret stored")
+)
+
+// SecretCipher is satisfied by an adapter that wraps admin.Encrypt and
+// admin.Decrypt. Defined as an interface so the policy package does not import
+// internal/admin directly.
+type SecretCipher interface {
+	EncryptWebhookSecret(plaintext string) (ciphertext string, err error)
+	DecryptWebhookSecret(ciphertext string) (plaintext string, err error)
+}
 
 // ToolLookup checks whether a tool reference exists in the MCP registry.
 // Implementations query the mcp_tools + mcp_servers tables.
@@ -54,6 +84,7 @@ type Service struct {
 	modelValidator   ModelValidator   // nil skips model name validation
 	optionsValidator OptionsValidator // nil skips provider options validation
 	settings         SettingsReader   // nil falls back to compiled defaults
+	encrypter        SecretCipher  // nil means encryption not configured
 }
 
 // NewService returns a policy Service. lookup may be nil if MCP registry
@@ -75,6 +106,9 @@ func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidato
 // Create parses and validates the YAML, checks tool references against the
 // MCP registry (non-blocking warnings), and stores the policy.
 func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, error) {
+	if err := CheckLegacyWebhookSecret(rawYAML); err != nil {
+		return nil, &ValidationError{Errors: []string{err.Error()}}
+	}
 	provider, modelName := s.resolveDefaults(ctx)
 	parsed, err := Parse(rawYAML, provider, modelName)
 	if err != nil {
@@ -136,6 +170,9 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 // Update re-parses and re-validates the YAML, checks tool references, and
 // replaces the stored YAML for the given policy ID.
 func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (*SaveResult, error) {
+	if err := CheckLegacyWebhookSecret(rawYAML); err != nil {
+		return nil, &ValidationError{Errors: []string{err.Error()}}
+	}
 	provider, modelName := s.resolveDefaults(ctx)
 	parsed, err := Parse(rawYAML, provider, modelName)
 	if err != nil {
@@ -220,6 +257,94 @@ func (s *Service) ClearPolicyPausedAt(ctx context.Context, policyID string) erro
 		return fmt.Errorf("clear policy paused_at: %w", err)
 	}
 	return nil
+}
+
+// generateWebhookSecret returns a cryptographically random 64-character
+// lowercase hex string (32 bytes of entropy).
+func generateWebhookSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate random bytes: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+// WithWebhookSecretEncrypter sets the encrypter used for rotate/reveal operations.
+// When nil (the default), those operations return ErrEncryptionUnavailable.
+func (s *Service) WithWebhookSecretEncrypter(e SecretCipher) {
+	s.encrypter = e
+}
+
+// RotateWebhookSecret generates a fresh 64-hex secret, encrypts it, and persists
+// it to policies.webhook_secret_encrypted. The plaintext is returned to the caller
+// for immediate display and MUST NOT be logged or stored anywhere else.
+func (s *Service) RotateWebhookSecret(ctx context.Context, policyID string) (string, error) {
+	row, err := s.store.GetPolicy(ctx, policyID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrNoSuchPolicy
+		}
+		return "", fmt.Errorf("get policy: %w", err)
+	}
+	if row.TriggerType != string(model.TriggerTypeWebhook) {
+		return "", ErrNotWebhookTrigger
+	}
+	if s.encrypter == nil {
+		return "", ErrEncryptionUnavailable
+	}
+
+	plaintext, err := generateWebhookSecret()
+	if err != nil {
+		return "", fmt.Errorf("generate webhook secret: %w", err)
+	}
+
+	ciphertext, err := s.encrypter.EncryptWebhookSecret(plaintext)
+	if err != nil {
+		return "", fmt.Errorf("encrypt webhook secret: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.store.SetPolicyWebhookSecret(ctx, db.SetPolicyWebhookSecretParams{
+		Ciphertext: &ciphertext,
+		UpdatedAt:  now,
+		ID:         policyID,
+	}); err != nil {
+		return "", fmt.Errorf("store webhook secret: %w", err)
+	}
+
+	return plaintext, nil
+}
+
+// GetWebhookSecret decrypts and returns the stored webhook secret for policyID.
+// Returns ErrNoSecret when no secret has been stored yet.
+// Returns ErrEncryptionUnavailable when the encryption key is not configured.
+func (s *Service) GetWebhookSecret(ctx context.Context, policyID string) (string, error) {
+	if s.encrypter == nil {
+		return "", ErrEncryptionUnavailable
+	}
+
+	ciphertext, err := s.store.GetPolicyWebhookSecret(ctx, policyID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrNoSuchPolicy
+		}
+		return "", fmt.Errorf("get webhook secret: %w", err)
+	}
+	if ciphertext == nil {
+		return "", ErrNoSecret
+	}
+
+	plaintext, err := decryptSecret(s.encrypter, *ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("decrypt webhook secret: %w", err)
+	}
+	return plaintext, nil
+}
+
+// decryptSecret decrypts a ciphertext using the SecretCipher. Both encrypt
+// and decrypt are declared on the same interface so no type assertion is needed.
+func decryptSecret(e SecretCipher, ciphertext string) (string, error) {
+	return e.DecryptWebhookSecret(ciphertext)
 }
 
 // toModelPolicy maps a sqlc-generated db.Policy to the domain model.Policy.

@@ -24,6 +24,7 @@ const integrationPolicy = `
 name: integration-test-policy
 trigger:
   type: webhook
+  auth: none
 capabilities:
   tools:
     - tool: stub-server.read_data
@@ -43,7 +44,7 @@ func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, llmClient l
 		return agent.New(cfg)
 	})
 	launcher := run.NewRunLauncher(store, registry, manager, factory, nil, 0)
-	wh := trigger.NewWebhookHandler(store, launcher)
+	wh := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil))
 	rh := run.NewRunsHandler(store, manager, nil)
 
 	// Reuse newRunsRouter for the runs routes so both stay in sync automatically.

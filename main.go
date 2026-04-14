@@ -23,6 +23,7 @@ import (
 	openaillm "github.com/rapp992/gleipnir/internal/llm/openai"
 	openaicompatllm "github.com/rapp992/gleipnir/internal/llm/openaicompat"
 	"github.com/rapp992/gleipnir/internal/mcp"
+	"github.com/rapp992/gleipnir/internal/policy"
 	runpkg "github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/sse"
 	"github.com/rapp992/gleipnir/internal/timeout"
@@ -193,7 +194,29 @@ func run(cfg config.Config) error {
 
 	launcher := runpkg.NewRunLauncher(store, registry, runManager, runpkg.NewAgentFactory(providerRegistry), broadcaster, cfg.DefaultFeedbackTimeout)
 
-	webhookHandler := trigger.NewWebhookHandler(store, launcher)
+	webhookSecretLoader := trigger.NewSecretLoader(store.Queries(), encryptionKey)
+	webhookHandler := trigger.NewWebhookHandler(store, launcher, webhookSecretLoader)
+
+	// Build encrypter for policy webhook secret management.
+	var webhookEncrypter *webhookSecretEncrypterAdapter
+	if encryptionKey != nil {
+		webhookEncrypter = &webhookSecretEncrypterAdapter{key: encryptionKey}
+	}
+
+	// Warn if the encryption key is absent but encrypted secrets are in the DB.
+	if encryptionKey == nil {
+		if n, err := countEncryptedWebhookSecrets(ctx, store); err == nil && n > 0 {
+			slog.Error("encryption key unset but DB contains encrypted webhook secrets; webhook verification and rotate/reveal will return 500/503",
+				"count", n)
+		}
+	}
+
+	// Wire the policy webhook handler for rotate/reveal endpoints.
+	policyService := policy.NewService(store, nil, providerRegistry, providerRegistry, adminHandler)
+	if webhookEncrypter != nil {
+		policyService.WithWebhookSecretEncrypter(webhookEncrypter)
+	}
+	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
 
 	scheduler := trigger.NewScheduler(store, launcher)
 	if err := scheduler.Start(ctx); err != nil {
@@ -209,23 +232,24 @@ func run(cfg config.Config) error {
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
 
 	r := api.BuildRouter(api.RouterConfig{
-		Store:               store,
-		Broadcaster:         broadcaster,
-		Registry:            registry,
-		RunManager:          runManager,
-		Launcher:            launcher,
-		ModelLister:         providerRegistry,
-		ProviderRegistry:    providerRegistry,
-		ModelFilter:         &modelFilterAdapter{q: store.Queries()},
-		AuthHandler:         authHandler,
-		SettingsHandler:     settingsHandler,
-		AdminHandler:        adminHandler,
-		OpenAICompatHandler: openaiCompatHandler,
-		WebhookHandler:      webhookHandler,
-		SSEHandler:          sseHandler,
-		Version:             version,
-		StartTime:           startTime,
-		DBPath:              cfg.DBPath,
+		Store:                store,
+		Broadcaster:          broadcaster,
+		Registry:             registry,
+		RunManager:           runManager,
+		Launcher:             launcher,
+		ModelLister:          providerRegistry,
+		ProviderRegistry:     providerRegistry,
+		ModelFilter:          &modelFilterAdapter{q: store.Queries()},
+		AuthHandler:          authHandler,
+		SettingsHandler:      settingsHandler,
+		AdminHandler:         adminHandler,
+		OpenAICompatHandler:  openaiCompatHandler,
+		WebhookHandler:       webhookHandler,
+		SSEHandler:           sseHandler,
+		PolicyWebhookHandler: policyWebhookHandler,
+		Version:              version,
+		StartTime:            startTime,
+		DBPath:               cfg.DBPath,
 	})
 
 	srv := &http.Server{
@@ -434,3 +458,31 @@ func (a *modelFilterAdapter) ListEnabledModels(ctx context.Context) ([]api.Enabl
 	}
 	return result, nil
 }
+
+// webhookSecretEncrypterAdapter wraps admin.Encrypt and admin.Decrypt so the
+// policy package can encrypt/decrypt webhook secrets without importing admin.
+// It satisfies both the policy.secretEncrypter interface and the decrypter
+// extension interface checked via type assertion in service.go.
+type webhookSecretEncrypterAdapter struct {
+	key []byte
+}
+
+func (a *webhookSecretEncrypterAdapter) EncryptWebhookSecret(plaintext string) (string, error) {
+	return admin.Encrypt(a.key, plaintext)
+}
+
+func (a *webhookSecretEncrypterAdapter) DecryptWebhookSecret(ciphertext string) (string, error) {
+	return admin.Decrypt(a.key, ciphertext)
+}
+
+// countEncryptedWebhookSecrets returns the number of policies with a non-NULL
+// webhook_secret_encrypted column. Used at startup to warn when the encryption
+// key is absent but encrypted secrets exist.
+func countEncryptedWebhookSecrets(ctx context.Context, store *db.Store) (int, error) {
+	var n int
+	err := store.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM policies WHERE webhook_secret_encrypted IS NOT NULL`,
+	).Scan(&n)
+	return n, err
+}
+

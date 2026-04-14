@@ -11,21 +11,20 @@ import (
 	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/api"
 	"github.com/rapp992/gleipnir/internal/auth"
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
+	"github.com/rapp992/gleipnir/internal/policy"
 	"github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/sse"
 	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
-// buildTestRouter constructs a minimal RouterConfig backed by a real in-memory
-// SQLite store. Handlers that would require real provider credentials (admin
-// key management, model listing) are wired with no-op stubs.
-func buildTestRouter(t *testing.T) http.Handler {
+// buildTestRouterWithStore is the shared core: it lets callers inject the store
+// so they can seed rows before the router is built.
+func buildTestRouterWithStore(t *testing.T, store *db.Store) http.Handler {
 	t.Helper()
-
-	store := testutil.NewTestStore(t)
 
 	broadcaster := sse.NewBroadcaster()
 	sseHandler := sse.NewHandler(broadcaster)
@@ -38,40 +37,94 @@ func buildTestRouter(t *testing.T) http.Handler {
 	providerRegistry.Register("anthropic", noopClient)
 
 	launcher := run.NewRunLauncher(store, registry, runManager, run.NewAgentFactory(providerRegistry), broadcaster, 30*time.Minute)
-	webhookHandler := trigger.NewWebhookHandler(store, launcher)
+	webhookHandler := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil))
 
 	adminQuerier := admin.NewQuerierAdapter(store.Queries())
-	// Empty encryption key is valid for testing — no real keys are stored.
 	adminHandler := admin.NewHandler(adminQuerier, nil, []string{"anthropic"}, nil, nil)
 	openaiCompatHandler := admin.NewOpenAICompatHandler(nil, nil, providerRegistry, noopConnectionTester)
 
 	authHandler := auth.NewHandler(store.Queries(), store.DB())
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
 
+	policyService := policy.NewService(store, nil, providerRegistry, providerRegistry, adminHandler)
+	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
+
 	return api.BuildRouter(api.RouterConfig{
-		Store:               store,
-		Broadcaster:         broadcaster,
-		Registry:            registry,
-		RunManager:          runManager,
-		Launcher:            launcher,
-		ModelLister:         providerRegistry,
-		ProviderRegistry:    providerRegistry,
-		ModelFilter:         nil,
-		AuthHandler:         authHandler,
-		SettingsHandler:     settingsHandler,
-		AdminHandler:        adminHandler,
-		OpenAICompatHandler: openaiCompatHandler,
-		WebhookHandler:      webhookHandler,
-		SSEHandler:          sseHandler,
-		Version:             "test",
-		StartTime:           time.Now(),
-		DBPath:              "",
+		Store:                store,
+		Broadcaster:          broadcaster,
+		Registry:             registry,
+		RunManager:           runManager,
+		Launcher:             launcher,
+		ModelLister:          providerRegistry,
+		ProviderRegistry:     providerRegistry,
+		ModelFilter:          nil,
+		AuthHandler:          authHandler,
+		SettingsHandler:      settingsHandler,
+		AdminHandler:         adminHandler,
+		OpenAICompatHandler:  openaiCompatHandler,
+		WebhookHandler:       webhookHandler,
+		SSEHandler:           sseHandler,
+		PolicyWebhookHandler: policyWebhookHandler,
+		Version:              "test",
+		StartTime:            time.Now(),
+		DBPath:               "",
 	})
+}
+
+// buildTestRouter constructs a minimal RouterConfig backed by a real in-memory
+// SQLite store. Handlers that would require real provider credentials (admin
+// key management, model listing) are wired with no-op stubs.
+func buildTestRouter(t *testing.T) http.Handler {
+	t.Helper()
+	return buildTestRouterWithStore(t, testutil.NewTestStore(t))
 }
 
 // noopConnectionTester satisfies admin.ConnectionTester without making network calls.
 func noopConnectionTester(_ context.Context, _, _ string) (bool, error) {
 	return false, nil
+}
+
+// insertUserWithSession creates a user with the given role in the store,
+// creates an active session for them, and returns the raw session token (the
+// value to put in the gleipnir_session cookie).
+func insertUserWithSession(t *testing.T, store *db.Store, username, role string) string {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+	userID := "user-" + username
+
+	_, err := store.Queries().CreateUser(ctx, db.CreateUserParams{
+		ID:           userID,
+		Username:     username,
+		PasswordHash: "x",
+		CreatedAt:    now,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser %s: %v", username, err)
+	}
+	if err := store.Queries().AssignRole(ctx, db.AssignRoleParams{
+		UserID:    userID,
+		Role:      role,
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("AssignRole %s/%s: %v", username, role, err)
+	}
+
+	rawToken := "test-token-" + username
+	expires := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	_, err = store.Queries().CreateSession(ctx, db.CreateSessionParams{
+		ID:        "sess-" + username,
+		UserID:    userID,
+		Token:     auth.HashSessionToken(rawToken),
+		CreatedAt: now,
+		ExpiresAt: expires,
+		UserAgent: "test",
+		IpAddress: "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession %s: %v", username, err)
+	}
+	return rawToken
 }
 
 // testSSERoute verifies that GET /api/v1/events returns text/event-stream headers.
@@ -134,6 +187,91 @@ func TestSecurityHeaders(t *testing.T) {
 				if got := w.Header().Get(header); got == "" {
 					t.Errorf("route %s: header %q is missing", route.path, header)
 				}
+			}
+		})
+	}
+}
+
+// TestWebhookSecretEndpointsRoleGating verifies that the two webhook secret
+// management endpoints enforce the admin|operator role requirement. These
+// endpoints are registered inside the authenticated group with RequireRole, so
+// this test exercises the middleware wiring end-to-end, not just the handlers.
+func TestWebhookSecretEndpointsRoleGating(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	router := buildTestRouterWithStore(t, store)
+
+	// Seed one user per role we want to test.
+	adminToken := insertUserWithSession(t, store, "alice", "admin")
+	operatorToken := insertUserWithSession(t, store, "bob", "operator")
+	auditorToken := insertUserWithSession(t, store, "carol", "auditor")
+	approverToken := insertUserWithSession(t, store, "dave", "approver")
+
+	type endpointCase struct {
+		name        string
+		method      string
+		path        string
+		// adminStatus / operatorStatus are what the handler returns when
+		// auth passes. The exact code depends on handler logic (e.g. encryption
+		// unavailable vs policy not found) — what matters is it's not 403/401.
+		adminStatus    int
+		operatorStatus int
+	}
+	endpoints := []endpointCase{
+		{
+			name:   "rotate",
+			method: http.MethodPost,
+			path:   "/api/v1/policies/nonexistent/webhook/rotate",
+			// RotateWebhookSecret checks policy existence before encryption key,
+			// so nonexistent policy → 404.
+			adminStatus:    http.StatusNotFound,
+			operatorStatus: http.StatusNotFound,
+		},
+		{
+			name:   "secret",
+			method: http.MethodGet,
+			path:   "/api/v1/policies/nonexistent/webhook/secret",
+			// GetWebhookSecret checks encryption key first (before DB lookup),
+			// so encryption key unset → 503.
+			adminStatus:    http.StatusServiceUnavailable,
+			operatorStatus: http.StatusServiceUnavailable,
+		},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.name+"/admin allowed", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.AddCookie(&http.Cookie{Name: "gleipnir_session", Value: adminToken})
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != ep.adminStatus {
+				t.Errorf("admin: status = %d, want %d (not a 403/401); body: %s", w.Code, ep.adminStatus, w.Body.String())
+			}
+		})
+		t.Run(ep.name+"/operator allowed", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.AddCookie(&http.Cookie{Name: "gleipnir_session", Value: operatorToken})
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != ep.operatorStatus {
+				t.Errorf("operator: status = %d, want %d (not a 403/401); body: %s", w.Code, ep.operatorStatus, w.Body.String())
+			}
+		})
+		t.Run(ep.name+"/auditor forbidden", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.AddCookie(&http.Cookie{Name: "gleipnir_session", Value: auditorToken})
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("auditor: status = %d, want 403; body: %s", w.Code, w.Body.String())
+			}
+		})
+		t.Run(ep.name+"/approver forbidden", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, nil)
+			req.AddCookie(&http.Cookie{Name: "gleipnir_session", Value: approverToken})
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("approver: status = %d, want 403; body: %s", w.Code, w.Body.String())
 			}
 		})
 	}

@@ -2,6 +2,7 @@ export const queryKeys = {
   policies: {
     all: ['policies'] as const,
     detail: (id: string) => ['policies', id] as const,
+    webhookSecret: (id: string) => ['policies', id, 'webhook-secret'] as const,
   },
   runs: {
     all: ['runs'] as const,

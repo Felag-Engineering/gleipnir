@@ -358,6 +358,93 @@ func TestValidate_FeedbackDisabledIsValid(t *testing.T) {
 	}
 }
 
+// TestValidate_WebhookAuth covers the trigger.auth validation rules.
+func TestValidate_WebhookAuth(t *testing.T) {
+	t.Run("valid hmac is accepted", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.WebhookAuth = model.WebhookAuthHMAC
+		if err := Validate(p); err != nil {
+			t.Errorf("expected valid, got: %v", err)
+		}
+	})
+
+	t.Run("valid bearer is accepted", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.WebhookAuth = model.WebhookAuthBearer
+		if err := Validate(p); err != nil {
+			t.Errorf("expected valid, got: %v", err)
+		}
+	})
+
+	t.Run("valid none is accepted", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.WebhookAuth = model.WebhookAuthNone
+		if err := Validate(p); err != nil {
+			t.Errorf("expected valid, got: %v", err)
+		}
+	})
+
+	t.Run("invalid auth mode is rejected", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.WebhookAuth = "invalidmode"
+		assertValidationContains(t, p, "trigger.auth")
+		assertValidationContains(t, p, "invalidmode")
+	})
+}
+
+// TestCheckLegacyWebhookSecret covers the save-time rejection of the legacy field.
+func TestCheckLegacyWebhookSecret(t *testing.T) {
+	t.Run("webhook trigger with webhook_secret returns error mentioning rotate", func(t *testing.T) {
+		yaml := `
+name: test
+trigger:
+  type: webhook
+  webhook_secret: mysecret
+agent:
+  task: do it
+`
+		err := CheckLegacyWebhookSecret(yaml)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "rotate") {
+			t.Errorf("expected error to mention rotate endpoint, got: %v", err)
+		}
+	})
+
+	t.Run("non-webhook trigger with webhook_secret returns error", func(t *testing.T) {
+		yaml := `
+name: test
+trigger:
+  type: manual
+  webhook_secret: mysecret
+agent:
+  task: do it
+`
+		err := CheckLegacyWebhookSecret(yaml)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "webhook triggers") {
+			t.Errorf("expected error to mention webhook triggers, got: %v", err)
+		}
+	})
+
+	t.Run("YAML without webhook_secret is accepted", func(t *testing.T) {
+		yaml := `
+name: test
+trigger:
+  type: webhook
+  auth: hmac
+agent:
+  task: do it
+`
+		if err := CheckLegacyWebhookSecret(yaml); err != nil {
+			t.Errorf("expected nil, got: %v", err)
+		}
+	})
+}
+
 func assertValidationContains(t *testing.T, p *model.ParsedPolicy, substr string) {
 	t.Helper()
 	err := Validate(p)

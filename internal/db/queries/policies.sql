@@ -13,6 +13,9 @@ SELECT * FROM policies WHERE name = :name;
 SELECT * FROM policies ORDER BY created_at DESC;
 
 -- name: UpdatePolicy :one
+-- Note: webhook_secret_encrypted is intentionally excluded from this UPDATE so
+-- that policy edits (name, yaml, trigger_type) do not clear the stored secret.
+-- To manage the secret, use SetPolicyWebhookSecret / ClearPolicyWebhookSecret.
 UPDATE policies
 SET name = :name, trigger_type = :trigger_type, yaml = :yaml, updated_at = :updated_at
 WHERE id = :id
@@ -35,6 +38,15 @@ SELECT COUNT(*) FROM policies;
 
 -- name: GetPollActivePolicies :many
 SELECT * FROM policies WHERE trigger_type = 'poll' AND paused_at IS NULL;
+
+-- name: SetPolicyWebhookSecret :exec
+UPDATE policies SET webhook_secret_encrypted = :ciphertext, updated_at = :updated_at WHERE id = :id;
+
+-- name: GetPolicyWebhookSecret :one
+SELECT webhook_secret_encrypted FROM policies WHERE id = :id;
+
+-- name: ClearPolicyWebhookSecret :exec
+UPDATE policies SET webhook_secret_encrypted = NULL, updated_at = :updated_at WHERE id = :id;
 
 -- name: ListPoliciesWithLatestRun :many
 SELECT

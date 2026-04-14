@@ -108,8 +108,9 @@ This alias is configured in `tsconfig.json` (`paths`) and `vite.config.ts` (`res
 ### Query key families
 
 ```typescript
-queryKeys.policies.all          // ['policies']
-queryKeys.policies.detail(id)   // ['policies', id]
+queryKeys.policies.all                  // ['policies']
+queryKeys.policies.detail(id)           // ['policies', id]
+queryKeys.policies.webhookSecret(id)    // ['policies', id, 'webhook-secret']
 queryKeys.runs.all              // ['runs']
 queryKeys.runs.detail(id)       // ['runs', id]
 queryKeys.runs.steps(id)        // ['runs', id, 'steps']
@@ -161,6 +162,8 @@ Policies:
 GET    /api/v1/policies                POST   /api/v1/policies
 GET    /api/v1/policies/:id            PUT    /api/v1/policies/:id
 DELETE /api/v1/policies/:id
+GET    /api/v1/policies/:id/webhook/secret   (admin|operator)
+POST   /api/v1/policies/:id/webhook/rotate   (admin|operator)
 
 Runs:
 GET    /api/v1/runs                    GET    /api/v1/runs/:id

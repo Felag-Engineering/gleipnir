@@ -23,7 +23,7 @@ const DEFAULT_POLL: PollTriggerState = {
 
 export function TriggerSection({ value, onChange, policyId }: TriggerSectionProps) {
   function handleTypeSelect(type: TriggerFormState['type']) {
-    if (type === 'webhook') onChange({ type: 'webhook' });
+    if (type === 'webhook') onChange({ type: 'webhook', auth: 'hmac' });
     else if (type === 'manual') onChange(DEFAULT_MANUAL);
     else if (type === 'poll') onChange(DEFAULT_POLL);
     else onChange(DEFAULT_SCHEDULED);
@@ -45,7 +45,13 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
       </div>
 
       <div className={styles.config}>
-        {value.type === 'webhook' && <WebhookConfig policyId={policyId} />}
+        {value.type === 'webhook' && (
+          <WebhookConfig
+            policyId={policyId}
+            value={value}
+            onChange={(next) => onChange(next)}
+          />
+        )}
         {value.type === 'scheduled' && <ScheduledConfig value={value} onChange={onChange} />}
         {value.type === 'poll' && <PollConfig value={value} onChange={onChange} />}
         {value.type === 'manual' && null}

@@ -18,6 +18,20 @@ func (q *Queries) ClearPolicyPausedAt(ctx context.Context, id string) error {
 	return err
 }
 
+const clearPolicyWebhookSecret = `-- name: ClearPolicyWebhookSecret :exec
+UPDATE policies SET webhook_secret_encrypted = NULL, updated_at = ?1 WHERE id = ?2
+`
+
+type ClearPolicyWebhookSecretParams struct {
+	UpdatedAt string `json:"updated_at"`
+	ID        string `json:"id"`
+}
+
+func (q *Queries) ClearPolicyWebhookSecret(ctx context.Context, arg ClearPolicyWebhookSecretParams) error {
+	_, err := q.db.ExecContext(ctx, clearPolicyWebhookSecret, arg.UpdatedAt, arg.ID)
+	return err
+}
+
 const countPolicies = `-- name: CountPolicies :one
 SELECT COUNT(*) FROM policies
 `
@@ -32,7 +46,7 @@ func (q *Queries) CountPolicies(ctx context.Context) (int64, error) {
 const createPolicy = `-- name: CreatePolicy :one
 INSERT INTO policies (id, name, trigger_type, yaml, created_at, updated_at)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-RETURNING id, name, trigger_type, yaml, created_at, updated_at, paused_at
+RETURNING id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at
 `
 
 type CreatePolicyParams struct {
@@ -59,6 +73,7 @@ func (q *Queries) CreatePolicy(ctx context.Context, arg CreatePolicyParams) (Pol
 		&i.Name,
 		&i.TriggerType,
 		&i.Yaml,
+		&i.WebhookSecretEncrypted,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PausedAt,
@@ -76,7 +91,7 @@ func (q *Queries) DeletePolicy(ctx context.Context, id string) error {
 }
 
 const getPolicy = `-- name: GetPolicy :one
-SELECT id, name, trigger_type, yaml, created_at, updated_at, paused_at FROM policies WHERE id = ?1
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE id = ?1
 `
 
 func (q *Queries) GetPolicy(ctx context.Context, id string) (Policy, error) {
@@ -87,6 +102,7 @@ func (q *Queries) GetPolicy(ctx context.Context, id string) (Policy, error) {
 		&i.Name,
 		&i.TriggerType,
 		&i.Yaml,
+		&i.WebhookSecretEncrypted,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PausedAt,
@@ -95,7 +111,7 @@ func (q *Queries) GetPolicy(ctx context.Context, id string) (Policy, error) {
 }
 
 const getPolicyByName = `-- name: GetPolicyByName :one
-SELECT id, name, trigger_type, yaml, created_at, updated_at, paused_at FROM policies WHERE name = ?1
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE name = ?1
 `
 
 func (q *Queries) GetPolicyByName(ctx context.Context, name string) (Policy, error) {
@@ -106,6 +122,7 @@ func (q *Queries) GetPolicyByName(ctx context.Context, name string) (Policy, err
 		&i.Name,
 		&i.TriggerType,
 		&i.Yaml,
+		&i.WebhookSecretEncrypted,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PausedAt,
@@ -113,8 +130,19 @@ func (q *Queries) GetPolicyByName(ctx context.Context, name string) (Policy, err
 	return i, err
 }
 
+const getPolicyWebhookSecret = `-- name: GetPolicyWebhookSecret :one
+SELECT webhook_secret_encrypted FROM policies WHERE id = ?1
+`
+
+func (q *Queries) GetPolicyWebhookSecret(ctx context.Context, id string) (*string, error) {
+	row := q.db.QueryRowContext(ctx, getPolicyWebhookSecret, id)
+	var webhook_secret_encrypted *string
+	err := row.Scan(&webhook_secret_encrypted)
+	return webhook_secret_encrypted, err
+}
+
 const getPollActivePolicies = `-- name: GetPollActivePolicies :many
-SELECT id, name, trigger_type, yaml, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'poll' AND paused_at IS NULL
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'poll' AND paused_at IS NULL
 `
 
 func (q *Queries) GetPollActivePolicies(ctx context.Context) ([]Policy, error) {
@@ -131,6 +159,7 @@ func (q *Queries) GetPollActivePolicies(ctx context.Context) ([]Policy, error) {
 			&i.Name,
 			&i.TriggerType,
 			&i.Yaml,
+			&i.WebhookSecretEncrypted,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PausedAt,
@@ -149,7 +178,7 @@ func (q *Queries) GetPollActivePolicies(ctx context.Context) ([]Policy, error) {
 }
 
 const getScheduledActivePolicies = `-- name: GetScheduledActivePolicies :many
-SELECT id, name, trigger_type, yaml, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'scheduled' AND paused_at IS NULL
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'scheduled' AND paused_at IS NULL
 `
 
 func (q *Queries) GetScheduledActivePolicies(ctx context.Context) ([]Policy, error) {
@@ -166,6 +195,7 @@ func (q *Queries) GetScheduledActivePolicies(ctx context.Context) ([]Policy, err
 			&i.Name,
 			&i.TriggerType,
 			&i.Yaml,
+			&i.WebhookSecretEncrypted,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PausedAt,
@@ -184,7 +214,7 @@ func (q *Queries) GetScheduledActivePolicies(ctx context.Context) ([]Policy, err
 }
 
 const listPolicies = `-- name: ListPolicies :many
-SELECT id, name, trigger_type, yaml, created_at, updated_at, paused_at FROM policies ORDER BY created_at DESC
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies ORDER BY created_at DESC
 `
 
 func (q *Queries) ListPolicies(ctx context.Context) ([]Policy, error) {
@@ -201,6 +231,7 @@ func (q *Queries) ListPolicies(ctx context.Context) ([]Policy, error) {
 			&i.Name,
 			&i.TriggerType,
 			&i.Yaml,
+			&i.WebhookSecretEncrypted,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PausedAt,
@@ -311,11 +342,26 @@ func (q *Queries) SetPolicyPausedAt(ctx context.Context, arg SetPolicyPausedAtPa
 	return err
 }
 
+const setPolicyWebhookSecret = `-- name: SetPolicyWebhookSecret :exec
+UPDATE policies SET webhook_secret_encrypted = ?1, updated_at = ?2 WHERE id = ?3
+`
+
+type SetPolicyWebhookSecretParams struct {
+	Ciphertext *string `json:"ciphertext"`
+	UpdatedAt  string  `json:"updated_at"`
+	ID         string  `json:"id"`
+}
+
+func (q *Queries) SetPolicyWebhookSecret(ctx context.Context, arg SetPolicyWebhookSecretParams) error {
+	_, err := q.db.ExecContext(ctx, setPolicyWebhookSecret, arg.Ciphertext, arg.UpdatedAt, arg.ID)
+	return err
+}
+
 const updatePolicy = `-- name: UpdatePolicy :one
 UPDATE policies
 SET name = ?1, trigger_type = ?2, yaml = ?3, updated_at = ?4
 WHERE id = ?5
-RETURNING id, name, trigger_type, yaml, created_at, updated_at, paused_at
+RETURNING id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at
 `
 
 type UpdatePolicyParams struct {
@@ -326,6 +372,9 @@ type UpdatePolicyParams struct {
 	ID          string `json:"id"`
 }
 
+// Note: webhook_secret_encrypted is intentionally excluded from this UPDATE so
+// that policy edits (name, yaml, trigger_type) do not clear the stored secret.
+// To manage the secret, use SetPolicyWebhookSecret / ClearPolicyWebhookSecret.
 func (q *Queries) UpdatePolicy(ctx context.Context, arg UpdatePolicyParams) (Policy, error) {
 	row := q.db.QueryRowContext(ctx, updatePolicy,
 		arg.Name,
@@ -340,6 +389,7 @@ func (q *Queries) UpdatePolicy(ctx context.Context, arg UpdatePolicyParams) (Pol
 		&i.Name,
 		&i.TriggerType,
 		&i.Yaml,
+		&i.WebhookSecretEncrypted,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PausedAt,

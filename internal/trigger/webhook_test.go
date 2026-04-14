@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,6 +27,7 @@ const parallelPolicy = `
 name: test-parallel-policy
 trigger:
   type: webhook
+  auth: none
 agent:
   model: claude-opus-4-5
   task: "test task"
@@ -36,6 +38,7 @@ const queuePolicy = `
 name: test-queue-policy
 trigger:
   type: webhook
+  auth: none
 agent:
   model: claude-opus-4-5
   task: "test task"
@@ -46,6 +49,7 @@ const replacePolicy = `
 name: test-replace-policy
 trigger:
   type: webhook
+  auth: none
 agent:
   model: claude-opus-4-5
   task: "test task"
@@ -56,6 +60,7 @@ const queuePolicyDepth1 = `
 name: test-queue-depth1-policy
 trigger:
   type: webhook
+  auth: none
 agent:
   model: claude-opus-4-5
   task: "test task"
@@ -63,15 +68,57 @@ agent:
   queue_depth: 1
 `
 
-const webhookPolicyWithSecret = `
-name: test-secret-policy
+// webhookPolicyHMAC has auth: hmac — secrets are loaded from the DB, not YAML.
+const webhookPolicyHMAC = `
+name: test-hmac-policy
 trigger:
   type: webhook
-  webhook_secret: "test-secret-key-must-be-at-least-32-bytes-long"
+  auth: hmac
 agent:
   model: claude-opus-4-5
   task: "test task"
 `
+
+// webhookPolicyBearer has auth: bearer.
+const webhookPolicyBearer = `
+name: test-bearer-policy
+trigger:
+  type: webhook
+  auth: bearer
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+`
+
+// webhookPolicyNone has auth: none — no secret needed.
+const webhookPolicyNone = `
+name: test-none-policy
+trigger:
+  type: webhook
+  auth: none
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+`
+
+const testSecret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+// fakeSecretLoader is a test double that returns a fixed secret for a given policy.
+type fakeSecretLoader struct {
+	secrets map[string]string // policyID → plaintext secret
+	err     error             // if non-nil, always returned
+}
+
+func (f *fakeSecretLoader) LoadWebhookSecret(_ context.Context, policyID string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	s, ok := f.secrets[policyID]
+	if !ok {
+		return "", trigger.ErrNoSecret
+	}
+	return s, nil
+}
 
 // callHandler builds a chi router, registers the handler, and fires a request.
 // Returns the recorded response.
@@ -106,10 +153,22 @@ func computeTestSignature(secret, body string) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
+// newHandler builds a WebhookHandler with the given secret loader.
+func newHandler(t *testing.T, store *db.Store, loader trigger.SecretLoaderInterface) *trigger.WebhookHandler {
+	t.Helper()
+	registry := mcp.NewRegistry(store.Queries())
+	noopClient := testutil.NewNoopLLMClient()
+	providerReg := llm.NewProviderRegistry()
+	providerReg.Register("anthropic", noopClient)
+	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
+	return trigger.NewWebhookHandler(store, launcher, loader)
+}
+
 func TestWebhookHandler(t *testing.T) {
 	cases := []struct {
 		name       string
 		setup      func(t *testing.T, store *db.Store)
+		loader     func(store *db.Store) trigger.SecretLoaderInterface
 		policyID   string
 		body       string
 		headers    map[string]string
@@ -218,21 +277,38 @@ func TestWebhookHandler(t *testing.T) {
 			body:       `{"event": "test"}`,
 			wantStatus: http.StatusAccepted,
 		},
+		// auth: none
 		{
-			name: "401 missing signature when secret configured",
+			name: "auth none: 202 without any credential",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-secret-missing-sig", webhookPolicyWithSecret)
+				insertTestPolicy(t, store, "p-none", webhookPolicyNone)
 			},
-			policyID:   "p-secret-missing-sig",
+			policyID:   "p-none",
+			body:       `{"event": "test"}`,
+			wantStatus: http.StatusAccepted,
+		},
+		// auth: hmac
+		{
+			name: "hmac: 401 missing signature",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-hmac-missing", webhookPolicyHMAC)
+			},
+			loader: func(store *db.Store) trigger.SecretLoaderInterface {
+				return &fakeSecretLoader{secrets: map[string]string{"p-hmac-missing": testSecret}}
+			},
+			policyID:   "p-hmac-missing",
 			body:       `{"event": "test"}`,
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
-			name: "403 invalid signature when secret configured",
+			name: "hmac: 403 invalid signature",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-secret-bad-sig", webhookPolicyWithSecret)
+				insertTestPolicy(t, store, "p-hmac-bad", webhookPolicyHMAC)
 			},
-			policyID: "p-secret-bad-sig",
+			loader: func(store *db.Store) trigger.SecretLoaderInterface {
+				return &fakeSecretLoader{secrets: map[string]string{"p-hmac-bad": testSecret}}
+			},
+			policyID: "p-hmac-bad",
 			body:     `{"event": "test"}`,
 			headers: map[string]string{
 				"X-Gleipnir-Signature": "sha256=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
@@ -240,20 +316,97 @@ func TestWebhookHandler(t *testing.T) {
 			wantStatus: http.StatusForbidden,
 		},
 		{
-			name: "202 valid signature when secret configured",
+			name: "hmac: 202 valid signature",
 			setup: func(t *testing.T, store *db.Store) {
-				insertTestPolicy(t, store, "p-secret-valid-sig", webhookPolicyWithSecret)
+				insertTestPolicy(t, store, "p-hmac-ok", webhookPolicyHMAC)
 			},
-			policyID: "p-secret-valid-sig",
+			loader: func(store *db.Store) trigger.SecretLoaderInterface {
+				return &fakeSecretLoader{secrets: map[string]string{"p-hmac-ok": testSecret}}
+			},
+			policyID: "p-hmac-ok",
 			body:     `{"event": "test"}`,
 			headers: map[string]string{
-				"X-Gleipnir-Signature": computeTestSignature(
-					"test-secret-key-must-be-at-least-32-bytes-long",
-					`{"event": "test"}`,
-				),
+				"X-Gleipnir-Signature": computeTestSignature(testSecret, `{"event": "test"}`),
 			},
 			wantStatus: http.StatusAccepted,
 		},
+		{
+			name: "hmac: 500 no secret stored",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-hmac-nosecret", webhookPolicyHMAC)
+			},
+			loader: func(store *db.Store) trigger.SecretLoaderInterface {
+				return &fakeSecretLoader{secrets: map[string]string{}} // empty — ErrNoSecret
+			},
+			policyID:   "p-hmac-nosecret",
+			body:       `{"event": "test"}`,
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "hmac: 500 encryption key missing",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-hmac-nokey", webhookPolicyHMAC)
+			},
+			loader: func(store *db.Store) trigger.SecretLoaderInterface {
+				return &fakeSecretLoader{err: trigger.ErrEncryptionKeyMissing}
+			},
+			policyID:   "p-hmac-nokey",
+			body:       `{"event": "test"}`,
+			wantStatus: http.StatusInternalServerError,
+		},
+		// auth: bearer
+		{
+			name: "bearer: 202 valid token",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-bearer-ok", webhookPolicyBearer)
+			},
+			loader: func(store *db.Store) trigger.SecretLoaderInterface {
+				return &fakeSecretLoader{secrets: map[string]string{"p-bearer-ok": testSecret}}
+			},
+			policyID:   "p-bearer-ok",
+			body:       `{"event": "test"}`,
+			headers:    map[string]string{"Authorization": "Bearer " + testSecret},
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "bearer: 401 missing header",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-bearer-missing", webhookPolicyBearer)
+			},
+			loader: func(store *db.Store) trigger.SecretLoaderInterface {
+				return &fakeSecretLoader{secrets: map[string]string{"p-bearer-missing": testSecret}}
+			},
+			policyID:   "p-bearer-missing",
+			body:       `{"event": "test"}`,
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "bearer: 401 malformed prefix",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-bearer-malformed", webhookPolicyBearer)
+			},
+			loader: func(store *db.Store) trigger.SecretLoaderInterface {
+				return &fakeSecretLoader{secrets: map[string]string{"p-bearer-malformed": testSecret}}
+			},
+			policyID:   "p-bearer-malformed",
+			body:       `{"event": "test"}`,
+			headers:    map[string]string{"Authorization": "Token " + testSecret},
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "bearer: 403 wrong token",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-bearer-wrong", webhookPolicyBearer)
+			},
+			loader: func(store *db.Store) trigger.SecretLoaderInterface {
+				return &fakeSecretLoader{secrets: map[string]string{"p-bearer-wrong": testSecret}}
+			},
+			policyID:   "p-bearer-wrong",
+			body:       `{"event": "test"}`,
+			headers:    map[string]string{"Authorization": "Bearer wrongtoken"},
+			wantStatus: http.StatusForbidden,
+		},
+		// auth: none — explicit opt-out, no credential check
 		{
 			name: "202 no secret configured (open webhook)",
 			setup: func(t *testing.T, store *db.Store) {
@@ -288,19 +441,78 @@ func TestWebhookHandler(t *testing.T) {
 				tc.setup(t, store)
 			}
 
-			registry := mcp.NewRegistry(store.Queries())
-			noopClient := testutil.NewNoopLLMClient()
-			providerReg := llm.NewProviderRegistry()
-			providerReg.Register("anthropic", noopClient)
-			launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
-			h := trigger.NewWebhookHandler(store, launcher)
+			var loader trigger.SecretLoaderInterface
+			if tc.loader != nil {
+				loader = tc.loader(store)
+			} else {
+				loader = trigger.NewSecretLoader(store.Queries(), nil)
+			}
 
+			h := newHandler(t, store, loader)
 			w := callHandlerWithHeaders(t, h, tc.policyID, tc.body, tc.headers)
 			if w.Code != tc.wantStatus {
 				t.Errorf("status = %d, want %d; body: %s", w.Code, tc.wantStatus, w.Body.String())
 			}
 		})
 	}
+}
+
+// TestWebhookHandler_RotateInvalidation verifies that after a secret is rotated,
+// a request signed with the old secret is rejected.
+func TestWebhookHandler_RotateInvalidation(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	insertTestPolicy(t, store, "p-rotate", webhookPolicyHMAC)
+	body := `{"event": "test"}`
+
+	secretA := testSecret
+	secretB := strings.Repeat("b", 64)
+
+	loaderA := &fakeSecretLoader{secrets: map[string]string{"p-rotate": secretA}}
+	loaderB := &fakeSecretLoader{secrets: map[string]string{"p-rotate": secretB}}
+
+	// Sign with secret A; loader has A → 202.
+	hA := newHandler(t, store, loaderA)
+	wA := callHandlerWithHeaders(t, hA, "p-rotate", body, map[string]string{
+		"X-Gleipnir-Signature": computeTestSignature(secretA, body),
+	})
+	if wA.Code != http.StatusAccepted {
+		t.Fatalf("before rotate: got %d, want 202", wA.Code)
+	}
+
+	// After rotate (loader now returns B), resend original request signed with A → 403.
+	hB := newHandler(t, store, loaderB)
+	wB := callHandlerWithHeaders(t, hB, "p-rotate", body, map[string]string{
+		"X-Gleipnir-Signature": computeTestSignature(secretA, body),
+	})
+	if wB.Code != http.StatusForbidden {
+		t.Errorf("after rotate: got %d, want 403", wB.Code)
+	}
+}
+
+// TestWebhookHandler_HMACMissingSignatureHeader checks the exact error code returned
+// when the signature header is absent vs. present but wrong.
+func TestWebhookHandler_HMACSignatureErrors(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	insertTestPolicy(t, store, "p-sig-errs", webhookPolicyHMAC)
+	loader := &fakeSecretLoader{secrets: map[string]string{"p-sig-errs": testSecret}}
+	h := newHandler(t, store, loader)
+
+	t.Run("missing header → 401", func(t *testing.T) {
+		w := callHandler(t, h, "p-sig-errs", `{"x":1}`)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("got %d, want 401", w.Code)
+		}
+	})
+
+	t.Run("malformed prefix → 403", func(t *testing.T) {
+		// The handler maps any non-missing verify error to 403.
+		w := callHandlerWithHeaders(t, h, "p-sig-errs", `{"x":1}`, map[string]string{
+			"X-Gleipnir-Signature": "md5=abc123",
+		})
+		if w.Code != http.StatusForbidden {
+			t.Errorf("got %d, want 403", w.Code)
+		}
+	})
 }
 
 func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
@@ -312,7 +524,7 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
 	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
-	h := trigger.NewWebhookHandler(store, launcher)
+	h := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil))
 
 	w := callHandler(t, h, "p-run-created", `{"event": "test"}`)
 	if w.Code != http.StatusAccepted {
@@ -342,5 +554,15 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 	}
 	if run.TriggerType != "webhook" {
 		t.Errorf("run.TriggerType = %q, want %q", run.TriggerType, "webhook")
+	}
+}
+
+// TestErrSentinels verifies that the sentinel errors are exported correctly.
+func TestErrSentinels(t *testing.T) {
+	if !errors.Is(trigger.ErrNoSecret, trigger.ErrNoSecret) {
+		t.Error("ErrNoSecret is not itself")
+	}
+	if !errors.Is(trigger.ErrEncryptionKeyMissing, trigger.ErrEncryptionKeyMissing) {
+		t.Error("ErrEncryptionKeyMissing is not itself")
 	}
 }

@@ -65,6 +65,9 @@ CREATE TABLE policies (
     name            TEXT    NOT NULL UNIQUE,
     trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll')),
     yaml            TEXT    NOT NULL,
+    -- Encrypted webhook shared secret (AES-256-GCM, key from GLEIPNIR_ENCRYPTION_KEY).
+    -- Stored outside yaml because yaml is returned wholesale via GET /api/v1/policies/:id — see ADR-034.
+    webhook_secret_encrypted TEXT,
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     updated_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     paused_at       TEXT                  -- nullable, ISO 8601 UTC; set when a scheduled policy exhausts all fire times

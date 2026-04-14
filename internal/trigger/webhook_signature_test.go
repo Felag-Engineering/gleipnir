@@ -70,6 +70,13 @@ func TestValidateSignature(t *testing.T) {
 			signatureHeader: computeSignature(secret, []byte{}),
 			wantErr:         nil,
 		},
+		{
+			name:            "wrong hex length (shorter than expected)",
+			secret:          secret,
+			body:            body,
+			signatureHeader: "sha256=deadbeef",
+			wantErr:         errInvalidSignature,
+		},
 	}
 
 	for _, tc := range cases {

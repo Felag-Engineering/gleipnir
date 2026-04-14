@@ -963,3 +963,84 @@ agent:
 		t.Errorf("preamble = %q, want %q", p.Agent.Preamble, "Custom preamble text")
 	}
 }
+
+// TestParse_WebhookAuth covers trigger.auth parsing for webhook policies.
+func TestParse_WebhookAuth(t *testing.T) {
+	cases := []struct {
+		name     string
+		yaml     string
+		wantAuth model.WebhookAuthMode
+	}{
+		{
+			name: "absent auth defaults to hmac",
+			yaml: `
+name: open
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+`,
+			wantAuth: model.WebhookAuthHMAC,
+		},
+		{
+			name: "explicit auth: bearer is preserved",
+			yaml: `
+name: bearer
+trigger:
+  type: webhook
+  auth: bearer
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+`,
+			wantAuth: model.WebhookAuthBearer,
+		},
+		{
+			name: "explicit auth: hmac is preserved",
+			yaml: `
+name: hmac
+trigger:
+  type: webhook
+  auth: hmac
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+`,
+			wantAuth: model.WebhookAuthHMAC,
+		},
+		{
+			name: "explicit auth: none is preserved",
+			yaml: `
+name: none
+trigger:
+  type: webhook
+  auth: none
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+`,
+			wantAuth: model.WebhookAuthNone,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := Parse(tc.yaml, model.DefaultProvider, model.DefaultModelName)
+			if err != nil {
+				t.Fatalf("Parse() error: %v", err)
+			}
+			if p.Trigger.WebhookAuth != tc.wantAuth {
+				t.Errorf("WebhookAuth = %q, want %q", p.Trigger.WebhookAuth, tc.wantAuth)
+			}
+		})
+	}
+}

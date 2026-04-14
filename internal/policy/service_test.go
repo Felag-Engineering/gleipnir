@@ -510,3 +510,263 @@ func TestToModelPolicy_NilPausedAt(t *testing.T) {
 		t.Errorf("PausedAt = %v, want nil", p.PausedAt)
 	}
 }
+
+// --- Webhook secret tests ---
+
+// fakeEncrypter implements secretEncrypter + decrypter interface for tests.
+// It XORs bytes with a fixed key byte so Encrypt/Decrypt are inverses without
+// importing a real crypto package.
+type fakeEncrypter struct {
+	key byte
+}
+
+func (f *fakeEncrypter) EncryptWebhookSecret(plaintext string) (string, error) {
+	b := []byte(plaintext)
+	for i := range b {
+		b[i] ^= f.key
+	}
+	return fmt.Sprintf("enc:%x", b), nil
+}
+
+func (f *fakeEncrypter) DecryptWebhookSecret(ciphertext string) (string, error) {
+	var hex string
+	if _, err := fmt.Sscanf(ciphertext, "enc:%s", &hex); err != nil {
+		return "", fmt.Errorf("bad fake ciphertext %q", ciphertext)
+	}
+	// hex-decode the bytes
+	decoded := make([]byte, len(hex)/2)
+	for i := range decoded {
+		var b byte
+		if _, err := fmt.Sscanf(hex[i*2:i*2+2], "%02x", &b); err != nil {
+			return "", fmt.Errorf("decode hex: %w", err)
+		}
+		decoded[i] = b ^ f.key
+	}
+	return string(decoded), nil
+}
+
+const webhookYAML = `
+name: webhook-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: run webhook
+`
+
+const manualYAML = `
+name: manual-policy
+trigger:
+  type: manual
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: run manual
+`
+
+func newWebhookService(t *testing.T) (*Service, *db.Store) {
+	t.Helper()
+	store := testutil.NewTestStore(t)
+	svc := NewService(store, nil, nil, nil, nil)
+	svc.WithWebhookSecretEncrypter(&fakeEncrypter{key: 0xAB})
+	return svc, store
+}
+
+func TestService_RotateWebhookSecret_RoundTrip(t *testing.T) {
+	svc, _ := newWebhookService(t)
+	ctx := context.Background()
+
+	createResult, err := svc.Create(ctx, webhookYAML)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	id := createResult.Policy.ID
+
+	plaintext, err := svc.RotateWebhookSecret(ctx, id)
+	if err != nil {
+		t.Fatalf("RotateWebhookSecret: %v", err)
+	}
+	if len(plaintext) != 64 {
+		t.Errorf("plaintext length = %d, want 64", len(plaintext))
+	}
+
+	// GetWebhookSecret must return the same value.
+	got, err := svc.GetWebhookSecret(ctx, id)
+	if err != nil {
+		t.Fatalf("GetWebhookSecret: %v", err)
+	}
+	if got != plaintext {
+		t.Errorf("GetWebhookSecret = %q, want %q", got, plaintext)
+	}
+}
+
+func TestService_RotateWebhookSecret_NotWebhook(t *testing.T) {
+	svc, _ := newWebhookService(t)
+	ctx := context.Background()
+
+	createResult, err := svc.Create(ctx, manualYAML)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, err = svc.RotateWebhookSecret(ctx, createResult.Policy.ID)
+	if !errors.Is(err, ErrNotWebhookTrigger) {
+		t.Errorf("got %v, want ErrNotWebhookTrigger", err)
+	}
+}
+
+func TestService_RotateWebhookSecret_NoEncrypter(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	// No encrypter set.
+	svc := NewService(store, nil, nil, nil, nil)
+	ctx := context.Background()
+
+	createResult, err := svc.Create(ctx, webhookYAML)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, err = svc.RotateWebhookSecret(ctx, createResult.Policy.ID)
+	if !errors.Is(err, ErrEncryptionUnavailable) {
+		t.Errorf("got %v, want ErrEncryptionUnavailable", err)
+	}
+}
+
+func TestService_RotateWebhookSecret_PolicyNotFound(t *testing.T) {
+	svc, _ := newWebhookService(t)
+	ctx := context.Background()
+
+	_, err := svc.RotateWebhookSecret(ctx, "no-such-policy-id")
+	if !errors.Is(err, ErrNoSuchPolicy) {
+		t.Errorf("got %v, want ErrNoSuchPolicy", err)
+	}
+}
+
+func TestService_GetWebhookSecret_NullColumn(t *testing.T) {
+	svc, _ := newWebhookService(t)
+	ctx := context.Background()
+
+	createResult, err := svc.Create(ctx, webhookYAML)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// No rotate call — column should still be NULL.
+	_, err = svc.GetWebhookSecret(ctx, createResult.Policy.ID)
+	if !errors.Is(err, ErrNoSecret) {
+		t.Errorf("got %v, want ErrNoSecret", err)
+	}
+}
+
+func TestService_GetWebhookSecret_NoEncrypter(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	svc := NewService(store, nil, nil, nil, nil)
+	ctx := context.Background()
+
+	createResult, err := svc.Create(ctx, webhookYAML)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, err = svc.GetWebhookSecret(ctx, createResult.Policy.ID)
+	if !errors.Is(err, ErrEncryptionUnavailable) {
+		t.Errorf("got %v, want ErrEncryptionUnavailable", err)
+	}
+}
+
+func TestService_UpdatePreservesWebhookSecretEncrypted(t *testing.T) {
+	svc, store := newWebhookService(t)
+	ctx := context.Background()
+
+	createResult, err := svc.Create(ctx, webhookYAML)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	id := createResult.Policy.ID
+
+	plaintext, err := svc.RotateWebhookSecret(ctx, id)
+	if err != nil {
+		t.Fatalf("RotateWebhookSecret: %v", err)
+	}
+
+	// Update the policy YAML (different task text), which should not clear the secret.
+	updatedYAML := strings.ReplaceAll(webhookYAML, "run webhook", "run webhook v2")
+	if _, err := svc.Update(ctx, id, updatedYAML); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// Verify the ciphertext column is still populated.
+	ciphertext, err := store.GetPolicyWebhookSecret(ctx, id)
+	if err != nil {
+		t.Fatalf("GetPolicyWebhookSecret: %v", err)
+	}
+	if ciphertext == nil {
+		t.Fatal("webhook_secret_encrypted was cleared by Update")
+	}
+
+	// Full round-trip: decrypt must still match the original plaintext.
+	got, err := svc.GetWebhookSecret(ctx, id)
+	if err != nil {
+		t.Fatalf("GetWebhookSecret: %v", err)
+	}
+	if got != plaintext {
+		t.Errorf("GetWebhookSecret after Update = %q, want %q", got, plaintext)
+	}
+}
+
+func TestService_Create_RejectsLegacyWebhookSecret(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	svc := NewService(store, nil, nil, nil, nil)
+
+	legacyYAML := `
+name: legacy
+trigger:
+  type: webhook
+  webhook_secret: mysecret
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: do something
+`
+	_, err := svc.Create(context.Background(), legacyYAML)
+	if err == nil {
+		t.Fatal("expected error for legacy webhook_secret, got nil")
+	}
+	if !strings.Contains(err.Error(), "rotate") {
+		t.Errorf("error %q does not mention rotate endpoint", err.Error())
+	}
+}
+
+func TestService_Update_RejectsLegacyWebhookSecret(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	svc := NewService(store, nil, nil, nil, nil)
+
+	// Create clean policy first.
+	createResult, err := svc.Create(context.Background(), webhookYAML)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	legacyYAML := `
+name: webhook-policy
+trigger:
+  type: webhook
+  webhook_secret: newsecret
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: run webhook
+`
+	_, err = svc.Update(context.Background(), createResult.Policy.ID, legacyYAML)
+	if err == nil {
+		t.Fatal("expected error for legacy webhook_secret on update, got nil")
+	}
+	if !strings.Contains(err.Error(), "rotate") {
+		t.Errorf("error %q does not mention rotate endpoint", err.Error())
+	}
+}

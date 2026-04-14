@@ -9,6 +9,7 @@ import type {
   RunLimitsFormState,
   TaskInstructionsFormState,
   TriggerFormState,
+  WebhookAuthMode,
 } from '@/components/PolicyEditor/FormMode/types'
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -116,7 +117,23 @@ export function yamlToFormState(yaml: string): FormState | null {
         : [{ tool: '', input: '', path: '', comparator: 'equals' as const, value: '' }],
     }
   } else {
-    trigger = { type: 'webhook' }
+    // Parse auth mode. If auth is explicitly set, use it. Otherwise fall back
+    // to the backend grandfathering rule: a pre-existing in-YAML webhook_secret
+    // (now deprecated) implies hmac; absent secret means none. This prevents the
+    // form from silently upgrading legacy unauthenticated webhooks to hmac on save.
+    const validAuthModes: WebhookAuthMode[] = ['hmac', 'bearer', 'none']
+    const rawAuth = triggerRaw.auth
+    let auth: WebhookAuthMode
+    if (validAuthModes.includes(rawAuth as WebhookAuthMode)) {
+      auth = rawAuth as WebhookAuthMode
+    } else if (typeof triggerRaw.webhook_secret === 'string' && triggerRaw.webhook_secret !== '') {
+      // Legacy policy: had a secret in YAML but no auth field — grandfathered to hmac.
+      auth = 'hmac'
+    } else {
+      // No auth field and no legacy secret: default to none (matches backend).
+      auth = 'none'
+    }
+    trigger = { type: 'webhook', auth }
   }
 
   // Capabilities
@@ -249,7 +266,7 @@ export function formStateToYaml(state: FormState): string {
     })
     triggerObj = { type: 'poll', interval: trigger.interval, match: trigger.match, checks }
   } else {
-    triggerObj = { type: 'webhook' }
+    triggerObj = { type: 'webhook', auth: trigger.auth }
   }
 
   // Build capabilities — single tools array

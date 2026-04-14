@@ -23,7 +23,7 @@ type Story = StoryObj<typeof TriggerSection>;
 
 export const WebhookSelected: Story = {
   args: {
-    value: { type: 'webhook' },
+    value: { type: 'webhook', auth: 'hmac' },
     policyId: 'abc-123',
     onChange: fn(),
   },
@@ -31,7 +31,7 @@ export const WebhookSelected: Story = {
 
 export const WebhookNewAgent: Story = {
   args: {
-    value: { type: 'webhook' },
+    value: { type: 'webhook', auth: 'hmac' },
     onChange: fn(),
   },
 };
@@ -76,7 +76,7 @@ export const PollMultipleChecks: Story = {
 };
 
 function InteractiveTriggerSection() {
-  const [value, setValue] = useState<TriggerFormState>({ type: 'webhook' });
+  const [value, setValue] = useState<TriggerFormState>({ type: 'webhook', auth: 'hmac' });
   return <TriggerSection value={value} onChange={setValue} policyId="example-policy" />;
 }
 

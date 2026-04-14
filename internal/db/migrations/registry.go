@@ -16,5 +16,6 @@ func All() []Migration {
 		&AddPollTriggerType{},
 		&AddSystemAndModelSettings{},
 		&AddOpenAICompatProviders{},
+		&AddWebhookSecretEncrypted{},
 	}
 }

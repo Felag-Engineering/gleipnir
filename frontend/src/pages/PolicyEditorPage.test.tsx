@@ -33,8 +33,8 @@ vi.mock('@/components/PolicyEditor/YamlEditor/YamlEditor', () => ({
   },
 }))
 
-import { usePolicy, usePolicies } from '@/hooks/queries/policies'
-import { useSavePolicy, useDeletePolicy, useTriggerPolicy, usePausePolicy, useResumePolicy } from '@/hooks/mutations/policies'
+import { usePolicy, usePolicies, useWebhookSecret } from '@/hooks/queries/policies'
+import { useSavePolicy, useDeletePolicy, useTriggerPolicy, usePausePolicy, useResumePolicy, useRotateWebhookSecret } from '@/hooks/mutations/policies'
 import { useMcpServers } from '@/hooks/queries/servers'
 
 // --- Fixtures ---
@@ -158,6 +158,16 @@ function mockHooksDefault() {
     data: [],
     status: 'success',
   } as unknown as ReturnType<typeof usePolicies>)
+
+  vi.mocked(useWebhookSecret).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+  } as unknown as ReturnType<typeof useWebhookSecret>)
+
+  vi.mocked(useRotateWebhookSecret).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as unknown as ReturnType<typeof useRotateWebhookSecret>)
 
   return { mutateAsync }
 }

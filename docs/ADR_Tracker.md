@@ -48,7 +48,41 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-031 | Native feedback as a Gleipnir runtime primitive | 🟢 Decided | v1.0 | Agent runtime, policy schema, notify package, UI |
 | ADR-032 | Admin-managed OpenAI-compatible LLM provider instances | 🟢 Decided | v1.0 | internal/llm/openaicompat, admin API, admin UI |
 | ADR-033 | Premium OpenAI client split from compat client         | 🟢 Decided | v1.0 | internal/llm/openai, internal/llm/openaicompat, main.go |
+| ADR-034 | Webhook secrets stored in encrypted DB column (scoped ADR-002 deviation) | 🟢 Decided | v1.0 | policies table, internal/policy, trigger/webhook_handler, frontend WebhookConfig |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
+
+---
+
+## ADR-034: Webhook secrets stored in encrypted DB column (scoped ADR-002 deviation)
+
+**Status:** Decided
+**Date:** 2026-04
+
+### Context
+
+ADR-002 established that all policy configuration lives in the `yaml` column, with only `name` and `trigger_type` as indexed columns. Webhook shared secrets are a category of data that violates this rule: the `yaml` column is returned wholesale by `GET /api/v1/policies/:id`, which means storing a plaintext secret there would expose it to any authenticated user regardless of role, and would also leak the secret into audit logs and exports.
+
+### Decision
+
+Webhook secrets are stored in a dedicated `webhook_secret_encrypted TEXT` column on the `policies` table, encrypted with AES-256-GCM using the key from `GLEIPNIR_ENCRYPTION_KEY`. This is an intentional, scoped deviation from ADR-002. YAML remains the source of truth for all other policy fields.
+
+The `trigger.auth` field (`hmac | bearer | none`) **does** live in the YAML, because it is configuration (not a secret) and operators need to see and edit it in the policy editor. The encrypted secret value is never included in any policy GET response, SSE payload, or export.
+
+### Rejected alternative
+
+Redacting the secret from `GET /api/v1/policies/:id` response while keeping it in YAML: rejected because it creates a partial-round-trip problem — the field would silently disappear on re-save unless every edit path was made secret-aware. Storing it separately is cleaner and eliminates the surface area entirely.
+
+### Auditor access posture
+
+Auditors can read `trigger.auth` mode from the policy YAML (visible in `GET /api/v1/policies/:id`). They cannot call the reveal endpoint (`GET /policies/:id/webhook/secret`) or the rotate endpoint (`POST /policies/:id/webhook/rotate`), both of which require admin or operator role.
+
+### Export / import consequences
+
+Policy export (the YAML blob) does not include the secret. An exported policy imported to a new instance will have `trigger.auth: hmac` (or `bearer`) set but no secret — the operator must generate a new secret via the rotate endpoint. This is intentional: exporting a secret alongside a policy would undermine the encrypted-column separation.
+
+### Legacy migration
+
+Policies created before this change may have `webhook_secret:` in their YAML. A one-time eager startup migration (`policy.MigrateLegacyWebhookSecrets`) detects these rows, encrypts the secret into the new column, and removes the field from the stored YAML. The grandfathering rule: a policy that had a `webhook_secret` but no `auth` field defaults to `auth: hmac` (preserving original security posture). Only policies with neither field default to `auth: none`.
 
 ---
 

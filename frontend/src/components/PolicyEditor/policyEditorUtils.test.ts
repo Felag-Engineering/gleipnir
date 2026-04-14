@@ -52,6 +52,50 @@ describe('yamlToFormState — all trigger types', () => {
     expect(state!.trigger.type).toBe('webhook')
   })
 
+  it('parses webhook trigger with auth: hmac', () => {
+    const state = yamlToFormState('name: p\ntrigger:\n  type: webhook\n  auth: hmac\n')
+    if (state!.trigger.type !== 'webhook') throw new Error('expected webhook')
+    expect(state!.trigger.auth).toBe('hmac')
+  })
+
+  it('parses webhook trigger with auth: bearer', () => {
+    const state = yamlToFormState('name: p\ntrigger:\n  type: webhook\n  auth: bearer\n')
+    if (state!.trigger.type !== 'webhook') throw new Error('expected webhook')
+    expect(state!.trigger.auth).toBe('bearer')
+  })
+
+  it('parses webhook trigger with auth: none', () => {
+    const state = yamlToFormState('name: p\ntrigger:\n  type: webhook\n  auth: none\n')
+    if (state!.trigger.type !== 'webhook') throw new Error('expected webhook')
+    expect(state!.trigger.auth).toBe('none')
+  })
+
+  it('defaults webhook auth to none when auth is absent and no legacy secret', () => {
+    // Backend grandfathers absent auth + absent secret to none (not hmac).
+    // This test ensures the frontend matches that behaviour so legacy unauthenticated
+    // webhooks are not silently upgraded to hmac on first save.
+    const state = yamlToFormState('name: p\ntrigger:\n  type: webhook\n')
+    if (state!.trigger.type !== 'webhook') throw new Error('expected webhook')
+    expect(state!.trigger.auth).toBe('none')
+  })
+
+  it('defaults webhook auth to hmac when auth is absent but legacy webhook_secret is present', () => {
+    // Legacy policies had webhook_secret in YAML but no auth field. The grandfathering
+    // rule preserves their security posture by defaulting to hmac.
+    const state = yamlToFormState(
+      'name: p\ntrigger:\n  type: webhook\n  webhook_secret: "abc123"\n',
+    )
+    if (state!.trigger.type !== 'webhook') throw new Error('expected webhook')
+    expect(state!.trigger.auth).toBe('hmac')
+  })
+
+  it('defaults webhook auth to none when auth is invalid and no legacy secret', () => {
+    // Invalid auth value with no legacy secret → none (matches backend default).
+    const state = yamlToFormState('name: p\ntrigger:\n  type: webhook\n  auth: invalid\n')
+    if (state!.trigger.type !== 'webhook') throw new Error('expected webhook')
+    expect(state!.trigger.auth).toBe('none')
+  })
+
   it('defaults cron trigger type to webhook (unsupported trigger type)', () => {
     const state = yamlToFormState('name: p\ntrigger:\n  type: cron\n  schedule: "0 * * * *"\n')
     expect(state!.trigger.type).toBe('webhook')
@@ -265,6 +309,26 @@ agent:
 // --- Serialization ---
 
 describe('formStateToYaml — serialization', () => {
+  it('serializes webhook auth mode into YAML', () => {
+    const state = yamlToFormState('name: p\ntrigger:\n  type: webhook\n  auth: bearer\n')!
+    const yaml = formStateToYaml(state)
+    expect(yaml).toContain('auth: bearer')
+  })
+
+  it('serializes webhook auth: none (absent auth, no legacy secret) into YAML', () => {
+    // Absent auth with no legacy secret defaults to none — the serialised YAML
+    // must preserve that so a re-save does not change the effective auth mode.
+    const state = yamlToFormState('name: p\ntrigger:\n  type: webhook\n')!
+    const yaml = formStateToYaml(state)
+    expect(yaml).toContain('auth: none')
+  })
+
+  it('serializes webhook auth: hmac when explicitly set', () => {
+    const state = yamlToFormState('name: p\ntrigger:\n  type: webhook\n  auth: hmac\n')!
+    const yaml = formStateToYaml(state)
+    expect(yaml).toContain('auth: hmac')
+  })
+
   it('omits description when empty', () => {
     const state = yamlToFormState('name: p\ntrigger:\n  type: webhook\n')!
     const yaml = formStateToYaml(state)
