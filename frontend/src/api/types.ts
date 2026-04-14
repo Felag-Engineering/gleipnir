@@ -44,6 +44,7 @@ export interface ApiRun {
   created_at: string
   system_prompt: string | null
   model: string
+  policy_updated_at?: string
 }
 
 // Matches trigger/runs_handler.go → StepSummary struct

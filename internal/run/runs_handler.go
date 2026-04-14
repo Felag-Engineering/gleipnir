@@ -25,19 +25,20 @@ type PaginatedRunsResponse struct {
 
 // RunSummary is the JSON shape returned for a single run.
 type RunSummary struct {
-	ID             string  `json:"id"`
-	PolicyID       string  `json:"policy_id"`
-	PolicyName     string  `json:"policy_name"`
-	Status         string  `json:"status"`
-	TriggerType    string  `json:"trigger_type"`
-	TriggerPayload string  `json:"trigger_payload"`
-	StartedAt      string  `json:"started_at"`
-	CompletedAt    *string `json:"completed_at"`
-	TokenCost      int64   `json:"token_cost"`
-	Error          *string `json:"error"`
-	CreatedAt      string  `json:"created_at"`
-	SystemPrompt   *string `json:"system_prompt"`
-	Model          string  `json:"model"`
+	ID              string  `json:"id"`
+	PolicyID        string  `json:"policy_id"`
+	PolicyName      string  `json:"policy_name"`
+	Status          string  `json:"status"`
+	TriggerType     string  `json:"trigger_type"`
+	TriggerPayload  string  `json:"trigger_payload"`
+	StartedAt       string  `json:"started_at"`
+	CompletedAt     *string `json:"completed_at"`
+	TokenCost       int64   `json:"token_cost"`
+	Error           *string `json:"error"`
+	CreatedAt       string  `json:"created_at"`
+	SystemPrompt    *string `json:"system_prompt"`
+	Model           string  `json:"model"`
+	PolicyUpdatedAt *string `json:"policy_updated_at,omitempty"` // omitted from list responses; set only by Get
 }
 
 // StepSummary is the JSON shape returned for a single run step.
@@ -251,6 +252,7 @@ func (h *RunsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	policy, err := h.store.GetPolicy(ctx, run.PolicyID)
 	if err == nil {
 		summary.PolicyName = policy.Name
+		summary.PolicyUpdatedAt = &policy.UpdatedAt
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		slog.Warn("GetPolicy for run detail failed", "policy_id", run.PolicyID, "err", err)
 	}

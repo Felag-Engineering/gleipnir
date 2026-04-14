@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { fn } from 'storybook/test'
 import { MemoryRouter } from 'react-router-dom'
 import '@/tokens.css'
 import type { ApiRun } from '@/api/types'
@@ -81,5 +82,16 @@ export const DeletedAgent: Story = {
     toolCallCount: 7,
     tokenTotal: 2340,
     duration: 225_000,
+  },
+}
+
+export const FailedWithRetry: Story = {
+  args: {
+    run: { ...BASE_RUN, status: 'failed', error: 'MCP server unreachable after 3 retries' },
+    toolCallCount: 5,
+    tokenTotal: 1800,
+    duration: 120_000,
+    showRetry: true,
+    onRetry: fn(),
   },
 }

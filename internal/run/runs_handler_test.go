@@ -574,6 +574,23 @@ func TestRunsHandler_Get(t *testing.T) {
 			runID:    "r-does-not-exist",
 			wantCode: http.StatusNotFound,
 		},
+		{
+			name: "policy_updated_at is present when policy exists",
+			setup: func(t *testing.T, store *db.Store) {
+				testutil.InsertPolicy(t, store, "p-get-updated-at", "policy-p-get-updated-at", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-get-updated-at", "p-get-updated-at", model.RunStatusFailed)
+			},
+			runID:    "r-get-updated-at",
+			wantCode: http.StatusOK,
+			checkFn: func(t *testing.T, run run.RunSummary) {
+				if run.PolicyUpdatedAt == nil {
+					t.Error("policy_updated_at is nil, want non-nil when policy exists")
+				}
+				if run.PolicyUpdatedAt != nil && *run.PolicyUpdatedAt == "" {
+					t.Error("policy_updated_at is empty string, want non-empty timestamp")
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {

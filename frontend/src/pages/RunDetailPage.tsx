@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { useRun } from '@/hooks/queries/runs'
 import { useRunSteps } from '@/hooks/queries/runs'
 import { useRunTimeline } from '@/hooks/useRunTimeline'
@@ -14,6 +14,7 @@ import {
   FilterBar,
   StepTimeline,
 } from '@/components/RunDetail'
+import { TriggerRunModal } from '@/components/TriggerRunModal'
 import { ApprovalActions } from '@/components/RunDetail/ApprovalActions'
 import { CopyBlock } from '@/components/CopyBlock'
 import type { FilterKey } from '@/components/RunDetail'
@@ -25,11 +26,13 @@ import styles from './RunDetailPage.module.css'
 
 export default function RunDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const { data: run, status: runStatus, error: runErrorObj, refetch: runRefetch } = useRun(id)
   const { data: rawSteps = [], status: stepsStatus } = useRunSteps(id)
 
   usePageTitle(runStatus === 'error' ? 'Run not found' : (id ? `Run ${id.slice(0, 8)}` : 'Run'))
   const [filter, setFilter] = useState<FilterKey>('all')
+  const [retryModalOpen, setRetryModalOpen] = useState(false)
 
   const { timelineItems, counts, snapshotSteps, hasMore, remainingCount, loadMore } = useRunTimeline(rawSteps, filter)
   const { sentinelRef, showNewPill, scrollToBottom } = useScrollSentinel(rawSteps.length)
@@ -56,6 +59,18 @@ export default function RunDetailPage() {
     run?.completed_at ?? null,
     run?.status ?? 'pending',
   )
+
+  const showRetry = run?.status === 'failed' || run?.status === 'interrupted'
+
+  const retryMessage = useMemo(() => {
+    if (!run?.trigger_payload) return ''
+    try {
+      const parsed = JSON.parse(run.trigger_payload)
+      return typeof parsed.message === 'string' ? parsed.message : ''
+    } catch {
+      return ''
+    }
+  }, [run?.trigger_payload])
 
   const toolCallCount = rawSteps.filter((s) => s.type === 'tool_call').length
   const tokenTotal = rawSteps.reduce((acc, s) => acc + s.token_cost, 0)
@@ -111,62 +126,80 @@ export default function RunDetailPage() {
         }
       >
         {run && (
-          <ErrorBoundary>
-            <RunHeader
-              run={run}
-              toolCallCount={toolCallCount}
-              tokenTotal={tokenTotal}
-              duration={duration}
-              capabilitySnapshot={capabilitySnapshot}
-            />
+          <>
+            <ErrorBoundary>
+              <RunHeader
+                run={run}
+                toolCallCount={toolCallCount}
+                tokenTotal={tokenTotal}
+                duration={duration}
+                capabilitySnapshot={capabilitySnapshot}
+                showRetry={showRetry}
+                onRetry={() => setRetryModalOpen(true)}
+              />
 
-            {run.status === 'waiting_for_approval' && (
-              <div className={styles.approvalBox} role="alert">
-                <span className={styles.approvalBoxLabel}>Awaiting approval</span>
-                <span className={styles.approvalBoxMsg}>A tool call requires operator approval before the run can continue.</span>
-                <ApprovalActions runId={id!} runStatus={run.status} />
+              {run.status === 'waiting_for_approval' && (
+                <div className={styles.approvalBox} role="alert">
+                  <span className={styles.approvalBoxLabel}>Awaiting approval</span>
+                  <span className={styles.approvalBoxMsg}>A tool call requires operator approval before the run can continue.</span>
+                  <ApprovalActions runId={id!} runStatus={run.status} />
+                </div>
+              )}
+
+              {(run.status === 'failed' || run.status === 'interrupted') && run.error && (
+                <div className={styles.errorBox} role="alert">
+                  <span className={styles.errorBoxLabel}>
+                    {run.status === 'failed' ? 'Run failed' : 'Run interrupted'}
+                  </span>
+                  <CopyBlock text={run.error}>
+                    <pre className={styles.errorBoxMsg}>{run.error}</pre>
+                  </CopyBlock>
+                </div>
+              )}
+
+              <FilterBar active={filter} counts={counts} onChange={setFilter} />
+
+              <div className={styles.timeline}>
+                <StepTimeline items={timelineItems} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} triggerType={run.trigger_type} triggerPayload={run.trigger_payload} durationMs={duration} />
+
+                {hasMore && (
+                  <button
+                    type="button"
+                    className={styles.loadMoreBtn}
+                    onClick={loadMore}
+                  >
+                    Load more ({remainingCount} remaining)
+                  </button>
+                )}
               </div>
-            )}
 
-            {(run.status === 'failed' || run.status === 'interrupted') && run.error && (
-              <div className={styles.errorBox} role="alert">
-                <span className={styles.errorBoxLabel}>
-                  {run.status === 'failed' ? 'Run failed' : 'Run interrupted'}
-                </span>
-                <CopyBlock text={run.error}>
-                  <pre className={styles.errorBoxMsg}>{run.error}</pre>
-                </CopyBlock>
-              </div>
-            )}
+              <div ref={sentinelRef} className={styles.sentinel} aria-hidden="true" />
 
-            <FilterBar active={filter} counts={counts} onChange={setFilter} />
-
-            <div className={styles.timeline}>
-              <StepTimeline items={timelineItems} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} triggerType={run.trigger_type} triggerPayload={run.trigger_payload} durationMs={duration} />
-
-              {hasMore && (
+              {showNewPill && (
                 <button
                   type="button"
-                  className={styles.loadMoreBtn}
-                  onClick={loadMore}
+                  className={styles.newStepsPill}
+                  onClick={scrollToBottom}
                 >
-                  Load more ({remainingCount} remaining)
+                  New steps ↓
                 </button>
               )}
-            </div>
+            </ErrorBoundary>
 
-            <div ref={sentinelRef} className={styles.sentinel} aria-hidden="true" />
-
-            {showNewPill && (
-              <button
-                type="button"
-                className={styles.newStepsPill}
-                onClick={scrollToBottom}
-              >
-                New steps ↓
-              </button>
+            {retryModalOpen && (
+              <TriggerRunModal
+                policyId={run.policy_id}
+                policyName={run.policy_name || run.policy_id}
+                initialMessage={retryMessage}
+                policyUpdatedAt={run.policy_updated_at}
+                onClose={() => setRetryModalOpen(false)}
+                onSuccess={(runId) => {
+                  setRetryModalOpen(false)
+                  navigate(`/runs/${runId}`)
+                }}
+              />
             )}
-          </ErrorBoundary>
+          </>
         )}
       </QueryBoundary>
     </div>

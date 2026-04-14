@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import type { ApiRun } from '@/api/types'
 import { StatusBadge } from '@/components/dashboard/StatusBadge/StatusBadge'
 import { TriggerChip } from '@/components/dashboard/TriggerChip/TriggerChip'
+import { Button } from '@/components/Button'
 import type { RunStatus, TriggerType } from '@/constants/status'
 import { formatDurationMs, formatTokens, formatTimestamp, formatProviderName } from '@/utils/format'
 import styles from './RunHeader.module.css'
@@ -24,9 +25,11 @@ interface Props {
     toolCount: number
     tools: Array<CapabilityTool>
   } | null
+  showRetry?: boolean
+  onRetry?: () => void
 }
 
-export function RunHeader({ run, toolCallCount, tokenTotal, duration, capabilitySnapshot }: Props) {
+export function RunHeader({ run, toolCallCount, tokenTotal, duration, capabilitySnapshot, showRetry, onRetry }: Props) {
   const navigate = useNavigate()
   const [adminOpen, setAdminOpen] = useState(false)
   const [capExpanded, setCapExpanded] = useState(false)
@@ -61,6 +64,11 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
         </span>
         <StatusBadge status={run.status as RunStatus} />
         <TriggerChip type={run.trigger_type as TriggerType} />
+        {showRetry && onRetry && (
+          <Button variant="secondary" size="small" onClick={onRetry}>
+            Retry
+          </Button>
+        )}
       </div>
 
       <div className={styles.statCards}>

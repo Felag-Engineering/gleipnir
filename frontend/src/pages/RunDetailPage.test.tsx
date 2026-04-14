@@ -695,6 +695,52 @@ describe('RunDetailPage — error box', () => {
   })
 })
 
+describe('RunDetailPage — Retry button', () => {
+  it('shows Retry button for failed runs', () => {
+    mockLoaded(makeRun({ status: 'failed', error: 'timed out' }))
+    renderPage()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+  })
+
+  it('shows Retry button for interrupted runs', () => {
+    mockLoaded(makeRun({ status: 'interrupted', error: 'process restarted' }))
+    renderPage()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+  })
+
+  it('does not show Retry button for complete runs', () => {
+    mockLoaded(makeRun({ status: 'complete' }))
+    renderPage()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+  })
+
+  it('does not show Retry button for running runs', () => {
+    mockLoaded(makeRun({ status: 'running', completed_at: null }))
+    renderPage()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+  })
+
+  it('opens the TriggerRunModal when Retry button is clicked', async () => {
+    mockLoaded(makeRun({ status: 'failed', error: 'timed out', policy_name: 'my-policy' }))
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => {
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
+    })
+  })
+
+  it('pre-fills the modal message from trigger_payload', async () => {
+    const payload = JSON.stringify({ message: 'check the logs please' })
+    mockLoaded(makeRun({ status: 'failed', error: 'timed out', trigger_payload: payload }))
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => {
+      const textarea = screen.getByRole('textbox')
+      expect(textarea).toHaveValue('check the logs please')
+    })
+  })
+})
+
 describe('RunDetailPage — "New steps" pill', () => {
   it('shows pill when new steps arrive and user is not near bottom', async () => {
     const initialSteps: ApiRunStep[] = [

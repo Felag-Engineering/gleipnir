@@ -2,18 +2,22 @@ import { useState } from 'react'
 import { Modal } from '@/components/Modal/Modal'
 import { ModalFooter } from '@/components/ModalFooter'
 import { useTriggerPolicy } from '@/hooks/mutations/policies'
+import { formatTimeAgo } from '@/utils/format'
 import formStyles from '@/styles/forms.module.css'
 import alertStyles from '@/styles/alerts.module.css'
+import styles from './TriggerRunModal.module.css'
 
 interface TriggerRunModalProps {
   policyId: string
   policyName: string
   onClose: () => void
   onSuccess: (runId: string) => void
+  initialMessage?: string
+  policyUpdatedAt?: string | null
 }
 
-export function TriggerRunModal({ policyId, policyName, onClose, onSuccess }: TriggerRunModalProps) {
-  const [message, setMessage] = useState('')
+export function TriggerRunModal({ policyId, policyName, onClose, onSuccess, initialMessage, policyUpdatedAt }: TriggerRunModalProps) {
+  const [message, setMessage] = useState(initialMessage ?? '')
   const { mutate, isPending, error } = useTriggerPolicy()
 
   function handleSubmit(e: React.FormEvent) {
@@ -54,6 +58,11 @@ export function TriggerRunModal({ policyId, policyName, onClose, onSuccess }: Tr
             rows={4}
           />
         </div>
+        {policyUpdatedAt && (
+          <p className={styles.editedNote}>
+            Policy last edited {formatTimeAgo(policyUpdatedAt)}
+          </p>
+        )}
         {error && (
           <div className={alertStyles.alertError} role="alert">{error.message}</div>
         )}

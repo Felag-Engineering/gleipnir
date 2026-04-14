@@ -36,3 +36,10 @@ export const WithLongName: Story = {
     policyName: 'Deploy to Production Environment Agent',
   },
 }
+
+export const WithPrefill: Story = {
+  args: {
+    initialMessage: 'Check the logs on the production server for errors in the last hour.',
+    policyUpdatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+  },
+}
