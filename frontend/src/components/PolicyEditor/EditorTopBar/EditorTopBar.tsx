@@ -6,10 +6,14 @@ export interface EditorTopBarProps {
   mode: 'form' | 'yaml';
   canSave: boolean;
   isEditMode: boolean;
+  pausedAt?: string | null;
+  isPauseResumeLoading?: boolean;
   onModeChange: (m: 'form' | 'yaml') => void;
   onSave: () => void;
   onDeleteClick: () => void;
   onRunNowClick?: () => void;
+  onPauseClick?: () => void;
+  onResumeClick?: () => void;
 }
 
 export function EditorTopBar({
@@ -17,10 +21,14 @@ export function EditorTopBar({
   mode,
   canSave,
   isEditMode,
+  pausedAt,
+  isPauseResumeLoading,
   onModeChange,
   onSave,
   onDeleteClick,
   onRunNowClick,
+  onPauseClick,
+  onResumeClick,
 }: EditorTopBarProps) {
   return (
     <div className={styles.topbar}>
@@ -30,6 +38,7 @@ export function EditorTopBar({
         <Link to="/agents" className={`${styles.crumb} ${styles.crumbPolicies} ${styles.crumbLink}`}>Agents</Link>
         <span className={styles.separator}>›</span>
         <span className={`${styles.crumb} ${styles.crumbPolicy}`}>{policyName}</span>
+        {pausedAt && <span className={styles.pausedBadge}>Paused</span>}
       </div>
 
       <div className={styles.actions}>
@@ -55,6 +64,26 @@ export function EditorTopBar({
           >
             Run now
           </button>
+        )}
+
+        {isEditMode && (
+          pausedAt ? (
+            <button
+              className={styles.resumeButton}
+              onClick={onResumeClick}
+              disabled={isPauseResumeLoading}
+            >
+              Resume
+            </button>
+          ) : (
+            <button
+              className={styles.pauseButton}
+              onClick={onPauseClick}
+              disabled={isPauseResumeLoading}
+            >
+              Pause
+            </button>
+          )
         )}
 
         <button

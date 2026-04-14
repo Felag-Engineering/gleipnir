@@ -263,6 +263,22 @@ func TestWebhookHandler(t *testing.T) {
 			body:       `{"event": "test"}`,
 			wantStatus: http.StatusAccepted,
 		},
+		{
+			name: "409 when policy is paused",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestPolicy(t, store, "p-paused", minimalWebhookPolicy)
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				if err := store.SetPolicyPausedAt(context.Background(), db.SetPolicyPausedAtParams{
+					PausedAt: &now,
+					ID:       "p-paused",
+				}); err != nil {
+					t.Fatalf("SetPolicyPausedAt: %v", err)
+				}
+			},
+			policyID:   "p-paused",
+			body:       `{"event": "test"}`,
+			wantStatus: http.StatusConflict,
+		},
 	}
 
 	for _, tc := range cases {

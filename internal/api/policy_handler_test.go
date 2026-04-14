@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -35,6 +36,8 @@ func newPolicyRouter(store *db.Store) http.Handler {
 	r.Post("/policies", h.Create)
 	r.Get("/policies/{id}", h.Get)
 	r.Put("/policies/{id}", h.Update)
+	r.Post("/policies/{id}/pause", h.Pause)
+	r.Post("/policies/{id}/resume", h.Resume)
 	r.Delete("/policies/{id}", h.Delete)
 	return r
 }
@@ -49,6 +52,8 @@ func newPolicyRouterWithLookup(store *db.Store, lookup policy.ToolLookup) http.H
 	r.Post("/policies", h.Create)
 	r.Get("/policies/{id}", h.Get)
 	r.Put("/policies/{id}", h.Update)
+	r.Post("/policies/{id}/pause", h.Pause)
+	r.Post("/policies/{id}/resume", h.Resume)
 	r.Delete("/policies/{id}", h.Delete)
 	return r
 }
@@ -1023,4 +1028,178 @@ func TestParsePolicySummary_InvalidYAML(t *testing.T) {
 	if envelope.Data[0].Model != "" {
 		t.Errorf("model = %q, want empty string for corrupt YAML", envelope.Data[0].Model)
 	}
+}
+
+// setPolicyPaused sets paused_at on a policy row directly via the store.
+func setPolicyPaused(t *testing.T, s *db.Store, id string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.SetPolicyPausedAt(context.Background(), db.SetPolicyPausedAtParams{
+		PausedAt: &now,
+		ID:       id,
+	}); err != nil {
+		t.Fatalf("SetPolicyPausedAt %s: %v", id, err)
+	}
+}
+
+func TestPolicyPauseHandler(t *testing.T) {
+	t.Run("pause sets paused_at and returns 200", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		insertTestPolicy(t, store, "pol1", "my-policy", "trigger: webhook\n")
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Post(srv.URL+"/policies/pol1/pause", "application/json", nil)
+		if err != nil {
+			t.Fatalf("POST /policies/pol1/pause: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Data struct {
+				ID       string  `json:"id"`
+				PausedAt *string `json:"paused_at"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.ID != "pol1" {
+			t.Errorf("id = %q, want pol1", envelope.Data.ID)
+		}
+		if envelope.Data.PausedAt == nil {
+			t.Error("paused_at is null, want non-null after pause")
+		}
+	})
+
+	t.Run("pause returns 404 for unknown policy", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Post(srv.URL+"/policies/no-such-id/pause", "application/json", nil)
+		if err != nil {
+			t.Fatalf("POST /policies/no-such-id/pause: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", resp.StatusCode)
+		}
+	})
+
+	t.Run("pause returns 409 when already paused", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		insertTestPolicy(t, store, "pol1", "my-policy", "trigger: webhook\n")
+		setPolicyPaused(t, store, "pol1")
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Post(srv.URL+"/policies/pol1/pause", "application/json", nil)
+		if err != nil {
+			t.Fatalf("POST /policies/pol1/pause: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("status = %d, want 409", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Error string `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Error != "policy is already paused" {
+			t.Errorf("error = %q, want %q", envelope.Error, "policy is already paused")
+		}
+	})
+}
+
+func TestPolicyResumeHandler(t *testing.T) {
+	t.Run("resume clears paused_at and returns 200", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		insertTestPolicy(t, store, "pol1", "my-policy", "trigger: webhook\n")
+		setPolicyPaused(t, store, "pol1")
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Post(srv.URL+"/policies/pol1/resume", "application/json", nil)
+		if err != nil {
+			t.Fatalf("POST /policies/pol1/resume: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Data struct {
+				ID       string  `json:"id"`
+				PausedAt *string `json:"paused_at"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.ID != "pol1" {
+			t.Errorf("id = %q, want pol1", envelope.Data.ID)
+		}
+		if envelope.Data.PausedAt != nil {
+			t.Errorf("paused_at = %q, want null after resume", *envelope.Data.PausedAt)
+		}
+	})
+
+	t.Run("resume returns 404 for unknown policy", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Post(srv.URL+"/policies/no-such-id/resume", "application/json", nil)
+		if err != nil {
+			t.Fatalf("POST /policies/no-such-id/resume: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", resp.StatusCode)
+		}
+	})
+
+	t.Run("resume returns 409 when not paused", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		insertTestPolicy(t, store, "pol1", "my-policy", "trigger: webhook\n")
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Post(srv.URL+"/policies/pol1/resume", "application/json", nil)
+		if err != nil {
+			t.Fatalf("POST /policies/pol1/resume: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("status = %d, want 409", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Error string `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Error != "policy is not paused" {
+			t.Errorf("error = %q, want %q", envelope.Error, "policy is not paused")
+		}
+	})
 }

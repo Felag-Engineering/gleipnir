@@ -48,6 +48,12 @@
   background: color-mix(in srgb, var(--color-teal) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-teal) 15%, transparent);
 }
+.pausedPill {
+  composes: pill;
+  color: var(--color-amber);
+  background: color-mix(in srgb, var(--color-amber) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-amber) 15%, transparent);
+}
 .modelPill {
   composes: pill;
   color: var(--text-second);
@@ -86,5 +92,6 @@
   transition: border-color var(--duration-fast) var(--ease-out),
               color var(--duration-fast) var(--ease-out);
 }
-.playBtn:hover { border-color: var(--color-green); color: var(--color-green); }
+.playBtn:hover:not(:disabled) { border-color: var(--color-green); color: var(--color-green); }
+.playBtn:disabled { opacity: 0.4; cursor: not-allowed; }
 .editBtn:hover { border-color: var(--text-primary); color: var(--text-primary); }

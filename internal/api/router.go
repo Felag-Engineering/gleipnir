@@ -192,6 +192,8 @@ func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registr
 		r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/", policies.Create)
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/{id}", policies.Get)
 		r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Put("/{id}", policies.Update)
+		r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/{id}/pause", policies.Pause)
+		r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/{id}/resume", policies.Resume)
 		r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Delete("/{id}", policies.Delete)
 	})
 

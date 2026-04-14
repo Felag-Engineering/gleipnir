@@ -272,6 +272,94 @@ func (h *PolicyHandler) Update(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, buildMutateResponse(result))
 }
 
+// Pause handles POST /api/v1/policies/{id}/pause.
+// It sets paused_at to the current time, preventing webhook and manual triggers from firing.
+// Returns 409 if the policy is already paused.
+func (h *PolicyHandler) Pause(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	dbPolicy, err := h.store.GetPolicy(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, "policy not found", "")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get policy", err.Error())
+		return
+	}
+
+	if dbPolicy.PausedAt != nil {
+		httputil.WriteError(w, http.StatusConflict, "policy is already paused", "")
+		return
+	}
+
+	if err := h.svc.SetPolicyPausedAt(r.Context(), id); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to pause policy", err.Error())
+		return
+	}
+
+	updated, err := h.store.GetPolicy(r.Context(), id)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch updated policy", err.Error())
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, policyDetail{
+		ID:          updated.ID,
+		Name:        updated.Name,
+		TriggerType: updated.TriggerType,
+		Folder:      extractFolder(updated.Yaml),
+		YAML:        updated.Yaml,
+		CreatedAt:   updated.CreatedAt,
+		UpdatedAt:   updated.UpdatedAt,
+		PausedAt:    updated.PausedAt,
+	})
+}
+
+// Resume handles POST /api/v1/policies/{id}/resume.
+// It clears paused_at, allowing webhook and manual triggers to fire again.
+// Returns 409 if the policy is not currently paused.
+func (h *PolicyHandler) Resume(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	dbPolicy, err := h.store.GetPolicy(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, "policy not found", "")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get policy", err.Error())
+		return
+	}
+
+	if dbPolicy.PausedAt == nil {
+		httputil.WriteError(w, http.StatusConflict, "policy is not paused", "")
+		return
+	}
+
+	if err := h.svc.ClearPolicyPausedAt(r.Context(), id); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to resume policy", err.Error())
+		return
+	}
+
+	updated, err := h.store.GetPolicy(r.Context(), id)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch updated policy", err.Error())
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, policyDetail{
+		ID:          updated.ID,
+		Name:        updated.Name,
+		TriggerType: updated.TriggerType,
+		Folder:      extractFolder(updated.Yaml),
+		YAML:        updated.Yaml,
+		CreatedAt:   updated.CreatedAt,
+		UpdatedAt:   updated.UpdatedAt,
+		PausedAt:    updated.PausedAt,
+	})
+}
+
 // Delete handles DELETE /api/v1/policies/{id}.
 func (h *PolicyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")

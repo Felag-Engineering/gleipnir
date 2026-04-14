@@ -28,6 +28,7 @@ function statusDotClass(status: string | undefined): string {
 export function PolicyCard({ policy, onTrigger }: Props) {
   const [expanded, setExpanded] = useState(false)
   const run = policy.latest_run
+  const isPaused = Boolean(policy.paused_at)
 
   return (
     <div className={`${styles.card} ${expanded ? styles.cardExpanded : ''}`}>
@@ -47,6 +48,7 @@ export function PolicyCard({ policy, onTrigger }: Props) {
           <div className={`${styles.statusDot} ${statusDotClass(run?.status)}`} />
           <span className={styles.policyName}>{policy.name}</span>
           <span className={styles.triggerPill}>{policy.trigger_type}</span>
+          {isPaused && <span className={styles.pausedPill}>Paused</span>}
           {policy.model && <span className={styles.modelPill}>{policy.model}</span>}
           {policy.tool_count > 0 && (
             <span className={styles.toolCount}>{policy.tool_count} {policy.tool_count === 1 ? 'tool' : 'tools'}</span>
@@ -63,6 +65,7 @@ export function PolicyCard({ policy, onTrigger }: Props) {
             className={`${styles.actionBtn} ${styles.playBtn}`}
             onClick={(e) => { e.stopPropagation(); onTrigger(policy.id, policy.name) }}
             aria-label={`Run ${policy.name}`}
+            disabled={isPaused}
           >
             ▶
           </button>

@@ -49,6 +49,18 @@
   user-select: none;
 }
 
+/* Paused badge in breadcrumb */
+
+.pausedBadge {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-amber);
+  background: color-mix(in srgb, var(--color-amber) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-amber) 15%, transparent);
+  padding: 0 var(--space-2);
+  border-radius: 4px;
+}
+
 /* Actions */
 
 .actions {
@@ -122,6 +134,62 @@
   cursor: not-allowed;
 }
 
+/* Pause button */
+
+.pauseButton {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  padding: var(--space-1) var(--space-3);
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--color-amber) 40%, transparent);
+  background: color-mix(in srgb, var(--color-amber) 12%, transparent);
+  color: var(--color-amber);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out);
+}
+
+.pauseButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-amber) 20%, transparent);
+  border-color: color-mix(in srgb, var(--color-amber) 60%, transparent);
+}
+
+.pauseButton:disabled {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: var(--border-subtle);
+  cursor: not-allowed;
+}
+
+/* Resume button */
+
+.resumeButton {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  padding: var(--space-1) var(--space-3);
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--color-green) 40%, transparent);
+  background: color-mix(in srgb, var(--color-green) 12%, transparent);
+  color: var(--color-green);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out);
+}
+
+.resumeButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-green) 20%, transparent);
+  border-color: color-mix(in srgb, var(--color-green) 60%, transparent);
+}
+
+.resumeButton:disabled {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: var(--border-subtle);
+  cursor: not-allowed;
+}
+
 /* Save button */
 
 .saveButton {
@@ -170,4 +238,3 @@
   background: color-mix(in srgb, var(--color-red) 10%, transparent);
   border-color: color-mix(in srgb, var(--color-red) 60%, transparent);
 }
-

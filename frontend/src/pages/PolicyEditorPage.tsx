@@ -13,8 +13,7 @@ import { ConcurrencySection } from '@/components/PolicyEditor/FormMode/Concurren
 import { ModelSection } from '@/components/PolicyEditor/FormMode/ModelSection'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { usePolicy, usePolicies } from '@/hooks/queries/policies'
-import { useSavePolicy } from '@/hooks/mutations/policies'
-import { useDeletePolicy } from '@/hooks/mutations/policies'
+import { useSavePolicy, useDeletePolicy, usePausePolicy, useResumePolicy } from '@/hooks/mutations/policies'
 import { ApiError } from '@/api/fetch'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import NotFoundPage from '@/pages/NotFoundPage'
@@ -29,6 +28,8 @@ export function PolicyEditorPage() {
   const { data: allPolicies } = usePolicies()
   const savePolicy = useSavePolicy()
   const deletePolicy = useDeletePolicy()
+  const pausePolicy = usePausePolicy()
+  const resumePolicy = useResumePolicy()
 
   const existingFolders: string[] = allPolicies
     ? [...new Set(allPolicies.map((p) => p.folder).filter((f): f is string => Boolean(f)))]
@@ -116,6 +117,16 @@ export function PolicyEditorPage() {
     }
   }
 
+  async function handlePause() {
+    if (!id) return
+    try { await pausePolicy.mutateAsync(id) } catch { /* error surface handled by TanStack Query */ }
+  }
+
+  async function handleResume() {
+    if (!id) return
+    try { await resumePolicy.mutateAsync(id) } catch { /* error surface handled by TanStack Query */ }
+  }
+
   // Stable ref so the keydown listener always calls the current handleSave
   // without needing to re-register on every render (same pattern as YamlEditor.tsx)
   const handleSaveRef = useRef(handleSave)
@@ -185,10 +196,14 @@ export function PolicyEditorPage() {
         mode={mode}
         canSave={canSave}
         isEditMode={Boolean(id)}
+        pausedAt={policy?.paused_at}
+        isPauseResumeLoading={pausePolicy.isPending || resumePolicy.isPending}
         onModeChange={handleModeChange}
         onSave={handleSave}
         onDeleteClick={() => setDeleteModalOpen(true)}
         onRunNowClick={isManualTrigger ? () => setTriggerModalOpen(true) : undefined}
+        onPauseClick={id ? handlePause : undefined}
+        onResumeClick={id ? handleResume : undefined}
       />
       {deleteModalOpen && id && (
         <DeleteAgentModal

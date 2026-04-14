@@ -34,7 +34,7 @@ vi.mock('@/components/PolicyEditor/YamlEditor/YamlEditor', () => ({
 }))
 
 import { usePolicy, usePolicies } from '@/hooks/queries/policies'
-import { useSavePolicy, useDeletePolicy, useTriggerPolicy } from '@/hooks/mutations/policies'
+import { useSavePolicy, useDeletePolicy, useTriggerPolicy, usePausePolicy, useResumePolicy } from '@/hooks/mutations/policies'
 import { useMcpServers } from '@/hooks/queries/servers'
 
 // --- Fixtures ---
@@ -138,6 +138,16 @@ function mockHooksDefault() {
     isPending: false,
     error: null,
   } as unknown as ReturnType<typeof useTriggerPolicy>)
+
+  vi.mocked(usePausePolicy).mockReturnValue({
+    mutateAsync: vi.fn().mockResolvedValue(undefined),
+    isPending: false,
+  } as unknown as ReturnType<typeof usePausePolicy>)
+
+  vi.mocked(useResumePolicy).mockReturnValue({
+    mutateAsync: vi.fn().mockResolvedValue(undefined),
+    isPending: false,
+  } as unknown as ReturnType<typeof useResumePolicy>)
 
   vi.mocked(useMcpServers).mockReturnValue({
     data: [],
@@ -314,6 +324,16 @@ describe('PolicyEditorPage — dirty state and save', () => {
       isPending: false,
       error: null,
     } as unknown as ReturnType<typeof useTriggerPolicy>)
+
+    vi.mocked(usePausePolicy).mockReturnValue({
+      mutateAsync: vi.fn().mockResolvedValue(undefined),
+      isPending: false,
+    } as unknown as ReturnType<typeof usePausePolicy>)
+
+    vi.mocked(useResumePolicy).mockReturnValue({
+      mutateAsync: vi.fn().mockResolvedValue(undefined),
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumePolicy>)
 
     vi.mocked(useMcpServers).mockReturnValue({
       data: [],

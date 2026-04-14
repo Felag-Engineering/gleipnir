@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/db"
@@ -176,6 +177,22 @@ func TestManualTriggerHandler(t *testing.T) {
 			policyID:   "mp-replace",
 			body:       `{"message": "test"}`,
 			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "409 when policy is paused",
+			setup: func(t *testing.T, store *db.Store) {
+				insertTestManualPolicy(t, store, "mp-paused", minimalManualPolicy)
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				if err := store.SetPolicyPausedAt(context.Background(), db.SetPolicyPausedAtParams{
+					PausedAt: &now,
+					ID:       "mp-paused",
+				}); err != nil {
+					t.Fatalf("SetPolicyPausedAt: %v", err)
+				}
+			},
+			policyID:   "mp-paused",
+			body:       `{"message": "test"}`,
+			wantStatus: http.StatusConflict,
 		},
 	}
 

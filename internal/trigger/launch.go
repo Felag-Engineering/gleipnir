@@ -27,6 +27,11 @@ func fetchAndParsePolicy(ctx context.Context, w http.ResponseWriter, store *db.S
 		return nil
 	}
 
+	if dbPolicy.PausedAt != nil {
+		httputil.WriteError(w, http.StatusConflict, "policy is paused", "")
+		return nil
+	}
+
 	parsed, err := policy.Parse(dbPolicy.Yaml, model.DefaultProvider, model.DefaultModelName)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse policy", "")

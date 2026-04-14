@@ -35,7 +35,7 @@ func NewWebhookHandler(store *db.Store, launcher *run.RunLauncher) *WebhookHandl
 // Responds 202 Accepted with {"data": {"queued": true}} when enqueued (concurrency: queue).
 // Responds 400 if the request body is not valid JSON.
 // Responds 404 if the policy does not exist.
-// Responds 409 if the concurrency policy is skip and a run is already active.
+// Responds 409 if the policy is paused or the concurrency policy is skip and a run is already active.
 // Responds 429 if the trigger queue is full (concurrency: queue).
 func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	policyID := chi.URLParam(r, "policyID")
