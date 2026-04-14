@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
-import { Activity, Bot, ChevronLeft, ChevronRight, ChevronUp, Cpu, History, Settings2, Users, Wrench } from 'lucide-react'
+import { Activity, Bot, ChevronUp, Cpu, History, Settings2, Users, Wrench } from 'lucide-react'
+import { Logo } from '@/components/Logo/Logo'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useSSE } from '@/hooks/useSSE'
 import { useCurrentUser } from '@/hooks/queries/users'
@@ -7,8 +8,6 @@ import { useAttentionItems } from '@/hooks/useAttentionItems'
 import { useMcpServers } from '@/hooks/queries/servers'
 import { UserMenu } from './UserMenu'
 import styles from './Layout.module.css'
-
-const SIDEBAR_STORAGE_KEY = 'gleipnir-sidebar-collapsed'
 
 const NAV_ITEMS = [
   { label: 'Control Center', to: '/dashboard', Icon: Activity },
@@ -34,29 +33,8 @@ export default function Layout() {
 
   const hasPendingApprovals = (attentionItems?.length ?? 0) > 0
   const hasUnhealthyServers = mcpServers?.some(s => s.last_discovered_at === null) ?? false
-  const unhealthyCount = mcpServers?.filter(s => s.last_discovered_at === null).length ?? 0
-
-  // Synchronous localStorage read to avoid layout shift on page load
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'true'
-    } catch {
-      return false
-    }
-  })
-
-  function toggleCollapsed() {
-    const next = !collapsed
-    setCollapsed(next)
-    try {
-      localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next))
-    } catch {
-      // localStorage may be unavailable in private browsing
-    }
-  }
 
   function navLinkClass(to: string, statusClass?: string): string {
-    // /agents matches all nested routes; admin routes match their sub-paths
     const active =
       to === '/agents' ? location.pathname.startsWith('/agents')
       : to === '/admin/users' ? location.pathname.startsWith('/admin/users')
@@ -67,34 +45,11 @@ export default function Layout() {
     return statusClass ? `${base} ${statusClass}` : base
   }
 
-  function navTitle(label: string, to: string): string | undefined {
-    if (!collapsed) return undefined
-    if (to === '/dashboard' && hasPendingApprovals) {
-      const n = attentionItems.length
-      return `Control Center — ${n} item${n > 1 ? 's' : ''} need attention`
-    }
-    if (to === '/tools' && hasUnhealthyServers) {
-      return `Tools — ${unhealthyCount} MCP server${unhealthyCount > 1 ? 's' : ''} unreachable`
-    }
-    return label
-  }
-
   return (
     <div className={styles.layout}>
-      <aside className={collapsed ? `${styles.sidebar} ${styles.sidebarCollapsed}` : styles.sidebar}>
-        <div className={styles.sidebarHeader}>
-          <span className={collapsed ? `${styles.wordmark} ${styles.wordmarkHidden}` : styles.wordmark}>
-            GLEIPNIR
-          </span>
-          <button
-            className={styles.collapseButton}
-            onClick={toggleCollapsed}
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            {collapsed
-              ? <ChevronRight size={16} aria-hidden strokeWidth={1.5} />
-              : <ChevronLeft size={16} aria-hidden strokeWidth={1.5} />}
-          </button>
+      <aside className={styles.sidebar}>
+        <div className={styles.sidebarBrand}>
+          <Logo variant="sidebar" />
         </div>
 
         <nav className={styles.nav} aria-label="Main navigation">
@@ -109,14 +64,11 @@ export default function Layout() {
                 key={to}
                 to={to}
                 className={() => navLinkClass(to, statusClass)}
-                title={navTitle(label, to)}
               >
                 <span className={styles.navIcon}>
                   <Icon size={20} aria-hidden strokeWidth={1.5} />
                 </span>
-                <span className={collapsed ? `${styles.navLabel} ${styles.navLabelHidden}` : styles.navLabel}>
-                  {label}
-                </span>
+                <span className={styles.navLabel}>{label}</span>
               </NavLink>
             )
           })}
@@ -130,14 +82,11 @@ export default function Layout() {
                   key={to}
                   to={to}
                   className={() => navLinkClass(to)}
-                  title={collapsed ? label : undefined}
                 >
                   <span className={styles.navIcon}>
                     <Icon size={20} aria-hidden strokeWidth={1.5} />
                   </span>
-                  <span className={collapsed ? `${styles.navLabel} ${styles.navLabelHidden}` : styles.navLabel}>
-                    {label}
-                  </span>
+                  <span className={styles.navLabel}>{label}</span>
                 </NavLink>
               ))}
             </>
@@ -150,7 +99,7 @@ export default function Layout() {
             onClose={handleMenuClose}
           />
           <div
-            className={collapsed ? `${styles.sidebarFooter} ${styles.sidebarFooterCollapsed}` : styles.sidebarFooter}
+            className={styles.sidebarFooter}
             role="button"
             tabIndex={0}
             onClick={() => setMenuOpen(prev => !prev)}
@@ -159,25 +108,21 @@ export default function Layout() {
             aria-expanded={menuOpen}
             aria-haspopup="menu"
           >
-            <div className={collapsed ? `${styles.userAvatar} ${styles.userAvatarCollapsed}` : styles.userAvatar}>
+            <div className={styles.userAvatar}>
               {(currentUser?.username?.[0] ?? '?').toUpperCase()}
-              <span className={collapsed ? `${styles.onlineDot} ${styles.onlineDotCollapsed}` : styles.onlineDot} aria-hidden="true" />
+              <span className={styles.onlineDot} aria-hidden="true" />
             </div>
-            {!collapsed && (
-              <>
-                <div className={styles.userInfo}>
-                  <span className={styles.userName}>{currentUser?.username ?? 'User'}</span>
-                  <span className={styles.userRole}>
-                    {currentUser?.roles?.[0]
-                      ? currentUser.roles[0].charAt(0).toUpperCase() + currentUser.roles[0].slice(1)
-                      : 'User'}
-                  </span>
-                </div>
-                <span className={menuOpen ? `${styles.menuChevron} ${styles.menuChevronOpen}` : styles.menuChevron} aria-hidden="true">
-                  <ChevronUp size={16} strokeWidth={1.5} />
-                </span>
-              </>
-            )}
+            <div className={styles.userInfo}>
+              <span className={styles.userName}>{currentUser?.username ?? 'User'}</span>
+              <span className={styles.userRole}>
+                {currentUser?.roles?.[0]
+                  ? currentUser.roles[0].charAt(0).toUpperCase() + currentUser.roles[0].slice(1)
+                  : 'User'}
+              </span>
+            </div>
+            <span className={menuOpen ? `${styles.menuChevron} ${styles.menuChevronOpen}` : styles.menuChevron} aria-hidden="true">
+              <ChevronUp size={16} strokeWidth={1.5} />
+            </span>
           </div>
         </div>
       </aside>

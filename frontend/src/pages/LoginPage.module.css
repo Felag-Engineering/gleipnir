@@ -19,14 +19,10 @@
     0 1px 4px rgba(0, 0, 0, 0.08);
 }
 
-.wordmark {
-  font-family: var(--font-mono);
-  font-size: var(--text-xl);
-  font-weight: var(--weight-bold);
-  color: var(--color-blue);
-  letter-spacing: 0.1em;
-  text-align: center;
-  margin: 0 0 var(--space-8) 0;
+.logoWrapper {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 var(--space-6) 0;
 }
 
 .form {

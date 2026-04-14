@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/Button/Button'
+import { Logo } from '@/components/Logo/Logo'
 import { login, getAuthStatus } from '@/api/auth'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import styles from './LoginPage.module.css'
@@ -42,7 +43,9 @@ export default function LoginPage() {
   return (
     <div className={styles.page}>
       <div className={styles.card}>
-        <h1 className={styles.wordmark}>GLEIPNIR</h1>
+        <div className={styles.logoWrapper}>
+          <Logo variant="login" />
+        </div>
         <form className={styles.form} onSubmit={handleSubmit}>
           <div className={styles.field}>
             <label htmlFor="username" className={styles.label}>

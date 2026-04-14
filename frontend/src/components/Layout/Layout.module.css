@@ -16,96 +16,19 @@
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-subtle);
   flex-shrink: 0;
-  transition: width var(--duration-normal) var(--ease-out);
   overflow: hidden;
   z-index: 100;
 }
 
-.sidebarCollapsed {
-  width: var(--sidebar-collapsed);
-}
+/* ---- Sidebar brand (logo) ---- */
 
-/* Collapsed overrides — center icons and reposition accent bar */
-.sidebarCollapsed .sidebarHeader {
-  justify-content: center;
-  padding: 0;
-}
-
-.sidebarCollapsed .navLink {
-  margin: 0 4px;
-  padding: var(--space-2) 0;
-  justify-content: center;
-  gap: 0;
-}
-
-.sidebarCollapsed .navLinkActive::before {
-  left: -4px;
-  top: 6px;
-  bottom: 6px;
-}
-
-/* Remove the inset box-shadow in collapsed mode — it crowds the small icon cell */
-:global(:root[data-theme="light"]) .sidebarCollapsed .navLinkActive,
-:global(:root[data-theme="system"]) .sidebarCollapsed .navLinkActive {
-  box-shadow: none;
-}
-
-.sidebarCollapsed .collapseButton {
-  margin: 0 auto;
-}
-
-/* ---- Sidebar header ---- */
-
-.sidebarHeader {
+.sidebarBrand {
   display: flex;
-  flex-direction: row;
   align-items: center;
-  height: 48px;
-  padding: 0 var(--space-3);
-  gap: var(--space-3);
+  justify-content: center;
+  padding: var(--space-5) var(--space-3);
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
-}
-
-.wordmark {
-  font-family: var(--font-mono);
-  font-weight: var(--weight-bold);
-  font-size: var(--text-sm);
-  letter-spacing: 0.06em;
-  color: var(--text-primary);
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  opacity: 1;
-  transition:
-    opacity var(--duration-normal) var(--ease-out),
-    width var(--duration-normal) var(--ease-out);
-}
-
-.wordmarkHidden {
-  opacity: 0;
-  width: 0;
-  flex: none;
-}
-
-.collapseButton {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  background: none;
-  border: none;
-  border-radius: 4px;
-  color: var(--text-muted);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out);
-}
-
-.collapseButton:hover {
-  color: var(--text-second);
-  background: var(--bg-elevated);
 }
 
 /* ---- Nav ---- */
@@ -115,7 +38,7 @@
   flex-direction: column;
   flex: 1;
   gap: var(--space-1);
-  padding: var(--space-2) 0;
+  padding: var(--space-3) 0;
 }
 
 .navLink {
@@ -158,8 +81,7 @@
   border-radius: 0 2px 2px 0;
 }
 
-/* Light theme: stronger highlight on parchment sidebar — use box-shadow
-   instead of border so collapsed sidebar layout isn't affected */
+/* Light theme: stronger highlight on parchment sidebar */
 :global(:root[data-theme="light"]) .navLinkActive,
 :global(:root[data-theme="system"]) .navLinkActive {
   background: color-mix(in srgb, var(--color-blue) 24%, transparent);
@@ -181,14 +103,7 @@
 }
 
 .navLabel {
-  opacity: 1;
   overflow: hidden;
-  transition: opacity var(--duration-normal) var(--ease-out);
-}
-
-.navLabelHidden {
-  opacity: 0;
-  width: 0;
 }
 
 /* ---- Sidebar footer ---- */
@@ -214,11 +129,6 @@
   background: var(--bg-elevated);
 }
 
-.sidebarFooterCollapsed {
-  padding: 12px 0;
-  justify-content: center;
-}
-
 .userAvatar {
   width: 28px;
   height: 28px;
@@ -234,11 +144,6 @@
   flex-shrink: 0;
 }
 
-.userAvatarCollapsed {
-  width: 24px;
-  height: 24px;
-}
-
 .onlineDot {
   position: absolute;
   bottom: -1px;
@@ -249,12 +154,6 @@
   background: var(--color-green);
   border: 2px solid var(--bg-sidebar);
   box-shadow: 0 0 8px color-mix(in srgb, var(--color-green) 50%, transparent);
-}
-
-.onlineDotCollapsed {
-  width: 6px;
-  height: 6px;
-  border-width: 1.5px;
 }
 
 .userInfo {
@@ -303,7 +202,6 @@
 
 /* ---- Nav-level status indicators ---- */
 
-/* Opacity breathes between 1.0 and 0.4 — visible but not aggressive */
 @keyframes statusPulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
@@ -348,8 +246,10 @@
 
 .navSectionHeader {
   padding: 0 var(--space-4);
-  margin-top: var(--space-3);
+  margin-top: var(--space-4);
   margin-bottom: var(--space-1);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-3);
 }
 
 .navSectionLabel {
@@ -357,22 +257,16 @@
   font-weight: var(--weight-semibold);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-faint);
-}
-
-.sidebarCollapsed .navSectionHeader {
-  display: none;
+  color: var(--text-muted);
 }
 
 /* ---- Disconnect banner (content area) ---- */
 
-/* Slides in from the top when connection is lost */
 @keyframes slideDown {
   from { transform: translateY(-100%); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
 }
 
-/* Pulse for the dot indicator — defined locally to stay self-contained */
 @keyframes disconnectPulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.2; }
@@ -436,36 +330,4 @@
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
-}
-
-/* ---- Responsive: auto-collapse below 768px ---- */
-
-@media (max-width: 768px) {
-  .sidebar {
-    width: var(--sidebar-collapsed);
-  }
-
-  .wordmark {
-    opacity: 0;
-    width: 0;
-    flex: none;
-  }
-
-  .navLabel {
-    opacity: 0;
-    width: 0;
-  }
-
-  .collapseButton {
-    display: none;
-  }
-
-  .userInfo,
-  .menuChevron {
-    display: none;
-  }
-
-  .sidebarFooter {
-    justify-content: center;
-  }
 }

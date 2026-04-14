@@ -1,0 +1,55 @@
+.logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.sidebarSize {
+  width: 112px;
+  height: 112px;
+}
+
+.loginSize {
+  width: 128px;
+  height: 128px;
+}
+
+/* Light theme (default): show light logo, hide dark */
+.lightLogo {
+  display: block;
+}
+
+.darkLogo {
+  display: none;
+}
+
+/* Dark theme: show dark logo, hide light */
+:global(:root[data-theme="dark"]) .lightLogo,
+:global(:root[data-theme="dark"]) .logo .lightLogo {
+  display: none;
+}
+
+:global(:root[data-theme="dark"]) .darkLogo,
+:global(:root[data-theme="dark"]) .logo .darkLogo {
+  display: block;
+}
+
+/* System theme: follow OS preference */
+@media (prefers-color-scheme: dark) {
+  :global(:root[data-theme="system"]) .lightLogo,
+  :global(:root[data-theme="system"]) .logo .lightLogo {
+    display: none;
+  }
+
+  :global(:root[data-theme="system"]) .darkLogo,
+  :global(:root[data-theme="system"]) .logo .darkLogo {
+    display: block;
+  }
+}

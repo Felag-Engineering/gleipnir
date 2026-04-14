@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/Button/Button'
+import { Logo } from '@/components/Logo/Logo'
 import { setup } from '@/api/auth'
 import styles from './SetupPage.module.css'
 
@@ -39,7 +40,9 @@ export default function SetupPage() {
   return (
     <div className={styles.page}>
       <div className={styles.card}>
-        <h1 className={styles.wordmark}>GLEIPNIR</h1>
+        <div className={styles.logoWrapper}>
+          <Logo variant="login" />
+        </div>
         <p className={styles.subtitle}>Create your admin account</p>
         <form className={styles.form} onSubmit={handleSubmit}>
           <div className={styles.field}>

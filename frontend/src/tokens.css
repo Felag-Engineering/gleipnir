@@ -41,8 +41,7 @@
   --color-feedback: var(--color-purple);
 
   /* Sidebar dimensions */
-  --sidebar-width: 232px;
-  --sidebar-collapsed: 48px;
+  --sidebar-width: 212px;
 
   /* Spacing (4px base) */
   --space-1: 4px;

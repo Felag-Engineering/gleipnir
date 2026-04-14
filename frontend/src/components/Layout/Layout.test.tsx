@@ -43,7 +43,6 @@ function renderLayout(initialPath = '/dashboard') {
 
 describe('Layout', () => {
   beforeEach(() => {
-    localStorage.clear()
     vi.mocked(useSSE).mockReturnValue({ connectionState: 'connected' })
     vi.mocked(useCurrentUser).mockReturnValue({ data: { id: '1', username: 'alice', roles: ['admin'] } } as ReturnType<typeof useCurrentUser>)
     vi.mocked(useAttentionItems).mockReturnValue({ items: [], count: 0, isLoading: false, dismissFailure: vi.fn() })
@@ -56,34 +55,10 @@ describe('Layout', () => {
     expect(screen.getByRole('link', { name: /run history/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /agents/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /tools/i })).toBeInTheDocument()
-    // Admin section visible for admin users (both nav header and footer role show 'Admin')
     expect(screen.getAllByText('Admin').length).toBeGreaterThanOrEqual(2)
     expect(screen.getByRole('link', { name: /users/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /models/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /system/i })).toBeInTheDocument()
-  })
-
-  it('sidebar is expanded by default when no localStorage value', () => {
-    renderLayout()
-    const sidebar = screen.getByRole('complementary')
-    expect(sidebar.className).not.toContain('sidebarCollapsed')
-  })
-
-  it('reads collapsed state from localStorage', () => {
-    localStorage.setItem('gleipnir-sidebar-collapsed', 'true')
-    renderLayout()
-    const sidebar = screen.getByRole('complementary')
-    expect(sidebar.className).toContain('sidebarCollapsed')
-  })
-
-  it('toggle button persists state to localStorage', () => {
-    renderLayout()
-    const toggle = screen.getByRole('button', { name: /collapse sidebar/i })
-    fireEvent.click(toggle)
-    expect(localStorage.getItem('gleipnir-sidebar-collapsed')).toBe('true')
-
-    fireEvent.click(screen.getByRole('button', { name: /expand sidebar/i }))
-    expect(localStorage.getItem('gleipnir-sidebar-collapsed')).toBe('false')
   })
 
   it('active nav item has active class', () => {
@@ -102,11 +77,8 @@ describe('Layout', () => {
 
   it('footer renders user avatar with initial, username, and role', () => {
     renderLayout()
-    // Avatar initial is the first letter of 'alice', uppercased
     expect(screen.getByText('A')).toBeInTheDocument()
     expect(screen.getByText('alice')).toBeInTheDocument()
-    // Role 'admin' is capitalized to 'Admin' in the footer.
-    // 'Admin' also appears as the nav section header, so use getAllByText.
     const adminTexts = screen.getAllByText('Admin')
     expect(adminTexts.length).toBeGreaterThanOrEqual(1)
   })
@@ -115,30 +87,14 @@ describe('Layout', () => {
     renderLayout()
     const footer = screen.getByRole('button', { name: /user menu/i })
     fireEvent.click(footer)
-    // Menu should appear with Settings and Log out (System Settings was removed)
     expect(screen.getByRole('menuitem', { name: /^settings$/i })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: /log out/i })).toBeInTheDocument()
-  })
-
-  it('collapsed footer shows only avatar initial, hides username and role', () => {
-    localStorage.setItem('gleipnir-sidebar-collapsed', 'true')
-    renderLayout()
-    // Avatar initial should still be visible
-    expect(screen.getByText('A')).toBeInTheDocument()
-    // Username and role should not be rendered when collapsed
-    expect(screen.queryByText('alice')).not.toBeInTheDocument()
-    // Note: 'Admin' text exists in the nav section header but is hidden via
-    // display:none when collapsed. queryByText still finds it in the DOM.
-    // We check the user role text is gone by verifying the footer structure instead.
   })
 
   it('footer shows fallback avatar and text when user is loading', () => {
     vi.mocked(useCurrentUser).mockReturnValue({ data: undefined, isLoading: true } as ReturnType<typeof useCurrentUser>)
     renderLayout()
-    // When currentUser is undefined, avatar shows '?'
     expect(screen.getByText('?')).toBeInTheDocument()
-    // Both name and role fall back to 'User'
-    // There will be two 'User' elements — one for name, one for role
     const userFallbacks = screen.getAllByText('User')
     expect(userFallbacks.length).toBeGreaterThanOrEqual(2)
   })

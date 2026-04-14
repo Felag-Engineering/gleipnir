@@ -16,12 +16,9 @@
   padding: var(--space-8);
 }
 
-.wordmark {
-  font-size: var(--text-lg);
-  font-weight: var(--weight-bold);
-  color: var(--text-primary);
-  letter-spacing: 0.1em;
-  text-align: center;
+.logoWrapper {
+  display: flex;
+  justify-content: center;
   margin: 0 0 var(--space-2) 0;
 }
 

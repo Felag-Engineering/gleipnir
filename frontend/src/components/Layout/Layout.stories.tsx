@@ -16,9 +16,6 @@ function PageContent({ title }: { title: string }) {
   )
 }
 
-// Builds a QueryClient pre-seeded with specific Layout data. When an override
-// is omitted the corresponding query remains empty, so MSW global handlers
-// will provide the response instead.
 function makeLayoutQueryClient(overrides?: {
   currentUser?: { id: string; username: string; roles: string[] }
   attentionItems?: unknown[]
@@ -37,11 +34,6 @@ function makeLayoutQueryClient(overrides?: {
   return qc
 }
 
-// SidebarStory wraps Layout in the full router + query provider scaffolding.
-// When queryClient is provided the story uses pre-seeded data; when omitted
-// a fresh empty QueryClient is created so MSW global handlers supply the
-// responses. A new instance on each render prevents cached data from leaking
-// between stories when navigating in Storybook.
 function SidebarStory({
   initialPath = '/dashboard',
   queryClient,
@@ -77,30 +69,13 @@ const meta: Meta = {
   parameters: {
     layout: 'fullscreen',
   },
-  // Clear sidebar collapse state before each story so stories don't leak into each other
-  loaders: [
-    async () => {
-      localStorage.removeItem('gleipnir-sidebar-collapsed')
-      return {}
-    },
-  ],
 }
 
 export default meta
 type Story = StoryObj
 
-export const Expanded: Story = {
+export const Default: Story = {
   render: () => <SidebarStory initialPath="/dashboard" />,
-}
-
-export const Collapsed: Story = {
-  render: () => <SidebarStory initialPath="/dashboard" />,
-  loaders: [
-    async () => {
-      localStorage.setItem('gleipnir-sidebar-collapsed', 'true')
-      return {}
-    },
-  ],
 }
 
 export const ActiveRuns: Story = {
@@ -149,11 +124,6 @@ export const WithBothAlerts: Story = {
   ),
 }
 
-// In Storybook, EventSource connections always fail because there is no
-// backing server. The useSSE hook enters reconnecting state naturally, so
-// both Disconnected and Reconnecting stories show the same reconnecting UI.
-// True disconnected state would require making SSE state injectable into the
-// component, which is outside this issue's scope.
 export const Disconnected: Story = {
   render: () => <SidebarStory initialPath="/dashboard" />,
 }
@@ -171,23 +141,6 @@ export const AdminUser: Story = {
       })}
     />
   ),
-}
-
-export const AdminUserCollapsed: Story = {
-  render: () => (
-    <SidebarStory
-      initialPath="/dashboard"
-      queryClient={makeLayoutQueryClient({
-        currentUser: { id: '1', username: 'admin', roles: ['admin'] },
-      })}
-    />
-  ),
-  loaders: [
-    async () => {
-      localStorage.setItem('gleipnir-sidebar-collapsed', 'true')
-      return {}
-    },
-  ],
 }
 
 export const ActiveAdminUsers: Story = {
@@ -210,22 +163,4 @@ export const ActiveAdminSystem: Story = {
       })}
     />
   ),
-}
-
-export const CollapsedWithAlerts: Story = {
-  render: () => (
-    <SidebarStory
-      initialPath="/dashboard"
-      queryClient={makeLayoutQueryClient({
-        attentionItems: [{} as never, {} as never],
-        servers: [{ id: '1', url: 'http://example.com', last_discovered_at: null }],
-      })}
-    />
-  ),
-  loaders: [
-    async () => {
-      localStorage.setItem('gleipnir-sidebar-collapsed', 'true')
-      return {}
-    },
-  ],
 }
