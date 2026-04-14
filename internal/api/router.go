@@ -49,6 +49,7 @@ type RouterConfig struct {
 // catch-alls, and the SPA handler is always last.
 func BuildRouter(cfg RouterConfig) chi.Router {
 	r := chi.NewRouter()
+	r.Use(httputil.SecurityHeaders)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)

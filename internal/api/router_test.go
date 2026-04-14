@@ -101,6 +101,44 @@ func testSSERoute(t *testing.T, router http.Handler) {
 	})
 }
 
+// TestSecurityHeaders verifies that the SecurityHeaders middleware is wired into
+// BuildRouter and fires on real routes — both an API endpoint and the SPA catch-all.
+// Exact header values are validated in the unit tests in internal/httputil.
+func TestSecurityHeaders(t *testing.T) {
+	router := buildTestRouter(t)
+
+	routes := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"API endpoint", http.MethodGet, "/api/v1/health"},
+		{"SPA catch-all", http.MethodGet, "/some-frontend-route"},
+	}
+
+	securityHeaders := []string{
+		"X-Content-Type-Options",
+		"X-Frame-Options",
+		"Referrer-Policy",
+		"Permissions-Policy",
+		"Content-Security-Policy",
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			req := httptest.NewRequest(route.method, route.path, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			for _, header := range securityHeaders {
+				if got := w.Header().Get(header); got == "" {
+					t.Errorf("route %s: header %q is missing", route.path, header)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildRouter(t *testing.T) {
 	cases := []struct {
 		name            string
