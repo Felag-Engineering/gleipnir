@@ -51,6 +51,13 @@ function buildChartData(data: ApiTimeSeriesResponse | undefined): ChartRow[] {
   }))
 }
 
+// isAllZero returns true when every bucket has zero across all three series,
+// which means there's nothing meaningful to chart.
+function isAllZero(rows: ChartRow[]): boolean {
+  if (rows.length === 0) return true
+  return rows.every(r => r.completed === 0 && r.approval === 0 && r.failed === 0)
+}
+
 // Legend component that shows colored swatch + label + 24h total count.
 function ChartLegend({ rows }: { rows: ChartRow[] }) {
   const total = (key: keyof Omit<ChartRow, 'time'>) =>
@@ -77,6 +84,7 @@ function ChartLegend({ rows }: { rows: ChartRow[] }) {
 
 export function RunActivityChart({ data, isLoading }: RunActivityChartProps) {
   const rows = buildChartData(data)
+  const empty = isAllZero(rows)
 
   return (
     <div className={styles.panel}>
@@ -88,6 +96,8 @@ export function RunActivityChart({ data, isLoading }: RunActivityChartProps) {
       <div className={styles.chartArea}>
         {isLoading ? (
           <div className={styles.skeleton} />
+        ) : empty ? (
+          <div className={styles.emptyState}>No runs in the last 24h</div>
         ) : (
           <ResponsiveContainer width="100%" height={160}>
             <AreaChart data={rows} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>

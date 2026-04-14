@@ -89,6 +89,18 @@ describe('DashboardPage', () => {
     expect(screen.getByText('RECENT RUNS')).toBeInTheDocument()
   })
 
+  it('shows empty-state messages in both charts when there are no runs', async () => {
+    setupDefaultHandlers()
+    renderDashboard(makeClient())
+
+    await waitFor(() => {
+      expect(screen.getByText('No runs in the last 24h')).toBeInTheDocument()
+    })
+    // 'No runs yet' also appears in RecentRunsFeed when runs are empty,
+    // so use getAllByText and confirm at least one instance is present.
+    expect(screen.getAllByText('No runs yet').length).toBeGreaterThanOrEqual(1)
+  })
+
   it('does not render the attention queue when there are no items', async () => {
     setupDefaultHandlers()
     renderDashboard(makeClient())

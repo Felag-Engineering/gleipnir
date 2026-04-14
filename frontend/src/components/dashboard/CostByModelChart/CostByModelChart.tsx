@@ -106,6 +106,7 @@ function CostLegend({ rows, models }: { rows: ChartRow[]; models: string[] }) {
 
 export function CostByModelChart({ data, isLoading }: CostByModelChartProps) {
   const { rows, models } = buildChartData(data)
+  const empty = models.length === 0
 
   return (
     <div className={styles.panel}>
@@ -117,6 +118,8 @@ export function CostByModelChart({ data, isLoading }: CostByModelChartProps) {
       <div className={styles.chartArea}>
         {isLoading ? (
           <div className={styles.skeleton} />
+        ) : empty ? (
+          <div className={styles.emptyState}>No runs yet</div>
         ) : (
           <ResponsiveContainer width="100%" height={160}>
             <AreaChart data={rows} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
@@ -182,7 +185,7 @@ export function CostByModelChart({ data, isLoading }: CostByModelChartProps) {
         )}
       </div>
 
-      <CostLegend rows={rows} models={models} />
+      {!empty && <CostLegend rows={rows} models={models} />}
     </div>
   )
 }
