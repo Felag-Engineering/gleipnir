@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/event"
 	"github.com/rapp992/gleipnir/internal/logctx"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/runstate"
@@ -21,7 +22,7 @@ type RunStateMachine struct {
 	current   model.RunStatus
 	mu        sync.Mutex
 	queries   *db.Queries
-	publisher Publisher
+	publisher event.Publisher
 }
 
 // StateMachineOption configures a RunStateMachine at construction time.
@@ -29,7 +30,7 @@ type StateMachineOption func(*RunStateMachine)
 
 // WithStateMachinePublisher injects a Publisher that receives run.status_changed
 // events after each successful transition.
-func WithStateMachinePublisher(p Publisher) StateMachineOption {
+func WithStateMachinePublisher(p event.Publisher) StateMachineOption {
 	return func(sm *RunStateMachine) {
 		sm.publisher = p
 	}

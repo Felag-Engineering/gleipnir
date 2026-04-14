@@ -33,7 +33,7 @@ func buildSSERouter(t *testing.T, policyID string, llmClient llm.LLMClient, broa
 	insertTestPolicy(t, store, policyID, integrationPolicy)
 
 	manager := run.NewRunManager()
-	factory := run.AgentFactory(func(cfg agent.Config) (agent.Runner, error) {
+	factory := run.AgentFactory(func(cfg agent.Config) (*agent.BoundAgent, error) {
 		cfg.LLMClient = llmClient
 		return agent.New(cfg)
 	})

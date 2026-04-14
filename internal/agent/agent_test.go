@@ -13,13 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/approval"
 	"github.com/rapp992/gleipnir/internal/db"
-	feedbackscanner "github.com/rapp992/gleipnir/internal/feedback"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
+	"github.com/rapp992/gleipnir/internal/timeout"
 )
 
 // makeToolCallServer starts an httptest.Server that responds to tools/call
@@ -2359,7 +2358,7 @@ func TestWaitForApproval_ScannerWins(t *testing.T) {
 	}
 
 	// Drive the scanner synchronously. It wins the guarded UPDATE (rows=1).
-	sc := approval.NewScanner(s, time.Minute, approval.WithPublisher(pub))
+	sc := timeout.NewApprovalScanner(s, time.Minute, timeout.WithPublisher(pub))
 	if err := sc.Scan(context.Background()); err != nil {
 		t.Fatalf("scanner.Scan: %v", err)
 	}
@@ -2469,7 +2468,7 @@ func TestWaitForFeedback_ScannerWins(t *testing.T) {
 	}
 
 	// Drive the scanner synchronously. It wins the guarded UPDATE (rows=1).
-	sc := feedbackscanner.NewScanner(s, time.Minute, feedbackscanner.WithPublisher(pub))
+	sc := timeout.NewFeedbackScanner(s, time.Minute, timeout.WithPublisher(pub))
 	if err := sc.Scan(context.Background()); err != nil {
 		t.Fatalf("scanner.Scan: %v", err)
 	}
@@ -2547,7 +2546,7 @@ func TestWaitForFeedback_ResponseWins(t *testing.T) {
 	// The feedback row is still 'pending' (the handler updates it, not waitForFeedback).
 	// Verify the scanner does nothing when it runs — no error steps, no events.
 	pub := &capturePublisher{}
-	sc := feedbackscanner.NewScanner(s, time.Minute, feedbackscanner.WithPublisher(pub))
+	sc := timeout.NewFeedbackScanner(s, time.Minute, timeout.WithPublisher(pub))
 	if err := sc.Scan(context.Background()); err != nil {
 		t.Fatalf("scanner.Scan after response: %v", err)
 	}

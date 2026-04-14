@@ -4,11 +4,12 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/llm"
 )
 
-// ModelLister is an alias for llm.ModelLister, kept here so existing callers
-// that reference api.ModelLister continue to compile without changes.
+// ModelLister aliases llm.ModelLister so test files in this package can
+// reference api.ModelLister without importing llm directly.
 type ModelLister = llm.ModelLister
 
 // EnabledModel identifies a model that has been explicitly enabled by an admin.
@@ -55,10 +56,10 @@ func (h *ModelsHandler) List(w http.ResponseWriter, r *http.Request) {
 	if provider != "" {
 		models, err := h.lister.ListModels(r.Context(), provider)
 		if err != nil {
-			WriteError(w, http.StatusBadRequest, "failed to list models", err.Error())
+			httputil.WriteError(w, http.StatusBadRequest, "failed to list models", err.Error())
 			return
 		}
-		WriteJSON(w, http.StatusOK, []modelsListResponse{
+		httputil.WriteJSON(w, http.StatusOK, []modelsListResponse{
 			{Provider: provider, Models: filterModels(toModelResponses(models), provider, enabled)},
 		})
 		return
@@ -66,7 +67,7 @@ func (h *ModelsHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	all, err := h.lister.ListAllModels(r.Context())
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to list models", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list models", err.Error())
 		return
 	}
 
@@ -77,7 +78,7 @@ func (h *ModelsHandler) List(w http.ResponseWriter, r *http.Request) {
 			Models:   filterModels(toModelResponses(models), prov, enabled),
 		})
 	}
-	WriteJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 // Refresh handles POST /api/v1/models/refresh.
@@ -88,15 +89,15 @@ func (h *ModelsHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 
 	if provider != "" {
 		if err := h.lister.InvalidateModelCache(provider); err != nil {
-			WriteError(w, http.StatusBadRequest, "failed to invalidate cache", err.Error())
+			httputil.WriteError(w, http.StatusBadRequest, "failed to invalidate cache", err.Error())
 			return
 		}
 		models, err := h.lister.ListModels(r.Context(), provider)
 		if err != nil {
-			WriteError(w, http.StatusInternalServerError, "failed to list models after refresh", err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to list models after refresh", err.Error())
 			return
 		}
-		WriteJSON(w, http.StatusOK, []modelsListResponse{
+		httputil.WriteJSON(w, http.StatusOK, []modelsListResponse{
 			{Provider: provider, Models: toModelResponses(models)},
 		})
 		return
@@ -106,7 +107,7 @@ func (h *ModelsHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 
 	all, err := h.lister.ListAllModels(r.Context())
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to list models after refresh", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list models after refresh", err.Error())
 		return
 	}
 
@@ -117,7 +118,7 @@ func (h *ModelsHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 			Models:   toModelResponses(models),
 		})
 	}
-	WriteJSON(w, http.StatusOK, result)
+	httputil.WriteJSON(w, http.StatusOK, result)
 }
 
 func toModelResponses(models []llm.ModelInfo) []modelResponse {

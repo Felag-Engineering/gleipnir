@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/rapp992/gleipnir/internal/httputil"
 )
 
 // StatsHandler serves GET /api/v1/stats.
@@ -18,8 +20,8 @@ func NewStatsHandler(svc *StatsService) *StatsHandler {
 func (h *StatsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.svc.Compute(r.Context())
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to compute stats", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to compute stats", err.Error())
 		return
 	}
-	WriteJSON(w, http.StatusOK, stats)
+	httputil.WriteJSON(w, http.StatusOK, stats)
 }

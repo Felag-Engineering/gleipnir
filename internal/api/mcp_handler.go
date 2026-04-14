@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -99,15 +100,15 @@ func (h *MCPHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 		URL string `json:"url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
 	if body.URL == "" {
-		WriteError(w, http.StatusBadRequest, "url is required", "")
+		httputil.WriteError(w, http.StatusBadRequest, "url is required", "")
 		return
 	}
 	if err := mcp.ValidateServerURL(r.Context(), body.URL); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid url", err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid url", err.Error())
 		return
 	}
 
@@ -120,7 +121,7 @@ func (h *MCPHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 
 	tools, err := client.DiscoverTools(ctx)
 	if err != nil {
-		WriteJSON(w, http.StatusOK, testConnectionResponse{
+		httputil.WriteJSON(w, http.StatusOK, testConnectionResponse{
 			OK:        false,
 			ToolCount: 0,
 			Tools:     []string{},
@@ -133,7 +134,7 @@ func (h *MCPHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 	for i, t := range tools {
 		names[i] = t.Name
 	}
-	WriteJSON(w, http.StatusOK, testConnectionResponse{
+	httputil.WriteJSON(w, http.StatusOK, testConnectionResponse{
 		OK:        true,
 		ToolCount: len(tools),
 		Tools:     names,
@@ -145,7 +146,7 @@ func (h *MCPHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 func (h *MCPHandler) List(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.store.ListMCPServers(r.Context())
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to list MCP servers", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list MCP servers", err.Error())
 		return
 	}
 
@@ -154,7 +155,7 @@ func (h *MCPHandler) List(w http.ResponseWriter, r *http.Request) {
 		items = append(items, serverToResponse(row))
 	}
 
-	WriteJSON(w, http.StatusOK, items)
+	httputil.WriteJSON(w, http.StatusOK, items)
 }
 
 // Create handles POST /api/v1/mcp/servers.
@@ -164,16 +165,16 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		URL  string `json:"url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
 
 	if body.Name == "" {
-		WriteError(w, http.StatusBadRequest, "name is required", "")
+		httputil.WriteError(w, http.StatusBadRequest, "name is required", "")
 		return
 	}
 	if err := mcp.ValidateServerURL(r.Context(), body.URL); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid url", err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid url", err.Error())
 		return
 	}
 
@@ -186,10 +187,10 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if isUniqueConstraintError(err) {
-			WriteError(w, http.StatusConflict, "MCP server name already exists", "")
+			httputil.WriteError(w, http.StatusConflict, "MCP server name already exists", "")
 			return
 		}
-		WriteError(w, http.StatusInternalServerError, "failed to create MCP server", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create MCP server", err.Error())
 		return
 	}
 
@@ -210,7 +211,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	WriteCreated(w, "/api/v1/mcp/servers/"+server.ID, resp)
+	httputil.WriteCreated(w, "/api/v1/mcp/servers/"+server.ID, resp)
 }
 
 // Delete handles DELETE /api/v1/mcp/servers/{id}.
@@ -220,10 +221,10 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	server, err := h.store.GetMCPServer(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			WriteError(w, http.StatusNotFound, "MCP server not found", "")
+			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
 			return
 		}
-		WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
 		return
 	}
 
@@ -232,7 +233,7 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	// the server name prefix to catch all tools from this server.
 	policies, err := h.store.ListPolicies(r.Context())
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to list policies", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list policies", err.Error())
 		return
 	}
 
@@ -245,14 +246,14 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(conflicting) > 0 {
-		WriteError(w, http.StatusConflict, "MCP server is referenced by active policies",
+		httputil.WriteError(w, http.StatusConflict, "MCP server is referenced by active policies",
 			fmt.Sprintf("policies referencing this server: %s", strings.Join(conflicting, ", ")))
 		return
 	}
 
 	// mcp_tools rows are cascade-deleted by the FK constraint on DELETE.
 	if err := h.store.DeleteMCPServer(r.Context(), id); err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to delete MCP server", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete MCP server", err.Error())
 		return
 	}
 
@@ -265,21 +266,21 @@ func (h *MCPHandler) Discover(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := h.store.GetMCPServer(r.Context(), id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			WriteError(w, http.StatusNotFound, "MCP server not found", "")
+			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
 			return
 		}
-		WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
 		return
 	}
 
 	diff, err := h.registry.RefreshTools(r.Context(), id)
 	if err != nil {
 		slog.Error("MCP discovery failed", "server_id", id, "err", err)
-		WriteError(w, http.StatusInternalServerError, "discovery failed", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "discovery failed", err.Error())
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, diffToResponse(diff))
+	httputil.WriteJSON(w, http.StatusOK, diffToResponse(diff))
 }
 
 type mcpToolResponse struct {
@@ -309,16 +310,16 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := h.store.GetMCPServer(ctx, id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			WriteError(w, http.StatusNotFound, "MCP server not found", "")
+			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
 			return
 		}
-		WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
 		return
 	}
 
 	rows, err := h.store.ListMCPToolsByServer(ctx, id)
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to list MCP tools", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list MCP tools", err.Error())
 		return
 	}
 
@@ -327,7 +328,7 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 		items = append(items, toolToResponse(row))
 	}
 
-	WriteJSON(w, http.StatusOK, items)
+	httputil.WriteJSON(w, http.StatusOK, items)
 }
 
 // policyReferencesServer returns true if the raw policy YAML contains any tool

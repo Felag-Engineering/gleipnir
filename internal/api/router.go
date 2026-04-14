@@ -174,7 +174,7 @@ func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registr
 	r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
 	statsHandler := NewStatsHandler(NewStatsService(store))
@@ -200,7 +200,7 @@ func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registr
 	r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/models/refresh", modelsH.Refresh)
 
 	r.Route("/mcp", func(r chi.Router) {
-		r.Use(RequireJSON)
+		r.Use(httputil.RequireJSON)
 		mcpH := NewMCPHandler(store, registry)
 		r.Route("/servers", func(r chi.Router) {
 			r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/", mcpH.List)

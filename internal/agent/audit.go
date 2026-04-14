@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/event"
 	"github.com/rapp992/gleipnir/internal/logctx"
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -29,7 +30,7 @@ type AuditWriter struct {
 	queue     chan writeRequest
 	done      chan struct{}
 	closeOnce sync.Once
-	publisher Publisher
+	publisher event.Publisher
 	// drainErr accumulates all errors encountered by loop(); read after <-w.done in Close().
 	drainErr error
 }
@@ -52,7 +53,7 @@ func WithQueueDepth(n int) Option {
 
 // WithPublisher injects a Publisher that receives run.step_added events after
 // each step is successfully written to the DB.
-func WithPublisher(p Publisher) Option {
+func WithPublisher(p event.Publisher) Option {
 	return func(w *AuditWriter) {
 		w.publisher = p
 	}

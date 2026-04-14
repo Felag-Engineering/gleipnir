@@ -65,9 +65,92 @@ type Config struct {
 	SSEPayload func(id string, runID string) map[string]string
 }
 
+// NewApprovalScanner creates a Scanner that checks for expired approval requests
+// on the given interval.
+func NewApprovalScanner(store *db.Store, interval time.Duration, opts ...ScannerOption) *Scanner {
+	cfg := Config{
+		Name: "approval",
+		ListExpired: func(ctx context.Context, cutoff string) ([]ExpiredItem, error) {
+			rows, err := store.Queries().ListExpiredApprovalRequests(ctx, cutoff)
+			if err != nil {
+				return nil, err
+			}
+			items := make([]ExpiredItem, len(rows))
+			for i, r := range rows {
+				items[i] = ExpiredItem{ID: r.ID, RunID: r.RunID, ToolName: r.ToolName}
+			}
+			return items, nil
+		},
+		ClaimTimeout: func(ctx context.Context, id string, now string) (int64, error) {
+			return store.Queries().UpdateApprovalRequestStatus(ctx, db.UpdateApprovalRequestStatusParams{
+				Status:    string(model.ApprovalStatusTimeout),
+				DecidedAt: &now,
+				Note:      nil,
+				ID:        id,
+			})
+		},
+		WaitingRunStatus: model.RunStatusWaitingForApproval,
+		ErrorCode:        "approval_timeout",
+		ErrorMessage: func(toolName string) string {
+			return fmt.Sprintf("approval timeout: %s not approved within timeout window", toolName)
+		},
+		SSEEventName: "approval.resolved",
+		SSEPayload: func(id, runID string) map[string]string {
+			return map[string]string{
+				"approval_id": id,
+				"run_id":      runID,
+				"status":      string(model.ApprovalStatusTimeout),
+			}
+		},
+	}
+	return NewScanner(store, interval, cfg, opts...)
+}
+
+// NewFeedbackScanner creates a Scanner that checks for expired feedback requests
+// on the given interval. Only feedback requests with a non-NULL expires_at are
+// considered for timeout.
+func NewFeedbackScanner(store *db.Store, interval time.Duration, opts ...ScannerOption) *Scanner {
+	cfg := Config{
+		Name: "feedback",
+		ListExpired: func(ctx context.Context, cutoff string) ([]ExpiredItem, error) {
+			rows, err := store.Queries().ListExpiredFeedbackRequests(ctx, &cutoff)
+			if err != nil {
+				return nil, err
+			}
+			items := make([]ExpiredItem, len(rows))
+			for i, r := range rows {
+				items[i] = ExpiredItem{ID: r.ID, RunID: r.RunID, ToolName: r.ToolName}
+			}
+			return items, nil
+		},
+		ClaimTimeout: func(ctx context.Context, id string, now string) (int64, error) {
+			return store.Queries().UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
+				Status:     "timed_out",
+				Response:   nil,
+				ResolvedAt: &now,
+				ID:         id,
+			})
+		},
+		WaitingRunStatus: model.RunStatusWaitingForFeedback,
+		ErrorCode:        string(model.ErrorCodeFeedbackTimeout),
+		ErrorMessage: func(toolName string) string {
+			return fmt.Sprintf("feedback timeout: operator did not respond within the configured timeout for %s", toolName)
+		},
+		SSEEventName: "feedback.timed_out",
+		SSEPayload: func(id, runID string) map[string]string {
+			return map[string]string{
+				"feedback_id": id,
+				"run_id":      runID,
+				"status":      "timed_out",
+			}
+		},
+	}
+	return NewScanner(store, interval, cfg, opts...)
+}
+
 // Scanner periodically scans for expired pending requests and resolves them as
-// timed-out failures. It is constructed by domain packages (approval, feedback)
-// that supply a Config with domain-specific callbacks.
+// timed-out failures. It is constructed via NewApprovalScanner or
+// NewFeedbackScanner, which supply domain-specific callbacks.
 type Scanner struct {
 	store     *db.Store
 	interval  time.Duration

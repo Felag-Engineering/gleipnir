@@ -49,7 +49,7 @@ agent:
 // schedulerFactory returns an AgentFactory that uses a mock LLM client so
 // no real Claude API calls are made during scheduler tests.
 func schedulerFactory() run.AgentFactory {
-	return func(cfg agent.Config) (agent.Runner, error) {
+	return func(cfg agent.Config) (*agent.BoundAgent, error) {
 		cfg.LLMClient = testutil.NewMockLLMClient(
 			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
 		)

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/httputil"
 )
 
 // AttentionHandler serves GET /api/v1/attention.
@@ -45,7 +46,7 @@ func (h *AttentionHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	dbItems, err := h.store.ListAttentionItems(ctx)
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to list attention items", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list attention items", err.Error())
 		return
 	}
 
@@ -59,7 +60,7 @@ func (h *AttentionHandler) Get(w http.ResponseWriter, r *http.Request) {
 		Offset: 0,
 	})
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to list failed runs", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list failed runs", err.Error())
 		return
 	}
 
@@ -113,5 +114,5 @@ func (h *AttentionHandler) Get(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	WriteJSON(w, http.StatusOK, AttentionResponse{Items: items})
+	httputil.WriteJSON(w, http.StatusOK, AttentionResponse{Items: items})
 }

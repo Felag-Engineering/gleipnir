@@ -14,11 +14,9 @@ import (
 
 	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/api"
-	"github.com/rapp992/gleipnir/internal/approval"
 	"github.com/rapp992/gleipnir/internal/auth"
 	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/feedback"
 	"github.com/rapp992/gleipnir/internal/llm"
 	anthropicllm "github.com/rapp992/gleipnir/internal/llm/anthropic"
 	googlellm "github.com/rapp992/gleipnir/internal/llm/google"
@@ -27,6 +25,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/mcp"
 	runpkg "github.com/rapp992/gleipnir/internal/run"
 	"github.com/rapp992/gleipnir/internal/sse"
+	"github.com/rapp992/gleipnir/internal/timeout"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
 
@@ -82,17 +81,17 @@ func run(cfg config.Config) error {
 	broadcaster := sse.NewBroadcaster()
 	sseHandler := sse.NewHandler(broadcaster)
 
-	approvalScanner := approval.NewScanner(
+	approvalScanner := timeout.NewApprovalScanner(
 		store,
 		cfg.ApprovalScanInterval,
-		approval.WithPublisher(broadcaster),
+		timeout.WithPublisher(broadcaster),
 	)
 	approvalScanner.Start(ctx)
 
-	feedbackScanner := feedback.NewScanner(
+	feedbackScanner := timeout.NewFeedbackScanner(
 		store,
 		cfg.FeedbackScanInterval,
-		feedback.WithPublisher(broadcaster),
+		timeout.WithPublisher(broadcaster),
 	)
 	feedbackScanner.Start(ctx)
 

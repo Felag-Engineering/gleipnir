@@ -196,7 +196,7 @@ func insertTestPollPolicy(t *testing.T, store *db.Store, policyID, name, yamlStr
 // pollerFactory returns an AgentFactory backed by a mock LLM so tests do not
 // make real Claude API calls.
 func pollerFactory() run.AgentFactory {
-	return func(cfg agent.Config) (agent.Runner, error) {
+	return func(cfg agent.Config) (*agent.BoundAgent, error) {
 		cfg.LLMClient = testutil.NewMockLLMClient(
 			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
 		)

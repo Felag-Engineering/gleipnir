@@ -38,7 +38,7 @@ agent:
 // RunManager so callers can call manager.Wait() for deterministic cleanup.
 func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, llmClient llm.LLMClient) (http.Handler, *run.RunManager) {
 	manager := run.NewRunManager()
-	factory := run.AgentFactory(func(cfg agent.Config) (agent.Runner, error) {
+	factory := run.AgentFactory(func(cfg agent.Config) (*agent.BoundAgent, error) {
 		cfg.LLMClient = llmClient
 		return agent.New(cfg)
 	})

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	feedbackscanner "github.com/rapp992/gleipnir/internal/feedback"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
+	"github.com/rapp992/gleipnir/internal/timeout"
 )
 
 // TestFeedbackHandler_Wait_ResponseReceived verifies the happy path: operator
@@ -165,7 +165,7 @@ func TestFeedbackHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 	}
 
 	// Drive the scanner synchronously — it wins the guarded UPDATE (rows=1).
-	sc := feedbackscanner.NewScanner(s, time.Minute, feedbackscanner.WithPublisher(pub))
+	sc := timeout.NewFeedbackScanner(s, time.Minute, timeout.WithPublisher(pub))
 	if err := sc.Scan(context.Background()); err != nil {
 		t.Fatalf("scanner.Scan: %v", err)
 	}

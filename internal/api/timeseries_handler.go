@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/httputil"
 )
 
 // TimeSeriesHandler serves GET /api/v1/stats/timeseries.
@@ -63,13 +64,13 @@ func (h *TimeSeriesHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	window, ok := windowDuration[windowParam]
 	if !ok {
-		WriteError(w, http.StatusBadRequest, "unsupported window parameter",
+		httputil.WriteError(w, http.StatusBadRequest, "unsupported window parameter",
 			"supported values: 24h, 7d, 30d")
 		return
 	}
 	step, ok := bucketDuration[bucketParam]
 	if !ok {
-		WriteError(w, http.StatusBadRequest, "unsupported bucket parameter",
+		httputil.WriteError(w, http.StatusBadRequest, "unsupported bucket parameter",
 			"supported values: 1h, 6h, 1d")
 		return
 	}
@@ -83,13 +84,13 @@ func (h *TimeSeriesHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.store.GetRunTimeSeries(r.Context(), sinceStr)
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to fetch time series", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch time series", err.Error())
 		return
 	}
 
 	// Build the ordered list of clock-aligned bucket timestamps covering the window.
 	buckets := buildBuckets(start, end, step, rows)
-	WriteJSON(w, http.StatusOK, TimeSeriesResponse{Buckets: buckets})
+	httputil.WriteJSON(w, http.StatusOK, TimeSeriesResponse{Buckets: buckets})
 }
 
 // buildBuckets assembles clock-aligned TimeSeriesBuckets for the window.

@@ -18,17 +18,17 @@ import (
 	"github.com/rapp992/gleipnir/internal/policy"
 )
 
-// AgentFactory constructs a Runner from a fully-populated Config.
+// AgentFactory constructs a BoundAgent from a fully-populated Config.
 // The factory owns all decisions about how to supply the LLM client or any
 // test doubles — callers have no knowledge of either.
-type AgentFactory func(cfg agent.Config) (agent.Runner, error)
+type AgentFactory func(cfg agent.Config) (*agent.BoundAgent, error)
 
 // NewAgentFactory returns an AgentFactory that resolves the correct LLM client
 // from registry and constructs a BoundAgent for the run. If the policy's
 // provider is not registered, the factory returns a descriptive error so the
 // run record can be marked failed with a clear message.
 func NewAgentFactory(registry *llm.ProviderRegistry) AgentFactory {
-	return func(cfg agent.Config) (agent.Runner, error) {
+	return func(cfg agent.Config) (*agent.BoundAgent, error) {
 		client, err := registry.Get(cfg.Policy.Agent.ModelConfig.Provider)
 		if err != nil {
 			return nil, fmt.Errorf("provider lookup: %w", err)

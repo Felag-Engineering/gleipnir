@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/approval"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
+	"github.com/rapp992/gleipnir/internal/timeout"
 )
 
 // approvalEntry returns a resolvedToolEntry with the given timeout (0 means no timeout).
@@ -212,7 +212,7 @@ func TestApprovalHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 	}
 
 	// Drive the scanner synchronously — it wins the guarded UPDATE (rows=1).
-	sc := approval.NewScanner(s, time.Minute, approval.WithPublisher(pub))
+	sc := timeout.NewApprovalScanner(s, time.Minute, timeout.WithPublisher(pub))
 	if err := sc.Scan(context.Background()); err != nil {
 		t.Fatalf("scanner.Scan: %v", err)
 	}

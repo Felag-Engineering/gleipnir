@@ -23,7 +23,7 @@ import (
 
 // failingAgentFactory returns an AgentFactory whose New call always fails.
 func failingAgentFactory(err error) run.AgentFactory {
-	return func(cfg agent.Config) (agent.Runner, error) {
+	return func(cfg agent.Config) (*agent.BoundAgent, error) {
 		return nil, err
 	}
 }
@@ -81,7 +81,7 @@ func setupIntegrationFixture(t *testing.T) (*db.Store, *mcp.Registry) {
 // localAgentFactory returns an AgentFactory that uses a mock LLM client so
 // no real API calls are made during launcher tests.
 func localAgentFactory() run.AgentFactory {
-	return func(cfg agent.Config) (agent.Runner, error) {
+	return func(cfg agent.Config) (*agent.BoundAgent, error) {
 		cfg.LLMClient = testutil.NewMockLLMClient(
 			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
 		)

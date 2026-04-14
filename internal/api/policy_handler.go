@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/policy"
 )
 
@@ -66,7 +67,7 @@ type policyDetail struct {
 func (h *PolicyHandler) List(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.store.ListPoliciesWithLatestRun(r.Context())
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to list policies", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list policies", err.Error())
 		return
 	}
 
@@ -103,7 +104,7 @@ func (h *PolicyHandler) List(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 
-	WriteJSON(w, http.StatusOK, items)
+	httputil.WriteJSON(w, http.StatusOK, items)
 }
 
 // Get handles GET /api/v1/policies/{id}.
@@ -113,14 +114,14 @@ func (h *PolicyHandler) Get(w http.ResponseWriter, r *http.Request) {
 	policy, err := h.store.GetPolicy(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			WriteError(w, http.StatusNotFound, "policy not found", "")
+			httputil.WriteError(w, http.StatusNotFound, "policy not found", "")
 			return
 		}
-		WriteError(w, http.StatusInternalServerError, "failed to get policy", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get policy", err.Error())
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, policyDetail{
+	httputil.WriteJSON(w, http.StatusOK, policyDetail{
 		ID:          policy.ID,
 		Name:        policy.Name,
 		TriggerType: policy.TriggerType,
@@ -215,7 +216,7 @@ func buildMutateResponse(result *policy.SaveResult) policyMutateResponse {
 func (h *PolicyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to read request body", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to read request body", err.Error())
 		return
 	}
 
@@ -223,19 +224,19 @@ func (h *PolicyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var pe *policy.ParseError
 		if errors.As(err, &pe) {
-			WriteError(w, http.StatusBadRequest, "invalid policy YAML", pe.Error())
+			httputil.WriteError(w, http.StatusBadRequest, "invalid policy YAML", pe.Error())
 			return
 		}
 		var ve *policy.ValidationError
 		if errors.As(err, &ve) {
-			WriteError(w, http.StatusBadRequest, "policy validation failed", strings.Join(ve.Errors, "; "))
+			httputil.WriteError(w, http.StatusBadRequest, "policy validation failed", strings.Join(ve.Errors, "; "))
 			return
 		}
-		WriteError(w, http.StatusInternalServerError, "failed to create policy", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create policy", err.Error())
 		return
 	}
 
-	WriteCreated(w, "/api/v1/policies/"+result.Policy.ID, buildMutateResponse(result))
+	httputil.WriteCreated(w, "/api/v1/policies/"+result.Policy.ID, buildMutateResponse(result))
 }
 
 // Update handles PUT /api/v1/policies/{id}.
@@ -244,31 +245,31 @@ func (h *PolicyHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to read request body", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to read request body", err.Error())
 		return
 	}
 
 	result, err := h.svc.Update(r.Context(), id, string(body))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			WriteError(w, http.StatusNotFound, "policy not found", "")
+			httputil.WriteError(w, http.StatusNotFound, "policy not found", "")
 			return
 		}
 		var pe *policy.ParseError
 		if errors.As(err, &pe) {
-			WriteError(w, http.StatusBadRequest, "invalid policy YAML", pe.Error())
+			httputil.WriteError(w, http.StatusBadRequest, "invalid policy YAML", pe.Error())
 			return
 		}
 		var ve *policy.ValidationError
 		if errors.As(err, &ve) {
-			WriteError(w, http.StatusBadRequest, "policy validation failed", strings.Join(ve.Errors, "; "))
+			httputil.WriteError(w, http.StatusBadRequest, "policy validation failed", strings.Join(ve.Errors, "; "))
 			return
 		}
-		WriteError(w, http.StatusInternalServerError, "failed to update policy", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update policy", err.Error())
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, buildMutateResponse(result))
+	httputil.WriteJSON(w, http.StatusOK, buildMutateResponse(result))
 }
 
 // Delete handles DELETE /api/v1/policies/{id}.
@@ -277,27 +278,27 @@ func (h *PolicyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := h.store.GetPolicy(r.Context(), id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			WriteError(w, http.StatusNotFound, "policy not found", "")
+			httputil.WriteError(w, http.StatusNotFound, "policy not found", "")
 			return
 		}
-		WriteError(w, http.StatusInternalServerError, "failed to get policy", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get policy", err.Error())
 		return
 	}
 
 	runs, err := h.store.ListActiveRunsByPolicy(r.Context(), id)
 	if err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to check active runs", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to check active runs", err.Error())
 		return
 	}
 	if len(runs) > 0 {
-		WriteError(w, http.StatusConflict, "policy has active runs",
+		httputil.WriteError(w, http.StatusConflict, "policy has active runs",
 			fmt.Sprintf("%d active run(s) must complete or be cancelled before deletion", len(runs)))
 		return
 	}
 
 	// ON DELETE CASCADE handles runs, run_steps, and approval_requests automatically.
 	if err := h.store.DeletePolicy(r.Context(), id); err != nil {
-		WriteError(w, http.StatusInternalServerError, "failed to delete policy", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete policy", err.Error())
 		return
 	}
 
