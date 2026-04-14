@@ -182,7 +182,6 @@ export function PolicyEditorPage() {
     <div className={styles.page}>
       <EditorTopBar
         policyName={policyName}
-        isDirty={isDirty}
         mode={mode}
         canSave={canSave}
         isEditMode={Boolean(id)}

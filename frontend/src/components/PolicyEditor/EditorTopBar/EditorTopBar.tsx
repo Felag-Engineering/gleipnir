@@ -3,7 +3,6 @@ import styles from './EditorTopBar.module.css';
 
 export interface EditorTopBarProps {
   policyName: string;
-  isDirty: boolean;
   mode: 'form' | 'yaml';
   canSave: boolean;
   isEditMode: boolean;
@@ -15,7 +14,6 @@ export interface EditorTopBarProps {
 
 export function EditorTopBar({
   policyName,
-  isDirty,
   mode,
   canSave,
   isEditMode,
@@ -32,7 +30,6 @@ export function EditorTopBar({
         <Link to="/agents" className={`${styles.crumb} ${styles.crumbPolicies} ${styles.crumbLink}`}>Agents</Link>
         <span className={styles.separator}>›</span>
         <span className={`${styles.crumb} ${styles.crumbPolicy}`}>{policyName}</span>
-        {isDirty && <span className={styles.dirtyDot} />}
       </div>
 
       <div className={styles.actions}>

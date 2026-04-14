@@ -49,14 +49,6 @@
   user-select: none;
 }
 
-.dirtyDot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-amber);
-  flex-shrink: 0;
-}
-
 /* Actions */
 
 .actions {

@@ -30,17 +30,15 @@ type Story = StoryObj<typeof EditorTopBar>;
 export const Clean: Story = {
   args: {
     policyName: 'deploy-on-push',
-    isDirty: false,
     mode: 'form',
     canSave: false,
     isEditMode: true,
   },
 };
 
-export const Dirty: Story = {
+export const SaveEnabled: Story = {
   args: {
     policyName: 'deploy-on-push',
-    isDirty: true,
     mode: 'form',
     canSave: true,
     isEditMode: true,
@@ -50,7 +48,6 @@ export const Dirty: Story = {
 export const YamlInvalid: Story = {
   args: {
     policyName: 'deploy-on-push',
-    isDirty: true,
     mode: 'yaml',
     canSave: false,
     isEditMode: true,
@@ -60,7 +57,6 @@ export const YamlInvalid: Story = {
 export const CreateMode: Story = {
   args: {
     policyName: 'New Agent',
-    isDirty: true,
     mode: 'form',
     canSave: true,
     isEditMode: false,
@@ -70,7 +66,6 @@ export const CreateMode: Story = {
 export const ManualTrigger: Story = {
   args: {
     policyName: 'on-demand-check',
-    isDirty: false,
     mode: 'form',
     canSave: false,
     isEditMode: true,
