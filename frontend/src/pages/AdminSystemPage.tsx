@@ -61,6 +61,7 @@ function RunLimitsSection() {
             id="max-tokens"
             type="number"
             className={cardStyles.input}
+            placeholder="0 (unlimited)"
             value={maxTokens}
             onChange={(e) => setMaxTokens(e.target.value)}
             min={0}
@@ -77,6 +78,7 @@ function RunLimitsSection() {
             id="max-tool-calls"
             type="number"
             className={cardStyles.input}
+            placeholder="0 (unlimited)"
             value={maxToolCalls}
             onChange={(e) => setMaxToolCalls(e.target.value)}
             min={0}
