@@ -12,9 +12,9 @@
           },
           {
             "type": "command",
-            "command": "if git diff --cached --name-only | grep -q '^frontend/'; then cd frontend && npx vitest run; fi",
-            "timeout": 120,
-            "statusMessage": "Running frontend tests (if frontend files staged)..."
+            "command": "if git diff --cached --name-only | grep -q '^frontend/'; then cd frontend && npm run build && npx vitest run; fi",
+            "timeout": 180,
+            "statusMessage": "Running frontend build + tests (if frontend files staged)..."
           }
         ]
       }
