@@ -20,9 +20,14 @@ type mockQuerier struct {
 	userErr      error
 	roles        []string
 	listRolesErr error
+
+	// capturedToken is set by GetSessionByToken so tests can verify the
+	// middleware hashes the cookie value before calling into the querier.
+	capturedToken string
 }
 
-func (m *mockQuerier) GetSessionByToken(_ context.Context, _ string) (db.Session, error) {
+func (m *mockQuerier) GetSessionByToken(_ context.Context, token string) (db.Session, error) {
+	m.capturedToken = token
 	return m.session, m.err
 }
 
@@ -79,7 +84,7 @@ func TestRequireAuth(t *testing.T) {
 				session: db.Session{
 					ID:        "sess1",
 					UserID:    "user1",
-					Token:     "good-token",
+					Token:     HashSessionToken("good-token"),
 					CreatedAt: time.Now().UTC().Format(time.RFC3339),
 					ExpiresAt: futureExpiry(),
 				},
@@ -101,7 +106,7 @@ func TestRequireAuth(t *testing.T) {
 				session: db.Session{
 					ID:        "sess1",
 					UserID:    "user1",
-					Token:     "good-token",
+					Token:     HashSessionToken("good-token"),
 					CreatedAt: time.Now().UTC().Format(time.RFC3339),
 					ExpiresAt: futureExpiry(),
 				},
@@ -143,7 +148,7 @@ func TestRequireAuth(t *testing.T) {
 				session: db.Session{
 					ID:        "sess2",
 					UserID:    "user2",
-					Token:     "expired-token",
+					Token:     HashSessionToken("expired-token"),
 					CreatedAt: time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339),
 					ExpiresAt: pastExpiry(),
 				},
@@ -165,7 +170,7 @@ func TestRequireAuth(t *testing.T) {
 				session: db.Session{
 					ID:        "sess3",
 					UserID:    "user3",
-					Token:     "good-token",
+					Token:     HashSessionToken("good-token"),
 					CreatedAt: time.Now().UTC().Format(time.RFC3339),
 					ExpiresAt: futureExpiry(),
 				},
@@ -181,7 +186,7 @@ func TestRequireAuth(t *testing.T) {
 				session: db.Session{
 					ID:        "sess4",
 					UserID:    "user4",
-					Token:     "good-token",
+					Token:     HashSessionToken("good-token"),
 					CreatedAt: time.Now().UTC().Format(time.RFC3339),
 					ExpiresAt: futureExpiry(),
 				},
@@ -197,7 +202,7 @@ func TestRequireAuth(t *testing.T) {
 				session: db.Session{
 					ID:        "sess5",
 					UserID:    "user5",
-					Token:     "good-token",
+					Token:     HashSessionToken("good-token"),
 					CreatedAt: time.Now().UTC().Format(time.RFC3339),
 					ExpiresAt: futureExpiry(),
 				},
@@ -217,7 +222,7 @@ func TestRequireAuth(t *testing.T) {
 				session: db.Session{
 					ID:        "sess6",
 					UserID:    "user6",
-					Token:     "good-token",
+					Token:     HashSessionToken("good-token"),
 					CreatedAt: time.Now().UTC().Format(time.RFC3339),
 					ExpiresAt: futureExpiry(),
 				},
@@ -245,6 +250,18 @@ func TestRequireAuth(t *testing.T) {
 
 			if rec.Code != tc.wantStatus {
 				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+
+			// Verify that the middleware hashed the raw cookie value before
+			// passing it to GetSessionByToken, for any case where a cookie was sent.
+			if tc.cookie != nil && tc.cookie.Value != "" {
+				mq, ok := tc.querier.(*mockQuerier)
+				if ok && mq.capturedToken != "" {
+					wantHash := HashSessionToken(tc.cookie.Value)
+					if mq.capturedToken != wantHash {
+						t.Errorf("GetSessionByToken received %q, want hashed value %q", mq.capturedToken, wantHash)
+					}
+				}
 			}
 
 			if tc.wantUserInCtx && rec.Code == http.StatusOK {

@@ -272,6 +272,18 @@ func TestHandler_Login(t *testing.T) {
 				if !sessionCookie.HttpOnly {
 					t.Error("session cookie should be HttpOnly")
 				}
+
+				// The DB must store the hashed token, never the raw cookie value.
+				storedToken := tc.querier.createdSession.Token
+				if len(storedToken) != 64 {
+					t.Errorf("stored token length = %d, want 64 (SHA-256 hex)", len(storedToken))
+				}
+				if storedToken == sessionCookie.Value {
+					t.Error("stored token must be a hash of the cookie value, not the raw token")
+				}
+				if storedToken != HashSessionToken(sessionCookie.Value) {
+					t.Errorf("stored token %q is not SHA-256 of cookie value %q", storedToken, sessionCookie.Value)
+				}
 			}
 
 			if tc.wantUser != "" && rec.Code == http.StatusOK {
@@ -1112,11 +1124,12 @@ func TestListSessionsHandler(t *testing.T) {
 	now := time.Now().UTC()
 	future := now.Add(24 * time.Hour).Format(time.RFC3339)
 
+	// The DB stores hashed tokens. The cookie carries the raw value.
 	sessions := []db.ListSessionsByUserRow{
 		{
 			ID:        "sess-1",
 			UserID:    "user-1",
-			Token:     "token-current",
+			Token:     HashSessionToken("token-current"),
 			UserAgent: "Mozilla/5.0",
 			IpAddress: "127.0.0.1",
 			CreatedAt: now.Format(time.RFC3339),
@@ -1125,7 +1138,7 @@ func TestListSessionsHandler(t *testing.T) {
 		{
 			ID:        "sess-2",
 			UserID:    "user-1",
-			Token:     "token-other",
+			Token:     HashSessionToken("token-other"),
 			UserAgent: "curl/7.0",
 			IpAddress: "10.0.0.1",
 			CreatedAt: now.Add(-1 * time.Hour).Format(time.RFC3339),

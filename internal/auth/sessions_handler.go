@@ -101,10 +101,11 @@ func (h *Handler) ListSessionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Identify the current session token from the cookie so we can mark it.
-	currentToken := ""
+	// Identify the current session by hashing the cookie value and comparing
+	// against the stored hash. The DB stores hashes, not raw tokens.
+	currentTokenHash := ""
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
-		currentToken = cookie.Value
+		currentTokenHash = HashSessionToken(cookie.Value)
 	}
 
 	resp := make([]sessionResponse, 0, len(sessions))
@@ -115,7 +116,7 @@ func (h *Handler) ListSessionsHandler(w http.ResponseWriter, r *http.Request) {
 			IPAddress: s.IpAddress,
 			CreatedAt: s.CreatedAt,
 			ExpiresAt: s.ExpiresAt,
-			IsCurrent: s.Token == currentToken,
+			IsCurrent: s.Token == currentTokenHash,
 		})
 	}
 

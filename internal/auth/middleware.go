@@ -64,7 +64,7 @@ func RequireAuth(querier SessionQuerier) func(http.Handler) http.Handler {
 				return
 			}
 
-			session, err := querier.GetSessionByToken(r.Context(), cookie.Value)
+			session, err := querier.GetSessionByToken(r.Context(), HashSessionToken(cookie.Value))
 			if err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
 					httputil.WriteError(w, http.StatusUnauthorized, "invalid or expired session", "")

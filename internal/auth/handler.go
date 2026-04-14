@@ -150,6 +150,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := hex.EncodeToString(tokenBytes)
+	tokenHash := HashSessionToken(token)
 
 	now := time.Now().UTC()
 	expiresAt := now.Add(SessionDuration)
@@ -164,7 +165,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	_, err = h.q.CreateSession(r.Context(), db.CreateSessionParams{
 		ID:        model.NewULID(),
 		UserID:    user.ID,
-		Token:     token,
+		Token:     tokenHash,
 		CreatedAt: now.Format(time.RFC3339),
 		ExpiresAt: expiresAt.Format(time.RFC3339),
 		UserAgent: r.Header.Get("User-Agent"),
@@ -197,7 +198,7 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.q.DeleteSessionByToken(r.Context(), cookie.Value); err != nil {
+	if err := h.q.DeleteSessionByToken(r.Context(), HashSessionToken(cookie.Value)); err != nil {
 		slog.Error("logout: failed to delete session", "err", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
 		return
