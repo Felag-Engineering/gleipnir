@@ -32,6 +32,8 @@ function makeQueryClient() {
   });
 }
 
+const MOCK_NO_MODELS_RESPONSE = JSON.stringify({ data: [] });
+
 const meta: Meta<typeof ModelSection> = {
   title: 'PolicyEditor/FormMode/ModelSection',
   component: ModelSection,
@@ -92,4 +94,31 @@ function InteractiveModelSection() {
 
 export const Interactive: Story = {
   render: () => <InteractiveModelSection />,
+};
+
+// NoModels shows the disabled placeholder when the operator has not yet enabled
+// any models (e.g. immediately after a fresh install before visiting Admin → Models).
+export const NoModels: Story = {
+  args: {
+    value: { provider: '', model: '' },
+    onChange: fn(),
+  },
+  beforeEach: () => {
+    const originalFetch = window.fetch;
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+      if (url.includes('/api/v1/models')) {
+        return new Response(MOCK_NO_MODELS_RESPONSE, {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return originalFetch(input, init);
+    };
+    return () => { window.fetch = originalFetch; };
+  },
 };

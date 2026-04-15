@@ -141,7 +141,7 @@ func run(cfg config.Config) error {
 	}
 
 	adminQuerier := admin.NewQuerierAdapter(store.Queries())
-	adminHandler := admin.NewHandler(adminQuerier, encryptionKey, knownProviders, configureProvider, removeProvider)
+	adminHandler := admin.NewHandler(adminQuerier, encryptionKey, knownProviders, configureProvider, removeProvider, providerRegistry)
 
 	// Bootstrap providers from DB-stored encrypted API keys.
 	for _, provName := range knownProviders {

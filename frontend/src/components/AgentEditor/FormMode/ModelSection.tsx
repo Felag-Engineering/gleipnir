@@ -49,11 +49,11 @@ export function ModelSection({ value, onChange }: ModelSectionProps) {
         className={styles.select}
         value={selected}
         onChange={handleChange}
-        disabled={isLoading || isError}
+        disabled={isLoading || isError || providers?.length === 0}
       >
         {isLoading && <option value={selected}>Loading models…</option>}
         {isError && <option value={selected}>Failed to load models</option>}
-        {providers?.length === 0 && <option value={selected}>No models available</option>}
+        {providers?.length === 0 && <option value="">No models enabled — go to Admin → Models</option>}
         {providers?.map((group) => (
           <optgroup key={group.provider} label={formatProviderName(group.provider)}>
             {group.models.map((m) => (
