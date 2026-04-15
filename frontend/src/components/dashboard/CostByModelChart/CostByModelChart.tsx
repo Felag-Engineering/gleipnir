@@ -154,7 +154,7 @@ export function CostByModelChart({ data, isLoading }: CostByModelChartProps) {
                 tickFormatter={formatYAxisDollars}
               />
               <Tooltip
-                formatter={(value: number) => formatDollars(value)}
+                formatter={(value) => (typeof value === 'number' ? formatDollars(value) : String(value))}
                 contentStyle={{
                   background: 'var(--bg-elevated)',
                   border: '1px solid var(--border-mid)',

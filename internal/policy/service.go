@@ -84,7 +84,7 @@ type Service struct {
 	modelValidator   ModelValidator   // nil skips model name validation
 	optionsValidator OptionsValidator // nil skips provider options validation
 	settings         SettingsReader   // nil falls back to compiled defaults
-	encrypter        SecretCipher  // nil means encryption not configured
+	encrypter        SecretCipher     // nil means encryption not configured
 }
 
 // NewService returns a policy Service. lookup may be nil if MCP registry

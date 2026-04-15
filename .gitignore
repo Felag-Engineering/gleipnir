@@ -9,3 +9,8 @@ previewConfig.json
 *storybook.log
 storybook-static
 node_modules
+
+# Playwright MCP artefacts (screenshots, snapshots, console logs)
+.playwright-mcp/
+*.png
+*.jpeg

@@ -485,4 +485,3 @@ func countEncryptedWebhookSecrets(ctx context.Context, store *db.Store) (int, er
 	).Scan(&n)
 	return n, err
 }
-

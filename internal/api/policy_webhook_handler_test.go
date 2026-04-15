@@ -126,7 +126,9 @@ func TestPolicyWebhookGet_ReturnsSecret(t *testing.T) {
 	}
 	defer rotateResp.Body.Close()
 	var rotateEnvelope struct {
-		Data struct{ Secret string `json:"secret"` } `json:"data"`
+		Data struct {
+			Secret string `json:"secret"`
+		} `json:"data"`
 	}
 	if err := json.NewDecoder(rotateResp.Body).Decode(&rotateEnvelope); err != nil {
 		t.Fatalf("decode rotate: %v", err)
@@ -144,7 +146,9 @@ func TestPolicyWebhookGet_ReturnsSecret(t *testing.T) {
 	}
 
 	var getEnvelope struct {
-		Data struct{ Secret string `json:"secret"` } `json:"data"`
+		Data struct {
+			Secret string `json:"secret"`
+		} `json:"data"`
 	}
 	if err := json.NewDecoder(getResp.Body).Decode(&getEnvelope); err != nil {
 		t.Fatalf("decode get: %v", err)
