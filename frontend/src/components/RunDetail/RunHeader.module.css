@@ -205,3 +205,13 @@
   margin: 0;
   word-break: break-all;
 }
+
+.adminLink {
+  color: var(--accent-hover);
+  text-decoration: none;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.adminLink:hover {
+  text-decoration: underline;
+}

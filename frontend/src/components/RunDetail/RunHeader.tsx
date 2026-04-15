@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import type { ApiRun } from '@/api/types'
 import { StatusBadge } from '@/components/dashboard/StatusBadge/StatusBadge'
 import { TriggerChip } from '@/components/dashboard/TriggerChip/TriggerChip'
@@ -140,8 +140,30 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
               <dd className={styles.adminValue}>{run.id}</dd>
             </div>
             <div className={styles.adminCell}>
+              <dt className={styles.adminLabel}>Policy</dt>
+              <dd className={styles.adminValue}>
+                <Link to={`/policies/${run.policy_id}`} className={styles.adminLink}>
+                  {run.policy_name || run.policy_id}
+                </Link>
+              </dd>
+            </div>
+            <div className={styles.adminCell}>
               <dt className={styles.adminLabel}>Model</dt>
               <dd className={styles.adminValue}>{run.model}</dd>
+            </div>
+            <div className={styles.adminCell}>
+              <dt className={styles.adminLabel}>Trigger type</dt>
+              <dd className={styles.adminValue}>{run.trigger_type}</dd>
+            </div>
+            <div className={styles.adminCell}>
+              <dt className={styles.adminLabel}>Started at</dt>
+              <dd className={styles.adminValue}>{formatTimestamp(run.started_at)}</dd>
+            </div>
+            <div className={styles.adminCell}>
+              <dt className={styles.adminLabel}>Completed at</dt>
+              <dd className={styles.adminValue}>
+                {run.completed_at ? formatTimestamp(run.completed_at) : '—'}
+              </dd>
             </div>
           </dl>
         )}
