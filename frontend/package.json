@@ -17,7 +17,7 @@
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@fontsource/ibm-plex-sans": "^5.2.8",
     "@tanstack/react-query": "^5.90.21",
-    "@tanstack/react-query-devtools": "^5.91.3",
+    "@tanstack/react-query-devtools": "^5.99.0",
     "codemirror": "^6.0.2",
     "focus-trap-react": "^12.0.0",
     "js-yaml": "^4.1.1",
