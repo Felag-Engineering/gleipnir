@@ -3,8 +3,8 @@ import Layout from '@/components/Layout'
 import DashboardPage from './pages/DashboardPage'
 import LoginPage from './pages/LoginPage'
 import SetupPage from './pages/SetupPage'
-import PoliciesPage from './pages/PoliciesPage'
-import PolicyEditorPage from './pages/PolicyEditorPage'
+import AgentsPage from './pages/AgentsPage'
+import AgentEditorPage from './pages/AgentEditorPage'
 import RunDetailPage from './pages/RunDetailPage'
 import RunsPage from './pages/RunsPage'
 import MCPPage from './pages/MCPPage'
@@ -31,10 +31,10 @@ const router = createBrowserRouter([
       { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: 'dashboard', element: <DashboardPage />, errorElement: <RouteErrorFallback /> },
       { path: 'runs', element: <RunsPage />, errorElement: <RouteErrorFallback /> },
-      { path: 'agents', element: <PoliciesPage />, errorElement: <RouteErrorFallback /> },
-      { path: 'agents/new', element: <PolicyEditorPage />, errorElement: <RouteErrorFallback /> },
+      { path: 'agents', element: <AgentsPage />, errorElement: <RouteErrorFallback /> },
+      { path: 'agents/new', element: <AgentEditorPage />, errorElement: <RouteErrorFallback /> },
       { path: 'agents/:id/runs', element: <PolicyRunsRedirect />, errorElement: <RouteErrorFallback /> },
-      { path: 'agents/:id', element: <PolicyEditorPage />, errorElement: <RouteErrorFallback /> },
+      { path: 'agents/:id', element: <AgentEditorPage />, errorElement: <RouteErrorFallback /> },
       { path: 'runs/:id', element: <RunDetailPage />, errorElement: <RouteErrorFallback /> },
       { path: 'tools', element: <MCPPage />, errorElement: <RouteErrorFallback /> },
       { path: 'mcp', element: <Navigate to="/tools" replace /> },

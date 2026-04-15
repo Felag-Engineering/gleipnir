@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { http, HttpResponse, delay } from 'msw'
 import { server } from '@/test/server'
 import userEvent from '@testing-library/user-event'
-import PoliciesPage from './PoliciesPage'
+import AgentsPage from './AgentsPage'
 import type { ApiPolicyListItem } from '@/api/types'
 
 const POLICIES: ApiPolicyListItem[] = [
@@ -35,13 +35,13 @@ function renderPage(queryClient: QueryClient) {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <PoliciesPage />
+        <AgentsPage />
       </MemoryRouter>
     </QueryClientProvider>,
   )
 }
 
-describe('PoliciesPage', () => {
+describe('AgentsPage', () => {
   it('shows skeleton blocks while /api/v1/policies is in flight, then shows agents', async () => {
     server.use(
       http.get('/api/v1/policies', async () => {

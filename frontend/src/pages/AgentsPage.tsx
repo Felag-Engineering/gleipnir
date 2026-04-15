@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { EmptyState } from '@/components/EmptyState'
-import { PolicyList } from '@/components/PolicyList'
+import { PolicyList } from '@/components/AgentList'
 import { TriggerRunModal } from '@/components/TriggerRunModal'
 import { PageHeader } from '@/components/PageHeader'
 import { usePolicies } from '@/hooks/queries/policies'
@@ -10,9 +10,9 @@ import { queryKeys } from '@/hooks/queryKeys'
 import { QueryBoundary } from '@/components/QueryBoundary'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import buttonStyles from '@/components/Button/Button.module.css'
-import styles from './PoliciesPage.module.css'
+import styles from './AgentsPage.module.css'
 
-export default function PoliciesPage() {
+export default function AgentsPage() {
   usePageTitle('Agents')
   const { data: policies, status: policiesStatus } = usePolicies()
   const queryClient = useQueryClient()

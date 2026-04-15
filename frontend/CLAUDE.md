@@ -22,8 +22,8 @@ npm run build-storybook  # static Storybook build
 /dashboard          → stats bar, policy list grouped by folder
 /runs               → paginated run history with filters
 /agents             → agent (policy) list
-/agents/new         → dual-mode policy editor (create)
-/agents/:id         → dual-mode policy editor (edit)
+/agents/new         → agent editor (create)
+/agents/:id         → agent editor (edit)
 /agents/:id/runs    → redirect to /runs?policy=:id
 /runs/:id           → reasoning timeline with live SSE updates
 /tools              → tool management + server registry
@@ -208,8 +208,8 @@ Organized by feature area:
 
 - **Layout** — sidebar navigation, content area, theme toggle, connection status banner
 - **dashboard/** — StatsBar, StatusBadge, StatusBoard, TriggerChip, ActivityFeed, OnboardingSteps
-- **PolicyEditor/** — EditorTopBar, FormMode (7 form sections)
-- **PolicyList** — policy table with folder grouping
+- **AgentEditor/** — the agent editor (EditorTopBar, FormMode with 7 form sections)
+- **AgentList/** — agent list with folder grouping
 - **RunDetail/** — RunHeader, StepTimeline, FilterBar, MetadataGrid, CapabilitySnapshotCard, ThoughtBlock, ThinkingBlock, ToolBlock, CompleteBlock, ErrorBlock, FeedbackBlock, ApprovalActions, FeedbackActions
 - **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal
 - **Shared** — Button, Modal, ModalFooter, EmptyState, ErrorBoundary, QueryBoundary, CopyBlock, CollapsibleJSON, SkeletonBlock, PageHeader, ApprovalBanner, ConnectionBanner, TriggerRunModal
@@ -225,7 +225,7 @@ Organized by feature area:
 ## Key architectural decisions
 
 - **ADR-016:** SSE for real-time transport, not WebSockets. The Go SSE handler sets `X-Accel-Buffering: no` directly for compatibility with upstream reverse proxies.
-- **ADR-019:** Dual-mode policy editor. Form view + YAML view edit the same YAML string. YAML is the API payload.
+- **ADR-019:** Agent editor (originally dual-mode policy editor). Form view is the only editing surface; YAML is the API payload. YAML tab was removed in #751.
 - **ADR-020:** Policy folders are a YAML-only `folder` field for UI grouping. No DB column.
 - **ADR-030:** UI abstracts over tool transport — the Tools page is protocol-agnostic (not "MCP page").
 - **Hard capability enforcement:** disallowed tools are never registered with the agent. The UI displays what the runtime enforces.

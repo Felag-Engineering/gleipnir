@@ -4,8 +4,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-import { PolicyEditorPage } from './PolicyEditorPage'
-import { yamlToFormState, formStateToYaml } from '@/components/PolicyEditor/policyEditorUtils'
+import { AgentEditorPage } from './AgentEditorPage'
+import { yamlToFormState, formStateToYaml } from '@/components/AgentEditor/agentEditorUtils'
 import { ApiError } from '@/api/fetch'
 
 // --- Mocks ---
@@ -80,8 +80,8 @@ function renderEditor(path = '/agents/new', queryClient = makeQueryClient()) {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/agents/new" element={<PolicyEditorPage />} />
-          <Route path="/agents/:id" element={<PolicyEditorPage />} />
+          <Route path="/agents/new" element={<AgentEditorPage />} />
+          <Route path="/agents/:id" element={<AgentEditorPage />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -161,7 +161,7 @@ function mockHooksDefault() {
 
 // --- Tests ---
 
-describe('PolicyEditorUtils — formStateToYaml approval output', () => {
+describe('AgentEditorUtils — formStateToYaml approval output', () => {
   it('emits approval: required in YAML when approvalRequired is true on a tool', () => {
     const state = yamlToFormState(WEBHOOK_YAML)!
     // filesystem.write_file already has approval: required in WEBHOOK_YAML
@@ -191,7 +191,7 @@ describe('PolicyEditorUtils — formStateToYaml approval output', () => {
   })
 })
 
-describe('PolicyEditorUtils — YAML ↔ form round-trip (pure functions)', () => {
+describe('AgentEditorUtils — YAML ↔ form round-trip (pure functions)', () => {
   it.each([
     ['webhook', WEBHOOK_YAML],
     ['manual', MANUAL_YAML],
@@ -246,7 +246,7 @@ describe('PolicyEditorUtils — YAML ↔ form round-trip (pure functions)', () =
   })
 })
 
-describe('PolicyEditorPage — dirty state and save', () => {
+describe('AgentEditorPage — dirty state and save', () => {
   it('editing the name field sets isDirty; saving clears it', async () => {
     // Use an existing-policy route so save does not navigate away
     vi.mocked(usePolicy).mockReturnValue({
@@ -349,7 +349,7 @@ describe('PolicyEditorPage — dirty state and save', () => {
   })
 })
 
-describe('PolicyEditorPage — Ctrl+S always triggers save', () => {
+describe('AgentEditorPage — Ctrl+S always triggers save', () => {
   it('calls mutateAsync on Ctrl+S even when the form has not been changed', async () => {
     const { mutateAsync } = mockHooksDefault()
     renderEditor()
@@ -365,7 +365,7 @@ describe('PolicyEditorPage — Ctrl+S always triggers save', () => {
   })
 })
 
-describe('PolicyEditorPage — Cmd+S / Ctrl+S fires save', () => {
+describe('AgentEditorPage — Cmd+S / Ctrl+S fires save', () => {
   it('fires mutateAsync on Cmd+S when form is dirty', async () => {
     const { mutateAsync } = mockHooksDefault()
     renderEditor()
@@ -405,7 +405,7 @@ describe('PolicyEditorPage — Cmd+S / Ctrl+S fires save', () => {
   })
 })
 
-describe('PolicyEditorPage — agent not found (404)', () => {
+describe('AgentEditorPage — agent not found (404)', () => {
   it('renders NotFoundPage with "Agent not found" heading on 404 error', () => {
     mockHooksDefault()
     vi.mocked(usePolicy).mockReturnValue({
@@ -450,7 +450,7 @@ describe('PolicyEditorPage — agent not found (404)', () => {
   })
 })
 
-describe('PolicyEditorPage — non-404 error', () => {
+describe('AgentEditorPage — non-404 error', () => {
   it('shows generic "Failed to load agent." message for 500 errors', () => {
     mockHooksDefault()
     vi.mocked(usePolicy).mockReturnValue({
@@ -478,7 +478,7 @@ describe('PolicyEditorPage — non-404 error', () => {
   })
 })
 
-describe('PolicyEditorPage — Run now button for manual trigger', () => {
+describe('AgentEditorPage — Run now button for manual trigger', () => {
   it('shows Run now button when policy trigger_type is manual', () => {
     mockHooksDefault()
     vi.mocked(usePolicy).mockReturnValue({

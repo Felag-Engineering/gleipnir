@@ -10,7 +10,7 @@ import type {
   TaskInstructionsFormState,
   TriggerFormState,
   WebhookAuthMode,
-} from '@/components/PolicyEditor/FormMode/types'
+} from '@/components/AgentEditor/FormMode/types'
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)

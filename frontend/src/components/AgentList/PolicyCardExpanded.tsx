@@ -1,7 +1,7 @@
 import type { ApiPolicyListItem } from '@/api/types'
 import { usePolicy } from '@/hooks/queries/policies'
 import { useRuns } from '@/hooks/queries/runs'
-import { yamlToFormState } from '@/components/PolicyEditor/policyEditorUtils'
+import { yamlToFormState } from '@/components/AgentEditor/agentEditorUtils'
 import { formatTokens } from '@/utils/format'
 import styles from './PolicyCardExpanded.module.css'
 

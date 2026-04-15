@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { yamlToFormState, formStateToYaml, defaultFormState, DEFAULT_YAML } from './policyEditorUtils'
+import { yamlToFormState, formStateToYaml, defaultFormState, DEFAULT_YAML } from './agentEditorUtils'
 
 // --- Invalid input ---
 

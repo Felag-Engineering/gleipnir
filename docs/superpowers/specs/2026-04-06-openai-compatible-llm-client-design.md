@@ -530,7 +530,7 @@ Every code path in `internal/llm/openai/*.go` that isn't a one-line getter or st
 
 **Why API keys are encrypted at rest.** Reuses the existing `internal/admin/crypto.go` and `GLEIPNIR_SECRET_KEY` infrastructure used for Anthropic and Google. No new key-management story.
 
-**Why deletion is destructive without policy checks.** A policy referencing an unknown provider already fails at run-start with a clear error. Adding a "this provider is referenced by N policies" check is desirable but not required for v1; it can be added without changing this ADR. In-flight runs that already hold a client reference complete their current API call and only fail when their next run starts and tries to look up the provider in the registry. Deleting a provider does not interrupt running fetters.
+**Why deletion is destructive without policy checks.** A policy referencing an unknown provider already fails at run-start with a clear error. Adding a "this provider is referenced by N policies" check is desirable but not required for v1; it can be added without changing this ADR. In-flight runs that already hold a client reference complete their current API call and only fail when their next run starts and tries to look up the provider in the registry. Deleting a provider does not interrupt running agents.
 
 **Why connection-test-on-save (with a 404 escape hatch).** Catching authentication failures, typos, and unreachable backends in the admin UI at save time rather than in a policy author's failed run hours later is a much better operator experience. The 404 escape hatch exists because some compat backends do not implement `/v1/models`; they should still be usable, with the trade-off that model-name autocomplete is unavailable for those instances.
 

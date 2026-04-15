@@ -142,7 +142,7 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
             <div className={styles.adminCell}>
               <dt className={styles.adminLabel}>Policy</dt>
               <dd className={styles.adminValue}>
-                <Link to={`/policies/${run.policy_id}`} className={styles.adminLink}>
+                <Link to={`/agents/${run.policy_id}`} className={styles.adminLink}>
                   {run.policy_name || run.policy_id}
                 </Link>
               </dd>

@@ -1,25 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { EditorTopBar } from '@/components/PolicyEditor/EditorTopBar/EditorTopBar'
-import { DeleteAgentModal } from '@/components/PolicyEditor/DeleteAgentModal'
+import { EditorTopBar } from '@/components/AgentEditor/EditorTopBar/EditorTopBar'
+import { DeleteAgentModal } from '@/components/AgentEditor/DeleteAgentModal'
 import { TriggerRunModal } from '@/components/TriggerRunModal/TriggerRunModal'
-import { PolicyIdentitySection } from '@/components/PolicyEditor/FormMode/PolicyIdentitySection'
-import { TriggerSection } from '@/components/PolicyEditor/FormMode/TriggerSection'
-import { CapabilitiesSection } from '@/components/PolicyEditor/FormMode/CapabilitiesSection'
-import { TaskInstructionsSection } from '@/components/PolicyEditor/FormMode/TaskInstructionsSection'
-import { RunLimitsSection } from '@/components/PolicyEditor/FormMode/RunLimitsSection'
-import { ConcurrencySection } from '@/components/PolicyEditor/FormMode/ConcurrencySection'
-import { ModelSection } from '@/components/PolicyEditor/FormMode/ModelSection'
+import { PolicyIdentitySection } from '@/components/AgentEditor/FormMode/PolicyIdentitySection'
+import { TriggerSection } from '@/components/AgentEditor/FormMode/TriggerSection'
+import { CapabilitiesSection } from '@/components/AgentEditor/FormMode/CapabilitiesSection'
+import { TaskInstructionsSection } from '@/components/AgentEditor/FormMode/TaskInstructionsSection'
+import { RunLimitsSection } from '@/components/AgentEditor/FormMode/RunLimitsSection'
+import { ConcurrencySection } from '@/components/AgentEditor/FormMode/ConcurrencySection'
+import { ModelSection } from '@/components/AgentEditor/FormMode/ModelSection'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { usePolicy, usePolicies } from '@/hooks/queries/policies'
 import { useSavePolicy, useDeletePolicy, usePausePolicy, useResumePolicy } from '@/hooks/mutations/policies'
 import { ApiError } from '@/api/fetch'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import NotFoundPage from '@/pages/NotFoundPage'
-import { defaultFormState, FormState, formStateToYaml, yamlToFormState } from '@/components/PolicyEditor/policyEditorUtils'
-import styles from './PolicyEditorPage.module.css'
+import { defaultFormState, FormState, formStateToYaml, yamlToFormState } from '@/components/AgentEditor/agentEditorUtils'
+import styles from './AgentEditorPage.module.css'
 
-export function PolicyEditorPage() {
+export function AgentEditorPage() {
   const { id } = useParams<{ id?: string }>()
   const navigate = useNavigate()
 
@@ -239,4 +239,4 @@ export function PolicyEditorPage() {
   )
 }
 
-export default PolicyEditorPage
+export default AgentEditorPage

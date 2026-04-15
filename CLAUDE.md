@@ -1,6 +1,6 @@
 ## Project overview
 
-Gleipnir is a homelab-scale autonomous agent orchestrator. It runs AI agents as **Fetters** — agents with hard capability enforcement (no prompt-based restrictions), a full audit trail, and human-in-the-loop controls.
+Gleipnir is a homelab-scale autonomous agent orchestrator. It runs AI agents with hard capability enforcement (no prompt-based restrictions), a full audit trail, and human-in-the-loop controls.
 
 ## Commands
 
@@ -55,7 +55,7 @@ See `frontend/CLAUDE.md` for detailed frontend architecture (routes, design syst
 
 ## Core domain concepts
 
-**Fetter** — an agent run scoped to a specific policy. Tools not granted to a run are never registered with the agent; they do not exist from the agent's perspective.
+**Agent** — a run scoped to a specific policy. Tools not granted to a run are never registered with the agent; they do not exist from the agent's perspective.
 
 **Policy** — YAML config defining trigger, agent task prompt, capability grants, and limits. Four trigger types: `webhook`, `manual`, `scheduled`, `poll`.
 
@@ -175,7 +175,7 @@ These are resolved constraints — do not re-litigate them.
 - **SSE for real-time UI transport (ADR-016):** Server-Sent Events push run status changes, new steps, and approval events. Mutations remain REST. No WebSockets.
 - **Policy-level parameter scoping (ADR-017):** tool parameters can be restricted per-policy via `params` blocks. Schema is narrowed before agent sees it — structural enforcement, not prompt-based.
 - **Capability snapshot as first run step (ADR-018):** every run records the exact tools registered at run start.
-- **Dual-mode policy editor (ADR-019):** Form view + YAML view, both editing the same YAML string. YAML is the API payload.
+- **Agent editor (ADR-019):** Form view is the only editing surface. YAML is the API payload and storage format; operators do not author it directly in the UI. YAML tab was removed in #751.
 - **Policy folders are YAML-only (ADR-020):** `folder` is an optional string in the policy YAML for UI grouping. No DB column — purely cosmetic.
 - **Model-agnostic design (ADR-026):** multi-provider support via `internal/llm` interface. Currently Anthropic + Google. Providers implement a common interface; agent runtime is provider-agnostic.
 - **Tool risk classification (ADR-028):** tools categorized by risk level, affecting approval requirements.
