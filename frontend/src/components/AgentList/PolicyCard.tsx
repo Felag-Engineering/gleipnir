@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Play, Pencil } from 'lucide-react'
 import type { ApiPolicyListItem } from '@/api/types'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'
 import { isRunStatus } from '@/constants/status'
@@ -67,7 +68,7 @@ export function PolicyCard({ policy, onTrigger }: Props) {
             aria-label={`Run ${policy.name}`}
             disabled={isPaused}
           >
-            ▶
+            <Play size={12} aria-hidden />
           </button>
           <Link
             to={`/agents/${policy.id}`}
@@ -75,7 +76,7 @@ export function PolicyCard({ policy, onTrigger }: Props) {
             onClick={(e) => e.stopPropagation()}
             aria-label={`Edit ${policy.name}`}
           >
-            ✎
+            <Pencil size={14} aria-hidden />
           </Link>
         </div>
       </div>

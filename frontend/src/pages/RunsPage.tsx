@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useRuns } from '@/hooks/queries/runs'
 import { usePolicies } from '@/hooks/queries/policies'
@@ -210,7 +210,7 @@ export default function RunsPage() {
               className={`${styles.pageButton} ${page <= 1 ? styles.pageButtonDisabled : ''}`}
               onClick={() => goToPage(page - 1)}
             >
-              ←
+              <ChevronLeft size={16} aria-hidden strokeWidth={1.5} />
             </button>
 
             {pageNumbers.map((n, i) =>

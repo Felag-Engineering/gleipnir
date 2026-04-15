@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
 import type { ApiRun } from '@/api/types'
 import { StatusBadge } from '@/components/dashboard/StatusBadge/StatusBadge'
 import { TriggerChip } from '@/components/dashboard/TriggerChip/TriggerChip'
@@ -57,7 +58,7 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
           className={styles.backBtn}
           onClick={() => navigate('/dashboard')}
         >
-          ← Runs
+          <ArrowLeft size={14} aria-hidden /> Runs
         </button>
         <span className={styles.policyName}>
           {run.policy_name || run.policy_id}
@@ -90,7 +91,7 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
           >
             {capabilityParts.join(' · ')}
             <span className={styles.capabilityChevron}>
-              {capExpanded ? ' ▲' : ' ▼'}
+              {capExpanded ? <ChevronUp size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
             </span>
           </button>
           {capExpanded && capabilitySnapshot && capabilitySnapshot.tools.length > 0 && (
@@ -131,7 +132,7 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
           onClick={() => setAdminOpen(o => !o)}
           aria-expanded={adminOpen}
         >
-          Run details {adminOpen ? '▲' : '▼'}
+          Run details {adminOpen ? <ChevronUp size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
         </button>
         {adminOpen && (
           <dl className={styles.adminGrid}>

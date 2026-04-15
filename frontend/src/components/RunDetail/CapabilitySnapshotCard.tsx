@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Settings, ChevronDown, ChevronUp, ChevronRight } from 'lucide-react'
 import type { CapabilitySnapshotContent, CapabilitySnapshotV2, GrantedToolEntry } from './types'
 import { formatProviderName } from '@/utils/format'
 import styles from './CapabilitySnapshotCard.module.css'
@@ -27,11 +28,11 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
         onClick={() => setExpanded((e) => !e)}
         aria-expanded={expanded}
       >
-        <span className={styles.icon}>⚙</span>
+        <Settings size={14} className={styles.icon} aria-hidden />
         <span className={styles.label}>
           Capability snapshot — {count} tool{count === 1 ? '' : 's'}{provider ? ` · ${formatProviderName(provider)}` : ''}{modelName ? ` · ${modelName}` : ''}
         </span>
-        <span className={styles.chevron}>{expanded ? '▲' : '▼'}</span>
+        {expanded ? <ChevronUp size={14} className={styles.chevron} aria-hidden /> : <ChevronDown size={14} className={styles.chevron} aria-hidden />}
       </button>
       {expanded && (
         <div className={styles.tableWrapper}>
@@ -61,7 +62,7 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
                 onClick={() => setPromptExpanded((e) => !e)}
                 aria-expanded={promptExpanded}
               >
-                {promptExpanded ? '▼' : '▶'} System prompt
+                {promptExpanded ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />} System prompt
               </button>
               {promptExpanded && (
                 <pre className={styles.promptBody}>{systemPrompt}</pre>

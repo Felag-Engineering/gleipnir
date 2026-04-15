@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ChevronRight } from 'lucide-react'
 import type { ParsedStep } from './types'
 import { formatTokens } from '@/utils/format'
 import styles from './ThinkingBlock.module.css'
@@ -47,7 +48,7 @@ export function ThinkingBlock({ step, defaultExpanded = false }: Props) {
       aria-expanded={expanded}
     >
       <div className={styles.header}>
-        <span className={chevronClass} aria-hidden="true">▶</span>
+        <ChevronRight size={12} className={chevronClass} aria-hidden />
         <span className={styles.label}>Thinking</span>
         {tokenCount > 0 && (
           <span className={styles.tokens}>{formatTokens(tokenCount)} tokens</span>
