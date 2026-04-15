@@ -88,6 +88,7 @@ const FIXTURE_ASSIGNED_TOOLS: AssignedTool[] = [
     name: 'read_file',
     description: 'Read the contents of a file at the given path',
     approvalRequired: false,
+    approvalTimeout: '',
   },
   {
     toolId: 'tool-2',
@@ -96,6 +97,7 @@ const FIXTURE_ASSIGNED_TOOLS: AssignedTool[] = [
     name: 'write_file',
     description: 'Write content to a file at the given path',
     approvalRequired: true,
+    approvalTimeout: '',
   },
   {
     toolId: 'tool-4',
@@ -104,6 +106,7 @@ const FIXTURE_ASSIGNED_TOOLS: AssignedTool[] = [
     name: 'create_issue',
     description: 'Create a new GitHub issue in a repository',
     approvalRequired: false,
+    approvalTimeout: '',
   },
 ];
 
@@ -144,6 +147,27 @@ export const Empty: Story = {
 export const WithTools: Story = {
   args: {
     value: { tools: FIXTURE_ASSIGNED_TOOLS, feedback: DEFAULT_FEEDBACK },
+    onChange: () => {},
+  },
+};
+
+// Shows the approval timeout input rendered alongside the approval toggle.
+export const WithApprovalTimeout: Story = {
+  args: {
+    value: {
+      tools: [
+        {
+          toolId: 'tool-2',
+          serverId: 'srv-1',
+          serverName: 'Filesystem Tools',
+          name: 'write_file',
+          description: 'Write content to a file at the given path',
+          approvalRequired: true,
+          approvalTimeout: '30m',
+        },
+      ],
+      feedback: DEFAULT_FEEDBACK,
+    },
     onChange: () => {},
   },
 };

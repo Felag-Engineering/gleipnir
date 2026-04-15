@@ -49,11 +49,24 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
     onChange({ ...value, tools: value.tools.filter(t => t.toolId !== toolId) });
   }
 
+  // handleToggleApproval intentionally does NOT reset approvalTimeout when toggling
+  // off. The value is preserved in state but omitted from YAML when approval is off
+  // (see formStateToYaml). This lets users toggle approval on/off without losing
+  // a timeout they typed.
   function handleToggleApproval(toolId: string) {
     onChange({
       ...value,
       tools: value.tools.map(t =>
         t.toolId === toolId ? { ...t, approvalRequired: !t.approvalRequired } : t
+      ),
+    });
+  }
+
+  function handleTimeoutChange(toolId: string, timeout: string) {
+    onChange({
+      ...value,
+      tools: value.tools.map(t =>
+        t.toolId === toolId ? { ...t, approvalTimeout: timeout } : t
       ),
     });
   }
@@ -66,6 +79,7 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
       name: tool.name,
       description: tool.description,
       approvalRequired: false,
+      approvalTimeout: '',
     };
     onChange({ ...value, tools: [...value.tools, assigned] });
     setSearchOpen(false);
@@ -102,6 +116,7 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
               tool={tool}
               onRemove={handleRemove}
               onToggleApproval={handleToggleApproval}
+              onTimeoutChange={handleTimeoutChange}
             />
           ))}
         </div>
@@ -166,9 +181,10 @@ interface AssignedToolRowProps {
   tool: AssignedTool;
   onRemove: (toolId: string) => void;
   onToggleApproval: (toolId: string) => void;
+  onTimeoutChange: (toolId: string, timeout: string) => void;
 }
 
-function AssignedToolRow({ tool, onRemove, onToggleApproval }: AssignedToolRowProps) {
+function AssignedToolRow({ tool, onRemove, onToggleApproval, onTimeoutChange }: AssignedToolRowProps) {
   const displayName = `${tool.serverName}.${tool.name}`;
 
   return (
@@ -188,6 +204,16 @@ function AssignedToolRow({ tool, onRemove, onToggleApproval }: AssignedToolRowPr
             <span className={`${styles.toggleThumb} ${tool.approvalRequired ? styles.toggleThumbOn : styles.toggleThumbOff}`} />
           </span>
         </button>
+        {tool.approvalRequired && (
+          <input
+            className={styles.approvalTimeoutInput}
+            type="text"
+            placeholder="e.g. 30m"
+            value={tool.approvalTimeout}
+            onChange={e => onTimeoutChange(tool.toolId, e.target.value)}
+            aria-label={`Approval timeout for ${displayName}`}
+          />
+        )}
       </div>
       <button
         className={styles.removeButton}

@@ -24,9 +24,6 @@ export interface FormState {
   limits: RunLimitsFormState
   concurrency: ConcurrencyFormState
   model: ModelFormState
-  // Passthrough fields preserved across round-trips but not editable in form UI
-  _preamble?: string
-  _toolExtras?: Record<string, { timeout?: number; on_timeout?: string }>
 }
 
 export const DEFAULT_YAML = `name: ''
@@ -139,8 +136,6 @@ export function yamlToFormState(yaml: string): FormState | null {
   // Capabilities
   const capsRaw = isRecord(p.capabilities) ? p.capabilities : {}
 
-  const toolExtras: Record<string, { timeout?: number; on_timeout?: string }> = {}
-
   const tools = Array.isArray(capsRaw.tools)
     ? capsRaw.tools.flatMap((entry: unknown) => {
         if (!isRecord(entry)) return []
@@ -152,12 +147,14 @@ export function yamlToFormState(yaml: string): FormState | null {
         const toolPart = dotIdx >= 0 ? toolStr.slice(dotIdx + 1) : ''
         const approvalRequired = e.approval === 'required'
 
-        // Stash timeout/on_timeout for round-trip passthrough
-        const extras: { timeout?: number; on_timeout?: string } = {}
-        if (typeof e.timeout === 'number') extras.timeout = e.timeout
-        if (typeof e.on_timeout === 'string') extras.on_timeout = e.on_timeout
-        if (Object.keys(extras).length > 0) {
-          toolExtras[toolStr] = extras
+        // Convert timeout to a Go duration string. js-yaml may hand us a number
+        // for bare-integer values in legacy YAML (e.g. `timeout: 300`), which
+        // would fail time.ParseDuration on the backend. Convert those to "${n}s".
+        let approvalTimeout = ''
+        if (typeof e.timeout === 'string') {
+          approvalTimeout = e.timeout
+        } else if (typeof e.timeout === 'number') {
+          approvalTimeout = `${e.timeout}s`
         }
 
         return [{
@@ -168,6 +165,7 @@ export function yamlToFormState(yaml: string): FormState | null {
           description: '',
           role: 'tool' as const, // placeholder — CapabilitiesSection reconciles with registry
           approvalRequired,
+          approvalTimeout,
         }]
       })
     : []
@@ -214,6 +212,7 @@ export function yamlToFormState(yaml: string): FormState | null {
     concurrency: validConcurrency.includes(concurrencyRaw as ConcurrencyValue)
       ? (concurrencyRaw as ConcurrencyValue)
       : 'skip',
+    queueDepth: typeof agentRaw.queue_depth === 'number' ? agentRaw.queue_depth : 0,
   }
 
   // Read model from top-level model: section
@@ -223,8 +222,6 @@ export function yamlToFormState(yaml: string): FormState | null {
     ? { provider: modelRaw.provider, model: modelRaw.name }
     : { provider: 'anthropic', model: 'claude-sonnet-4-6' }
 
-  const _preamble = typeof agentRaw.preamble === 'string' ? agentRaw.preamble : undefined
-
   return {
     identity,
     trigger,
@@ -233,8 +230,6 @@ export function yamlToFormState(yaml: string): FormState | null {
     limits,
     concurrency,
     model,
-    _preamble,
-    _toolExtras: Object.keys(toolExtras).length > 0 ? toolExtras : undefined,
   }
 }
 
@@ -271,12 +266,17 @@ export function formStateToYaml(state: FormState): string {
 
   // Build capabilities — single tools array
   const tools = capabilities.tools.map(t => {
-    const toolId = t.toolId
-    const extras = state._toolExtras?.[toolId] ?? {}
     const entry: Record<string, unknown> = { tool: `${t.serverName}.${t.name}` }
-    if (extras.timeout !== undefined) entry.timeout = extras.timeout
-    if (extras.on_timeout !== undefined) entry.on_timeout = extras.on_timeout
-    if (t.approvalRequired) entry.approval = 'required'
+    if (t.approvalRequired) {
+      entry.approval = 'required'
+      // Only emit timeout and on_timeout when approval is on and a timeout is set.
+      // When approval is off, the timeout value is preserved in form state but not
+      // serialized — this lets users toggle approval without losing their typed value.
+      if (t.approvalTimeout) {
+        entry.timeout = t.approvalTimeout
+        entry.on_timeout = 'reject' // hardcoded — reject is the only valid value
+      }
+    }
     return entry
   })
 
@@ -292,13 +292,17 @@ export function formStateToYaml(state: FormState): string {
 
   // Build agent block
   const agentObj: Record<string, unknown> = {}
-  if (state._preamble !== undefined) agentObj.preamble = state._preamble
   agentObj.task = task.task
   agentObj.limits = {
     max_tokens_per_run: limits.max_tokens_per_run,
     max_tool_calls_per_run: limits.max_tool_calls_per_run,
   }
   agentObj.concurrency = concurrency.concurrency
+  // Emit queue_depth only when mode is queue and depth is non-zero.
+  // Omitting it lets the backend apply model.DefaultQueueDepth.
+  if (concurrency.concurrency === 'queue' && concurrency.queueDepth > 0) {
+    agentObj.queue_depth = concurrency.queueDepth
+  }
 
   const doc: Record<string, unknown> = {
     name: identity.name,

@@ -23,34 +23,42 @@ type Story = StoryObj<typeof ConcurrencySection>;
 
 export const SkipSelected: Story = {
   args: {
-    value: { concurrency: 'skip' },
+    value: { concurrency: 'skip', queueDepth: 0 },
     onChange: fn(),
   },
 };
 
 export const QueueSelected: Story = {
   args: {
-    value: { concurrency: 'queue' },
+    value: { concurrency: 'queue', queueDepth: 0 },
+    onChange: fn(),
+  },
+};
+
+// Shows the queue-depth input rendered with a non-zero value.
+export const QueueWithDepth: Story = {
+  args: {
+    value: { concurrency: 'queue', queueDepth: 10 },
     onChange: fn(),
   },
 };
 
 export const ParallelSelected: Story = {
   args: {
-    value: { concurrency: 'parallel' },
+    value: { concurrency: 'parallel', queueDepth: 0 },
     onChange: fn(),
   },
 };
 
 export const ReplaceSelected: Story = {
   args: {
-    value: { concurrency: 'replace' },
+    value: { concurrency: 'replace', queueDepth: 0 },
     onChange: fn(),
   },
 };
 
 function InteractiveConcurrencySection() {
-  const [value, setValue] = useState<ConcurrencyFormState>({ concurrency: 'skip' });
+  const [value, setValue] = useState<ConcurrencyFormState>({ concurrency: 'skip', queueDepth: 0 });
   return <ConcurrencySection value={value} onChange={setValue} />;
 }
 

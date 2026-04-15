@@ -3,7 +3,6 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { EditorTopBar } from '@/components/PolicyEditor/EditorTopBar/EditorTopBar'
 import { DeleteAgentModal } from '@/components/PolicyEditor/DeleteAgentModal'
 import { TriggerRunModal } from '@/components/TriggerRunModal/TriggerRunModal'
-import { YamlEditor } from '@/components/PolicyEditor/YamlEditor/YamlEditor'
 import { PolicyIdentitySection } from '@/components/PolicyEditor/FormMode/PolicyIdentitySection'
 import { TriggerSection } from '@/components/PolicyEditor/FormMode/TriggerSection'
 import { CapabilitiesSection } from '@/components/PolicyEditor/FormMode/CapabilitiesSection'
@@ -17,7 +16,7 @@ import { useSavePolicy, useDeletePolicy, usePausePolicy, useResumePolicy } from 
 import { ApiError } from '@/api/fetch'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import NotFoundPage from '@/pages/NotFoundPage'
-import { DEFAULT_YAML, defaultFormState, FormState, formStateToYaml, yamlToFormState } from '@/components/PolicyEditor/policyEditorUtils'
+import { defaultFormState, FormState, formStateToYaml, yamlToFormState } from '@/components/PolicyEditor/policyEditorUtils'
 import styles from './PolicyEditorPage.module.css'
 
 export function PolicyEditorPage() {
@@ -35,9 +34,6 @@ export function PolicyEditorPage() {
     ? [...new Set(allPolicies.map((p) => p.folder).filter((f): f is string => Boolean(f)))]
     : []
 
-  const [mode, setMode] = useState<'form' | 'yaml'>('form')
-  const [yamlString, setYamlString] = useState(DEFAULT_YAML)
-  const [yamlValid, setYamlValid] = useState(true)
   const [isDirty, setIsDirty] = useState(false)
   const [formState, setFormState] = useState<FormState>(() => defaultFormState())
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -49,49 +45,25 @@ export function PolicyEditorPage() {
   // Initialize from fetched policy data
   useEffect(() => {
     if (!id) {
-      setYamlString(DEFAULT_YAML)
       setFormState(defaultFormState())
       setIsDirty(false)
       return
     }
     if (policy) {
-      setYamlString(policy.yaml)
       const parsed = yamlToFormState(policy.yaml)
       if (parsed) setFormState(parsed)
       setIsDirty(false)
     }
   }, [id, policy])
 
-  function handleModeChange(next: 'form' | 'yaml') {
-    if (next === mode) return
-    if (next === 'yaml') {
-      setYamlString(formStateToYaml(formState))
-      setMode('yaml')
-    } else {
-      const parsed = yamlToFormState(yamlString)
-      if (parsed === null) {
-        setSaveError('Cannot switch to Form mode: YAML is malformed or missing required fields.')
-        return
-      }
-      setFormState(parsed)
-      setSaveError(null)
-      setMode('form')
-    }
-  }
-
   function handleFormChange(patch: Partial<FormState>) {
     setFormState(prev => ({ ...prev, ...patch }))
     setIsDirty(true)
   }
 
-  function handleYamlChange(value: string) {
-    setYamlString(value)
-    setIsDirty(true)
-  }
-
   async function handleSave() {
     setSaveError(null)
-    const yaml = mode === 'form' ? formStateToYaml(formState) : yamlString
+    const yaml = formStateToYaml(formState)
     try {
       const result = await savePolicy.mutateAsync({ id, yaml })
       setIsDirty(false)
@@ -128,7 +100,7 @@ export function PolicyEditorPage() {
   }
 
   // Stable ref so the keydown listener always calls the current handleSave
-  // without needing to re-register on every render (same pattern as YamlEditor.tsx)
+  // without needing to re-register on every render.
   const handleSaveRef = useRef(handleSave)
   handleSaveRef.current = handleSave
 
@@ -143,16 +115,13 @@ export function PolicyEditorPage() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  const canSave = isDirty && (mode === 'form' || yamlValid) && !savePolicy.isPending
+  const canSave = isDirty && !savePolicy.isPending
 
   // Only show the Run now button for saved policies with a manual trigger type.
-  // The button reflects the server-side state, not the unsaved YAML in the editor.
+  // The button reflects the server-side state, not the unsaved form state.
   const isManualTrigger = Boolean(id) && policy?.trigger_type === 'manual'
 
-  const policyName =
-    mode === 'form'
-      ? (formState.identity.name || (id ? id : 'New Agent'))
-      : (id ? (policy?.name ?? id) : 'New Agent')
+  const policyName = formState.identity.name || (id ? id : 'New Agent')
 
   const pageTitle = (id && policyStatus === 'error') ? 'Agent not found' : policyName
   usePageTitle(pageTitle)
@@ -193,12 +162,10 @@ export function PolicyEditorPage() {
     <div className={styles.page}>
       <EditorTopBar
         policyName={policyName}
-        mode={mode}
         canSave={canSave}
         isEditMode={Boolean(id)}
         pausedAt={policy?.paused_at}
         isPauseResumeLoading={pausePolicy.isPending || resumePolicy.isPending}
-        onModeChange={handleModeChange}
         onSave={handleSave}
         onDeleteClick={() => setDeleteModalOpen(true)}
         onRunNowClick={isManualTrigger ? () => setTriggerModalOpen(true) : undefined}
@@ -234,48 +201,38 @@ export function PolicyEditorPage() {
               <button className={styles.errorBannerClose} onClick={() => setSaveError(null)}>×</button>
             </div>
           )}
-          {mode === 'yaml' ? (
-            <div className={styles.yamlPane}>
-              <YamlEditor
-                value={yamlString}
-                onChange={handleYamlChange}
-                onValidityChange={setYamlValid}
-              />
-            </div>
-          ) : (
-            <div className={styles.formPane}>
-              <PolicyIdentitySection
-                value={formState.identity}
-                onChange={v => handleFormChange({ identity: v })}
-                existingFolders={existingFolders}
-              />
-              <TriggerSection
-                value={formState.trigger}
-                onChange={v => handleFormChange({ trigger: v })}
-                policyId={savedPolicyId}
-              />
-              <CapabilitiesSection
-                value={formState.capabilities}
-                onChange={v => handleFormChange({ capabilities: v })}
-              />
-              <TaskInstructionsSection
-                value={formState.task}
-                onChange={v => handleFormChange({ task: v })}
-              />
-              <ModelSection
-                value={formState.model}
-                onChange={v => handleFormChange({ model: v })}
-              />
-              <RunLimitsSection
-                value={formState.limits}
-                onChange={v => handleFormChange({ limits: v })}
-              />
-              <ConcurrencySection
-                value={formState.concurrency}
-                onChange={v => handleFormChange({ concurrency: v })}
-              />
-            </div>
-          )}
+          <div className={styles.formPane}>
+            <PolicyIdentitySection
+              value={formState.identity}
+              onChange={v => handleFormChange({ identity: v })}
+              existingFolders={existingFolders}
+            />
+            <TriggerSection
+              value={formState.trigger}
+              onChange={v => handleFormChange({ trigger: v })}
+              policyId={savedPolicyId}
+            />
+            <CapabilitiesSection
+              value={formState.capabilities}
+              onChange={v => handleFormChange({ capabilities: v })}
+            />
+            <TaskInstructionsSection
+              value={formState.task}
+              onChange={v => handleFormChange({ task: v })}
+            />
+            <ModelSection
+              value={formState.model}
+              onChange={v => handleFormChange({ model: v })}
+            />
+            <RunLimitsSection
+              value={formState.limits}
+              onChange={v => handleFormChange({ limits: v })}
+            />
+            <ConcurrencySection
+              value={formState.concurrency}
+              onChange={v => handleFormChange({ concurrency: v })}
+            />
+          </div>
         </div>
       </ErrorBoundary>
     </div>

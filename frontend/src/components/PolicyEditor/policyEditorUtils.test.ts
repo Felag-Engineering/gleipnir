@@ -38,6 +38,7 @@ describe('yamlToFormState — defaults for missing fields', () => {
     expect(state!.limits.max_tokens_per_run).toBe(20000)
     expect(state!.limits.max_tool_calls_per_run).toBe(50)
     expect(state!.concurrency.concurrency).toBe('skip')
+    expect(state!.concurrency.queueDepth).toBe(0)
     expect(state!.model.provider).toBe('anthropic')
     expect(state!.model.model).toBe('claude-sonnet-4-6')
     expect(state!.trigger.type).toBe('webhook')
@@ -165,6 +166,7 @@ capabilities:
     expect(tool.serverName).toBe('myserver')
     expect(tool.name).toBe('read_file')
     expect(tool.approvalRequired).toBe(false)
+    expect(tool.approvalTimeout).toBe('')
   })
 
   it('parses tools with approval: required flag', () => {
@@ -191,17 +193,31 @@ capabilities:
     expect(tool.approvalRequired).toBe(false)
   })
 
-  it('preserves _toolExtras (timeout and on_timeout)', () => {
+  it('reads string timeout directly into approvalTimeout (string pass-through)', () => {
     const yaml = `name: p
 capabilities:
   tools:
     - tool: myserver.deploy
-      timeout: 300
-      on_timeout: fail
+      approval: required
+      timeout: 30m
 `
     const state = yamlToFormState(yaml)
-    expect(state!._toolExtras).toBeDefined()
-    expect(state!._toolExtras!['myserver.deploy']).toEqual({ timeout: 300, on_timeout: 'fail' })
+    expect(state!.capabilities.tools[0].approvalTimeout).toBe('30m')
+  })
+
+  it('converts numeric timeout to Go duration string (numeric branch: 300 → "300s")', () => {
+    // js-yaml hands us a number for bare-integer values like `timeout: 300`.
+    // The backend requires a Go duration string — bare integers fail time.ParseDuration.
+    // We convert number n to "${n}s" so the round-trip emits a valid duration.
+    const yaml = `name: p
+capabilities:
+  tools:
+    - tool: myserver.deploy
+      approval: required
+      timeout: 300
+`
+    const state = yamlToFormState(yaml)
+    expect(state!.capabilities.tools[0].approvalTimeout).toBe('300s')
   })
 
   it('parses new feedback config block with enabled, timeout, on_timeout', () => {
@@ -254,16 +270,6 @@ capabilities:
 // --- Agent block ---
 
 describe('yamlToFormState — agent block', () => {
-  it('parses preamble into _preamble', () => {
-    const yaml = `name: p
-agent:
-  preamble: "You are a helpful agent."
-  task: do things
-`
-    const state = yamlToFormState(yaml)
-    expect(state!._preamble).toBe('You are a helpful agent.')
-  })
-
   it('parses top-level model section with provider and name', () => {
     const yaml = `name: p
 model:
@@ -303,6 +309,27 @@ agent:
 `
     const state = yamlToFormState(yaml)
     expect(state!.concurrency.concurrency).toBe('skip')
+  })
+
+  it('parses agent.queue_depth into concurrency.queueDepth', () => {
+    const yaml = `name: p
+agent:
+  concurrency: queue
+  queue_depth: 5
+  task: do things
+`
+    const state = yamlToFormState(yaml)
+    expect(state!.concurrency.queueDepth).toBe(5)
+  })
+
+  it('defaults queueDepth to 0 when queue_depth is absent', () => {
+    const yaml = `name: p
+agent:
+  concurrency: queue
+  task: do things
+`
+    const state = yamlToFormState(yaml)
+    expect(state!.concurrency.queueDepth).toBe(0)
   })
 })
 
@@ -390,7 +417,9 @@ trigger:
     expect(output).toContain('2025-01-01T00:00:00Z')
   })
 
-  it('includes _preamble in agent block', () => {
+  it('does not emit preamble — preamble is no longer a per-policy field', () => {
+    // Existing policies with preamble: in YAML are silently migrated on first save
+    // (preamble field is dropped). This is intentional per the issue.
     const yaml = `name: p
 agent:
   preamble: "System context."
@@ -398,8 +427,7 @@ agent:
 `
     const state = yamlToFormState(yaml)!
     const output = formStateToYaml(state)
-    expect(output).toContain('preamble')
-    expect(output).toContain('System context.')
+    expect(output).not.toContain('preamble')
   })
 
   it('emits feedback block when feedback.enabled is true', () => {
@@ -429,20 +457,57 @@ capabilities:
     expect(output).not.toContain('feedback')
   })
 
-  it('preserves _toolExtras (timeout and on_timeout) in output', () => {
+  it('emits approval: required, timeout, and on_timeout: reject when approvalRequired and approvalTimeout are set', () => {
     const yaml = `name: p
 capabilities:
   tools:
     - tool: srv.deploy
-      timeout: 120
-      on_timeout: skip
+      approval: required
+      timeout: 30m
 `
     const state = yamlToFormState(yaml)!
     const output = formStateToYaml(state)
-    expect(output).toContain('timeout')
-    expect(output).toContain('120')
-    expect(output).toContain('on_timeout')
-    expect(output).toContain('skip')
+    expect(output).toContain('approval: required')
+    expect(output).toContain('timeout: 30m')
+    expect(output).toContain('on_timeout: reject')
+  })
+
+  it('does not emit approval, timeout, or on_timeout when approvalRequired is false (even if approvalTimeout is set)', () => {
+    // State preservation rule: approvalTimeout stays in form state when toggled off,
+    // but the serializer must not emit it.
+    const state = yamlToFormState(`name: p
+capabilities:
+  tools:
+    - tool: srv.deploy
+      approval: required
+      timeout: 30m
+`)!
+    // Toggle approval off — approvalTimeout is preserved in state per the spec
+    const modified = {
+      ...state,
+      capabilities: {
+        ...state.capabilities,
+        tools: state.capabilities.tools.map(t => ({ ...t, approvalRequired: false })),
+      },
+    }
+    const output = formStateToYaml(modified)
+    expect(output).not.toContain('approval:')
+    expect(output).not.toContain('timeout:')
+    expect(output).not.toContain('on_timeout:')
+  })
+
+  it('emits approval: required without timeout when approvalTimeout is empty', () => {
+    const yaml = `name: p
+capabilities:
+  tools:
+    - tool: srv.deploy
+      approval: required
+`
+    const state = yamlToFormState(yaml)!
+    const output = formStateToYaml(state)
+    expect(output).toContain('approval: required')
+    expect(output).not.toContain('timeout:')
+    expect(output).not.toContain('on_timeout:')
   })
 
   it('emits approval: required in YAML when approvalRequired is true', () => {
@@ -467,11 +532,50 @@ capabilities:
     const output = formStateToYaml(state)
     expect(output).not.toContain('approval: required')
   })
+
+  it('emits queue_depth when mode is queue and queueDepth > 0', () => {
+    const yaml = `name: p
+agent:
+  concurrency: queue
+  queue_depth: 5
+  task: do things
+`
+    const state = yamlToFormState(yaml)!
+    const output = formStateToYaml(state)
+    expect(output).toContain('queue_depth: 5')
+  })
+
+  it('omits queue_depth when queueDepth is 0', () => {
+    const yaml = `name: p
+agent:
+  concurrency: queue
+  task: do things
+`
+    const state = yamlToFormState(yaml)!
+    const output = formStateToYaml(state)
+    expect(output).not.toContain('queue_depth')
+  })
+
+  it('omits queue_depth when concurrency mode is not queue even if queueDepth > 0', () => {
+    const yaml = `name: p
+agent:
+  concurrency: queue
+  queue_depth: 5
+  task: do things
+`
+    const state = yamlToFormState(yaml)!
+    // Switch mode to skip
+    const modified = { ...state, concurrency: { ...state.concurrency, concurrency: 'skip' as const } }
+    const output = formStateToYaml(modified)
+    expect(output).not.toContain('queue_depth')
+  })
 })
 
 // --- Round-trip fidelity ---
 
 describe('round-trip fidelity', () => {
+  // Uses a valid Go duration string (30m) instead of bare integer (300).
+  // Bare integers fail backend time.ParseDuration.
   const COMPREHENSIVE_YAML = `name: comprehensive-policy
 description: A comprehensive policy
 folder: ops
@@ -485,14 +589,12 @@ capabilities:
     - tool: github.list_prs
     - tool: github.merge_pr
       approval: required
-      timeout: 300
-      on_timeout: fail
+      timeout: 30m
   feedback:
     enabled: true
     timeout: 30m
     on_timeout: fail
 agent:
-  preamble: "You are a GitHub automation agent."
   task: |
     Process pull requests and merge when approved.
   limits:
@@ -516,11 +618,16 @@ agent:
     expect(second!.concurrency.concurrency).toBe(first!.concurrency.concurrency)
     expect(second!.model.provider).toBe(first!.model.provider)
     expect(second!.model.model).toBe(first!.model.model)
-    expect(second!._preamble).toBe(first!._preamble)
     expect(second!.capabilities.feedback.enabled).toBe(first!.capabilities.feedback.enabled)
     expect(second!.capabilities.feedback.timeout).toBe(first!.capabilities.feedback.timeout)
 
     expect(second!.capabilities.tools).toHaveLength(first!.capabilities.tools.length)
+
+    // Gated tool should preserve approvalTimeout string pass-through (30m → 30m)
+    const gatedTool = second!.capabilities.tools.find(t => t.approvalRequired)
+    expect(gatedTool).toBeDefined()
+    expect(gatedTool!.approvalTimeout).toBe('30m')
+
     first!.capabilities.tools.forEach((t, i) => {
       expect(second!.capabilities.tools[i].serverName).toBe(t.serverName)
       expect(second!.capabilities.tools[i].name).toBe(t.name)
@@ -578,6 +685,18 @@ trigger:
     expect(second.trigger.fireAt).toEqual(['2025-03-01T10:00:00Z', '2025-09-01T10:00:00Z'])
   })
 
+  it('round-trips concurrency queue + queueDepth 5', () => {
+    const yaml = `name: p
+agent:
+  concurrency: queue
+  queue_depth: 5
+  task: do things
+`
+    const first = yamlToFormState(yaml)!
+    const second = yamlToFormState(formStateToYaml(first))!
+    expect(second.concurrency.concurrency).toBe('queue')
+    expect(second.concurrency.queueDepth).toBe(5)
+  })
 })
 
 // --- defaultFormState ---
@@ -592,6 +711,7 @@ describe('defaultFormState', () => {
     expect(state.limits.max_tokens_per_run).toBe(20000)
     expect(state.limits.max_tool_calls_per_run).toBe(50)
     expect(state.concurrency.concurrency).toBe('skip')
+    expect(state.concurrency.queueDepth).toBe(0)
   })
 
   it('matches what yamlToFormState(DEFAULT_YAML) returns', () => {

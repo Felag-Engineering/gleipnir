@@ -3,12 +3,10 @@ import styles from './EditorTopBar.module.css';
 
 export interface EditorTopBarProps {
   policyName: string;
-  mode: 'form' | 'yaml';
   canSave: boolean;
   isEditMode: boolean;
   pausedAt?: string | null;
   isPauseResumeLoading?: boolean;
-  onModeChange: (m: 'form' | 'yaml') => void;
   onSave: () => void;
   onDeleteClick: () => void;
   onRunNowClick?: () => void;
@@ -18,12 +16,10 @@ export interface EditorTopBarProps {
 
 export function EditorTopBar({
   policyName,
-  mode,
   canSave,
   isEditMode,
   pausedAt,
   isPauseResumeLoading,
-  onModeChange,
   onSave,
   onDeleteClick,
   onRunNowClick,
@@ -42,21 +38,6 @@ export function EditorTopBar({
       </div>
 
       <div className={styles.actions}>
-        <div className={styles.modeToggle}>
-          <button
-            className={mode === 'form' ? styles.toggleActive : styles.toggleInactive}
-            onClick={() => onModeChange('form')}
-          >
-            Form
-          </button>
-          <button
-            className={mode === 'yaml' ? styles.toggleActive : styles.toggleInactive}
-            onClick={() => onModeChange('yaml')}
-          >
-            YAML
-          </button>
-        </div>
-
         {isEditMode && onRunNowClick && (
           <button
             className={styles.runNowButton}

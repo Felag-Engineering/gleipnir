@@ -208,7 +208,7 @@ Organized by feature area:
 
 - **Layout** — sidebar navigation, content area, theme toggle, connection status banner
 - **dashboard/** — StatsBar, StatusBadge, StatusBoard, TriggerChip, ActivityFeed, OnboardingSteps
-- **PolicyEditor/** — EditorTopBar, FormMode (7 form sections), YamlEditor
+- **PolicyEditor/** — EditorTopBar, FormMode (7 form sections)
 - **PolicyList** — policy table with folder grouping
 - **RunDetail/** — RunHeader, StepTimeline, FilterBar, MetadataGrid, CapabilitySnapshotCard, ThoughtBlock, ThinkingBlock, ToolBlock, CompleteBlock, ErrorBlock, FeedbackBlock, ApprovalActions, FeedbackActions
 - **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal

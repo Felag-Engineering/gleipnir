@@ -16,6 +16,13 @@ const CONCURRENCY_OPTIONS: { value: ConcurrencyValue; label: string; desc: strin
 ];
 
 export function ConcurrencySection({ value, onChange }: ConcurrencySectionProps) {
+  function handleQueueDepthChange(e: React.ChangeEvent<HTMLInputElement>) {
+    // Clamp to non-negative integers. Backend rejects negatives (validator.go:200)
+    // and 0 means "use default" (model.DefaultQueueDepth).
+    const n = Math.max(0, parseInt(e.target.value) || 0);
+    onChange({ ...value, concurrency: 'queue', queueDepth: n });
+  }
+
   return (
     <div className={shared.section}>
       <div className={shared.heading}>Concurrency</div>
@@ -27,7 +34,8 @@ export function ConcurrencySection({ value, onChange }: ConcurrencySectionProps)
             <button
               key={option.value}
               className={isActive ? `${styles.card} ${styles.cardActive}` : styles.card}
-              onClick={() => onChange({ concurrency: option.value })}
+              // Spread value to preserve queueDepth when switching between modes
+              onClick={() => onChange({ ...value, concurrency: option.value })}
             >
               {isActive && (
                 <span className={styles.checkmark} aria-hidden="true">
@@ -42,6 +50,23 @@ export function ConcurrencySection({ value, onChange }: ConcurrencySectionProps)
           );
         })}
       </div>
+
+      {value.concurrency === 'queue' && (
+        <div className={styles.queueDepthRow}>
+          <label className={styles.queueDepthLabel} htmlFor="queue-depth-input">
+            Queue depth
+          </label>
+          <input
+            id="queue-depth-input"
+            className={styles.queueDepthInput}
+            type="number"
+            min={0}
+            placeholder="10"
+            value={value.queueDepth || ''}
+            onChange={handleQueueDepthChange}
+          />
+        </div>
+      )}
     </div>
   );
 }

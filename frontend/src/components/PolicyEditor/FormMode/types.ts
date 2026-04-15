@@ -5,6 +5,7 @@ export interface AssignedTool {
   name: string;
   description: string;
   approvalRequired: boolean;
+  approvalTimeout: string; // Go duration string (e.g. "30m"), empty string if unset
 }
 
 export interface FeedbackFormState {
@@ -76,6 +77,7 @@ export type ConcurrencyValue = 'skip' | 'queue' | 'parallel' | 'replace';
 
 export interface ConcurrencyFormState {
   concurrency: ConcurrencyValue;
+  queueDepth: number; // 0 means unset/use backend default; only emitted when mode is 'queue' and > 0
 }
 
 export interface ModelFormState {

@@ -156,6 +156,7 @@ describe('CapabilitiesSection — tool picker remove', () => {
         name: 'read_file',
         description: 'Read the contents of a file at the given path',
         approvalRequired: false,
+        approvalTimeout: '',
       },
     ]
 
@@ -261,6 +262,7 @@ describe('CapabilitiesSection — feedback section', () => {
         name: 'read_file',
         description: 'Read a file',
         approvalRequired: false,
+        approvalTimeout: '',
       },
     ]
     render(
@@ -294,7 +296,7 @@ describe('CapabilitiesSection — feedback section', () => {
     const lastCall = onChange.mock.calls[0][0] as CapabilitiesFormState
     // feedback.enabled must be flipped
     expect(lastCall.feedback.enabled).toBe(true)
-    // tools must be preserved (Blocking Issue 1 fix)
+    // tools must be preserved
     expect(lastCall.tools).toHaveLength(1)
     expect(lastCall.tools[0].toolId).toBe('tool-1')
   })
@@ -349,6 +351,7 @@ describe('CapabilitiesSection — approval toggle', () => {
         name: 'write_file',
         description: 'Write content to a file at the given path',
         approvalRequired: false,
+        approvalTimeout: '',
       },
     ]
 
@@ -379,6 +382,7 @@ describe('CapabilitiesSection — approval toggle', () => {
         name: 'write_file',
         description: 'Write content to a file at the given path',
         approvalRequired: true,
+        approvalTimeout: '',
       },
     ]
 
@@ -395,5 +399,100 @@ describe('CapabilitiesSection — approval toggle', () => {
 
     const lastCall = onChange.mock.calls[0][0] as CapabilitiesFormState
     expect(lastCall.tools[0].approvalRequired).toBe(false)
+  })
+})
+
+describe('CapabilitiesSection — approval timeout input', () => {
+  it('shows approval timeout input when approvalRequired is true', () => {
+    const assignedTools: AssignedTool[] = [
+      {
+        toolId: 'tool-2',
+        serverId: 'srv-1',
+        serverName: 'Filesystem Tools',
+        name: 'write_file',
+        description: 'Write content to a file at the given path',
+        approvalRequired: true,
+        approvalTimeout: '',
+      },
+    ]
+    renderSection(assignedTools)
+    expect(screen.getByPlaceholderText('e.g. 30m')).toBeInTheDocument()
+  })
+
+  it('does not show approval timeout input when approvalRequired is false', () => {
+    const assignedTools: AssignedTool[] = [
+      {
+        toolId: 'tool-2',
+        serverId: 'srv-1',
+        serverName: 'Filesystem Tools',
+        name: 'write_file',
+        description: 'Write content to a file at the given path',
+        approvalRequired: false,
+        approvalTimeout: '',
+      },
+    ]
+    renderSection(assignedTools)
+    // No timeout input when approval is off
+    expect(screen.queryByPlaceholderText('e.g. 30m')).toBeNull()
+  })
+
+  it('typing in the approval timeout input calls onChange with updated approvalTimeout', async () => {
+    const onChange = vi.fn()
+    const assignedTools: AssignedTool[] = [
+      {
+        toolId: 'tool-2',
+        serverId: 'srv-1',
+        serverName: 'Filesystem Tools',
+        name: 'write_file',
+        description: 'Write content to a file at the given path',
+        approvalRequired: true,
+        approvalTimeout: '',
+      },
+    ]
+
+    renderSection(assignedTools, onChange)
+
+    const timeoutInput = screen.getByPlaceholderText('e.g. 30m')
+    fireEvent.change(timeoutInput, { target: { value: '30m' } })
+
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledTimes(1)
+    })
+
+    const lastCall = onChange.mock.calls[0][0] as CapabilitiesFormState
+    expect(lastCall.tools[0].approvalTimeout).toBe('30m')
+  })
+
+  it('toggling approval off preserves approvalTimeout in state (state preservation rule)', async () => {
+    // handleToggleApproval does NOT reset approvalTimeout when toggling off.
+    // The serializer omits it from YAML when approval is off — this test verifies
+    // the state side: the timeout value survives the toggle so re-enabling approval
+    // shows the previously typed timeout.
+    const onChange = vi.fn()
+    const assignedTools: AssignedTool[] = [
+      {
+        toolId: 'tool-2',
+        serverId: 'srv-1',
+        serverName: 'Filesystem Tools',
+        name: 'write_file',
+        description: 'Write content to a file at the given path',
+        approvalRequired: true,
+        approvalTimeout: '30m',
+      },
+    ]
+
+    renderSection(assignedTools, onChange)
+
+    const toggle = screen.getByTitle('Approval required — click to disable')
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledTimes(1)
+    })
+
+    const lastCall = onChange.mock.calls[0][0] as CapabilitiesFormState
+    expect(lastCall.tools[0].approvalRequired).toBe(false)
+    // approvalTimeout is preserved even though approval is off
+    expect(lastCall.tools[0].approvalTimeout).toBe('30m')
   })
 })

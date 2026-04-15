@@ -14,11 +14,7 @@ const meta: Meta<typeof EditorTopBar> = {
       </MemoryRouter>
     ),
   ],
-  argTypes: {
-    mode: { control: 'select', options: ['form', 'yaml'] },
-  },
   args: {
-    onModeChange: fn(),
     onSave: fn(),
     onDeleteClick: fn(),
   },
@@ -30,7 +26,6 @@ type Story = StoryObj<typeof EditorTopBar>;
 export const Clean: Story = {
   args: {
     policyName: 'deploy-on-push',
-    mode: 'form',
     canSave: false,
     isEditMode: true,
   },
@@ -39,17 +34,7 @@ export const Clean: Story = {
 export const SaveEnabled: Story = {
   args: {
     policyName: 'deploy-on-push',
-    mode: 'form',
     canSave: true,
-    isEditMode: true,
-  },
-};
-
-export const YamlInvalid: Story = {
-  args: {
-    policyName: 'deploy-on-push',
-    mode: 'yaml',
-    canSave: false,
     isEditMode: true,
   },
 };
@@ -57,7 +42,6 @@ export const YamlInvalid: Story = {
 export const CreateMode: Story = {
   args: {
     policyName: 'New Agent',
-    mode: 'form',
     canSave: true,
     isEditMode: false,
   },
@@ -66,7 +50,6 @@ export const CreateMode: Story = {
 export const ManualTrigger: Story = {
   args: {
     policyName: 'on-demand-check',
-    mode: 'form',
     canSave: false,
     isEditMode: true,
     onRunNowClick: fn(),
