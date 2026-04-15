@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -271,6 +272,10 @@ func TestHandler_Login(t *testing.T) {
 				}
 				if !sessionCookie.HttpOnly {
 					t.Error("session cookie should be HttpOnly")
+				}
+				// Plain httptest.NewRequest is HTTP, so Secure must be false.
+				if sessionCookie.Secure {
+					t.Error("session cookie should not be Secure for a plain HTTP request")
 				}
 
 				// The DB must store the hashed token, never the raw cookie value.
@@ -1204,5 +1209,50 @@ func TestRevokeSessionHandler(t *testing.T) {
 func TestDummyHashInit(t *testing.T) {
 	if len(dummyHash) == 0 {
 		t.Fatal("dummyHash must not be empty after init()")
+	}
+}
+
+func TestIsSecureRequest(t *testing.T) {
+	cases := []struct {
+		name       string
+		setupReq   func(r *http.Request)
+		wantSecure bool
+	}{
+		{
+			name:       "plain HTTP request is not secure",
+			setupReq:   func(r *http.Request) {},
+			wantSecure: false,
+		},
+		{
+			name: "X-Forwarded-Proto: https is secure",
+			setupReq: func(r *http.Request) {
+				r.Header.Set("X-Forwarded-Proto", "https")
+			},
+			wantSecure: true,
+		},
+		{
+			name: "X-Forwarded-Proto: http is not secure",
+			setupReq: func(r *http.Request) {
+				r.Header.Set("X-Forwarded-Proto", "http")
+			},
+			wantSecure: false,
+		},
+		{
+			name: "r.TLS non-nil (direct TLS) is secure",
+			setupReq: func(r *http.Request) {
+				r.TLS = &tls.ConnectionState{}
+			},
+			wantSecure: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			tc.setupReq(req)
+			if got := isSecureRequest(req); got != tc.wantSecure {
+				t.Errorf("isSecureRequest = %v, want %v", got, tc.wantSecure)
+			}
+		})
 	}
 }

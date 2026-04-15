@@ -182,6 +182,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   isSecureRequest(r),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  expiresAt,
 	})
@@ -209,11 +210,21 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   isSecureRequest(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// isSecureRequest reports whether the request arrived over HTTPS — either
+// because Go terminated TLS directly (r.TLS != nil) or because a reverse
+// proxy terminated TLS and forwarded the original scheme via X-Forwarded-Proto.
+// Used to decide whether to set the Secure flag on session cookies, so HTTP
+// homelab deployments work without any extra configuration.
+func isSecureRequest(r *http.Request) bool {
+	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 }
 
 // Status reports whether initial setup is required (i.e., no users exist yet).
