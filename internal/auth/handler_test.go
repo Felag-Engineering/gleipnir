@@ -1204,11 +1204,11 @@ func TestRevokeSessionHandler(t *testing.T) {
 	}
 }
 
-// TestDummyHashInit verifies that the package-level dummyHash is populated by
-// the init() function so constant-time enumeration defense works at startup.
+// TestDummyHashInit verifies that getDummyHash returns a non-empty hash so
+// constant-time enumeration defense works on first call.
 func TestDummyHashInit(t *testing.T) {
-	if len(dummyHash) == 0 {
-		t.Fatal("dummyHash must not be empty after init()")
+	if len(getDummyHash()) == 0 {
+		t.Fatal("getDummyHash() must not return an empty hash")
 	}
 }
 

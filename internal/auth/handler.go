@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -65,11 +66,10 @@ func NewHandler(q AuthQuerier, database *sql.DB) *Handler {
 	return &Handler{q: q, db: database}
 }
 
-// dummyHash is used for constant-time password checking when a user is not
+// getDummyHash returns a bcrypt hash of a fixed dummy password, computed once
+// on first call. Used for constant-time password checking when a user is not
 // found, to prevent timing-based user enumeration attacks.
-var dummyHash []byte
-
-func init() {
+var getDummyHash = sync.OnceValue(func() []byte {
 	h, err := bcrypt.GenerateFromPassword([]byte("gleipnir-dummy-password"), bcryptCost)
 	if err != nil {
 		// bcrypt.GenerateFromPassword only fails if the cost is out of range.
@@ -77,8 +77,8 @@ func init() {
 		// so this is unreachable in practice.
 		panic("failed to generate dummy bcrypt hash: " + err.Error())
 	}
-	dummyHash = h
-}
+	return h
+})
 
 type loginRequest struct {
 	Username string `json:"username"`
@@ -120,7 +120,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			// Run bcrypt against a dummy hash so this path takes the same wall-clock
 			// time as the wrong-password path. The error is intentionally discarded —
 			// the only purpose is the constant-time delay to prevent user enumeration.
-			_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(req.Password))
+			_ = bcrypt.CompareHashAndPassword(getDummyHash(), []byte(req.Password))
 			httputil.WriteError(w, http.StatusUnauthorized, "invalid credentials", "")
 			return
 		}

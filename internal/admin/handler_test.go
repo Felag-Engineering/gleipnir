@@ -13,37 +13,38 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/llm"
 )
 
 // mockQuerier is an in-memory AdminQuerier for tests.
 type mockQuerier struct {
-	settings       map[string]SystemSettingRow
-	models         map[string]ModelSettingRow // key: "provider:model"
+	settings       map[string]db.SystemSetting
+	models         map[string]db.ModelSetting // key: "provider:model"
 	getSettingErrs map[string]error           // inject per-key errors for GetSystemSetting
 }
 
 func newMockQuerier() *mockQuerier {
 	return &mockQuerier{
-		settings:       make(map[string]SystemSettingRow),
-		models:         make(map[string]ModelSettingRow),
+		settings:       make(map[string]db.SystemSetting),
+		models:         make(map[string]db.ModelSetting),
 		getSettingErrs: make(map[string]error),
 	}
 }
 
-func (m *mockQuerier) GetSystemSetting(_ context.Context, key string) (SystemSettingRow, error) {
+func (m *mockQuerier) GetSystemSetting(_ context.Context, key string) (db.SystemSetting, error) {
 	if err, ok := m.getSettingErrs[key]; ok {
-		return SystemSettingRow{}, err
+		return db.SystemSetting{}, err
 	}
 	row, ok := m.settings[key]
 	if !ok {
-		return SystemSettingRow{}, ErrNotFound
+		return db.SystemSetting{}, ErrNotFound
 	}
 	return row, nil
 }
 
 func (m *mockQuerier) UpsertSystemSetting(_ context.Context, key, value, updatedAt string) error {
-	m.settings[key] = SystemSettingRow{Key: key, Value: value, UpdatedAt: updatedAt}
+	m.settings[key] = db.SystemSetting{Key: key, Value: value, UpdatedAt: updatedAt}
 	return nil
 }
 
@@ -52,19 +53,19 @@ func (m *mockQuerier) DeleteSystemSetting(_ context.Context, key string) error {
 	return nil
 }
 
-func (m *mockQuerier) ListSystemSettings(_ context.Context) ([]SystemSettingRow, error) {
-	rows := make([]SystemSettingRow, 0, len(m.settings))
+func (m *mockQuerier) ListSystemSettings(_ context.Context) ([]db.SystemSetting, error) {
+	rows := make([]db.SystemSetting, 0, len(m.settings))
 	for _, row := range m.settings {
 		rows = append(rows, row)
 	}
 	return rows, nil
 }
 
-func (m *mockQuerier) ListEnabledModels(_ context.Context) ([]EnabledModelRow, error) {
-	var rows []EnabledModelRow
+func (m *mockQuerier) ListEnabledModels(_ context.Context) ([]db.ListEnabledModelsRow, error) {
+	var rows []db.ListEnabledModelsRow
 	for _, row := range m.models {
 		if row.Enabled != 0 {
-			rows = append(rows, EnabledModelRow{Provider: row.Provider, ModelName: row.ModelName})
+			rows = append(rows, db.ListEnabledModelsRow{Provider: row.Provider, ModelName: row.ModelName})
 		}
 	}
 	return rows, nil
@@ -72,12 +73,12 @@ func (m *mockQuerier) ListEnabledModels(_ context.Context) ([]EnabledModelRow, e
 
 func (m *mockQuerier) UpsertModelSetting(_ context.Context, provider, modelName string, enabled int64, updatedAt string) error {
 	key := provider + ":" + modelName
-	m.models[key] = ModelSettingRow{Provider: provider, ModelName: modelName, Enabled: enabled, UpdatedAt: updatedAt}
+	m.models[key] = db.ModelSetting{Provider: provider, ModelName: modelName, Enabled: enabled, UpdatedAt: updatedAt}
 	return nil
 }
 
-func (m *mockQuerier) ListModelSettings(_ context.Context) ([]ModelSettingRow, error) {
-	rows := make([]ModelSettingRow, 0, len(m.models))
+func (m *mockQuerier) ListModelSettings(_ context.Context) ([]db.ModelSetting, error) {
+	rows := make([]db.ModelSetting, 0, len(m.models))
 	for _, row := range m.models {
 		rows = append(rows, row)
 	}
@@ -239,7 +240,7 @@ func TestSetModelEnabled_DisableDefault_Returns409(t *testing.T) {
 	h := newTestHandler(q)
 
 	// Set a default model.
-	q.settings["default_model"] = SystemSettingRow{
+	q.settings["default_model"] = db.SystemSetting{
 		Key:   "default_model",
 		Value: "anthropic:claude-sonnet-4-20250514",
 	}
@@ -264,7 +265,7 @@ func TestSetModelEnabled_DisableNonDefault_OK(t *testing.T) {
 	q := newMockQuerier()
 	h := newTestHandler(q)
 
-	q.settings["default_model"] = SystemSettingRow{
+	q.settings["default_model"] = db.SystemSetting{
 		Key:   "default_model",
 		Value: "anthropic:claude-sonnet-4-20250514",
 	}
@@ -284,9 +285,9 @@ func TestGetSettings_ExcludesAPIKeys(t *testing.T) {
 	q := newMockQuerier()
 	h := newTestHandler(q)
 
-	q.settings["anthropic_api_key"] = SystemSettingRow{Key: "anthropic_api_key", Value: "encrypted-val"}
-	q.settings["default_model"] = SystemSettingRow{Key: "default_model", Value: "anthropic:claude-sonnet-4-20250514"}
-	q.settings["max_tokens"] = SystemSettingRow{Key: "max_tokens", Value: "4096"}
+	q.settings["anthropic_api_key"] = db.SystemSetting{Key: "anthropic_api_key", Value: "encrypted-val"}
+	q.settings["default_model"] = db.SystemSetting{Key: "default_model", Value: "anthropic:claude-sonnet-4-20250514"}
+	q.settings["max_tokens"] = db.SystemSetting{Key: "max_tokens", Value: "4096"}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
@@ -354,7 +355,7 @@ func TestGetSystemDefault(t *testing.T) {
 	q := newMockQuerier()
 	h := newTestHandler(q)
 
-	q.settings["default_model"] = SystemSettingRow{
+	q.settings["default_model"] = db.SystemSetting{
 		Key:   "default_model",
 		Value: "anthropic:claude-sonnet-4-20250514",
 	}
@@ -385,7 +386,7 @@ func TestDeleteProviderKey(t *testing.T) {
 		removedProvider = provider
 	}, nil)
 
-	q.settings["anthropic_api_key"] = SystemSettingRow{Key: "anthropic_api_key", Value: "encrypted"}
+	q.settings["anthropic_api_key"] = db.SystemSetting{Key: "anthropic_api_key", Value: "encrypted"}
 
 	req := httptest.NewRequest(http.MethodDelete, "/providers/anthropic/key", nil)
 	req = withChiParam(req, "name", "anthropic")
@@ -570,7 +571,7 @@ func TestSetProviderKey_SetsDefaultWhenNoneExists(t *testing.T) {
 
 func TestSetProviderKey_DoesNotOverwriteExistingDefault(t *testing.T) {
 	q := newMockQuerier()
-	q.settings["default_model"] = SystemSettingRow{Key: "default_model", Value: "openai:gpt-4o"}
+	q.settings["default_model"] = db.SystemSetting{Key: "default_model", Value: "openai:gpt-4o"}
 	lister := &stubLister{
 		models: map[string][]llm.ModelInfo{
 			"anthropic": {
@@ -649,10 +650,10 @@ func deleteProviderKeyRequest(h *Handler, provider string) *httptest.ResponseRec
 func TestDeleteProviderKey_DisablesProviderModels(t *testing.T) {
 	q := newMockQuerier()
 	// Pre-seed two enabled anthropic models and one enabled openai model.
-	q.models["anthropic:claude-sonnet-4"] = ModelSettingRow{Provider: "anthropic", ModelName: "claude-sonnet-4", Enabled: 1}
-	q.models["anthropic:claude-haiku-4"] = ModelSettingRow{Provider: "anthropic", ModelName: "claude-haiku-4", Enabled: 1}
-	q.models["openai:gpt-4o"] = ModelSettingRow{Provider: "openai", ModelName: "gpt-4o", Enabled: 1}
-	q.settings["anthropic_api_key"] = SystemSettingRow{Key: "anthropic_api_key", Value: "encrypted"}
+	q.models["anthropic:claude-sonnet-4"] = db.ModelSetting{Provider: "anthropic", ModelName: "claude-sonnet-4", Enabled: 1}
+	q.models["anthropic:claude-haiku-4"] = db.ModelSetting{Provider: "anthropic", ModelName: "claude-haiku-4", Enabled: 1}
+	q.models["openai:gpt-4o"] = db.ModelSetting{Provider: "openai", ModelName: "gpt-4o", Enabled: 1}
+	q.settings["anthropic_api_key"] = db.SystemSetting{Key: "anthropic_api_key", Value: "encrypted"}
 	h := newTestHandler(q)
 
 	rec := deleteProviderKeyRequest(h, "anthropic")
@@ -674,8 +675,8 @@ func TestDeleteProviderKey_DisablesProviderModels(t *testing.T) {
 
 func TestDeleteProviderKey_ClearsDefaultWhenItPointsToThisProvider(t *testing.T) {
 	q := newMockQuerier()
-	q.settings["anthropic_api_key"] = SystemSettingRow{Key: "anthropic_api_key", Value: "encrypted"}
-	q.settings["default_model"] = SystemSettingRow{Key: "default_model", Value: "anthropic:claude-sonnet-4"}
+	q.settings["anthropic_api_key"] = db.SystemSetting{Key: "anthropic_api_key", Value: "encrypted"}
+	q.settings["default_model"] = db.SystemSetting{Key: "default_model", Value: "anthropic:claude-sonnet-4"}
 	h := newTestHandler(q)
 
 	rec := deleteProviderKeyRequest(h, "anthropic")
@@ -691,8 +692,8 @@ func TestDeleteProviderKey_ClearsDefaultWhenItPointsToThisProvider(t *testing.T)
 
 func TestDeleteProviderKey_LeavesDefaultWhenItPointsElsewhere(t *testing.T) {
 	q := newMockQuerier()
-	q.settings["anthropic_api_key"] = SystemSettingRow{Key: "anthropic_api_key", Value: "encrypted"}
-	q.settings["default_model"] = SystemSettingRow{Key: "default_model", Value: "openai:gpt-4o"}
+	q.settings["anthropic_api_key"] = db.SystemSetting{Key: "anthropic_api_key", Value: "encrypted"}
+	q.settings["default_model"] = db.SystemSetting{Key: "default_model", Value: "openai:gpt-4o"}
 	h := newTestHandler(q)
 
 	rec := deleteProviderKeyRequest(h, "anthropic")

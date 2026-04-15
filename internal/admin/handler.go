@@ -13,38 +13,21 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/llm"
 )
 
 var ErrNotFound = sql.ErrNoRows
 
-type SystemSettingRow struct {
-	Key       string
-	Value     string
-	UpdatedAt string
-}
-
-type EnabledModelRow struct {
-	Provider  string
-	ModelName string
-}
-
-type ModelSettingRow struct {
-	Provider  string
-	ModelName string
-	Enabled   int64
-	UpdatedAt string
-}
-
 type AdminQuerier interface {
-	GetSystemSetting(ctx context.Context, key string) (SystemSettingRow, error)
+	GetSystemSetting(ctx context.Context, key string) (db.SystemSetting, error)
 	UpsertSystemSetting(ctx context.Context, key, value, updatedAt string) error
 	DeleteSystemSetting(ctx context.Context, key string) error
-	ListSystemSettings(ctx context.Context) ([]SystemSettingRow, error)
-	ListEnabledModels(ctx context.Context) ([]EnabledModelRow, error)
+	ListSystemSettings(ctx context.Context) ([]db.SystemSetting, error)
+	ListEnabledModels(ctx context.Context) ([]db.ListEnabledModelsRow, error)
 	UpsertModelSetting(ctx context.Context, provider, modelName string, enabled int64, updatedAt string) error
-	ListModelSettings(ctx context.Context) ([]ModelSettingRow, error)
+	ListModelSettings(ctx context.Context) ([]db.ModelSetting, error)
 }
 
 type ProviderStatus struct {

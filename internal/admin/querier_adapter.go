@@ -7,6 +7,9 @@ import (
 )
 
 // QuerierAdapter wraps *db.Queries to satisfy the AdminQuerier interface.
+// The adapter exists because AdminQuerier uses flat parameter lists for upsert
+// methods, whereas db.Queries uses param structs — so a direct assignment is
+// not possible even though the return types are now shared db types.
 type QuerierAdapter struct {
 	q *db.Queries
 }
@@ -15,16 +18,8 @@ func NewQuerierAdapter(q *db.Queries) *QuerierAdapter {
 	return &QuerierAdapter{q: q}
 }
 
-func (a *QuerierAdapter) GetSystemSetting(ctx context.Context, key string) (SystemSettingRow, error) {
-	row, err := a.q.GetSystemSetting(ctx, key)
-	if err != nil {
-		return SystemSettingRow{}, err
-	}
-	return SystemSettingRow{
-		Key:       row.Key,
-		Value:     row.Value,
-		UpdatedAt: row.UpdatedAt,
-	}, nil
+func (a *QuerierAdapter) GetSystemSetting(ctx context.Context, key string) (db.SystemSetting, error) {
+	return a.q.GetSystemSetting(ctx, key)
 }
 
 func (a *QuerierAdapter) UpsertSystemSetting(ctx context.Context, key, value, updatedAt string) error {
@@ -39,35 +34,12 @@ func (a *QuerierAdapter) DeleteSystemSetting(ctx context.Context, key string) er
 	return a.q.DeleteSystemSetting(ctx, key)
 }
 
-func (a *QuerierAdapter) ListSystemSettings(ctx context.Context) ([]SystemSettingRow, error) {
-	rows, err := a.q.ListSystemSettings(ctx)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]SystemSettingRow, len(rows))
-	for i, row := range rows {
-		result[i] = SystemSettingRow{
-			Key:       row.Key,
-			Value:     row.Value,
-			UpdatedAt: row.UpdatedAt,
-		}
-	}
-	return result, nil
+func (a *QuerierAdapter) ListSystemSettings(ctx context.Context) ([]db.SystemSetting, error) {
+	return a.q.ListSystemSettings(ctx)
 }
 
-func (a *QuerierAdapter) ListEnabledModels(ctx context.Context) ([]EnabledModelRow, error) {
-	rows, err := a.q.ListEnabledModels(ctx)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]EnabledModelRow, len(rows))
-	for i, row := range rows {
-		result[i] = EnabledModelRow{
-			Provider:  row.Provider,
-			ModelName: row.ModelName,
-		}
-	}
-	return result, nil
+func (a *QuerierAdapter) ListEnabledModels(ctx context.Context) ([]db.ListEnabledModelsRow, error) {
+	return a.q.ListEnabledModels(ctx)
 }
 
 func (a *QuerierAdapter) UpsertModelSetting(ctx context.Context, provider, modelName string, enabled int64, updatedAt string) error {
@@ -79,19 +51,6 @@ func (a *QuerierAdapter) UpsertModelSetting(ctx context.Context, provider, model
 	})
 }
 
-func (a *QuerierAdapter) ListModelSettings(ctx context.Context) ([]ModelSettingRow, error) {
-	rows, err := a.q.ListModelSettings(ctx)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]ModelSettingRow, len(rows))
-	for i, row := range rows {
-		result[i] = ModelSettingRow{
-			Provider:  row.Provider,
-			ModelName: row.ModelName,
-			Enabled:   row.Enabled,
-			UpdatedAt: row.UpdatedAt,
-		}
-	}
-	return result, nil
+func (a *QuerierAdapter) ListModelSettings(ctx context.Context) ([]db.ModelSetting, error) {
+	return a.q.ListModelSettings(ctx)
 }

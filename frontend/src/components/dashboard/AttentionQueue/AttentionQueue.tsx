@@ -1,6 +1,6 @@
-import { useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import type { AttentionItem as AttentionItemType } from '@/hooks/useAttentionItems'
+import { useLocalStorage } from '@/hooks/useLocalStorage'
 import { AttentionItem } from './AttentionItem'
 import styles from './AttentionQueue.module.css'
 
@@ -13,24 +13,12 @@ interface AttentionQueueProps {
 }
 
 export function AttentionQueue({ items, count, onDismiss }: AttentionQueueProps) {
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(COLLAPSED_STORAGE_KEY) === 'true'
-    } catch {
-      return false
-    }
-  })
+  const [collapsed, setCollapsed] = useLocalStorage(COLLAPSED_STORAGE_KEY, false)
 
   if (count === 0) return null
 
   function toggleCollapsed() {
-    const next = !collapsed
-    setCollapsed(next)
-    try {
-      localStorage.setItem(COLLAPSED_STORAGE_KEY, String(next))
-    } catch {
-      // localStorage unavailable; ignore
-    }
+    setCollapsed(!collapsed)
   }
 
   return (

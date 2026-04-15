@@ -107,6 +107,20 @@ func (h *PolicyHandler) List(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, items)
 }
 
+// toPolicyDetail converts a db.Policy row into a policyDetail response struct.
+func toPolicyDetail(p db.Policy) policyDetail {
+	return policyDetail{
+		ID:          p.ID,
+		Name:        p.Name,
+		TriggerType: p.TriggerType,
+		Folder:      extractFolder(p.Yaml),
+		YAML:        p.Yaml,
+		CreatedAt:   p.CreatedAt,
+		UpdatedAt:   p.UpdatedAt,
+		PausedAt:    p.PausedAt,
+	}
+}
+
 // Get handles GET /api/v1/policies/{id}.
 func (h *PolicyHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -121,16 +135,7 @@ func (h *PolicyHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, policyDetail{
-		ID:          policy.ID,
-		Name:        policy.Name,
-		TriggerType: policy.TriggerType,
-		Folder:      extractFolder(policy.Yaml),
-		YAML:        policy.Yaml,
-		CreatedAt:   policy.CreatedAt,
-		UpdatedAt:   policy.UpdatedAt,
-		PausedAt:    policy.PausedAt,
-	})
+	httputil.WriteJSON(w, http.StatusOK, toPolicyDetail(policy))
 }
 
 // policyYAMLSummary holds the fields extracted from a raw policy YAML blob
@@ -193,21 +198,24 @@ func buildMutateResponse(result *policy.SaveResult) policyMutateResponse {
 	if warnings == nil {
 		warnings = make([]string, 0)
 	}
-	detail := policyDetail{
+	// Convert model.Policy time fields to the string format db.Policy uses so
+	// toPolicyDetail can handle both code paths uniformly.
+	var pausedAt *string
+	if p.PausedAt != nil {
+		s := p.PausedAt.Format(time.RFC3339Nano)
+		pausedAt = &s
+	}
+	dbPolicy := db.Policy{
 		ID:          p.ID,
 		Name:        p.Name,
 		TriggerType: string(p.TriggerType),
-		Folder:      extractFolder(p.YAML),
-		YAML:        p.YAML,
+		Yaml:        p.YAML,
 		CreatedAt:   p.CreatedAt.Format(time.RFC3339Nano),
 		UpdatedAt:   p.UpdatedAt.Format(time.RFC3339Nano),
-	}
-	if p.PausedAt != nil {
-		s := p.PausedAt.Format(time.RFC3339Nano)
-		detail.PausedAt = &s
+		PausedAt:    pausedAt,
 	}
 	return policyMutateResponse{
-		policyDetail: detail,
+		policyDetail: toPolicyDetail(dbPolicy),
 		Warnings:     warnings,
 	}
 }
@@ -304,16 +312,7 @@ func (h *PolicyHandler) Pause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, policyDetail{
-		ID:          updated.ID,
-		Name:        updated.Name,
-		TriggerType: updated.TriggerType,
-		Folder:      extractFolder(updated.Yaml),
-		YAML:        updated.Yaml,
-		CreatedAt:   updated.CreatedAt,
-		UpdatedAt:   updated.UpdatedAt,
-		PausedAt:    updated.PausedAt,
-	})
+	httputil.WriteJSON(w, http.StatusOK, toPolicyDetail(updated))
 }
 
 // Resume handles POST /api/v1/policies/{id}/resume.
@@ -348,16 +347,7 @@ func (h *PolicyHandler) Resume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, policyDetail{
-		ID:          updated.ID,
-		Name:        updated.Name,
-		TriggerType: updated.TriggerType,
-		Folder:      extractFolder(updated.Yaml),
-		YAML:        updated.Yaml,
-		CreatedAt:   updated.CreatedAt,
-		UpdatedAt:   updated.UpdatedAt,
-		PausedAt:    updated.PausedAt,
-	})
+	httputil.WriteJSON(w, http.StatusOK, toPolicyDetail(updated))
 }
 
 // Delete handles DELETE /api/v1/policies/{id}.

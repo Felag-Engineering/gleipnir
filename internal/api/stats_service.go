@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/rapp992/gleipnir/internal/db"
 )
 
@@ -27,32 +29,55 @@ type DashboardStats struct {
 	TokensLast24h    int64 `json:"tokens_last_24h"`
 }
 
-// Compute queries the DB for all four dashboard aggregates and returns them.
+// wrapErr wraps a non-nil error with context. Returns nil if err is nil.
+func wrapErr(err error, msg string) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", msg, err)
+}
+
+// Compute queries the DB for all five dashboard aggregates concurrently.
 func (s *StatsService) Compute(ctx context.Context) (DashboardStats, error) {
-	activeRuns, err := s.store.CountActiveRuns(ctx)
-	if err != nil {
-		return DashboardStats{}, fmt.Errorf("count active runs: %w", err)
-	}
+	var (
+		activeRuns       int64
+		pendingApprovals int64
+		pendingFeedback  int64
+		policyCount      int64
+		tokens           int64
+	)
 
-	pendingApprovals, err := s.store.CountPendingApprovalRequests(ctx)
-	if err != nil {
-		return DashboardStats{}, fmt.Errorf("count pending approvals: %w", err)
-	}
+	g, ctx := errgroup.WithContext(ctx)
 
-	pendingFeedback, err := s.store.CountPendingFeedbackRequests(ctx)
-	if err != nil {
-		return DashboardStats{}, fmt.Errorf("count pending feedback: %w", err)
-	}
+	g.Go(func() error {
+		var err error
+		activeRuns, err = s.store.CountActiveRuns(ctx)
+		return wrapErr(err, "count active runs")
+	})
+	g.Go(func() error {
+		var err error
+		pendingApprovals, err = s.store.CountPendingApprovalRequests(ctx)
+		return wrapErr(err, "count pending approvals")
+	})
+	g.Go(func() error {
+		var err error
+		pendingFeedback, err = s.store.CountPendingFeedbackRequests(ctx)
+		return wrapErr(err, "count pending feedback")
+	})
+	g.Go(func() error {
+		var err error
+		policyCount, err = s.store.CountPolicies(ctx)
+		return wrapErr(err, "count policies")
+	})
+	g.Go(func() error {
+		since := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
+		var err error
+		tokens, err = s.store.SumTokensLast24Hours(ctx, since)
+		return wrapErr(err, "sum tokens")
+	})
 
-	policyCount, err := s.store.CountPolicies(ctx)
-	if err != nil {
-		return DashboardStats{}, fmt.Errorf("count policies: %w", err)
-	}
-
-	since := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
-	tokens, err := s.store.SumTokensLast24Hours(ctx, since)
-	if err != nil {
-		return DashboardStats{}, fmt.Errorf("sum tokens: %w", err)
+	if err := g.Wait(); err != nil {
+		return DashboardStats{}, err
 	}
 
 	return DashboardStats{

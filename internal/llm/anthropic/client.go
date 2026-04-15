@@ -401,6 +401,7 @@ func translateResponse(resp *anthropic.Message, sanitizedToOriginal map[string]s
 			})
 		case anthropic.ThinkingBlock:
 			result.Thinking = append(result.Thinking, llm.ThinkingBlock{
+				Provider:  "anthropic",
 				Text:      b.Thinking,
 				Redacted:  false,
 				Signature: b.Signature,
@@ -409,6 +410,7 @@ func translateResponse(resp *anthropic.Message, sanitizedToOriginal map[string]s
 			// Text is set to "[redacted]" for audit display only — it is never
 			// sent back to the API. Only RedactedData is echoed on subsequent requests.
 			result.Thinking = append(result.Thinking, llm.ThinkingBlock{
+				Provider:     "anthropic",
 				Text:         "[redacted]",
 				Redacted:     true,
 				RedactedData: b.Data,

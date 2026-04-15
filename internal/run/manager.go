@@ -136,6 +136,22 @@ func (m *RunManager) WaitForDeregistration(runID string, timeout time.Duration) 
 	}
 }
 
+// sendToChannel sends value to ch without blocking. Returns ErrRunNotFound if
+// ch is nil (nilled by CancelAll), or ErrNoReceiver if the buffer is full
+// (TOCTOU: gate timed out or context was cancelled between the caller's status
+// check and this send).
+func sendToChannel[T any](ch chan T, value T) error {
+	if ch == nil {
+		return ErrRunNotFound
+	}
+	select {
+	case ch <- value:
+		return nil
+	default:
+		return ErrNoReceiver
+	}
+}
+
 // SendApproval routes an approval decision to the run's waiting agent goroutine.
 // Returns ErrRunNotFound if the run is not registered or CancelAll has already
 // run, or ErrNoReceiver if the channel buffer is full (TOCTOU: approval gate
@@ -145,17 +161,10 @@ func (m *RunManager) SendApproval(runID string, approved bool) error {
 	m.mu.Lock()
 	tr, ok := m.runs[runID]
 	m.mu.Unlock()
-	// tr.approval is nilled by CancelAll; sending on a nil channel blocks forever,
-	// so we treat a nil channel the same as a missing run.
-	if !ok || tr.approval == nil {
+	if !ok {
 		return ErrRunNotFound
 	}
-	select {
-	case tr.approval <- approved:
-		return nil
-	default:
-		return ErrNoReceiver
-	}
+	return sendToChannel(tr.approval, approved)
 }
 
 // SendFeedback routes an operator's freeform response to the run's waiting agent
@@ -166,17 +175,10 @@ func (m *RunManager) SendFeedback(runID string, response string) error {
 	m.mu.Lock()
 	tr, ok := m.runs[runID]
 	m.mu.Unlock()
-	// tr.feedback is nilled by CancelAll; sending on a nil channel blocks forever,
-	// so we treat a nil channel the same as a missing run.
-	if !ok || tr.feedback == nil {
+	if !ok {
 		return ErrRunNotFound
 	}
-	select {
-	case tr.feedback <- response:
-		return nil
-	default:
-		return ErrNoReceiver
-	}
+	return sendToChannel(tr.feedback, response)
 }
 
 // CancelAll cancels every in-flight run. It does NOT call wg.Done — each

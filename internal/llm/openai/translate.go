@@ -206,6 +206,7 @@ func translateResponse(resp *responses.Response, names llm.ToolNameMapping) (*ll
 			// for multi-turn continuity, or summary text for audit display.
 			if v.EncryptedContent != "" || summaryText != "" {
 				out.Thinking = append(out.Thinking, llm.ThinkingBlock{
+					Provider:         "openai",
 					ID:               v.ID,
 					Text:             summaryText,
 					EncryptedContent: v.EncryptedContent,

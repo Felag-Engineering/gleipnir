@@ -66,6 +66,11 @@ type TokenUsage struct {
 // Providers that don't need it (Google, OpenAI-compat) silently skip it during
 // message translation.
 type ThinkingBlock struct {
+	// Provider identifies which provider produced this block ("anthropic", "google",
+	// "openai", etc.). It determines which of the provider-specific opaque fields
+	// below are populated.
+	Provider string
+
 	Text     string
 	Redacted bool
 
@@ -185,6 +190,15 @@ type MessageChunk struct {
 type ModelInfo struct {
 	Name        string // model ID used in API calls (e.g. "gemini-2.0-flash", "claude-sonnet-4-6")
 	DisplayName string // human-readable name (e.g. "Gemini 2.0 Flash")
+}
+
+// ModelLister is the subset of ProviderRegistry used by model listing endpoints.
+// Defined as an interface so handler packages do not depend on the concrete registry.
+type ModelLister interface {
+	ListModels(ctx context.Context, provider string) ([]ModelInfo, error)
+	ListAllModels(ctx context.Context) (map[string][]ModelInfo, error)
+	InvalidateModelCache(provider string) error
+	InvalidateAllModelCaches()
 }
 
 // LLMClient is the provider-agnostic interface for interacting with an LLM API.

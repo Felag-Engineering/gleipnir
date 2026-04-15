@@ -55,19 +55,10 @@ func BuildChatCompletionRequest(req llm.MessageRequest, stream bool, names llm.T
 	// MaxTokens: route to the right field depending on the model family.
 	hints, _ := req.Hints.(*OpenAIHints)
 	effectiveMax := req.MaxTokens
-	if hints != nil && hints.MaxOutputTokens != nil {
-		effectiveMax = *hints.MaxOutputTokens
-	}
-	if effectiveMax > 0 {
-		v := effectiveMax
-		if isOSeriesModel(req.Model) {
-			out.MaxCompletionTokens = &v
-		} else {
-			out.MaxTokens = &v
-		}
-	}
-
 	if hints != nil {
+		if hints.MaxOutputTokens != nil {
+			effectiveMax = *hints.MaxOutputTokens
+		}
 		if hints.Temperature != nil {
 			t := *hints.Temperature
 			out.Temperature = &t
@@ -81,6 +72,14 @@ func BuildChatCompletionRequest(req llm.MessageRequest, stream bool, names llm.T
 		if hints.ReasoningEffort != nil && isOSeriesModel(req.Model) {
 			e := *hints.ReasoningEffort
 			out.ReasoningEffort = &e
+		}
+	}
+	if effectiveMax > 0 {
+		v := effectiveMax
+		if isOSeriesModel(req.Model) {
+			out.MaxCompletionTokens = &v
+		} else {
+			out.MaxTokens = &v
 		}
 	}
 

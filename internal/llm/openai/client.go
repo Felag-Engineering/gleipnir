@@ -107,14 +107,10 @@ func (c *Client) buildParams(
 
 	// MaxOutputTokens: explicit per-call limit takes precedence over hints.
 	maxOut := int64(req.MaxTokens)
-	if hints != nil && hints.MaxOutputTokens != nil && maxOut == 0 {
-		maxOut = *hints.MaxOutputTokens
-	}
-	if maxOut > 0 {
-		params.MaxOutputTokens = openaisdk.Int(maxOut)
-	}
-
 	if hints != nil {
+		if hints.MaxOutputTokens != nil && maxOut == 0 {
+			maxOut = *hints.MaxOutputTokens
+		}
 		if hints.Temperature != nil {
 			params.Temperature = openaisdk.Float(*hints.Temperature)
 		}
@@ -126,6 +122,9 @@ func (c *Client) buildParams(
 				Effort: shared.ReasoningEffort(*hints.ReasoningEffort),
 			}
 		}
+	}
+	if maxOut > 0 {
+		params.MaxOutputTokens = openaisdk.Int(maxOut)
 	}
 
 	return params

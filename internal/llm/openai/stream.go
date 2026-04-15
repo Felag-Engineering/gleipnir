@@ -92,6 +92,7 @@ func consumeStream(
 				summaryText := strings.Join(parts, "\n")
 				if ri.EncryptedContent != "" || summaryText != "" {
 					out <- llm.MessageChunk{Thinking: &llm.ThinkingBlock{
+						Provider:         "openai",
 						ID:               ri.ID,
 						Text:             summaryText,
 						EncryptedContent: ri.EncryptedContent,
