@@ -207,9 +207,9 @@ func TestWebhookSecretEndpointsRoleGating(t *testing.T) {
 	approverToken := insertUserWithSession(t, store, "dave", "approver")
 
 	type endpointCase struct {
-		name        string
-		method      string
-		path        string
+		name   string
+		method string
+		path   string
 		// adminStatus / operatorStatus are what the handler returns when
 		// auth passes. The exact code depends on handler logic (e.g. encryption
 		// unavailable vs policy not found) — what matters is it's not 403/401.
@@ -288,11 +288,12 @@ func TestBuildRouter(t *testing.T) {
 		wantContentType string
 	}{
 		{
-			// health is inside the authenticated sub-router, so it returns 401 without a session
-			name:       "health returns 401 without session (route is registered)",
+			// Health is public: Docker HEALTHCHECK, load balancer probes, and uptime
+			// monitors all hit this endpoint without session cookies.
+			name:       "health returns 200 without session (public endpoint)",
 			method:     http.MethodGet,
 			path:       "/api/v1/health",
-			wantStatus: http.StatusUnauthorized,
+			wantStatus: http.StatusOK,
 		},
 		// SSE is tested separately below because it blocks until client disconnects.
 

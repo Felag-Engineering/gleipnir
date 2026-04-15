@@ -70,6 +70,14 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	r.With(middleware.Throttle(10), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).
 		Post("/api/v1/webhooks/{policyID}", cfg.WebhookHandler.Handle)
 
+	// Health check is intentionally public (no auth required).
+	// DO NOT move this route inside the authenticated sub-router — doing so
+	// would break Docker HEALTHCHECK directives, load balancer probes, and
+	// uptime monitors that cannot send session cookies.
+	r.Get("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
 	// Auth routes that do not require an existing session.
 	r.Route("/api/v1/auth", func(r chi.Router) {
 		r.Get("/status", cfg.AuthHandler.Status)
@@ -118,7 +126,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize), auth.RequireRole(model.RoleApprover, model.RoleOperator)).
 			Post("/api/v1/runs/{runID}/feedback", runsHandler.SubmitFeedback)
 
-		// Policies, MCP, stats, models, health, and attention — mounted under /api/v1.
+		// Policies, MCP, stats, models, and attention — mounted under /api/v1.
 		policySvc := policy.NewService(cfg.Store, nil, cfg.ProviderRegistry, cfg.ProviderRegistry, cfg.AdminHandler)
 		r.Mount("/api/v1", newAPISubRouter(cfg.Store, policySvc, cfg.Registry, cfg.ModelLister, cfg.ModelFilter, cfg.PolicyWebhookHandler))
 
@@ -175,10 +183,6 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter, policyWebhook *PolicyWebhookHandler) chi.Router {
 	r := chi.NewRouter()
 	r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
-
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
 
 	statsHandler := NewStatsHandler(NewStatsService(store))
 	r.Get("/stats", statsHandler.Get)
