@@ -44,3 +44,13 @@ Structured result wrapping to reduce injection surface is a deferred enhancement
 When a policy sets `concurrency: parallel`, each concurrent webhook fire for the same policy creates and launches a separate run with no additional coordination between runs. There is no global concurrency cap, no per-policy rate limit, and no backpressure mechanism in v0.1. A burst of webhook calls can result in an unbounded number of parallel agent runs.
 
 This is a known resource exhaustion risk. Deferred to EPIC-008.
+
+## Accepted Advisories
+
+The table below lists known vulnerability advisories that have been reviewed and accepted. Each entry documents why the risk is acceptable and when it should be revisited.
+
+| ID | Package | Severity | Reason accepted | Revisit |
+|----|---------|----------|-----------------|---------|
+| — | — | — | No accepted advisories at this time | — |
+
+Advisories are tracked here rather than suppressed silently in scanner config. To accept a new advisory, add a row and reference the PR where the decision was made.
