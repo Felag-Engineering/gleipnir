@@ -10,7 +10,7 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/openai/openai-go v1.12.0
 	golang.org/x/crypto v0.50.0
-	google.golang.org/genai v1.52.0
+	google.golang.org/genai v1.54.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.2
 )
