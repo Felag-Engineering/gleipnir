@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
 
@@ -13,10 +14,13 @@ import (
 
 // mockGenerator implements contentGenerator for tests. It stores the captured
 // arguments from GenerateContent and returns the configured canned response.
+// streamResponses and streamErr drive the GenerateContentStream path.
 type mockGenerator struct {
-	response *genai.GenerateContentResponse
-	err      error
-	captured struct {
+	response        *genai.GenerateContentResponse
+	err             error
+	streamResponses []*genai.GenerateContentResponse
+	streamErr       error
+	captured        struct {
 		model    string
 		contents []*genai.Content
 		config   *genai.GenerateContentConfig
@@ -28,6 +32,21 @@ func (m *mockGenerator) GenerateContent(ctx context.Context, model string, conte
 	m.captured.contents = contents
 	m.captured.config = config
 	return m.response, m.err
+}
+
+// GenerateContentStream returns an iter.Seq2 that yields each response in
+// streamResponses, then yields (nil, streamErr) if set.
+func (m *mockGenerator) GenerateContentStream(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error] {
+	return func(yield func(*genai.GenerateContentResponse, error) bool) {
+		for _, resp := range m.streamResponses {
+			if !yield(resp, nil) {
+				return
+			}
+		}
+		if m.streamErr != nil {
+			yield(nil, m.streamErr)
+		}
+	}
 }
 
 // makeTextResponse is a helper that builds a minimal genai response with a text part.
@@ -983,25 +1002,34 @@ func TestCreateMessage_WithHints(t *testing.T) {
 
 // --- StreamMessage tests ---
 
-func TestStreamMessage_SingleChunk(t *testing.T) {
-	// Response contains text and a function call. Multi-chunk emission produces
-	// two separate chunks: one for text, one for the tool call.
+func TestStreamMessage_HappyPath(t *testing.T) {
+	// Two responses: text in the first, tool call in the second with usage.
 	mock := &mockGenerator{
-		response: &genai.GenerateContentResponse{
-			Candidates: []*genai.Candidate{
-				{
-					Content: &genai.Content{
-						Parts: []*genai.Part{
-							{Text: "hello from stream"},
-							{FunctionCall: &genai.FunctionCall{ID: "fc-1", Name: "search", Args: map[string]any{"q": "test"}}},
+		streamResponses: []*genai.GenerateContentResponse{
+			{
+				Candidates: []*genai.Candidate{
+					{
+						Content: &genai.Content{
+							Parts: []*genai.Part{{Text: "hello from stream"}},
 						},
 					},
-					FinishReason: genai.FinishReasonStop,
 				},
 			},
-			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
-				PromptTokenCount:     25,
-				CandidatesTokenCount: 12,
+			{
+				Candidates: []*genai.Candidate{
+					{
+						Content: &genai.Content{
+							Parts: []*genai.Part{
+								{FunctionCall: &genai.FunctionCall{ID: "fc-1", Name: "search", Args: map[string]any{"q": "test"}}},
+							},
+						},
+						FinishReason: genai.FinishReasonStop,
+					},
+				},
+				UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+					PromptTokenCount:     25,
+					CandidatesTokenCount: 12,
+				},
 			},
 		},
 	}
@@ -1020,9 +1048,9 @@ func TestStreamMessage_SingleChunk(t *testing.T) {
 		chunks = append(chunks, c)
 	}
 
-	// Expect: 1 text chunk + 1 tool call chunk.
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	// Expect: 1 text chunk + 1 tool call chunk + 1 final chunk.
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks, got %d", len(chunks))
 	}
 
 	textChunk := chunks[0]
@@ -1031,9 +1059,6 @@ func TestStreamMessage_SingleChunk(t *testing.T) {
 	}
 	if textChunk.Text == nil || *textChunk.Text != "hello from stream" {
 		t.Errorf("chunks[0].Text = %v, want %q", textChunk.Text, "hello from stream")
-	}
-	if textChunk.ToolCall != nil {
-		t.Errorf("chunks[0].ToolCall = %v, want nil", textChunk.ToolCall)
 	}
 	if textChunk.StopReason != nil {
 		t.Error("chunks[0].StopReason should be nil (not the final chunk)")
@@ -1049,17 +1074,21 @@ func TestStreamMessage_SingleChunk(t *testing.T) {
 	if toolChunk.ToolCall.Name != "search" {
 		t.Errorf("chunks[1].ToolCall.Name = %q, want %q", toolChunk.ToolCall.Name, "search")
 	}
-	if toolChunk.StopReason == nil || *toolChunk.StopReason != llm.StopReasonToolUse {
-		t.Errorf("chunks[1].StopReason = %v, want StopReasonToolUse", toolChunk.StopReason)
+
+	final := chunks[2]
+	if final.StopReason == nil || *final.StopReason != llm.StopReasonToolUse {
+		t.Errorf("final.StopReason = %v, want StopReasonToolUse", final.StopReason)
 	}
-	if toolChunk.Usage == nil || toolChunk.Usage.InputTokens != 25 || toolChunk.Usage.OutputTokens != 12 {
-		t.Errorf("chunks[1].Usage = %v, want {InputTokens:25, OutputTokens:12}", toolChunk.Usage)
+	if final.Usage == nil || final.Usage.InputTokens != 25 || final.Usage.OutputTokens != 12 {
+		t.Errorf("final.Usage = %v, want {InputTokens:25, OutputTokens:12}", final.Usage)
 	}
 }
 
 func TestStreamMessage_ChannelClosed(t *testing.T) {
 	mock := &mockGenerator{
-		response: makeTextResponse("hi", genai.FinishReasonStop, 5, 3),
+		streamResponses: []*genai.GenerateContentResponse{
+			makeTextResponse("hi", genai.FinishReasonStop, 5, 3),
+		},
 	}
 	client := newClientWithGenerator(mock)
 
@@ -1082,9 +1111,11 @@ func TestStreamMessage_ChannelClosed(t *testing.T) {
 	}
 }
 
-func TestStreamMessage_ErrorPropagation(t *testing.T) {
+func TestStreamMessage_StreamError(t *testing.T) {
+	// Errors now arrive as Err chunks (not synchronous returns) because
+	// GenerateContentStream is lazy — the iterator yields errors asynchronously.
 	mock := &mockGenerator{
-		err: genai.APIError{Code: 500, Message: "boom"},
+		streamErr: errors.New("server error: boom"),
 	}
 	client := newClientWithGenerator(mock)
 
@@ -1092,14 +1123,26 @@ func TestStreamMessage_ErrorPropagation(t *testing.T) {
 		Model:   "gemini-2.0-flash",
 		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}},
 	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+		t.Fatalf("unexpected synchronous error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "server error") {
-		t.Errorf("expected error to contain 'server error', got %q", err.Error())
+
+	var errChunk *llm.MessageChunk
+	for c := range ch {
+		if c.Err != nil {
+			cp := c
+			errChunk = &cp
+			break
+		}
 	}
-	if ch != nil {
-		t.Error("expected nil channel on error, got non-nil")
+	for range ch { // drain remainder
+	}
+
+	if errChunk == nil {
+		t.Fatal("expected an Err chunk from stream error, got none")
+	}
+	if !strings.Contains(errChunk.Err.Error(), "server error") {
+		t.Errorf("Err chunk error %q does not contain %q", errChunk.Err.Error(), "server error")
 	}
 }
 
@@ -1107,10 +1150,12 @@ func TestStreamMessage_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancel the context
 
-	// The mock returns context.Canceled to simulate the SDK detecting the
-	// cancelled context when GenerateContent is called.
+	// The mock has no responses; with a pre-cancelled context the ctx.Done()
+	// check in consumeStream fires on the first response (or immediately).
 	mock := &mockGenerator{
-		err: context.Canceled,
+		streamResponses: []*genai.GenerateContentResponse{
+			makeTextResponse("hi", genai.FinishReasonStop, 1, 1),
+		},
 	}
 	client := newClientWithGenerator(mock)
 
@@ -1118,11 +1163,31 @@ func TestStreamMessage_ContextCancellation(t *testing.T) {
 		Model:   "gemini-2.0-flash",
 		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}},
 	})
-	if err == nil {
-		t.Fatal("expected error from cancelled context, got nil")
+	// StreamMessage itself returns (ch, nil) — the cancellation surfaces as an Err chunk.
+	if err != nil {
+		t.Fatalf("unexpected synchronous error: %v", err)
 	}
-	if ch != nil {
-		t.Error("expected nil channel on error, got non-nil")
+	if ch == nil {
+		t.Fatal("expected non-nil channel")
+	}
+
+	// Drain; there should be an Err chunk carrying ctx.Err().
+	var errChunk *llm.MessageChunk
+	for c := range ch {
+		if c.Err != nil {
+			cp := c
+			errChunk = &cp
+			break
+		}
+	}
+	for range ch {
+	}
+
+	if errChunk == nil {
+		t.Fatal("expected an Err chunk from cancelled context, got none")
+	}
+	if !errors.Is(errChunk.Err, context.Canceled) {
+		t.Errorf("Err = %v, want context.Canceled", errChunk.Err)
 	}
 }
 

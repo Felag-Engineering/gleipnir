@@ -3,10 +3,9 @@ package llm
 import "strings"
 
 // StubStreamFromResponse converts a CreateMessage response into a multi-chunk
-// buffered channel. This is the v1.0 stub pattern shared by all provider
-// implementations: call CreateMessage, handle the error, then delegate
-// chunk-building to this helper. Real streaming (one chunk per token) will
-// replace this in a later release.
+// buffered channel. Now used by test mocks only (internal/testutil/mock_llm.go);
+// all first-party providers stream natively. Kept here so agent package tests
+// continue to work without modification.
 //
 // Emission order:
 //  1. One chunk per ThinkingBlock (Thinking field set).

@@ -770,15 +770,38 @@ func TestCreateMessage_ErrorResponses(t *testing.T) {
 	}
 }
 
-func TestStreamMessage_SingleChunk(t *testing.T) {
-	// Response contains a text block ("thinking..." is plain text, not a thinking
-	// block) and a tool call. Multi-chunk emission produces two separate chunks.
-	body := messageRespJSON(
-		`[{"type":"text","text":"thinking..."},{"type":"tool_use","id":"tu_2","name":"run","input":{}}]`,
-		"tool_use", 30, 15,
-	)
+// serveSSE creates an httptest.Server that responds with a text/event-stream body.
+// Each element of events is an SSE event line pair: "event: <type>\ndata: <json>\n\n".
+func serveSSE(t *testing.T, events []string) *httptest.Server {
+	t.Helper()
+	body := strings.Join(events, "") + "\n"
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		w.Write([]byte(body)) //nolint:errcheck
+	}))
+}
 
-	srv := serveJSON(t, 200, body)
+// sseEvent formats a single SSE event block.
+func sseEvent(eventType, data string) string {
+	return fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, data)
+}
+
+func TestStreamMessage_HappyPath(t *testing.T) {
+	// Build an SSE stream with text + tool call, matching the Anthropic wire format.
+	events := []string{
+		sseEvent("message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022","stop_reason":null,"usage":{"input_tokens":30,"output_tokens":0}}}`),
+		sseEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		sseEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`),
+		sseEvent("content_block_stop", `{"type":"content_block_stop","index":0}`),
+		sseEvent("content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_2","name":"run","input":{}}}`),
+		sseEvent("content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}`),
+		sseEvent("content_block_stop", `{"type":"content_block_stop","index":1}`),
+		sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":15}}`),
+		sseEvent("message_stop", `{"type":"message_stop"}`),
+	}
+
+	srv := serveSSE(t, events)
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
@@ -792,20 +815,17 @@ func TestStreamMessage_SingleChunk(t *testing.T) {
 		chunks = append(chunks, c)
 	}
 
-	// Expect: 1 text chunk + 1 tool call chunk.
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	// Expect: 1 text chunk + 1 tool call chunk + 1 final chunk.
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks, got %d", len(chunks))
 	}
 
 	textChunk := chunks[0]
 	if textChunk.Err != nil {
 		t.Fatalf("chunks[0].Err = %v, want nil", textChunk.Err)
 	}
-	if textChunk.Text == nil || *textChunk.Text != "thinking..." {
-		t.Errorf("chunks[0].Text = %v, want %q", textChunk.Text, "thinking...")
-	}
-	if textChunk.ToolCall != nil {
-		t.Errorf("chunks[0].ToolCall = %v, want nil", textChunk.ToolCall)
+	if textChunk.Text == nil || *textChunk.Text != "Hello" {
+		t.Errorf("chunks[0].Text = %v, want %q", textChunk.Text, "Hello")
 	}
 	if textChunk.StopReason != nil {
 		t.Error("chunks[0].StopReason should be nil (not the final chunk)")
@@ -821,21 +841,27 @@ func TestStreamMessage_SingleChunk(t *testing.T) {
 	if toolChunk.ToolCall.Name != "run" {
 		t.Errorf("chunks[1].ToolCall.Name = %q, want %q", toolChunk.ToolCall.Name, "run")
 	}
-	if toolChunk.StopReason == nil || *toolChunk.StopReason != llm.StopReasonToolUse {
-		t.Errorf("chunks[1].StopReason = %v, want StopReasonToolUse", toolChunk.StopReason)
+
+	final := chunks[2]
+	if final.StopReason == nil || *final.StopReason != llm.StopReasonToolUse {
+		t.Errorf("final.StopReason = %v, want StopReasonToolUse", final.StopReason)
 	}
-	if toolChunk.Usage == nil || toolChunk.Usage.InputTokens != 30 || toolChunk.Usage.OutputTokens != 15 {
-		t.Errorf("chunks[1].Usage = %v, want {InputTokens:30, OutputTokens:15}", toolChunk.Usage)
+	if final.Usage == nil || final.Usage.InputTokens != 30 || final.Usage.OutputTokens != 15 {
+		t.Errorf("final.Usage = %v, want {InputTokens:30, OutputTokens:15}", final.Usage)
 	}
 }
 
 func TestStreamMessage_ChannelClosed(t *testing.T) {
-	body := messageRespJSON(
-		`[{"type":"text","text":"thinking..."},{"type":"tool_use","id":"tu_2","name":"run","input":{}}]`,
-		"tool_use", 30, 15,
-	)
+	events := []string{
+		sseEvent("message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022","stop_reason":null,"usage":{"input_tokens":5,"output_tokens":0}}}`),
+		sseEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		sseEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`),
+		sseEvent("content_block_stop", `{"type":"content_block_stop","index":0}`),
+		sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":3}}`),
+		sseEvent("message_stop", `{"type":"message_stop"}`),
+	}
 
-	srv := serveJSON(t, 200, body)
+	srv := serveSSE(t, events)
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
@@ -855,41 +881,74 @@ func TestStreamMessage_ChannelClosed(t *testing.T) {
 	}
 }
 
-func TestStreamMessage_CreateMessageError(t *testing.T) {
-	errorJSON := `{"type":"error","error":{"type":"api_error","message":"error"}}`
+func TestStreamMessage_HTTPErrorBeforeStream(t *testing.T) {
+	// 401 response: the SDK surfaces this as a stream error (Err chunk), not a
+	// synchronous return error. The NewStreaming call itself returns without
+	// error; the error surfaces on the first Next() call.
+	errorJSON := `{"type":"error","error":{"type":"authentication_error","message":"authentication error"}}`
 
 	srv := serveJSON(t, 401, errorJSON)
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
 	ch, err := client.StreamMessage(context.Background(), minimalRequest())
-	if err == nil {
-		t.Fatal("expected error, got nil")
+
+	// The real streaming path: pre-stream HTTP errors arrive as Err chunks.
+	// Accept either a synchronous error or an Err chunk on the channel.
+	if err != nil {
+		// Synchronous path is acceptable.
+		if !strings.Contains(err.Error(), "authentication") {
+			t.Errorf("error %q does not contain %q", err.Error(), "authentication")
+		}
+		return
 	}
-	if !strings.Contains(err.Error(), "authentication failed") {
-		t.Errorf("error %q does not contain %q", err.Error(), "authentication failed")
+
+	// Async path: drain channel and check for Err chunk.
+	if ch == nil {
+		t.Fatal("expected non-nil channel or synchronous error")
 	}
-	if ch != nil {
-		t.Error("expected nil channel on error, got non-nil")
+	var errChunk *llm.MessageChunk
+	for c := range ch {
+		if c.Err != nil {
+			cp := c
+			errChunk = &cp
+			break
+		}
+	}
+	// Drain remaining.
+	for range ch {
+	}
+	if errChunk == nil {
+		t.Fatal("expected an Err chunk from HTTP 401 response, got none")
+	}
+	if !strings.Contains(errChunk.Err.Error(), "authentication") {
+		t.Errorf("Err chunk error %q does not contain %q", errChunk.Err.Error(), "authentication")
 	}
 }
 
 func TestStreamMessage_ContextCancellation(t *testing.T) {
-	// Pre-cancel the context so the SDK call fails immediately.
+	// Pre-cancel the context. The SDK may either return synchronously or
+	// emit a cancellation error chunk — both are valid outcomes.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	// The server won't be reached, but we need a valid URL for the client.
-	srv := serveJSON(t, 200, messageRespJSON(`[{"type":"text","text":"ok"}]`, "end_turn", 1, 1))
+	srv := serveSSE(t, []string{
+		sseEvent("message_start", `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}}`),
+	})
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
 	ch, err := client.StreamMessage(ctx, minimalRequest())
-	if err == nil {
-		t.Fatal("expected error from cancelled context, got nil")
+
+	if err != nil {
+		// Synchronous cancellation is acceptable.
+		return
 	}
-	if ch != nil {
-		t.Error("expected nil channel on error, got non-nil")
+	if ch == nil {
+		t.Fatal("expected non-nil channel or synchronous error")
+	}
+	// Drain; the channel should close promptly.
+	for range ch {
 	}
 }
 

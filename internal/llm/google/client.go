@@ -5,20 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"google.golang.org/genai"
 )
 
-// contentGenerator abstracts genai.Models.GenerateContent for test injection.
-// genai.Models has a value receiver on GenerateContent, so *genai.Models
-// satisfies this interface because value-receiver methods are in the pointer's
-// method set.
+// contentGenerator abstracts genai.Models methods for test injection.
+// genai.Models has value receivers on both methods, so *genai.Models satisfies
+// this interface because value-receiver methods are in the pointer's method set.
 type contentGenerator interface {
 	GenerateContent(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error)
+	GenerateContentStream(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) iter.Seq2[*genai.GenerateContentResponse, error]
 }
 
 // Compile-time check that GeminiClient satisfies the LLMClient interface.
@@ -66,15 +66,20 @@ func (c *GeminiClient) CreateMessage(ctx context.Context, req llm.MessageRequest
 	return translateResponse(resp, names)
 }
 
-// StreamMessage wraps CreateMessage and emits the complete response as a single
-// MessageChunk on a buffered channel. The channel is closed immediately after
-// the chunk is sent. This is a v1.0 stub; real streaming will be added later.
+// StreamMessage opens a streaming request to the Gemini API and emits
+// llm.MessageChunk values on the returned channel as responses arrive. The
+// channel is closed when the stream ends. Errors arrive as Err chunks rather
+// than synchronous returns because GenerateContentStream is a lazy iterator.
 func (c *GeminiClient) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
-	resp, err := c.CreateMessage(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return llm.StubStreamFromResponse(resp), nil
+	hints, _ := req.Hints.(*GeminiHints)
+	names := llm.BuildNameMapping(req.Tools, "")
+	contents := buildContents(req.History, names)
+	config := buildConfig(req, hints, names)
+
+	seq := c.generator.GenerateContentStream(ctx, req.Model, contents, config)
+	out := make(chan llm.MessageChunk, 16)
+	go consumeStream(ctx, seq, out, names)
+	return out, nil
 }
 
 // ValidateOptions validates provider-specific options from the policy YAML.
@@ -302,28 +307,9 @@ func translateResponse(resp *genai.GenerateContentResponse, names llm.ToolNameMa
 			continue
 		}
 		if part.FunctionCall != nil {
-			id := part.FunctionCall.ID
-			if id == "" {
-				id = uuid.NewString()
-			}
-			argsJSON, _ := json.Marshal(part.FunctionCall.Args)
-			// Reverse-map from sanitized wire name to original MCP name.
-			originalName := part.FunctionCall.Name
-			if mapped, ok := names.SanitizedToOriginal[part.FunctionCall.Name]; ok {
-				originalName = mapped
-			}
-			block := llm.ToolCallBlock{
-				ID:    id,
-				Name:  originalName,
-				Input: json.RawMessage(argsJSON),
-			}
-			// Gemini 3 attaches a ThoughtSignature to the Part (not the inner
-			// FunctionCall). It must be echoed back on subsequent turns or the
-			// API rejects the replayed function call.
-			if len(part.ThoughtSignature) > 0 {
-				block.ProviderMetadata = map[string][]byte{
-					"google.thought_signature": part.ThoughtSignature,
-				}
+			block, err := buildToolCallBlockFromPart(part, names)
+			if err != nil {
+				return nil, fmt.Errorf("google: building tool call block: %w", err)
 			}
 			result.ToolCalls = append(result.ToolCalls, block)
 		} else if part.Text != "" {

@@ -79,15 +79,33 @@ func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequ
 	return translateResponse(resp, nameMap.SanitizedToOriginal), nil
 }
 
-// StreamMessage wraps CreateMessage and emits the complete response as a single
-// MessageChunk on a buffered channel. The channel is closed immediately after
-// the chunk is sent. This is a v1.0 stub; real streaming will be added later.
+// StreamMessage opens a streaming request to the Anthropic API and emits
+// llm.MessageChunk values on the returned channel as events arrive. The channel
+// is closed when the stream ends. Pre-stream errors (e.g. tool schema failures)
+// are returned synchronously; mid-stream errors arrive as Err chunks.
 func (c *AnthropicClient) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
-	resp, err := c.CreateMessage(ctx, req)
+	hints, _ := req.Hints.(*AnthropicHints)
+	maxTokens := resolveMaxTokens(req, hints)
+	system := buildSystemBlocks(req, hints)
+
+	tools, nameMap, err := buildTools(req.Tools)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("anthropic: building tools: %w", err)
 	}
-	return llm.StubStreamFromResponse(resp), nil
+	messages := buildMessages(req.History, nameMap.OriginalToSanitized)
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model(req.Model),
+		MaxTokens: maxTokens,
+		System:    system,
+		Messages:  messages,
+		Tools:     tools,
+	}
+
+	stream := c.client.Messages.NewStreaming(ctx, params)
+	out := make(chan llm.MessageChunk, 16)
+	go consumeStream(ctx, stream, out, nameMap.SanitizedToOriginal)
+	return out, nil
 }
 
 // ValidateOptions validates provider-specific options from the policy YAML.
