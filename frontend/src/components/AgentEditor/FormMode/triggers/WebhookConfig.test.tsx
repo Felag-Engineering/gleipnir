@@ -5,9 +5,11 @@ import type { WebhookTriggerState } from '../types'
 // Mock the hooks before importing WebhookConfig
 vi.mock('@/hooks/queries/policies')
 vi.mock('@/hooks/mutations/policies')
+vi.mock('@/hooks/queries/config')
 
 import { useWebhookSecret } from '@/hooks/queries/policies'
 import { useRotateWebhookSecret } from '@/hooks/mutations/policies'
+import { usePublicConfig } from '@/hooks/queries/config'
 import { WebhookConfig } from './WebhookConfig'
 
 const hmacValue: WebhookTriggerState = { type: 'webhook', auth: 'hmac' }
@@ -24,6 +26,11 @@ function mockHooksDefault() {
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof useRotateWebhookSecret>)
+
+  // Default: public_url not configured — webhook URLs show path-only.
+  vi.mocked(usePublicConfig).mockReturnValue({
+    data: { public_url: '' },
+  } as unknown as ReturnType<typeof usePublicConfig>)
 }
 
 beforeEach(() => {

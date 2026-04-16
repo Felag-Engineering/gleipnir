@@ -1,11 +1,86 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Gauge, Info } from 'lucide-react'
+import { Gauge, Globe, Info } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import { useAdminSettings, useSystemInfo } from '@/hooks/queries/admin'
 import { useUpdateAdminSettings } from '@/hooks/mutations/admin'
 import cardStyles from '@/components/Settings/Settings.module.css'
 import styles from './AdminSystemPage.module.css'
+
+/* ------------------------------------------------------------------ */
+/*  PublicURLSection                                                   */
+/* ------------------------------------------------------------------ */
+
+function PublicURLSection() {
+  const { data: settings } = useAdminSettings()
+  const updateSettings = useUpdateAdminSettings()
+
+  const [publicUrl, setPublicUrl] = useState('')
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    if (settings) {
+      setPublicUrl(settings.public_url ?? '')
+    }
+  }, [settings])
+
+  const handleSave = useCallback(() => {
+    updateSettings.mutate(
+      { public_url: publicUrl },
+      {
+        onSuccess: () => {
+          setSaved(true)
+          setTimeout(() => setSaved(false), 3000)
+        },
+      },
+    )
+  }, [publicUrl, updateSettings])
+
+  return (
+    <section className={cardStyles.card}>
+      <div className={cardStyles.cardHeader}>
+        <h2 className={cardStyles.cardTitle}>
+          <Globe size={16} strokeWidth={1.5} className={cardStyles.cardTitleIcon} />
+          Public URL
+        </h2>
+        <p className={cardStyles.cardDesc}>
+          The external URL where Gleipnir is accessible. Used to display full webhook URLs.
+        </p>
+      </div>
+      <div className={cardStyles.cardBody}>
+        <div className={cardStyles.fieldGroup}>
+          <label className={cardStyles.label} htmlFor="public-url">
+            Public URL
+          </label>
+          <input
+            id="public-url"
+            type="url"
+            className={cardStyles.input}
+            placeholder="https://gleipnir.example.com"
+            value={publicUrl}
+            onChange={(e) => setPublicUrl(e.target.value)}
+          />
+          <span className={cardStyles.fieldHint}>
+            Must be an absolute URL with scheme and host. Leave empty to show path-only webhook URLs.
+          </span>
+        </div>
+        <div className={cardStyles.formActions}>
+          <button
+            className={styles.saveButton}
+            onClick={handleSave}
+            disabled={updateSettings.isPending}
+          >
+            Save
+          </button>
+          {saved && <span className={cardStyles.successMsg}>Saved</span>}
+          {updateSettings.isError && (
+            <span className={cardStyles.errorMsg}>Failed to save settings</span>
+          )}
+        </div>
+      </div>
+    </section>
+  )
+}
 
 /* ------------------------------------------------------------------ */
 /*  RunLimitsSection                                                   */
@@ -158,6 +233,7 @@ export default function AdminSystemPage() {
   return (
     <div className={styles.page}>
       <PageHeader title="System" />
+      <PublicURLSection />
       <RunLimitsSection />
       <SystemInfoSection />
     </div>

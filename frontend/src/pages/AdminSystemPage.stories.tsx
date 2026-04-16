@@ -18,11 +18,13 @@ function makeQueryClient(opts: {
   systemInfo?: ApiSystemInfo
   maxTokens?: string
   maxToolCalls?: string
+  publicUrl?: string
 }): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   qc.setQueryData(queryKeys.admin.settings, {
     max_tokens_per_run: opts.maxTokens ?? '0',
     max_tool_calls_per_run: opts.maxToolCalls ?? '0',
+    public_url: opts.publicUrl ?? '',
   })
   if (opts.systemInfo) qc.setQueryData(queryKeys.admin.systemInfo, opts.systemInfo)
   return qc
@@ -44,6 +46,25 @@ export const Default: Story = {
           systemInfo: FIXTURE_SYSTEM_INFO,
           maxTokens: '100000',
           maxToolCalls: '50',
+        })}
+      >
+        <div style={{ maxWidth: 720 }}>
+          <Story />
+        </div>
+      </QueryClientProvider>
+    ),
+  ],
+}
+
+export const WithPublicURL: Story = {
+  decorators: [
+    (Story) => (
+      <QueryClientProvider
+        client={makeQueryClient({
+          systemInfo: FIXTURE_SYSTEM_INFO,
+          maxTokens: '100000',
+          maxToolCalls: '50',
+          publicUrl: 'https://gleipnir.example.com',
         })}
       >
         <div style={{ maxWidth: 720 }}>

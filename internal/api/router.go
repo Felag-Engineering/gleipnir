@@ -126,6 +126,12 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize), auth.RequireRole(model.RoleApprover, model.RoleOperator)).
 			Post("/api/v1/runs/{runID}/feedback", runsHandler.SubmitFeedback)
 
+		// Public config — accessible to all authenticated users.
+		// Operators and auditors need public_url to construct full webhook URLs.
+		// This route must be registered before the r.Mount("/api/v1", ...) below;
+		// in chi, literal routes must precede mount prefix catch-alls to avoid shadowing.
+		r.Get("/api/v1/config", cfg.AdminHandler.GetPublicConfig)
+
 		// Policies, MCP, stats, models, and attention — mounted under /api/v1.
 		policySvc := policy.NewService(cfg.Store, nil, cfg.ProviderRegistry, cfg.ProviderRegistry, cfg.AdminHandler)
 		r.Mount("/api/v1", newAPISubRouter(cfg.Store, policySvc, cfg.Registry, cfg.ModelLister, cfg.ModelFilter, cfg.PolicyWebhookHandler))

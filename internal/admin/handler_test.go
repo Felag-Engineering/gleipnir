@@ -710,6 +710,174 @@ func TestDeleteProviderKey_LeavesDefaultWhenItPointsElsewhere(t *testing.T) {
 	}
 }
 
+// --- public_url validation tests ---
+
+func TestUpdateSettings_ValidatesPublicURL_Relative(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	body := `{"public_url": "/relative/path"}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for relative URL, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := q.GetSystemSetting(context.Background(), "public_url"); err == nil {
+		t.Error("public_url should not have been stored for a relative path")
+	}
+}
+
+func TestUpdateSettings_ValidatesPublicURL_NotAURL(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	body := `{"public_url": "not-a-url"}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-URL string, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateSettings_PublicURL_StripsTrailingSlash(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	body := `{"public_url": "https://gleipnir.example.com/"}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	row, err := q.GetSystemSetting(context.Background(), "public_url")
+	if err != nil {
+		t.Fatalf("public_url not stored: %v", err)
+	}
+	want := "https://gleipnir.example.com"
+	if row.Value != want {
+		t.Errorf("trailing slash not stripped: got %q, want %q", row.Value, want)
+	}
+}
+
+func TestUpdateSettings_PublicURL_AcceptsHTTP(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	body := `{"public_url": "http://localhost:8080"}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for http URL, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateSettings_PublicURL_EmptyClears(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	// Pre-seed a value so we can verify it's deleted rather than replaced.
+	q.settings["public_url"] = db.SystemSetting{Key: "public_url", Value: "https://gleipnir.example.com"}
+
+	body := `{"public_url": ""}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 when clearing public_url, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// The row should be gone, not set to "".
+	if _, err := q.GetSystemSetting(context.Background(), "public_url"); err == nil {
+		t.Error("public_url should have been deleted, not stored as empty string")
+	}
+}
+
+func TestGetPublicConfig_WithValue(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	q.settings["public_url"] = db.SystemSetting{Key: "public_url", Value: "https://gleipnir.example.com"}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	h.GetPublicConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var cfg map[string]string
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg["public_url"] != "https://gleipnir.example.com" {
+		t.Errorf("public_url = %q, want %q", cfg["public_url"], "https://gleipnir.example.com")
+	}
+}
+
+func TestGetPublicConfig_Unset(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	// No public_url in store.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	h.GetPublicConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 when public_url is not set, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var cfg map[string]string
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if v, ok := cfg["public_url"]; !ok || v != "" {
+		t.Errorf("expected public_url=\"\", got %q (ok=%v)", v, ok)
+	}
+}
+
+func TestGetPublicURL_Helper(t *testing.T) {
+	t.Run("returns stored value", func(t *testing.T) {
+		q := newMockQuerier()
+		h := newTestHandler(q)
+		q.settings["public_url"] = db.SystemSetting{Key: "public_url", Value: "https://gleipnir.example.com"}
+
+		got, err := h.GetPublicURL(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "https://gleipnir.example.com" {
+			t.Errorf("got %q, want %q", got, "https://gleipnir.example.com")
+		}
+	})
+
+	t.Run("returns empty string when not set", func(t *testing.T) {
+		q := newMockQuerier()
+		h := newTestHandler(q)
+
+		got, err := h.GetPublicURL(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+}
+
 func TestFormatUptime(t *testing.T) {
 	tests := []struct {
 		name     string

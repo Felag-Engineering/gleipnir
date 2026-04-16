@@ -7,6 +7,7 @@ import { Modal } from '@/components/Modal/Modal';
 import { ModalFooter } from '@/components/ModalFooter/ModalFooter';
 import { useWebhookSecret } from '@/hooks/queries/policies';
 import { useRotateWebhookSecret } from '@/hooks/mutations/policies';
+import { usePublicConfig } from '@/hooks/queries/config';
 import type { WebhookTriggerState, WebhookAuthMode } from '../types';
 
 export interface WebhookConfigProps {
@@ -21,6 +22,7 @@ export function WebhookConfig({ policyId, value, onChange }: WebhookConfigProps)
   const [revealed, setRevealed] = useState(false);
   const [showRotateModal, setShowRotateModal] = useState(false);
 
+  const { data: publicConfig } = usePublicConfig();
   const { data: secret, isLoading: secretLoading } = useWebhookSecret(policyId ?? '', revealed && !!policyId);
   const rotateMutation = useRotateWebhookSecret();
 
@@ -45,7 +47,11 @@ export function WebhookConfig({ policyId, value, onChange }: WebhookConfigProps)
   async function handleCopyUrl() {
     if (!policyId) return;
     try {
-      await navigator.clipboard.writeText(`/api/v1/webhooks/${policyId}`);
+      const webhookPath = `/api/v1/webhooks/${policyId}`;
+      const copyUrl = publicConfig?.public_url
+        ? `${publicConfig.public_url}${webhookPath}`
+        : webhookPath;
+      await navigator.clipboard.writeText(copyUrl);
       setUrlCopied(true);
     } catch {
       // clipboard API unavailable or permission denied — silently fail
@@ -85,7 +91,11 @@ export function WebhookConfig({ policyId, value, onChange }: WebhookConfigProps)
     });
   }
 
-  const url = policyId ? `/api/v1/webhooks/${policyId}` : undefined;
+  const webhookPath = policyId ? `/api/v1/webhooks/${policyId}` : undefined;
+  const publicUrl = publicConfig?.public_url ?? '';
+  const url = webhookPath
+    ? (publicUrl ? `${publicUrl}${webhookPath}` : webhookPath)
+    : undefined;
   const displayUrl = url ?? 'POST /api/v1/webhooks/<agent-id>';
 
   const needsSecret = value.auth !== 'none' && !!policyId;
@@ -95,7 +105,12 @@ export function WebhookConfig({ policyId, value, onChange }: WebhookConfigProps)
   const hasSecret = needsSecret && revealed && !secretLoading && secret !== null;
 
   function buildSnippet() {
-    const endpoint = url ?? 'https://gleipnir.example.com/api/v1/webhooks/<id>';
+    // When public_url is set, use the full URL. When not set, fall back to the
+    // placeholder so the snippet is always copy-paste-ready for documentation.
+    const placeholderEndpoint = webhookPath
+      ? `https://gleipnir.example.com${webhookPath}`
+      : 'https://gleipnir.example.com/api/v1/webhooks/<id>';
+    const endpoint = url ?? placeholderEndpoint;
     const secretVal = hasSecret && secret ? secret : '<secret>';
 
     if (value.auth === 'hmac') {

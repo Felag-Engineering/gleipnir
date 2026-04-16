@@ -47,4 +47,7 @@ export const queryKeys = {
     systemInfo: ['admin', 'system-info'] as const,
     openaiCompatProviders: ['admin', 'openai-compat-providers'] as const,
   },
+  config: {
+    all: ['config'] as const,
+  },
 } as const

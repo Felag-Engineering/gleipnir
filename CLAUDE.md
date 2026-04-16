@@ -153,6 +153,7 @@ Routes are registered in `internal/api/router.go` via `BuildRouter`, which const
 - `/api/v1/webhooks/{policyID}` — fires a webhook-triggered run (auth dispatcher per `trigger.auth`: hmac | bearer | none)
 - `/api/v1/policies/{policyID}/trigger` — fires a manual run
 - `/api/v1/policies/{id}/webhook/rotate`, `/api/v1/policies/{id}/webhook/secret` — rotate/reveal the webhook secret (admin|operator only; see ADR-034)
+- `/api/v1/config` — public instance config (e.g. `public_url`); available to all authenticated roles
 - `/api/v1/events` — SSE stream (`text/event-stream`) for real-time updates
 - `/api/v1/models` — list/refresh available LLM models
 - `/api/v1/stats`, `/api/v1/stats/timeseries` — dashboard statistics
@@ -182,6 +183,7 @@ These are resolved constraints — do not re-litigate them.
 - **Approval state machine (ADR-029):** minimal v1.0 approval lifecycle with timeout enforcement.
 - **Protocol-agnostic tools page (ADR-030):** UI abstracts over tool transport. The Tools page does not expose MCP-specific concepts to users.
 - **Native feedback (ADR-031):** feedback is a first-class runtime primitive. Agent can request operator input via `gleipnir.ask_operator`; the runtime manages the `waiting_for_feedback` state and timeout.
+- **DB-backed system settings (ADR-035):** instance-level config (e.g. `public_url`) lives in a `system_settings` key/value table, editable via the admin UI at `/admin/system`. Admin-only `GET/PUT /api/v1/admin/settings` manages the table; a separate `GET /api/v1/config` endpoint (all authenticated roles) exposes non-sensitive values like `public_url` to operators and auditors.
 - **Webhook secrets in encrypted DB column (ADR-034):** `webhook_secret_encrypted` is a dedicated column outside the YAML blob (scoped ADR-002 deviation). The `yaml` column is returned wholesale by GET /api/v1/policies/:id; storing a secret there would expose it to all authenticated roles. The `trigger.auth` mode (`hmac | bearer | none`) lives in YAML because it is configuration, not a secret. Auditors can see auth mode but cannot call the rotate/reveal endpoints (admin|operator only).
 - **CSS Modules, no inline styles:** All frontend styling goes through CSS Modules consuming CSS custom properties. No inline `style={}` attributes.
 - **4px spacing scale:** All margins, padding, and gaps snap to multiples of 4px (4, 8, 12, 16, 24, 32, 48, 64).

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -255,6 +256,27 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, settings)
 }
 
+// validateSettings checks setting values before they are persisted.
+// It returns an HTTP status code and error message on failure (status 0 means valid).
+// Currently validates public_url: must be an absolute URL with scheme and host.
+// Trailing slashes are stripped and the cleaned value is written back to the map.
+func validateSettings(body map[string]string) (httpStatus int, errMsg string) {
+	rawURL, ok := body["public_url"]
+	if !ok || rawURL == "" {
+		// Empty string is valid — it clears the setting.
+		return 0, ""
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return http.StatusBadRequest, "public_url must be an absolute URL (e.g. https://gleipnir.example.com)"
+	}
+
+	// Strip trailing slash so stored values are always canonical.
+	body["public_url"] = strings.TrimRight(rawURL, "/")
+	return 0, ""
+}
+
 // UpdateSettings upserts system settings, rejecting any _api_key keys.
 func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var body map[string]string
@@ -270,11 +292,27 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if status, msg := validateSettings(body); status != 0 {
+		httputil.WriteError(w, status, msg, "")
+		return
+	}
+
 	// Settings are written one-at-a-time. For the small number of settings in
 	// practice (2-3 keys), the risk of partial failure is negligible. A future
 	// enhancement could wrap this in a transaction.
 	now := time.Now().UTC().Format(time.RFC3339)
 	for key, value := range body {
+		// An empty public_url means the operator wants to clear the setting.
+		// We delete rather than upsert because value TEXT NOT NULL accepts empty
+		// strings — storing "" would be indistinguishable from "not set".
+		if key == "public_url" && value == "" {
+			if err := h.q.DeleteSystemSetting(r.Context(), key); err != nil {
+				httputil.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to clear setting %q", key), "")
+				return
+			}
+			continue // deletion handled above — skip the upsert below
+		}
+
 		if err := h.q.UpsertSystemSetting(r.Context(), key, value, now); err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save setting %q", key), "")
 			return
@@ -282,6 +320,35 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// GetPublicURL reads the public_url system setting and returns it.
+// If the setting has not been configured, it returns an empty string (not an error).
+// Other database errors are returned as-is for the caller to handle.
+func (h *Handler) GetPublicURL(ctx context.Context) (string, error) {
+	row, err := h.q.GetSystemSetting(ctx, "public_url")
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read public_url: %w", err)
+	}
+	return row.Value, nil
+}
+
+// GetPublicConfig returns non-sensitive runtime configuration to all authenticated
+// users. Currently exposes only public_url. Operators and auditors need this to
+// display full webhook URLs without having access to the admin settings endpoint.
+func (h *Handler) GetPublicConfig(w http.ResponseWriter, r *http.Request) {
+	publicURL, err := h.GetPublicURL(r.Context())
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to read config", "")
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{
+		"public_url": publicURL,
+	})
 }
 
 // ListModelsAdmin returns all model settings.

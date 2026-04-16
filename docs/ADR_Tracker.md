@@ -49,7 +49,29 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-032 | Admin-managed OpenAI-compatible LLM provider instances | 🟢 Decided | v1.0 | internal/llm/openaicompat, admin API, admin UI |
 | ADR-033 | Premium OpenAI client split from compat client         | 🟢 Decided | v1.0 | internal/llm/openai, internal/llm/openaicompat, main.go |
 | ADR-034 | Webhook secrets stored in encrypted DB column (scoped ADR-002 deviation) | 🟢 Decided | v1.0 | policies table, internal/policy, trigger/webhook_handler, frontend WebhookConfig |
+| ADR-035 | DB-backed system settings for runtime configuration | 🟢 Decided | v1.0 | system_settings table, admin API, frontend /admin/system |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
+
+---
+
+## ADR-035: DB-backed system settings for runtime configuration
+
+**Status:** Decided
+**Date:** 2026-04
+
+### Context
+
+Gleipnir needs runtime-configurable settings that survive container restarts and image upgrades. The first such setting is `public_url` — the external URL where Gleipnir is accessible, used to construct full webhook URLs for display. Environment variables are unsuitable because they require container restart to change and cannot be edited from the UI.
+
+### Decision
+
+Runtime configuration is stored in the existing `system_settings` key/value table (TEXT PRIMARY KEY `key`, TEXT NOT NULL `value`, TEXT NOT NULL `updated_at`). Settings are managed via `GET/PUT /api/v1/admin/settings` (admin-only). A separate `GET /api/v1/config` endpoint exposes non-sensitive settings (currently `public_url`) to all authenticated users.
+
+The `public_url` setting is validated on write: it must be an absolute URL with scheme and host. Trailing slashes are stripped. An empty value clears the setting via `DELETE` (not upsert — `value TEXT NOT NULL` allows empty strings, so storing `""` would be indistinguishable from "not set"). When unset, features that depend on it fall back gracefully (e.g., webhook URL display shows path-only).
+
+### Rejected alternative
+
+Environment variable (`GLEIPNIR_PUBLIC_URL`): rejected because it requires container restart, cannot be edited from the UI, and doesn't survive Docker image upgrades that reset env vars.
 
 ---
 

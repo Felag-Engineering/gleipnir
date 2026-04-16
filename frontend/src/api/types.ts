@@ -285,6 +285,12 @@ export interface ApiSystemSettings {
   [key: string]: string
 }
 
+// Matches admin/handler.go → GetPublicConfig (GET /api/v1/config)
+// Non-sensitive config returned to all authenticated users (no admin role required).
+export interface ApiPublicConfig {
+  public_url: string
+}
+
 // Matches admin/handler.go → systemInfo (GET /api/v1/admin/system-info)
 export interface ApiSystemInfo {
   version: string

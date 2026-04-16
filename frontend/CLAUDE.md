@@ -29,6 +29,8 @@ npm run build-storybook  # static Storybook build
 /tools              → tool management + server registry
 /mcp                → redirect to /tools (legacy path)
 /users              → user management (admin)
+/admin/models       → model enable/disable, provider key management (admin)
+/admin/system       → system settings (public URL, run limits, system info) (admin)
 *                   → 404 not found
 ```
 
@@ -122,6 +124,7 @@ queryKeys.approvals.all         // ['approvals']
 queryKeys.users.all             // ['users']
 queryKeys.currentUser.all       // ['currentUser']
 queryKeys.models.all            // ['models']
+queryKeys.config.all            // ['config']
 ```
 
 ### Data fetching
