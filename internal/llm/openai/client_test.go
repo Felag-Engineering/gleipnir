@@ -271,6 +271,30 @@ func buildTextSSE() []byte {
 	return out
 }
 
+// TestCuratedModelIsReasoning verifies that the IsReasoning flag on each
+// curated model entry is plumbed correctly through curatedModelIsReasoning,
+// and that unknown models return false.
+func TestCuratedModelIsReasoning(t *testing.T) {
+	// Verify every curated model entry is reflected correctly.
+	for _, m := range curatedModels {
+		t.Run(m.Name, func(t *testing.T) {
+			if got := curatedModelIsReasoning(m.Name); got != m.IsReasoning {
+				t.Errorf("curatedModelIsReasoning(%q) = %v; want %v (from ModelInfo.IsReasoning)", m.Name, got, m.IsReasoning)
+			}
+		})
+	}
+
+	// Unknown models must return false — they should not receive the include.
+	unknowns := []string{"gpt-4o", "gpt-4o-mini", "not-a-real-model"}
+	for _, name := range unknowns {
+		t.Run("unknown/"+name, func(t *testing.T) {
+			if curatedModelIsReasoning(name) {
+				t.Errorf("curatedModelIsReasoning(%q) = true; want false for unknown model", name)
+			}
+		})
+	}
+}
+
 // containsString is a helper that avoids importing strings in test bodies.
 func containsString(s, sub string) bool {
 	if len(sub) == 0 {

@@ -89,9 +89,13 @@ func (c *Client) buildParams(
 	params := responses.ResponseNewParams{
 		Model: shared.ResponsesModel(req.Model),
 		Tools: tools,
-		// Request encrypted_content so reasoning items can be round-tripped in
-		// subsequent requests. The API ignores this for non-reasoning models.
-		Include: []responses.ResponseIncludable{responses.ResponseIncludableReasoningEncryptedContent},
+	}
+
+	// Only reasoning models accept reasoning.encrypted_content; non-reasoning
+	// models reject it with a 400 error. The flag lives on the curated model
+	// entry so the data and the behavior stay in sync.
+	if curatedModelIsReasoning(req.Model) {
+		params.Include = []responses.ResponseIncludable{responses.ResponseIncludableReasoningEncryptedContent}
 	}
 
 	input := buildInput(req, names)
@@ -151,10 +155,8 @@ func (c *Client) ValidateModelName(_ context.Context, name string) error {
 	if name == "" {
 		return errors.New("openai: model name is empty")
 	}
-	for _, m := range curatedModels {
-		if m.Name == name {
-			return nil
-		}
+	if _, ok := curatedModelsByName[name]; ok {
+		return nil
 	}
 	names := make([]string, len(curatedModels))
 	for i, m := range curatedModels {
@@ -167,6 +169,12 @@ func (c *Client) ValidateModelName(_ context.Context, name string) error {
 // requires no cache invalidation. The method exists to satisfy the LLMClient
 // interface so the provider registry's /api/v1/models/refresh path works.
 func (c *Client) InvalidateModelCache() {}
+
+// curatedModelIsReasoning reports whether model is marked IsReasoning in the
+// curated model list. Unknown models return false.
+func curatedModelIsReasoning(model string) bool {
+	return curatedModelsByName[model].IsReasoning
+}
 
 // wrapSDKError wraps an openai-go SDK error with HTTP status context so callers
 // can produce meaningful log messages.

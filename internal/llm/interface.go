@@ -190,6 +190,7 @@ type MessageChunk struct {
 type ModelInfo struct {
 	Name        string // model ID used in API calls (e.g. "gemini-2.0-flash", "claude-sonnet-4-6")
 	DisplayName string // human-readable name (e.g. "Gemini 2.0 Flash")
+	IsReasoning bool   // true if the model supports reasoning/thinking (e.g. o1*, gpt-5*)
 }
 
 // ModelLister is the subset of ProviderRegistry used by model listing endpoints.
