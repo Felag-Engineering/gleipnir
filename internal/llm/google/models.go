@@ -14,6 +14,4 @@ var curatedModels = []llm.ModelInfo{
 	{Name: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro"},
 	{Name: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
 	{Name: "gemini-2.5-flash-lite", DisplayName: "Gemini 2.5 Flash-Lite"},
-	{Name: "gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"},
-	{Name: "gemini-2.0-flash-lite", DisplayName: "Gemini 2.0 Flash-Lite"},
 }

@@ -76,7 +76,7 @@ export const V2WithGemini: Story = {
   args: {
     content: {
       provider: 'google',
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       tools: MIXED_TOOLS,
     },
   },

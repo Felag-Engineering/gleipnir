@@ -20,7 +20,7 @@ const MOCK_MODELS_RESPONSE = JSON.stringify({
       provider: 'google',
       models: [
         { name: 'gemini-2.5-pro', display_name: 'Gemini 2.5 Pro' },
-        { name: 'gemini-2.0-flash', display_name: 'Gemini 2.0 Flash' },
+        { name: 'gemini-2.5-flash', display_name: 'Gemini 2.5 Flash' },
       ],
     },
   ],
@@ -82,7 +82,7 @@ export const AnthropicSelected: Story = {
 
 export const GoogleSelected: Story = {
   args: {
-    value: { provider: 'google', model: 'gemini-2.0-flash' },
+    value: { provider: 'google', model: 'gemini-2.5-flash' },
     onChange: fn(),
   },
 };

@@ -485,7 +485,7 @@ func TestCreateMessage_ThinkingBlocks(t *testing.T) {
 	client := newClientWithGenerator(mock)
 
 	resp, err := client.CreateMessage(context.Background(), llm.MessageRequest{
-		Model: "gemini-2.0-flash",
+		Model: "gemini-2.5-flash",
 		History: []llm.ConversationTurn{
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hello"}}},
 		},
@@ -870,7 +870,7 @@ func TestCreateMessage_Success(t *testing.T) {
 	client := newClientWithGenerator(mock)
 
 	req := llm.MessageRequest{
-		Model:        "gemini-2.0-flash",
+		Model:        "gemini-2.5-flash",
 		MaxTokens:    512,
 		SystemPrompt: "You are helpful.",
 		History: []llm.ConversationTurn{
@@ -892,8 +892,8 @@ func TestCreateMessage_Success(t *testing.T) {
 		t.Errorf("unexpected usage: %+v", resp.Usage)
 	}
 	// Verify captured model and config.
-	if mock.captured.model != "gemini-2.0-flash" {
-		t.Errorf("expected model 'gemini-2.0-flash', got %q", mock.captured.model)
+	if mock.captured.model != "gemini-2.5-flash" {
+		t.Errorf("expected model 'gemini-2.5-flash', got %q", mock.captured.model)
 	}
 	if mock.captured.config.MaxOutputTokens != 512 {
 		t.Errorf("expected MaxOutputTokens=512, got %d", mock.captured.config.MaxOutputTokens)
@@ -922,7 +922,7 @@ func TestCreateMessage_ToolCallResponse(t *testing.T) {
 	client := newClientWithGenerator(mock)
 
 	resp, err := client.CreateMessage(context.Background(), llm.MessageRequest{
-		Model: "gemini-2.0-flash",
+		Model: "gemini-2.5-flash",
 		History: []llm.ConversationTurn{
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "search for go"}}},
 		},
@@ -947,7 +947,7 @@ func TestCreateMessage_SDKError(t *testing.T) {
 	client := newClientWithGenerator(mock)
 
 	_, err := client.CreateMessage(context.Background(), llm.MessageRequest{
-		Model:   "gemini-2.0-flash",
+		Model:   "gemini-2.5-flash",
 		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}},
 	})
 	if err == nil {
@@ -971,7 +971,7 @@ func TestCreateMessage_WithHints(t *testing.T) {
 	client := newClientWithGenerator(mock)
 
 	_, err := client.CreateMessage(context.Background(), llm.MessageRequest{
-		Model:   "gemini-2.0-flash",
+		Model:   "gemini-2.5-flash",
 		Hints:   hints,
 		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}},
 	})
@@ -1036,7 +1036,7 @@ func TestStreamMessage_HappyPath(t *testing.T) {
 	client := newClientWithGenerator(mock)
 
 	ch, err := client.StreamMessage(context.Background(), llm.MessageRequest{
-		Model:   "gemini-2.0-flash",
+		Model:   "gemini-2.5-flash",
 		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "go"}}}},
 	})
 	if err != nil {
@@ -1093,7 +1093,7 @@ func TestStreamMessage_ChannelClosed(t *testing.T) {
 	client := newClientWithGenerator(mock)
 
 	ch, err := client.StreamMessage(context.Background(), llm.MessageRequest{
-		Model:   "gemini-2.0-flash",
+		Model:   "gemini-2.5-flash",
 		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
@@ -1120,7 +1120,7 @@ func TestStreamMessage_StreamError(t *testing.T) {
 	client := newClientWithGenerator(mock)
 
 	ch, err := client.StreamMessage(context.Background(), llm.MessageRequest{
-		Model:   "gemini-2.0-flash",
+		Model:   "gemini-2.5-flash",
 		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
@@ -1160,7 +1160,7 @@ func TestStreamMessage_ContextCancellation(t *testing.T) {
 	client := newClientWithGenerator(mock)
 
 	ch, err := client.StreamMessage(ctx, llm.MessageRequest{
-		Model:   "gemini-2.0-flash",
+		Model:   "gemini-2.5-flash",
 		History: []llm.ConversationTurn{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}},
 	})
 	// StreamMessage itself returns (ch, nil) — the cancellation surfaces as an Err chunk.

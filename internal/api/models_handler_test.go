@@ -85,7 +85,7 @@ func TestModelsHandler_List(t *testing.T) {
 				{Name: "claude-sonnet-4-6", DisplayName: "claude-sonnet-4-6"},
 			},
 			"google": {
-				{Name: "gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"},
+				{Name: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
 				{Name: "gemini-1.5-pro", DisplayName: "Gemini 1.5 Pro"},
 			},
 		},
@@ -191,7 +191,7 @@ func TestModelsHandler_Refresh(t *testing.T) {
 		lister := &stubModelLister{
 			models: map[string][]llm.ModelInfo{
 				"anthropic": {{Name: "claude-sonnet-4-6", DisplayName: "claude-sonnet-4-6"}},
-				"google":    {{Name: "gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"}},
+				"google":    {{Name: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"}},
 			},
 		}
 		srv := httptest.NewServer(newModelsRouter(lister))
@@ -231,7 +231,7 @@ func TestModelsHandler_Refresh(t *testing.T) {
 		lister := &stubModelLister{
 			models: map[string][]llm.ModelInfo{
 				"anthropic": {{Name: "claude-sonnet-4-6", DisplayName: "claude-sonnet-4-6"}},
-				"google":    {{Name: "gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"}},
+				"google":    {{Name: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"}},
 			},
 		}
 		srv := httptest.NewServer(newModelsRouter(lister))
@@ -290,7 +290,7 @@ func TestModelsHandler_ResponseShape(t *testing.T) {
 	lister := &stubModelLister{
 		models: map[string][]llm.ModelInfo{
 			"google": {
-				{Name: "gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"},
+				{Name: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
 			},
 		},
 	}
@@ -324,8 +324,8 @@ func TestModelsHandler_ResponseShape(t *testing.T) {
 	if err := json.Unmarshal(raw["data"], &envelope.Data); err != nil {
 		t.Fatalf("unmarshal data: %v", err)
 	}
-	if envelope.Data[0].Models[0].DisplayName != "Gemini 2.0 Flash" {
-		t.Errorf("display_name = %q, want %q", envelope.Data[0].Models[0].DisplayName, "Gemini 2.0 Flash")
+	if envelope.Data[0].Models[0].DisplayName != "Gemini 2.5 Flash" {
+		t.Errorf("display_name = %q, want %q", envelope.Data[0].Models[0].DisplayName, "Gemini 2.5 Flash")
 	}
 }
 
@@ -337,7 +337,7 @@ func TestModelsHandler_FilterSemantics(t *testing.T) {
 				{Name: "claude-haiku-4", DisplayName: "Claude Haiku 4"},
 			},
 			"google": {
-				{Name: "gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"},
+				{Name: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
 			},
 		},
 	}

@@ -32,7 +32,7 @@ func TestCrossProvider_StructuralParity(t *testing.T) {
 		modelName string
 	}{
 		{name: "anthropic", provider: "anthropic", modelName: "claude-sonnet-4-6"},
-		{name: "google", provider: "google", modelName: "gemini-2.0-flash"},
+		{name: "google", provider: "google", modelName: "gemini-2.5-flash"},
 	}
 
 	for _, tc := range providers {

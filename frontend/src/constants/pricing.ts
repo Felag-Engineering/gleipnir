@@ -27,6 +27,8 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
   'Gemini 2.5 Pro':        { input: 1.25 / 1_000_000,   output: 10.00 / 1_000_000 },
   'Gemini 2.5 Flash':      { input: 0.15 / 1_000_000,   output: 0.60 / 1_000_000 },
   'Gemini 2.5 Flash-Lite': { input: 0.075 / 1_000_000,  output: 0.30 / 1_000_000 },
+
+  // Google legacy models — kept for historical run cost charts.
   'Gemini 2.0 Flash':      { input: 0.10 / 1_000_000,   output: 0.40 / 1_000_000 },
   'Gemini 2.0 Flash-Lite': { input: 0.075 / 1_000_000,  output: 0.30 / 1_000_000 },
 

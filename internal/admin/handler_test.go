@@ -439,7 +439,7 @@ func TestListAllModels(t *testing.T) {
 					{Name: "claude-haiku-4", DisplayName: "Claude Haiku 4"},
 				},
 				"google": {
-					{Name: "gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash"},
+					{Name: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash"},
 				},
 			},
 		}
@@ -481,8 +481,8 @@ func TestListAllModels(t *testing.T) {
 		if byKey["anthropic:claude-haiku-4"] {
 			t.Error("claude-haiku-4 should be disabled (no enabled row)")
 		}
-		if byKey["google:gemini-2.0-flash"] {
-			t.Error("gemini-2.0-flash should be disabled (no enabled row)")
+		if byKey["google:gemini-2.5-flash"] {
+			t.Error("gemini-2.5-flash should be disabled (no enabled row)")
 		}
 	})
 

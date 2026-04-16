@@ -458,10 +458,10 @@ capabilities:
 agent:
   task: do it
 model:
-  name: gemini-2.0-flash
+  name: gemini-2.5-flash
 `,
 			wantProvider: model.DefaultProvider,
-			wantName:     "gemini-2.0-flash",
+			wantName:     "gemini-2.5-flash",
 			wantOptions:  nil,
 		},
 		{

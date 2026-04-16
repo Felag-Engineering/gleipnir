@@ -274,13 +274,13 @@ describe('yamlToFormState — agent block', () => {
     const yaml = `name: p
 model:
   provider: google
-  name: gemini-2.0-flash
+  name: gemini-2.5-flash
 agent:
   task: do things
 `
     const state = yamlToFormState(yaml)
     expect(state!.model.provider).toBe('google')
-    expect(state!.model.model).toBe('gemini-2.0-flash')
+    expect(state!.model.model).toBe('gemini-2.5-flash')
   })
 
   it('defaults missing model section to anthropic claude-sonnet-4-6', () => {
