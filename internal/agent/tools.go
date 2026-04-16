@@ -41,17 +41,13 @@ func buildResolvedToolMap(tools []mcp.ResolvedTool) (map[string]resolvedToolEntr
 // Run(), before the pending→running transition, so a run with unresolvable
 // capabilities fails immediately without ever appearing as running.
 func (a *BoundAgent) checkCapabilities() error {
-	// Collect all tool names referenced in the policy's tool capability list.
-	// The feedback channel (FeedbackConfig) is not an MCP tool and requires no
-	// registry check — it is injected by the runtime when Enabled is true.
-	var toolNames []string
+	// Verify every tool capability references a tool registered at construction
+	// time. The feedback channel (FeedbackConfig) is not an MCP tool and
+	// requires no registry check — it is injected by the runtime when Enabled
+	// is true.
 	for _, t := range a.policy.Capabilities.Tools {
-		toolNames = append(toolNames, t.Tool)
-	}
-
-	for _, name := range toolNames {
-		if _, ok := a.toolsByName[name]; !ok {
-			return fmt.Errorf("capability '%s' not found in MCP registry — verify the MCP server is registered and the tool exists", name)
+		if _, ok := a.toolsByName[t.Tool]; !ok {
+			return fmt.Errorf("capability '%s' not found in MCP registry — verify the MCP server is registered and the tool exists", t.Tool)
 		}
 	}
 	return nil

@@ -323,7 +323,7 @@ func (h *Handler) UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) checkLastAdminProtection(ctx context.Context, callerID, targetID string, req updateUserRequest) error {
 	// We only need to check when deactivating an admin or removing the admin role.
 	targetIsBeingDeactivated := req.Deactivated != nil && *req.Deactivated
-	targetIsLosingAdminRole := req.Roles != nil && !containsRole(*req.Roles, string(model.RoleAdmin))
+	targetIsLosingAdminRole := req.Roles != nil && !makeRoleSet(*req.Roles)[string(model.RoleAdmin)]
 
 	if !targetIsBeingDeactivated && !targetIsLosingAdminRole {
 		return nil
@@ -334,7 +334,7 @@ func (h *Handler) checkLastAdminProtection(ctx context.Context, callerID, target
 	if err != nil {
 		return errAdminCheckFailed
 	}
-	if !containsRole(currentRoles, string(model.RoleAdmin)) {
+	if !makeRoleSet(currentRoles)[string(model.RoleAdmin)] {
 		// Target is not an admin — no protection needed.
 		return nil
 	}
@@ -357,15 +357,6 @@ func (h *Handler) checkLastAdminProtection(ctx context.Context, callerID, target
 		return errLastAdmin
 	}
 	return nil
-}
-
-func containsRole(roles []string, role string) bool {
-	for _, r := range roles {
-		if r == role {
-			return true
-		}
-	}
-	return false
 }
 
 // isUniqueConstraintError reports whether err is a SQLite UNIQUE constraint violation.

@@ -27,49 +27,49 @@ func TestRequireRole(t *testing.T) {
 	}{
 		{
 			name:          "admin bypasses all guards",
-			user:          &UserContext{ID: "1", Roles: []string{"admin"}},
+			user:          &UserContext{ID: "1", Roles: []string{"admin"}, roleSet: makeRoleSet([]string{"admin"})},
 			requiredRoles: []model.Role{model.RoleOperator},
 			wantStatus:    http.StatusOK,
 		},
 		{
 			name:          "admin bypasses even with empty required roles",
-			user:          &UserContext{ID: "1", Roles: []string{"admin"}},
+			user:          &UserContext{ID: "1", Roles: []string{"admin"}, roleSet: makeRoleSet([]string{"admin"})},
 			requiredRoles: []model.Role{},
 			wantStatus:    http.StatusOK,
 		},
 		{
 			name:          "single matching role passes",
-			user:          &UserContext{ID: "1", Roles: []string{"operator"}},
+			user:          &UserContext{ID: "1", Roles: []string{"operator"}, roleSet: makeRoleSet([]string{"operator"})},
 			requiredRoles: []model.Role{model.RoleOperator},
 			wantStatus:    http.StatusOK,
 		},
 		{
 			name:          "first of multiple required roles matches",
-			user:          &UserContext{ID: "1", Roles: []string{"auditor"}},
+			user:          &UserContext{ID: "1", Roles: []string{"auditor"}, roleSet: makeRoleSet([]string{"auditor"})},
 			requiredRoles: []model.Role{model.RoleOperator, model.RoleAuditor},
 			wantStatus:    http.StatusOK,
 		},
 		{
 			name:          "second of multiple required roles matches",
-			user:          &UserContext{ID: "1", Roles: []string{"operator"}},
+			user:          &UserContext{ID: "1", Roles: []string{"operator"}, roleSet: makeRoleSet([]string{"operator"})},
 			requiredRoles: []model.Role{model.RoleAuditor, model.RoleOperator},
 			wantStatus:    http.StatusOK,
 		},
 		{
 			name:          "no matching role returns 403",
-			user:          &UserContext{ID: "1", Roles: []string{"auditor"}},
+			user:          &UserContext{ID: "1", Roles: []string{"auditor"}, roleSet: makeRoleSet([]string{"auditor"})},
 			requiredRoles: []model.Role{model.RoleOperator},
 			wantStatus:    http.StatusForbidden,
 		},
 		{
 			name:          "user with no roles returns 403",
-			user:          &UserContext{ID: "1", Roles: nil},
+			user:          &UserContext{ID: "1", Roles: nil, roleSet: makeRoleSet(nil)},
 			requiredRoles: []model.Role{model.RoleOperator},
 			wantStatus:    http.StatusForbidden,
 		},
 		{
 			name:          "empty required roles with non-admin returns 403",
-			user:          &UserContext{ID: "1", Roles: []string{"operator"}},
+			user:          &UserContext{ID: "1", Roles: []string{"operator"}, roleSet: makeRoleSet([]string{"operator"})},
 			requiredRoles: []model.Role{},
 			wantStatus:    http.StatusForbidden,
 		},
@@ -128,7 +128,7 @@ func TestUserContext_HasRole(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			u := &UserContext{Roles: tc.roles}
+			u := &UserContext{Roles: tc.roles, roleSet: makeRoleSet(tc.roles)}
 			got := u.HasRole(tc.checkFor)
 			if got != tc.want {
 				t.Errorf("HasRole(%q) = %v, want %v", tc.checkFor, got, tc.want)

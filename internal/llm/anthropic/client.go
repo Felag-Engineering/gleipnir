@@ -167,10 +167,8 @@ func (c *AnthropicClient) ValidateOptions(options map[string]any) error {
 // validationAliases (for backward compat with stored policies using dated pins).
 // No network call is made — validation is purely against the curated list.
 func (c *AnthropicClient) ValidateModelName(_ context.Context, modelName string) error {
-	for _, m := range curatedModels {
-		if m.Name == modelName {
-			return nil
-		}
+	if _, ok := curatedModelsByName[modelName]; ok {
+		return nil
 	}
 	if _, ok := validationAliases[modelName]; ok {
 		return nil

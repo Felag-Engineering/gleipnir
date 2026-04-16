@@ -21,6 +21,17 @@ var curatedModels = []llm.ModelInfo{
 	{Name: "claude-sonnet-4-5", DisplayName: "Claude Sonnet 4.5"},
 }
 
+// curatedModelsByName is a lookup index built from curatedModels at init time.
+// ValidateModelName uses it for O(1) lookup instead of iterating the slice.
+var curatedModelsByName map[string]llm.ModelInfo
+
+func init() {
+	curatedModelsByName = make(map[string]llm.ModelInfo, len(curatedModels))
+	for _, m := range curatedModels {
+		curatedModelsByName[m.Name] = m
+	}
+}
+
 // validationAliases maps dated model aliases to their human-readable label.
 // These are accepted by ValidateModelName but not returned by ListModels.
 // Add new entries here when stored policies use a dated pin that would otherwise

@@ -30,16 +30,21 @@ type UserContext struct {
 	ID       string
 	Username string
 	Roles    []string
+	roleSet  map[string]bool // derived from Roles at construction; not serialized
+}
+
+// makeRoleSet builds a set from a roles slice for O(1) membership lookups.
+func makeRoleSet(roles []string) map[string]bool {
+	s := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		s[r] = true
+	}
+	return s
 }
 
 // HasRole reports whether the user holds the given role.
 func (u *UserContext) HasRole(role model.Role) bool {
-	for _, r := range u.Roles {
-		if r == string(role) {
-			return true
-		}
-	}
-	return false
+	return u.roleSet[string(role)]
 }
 
 type contextKey struct{}
@@ -113,6 +118,7 @@ func RequireAuth(querier SessionQuerier) func(http.Handler) http.Handler {
 				ID:       user.ID,
 				Username: user.Username,
 				Roles:    roles,
+				roleSet:  makeRoleSet(roles),
 			})
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

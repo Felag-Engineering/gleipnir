@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useUsers } from '@/hooks/queries/users'
 import { useCreateUser } from '@/hooks/mutations/users'
 import { useUpdateUser } from '@/hooks/mutations/users'
@@ -21,6 +21,11 @@ export default function UsersPage() {
   const createMutation = useCreateUser()
   const updateMutation = useUpdateUser()
 
+  const usersById = useMemo(
+    () => new Map(users?.map((u) => [u.id, u]) ?? []),
+    [users],
+  )
+
   function handleCreateSubmit(username: string, password: string, roles: string[]) {
     createMutation.mutate(
       { username, password, roles },
@@ -39,7 +44,7 @@ export default function UsersPage() {
   }
 
   function handleRoleToggle(userId: string, role: string, add: boolean) {
-    const user = users?.find((u) => u.id === userId)
+    const user = usersById.get(userId)
     if (!user) return
 
     const newRoles = add

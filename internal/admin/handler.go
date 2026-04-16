@@ -43,29 +43,26 @@ type Handler struct {
 	q                 AdminQuerier
 	encryptionKey     []byte
 	knownProviders    []string
+	knownProviderSet  map[string]bool
 	configureProvider ProviderConfigurator
 	removeProvider    ProviderRemover
 	lister            llm.ModelLister
 }
 
 func NewHandler(q AdminQuerier, encryptionKey []byte, knownProviders []string, configure ProviderConfigurator, remove ProviderRemover, lister llm.ModelLister) *Handler {
+	providerSet := make(map[string]bool, len(knownProviders))
+	for _, p := range knownProviders {
+		providerSet[p] = true
+	}
 	return &Handler{
 		q:                 q,
 		encryptionKey:     encryptionKey,
 		knownProviders:    knownProviders,
+		knownProviderSet:  providerSet,
 		configureProvider: configure,
 		removeProvider:    remove,
 		lister:            lister,
 	}
-}
-
-func (h *Handler) isKnownProvider(name string) bool {
-	for _, p := range h.knownProviders {
-		if p == name {
-			return true
-		}
-	}
-	return false
 }
 
 // ListProviders returns the status of each known LLM provider's API key.
@@ -92,7 +89,7 @@ func (h *Handler) ListProviders(w http.ResponseWriter, r *http.Request) {
 // SetProviderKey encrypts and stores an API key for the given provider.
 func (h *Handler) SetProviderKey(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
-	if !h.isKnownProvider(name) {
+	if !h.knownProviderSet[name] {
 		httputil.WriteError(w, http.StatusBadRequest, "unknown provider", "")
 		return
 	}
@@ -181,7 +178,7 @@ func (h *Handler) autoEnableModelsForProvider(ctx context.Context, provider stri
 // DeleteProviderKey removes an API key for the given provider.
 func (h *Handler) DeleteProviderKey(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
-	if !h.isKnownProvider(name) {
+	if !h.knownProviderSet[name] {
 		httputil.WriteError(w, http.StatusBadRequest, "unknown provider", "")
 		return
 	}
