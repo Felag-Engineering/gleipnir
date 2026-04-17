@@ -43,8 +43,9 @@ func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, llmClient l
 		cfg.LLMClient = llmClient
 		return agent.New(cfg)
 	})
-	launcher := run.NewRunLauncher(store, registry, manager, factory, nil, 0)
-	wh := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil))
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, factory, nil, 0, resolver)
+	wh := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil), resolver)
 	rh := run.NewRunsHandler(store, manager, nil)
 
 	// Reuse newRunsRouter for the runs routes so both stay in sync automatically.

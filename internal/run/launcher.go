@@ -65,6 +65,13 @@ type LaunchResult struct {
 	RunID string
 }
 
+// defaultModelResolver fetches the system-wide default LLM provider and model
+// name. *admin.Handler satisfies this interface. Used by the drain path to
+// re-parse policies with current settings rather than a stale snapshot.
+type defaultModelResolver interface {
+	GetSystemDefault(ctx context.Context) (provider string, modelName string, err error)
+}
+
 // RunLauncher encapsulates the shared logic for creating a run record,
 // resolving tools, constructing the agent, and launching the goroutine.
 // All three trigger handlers (webhook, manual, scheduled) delegate to it.
@@ -75,6 +82,7 @@ type RunLauncher struct {
 	newAgent               AgentFactory
 	publisher              event.Publisher
 	defaultFeedbackTimeout time.Duration
+	modelResolver          defaultModelResolver
 }
 
 // registryResolver is the subset of mcp.Registry used by RunLauncher, defined
@@ -86,7 +94,10 @@ type registryResolver interface {
 // NewRunLauncher returns a RunLauncher ready to use.
 // publisher may be nil, in which case no real-time events are emitted.
 // defaultFeedbackTimeout is used when a policy does not specify its own timeout.
-func NewRunLauncher(store *db.Store, registry registryResolver, manager *RunManager, factory AgentFactory, publisher event.Publisher, defaultFeedbackTimeout time.Duration) *RunLauncher {
+// modelResolver is used by the drain path to re-parse policies with current
+// system settings; it may be nil, in which case the drain path uses the
+// snapshot captured at launch time.
+func NewRunLauncher(store *db.Store, registry registryResolver, manager *RunManager, factory AgentFactory, publisher event.Publisher, defaultFeedbackTimeout time.Duration, modelResolver defaultModelResolver) *RunLauncher {
 	return &RunLauncher{
 		store:                  store,
 		registry:               registry,
@@ -94,7 +105,23 @@ func NewRunLauncher(store *db.Store, registry registryResolver, manager *RunMana
 		newAgent:               factory,
 		publisher:              publisher,
 		defaultFeedbackTimeout: defaultFeedbackTimeout,
+		modelResolver:          modelResolver,
 	}
+}
+
+// drainResolveDefaults fetches the system default model for the drain path.
+// When no resolver is configured, or the resolver returns an error, it returns
+// ("", "") — the caller falls back to the launch-time snapshot. Drain is
+// best-effort, so we never block queued runs on a resolver failure.
+func (l *RunLauncher) drainResolveDefaults(ctx context.Context) (string, string) {
+	if l.modelResolver == nil {
+		return "", ""
+	}
+	provider, modelName, err := l.modelResolver.GetSystemDefault(ctx)
+	if err != nil {
+		return "", ""
+	}
+	return provider, modelName
 }
 
 // CheckConcurrency enforces the given concurrency policy for the policy
@@ -234,9 +261,16 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		if params.ParsedPolicy.Agent.Concurrency == model.ConcurrencyQueue {
 			drainCtx := context.Background()
 			currentPolicy := params.ParsedPolicy
-			if dbPol, err := l.store.GetPolicy(drainCtx, params.PolicyID); err == nil {
-				if p, err := policy.Parse(dbPol.Yaml, model.DefaultProvider, model.DefaultModelName); err == nil {
+			if dbPol, dbErr := l.store.GetPolicy(drainCtx, params.PolicyID); dbErr == nil {
+				provider, modelName := l.drainResolveDefaults(drainCtx)
+				if provider == "" || modelName == "" {
+					slog.Warn("drain: system default model unavailable, using launch-time snapshot",
+						"policy_id", params.PolicyID)
+				} else if p, parseErr := policy.Parse(dbPol.Yaml, provider, modelName); parseErr == nil {
 					currentPolicy = p
+				} else {
+					slog.Warn("drain: failed to re-parse policy, using launch-time snapshot",
+						"policy_id", params.PolicyID, "err", parseErr)
 				}
 			}
 			l.DrainQueue(drainCtx, params.PolicyID, currentPolicy)

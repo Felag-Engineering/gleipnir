@@ -199,7 +199,7 @@ capabilities:
 agent:
   task: test
 `
-	parsed, err := Parse(yamlWithManyTools, model.DefaultProvider, model.DefaultModelName)
+	parsed, err := Parse(yamlWithManyTools, "anthropic", "claude-sonnet-4-6")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

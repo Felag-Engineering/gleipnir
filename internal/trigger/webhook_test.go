@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -160,8 +161,9 @@ func newHandler(t *testing.T, store *db.Store, loader trigger.SecretLoaderInterf
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
-	return trigger.NewWebhookHandler(store, launcher, loader)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0, resolver)
+	return trigger.NewWebhookHandler(store, launcher, loader, resolver)
 }
 
 func TestWebhookHandler(t *testing.T) {
@@ -523,8 +525,9 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
-	h := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil))
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0, resolver)
+	h := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil), resolver)
 
 	w := callHandler(t, h, "p-run-created", `{"event": "test"}`)
 	if w.Code != http.StatusAccepted {
@@ -564,5 +567,44 @@ func TestErrSentinels(t *testing.T) {
 	}
 	if !errors.Is(trigger.ErrEncryptionKeyMissing, trigger.ErrEncryptionKeyMissing) {
 		t.Error("ErrEncryptionKeyMissing is not itself")
+	}
+}
+
+// webhookPolicyNoModel is a policy with no model block — used to test the
+// "no default model configured" 500 response when the system default is unset.
+const webhookPolicyNoModel = `
+name: test-no-model-policy
+trigger:
+  type: webhook
+  auth: none
+agent:
+  task: "test task"
+`
+
+// TestWebhookHandler_Returns500_WhenNoDefaultModelAndPolicyOmitsModel verifies
+// that when the system default is unset (sql.ErrNoRows from the resolver) and
+// the policy YAML omits the model block, the webhook handler returns 500 with
+// a message containing "no default model configured".
+func TestWebhookHandler_Returns500_WhenNoDefaultModelAndPolicyOmitsModel(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	insertTestPolicy(t, store, "p-no-model-500", webhookPolicyNoModel)
+
+	registry := mcp.NewRegistry(store.Queries())
+	noopClient := testutil.NewNoopLLMClient()
+	providerReg := llm.NewProviderRegistry()
+	providerReg.Register("anthropic", noopClient)
+
+	// Resolver with no default configured.
+	noDefault := stubDefaultModelResolver{err: sql.ErrNoRows}
+	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0, noDefault)
+	h := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil), noDefault)
+
+	w := callHandler(t, h, "p-no-model-500", `{"event": "test"}`)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "no default model configured") {
+		t.Errorf("expected body to contain %q, got: %s", "no default model configured", w.Body.String())
 	}
 }

@@ -134,9 +134,8 @@ func (h *Handler) SetProviderKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // autoEnableModelsForProvider enables every model returned by the provider's
-// lister and seeds default_model if no default is configured yet.
-// It is best-effort: individual errors are logged and never surface to the caller.
-// A nil lister is valid — the function becomes a no-op.
+// lister. It is best-effort: individual errors are logged and never surface to
+// the caller. A nil lister is valid — the function becomes a no-op.
 func (h *Handler) autoEnableModelsForProvider(ctx context.Context, provider string) {
 	if h.lister == nil {
 		return
@@ -155,25 +154,6 @@ func (h *Handler) autoEnableModelsForProvider(ctx context.Context, provider stri
 			// Continue — best-effort, other models should still be enabled.
 		}
 	}
-
-	if len(models) == 0 {
-		return
-	}
-
-	// Seed default_model only when no default exists. Use errors.Is to
-	// distinguish a genuinely missing row from a transient DB error — treating a
-	// transient error as "missing" would silently overwrite a setting we
-	// couldn't read.
-	_, err = h.q.GetSystemSetting(ctx, "default_model")
-	if errors.Is(err, sql.ErrNoRows) {
-		defaultVal := provider + ":" + models[0].Name
-		if err := h.q.UpsertSystemSetting(ctx, "default_model", defaultVal, now); err != nil {
-			slog.Warn("auto-enable: set default_model failed", "provider", provider, "model", models[0].Name, "err", err)
-		}
-	} else if err != nil {
-		slog.Warn("auto-enable: read default_model failed", "provider", provider, "err", err)
-	}
-	// If err == nil the setting already exists — leave it untouched.
 }
 
 // DeleteProviderKey removes an API key for the given provider.
@@ -201,8 +181,7 @@ func (h *Handler) DeleteProviderKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // disableModelsForProvider sets enabled=0 for every model belonging to the
-// given provider and clears default_model if it pointed to that provider.
-// It operates only on h.q and never touches h.lister.
+// given provider. It operates only on h.q and never touches h.lister.
 func (h *Handler) disableModelsForProvider(ctx context.Context, provider string) {
 	rows, err := h.q.ListModelSettings(ctx)
 	if err != nil {
@@ -218,21 +197,6 @@ func (h *Handler) disableModelsForProvider(ctx context.Context, provider string)
 		if err := h.q.UpsertModelSetting(ctx, provider, row.ModelName, 0, now); err != nil {
 			slog.Warn("disable-models: upsert model failed", "provider", provider, "model", row.ModelName, "err", err)
 			// Continue — best-effort, disable remaining models.
-		}
-	}
-
-	defaultRow, err := h.q.GetSystemSetting(ctx, "default_model")
-	if err != nil {
-		// ErrNoRows means no default is set — nothing to clear.
-		if !errors.Is(err, sql.ErrNoRows) {
-			slog.Warn("disable-models: read default_model failed", "provider", provider, "err", err)
-		}
-		return
-	}
-
-	if strings.HasPrefix(defaultRow.Value, provider+":") {
-		if err := h.q.DeleteSystemSetting(ctx, "default_model"); err != nil {
-			slog.Warn("disable-models: clear default_model failed", "provider", provider, "err", err)
 		}
 	}
 }

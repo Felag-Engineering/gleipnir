@@ -2,6 +2,7 @@ package trigger_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -119,8 +120,9 @@ func TestScheduler_SkipsPastTimestampsOnStartup(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
-	scheduler := trigger.NewScheduler(store, launcher)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -153,8 +155,9 @@ func TestScheduler_FiresFutureTimestamp(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
-	scheduler := trigger.NewScheduler(store, launcher)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -188,8 +191,9 @@ func TestScheduler_AutoPausesAfterAllTimesConsumed(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
-	scheduler := trigger.NewScheduler(store, launcher)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -233,8 +237,9 @@ func TestScheduler_DeduplicatesAlreadyFiredTime(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
-	scheduler := trigger.NewScheduler(store, launcher)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -270,8 +275,9 @@ func TestScheduler_ConcurrencySkip_BlocksWhenActive(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
-	scheduler := trigger.NewScheduler(store, launcher)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -303,8 +309,9 @@ func TestScheduler_ConcurrencySkip_ProceedsWhenIdle(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
-	scheduler := trigger.NewScheduler(store, launcher)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -341,8 +348,9 @@ func TestScheduler_ConcurrencyQueue_EnqueuesWhenActive(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
-	scheduler := trigger.NewScheduler(store, launcher)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -384,8 +392,9 @@ func TestScheduler_ConcurrencyQueue_LaunchesWhenIdle(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0)
-	scheduler := trigger.NewScheduler(store, launcher)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -405,4 +414,61 @@ func TestScheduler_ConcurrencyQueue_LaunchesWhenIdle(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Error("expected a run to be created for queue policy with no active runs, but none appeared")
+}
+
+// scheduledPolicyYAMLNoModel builds a minimal scheduled policy with no model
+// block in the agent section. Used to test the empty-system-default code path.
+func scheduledPolicyYAMLNoModel(name string, fireTimes []time.Time) string {
+	fireAtLines := ""
+	for _, t := range fireTimes {
+		fireAtLines += fmt.Sprintf("    - %q\n", t.UTC().Format(time.RFC3339))
+	}
+	return fmt.Sprintf(`
+name: %s
+trigger:
+  type: scheduled
+  fire_at:
+%scapabilities:
+  tools:
+    - tool: stub-server.read_data
+agent:
+  task: "do thing"
+  concurrency: parallel
+`, name, fireAtLines)
+}
+
+// TestScheduler_SkipsPolicy_WhenNoSystemDefaultAndNoModelInYAML verifies that
+// a scheduled policy whose YAML omits the model block is not scheduled when the
+// system default is also unset (sql.ErrNoRows). The policy silently skips
+// rather than arming timers that would fire an invalid run.
+func TestScheduler_SkipsPolicy_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T) {
+	store, registry := setupSchedulerFixture(t)
+
+	future := time.Now().Add(2 * time.Second)
+	yaml := scheduledPolicyYAMLNoModel("no-model-policy", []time.Time{future})
+	insertTestScheduledPolicy(t, store, "pol-no-model", "no-model-policy", yaml)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	manager := run.NewRunManager()
+	// Resolver that returns sql.ErrNoRows — simulates unconfigured system default.
+	noDefault := stubDefaultModelResolver{err: sql.ErrNoRows}
+	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, noDefault)
+	scheduler := trigger.NewScheduler(store, launcher, noDefault)
+
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Give the scheduler time to process startup and the future timer (it should not arm).
+	time.Sleep(500 * time.Millisecond)
+
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "pol-no-model", Limit: 100})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Errorf("expected 0 runs when system default is unset and policy omits model, got %d", len(runs))
+	}
 }

@@ -233,15 +233,6 @@ func TestModelConfig_JSONRoundTrip(t *testing.T) {
 	})
 }
 
-func TestModelConfig_Defaults(t *testing.T) {
-	if DefaultProvider != "anthropic" {
-		t.Errorf("DefaultProvider = %q, want %q", DefaultProvider, "anthropic")
-	}
-	if DefaultModelName != "claude-sonnet-4-6" {
-		t.Errorf("DefaultModelName = %q, want %q", DefaultModelName, "claude-sonnet-4-6")
-	}
-}
-
 func TestIsTerminalStatus(t *testing.T) {
 	cases := []struct {
 		status   RunStatus

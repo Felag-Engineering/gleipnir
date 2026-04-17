@@ -13,9 +13,8 @@ import (
 
 // allowedPreferenceKeys is the set of user preference keys accepted by the API.
 var allowedPreferenceKeys = map[string]bool{
-	"default_model": true,
-	"timezone":      true,
-	"date_format":   true,
+	"timezone":    true,
+	"date_format": true,
 }
 
 // SettingsQuerier is the subset of db.Queries used by SettingsHandler.

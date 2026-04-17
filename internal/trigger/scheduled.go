@@ -22,19 +22,21 @@ import (
 // timestamps, and sets timers for any future ones. After the final fire time fires for
 // a policy it pauses the policy so it is not re-loaded on the next restart.
 type Scheduler struct {
-	store    *db.Store
-	launcher *run.RunLauncher
-	mu       sync.Mutex                       // protects timers and rootCtx
-	timers   map[string][]context.CancelFunc  // policyID -> per-fire-time cancel funcs
-	rootCtx  context.Context                  // set in Start; used by Notify to outlive the HTTP request
+	store        *db.Store
+	launcher     *run.RunLauncher
+	modelResolver defaultModelResolver
+	mu           sync.Mutex                      // protects timers and rootCtx
+	timers       map[string][]context.CancelFunc // policyID -> per-fire-time cancel funcs
+	rootCtx      context.Context                 // set in Start; used by Notify to outlive the HTTP request
 }
 
 // NewScheduler returns a Scheduler ready to be started.
-func NewScheduler(store *db.Store, launcher *run.RunLauncher) *Scheduler {
+func NewScheduler(store *db.Store, launcher *run.RunLauncher, modelResolver defaultModelResolver) *Scheduler {
 	return &Scheduler{
-		store:    store,
-		launcher: launcher,
-		timers:   make(map[string][]context.CancelFunc),
+		store:        store,
+		launcher:     launcher,
+		modelResolver: modelResolver,
+		timers:       make(map[string][]context.CancelFunc),
 	}
 }
 
@@ -52,14 +54,32 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	}
 
 	for _, p := range policies {
-		parsed, err := policy.Parse(p.Yaml, model.DefaultProvider, model.DefaultModelName)
+		provider, modelName := s.resolveDefaults(ctx)
+		parsed, err := policy.Parse(p.Yaml, provider, modelName)
 		if err != nil {
 			slog.Error("scheduled: failed to parse policy yaml", "policy_id", p.ID, "err", err)
+			continue
+		}
+		if parsed.Agent.ModelConfig.Provider == "" || parsed.Agent.ModelConfig.Name == "" {
+			slog.Error("scheduled: no default model configured; skipping policy",
+				"policy_id", p.ID)
 			continue
 		}
 		s.schedulePolicy(ctx, p.ID, parsed)
 	}
 	return nil
+}
+
+// resolveDefaults fetches the system default provider and model name. On error
+// (including sql.ErrNoRows for an unconfigured default) it returns ("", "") so
+// policy.Parse leaves ModelConfig blank — the caller is responsible for
+// checking whether the result is usable.
+func (s *Scheduler) resolveDefaults(ctx context.Context) (string, string) {
+	provider, modelName, err := s.modelResolver.GetSystemDefault(ctx)
+	if err != nil {
+		return "", ""
+	}
+	return provider, modelName
 }
 
 // cancelTimersLocked cancels all pending timers for policyID and removes the
@@ -140,9 +160,14 @@ func (s *Scheduler) Notify(reqCtx context.Context, policyID string) {
 		return
 	}
 
-	parsed, err := policy.Parse(pol.Yaml, model.DefaultProvider, model.DefaultModelName)
+	provider, modelName := s.resolveDefaults(reqCtx)
+	parsed, err := policy.Parse(pol.Yaml, provider, modelName)
 	if err != nil {
 		slog.Warn("scheduler: notify failed to parse policy yaml", "policy_id", policyID, "err", err)
+		return
+	}
+	if parsed.Agent.ModelConfig.Provider == "" || parsed.Agent.ModelConfig.Name == "" {
+		slog.Error("scheduled: no default model configured; skipping policy", "policy_id", policyID)
 		return
 	}
 

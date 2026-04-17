@@ -2,6 +2,7 @@ package trigger_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -238,8 +239,9 @@ func TestPoller_CheckMatchFires(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
-	poller := trigger.NewPoller(store, launcher, registry)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -266,8 +268,9 @@ func TestPoller_CheckNoMatchNoRun(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
-	poller := trigger.NewPoller(store, launcher, registry)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -302,8 +305,9 @@ func TestPoller_MatchAny_OnePassFires(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
-	poller := trigger.NewPoller(store, launcher, registry)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -352,8 +356,9 @@ agent:
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
-	poller := trigger.NewPoller(store, launcher, registry)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -387,8 +392,9 @@ func TestPoller_ToolErrorTreatedAsNotPassed(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
-	poller := trigger.NewPoller(store, launcher, registry)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -424,8 +430,9 @@ func TestPoller_ConcurrencySkip(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
-	poller := trigger.NewPoller(store, launcher, registry)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -458,8 +465,9 @@ func TestPoller_GracefulShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0)
-	poller := trigger.NewPoller(store, launcher, registry)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -480,5 +488,63 @@ func TestPoller_GracefulShutdown(t *testing.T) {
 		// Goroutines exited cleanly.
 	case <-time.After(5 * time.Second):
 		t.Error("poller.Wait() did not return within 5s after context cancel")
+	}
+}
+
+// pollPolicyYAMLNoModel builds a poll policy with no model block in the agent
+// section. Used to test the empty-system-default code path.
+func pollPolicyYAMLNoModel(name, intervalStr string) string {
+	return fmt.Sprintf(`
+name: %s
+trigger:
+  type: poll
+  interval: %s
+  match: all
+  checks:
+    - tool: poll-server.check
+      path: "$.status"
+      equals: degraded
+capabilities:
+  tools:
+    - tool: poll-server.check
+agent:
+  task: "process poll result"
+  concurrency: parallel
+`, name, intervalStr)
+}
+
+// TestPoller_SkipsLoop_WhenNoSystemDefaultAndNoModelInYAML verifies that when
+// the system default model is unset (sql.ErrNoRows) and the policy YAML omits
+// the model block, startPollLoopLocked does not register the loop and no run
+// is ever created.
+func TestPoller_SkipsLoop_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T) {
+	mcpSrv, _ := pollResultServer(t, textContent(`{"status":"degraded"}`))
+	store, registry := setupPollerFixture(t, mcpSrv)
+
+	yamlStr := pollPolicyYAMLNoModel("poll-no-model", "100ms")
+	insertTestPollPolicy(t, store, "pol-no-model", "poll-no-model", yamlStr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	manager := run.NewRunManager()
+	// Resolver returns sql.ErrNoRows — simulates unconfigured system default.
+	noDefault := stubDefaultModelResolver{err: sql.ErrNoRows}
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, noDefault)
+	poller := trigger.NewPoller(store, launcher, registry, noDefault)
+
+	if err := poller.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Let the poller attempt to start a loop; it should skip due to missing model.
+	time.Sleep(300 * time.Millisecond)
+
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "pol-no-model", Limit: 100})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Errorf("expected 0 runs when system default is unset and policy omits model, got %d", len(runs))
 	}
 }

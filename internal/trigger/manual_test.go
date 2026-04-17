@@ -207,8 +207,9 @@ func TestManualTriggerHandler(t *testing.T) {
 			noopClient := testutil.NewNoopLLMClient()
 			providerReg := llm.NewProviderRegistry()
 			providerReg.Register("anthropic", noopClient)
-			launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
-			h := trigger.NewManualTriggerHandler(store, launcher)
+			resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+			launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0, resolver)
+			h := trigger.NewManualTriggerHandler(store, launcher, resolver)
 
 			w := callManualHandler(t, h, tc.policyID, tc.body)
 			if w.Code != tc.wantStatus {
@@ -226,8 +227,9 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
-	h := trigger.NewManualTriggerHandler(store, launcher)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0, resolver)
+	h := trigger.NewManualTriggerHandler(store, launcher, resolver)
 
 	w := callManualHandler(t, h, "mp-run-created", `{"message": "test"}`)
 	if w.Code != http.StatusAccepted {
@@ -260,8 +262,9 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0)
-	h := trigger.NewManualTriggerHandler(store, launcher)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0, resolver)
+	h := trigger.NewManualTriggerHandler(store, launcher, resolver)
 
 	// Empty body should be accepted (treated as '{}')
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/policies/mp-empty-body/trigger", strings.NewReader(""))

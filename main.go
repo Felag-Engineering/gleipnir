@@ -192,10 +192,10 @@ func run(cfg config.Config) error {
 		slog.Warn("could not ensure default model is enabled", "err", err)
 	}
 
-	launcher := runpkg.NewRunLauncher(store, registry, runManager, runpkg.NewAgentFactory(providerRegistry), broadcaster, cfg.DefaultFeedbackTimeout)
+	launcher := runpkg.NewRunLauncher(store, registry, runManager, runpkg.NewAgentFactory(providerRegistry), broadcaster, cfg.DefaultFeedbackTimeout, adminHandler)
 
 	webhookSecretLoader := trigger.NewSecretLoader(store.Queries(), encryptionKey)
-	webhookHandler := trigger.NewWebhookHandler(store, launcher, webhookSecretLoader)
+	webhookHandler := trigger.NewWebhookHandler(store, launcher, webhookSecretLoader, adminHandler)
 
 	// Build encrypter for policy webhook secret management.
 	var webhookEncrypter *webhookSecretEncrypterAdapter
@@ -218,12 +218,12 @@ func run(cfg config.Config) error {
 	}
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
 
-	scheduler := trigger.NewScheduler(store, launcher)
+	scheduler := trigger.NewScheduler(store, launcher, adminHandler)
 	if err := scheduler.Start(ctx); err != nil {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
 
-	poller := trigger.NewPoller(store, launcher, registry)
+	poller := trigger.NewPoller(store, launcher, registry, adminHandler)
 	if err := poller.Start(ctx); err != nil {
 		return fmt.Errorf("start poller: %w", err)
 	}

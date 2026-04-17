@@ -164,12 +164,6 @@ const (
 	ConcurrencyReplace  ConcurrencyPolicy = "replace"
 )
 
-// DefaultProvider is the LLM provider used when the policy omits the provider field.
-const DefaultProvider = "anthropic"
-
-// DefaultModelName is the model ID used when the policy omits the model field.
-const DefaultModelName = "claude-sonnet-4-6"
-
 // IsTerminalStatus reports whether the given status is a terminal state
 // (no further transitions are possible). This is the single source of truth
 // for "is this run active?" — active means !IsTerminalStatus(s).

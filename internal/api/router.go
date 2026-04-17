@@ -121,7 +121,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		})
 
 		// Manual trigger: operators fire a run from the UI or API.
-		manualTriggerHandler := trigger.NewManualTriggerHandler(cfg.Store, cfg.Launcher)
+		manualTriggerHandler := trigger.NewManualTriggerHandler(cfg.Store, cfg.Launcher, cfg.AdminHandler)
 		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize), auth.RequireRole(model.RoleOperator)).
 			Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
 

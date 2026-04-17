@@ -435,9 +435,9 @@ func TestTranslateResponse_EmptyThoughtPartSkipped(t *testing.T) {
 	// Gemini occasionally emits thought parts with an empty text field. These
 	// should be silently ignored rather than producing empty ThinkingBlocks.
 	tests := []struct {
-		name           string
-		parts          []*genai.Part
-		wantThinking   int
+		name             string
+		parts            []*genai.Part
+		wantThinking     int
 		wantThinkingText string
 	}{
 		{

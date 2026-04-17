@@ -36,8 +36,9 @@ func setupNotifyPollerFixture(t *testing.T) (*db.Store, *Poller) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, notifyPollerFactory(), nil, 0)
-	poller := NewPoller(store, launcher, registry)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, notifyPollerFactory(), nil, 0, resolver)
+	poller := NewPoller(store, launcher, registry, resolver)
 
 	// Set a root context so Notify can start loops.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -173,8 +174,9 @@ func setupNotifySchedulerFixture(t *testing.T) (*db.Store, *Scheduler) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, notifyPollerFactory(), nil, 0)
-	scheduler := NewScheduler(store, launcher)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, notifyPollerFactory(), nil, 0, resolver)
+	scheduler := NewScheduler(store, launcher, resolver)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

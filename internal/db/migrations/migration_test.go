@@ -88,3 +88,49 @@ func TestAllMigrationsOrdered(t *testing.T) {
 		t.Errorf("schema_migrations version 1 row missing after migrations")
 	}
 }
+
+// TestDeleteUserPrefDefaultModel verifies that the migration removes only
+// user_preferences rows with key = 'default_model' and leaves other keys alone.
+func TestDeleteUserPrefDefaultModel(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	// Insert a user to satisfy the foreign key constraint.
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO users(id, username, password_hash, created_at) VALUES ('u1', 'alice', 'x', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	// Insert one default_model row (should be deleted) and one timezone row (should survive).
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO user_preferences(user_id, preference_key, preference_value, updated_at)
+		 VALUES ('u1', 'default_model', 'claude-x', '2024-01-01T00:00:00Z'),
+		        ('u1', 'timezone', 'UTC', '2024-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert preferences: %v", err)
+	}
+
+	m := &migrations.DeleteUserPrefDefaultModel{}
+	if err := migrations.Apply(ctx, db, []migrations.Migration{m}, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Only the timezone row should remain.
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_preferences`).Scan(&count); err != nil {
+		t.Fatalf("query count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 row after migration, got %d", count)
+	}
+
+	var key string
+	if err := db.QueryRowContext(ctx, `SELECT preference_key FROM user_preferences`).Scan(&key); err != nil {
+		t.Fatalf("query key: %v", err)
+	}
+	if key != "timezone" {
+		t.Errorf("surviving row key = %q, want %q", key, "timezone")
+	}
+}

@@ -17,5 +17,6 @@ func All() []Migration {
 		&AddSystemAndModelSettings{},
 		&AddOpenAICompatProviders{},
 		&AddWebhookSecretEncrypted{},
+		&DeleteUserPrefDefaultModel{},
 	}
 }

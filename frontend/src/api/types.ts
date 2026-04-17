@@ -154,7 +154,6 @@ export interface ApiMcpTool {
 
 // Matches auth/settings_handler.go → map[string]string (GET/PUT /api/v1/settings/preferences)
 export interface ApiPreferences {
-  default_model?: string
   timezone?: string
   date_format?: string
 }

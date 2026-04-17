@@ -91,8 +91,8 @@ type Service struct {
 // checking is not yet available — tool reference warnings will be skipped.
 // modelValidator may be nil — model name validation will be skipped.
 // optionsValidator may be nil — provider options validation will be skipped.
-// settings may be nil — the compiled-in defaults from model.DefaultProvider
-// and model.DefaultModelName will be used.
+// settings may be nil — model defaults will be unset, causing policies that
+// omit the model block to fail validation with a clear error.
 func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidator, optionsValidator OptionsValidator, settings SettingsReader) *Service {
 	return &Service{
 		store:            store,
@@ -403,14 +403,18 @@ func (s *Service) validateModel(ctx context.Context, parsed *model.ParsedPolicy)
 	)
 }
 
-// resolveDefaults returns the default provider and model, preferring DB-stored
-// settings over the compiled-in constants.
+// resolveDefaults returns the default provider and model from DB-stored system
+// settings. When settings are not configured or the lookup fails, ("", "") is
+// returned so that policy.Parse leaves ModelConfig blank — policy.Validate
+// will then surface a clear "model.provider is required" error rather than
+// silently using a hard-coded fallback.
 func (s *Service) resolveDefaults(ctx context.Context) (string, string) {
-	provider, modelName := model.DefaultProvider, model.DefaultModelName
-	if s.settings != nil {
-		if p, m, err := s.settings.GetSystemDefault(ctx); err == nil && p != "" {
-			provider, modelName = p, m
-		}
+	if s.settings == nil {
+		return "", ""
+	}
+	provider, modelName, err := s.settings.GetSystemDefault(ctx)
+	if err != nil || provider == "" {
+		return "", ""
 	}
 	return provider, modelName
 }

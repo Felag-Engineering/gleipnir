@@ -2,9 +2,7 @@ package admin
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,23 +17,18 @@ import (
 
 // mockQuerier is an in-memory AdminQuerier for tests.
 type mockQuerier struct {
-	settings       map[string]db.SystemSetting
-	models         map[string]db.ModelSetting // key: "provider:model"
-	getSettingErrs map[string]error           // inject per-key errors for GetSystemSetting
+	settings map[string]db.SystemSetting
+	models   map[string]db.ModelSetting // key: "provider:model"
 }
 
 func newMockQuerier() *mockQuerier {
 	return &mockQuerier{
-		settings:       make(map[string]db.SystemSetting),
-		models:         make(map[string]db.ModelSetting),
-		getSettingErrs: make(map[string]error),
+		settings: make(map[string]db.SystemSetting),
+		models:   make(map[string]db.ModelSetting),
 	}
 }
 
 func (m *mockQuerier) GetSystemSetting(_ context.Context, key string) (db.SystemSetting, error) {
-	if err, ok := m.getSettingErrs[key]; ok {
-		return db.SystemSetting{}, err
-	}
 	row, ok := m.settings[key]
 	if !ok {
 		return db.SystemSetting{}, ErrNotFound
@@ -542,58 +535,6 @@ func TestSetProviderKey_AutoEnablesModels(t *testing.T) {
 	}
 }
 
-func TestSetProviderKey_SetsDefaultWhenNoneExists(t *testing.T) {
-	q := newMockQuerier()
-	lister := &stubLister{
-		models: map[string][]llm.ModelInfo{
-			"anthropic": {
-				{Name: "claude-sonnet-4", DisplayName: "Claude Sonnet 4"},
-				{Name: "claude-haiku-4", DisplayName: "Claude Haiku 4"},
-			},
-		},
-	}
-	h := newTestHandlerWithLister(q, lister)
-
-	rec := setProviderKeyRequest(h, "anthropic", "sk-ant-test")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
-	}
-
-	row, err := q.GetSystemSetting(context.Background(), "default_model")
-	if err != nil {
-		t.Fatalf("default_model not set: %v", err)
-	}
-	want := "anthropic:claude-sonnet-4"
-	if row.Value != want {
-		t.Errorf("default_model = %q, want %q", row.Value, want)
-	}
-}
-
-func TestSetProviderKey_DoesNotOverwriteExistingDefault(t *testing.T) {
-	q := newMockQuerier()
-	q.settings["default_model"] = db.SystemSetting{Key: "default_model", Value: "openai:gpt-4o"}
-	lister := &stubLister{
-		models: map[string][]llm.ModelInfo{
-			"anthropic": {
-				{Name: "claude-sonnet-4", DisplayName: "Claude Sonnet 4"},
-			},
-		},
-	}
-	h := newTestHandlerWithLister(q, lister)
-
-	rec := setProviderKeyRequest(h, "anthropic", "sk-ant-test")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
-	}
-
-	row, err := q.GetSystemSetting(context.Background(), "default_model")
-	if err != nil {
-		t.Fatalf("default_model missing: %v", err)
-	}
-	if row.Value != "openai:gpt-4o" {
-		t.Errorf("default_model overwritten: got %q, want %q", row.Value, "openai:gpt-4o")
-	}
-}
 
 func TestSetProviderKey_ListerErrorDoesNotFailRequest(t *testing.T) {
 	q := newMockQuerier()
@@ -611,33 +552,6 @@ func TestSetProviderKey_ListerErrorDoesNotFailRequest(t *testing.T) {
 	}
 }
 
-func TestSetProviderKey_TransientDefaultReadErrorDoesNotSeedBadDefault(t *testing.T) {
-	q := newMockQuerier()
-	// Inject a non-ErrNoRows error for "default_model" so that autoEnableModelsForProvider
-	// cannot distinguish "missing" from "transient failure". The default must NOT be written.
-	transientErr := errors.New("disk I/O error")
-	q.getSettingErrs["default_model"] = transientErr
-
-	lister := &stubLister{
-		models: map[string][]llm.ModelInfo{
-			"anthropic": {
-				{Name: "claude-sonnet-4", DisplayName: "Claude Sonnet 4"},
-			},
-		},
-	}
-	h := newTestHandlerWithLister(q, lister)
-
-	rec := setProviderKeyRequest(h, "anthropic", "sk-ant-test")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
-	}
-
-	// The error injection is still in place, so GetSystemSetting returns transientErr.
-	// We verify nothing was written by checking the settings map directly.
-	if _, ok := q.settings["default_model"]; ok {
-		t.Error("default_model should NOT have been written when GetSystemSetting returned a non-ErrNoRows error")
-	}
-}
 
 func deleteProviderKeyRequest(h *Handler, provider string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodDelete, "/providers/"+provider+"/key", nil)
@@ -673,42 +587,6 @@ func TestDeleteProviderKey_DisablesProviderModels(t *testing.T) {
 	}
 }
 
-func TestDeleteProviderKey_ClearsDefaultWhenItPointsToThisProvider(t *testing.T) {
-	q := newMockQuerier()
-	q.settings["anthropic_api_key"] = db.SystemSetting{Key: "anthropic_api_key", Value: "encrypted"}
-	q.settings["default_model"] = db.SystemSetting{Key: "default_model", Value: "anthropic:claude-sonnet-4"}
-	h := newTestHandler(q)
-
-	rec := deleteProviderKeyRequest(h, "anthropic")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
-	}
-
-	_, err := q.GetSystemSetting(context.Background(), "default_model")
-	if !errors.Is(err, sql.ErrNoRows) {
-		t.Errorf("default_model should have been cleared, got err=%v", err)
-	}
-}
-
-func TestDeleteProviderKey_LeavesDefaultWhenItPointsElsewhere(t *testing.T) {
-	q := newMockQuerier()
-	q.settings["anthropic_api_key"] = db.SystemSetting{Key: "anthropic_api_key", Value: "encrypted"}
-	q.settings["default_model"] = db.SystemSetting{Key: "default_model", Value: "openai:gpt-4o"}
-	h := newTestHandler(q)
-
-	rec := deleteProviderKeyRequest(h, "anthropic")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
-	}
-
-	row, err := q.GetSystemSetting(context.Background(), "default_model")
-	if err != nil {
-		t.Fatalf("default_model should still exist: %v", err)
-	}
-	if row.Value != "openai:gpt-4o" {
-		t.Errorf("default_model should be unchanged, got %q", row.Value)
-	}
-}
 
 // --- public_url validation tests ---
 

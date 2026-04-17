@@ -38,6 +38,7 @@ type Poller struct {
 	store        *db.Store
 	launcher     *run.RunLauncher
 	toolResolver toolResolver
+	modelResolver defaultModelResolver
 	mu           sync.Mutex                    // protects loops and rootCtx
 	loops        map[string]context.CancelFunc // policyID -> cancel func for that goroutine
 	wg           sync.WaitGroup                // tracks all poll loop goroutines
@@ -45,12 +46,14 @@ type Poller struct {
 }
 
 // NewPoller returns a Poller ready to be started. resolver is used to call
-// poll tools outside of any agent run context.
-func NewPoller(store *db.Store, launcher *run.RunLauncher, resolver toolResolver) *Poller {
+// poll tools outside of any agent run context. modelResolver is used to look
+// up the system default model when the policy YAML omits the model block.
+func NewPoller(store *db.Store, launcher *run.RunLauncher, resolver toolResolver, modelResolver defaultModelResolver) *Poller {
 	return &Poller{
 		store:        store,
 		launcher:     launcher,
 		toolResolver: resolver,
+		modelResolver: modelResolver,
 		loops:        make(map[string]context.CancelFunc),
 	}
 }
@@ -198,9 +201,19 @@ func (p *Poller) startPollLoopLocked(ctx context.Context, policyRow db.Policy) {
 		return
 	}
 
-	parsed, err := policy.Parse(policyRow.Yaml, model.DefaultProvider, model.DefaultModelName)
+	provider, modelName, err := p.modelResolver.GetSystemDefault(ctx)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		slog.Error("poller: failed to load system default model", "policy_id", policyRow.ID, "err", err)
+		return
+	}
+
+	parsed, err := policy.Parse(policyRow.Yaml, provider, modelName)
 	if err != nil {
 		slog.Error("poller: failed to parse policy yaml", "policy_id", policyRow.ID, "err", err)
+		return
+	}
+	if parsed.Agent.ModelConfig.Provider == "" || parsed.Agent.ModelConfig.Name == "" {
+		slog.Error("poller: no default model configured; skipping policy", "policy_id", policyRow.ID)
 		return
 	}
 

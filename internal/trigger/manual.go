@@ -16,15 +16,18 @@ import (
 // It validates the policy exists, applies the concurrency policy, creates a
 // run record with trigger_type: manual, and launches the agent in a goroutine.
 type ManualTriggerHandler struct {
-	store    *db.Store
-	launcher *run.RunLauncher
+	store        *db.Store
+	launcher     *run.RunLauncher
+	modelResolver defaultModelResolver
 }
 
-// NewManualTriggerHandler returns a ManualTriggerHandler backed by store and launcher.
-func NewManualTriggerHandler(store *db.Store, launcher *run.RunLauncher) *ManualTriggerHandler {
+// NewManualTriggerHandler returns a ManualTriggerHandler backed by store, launcher,
+// and the given resolver for fetching the system default model.
+func NewManualTriggerHandler(store *db.Store, launcher *run.RunLauncher, modelResolver defaultModelResolver) *ManualTriggerHandler {
 	return &ManualTriggerHandler{
-		store:    store,
-		launcher: launcher,
+		store:        store,
+		launcher:     launcher,
+		modelResolver: modelResolver,
 	}
 }
 
@@ -58,7 +61,7 @@ func (h *ManualTriggerHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	parsed := fetchAndParsePolicy(ctx, w, h.store, policyID)
+	parsed := fetchAndParsePolicy(ctx, w, h.store, policyID, h.modelResolver)
 	if parsed == nil {
 		return
 	}

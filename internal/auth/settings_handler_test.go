@@ -51,10 +51,10 @@ func TestGetPreferences(t *testing.T) {
 			name: "returns stored preferences as key-value map",
 			prefs: []db.UserPreference{
 				{UserID: "user-1", PreferenceKey: "timezone", PreferenceValue: "UTC", UpdatedAt: now},
-				{UserID: "user-1", PreferenceKey: "default_model", PreferenceValue: "claude-sonnet-4-6", UpdatedAt: now},
+				{UserID: "user-1", PreferenceKey: "date_format", PreferenceValue: "iso", UpdatedAt: now},
 			},
 			wantStatus: http.StatusOK,
-			wantKeys:   []string{"timezone", "default_model"},
+			wantKeys:   []string{"timezone", "date_format"},
 		},
 		{
 			name:       "empty prefs returns empty map",
@@ -113,16 +113,21 @@ func TestUpdatePreferences(t *testing.T) {
 	}{
 		{
 			name: "valid keys are upserted and returned",
-			body: `{"timezone":"America/New_York","default_model":"claude-opus-4"}`,
+			body: `{"timezone":"America/New_York","date_format":"iso"}`,
 			prefs: []db.UserPreference{
 				{UserID: "user-1", PreferenceKey: "timezone", PreferenceValue: "America/New_York", UpdatedAt: now},
-				{UserID: "user-1", PreferenceKey: "default_model", PreferenceValue: "claude-opus-4", UpdatedAt: now},
+				{UserID: "user-1", PreferenceKey: "date_format", PreferenceValue: "iso", UpdatedAt: now},
 			},
 			wantStatus: http.StatusOK,
 		},
 		{
 			name:       "unknown key returns 400",
 			body:       `{"unknown_key":"value"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "default_model key is now rejected with 400",
+			body:       `{"default_model":"claude-x"}`,
 			wantStatus: http.StatusBadRequest,
 		},
 		{

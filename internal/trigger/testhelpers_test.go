@@ -13,6 +13,20 @@ import (
 	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
+// stubDefaultModelResolver is the external-package copy of the resolver stub.
+// Internal-package tests (notify_test.go) use their own copy in
+// notify_resolver_stub_test.go because Go test packages cannot share symbols
+// across package trigger and package trigger_test.
+type stubDefaultModelResolver struct {
+	provider string
+	name     string
+	err      error
+}
+
+func (s stubDefaultModelResolver) GetSystemDefault(_ context.Context) (string, string, error) {
+	return s.provider, s.name, s.err
+}
+
 // minimalWebhookPolicy is the smallest YAML that parses cleanly with trigger
 // type webhook and the default concurrency (skip). Centralised here so all
 // trigger tests share a single definition.

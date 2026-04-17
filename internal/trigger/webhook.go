@@ -29,15 +29,18 @@ type WebhookHandler struct {
 	store        *db.Store
 	launcher     *run.RunLauncher
 	secretLoader SecretLoaderInterface
+	modelResolver defaultModelResolver
 }
 
-// NewWebhookHandler returns a WebhookHandler backed by store, launcher, and the
-// provided secret loader. secretLoader is required; pass NewSecretLoader(q, key).
-func NewWebhookHandler(store *db.Store, launcher *run.RunLauncher, secretLoader SecretLoaderInterface) *WebhookHandler {
+// NewWebhookHandler returns a WebhookHandler backed by store, launcher, the
+// provided secret loader, and the given resolver for the system default model.
+// secretLoader is required; pass NewSecretLoader(q, key).
+func NewWebhookHandler(store *db.Store, launcher *run.RunLauncher, secretLoader SecretLoaderInterface, modelResolver defaultModelResolver) *WebhookHandler {
 	return &WebhookHandler{
 		store:        store,
 		launcher:     launcher,
 		secretLoader: secretLoader,
+		modelResolver: modelResolver,
 	}
 }
 
@@ -67,7 +70,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	parsed := fetchAndParsePolicy(ctx, w, h.store, policyID)
+	parsed := fetchAndParsePolicy(ctx, w, h.store, policyID, h.modelResolver)
 	if parsed == nil {
 		return
 	}

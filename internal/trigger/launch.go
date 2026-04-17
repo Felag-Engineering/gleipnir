@@ -14,9 +14,18 @@ import (
 	"github.com/rapp992/gleipnir/internal/run"
 )
 
-// fetchAndParsePolicy loads a policy by ID and parses its YAML.
-// On failure it writes the appropriate HTTP error and returns nil.
-func fetchAndParsePolicy(ctx context.Context, w http.ResponseWriter, store *db.Store, policyID string) *model.ParsedPolicy {
+// defaultModelResolver fetches the system-wide default LLM provider and model
+// name from persistent storage. *admin.Handler satisfies this interface.
+type defaultModelResolver interface {
+	GetSystemDefault(ctx context.Context) (provider string, modelName string, err error)
+}
+
+// fetchAndParsePolicy loads a policy by ID, resolves the system default model
+// (used when the policy YAML omits the model block), and parses the YAML.
+// If the resolved model is empty and the policy also omits the model block the
+// run cannot proceed; the handler writes a 500 and returns nil.
+// On any other failure it writes the appropriate HTTP error and returns nil.
+func fetchAndParsePolicy(ctx context.Context, w http.ResponseWriter, store *db.Store, policyID string, resolver defaultModelResolver) *model.ParsedPolicy {
 	dbPolicy, err := store.GetPolicy(ctx, policyID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -32,11 +41,27 @@ func fetchAndParsePolicy(ctx context.Context, w http.ResponseWriter, store *db.S
 		return nil
 	}
 
-	parsed, err := policy.Parse(dbPolicy.Yaml, model.DefaultProvider, model.DefaultModelName)
+	provider, modelName, err := resolver.GetSystemDefault(ctx)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to load system default model", "")
+		return nil
+	}
+	// sql.ErrNoRows means no system default is configured — pass ("", "") so
+	// policy.Parse leaves ModelConfig blank; Validate will catch it if the
+	// policy YAML also omits the model block.
+
+	parsed, err := policy.Parse(dbPolicy.Yaml, provider, modelName)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse policy", "")
 		return nil
 	}
+
+	if parsed.Agent.ModelConfig.Provider == "" || parsed.Agent.ModelConfig.Name == "" {
+		httputil.WriteError(w, http.StatusInternalServerError,
+			"no default model configured: set admin → models default or specify model in policy YAML", "")
+		return nil
+	}
+
 	return parsed
 }
 
