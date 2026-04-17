@@ -19,3 +19,4 @@ For people writing Gleipnir code. If you're looking for how to *run* Gleipnir, s
 ### Reference
 - [Manual testing](manual-testing.md) — live integration test environment with real MCP servers.
 - [Stdio MCP servers](../stdio-mcp-servers.md) — wiring up stdio-only MCP servers via the Supergateway sidecar.
+- [Scheduler dispatcher](dispatcher.md) — design reference for the centralized scheduling layer (ADR-036).

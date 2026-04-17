@@ -50,7 +50,66 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-033 | Premium OpenAI client split from compat client         | 🟢 Decided | v1.0 | internal/llm/openai, internal/llm/openaicompat, main.go |
 | ADR-034 | Webhook secrets stored in encrypted DB column (scoped ADR-002 deviation) | 🟢 Decided | v1.0 | policies table, internal/policy, trigger/webhook_handler, frontend WebhookConfig |
 | ADR-035 | DB-backed system settings for runtime configuration | 🟢 Decided | v1.0 | system_settings table, admin API, frontend /admin/system |
+| ADR-036 | Centralized scheduler dispatcher                    | 🟢 Decided | v1.0 | internal/dispatcher (new), internal/trigger/scheduled.go, internal/trigger/poll.go, main.go |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
+
+---
+
+## ADR-036: Centralized scheduler dispatcher
+
+**Status:** Decided
+**Date:** 2026-04
+
+### Context
+
+Gleipnir's trigger subsystem has accumulated two parallel implementations of "do work at time T": `internal/trigger/scheduled.go` and `internal/trigger/poll.go`. Each owns its own long-running goroutines, its own mutex/map/waitgroup lifecycle bookkeeping, and its own reconciliation plumbing. #791 recently added a `PolicyNotifier` interface with `Notify` methods on both — further duplicating the "stay in sync with DB state" plumbing across both subsystems.
+
+The duplication has concrete costs:
+
+- Bug #790 ("Scheduler has no reconcile loop") existed because the pattern had to be reimplemented per trigger type. When Poller got a reconcile loop, Scheduler did not. Applying the Poller fix to Scheduler (via #791) required ~100 lines of near-identical bookkeeping in each.
+- Goroutine count grows with configuration: one per active poll policy plus a reconcile goroutine; one per `fire_at` timestamp on every scheduled policy.
+- Adding any new timed primitive (e.g. future denial-with-reason timeouts, retry schedulers, rate-limit budgets) would repeat the pattern a third time.
+- Startup wiring, shutdown draining, and `rootCtx` handoff for long-lived `Notify` calls live independently in each subsystem.
+
+### Decision
+
+Scheduling is centralized behind a single `Dispatcher` interface with an in-memory implementation:
+
+```go
+type Dispatcher interface {
+    Schedule(fireAt time.Time, kind string, payload any) int64
+    Cancel(jobID int64)
+    RegisterHandler(kind string, fn HandlerFn)
+}
+
+type HandlerFn func(ctx context.Context, payload any)
+```
+
+The `memoryDispatcher` is a leaf package that owns one min-heap keyed on `fireAt`, one goroutine that sleeps until the heap top, and a handler registry populated at startup. `Scheduler` and `Poller` are retired; their logic moves into handlers registered against the dispatcher by `kind` (`scheduled_fire`, `poll_tick`). Poll is modeled as self-rescheduling — each tick handler schedules the next tick after firing.
+
+Source of truth for pending work remains the existing tables (`policies`, policy YAML). The heap is an in-memory index rebuilt on startup by scanning those tables. Policy save paths call `Schedule()` synchronously — no reconcile loop, no notify interface, no up-to-N-seconds latency. Handlers re-check policy status at fire time and drop the fire if the policy has been paused or deleted, keeping delete/pause paths ignorant of the dispatcher.
+
+Scope is limited to the scheduler/poll subsystems. The approval and feedback timeout scanners (`internal/timeout/`) retain their scan-for-state-change pattern, which is a better fit for "has this pending request been resolved yet?" than a per-request timer. The agent-run goroutines in `internal/run/` and `internal/agent/` are unchanged — they hold real blocking LLM/tool I/O and should remain goroutine-per-run.
+
+### Rejected alternatives
+
+**DB-backed scheduled_jobs table.** A new `scheduled_jobs(id, kind, payload, run_at, taken_at, completed_at)` table with a polling dispatcher. Rejected because the information already lives in existing tables (`policies.fire_at`, `approval_requests.expires_at`, policy YAML intervals) — a jobs table would duplicate rather than consolidate. DB-polling queues also scale poorly (polling pressure, row-lock contention, awkward fencing semantics under concurrent writers) and do not provide a clean foundation for future multi-node HA.
+
+**Full event-driven refactor.** Every agent step becomes an event on a shared bus consumed by a worker pool. Rejected because the pain motivating this change is scheduler sprawl, not agent execution. Agent goroutines hold legitimate blocking I/O; converting them to event-driven workers would require reconstituting provider-specific state (tool_use_id pairing, reasoning tokens, streaming cursor position) between every step, with no corresponding win at single-node scale. The dispatcher interface is designed to compose with an event-driven layer later if it is ever warranted — it does not preclude that future.
+
+**Replicate the #791 notify pattern for every future timed primitive.** Keep the current structure and accept that each new timed subsystem pays the same ~100-line lifecycle tax. Rejected because the cost compounds: each new primitive adds a new reconcile loop, a new notify interface, new startup wiring, and a new category of "stale-state" bug class.
+
+### Multi-node HA path
+
+The `Dispatcher` interface is designed for substitution. When multi-node Gleipnir is pursued, a new implementation (`leaderOnlyDispatcher`, `raftDispatcher`, or an external-primitive-backed variant using NATS JetStream, etcd leases, or Temporal) implements the same interface without caller changes. Committing to a DB-backed queue now would accrue migration debt against whatever coordination primitive is chosen later; the in-memory choice keeps that decision deferred and cheap.
+
+### Migration
+
+1. Add `internal/dispatcher/` package with `memoryDispatcher`, `jobHeap`, fake-clock test scaffolding, and unit tests.
+2. Migrate `scheduled.go`: register `scheduled_fire` handler, seed heap from `GetScheduledActivePolicies` on startup, call `Schedule()` from the policy save path, delete the `Scheduler` struct and its `PolicyNotifier` implementation. Closes #790.
+3. Migrate `poll.go`: register `poll_tick` handler that reschedules itself, seed first tick per active poll policy on startup, delete the `Poller` struct, its reconcile loop, and its `PolicyNotifier` implementation.
+
+Design detail, diagrams, and handler contracts live in [`docs/developer/dispatcher.md`](developer/dispatcher.md).
 
 ---
 
