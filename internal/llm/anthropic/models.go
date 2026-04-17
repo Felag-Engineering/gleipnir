@@ -14,8 +14,9 @@ import "github.com/rapp992/gleipnir/internal/llm"
 // curatedModels is the display list returned by ListModels. The order here is
 // the order users see in the UI — most capable first within each generation.
 var curatedModels = []llm.ModelInfo{
-	{Name: "claude-opus-4-6", DisplayName: "Claude Opus 4.6"},
-	{Name: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6"},
+	{Name: "claude-opus-4-7", DisplayName: "Claude Opus 4.7", IsReasoning: true},
+	{Name: "claude-opus-4-6", DisplayName: "Claude Opus 4.6", IsReasoning: true},
+	{Name: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6", IsReasoning: true},
 	{Name: "claude-haiku-4-5", DisplayName: "Claude Haiku 4.5"},
 	{Name: "claude-opus-4-5", DisplayName: "Claude Opus 4.5"},
 	{Name: "claude-sonnet-4-5", DisplayName: "Claude Sonnet 4.5"},

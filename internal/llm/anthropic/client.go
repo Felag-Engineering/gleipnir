@@ -16,7 +16,14 @@ import (
 	"github.com/rapp992/gleipnir/internal/llm"
 )
 
-const defaultMaxTokens = 4096
+const (
+	defaultMaxTokens = 4096
+
+	// defaultMaxTokensThinking is the fallback max_tokens for requests where adaptive
+	// thinking is enabled. Thinking tokens count against this budget alongside response
+	// text, so a higher default is needed to avoid frequent stop_reason: max_tokens.
+	defaultMaxTokensThinking = 16000
+)
 
 var validOptions = map[string]bool{
 	"enable_prompt_caching": true,
@@ -53,8 +60,9 @@ func NewClientFromEnv(opts ...option.RequestOption) *AnthropicClient {
 // returns the normalized response.
 func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
 	hints, _ := req.Hints.(*AnthropicHints)
+	isReasoning := curatedModelsByName[req.Model].IsReasoning
 
-	maxTokens := resolveMaxTokens(req, hints)
+	maxTokens := resolveMaxTokens(req, hints, isReasoning)
 	system := buildSystemBlocks(req, hints)
 
 	tools, nameMap, err := buildTools(req.Tools)
@@ -69,6 +77,11 @@ func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequ
 		System:    system,
 		Messages:  messages,
 		Tools:     tools,
+	}
+	if isReasoning {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{},
+		}
 	}
 
 	resp, err := c.client.Messages.New(ctx, params)
@@ -85,7 +98,9 @@ func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequ
 // are returned synchronously; mid-stream errors arrive as Err chunks.
 func (c *AnthropicClient) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
 	hints, _ := req.Hints.(*AnthropicHints)
-	maxTokens := resolveMaxTokens(req, hints)
+	isReasoning := curatedModelsByName[req.Model].IsReasoning
+
+	maxTokens := resolveMaxTokens(req, hints, isReasoning)
 	system := buildSystemBlocks(req, hints)
 
 	tools, nameMap, err := buildTools(req.Tools)
@@ -100,6 +115,11 @@ func (c *AnthropicClient) StreamMessage(ctx context.Context, req llm.MessageRequ
 		System:    system,
 		Messages:  messages,
 		Tools:     tools,
+	}
+	if isReasoning {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{},
+		}
 	}
 
 	stream := c.client.Messages.NewStreaming(ctx, params)
@@ -232,13 +252,17 @@ func (c *AnthropicClient) InvalidateModelCache() {}
 // Precedence (highest to lowest):
 //  1. req.MaxTokens > 0 — explicit per-call limit on the request
 //  2. hints.MaxTokens != nil — provider-specific hint
-//  3. defaultMaxTokens (4096)
-func resolveMaxTokens(req llm.MessageRequest, hints *AnthropicHints) int64 {
+//  3. defaultMaxTokensThinking (16000) when thinking is enabled
+//  4. defaultMaxTokens (4096)
+func resolveMaxTokens(req llm.MessageRequest, hints *AnthropicHints, thinkingEnabled bool) int64 {
 	if req.MaxTokens > 0 {
 		return int64(req.MaxTokens)
 	}
 	if hints != nil && hints.MaxTokens != nil {
 		return *hints.MaxTokens
+	}
+	if thinkingEnabled {
+		return defaultMaxTokensThinking
 	}
 	return defaultMaxTokens
 }

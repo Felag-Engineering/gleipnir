@@ -10,7 +10,8 @@
 // public pricing pages — suitable for dashboard charts, not billing.
 export const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   // Anthropic curated models.
-  'Opus 4.6':   { input: 15.00 / 1_000_000, output: 75.00 / 1_000_000 },
+  'Opus 4.7':   { input: 5.00 / 1_000_000,  output: 25.00 / 1_000_000 },
+  'Opus 4.6':   { input: 5.00 / 1_000_000,  output: 25.00 / 1_000_000 },
   'Sonnet 4.6': { input: 3.00 / 1_000_000,  output: 15.00 / 1_000_000 },
   'Haiku 4.5':  { input: 0.80 / 1_000_000,  output: 4.00 / 1_000_000 },
   'Opus 4.5':   { input: 15.00 / 1_000_000, output: 75.00 / 1_000_000 },

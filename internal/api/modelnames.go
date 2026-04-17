@@ -14,6 +14,7 @@ package api
 // each provider's curated list has an entry here.
 var ModelDisplayNames = map[string]string{
 	// Anthropic curated models (from internal/llm/anthropic/models.go curatedModels).
+	"claude-opus-4-7":   "Opus 4.7",
 	"claude-opus-4-6":   "Opus 4.6",
 	"claude-sonnet-4-6": "Sonnet 4.6",
 	"claude-haiku-4-5":  "Haiku 4.5",

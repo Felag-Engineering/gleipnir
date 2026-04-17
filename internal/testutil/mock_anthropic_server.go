@@ -69,12 +69,14 @@ type MockServerOptions struct {
 // CapturedAnthropicRequest holds the decoded fields from an incoming request,
 // allowing tests to assert on what the client sent.
 type CapturedAnthropicRequest struct {
-	Model     string          `json:"model"`
-	MaxTokens int             `json:"max_tokens"`
-	System    json.RawMessage `json:"system"`
-	Messages  json.RawMessage `json:"messages"`
-	Tools     json.RawMessage `json:"tools"`
-	Stream    bool            `json:"stream"`
+	Model        string          `json:"model"`
+	MaxTokens    int             `json:"max_tokens"`
+	System       json.RawMessage `json:"system"`
+	Messages     json.RawMessage `json:"messages"`
+	Tools        json.RawMessage `json:"tools"`
+	Stream       bool            `json:"stream"`
+	Thinking     json.RawMessage `json:"thinking"`      // non-nil when thinking config is sent
+	OutputConfig json.RawMessage `json:"output_config"` // non-nil when effort is set
 }
 
 // NewMockAnthropicServer creates and starts a test server pre-loaded with the

@@ -63,10 +63,11 @@ func TestResolveMaxTokens(t *testing.T) {
 	ptr := func(n int64) *int64 { return &n }
 
 	tests := []struct {
-		name       string
-		req        llm.MessageRequest
-		hints      *AnthropicHints
-		wantTokens int64
+		name           string
+		req            llm.MessageRequest
+		hints          *AnthropicHints
+		thinkingEnabled bool
+		wantTokens     int64
 	}{
 		{
 			name:       "nil hints uses default",
@@ -98,11 +99,25 @@ func TestResolveMaxTokens(t *testing.T) {
 			hints:      nil,
 			wantTokens: 2048,
 		},
+		{
+			name:            "thinking enabled uses higher default",
+			req:             llm.MessageRequest{},
+			hints:           nil,
+			thinkingEnabled: true,
+			wantTokens:      defaultMaxTokensThinking,
+		},
+		{
+			name:            "explicit req.MaxTokens overrides thinking default",
+			req:             llm.MessageRequest{MaxTokens: 2048},
+			hints:           nil,
+			thinkingEnabled: true,
+			wantTokens:      2048,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := resolveMaxTokens(tc.req, tc.hints)
+			got := resolveMaxTokens(tc.req, tc.hints, tc.thinkingEnabled)
 			if got != tc.wantTokens {
 				t.Errorf("resolveMaxTokens() = %d, want %d", got, tc.wantTokens)
 			}
@@ -1444,5 +1459,131 @@ func TestBuildMessages_ThinkingBlockNoSignature_Skipped(t *testing.T) {
 	}
 	if msgs[0].Content[0].OfText == nil {
 		t.Error("expected remaining block to be a text block")
+	}
+}
+
+// serveCapturingJSON creates an httptest.Server that captures the decoded
+// request body and responds with the given JSON. The captured body is stored
+// in the returned pointer after the first request.
+func serveCapturingJSON(t *testing.T, status int, body string, captured *map[string]json.RawMessage) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			*captured = req
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		w.Write([]byte(body)) //nolint:errcheck
+	}))
+}
+
+func TestCreateMessage_AdaptiveThinkingForReasoningModel(t *testing.T) {
+	var captured map[string]json.RawMessage
+	body := messageRespJSON(`[{"type":"text","text":"answer"}]`, "end_turn", 10, 5)
+	srv := serveCapturingJSON(t, 200, body, &captured)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	req := llm.MessageRequest{
+		Model: "claude-opus-4-7",
+		History: []llm.ConversationTurn{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}},
+		},
+	}
+	_, err := client.CreateMessage(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateMessage() error: %v", err)
+	}
+	thinkingRaw, ok := captured["thinking"]
+	if !ok || string(thinkingRaw) == "null" {
+		t.Fatal("expected thinking field in request, got none")
+	}
+	var thinking map[string]string
+	if err := json.Unmarshal(thinkingRaw, &thinking); err != nil {
+		t.Fatalf("unmarshal thinking: %v", err)
+	}
+	if thinking["type"] != "adaptive" {
+		t.Errorf("thinking.type = %q, want %q", thinking["type"], "adaptive")
+	}
+}
+
+func TestCreateMessage_AdaptiveThinkingForOpus46(t *testing.T) {
+	var captured map[string]json.RawMessage
+	body := messageRespJSON(`[{"type":"text","text":"answer"}]`, "end_turn", 10, 5)
+	srv := serveCapturingJSON(t, 200, body, &captured)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	req := llm.MessageRequest{
+		Model: "claude-opus-4-6",
+		History: []llm.ConversationTurn{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}},
+		},
+	}
+	_, err := client.CreateMessage(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateMessage() error: %v", err)
+	}
+	thinkingRaw, ok := captured["thinking"]
+	if !ok || string(thinkingRaw) == "null" {
+		t.Fatal("expected thinking field in request for claude-opus-4-6, got none")
+	}
+	var thinking map[string]string
+	if err := json.Unmarshal(thinkingRaw, &thinking); err != nil {
+		t.Fatalf("unmarshal thinking: %v", err)
+	}
+	if thinking["type"] != "adaptive" {
+		t.Errorf("thinking.type = %q, want %q", thinking["type"], "adaptive")
+	}
+}
+
+func TestCreateMessage_NoThinkingForNonReasoningModel(t *testing.T) {
+	var captured map[string]json.RawMessage
+	body := messageRespJSON(`[{"type":"text","text":"answer"}]`, "end_turn", 10, 5)
+	srv := serveCapturingJSON(t, 200, body, &captured)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	// claude-haiku-4-5 has IsReasoning: false — no thinking param should be sent.
+	req := llm.MessageRequest{
+		Model: "claude-haiku-4-5",
+		History: []llm.ConversationTurn{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}},
+		},
+	}
+	_, err := client.CreateMessage(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateMessage() error: %v", err)
+	}
+	if thinkingRaw, ok := captured["thinking"]; ok && string(thinkingRaw) != "null" {
+		t.Errorf("expected no thinking field for non-reasoning model, got %s", thinkingRaw)
+	}
+}
+
+func TestCreateMessage_ThinkingModelDefaultsToHigherMaxTokens(t *testing.T) {
+	var captured map[string]json.RawMessage
+	body := messageRespJSON(`[{"type":"text","text":"answer"}]`, "end_turn", 10, 5)
+	srv := serveCapturingJSON(t, 200, body, &captured)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	// No explicit MaxTokens — should default to defaultMaxTokensThinking.
+	req := llm.MessageRequest{
+		Model: "claude-opus-4-7",
+		History: []llm.ConversationTurn{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}},
+		},
+	}
+	_, err := client.CreateMessage(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateMessage() error: %v", err)
+	}
+	var maxTokens int
+	if err := json.Unmarshal(captured["max_tokens"], &maxTokens); err != nil {
+		t.Fatalf("unmarshal max_tokens: %v", err)
+	}
+	if maxTokens != defaultMaxTokensThinking {
+		t.Errorf("max_tokens = %d, want %d (defaultMaxTokensThinking)", maxTokens, defaultMaxTokensThinking)
 	}
 }

@@ -48,6 +48,10 @@ describe('estimateCost', () => {
     expect(estimateCost('Sonnet 4.6', 1000)).toBeGreaterThan(0)
   })
 
+  it('Opus 4.7 with ~1000 tokens returns non-zero cost', () => {
+    expect(estimateCost('Opus 4.7', 1000)).toBeGreaterThan(0)
+  })
+
   it('GPT-5 Nano with ~1400 tokens returns non-zero cost', () => {
     expect(estimateCost('GPT-5 Nano', 1400)).toBeGreaterThan(0)
   })
