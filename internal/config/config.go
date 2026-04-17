@@ -3,6 +3,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -32,9 +33,18 @@ type Config struct {
 	EncryptionKey          string
 }
 
-// Load reads configuration from environment variables and applies defaults
-// for any values not set or invalid.
-func Load() Config {
+// Load reads configuration from environment variables, applies defaults for
+// any values not set or invalid, and validates required fields.
+//
+// It returns an error if GLEIPNIR_ENCRYPTION_KEY is missing or malformed.
+// The server cannot start without a valid encryption key because provider API
+// keys and webhook secrets are stored encrypted at rest using AES-256.
+func Load() (Config, error) {
+	raw := os.Getenv("GLEIPNIR_ENCRYPTION_KEY")
+	if err := validateEncryptionKey(raw); err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		DBPath:                 envOrDefault("GLEIPNIR_DB_PATH", "/data/gleipnir.db"),
 		ListenAddr:             envOrDefault("GLEIPNIR_LISTEN_ADDR", ":8080"),
@@ -46,8 +56,38 @@ func Load() Config {
 		ApprovalScanInterval:   envDuration("GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30*time.Second),
 		DefaultFeedbackTimeout: envDuration("GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", 30*time.Minute),
 		FeedbackScanInterval:   envDuration("GLEIPNIR_FEEDBACK_SCAN_INTERVAL", 30*time.Second),
-		EncryptionKey:          os.Getenv("GLEIPNIR_ENCRYPTION_KEY"),
+		EncryptionKey:          raw,
+	}, nil
+}
+
+// validateEncryptionKey checks that the value of GLEIPNIR_ENCRYPTION_KEY is a
+// valid hex string that decodes to exactly 32 bytes (AES-256).
+func validateEncryptionKey(raw string) error {
+	if raw == "" {
+		return fmt.Errorf(
+			"GLEIPNIR_ENCRYPTION_KEY is required (64-char hex, 32-byte AES-256 key); " +
+				"generate one with: openssl rand -hex 32",
+		)
 	}
+
+	decoded, err := hex.DecodeString(raw)
+	if err != nil {
+		return fmt.Errorf(
+			"GLEIPNIR_ENCRYPTION_KEY is not valid hex: %w; " +
+				"generate a valid key with: openssl rand -hex 32",
+			err,
+		)
+	}
+
+	if len(decoded) != 32 {
+		return fmt.Errorf(
+			"GLEIPNIR_ENCRYPTION_KEY decoded to %d bytes, want 32 (AES-256 requires a 64-char hex string); "+
+				"generate a valid key with: openssl rand -hex 32",
+			len(decoded),
+		)
+	}
+
+	return nil
 }
 
 func envOrDefault(key, def string) string {

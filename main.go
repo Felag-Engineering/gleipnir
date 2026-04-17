@@ -47,7 +47,12 @@ const (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		// Use plain stderr here — the structured logger is not set up yet.
+		fmt.Fprintf(os.Stderr, "FATAL: %s\n", err)
+		os.Exit(1)
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(logger)
 

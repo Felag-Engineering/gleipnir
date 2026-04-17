@@ -2,12 +2,18 @@ package config
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
 
+// validKey is a well-formed 64-char hex string used wherever tests need a
+// valid GLEIPNIR_ENCRYPTION_KEY but are not specifically testing key validation.
+const validKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 func TestLoad_Defaults(t *testing.T) {
-	// Unset all env vars so we get pure defaults.
+	// Unset all env vars so we get pure defaults, but provide a valid encryption
+	// key because Load requires one.
 	for _, key := range []string{
 		"GLEIPNIR_DB_PATH",
 		"GLEIPNIR_LISTEN_ADDR",
@@ -19,12 +25,15 @@ func TestLoad_Defaults(t *testing.T) {
 		"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
 		"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT",
 		"GLEIPNIR_FEEDBACK_SCAN_INTERVAL",
-		"GLEIPNIR_ENCRYPTION_KEY",
 	} {
 		t.Setenv(key, "")
 	}
+	t.Setenv("GLEIPNIR_ENCRYPTION_KEY", validKey)
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
 
 	if cfg.DBPath != "/data/gleipnir.db" {
 		t.Errorf("DBPath: got %q, want /data/gleipnir.db", cfg.DBPath)
@@ -56,8 +65,8 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.FeedbackScanInterval != 30*time.Second {
 		t.Errorf("FeedbackScanInterval: got %v, want 30s", cfg.FeedbackScanInterval)
 	}
-	if cfg.EncryptionKey != "" {
-		t.Errorf("EncryptionKey: got %q, want empty", cfg.EncryptionKey)
+	if cfg.EncryptionKey != validKey {
+		t.Errorf("EncryptionKey: got %q, want %q", cfg.EncryptionKey, validKey)
 	}
 }
 
@@ -150,9 +159,9 @@ func TestLoad_Overrides(t *testing.T) {
 		},
 		{
 			name: "encryption key",
-			env:  map[string]string{"GLEIPNIR_ENCRYPTION_KEY": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+			env:  map[string]string{"GLEIPNIR_ENCRYPTION_KEY": validKey},
 			check: func(t *testing.T, cfg Config) {
-				if cfg.EncryptionKey != "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+				if cfg.EncryptionKey != validKey {
 					t.Errorf("got %q, want hex key", cfg.EncryptionKey)
 				}
 			},
@@ -161,21 +170,25 @@ func TestLoad_Overrides(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Clear all env vars first.
+			// Clear all env vars first, then set a valid encryption key as the
+			// baseline so Load() does not fail for unrelated test cases.
 			for _, key := range []string{
 				"GLEIPNIR_DB_PATH", "GLEIPNIR_LISTEN_ADDR", "GLEIPNIR_LOG_LEVEL",
 				"GLEIPNIR_MCP_TIMEOUT", "GLEIPNIR_HTTP_READ_TIMEOUT",
 				"GLEIPNIR_HTTP_WRITE_TIMEOUT", "GLEIPNIR_HTTP_IDLE_TIMEOUT",
 				"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
 				"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", "GLEIPNIR_FEEDBACK_SCAN_INTERVAL",
-				"GLEIPNIR_ENCRYPTION_KEY",
 			} {
 				t.Setenv(key, "")
 			}
+			t.Setenv("GLEIPNIR_ENCRYPTION_KEY", validKey)
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
-			cfg := Load()
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() unexpected error: %v", err)
+			}
 			tc.check(t, cfg)
 		})
 	}
@@ -201,8 +214,12 @@ func TestLoad_LogLevel(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GLEIPNIR_ENCRYPTION_KEY", validKey)
 			t.Setenv("GLEIPNIR_LOG_LEVEL", tc.envValue)
-			cfg := Load()
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() unexpected error: %v", err)
+			}
 			if cfg.LogLevel != tc.wantLevel {
 				t.Errorf("LogLevel: got %v, want %v", cfg.LogLevel, tc.wantLevel)
 			}
@@ -227,8 +244,12 @@ func TestLoad_InvalidDuration(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GLEIPNIR_ENCRYPTION_KEY", validKey)
 			t.Setenv(tc.key, "not-a-duration")
-			cfg := Load()
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() unexpected error: %v", err)
+			}
 			var got time.Duration
 			switch tc.key {
 			case "GLEIPNIR_MCP_TIMEOUT":
@@ -248,6 +269,72 @@ func TestLoad_InvalidDuration(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("%s: got %v, want %v", tc.key, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_EncryptionKeyValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		keyValue    string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:        "missing key returns error",
+			keyValue:    "",
+			wantErr:     true,
+			errContains: "GLEIPNIR_ENCRYPTION_KEY is required",
+		},
+		{
+			name:        "non-hex value returns error",
+			keyValue:    "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+			wantErr:     true,
+			errContains: "not valid hex",
+		},
+		{
+			name:        "too-short hex (32 chars, 16 bytes) returns error",
+			keyValue:    "0123456789abcdef0123456789abcdef",
+			wantErr:     true,
+			errContains: "decoded to 16 bytes, want 32",
+		},
+		{
+			name:        "too-long hex (128 chars, 64 bytes) returns error",
+			keyValue:    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			wantErr:     true,
+			errContains: "decoded to 64 bytes, want 32",
+		},
+		{
+			name:     "valid 64-char hex succeeds",
+			keyValue: validKey,
+			wantErr:  false,
+		},
+		{
+			name:     "valid 64-char uppercase hex succeeds",
+			keyValue: "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+			wantErr:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GLEIPNIR_ENCRYPTION_KEY", tc.keyValue)
+
+			_, err := Load()
+
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Load() expected an error but got nil")
+				}
+				if !strings.Contains(err.Error(), tc.errContains) {
+					t.Errorf("error message %q does not contain %q", err.Error(), tc.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Load() unexpected error: %v", err)
 			}
 		})
 	}
