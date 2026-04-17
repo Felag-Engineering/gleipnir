@@ -247,6 +247,8 @@ func run(cfg config.Config) error {
 		WebhookHandler:       webhookHandler,
 		SSEHandler:           sseHandler,
 		PolicyWebhookHandler: policyWebhookHandler,
+		Poller:               poller,
+		Scheduler:            scheduler,
 		Version:              version,
 		StartTime:            startTime,
 		DBPath:               cfg.DBPath,

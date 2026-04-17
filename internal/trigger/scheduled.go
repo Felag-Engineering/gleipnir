@@ -2,10 +2,12 @@ package trigger
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/config"
@@ -22,6 +24,9 @@ import (
 type Scheduler struct {
 	store    *db.Store
 	launcher *run.RunLauncher
+	mu       sync.Mutex                       // protects timers and rootCtx
+	timers   map[string][]context.CancelFunc  // policyID -> per-fire-time cancel funcs
+	rootCtx  context.Context                  // set in Start; used by Notify to outlive the HTTP request
 }
 
 // NewScheduler returns a Scheduler ready to be started.
@@ -29,6 +34,7 @@ func NewScheduler(store *db.Store, launcher *run.RunLauncher) *Scheduler {
 	return &Scheduler{
 		store:    store,
 		launcher: launcher,
+		timers:   make(map[string][]context.CancelFunc),
 	}
 }
 
@@ -36,6 +42,10 @@ func NewScheduler(store *db.Store, launcher *run.RunLauncher) *Scheduler {
 // It returns immediately after scheduling; timers fire in background goroutines.
 // Cancelling ctx stops any pending timers before they fire.
 func (s *Scheduler) Start(ctx context.Context) error {
+	s.mu.Lock()
+	s.rootCtx = ctx
+	s.mu.Unlock()
+
 	policies, err := s.store.GetScheduledActivePolicies(ctx)
 	if err != nil {
 		return fmt.Errorf("load scheduled policies: %w", err)
@@ -52,7 +62,18 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	return nil
 }
 
+// cancelTimersLocked cancels all pending timers for policyID and removes the
+// entry. mu must be held by the caller.
+func (s *Scheduler) cancelTimersLocked(policyID string) {
+	for _, cancel := range s.timers[policyID] {
+		cancel()
+	}
+	delete(s.timers, policyID)
+}
+
 // schedulePolicy arms timers for all future fire_at times in the parsed policy.
+// Each timer goroutine derives its context from ctx so that cancelling ctx (or
+// calling cancelTimersLocked) stops timers that have not yet fired.
 func (s *Scheduler) schedulePolicy(ctx context.Context, policyID string, parsed *model.ParsedPolicy) {
 	now := time.Now().UTC()
 
@@ -68,18 +89,64 @@ func (s *Scheduler) schedulePolicy(ctx context.Context, policyID string, parsed 
 		ft := fireTime
 		delay := ft.Sub(now)
 
+		// Give each timer its own cancel so Notify can stop individual timers
+		// without cancelling unrelated ones.
+		timerCtx, timerCancel := context.WithCancel(ctx)
+
+		s.mu.Lock()
+		s.timers[policyID] = append(s.timers[policyID], timerCancel)
+		s.mu.Unlock()
+
 		go func() {
 			timer := time.NewTimer(delay)
 			defer timer.Stop()
 
 			select {
-			case <-ctx.Done():
+			case <-timerCtx.Done():
 				return
 			case <-timer.C:
-				s.fire(ctx, policyID, parsed, ft)
+				s.fire(timerCtx, policyID, parsed, ft)
 			}
 		}()
 	}
+}
+
+// Notify immediately reconciles the scheduled timers for the given policy in
+// response to a create, update, pause, or delete event from the API. It cancels
+// any existing timers for the policy, then re-arms new ones if the policy is
+// active (non-paused, type=scheduled).
+//
+// reqCtx is used only for the DB read; timers run under the root context
+// captured in Start so they outlive the HTTP request.
+// Errors are logged at warn level; Notify never returns an error (best-effort).
+func (s *Scheduler) Notify(reqCtx context.Context, policyID string) {
+	// Cancel existing timers before deciding whether to re-arm — regardless of
+	// what DB state says, old timers are stale after any mutation.
+	s.mu.Lock()
+	s.cancelTimersLocked(policyID)
+	rootCtx := s.rootCtx
+	s.mu.Unlock()
+
+	pol, err := s.store.GetPolicy(reqCtx, policyID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Warn("scheduler: notify failed to read policy", "policy_id", policyID, "err", err)
+		}
+		return
+	}
+
+	// Policy exists but should not have active timers.
+	if pol.TriggerType != string(model.TriggerTypeScheduled) || pol.PausedAt != nil {
+		return
+	}
+
+	parsed, err := policy.Parse(pol.Yaml, model.DefaultProvider, model.DefaultModelName)
+	if err != nil {
+		slog.Warn("scheduler: notify failed to parse policy yaml", "policy_id", policyID, "err", err)
+		return
+	}
+
+	s.schedulePolicy(rootCtx, policyID, parsed)
 }
 
 // fire creates a run for the given scheduled fire time and launches the agent.

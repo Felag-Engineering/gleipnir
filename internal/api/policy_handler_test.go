@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,7 +32,7 @@ func newPolicyHandlerStore(t *testing.T) *db.Store {
 func newPolicyRouter(store *db.Store) http.Handler {
 	r := chi.NewRouter()
 	svc := policy.NewService(store, nil, nil, nil, nil)
-	h := api.NewPolicyHandler(store, svc)
+	h := api.NewPolicyHandler(store, svc, nil, nil)
 	r.Get("/policies", h.List)
 	r.Post("/policies", h.Create)
 	r.Get("/policies/{id}", h.Get)
@@ -47,7 +48,7 @@ func newPolicyRouter(store *db.Store) http.Handler {
 func newPolicyRouterWithLookup(store *db.Store, lookup policy.ToolLookup) http.Handler {
 	r := chi.NewRouter()
 	svc := policy.NewService(store, lookup, nil, nil, nil)
-	h := api.NewPolicyHandler(store, svc)
+	h := api.NewPolicyHandler(store, svc, nil, nil)
 	r.Get("/policies", h.List)
 	r.Post("/policies", h.Create)
 	r.Get("/policies/{id}", h.Get)
@@ -1203,3 +1204,333 @@ func TestPolicyResumeHandler(t *testing.T) {
 		}
 	})
 }
+
+// ---- Notifier wiring tests -------------------------------------------------
+
+// recordingNotifier implements api.PolicyNotifier and records each Notify call.
+type recordingNotifier struct {
+	mu      sync.Mutex
+	notified []string // policyIDs in call order
+}
+
+func (r *recordingNotifier) Notify(_ context.Context, policyID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notified = append(r.notified, policyID)
+}
+
+func (r *recordingNotifier) calls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.notified))
+	copy(out, r.notified)
+	return out
+}
+
+// newPolicyRouterWithNotifiers wires a chi router with the policy handler and
+// the given notifiers. Both may be nil.
+func newPolicyRouterWithNotifiers(store *db.Store, poller, scheduler api.PolicyNotifier) http.Handler {
+	r := chi.NewRouter()
+	svc := policy.NewService(store, nil, nil, nil, nil)
+	h := api.NewPolicyHandler(store, svc, poller, scheduler)
+	r.Get("/policies", h.List)
+	r.Post("/policies", h.Create)
+	r.Get("/policies/{id}", h.Get)
+	r.Put("/policies/{id}", h.Update)
+	r.Post("/policies/{id}/pause", h.Pause)
+	r.Post("/policies/{id}/resume", h.Resume)
+	r.Delete("/policies/{id}", h.Delete)
+	return r
+}
+
+const pollPolicyYAMLForHandler = `
+name: my-poll
+trigger:
+  type: poll
+  interval: 1m
+  match: all
+  checks:
+    - tool: srv.check
+      path: "$.ok"
+      equals: "true"
+capabilities:
+  tools:
+    - tool: srv.check
+agent:
+  task: "poll task"
+`
+
+const scheduledPolicyYAMLForHandler = `
+name: my-scheduled
+trigger:
+  type: scheduled
+  fire_at:
+    - "2099-01-01T00:00:00Z"
+capabilities:
+  tools:
+    - tool: srv.check
+agent:
+  task: "scheduled task"
+`
+
+const webhookPolicyYAMLForHandler = `
+name: my-webhook
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: srv.check
+agent:
+  task: "webhook task"
+`
+
+// TestPolicyHandler_NotifiesPollerOnCreate verifies that creating a poll policy
+// calls poller.Notify exactly once with the new policy ID, and does not call
+// scheduler.Notify.
+func TestPolicyHandler_NotifiesPollerOnCreate(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	poller := &recordingNotifier{}
+	scheduler := &recordingNotifier{}
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/policies", "application/yaml", strings.NewReader(pollPolicyYAMLForHandler))
+	if err != nil {
+		t.Fatalf("POST /policies: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+
+	var envelope struct {
+		Data struct{ ID string `json:"id"` } `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	pollerCalls := poller.calls()
+	if len(pollerCalls) != 1 {
+		t.Fatalf("poller.Notify called %d times, want 1", len(pollerCalls))
+	}
+	if pollerCalls[0] != envelope.Data.ID {
+		t.Errorf("poller notified with %q, want %q", pollerCalls[0], envelope.Data.ID)
+	}
+	if len(scheduler.calls()) != 0 {
+		t.Errorf("scheduler.Notify called %d times, want 0", len(scheduler.calls()))
+	}
+}
+
+// TestPolicyHandler_NotifiesSchedulerOnCreate verifies that creating a
+// scheduled policy calls scheduler.Notify and not poller.Notify.
+func TestPolicyHandler_NotifiesSchedulerOnCreate(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	poller := &recordingNotifier{}
+	scheduler := &recordingNotifier{}
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/policies", "application/yaml", strings.NewReader(scheduledPolicyYAMLForHandler))
+	if err != nil {
+		t.Fatalf("POST /policies: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+
+	var envelope struct {
+		Data struct{ ID string `json:"id"` } `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	schedCalls := scheduler.calls()
+	if len(schedCalls) != 1 {
+		t.Fatalf("scheduler.Notify called %d times, want 1", len(schedCalls))
+	}
+	if schedCalls[0] != envelope.Data.ID {
+		t.Errorf("scheduler notified with %q, want %q", schedCalls[0], envelope.Data.ID)
+	}
+	if len(poller.calls()) != 0 {
+		t.Errorf("poller.Notify called %d times, want 0", len(poller.calls()))
+	}
+}
+
+// TestPolicyHandler_NoNotifyForWebhookPolicy verifies that webhook and manual
+// trigger types do not invoke either notifier.
+func TestPolicyHandler_NoNotifyForWebhookPolicy(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	poller := &recordingNotifier{}
+	scheduler := &recordingNotifier{}
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/policies", "application/yaml", strings.NewReader(webhookPolicyYAMLForHandler))
+	if err != nil {
+		t.Fatalf("POST /policies: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+
+	if len(poller.calls()) != 0 {
+		t.Errorf("poller.Notify called %d times, want 0 for webhook policy", len(poller.calls()))
+	}
+	if len(scheduler.calls()) != 0 {
+		t.Errorf("scheduler.Notify called %d times, want 0 for webhook policy", len(scheduler.calls()))
+	}
+}
+
+// TestPolicyHandler_NotifiesPollerOnUpdate verifies that updating a poll policy
+// calls poller.Notify.
+func TestPolicyHandler_NotifiesPollerOnUpdate(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	testutil.InsertPolicy(t, store, "pol-upd-poll", "my-poll", "poll", pollPolicyYAMLForHandler)
+	poller := &recordingNotifier{}
+	scheduler := &recordingNotifier{}
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler))
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/policies/pol-upd-poll", strings.NewReader(pollPolicyYAMLForHandler))
+	req.Header.Set("Content-Type", "application/yaml")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /policies/pol-upd-poll: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	if len(poller.calls()) != 1 || poller.calls()[0] != "pol-upd-poll" {
+		t.Errorf("poller.Notify calls = %v, want [pol-upd-poll]", poller.calls())
+	}
+	if len(scheduler.calls()) != 0 {
+		t.Errorf("scheduler.Notify called unexpectedly: %v", scheduler.calls())
+	}
+}
+
+// TestPolicyHandler_NotifiesOnPauseAndResume verifies that pausing and resuming
+// a poll policy calls poller.Notify each time.
+func TestPolicyHandler_NotifiesOnPauseAndResume(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	testutil.InsertPolicy(t, store, "pol-pr", "my-poll", "poll", pollPolicyYAMLForHandler)
+	poller := &recordingNotifier{}
+	scheduler := &recordingNotifier{}
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler))
+	t.Cleanup(srv.Close)
+
+	// Pause.
+	resp, err := http.Post(srv.URL+"/policies/pol-pr/pause", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST pause: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pause status = %d, want 200", resp.StatusCode)
+	}
+
+	// Resume.
+	resp2, err := http.Post(srv.URL+"/policies/pol-pr/resume", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST resume: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("resume status = %d, want 200", resp2.StatusCode)
+	}
+
+	calls := poller.calls()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 poller.Notify calls (pause + resume), got %d: %v", len(calls), calls)
+	}
+	for _, id := range calls {
+		if id != "pol-pr" {
+			t.Errorf("notified with unexpected id %q", id)
+		}
+	}
+}
+
+// TestPolicyHandler_NotifiesPollerOnDelete verifies that deleting a poll policy
+// calls poller.Notify with the policy ID.
+func TestPolicyHandler_NotifiesPollerOnDelete(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	testutil.InsertPolicy(t, store, "pol-del-poll", "my-poll", "poll", pollPolicyYAMLForHandler)
+	poller := &recordingNotifier{}
+	scheduler := &recordingNotifier{}
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler))
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/policies/pol-del-poll", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE /policies/pol-del-poll: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+
+	if len(poller.calls()) != 1 || poller.calls()[0] != "pol-del-poll" {
+		t.Errorf("poller.Notify calls = %v, want [pol-del-poll]", poller.calls())
+	}
+	if len(scheduler.calls()) != 0 {
+		t.Errorf("scheduler.Notify called unexpectedly: %v", scheduler.calls())
+	}
+}
+
+// TestPolicyHandler_NilNotifiersDoNotPanic verifies that nil poller and
+// scheduler do not cause a panic — the defensive nil check in notifyTriggers
+// must hold for all handler paths.
+func TestPolicyHandler_NilNotifiersDoNotPanic(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	testutil.InsertPolicy(t, store, "pol-nil-poll", "my-poll", "poll", pollPolicyYAMLForHandler)
+
+	// newPolicyRouter passes nil, nil — reuse it.
+	srv := httptest.NewServer(newPolicyRouter(store))
+	t.Cleanup(srv.Close)
+
+	// Create.
+	resp, err := http.Post(srv.URL+"/policies", "application/yaml", strings.NewReader(pollPolicyYAMLForHandler))
+	if err != nil {
+		t.Fatalf("POST /policies: %v", err)
+	}
+	resp.Body.Close()
+
+	// Pause.
+	resp, err = http.Post(srv.URL+"/policies/pol-nil-poll/pause", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST pause: %v", err)
+	}
+	resp.Body.Close()
+
+	// Resume.
+	resp, err = http.Post(srv.URL+"/policies/pol-nil-poll/resume", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST resume: %v", err)
+	}
+	resp.Body.Close()
+
+	// Update.
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/policies/pol-nil-poll", strings.NewReader(pollPolicyYAMLForHandler))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /policies/pol-nil-poll: %v", err)
+	}
+	resp.Body.Close()
+
+	// Delete.
+	req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/policies/pol-nil-poll", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE /policies/pol-nil-poll: %v", err)
+	}
+	resp.Body.Close()
+
+	// If we reach here without panicking, the test passes.
+}
+

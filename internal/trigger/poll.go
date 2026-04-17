@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,9 +38,10 @@ type Poller struct {
 	store        *db.Store
 	launcher     *run.RunLauncher
 	toolResolver toolResolver
-	mu           sync.Mutex                    // protects the loops map
+	mu           sync.Mutex                    // protects loops and rootCtx
 	loops        map[string]context.CancelFunc // policyID -> cancel func for that goroutine
 	wg           sync.WaitGroup                // tracks all poll loop goroutines
+	rootCtx      context.Context               // set in Start; used by Notify to outlive the HTTP request
 }
 
 // NewPoller returns a Poller ready to be started. resolver is used to call
@@ -59,6 +61,10 @@ func NewPoller(store *db.Store, launcher *run.RunLauncher, resolver toolResolver
 // created, paused, or deleted after startup.
 // Start returns immediately; goroutines run in the background.
 func (p *Poller) Start(ctx context.Context) error {
+	p.mu.Lock()
+	p.rootCtx = ctx
+	p.mu.Unlock()
+
 	policies, err := p.store.GetPollActivePolicies(ctx)
 	if err != nil {
 		return fmt.Errorf("load poll policies: %w", err)
@@ -128,6 +134,54 @@ func (p *Poller) reconcile(ctx context.Context) {
 			delete(p.loops, policyID)
 		}
 	}
+}
+
+// cancelLoopLocked cancels and removes the poll loop for policyID if one is
+// running. mu must be held by the caller.
+func (p *Poller) cancelLoopLocked(policyID string) {
+	if cancel, ok := p.loops[policyID]; ok {
+		cancel()
+		delete(p.loops, policyID)
+	}
+}
+
+// Notify immediately reconciles the poll loop for the given policy in response
+// to a create, update, pause, or delete event from the API. It reads current
+// DB state so it converges correctly for all mutation types:
+//   - Not found / non-poll / paused → cancel any existing loop.
+//   - Active poll policy → restart the loop so YAML changes (e.g. interval) take effect.
+//
+// reqCtx is used only for the DB read; the loop itself runs under the root
+// context captured in Start so it outlives the HTTP request.
+// Errors are logged at warn level; Notify never returns an error (best-effort).
+func (p *Poller) Notify(reqCtx context.Context, policyID string) {
+	pol, err := p.store.GetPolicy(reqCtx, policyID)
+	if err != nil {
+		p.mu.Lock()
+		p.cancelLoopLocked(policyID)
+		p.mu.Unlock()
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Warn("poller: notify failed to read policy", "policy_id", policyID, "err", err)
+		}
+		return
+	}
+
+	// Policy exists but should not be running (wrong type or paused).
+	if pol.TriggerType != string(model.TriggerTypePoll) || pol.PausedAt != nil {
+		p.mu.Lock()
+		p.cancelLoopLocked(policyID)
+		p.mu.Unlock()
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Cancel the existing loop first so that a YAML change (e.g. new interval)
+	// takes effect. startPollLoopLocked has an early-return guard for already-running
+	// loops, so we must remove the old entry before calling it.
+	p.cancelLoopLocked(policyID)
+	p.startPollLoopLocked(p.rootCtx, pol)
 }
 
 // startPollLoop acquires mu and starts a goroutine for the given policy.

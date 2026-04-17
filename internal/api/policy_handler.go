@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -15,18 +16,39 @@ import (
 
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/httputil"
+	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
 )
 
 // PolicyHandler serves policy CRUD endpoints under /api/v1/policies.
 type PolicyHandler struct {
-	store *db.Store
-	svc   *policy.Service
+	store     *db.Store
+	svc       *policy.Service
+	poller    PolicyNotifier // may be nil; notified on poll-trigger mutations
+	scheduler PolicyNotifier // may be nil; notified on scheduled-trigger mutations
 }
 
 // NewPolicyHandler creates a PolicyHandler backed by the given store and service.
-func NewPolicyHandler(store *db.Store, svc *policy.Service) *PolicyHandler {
-	return &PolicyHandler{store: store, svc: svc}
+// poller and scheduler may be nil — notifyTriggers skips nil notifiers.
+func NewPolicyHandler(store *db.Store, svc *policy.Service, poller, scheduler PolicyNotifier) *PolicyHandler {
+	return &PolicyHandler{store: store, svc: svc, poller: poller, scheduler: scheduler}
+}
+
+// notifyTriggers dispatches to the appropriate background component after a
+// successful policy mutation. It is best-effort and synchronous — errors inside
+// Notify are handled by the notifier itself (logged at warn). Callers must pass
+// the request context so the DB read inside Notify is bounded by the request.
+func (h *PolicyHandler) notifyTriggers(ctx context.Context, policyID string, triggerType model.TriggerType) {
+	switch triggerType {
+	case model.TriggerTypePoll:
+		if h.poller != nil {
+			h.poller.Notify(ctx, policyID)
+		}
+	case model.TriggerTypeScheduled:
+		if h.scheduler != nil {
+			h.scheduler.Notify(ctx, policyID)
+		}
+	}
 }
 
 type runSummary struct {
@@ -244,6 +266,7 @@ func (h *PolicyHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.notifyTriggers(r.Context(), result.Policy.ID, result.Policy.TriggerType)
 	httputil.WriteCreated(w, "/api/v1/policies/"+result.Policy.ID, buildMutateResponse(result))
 }
 
@@ -277,6 +300,7 @@ func (h *PolicyHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.notifyTriggers(r.Context(), result.Policy.ID, result.Policy.TriggerType)
 	httputil.WriteJSON(w, http.StatusOK, buildMutateResponse(result))
 }
 
@@ -312,6 +336,7 @@ func (h *PolicyHandler) Pause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.notifyTriggers(r.Context(), id, model.TriggerType(updated.TriggerType))
 	httputil.WriteJSON(w, http.StatusOK, toPolicyDetail(updated))
 }
 
@@ -347,6 +372,7 @@ func (h *PolicyHandler) Resume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.notifyTriggers(r.Context(), id, model.TriggerType(updated.TriggerType))
 	httputil.WriteJSON(w, http.StatusOK, toPolicyDetail(updated))
 }
 
@@ -354,7 +380,11 @@ func (h *PolicyHandler) Resume(w http.ResponseWriter, r *http.Request) {
 func (h *PolicyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	if _, err := h.store.GetPolicy(r.Context(), id); err != nil {
+	// Capture trigger type before deleting — we need it to notify the right
+	// background component after the row is gone (Notify will observe ErrNoRows
+	// and cancel any running loop/timers cleanly).
+	existing, err := h.store.GetPolicy(r.Context(), id)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			httputil.WriteError(w, http.StatusNotFound, "policy not found", "")
 			return
@@ -379,6 +409,10 @@ func (h *PolicyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete policy", err.Error())
 		return
 	}
+
+	// Notify after delete so the background component cancels any running loop
+	// or pending timers. Notify reads ErrNoRows from the DB and cancels cleanly.
+	h.notifyTriggers(r.Context(), id, model.TriggerType(existing.TriggerType))
 
 	w.WriteHeader(http.StatusNoContent)
 }
