@@ -63,7 +63,9 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	r.Use(httputil.SecurityHeaders)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
+	r.Use(slogContext)   // enriches context with request_id + remote_addr logger
+	r.Use(httpMetrics)   // records Prometheus duration histogram and request counter
+	r.Use(slogAccess)    // emits structured JSON access log after each response
 	r.Use(middleware.Recoverer)
 	// Compress API JSON responses and embedded frontend assets. SSE is excluded
 	// automatically because text/event-stream is not in the compressible type

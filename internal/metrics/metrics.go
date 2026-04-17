@@ -66,22 +66,22 @@ var BucketsSlow = []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600}
 // Gleipnir collectors. Defining them here keeps the naming scheme authoritative
 // in one place and prevents typos at call sites.
 const (
-	LabelErrorType    = "error_type"
-	LabelDirection    = "direction"
-	LabelProvider     = "provider"
-	LabelModel        = "model"
-	LabelServer       = "server"
-	LabelTool         = "tool"
-	LabelQuery        = "query"
-	LabelMethod       = "method"
-	LabelRoute        = "route"
-	LabelCode         = "code"
-	LabelState        = "state"
-	LabelStatus       = "status"
-	LabelStepType     = "step_type"
-	LabelTriggerType  = "trigger_type"
-	LabelFrom         = "from"
-	LabelTo           = "to"
+	LabelErrorType   = "error_type"
+	LabelDirection   = "direction"
+	LabelProvider    = "provider"
+	LabelModel       = "model"
+	LabelServer      = "server"
+	LabelTool        = "tool"
+	LabelQuery       = "query"
+	LabelMethod      = "method"
+	LabelRoute       = "route"
+	LabelCode        = "code"
+	LabelState       = "state"
+	LabelStatus      = "status"
+	LabelStepType    = "step_type"
+	LabelTriggerType = "trigger_type"
+	LabelFrom        = "from"
+	LabelTo          = "to"
 )
 
 // error_type label values enumerate the categories of errors recorded in
