@@ -72,6 +72,7 @@ type policyListItem struct {
 	UpdatedAt    string      `json:"updated_at"`
 	PausedAt     *string     `json:"paused_at"`
 	LatestRun    *runSummary `json:"latest_run"`
+	NextFireAt   *string     `json:"next_fire_at"`
 }
 
 type policyDetail struct {
@@ -123,6 +124,8 @@ func (h *PolicyHandler) List(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		item.NextFireAt = computeNextFireAt(row.TriggerType, summary, item.LatestRun)
+
 		items = append(items, item)
 	}
 
@@ -173,6 +176,10 @@ type policyYAMLSummary struct {
 	Capabilities struct {
 		Tools []policyToolEntry `yaml:"tools"`
 	} `yaml:"capabilities"`
+	Trigger struct {
+		FireAt   []string `yaml:"fire_at"`  // scheduled only, RFC3339 timestamps
+		Interval string   `yaml:"interval"` // poll only, Go duration string e.g. "5m"
+	} `yaml:"trigger"`
 }
 
 // toolRefs extracts the tool reference strings (e.g. "server.tool_name")
@@ -196,6 +203,54 @@ func parsePolicySummary(rawYAML string) policyYAMLSummary {
 		slog.Warn("parsePolicySummary: failed to parse policy YAML", "err", err)
 	}
 	return v
+}
+
+// computeNextFireAt returns the next scheduled fire time for scheduled and poll
+// trigger types, or nil for all others. Parse errors are silently ignored so a
+// bad YAML value never breaks the list endpoint.
+func computeNextFireAt(triggerType string, summary policyYAMLSummary, latestRun *runSummary) *string {
+	now := time.Now().UTC()
+
+	switch triggerType {
+	case string(model.TriggerTypeScheduled):
+		var earliest *time.Time
+		for _, raw := range summary.Trigger.FireAt {
+			t, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				continue
+			}
+			if t.After(now) && (earliest == nil || t.Before(*earliest)) {
+				tc := t
+				earliest = &tc
+			}
+		}
+		if earliest != nil {
+			s := earliest.UTC().Format(time.RFC3339)
+			return &s
+		}
+
+	case string(model.TriggerTypePoll):
+		if latestRun == nil {
+			return nil
+		}
+		interval, err := time.ParseDuration(summary.Trigger.Interval)
+		if err != nil || interval <= 0 {
+			return nil
+		}
+		startedAt, err := time.Parse(time.RFC3339Nano, latestRun.StartedAt)
+		if err != nil {
+			// Also try without nanoseconds
+			startedAt, err = time.Parse(time.RFC3339, latestRun.StartedAt)
+			if err != nil {
+				return nil
+			}
+		}
+		next := startedAt.Add(interval).UTC()
+		s := next.Format(time.RFC3339)
+		return &s
+	}
+
+	return nil
 }
 
 // extractFolder parses the folder field from a raw policy YAML blob.

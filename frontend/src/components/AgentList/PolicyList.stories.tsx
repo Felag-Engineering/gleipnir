@@ -37,6 +37,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     tool_refs: [],
     avg_token_cost: 2340,
     run_count: 5,
+    next_fire_at: null,
   },
   {
     id: 'pol-2',
@@ -57,6 +58,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     tool_refs: [],
     avg_token_cost: 870,
     run_count: 1,
+    next_fire_at: null,
   },
   {
     id: 'pol-3',
@@ -77,6 +79,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     tool_refs: [],
     avg_token_cost: 1100,
     run_count: 3,
+    next_fire_at: null,
   },
   {
     id: 'pol-4',
@@ -97,6 +100,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     tool_refs: [],
     avg_token_cost: 560,
     run_count: 2,
+    next_fire_at: null,
   },
   {
     id: 'pol-5',
@@ -117,6 +121,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     tool_refs: [],
     avg_token_cost: 430,
     run_count: 1,
+    next_fire_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
   },
   {
     id: 'pol-6',
@@ -137,6 +142,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     tool_refs: [],
     avg_token_cost: 0,
     run_count: 1,
+    next_fire_at: null,
   },
   {
     id: 'pol-7',
@@ -152,6 +158,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     tool_refs: [],
     avg_token_cost: 0,
     run_count: 0,
+    next_fire_at: null,
   },
   {
     id: 'pol-8',
@@ -172,6 +179,7 @@ const FIXTURE_POLICIES: ApiPolicyListItem[] = [
     tool_refs: [],
     avg_token_cost: 980,
     run_count: 4,
+    next_fire_at: null,
   },
 ]
 

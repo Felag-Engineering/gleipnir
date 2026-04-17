@@ -18,6 +18,7 @@ const BASE_POLICY: ApiPolicyListItem = {
   latest_run: null,
   avg_token_cost: 0,
   run_count: 0,
+  next_fire_at: null,
 }
 
 const POLICY_WITH_RUN: ApiPolicyListItem = {

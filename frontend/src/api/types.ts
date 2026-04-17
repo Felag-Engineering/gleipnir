@@ -21,6 +21,7 @@ export interface ApiPolicyListItem {
   updated_at: string
   paused_at: string | null
   latest_run: ApiRunSummary | null
+  next_fire_at: string | null
 }
 
 // Matches trigger/runs_handler.go → PaginatedRunsResponse struct

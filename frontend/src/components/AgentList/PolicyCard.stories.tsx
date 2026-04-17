@@ -73,6 +73,7 @@ const BASE_POLICY: ApiPolicyListItem = {
     started_at: '2026-04-08T02:00:00Z',
     token_cost: 1200,
   },
+  next_fire_at: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
 }
 
 const meta: Meta<typeof PolicyCard> = {

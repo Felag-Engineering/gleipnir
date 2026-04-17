@@ -48,7 +48,7 @@ export const Healthy: Story = {
     policies: [
       { id: 'p1', name: 'system-health-check', trigger_type: 'webhook', folder: 'testing',
         model: '', tool_count: 3, tool_refs: ['test-server.echo', 'test-server.get_current_time', 'test-server.get_system_status'],
-        avg_token_cost: 0, run_count: 0, created_at: '', updated_at: '', paused_at: null, latest_run: null },
+        avg_token_cost: 0, run_count: 0, created_at: '', updated_at: '', paused_at: null, latest_run: null, next_fire_at: null },
     ],
     onClose: () => {}, onDiscover: () => {}, onDelete: () => {},
   },

@@ -76,6 +76,7 @@ const POLICY: ApiPolicyListItem = {
     started_at: '2026-04-03T12:00:00Z',
     token_cost: 4500,
   },
+  next_fire_at: null,
 }
 
 // Default mocks so existing collapsed-only tests don't throw when hooks are called on expand

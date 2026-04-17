@@ -73,7 +73,7 @@ func validateEncryptionKey(raw string) error {
 	decoded, err := hex.DecodeString(raw)
 	if err != nil {
 		return fmt.Errorf(
-			"GLEIPNIR_ENCRYPTION_KEY is not valid hex: %w; " +
+			"GLEIPNIR_ENCRYPTION_KEY is not valid hex: %w; "+
 				"generate a valid key with: openssl rand -hex 32",
 			err,
 		)

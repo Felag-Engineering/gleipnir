@@ -400,10 +400,10 @@ func TestValidate_WebhookAuth(t *testing.T) {
 // and model.name added to validateAgent.
 func TestValidate_ModelRequired(t *testing.T) {
 	tests := []struct {
-		name     string
-		provider string
+		name      string
+		provider  string
 		modelName string
-		wantErrs []string
+		wantErrs  []string
 	}{
 		{
 			name:      "empty provider only",

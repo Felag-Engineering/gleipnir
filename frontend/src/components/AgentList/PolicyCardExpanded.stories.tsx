@@ -90,6 +90,7 @@ const BASE_LIST_ITEM: ApiPolicyListItem = {
     started_at: '2026-04-08T08:00:00Z',
     token_cost: 4200,
   },
+  next_fire_at: null,
 }
 
 const RECENT_RUNS = [
