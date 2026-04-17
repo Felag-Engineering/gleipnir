@@ -109,6 +109,7 @@ internal/
     anthropic/        — Anthropic API client
     google/           — Google AI client
   logctx/             — context-based structured log correlation (run_id + policy_id); leaf package, no internal imports
+  metrics/            — custom Prometheus registry, histogram bucket presets (BucketsFast/BucketsSlow), shared label constants, Handler()/Registry() accessors; leaf package, no internal imports (ADR-037)
   mcp/                — MCP HTTP client, tool registry, capability tags
   model/              — domain types (Policy, Run, RunStep, ApprovalRequest, enums, ...)
   policy/             — YAML parser, validator, system prompt renderer

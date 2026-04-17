@@ -51,6 +51,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-034 | Webhook secrets stored in encrypted DB column (scoped ADR-002 deviation) | 🟢 Decided | v1.0 | policies table, internal/policy, trigger/webhook_handler, frontend WebhookConfig |
 | ADR-035 | DB-backed system settings for runtime configuration | 🟢 Decided | v1.0 | system_settings table, admin API, frontend /admin/system |
 | ADR-036 | Centralized scheduler dispatcher                    | 🟢 Decided | v1.0 | internal/dispatcher (new), internal/trigger/scheduled.go, internal/trigger/poll.go, main.go |
+| ADR-037 | Custom Prometheus registry in internal/metrics (leaf package) | 🟢 Decided | v1.0 | internal/metrics (new), all future instrumented packages |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
 
 ---
@@ -110,6 +111,35 @@ The `Dispatcher` interface is designed for substitution. When multi-node Gleipni
 3. Migrate `poll.go`: register `poll_tick` handler that reschedules itself, seed first tick per active poll policy on startup, delete the `Poller` struct, its reconcile loop, and its `PolicyNotifier` implementation.
 
 Design detail, diagrams, and handler contracts live in [`docs/developer/dispatcher.md`](developer/dispatcher.md).
+
+---
+
+## ADR-037: Custom Prometheus registry in internal/metrics (leaf package)
+
+**Status:** Decided
+**Date:** 2026-04
+
+### Context
+
+`github.com/prometheus/client_golang` registers collectors on a process-wide global default registry (`prometheus.DefaultRegisterer`) unless callers explicitly pass their own registry. A global registry couples every future instrumented package to init-order: if two packages register the same metric name, the second registration panics at startup and the cause can be hard to locate. It also leaks metric registrations across tests — a collector registered in one test binary persists for the lifetime of the process, causing `AlreadyRegisteredError` when a second test registers a same-named collector. The upcoming per-package instrumentation plan (spec `2026-04-09-metrics-and-logging-design`) needs one shared, explicit registry that all domain packages inject into, rather than a hidden global side channel.
+
+### Decision
+
+Introduce `internal/metrics` as a leaf package that owns a package-private `*prometheus.Registry` (created with `prometheus.NewRegistry`, not `prometheus.NewPedanticRegistry`). The registry is initialized once in `init()` with the Go runtime collector (`collectors.NewGoCollector()`). Two exported accessors are provided:
+
+- `Registry() *prometheus.Registry` — domain packages call `promauto.With(metrics.Registry())` to register their own collectors. The concrete type is returned (not the `Registerer` or `Gatherer` interface) so callers can use it as both without forcing separate accessors.
+- `Handler() http.Handler` — returns `promhttp.HandlerFor(registry, promhttp.HandlerOpts{Registry: registry})` for mounting on the `/metrics` route in a follow-up PR.
+
+Shared bucket presets (`BucketsFast` for MCP/DB latency, `BucketsSlow` for LLM/run duration) and label-key/enum constants (`LabelErrorType`, `ErrorTypeTimeout`, `DirectionInput`, etc.) also live in this package so the `gleipnir_` naming scheme and fixed `error_type` enum stay authoritative in one place.
+
+### Rejected alternative
+
+Using `prometheus.DefaultRegisterer` (the global default registry). Rejected because it couples every package to init-order, makes isolated testing awkward (registrations persist globally across tests), and obscures which registry the `/metrics` endpoint actually exposes. A custom registry makes the dependency explicit and traceable.
+
+### Consequences
+
+- Every future instrumented package imports `internal/metrics` for the registry and shared constants. `internal/metrics` imports no other internal package — it is a leaf package.
+- The `/metrics` route and `GLEIPNIR_METRICS_ENABLED` / `GLEIPNIR_METRICS_PATH` env vars are added in a follow-up PR that mounts `metrics.Handler()` into the chi router.
 
 ---
 
