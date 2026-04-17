@@ -478,8 +478,8 @@ describe('AgentEditorPage — non-404 error', () => {
   })
 })
 
-describe('AgentEditorPage — Run now button for manual trigger', () => {
-  it('shows Run now button when policy trigger_type is manual', () => {
+describe('AgentEditorPage — Run now button', () => {
+  it('shows Run now button for a saved policy with trigger_type manual', () => {
     mockHooksDefault()
     vi.mocked(usePolicy).mockReturnValue({
       data: {
@@ -499,7 +499,7 @@ describe('AgentEditorPage — Run now button for manual trigger', () => {
     expect(screen.getByText('Run now')).toBeInTheDocument()
   })
 
-  it('does not show Run now button when policy trigger_type is webhook', () => {
+  it('shows Run now button for a saved policy with trigger_type webhook', () => {
     mockHooksDefault()
     vi.mocked(usePolicy).mockReturnValue({
       data: {
@@ -516,7 +516,27 @@ describe('AgentEditorPage — Run now button for manual trigger', () => {
 
     renderEditor('/agents/webhook-id')
 
-    expect(screen.queryByText('Run now')).not.toBeInTheDocument()
+    expect(screen.getByText('Run now')).toBeInTheDocument()
+  })
+
+  it('shows Run now button for a saved policy with trigger_type scheduled', () => {
+    mockHooksDefault()
+    vi.mocked(usePolicy).mockReturnValue({
+      data: {
+        id: 'scheduled-id',
+        name: 'scheduled-policy',
+        trigger_type: 'scheduled',
+        folder: '',
+        yaml: SCHEDULED_YAML,
+        created_at: '',
+        updated_at: '',
+      },
+      status: 'success',
+    } as ReturnType<typeof usePolicy>)
+
+    renderEditor('/agents/scheduled-id')
+
+    expect(screen.getByText('Run now')).toBeInTheDocument()
   })
 
   it('does not show Run now button for new agent (create mode)', () => {

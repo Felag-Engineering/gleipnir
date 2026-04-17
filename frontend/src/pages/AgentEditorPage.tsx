@@ -117,10 +117,6 @@ export function AgentEditorPage() {
 
   const canSave = isDirty && !savePolicy.isPending
 
-  // Only show the Run now button for saved policies with a manual trigger type.
-  // The button reflects the server-side state, not the unsaved form state.
-  const isManualTrigger = Boolean(id) && policy?.trigger_type === 'manual'
-
   const policyName = formState.identity.name || (id ? id : 'New Agent')
 
   const pageTitle = (id && policyStatus === 'error') ? 'Agent not found' : policyName
@@ -168,7 +164,7 @@ export function AgentEditorPage() {
         isPauseResumeLoading={pausePolicy.isPending || resumePolicy.isPending}
         onSave={handleSave}
         onDeleteClick={() => setDeleteModalOpen(true)}
-        onRunNowClick={isManualTrigger ? () => setTriggerModalOpen(true) : undefined}
+        onRunNowClick={id ? () => setTriggerModalOpen(true) : undefined}
         onPauseClick={id ? handlePause : undefined}
         onResumeClick={id ? handleResume : undefined}
       />
