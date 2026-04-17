@@ -431,6 +431,52 @@ func TestTranslateResponse_ThoughtPartsAsThinking(t *testing.T) {
 	}
 }
 
+func TestTranslateResponse_EmptyThoughtPartSkipped(t *testing.T) {
+	// Gemini occasionally emits thought parts with an empty text field. These
+	// should be silently ignored rather than producing empty ThinkingBlocks.
+	tests := []struct {
+		name           string
+		parts          []*genai.Part
+		wantThinking   int
+		wantThinkingText string
+	}{
+		{
+			name:         "empty thought produces no ThinkingBlock",
+			parts:        []*genai.Part{{Text: "", Thought: true}},
+			wantThinking: 0,
+		},
+		{
+			name:             "non-empty thought produces a ThinkingBlock",
+			parts:            []*genai.Part{{Text: "some reasoning", Thought: true}},
+			wantThinking:     1,
+			wantThinkingText: "some reasoning",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &genai.GenerateContentResponse{
+				Candidates: []*genai.Candidate{
+					{
+						Content:      &genai.Content{Parts: tc.parts},
+						FinishReason: genai.FinishReasonStop,
+					},
+				},
+			}
+			result, err := translateResponse(resp, llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(result.Thinking) != tc.wantThinking {
+				t.Fatalf("len(Thinking) = %d, want %d", len(result.Thinking), tc.wantThinking)
+			}
+			if tc.wantThinking > 0 && result.Thinking[0].Text != tc.wantThinkingText {
+				t.Errorf("Thinking[0].Text = %q, want %q", result.Thinking[0].Text, tc.wantThinkingText)
+			}
+		})
+	}
+}
+
 func TestTranslateResponse_ThinkingTokenUsage(t *testing.T) {
 	resp := &genai.GenerateContentResponse{
 		Candidates: []*genai.Candidate{

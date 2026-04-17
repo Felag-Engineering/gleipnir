@@ -298,7 +298,7 @@ func translateResponse(resp *genai.GenerateContentResponse, names llm.ToolNameMa
 	candidate := resp.Candidates[0]
 
 	for _, part := range candidate.Content.Parts {
-		if part.Thought {
+		if part.Thought && part.Text != "" {
 			result.Thinking = append(result.Thinking, llm.ThinkingBlock{
 				Provider: "google",
 				Text:     part.Text,
