@@ -22,21 +22,21 @@ import (
 // timestamps, and sets timers for any future ones. After the final fire time fires for
 // a policy it pauses the policy so it is not re-loaded on the next restart.
 type Scheduler struct {
-	store        *db.Store
-	launcher     *run.RunLauncher
+	store         *db.Store
+	launcher      *run.RunLauncher
 	modelResolver defaultModelResolver
-	mu           sync.Mutex                      // protects timers and rootCtx
-	timers       map[string][]context.CancelFunc // policyID -> per-fire-time cancel funcs
-	rootCtx      context.Context                 // set in Start; used by Notify to outlive the HTTP request
+	mu            sync.Mutex                      // protects timers and rootCtx
+	timers        map[string][]context.CancelFunc // policyID -> per-fire-time cancel funcs
+	rootCtx       context.Context                 // set in Start; used by Notify to outlive the HTTP request
 }
 
 // NewScheduler returns a Scheduler ready to be started.
 func NewScheduler(store *db.Store, launcher *run.RunLauncher, modelResolver defaultModelResolver) *Scheduler {
 	return &Scheduler{
-		store:        store,
-		launcher:     launcher,
+		store:         store,
+		launcher:      launcher,
 		modelResolver: modelResolver,
-		timers:       make(map[string][]context.CancelFunc),
+		timers:        make(map[string][]context.CancelFunc),
 	}
 }
 

@@ -35,14 +35,14 @@ const (
 // When all checks pass (or any check passes, depending on the match mode), a
 // run is launched. Polling is stateless — no deduplication or backoff.
 type Poller struct {
-	store        *db.Store
-	launcher     *run.RunLauncher
-	toolResolver toolResolver
+	store         *db.Store
+	launcher      *run.RunLauncher
+	toolResolver  toolResolver
 	modelResolver defaultModelResolver
-	mu           sync.Mutex                    // protects loops and rootCtx
-	loops        map[string]context.CancelFunc // policyID -> cancel func for that goroutine
-	wg           sync.WaitGroup                // tracks all poll loop goroutines
-	rootCtx      context.Context               // set in Start; used by Notify to outlive the HTTP request
+	mu            sync.Mutex                    // protects loops and rootCtx
+	loops         map[string]context.CancelFunc // policyID -> cancel func for that goroutine
+	wg            sync.WaitGroup                // tracks all poll loop goroutines
+	rootCtx       context.Context               // set in Start; used by Notify to outlive the HTTP request
 }
 
 // NewPoller returns a Poller ready to be started. resolver is used to call
@@ -50,11 +50,11 @@ type Poller struct {
 // up the system default model when the policy YAML omits the model block.
 func NewPoller(store *db.Store, launcher *run.RunLauncher, resolver toolResolver, modelResolver defaultModelResolver) *Poller {
 	return &Poller{
-		store:        store,
-		launcher:     launcher,
-		toolResolver: resolver,
+		store:         store,
+		launcher:      launcher,
+		toolResolver:  resolver,
 		modelResolver: modelResolver,
-		loops:        make(map[string]context.CancelFunc),
+		loops:         make(map[string]context.CancelFunc),
 	}
 }
 

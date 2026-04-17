@@ -1,21 +1,52 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { fn } from 'storybook/test';
 import { useState } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import '@/tokens.css';
 import { TriggerSection } from './TriggerSection';
 import type { TriggerFormState } from './types';
 import decoratorStyles from './TriggerSection.stories.module.css';
 
+function makeQueryClient() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+}
+
+const MOCK_CONFIG_RESPONSE = JSON.stringify({ data: { public_url: '', default_model: null } });
+
 const meta: Meta<typeof TriggerSection> = {
   title: 'PolicyEditor/FormMode/TriggerSection',
   component: TriggerSection,
   decorators: [
-    (Story) => (
-      <div className={decoratorStyles.decorator}>
-        <Story />
-      </div>
-    ),
+    (Story) => {
+      // Fresh query client per story to prevent cached query state bleeding across stories.
+      const qc = makeQueryClient();
+      return (
+        <QueryClientProvider client={qc}>
+          <div className={decoratorStyles.decorator}>
+            <Story />
+          </div>
+        </QueryClientProvider>
+      );
+    },
   ],
+  beforeEach: () => {
+    const originalFetch = window.fetch;
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+      if (url.includes('/api/v1/config')) {
+        return new Response(MOCK_CONFIG_RESPONSE, {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return originalFetch(input, init);
+    };
+    return () => { window.fetch = originalFetch; };
+  },
 };
 
 export default meta;

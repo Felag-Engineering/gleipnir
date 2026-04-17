@@ -53,6 +53,9 @@ const webhookPolicyYAML = `
 name: test-webhook
 trigger:
   type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: srv.tool
@@ -64,6 +67,9 @@ const manualPolicyYAML = `
 name: test-manual
 trigger:
   type: manual
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: srv.tool

@@ -23,6 +23,10 @@ func validPolicy() *model.ParsedPolicy {
 		Agent: model.AgentConfig{
 			Task:        "do something",
 			Concurrency: model.ConcurrencySkip,
+			ModelConfig: model.ModelConfig{
+				Provider: "anthropic",
+				Name:     "claude-sonnet-4-6",
+			},
 			Limits: model.RunLimits{
 				MaxTokensPerRun:    20000,
 				MaxToolCallsPerRun: 50,
@@ -390,6 +394,90 @@ func TestValidate_WebhookAuth(t *testing.T) {
 		assertValidationContains(t, p, "trigger.auth")
 		assertValidationContains(t, p, "invalidmode")
 	})
+}
+
+// TestValidate_ModelRequired covers the new required-field checks for model.provider
+// and model.name added to validateAgent.
+func TestValidate_ModelRequired(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		modelName string
+		wantErrs []string
+	}{
+		{
+			name:      "empty provider only",
+			provider:  "",
+			modelName: "claude-sonnet-4-6",
+			wantErrs:  []string{"model.provider is required"},
+		},
+		{
+			name:      "empty name only",
+			provider:  "anthropic",
+			modelName: "",
+			wantErrs:  []string{"model.name is required"},
+		},
+		{
+			name:      "both empty",
+			provider:  "",
+			modelName: "",
+			wantErrs:  []string{"model.provider is required", "model.name is required"},
+		},
+		{
+			name:      "both set — no model errors",
+			provider:  "anthropic",
+			modelName: "claude-sonnet-4-6",
+			wantErrs:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := validPolicy()
+			p.Agent.ModelConfig.Provider = tt.provider
+			p.Agent.ModelConfig.Name = tt.modelName
+
+			err := Validate(p)
+
+			if len(tt.wantErrs) == 0 {
+				// No model-related errors expected. Any other errors are from a
+				// legitimately invalid validPolicy() modification — that's a test bug,
+				// not a production bug, so fail loudly.
+				if err != nil {
+					ve, ok := err.(*ValidationError)
+					if !ok {
+						t.Fatalf("unexpected error type %T: %v", err, err)
+					}
+					for _, e := range ve.Errors {
+						if strings.Contains(e, "model.") {
+							t.Errorf("unexpected model error: %q", e)
+						}
+					}
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("expected validation errors %v, got nil", tt.wantErrs)
+			}
+			ve, ok := err.(*ValidationError)
+			if !ok {
+				t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+			}
+			for _, want := range tt.wantErrs {
+				found := false
+				for _, e := range ve.Errors {
+					if strings.Contains(e, want) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected error containing %q in %v", want, ve.Errors)
+				}
+			}
+		})
+	}
 }
 
 // TestCheckLegacyWebhookSecret covers the save-time rejection of the legacy field.

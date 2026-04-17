@@ -3,6 +3,7 @@ import shared from './FormSections.module.css';
 import styles from './ModelSection.module.css';
 import type { ModelFormState } from './types';
 import { useModels } from '@/hooks/queries/users';
+import { usePublicConfig } from '@/hooks/queries/config';
 import { formatProviderName } from '@/utils/format';
 
 export interface ModelSectionProps {
@@ -12,15 +13,32 @@ export interface ModelSectionProps {
 
 export function ModelSection({ value, onChange }: ModelSectionProps) {
   const { data: providers, isLoading, isError } = useModels();
+  const { data: publicConfig } = usePublicConfig();
 
-  // If the current (provider, model) is not present in the loaded list — e.g.
-  // a new policy whose hardcoded default is "anthropic:claude-sonnet-4-6" but
-  // the operator only has Google enabled — silently snap to the first
-  // available option. Without this, the <select> visually shows the first
-  // option but no change event fires, so the form submits the stale provider
-  // and the backend rejects it with "unknown provider".
+  // When neither provider nor model is set (new policy, no model block in YAML),
+  // apply the system default from /api/v1/config if it appears in the enabled
+  // model list. An empty state is distinct from "chosen but invalid" — we must
+  // not overwrite a value the user has already selected.
   useEffect(() => {
     if (!providers || providers.length === 0) return;
+    if (value.provider !== '' || value.model !== '') return;
+    const dm = publicConfig?.default_model;
+    if (!dm) return;
+    const inList = providers.some(
+      (g) => g.provider === dm.provider && g.models.some((m) => m.name === dm.name),
+    );
+    if (!inList) return;
+    onChange({ provider: dm.provider, model: dm.name });
+  }, [providers, publicConfig, value.provider, value.model, onChange]);
+
+  // If the current (provider, model) is not present in the loaded list and the
+  // current value is non-empty, snap to the first available option. This handles
+  // the case where an existing policy references a model that was subsequently
+  // disabled. Guard against empty-state so we don't overwrite the "not yet
+  // chosen" placeholder before the system-default effect has a chance to run.
+  useEffect(() => {
+    if (!providers || providers.length === 0) return;
+    if (!value.provider && !value.model) return;
     const exists = providers.some(
       (g) => g.provider === value.provider && g.models.some((m) => m.name === value.model),
     );
@@ -41,6 +59,7 @@ export function ModelSection({ value, onChange }: ModelSectionProps) {
   };
 
   const selected = `${value.provider}:${value.model}`;
+  const isEmpty = !value.provider && !value.model;
 
   return (
     <div className={shared.section}>
@@ -54,6 +73,10 @@ export function ModelSection({ value, onChange }: ModelSectionProps) {
         {isLoading && <option value={selected}>Loading models…</option>}
         {isError && <option value={selected}>Failed to load models</option>}
         {providers?.length === 0 && <option value="">No models enabled — go to Admin → Models</option>}
+        {/* Placeholder shown when no model has been chosen yet (new policy, no system default) */}
+        {isEmpty && !isLoading && !isError && (providers?.length ?? 0) > 0 && (
+          <option value="">Select a model…</option>
+        )}
         {providers?.map((group) => (
           <optgroup key={group.provider} label={formatProviderName(group.provider)}>
             {group.models.map((m) => (

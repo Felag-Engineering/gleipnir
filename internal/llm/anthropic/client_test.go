@@ -63,11 +63,11 @@ func TestResolveMaxTokens(t *testing.T) {
 	ptr := func(n int64) *int64 { return &n }
 
 	tests := []struct {
-		name           string
-		req            llm.MessageRequest
-		hints          *AnthropicHints
+		name            string
+		req             llm.MessageRequest
+		hints           *AnthropicHints
 		thinkingEnabled bool
-		wantTokens     int64
+		wantTokens      int64
 	}{
 		{
 			name:       "nil hints uses default",

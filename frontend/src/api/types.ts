@@ -284,10 +284,17 @@ export interface ApiSystemSettings {
   [key: string]: string
 }
 
-// Matches admin/handler.go → GetPublicConfig (GET /api/v1/config)
+// Matches admin/handler.go → defaultModel within publicConfigResponse (GET /api/v1/config)
+export interface ApiDefaultModel {
+  provider: string
+  name: string
+}
+
+// Matches admin/handler.go → publicConfigResponse (GET /api/v1/config)
 // Non-sensitive config returned to all authenticated users (no admin role required).
 export interface ApiPublicConfig {
   public_url: string
+  default_model: ApiDefaultModel | null
 }
 
 // Matches admin/handler.go → systemInfo (GET /api/v1/admin/system-info)

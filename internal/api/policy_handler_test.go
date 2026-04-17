@@ -515,6 +515,9 @@ const validPolicyYAML = `
 name: test-policy
 trigger:
   type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: github.list_repos
@@ -670,6 +673,9 @@ func TestPolicyUpdateHandler(t *testing.T) {
 name: updated-name
 trigger:
   type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: github.list_repos
@@ -914,6 +920,9 @@ func TestPolicyCRUDRoundTrip(t *testing.T) {
 name: updated-policy
 trigger:
   type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: github.list_repos
@@ -1209,7 +1218,7 @@ func TestPolicyResumeHandler(t *testing.T) {
 
 // recordingNotifier implements api.PolicyNotifier and records each Notify call.
 type recordingNotifier struct {
-	mu      sync.Mutex
+	mu       sync.Mutex
 	notified []string // policyIDs in call order
 }
 
@@ -1253,6 +1262,9 @@ trigger:
     - tool: srv.check
       path: "$.ok"
       equals: "true"
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: srv.check
@@ -1266,6 +1278,9 @@ trigger:
   type: scheduled
   fire_at:
     - "2099-01-01T00:00:00Z"
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: srv.check
@@ -1277,6 +1292,9 @@ const webhookPolicyYAMLForHandler = `
 name: my-webhook
 trigger:
   type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: srv.check
@@ -1304,7 +1322,9 @@ func TestPolicyHandler_NotifiesPollerOnCreate(t *testing.T) {
 	}
 
 	var envelope struct {
-		Data struct{ ID string `json:"id"` } `json:"data"`
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -1341,7 +1361,9 @@ func TestPolicyHandler_NotifiesSchedulerOnCreate(t *testing.T) {
 	}
 
 	var envelope struct {
-		Data struct{ ID string `json:"id"` } `json:"data"`
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -1533,4 +1555,3 @@ func TestPolicyHandler_NilNotifiersDoNotPanic(t *testing.T) {
 
 	// If we reach here without panicking, the test passes.
 }
-

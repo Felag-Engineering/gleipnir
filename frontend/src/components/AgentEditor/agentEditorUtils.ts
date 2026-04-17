@@ -28,9 +28,6 @@ export interface FormState {
 
 export const DEFAULT_YAML = `name: ''
 description: ''
-model:
-  provider: anthropic
-  name: claude-sonnet-4-6
 trigger:
   type: webhook
 capabilities:
@@ -218,9 +215,13 @@ export function yamlToFormState(yaml: string): FormState | null {
   // Read model from top-level model: section
   const modelRaw = isRecord(p.model) ? p.model : null
 
+  // When the model block is absent, leave provider and model empty so the form
+  // layer (ModelSection) can apply the system default from /api/v1/config.
+  // An explicit { provider: '', model: '' } is the "not yet chosen" state that
+  // the backend will reject with "model.provider is required" if saved as-is.
   const model: ModelFormState = modelRaw && typeof modelRaw.provider === 'string' && typeof modelRaw.name === 'string'
     ? { provider: modelRaw.provider, model: modelRaw.name }
-    : { provider: 'anthropic', model: 'claude-sonnet-4-6' }
+    : { provider: '', model: '' }
 
   return {
     identity,

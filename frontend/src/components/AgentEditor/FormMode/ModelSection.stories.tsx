@@ -64,6 +64,12 @@ const meta: Meta<typeof ModelSection> = {
           headers: { 'Content-Type': 'application/json' },
         });
       }
+      if (url.includes('/api/v1/config')) {
+        return new Response(JSON.stringify({ data: { public_url: '', default_model: null } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       return originalFetch(input, init);
     };
     return () => { window.fetch = originalFetch; };
@@ -116,6 +122,50 @@ export const NoModels: Story = {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
+      }
+      return originalFetch(input, init);
+    };
+    return () => { window.fetch = originalFetch; };
+  },
+};
+
+// EmptyNoDefault shows the select with a placeholder when no system default is configured.
+// The operator must explicitly choose a model before saving.
+export const EmptyNoDefault: Story = {
+  args: {
+    value: { provider: '', model: '' },
+    onChange: fn(),
+  },
+};
+
+// SystemDefaultApplied demonstrates the select automatically applying the system default
+// (configured in Admin → Models) when opening the form for a new policy.
+export const SystemDefaultApplied: Story = {
+  args: {
+    value: { provider: '', model: '' },
+    onChange: fn(),
+  },
+  beforeEach: () => {
+    const originalFetch = window.fetch;
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+      if (url.includes('/api/v1/models')) {
+        return new Response(MOCK_MODELS_RESPONSE, {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/v1/config')) {
+        return new Response(
+          JSON.stringify({
+            data: { public_url: '', default_model: { provider: 'anthropic', name: 'claude-sonnet-4-6' } },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
       }
       return originalFetch(input, init);
     };

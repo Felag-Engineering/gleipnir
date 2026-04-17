@@ -39,8 +39,8 @@ describe('yamlToFormState — defaults for missing fields', () => {
     expect(state!.limits.max_tool_calls_per_run).toBe(50)
     expect(state!.concurrency.concurrency).toBe('skip')
     expect(state!.concurrency.queueDepth).toBe(0)
-    expect(state!.model.provider).toBe('anthropic')
-    expect(state!.model.model).toBe('claude-sonnet-4-6')
+    expect(state!.model.provider).toBe('')
+    expect(state!.model.model).toBe('')
     expect(state!.trigger.type).toBe('webhook')
   })
 })
@@ -283,14 +283,14 @@ agent:
     expect(state!.model.model).toBe('gemini-2.5-flash')
   })
 
-  it('defaults missing model section to anthropic claude-sonnet-4-6', () => {
+  it('defaults missing model section to empty strings', () => {
     const yaml = `name: p
 agent:
   task: do things
 `
     const state = yamlToFormState(yaml)
-    expect(state!.model.provider).toBe('anthropic')
-    expect(state!.model.model).toBe('claude-sonnet-4-6')
+    expect(state!.model.provider).toBe('')
+    expect(state!.model.model).toBe('')
   })
 
   it('parses valid concurrency values', () => {

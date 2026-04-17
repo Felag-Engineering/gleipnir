@@ -170,12 +170,21 @@ func validateFeedback(f model.FeedbackConfig) []string {
 // validateAgent checks agent config and cross-validates against capabilities.
 // Specifically: replace concurrency is not valid if any tool has
 // approval: required (the in-flight run cannot be safely cancelled mid-approval).
-// Model/provider validation is handled at the service layer via OptionsValidator.
+// Required-field validation for model.provider and model.name is done here;
+// model-option range validation (e.g. valid temperature, max_tokens bounds)
+// is done at the service layer via OptionsValidator.
 func validateAgent(a model.AgentConfig, c model.CapabilitiesConfig) []string {
 	var errs []string
 
 	if a.Task == "" {
 		errs = append(errs, "agent.task is required")
+	}
+
+	if a.ModelConfig.Provider == "" {
+		errs = append(errs, "model.provider is required (set a default in Admin → Models or specify model.provider in policy YAML)")
+	}
+	if a.ModelConfig.Name == "" {
+		errs = append(errs, "model.name is required (set a default in Admin → Models or specify model.name in policy YAML)")
 	}
 
 	// "claude-code" was a subprocess runner removed in issue #611. Policies that

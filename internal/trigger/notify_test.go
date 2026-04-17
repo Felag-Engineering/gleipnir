@@ -389,4 +389,3 @@ func insertNotifyWebhookPolicy(t *testing.T, store *db.Store, id, name string) {
 		t.Fatalf("insertNotifyWebhookPolicy %s: %v", id, err)
 	}
 }
-

@@ -300,19 +300,56 @@ func (h *Handler) GetPublicURL(ctx context.Context) (string, error) {
 	return row.Value, nil
 }
 
+// publicConfigResponse is the JSON shape returned by GetPublicConfig.
+// default_model is null when no system default is configured or when the
+// configured default has been disabled.
+type publicConfigResponse struct {
+	PublicURL    string        `json:"public_url"`
+	DefaultModel *defaultModel `json:"default_model"`
+}
+
+type defaultModel struct {
+	Provider string `json:"provider"`
+	Name     string `json:"name"`
+}
+
 // GetPublicConfig returns non-sensitive runtime configuration to all authenticated
-// users. Currently exposes only public_url. Operators and auditors need this to
-// display full webhook URLs without having access to the admin settings endpoint.
+// users. Exposes public_url and default_model. Operators and auditors need this to
+// display full webhook URLs and to pre-populate the model selector for new policies
+// without having access to the admin settings endpoint.
 func (h *Handler) GetPublicConfig(w http.ResponseWriter, r *http.Request) {
-	publicURL, err := h.GetPublicURL(r.Context())
+	ctx := r.Context()
+
+	publicURL, err := h.GetPublicURL(ctx)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to read config", "")
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, map[string]string{
-		"public_url": publicURL,
-	})
+	resp := publicConfigResponse{PublicURL: publicURL}
+
+	provider, name, err := h.GetSystemDefault(ctx)
+	if err != nil {
+		// Log but do not fail the whole config fetch — default_model stays nil.
+		slog.Warn("GetPublicConfig: failed to read default_model", "err", err)
+	} else if provider != "" {
+		// Guard against a stale default that was disabled via direct DB edits
+		// (the SetModelEnabled API already prevents disabling the current default,
+		// but this defends against out-of-band changes).
+		enabled, listErr := h.q.ListEnabledModels(ctx)
+		if listErr != nil {
+			slog.Warn("GetPublicConfig: failed to list enabled models", "err", listErr)
+		} else {
+			for _, row := range enabled {
+				if row.Provider == provider && row.ModelName == name {
+					resp.DefaultModel = &defaultModel{Provider: provider, Name: name}
+					break
+				}
+			}
+		}
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, resp)
 }
 
 // ListModelsAdmin returns all model settings.
@@ -432,10 +469,15 @@ func (h *Handler) SetModelEnabled(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetSystemDefault returns the provider and model name from the default_model setting.
+// Returns ("", "", nil) when no default is configured (sql.ErrNoRows), so callers
+// can distinguish "unset" from "read failure" — matching the GetPublicURL pattern.
 func (h *Handler) GetSystemDefault(ctx context.Context) (string, string, error) {
 	row, err := h.q.GetSystemSetting(ctx, "default_model")
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("read default_model: %w", err)
 	}
 	parts := strings.SplitN(row.Value, ":", 2)
 	if len(parts) != 2 {

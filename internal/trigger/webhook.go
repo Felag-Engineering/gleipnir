@@ -26,9 +26,9 @@ type SecretLoaderInterface interface {
 // It validates the policy exists, applies the concurrency policy, creates a
 // run record, and launches the agent in a goroutine.
 type WebhookHandler struct {
-	store        *db.Store
-	launcher     *run.RunLauncher
-	secretLoader SecretLoaderInterface
+	store         *db.Store
+	launcher      *run.RunLauncher
+	secretLoader  SecretLoaderInterface
 	modelResolver defaultModelResolver
 }
 
@@ -37,9 +37,9 @@ type WebhookHandler struct {
 // secretLoader is required; pass NewSecretLoader(q, key).
 func NewWebhookHandler(store *db.Store, launcher *run.RunLauncher, secretLoader SecretLoaderInterface, modelResolver defaultModelResolver) *WebhookHandler {
 	return &WebhookHandler{
-		store:        store,
-		launcher:     launcher,
-		secretLoader: secretLoader,
+		store:         store,
+		launcher:      launcher,
+		secretLoader:  secretLoader,
 		modelResolver: modelResolver,
 	}
 }

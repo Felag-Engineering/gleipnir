@@ -362,13 +362,19 @@ func TestGetSystemDefault(t *testing.T) {
 	}
 }
 
-func TestGetSystemDefault_NotSet(t *testing.T) {
+func TestGetSystemDefault_Unset(t *testing.T) {
 	q := newMockQuerier()
 	h := newTestHandler(q)
 
-	_, _, err := h.GetSystemDefault(context.Background())
-	if err == nil {
-		t.Fatal("expected error when default_model not set")
+	// When no default_model row exists, GetSystemDefault must return ("", "", nil)
+	// rather than forwarding sql.ErrNoRows — the empty provider string is the
+	// caller-visible signal for "not configured".
+	provider, model, err := h.GetSystemDefault(context.Background())
+	if err != nil {
+		t.Fatalf("expected nil error when default_model not set, got: %v", err)
+	}
+	if provider != "" || model != "" {
+		t.Errorf("expected empty provider and model, got provider=%q model=%q", provider, model)
 	}
 }
 
@@ -535,7 +541,6 @@ func TestSetProviderKey_AutoEnablesModels(t *testing.T) {
 	}
 }
 
-
 func TestSetProviderKey_ListerErrorDoesNotFailRequest(t *testing.T) {
 	q := newMockQuerier()
 	lister := &stubLister{listErr: fmt.Errorf("provider registry unavailable")}
@@ -551,7 +556,6 @@ func TestSetProviderKey_ListerErrorDoesNotFailRequest(t *testing.T) {
 		t.Errorf("api key should have been stored despite lister error: %v", err)
 	}
 }
-
 
 func deleteProviderKeyRequest(h *Handler, provider string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodDelete, "/providers/"+provider+"/key", nil)
@@ -586,7 +590,6 @@ func TestDeleteProviderKey_DisablesProviderModels(t *testing.T) {
 		t.Error("openai gpt-4o should remain enabled")
 	}
 }
-
 
 // --- public_url validation tests ---
 
@@ -680,6 +683,16 @@ func TestUpdateSettings_PublicURL_EmptyClears(t *testing.T) {
 	}
 }
 
+// publicConfigTestResponse mirrors publicConfigResponse for test assertions.
+// Using a typed struct catches shape mismatches that a map[string]string would silently drop.
+type publicConfigTestResponse struct {
+	PublicURL    string `json:"public_url"`
+	DefaultModel *struct {
+		Provider string `json:"provider"`
+		Name     string `json:"name"`
+	} `json:"default_model"`
+}
+
 func TestGetPublicConfig_WithValue(t *testing.T) {
 	q := newMockQuerier()
 	h := newTestHandler(q)
@@ -695,12 +708,15 @@ func TestGetPublicConfig_WithValue(t *testing.T) {
 	}
 
 	data := parseDataResponse(t, rec)
-	var cfg map[string]string
+	var cfg publicConfigTestResponse
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if cfg["public_url"] != "https://gleipnir.example.com" {
-		t.Errorf("public_url = %q, want %q", cfg["public_url"], "https://gleipnir.example.com")
+	if cfg.PublicURL != "https://gleipnir.example.com" {
+		t.Errorf("public_url = %q, want %q", cfg.PublicURL, "https://gleipnir.example.com")
+	}
+	if cfg.DefaultModel != nil {
+		t.Errorf("expected default_model to be nil when not configured, got %+v", cfg.DefaultModel)
 	}
 }
 
@@ -718,12 +734,75 @@ func TestGetPublicConfig_Unset(t *testing.T) {
 	}
 
 	data := parseDataResponse(t, rec)
-	var cfg map[string]string
+	var cfg publicConfigTestResponse
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if v, ok := cfg["public_url"]; !ok || v != "" {
-		t.Errorf("expected public_url=\"\", got %q (ok=%v)", v, ok)
+	if cfg.PublicURL != "" {
+		t.Errorf("expected empty public_url, got %q", cfg.PublicURL)
+	}
+	if cfg.DefaultModel != nil {
+		t.Errorf("expected default_model to be nil when not configured, got %+v", cfg.DefaultModel)
+	}
+}
+
+func TestGetPublicConfig_WithDefaultModel(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	// Seed the default_model setting and mark the model as enabled.
+	q.settings["default_model"] = db.SystemSetting{Key: "default_model", Value: "anthropic:claude-sonnet-4-6"}
+	q.models["anthropic:claude-sonnet-4-6"] = db.ModelSetting{
+		Provider: "anthropic", ModelName: "claude-sonnet-4-6", Enabled: 1,
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	h.GetPublicConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var cfg publicConfigTestResponse
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.DefaultModel == nil {
+		t.Fatal("expected default_model to be non-nil")
+	}
+	if cfg.DefaultModel.Provider != "anthropic" {
+		t.Errorf("default_model.provider = %q, want %q", cfg.DefaultModel.Provider, "anthropic")
+	}
+	if cfg.DefaultModel.Name != "claude-sonnet-4-6" {
+		t.Errorf("default_model.name = %q, want %q", cfg.DefaultModel.Name, "claude-sonnet-4-6")
+	}
+}
+
+func TestGetPublicConfig_DefaultModelDisabled(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	// Seed the default_model setting but do NOT add it to enabled models.
+	// This simulates a stale default whose model was disabled via direct DB edit.
+	q.settings["default_model"] = db.SystemSetting{Key: "default_model", Value: "anthropic:claude-sonnet-4-6"}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	h.GetPublicConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var cfg publicConfigTestResponse
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.DefaultModel != nil {
+		t.Errorf("expected default_model to be nil when default is disabled, got %+v", cfg.DefaultModel)
 	}
 }
 

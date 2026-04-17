@@ -35,6 +35,9 @@ const validYAML = `
 name: test-policy
 trigger:
   type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: github.list_repos
@@ -128,6 +131,9 @@ func TestService_Update(t *testing.T) {
 name: test-policy
 trigger:
   type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: github.list_repos
@@ -160,6 +166,9 @@ func TestService_Update_ChangedTriggerType_WebhookToManual(t *testing.T) {
 name: test-policy-renamed
 trigger:
   type: manual
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: github.list_repos
@@ -191,6 +200,9 @@ func TestService_Create_ContextCancelled(t *testing.T) {
 name: ctx-test
 trigger:
   type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: a.one
@@ -306,16 +318,16 @@ const validYAMLWithOptions = `
 name: test-policy
 trigger:
   type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+  options:
+    temperature: 0.7
 capabilities:
   tools:
     - tool: github.list_repos
 agent:
   task: Check all repos
-  model:
-    provider: anthropic
-    name: claude-sonnet-4-6
-    options:
-      temperature: 0.7
 `
 
 func TestService_Create_ValidOptionsPass(t *testing.T) {
@@ -382,18 +394,95 @@ func TestService_Create_NilOptionsValidatorSkipsCheck(t *testing.T) {
 	}
 }
 
-func TestService_Create_NoModelSectionDefaultsPass(t *testing.T) {
+func TestService_Create_WithModelSectionPasses(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	ov := &stubOptionsValidator{err: nil}
 	svc := NewService(store, nil, nil, ov, nil)
 
-	// validYAML has no model section; the parser fills in provider defaults.
+	// validYAML includes a model section; verify the policy is created successfully.
 	result, err := svc.Create(context.Background(), validYAML)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Policy.ID == "" {
 		t.Error("expected non-empty policy ID")
+	}
+}
+
+// stubSettings implements SettingsReader for tests.
+type stubSettings struct {
+	provider string
+	model    string
+	err      error
+}
+
+func (s *stubSettings) GetSystemDefault(_ context.Context) (string, string, error) {
+	return s.provider, s.model, s.err
+}
+
+// noModelYAML is a policy YAML with no model block — used to test that the
+// system default is applied (or that validation fires when there is no default).
+const noModelYAML = `
+name: test-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: github.list_repos
+agent:
+  task: Check all repos
+`
+
+func TestCreate_NoModelInYAMLAndNoSystemDefault(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	// nil settings means resolveDefaults returns ("", ""), and the validator
+	// must surface a clear error rather than silently passing empty strings.
+	svc := NewService(store, nil, nil, nil, nil)
+
+	_, err := svc.Create(context.Background(), noModelYAML)
+	if err == nil {
+		t.Fatal("expected validation error when no model in YAML and no system default, got nil")
+	}
+	ve, ok := err.(*ValidationError)
+	if !ok {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	found := false
+	for _, e := range ve.Errors {
+		if strings.Contains(e, "model.provider is required") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error containing 'model.provider is required', got %v", ve.Errors)
+	}
+}
+
+func TestCreate_UsesSystemDefault_WhenYAMLModelOmitted(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	settings := &stubSettings{provider: "anthropic", model: "claude-sonnet-4-6"}
+	svc := NewService(store, nil, nil, nil, settings)
+
+	result, err := svc.Create(context.Background(), noModelYAML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Policy.ID == "" {
+		t.Error("expected non-empty policy ID")
+	}
+
+	// The stored YAML should still be the raw input (no mutation), but parsing it
+	// with the same default should round-trip to the expected ModelConfig.
+	parsed, parseErr := Parse(result.Policy.YAML, "anthropic", "claude-sonnet-4-6")
+	if parseErr != nil {
+		t.Fatalf("parse stored YAML: %v", parseErr)
+	}
+	if parsed.Agent.ModelConfig.Provider != "anthropic" {
+		t.Errorf("ModelConfig.Provider = %q, want %q", parsed.Agent.ModelConfig.Provider, "anthropic")
+	}
+	if parsed.Agent.ModelConfig.Name != "claude-sonnet-4-6" {
+		t.Errorf("ModelConfig.Name = %q, want %q", parsed.Agent.ModelConfig.Name, "claude-sonnet-4-6")
 	}
 }
 
@@ -549,6 +638,9 @@ const webhookYAML = `
 name: webhook-policy
 trigger:
   type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: srv.tool
@@ -560,6 +652,9 @@ const manualYAML = `
 name: manual-policy
 trigger:
   type: manual
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: srv.tool
@@ -693,6 +788,7 @@ func TestService_UpdatePreservesWebhookSecretEncrypted(t *testing.T) {
 	}
 
 	// Update the policy YAML (different task text), which should not clear the secret.
+	// webhookYAML already contains the model block so ReplaceAll preserves it.
 	updatedYAML := strings.ReplaceAll(webhookYAML, "run webhook", "run webhook v2")
 	if _, err := svc.Update(ctx, id, updatedYAML); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -726,6 +822,9 @@ name: legacy
 trigger:
   type: webhook
   webhook_secret: mysecret
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: srv.tool
@@ -756,6 +855,9 @@ name: webhook-policy
 trigger:
   type: webhook
   webhook_secret: newsecret
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
 capabilities:
   tools:
     - tool: srv.tool
