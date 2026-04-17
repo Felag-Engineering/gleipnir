@@ -77,16 +77,19 @@ func NewAuditWriter(queries *db.Queries, opts ...Option) *AuditWriter {
 // ctx is cancelled. Writes are ordered by arrival; step_number is assigned
 // sequentially within the run.
 func (w *AuditWriter) Write(ctx context.Context, step Step) error {
+	auditQueueDepth.Inc()
 	resp := make(chan error, 1)
 	select {
 	case w.queue <- writeRequest{step: step, resp: resp}:
 	case <-ctx.Done():
+		auditQueueDepth.Dec() // never enqueued — undo the Inc
 		return ctx.Err()
 	}
 	select {
 	case err := <-resp:
 		return err
 	case <-ctx.Done():
+		// Do NOT Dec here — the item was enqueued; loop() will Dec when it dequeues.
 		return ctx.Err()
 	}
 }
@@ -136,6 +139,7 @@ func (w *AuditWriter) loop() {
 	counters := make(map[string]int64)
 
 	for req := range w.queue {
+		auditQueueDepth.Dec()
 		stepNum := counters[req.step.RunID]
 		counters[req.step.RunID]++
 
@@ -163,6 +167,8 @@ func (w *AuditWriter) loop() {
 			w.drainErr = errors.Join(w.drainErr, e)
 			continue
 		}
+
+		runStepsTotal.WithLabelValues(req.step.Type.String()).Inc()
 
 		if w.publisher != nil {
 			data, err := json.Marshal(map[string]any{

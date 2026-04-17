@@ -5,9 +5,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	dto "github.com/prometheus/client_model/go"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/rapp992/gleipnir/internal/metrics"
 )
 

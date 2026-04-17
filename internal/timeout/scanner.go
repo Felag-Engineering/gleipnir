@@ -254,6 +254,18 @@ func (s *Scanner) resolveTimeout(ctx context.Context, item ExpiredItem) error {
 		return nil
 	}
 
+	if s.cfg.Name == "approval" {
+		// Increment the approval timeout counter here — right after we
+		// successfully claimed the timeout — even if the run was already
+		// moved out of waiting_for_approval (e.g. interrupted by
+		// ScanOrphanedRuns on restart). The approval itself timed out;
+		// the run's subsequent state is irrelevant to this counter. The
+		// downstream `run.Status != WaitingRunStatus` branch below may
+		// skip the run-side side effects, but the approval-timed-out
+		// fact remains true.
+		approvalTimeoutsTotal.Inc()
+	}
+
 	// Check whether the run is still waiting. ScanOrphanedRuns may have already
 	// marked it interrupted on process restart; in that case we skip the run
 	// update but the item has already been marked timed-out above.

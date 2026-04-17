@@ -14,6 +14,20 @@ import (
 	"github.com/rapp992/gleipnir/internal/runstate"
 )
 
+// trackedForActive reports whether a run status contributes to the
+// gleipnir_runs_active gauge. pending and terminal statuses are excluded —
+// pending is effectively instantaneous, and terminal statuses (complete,
+// failed, interrupted) are covered by runs_total, not an "active" gauge.
+func trackedForActive(s model.RunStatus) bool {
+	switch s {
+	case model.RunStatusRunning,
+		model.RunStatusWaitingForApproval,
+		model.RunStatusWaitingForFeedback:
+		return true
+	}
+	return false
+}
+
 // RunStateMachine tracks and persists the status of a single agent run.
 // It enforces the legal transition graph and writes every transition to the DB.
 // Safe for concurrent use.
@@ -169,6 +183,26 @@ func (sm *RunStateMachine) Transition(ctx context.Context, next model.RunStatus,
 			return fmt.Errorf("creating feedback request record: %w", err)
 		}
 	}
+
+	// Update runs_active gauge based on whether we're entering or leaving a
+	// tracked in-flight state. All Inc/Dec of runs_active live exclusively here
+	// to prevent double-dec bugs — BoundAgent.Run does not touch the gauge.
+	if trackedForActive(from) && !trackedForActive(next) {
+		// Leaving a tracked state for a terminal (e.g. running → complete,
+		// running → failed, waiting_for_approval → failed). Dec only.
+		runsActive.WithLabelValues(string(from)).Dec()
+	} else if !trackedForActive(from) && trackedForActive(next) {
+		// Entering a tracked state from pending (pending → running). Inc only.
+		runsActive.WithLabelValues(string(next)).Inc()
+	} else if trackedForActive(from) && trackedForActive(next) {
+		// Swap between tracked states (running → waiting_for_*, waiting_for_* → running).
+		// Balanced Dec + Inc.
+		runsActive.WithLabelValues(string(from)).Dec()
+		runsActive.WithLabelValues(string(next)).Inc()
+	}
+	// pending → failed (pre-flight) is neither tracked state: no-op, as expected.
+
+	runstate.RecordTransition(from, next)
 
 	sm.current = next
 	logctx.Logger(ctx).InfoContext(ctx, "run status transition", "from", string(from), "to", string(next))

@@ -92,6 +92,8 @@ func TransitionRunFailed(ctx context.Context, queries *db.Queries, publisher eve
 		return fmt.Errorf("persisting run status failed: %w", err)
 	}
 
+	RecordTransition(model.RunStatus(run.Status), model.RunStatusFailed)
+
 	logctx.Logger(ctx).InfoContext(ctx, "run status transition", "run_id", runID, "from", run.Status, "to", "failed")
 
 	if publisher != nil {

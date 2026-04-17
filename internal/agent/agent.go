@@ -321,6 +321,18 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		}
 	}()
 
+	// Capture trigger type and start time for the metrics defer below.
+	// Defers execute LIFO, so this defer fires before the audit.Close() defer
+	// above — the terminal status is read from sm.Current() which reflects the
+	// final DB-persisted state after all transitions complete.
+	triggerType := string(a.policy.Trigger.Type)
+	startedAt := time.Now()
+	defer func() {
+		terminal := string(a.sm.Current())
+		runsTotal.WithLabelValues(triggerType, terminal).Inc()
+		runDurationSeconds.WithLabelValues(triggerType, terminal).Observe(time.Since(startedAt).Seconds())
+	}()
+
 	// Fail fast before entering running state: every capability referenced by the
 	// policy must resolve to a registered tool. Checked here (pending→failed) so the
 	// run never briefly appears running when it has no chance of succeeding.
