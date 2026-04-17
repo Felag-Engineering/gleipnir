@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useApproveRun } from '@/hooks/mutations/runs'
-import { formatCountdown } from '@/utils/format'
+import { useCountdown } from '@/hooks/useCountdown'
 import type { AttentionItem as AttentionItemType } from '@/hooks/useAttentionItems'
 import styles from './AttentionQueue.module.css'
 
@@ -30,11 +30,14 @@ function TypeBadge({ type }: { type: string }) {
 }
 
 // CountdownDisplay shows remaining time until expires_at, turning red when urgent.
+// Using useCountdown here (rather than a bare formatCountdown call) gives each
+// item its own 1-second interval, so the displayed time updates in real time.
 function CountdownDisplay({ expiresAt }: { expiresAt: string }) {
-  const { str, urgent } = formatCountdown(expiresAt)
+  const countdown = useCountdown(expiresAt)
+  if (!countdown) return null
   return (
-    <span className={`${styles.countdown} ${urgent ? styles.countdownUrgent : ''}`}>
-      {str}
+    <span className={`${styles.countdown} ${countdown.urgent ? styles.countdownUrgent : ''}`}>
+      {countdown.str}
     </span>
   )
 }

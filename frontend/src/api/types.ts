@@ -44,6 +44,7 @@ export interface ApiRun {
   created_at: string
   system_prompt: string | null
   model: string
+  approval_expires_at?: string
   policy_updated_at?: string
 }
 

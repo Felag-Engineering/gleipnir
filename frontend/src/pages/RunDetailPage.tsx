@@ -142,7 +142,7 @@ export default function RunDetailPage() {
                 <div className={styles.approvalBox} role="alert">
                   <span className={styles.approvalBoxLabel}>Awaiting approval</span>
                   <span className={styles.approvalBoxMsg}>A tool call requires operator approval before the run can continue.</span>
-                  <ApprovalActions runId={id!} runStatus={run.status} />
+                  <ApprovalActions runId={id!} runStatus={run.status} approvalExpiresAt={run.approval_expires_at} />
                 </div>
               )}
 

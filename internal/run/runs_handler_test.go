@@ -591,6 +591,55 @@ func TestRunsHandler_Get(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "approval_expires_at is set when run is waiting_for_approval with a pending request",
+			setup: func(t *testing.T, store *db.Store) {
+				testutil.InsertPolicy(t, store, "p-get-wfa", "policy-p-get-wfa", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-get-wfa", "p-get-wfa", model.RunStatusWaitingForApproval)
+				testutil.InsertApprovalRequest(t, store, "ar-get-wfa", "r-get-wfa", "tool.x")
+			},
+			runID:    "r-get-wfa",
+			wantCode: http.StatusOK,
+			checkFn: func(t *testing.T, run run.RunSummary) {
+				if run.ApprovalExpiresAt == nil {
+					t.Error("approval_expires_at is nil, want non-nil when waiting_for_approval with pending request")
+				}
+				if run.ApprovalExpiresAt != nil && *run.ApprovalExpiresAt == "" {
+					t.Error("approval_expires_at is empty string, want non-empty timestamp")
+				}
+			},
+		},
+		{
+			name: "approval_expires_at is nil when run is waiting_for_approval with no pending request",
+			setup: func(t *testing.T, store *db.Store) {
+				testutil.InsertPolicy(t, store, "p-get-wfa-empty", "policy-p-get-wfa-empty", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-get-wfa-empty", "p-get-wfa-empty", model.RunStatusWaitingForApproval)
+				// No approval request inserted — covers the len(pending) == 0 path.
+			},
+			runID:    "r-get-wfa-empty",
+			wantCode: http.StatusOK,
+			checkFn: func(t *testing.T, run run.RunSummary) {
+				if run.ApprovalExpiresAt != nil {
+					t.Errorf("approval_expires_at = %q, want nil when no pending request exists", *run.ApprovalExpiresAt)
+				}
+			},
+		},
+		{
+			name: "approval_expires_at is nil when run is not waiting_for_approval",
+			setup: func(t *testing.T, store *db.Store) {
+				testutil.InsertPolicy(t, store, "p-get-complete-ar", "policy-p-get-complete-ar", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-get-complete-ar", "p-get-complete-ar", model.RunStatusComplete)
+				// Insert a stale approval request to verify the status gate is respected.
+				testutil.InsertApprovalRequest(t, store, "ar-get-complete-stale", "r-get-complete-ar", "tool.y")
+			},
+			runID:    "r-get-complete-ar",
+			wantCode: http.StatusOK,
+			checkFn: func(t *testing.T, run run.RunSummary) {
+				if run.ApprovalExpiresAt != nil {
+					t.Errorf("approval_expires_at = %q, want nil for non-waiting run", *run.ApprovalExpiresAt)
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {

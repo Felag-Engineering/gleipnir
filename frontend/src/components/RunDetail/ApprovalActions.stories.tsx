@@ -31,7 +31,7 @@ const meta: Meta<typeof ApprovalActions> = {
 export default meta
 type Story = StoryObj<typeof ApprovalActions>
 
-// ApproverWaiting — an approver role sees the Approve / Deny buttons.
+// ApproverWaiting — an approver role sees the Approve / Deny buttons with no countdown.
 export const ApproverWaiting: Story = {
   decorators: [
     (Story) => (
@@ -43,10 +43,11 @@ export const ApproverWaiting: Story = {
   args: {
     runId: 'run-1',
     runStatus: 'waiting_for_approval',
+    approvalExpiresAt: null,
   },
 }
 
-// AdminWaiting — admin also has approval rights.
+// AdminWaiting — admin also has approval rights, no countdown.
 export const AdminWaiting: Story = {
   decorators: [
     (Story) => (
@@ -58,6 +59,7 @@ export const AdminWaiting: Story = {
   args: {
     runId: 'run-1',
     runStatus: 'waiting_for_approval',
+    approvalExpiresAt: null,
   },
 }
 
@@ -73,6 +75,7 @@ export const OperatorWaiting: Story = {
   args: {
     runId: 'run-1',
     runStatus: 'waiting_for_approval',
+    approvalExpiresAt: null,
   },
 }
 
@@ -88,5 +91,38 @@ export const NotWaiting: Story = {
   args: {
     runId: 'run-1',
     runStatus: 'complete',
+    approvalExpiresAt: null,
+  },
+}
+
+// ApproverWaitingWithCountdown — approver sees the countdown in amber (~8 min remaining).
+export const ApproverWaitingWithCountdown: Story = {
+  decorators: [
+    (Story) => (
+      <QueryClientProvider client={makeQueryClient(['approver'])}>
+        <Story />
+      </QueryClientProvider>
+    ),
+  ],
+  args: {
+    runId: 'run-1',
+    runStatus: 'waiting_for_approval',
+    approvalExpiresAt: new Date(Date.now() + 8 * 60 * 1000).toISOString(),
+  },
+}
+
+// ApproverWaitingUrgent — approver sees the countdown in red with pulse animation (~75 s remaining).
+export const ApproverWaitingUrgent: Story = {
+  decorators: [
+    (Story) => (
+      <QueryClientProvider client={makeQueryClient(['approver'])}>
+        <Story />
+      </QueryClientProvider>
+    ),
+  ],
+  args: {
+    runId: 'run-1',
+    runStatus: 'waiting_for_approval',
+    approvalExpiresAt: new Date(Date.now() + 75 * 1000).toISOString(),
   },
 }

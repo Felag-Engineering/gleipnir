@@ -10,3 +10,23 @@
   font-size: var(--text-xs);
   margin-top: var(--space-1);
 }
+
+.countdown {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-amber);
+}
+
+.countdownUrgent {
+  color: var(--color-red);
+  animation: urgentPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes urgentPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .countdownUrgent { animation: none; }
+}

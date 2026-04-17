@@ -37,8 +37,9 @@ type RunSummary struct {
 	Error           *string `json:"error"`
 	CreatedAt       string  `json:"created_at"`
 	SystemPrompt    *string `json:"system_prompt"`
-	Model           string  `json:"model"`
-	PolicyUpdatedAt *string `json:"policy_updated_at,omitempty"` // omitted from list responses; set only by Get
+	Model             string  `json:"model"`
+	ApprovalExpiresAt *string `json:"approval_expires_at,omitempty"` // omitted from list responses; set only by Get when waiting_for_approval
+	PolicyUpdatedAt   *string `json:"policy_updated_at,omitempty"`   // omitted from list responses; set only by Get
 }
 
 // StepSummary is the JSON shape returned for a single run step.
@@ -255,6 +256,17 @@ func (h *RunsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		summary.PolicyUpdatedAt = &policy.UpdatedAt
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		slog.Warn("GetPolicy for run detail failed", "policy_id", run.PolicyID, "err", err)
+	}
+
+	// Populate approval_expires_at only for runs actively waiting for approval.
+	// Best-effort: a query failure must never cause the Get response to fail.
+	if run.Status == string(model.RunStatusWaitingForApproval) {
+		pending, err := h.store.GetPendingApprovalRequestsByRun(ctx, runID)
+		if err != nil {
+			slog.Warn("GetPendingApprovalRequestsByRun for run detail failed", "run_id", runID, "err", err)
+		} else if len(pending) > 0 {
+			summary.ApprovalExpiresAt = &pending[0].ExpiresAt
+		}
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, summary)
