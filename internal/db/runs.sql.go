@@ -123,16 +123,25 @@ func (q *Queries) GetRun(ctx context.Context, id string) (Run, error) {
 
 const getRunTimeSeries = `-- name: GetRunTimeSeries :many
 SELECT
-  strftime('%Y-%m-%dT%H:00:00Z', created_at) AS bucket,
+  strftime('%Y-%m-%dT%H:%M:%SZ',
+           (CAST(strftime('%s', created_at) AS INTEGER)
+             / ?1)
+           * ?1,
+           'unixepoch') AS bucket,
   status,
   model,
   COUNT(*) AS run_count,
   CAST(COALESCE(SUM(token_cost), 0) AS INTEGER) AS total_tokens
 FROM runs
-WHERE created_at >= ?1
+WHERE created_at >= ?2
 GROUP BY bucket, status, model
 ORDER BY bucket ASC
 `
+
+type GetRunTimeSeriesParams struct {
+	BucketSeconds string `json:"bucket_seconds"`
+	Since         string `json:"since"`
+}
 
 type GetRunTimeSeriesRow struct {
 	Bucket      interface{} `json:"bucket"`
@@ -142,12 +151,14 @@ type GetRunTimeSeriesRow struct {
 	TotalTokens int64       `json:"total_tokens"`
 }
 
-// GetRunTimeSeries returns hourly-bucketed run counts and token costs grouped by
-// status and model for the dashboard time-series charts. The bucket column is
-// truncated to the hour boundary using strftime so the Go handler can build a
-// consistent x-axis without holes.
-func (q *Queries) GetRunTimeSeries(ctx context.Context, since string) ([]GetRunTimeSeriesRow, error) {
-	rows, err := q.db.QueryContext(ctx, getRunTimeSeries, since)
+// GetRunTimeSeries returns run counts and token costs grouped by configurable
+// time bucket, status, and model for the dashboard time-series charts. Buckets
+// are UTC-aligned using epoch-second integer math: floor(epoch / N) * N places
+// each row in the N-second grid with no DST drift. The Go handler passes
+// bucket_seconds (e.g. 300 for 5 minutes) so the same query serves both the
+// fine-grained 24h view and coarser 7d/30d windows.
+func (q *Queries) GetRunTimeSeries(ctx context.Context, arg GetRunTimeSeriesParams) ([]GetRunTimeSeriesRow, error) {
+	rows, err := q.db.QueryContext(ctx, getRunTimeSeries, arg.BucketSeconds, arg.Since)
 	if err != nil {
 		return nil, err
 	}

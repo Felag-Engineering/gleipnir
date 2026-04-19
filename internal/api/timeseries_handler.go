@@ -1,7 +1,9 @@
 package api
 
 import (
+	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
@@ -42,16 +44,28 @@ var windowDuration = map[string]time.Duration{
 
 // bucketDuration maps the supported bucket query param values to durations.
 var bucketDuration = map[string]time.Duration{
-	"1h": time.Hour,
-	"6h": 6 * time.Hour,
-	"1d": 24 * time.Hour,
+	"5m":  5 * time.Minute,
+	"15m": 15 * time.Minute,
+	"1h":  time.Hour,
+	"6h":  6 * time.Hour,
+	"1d":  24 * time.Hour,
 }
 
-// Get handles GET /api/v1/stats/timeseries?window=24h&bucket=1h.
+// defaultBucketForWindow is the bucket granularity used when the client omits
+// the bucket query param. The 24h window uses 5-minute buckets (288 points)
+// so the chart scrolls smoothly; wider windows use coarser buckets.
+var defaultBucketForWindow = map[string]string{
+	"24h": "5m",
+	"7d":  "6h",
+	"30d": "1d",
+}
+
+// Get handles GET /api/v1/stats/timeseries?window=24h&bucket=5m.
 //
-// It fetches raw hourly rows from the DB (grouped by status and model), then
-// distributes them into clock-aligned buckets for the requested window. Empty
-// buckets are always emitted so the frontend has a consistent x-axis.
+// It fetches rows from the DB (grouped by configurable time bucket, status, and
+// model), then distributes them into UTC-aligned buckets for the requested
+// window. Empty buckets are always emitted so the frontend has a consistent
+// x-axis.
 func (h *TimeSeriesHandler) Get(w http.ResponseWriter, r *http.Request) {
 	windowParam := r.URL.Query().Get("window")
 	if windowParam == "" {
@@ -59,7 +73,7 @@ func (h *TimeSeriesHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	bucketParam := r.URL.Query().Get("bucket")
 	if bucketParam == "" {
-		bucketParam = "1h"
+		bucketParam = defaultBucketForWindow[windowParam]
 	}
 
 	window, ok := windowDuration[windowParam]
@@ -71,18 +85,21 @@ func (h *TimeSeriesHandler) Get(w http.ResponseWriter, r *http.Request) {
 	step, ok := bucketDuration[bucketParam]
 	if !ok {
 		httputil.WriteError(w, http.StatusBadRequest, "unsupported bucket parameter",
-			"supported values: 1h, 6h, 1d")
+			"supported values: 5m, 15m, 1h, 6h, 1d")
 		return
 	}
 
-	// end is the next clock-aligned boundary after now. This ensures the current
-	// partial bucket is always the last one in the response.
+	// end tracks now exactly so the right edge of the chart advances
+	// continuously. start is aligned to a step boundary so the empty-bucket
+	// synthesis in Go produces keys that match the SQL strftime output.
 	now := time.Now().UTC()
-	end := now.Truncate(step).Add(step)
-	start := end.Add(-window)
-	sinceStr := start.Format(time.RFC3339Nano)
+	end := now
+	start := end.Add(-window).Truncate(step)
 
-	rows, err := h.store.GetRunTimeSeries(r.Context(), sinceStr)
+	rows, err := h.store.GetRunTimeSeries(r.Context(), db.GetRunTimeSeriesParams{
+		BucketSeconds: strconv.FormatInt(int64(step/time.Second), 10),
+		Since:         start.Format(time.RFC3339Nano),
+	})
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch time series", err.Error())
 		return
@@ -94,13 +111,14 @@ func (h *TimeSeriesHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildBuckets assembles clock-aligned TimeSeriesBuckets for the window.
-// start and end are already aligned to step boundaries (start = end - window).
+// start is aligned to a step boundary; end is not necessarily aligned (it is
+// now). bucketCount uses ceil so the trailing partial bucket containing recent
+// runs is always emitted.
 // DB rows are matched to buckets by comparing their SQL-generated bucket string
-// (e.g. "2026-04-01T14:00:00Z") against each bucket's timestamp. Model IDs in
+// (e.g. "2026-04-01T14:05:00Z") against each bucket's timestamp. Model IDs in
 // the DB rows are converted to display names before being placed in CostByModel.
 func buildBuckets(start, end time.Time, step time.Duration, rows []db.GetRunTimeSeriesRow) []TimeSeriesBucket {
-	window := end.Sub(start)
-	bucketCount := int(window / step)
+	bucketCount := int(math.Ceil(float64(end.Sub(start)) / float64(step)))
 	if bucketCount < 1 {
 		bucketCount = 1
 	}
@@ -117,7 +135,7 @@ func buildBuckets(start, end time.Time, step time.Duration, rows []db.GetRunTime
 	buckets := make([]TimeSeriesBucket, 0, bucketCount)
 	for i := 0; i < bucketCount; i++ {
 		t := start.Add(time.Duration(i) * step)
-		// Format to match strftime('%Y-%m-%dT%H:00:00Z', ...) output.
+		// Format to match strftime('%Y-%m-%dT%H:%M:%SZ', ..., 'unixepoch') output.
 		bucketTS := t.UTC().Format("2006-01-02T15:04:05Z")
 
 		b := TimeSeriesBucket{

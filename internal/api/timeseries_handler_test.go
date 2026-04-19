@@ -2,12 +2,14 @@ package api_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/api"
+	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
@@ -30,9 +32,11 @@ func TestTimeSeriesHandlerEmptyDB(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	// 24h window with 1h buckets should produce 24 buckets.
-	if len(env.Data.Buckets) != 24 {
-		t.Errorf("expected 24 buckets for 24h/1h window, got %d", len(env.Data.Buckets))
+	// 24h window with 1h buckets produces 24 or 25 buckets depending on whether
+	// now falls exactly on an hour boundary (ceil of window/step).
+	n := len(env.Data.Buckets)
+	if n < 24 || n > 25 {
+		t.Errorf("expected 24 or 25 buckets for 24h/1h window, got %d", n)
 	}
 
 	// All buckets should be zero.
@@ -174,9 +178,10 @@ func TestTimeSeriesHandlerWindowParam7d(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	// 7d / 6h = 28 buckets.
-	if len(env.Data.Buckets) != 28 {
-		t.Errorf("expected 28 buckets for 7d/6h window, got %d", len(env.Data.Buckets))
+	// 7d / 6h = 28 buckets when now is step-aligned, 29 when it is not.
+	n := len(env.Data.Buckets)
+	if n < 28 || n > 29 {
+		t.Errorf("expected 28 or 29 buckets for 7d/6h window, got %d", n)
 	}
 }
 
@@ -201,4 +206,145 @@ func TestTimeSeriesHandlerInvalidParams(t *testing.T) {
 			t.Errorf("expected 400, got %d", rec.Code)
 		}
 	})
+
+	t.Run("invalid bucket 10m", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/stats/timeseries?window=24h&bucket=10m", nil)
+		rec := httptest.NewRecorder()
+		h.Get(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 for bucket=10m, got %d", rec.Code)
+		}
+	})
+}
+
+// TestTimeSeriesHandlerDefaultBucketPerWindow verifies that each window uses the
+// expected default bucket granularity when no bucket param is supplied.
+func TestTimeSeriesHandlerDefaultBucketPerWindow(t *testing.T) {
+	cases := []struct {
+		window   string
+		minCount int
+		maxCount int
+	}{
+		// 24h at 5m (300s): 24*60/5 = 288; allow 288 or 289
+		{"24h", 288, 289},
+		// 7d at 6h: 7*24/6 = 28; allow 28 or 29
+		{"7d", 28, 29},
+		// 30d at 1d: 30; allow 30 or 31
+		{"30d", 30, 31},
+	}
+
+	for _, tc := range cases {
+		t.Run("window="+tc.window, func(t *testing.T) {
+			store := newPolicyHandlerStore(t)
+			h := api.NewTimeSeriesHandler(store)
+
+			req := httptest.NewRequest(http.MethodGet, "/stats/timeseries?window="+tc.window, nil)
+			rec := httptest.NewRecorder()
+			h.Get(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+
+			var env struct {
+				Data api.TimeSeriesResponse `json:"data"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&env); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+
+			n := len(env.Data.Buckets)
+			if n < tc.minCount || n > tc.maxCount {
+				t.Errorf("window=%s: expected %d-%d buckets, got %d", tc.window, tc.minCount, tc.maxCount, n)
+			}
+		})
+	}
+}
+
+// TestTimeSeriesHandlerRightEdgeTracksNow checks that the last bucket timestamp
+// is within one step of now — confirming end=now rather than end=next-boundary.
+func TestTimeSeriesHandlerRightEdgeTracksNow(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	insertTestPolicy(t, store, "p1", "pol1", "")
+
+	// Insert a run created 1 minute ago.
+	createdAt := time.Now().UTC().Add(-1 * time.Minute).Format(time.RFC3339Nano)
+	testutil.InsertRunWithTime(t, store, "r1", "p1", model.RunStatusComplete, createdAt, 0)
+
+	h := api.NewTimeSeriesHandler(store)
+	before := time.Now().UTC()
+	req := httptest.NewRequest(http.MethodGet, "/stats/timeseries?window=24h&bucket=5m", nil)
+	rec := httptest.NewRecorder()
+	h.Get(rec, req)
+	after := time.Now().UTC()
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var env struct {
+		Data api.TimeSeriesResponse `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(env.Data.Buckets) == 0 {
+		t.Fatal("expected at least one bucket")
+	}
+
+	last := env.Data.Buckets[len(env.Data.Buckets)-1]
+	lastTS, err := time.Parse(time.RFC3339, last.Timestamp)
+	if err != nil {
+		t.Fatalf("parse last bucket timestamp %q: %v", last.Timestamp, err)
+	}
+
+	step := 5 * time.Minute
+	// The last bucket's timestamp must be <= now and > now - step.
+	if lastTS.After(after) {
+		t.Errorf("last bucket timestamp %v is after now %v", lastTS, after)
+	}
+	if !lastTS.After(before.Add(-step)) {
+		t.Errorf("last bucket timestamp %v is more than one step (%v) before now %v", lastTS, step, before)
+	}
+}
+
+// TestTimeSeriesHandlerFineBucket5m inserts three runs at -10m, -20m, and -30m
+// and verifies they fall into three distinct 5-minute buckets.
+func TestTimeSeriesHandlerFineBucket5m(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	insertTestPolicy(t, store, "p1", "pol1", "")
+
+	now := time.Now().UTC()
+	for i, offset := range []time.Duration{10, 20, 30} {
+		ts := now.Add(-offset * time.Minute).Format(time.RFC3339Nano)
+		testutil.InsertRunWithTime(t, store, fmt.Sprintf("r%d", i), "p1", model.RunStatusComplete, ts, 0)
+	}
+
+	h := api.NewTimeSeriesHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/stats/timeseries?window=24h&bucket=5m", nil)
+	rec := httptest.NewRecorder()
+	h.Get(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var env struct {
+		Data api.TimeSeriesResponse `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Count how many buckets have exactly one completed run.
+	singleRunBuckets := 0
+	for _, b := range env.Data.Buckets {
+		if b.Completed == 1 {
+			singleRunBuckets++
+		}
+	}
+
+	if singleRunBuckets != 3 {
+		t.Errorf("expected 3 buckets each with one completed run (runs at -10m, -20m, -30m should be in separate 5m buckets), got %d", singleRunBuckets)
+	}
 }

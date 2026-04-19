@@ -104,19 +104,25 @@ SELECT CAST(COALESCE(SUM(token_cost), 0) AS INTEGER) FROM runs WHERE created_at 
 -- name: HasScheduledRunSince :one
 SELECT EXISTS(SELECT 1 FROM runs WHERE policy_id = :policy_id AND trigger_type = 'scheduled' AND created_at >= :since) AS fired;
 
--- GetRunTimeSeries returns hourly-bucketed run counts and token costs grouped by
--- status and model for the dashboard time-series charts. The bucket column is
--- truncated to the hour boundary using strftime so the Go handler can build a
--- consistent x-axis without holes.
+-- GetRunTimeSeries returns run counts and token costs grouped by configurable
+-- time bucket, status, and model for the dashboard time-series charts. Buckets
+-- are UTC-aligned using epoch-second integer math: floor(epoch / N) * N places
+-- each row in the N-second grid with no DST drift. The Go handler passes
+-- bucket_seconds (e.g. 300 for 5 minutes) so the same query serves both the
+-- fine-grained 24h view and coarser 7d/30d windows.
 -- name: GetRunTimeSeries :many
 SELECT
-  strftime('%Y-%m-%dT%H:00:00Z', created_at) AS bucket,
+  strftime('%Y-%m-%dT%H:%M:%SZ',
+           (CAST(strftime('%s', created_at) AS INTEGER)
+             / sqlc.arg('bucket_seconds'))
+           * sqlc.arg('bucket_seconds'),
+           'unixepoch') AS bucket,
   status,
   model,
   COUNT(*) AS run_count,
   CAST(COALESCE(SUM(token_cost), 0) AS INTEGER) AS total_tokens
 FROM runs
-WHERE created_at >= :since
+WHERE created_at >= sqlc.arg('since')
 GROUP BY bucket, status, model
 ORDER BY bucket ASC;
 

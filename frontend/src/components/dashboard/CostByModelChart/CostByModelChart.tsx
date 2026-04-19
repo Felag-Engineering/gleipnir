@@ -20,8 +20,8 @@ interface CostByModelChartProps {
 const MODEL_COLORS = ['#60a5fa', '#34d399', '#a78bfa', '#f59e0b']
 
 interface ChartRow {
-  time: string
-  [model: string]: string | number
+  time: number
+  [model: string]: number
 }
 
 // formatYAxisDollars abbreviates dollar amounts for the Y-axis (e.g. 1200 -> "$1.2k").
@@ -36,14 +36,32 @@ function formatYAxisDollars(value: number): string {
   return `$${value.toFixed(2)}`
 }
 
-// formatHour turns an ISO timestamp into a short clock label like "14:00".
-function formatHour(iso: string): string {
+// formatHourTick formats an epoch-ms value into a short clock label like "14:00".
+function formatHourTick(ms: number): string {
   try {
-    const d = new Date(iso)
-    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+    return new Date(ms).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
   } catch {
-    return iso
+    return String(ms)
   }
+}
+
+// computeHourTicks returns a sparse set of whole-hour tick positions from the
+// data range, capped at 6 ticks so the axis stays readable at 288-point density.
+function computeHourTicks(rows: ChartRow[]): number[] {
+  if (rows.length < 2) return []
+  const min = rows[0].time
+  const max = rows[rows.length - 1].time
+  const hourMs = 3600 * 1000
+  // Start from the first whole-hour boundary at or after min.
+  const firstTick = Math.ceil(min / hourMs) * hourMs
+  const ticks: number[] = []
+  for (let t = firstTick; t <= max; t += hourMs) {
+    ticks.push(t)
+  }
+  // If there are more than 6 ticks, sample evenly to keep the axis sparse.
+  if (ticks.length <= 6) return ticks
+  const step = Math.ceil(ticks.length / 6)
+  return ticks.filter((_, i) => i % step === 0)
 }
 
 function buildChartData(data: ApiTimeSeriesResponse | undefined): { rows: ChartRow[]; models: string[] } {
@@ -59,7 +77,7 @@ function buildChartData(data: ApiTimeSeriesResponse | undefined): { rows: ChartR
   const models = [...modelSet]
 
   const rows: ChartRow[] = data.buckets.map(b => {
-    const row: ChartRow = { time: formatHour(b.timestamp) }
+    const row: ChartRow = { time: new Date(b.timestamp).getTime() }
     for (const m of models) {
       const tokens = b.cost_by_model[m] ?? 0
       row[m] = estimateCost(m, tokens)
@@ -141,10 +159,14 @@ export function CostByModelChart({ data, isLoading }: CostByModelChartProps) {
               />
               <XAxis
                 dataKey="time"
+                type="number"
+                scale="time"
+                domain={['dataMin', 'dataMax']}
+                ticks={computeHourTicks(rows)}
+                tickFormatter={formatHourTick}
                 tick={{ fontFamily: 'var(--font-mono)', fontSize: 10, fill: 'var(--text-muted)' }}
                 tickLine={false}
                 axisLine={false}
-                interval="preserveStartEnd"
               />
               <YAxis
                 tick={{ fontFamily: 'var(--font-mono)', fontSize: 10, fill: 'var(--text-muted)' }}
@@ -154,6 +176,7 @@ export function CostByModelChart({ data, isLoading }: CostByModelChartProps) {
                 tickFormatter={formatYAxisDollars}
               />
               <Tooltip
+                labelFormatter={(label) => formatHourTick(Number(label))}
                 formatter={(value) => (typeof value === 'number' ? formatDollars(value) : String(value))}
                 contentStyle={{
                   background: 'var(--bg-elevated)',
