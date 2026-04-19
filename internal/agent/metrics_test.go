@@ -6,8 +6,8 @@ import (
 
 	// Import packages that register their collectors at init time so the
 	// smoke test covers all seven metric families in a single Describe pass.
-	_ "github.com/rapp992/gleipnir/internal/agent"
 	"github.com/prometheus/client_golang/prometheus"
+	_ "github.com/rapp992/gleipnir/internal/agent"
 	"github.com/rapp992/gleipnir/internal/metrics"
 	_ "github.com/rapp992/gleipnir/internal/runstate"
 	_ "github.com/rapp992/gleipnir/internal/timeout"

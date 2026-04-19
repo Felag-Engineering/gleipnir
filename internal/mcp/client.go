@@ -95,6 +95,7 @@ type contentItem struct {
 // Client calls a single MCP server over HTTP transport.
 type Client struct {
 	serverURL  string
+	serverName string // Prometheus label; set by registry.newClient, empty for direct NewClient callers
 	httpClient *http.Client
 	mu         sync.Mutex
 	sessionID  string
@@ -320,8 +321,21 @@ func (c *Client) DiscoverTools(ctx context.Context) ([]Tool, error) {
 
 // CallTool invokes a named tool on the MCP server with the given input.
 // The input must be a JSON-serialisable value matching the tool's inputSchema.
-func (c *Client) CallTool(ctx context.Context, name string, input map[string]any) (ToolResult, error) {
-	body, err := json.Marshal(jsonrpcRequest{
+func (c *Client) CallTool(ctx context.Context, name string, input map[string]any) (res ToolResult, err error) {
+	start := time.Now()
+	defer func() {
+		mcpCallDurationSeconds.
+			WithLabelValues(c.serverName, name).
+			Observe(time.Since(start).Seconds())
+		if err != nil {
+			mcpErrorsTotal.
+				WithLabelValues(c.serverName, ClassifyMCPErrorType(err)).
+				Inc()
+		}
+	}()
+
+	var body []byte
+	body, err = json.Marshal(jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      2,
 		Method:  "tools/call",
@@ -334,37 +348,46 @@ func (c *Client) CallTool(ctx context.Context, name string, input map[string]any
 		},
 	})
 	if err != nil {
-		return ToolResult{}, fmt.Errorf("marshal tools/call request: %w", err)
+		err = fmt.Errorf("marshal tools/call request: %w", err)
+		return
 	}
 
-	resp, err := c.callWithSession(ctx, body)
+	var resp *http.Response
+	resp, err = c.callWithSession(ctx, body)
 	if err != nil {
-		return ToolResult{}, fmt.Errorf("post tools/call: %w", err)
+		err = fmt.Errorf("post tools/call: %w", err)
+		return
 	}
 	defer resp.Body.Close()
 
 	var envelope jsonrpcResponse
-	if err := decodeResponse(resp, &envelope); err != nil {
-		return ToolResult{}, fmt.Errorf("decode tools/call response: %w", err)
+	if decErr := decodeResponse(resp, &envelope); decErr != nil {
+		err = fmt.Errorf("decode tools/call response: %w", decErr)
+		return
 	}
 	if envelope.Error != nil {
-		return ToolResult{}, envelope.Error
+		err = envelope.Error
+		return
 	}
 
 	var result toolsCallResult
-	if err := json.Unmarshal(envelope.Result, &result); err != nil {
-		return ToolResult{}, fmt.Errorf("unmarshal tools/call result: %w", err)
+	if umErr := json.Unmarshal(envelope.Result, &result); umErr != nil {
+		err = fmt.Errorf("unmarshal tools/call result: %w", umErr)
+		return
 	}
 
-	output, err := json.Marshal(result.Content)
+	var output []byte
+	output, err = json.Marshal(result.Content)
 	if err != nil {
-		return ToolResult{}, fmt.Errorf("marshal content array: %w", err)
+		err = fmt.Errorf("marshal content array: %w", err)
+		return
 	}
 
-	return ToolResult{
+	res = ToolResult{
 		Output:  output,
 		IsError: result.IsError,
-	}, nil
+	}
+	return
 }
 
 // decodeResponse decodes a JSON-RPC response from resp.Body into dst.

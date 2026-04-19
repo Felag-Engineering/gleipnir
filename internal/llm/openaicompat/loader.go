@@ -45,7 +45,7 @@ func LoadAndRegister(ctx context.Context, q LoaderQuerier, encKey []byte, regist
 				"name", row.Name, "err", err)
 			continue
 		}
-		client := NewClient(row.BaseURL, plaintext)
+		client := NewClient(row.BaseURL, plaintext, WithProviderName(row.Name))
 		registry.Register(row.Name, client)
 		slog.Info("openai loader: registered provider",
 			"name", row.Name, "base_url", row.BaseURL)

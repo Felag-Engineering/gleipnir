@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	openaisdk "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/shared"
 	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/rapp992/gleipnir/internal/metrics"
 )
 
 // Compile-time check that *Client satisfies the LLMClient interface.
@@ -40,22 +42,50 @@ func NewClient(apiKey string, opts ...option.RequestOption) *Client {
 
 // CreateMessage sends a single synchronous Responses API request and returns
 // the normalized response.
-func (c *Client) CreateMessage(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
+func (c *Client) CreateMessage(ctx context.Context, req llm.MessageRequest) (resp *llm.MessageResponse, err error) {
+	start := time.Now()
+	defer func() {
+		llm.ObserveRequestDuration("openai", req.Model, time.Since(start))
+		if err != nil {
+			llm.RecordError("openai", classifyOpenAIError(err))
+			return
+		}
+		if resp != nil {
+			llm.RecordTokens("openai", req.Model, resp.Usage)
+		}
+	}()
+
 	hints, _ := req.Hints.(*OpenAIHints)
 
-	tools, names, err := buildTools(req.Tools)
-	if err != nil {
-		return nil, fmt.Errorf("openai: building tools: %w", err)
+	tools, names, buildErr := buildTools(req.Tools)
+	if buildErr != nil {
+		err = fmt.Errorf("openai: building tools: %w", buildErr)
+		return
 	}
 
 	params := c.buildParams(req, hints, tools, names)
 
-	resp, err := c.sdk.Responses.New(ctx, params)
-	if err != nil {
-		return nil, wrapSDKError(err)
+	sdkResp, sdkErr := c.sdk.Responses.New(ctx, params)
+	if sdkErr != nil {
+		err = wrapSDKError(sdkErr)
+		return
 	}
 
-	return translateResponse(resp, names)
+	resp, err = translateResponse(sdkResp, names)
+	return
+}
+
+// classifyOpenAIError maps an OpenAI SDK error to the fixed error_type enum.
+// openaisdk.Error is a pointer type, so the errors.As target is **openaisdk.Error.
+func classifyOpenAIError(err error) string {
+	if et, ok := llm.ClassifyContextError(err); ok {
+		return et
+	}
+	var apiErr *openaisdk.Error
+	if errors.As(err, &apiErr) {
+		return llm.ClassifyHTTPStatus(apiErr.StatusCode)
+	}
+	return metrics.ErrorTypeConnection
 }
 
 // StreamMessage sends a streaming Responses API request and returns a channel

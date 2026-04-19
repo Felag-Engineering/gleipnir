@@ -8,8 +8,10 @@ import (
 	"iter"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/rapp992/gleipnir/internal/metrics"
 	"google.golang.org/genai"
 )
 
@@ -49,7 +51,19 @@ func newClientWithGenerator(gen contentGenerator) *GeminiClient {
 
 // CreateMessage sends a single synchronous request to the Gemini API and
 // returns the normalized response.
-func (c *GeminiClient) CreateMessage(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
+func (c *GeminiClient) CreateMessage(ctx context.Context, req llm.MessageRequest) (resp *llm.MessageResponse, err error) {
+	start := time.Now()
+	defer func() {
+		llm.ObserveRequestDuration("google", req.Model, time.Since(start))
+		if err != nil {
+			llm.RecordError("google", classifyGoogleError(err))
+			return
+		}
+		if resp != nil {
+			llm.RecordTokens("google", req.Model, resp.Usage)
+		}
+	}()
+
 	hints, _ := req.Hints.(*GeminiHints)
 
 	// Build name mapping before translating history so tool names in
@@ -58,12 +72,27 @@ func (c *GeminiClient) CreateMessage(ctx context.Context, req llm.MessageRequest
 	contents := buildContents(req.History, names)
 	config := buildConfig(req, hints, names)
 
-	resp, err := c.generator.GenerateContent(ctx, req.Model, contents, config)
-	if err != nil {
-		return nil, wrapSDKError(err)
+	sdkResp, sdkErr := c.generator.GenerateContent(ctx, req.Model, contents, config)
+	if sdkErr != nil {
+		err = wrapSDKError(sdkErr)
+		return
 	}
 
-	return translateResponse(resp, names)
+	resp, err = translateResponse(sdkResp, names)
+	return
+}
+
+// classifyGoogleError maps a Gemini SDK error to the fixed error_type enum.
+// genai.APIError is a value type, so the errors.As target is a pointer-to-value.
+func classifyGoogleError(err error) string {
+	if et, ok := llm.ClassifyContextError(err); ok {
+		return et
+	}
+	var apiErr genai.APIError
+	if errors.As(err, &apiErr) {
+		return llm.ClassifyHTTPStatus(apiErr.Code)
+	}
+	return metrics.ErrorTypeConnection
 }
 
 // StreamMessage opens a streaming request to the Gemini API and emits

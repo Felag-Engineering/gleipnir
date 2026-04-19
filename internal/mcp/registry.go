@@ -59,13 +59,18 @@ func NewRegistry(queries *db.Queries, opts ...RegistryOption) *Registry {
 	return r
 }
 
-// newClient creates an MCP Client for the given URL, applying the Registry's
-// mcpTimeout when it is non-zero.
-func (r *Registry) newClient(url string) *Client {
+// newClient creates an MCP Client for the given server name and URL, applying
+// the Registry's mcpTimeout when it is non-zero. serverName is stored on the
+// Client so CallTool can use it as a Prometheus label.
+func (r *Registry) newClient(name, url string) *Client {
+	var cl *Client
 	if r.mcpTimeout > 0 {
-		return NewClient(url, WithTimeout(r.mcpTimeout))
+		cl = NewClient(url, WithTimeout(r.mcpTimeout))
+	} else {
+		cl = NewClient(url)
 	}
-	return NewClient(url)
+	cl.serverName = name
+	return cl
 }
 
 // splitToolName splits a dot-notation tool name (e.g. "my-server.read_pods")
@@ -118,7 +123,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 
 		cl, ok := clients[srv.Url]
 		if !ok {
-			cl = r.newClient(srv.Url)
+			cl = r.newClient(serverName, srv.Url)
 			clients[srv.Url] = cl
 		}
 
@@ -165,7 +170,7 @@ func (r *Registry) ResolveToolByName(ctx context.Context, dotName string) (*Clie
 		return nil, "", fmt.Errorf("get server for tool %q: %w", dotName, err)
 	}
 
-	return r.newClient(srv.Url), toolName, nil
+	return r.newClient(serverName, srv.Url), toolName, nil
 }
 
 // RegisterServer stores a new MCP server record, discovers its tools via the
@@ -188,7 +193,7 @@ func (r *Registry) RegisterServer(ctx context.Context, name, url string) error {
 		return fmt.Errorf("create mcp server: %w", err)
 	}
 
-	tools, err := r.newClient(url).DiscoverTools(ctx)
+	tools, err := r.newClient(name, url).DiscoverTools(ctx)
 	if err != nil {
 		return fmt.Errorf("discover tools for server %q: %w", name, err)
 	}
@@ -230,7 +235,7 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 		return ToolDiff{}, fmt.Errorf("get mcp server %q: %w", serverID, err)
 	}
 
-	freshTools, err := r.newClient(srv.Url).DiscoverTools(ctx)
+	freshTools, err := r.newClient(srv.Name, srv.Url).DiscoverTools(ctx)
 	if err != nil {
 		return ToolDiff{}, fmt.Errorf("discover tools for server %q: %w", serverID, err)
 	}

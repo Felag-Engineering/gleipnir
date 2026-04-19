@@ -9,11 +9,13 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/rapp992/gleipnir/internal/metrics"
 )
 
 const (
@@ -58,16 +60,29 @@ func NewClientFromEnv(opts ...option.RequestOption) *AnthropicClient {
 
 // CreateMessage sends a single synchronous request to the Anthropic API and
 // returns the normalized response.
-func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
+func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequest) (resp *llm.MessageResponse, err error) {
+	start := time.Now()
+	defer func() {
+		llm.ObserveRequestDuration("anthropic", req.Model, time.Since(start))
+		if err != nil {
+			llm.RecordError("anthropic", classifyAnthropicError(err))
+			return
+		}
+		if resp != nil {
+			llm.RecordTokens("anthropic", req.Model, resp.Usage)
+		}
+	}()
+
 	hints, _ := req.Hints.(*AnthropicHints)
 	isReasoning := curatedModelsByName[req.Model].IsReasoning
 
 	maxTokens := resolveMaxTokens(req, hints, isReasoning)
 	system := buildSystemBlocks(req, hints)
 
-	tools, nameMap, err := buildTools(req.Tools)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: building tools: %w", err)
+	tools, nameMap, buildErr := buildTools(req.Tools)
+	if buildErr != nil {
+		err = fmt.Errorf("anthropic: building tools: %w", buildErr)
+		return
 	}
 	messages := buildMessages(req.History, nameMap.OriginalToSanitized)
 
@@ -84,12 +99,27 @@ func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequ
 		}
 	}
 
-	resp, err := c.client.Messages.New(ctx, params)
-	if err != nil {
-		return nil, wrapSDKError(err)
+	sdkResp, sdkErr := c.client.Messages.New(ctx, params)
+	if sdkErr != nil {
+		err = wrapSDKError(sdkErr)
+		return
 	}
 
-	return translateResponse(resp, nameMap.SanitizedToOriginal), nil
+	resp = translateResponse(sdkResp, nameMap.SanitizedToOriginal)
+	return
+}
+
+// classifyAnthropicError maps an Anthropic SDK error to the fixed error_type
+// enum. Uses errors.As with a typed pointer variable per the two-step pattern.
+func classifyAnthropicError(err error) string {
+	if et, ok := llm.ClassifyContextError(err); ok {
+		return et
+	}
+	var apiErr *anthropic.Error
+	if errors.As(err, &apiErr) {
+		return llm.ClassifyHTTPStatus(apiErr.StatusCode)
+	}
+	return metrics.ErrorTypeConnection
 }
 
 // StreamMessage opens a streaming request to the Anthropic API and emits

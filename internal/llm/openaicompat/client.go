@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/rapp992/gleipnir/internal/metrics"
 )
 
 // Compile-time assertion that *Client satisfies the LLMClient interface.
@@ -25,6 +27,7 @@ type Client struct {
 	httpClient        *http.Client
 	baseURL           string
 	apiKey            string
+	providerName      string // Prometheus label; defaults to "openaicompat" when unset
 	models            llm.ModelCache
 	modelsUnavailable bool // true when the /models endpoint returned 404 (ADR-032 escape hatch)
 }
@@ -55,6 +58,13 @@ func WithTimeout(d time.Duration) Option {
 	}
 }
 
+// WithProviderName sets the Prometheus provider label for this client.
+// When unset, CreateMessage falls back to "openaicompat". The loader sets this
+// to the admin-registered provider name so metrics reflect the configured backend.
+func WithProviderName(name string) Option {
+	return func(c *Client) { c.providerName = name }
+}
+
 // NewClient constructs a Client for the given base URL and API key.
 // baseURL should be the root URL without a trailing slash (e.g.
 // "https://api.openai.com/v1"). Functional options may inject a custom
@@ -77,38 +87,84 @@ func NewClient(baseURL, apiKey string, opts ...Option) *Client {
 
 // CreateMessage sends a single synchronous Chat Completions request and returns
 // the normalized response.
-func (c *Client) CreateMessage(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
+func (c *Client) CreateMessage(ctx context.Context, req llm.MessageRequest) (resp *llm.MessageResponse, err error) {
+	start := time.Now()
+	defer func() {
+		provider := c.providerName
+		if provider == "" {
+			provider = "openaicompat"
+		}
+		llm.ObserveRequestDuration(provider, req.Model, time.Since(start))
+		if err != nil {
+			llm.RecordError(provider, classifyCompatError(err))
+			return
+		}
+		if resp != nil {
+			llm.RecordTokens(provider, req.Model, resp.Usage)
+		}
+	}()
+
 	// OpenAI allows [a-zA-Z0-9_-] in tool names; build the mapping once and
 	// use it for both outbound sanitization and inbound reversal.
 	names := llm.BuildNameMapping(req.Tools, "-")
 	wireReq := BuildChatCompletionRequest(req, false, names)
 
-	body, err := json.Marshal(wireReq)
+	var body []byte
+	body, err = json.Marshal(wireReq)
 	if err != nil {
-		return nil, fmt.Errorf("openai: marshalling request: %w", err)
+		err = fmt.Errorf("openai: marshalling request: %w", err)
+		return
 	}
 
-	resp, err := c.doRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(body))
+	var httpResp *http.Response
+	httpResp, err = c.doRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return
 	}
-	defer resp.Body.Close()
+	defer httpResp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	var raw []byte
+	raw, err = io.ReadAll(httpResp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("openai: reading response body: %w", err)
+		err = fmt.Errorf("openai: reading response body: %w", err)
+		return
 	}
 
-	if resp.StatusCode >= 400 {
-		return nil, wrapHTTPError(resp.StatusCode, raw)
+	if httpResp.StatusCode >= 400 {
+		err = wrapHTTPError(httpResp.StatusCode, raw)
+		return
 	}
 
 	var wire chatResponse
-	if err := json.Unmarshal(raw, &wire); err != nil {
-		return nil, fmt.Errorf("openai: decoding response: %w", err)
+	if umErr := json.Unmarshal(raw, &wire); umErr != nil {
+		err = fmt.Errorf("openai: decoding response: %w", umErr)
+		return
 	}
 
-	return ParseChatCompletionResponse(&wire, names)
+	resp, err = ParseChatCompletionResponse(&wire, names)
+	return
+}
+
+// classifyCompatError maps an openaicompat error to the fixed error_type enum.
+// wrapHTTPError wraps *llm.HTTPError so we can recover the status code here via
+// errors.As without re-parsing the raw HTTP response in the defer.
+func classifyCompatError(err error) string {
+	if et, ok := llm.ClassifyContextError(err); ok {
+		return et
+	}
+	var httpErr *llm.HTTPError
+	if errors.As(err, &httpErr) {
+		return llm.ClassifyHTTPStatus(httpErr.StatusCode)
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return metrics.ErrorTypeConnection
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return metrics.ErrorTypeConnection
+	}
+	return metrics.ErrorTypeConnection
 }
 
 // StreamMessage sends a streaming Chat Completions request and returns a
@@ -258,12 +314,15 @@ type errorEnvelope struct {
 
 // wrapHTTPError formats an HTTP error response into a descriptive error. If
 // the body is a JSON object with an "error" field, the message from that field
-// is included; otherwise the raw body is truncated to 256 characters.
+// is included; otherwise the raw body is truncated to 256 characters. The
+// returned error wraps *llm.HTTPError via %w so the defer in CreateMessage can
+// recover the status code via errors.As for metric classification.
 func wrapHTTPError(status int, body []byte) error {
+	httpErr := &llm.HTTPError{StatusCode: status, Body: string(body)}
 	var env errorEnvelope
 	if err := json.Unmarshal(body, &env); err == nil && env.Error != nil && env.Error.Message != "" {
-		return fmt.Errorf("openai: HTTP %d: %s (type=%s code=%s)",
-			status, env.Error.Message, env.Error.Type, env.Error.Code)
+		return fmt.Errorf("openai: HTTP %d: %s (type=%s code=%s): %w",
+			status, env.Error.Message, env.Error.Type, env.Error.Code, httpErr)
 	}
 
 	// Fallback: include the raw body truncated to 256 characters.
@@ -271,5 +330,5 @@ func wrapHTTPError(status int, body []byte) error {
 	if len(raw) > 256 {
 		raw = raw[:256] + "..."
 	}
-	return fmt.Errorf("openai: HTTP %d: %s", status, raw)
+	return fmt.Errorf("openai: HTTP %d: %s: %w", status, raw, httpErr)
 }
