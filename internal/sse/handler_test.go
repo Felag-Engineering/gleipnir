@@ -9,6 +9,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rapp992/gleipnir/internal/metrics"
 )
 
 // drainLines reads lines from the response body until either n non-empty lines
@@ -221,6 +225,99 @@ func TestHandler_EventFormat(t *testing.T) {
 	for i, want := range wantLines {
 		if !strings.HasPrefix(lines[i], want) {
 			t.Errorf("lines[%d] = %q, want prefix %q", i, lines[i], want)
+		}
+	}
+}
+
+// TestHandler_ConnectionsActiveGauge verifies that the sseConnectionsActive
+// gauge increments when a client connects and decrements when it disconnects.
+// Delta assertions (before/after) are used instead of absolute values because
+// the gauge persists across tests in the same binary.
+func TestHandler_ConnectionsActiveGauge(t *testing.T) {
+	b := NewBroadcaster()
+	h := NewHandler(b)
+
+	before := promtestutil.ToFloat64(sseConnectionsActive)
+
+	// Wrap the handler to close serverDone when ServeHTTP returns, so we can
+	// block until the deferred sseConnectionsActive.Dec() has actually run.
+	serverDone := make(chan struct{})
+	wrappedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(serverDone)
+		h.ServeHTTP(w, r)
+	})
+
+	srv := httptest.NewServer(wrappedHandler)
+	defer srv.Close()
+
+	// Use a cancellable context so we can trigger clean server-side exit via
+	// r.Context().Done() rather than relying on a sleep.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/events", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/v1/events: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Publish an event so drainLines has something to read, confirming the
+	// client is fully connected and the handler is in the streaming loop.
+	b.Publish("test.event", rawJSON(`{"n":1}`))
+	lines := drainLines(t, resp, 3, 3*time.Second)
+	if len(lines) < 3 {
+		t.Fatalf("got %d lines before checking gauge, want at least 3", len(lines))
+	}
+
+	// While the client is still connected, the gauge should have risen by 1.
+	if got := promtestutil.ToFloat64(sseConnectionsActive); got-before != 1.0 {
+		t.Fatalf("gauge delta while connected = %.1f, want 1.0", got-before)
+	}
+
+	// Cancel the client context. The server detects disconnection via
+	// r.Context().Done(), runs its deferred Dec, then ServeHTTP returns —
+	// closing serverDone. Block on that to guarantee Dec has run.
+	cancel()
+	select {
+	case <-serverDone:
+		// ServeHTTP has returned; deferred Dec has run.
+	case <-time.After(2 * time.Second):
+		t.Fatal("server handler did not exit after client context cancellation")
+	}
+
+	if got := promtestutil.ToFloat64(sseConnectionsActive); got-before != 0.0 {
+		t.Fatalf("gauge delta after disconnect = %.1f, want 0.0", got-before)
+	}
+}
+
+// TestSSEMetricFamiliesRegistered confirms that the SSE gauge is registered on
+// the custom Prometheus registry. Mirrors the pattern in
+// internal/mcp/metrics_test.go:TestMCPMetricFamiliesRegistered.
+func TestSSEMetricFamiliesRegistered(t *testing.T) {
+	want := map[string]bool{
+		"gleipnir_sse_connections_active": false,
+	}
+
+	ch := make(chan *prometheus.Desc, 1024)
+	metrics.Registry().Describe(ch)
+	close(ch)
+
+	for d := range ch {
+		desc := d.String()
+		for name := range want {
+			if strings.Contains(desc, `"`+name+`"`) {
+				want[name] = true
+			}
+		}
+	}
+
+	for name, found := range want {
+		if !found {
+			t.Errorf("metric family %q not registered", name)
 		}
 	}
 }

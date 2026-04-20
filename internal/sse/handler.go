@@ -52,7 +52,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Subscribe first so we don't miss events published during replay.
 	sub := h.broadcaster.Subscribe()
-	defer h.broadcaster.Unsubscribe(sub)
+	sseConnectionsActive.Inc()
+	defer func() {
+		h.broadcaster.Unsubscribe(sub)
+		sseConnectionsActive.Dec()
+	}()
 
 	// Replay buffered events for a reconnecting client.
 	var lastSentID uint64

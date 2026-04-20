@@ -24,8 +24,10 @@ import (
 //go:embed migrations/0001_initial.sql
 var initialSchema string
 
-// queries wraps the sqlc-generated Queries so the embedding is unexported.
-type queries struct{ *Queries }
+// queries wraps InstrumentedQueries so the embedding is unexported. Shadowed
+// methods on InstrumentedQueries win over promoted *Queries methods, so the
+// six hot-path queries are instrumented without changing any callers.
+type queries struct{ *InstrumentedQueries }
 
 // Store wraps the database connection and provides lifecycle methods.
 type Store struct {
@@ -58,7 +60,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
-	return &Store{db: db, queries: queries{New(db)}}, nil
+	return &Store{db: db, queries: queries{NewInstrumentedQueries(New(db))}}, nil
 }
 
 // DB returns the underlying *sql.DB.
@@ -66,9 +68,11 @@ func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
-// Queries returns the sqlc-generated query object for callers that need to
-// pass it to components outside the Store (e.g. agent.AuditWriter).
-func (s *Store) Queries() *Queries { return s.queries.Queries }
+// Queries returns the uninstrumented *Queries; callers via this path are not
+// recorded in gleipnir_db_query_duration_seconds. The two-level chain is
+// intentional: Store embeds queries{*InstrumentedQueries}, and
+// InstrumentedQueries embeds *Queries.
+func (s *Store) Queries() *Queries { return s.queries.InstrumentedQueries.Queries }
 
 // Close closes the underlying database connection.
 func (s *Store) Close() error {
