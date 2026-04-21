@@ -7,6 +7,9 @@ services:
       - "${GLEIPNIR_PORT:-3000}:8080"
     environment:
       - GLEIPNIR_DB_PATH=${GLEIPNIR_DB_PATH:-/data/gleipnir.db}
+      # REQUIRED. Encrypts provider API keys and webhook secrets at rest.
+      # Losing this value makes all encrypted data permanently unrecoverable.
+      # Back it up (password manager / secrets vault). Rotation not supported in v1.0.
       - GLEIPNIR_ENCRYPTION_KEY=${GLEIPNIR_ENCRYPTION_KEY}
     volumes:
       - gleipnir_data:/data

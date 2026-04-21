@@ -35,6 +35,10 @@ Any tool can be marked as requiring approval. When the agent tries to use one, t
 
 4. Complete the first-run setup: create the admin user, then add your Anthropic API key on the `/admin/models` page.
 
+### Back up your encryption key
+
+`GLEIPNIR_ENCRYPTION_KEY` is a mandatory AES-256 key that encrypts every provider API key and webhook secret stored in the database. Losing it makes those credentials permanently unrecoverable — there is no fallback decryption path. Store it in a password manager or secrets vault immediately after generating it. See [Operations — Backing up the encryption key](docs/user/operations.md#backing-up-the-encryption-key).
+
 ## Your first policy
 
 Once the stack is running and you're logged in, here's how to wire up your first agent:
@@ -51,7 +55,7 @@ For fully worked examples against specific services, follow one of the [playbook
 ## More reading
 
 - [Playbooks](docs/playbooks/) — copy-pasteable setups for the use cases above.
-- [User docs](docs/user/) — backups, logs, troubleshooting.
+- [User docs](docs/user/) — encryption key, backups, logs, troubleshooting.
 - [Developer docs](docs/developer/) — architecture, building, contributing.
 - [Security notes](SECURITY.md)
 

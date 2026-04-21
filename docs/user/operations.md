@@ -2,6 +2,43 @@
 
 Day-to-day operational tasks for a running Gleipnir instance.
 
+## Backing up the encryption key
+
+`GLEIPNIR_ENCRYPTION_KEY` is a 32-byte AES-256 master key (stored as 64 hex characters) used to encrypt provider API keys and webhook secrets in the database.
+
+**Losing `GLEIPNIR_ENCRYPTION_KEY` makes all encrypted data in the database permanently unrecoverable. Back it up securely (e.g. a password manager or secrets vault).**
+
+Back it up immediately upon generation, before starting the stack for the first time. Store it in a location separate from your database backups — a single compromise should not expose both the data and the key that unlocks it.
+
+## Rotating the encryption key (v1.0 known limitation)
+
+Key rotation is not supported in v1.0. There is no re-encryption routine — replacing the key invalidates every ciphertext already in the database. Proper re-encryption support is planned for a future release.
+
+If you must rotate the key now, follow this manual workaround:
+
+1. **Copy out all secrets via the admin UI.** Note each provider API key and webhook secret before proceeding. Once the key is replaced these values will be unreadable.
+2. **Stop the stack:**
+   ```bash
+   docker compose stop
+   ```
+3. **Generate a new key and update `.env`:**
+   ```bash
+   openssl rand -hex 32
+   # Paste the output into GLEIPNIR_ENCRYPTION_KEY in your .env file.
+   ```
+4. **Clear the encrypted rows and columns.** The old ciphertext is now unreadable, so delete it rather than leaving stale data:
+   ```bash
+   docker compose exec api sqlite3 /data/gleipnir.db \
+     "DELETE FROM system_settings WHERE key LIKE '%_api_key';
+      DELETE FROM openai_compat_providers;
+      UPDATE policies SET webhook_secret_encrypted = NULL;"
+   ```
+5. **Restart the stack and re-enter credentials:**
+   ```bash
+   docker compose up -d
+   ```
+   Re-enter each provider API key at `/admin/models`. Rotate each webhook secret via `POST /api/v1/policies/:id/webhook/rotate` or through the admin UI.
+
 ## Backing up the database
 
 The SQLite database lives at the path set by `GLEIPNIR_DB_PATH` (default: `/data/gleipnir.db`) inside the `gleipnir_data` Docker volume.

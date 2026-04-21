@@ -32,6 +32,7 @@ npm run storybook        # Storybook on port 6006
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `GLEIPNIR_ENCRYPTION_KEY` | *(required)* | Required. 64-char hex (32-byte AES-256) key that encrypts provider API keys and webhook secrets. Losing it is permanent — see [docs/user/operations.md](../user/operations.md). |
 | `GLEIPNIR_DB_PATH` | `/data/gleipnir.db` | SQLite file path |
 | `GLEIPNIR_LISTEN_ADDR` | `:8080` | HTTP listen address |
 | `GLEIPNIR_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |

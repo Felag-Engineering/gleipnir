@@ -215,6 +215,7 @@ Organized by feature area:
 - **AgentList/** — agent list with folder grouping
 - **RunDetail/** — RunHeader, StepTimeline, FilterBar, MetadataGrid, CapabilitySnapshotCard, ThoughtBlock, ThinkingBlock, ToolBlock, CompleteBlock, ErrorBlock, FeedbackBlock, ApprovalActions, FeedbackActions
 - **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal
+- **admin/** — EncryptionKeyNotice (persistent warning banner on the Models page about encryption key backup requirements)
 - **Shared** — Button, Modal, ModalFooter, EmptyState, ErrorBoundary, QueryBoundary, CopyBlock, CollapsibleJSON, SkeletonBlock, PageHeader, ApprovalBanner, ConnectionBanner, TriggerRunModal
 
 ### Hooks (`src/hooks/`)
@@ -223,7 +224,7 @@ Organized by feature area:
 
 ### Storybook
 
-45 story files covering components, dashboard widgets, form sections, and hook demonstrations. Stories use MSW for API mocking and have their own `.stories.module.css` for layout scaffolding where needed.
+46 story files covering components, dashboard widgets, form sections, and hook demonstrations. Stories use MSW for API mocking and have their own `.stories.module.css` for layout scaffolding where needed.
 
 ## Key architectural decisions
 
