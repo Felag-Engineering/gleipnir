@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest a new capability or improvement.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Please check the [roadmap](https://github.com/Felag-Engineering/gleipnir/blob/main/docs/Backend_Roadmap.md) and [existing issues](https://github.com/Felag-Engineering/gleipnir/issues?q=is%3Aissue) first.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the concrete situation you ran into that made you want this feature. "It would be nice if..." is less useful than "I was trying to X and hit Y."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would the feature look like? Rough API shape, UI sketch, or behavior is fine — doesn't need to be polished.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about and why they didn't fit.
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Links, screenshots, related issues, or anything else useful.
+    validations:
+      required: false
