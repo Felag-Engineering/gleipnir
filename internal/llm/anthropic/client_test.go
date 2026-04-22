@@ -152,7 +152,10 @@ func TestBuildMessages_TextBlocks(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			msgs := buildMessages(tc.history, nil)
+			msgs, err := buildMessages(tc.history, nil)
+			if err != nil {
+				t.Fatalf("buildMessages: %v", err)
+			}
 			if len(msgs) != 1 {
 				t.Fatalf("got %d messages, want 1", len(msgs))
 			}
@@ -193,7 +196,10 @@ func TestBuildMessages_ToolCallBlocks(t *testing.T) {
 			history := []llm.ConversationTurn{
 				{Role: llm.RoleAssistant, Content: []llm.ContentBlock{tc.block}},
 			}
-			msgs := buildMessages(history, nil)
+			msgs, err := buildMessages(history, nil)
+			if err != nil {
+				t.Fatalf("buildMessages: %v", err)
+			}
 			if len(msgs) != 1 || len(msgs[0].Content) != 1 {
 				t.Fatal("expected 1 message with 1 content block")
 			}
@@ -234,7 +240,10 @@ func TestBuildMessages_ToolResultBlocks(t *testing.T) {
 			history := []llm.ConversationTurn{
 				{Role: llm.RoleUser, Content: []llm.ContentBlock{tc.block}},
 			}
-			msgs := buildMessages(history, nil)
+			msgs, err := buildMessages(history, nil)
+			if err != nil {
+				t.Fatalf("buildMessages: %v", err)
+			}
 			if len(msgs) != 1 || len(msgs[0].Content) != 1 {
 				t.Fatal("expected 1 message with 1 content block")
 			}
@@ -300,7 +309,10 @@ func TestBuildTools(t *testing.T) {
 func TestBuildMessages_EmptyHistory(t *testing.T) {
 	// nil and empty slices must not panic and must return an empty slice.
 	for _, history := range [][]llm.ConversationTurn{nil, {}} {
-		msgs := buildMessages(history, nil)
+		msgs, err := buildMessages(history, nil)
+		if err != nil {
+			t.Fatalf("buildMessages: %v", err)
+		}
 		if len(msgs) != 0 {
 			t.Errorf("buildMessages(%v) = %d messages, want 0", history, len(msgs))
 		}
@@ -496,7 +508,10 @@ func TestTranslateStopReason(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(string(tc.sdkReason), func(t *testing.T) {
 			msg := &sdkanthropic.Message{StopReason: tc.sdkReason}
-			got := translateResponse(msg, nil)
+			got, err := translateResponse(msg, nil)
+			if err != nil {
+				t.Fatalf("translateResponse: %v", err)
+			}
 			if got.StopReason != tc.want {
 				t.Errorf("StopReason = %v, want %v", got.StopReason, tc.want)
 			}
@@ -1169,7 +1184,10 @@ func TestBuildMessages_UsesNameMap(t *testing.T) {
 					},
 				},
 			}
-			msgs := buildMessages(history, tc.nameMap)
+			msgs, err := buildMessages(history, tc.nameMap)
+			if err != nil {
+				t.Fatalf("buildMessages: %v", err)
+			}
 			if len(msgs) != 1 || len(msgs[0].Content) != 1 {
 				t.Fatal("expected 1 message with 1 content block")
 			}
@@ -1249,7 +1267,10 @@ func TestToolNameRoundTrip(t *testing.T) {
 	}
 
 	// 5. Rebuild messages for the next API call using the forward map.
-	msgs := buildMessages(history, names.OriginalToSanitized)
+	msgs, err := buildMessages(history, names.OriginalToSanitized)
+	if err != nil {
+		t.Fatalf("buildMessages: %v", err)
+	}
 	if len(msgs) != 1 || len(msgs[0].Content) != 1 {
 		t.Fatal("expected 1 message with 1 content block")
 	}
@@ -1296,8 +1317,14 @@ func TestBuildMessages_IgnoresProviderMetadata(t *testing.T) {
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{withoutMeta}},
 	}
 
-	msgsWith := buildMessages(histWith, nil)
-	msgsWithout := buildMessages(histWithout, nil)
+	msgsWith, err := buildMessages(histWith, nil)
+	if err != nil {
+		t.Fatalf("buildMessages (with): %v", err)
+	}
+	msgsWithout, err := buildMessages(histWithout, nil)
+	if err != nil {
+		t.Fatalf("buildMessages (without): %v", err)
+	}
 
 	if len(msgsWith) != 1 || len(msgsWithout) != 1 {
 		t.Fatal("expected 1 message for each history")
@@ -1333,8 +1360,12 @@ func TestTranslateResponse_ThinkingBlock_CapturesSignature(t *testing.T) {
 		t.Fatalf("Thinking len = %d, want 1", len(resp.Thinking))
 	}
 	tb := resp.Thinking[0]
-	if tb.Signature != "sig_abc" {
-		t.Errorf("Signature = %q, want %q", tb.Signature, "sig_abc")
+	var state anthropicThinkingState
+	if err := json.Unmarshal(tb.ProviderState, &state); err != nil {
+		t.Fatalf("unmarshal ProviderState: %v", err)
+	}
+	if state.Signature != "sig_abc" {
+		t.Errorf("state.Signature = %q, want %q", state.Signature, "sig_abc")
 	}
 	if tb.Text != "let me think" {
 		t.Errorf("Text = %q, want %q", tb.Text, "let me think")
@@ -1361,8 +1392,12 @@ func TestTranslateResponse_RedactedThinkingBlock_CapturesData(t *testing.T) {
 		t.Fatalf("Thinking len = %d, want 1", len(resp.Thinking))
 	}
 	tb := resp.Thinking[0]
-	if tb.RedactedData != "opaque_data_xyz" {
-		t.Errorf("RedactedData = %q, want %q", tb.RedactedData, "opaque_data_xyz")
+	var state anthropicThinkingState
+	if err := json.Unmarshal(tb.ProviderState, &state); err != nil {
+		t.Fatalf("unmarshal ProviderState: %v", err)
+	}
+	if state.RedactedData != "opaque_data_xyz" {
+		t.Errorf("state.RedactedData = %q, want %q", state.RedactedData, "opaque_data_xyz")
 	}
 	if tb.Text != "[redacted]" {
 		t.Errorf("Text = %q, want [redacted]", tb.Text)
@@ -1373,16 +1408,21 @@ func TestTranslateResponse_RedactedThinkingBlock_CapturesData(t *testing.T) {
 }
 
 func TestBuildMessages_ThinkingBlockRoundTrip(t *testing.T) {
+	state := anthropicThinkingState{Signature: "sig123"}
+	raw, _ := marshalThinkingState(state)
 	history := []llm.ConversationTurn{
 		{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentBlock{
-				llm.ThinkingBlock{Text: "reasoning", Signature: "sig123"},
+				llm.ThinkingBlock{Provider: "anthropic", Text: "reasoning", ProviderState: raw},
 				llm.TextBlock{Text: "answer"},
 			},
 		},
 	}
-	msgs := buildMessages(history, nil)
+	msgs, err := buildMessages(history, nil)
+	if err != nil {
+		t.Fatalf("buildMessages: %v", err)
+	}
 	if len(msgs) != 1 {
 		t.Fatalf("msgs len = %d, want 1", len(msgs))
 	}
@@ -1390,11 +1430,11 @@ func TestBuildMessages_ThinkingBlockRoundTrip(t *testing.T) {
 		t.Fatalf("content blocks = %d, want 2", len(msgs[0].Content))
 	}
 
-	raw, err := json.Marshal(msgs[0].Content[0])
+	wireRaw, err := json.Marshal(msgs[0].Content[0])
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	s := string(raw)
+	s := string(wireRaw)
 	if !strings.Contains(s, `"type":"thinking"`) {
 		t.Errorf("expected type=thinking in %s", s)
 	}
@@ -1407,24 +1447,29 @@ func TestBuildMessages_ThinkingBlockRoundTrip(t *testing.T) {
 }
 
 func TestBuildMessages_RedactedThinkingBlockRoundTrip(t *testing.T) {
+	state := anthropicThinkingState{RedactedData: "xyz_data"}
+	raw, _ := marshalThinkingState(state)
 	history := []llm.ConversationTurn{
 		{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentBlock{
-				llm.ThinkingBlock{Text: "[redacted]", Redacted: true, RedactedData: "xyz_data"},
+				llm.ThinkingBlock{Provider: "anthropic", Text: "[redacted]", Redacted: true, ProviderState: raw},
 			},
 		},
 	}
-	msgs := buildMessages(history, nil)
+	msgs, err := buildMessages(history, nil)
+	if err != nil {
+		t.Fatalf("buildMessages: %v", err)
+	}
 	if len(msgs) != 1 || len(msgs[0].Content) != 1 {
 		t.Fatalf("expected 1 message with 1 content block")
 	}
 
-	raw, err := json.Marshal(msgs[0].Content[0])
+	wireRaw, err := json.Marshal(msgs[0].Content[0])
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	s := string(raw)
+	s := string(wireRaw)
 	if !strings.Contains(s, `"type":"redacted_thinking"`) {
 		t.Errorf("expected type=redacted_thinking in %s", s)
 	}
@@ -1437,28 +1482,86 @@ func TestBuildMessages_RedactedThinkingBlockRoundTrip(t *testing.T) {
 	}
 }
 
-func TestBuildMessages_ThinkingBlockNoSignature_Skipped(t *testing.T) {
-	// A ThinkingBlock with an empty Signature (from a non-Anthropic provider)
-	// must be silently skipped — Anthropic requires a non-empty signature.
+func TestBuildMessages_ThinkingBlockEmptyProviderState_Skipped(t *testing.T) {
+	// A ThinkingBlock with nil ProviderState has no round-trip data and must
+	// be silently skipped — Anthropic requires a non-empty signature.
 	history := []llm.ConversationTurn{
 		{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentBlock{
-				llm.ThinkingBlock{Text: "reasoning", Signature: ""},
+				llm.ThinkingBlock{Provider: "anthropic", Text: "reasoning", ProviderState: nil},
 				llm.TextBlock{Text: "answer"},
 			},
 		},
 	}
-	msgs := buildMessages(history, nil)
+	msgs, err := buildMessages(history, nil)
+	if err != nil {
+		t.Fatalf("buildMessages: %v", err)
+	}
 	if len(msgs) != 1 {
 		t.Fatalf("msgs len = %d, want 1", len(msgs))
 	}
 	// Only the TextBlock should remain; the ThinkingBlock is dropped.
 	if len(msgs[0].Content) != 1 {
-		t.Fatalf("content blocks = %d, want 1 (ThinkingBlock with empty signature should be skipped)", len(msgs[0].Content))
+		t.Fatalf("content blocks = %d, want 1 (ThinkingBlock with empty ProviderState should be skipped)", len(msgs[0].Content))
 	}
 	if msgs[0].Content[0].OfText == nil {
 		t.Error("expected remaining block to be a text block")
+	}
+}
+
+func TestBuildMessages_ThinkingBlockCrossProviderSkipped(t *testing.T) {
+	// A ThinkingBlock from a different provider (e.g. OpenAI) must be silently
+	// skipped; Anthropic cannot round-trip another provider's opaque state.
+	history := []llm.ConversationTurn{
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentBlock{
+				llm.ThinkingBlock{
+					Provider:      "openai",
+					Text:          "reasoning",
+					ProviderState: json.RawMessage(`{"id":"rs_1"}`),
+				},
+				llm.TextBlock{Text: "answer"},
+			},
+		},
+	}
+	msgs, err := buildMessages(history, nil)
+	if err != nil {
+		t.Fatalf("buildMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("msgs len = %d, want 1", len(msgs))
+	}
+	// Only the TextBlock should remain; the cross-provider ThinkingBlock is dropped.
+	if len(msgs[0].Content) != 1 {
+		t.Fatalf("content blocks = %d, want 1 (cross-provider ThinkingBlock should be skipped)", len(msgs[0].Content))
+	}
+	if msgs[0].Content[0].OfText == nil {
+		t.Error("expected remaining block to be a text block")
+	}
+}
+
+func TestBuildMessages_ThinkingBlockMalformedProviderState_Error(t *testing.T) {
+	// A ThinkingBlock with malformed ProviderState JSON must return an error.
+	history := []llm.ConversationTurn{
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentBlock{
+				llm.ThinkingBlock{
+					Provider:      "anthropic",
+					Text:          "reasoning",
+					ProviderState: json.RawMessage([]byte("{not json")),
+				},
+			},
+		},
+	}
+	_, err := buildMessages(history, nil)
+	if err == nil {
+		t.Fatal("expected error for malformed ProviderState, got nil")
+	}
+	if !strings.Contains(err.Error(), "unmarshal thinking state") {
+		t.Errorf("error message %q does not contain 'unmarshal thinking state'", err.Error())
 	}
 }
 

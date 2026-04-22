@@ -62,32 +62,24 @@ type TokenUsage struct {
 
 // ThinkingBlock is an internal reasoning block returned by the model.
 // ThinkingBlock is included in conversation history for providers that require it
-// for multi-turn continuity (Anthropic via Signature, OpenAI via EncryptedContent).
+// for multi-turn continuity (Anthropic via signature, OpenAI via encrypted content).
 // Providers that don't need it (Google, OpenAI-compat) silently skip it during
 // message translation.
+//
+// Provider is the discriminator: request builders silently skip blocks whose Provider
+// does not match the current provider (empty or mismatched). ProviderState is opaque,
+// provider-owned JSON; each provider package defines an unexported state struct and its
+// own marshal/unmarshal helpers — no shared schema. Empty ProviderState (nil or len 0)
+// means text-only with no round-trip state; request builders skip the round-trip (same
+// semantics as empty Signature/EncryptedContent in the old shape). Malformed
+// ProviderState JSON is returned as an error — do not silently drop continuity.
+//
+// ADR-026 (amended): opaque provider-owned state
 type ThinkingBlock struct {
-	// Provider identifies which provider produced this block ("anthropic", "google",
-	// "openai", etc.). It determines which of the provider-specific opaque fields
-	// below are populated.
-	Provider string
-
-	Text     string
-	Redacted bool
-
-	// Signature carries the Anthropic-issued signature for a non-redacted thinking
-	// block. Required to round-trip it in subsequent Anthropic requests.
-	Signature string
-
-	// RedactedData carries the opaque data for an Anthropic redacted thinking
-	// block. This is never displayed — it is only echoed back to the API.
-	RedactedData string
-
-	// EncryptedContent carries the OpenAI encrypted reasoning content. Required
-	// to round-trip it in subsequent OpenAI Responses API requests.
-	EncryptedContent string
-
-	// ID is the OpenAI reasoning item ID. Required when echoing back to the API.
-	ID string
+	Provider      string
+	Text          string
+	Redacted      bool
+	ProviderState json.RawMessage
 }
 
 // TextBlock is a plain text content block from the model's response.

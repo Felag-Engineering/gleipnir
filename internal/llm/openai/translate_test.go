@@ -165,7 +165,10 @@ func TestBuildInput_UserTurn(t *testing.T) {
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "Hello"}}},
 		},
 	}
-	items := buildInput(req, llm.ToolNameMapping{})
+	items, err := buildInput(req, llm.ToolNameMapping{})
+	if err != nil {
+		t.Fatalf("buildInput: %v", err)
+	}
 	if len(items) != 1 {
 		t.Fatalf("len(items) = %d; want 1", len(items))
 	}
@@ -183,7 +186,10 @@ func TestBuildInput_ToolResultTurn(t *testing.T) {
 			},
 		},
 	}
-	items := buildInput(req, llm.ToolNameMapping{})
+	items, err := buildInput(req, llm.ToolNameMapping{})
+	if err != nil {
+		t.Fatalf("buildInput: %v", err)
+	}
 	if len(items) != 1 {
 		t.Fatalf("len(items) = %d; want 1", len(items))
 	}
@@ -218,8 +224,14 @@ func TestTranslate_IgnoresProviderMetadata(t *testing.T) {
 		}
 	}
 
-	itemsWith := buildInput(makeReq(withMeta), llm.ToolNameMapping{})
-	itemsWithout := buildInput(makeReq(withoutMeta), llm.ToolNameMapping{})
+	itemsWith, err := buildInput(makeReq(withMeta), llm.ToolNameMapping{})
+	if err != nil {
+		t.Fatalf("buildInput (with): %v", err)
+	}
+	itemsWithout, err := buildInput(makeReq(withoutMeta), llm.ToolNameMapping{})
+	if err != nil {
+		t.Fatalf("buildInput (without): %v", err)
+	}
 
 	if len(itemsWith) != 1 || len(itemsWithout) != 1 {
 		t.Fatalf("expected 1 item each, got %d and %d", len(itemsWith), len(itemsWithout))
@@ -257,11 +269,15 @@ func TestTranslateResponse_ReasoningWithEncryptedContent(t *testing.T) {
 		t.Fatal("expected at least one thinking block")
 	}
 	tb := out.Thinking[0]
-	if tb.EncryptedContent != "enc_abc123" {
-		t.Errorf("EncryptedContent = %q, want enc_abc123", tb.EncryptedContent)
+	var state openaiThinkingState
+	if err := json.Unmarshal(tb.ProviderState, &state); err != nil {
+		t.Fatalf("unmarshal ProviderState: %v", err)
 	}
-	if tb.ID != "rs_001" {
-		t.Errorf("ID = %q, want rs_001", tb.ID)
+	if state.EncryptedContent != "enc_abc123" {
+		t.Errorf("state.EncryptedContent = %q, want enc_abc123", state.EncryptedContent)
+	}
+	if state.ID != "rs_001" {
+		t.Errorf("state.ID = %q, want rs_001", state.ID)
 	}
 }
 
@@ -301,8 +317,12 @@ func TestTranslateResponse_ReasoningNoEncryptedContent_WithSummary(t *testing.T)
 	if tb.Text != "thinking hard" {
 		t.Errorf("Text = %q, want thinking hard", tb.Text)
 	}
-	if tb.EncryptedContent != "" {
-		t.Errorf("EncryptedContent should be empty, got %q", tb.EncryptedContent)
+	var state openaiThinkingState
+	if err := json.Unmarshal(tb.ProviderState, &state); err != nil {
+		t.Fatalf("unmarshal ProviderState: %v", err)
+	}
+	if state.EncryptedContent != "" {
+		t.Errorf("state.EncryptedContent should be empty, got %q", state.EncryptedContent)
 	}
 }
 
@@ -341,19 +361,23 @@ func TestTranslateResponse_ReasoningEmpty_Skipped(t *testing.T) {
 }
 
 func TestBuildInput_ThinkingBlockRoundTrip(t *testing.T) {
+	providerState, _ := marshalThinkingState(openaiThinkingState{ID: "rs_001", EncryptedContent: "enc123"})
 	req := llm.MessageRequest{
 		Model: "o3-mini",
 		History: []llm.ConversationTurn{
 			{
 				Role: llm.RoleAssistant,
 				Content: []llm.ContentBlock{
-					llm.ThinkingBlock{ID: "rs_001", Text: "summary text", EncryptedContent: "enc123"},
+					llm.ThinkingBlock{Provider: "openai", Text: "summary text", ProviderState: providerState},
 					llm.TextBlock{Text: "the answer"},
 				},
 			},
 		},
 	}
-	items := buildInput(req, llm.ToolNameMapping{})
+	items, err := buildInput(req, llm.ToolNameMapping{})
+	if err != nil {
+		t.Fatalf("buildInput: %v", err)
+	}
 	// Expect two items: reasoning item + assistant text item.
 	if len(items) != 2 {
 		t.Fatalf("len(items) = %d, want 2", len(items))
@@ -380,18 +404,22 @@ func TestBuildInput_ThinkingBlockEmptySummary_IncludesSummaryField(t *testing.T)
 	// produce a reasoning item with a non-nil summary array. The Responses API
 	// rejects input items where the summary field is absent (nil slice → omitted
 	// via omitzero).
+	providerState, _ := marshalThinkingState(openaiThinkingState{ID: "rs_010", EncryptedContent: "enc_opaque"})
 	req := llm.MessageRequest{
 		Model: "o3-mini",
 		History: []llm.ConversationTurn{
 			{
 				Role: llm.RoleAssistant,
 				Content: []llm.ContentBlock{
-					llm.ThinkingBlock{ID: "rs_010", Text: "", EncryptedContent: "enc_opaque"},
+					llm.ThinkingBlock{Provider: "openai", Text: "", ProviderState: providerState},
 				},
 			},
 		},
 	}
-	items := buildInput(req, llm.ToolNameMapping{})
+	items, err := buildInput(req, llm.ToolNameMapping{})
+	if err != nil {
+		t.Fatalf("buildInput: %v", err)
+	}
 	if len(items) != 1 {
 		t.Fatalf("len(items) = %d, want 1", len(items))
 	}
@@ -411,18 +439,22 @@ func TestBuildInput_ThinkingBlockEmptySummary_IncludesSummaryField(t *testing.T)
 func TestBuildInput_ThinkingBlockNoEncryptedContent(t *testing.T) {
 	// A ThinkingBlock with only summary text (no EncryptedContent) should still
 	// emit a reasoning input item.
+	providerState, _ := marshalThinkingState(openaiThinkingState{ID: "rs_002"})
 	req := llm.MessageRequest{
 		Model: "o3-mini",
 		History: []llm.ConversationTurn{
 			{
 				Role: llm.RoleAssistant,
 				Content: []llm.ContentBlock{
-					llm.ThinkingBlock{ID: "rs_002", Text: "some reasoning"},
+					llm.ThinkingBlock{Provider: "openai", Text: "some reasoning", ProviderState: providerState},
 				},
 			},
 		},
 	}
-	items := buildInput(req, llm.ToolNameMapping{})
+	items, err := buildInput(req, llm.ToolNameMapping{})
+	if err != nil {
+		t.Fatalf("buildInput: %v", err)
+	}
 	if len(items) != 1 {
 		t.Fatalf("len(items) = %d, want 1", len(items))
 	}
@@ -437,24 +469,28 @@ func TestBuildInput_ThinkingBlockNoEncryptedContent(t *testing.T) {
 }
 
 func TestBuildInput_ThinkingBlockNoIDNoEncrypted_Skipped(t *testing.T) {
-	// A ThinkingBlock with empty ID and empty EncryptedContent is a non-OpenAI
-	// block (e.g. from Anthropic). It should be silently dropped.
+	// A ThinkingBlock from a different provider (Anthropic) must be silently
+	// dropped — the OpenAI translator cannot round-trip Anthropic state.
+	providerState := json.RawMessage(`{"signature":"sig_xyz"}`)
 	req := llm.MessageRequest{
 		Model: "o3-mini",
 		History: []llm.ConversationTurn{
 			{
 				Role: llm.RoleAssistant,
 				Content: []llm.ContentBlock{
-					llm.ThinkingBlock{Text: "anthropic reasoning", Signature: "sig_xyz"},
+					llm.ThinkingBlock{Provider: "anthropic", Text: "anthropic reasoning", ProviderState: providerState},
 					llm.TextBlock{Text: "answer"},
 				},
 			},
 		},
 	}
-	items := buildInput(req, llm.ToolNameMapping{})
+	items, err := buildInput(req, llm.ToolNameMapping{})
+	if err != nil {
+		t.Fatalf("buildInput: %v", err)
+	}
 	// Only the text block should produce an item; ThinkingBlock is skipped.
 	if len(items) != 1 {
-		t.Fatalf("len(items) = %d, want 1 (ThinkingBlock with no ID/EncryptedContent should be skipped)", len(items))
+		t.Fatalf("len(items) = %d, want 1 (cross-provider ThinkingBlock should be skipped)", len(items))
 	}
 	raw, err := json.Marshal(items[0])
 	if err != nil {
@@ -462,5 +498,31 @@ func TestBuildInput_ThinkingBlockNoIDNoEncrypted_Skipped(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "answer") {
 		t.Errorf("expected text 'answer' in item, got %s", raw)
+	}
+}
+
+func TestBuildInput_ThinkingBlockMalformedProviderState_Error(t *testing.T) {
+	// A ThinkingBlock with malformed ProviderState JSON must return an error.
+	req := llm.MessageRequest{
+		Model: "o3-mini",
+		History: []llm.ConversationTurn{
+			{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentBlock{
+					llm.ThinkingBlock{
+						Provider:      "openai",
+						Text:          "reasoning",
+						ProviderState: json.RawMessage([]byte("{not json")),
+					},
+				},
+			},
+		},
+	}
+	_, err := buildInput(req, llm.ToolNameMapping{})
+	if err == nil {
+		t.Fatal("expected error for malformed ProviderState, got nil")
+	}
+	if !strings.Contains(err.Error(), "unmarshal thinking state") {
+		t.Errorf("error message %q does not contain 'unmarshal thinking state'", err.Error())
 	}
 }

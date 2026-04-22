@@ -91,11 +91,15 @@ func consumeStream(
 				}
 				summaryText := strings.Join(parts, "\n")
 				if ri.EncryptedContent != "" || summaryText != "" {
+					raw, err := marshalThinkingState(openaiThinkingState{ID: ri.ID, EncryptedContent: ri.EncryptedContent})
+					if err != nil {
+						out <- llm.MessageChunk{Err: fmt.Errorf("openai: marshal thinking state: %w", err)}
+						return
+					}
 					out <- llm.MessageChunk{Thinking: &llm.ThinkingBlock{
-						Provider:         "openai",
-						ID:               ri.ID,
-						Text:             summaryText,
-						EncryptedContent: ri.EncryptedContent,
+						Provider:      "openai",
+						Text:          summaryText,
+						ProviderState: raw,
 					}}
 				}
 			}

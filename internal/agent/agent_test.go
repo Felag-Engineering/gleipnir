@@ -2570,9 +2570,13 @@ func TestRun_ThinkingBlocksIncludedInHistory(t *testing.T) {
 
 	tools := []mcp.ResolvedTool{toolForRun(mcpSrv.URL, "my-server", "read_data")}
 
-	// First response: tool call with a ThinkingBlock carrying a Signature.
+	// First response: tool call with a ThinkingBlock carrying provider state.
 	firstResp := &llm.MessageResponse{
-		Thinking:   []llm.ThinkingBlock{{Text: "I need to call the tool", Signature: "sig_turn1"}},
+		Thinking: []llm.ThinkingBlock{{
+			Provider:      "anthropic",
+			Text:          "I need to call the tool",
+			ProviderState: json.RawMessage(`{"signature":"sig_turn1"}`),
+		}},
 		ToolCalls:  []llm.ToolCallBlock{{ID: "tc-1", Name: "my-server.read_data", Input: json.RawMessage(`{}`)}},
 		StopReason: llm.StopReasonToolUse,
 		Usage:      llm.TokenUsage{InputTokens: 10, OutputTokens: 5},
@@ -2628,8 +2632,14 @@ func TestRun_ThinkingBlocksIncludedInHistory(t *testing.T) {
 	if !ok {
 		t.Fatalf("first content block type = %T, want llm.ThinkingBlock", assistantTurn.Content[0])
 	}
-	if tb.Signature != "sig_turn1" {
-		t.Errorf("ThinkingBlock.Signature = %q, want sig_turn1", tb.Signature)
+	var state struct {
+		Signature string `json:"signature"`
+	}
+	if err := json.Unmarshal(tb.ProviderState, &state); err != nil {
+		t.Fatalf("unmarshal ThinkingBlock.ProviderState: %v", err)
+	}
+	if state.Signature != "sig_turn1" {
+		t.Errorf("state.Signature = %q, want sig_turn1", state.Signature)
 	}
 	if tb.Text != "I need to call the tool" {
 		t.Errorf("ThinkingBlock.Text = %q, want 'I need to call the tool'", tb.Text)

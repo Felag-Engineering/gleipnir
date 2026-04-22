@@ -299,14 +299,18 @@ func TestConsumeStream_ReasoningItemEmitted(t *testing.T) {
 	if thinkChunk == nil {
 		t.Fatal("expected a thinking chunk from reasoning item")
 	}
-	if thinkChunk.ID != "rs_001" {
-		t.Errorf("ID = %q, want rs_001", thinkChunk.ID)
+	var state openaiThinkingState
+	if err := json.Unmarshal(thinkChunk.ProviderState, &state); err != nil {
+		t.Fatalf("unmarshal ProviderState: %v", err)
+	}
+	if state.ID != "rs_001" {
+		t.Errorf("state.ID = %q, want rs_001", state.ID)
 	}
 	if thinkChunk.Text != "I should reason about this" {
 		t.Errorf("Text = %q, want 'I should reason about this'", thinkChunk.Text)
 	}
-	if thinkChunk.EncryptedContent != "enc_token_abc" {
-		t.Errorf("EncryptedContent = %q, want enc_token_abc", thinkChunk.EncryptedContent)
+	if state.EncryptedContent != "enc_token_abc" {
+		t.Errorf("state.EncryptedContent = %q, want enc_token_abc", state.EncryptedContent)
 	}
 }
 
@@ -337,7 +341,11 @@ func TestConsumeStream_ReasoningItemNoEncryptedContent(t *testing.T) {
 	if thinkChunk.Text != "summary only" {
 		t.Errorf("Text = %q, want 'summary only'", thinkChunk.Text)
 	}
-	if thinkChunk.EncryptedContent != "" {
-		t.Errorf("EncryptedContent should be empty, got %q", thinkChunk.EncryptedContent)
+	var state openaiThinkingState
+	if err := json.Unmarshal(thinkChunk.ProviderState, &state); err != nil {
+		t.Fatalf("unmarshal ProviderState: %v", err)
+	}
+	if state.EncryptedContent != "" {
+		t.Errorf("state.EncryptedContent should be empty, got %q", state.EncryptedContent)
 	}
 }
