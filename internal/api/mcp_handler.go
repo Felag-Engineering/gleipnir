@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -121,11 +124,12 @@ func (h *MCPHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 
 	tools, err := client.DiscoverTools(ctx)
 	if err != nil {
+		slog.Warn("MCP test connection failed", "url", body.URL, "err", err)
 		httputil.WriteJSON(w, http.StatusOK, testConnectionResponse{
 			OK:        false,
 			ToolCount: 0,
 			Tools:     []string{},
-			Error:     err.Error(),
+			Error:     humanizeMCPError(err),
 		})
 		return
 	}
@@ -358,4 +362,42 @@ func policyReferencesServer(rawYAML, serverPrefix string) bool {
 // isUniqueConstraintError reports whether err is a SQLite UNIQUE constraint violation.
 func isUniqueConstraintError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+// humanizeMCPError converts a low-level Go network/context error into a short,
+// user-facing message. The full error chain is always logged server-side before
+// this function is called, so diagnostic information is never lost.
+func humanizeMCPError(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "Connection timed out"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "Connection canceled"
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		// Inspect the underlying syscall errno to produce a specific message.
+		// errors.Is walks the chain, so this covers both direct and wrapped errnos.
+		switch {
+		case errors.Is(opErr.Err, syscall.ECONNREFUSED):
+			return "Could not reach server — connection refused"
+		case errors.Is(opErr.Err, syscall.EHOSTUNREACH), errors.Is(opErr.Err, syscall.ENETUNREACH):
+			return "Could not reach server — host unreachable"
+		}
+		return "Network error: " + opErr.Op + " failed"
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		inner := humanizeMCPError(urlErr.Err)
+		// If the inner error was not recognized, return a generic message rather
+		// than the raw URL error string which contains internal Go call chains.
+		if inner == "Could not complete MCP handshake" {
+			return "Could not reach server"
+		}
+		return inner
+	}
+
+	return "Could not complete MCP handshake"
 }

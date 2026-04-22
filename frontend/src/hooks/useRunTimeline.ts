@@ -56,6 +56,10 @@ export function useRunTimeline(
         ? item.approval !== null
         : item.type === 'approval_request'
     ).length,
+    feedback: pairedItems.filter((item) =>
+      !isToolBlock(item)
+        && (item.type === 'feedback_request' || item.type === 'feedback_response')
+    ).length,
   }
 
   // Apply filter to paired items. ToolBlockData always matches 'tool'. Filtering by
@@ -79,9 +83,9 @@ export function useRunTimeline(
             case 'thinking': return item.type === 'thinking'
             case 'error': return item.type === 'error'
             case 'approval': return item.type === 'approval_request'
-            // Types without a dedicated filter category (feedback_request, feedback_response,
-            // complete, orphan tool_result) are only visible under the 'all' filter. This is
-            // intentional — these are rare step types that don't warrant their own chip.
+            case 'feedback': return item.type === 'feedback_request' || item.type === 'feedback_response'
+            // Types without a dedicated filter category (complete, orphan tool_result) are
+            // only visible under the 'all' filter.
             default: return false
           }
         })

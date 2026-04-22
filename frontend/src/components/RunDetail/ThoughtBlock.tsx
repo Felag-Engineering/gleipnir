@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { renderInlineMarkdown } from '@/utils/inlineMarkdown'
 import type { ParsedStep } from './types'
 import styles from './ThoughtBlock.module.css'
 
@@ -23,7 +24,7 @@ export function ThoughtBlock({ step }: Props) {
         <span className={styles.label}>Thought</span>
       </div>
       <div className={styles.content}>
-        {displayText}
+        {renderInlineMarkdown(displayText)}
         {isLong && (
           <button
             type="button"

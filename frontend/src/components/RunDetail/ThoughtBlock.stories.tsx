@@ -43,6 +43,16 @@ export const LongThought: Story = {
   },
 }
 
+export const WithMarkdown: Story = {
+  args: {
+    step: parseStep(makeRaw({
+      content: JSON.stringify({
+        text: '**Result:** The `foo` function returned *success*.',
+      }),
+    })) as ReturnType<typeof parseStep> & { type: 'thought' },
+  },
+}
+
 export const MultiParagraph: Story = {
   args: {
     step: parseStep(makeRaw({

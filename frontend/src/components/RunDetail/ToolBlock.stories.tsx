@@ -71,7 +71,7 @@ export const Success: Story = {
         created_at: '2026-03-10T12:00:02Z',
         content: JSON.stringify({
           tool_name: 'read_file',
-          output: JSON.stringify({ lines: ['INFO app started', 'INFO ready'] }),
+          output: JSON.stringify([{ type: 'text', text: 'INFO app started\nINFO ready' }]),
           is_error: false,
         }),
       })) as ToolBlockData['result'],
@@ -221,5 +221,63 @@ export const ApprovalDenied: Story = {
     } satisfies ToolBlockData,
     runId: 'run-1',
     runStatus: 'failed',
+  },
+}
+
+export const OutputPlainText: Story = {
+  name: 'Output: plain text (not JSON)',
+  args: {
+    block: {
+      approval: null,
+      call: parseStep(makeRaw({
+        id: 'step-call',
+        type: 'tool_call',
+        content: JSON.stringify({
+          tool_name: 'get_weather',
+          server_id: 'weather-server',
+          input: { city: 'London' },
+        }),
+      })) as ToolBlockData['call'],
+      result: parseStep(makeRaw({
+        id: 'step-result',
+        type: 'tool_result',
+        content: JSON.stringify({
+          tool_name: 'get_weather',
+          output: 'Weather in London: Sunny, 22°C',
+          is_error: false,
+        }),
+      })) as ToolBlockData['result'],
+    } satisfies ToolBlockData,
+    runId: 'run-1',
+    runStatus: 'complete',
+  },
+}
+
+export const OutputWithMixedContent: Story = {
+  name: 'Output: mixed MCP content (text + image, fallback to JSON)',
+  args: {
+    block: {
+      approval: null,
+      call: parseStep(makeRaw({
+        id: 'step-call',
+        type: 'tool_call',
+        content: JSON.stringify({
+          tool_name: 'capture_screenshot',
+          server_id: 'browser-server',
+          input: { url: 'https://example.com' },
+        }),
+      })) as ToolBlockData['call'],
+      result: parseStep(makeRaw({
+        id: 'step-result',
+        type: 'tool_result',
+        content: JSON.stringify({
+          tool_name: 'capture_screenshot',
+          output: JSON.stringify([{ type: 'text', text: 'Saved' }, { type: 'image', data: '...' }]),
+          is_error: false,
+        }),
+      })) as ToolBlockData['result'],
+    } satisfies ToolBlockData,
+    runId: 'run-1',
+    runStatus: 'complete',
   },
 }

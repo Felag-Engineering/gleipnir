@@ -116,6 +116,16 @@ describe('useRunTimeline — filter counts', () => {
     const { result } = renderHook(() => useRunTimeline(steps, 'all'))
     expect(result.current.counts.approval).toBe(1)
   })
+
+  it('counts feedback steps (feedback_request + feedback_response)', () => {
+    const feedbackSteps: ApiRunStep[] = [
+      makeStep({ id: 'f1', type: 'feedback_request', content: JSON.stringify({ tool: 'gleipnir.ask_operator', message: 'Please confirm' }) }),
+      makeStep({ id: 'f2', step_number: 1, type: 'feedback_response', content: JSON.stringify({ response: 'Yes' }) }),
+      makeStep({ id: 'f3', step_number: 2, type: 'thought', content: JSON.stringify({ text: 'noted' }) }),
+    ]
+    const { result } = renderHook(() => useRunTimeline(feedbackSteps, 'all'))
+    expect(result.current.counts.feedback).toBe(2)
+  })
 })
 
 describe('useRunTimeline — filtering', () => {
@@ -166,6 +176,18 @@ describe('useRunTimeline — filtering', () => {
     const { result } = renderHook(() => useRunTimeline(approvalSteps, 'approval'))
     expect(result.current.filteredItems).toHaveLength(1)
     expect(result.current.filteredItems[0]).toHaveProperty('approval')
+  })
+
+  it('filter "feedback" returns feedback_request and feedback_response items', () => {
+    const feedbackSteps: ApiRunStep[] = [
+      makeStep({ id: 'f1', type: 'feedback_request', content: JSON.stringify({ tool: 'gleipnir.ask_operator', message: 'Confirm?' }) }),
+      makeStep({ id: 'f2', step_number: 1, type: 'feedback_response', content: JSON.stringify({ response: 'Yes' }) }),
+      makeStep({ id: 'f3', step_number: 2, type: 'thought', content: JSON.stringify({ text: 'ok' }) }),
+    ]
+    const { result } = renderHook(() => useRunTimeline(feedbackSteps, 'feedback'))
+    expect(result.current.filteredItems).toHaveLength(2)
+    expect(result.current.filteredItems[0]).toMatchObject({ type: 'feedback_request' })
+    expect(result.current.filteredItems[1]).toMatchObject({ type: 'feedback_response' })
   })
 })
 
