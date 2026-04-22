@@ -5,6 +5,13 @@ on:
     branches: [main]
   push:
     branches: [main]
+    # Match semver tags: v1.2.3 and pre-releases like v1.2.3-rc1. The two
+    # patterns avoid the false-positives of a single `v*.*.*` glob (which
+    # would also match `v1.2.3.4`). GHA glob: `+` is a quantifier for the
+    # preceding character, so `[0-9]+` means one-or-more digits.
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 jobs:
   backend-tests:
@@ -132,6 +139,60 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t gleipnir:ci .
+
+  # Publishes :dev on every merge to main. Bleeding-edge tag — do not pull
+  # this in production. :latest is reserved for the release job below.
+  docker-push-dev:
+    if: github.event_name == 'push' && github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            felagengineering/gleipnir:dev
+            felagengineering/gleipnir:${{ github.sha }}
+          # Re-use layers from the previous push; mode=max caches all
+          # intermediate stages, not just the final image.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Publishes :latest and the version tag (e.g. :v1.2.3) when a matching
+  # git tag is pushed. A GitHub Release creates a tag as a side effect,
+  # so this covers both the CLI and UI release flows.
+  docker-push-release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            felagengineering/gleipnir:latest
+            felagengineering/gleipnir:${{ github.ref_name }}
+            felagengineering/gleipnir:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   vuln-scan-go:
     if: github.event_name == 'pull_request'
