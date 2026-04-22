@@ -1,27 +1,34 @@
 import shared from './FormSections.module.css';
-import type { IdentityFormState } from './types';
+import type { IdentityFormState, SectionIssues } from './types';
+import { FieldError } from '@/components/form/FieldError';
 
 export interface PolicyIdentitySectionProps {
   value: IdentityFormState;
   onChange: (next: IdentityFormState) => void;
   existingFolders?: string[];
+  errors?: SectionIssues;
 }
 
-export function PolicyIdentitySection({ value, onChange, existingFolders = [] }: PolicyIdentitySectionProps) {
+export function PolicyIdentitySection({ value, onChange, existingFolders = [], errors = [] }: PolicyIdentitySectionProps) {
   const datalistId = 'policy-folder-suggestions';
+  const nameErrors = errors.filter(e => e.field === 'name').map(e => e.message);
+  const nameInvalid = nameErrors.length > 0;
 
   return (
     <div className={shared.section}>
       <div className={shared.heading}>Identity</div>
 
-      <div className={shared.field}>
+      <div className={shared.field} data-field="name">
         <label className={shared.label}>Name</label>
         <input
           className={`${shared.input} ${shared.inputMono}`}
           type="text"
           value={value.name}
+          aria-invalid={nameInvalid || undefined}
+          aria-describedby={nameInvalid ? 'field-name-error' : undefined}
           onChange={(e) => onChange({ ...value, name: e.target.value })}
         />
+        <FieldError id="field-name-error" messages={nameErrors} />
       </div>
 
       <div className={shared.field}>

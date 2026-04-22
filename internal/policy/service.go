@@ -107,7 +107,7 @@ func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidato
 // MCP registry (non-blocking warnings), and stores the policy.
 func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, error) {
 	if err := CheckLegacyWebhookSecret(rawYAML); err != nil {
-		return nil, &ValidationError{Errors: []string{err.Error()}}
+		return nil, &ValidationError{Errors: []Issue{{Field: "trigger.webhook_secret", Message: err.Error()}}}
 	}
 	provider, modelName := s.resolveDefaults(ctx)
 	parsed, err := Parse(rawYAML, provider, modelName)
@@ -118,7 +118,7 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 		return nil, err
 	}
 	if err := s.validateProviderOptions(parsed); err != nil {
-		return nil, &ValidationError{Errors: []string{err.Error()}}
+		return nil, &ValidationError{Errors: []Issue{{Field: "model", Message: err.Error()}}}
 	}
 	// Collect warnings before any blocking checks so model validation failures
 	// can be appended without returning an error.
@@ -141,7 +141,10 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 			}
 		}
 		if !hasFuture {
-			return nil, &ValidationError{Errors: []string{"trigger.fire_at: all timestamps are in the past; scheduled policy must have at least one future fire time"}}
+			return nil, &ValidationError{Errors: []Issue{{
+				Field:   "trigger.fire_at",
+				Message: "all timestamps are in the past; scheduled policy must have at least one future fire time",
+			}}}
 		}
 	}
 
@@ -171,7 +174,7 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 // replaces the stored YAML for the given policy ID.
 func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (*SaveResult, error) {
 	if err := CheckLegacyWebhookSecret(rawYAML); err != nil {
-		return nil, &ValidationError{Errors: []string{err.Error()}}
+		return nil, &ValidationError{Errors: []Issue{{Field: "trigger.webhook_secret", Message: err.Error()}}}
 	}
 	provider, modelName := s.resolveDefaults(ctx)
 	parsed, err := Parse(rawYAML, provider, modelName)
@@ -182,7 +185,7 @@ func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (
 		return nil, err
 	}
 	if err := s.validateProviderOptions(parsed); err != nil {
-		return nil, &ValidationError{Errors: []string{err.Error()}}
+		return nil, &ValidationError{Errors: []Issue{{Field: "model", Message: err.Error()}}}
 	}
 
 	var warnings []string

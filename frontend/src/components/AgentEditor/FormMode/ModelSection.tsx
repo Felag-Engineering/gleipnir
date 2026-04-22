@@ -1,17 +1,22 @@
 import { useEffect } from 'react';
 import shared from './FormSections.module.css';
 import styles from './ModelSection.module.css';
-import type { ModelFormState } from './types';
+import type { ModelFormState, SectionIssues } from './types';
 import { useModels } from '@/hooks/queries/users';
 import { usePublicConfig } from '@/hooks/queries/config';
 import { formatProviderName } from '@/utils/format';
+import { FieldError } from '@/components/form/FieldError';
 
 export interface ModelSectionProps {
   value: ModelFormState;
   onChange: (next: ModelFormState) => void;
+  errors?: SectionIssues;
 }
 
-export function ModelSection({ value, onChange }: ModelSectionProps) {
+export function ModelSection({ value, onChange, errors = [] }: ModelSectionProps) {
+  const providerErrors = errors.filter(e => e.field === 'model.provider').map(e => e.message);
+  const nameErrors = errors.filter(e => e.field === 'model.name').map(e => e.message);
+  const modelErrors = [...providerErrors, ...nameErrors];
   const { data: providers, isLoading, isError } = useModels();
   const { data: publicConfig } = usePublicConfig();
 
@@ -64,29 +69,33 @@ export function ModelSection({ value, onChange }: ModelSectionProps) {
   return (
     <div className={shared.section}>
       <div className={shared.heading}>Model</div>
-      <select
-        className={styles.select}
-        value={selected}
-        onChange={handleChange}
-        disabled={isLoading || isError || providers?.length === 0}
-      >
-        {isLoading && <option value={selected}>Loading models…</option>}
-        {isError && <option value={selected}>Failed to load models</option>}
-        {providers?.length === 0 && <option value="">No models enabled — go to Admin → Models</option>}
-        {/* Placeholder shown when no model has been chosen yet (new policy, no system default) */}
-        {isEmpty && !isLoading && !isError && (providers?.length ?? 0) > 0 && (
-          <option value="">Select a model…</option>
-        )}
-        {providers?.map((group) => (
-          <optgroup key={group.provider} label={formatProviderName(group.provider)}>
-            {group.models.map((m) => (
-              <option key={`${group.provider}:${m.name}`} value={`${group.provider}:${m.name}`}>
-                {m.display_name}
-              </option>
-            ))}
-          </optgroup>
-        ))}
-      </select>
+      <div data-field="model.provider">
+        <select
+          className={styles.select}
+          value={selected}
+          onChange={handleChange}
+          disabled={isLoading || isError || providers?.length === 0}
+          aria-invalid={modelErrors.length > 0 || undefined}
+        >
+          {isLoading && <option value={selected}>Loading models…</option>}
+          {isError && <option value={selected}>Failed to load models</option>}
+          {providers?.length === 0 && <option value="">No models enabled — go to Admin → Models</option>}
+          {/* Placeholder shown when no model has been chosen yet (new policy, no system default) */}
+          {isEmpty && !isLoading && !isError && (providers?.length ?? 0) > 0 && (
+            <option value="">Select a model…</option>
+          )}
+          {providers?.map((group) => (
+            <optgroup key={group.provider} label={formatProviderName(group.provider)}>
+              {group.models.map((m) => (
+                <option key={`${group.provider}:${m.name}`} value={`${group.provider}:${m.name}`}>
+                  {m.display_name}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        <FieldError messages={modelErrors} />
+      </div>
     </div>
   );
 }

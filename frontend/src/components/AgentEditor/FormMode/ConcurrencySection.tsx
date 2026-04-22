@@ -1,11 +1,13 @@
 import { Check } from 'lucide-react';
 import shared from './FormSections.module.css';
 import styles from './ConcurrencySection.module.css';
-import type { ConcurrencyFormState, ConcurrencyValue } from './types';
+import type { ConcurrencyFormState, ConcurrencyValue, SectionIssues } from './types';
+import { FieldError } from '@/components/form/FieldError';
 
 export interface ConcurrencySectionProps {
   value: ConcurrencyFormState;
   onChange: (next: ConcurrencyFormState) => void;
+  errors?: SectionIssues;
 }
 
 const CONCURRENCY_OPTIONS: { value: ConcurrencyValue; label: string; desc: string }[] = [
@@ -15,7 +17,10 @@ const CONCURRENCY_OPTIONS: { value: ConcurrencyValue; label: string; desc: strin
   { value: 'replace',  label: 'Replace',  desc: 'Cancel current, start fresh' },
 ];
 
-export function ConcurrencySection({ value, onChange }: ConcurrencySectionProps) {
+export function ConcurrencySection({ value, onChange, errors = [] }: ConcurrencySectionProps) {
+  const concurrencyErrors = errors.filter(e => e.field === 'agent.concurrency').map(e => e.message);
+  const queueDepthErrors = errors.filter(e => e.field === 'agent.queue_depth').map(e => e.message);
+
   function handleQueueDepthChange(e: React.ChangeEvent<HTMLInputElement>) {
     // Clamp to non-negative integers. Backend rejects negatives (validator.go:200)
     // and 0 means "use default" (model.DefaultQueueDepth).
@@ -27,7 +32,7 @@ export function ConcurrencySection({ value, onChange }: ConcurrencySectionProps)
     <div className={shared.section}>
       <div className={shared.heading}>Concurrency</div>
 
-      <div className={styles.cards}>
+      <div className={styles.cards} data-field="agent.concurrency">
         {CONCURRENCY_OPTIONS.map((option) => {
           const isActive = value.concurrency === option.value;
           return (
@@ -50,9 +55,10 @@ export function ConcurrencySection({ value, onChange }: ConcurrencySectionProps)
           );
         })}
       </div>
+      <FieldError messages={concurrencyErrors} />
 
       {value.concurrency === 'queue' && (
-        <div className={styles.queueDepthRow}>
+        <div className={styles.queueDepthRow} data-field="agent.queue_depth">
           <label className={styles.queueDepthLabel} htmlFor="queue-depth-input">
             Queue depth
           </label>
@@ -65,6 +71,7 @@ export function ConcurrencySection({ value, onChange }: ConcurrencySectionProps)
             value={value.queueDepth || ''}
             onChange={handleQueueDepthChange}
           />
+          <FieldError messages={queueDepthErrors} />
         </div>
       )}
     </div>

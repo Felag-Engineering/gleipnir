@@ -449,8 +449,8 @@ func TestValidate_ModelRequired(t *testing.T) {
 						t.Fatalf("unexpected error type %T: %v", err, err)
 					}
 					for _, e := range ve.Errors {
-						if strings.Contains(e, "model.") {
-							t.Errorf("unexpected model error: %q", e)
+						if strings.Contains(e.Field, "model.") || strings.Contains(e.Message, "model.") {
+							t.Errorf("unexpected model error: field=%q message=%q", e.Field, e.Message)
 						}
 					}
 				}
@@ -465,15 +465,8 @@ func TestValidate_ModelRequired(t *testing.T) {
 				t.Fatalf("expected *ValidationError, got %T: %v", err, err)
 			}
 			for _, want := range tt.wantErrs {
-				found := false
-				for _, e := range ve.Errors {
-					if strings.Contains(e, want) {
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Errorf("expected error containing %q in %v", want, ve.Errors)
+				if !containsIssue(ve.Errors, "", want) {
+					t.Errorf("expected error containing %q in %v", want, ve.Error())
 				}
 			}
 		})
@@ -533,6 +526,21 @@ agent:
 	})
 }
 
+// containsIssue returns true when issues contains an entry whose Field matches
+// fieldSubstr AND whose Message contains messageSubstr. Pass "" for fieldSubstr
+// to skip the field check.
+func containsIssue(issues []Issue, fieldSubstr, messageSubstr string) bool {
+	for _, iss := range issues {
+		if fieldSubstr != "" && !strings.Contains(iss.Field, fieldSubstr) {
+			continue
+		}
+		if strings.Contains(iss.Message, messageSubstr) {
+			return true
+		}
+	}
+	return false
+}
+
 func assertValidationContains(t *testing.T, p *model.ParsedPolicy, substr string) {
 	t.Helper()
 	err := Validate(p)
@@ -543,10 +551,219 @@ func assertValidationContains(t *testing.T, p *model.ParsedPolicy, substr string
 	if !ok {
 		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
 	}
+	// Check both the combined Error() string and individual Issue messages/fields
+	// so tests can match on field paths or on message substrings.
+	if strings.Contains(ve.Error(), substr) {
+		return
+	}
 	for _, e := range ve.Errors {
-		if strings.Contains(e, substr) {
+		if strings.Contains(e.Message, substr) || strings.Contains(e.Field, substr) {
 			return
 		}
 	}
 	t.Errorf("expected error containing %q in %v", substr, ve.Errors)
+}
+
+// assertIssueField asserts that Validate(p) returns a ValidationError
+// containing an Issue with the given field path and a message containing
+// messageSubstr. This locks down both the tagged field and the human text.
+func assertIssueField(t *testing.T, p *model.ParsedPolicy, field, messageSubstr string) {
+	t.Helper()
+	err := Validate(p)
+	if err == nil {
+		t.Fatalf("expected validation error for field %q, got nil", field)
+	}
+	ve, ok := err.(*ValidationError)
+	if !ok {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+	if !containsIssue(ve.Errors, field, messageSubstr) {
+		t.Errorf("expected issue with field=%q message~=%q in %v", field, messageSubstr, ve.Error())
+	}
+}
+
+// TestValidate_IssueFields verifies that each validator rule tags its output
+// with the canonical field path exposed to the frontend. One representative
+// case per field family suffices — the full rule logic is covered by the
+// existing single-message tests above.
+func TestValidate_IssueFields(t *testing.T) {
+	t.Run("name field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Name = ""
+		assertIssueField(t, p, "name", "name is required")
+	})
+
+	t.Run("trigger.type field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.Type = "bad"
+		assertIssueField(t, p, "trigger.type", "invalid")
+	})
+
+	t.Run("trigger.auth field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.WebhookAuth = "invalidmode"
+		assertIssueField(t, p, "trigger.auth", "invalid")
+	})
+
+	t.Run("trigger.fire_at field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.Type = model.TriggerTypeScheduled
+		p.Trigger.FireAt = nil
+		assertIssueField(t, p, "trigger.fire_at", "required")
+	})
+
+	t.Run("trigger.interval field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.Type = model.TriggerTypePoll
+		p.Trigger.Checks = []model.PollCheck{validPollCheck()}
+		// Interval is zero (not set)
+		assertIssueField(t, p, "trigger.interval", "required")
+	})
+
+	t.Run("trigger.match field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.Type = model.TriggerTypePoll
+		p.Trigger.Interval = 5 * time.Minute
+		p.Trigger.Match = "xor"
+		p.Trigger.Checks = []model.PollCheck{validPollCheck()}
+		assertIssueField(t, p, "trigger.match", "invalid")
+	})
+
+	t.Run("trigger.checks[0].tool field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.Type = model.TriggerTypePoll
+		p.Trigger.Interval = 5 * time.Minute
+		c := validPollCheck()
+		c.Tool = ""
+		p.Trigger.Checks = []model.PollCheck{c}
+		assertIssueField(t, p, "trigger.checks[0].tool", "required")
+	})
+
+	t.Run("trigger.checks[0].path field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.Type = model.TriggerTypePoll
+		p.Trigger.Interval = 5 * time.Minute
+		c := validPollCheck()
+		c.Path = ""
+		p.Trigger.Checks = []model.PollCheck{c}
+		assertIssueField(t, p, "trigger.checks[0].path", "required")
+	})
+
+	t.Run("trigger.checks[0].comparator field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.Type = model.TriggerTypePoll
+		p.Trigger.Interval = 5 * time.Minute
+		c := validPollCheck()
+		c.Comparator = ""
+		p.Trigger.Checks = []model.PollCheck{c}
+		assertIssueField(t, p, "trigger.checks[0].comparator", "comparator")
+	})
+
+	t.Run("capabilities root field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Capabilities.Tools = nil
+		p.Capabilities.Feedback = model.FeedbackConfig{Enabled: false}
+		assertIssueField(t, p, "capabilities", "at least one capability")
+	})
+
+	t.Run("capabilities.tools[0].tool field is tagged for empty ref", func(t *testing.T) {
+		p := validPolicy()
+		p.Capabilities.Tools = []model.ToolCapability{{Tool: "", Approval: model.ApprovalModeNone}}
+		assertIssueField(t, p, "capabilities.tools[0].tool", "required")
+	})
+
+	t.Run("capabilities.tools[1].tool field is tagged for duplicate", func(t *testing.T) {
+		p := validPolicy()
+		p.Capabilities.Tools = []model.ToolCapability{
+			{Tool: "s.t", Approval: model.ApprovalModeNone},
+			{Tool: "s.t", Approval: model.ApprovalModeNone},
+		}
+		assertIssueField(t, p, "capabilities.tools[1].tool", "duplicate")
+	})
+
+	t.Run("capabilities.tools[0].timeout field is tagged for bad duration", func(t *testing.T) {
+		p := validPolicy()
+		p.Capabilities.Tools = []model.ToolCapability{
+			{Tool: "s.t", Approval: model.ApprovalModeRequired, Timeout: "bad", OnTimeout: model.OnTimeoutReject},
+		}
+		assertIssueField(t, p, "capabilities.tools[0].timeout", "not a valid duration")
+	})
+
+	t.Run("capabilities.feedback.timeout field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Capabilities.Feedback = model.FeedbackConfig{
+			Enabled:   true,
+			Timeout:   "bad-duration",
+			OnTimeout: model.FeedbackOnTimeoutFail,
+		}
+		assertIssueField(t, p, "capabilities.feedback.timeout", "not a valid duration")
+	})
+
+	t.Run("agent.task field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Agent.Task = ""
+		assertIssueField(t, p, "agent.task", "required")
+	})
+
+	t.Run("model.provider field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Agent.ModelConfig.Provider = ""
+		assertIssueField(t, p, "model.provider", "required")
+	})
+
+	t.Run("model.name field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Agent.ModelConfig.Name = ""
+		assertIssueField(t, p, "model.name", "required")
+	})
+
+	t.Run("agent.limits.max_tokens_per_run field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Agent.Limits.MaxTokensPerRun = -1
+		assertIssueField(t, p, "agent.limits.max_tokens_per_run", "must be positive")
+	})
+
+	t.Run("agent.limits.max_tool_calls_per_run field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Agent.Limits.MaxToolCallsPerRun = 0
+		assertIssueField(t, p, "agent.limits.max_tool_calls_per_run", "must be positive")
+	})
+
+	t.Run("agent.concurrency field is tagged for invalid value", func(t *testing.T) {
+		p := validPolicy()
+		p.Agent.Concurrency = "invalid"
+		assertIssueField(t, p, "agent.concurrency", "invalid")
+	})
+
+	t.Run("agent.queue_depth field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Agent.QueueDepth = -1
+		assertIssueField(t, p, "agent.queue_depth", "must not be negative")
+	})
+
+	t.Run("agent.concurrency replace+approval cross-field is tagged", func(t *testing.T) {
+		p := validPolicy()
+		p.Agent.Concurrency = model.ConcurrencyReplace
+		p.Capabilities.Tools = []model.ToolCapability{
+			{Tool: "s.t", Approval: model.ApprovalModeRequired, OnTimeout: model.OnTimeoutReject},
+		}
+		assertIssueField(t, p, "agent.concurrency", "replace")
+	})
+
+	t.Run("Error() string retains legacy format", func(t *testing.T) {
+		p := validPolicy()
+		p.Name = ""
+		err := Validate(p)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		// Legacy callers expect "policy validation failed: ..." shape.
+		if !strings.HasPrefix(err.Error(), "policy validation failed: ") {
+			t.Errorf("Error() = %q, want prefix %q", err.Error(), "policy validation failed: ")
+		}
+		// The field path must appear in Error() so grep-based log tools still work.
+		if !strings.Contains(err.Error(), "name") {
+			t.Errorf("Error() = %q, missing field path %q", err.Error(), "name")
+		}
+	})
 }

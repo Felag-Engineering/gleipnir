@@ -314,7 +314,14 @@ func (h *PolicyHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 		var ve *policy.ValidationError
 		if errors.As(err, &ve) {
-			httputil.WriteError(w, http.StatusBadRequest, "policy validation failed", strings.Join(ve.Errors, "; "))
+			messages := make([]string, 0, len(ve.Errors))
+			issues := make([]httputil.ErrorIssue, 0, len(ve.Errors))
+			for _, iss := range ve.Errors {
+				messages = append(messages, iss.Message)
+				issues = append(issues, httputil.ErrorIssue{Field: iss.Field, Message: iss.Message})
+			}
+			httputil.WriteValidationError(w, http.StatusBadRequest,
+				"policy validation failed", strings.Join(messages, "; "), issues)
 			return
 		}
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create policy", err.Error())
@@ -348,7 +355,14 @@ func (h *PolicyHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		var ve *policy.ValidationError
 		if errors.As(err, &ve) {
-			httputil.WriteError(w, http.StatusBadRequest, "policy validation failed", strings.Join(ve.Errors, "; "))
+			messages := make([]string, 0, len(ve.Errors))
+			issues := make([]httputil.ErrorIssue, 0, len(ve.Errors))
+			for _, iss := range ve.Errors {
+				messages = append(messages, iss.Message)
+				issues = append(issues, httputil.ErrorIssue{Field: iss.Field, Message: iss.Message})
+			}
+			httputil.WriteValidationError(w, http.StatusBadRequest,
+				"policy validation failed", strings.Join(messages, "; "), issues)
 			return
 		}
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update policy", err.Error())

@@ -4,6 +4,7 @@ import { ModalFooter } from '@/components/ModalFooter'
 import { Button } from '@/components/Button/Button'
 import { useTestMcpConnection } from '@/hooks/mutations/servers'
 import type { ApiError } from '@/api/fetch'
+import { ErrorBanner } from '@/components/form/ErrorBanner'
 import styles from './AddServerModal.module.css'
 import formStyles from '@/styles/forms.module.css'
 import alertStyles from '@/styles/alerts.module.css'
@@ -118,11 +119,16 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
             </div>
           )}
         </div>
-        {error && (
-          <div className={alertStyles.alertError} role="alert">
-            {error.message}
-          </div>
-        )}
+        <ErrorBanner
+          issues={
+            error
+              ? (error.issues ??
+                  (error.detail
+                    ? [{ message: error.detail }]
+                    : [{ message: error.message }]))
+              : []
+          }
+        />
         {discoveryWarning && (
           <div className={alertStyles.alertWarning} role="status">
             Server registered, but tool discovery failed: {discoveryWarning}. You can retry with the Discover button.

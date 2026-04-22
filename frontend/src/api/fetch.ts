@@ -1,12 +1,19 @@
+export interface ApiErrorIssue {
+  field?: string
+  message: string
+}
+
 export class ApiError extends Error {
   status: number
   detail?: string
+  issues?: ApiErrorIssue[]
 
-  constructor(status: number, message: string, detail?: string) {
+  constructor(status: number, message: string, detail?: string, issues?: ApiErrorIssue[]) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
+    this.issues = issues
   }
 }
 
@@ -14,16 +21,29 @@ interface BaseRequestOptions {
   skipAuthRedirect?: boolean
 }
 
-function parseApiErrorBody(body: unknown): { error: string; detail?: string } | null {
+function parseApiErrorBody(
+  body: unknown,
+): { error: string; detail?: string; issues?: ApiErrorIssue[] } | null {
   if (
     typeof body === 'object' &&
     body !== null &&
     typeof (body as Record<string, unknown>).error === 'string'
   ) {
     const b = body as Record<string, unknown>
+    let issues: ApiErrorIssue[] | undefined
+    if (Array.isArray(b.issues)) {
+      const parsed = b.issues.filter(
+        (item): item is ApiErrorIssue =>
+          typeof item === 'object' &&
+          item !== null &&
+          typeof (item as Record<string, unknown>).message === 'string',
+      )
+      if (parsed.length > 0) issues = parsed
+    }
     return {
       error: b.error as string,
       detail: typeof b.detail === 'string' ? b.detail : undefined,
+      issues,
     }
   }
   return null
@@ -49,17 +69,19 @@ async function baseRequest(
     }
     let message = response.statusText
     let detail: string | undefined
+    let issues: ApiErrorIssue[] | undefined
     try {
       const body = await response.json()
       const parsed = parseApiErrorBody(body)
       if (parsed) {
         message = parsed.error
         detail = parsed.detail
+        issues = parsed.issues
       }
     } catch {
       // JSON parse failed, fall back to statusText already set above
     }
-    throw new ApiError(response.status, message, detail)
+    throw new ApiError(response.status, message, detail, issues)
   }
 
   return response

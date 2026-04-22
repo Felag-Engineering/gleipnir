@@ -30,33 +30,6 @@
   width: 100%;
 }
 
-.errorBanner {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  background: color-mix(in srgb, var(--color-red) 10%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-red) 25%, transparent);
-  color: var(--color-red);
-  font-size: var(--text-sm);
-  line-height: 1.5;
-}
-
-.errorBannerMessage {
-  flex: 1;
-}
-
-.errorBannerClose {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: inherit;
-  padding: 0;
-  line-height: 1;
-  font-size: var(--text-base);
-  flex-shrink: 0;
-}
-
 .loadingState,
 .errorState {
   flex: 1;

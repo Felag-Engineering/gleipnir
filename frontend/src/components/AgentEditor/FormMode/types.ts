@@ -84,3 +84,11 @@ export interface ModelFormState {
   provider: string;
   model: string;
 }
+
+// FormIssue is defined in validateFormState.ts (single source of truth).
+// It is re-exported here so section components only need to import from './types'.
+// SectionIssues is the array form: a flat list of issues pre-filtered to a
+// specific form section.
+import type { FormIssue } from '@/components/AgentEditor/validateFormState';
+export type { FormIssue };
+export type SectionIssues = FormIssue[];

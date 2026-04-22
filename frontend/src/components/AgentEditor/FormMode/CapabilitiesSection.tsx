@@ -4,18 +4,22 @@ import { useMcpServers } from '@/hooks/queries/servers';
 import { queryKeys } from '@/hooks/queryKeys';
 import { apiFetch } from '@/api/fetch';
 import type { ApiMcpTool } from '@/api/types';
-import type { AssignedTool, CapabilitiesFormState } from './types';
+import type { AssignedTool, CapabilitiesFormState, SectionIssues, FormIssue } from './types';
 import shared from './FormSections.module.css';
 import styles from './CapabilitiesSection.module.css';
+import { FieldError } from '@/components/form/FieldError';
 
 export interface CapabilitiesSectionProps {
   value: CapabilitiesFormState;
   onChange: (next: CapabilitiesFormState) => void;
+  errors?: SectionIssues;
 }
 
 type RegistryEntry = { tool: ApiMcpTool; serverName: string };
 
-export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProps) {
+export function CapabilitiesSection({ value, onChange, errors = [] }: CapabilitiesSectionProps) {
+  const capabilityRootErrors = errors.filter(e => e.field === 'capabilities').map(e => e.message);
+  const feedbackTimeoutErrors = errors.filter(e => e.field === 'capabilities.feedback.timeout').map(e => e.message);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
 
@@ -104,21 +108,27 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
     <div className={shared.section}>
       <div className={shared.heading}>Capabilities</div>
 
+      <FieldError messages={capabilityRootErrors} />
       {value.tools.length === 0 ? (
         <div className={styles.emptyState}>
           No tools added yet. Add tools from the registry below.
         </div>
       ) : (
         <div className={styles.toolList}>
-          {value.tools.map(tool => (
-            <AssignedToolRow
-              key={tool.toolId}
-              tool={tool}
-              onRemove={handleRemove}
-              onToggleApproval={handleToggleApproval}
-              onTimeoutChange={handleTimeoutChange}
-            />
-          ))}
+          {value.tools.map((tool, i) => {
+            const rowIssues = errors.filter(e => e.field.startsWith(`capabilities.tools[${i}].`));
+            return (
+              <AssignedToolRow
+                key={tool.toolId}
+                tool={tool}
+                rowIndex={i}
+                rowIssues={rowIssues}
+                onRemove={handleRemove}
+                onToggleApproval={handleToggleApproval}
+                onTimeoutChange={handleTimeoutChange}
+              />
+            );
+          })}
         </div>
       )}
 
@@ -156,7 +166,7 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
         </div>
         {value.feedback.enabled && (
           <div className={styles.feedbackFields}>
-            <div className={styles.feedbackRow}>
+            <div className={styles.feedbackRow} data-field="capabilities.feedback.timeout">
               <span className={styles.feedbackLabel}>Timeout</span>
               <input
                 className={styles.feedbackInput}
@@ -166,6 +176,7 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
                 onChange={e => handleFeedbackTimeoutChange(e.target.value)}
               />
             </div>
+            <FieldError messages={feedbackTimeoutErrors} />
             <div className={styles.feedbackRow}>
               <span className={styles.feedbackLabel}>On timeout</span>
               <span className={styles.feedbackLabel}>fail</span>
@@ -179,18 +190,23 @@ export function CapabilitiesSection({ value, onChange }: CapabilitiesSectionProp
 
 interface AssignedToolRowProps {
   tool: AssignedTool;
+  rowIndex: number;
+  rowIssues: FormIssue[];
   onRemove: (toolId: string) => void;
   onToggleApproval: (toolId: string) => void;
   onTimeoutChange: (toolId: string, timeout: string) => void;
 }
 
-function AssignedToolRow({ tool, onRemove, onToggleApproval, onTimeoutChange }: AssignedToolRowProps) {
+function AssignedToolRow({ tool, rowIndex, rowIssues, onRemove, onToggleApproval, onTimeoutChange }: AssignedToolRowProps) {
   const displayName = `${tool.serverName}.${tool.name}`;
+  const toolErrors = rowIssues.filter(e => e.field === `capabilities.tools[${rowIndex}].tool`).map(e => e.message);
+  const timeoutErrors = rowIssues.filter(e => e.field === `capabilities.tools[${rowIndex}].timeout`).map(e => e.message);
 
   return (
-    <div className={styles.toolRow}>
+    <div className={styles.toolRow} data-field={`capabilities.tools[${rowIndex}].tool`}>
       <span className={styles.toolName}>{displayName}</span>
       <span className={styles.toolDesc}>{tool.description}</span>
+      <FieldError messages={toolErrors} />
       <div className={styles.approvalToggle}>
         <span className={styles.approvalLabel}>approval</span>
         <button
@@ -215,6 +231,7 @@ function AssignedToolRow({ tool, onRemove, onToggleApproval, onTimeoutChange }: 
           />
         )}
       </div>
+      <FieldError messages={timeoutErrors} />
       <button
         className={styles.removeButton}
         onClick={() => onRemove(tool.toolId)}

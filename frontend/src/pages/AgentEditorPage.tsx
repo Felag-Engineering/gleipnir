@@ -11,13 +11,43 @@ import { RunLimitsSection } from '@/components/AgentEditor/FormMode/RunLimitsSec
 import { ConcurrencySection } from '@/components/AgentEditor/FormMode/ConcurrencySection'
 import { ModelSection } from '@/components/AgentEditor/FormMode/ModelSection'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { ErrorBanner } from '@/components/form/ErrorBanner'
 import { usePolicy, usePolicies } from '@/hooks/queries/policies'
 import { useSavePolicy, useDeletePolicy, usePausePolicy, useResumePolicy } from '@/hooks/mutations/policies'
 import { ApiError } from '@/api/fetch'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import NotFoundPage from '@/pages/NotFoundPage'
 import { defaultFormState, FormState, formStateToYaml, yamlToFormState } from '@/components/AgentEditor/agentEditorUtils'
+import { validateFormState, type FormIssue } from '@/components/AgentEditor/validateFormState'
 import styles from './AgentEditorPage.module.css'
+
+// splitIssuesBySection partitions a flat FormIssue list into buckets by the
+// canonical field prefix. Each section receives only the issues that belong to
+// it so it can render inline FieldError components without global state.
+function splitIssuesBySection(issues: FormIssue[]) {
+  return {
+    identity: issues.filter(iss => iss.field === 'name'),
+    trigger: issues.filter(iss => iss.field.startsWith('trigger.')),
+    capabilities: issues.filter(iss => iss.field.startsWith('capabilities')),
+    task: issues.filter(iss => iss.field === 'agent.task'),
+    model: issues.filter(iss => iss.field.startsWith('model.')),
+    limits: issues.filter(iss => iss.field.startsWith('agent.limits.')),
+    // Explicit field names rather than startsWith('agent.') because agent.task
+    // and agent.limits.* belong to separate sections.
+    concurrency: issues.filter(iss => iss.field === 'agent.concurrency' || iss.field === 'agent.queue_depth'),
+  }
+}
+
+// scrollToField scrolls the first element with data-field="<field>" into view
+// and focuses the first focusable child inside it.
+function scrollToField(field: string) {
+  const el = document.querySelector<HTMLElement>(`[data-field="${CSS.escape(field)}"]`)
+  if (!el) return
+  // scrollIntoView is not available in all environments (e.g. jsdom in tests).
+  el.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  const focusable = el.querySelector<HTMLElement>('input, textarea, select, button')
+  focusable?.focus({ preventScroll: true })
+}
 
 export function AgentEditorPage() {
   const { id } = useParams<{ id?: string }>()
@@ -36,7 +66,11 @@ export function AgentEditorPage() {
 
   const [isDirty, setIsDirty] = useState(false)
   const [formState, setFormState] = useState<FormState>(() => defaultFormState())
-  const [saveError, setSaveError] = useState<string | null>(null)
+  // issues holds the current set of validation errors (either from client-side
+  // validation or from the server). detailMsg holds a non-structured error
+  // message (e.g. "already exists") when the server does not return issues[].
+  const [issues, setIssues] = useState<FormIssue[]>([])
+  const [detailMsg, setDetailMsg] = useState<string | null>(null)
   const [savedPolicyId, setSavedPolicyId] = useState<string | undefined>(id)
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [deleteError, setDeleteError] = useState<ApiError | null>(null)
@@ -62,7 +96,19 @@ export function AgentEditorPage() {
   }
 
   async function handleSave() {
-    setSaveError(null)
+    // Client-side validation runs first. If it finds issues, short-circuit:
+    // display inline errors + banner and scroll to the first offending field.
+    const clientIssues = validateFormState(formState)
+    if (clientIssues.length > 0) {
+      setIssues(clientIssues)
+      setDetailMsg(null)
+      scrollToField(clientIssues[0].field)
+      return
+    }
+
+    setIssues([])
+    setDetailMsg(null)
+
     const yaml = formStateToYaml(formState)
     try {
       const result = await savePolicy.mutateAsync({ id, yaml })
@@ -73,7 +119,20 @@ export function AgentEditorPage() {
       }
     } catch (e) {
       const err = e as ApiError
-      setSaveError(err?.detail ?? err?.message ?? 'Save failed. Please try again.')
+      if (err?.issues?.length) {
+        // Server returned structured issues — render them like client-side issues.
+        const serverIssues: FormIssue[] = err.issues.map(iss => ({
+          field: iss.field ?? '',
+          message: iss.message,
+        }))
+        setIssues(serverIssues)
+        setDetailMsg(null)
+        scrollToField(serverIssues[0].field)
+      } else {
+        // Legacy or non-validation error — fall back to the single-bullet banner.
+        setDetailMsg(err?.detail ?? err?.message ?? 'Save failed. Please try again.')
+        setIssues([])
+      }
     }
   }
 
@@ -154,6 +213,16 @@ export function AgentEditorPage() {
     )
   }
 
+  const sectionIssues = splitIssuesBySection(issues)
+
+  // Build the banner issue list: if we have structured issues use them;
+  // otherwise fall back to the single detail message.
+  const bannerIssues = issues.length > 0
+    ? issues
+    : detailMsg
+      ? [{ message: detailMsg }]
+      : []
+
   return (
     <div className={styles.page}>
       <EditorTopBar
@@ -191,42 +260,48 @@ export function AgentEditorPage() {
       )}
       <ErrorBoundary>
         <div className={styles.content}>
-          {saveError && (
-            <div className={styles.errorBanner}>
-              <span className={styles.errorBannerMessage}>{saveError}</span>
-              <button className={styles.errorBannerClose} onClick={() => setSaveError(null)}>×</button>
-            </div>
-          )}
+          <ErrorBanner
+            issues={bannerIssues}
+            onDismiss={() => { setIssues([]); setDetailMsg(null) }}
+            onIssueClick={scrollToField}
+          />
           <div className={styles.formPane}>
             <PolicyIdentitySection
               value={formState.identity}
               onChange={v => handleFormChange({ identity: v })}
               existingFolders={existingFolders}
+              errors={sectionIssues.identity}
             />
             <TriggerSection
               value={formState.trigger}
               onChange={v => handleFormChange({ trigger: v })}
               policyId={savedPolicyId}
+              errors={sectionIssues.trigger}
             />
             <CapabilitiesSection
               value={formState.capabilities}
               onChange={v => handleFormChange({ capabilities: v })}
+              errors={sectionIssues.capabilities}
             />
             <TaskInstructionsSection
               value={formState.task}
               onChange={v => handleFormChange({ task: v })}
+              errors={sectionIssues.task}
             />
             <ModelSection
               value={formState.model}
               onChange={v => handleFormChange({ model: v })}
+              errors={sectionIssues.model}
             />
             <RunLimitsSection
               value={formState.limits}
               onChange={v => handleFormChange({ limits: v })}
+              errors={sectionIssues.limits}
             />
             <ConcurrencySection
               value={formState.concurrency}
               onChange={v => handleFormChange({ concurrency: v })}
+              errors={sectionIssues.concurrency}
             />
           </div>
         </div>

@@ -4,6 +4,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import { useAdminSettings, useSystemInfo } from '@/hooks/queries/admin'
 import { useUpdateAdminSettings } from '@/hooks/mutations/admin'
+import { ErrorBanner } from '@/components/form/ErrorBanner'
 import cardStyles from '@/components/Settings/Settings.module.css'
 import styles from './AdminSystemPage.module.css'
 
@@ -73,9 +74,9 @@ function PublicURLSection() {
             Save
           </button>
           {saved && <span className={cardStyles.successMsg}>Saved</span>}
-          {updateSettings.isError && (
-            <span className={cardStyles.errorMsg}>Failed to save settings</span>
-          )}
+          <ErrorBanner
+            issues={updateSettings.isError ? [{ message: 'Failed to save settings' }] : []}
+          />
         </div>
       </div>
     </section>
@@ -171,9 +172,9 @@ function RunLimitsSection() {
             Save
           </button>
           {saved && <span className={cardStyles.successMsg}>Saved</span>}
-          {updateSettings.isError && (
-            <span className={cardStyles.errorMsg}>Failed to save settings</span>
-          )}
+          <ErrorBanner
+            issues={updateSettings.isError ? [{ message: 'Failed to save settings' }] : []}
+          />
         </div>
       </div>
     </section>
