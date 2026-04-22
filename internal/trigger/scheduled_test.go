@@ -408,7 +408,12 @@ func TestScheduler_ConcurrencyQueue_LaunchesWhenIdle(t *testing.T) {
 			t.Fatalf("ListRuns: %v", err)
 		}
 		if len(runs) > 0 {
-			manager.Wait()
+			// Wait specifically for this run's goroutine to deregister. Calling
+			// manager.Wait() here would race with RunLauncher.Launch: the DB row
+			// is created before Register is called, so the poll above can observe
+			// the row while Register is still pending — a concurrent wg.Add/Wait
+			// is undefined per sync.WaitGroup.
+			manager.WaitForDeregistration(runs[0].ID, 5*time.Second)
 			return // success — run was created and launched
 		}
 		time.Sleep(50 * time.Millisecond)
