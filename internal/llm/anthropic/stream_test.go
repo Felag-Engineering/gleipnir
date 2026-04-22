@@ -266,8 +266,12 @@ func TestConsumeStream_ThinkingWithSignature(t *testing.T) {
 	if thinking.Text != "I think deeply" {
 		t.Errorf("Thinking.Text = %q, want %q", thinking.Text, "I think deeply")
 	}
-	if thinking.Signature != "sig-abc" {
-		t.Errorf("Thinking.Signature = %q, want %q", thinking.Signature, "sig-abc")
+	var state anthropicThinkingState
+	if err := json.Unmarshal(thinking.ProviderState, &state); err != nil {
+		t.Fatalf("unmarshal ProviderState: %v", err)
+	}
+	if state.Signature != "sig-abc" {
+		t.Errorf("state.Signature = %q, want %q", state.Signature, "sig-abc")
 	}
 	if thinking.Redacted {
 		t.Error("Thinking.Redacted = true, want false")
@@ -306,8 +310,12 @@ func TestConsumeStream_RedactedThinking(t *testing.T) {
 	if !thinking.Redacted {
 		t.Error("Thinking.Redacted = false, want true")
 	}
-	if thinking.RedactedData != "redacted-blob" {
-		t.Errorf("Thinking.RedactedData = %q, want %q", thinking.RedactedData, "redacted-blob")
+	var state anthropicThinkingState
+	if err := json.Unmarshal(thinking.ProviderState, &state); err != nil {
+		t.Fatalf("unmarshal ProviderState: %v", err)
+	}
+	if state.RedactedData != "redacted-blob" {
+		t.Errorf("state.RedactedData = %q, want %q", state.RedactedData, "redacted-blob")
 	}
 }
 

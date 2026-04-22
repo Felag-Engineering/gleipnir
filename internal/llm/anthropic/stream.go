@@ -126,22 +126,30 @@ func consumeStream(
 				// Text deltas were already emitted incrementally; nothing to flush.
 
 			case "thinking":
-				thinking := &llm.ThinkingBlock{
-					Provider:  "anthropic",
-					Text:      pb.thinkingText.String(),
-					Redacted:  false,
-					Signature: pb.signature,
+				raw, err := marshalThinkingState(anthropicThinkingState{Signature: pb.signature})
+				if err != nil {
+					out <- llm.MessageChunk{Err: fmt.Errorf("anthropic: marshal thinking state: %w", err)}
+					return
 				}
-				out <- llm.MessageChunk{Thinking: thinking}
+				out <- llm.MessageChunk{Thinking: &llm.ThinkingBlock{
+					Provider:      "anthropic",
+					Text:          pb.thinkingText.String(),
+					Redacted:      false,
+					ProviderState: raw,
+				}}
 
 			case "redacted_thinking":
-				thinking := &llm.ThinkingBlock{
-					Provider:     "anthropic",
-					Text:         "[redacted]",
-					Redacted:     true,
-					RedactedData: pb.redactedData,
+				raw, err := marshalThinkingState(anthropicThinkingState{RedactedData: pb.redactedData})
+				if err != nil {
+					out <- llm.MessageChunk{Err: fmt.Errorf("anthropic: marshal thinking state: %w", err)}
+					return
 				}
-				out <- llm.MessageChunk{Thinking: thinking}
+				out <- llm.MessageChunk{Thinking: &llm.ThinkingBlock{
+					Provider:      "anthropic",
+					Text:          "[redacted]",
+					Redacted:      true,
+					ProviderState: raw,
+				}}
 
 			case "tool_use":
 				originalName := pb.toolName

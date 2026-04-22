@@ -84,7 +84,11 @@ func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequ
 		err = fmt.Errorf("anthropic: building tools: %w", buildErr)
 		return
 	}
-	messages := buildMessages(req.History, nameMap.OriginalToSanitized)
+	messages, buildErr := buildMessages(req.History, nameMap.OriginalToSanitized)
+	if buildErr != nil {
+		err = fmt.Errorf("anthropic: %w", buildErr)
+		return
+	}
 
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(req.Model),
@@ -105,7 +109,11 @@ func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequ
 		return
 	}
 
-	resp = translateResponse(sdkResp, nameMap.SanitizedToOriginal)
+	resp, err = translateResponse(sdkResp, nameMap.SanitizedToOriginal)
+	if err != nil {
+		err = fmt.Errorf("anthropic: translateResponse: %w", err)
+		return
+	}
 	return
 }
 
@@ -137,7 +145,10 @@ func (c *AnthropicClient) StreamMessage(ctx context.Context, req llm.MessageRequ
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: building tools: %w", err)
 	}
-	messages := buildMessages(req.History, nameMap.OriginalToSanitized)
+	messages, err := buildMessages(req.History, nameMap.OriginalToSanitized)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: %w", err)
+	}
 
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(req.Model),
@@ -314,7 +325,7 @@ func buildSystemBlocks(req llm.MessageRequest, hints *AnthropicHints) []anthropi
 // Anthropic MessageParams. originalToSanitized maps original MCP tool names
 // to their sanitized wire-format names; when non-nil, ToolCallBlock names are
 // looked up in the map so the API receives valid tool names. See issue #413.
-func buildMessages(history []llm.ConversationTurn, originalToSanitized map[string]string) []anthropic.MessageParam {
+func buildMessages(history []llm.ConversationTurn, originalToSanitized map[string]string) ([]anthropic.MessageParam, error) {
 	msgs := make([]anthropic.MessageParam, 0, len(history))
 	for _, turn := range history {
 		blocks := make([]anthropic.ContentBlockParamUnion, 0, len(turn.Content))
@@ -338,14 +349,22 @@ func buildMessages(history []llm.ConversationTurn, originalToSanitized map[strin
 			case llm.ToolResultBlock:
 				blocks = append(blocks, anthropic.NewToolResultBlock(b.ToolCallID, b.Content, b.IsError))
 			case llm.ThinkingBlock:
-				if b.Redacted {
-					blocks = append(blocks, anthropic.NewRedactedThinkingBlock(b.RedactedData))
-				} else if b.Signature != "" {
-					blocks = append(blocks, anthropic.NewThinkingBlock(b.Signature, b.Text))
+				if b.Provider != "" && b.Provider != "anthropic" {
+					slog.Debug("buildMessages: skipping ThinkingBlock from non-Anthropic provider",
+						"block_provider", b.Provider)
+					continue
+				}
+				state, err := unmarshalThinkingState(b.ProviderState)
+				if err != nil {
+					return nil, fmt.Errorf("anthropic: buildMessages: %w", err)
+				}
+				if b.Redacted && state.RedactedData != "" {
+					blocks = append(blocks, anthropic.NewRedactedThinkingBlock(state.RedactedData))
+				} else if !b.Redacted && state.Signature != "" {
+					blocks = append(blocks, anthropic.NewThinkingBlock(state.Signature, b.Text))
 				} else {
-					// Empty signature means this block came from a non-Anthropic provider.
-					// Anthropic's API requires a non-empty signature, so skip it.
-					slog.Debug("buildMessages: skipping ThinkingBlock with empty signature (non-Anthropic source)")
+					// Empty state means no round-trip data — skip (no Signature or RedactedData to echo).
+					slog.Debug("buildMessages: skipping ThinkingBlock with empty provider state")
 				}
 			default:
 				slog.Warn("buildMessages: skipping unknown content block type", "type", fmt.Sprintf("%T", cb))
@@ -358,7 +377,7 @@ func buildMessages(history []llm.ConversationTurn, originalToSanitized map[strin
 			msgs = append(msgs, anthropic.NewUserMessage(blocks...))
 		}
 	}
-	return msgs
+	return msgs, nil
 }
 
 // buildTools translates the provider-neutral tool definitions into the
@@ -449,7 +468,7 @@ func buildToolInputSchema(schema json.RawMessage) (anthropic.ToolInputSchemaPara
 // provider-neutral MessageResponse. sanitizedToOriginal is the name map
 // returned by buildTools; it is used to reverse-map sanitized tool names
 // in ToolUseBlock responses back to the original MCP names.
-func translateResponse(resp *anthropic.Message, sanitizedToOriginal map[string]string) *llm.MessageResponse {
+func translateResponse(resp *anthropic.Message, sanitizedToOriginal map[string]string) (*llm.MessageResponse, error) {
 	var result llm.MessageResponse
 
 	for _, block := range resp.Content {
@@ -470,20 +489,28 @@ func translateResponse(resp *anthropic.Message, sanitizedToOriginal map[string]s
 				Input: b.Input,
 			})
 		case anthropic.ThinkingBlock:
+			raw, err := marshalThinkingState(anthropicThinkingState{Signature: b.Signature})
+			if err != nil {
+				return nil, fmt.Errorf("anthropic: translateResponse: %w", err)
+			}
 			result.Thinking = append(result.Thinking, llm.ThinkingBlock{
-				Provider:  "anthropic",
-				Text:      b.Thinking,
-				Redacted:  false,
-				Signature: b.Signature,
+				Provider:      "anthropic",
+				Text:          b.Thinking,
+				Redacted:      false,
+				ProviderState: raw,
 			})
 		case anthropic.RedactedThinkingBlock:
 			// Text is set to "[redacted]" for audit display only — it is never
 			// sent back to the API. Only RedactedData is echoed on subsequent requests.
+			raw, err := marshalThinkingState(anthropicThinkingState{RedactedData: b.Data})
+			if err != nil {
+				return nil, fmt.Errorf("anthropic: translateResponse: %w", err)
+			}
 			result.Thinking = append(result.Thinking, llm.ThinkingBlock{
-				Provider:     "anthropic",
-				Text:         "[redacted]",
-				Redacted:     true,
-				RedactedData: b.Data,
+				Provider:      "anthropic",
+				Text:          "[redacted]",
+				Redacted:      true,
+				ProviderState: raw,
 			})
 		default:
 			slog.Warn("translateResponse: skipping unhandled content block type", "type", fmt.Sprintf("%T", b))
@@ -509,7 +536,7 @@ func translateResponse(resp *anthropic.Message, sanitizedToOriginal map[string]s
 		OutputTokens: int(resp.Usage.OutputTokens),
 	}
 
-	return &result
+	return &result, nil
 }
 
 // wrapSDKError translates Anthropic SDK errors into descriptive errors with

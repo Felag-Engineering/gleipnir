@@ -15,29 +15,33 @@ import (
 // buildInput translates the provider-neutral MessageRequest history into the
 // Responses API input list. The system prompt is passed separately as
 // ResponseNewParams.Instructions; it is not included in the input list here.
-func buildInput(req llm.MessageRequest, names llm.ToolNameMapping) []responses.ResponseInputItemUnionParam {
+func buildInput(req llm.MessageRequest, names llm.ToolNameMapping) ([]responses.ResponseInputItemUnionParam, error) {
 	var items []responses.ResponseInputItemUnionParam
 	for _, turn := range req.History {
-		items = append(items, translateTurn(turn, names)...)
+		turnItems, err := translateTurn(turn, names)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, turnItems...)
 	}
-	return items
+	return items, nil
 }
 
 // translateTurn converts a single ConversationTurn into one or more input
 // items. The Responses API represents tool calls and results as separate
 // top-level items, not as nested content within a single message.
-func translateTurn(turn llm.ConversationTurn, names llm.ToolNameMapping) []responses.ResponseInputItemUnionParam {
+func translateTurn(turn llm.ConversationTurn, names llm.ToolNameMapping) ([]responses.ResponseInputItemUnionParam, error) {
 	switch turn.Role {
 	case llm.RoleAssistant:
 		return translateAssistantTurn(turn.Content, names)
 	case llm.RoleUser:
-		return translateUserTurn(turn.Content)
+		return translateUserTurn(turn.Content), nil
 	default:
-		return nil
+		return nil, nil
 	}
 }
 
-func translateAssistantTurn(blocks []llm.ContentBlock, names llm.ToolNameMapping) []responses.ResponseInputItemUnionParam {
+func translateAssistantTurn(blocks []llm.ContentBlock, names llm.ToolNameMapping) ([]responses.ResponseInputItemUnionParam, error) {
 	var items []responses.ResponseInputItemUnionParam
 	var textParts []string
 
@@ -61,10 +65,18 @@ func translateAssistantTurn(blocks []llm.ContentBlock, names llm.ToolNameMapping
 			}
 			items = append(items, responses.ResponseInputItemParamOfFunctionCall(args, v.ID, name))
 		case llm.ThinkingBlock:
-			if v.ID == "" && v.EncryptedContent == "" {
-				// Non-OpenAI thinking block (e.g. from Anthropic). The Responses API
-				// requires an ID and reasoning content to round-trip, so skip it.
-				slog.Debug("openai: skipping ThinkingBlock with no ID and no encrypted_content (non-OpenAI source)")
+			if v.Provider != "" && v.Provider != "openai" {
+				slog.Debug("openai: skipping ThinkingBlock from non-OpenAI provider",
+					"block_provider", v.Provider)
+				continue
+			}
+			state, err := unmarshalThinkingState(v.ProviderState)
+			if err != nil {
+				return nil, fmt.Errorf("openai: translateAssistantTurn: %w", err)
+			}
+			if state.ID == "" && state.EncryptedContent == "" {
+				// No round-trip data — skip (non-OpenAI source or empty state).
+				slog.Debug("openai: skipping ThinkingBlock with no ID and no encrypted_content")
 				continue
 			}
 			// Flush accumulated text before emitting the reasoning item.
@@ -77,9 +89,9 @@ func translateAssistantTurn(blocks []llm.ContentBlock, names llm.ToolNameMapping
 			// (common with encrypted_content-only items). Always include at
 			// least one entry to satisfy the wire format.
 			summaryParams := []responses.ResponseReasoningItemSummaryParam{{Text: v.Text}}
-			item := responses.ResponseInputItemParamOfReasoning(v.ID, summaryParams)
-			if v.EncryptedContent != "" {
-				item.OfReasoning.EncryptedContent = param.NewOpt(v.EncryptedContent)
+			item := responses.ResponseInputItemParamOfReasoning(state.ID, summaryParams)
+			if state.EncryptedContent != "" {
+				item.OfReasoning.EncryptedContent = param.NewOpt(state.EncryptedContent)
 			}
 			items = append(items, item)
 		}
@@ -87,7 +99,7 @@ func translateAssistantTurn(blocks []llm.ContentBlock, names llm.ToolNameMapping
 	if len(textParts) > 0 {
 		items = append(items, assistantTextItem(strings.Join(textParts, "\n\n")))
 	}
-	return items
+	return items, nil
 }
 
 // assistantTextItem encodes a plain assistant text turn as an EasyInputMessage
@@ -205,11 +217,15 @@ func translateResponse(resp *responses.Response, names llm.ToolNameMapping) (*ll
 			// Only append when there is something to round-trip: encrypted content
 			// for multi-turn continuity, or summary text for audit display.
 			if v.EncryptedContent != "" || summaryText != "" {
+				state := openaiThinkingState{ID: v.ID, EncryptedContent: v.EncryptedContent}
+				raw, marshalErr := marshalThinkingState(state)
+				if marshalErr != nil {
+					return nil, fmt.Errorf("openai: translateResponse: %w", marshalErr)
+				}
 				out.Thinking = append(out.Thinking, llm.ThinkingBlock{
-					Provider:         "openai",
-					ID:               v.ID,
-					Text:             summaryText,
-					EncryptedContent: v.EncryptedContent,
+					Provider:      "openai",
+					Text:          summaryText,
+					ProviderState: raw,
 				})
 			}
 		default:

@@ -63,7 +63,11 @@ func (c *Client) CreateMessage(ctx context.Context, req llm.MessageRequest) (res
 		return
 	}
 
-	params := c.buildParams(req, hints, tools, names)
+	params, buildErr := c.buildParams(req, hints, tools, names)
+	if buildErr != nil {
+		err = fmt.Errorf("openai: %w", buildErr)
+		return
+	}
 
 	sdkResp, sdkErr := c.sdk.Responses.New(ctx, params)
 	if sdkErr != nil {
@@ -99,7 +103,10 @@ func (c *Client) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-c
 		return nil, fmt.Errorf("openai: building tools: %w", err)
 	}
 
-	params := c.buildParams(req, hints, tools, names)
+	params, err := c.buildParams(req, hints, tools, names)
+	if err != nil {
+		return nil, fmt.Errorf("openai: %w", err)
+	}
 
 	stream := c.sdk.Responses.NewStreaming(ctx, params)
 
@@ -115,7 +122,7 @@ func (c *Client) buildParams(
 	hints *OpenAIHints,
 	tools []responses.ToolUnionParam,
 	names llm.ToolNameMapping,
-) responses.ResponseNewParams {
+) (responses.ResponseNewParams, error) {
 	params := responses.ResponseNewParams{
 		Model: shared.ResponsesModel(req.Model),
 		Tools: tools,
@@ -128,7 +135,10 @@ func (c *Client) buildParams(
 		params.Include = []responses.ResponseIncludable{responses.ResponseIncludableReasoningEncryptedContent}
 	}
 
-	input := buildInput(req, names)
+	input, err := buildInput(req, names)
+	if err != nil {
+		return responses.ResponseNewParams{}, fmt.Errorf("openai: buildParams: %w", err)
+	}
 	if len(input) > 0 {
 		params.Input = responses.ResponseNewParamsInputUnion{
 			OfInputItemList: input,
@@ -161,7 +171,7 @@ func (c *Client) buildParams(
 		params.MaxOutputTokens = openaisdk.Int(maxOut)
 	}
 
-	return params
+	return params, nil
 }
 
 // ValidateOptions validates provider-specific options from the policy YAML.

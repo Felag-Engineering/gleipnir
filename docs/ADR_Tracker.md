@@ -856,6 +856,40 @@ for the interface; it never imports provider SDKs directly.
 - Capability snapshot (ADR-018) records tools in MCP-native `ToolDefinition` format
 - Adding a new provider requires: implementing `LLMClient`, adding a `ProviderHints` field, registering in the registry — no BoundAgent changes
 
+**Amendment (2026-04):** `ThinkingBlock` now uses opaque `ProviderState json.RawMessage` instead
+of named provider-specific fields (`Signature`, `RedactedData`, `EncryptedContent`, `ID`). Each
+provider package that has round-trip state defines its own unexported state struct and
+marshal/unmarshal helpers; the shared interface carries only `Provider`, `Text`, `Redacted`, and
+`ProviderState`.
+
+Rationale: named fields created a lowest-common-denominator leak that grew with each new provider.
+Opaque bytes scale to additional providers without touching the shared interface.
+
+Per-provider adoption (not mandated uniformly):
+- `internal/llm/anthropic`: defines `anthropicThinkingState{Signature, RedactedData}`. Round-trips
+  via signature (non-redacted) or redacted-data (redacted blocks).
+- `internal/llm/openai`: defines `openaiThinkingState{ID, EncryptedContent}`. Round-trips via the
+  Responses API reasoning item ID and encrypted content.
+- `internal/llm/google`: has no `ThinkingBlock` round-trip state today (its thought signature lives
+  on `ToolCallBlock.ProviderMetadata["google.thought_signature"]`, out of scope). No state struct;
+  its `ThinkingBlock` constructions compile unchanged.
+- `internal/llm/openaicompat`: drops thinking blocks entirely. No state struct.
+
+What does NOT change:
+- `ProviderHints any` — typed-per-provider; request-time config where caller ergonomics favor a
+  typed interface over opaque bytes.
+- `ToolCallBlock.ProviderMetadata map[string][]byte` — already opaque bytes; map shape lets
+  independent keys coexist (Google uses one key).
+
+Cross-provider semantics: a block whose `Provider` does not match the current provider (empty or
+mismatched) is silently skipped (Debug log). Empty `ProviderState` (nil or len 0) is also skipped
+— treated as text-only with no round-trip data. Malformed `ProviderState` JSON returns an error
+and the agent fails the run with a wrapped message — do not silently drop continuity.
+
+Destructive migration: no DB schema change (`ThinkingBlock` provider-specific fields were never
+persisted — the audit writer records only `{text, redacted}`). Fresh installs only for in-flight
+conversations.
+
 ---
 
 ## ADR-028: Tool Risk Classification Model

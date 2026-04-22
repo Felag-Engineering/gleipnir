@@ -343,7 +343,7 @@ func TestBuildChatCompletionRequest(t *testing.T) {
 				Model: "gpt-4o",
 				History: []llm.ConversationTurn{
 					{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-						llm.ThinkingBlock{Text: "reasoning", Signature: "sig"},
+						llm.ThinkingBlock{Provider: "anthropic", Text: "reasoning"},
 						llm.TextBlock{Text: "answer"},
 					}},
 				},
