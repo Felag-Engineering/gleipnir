@@ -1,0 +1,73 @@
+name: Bug report
+description: Something in Gleipnir is broken or misbehaving.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Before you start, please check [existing issues](https://github.com/Felag-Engineering/gleipnir/issues?q=is%3Aissue) to avoid duplicates.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including what you expected to happen instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps someone else could follow to trigger the bug.
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Gleipnir version
+      description: Release tag, docker image tag, or commit SHA.
+      placeholder: "v0.1.0 or sha:abc123"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: trigger-type
+    attributes:
+      label: Which trigger type is involved?
+      description: If the bug is specific to a trigger, which one?
+      options:
+        - Not applicable
+        - webhook
+        - manual
+        - scheduled
+        - poll
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any relevant server logs, run trace output, or browser console errors. Redact API keys and secrets.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, deployment method (docker compose / bare metal), LLM provider, anything else relevant.
+      placeholder: |
+        - OS: Ubuntu 24.04
+        - Deployment: docker compose
+        - LLM provider: Anthropic (claude-sonnet-4-6)
+    validations:
+      required: false

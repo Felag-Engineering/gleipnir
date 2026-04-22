@@ -20,7 +20,7 @@ Any tool can be marked as requiring approval. When the agent tries to use one, t
 1. Clone the repo and copy the environment template:
 
    ```bash
-   git clone https://github.com/your-org/gleipnir.git
+   git clone https://github.com/Felag-Engineering/gleipnir.git
    cd gleipnir
    cp .env.example .env
    ```
@@ -61,4 +61,4 @@ For fully worked examples against specific services, follow one of the [playbook
 
 ## License
 
-[MIT](LICENSE)
+[Business Source License 1.1](LICENSE). Non-production use is free; production use requires a commercial license from Felag Engineering until the Change Date (2028-04-21), after which this version converts to Apache License 2.0.

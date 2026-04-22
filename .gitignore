@@ -1,5 +1,6 @@
 .env
 .claude/agent-memory/go-code-reviewer/MEMORY.md
+.claude/worktrees/
 devflow/.devflow/
 frontend/node_modules
 frontend/dist
