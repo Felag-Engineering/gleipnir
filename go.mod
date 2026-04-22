@@ -1,6 +1,6 @@
 module github.com/rapp992/gleipnir
 
-go 1.25.0
+go 1.25.9
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.37.0
