@@ -8,6 +8,7 @@ import type { ApiProviderStatus, ApiAllModelEntry } from '@/api/types'
 import { useSetProviderKey } from '@/hooks/mutations/admin'
 import { useUpdateAdminSettings, useSetModelEnabled } from '@/hooks/mutations/admin'
 import { OpenAICompatProvidersSection } from '@/components/admin/OpenAICompatProvidersSection'
+import { EncryptionKeyNotice } from '@/components/admin/EncryptionKeyNotice'
 import { useOpenAICompatProviders } from '@/hooks/queries/openaiCompatProviders'
 import { formatProviderName } from '@/utils/format'
 import cardStyles from '@/components/Settings/Settings.module.css'
@@ -344,6 +345,7 @@ export default function AdminModelsPage() {
   return (
     <div className={styles.page}>
       <PageHeader title="Models" />
+      <EncryptionKeyNotice />
       <ApiKeysSection />
       <OpenAICompatProvidersSection />
       <SystemDefaultSection />
