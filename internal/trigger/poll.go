@@ -30,6 +30,14 @@ const (
 	reconcileInterval = 60 * time.Second
 )
 
+// pollLoopHandle wraps a loop's cancel func so the map stores a pointer we can
+// identity-compare. Needed so a goroutine's deferred cleanup only deletes the
+// map entry it installed — if Notify has since cancelled-and-replaced the loop,
+// the stale goroutine must not evict the fresh handle.
+type pollLoopHandle struct {
+	cancel context.CancelFunc
+}
+
 // Poller manages one goroutine per active poll policy. Each goroutine loops
 // independently, calling the policy's configured MCP tools on each interval tick.
 // When all checks pass (or any check passes, depending on the match mode), a
@@ -39,10 +47,10 @@ type Poller struct {
 	launcher      *run.RunLauncher
 	toolResolver  toolResolver
 	modelResolver defaultModelResolver
-	mu            sync.Mutex                    // protects loops and rootCtx
-	loops         map[string]context.CancelFunc // policyID -> cancel func for that goroutine
-	wg            sync.WaitGroup                // tracks all poll loop goroutines
-	rootCtx       context.Context               // set in Start; used by Notify to outlive the HTTP request
+	mu            sync.Mutex                 // protects loops and rootCtx
+	loops         map[string]*pollLoopHandle // policyID -> handle for that goroutine
+	wg            sync.WaitGroup             // tracks all poll loop goroutines
+	rootCtx       context.Context            // set in Start; used by Notify to outlive the HTTP request
 }
 
 // NewPoller returns a Poller ready to be started. resolver is used to call
@@ -54,7 +62,7 @@ func NewPoller(store *db.Store, launcher *run.RunLauncher, resolver toolResolver
 		launcher:      launcher,
 		toolResolver:  resolver,
 		modelResolver: modelResolver,
-		loops:         make(map[string]context.CancelFunc),
+		loops:         make(map[string]*pollLoopHandle),
 	}
 }
 
@@ -131,9 +139,9 @@ func (p *Poller) reconcile(ctx context.Context) {
 	}
 
 	// Cancel loops for policies no longer active (paused or deleted).
-	for policyID, cancel := range p.loops {
+	for policyID, h := range p.loops {
 		if _, active := activeSet[policyID]; !active {
-			cancel()
+			h.cancel()
 			delete(p.loops, policyID)
 		}
 	}
@@ -142,8 +150,8 @@ func (p *Poller) reconcile(ctx context.Context) {
 // cancelLoopLocked cancels and removes the poll loop for policyID if one is
 // running. mu must be held by the caller.
 func (p *Poller) cancelLoopLocked(policyID string) {
-	if cancel, ok := p.loops[policyID]; ok {
-		cancel()
+	if h, ok := p.loops[policyID]; ok {
+		h.cancel()
 		delete(p.loops, policyID)
 	}
 }
@@ -218,7 +226,8 @@ func (p *Poller) startPollLoopLocked(ctx context.Context, policyRow db.Policy) {
 	}
 
 	loopCtx, loopCancel := context.WithCancel(ctx)
-	p.loops[policyRow.ID] = loopCancel
+	handle := &pollLoopHandle{cancel: loopCancel}
+	p.loops[policyRow.ID] = handle
 
 	p.wg.Add(1)
 	go func() {
@@ -226,12 +235,13 @@ func (p *Poller) startPollLoopLocked(ctx context.Context, policyRow db.Policy) {
 		defer func() {
 			// Remove the entry from the map when the loop exits so reconcile
 			// can restart it if the policy becomes active again.
-			// There is a benign race here: reconcile may run between the goroutine
-			// exiting and this delete, and observe a stale cancel func that has
-			// already been called. The reconcile will simply call cancel() again
-			// (a no-op) and delete the entry itself. Both paths converge correctly.
+			// Identity check: if Notify (or reconcile) has cancelled this loop
+			// and installed a replacement under the same policy ID, the map
+			// entry will point to a different handle — leave it alone.
 			p.mu.Lock()
-			delete(p.loops, policyRow.ID)
+			if current, ok := p.loops[policyRow.ID]; ok && current == handle {
+				delete(p.loops, policyRow.ID)
+			}
 			p.mu.Unlock()
 		}()
 		p.pollLoop(loopCtx, policyRow.ID, parsed)
@@ -376,8 +386,8 @@ func (p *Poller) Wait() {
 // provided as an explicit method for callers that do not own the context.
 func (p *Poller) Stop() {
 	p.mu.Lock()
-	for _, cancel := range p.loops {
-		cancel()
+	for _, h := range p.loops {
+		h.cancel()
 	}
 	p.mu.Unlock()
 	p.wg.Wait()
