@@ -19,6 +19,7 @@ const COUNTS: Record<FilterKey, number> = {
   thinking: 6,
   error: 3,
   approval: 2,
+  feedback: 2,
 }
 
 export const AllActive: Story = {
@@ -53,6 +54,14 @@ export const ApprovalsActive: Story = {
   },
 }
 
+export const FeedbackActive: Story = {
+  args: {
+    active: 'feedback',
+    counts: COUNTS,
+    onChange: () => {},
+  },
+}
+
 export const ToolsActive: Story = {
   args: {
     active: 'tool',
@@ -81,7 +90,7 @@ export const NoErrors: Story = {
 export const AllZeroCounts: Story = {
   args: {
     active: 'all',
-    counts: { all: 0, tool: 0, thought: 0, thinking: 0, error: 0, approval: 0 },
+    counts: { all: 0, tool: 0, thought: 0, thinking: 0, error: 0, approval: 0, feedback: 0 },
     onChange: () => {},
   },
 }

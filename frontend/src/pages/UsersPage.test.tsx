@@ -306,4 +306,33 @@ describe('UsersPage — create user modal', () => {
     const submitBtn = screen.getByRole('button', { name: /creating/i })
     expect(submitBtn).toBeDisabled()
   })
+
+  it('Create User modal — empty fields show inline errors, not native tooltip', () => {
+    const mutateMock = vi.fn()
+    vi.mocked(useCreateUser).mockReturnValue({
+      mutate: mutateMock,
+      isPending: false,
+      error: null,
+      reset: vi.fn(),
+    } as unknown as ReturnType<typeof useCreateUser>)
+
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /create user/i }))
+
+    // Submit without filling any inputs.
+    fireEvent.submit(document.querySelector('#create-user-form') as HTMLFormElement)
+
+    // Both error messages must appear (in the banner and/or inline FieldError).
+    // Use getAllByText because the message appears in both the FieldError element
+    // and the ErrorBanner summary list.
+    expect(screen.getAllByText(/username is required/i).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/password is required/i).length).toBeGreaterThan(0)
+
+    // Each field must be marked invalid for accessibility.
+    expect(screen.getByLabelText(/username/i)).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText(/password/i)).toHaveAttribute('aria-invalid', 'true')
+
+    // The mutation must not have been called — no server round-trip on empty inputs.
+    expect(mutateMock).not.toHaveBeenCalled()
+  })
 })

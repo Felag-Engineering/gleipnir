@@ -1,6 +1,7 @@
 import { Check, X } from 'lucide-react'
 import { CollapsibleJSON } from '@/components/CollapsibleJSON'
 import { ApprovalActions } from './ApprovalActions'
+import { parseToolOutput } from './toolOutput'
 import type { ToolBlockData } from './types'
 import styles from './ToolBlock.module.css'
 
@@ -53,15 +54,9 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
     block.call?.content.input ?? block.approval?.content.input ?? {}
   const inputEmpty = Object.keys(inputValue).length === 0
 
-  // Output: parse the JSON string from tool_result.
-  let outputValue: unknown = null
-  if (block.result) {
-    try {
-      outputValue = JSON.parse(block.result.content.output)
-    } catch {
-      outputValue = block.result.content.output
-    }
-  }
+  const outputValue: unknown = block.result
+    ? parseToolOutput(block.result.content.output)
+    : null
 
   const dotClass = {
     success: styles.dotSuccess,
@@ -119,14 +114,18 @@ export function ToolBlock({ block, runId, runStatus }: Props) {
         {status === 'success' && (
           <div className={`${styles.pane} ${styles.paneOutput}`}>
             <div className={styles.paneLabel}>Output</div>
-            <CollapsibleJSON value={outputValue} />
+            {typeof outputValue === 'string'
+              ? <pre className={styles.outputText}>{outputValue}</pre>
+              : <CollapsibleJSON value={outputValue} />}
           </div>
         )}
 
         {status === 'error' && (
           <div className={`${styles.pane} ${styles.paneOutput} ${styles.paneError}`}>
             <div className={styles.paneLabel}>Output</div>
-            <CollapsibleJSON value={outputValue} />
+            {typeof outputValue === 'string'
+              ? <pre className={styles.outputText}>{outputValue}</pre>
+              : <CollapsibleJSON value={outputValue} />}
           </div>
         )}
 

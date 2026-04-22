@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Lock } from 'lucide-react'
 import { Button } from '@/components/Button'
 import { useChangePassword } from '@/hooks/useSettings'
+import { useCurrentUser } from '@/hooks/queries/users'
 import type { ApiError } from '@/api/fetch'
 import { ErrorBanner } from '@/components/form/ErrorBanner'
 import styles from './Settings.module.css'
@@ -14,6 +15,8 @@ export function ChangePasswordSection() {
   const [success, setSuccess] = useState(false)
 
   const mutation = useChangePassword()
+  const { data: currentUser } = useCurrentUser()
+  const currentUsername = currentUser?.username ?? ''
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -55,6 +58,17 @@ export function ChangePasswordSection() {
       </div>
       <div className={styles.cardBody}>
         <form onSubmit={handleSubmit}>
+          {/* Hidden username field so password managers can associate the saved
+              credential with the correct account. The `hidden` attribute keeps
+              this out of the visible layout without inline styles. */}
+          <input
+            type="text"
+            name="username"
+            autoComplete="username"
+            value={currentUsername}
+            readOnly
+            hidden
+          />
           <div className={styles.formInner}>
             <div className={styles.fieldGroup}>
               <label htmlFor="current-password" className={styles.label}>

@@ -28,7 +28,8 @@ npm run build-storybook  # static Storybook build
 /runs/:id           → reasoning timeline with live SSE updates
 /tools              → tool management + server registry
 /mcp                → redirect to /tools (legacy path)
-/users              → user management (admin)
+/users              → redirect to /admin/users (legacy path)
+/admin/users        → user management (admin)
 /admin/models       → model enable/disable, provider key management (admin)
 /admin/system       → system settings (public URL, run limits, system info) (admin)
 *                   → 404 not found
@@ -149,6 +150,8 @@ Canonical formatting helpers live in `src/utils/format.ts`:
 - `formatCountdown(expiresAt)` — countdown with urgency flag
 - `computeRunDuration(run)` — derives duration from started/completed timestamps
 - `formatProviderName(provider)` — display label for LLM providers (`openai` → `OpenAI`)
+
+`src/utils/inlineMarkdown.ts` — `renderInlineMarkdown(text)` tokenizes bold (`**`), italic (`*`/`_`), and inline code (`` ` ``) and returns a `ReactNode[]` for use inside JSX. No external markdown dependency.
 
 ## API types
 

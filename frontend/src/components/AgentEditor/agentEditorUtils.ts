@@ -33,8 +33,7 @@ trigger:
 capabilities:
   tools: []
 agent:
-  task: |
-    Describe what this agent should do.
+  task: ''
   limits:
     max_tokens_per_run: 20000
     max_tool_calls_per_run: 50

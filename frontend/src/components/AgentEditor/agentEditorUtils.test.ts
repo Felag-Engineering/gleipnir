@@ -712,6 +712,9 @@ describe('defaultFormState', () => {
     expect(state.limits.max_tool_calls_per_run).toBe(50)
     expect(state.concurrency.concurrency).toBe('skip')
     expect(state.concurrency.queueDepth).toBe(0)
+    // task must start empty so the textarea placeholder guides the user and saving
+    // without editing correctly surfaces the "agent.task is required" validation error.
+    expect(state.task.task).toBe('')
   })
 
   it('matches what yamlToFormState(DEFAULT_YAML) returns', () => {

@@ -1,6 +1,6 @@
 import styles from './FilterBar.module.css'
 
-export type FilterKey = 'all' | 'tool' | 'thought' | 'thinking' | 'error' | 'approval'
+export type FilterKey = 'all' | 'tool' | 'thought' | 'thinking' | 'error' | 'approval' | 'feedback'
 
 interface FilterChip {
   key: FilterKey
@@ -14,6 +14,7 @@ const CHIPS: FilterChip[] = [
   { key: 'thinking', label: 'Thinking' },
   { key: 'error', label: 'Errors' },
   { key: 'approval', label: 'Approvals' },
+  { key: 'feedback', label: 'Feedback' },
 ]
 
 interface Props {

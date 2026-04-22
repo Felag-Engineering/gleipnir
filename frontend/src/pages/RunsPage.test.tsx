@@ -297,16 +297,28 @@ describe('RunsPage — sort chip', () => {
 })
 
 describe('RunsPage — stats subtitle', () => {
-  it('shows "{total} runs" in deferred mode when backend stats absent', () => {
+  it('shows "<n> runs" for a plural total (e.g. 42)', () => {
     mockLoaded([makeRun()], 42)
     renderPage()
     expect(screen.getByText('42 runs')).toBeInTheDocument()
   })
 
+  it('shows "2 runs" for a plural total', () => {
+    mockLoaded([makeRun(), makeRun({ id: 'run-2222222222222222' })], 2)
+    renderPage()
+    expect(screen.getByText('2 runs')).toBeInTheDocument()
+  })
+
+  it('shows "1 run" (singular) when total is exactly 1', () => {
+    mockLoaded([makeRun()], 1)
+    renderPage()
+    expect(screen.getByText('1 run')).toBeInTheDocument()
+  })
+
   it('stats line is hidden when there are no runs', () => {
     mockLoaded([])
     renderPage()
-    expect(screen.queryByText(/\d+ runs/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/\d+ runs?/)).not.toBeInTheDocument()
   })
 })
 

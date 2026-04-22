@@ -604,6 +604,70 @@ func TestMCPServerTestConnectionHandler(t *testing.T) {
 		if envelope.Data.Error == "" {
 			t.Errorf("error must be non-empty for unreachable server")
 		}
+		// The raw Go error chain must not be surfaced to the user.
+		for _, fragment := range []string{"post tools/list:", "ensure session", "http do"} {
+			if strings.Contains(envelope.Data.Error, fragment) {
+				t.Errorf("error %q must not contain raw Go chain fragment %q", envelope.Data.Error, fragment)
+			}
+		}
+		// The message should be human-readable.
+		lowerErr := strings.ToLower(envelope.Data.Error)
+		if !strings.Contains(lowerErr, "connection refused") && !strings.Contains(lowerErr, "could not reach server") {
+			t.Errorf("error %q should mention connection refused or could not reach server", envelope.Data.Error)
+		}
+	})
+
+	t.Run("context deadline produces friendly message", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("skipping: blocks for 5s waiting for context deadline")
+		}
+
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+
+		// done is closed just before the test server shuts down, unblocking any
+		// in-flight handler so httptest.Server.Close() does not stall.
+		done := make(chan struct{})
+
+		// This handler never sends a response, forcing the 5-second deadline inside
+		// TestConnection to expire. It blocks until done is closed.
+		blocking := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			<-done
+		}))
+		// Cleanup order: t.Cleanup calls in LIFO order — close(done) must be
+		// registered AFTER blocking.Close so it runs BEFORE it.
+		t.Cleanup(blocking.Close)
+		t.Cleanup(func() { close(done) })
+
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"url": blocking.URL})
+		resp, err := http.Post(srv.URL+"/servers/test", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /servers/test: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+
+		var envelope struct {
+			Data testResult `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.OK {
+			t.Errorf("ok = true, want false on deadline")
+		}
+		if !strings.Contains(envelope.Data.Error, "Connection timed out") {
+			t.Errorf("error = %q, want to contain %q", envelope.Data.Error, "Connection timed out")
+		}
+		if strings.Contains(envelope.Data.Error, "context deadline exceeded") {
+			t.Errorf("error %q must not contain raw Go text %q", envelope.Data.Error, "context deadline exceeded")
+		}
 	})
 
 	t.Run("missing url returns 400", func(t *testing.T) {

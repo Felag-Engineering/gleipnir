@@ -65,7 +65,7 @@ export default function RunsPage() {
 
   // Stats subtitle — deferred mode shows total count since backend doesn't
   // yet return per-status counts or token sums in the stats field.
-  const statsLine = total > 0 ? `${total} runs` : ''
+  const statsLine = total > 0 ? `${total} ${total === 1 ? 'run' : 'runs'}` : ''
 
   const sortLabel = sort === 'oldest' ? 'Oldest ▲' : 'Newest ▼'
   const sortAriaLabel =

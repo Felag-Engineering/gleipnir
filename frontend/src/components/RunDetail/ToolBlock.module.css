@@ -197,3 +197,13 @@
   font-size: var(--text-sm);
   font-weight: 500;
 }
+
+.outputText {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--text-second);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

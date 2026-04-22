@@ -2,7 +2,8 @@ import { useState, type FormEvent } from 'react'
 import { Modal } from '@/components/Modal'
 import { ModalFooter } from '@/components/ModalFooter'
 import type { ApiError } from '@/api/fetch'
-import { ErrorBanner } from '@/components/form/ErrorBanner'
+import { ErrorBanner, type BannerIssue } from '@/components/form/ErrorBanner'
+import { FieldError } from '@/components/form/FieldError'
 import styles from './CreateUserModal.module.css'
 
 const ALL_ROLES = ['admin', 'operator', 'approver', 'auditor'] as const
@@ -18,6 +19,8 @@ export function CreateUserModal({ onClose, onSubmit, isPending, error }: Props) 
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [selectedRoles, setSelectedRoles] = useState<Set<string>>(new Set())
+  const [clientIssues, setClientIssues] = useState<BannerIssue[]>([])
+  const [fieldErrors, setFieldErrors] = useState<{ username?: string; password?: string }>({})
 
   function toggleRole(role: string) {
     setSelectedRoles((prev) => {
@@ -33,8 +36,38 @@ export function CreateUserModal({ onClose, onSubmit, isPending, error }: Props) 
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
+
+    // Reset stale client errors before re-validating.
+    setClientIssues([])
+    setFieldErrors({})
+
+    const issues: BannerIssue[] = []
+    const errors: { username?: string; password?: string } = {}
+
+    if (username.trim() === '') {
+      issues.push({ field: 'username', message: 'Username is required' })
+      errors.username = 'Username is required'
+    }
+    if (password === '') {
+      issues.push({ field: 'password', message: 'Password is required' })
+      errors.password = 'Password is required'
+    }
+
+    if (issues.length > 0) {
+      setClientIssues(issues)
+      setFieldErrors(errors)
+      return
+    }
+
     onSubmit(username, password, Array.from(selectedRoles))
   }
+
+  const bannerIssues: BannerIssue[] =
+    clientIssues.length > 0
+      ? clientIssues
+      : error
+        ? (error.issues ?? (error.detail ? [{ message: error.detail }] : [{ message: error.message }]))
+        : []
 
   const footer = (
     <ModalFooter
@@ -48,7 +81,12 @@ export function CreateUserModal({ onClose, onSubmit, isPending, error }: Props) 
 
   return (
     <Modal title="Create user" onClose={onClose} footer={footer}>
-      <form id="create-user-form" className={styles.form} onSubmit={handleSubmit}>
+      <form
+        id="create-user-form"
+        className={styles.form}
+        onSubmit={handleSubmit}
+        onInvalid={(e) => e.preventDefault()}
+      >
         <div className={styles.fieldGroup}>
           <label htmlFor="new-username" className={styles.label}>
             Username
@@ -60,8 +98,10 @@ export function CreateUserModal({ onClose, onSubmit, isPending, error }: Props) 
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="off"
-            required
+            aria-invalid={Boolean(fieldErrors.username)}
+            aria-describedby="new-username-error"
           />
+          <FieldError id="new-username-error" messages={fieldErrors.username} />
         </div>
 
         <div className={styles.fieldGroup}>
@@ -75,8 +115,10 @@ export function CreateUserModal({ onClose, onSubmit, isPending, error }: Props) 
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="new-password"
-            required
+            aria-invalid={Boolean(fieldErrors.password)}
+            aria-describedby="new-password-error"
           />
+          <FieldError id="new-password-error" messages={fieldErrors.password} />
         </div>
 
         <div className={styles.fieldGroup}>
@@ -95,13 +137,7 @@ export function CreateUserModal({ onClose, onSubmit, isPending, error }: Props) 
           </div>
         </div>
 
-        <ErrorBanner
-          issues={
-            error
-              ? (error.issues ?? (error.detail ? [{ message: error.detail }] : [{ message: error.message }]))
-              : []
-          }
-        />
+        <ErrorBanner issues={bannerIssues} />
       </form>
     </Modal>
   )
