@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Modal } from '@/components/Modal'
 import { ModalFooter } from '@/components/ModalFooter'
 import type { ApiError } from '@/api/fetch'
-import alertStyles from '@/styles/alerts.module.css'
+import { ErrorBanner } from '@/components/form/ErrorBanner'
 import styles from './CreateUserModal.module.css'
 
 const ALL_ROLES = ['admin', 'operator', 'approver', 'auditor'] as const
@@ -95,11 +95,13 @@ export function CreateUserModal({ onClose, onSubmit, isPending, error }: Props) 
           </div>
         </div>
 
-        {error && (
-          <div className={alertStyles.alertError} role="alert">
-            {error.message}
-          </div>
-        )}
+        <ErrorBanner
+          issues={
+            error
+              ? (error.issues ?? (error.detail ? [{ message: error.detail }] : [{ message: error.message }]))
+              : []
+          }
+        />
       </form>
     </Modal>
   )

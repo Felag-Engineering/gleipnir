@@ -1,6 +1,6 @@
 import shared from './FormSections.module.css';
 import styles from './TriggerSection.module.css';
-import type { TriggerFormState, ManualTriggerState, ScheduledTriggerState, PollTriggerState } from './types';
+import type { TriggerFormState, ManualTriggerState, ScheduledTriggerState, PollTriggerState, SectionIssues } from './types';
 import { TriggerCard } from './triggers/TriggerCard';
 import { WebhookConfig } from './triggers/WebhookConfig';
 import { ScheduledConfig } from './triggers/ScheduledConfig';
@@ -10,6 +10,7 @@ export interface TriggerSectionProps {
   value: TriggerFormState;
   onChange: (next: TriggerFormState) => void;
   policyId?: string;
+  errors?: SectionIssues;
 }
 
 const DEFAULT_MANUAL: ManualTriggerState = { type: 'manual' };
@@ -21,7 +22,7 @@ const DEFAULT_POLL: PollTriggerState = {
   checks: [{ tool: '', input: '', path: '', comparator: 'equals', value: '' }],
 };
 
-export function TriggerSection({ value, onChange, policyId }: TriggerSectionProps) {
+export function TriggerSection({ value, onChange, policyId, errors = [] }: TriggerSectionProps) {
   function handleTypeSelect(type: TriggerFormState['type']) {
     if (type === 'webhook') onChange({ type: 'webhook', auth: 'hmac' });
     else if (type === 'manual') onChange(DEFAULT_MANUAL);
@@ -52,8 +53,8 @@ export function TriggerSection({ value, onChange, policyId }: TriggerSectionProp
             onChange={(next) => onChange(next)}
           />
         )}
-        {value.type === 'scheduled' && <ScheduledConfig value={value} onChange={onChange} />}
-        {value.type === 'poll' && <PollConfig value={value} onChange={onChange} />}
+        {value.type === 'scheduled' && <ScheduledConfig value={value} onChange={onChange} errors={errors} />}
+        {value.type === 'poll' && <PollConfig value={value} onChange={onChange} errors={errors} />}
         {value.type === 'manual' && null}
       </div>
     </div>

@@ -216,6 +216,7 @@ Organized by feature area:
 - **RunDetail/** — RunHeader, StepTimeline, FilterBar, MetadataGrid, CapabilitySnapshotCard, ThoughtBlock, ThinkingBlock, ToolBlock, CompleteBlock, ErrorBlock, FeedbackBlock, ApprovalActions, FeedbackActions
 - **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal
 - **admin/** — EncryptionKeyNotice (persistent warning banner on the Models page about encryption key backup requirements)
+- **form/** — FieldError (inline message under a field), ErrorBanner (top-of-form bulleted summary with scroll-to-field). Shared primitives for surfacing validation/save errors.
 - **Shared** — Button, Modal, ModalFooter, EmptyState, ErrorBoundary, QueryBoundary, CopyBlock, CollapsibleJSON, SkeletonBlock, PageHeader, ApprovalBanner, ConnectionBanner, TriggerRunModal
 
 ### Hooks (`src/hooks/`)

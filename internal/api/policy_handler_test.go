@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1554,4 +1555,197 @@ func TestPolicyHandler_NilNotifiersDoNotPanic(t *testing.T) {
 	resp.Body.Close()
 
 	// If we reach here without panicking, the test passes.
+}
+
+// TestPolicyValidationErrorShape asserts that the API returns the structured
+// `issues` array alongside the legacy `detail` string when policy validation
+// fails. This covers five distinct field families so the handler's mapping from
+// policy.Issue to httputil.ErrorIssue is exercised end-to-end.
+func TestPolicyValidationErrorShape(t *testing.T) {
+	// responseEnvelope captures the fields we want to assert on.
+	type issueJSON struct {
+		Field   string `json:"field"`
+		Message string `json:"message"`
+	}
+	type envelope struct {
+		Error  string      `json:"error"`
+		Detail string      `json:"detail"`
+		Issues []issueJSON `json:"issues"`
+	}
+
+	mustDecodeEnvelope := func(t *testing.T, body []byte) envelope {
+		t.Helper()
+		var env envelope
+		if err := json.Unmarshal(body, &env); err != nil {
+			t.Fatalf("decode envelope: %v", err)
+		}
+		return env
+	}
+
+	findIssue := func(issues []issueJSON, field, messageSubstr string) bool {
+		for _, iss := range issues {
+			if iss.Field == field && strings.Contains(iss.Message, messageSubstr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// assertValidationEnvelope POSTs yaml and checks the structured response.
+	assertValidationEnvelope := func(t *testing.T, yaml string, wantIssues []issueJSON) {
+		t.Helper()
+		store := newPolicyHandlerStore(t)
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Post(srv.URL+"/policies", "text/plain", strings.NewReader(yaml))
+		if err != nil {
+			t.Fatalf("POST /policies: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", resp.StatusCode)
+		}
+
+		var rawBody []byte
+		rawBody, err = io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+
+		env := mustDecodeEnvelope(t, rawBody)
+
+		if env.Error != "policy validation failed" {
+			t.Errorf("error = %q, want %q", env.Error, "policy validation failed")
+		}
+		if env.Detail == "" {
+			t.Errorf("detail must not be empty (legacy shape preserved)")
+		}
+		if len(env.Issues) == 0 {
+			t.Errorf("issues must not be empty, got: %s", rawBody)
+		}
+
+		for _, want := range wantIssues {
+			if !findIssue(env.Issues, want.Field, want.Message) {
+				t.Errorf("missing issue {field=%q, message~=%q} in %v", want.Field, want.Message, env.Issues)
+			}
+		}
+	}
+
+	t.Run("missing name", func(t *testing.T) {
+		yaml := `
+trigger:
+  type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: do something
+  limits:
+    max_tokens_per_run: 1000
+    max_tool_calls_per_run: 10
+  concurrency: skip
+`
+		assertValidationEnvelope(t, yaml, []issueJSON{
+			{Field: "name", Message: "name is required"},
+		})
+	})
+
+	t.Run("missing tool dot-notation", func(t *testing.T) {
+		yaml := `
+name: test
+trigger:
+  type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+capabilities:
+  tools:
+    - tool: nodot
+agent:
+  task: do something
+  limits:
+    max_tokens_per_run: 1000
+    max_tool_calls_per_run: 10
+  concurrency: skip
+`
+		assertValidationEnvelope(t, yaml, []issueJSON{
+			{Field: "capabilities.tools[0].tool", Message: "dot notation"},
+		})
+	})
+
+	t.Run("invalid concurrency mode", func(t *testing.T) {
+		yaml := `
+name: test
+trigger:
+  type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: do something
+  limits:
+    max_tokens_per_run: 1000
+    max_tool_calls_per_run: 10
+  concurrency: blorp
+`
+		assertValidationEnvelope(t, yaml, []issueJSON{
+			{Field: "agent.concurrency", Message: "invalid"},
+		})
+	})
+
+	t.Run("negative max_tokens_per_run", func(t *testing.T) {
+		yaml := `
+name: test
+trigger:
+  type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: do something
+  limits:
+    max_tokens_per_run: -1
+    max_tool_calls_per_run: 10
+  concurrency: skip
+`
+		assertValidationEnvelope(t, yaml, []issueJSON{
+			{Field: "agent.limits.max_tokens_per_run", Message: "must be positive"},
+		})
+	})
+
+	t.Run("replace plus approval conflict", func(t *testing.T) {
+		yaml := `
+name: test
+trigger:
+  type: webhook
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+capabilities:
+  tools:
+    - tool: srv.tool
+      approval: required
+      on_timeout: reject
+agent:
+  task: do something
+  limits:
+    max_tokens_per_run: 1000
+    max_tool_calls_per_run: 10
+  concurrency: replace
+`
+		assertValidationEnvelope(t, yaml, []issueJSON{
+			{Field: "agent.concurrency", Message: "replace"},
+		})
+	})
 }

@@ -39,6 +39,24 @@ agent:
   concurrency: skip
 `
 
+// VALID_YAML has all required fields so validateFormState returns no issues.
+const VALID_YAML = `name: my-agent
+trigger:
+  type: webhook
+model:
+  provider: anthropic
+  name: claude-opus-4-5
+capabilities:
+  tools:
+    - tool: filesystem.read_file
+agent:
+  task: Do the thing.
+  limits:
+    max_tokens_per_run: 10000
+    max_tool_calls_per_run: 50
+  concurrency: skip
+`
+
 const MANUAL_YAML = `name: manual-policy
 trigger:
   type: manual
@@ -248,14 +266,15 @@ describe('AgentEditorUtils — YAML ↔ form round-trip (pure functions)', () =>
 
 describe('AgentEditorPage — dirty state and save', () => {
   it('editing the name field sets isDirty; saving clears it', async () => {
-    // Use an existing-policy route so save does not navigate away
+    // Use an existing-policy route so save does not navigate away.
+    // VALID_YAML passes all client-side validation so the save button works.
     vi.mocked(usePolicy).mockReturnValue({
       data: {
         id: 'existing-id',
-        name: 'existing-policy',
+        name: 'my-agent',
         trigger_type: 'webhook',
         folder: '',
-        yaml: WEBHOOK_YAML,
+        yaml: VALID_YAML,
         created_at: '',
         updated_at: '',
       },
@@ -279,8 +298,8 @@ describe('AgentEditorPage — dirty state and save', () => {
 
     const mutateAsync = vi.fn().mockResolvedValue({
       id: 'existing-id',
-      name: 'existing-policy',
-      yaml: WEBHOOK_YAML,
+      name: 'my-agent',
+      yaml: VALID_YAML,
       trigger_type: 'webhook',
       folder: '',
       created_at: '',
@@ -352,7 +371,20 @@ describe('AgentEditorPage — dirty state and save', () => {
 describe('AgentEditorPage — Ctrl+S always triggers save', () => {
   it('calls mutateAsync on Ctrl+S even when the form has not been changed', async () => {
     const { mutateAsync } = mockHooksDefault()
-    renderEditor()
+    // Load a valid policy so client-side validation passes.
+    vi.mocked(usePolicy).mockReturnValue({
+      data: {
+        id: 'valid-id',
+        name: 'my-agent',
+        trigger_type: 'webhook',
+        folder: '',
+        yaml: VALID_YAML,
+        created_at: '',
+        updated_at: '',
+      },
+      status: 'success',
+    } as ReturnType<typeof usePolicy>)
+    renderEditor('/agents/valid-id')
 
     // Ctrl+S fires handleSave unconditionally (does not check canSave/isDirty)
     fireEvent.keyDown(window, { key: 's', ctrlKey: true })
@@ -366,13 +398,30 @@ describe('AgentEditorPage — Ctrl+S always triggers save', () => {
 })
 
 describe('AgentEditorPage — Cmd+S / Ctrl+S fires save', () => {
-  it('fires mutateAsync on Cmd+S when form is dirty', async () => {
+  function renderValidEditor() {
     const { mutateAsync } = mockHooksDefault()
-    renderEditor()
+    vi.mocked(usePolicy).mockReturnValue({
+      data: {
+        id: 'valid-id',
+        name: 'my-agent',
+        trigger_type: 'webhook',
+        folder: '',
+        yaml: VALID_YAML,
+        created_at: '',
+        updated_at: '',
+      },
+      status: 'success',
+    } as ReturnType<typeof usePolicy>)
+    renderEditor('/agents/valid-id')
+    return { mutateAsync }
+  }
+
+  it('fires mutateAsync on Cmd+S when form is dirty', async () => {
+    const { mutateAsync } = renderValidEditor()
 
     // Make form dirty — Name is first textbox (label lacks htmlFor)
     const nameInput = screen.getAllByRole('textbox')[0]
-    await userEvent.type(nameInput, 'test')
+    await userEvent.type(nameInput, '-edited')
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled()
@@ -387,11 +436,10 @@ describe('AgentEditorPage — Cmd+S / Ctrl+S fires save', () => {
   })
 
   it('fires mutateAsync on Ctrl+S when form is dirty', async () => {
-    const { mutateAsync } = mockHooksDefault()
-    renderEditor()
+    const { mutateAsync } = renderValidEditor()
 
     const nameInput = screen.getAllByRole('textbox')[0]
-    await userEvent.type(nameInput, 'test')
+    await userEvent.type(nameInput, '-edited')
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled()
@@ -568,6 +616,126 @@ describe('AgentEditorPage — Run now button', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/Run "manual-policy"/)).toBeInTheDocument()
+    })
+  })
+})
+
+describe('AgentEditorPage — client-side validation', () => {
+  it('shows banner and inline error for empty name, does not call the API', async () => {
+    const { mutateAsync } = mockHooksDefault()
+    // Load a valid policy, then clear the name so the single "name is required"
+    // issue fires (and not a cascade of other missing-field issues).
+    vi.mocked(usePolicy).mockReturnValue({
+      data: {
+        id: 'valid-id',
+        name: 'my-agent',
+        trigger_type: 'webhook',
+        folder: '',
+        yaml: VALID_YAML,
+        created_at: '',
+        updated_at: '',
+      },
+      status: 'success',
+    } as ReturnType<typeof usePolicy>)
+    renderEditor('/agents/valid-id')
+
+    // Clear the name field
+    const nameInput = screen.getAllByRole('textbox')[0]
+    await userEvent.clear(nameInput)
+
+    // Attempt save via keyboard shortcut
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+
+    await waitFor(() => {
+      // Both the ErrorBanner and the inline FieldError have role="alert"
+      const alerts = screen.getAllByRole('alert')
+      expect(alerts.length).toBeGreaterThan(0)
+      expect(screen.getAllByText(/name is required/i).length).toBeGreaterThan(0)
+    })
+
+    // mutateAsync must not have been called (API not hit)
+    expect(mutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('clears banner and calls the API when the form is valid', async () => {
+    const { mutateAsync } = mockHooksDefault()
+    // Load a valid policy — all fields are set, no client errors expected.
+    vi.mocked(usePolicy).mockReturnValue({
+      data: {
+        id: 'valid-id',
+        name: 'my-agent',
+        trigger_type: 'webhook',
+        folder: '',
+        yaml: VALID_YAML,
+        created_at: '',
+        updated_at: '',
+      },
+      status: 'success',
+    } as ReturnType<typeof usePolicy>)
+    renderEditor('/agents/valid-id')
+
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+
+    await waitFor(() => {
+      expect(mutateAsync).toHaveBeenCalledTimes(1)
+    })
+  })
+})
+
+describe('AgentEditorPage — server validation errors', () => {
+  function loadValidPolicy() {
+    vi.mocked(usePolicy).mockReturnValue({
+      data: {
+        id: 'valid-id',
+        name: 'my-agent',
+        trigger_type: 'webhook',
+        folder: '',
+        yaml: VALID_YAML,
+        created_at: '',
+        updated_at: '',
+      },
+      status: 'success',
+    } as ReturnType<typeof usePolicy>)
+  }
+
+  it('shows banner with server issue when server returns issues[]', async () => {
+    mockHooksDefault()
+    loadValidPolicy()
+    const serverIssues = [{ field: 'model.provider', message: 'model.provider is required' }]
+    vi.mocked(useSavePolicy).mockReturnValue({
+      mutateAsync: vi.fn().mockRejectedValue(
+        new ApiError(400, 'policy validation failed', 'model.provider is required', serverIssues),
+      ),
+      isPending: false,
+    } as unknown as ReturnType<typeof useSavePolicy>)
+
+    renderEditor('/agents/valid-id')
+
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('alert').length).toBeGreaterThan(0)
+      expect(screen.getAllByText(/model\.provider is required/).length).toBeGreaterThan(0)
+    })
+  })
+
+  it('shows detail string in banner when server returns legacy response (no issues[])', async () => {
+    mockHooksDefault()
+    loadValidPolicy()
+    vi.mocked(useSavePolicy).mockReturnValue({
+      mutateAsync: vi.fn().mockRejectedValue(
+        new ApiError(400, 'policy validation failed', 'policy already exists'),
+      ),
+      isPending: false,
+    } as unknown as ReturnType<typeof useSavePolicy>)
+
+    renderEditor('/agents/valid-id')
+
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('alert').length).toBeGreaterThan(0)
+      expect(screen.getByText(/policy already exists/)).toBeInTheDocument()
     })
   })
 })

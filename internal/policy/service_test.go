@@ -449,13 +449,13 @@ func TestCreate_NoModelInYAMLAndNoSystemDefault(t *testing.T) {
 	}
 	found := false
 	for _, e := range ve.Errors {
-		if strings.Contains(e, "model.provider is required") {
+		if e.Field == "model.provider" && strings.Contains(e.Message, "model.provider is required") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected error containing 'model.provider is required', got %v", ve.Errors)
+		t.Errorf("expected error with field 'model.provider' containing 'model.provider is required', got %v", ve.Error())
 	}
 }
 

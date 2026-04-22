@@ -1,13 +1,16 @@
 import shared from '../FormSections.module.css';
 import styles from '../TriggerSection.module.css';
-import type { ScheduledTriggerState, TriggerFormState } from '../types';
+import type { ScheduledTriggerState, TriggerFormState, SectionIssues } from '../types';
+import { FieldError } from '@/components/form/FieldError';
 
 export interface ScheduledConfigProps {
   value: ScheduledTriggerState;
   onChange: (next: TriggerFormState) => void;
+  errors?: SectionIssues;
 }
 
-export function ScheduledConfig({ value, onChange }: ScheduledConfigProps) {
+export function ScheduledConfig({ value, onChange, errors = [] }: ScheduledConfigProps) {
+  const fireAtErrors = errors.filter(e => e.field === 'trigger.fire_at').map(e => e.message);
   function addEntry() {
     // Default to one hour from now, formatted as a datetime-local value (no seconds).
     const soon = new Date(Date.now() + 60 * 60 * 1000);
@@ -41,7 +44,7 @@ export function ScheduledConfig({ value, onChange }: ScheduledConfigProps) {
   }
 
   return (
-    <div className={shared.field}>
+    <div className={shared.field} data-field="trigger.fire_at">
       <label className={shared.label}>Fire at (UTC)</label>
       {value.fireAt.map((ts, i) => (
         <div key={i} className={styles.fieldRow}>
@@ -67,6 +70,7 @@ export function ScheduledConfig({ value, onChange }: ScheduledConfigProps) {
       >
         + Add time
       </button>
+      <FieldError messages={fireAtErrors} />
     </div>
   );
 }

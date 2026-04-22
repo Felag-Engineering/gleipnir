@@ -6,9 +6,10 @@ import {
   useUpdateOpenAICompatProvider,
 } from '@/hooks/mutations/openaiCompatProviders'
 import type { ApiOpenAICompatProvider, ApiOpenAICompatProviderUpsert } from '@/api/types'
+import { ApiError } from '@/api/fetch'
+import { ErrorBanner } from '@/components/form/ErrorBanner'
 import styles from './OpenAICompatProviderModal.module.css'
 import formStyles from '@/styles/forms.module.css'
-import alertStyles from '@/styles/alerts.module.css'
 
 interface Props {
   mode: 'create' | 'edit'
@@ -22,7 +23,7 @@ export function OpenAICompatProviderModal({ mode, provider, onClose }: Props) {
   const [baseUrl, setBaseUrl] = useState(mode === 'edit' ? (provider?.base_url ?? '') : '')
   // Never pre-fill the API key — the masked value from the server is not a valid key.
   const [apiKey, setApiKey] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ApiError | null>(null)
 
   const createMut = useCreateOpenAICompatProvider()
   const updateMut = useUpdateOpenAICompatProvider()
@@ -58,7 +59,7 @@ export function OpenAICompatProviderModal({ mode, provider, onClose }: Props) {
       createMut.mutate(body, {
         onSuccess: onClose,
         onError: (err) =>
-          setError(err instanceof Error ? err.message : 'Save failed, please try again'),
+          setError(err instanceof ApiError ? err : new ApiError(0, err instanceof Error ? err.message : 'Save failed, please try again')),
       })
     } else {
       updateMut.mutate(
@@ -66,7 +67,7 @@ export function OpenAICompatProviderModal({ mode, provider, onClose }: Props) {
         {
           onSuccess: onClose,
           onError: (err) =>
-            setError(err instanceof Error ? err.message : 'Save failed, please try again'),
+            setError(err instanceof ApiError ? err : new ApiError(0, err instanceof Error ? err.message : 'Save failed, please try again')),
         },
       )
     }
@@ -150,11 +151,16 @@ export function OpenAICompatProviderModal({ mode, provider, onClose }: Props) {
           </span>
         </div>
 
-        {error && (
-          <div className={alertStyles.alertError} role="alert">
-            {error}
-          </div>
-        )}
+        <ErrorBanner
+          issues={
+            error
+              ? (error.issues ??
+                  (error.detail
+                    ? [{ message: error.detail }]
+                    : [{ message: error.message }]))
+              : []
+          }
+        />
       </form>
     </Modal>
   )

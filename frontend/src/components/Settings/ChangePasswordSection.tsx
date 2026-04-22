@@ -3,6 +3,7 @@ import { Lock } from 'lucide-react'
 import { Button } from '@/components/Button'
 import { useChangePassword } from '@/hooks/useSettings'
 import type { ApiError } from '@/api/fetch'
+import { ErrorBanner } from '@/components/form/ErrorBanner'
 import styles from './Settings.module.css'
 
 export function ChangePasswordSection() {
@@ -100,11 +101,18 @@ export function ChangePasswordSection() {
               />
             </div>
 
-            {(clientError ?? serverError) && (
-              <div className={styles.errorMsg}>
-                {clientError ?? serverError?.message}
-              </div>
-            )}
+            <ErrorBanner
+              issues={
+                clientError
+                  ? [{ message: clientError }]
+                  : serverError
+                    ? (serverError.issues ??
+                        (serverError.detail
+                          ? [{ message: serverError.detail }]
+                          : [{ message: serverError.message }]))
+                    : []
+              }
+            />
 
             {success && (
               <div className={styles.successMsg}>
