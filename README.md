@@ -17,6 +17,16 @@ Any tool can be marked as requiring approval. When the agent tries to use one, t
 
 ## Quick start
 
+**Option A — pre-built image (no clone required):**
+
+```bash
+docker pull felagengineering/gleipnir:latest
+```
+
+Create a `docker-compose.yml` and a `.env` file as shown in [Setup](docs/user/setup.md), then jump to step 3 below.
+
+**Option B — build from source:**
+
 1. Clone the repo and copy the environment template:
 
    ```bash
@@ -25,15 +35,22 @@ Any tool can be marked as requiring approval. When the agent tries to use one, t
    cp .env.example .env
    ```
 
-2. Start the stack:
+2. Generate an encryption key and add it to `.env`:
+
+   ```bash
+   openssl rand -hex 32
+   # Paste the output into GLEIPNIR_ENCRYPTION_KEY in .env
+   ```
+
+3. Start the stack:
 
    ```bash
    docker compose up -d
    ```
 
-3. Open `http://localhost:3000` in your browser.
+4. Open `http://localhost:3000` in your browser.
 
-4. Complete the first-run setup: create the admin user, then add your Anthropic API key on the `/admin/models` page.
+5. Complete the first-run setup: create the admin user, then add your LLM provider API key at **Admin → Models**.
 
 ### Back up your encryption key
 
@@ -43,10 +60,10 @@ Any tool can be marked as requiring approval. When the agent tries to use one, t
 
 Once the stack is running and you're logged in, here's how to wire up your first agent:
 
-1. Go to **Settings → MCP Servers** and click **Add Server**. Give it a name and the URL of any MCP server you have running.
+1. Go to **Tools** (`/tools`) and click **Add Server**. Give it a name and the URL of any MCP server you have running.
 2. Click **Discover** on the new server. Gleipnir reads the server's tool list and shows them in the UI.
 3. For each discovered tool, set its tag: `sensor` for read-only tools, `actuator` for tools that change something. Mark anything risky as requiring approval.
-4. Go to **Policies → New**. Pick a webhook trigger, write a short task description for the agent, and check the boxes for the tools you just tagged.
+4. Go to **Agents → New** (`/agents/new`). Pick a webhook trigger, write a short task description for the agent, and check the boxes for the tools you just tagged.
 5. Click **Trigger** on the new policy to fire a manual run.
 6. Open the run from the runs list and watch the trace populate as the agent works.
 
@@ -54,8 +71,11 @@ For fully worked examples against specific services, follow one of the [playbook
 
 ## More reading
 
+- [Setup](docs/user/setup.md) — detailed first-run walkthrough.
+- [Policies](docs/user/policies.md) — trigger types, capability grants, run states.
+- [Roles](docs/user/roles.md) — what each role can and cannot do.
+- [Operations](docs/user/operations.md) — upgrading, backups, environment variables.
 - [Playbooks](docs/playbooks/) — copy-pasteable setups for the use cases above.
-- [User docs](docs/user/) — encryption key, backups, logs, troubleshooting.
 - [Developer docs](docs/developer/) — architecture, building, contributing.
 - [Security notes](SECURITY.md)
 
