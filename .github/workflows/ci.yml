@@ -161,7 +161,6 @@ jobs:
           push: true
           tags: |
             felagengineering/gleipnir:dev
-            felagengineering/gleipnir:${{ github.sha }}
           # Re-use layers from the previous push; mode=max caches all
           # intermediate stages, not just the final image.
           cache-from: type=gha
@@ -190,7 +189,6 @@ jobs:
           tags: |
             felagengineering/gleipnir:latest
             felagengineering/gleipnir:${{ github.ref_name }}
-            felagengineering/gleipnir:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
