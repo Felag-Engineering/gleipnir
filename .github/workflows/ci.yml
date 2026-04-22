@@ -5,7 +5,13 @@ on:
     branches: [main]
   push:
     branches: [main]
-    tags: ['v*.*.*']
+    # Match semver tags: v1.2.3 and pre-releases like v1.2.3-rc1. The two
+    # patterns avoid the false-positives of a single `v*.*.*` glob (which
+    # would also match `v1.2.3.4`). GHA glob: `+` is a quantifier for the
+    # preceding character, so `[0-9]+` means one-or-more digits.
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 jobs:
   backend-tests:
