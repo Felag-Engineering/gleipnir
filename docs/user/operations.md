@@ -64,7 +64,45 @@ docker compose up -d
 docker compose exec api sqlite3 /data/gleipnir.db ".backup /data/gleipnir.backup.db"
 ```
 
-The `.backup` command uses SQLite's built-in online backup API, which is safe to run against a live database. Copy `/data/gleipnir.backup.db` out of the volume once the command completes.
+The `.backup` command uses SQLite's built-in online backup API, which is safe to run against a live database. Copy the file out of the volume once the command completes:
+
+```bash
+docker run --rm \
+  -v gleipnir_data:/data \
+  -v "$(pwd)":/backup \
+  alpine cp /data/gleipnir.backup.db /backup/gleipnir.backup.db
+```
+
+## Upgrading
+
+Pull the latest image and restart the stack. Docker Compose will stop the running container, pull the new image, and start a fresh container against the existing data volume.
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The data volume (`gleipnir_data`) is preserved across upgrades. Taking a database backup before upgrading is good practice — see [Backing up the database](#backing-up-the-database) above.
+
+## Environment variable reference
+
+All variables are read at startup. Changing a value requires restarting the stack (`docker compose up -d`).
+
+| Variable | Default | Description |
+|---|---|---|
+| `GLEIPNIR_ENCRYPTION_KEY` | *(required)* | 64-char hex key (32-byte AES-256) for encrypting provider API keys and webhook secrets. Generate with `openssl rand -hex 32`. |
+| `GLEIPNIR_DB_PATH` | `/data/gleipnir.db` | SQLite file path inside the container. |
+| `GLEIPNIR_LISTEN_ADDR` | `:8080` | Internal HTTP listen address for the Go server. |
+| `GLEIPNIR_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, or `error`. |
+| `GLEIPNIR_MCP_TIMEOUT` | `30s` | Timeout for individual MCP server calls. |
+| `GLEIPNIR_HTTP_READ_TIMEOUT` | `15s` | HTTP server read timeout. |
+| `GLEIPNIR_HTTP_WRITE_TIMEOUT` | `15s` | HTTP server write timeout. |
+| `GLEIPNIR_HTTP_IDLE_TIMEOUT` | `60s` | HTTP server idle timeout. |
+| `GLEIPNIR_APPROVAL_SCAN_INTERVAL` | `30s` | How often to check for timed-out approval requests. |
+| `GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT` | `30m` | Default timeout for feedback requests when not set in the policy. |
+| `GLEIPNIR_FEEDBACK_SCAN_INTERVAL` | `30s` | How often to check for timed-out feedback requests. |
+
+`GLEIPNIR_PORT` is a Docker Compose variable (not read by the Go server directly). It controls which host port the container exposes and defaults to `3000`.
 
 ## Viewing structured logs
 
@@ -98,7 +136,7 @@ docker compose logs api | jq 'select(.run_id == "<run_id>")'
 
 ## Resetting a stuck run
 
-On restart, Gleipnir automatically marks any run in `running` or `waiting_for_approval` as `interrupted`. This handles the common case of a clean restart after a crash or deployment.
+On restart, Gleipnir automatically marks any run in `running`, `waiting_for_approval`, or `waiting_for_feedback` as `interrupted`. This handles the common case of a clean restart after a crash or deployment.
 
 If a run is genuinely stuck — for example, after a manual DB edit left it in an inconsistent state — it can be reset directly with a SQL update:
 
