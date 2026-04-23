@@ -2,11 +2,11 @@ package trigger_test
 
 import (
 	"github.com/go-chi/chi/v5"
-	"github.com/rapp992/gleipnir/internal/run"
+	"github.com/rapp992/gleipnir/internal/execution/run"
 )
 
 // newRunsRouter builds a chi router with the standard runs endpoints.
-// Duplicated from internal/run's test helpers — kept local so trigger_test
+// Duplicated from internal/execution/run's test helpers — kept local so trigger_test
 // can wire integration tests without importing run's test package.
 func newRunsRouter(h *run.RunsHandler) *chi.Mux {
 	r := chi.NewRouter()

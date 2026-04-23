@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/agent"
+	"github.com/rapp992/gleipnir/internal/execution/agent"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/event"
 	"github.com/rapp992/gleipnir/internal/llm"

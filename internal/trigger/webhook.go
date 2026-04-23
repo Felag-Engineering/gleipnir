@@ -13,7 +13,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/run"
+	"github.com/rapp992/gleipnir/internal/execution/run"
 )
 
 // SecretLoaderInterface is the interface the webhook handler uses to load a
