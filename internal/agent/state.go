@@ -44,12 +44,12 @@ func trackedForActive(s model.RunStatus) bool {
 // IMPORTANT: callers must not open a transaction around Transition calls.
 // Store opens the DB with MaxOpenConns(1), so a nested BeginTx would deadlock.
 type RunStateMachine struct {
-	runID    string
-	current  model.RunStatus
-	version  int64 // in-memory mirror of runs.version; updated only after tx.Commit
-	mu       sync.Mutex
-	database *sql.DB
-	queries  *db.Queries
+	runID     string
+	current   model.RunStatus
+	version   int64 // in-memory mirror of runs.version; updated only after tx.Commit
+	mu        sync.Mutex
+	database  *sql.DB
+	queries   *db.Queries
 	publisher event.Publisher
 }
 

@@ -63,6 +63,10 @@ func applyOne(ctx context.Context, db *sql.DB, m Migration) error {
 	}()
 
 	if err := m.Up(ctx, tx); err != nil {
+		// Rollback explicitly before re-enabling FK: the pool has MaxOpenConns(1),
+		// so db.ExecContext in reenableForeignKeys would deadlock waiting for the
+		// connection the open transaction is holding.
+		_ = tx.Rollback()
 		if needsFKOff {
 			reenableForeignKeys(ctx, db, m)
 		}
