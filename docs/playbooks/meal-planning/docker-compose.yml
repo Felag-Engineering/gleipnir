@@ -1,0 +1,65 @@
+# MCP servers for the meal-planning playbook.
+#
+# Run from this directory:
+#   docker compose up -d
+#
+# Before starting, complete the first-run Google Calendar auth — see README.md.
+# Secrets are loaded from .env in this directory (see README.md § Step 2).
+
+services:
+
+  # Google Calendar MCP server — reads calendar events.
+  # Repo: https://github.com/nspady/google-calendar-mcp
+  gcal-mcp:
+    image: node:22-alpine
+    command: >
+      npx -y supergateway
+      --port 8101
+      --stdio "npx -y @cocal/google-calendar-mcp"
+    ports:
+      - "8101:8101"
+    environment:
+      - GOOGLE_OAUTH_CREDENTIALS=/config/gcp-oauth.keys.json
+    volumes:
+      - ./gcp-oauth.keys.json:/config/gcp-oauth.keys.json:ro
+      - gcal_tokens:/root/.config/google-calendar-mcp
+    restart: unless-stopped
+
+  # Generic HTTP fetch MCP server — used to call TheMealDB's free REST API.
+  # Repo: https://github.com/zcaceres/fetch-mcp
+  fetch-mcp:
+    image: node:22-alpine
+    command: >
+      npx -y supergateway
+      --port 8102
+      --stdio "npx -y mcp-fetch-server"
+    ports:
+      - "8102:8102"
+    restart: unless-stopped
+
+  # Google Keep MCP server — creates grocery list notes.
+  # Repo: https://github.com/feuerdev/keep-mcp
+  # Uses python:3.11-alpine because keep-mcp is a Python package; Node is
+  # installed via apk so Supergateway (an npm tool) can run inside the same
+  # container.
+  keep-mcp:
+    image: python:3.11-alpine
+    command: >
+      sh -c "apk add --no-cache nodejs npm &&
+             pip install --break-system-packages keep-mcp &&
+             npx -y supergateway --port 8103 --stdio 'keep-mcp'"
+    ports:
+      - "8103:8103"
+    environment:
+      - GOOGLE_EMAIL=${GOOGLE_EMAIL}
+      - GOOGLE_MASTER_TOKEN=${GOOGLE_MASTER_TOKEN}
+    restart: unless-stopped
+
+volumes:
+  # Named volume persists the Google Calendar OAuth refresh tokens across
+  # container restarts. Use "docker compose down" (without -v) to keep tokens.
+  # The explicit name prevents Compose from prepending the project name, so the
+  # pre-auth "docker run" command (which references "gcal_tokens" directly)
+  # writes into the same volume that gcal-mcp mounts.
+  gcal_tokens:
+    name: gcal_tokens
