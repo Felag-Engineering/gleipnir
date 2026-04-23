@@ -2,6 +2,8 @@
 // It fans out published events to all connected subscribers using buffered channels.
 // Slow clients whose buffers fill up receive dropped events rather than blocking delivery
 // to other subscribers. A fixed ring buffer enables Last-Event-ID reconnection replay.
+// Dropped deliveries are counted by gleipnir_sse_events_dropped_total so operators
+// can detect undersized buffers.
 //
 // The EventBroadcaster interface is the seam for swapping in a distributed backend
 // (Redis Pub/Sub, NATS) when horizontal scaling is needed — callers depend on the
@@ -42,8 +44,8 @@ type Subscription struct {
 type Option func(*Broadcaster)
 
 // WithChannelSize sets the per-subscription channel depth.
-// The default is 64. Events published to a full channel are dropped silently
-// rather than blocking delivery to other subscribers.
+// The default is 256. Events published to a full channel are dropped and counted by
+// gleipnir_sse_events_dropped_total rather than blocking delivery to other subscribers.
 func WithChannelSize(n int) Option {
 	return func(b *Broadcaster) {
 		b.channelSize = n
@@ -51,7 +53,7 @@ func WithChannelSize(n int) Option {
 }
 
 // WithRingSize sets the capacity of the replay ring buffer.
-// The default is 512. Once full, the oldest event is overwritten.
+// The default is 2048. Once full, the oldest event is overwritten.
 func WithRingSize(n int) Option {
 	return func(b *Broadcaster) {
 		b.ringSize = n
@@ -79,8 +81,8 @@ var _ EventBroadcaster = (*Broadcaster)(nil)
 func NewBroadcaster(opts ...Option) *Broadcaster {
 	b := &Broadcaster{
 		subs:        make(map[uint64]*Subscription),
-		channelSize: 64,
-		ringSize:    512,
+		channelSize: 256,
+		ringSize:    2048,
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -147,7 +149,11 @@ func (b *Broadcaster) Publish(eventType string, data json.RawMessage) {
 		select {
 		case sub.ch <- ev:
 		default:
-			// Drop the event for this slow subscriber rather than blocking.
+			// Drop the event for this slow subscriber rather than blocking
+			// delivery to other subscribers. The counter is the observability
+			// hook; clients recover via Last-Event-ID replay on reconnect
+			// (see Replay and the useSSE hook on the frontend).
+			sseEventsDroppedTotal.Inc()
 		}
 	}
 }

@@ -12,3 +12,12 @@ var sseConnectionsActive = promauto.With(metrics.Registry()).NewGauge(
 		Help: "Currently-connected SSE subscribers.",
 	},
 )
+
+var sseEventsDroppedTotal = promauto.With(metrics.Registry()).NewCounter(
+	prometheus.CounterOpts{
+		Name: "gleipnir_sse_events_dropped_total",
+		Help: "SSE events dropped because a subscriber's channel buffer was full. " +
+			"Clients recover via Last-Event-ID replay on reconnect; a sustained " +
+			"non-zero rate indicates buffers are undersized for event throughput.",
+	},
+)

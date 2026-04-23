@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func rawJSON(s string) json.RawMessage {
@@ -253,4 +255,53 @@ func TestBroadcaster_ConcurrentSubscribeUnsubscribe(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// TestBroadcaster_DropIncrementsCounter verifies that dropped events (subscriber
+// channel full) increment gleipnir_sse_events_dropped_total. Delta assertions are
+// used because the counter persists across tests in the same binary.
+func TestBroadcaster_DropIncrementsCounter(t *testing.T) {
+	b := NewBroadcaster(WithChannelSize(2))
+	sub := b.Subscribe()
+	defer b.Unsubscribe(sub)
+
+	before := promtestutil.ToFloat64(sseEventsDroppedTotal)
+
+	// Publish 5 events to a channel of depth 2; the first 2 are delivered,
+	// the remaining 3 are dropped.
+	const publish = 5
+	for range publish {
+		b.Publish("test", rawJSON(`{}`))
+	}
+
+	after := promtestutil.ToFloat64(sseEventsDroppedTotal)
+	if got := after - before; got != 3 {
+		t.Errorf("drop counter delta = %.0f, want 3", got)
+	}
+}
+
+// TestBroadcaster_SuccessfulPublishDoesNotIncrementDropCounter verifies that
+// events delivered without drops do not increment the counter.
+func TestBroadcaster_SuccessfulPublishDoesNotIncrementDropCounter(t *testing.T) {
+	b := NewBroadcaster()
+	sub := b.Subscribe()
+	defer b.Unsubscribe(sub)
+
+	before := promtestutil.ToFloat64(sseEventsDroppedTotal)
+
+	const publish = 3
+	for range publish {
+		b.Publish("test", rawJSON(`{}`))
+	}
+
+	// Drain the channel before asserting zero drops, to confirm all events
+	// were accepted by the subscriber.
+	for range publish {
+		<-sub.C
+	}
+
+	after := promtestutil.ToFloat64(sseEventsDroppedTotal)
+	if got := after - before; got != 0 {
+		t.Errorf("drop counter delta = %.0f, want 0", got)
+	}
 }
