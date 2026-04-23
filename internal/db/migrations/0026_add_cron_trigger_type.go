@@ -16,7 +16,7 @@ import (
 // PRAGMA foreign_keys must be toggled OUTSIDE the transaction (SQLite requirement).
 type AddCronTriggerType struct{}
 
-func (m *AddCronTriggerType) Version() int { return 15 }
+func (m *AddCronTriggerType) Version() int { return 16 }
 func (m *AddCronTriggerType) Name() string { return "add_cron_trigger_type" }
 
 func (m *AddCronTriggerType) RequiresForeignKeysOff() bool { return true }
@@ -75,7 +75,8 @@ CREATE TABLE runs_new (
     thread_id       TEXT,
     created_at      TEXT    NOT NULL,
     system_prompt   TEXT,
-    model           TEXT    NOT NULL DEFAULT ''
+    model           TEXT    NOT NULL DEFAULT '',
+    version         INTEGER NOT NULL DEFAULT 0
 );
 INSERT INTO runs_new SELECT * FROM runs;
 DROP TABLE runs;
