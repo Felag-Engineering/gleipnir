@@ -21,6 +21,11 @@ import (
 	"github.com/rapp992/gleipnir/internal/timeout"
 )
 
+// listAll is the sentinel page-size used by tests that want every step for a
+// run. The agent tests pre-date cursor pagination (ListRunSteps gained
+// After/Limit params) and assert on the full step list.
+const listAll = int64(10_000)
+
 // makeToolCallServer starts an httptest.Server that responds to tools/call
 // JSON-RPC requests with the given content payload and isError flag.
 func makeToolCallServer(t *testing.T, content json.RawMessage, isError bool) *httptest.Server {
@@ -261,7 +266,7 @@ func TestHandleToolCall(t *testing.T) {
 				Audit:        w,
 				LLMClient:    testutil.NewNoopLLMClient(),
 				ApprovalCh:   make(chan bool), // unbuffered — these tests don't exercise the approval gate
-				StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
+				StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries()),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -313,7 +318,7 @@ func TestHandleToolCall(t *testing.T) {
 			// matches the spec: tool_call must have "tool_name" and "server_id";
 			// tool_result must have "tool_name" and "is_error".
 			if tc.name == "successful_call" {
-				steps, err := s.ListRunSteps(context.Background(), "run1")
+				steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 				if err != nil {
 					t.Fatalf("ListRunSteps: %v", err)
 				}
@@ -379,7 +384,7 @@ func TestRun_SingleTurnEndTurn(t *testing.T) {
 		Tools:        nil,
 		Policy:       minimalPolicy(),
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -389,7 +394,7 @@ func TestRun_SingleTurnEndTurn(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -446,7 +451,7 @@ func TestRun_ToolCallLoop(t *testing.T) {
 		Tools:        tools,
 		Policy:       minimalPolicy(),
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -456,7 +461,7 @@ func TestRun_ToolCallLoop(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -498,7 +503,7 @@ func TestRun_ContextCancellation(t *testing.T) {
 		Tools:        nil,
 		Policy:       minimalPolicy(),
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -545,7 +550,7 @@ func TestRun_MissingCapabilityFailsFast(t *testing.T) {
 		Tools:        nil,
 		Policy:       p,
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -566,7 +571,7 @@ func TestRun_MissingCapabilityFailsFast(t *testing.T) {
 	}
 
 	// An error step with code missing_capability and the tool name in the message must exist.
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -600,7 +605,7 @@ func TestRun_ToolNotFound(t *testing.T) {
 		Tools:        nil,
 		Policy:       minimalPolicy(),
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -612,7 +617,7 @@ func TestRun_ToolNotFound(t *testing.T) {
 		t.Fatal("expected error for tool not found, got nil")
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -669,7 +674,7 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 		Tools:        tools,
 		Policy:       p,
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -681,7 +686,7 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 		t.Fatal("expected token budget error, got nil")
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -717,7 +722,7 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 		Tools:        nil,
 		Policy:       pol,
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -727,7 +732,7 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -781,7 +786,7 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 		Tools:        tools,
 		Policy:       minimalPolicy(),
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -796,7 +801,7 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 		t.Errorf("MCP server called %d times; want 0 (schema violation blocks execution)", serverCallCount)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -850,7 +855,7 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 		Policy:       minimalPolicy(),
 		Audit:        w,
 		ApprovalCh:   approvalCh,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -865,7 +870,7 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 		t.Errorf("MCP server called %d times; want 0 (rejection blocks execution)", serverCallCount)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -942,7 +947,7 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 		Tools:        tools,
 		Policy:       p,
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -958,7 +963,7 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 		t.Errorf("MCP server called %d times, want 1", mcpCallCount)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -1011,7 +1016,7 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 		Tools:        tools,
 		Policy:       p,
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1021,7 +1026,7 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 		t.Fatalf("Run returned unexpected error: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -1037,7 +1042,7 @@ func TestRun_Cancellation(t *testing.T) {
 	// and message "run cancelled" exists in the audit trail for the given run.
 	assertCancelledStep := func(t *testing.T, s *db.Store, runID string) {
 		t.Helper()
-		steps, err := s.ListRunSteps(context.Background(), runID)
+		steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: runID, After: -1, Limit: listAll})
 		if err != nil {
 			t.Fatalf("ListRunSteps: %v", err)
 		}
@@ -1071,7 +1076,7 @@ func TestRun_Cancellation(t *testing.T) {
 			Tools:        nil,
 			Policy:       minimalPolicy(),
 			Audit:        w,
-			StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+			StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -1116,7 +1121,7 @@ func TestRun_Cancellation(t *testing.T) {
 			Tools:        nil,
 			Policy:       minimalPolicy(),
 			Audit:        w,
-			StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+			StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -1193,7 +1198,7 @@ func TestRun_Cancellation(t *testing.T) {
 			Tools:        tools,
 			Policy:       minimalPolicy(),
 			Audit:        w,
-			StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+			StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -1264,7 +1269,7 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 		Tools:        tools,
 		Policy:       minimalPolicy(),
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1346,7 +1351,7 @@ func makeAgentWithTools(t *testing.T, tools []mcp.ResolvedTool, approvalCh chan 
 		LLMClient:    testutil.NewNoopLLMClient(),
 		Audit:        w,
 		ApprovalCh:   ch,
-		StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
+		StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1392,7 +1397,7 @@ func TestBuildToolDefinitions(t *testing.T) {
 				Tools:        tc.tools,
 				LLMClient:    testutil.NewNoopLLMClient(),
 				Audit:        NewAuditWriter(s.Queries()),
-				StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
+				StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries()),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -1550,7 +1555,7 @@ func TestWaitForApproval_DBAndSSE(t *testing.T) {
 			LLMClient:    testutil.NewNoopLLMClient(),
 			Audit:        w,
 			ApprovalCh:   (<-chan bool)(approvalCh),
-			StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub)),
+			StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub)),
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -1610,7 +1615,7 @@ func TestWaitForApproval_DBAndSSE(t *testing.T) {
 		approvalCh <- true
 
 		w := NewAuditWriter(s.Queries())
-		sm := NewRunStateMachine("run2", model.RunStatusRunning, s.Queries())
+		sm := NewRunStateMachine("run2", model.RunStatusRunning, s.DB(), s.Queries())
 		ba, err := New(Config{
 			Policy:       minimalPolicy(),
 			Tools:        nil,
@@ -1649,7 +1654,7 @@ func TestRunAPILoop_EndTurn(t *testing.T) {
 		Tools:        nil,
 		LLMClient:    testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("all done", llm.StopReasonEndTurn, 10, 5)),
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1677,7 +1682,7 @@ func TestRunAPILoop_EndTurn(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	steps, dbErr := s.ListRunSteps(context.Background(), "r1")
+	steps, dbErr := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if dbErr != nil {
 		t.Fatalf("ListRunSteps: %v", dbErr)
 	}
@@ -1703,7 +1708,7 @@ func TestLogAuditError(t *testing.T) {
 		Tools:        nil,
 		LLMClient:    testutil.NewNoopLLMClient(),
 		Audit:        w,
-		StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
+		StateMachine: NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1715,7 +1720,7 @@ func TestLogAuditError(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	steps, dbErr := s.ListRunSteps(context.Background(), "run1")
+	steps, dbErr := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 	if dbErr != nil {
 		t.Fatalf("ListRunSteps: %v", dbErr)
 	}
@@ -1769,7 +1774,7 @@ func TestHandleToolCall_AskOperator_Success(t *testing.T) {
 		Policy:       feedbackPolicy(),
 		Audit:        w,
 		FeedbackCh:   feedbackCh,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1779,7 +1784,7 @@ func TestHandleToolCall_AskOperator_Success(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -1865,7 +1870,7 @@ func TestHandleToolCall_AskOperator_NotAvailableWhenDisabled(t *testing.T) {
 		Tools:        nil,
 		Policy:       minimalPolicy(), // feedback disabled
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1889,7 +1894,7 @@ func TestHandleToolCall_AskOperator_NotAvailableWhenDisabled(t *testing.T) {
 	}
 
 	// At least one error step must exist.
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -1933,7 +1938,7 @@ func TestHandleToolCall_AskOperator_ReasonRequired(t *testing.T) {
 		Policy:       feedbackPolicy(),
 		Audit:        w,
 		FeedbackCh:   feedbackCh,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1954,7 +1959,7 @@ func TestHandleToolCall_AskOperator_ReasonRequired(t *testing.T) {
 	}
 
 	// An error step with schema_violation code must exist.
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -1998,7 +2003,7 @@ func TestBuildToolDefinitions_IncludesAskOperator(t *testing.T) {
 			Tools:        []mcp.ResolvedTool{mcpTool},
 			LLMClient:    testutil.NewNoopLLMClient(),
 			Audit:        NewAuditWriter(s.Queries()),
-			StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.Queries()),
+			StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -2029,7 +2034,7 @@ func TestBuildToolDefinitions_IncludesAskOperator(t *testing.T) {
 			Tools:        []mcp.ResolvedTool{mcpTool},
 			LLMClient:    testutil.NewNoopLLMClient(),
 			Audit:        NewAuditWriter(s.Queries()),
-			StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.Queries()),
+			StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -2081,7 +2086,7 @@ func TestRun_feedback_timeout(t *testing.T) {
 		Policy:                 pol,
 		Audit:                  w,
 		FeedbackCh:             feedbackCh,
-		StateMachine:           NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine:           NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 		DefaultFeedbackTimeout: 50 * time.Millisecond,
 	})
 	if err != nil {
@@ -2109,7 +2114,7 @@ func TestRun_feedback_timeout(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -2141,7 +2146,7 @@ func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 		Policy:       feedbackPolicy(),
 		Audit:        w,
 		FeedbackCh:   make(chan string), // unbuffered — test verifies run completes without feedback
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -2151,7 +2156,7 @@ func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -2199,7 +2204,7 @@ func makeAgentWithFeedback(t *testing.T, feedbackCh chan string, feedbackTimeout
 		Audit:                  w,
 		FeedbackCh:             (<-chan string)(feedbackCh),
 		DefaultFeedbackTimeout: feedbackTimeout,
-		StateMachine:           NewRunStateMachine("run1", model.RunStatusRunning, s.Queries()),
+		StateMachine:           NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -2251,7 +2256,7 @@ func countErrorStepsForRun(t *testing.T, s *db.Store, runID string) int {
 		t.Fatalf("CountRunSteps %s: %v", runID, err)
 	}
 	// CountRunSteps returns all steps; we need only error steps.
-	steps, err := s.ListRunSteps(context.Background(), runID)
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: runID, After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps %s: %v", runID, err)
 	}
@@ -2329,7 +2334,7 @@ func TestWaitForApproval_ScannerWins(t *testing.T) {
 	ba, s, w := makeAgentWithTools(t, nil, approvalCh)
 	// Use a publisher so we can count run.status_changed events.
 	pub := &capturePublisher{}
-	ba.sm = NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	ba.sm = NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 
 	entry := resolvedToolEntry{
 		tool: mcp.ResolvedTool{
@@ -2448,7 +2453,7 @@ func TestWaitForFeedback_ScannerWins(t *testing.T) {
 	feedbackCh := make(chan string, 1)
 	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 200*time.Millisecond)
 	pub := &capturePublisher{}
-	ba.sm = NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	ba.sm = NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 
 	done := make(chan error, 1)
 	go func() {
@@ -2593,7 +2598,7 @@ func TestRun_ThinkingBlocksIncludedInHistory(t *testing.T) {
 		Tools:        tools,
 		Policy:       minimalPolicy(),
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -2675,7 +2680,7 @@ func TestRun_ThinkingTokensIncludedInCost(t *testing.T) {
 		Tools:        nil,
 		Policy:       minimalPolicy(),
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -2685,7 +2690,7 @@ func TestRun_ThinkingTokensIncludedInCost(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -2774,7 +2779,7 @@ func TestRun_MCPTransportError_BecomesToolResult(t *testing.T) {
 		Tools:        tools,
 		Policy:       minimalPolicy(),
 		Audit:        w,
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -2789,7 +2794,7 @@ func TestRun_MCPTransportError_BecomesToolResult(t *testing.T) {
 		t.Errorf("MCP tools/call count = %d, want 1", callCount)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}

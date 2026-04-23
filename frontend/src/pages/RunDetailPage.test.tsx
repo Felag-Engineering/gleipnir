@@ -67,6 +67,16 @@ function renderPage(queryClient = makeQueryClient()) {
   )
 }
 
+// mockRunSteps builds a UseRunStepsResult-compatible mock return value.
+function mockRunStepsReturn(steps: ApiRunStep[], status: 'pending' | 'error' | 'success' = 'success') {
+  return {
+    steps,
+    status,
+    hasMore: false,
+    loadMore: vi.fn().mockResolvedValue(undefined),
+  } as ReturnType<typeof useRunSteps>
+}
+
 function mockError() {
   vi.mocked(useRun).mockReturnValue({
     data: undefined,
@@ -75,11 +85,7 @@ function mockError() {
     refetch: vi.fn(),
   } as unknown as ReturnType<typeof useRun>)
 
-  vi.mocked(useRunSteps).mockReturnValue({
-    data: undefined,
-    status: 'error',
-    error: new ApiError(404, 'Not Found'),
-  } as unknown as ReturnType<typeof useRunSteps>)
+  vi.mocked(useRunSteps).mockReturnValue(mockRunStepsReturn([], 'error'))
 }
 
 function mockServerError() {
@@ -90,11 +96,7 @@ function mockServerError() {
     refetch: vi.fn(),
   } as unknown as ReturnType<typeof useRun>)
 
-  vi.mocked(useRunSteps).mockReturnValue({
-    data: undefined,
-    status: 'error',
-    error: new ApiError(500, 'Internal Server Error'),
-  } as unknown as ReturnType<typeof useRunSteps>)
+  vi.mocked(useRunSteps).mockReturnValue(mockRunStepsReturn([], 'error'))
 }
 
 function mockSuccessNoData() {
@@ -104,10 +106,7 @@ function mockSuccessNoData() {
     refetch: vi.fn(),
   } as unknown as ReturnType<typeof useRun>)
 
-  vi.mocked(useRunSteps).mockReturnValue({
-    data: [],
-    status: 'success',
-  } as unknown as ReturnType<typeof useRunSteps>)
+  vi.mocked(useRunSteps).mockReturnValue(mockRunStepsReturn([]))
 }
 
 function mockPending() {
@@ -116,10 +115,7 @@ function mockPending() {
     status: 'pending',
   } as ReturnType<typeof useRun>)
 
-  vi.mocked(useRunSteps).mockReturnValue({
-    data: undefined,
-    status: 'pending',
-  } as ReturnType<typeof useRunSteps>)
+  vi.mocked(useRunSteps).mockReturnValue(mockRunStepsReturn([], 'pending'))
 }
 
 function mockLoaded(run: ApiRun, steps: ApiRunStep[] = []) {
@@ -128,10 +124,7 @@ function mockLoaded(run: ApiRun, steps: ApiRunStep[] = []) {
     status: 'success',
   } as ReturnType<typeof useRun>)
 
-  vi.mocked(useRunSteps).mockReturnValue({
-    data: steps,
-    status: 'success',
-  } as ReturnType<typeof useRunSteps>)
+  vi.mocked(useRunSteps).mockReturnValue(mockRunStepsReturn(steps))
 }
 
 // --- Tests ---
@@ -570,6 +563,73 @@ describe('RunDetailPage — Load more', () => {
   })
 })
 
+describe('RunDetailPage — server-side Load more steps', () => {
+  it('shows "Load more steps" button when hasMore is true and hides it when loadMore is called', async () => {
+    // Simulate a first server page of 500 steps with more available.
+    const firstPage: ApiRunStep[] = Array.from({ length: 500 }, (_, i) =>
+      makeStep({
+        id: `s${i}`,
+        step_number: i,
+        type: 'thought',
+        content: JSON.stringify({ text: `Thought ${i}` }),
+      }),
+    )
+    const extraPage: ApiRunStep[] = Array.from({ length: 10 }, (_, i) =>
+      makeStep({
+        id: `extra${i}`,
+        step_number: 500 + i,
+        type: 'thought',
+        content: JSON.stringify({ text: `Extra ${i}` }),
+      }),
+    )
+
+    const loadMoreFn = vi.fn().mockImplementation(async () => {
+      // Simulate appending the extra page by updating the mock.
+      vi.mocked(useRunSteps).mockReturnValue({
+        steps: [...firstPage, ...extraPage],
+        status: 'success',
+        hasMore: false,
+        loadMore: vi.fn().mockResolvedValue(undefined),
+      })
+    })
+
+    vi.mocked(useRun).mockReturnValue({
+      data: makeRun(),
+      status: 'success',
+    } as ReturnType<typeof useRun>)
+
+    vi.mocked(useRunSteps).mockReturnValue({
+      steps: firstPage,
+      status: 'success',
+      hasMore: true,
+      loadMore: loadMoreFn,
+    })
+
+    const { rerender } = renderPage()
+
+    // "Load more steps" button must be present (server-side pagination).
+    expect(screen.getByRole('button', { name: /load more steps/i })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /load more steps/i }))
+    expect(loadMoreFn).toHaveBeenCalledOnce()
+
+    // Re-render with the updated mock (simulates loadMore completing).
+    rerender(
+      <QueryClientProvider client={makeQueryClient()}>
+        <MemoryRouter initialEntries={['/runs/r1']}>
+          <Routes>
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /load more steps/i })).not.toBeInTheDocument()
+    })
+  })
+})
+
 describe('RunDetailPage — pagination with active filter', () => {
   it('shows Load More when >50 steps match the active filter and loads remaining on click', async () => {
     // 55 tool_call steps + 10 thought steps
@@ -752,10 +812,7 @@ describe('RunDetailPage — "New steps" pill', () => {
       status: 'success',
     } as ReturnType<typeof useRun>)
 
-    vi.mocked(useRunSteps).mockReturnValue({
-      data: initialSteps,
-      status: 'success',
-    } as ReturnType<typeof useRunSteps>)
+    vi.mocked(useRunSteps).mockReturnValue(mockRunStepsReturn(initialSteps))
 
     // Mock IntersectionObserver with a proper constructor function
     let observerCallback: IntersectionObserverCallback | null = null
@@ -787,10 +844,7 @@ describe('RunDetailPage — "New steps" pill', () => {
       makeStep({ id: 's2', step_number: 1, type: 'thought', content: JSON.stringify({ text: 'New step' }) }),
     ]
 
-    vi.mocked(useRunSteps).mockReturnValue({
-      data: newSteps,
-      status: 'success',
-    } as ReturnType<typeof useRunSteps>)
+    vi.mocked(useRunSteps).mockReturnValue(mockRunStepsReturn(newSteps))
 
     rerender(
       <QueryClientProvider client={qc}>
@@ -822,10 +876,7 @@ describe('RunDetailPage — "New steps" pill', () => {
       status: 'success',
     } as ReturnType<typeof useRun>)
 
-    vi.mocked(useRunSteps).mockReturnValue({
-      data: initialSteps,
-      status: 'success',
-    } as ReturnType<typeof useRunSteps>)
+    vi.mocked(useRunSteps).mockReturnValue(mockRunStepsReturn(initialSteps))
 
     // scrollIntoView is not implemented in jsdom; stub it to avoid TypeError
     window.HTMLElement.prototype.scrollIntoView = vi.fn()
@@ -855,10 +906,7 @@ describe('RunDetailPage — "New steps" pill', () => {
       makeStep({ id: 's2', step_number: 1, type: 'thought', content: JSON.stringify({ text: 'New step' }) }),
     ]
 
-    vi.mocked(useRunSteps).mockReturnValue({
-      data: newSteps,
-      status: 'success',
-    } as ReturnType<typeof useRunSteps>)
+    vi.mocked(useRunSteps).mockReturnValue(mockRunStepsReturn(newSteps))
 
     rerender(
       <QueryClientProvider client={qc}>

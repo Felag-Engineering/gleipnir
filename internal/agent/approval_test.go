@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
@@ -39,7 +40,7 @@ func TestApprovalHandler_Wait_Approved(t *testing.T) {
 	approvalCh <- true
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -65,7 +66,7 @@ func TestApprovalHandler_Wait_Approved(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	steps, err := s.ListRunSteps(context.Background(), "run1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -90,7 +91,7 @@ func TestApprovalHandler_Wait_Rejected(t *testing.T) {
 	approvalCh := make(chan bool, 1)
 	approvalCh <- false
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -107,7 +108,7 @@ func TestApprovalHandler_Wait_Rejected(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	steps, err := s.ListRunSteps(context.Background(), "run1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestApprovalHandler_Wait_Timeout_HandlerWins(t *testing.T) {
 
 	approvalCh := make(chan bool) // unbuffered — nothing sends
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -149,7 +150,7 @@ func TestApprovalHandler_Wait_Timeout_HandlerWins(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	steps, err := s.ListRunSteps(context.Background(), "run1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -176,7 +177,7 @@ func TestApprovalHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 	approvalCh := make(chan bool, 1)
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -232,7 +233,7 @@ func TestApprovalHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 	}
 
 	// Exactly one error step (written by the scanner, not by the handler).
-	steps, err := s.ListRunSteps(context.Background(), "run1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -261,7 +262,7 @@ func TestApprovalHandler_Wait_ContextCancelled(t *testing.T) {
 
 	approvalCh := make(chan bool) // unbuffered — nothing sends
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 

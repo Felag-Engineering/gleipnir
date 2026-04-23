@@ -88,6 +88,23 @@
   color: var(--text-primary);
 }
 
+/* loadOlderBtn sits above the timeline and loads server-side older pages. */
+.loadOlderBtn {
+  align-self: center;
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-second);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.loadOlderBtn:hover {
+  color: var(--text-primary);
+}
+
 .sentinel {
   height: 1px;
 }

@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/rapp992/gleipnir/internal/runstate"
 	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
@@ -110,7 +112,7 @@ func TestRunStateMachine_LegalTransitions(t *testing.T) {
 			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 			testutil.InsertRun(t, s, "run1", "p1", from)
 
-			sm := NewRunStateMachine("run1", from, s.Queries())
+			sm := NewRunStateMachine("run1", from, s.DB(), s.Queries())
 
 			errMsg := ""
 			if to == model.RunStatusFailed || to == model.RunStatusInterrupted {
@@ -135,7 +137,7 @@ func TestRunStateMachine_IllegalTransitions(t *testing.T) {
 			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 			testutil.InsertRun(t, s, "run1", "p1", from)
 
-			sm := NewRunStateMachine("run1", from, s.Queries())
+			sm := NewRunStateMachine("run1", from, s.DB(), s.Queries())
 
 			if err := sm.Transition(context.Background(), to, ""); err == nil {
 				t.Errorf("Transition(%s → %s): expected error, got nil", from, to)
@@ -164,7 +166,7 @@ func TestRunStateMachine_TerminalStatusSetsCompletedAt(t *testing.T) {
 			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-			sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+			sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 
 			if err := sm.Transition(context.Background(), tc.to, tc.errMsg); err != nil {
 				t.Fatalf("Transition: %v", err)
@@ -187,7 +189,7 @@ func TestRunStateMachine_NonTerminalStatusLeavesCompletedAtNil(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
-	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.DB(), s.Queries())
 
 	if err := sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
 		t.Fatalf("Transition: %v", err)
@@ -207,7 +209,7 @@ func TestRunStateMachine_FailedTransitionSetsErrorColumn(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	const wantMsg = "something bad happened"
 
 	if err := sm.Transition(context.Background(), model.RunStatusFailed, wantMsg); err != nil {
@@ -232,7 +234,7 @@ func TestRunStateMachine_PublishesOnSuccessfulTransition(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 
 	if err := sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
 		t.Fatalf("Transition: %v", err)
@@ -264,7 +266,7 @@ func TestRunStateMachine_NoPublishOnIllegalTransition(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 
 	// pending → complete is illegal.
 	_ = sm.Transition(context.Background(), model.RunStatusComplete, "")
@@ -280,7 +282,7 @@ func TestRunStateMachine_NilPublisherIsSafe(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
 	// No publisher option — should not panic.
-	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.DB(), s.Queries())
 
 	if err := sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
 		t.Fatalf("Transition with nil publisher: %v", err)
@@ -297,7 +299,7 @@ func TestRunStateMachine_ConcurrentTransitions(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 
 	var (
 		wg        sync.WaitGroup
@@ -328,7 +330,7 @@ func TestRunStateMachine_WaitingForApproval_CreatesRecord(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 
 	payload := ApprovalPayload{
 		ApprovalID:    "approval-001",
@@ -388,7 +390,7 @@ func TestRunStateMachine_WaitingForApproval_NoPayload(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 
 	// Transition without a payload — should succeed with only run.status_changed.
 	if err := sm.Transition(context.Background(), model.RunStatusWaitingForApproval, ""); err != nil {
@@ -419,7 +421,7 @@ func TestRunStateMachine_WaitingForFeedback_CreatesRecord(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 
 	payload := FeedbackPayload{
 		FeedbackID:    "feedback-001",
@@ -482,7 +484,7 @@ func TestRunStateMachine_WaitingForFeedback_NoPayload(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 
 	// Transition without a payload — should succeed with only run.status_changed.
 	if err := sm.Transition(context.Background(), model.RunStatusWaitingForFeedback, ""); err != nil {
@@ -512,7 +514,7 @@ func TestRunStateMachine_PersistSystemPrompt(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusPending)
 
-	sm := NewRunStateMachine("run1", model.RunStatusPending, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusPending, s.DB(), s.Queries())
 
 	prompt := "You are a helpful agent.\n\nCapabilities:\n- read files"
 	if err := sm.PersistSystemPrompt(context.Background(), prompt); err != nil {
@@ -530,5 +532,188 @@ func TestRunStateMachine_PersistSystemPrompt(t *testing.T) {
 	}
 	if *got != prompt {
 		t.Errorf("system_prompt = %q, want %q", *got, prompt)
+	}
+}
+
+// TestRunStateMachine_TransactionRollback verifies that when the secondary INSERT
+// inside a transition fails, the status UPDATE is rolled back atomically.
+// A duplicate approval ID (PRIMARY KEY violation) is used to trigger the failure.
+func TestRunStateMachine_TransactionRollback(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+
+	payload := ApprovalPayload{
+		ApprovalID:    "approval-dup",
+		ToolName:      "my-server.do_thing",
+		ProposedInput: `{"key":"value"}`,
+		ExpiresAt:     "2099-01-01T00:00:00Z",
+	}
+
+	// First transition: succeeds, creates the approval record.
+	if err := sm.Transition(context.Background(), model.RunStatusWaitingForApproval, "", WithApprovalPayload(payload)); err != nil {
+		t.Fatalf("first Transition: unexpected error: %v", err)
+	}
+
+	// Move back to running so we can attempt the same waiting_for_approval transition
+	// with the duplicate approval ID.
+	if err := sm.Transition(context.Background(), model.RunStatusRunning, ""); err != nil {
+		t.Fatalf("Transition back to running: %v", err)
+	}
+
+	// Second transition with SAME approval ID — INSERT INTO approval_requests will
+	// violate the PRIMARY KEY constraint. The transaction must roll back the status UPDATE.
+	err := sm.Transition(context.Background(), model.RunStatusWaitingForApproval, "", WithApprovalPayload(payload))
+	if err == nil {
+		t.Fatal("expected error from duplicate approval ID, got nil")
+	}
+
+	// The run status must still be 'running' — the UPDATE was rolled back.
+	run, getErr := s.GetRun(context.Background(), "run1")
+	if getErr != nil {
+		t.Fatalf("GetRun: %v", getErr)
+	}
+	if run.Status != string(model.RunStatusRunning) {
+		t.Errorf("status = %q after rolled-back transition, want %q", run.Status, model.RunStatusRunning)
+	}
+
+	// In-memory state must also remain 'running'.
+	if got := sm.Current(); got != model.RunStatusRunning {
+		t.Errorf("Current() = %s after rolled-back transition, want running", got)
+	}
+
+	// Version must not have advanced.
+	// After the successful running→waiting_for_approval→running round-trip, version is 2.
+	if got := sm.Version(); got != 2 {
+		t.Errorf("Version() = %d after rolled-back transition, want 2", got)
+	}
+
+	// Only one approval_requests row must exist (the first successful one).
+	pending, err := s.GetPendingApprovalRequestsByRun(context.Background(), "run1")
+	if err != nil {
+		t.Fatalf("GetPendingApprovalRequestsByRun: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Errorf("approval_requests count = %d after rollback, want 1", len(pending))
+	}
+}
+
+// TestRunStateMachine_CASConflict verifies that when two RunStateMachine instances
+// point at the same DB row, exactly one transition succeeds and the other returns
+// ErrTransitionConflict.
+//
+// Key invariant tested here: IsLegalTransition(running, failed) returns true for
+// BOTH instances — each holds running as its in-memory state. The CAS guard on
+// the version column is what rejects the loser, not the legality check.
+func TestRunStateMachine_CASConflict(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	// Both instances start with running state and version 0.
+	sm1 := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+	sm2 := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+
+	// Explicitly verify that IsLegalTransition passes for both intended targets
+	// so we know the CAS — not the legality check — is what distinguishes them.
+	if !runstate.IsLegalTransition(model.RunStatusRunning, model.RunStatusComplete) {
+		t.Fatal("IsLegalTransition(running, complete) must be true for this test to be meaningful")
+	}
+	if !runstate.IsLegalTransition(model.RunStatusRunning, model.RunStatusFailed) {
+		t.Fatal("IsLegalTransition(running, failed) must be true for this test to be meaningful")
+	}
+
+	// sm1 wins: running → complete.
+	if err := sm1.Transition(context.Background(), model.RunStatusComplete, ""); err != nil {
+		t.Fatalf("sm1.Transition to complete: unexpected error: %v", err)
+	}
+
+	// sm2 attempts running → failed using the same (stale) version 0.
+	// The CAS must reject it.
+	err := sm2.Transition(context.Background(), model.RunStatusFailed, "conflict test")
+	if err == nil {
+		t.Fatal("sm2.Transition: expected ErrTransitionConflict, got nil")
+	}
+	if !errors.Is(err, ErrTransitionConflict) {
+		t.Errorf("sm2.Transition: got %v, want errors.Is(err, ErrTransitionConflict)", err)
+	}
+
+	// The DB row must reflect sm1's outcome: complete.
+	run, getErr := s.GetRun(context.Background(), "run1")
+	if getErr != nil {
+		t.Fatalf("GetRun: %v", getErr)
+	}
+	if run.Status != string(model.RunStatusComplete) {
+		t.Errorf("DB status = %q, want complete", run.Status)
+	}
+	if run.Version != 1 {
+		t.Errorf("DB version = %d, want 1 (exactly one committed transition)", run.Version)
+	}
+}
+
+// TestRunStateMachine_ConcurrentTransitionsAcrossInstances creates N independent
+// RunStateMachine instances on the same DB row and races them. Exactly one must
+// win; all losers must return ErrTransitionConflict. The final DB status must be
+// exactly one of the attempted terminal states.
+func TestRunStateMachine_ConcurrentTransitionsAcrossInstances(t *testing.T) {
+	const N = 10
+
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	// Targets the goroutines will attempt — mix of complete and failed to confirm
+	// the test doesn't accidentally rely on one specific status winning.
+	targets := []model.RunStatus{model.RunStatusComplete, model.RunStatusFailed}
+	legalTargets := map[model.RunStatus]bool{
+		model.RunStatusComplete: true,
+		model.RunStatusFailed:   true,
+	}
+
+	var (
+		wg        sync.WaitGroup
+		successes atomic.Int64
+		conflicts atomic.Int64
+	)
+	wg.Add(N)
+	for i := range N {
+		target := targets[i%len(targets)]
+		sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+		go func(sm *RunStateMachine, to model.RunStatus) {
+			defer wg.Done()
+			errMsg := ""
+			if to == model.RunStatusFailed {
+				errMsg = "concurrent failure"
+			}
+			err := sm.Transition(context.Background(), to, errMsg)
+			if err == nil {
+				successes.Add(1)
+			} else if errors.Is(err, ErrTransitionConflict) {
+				conflicts.Add(1)
+			}
+			// Any other error is a test failure — we don't increment either counter.
+		}(sm, target)
+	}
+	wg.Wait()
+
+	if got := successes.Load(); got != 1 {
+		t.Errorf("exactly 1 goroutine should have succeeded; got %d", got)
+	}
+	if got := conflicts.Load(); got != int64(N-1) {
+		t.Errorf("exactly %d goroutines should have returned ErrTransitionConflict; got %d", N-1, got)
+	}
+
+	// DB row must have exactly one terminal status from the set of attempted targets.
+	run, err := s.GetRun(context.Background(), "run1")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if !legalTargets[model.RunStatus(run.Status)] {
+		t.Errorf("DB status = %q is not in the set of legal target statuses; want one of {complete, failed}", run.Status)
+	}
+	if run.Version != 1 {
+		t.Errorf("DB version = %d, want 1 (exactly one committed transition)", run.Version)
 	}
 }

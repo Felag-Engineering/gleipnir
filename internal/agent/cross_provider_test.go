@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/llm/anthropic"
 	googlellm "github.com/rapp992/gleipnir/internal/llm/google"
@@ -57,7 +58,7 @@ func TestCrossProvider_StructuralParity(t *testing.T) {
 				Tools:        tools,
 				Policy:       pol,
 				Audit:        NewAuditWriter(s.Queries()),
-				StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+				StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -67,7 +68,7 @@ func TestCrossProvider_StructuralParity(t *testing.T) {
 				t.Fatalf("Run: %v", err)
 			}
 
-			steps, err := s.ListRunSteps(context.Background(), "r1")
+			steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 			if err != nil {
 				t.Fatalf("ListRunSteps: %v", err)
 			}
@@ -256,7 +257,7 @@ func TestCrossProvider_MultiToolCallBatching(t *testing.T) {
 				Tools:        tools,
 				Policy:       pol,
 				Audit:        NewAuditWriter(s.Queries()),
-				StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+				StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -266,7 +267,7 @@ func TestCrossProvider_MultiToolCallBatching(t *testing.T) {
 				t.Fatalf("Run: %v", err)
 			}
 
-			steps, err := s.ListRunSteps(context.Background(), "r1")
+			steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 			if err != nil {
 				t.Fatalf("ListRunSteps: %v", err)
 			}
@@ -341,7 +342,7 @@ func TestToolResultBlocksBeforeTextInUserTurn(t *testing.T) {
 		Tools:        tools,
 		Policy:       pol,
 		Audit:        NewAuditWriter(s.Queries()),
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

@@ -42,6 +42,7 @@ export function ThemeToggle({ compact }: ThemeToggleProps) {
         aria-pressed={theme === 'system'}
       >
         <Monitor size={16} aria-hidden strokeWidth={1.5} />
+        <span className={styles.toggleLabel}>System</span>
       </button>
       <button
         className={theme === 'light' ? `${styles.toggleButton} ${styles.toggleButtonActive}` : styles.toggleButton}
@@ -50,6 +51,7 @@ export function ThemeToggle({ compact }: ThemeToggleProps) {
         aria-pressed={theme === 'light'}
       >
         <Sun size={16} aria-hidden strokeWidth={1.5} />
+        <span className={styles.toggleLabel}>Light</span>
       </button>
       <button
         className={theme === 'dark' ? `${styles.toggleButton} ${styles.toggleButtonActive}` : styles.toggleButton}
@@ -58,6 +60,7 @@ export function ThemeToggle({ compact }: ThemeToggleProps) {
         aria-pressed={theme === 'dark'}
       >
         <Moon size={16} aria-hidden strokeWidth={1.5} />
+        <span className={styles.toggleLabel}>Dark</span>
       </button>
     </div>
   )

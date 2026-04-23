@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 
 	"github.com/rapp992/gleipnir/internal/logctx"
 	"github.com/rapp992/gleipnir/internal/model"
@@ -13,14 +14,23 @@ import (
 // failRun transitions the run to failed status and returns the original error.
 // If the context is already cancelled, a background context is used so the DB
 // write still lands.
+//
+// A ErrTransitionConflict from Transition is logged at info level (not error) because
+// it means another writer already committed a terminal status — the run is in a
+// consistent state, so logging at error would be misleading.
 func failRun(ctx context.Context, sm *RunStateMachine, runErr error) error {
 	transCtx := ctx
 	if ctx.Err() != nil {
 		transCtx = context.Background()
 	}
 	if tErr := sm.Transition(transCtx, model.RunStatusFailed, runErr.Error()); tErr != nil {
-		logctx.Logger(transCtx).ErrorContext(transCtx, "failed to persist run failure status",
-			"run_err", runErr, "transition_err", tErr)
+		if errors.Is(tErr, ErrTransitionConflict) {
+			logctx.Logger(transCtx).InfoContext(transCtx, "transition lost to concurrent writer; run already in terminal state",
+				"run_err", runErr)
+		} else {
+			logctx.Logger(transCtx).ErrorContext(transCtx, "failed to persist run failure status",
+				"run_err", runErr, "transition_err", tErr)
+		}
 	}
 	return runErr
 }

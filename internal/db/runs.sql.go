@@ -51,7 +51,7 @@ func (q *Queries) CountRuns(ctx context.Context, arg CountRunsParams) (int64, er
 const createRun = `-- name: CreateRun :one
 INSERT INTO runs (id, policy_id, model, status, trigger_type, trigger_payload, started_at, created_at)
 VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7)
-RETURNING id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model
+RETURNING id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model, version
 `
 
 type CreateRunParams struct {
@@ -92,12 +92,13 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 		&i.CreatedAt,
 		&i.SystemPrompt,
 		&i.Model,
+		&i.Version,
 	)
 	return i, err
 }
 
 const getRun = `-- name: GetRun :one
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model FROM runs WHERE id = ?1
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model, version FROM runs WHERE id = ?1
 `
 
 func (q *Queries) GetRun(ctx context.Context, id string) (Run, error) {
@@ -117,6 +118,7 @@ func (q *Queries) GetRun(ctx context.Context, id string) (Run, error) {
 		&i.CreatedAt,
 		&i.SystemPrompt,
 		&i.Model,
+		&i.Version,
 	)
 	return i, err
 }
@@ -186,6 +188,17 @@ func (q *Queries) GetRunTimeSeries(ctx context.Context, arg GetRunTimeSeriesPara
 	return items, nil
 }
 
+const getRunVersion = `-- name: GetRunVersion :one
+SELECT version FROM runs WHERE id = ?1
+`
+
+func (q *Queries) GetRunVersion(ctx context.Context, id string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, getRunVersion, id)
+	var version int64
+	err := row.Scan(&version)
+	return version, err
+}
+
 const hasScheduledRunSince = `-- name: HasScheduledRunSince :one
 SELECT EXISTS(SELECT 1 FROM runs WHERE policy_id = ?1 AND trigger_type = 'scheduled' AND created_at >= ?2) AS fired
 `
@@ -217,7 +230,7 @@ func (q *Queries) IncrementRunTokenCost(ctx context.Context, arg IncrementRunTok
 }
 
 const listActiveRunsByPolicy = `-- name: ListActiveRunsByPolicy :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model FROM runs
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model, version FROM runs
 WHERE policy_id = ?1
   AND status IN ('pending', 'running', 'waiting_for_approval', 'waiting_for_feedback')
 ORDER BY created_at ASC
@@ -247,6 +260,7 @@ func (q *Queries) ListActiveRunsByPolicy(ctx context.Context, policyID string) (
 			&i.CreatedAt,
 			&i.SystemPrompt,
 			&i.Model,
+			&i.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -344,7 +358,7 @@ func (q *Queries) ListAttentionItems(ctx context.Context) ([]ListAttentionItemsR
 }
 
 const listOrphanedRuns = `-- name: ListOrphanedRuns :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model FROM runs WHERE status IN ('running', 'waiting_for_approval', 'waiting_for_feedback')
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model, version FROM runs WHERE status IN ('running', 'waiting_for_approval', 'waiting_for_feedback')
 `
 
 // Source of truth for terminal statuses: model.IsTerminalStatus (internal/model/model.go).
@@ -372,6 +386,7 @@ func (q *Queries) ListOrphanedRuns(ctx context.Context) ([]Run, error) {
 			&i.CreatedAt,
 			&i.SystemPrompt,
 			&i.Model,
+			&i.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -387,7 +402,7 @@ func (q *Queries) ListOrphanedRuns(ctx context.Context) ([]Run, error) {
 }
 
 const listRuns = `-- name: ListRuns :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model FROM runs
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model, version FROM runs
 WHERE (?1 IS NULL OR policy_id = ?1)
   AND (?2 IS NULL OR status = ?2)
   AND (?3 IS NULL OR created_at >= ?3)
@@ -435,6 +450,7 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, erro
 			&i.CreatedAt,
 			&i.SystemPrompt,
 			&i.Model,
+			&i.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -450,7 +466,7 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, erro
 }
 
 const listRunsAsc = `-- name: ListRunsAsc :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model FROM runs
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model, version FROM runs
 WHERE (?1 IS NULL OR policy_id = ?1)
   AND (?2 IS NULL OR status = ?2)
   AND (?3 IS NULL OR created_at >= ?3)
@@ -498,6 +514,7 @@ func (q *Queries) ListRunsAsc(ctx context.Context, arg ListRunsAscParams) ([]Run
 			&i.CreatedAt,
 			&i.SystemPrompt,
 			&i.Model,
+			&i.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -513,7 +530,7 @@ func (q *Queries) ListRunsAsc(ctx context.Context, arg ListRunsAscParams) ([]Run
 }
 
 const listRunsByDurationAsc = `-- name: ListRunsByDurationAsc :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model FROM runs
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model, version FROM runs
 WHERE (?1 IS NULL OR policy_id = ?1)
   AND (?2 IS NULL OR status = ?2)
   AND (?3 IS NULL OR created_at >= ?3)
@@ -561,6 +578,7 @@ func (q *Queries) ListRunsByDurationAsc(ctx context.Context, arg ListRunsByDurat
 			&i.CreatedAt,
 			&i.SystemPrompt,
 			&i.Model,
+			&i.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -576,7 +594,7 @@ func (q *Queries) ListRunsByDurationAsc(ctx context.Context, arg ListRunsByDurat
 }
 
 const listRunsByDurationDesc = `-- name: ListRunsByDurationDesc :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model FROM runs
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model, version FROM runs
 WHERE (?1 IS NULL OR policy_id = ?1)
   AND (?2 IS NULL OR status = ?2)
   AND (?3 IS NULL OR created_at >= ?3)
@@ -624,6 +642,7 @@ func (q *Queries) ListRunsByDurationDesc(ctx context.Context, arg ListRunsByDura
 			&i.CreatedAt,
 			&i.SystemPrompt,
 			&i.Model,
+			&i.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -639,7 +658,7 @@ func (q *Queries) ListRunsByDurationDesc(ctx context.Context, arg ListRunsByDura
 }
 
 const listRunsByTokenCostAsc = `-- name: ListRunsByTokenCostAsc :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model FROM runs
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model, version FROM runs
 WHERE (?1 IS NULL OR policy_id = ?1)
   AND (?2 IS NULL OR status = ?2)
   AND (?3 IS NULL OR created_at >= ?3)
@@ -687,6 +706,7 @@ func (q *Queries) ListRunsByTokenCostAsc(ctx context.Context, arg ListRunsByToke
 			&i.CreatedAt,
 			&i.SystemPrompt,
 			&i.Model,
+			&i.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -702,7 +722,7 @@ func (q *Queries) ListRunsByTokenCostAsc(ctx context.Context, arg ListRunsByToke
 }
 
 const listRunsByTokenCostDesc = `-- name: ListRunsByTokenCostDesc :many
-SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model FROM runs
+SELECT id, policy_id, status, trigger_type, trigger_payload, started_at, completed_at, token_cost, error, thread_id, created_at, system_prompt, model, version FROM runs
 WHERE (?1 IS NULL OR policy_id = ?1)
   AND (?2 IS NULL OR status = ?2)
   AND (?3 IS NULL OR created_at >= ?3)
@@ -750,6 +770,7 @@ func (q *Queries) ListRunsByTokenCostDesc(ctx context.Context, arg ListRunsByTok
 			&i.CreatedAt,
 			&i.SystemPrompt,
 			&i.Model,
+			&i.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -775,40 +796,56 @@ func (q *Queries) SumTokensLast24Hours(ctx context.Context, since string) (int64
 	return column_1, err
 }
 
-const updateRunError = `-- name: UpdateRunError :exec
-UPDATE runs SET status = ?1, error = ?2, completed_at = ?3 WHERE id = ?4
+const updateRunError = `-- name: UpdateRunError :execrows
+UPDATE runs SET status = ?1, error = ?2, completed_at = ?3, version = version + 1
+WHERE id = ?4 AND version = ?5
 `
 
 type UpdateRunErrorParams struct {
-	Status      string  `json:"status"`
-	Error       *string `json:"error"`
-	CompletedAt *string `json:"completed_at"`
-	ID          string  `json:"id"`
+	Status          string  `json:"status"`
+	Error           *string `json:"error"`
+	CompletedAt     *string `json:"completed_at"`
+	ID              string  `json:"id"`
+	ExpectedVersion int64   `json:"expected_version"`
 }
 
-func (q *Queries) UpdateRunError(ctx context.Context, arg UpdateRunErrorParams) error {
-	_, err := q.db.ExecContext(ctx, updateRunError,
+func (q *Queries) UpdateRunError(ctx context.Context, arg UpdateRunErrorParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateRunError,
 		arg.Status,
 		arg.Error,
 		arg.CompletedAt,
 		arg.ID,
+		arg.ExpectedVersion,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const updateRunStatus = `-- name: UpdateRunStatus :exec
-UPDATE runs SET status = ?1, completed_at = ?2 WHERE id = ?3
+const updateRunStatus = `-- name: UpdateRunStatus :execrows
+UPDATE runs SET status = ?1, completed_at = ?2, version = version + 1
+WHERE id = ?3 AND version = ?4
 `
 
 type UpdateRunStatusParams struct {
-	Status      string  `json:"status"`
-	CompletedAt *string `json:"completed_at"`
-	ID          string  `json:"id"`
+	Status          string  `json:"status"`
+	CompletedAt     *string `json:"completed_at"`
+	ID              string  `json:"id"`
+	ExpectedVersion int64   `json:"expected_version"`
 }
 
-func (q *Queries) UpdateRunStatus(ctx context.Context, arg UpdateRunStatusParams) error {
-	_, err := q.db.ExecContext(ctx, updateRunStatus, arg.Status, arg.CompletedAt, arg.ID)
-	return err
+func (q *Queries) UpdateRunStatus(ctx context.Context, arg UpdateRunStatusParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateRunStatus,
+		arg.Status,
+		arg.CompletedAt,
+		arg.ID,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateRunSystemPrompt = `-- name: UpdateRunSystemPrompt :exec
