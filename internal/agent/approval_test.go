@@ -39,7 +39,7 @@ func TestApprovalHandler_Wait_Approved(t *testing.T) {
 	approvalCh <- true
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -90,7 +90,7 @@ func TestApprovalHandler_Wait_Rejected(t *testing.T) {
 	approvalCh := make(chan bool, 1)
 	approvalCh <- false
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -132,7 +132,7 @@ func TestApprovalHandler_Wait_Timeout_HandlerWins(t *testing.T) {
 
 	approvalCh := make(chan bool) // unbuffered — nothing sends
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -176,7 +176,7 @@ func TestApprovalHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 	approvalCh := make(chan bool, 1)
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -261,7 +261,7 @@ func TestApprovalHandler_Wait_ContextCancelled(t *testing.T) {
 
 	approvalCh := make(chan bool) // unbuffered — nothing sends
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 

@@ -28,7 +28,7 @@ func TestFeedbackHandler_Wait_ResponseReceived(t *testing.T) {
 	feedbackCh <- "operator response"
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -83,7 +83,7 @@ func TestFeedbackHandler_Wait_Timeout_HandlerWins(t *testing.T) {
 	feedbackCh := make(chan string) // unbuffered — nothing sends
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -128,7 +128,7 @@ func TestFeedbackHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 	feedbackCh := make(chan string, 1)
 
 	pub := &capturePublisher{}
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries(), WithStateMachinePublisher(pub))
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -211,7 +211,7 @@ func TestFeedbackHandler_Wait_ContextCancelled(t *testing.T) {
 
 	feedbackCh := make(chan string) // unbuffered — nothing sends
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -238,7 +238,7 @@ func TestFeedbackHandler_HandleAskOperator_FeedbackDisabled(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 	feedbackCh := make(chan string)
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -283,7 +283,7 @@ func TestFeedbackHandler_HandleAskOperator_MissingReason(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 	feedbackCh := make(chan string)
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -328,7 +328,7 @@ func TestFeedbackHandler_HandleAskOperator_ReasonNotString(t *testing.T) {
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 	feedbackCh := make(chan string)
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -384,7 +384,7 @@ func TestFeedbackHandler_HandleAskOperator_TimeoutResolution(t *testing.T) {
 			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
 			feedbackCh := make(chan string) // never receives
-			sm := NewRunStateMachine("run1", model.RunStatusRunning, s.Queries())
+			sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 			w := NewAuditWriter(s.Queries())
 			defer w.Close() //nolint:errcheck
 

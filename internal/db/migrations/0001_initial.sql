@@ -112,7 +112,8 @@ CREATE TABLE runs (
     thread_id       TEXT,                 -- nullable, Slack thread_ts
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     system_prompt   TEXT,                 -- nullable, rendered system prompt at run start
-    model           TEXT    NOT NULL DEFAULT ''  -- API model ID (e.g. claude-sonnet-4-6); empty for legacy runs
+    model           TEXT    NOT NULL DEFAULT '',  -- API model ID (e.g. claude-sonnet-4-6); empty for legacy runs
+    version         INTEGER NOT NULL DEFAULT 0   -- optimistic-lock counter; bumped on every status UPDATE
 );
 
 CREATE INDEX idx_runs_status         ON runs(status);

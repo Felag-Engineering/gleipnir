@@ -99,6 +99,7 @@ type Run struct {
 	CreatedAt      string  `json:"created_at"`
 	SystemPrompt   *string `json:"system_prompt"`
 	Model          string  `json:"model"`
+	Version        int64   `json:"version"`
 }
 
 type RunStep struct {

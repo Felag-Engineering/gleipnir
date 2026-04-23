@@ -21,6 +21,12 @@ import (
 // permitted by the run state machine graph.
 var ErrIllegalTransition = errors.New("illegal run status transition")
 
+// ErrTransitionConflict is returned when a CAS update finds that another writer
+// already advanced the run's version before this caller could commit its own
+// transition. The run is in a valid state in the DB — the caller must not treat
+// this as a fatal error, only as a signal that its write was lost.
+var ErrTransitionConflict = errors.New("run status transition lost to concurrent writer")
+
 // legalTransitions is the run state machine graph. Each key is a non-terminal
 // status; its value lists every status it may transition to. Terminal statuses
 // (complete, failed, interrupted) have no entry — lookup returns nil, causing
@@ -61,17 +67,14 @@ func IsLegalTransition(from, to model.RunStatus) bool {
 }
 
 // TransitionRunFailed transitions a run to the "failed" status from any legal
-// source state. It reads the current status from the DB, validates the
-// transition, persists the failure, and publishes a run.status_changed event.
+// source state. It reads the current status and version from the DB, validates
+// the transition, and applies a CAS UPDATE (WHERE id = ? AND version = ?) to
+// detect concurrent writers. Returns ErrTransitionConflict when rows_affected == 0
+// (another writer already advanced the row). Returns ErrIllegalTransition when the
+// current status does not allow a transition to "failed".
 //
 // This function does NOT insert error steps — callers are responsible for
 // creating domain-specific error steps before calling this function.
-//
-// TOCTOU caveat: there is an inherent race between the GetRun read and the
-// UpdateRunError write. Callers should use a conditional DB update
-// (rows-affected guard) upstream of this call to prevent duplicate transitions
-// under concurrency. The IsLegalTransition check here is defense-in-depth,
-// not the primary concurrency gate.
 func TransitionRunFailed(ctx context.Context, queries *db.Queries, publisher event.Publisher, runID string, reason string) error {
 	run, err := queries.GetRun(ctx, runID)
 	if err != nil {
@@ -83,13 +86,18 @@ func TransitionRunFailed(ctx context.Context, queries *db.Queries, publisher eve
 	}
 
 	completedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	if err := queries.UpdateRunError(ctx, db.UpdateRunErrorParams{
-		Status:      string(model.RunStatusFailed),
-		Error:       &reason,
-		CompletedAt: &completedAt,
-		ID:          runID,
-	}); err != nil {
+	rows, err := queries.UpdateRunError(ctx, db.UpdateRunErrorParams{
+		Status:          string(model.RunStatusFailed),
+		Error:           &reason,
+		CompletedAt:     &completedAt,
+		ID:              runID,
+		ExpectedVersion: run.Version,
+	})
+	if err != nil {
 		return fmt.Errorf("persisting run status failed: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: run %s", ErrTransitionConflict, runID)
 	}
 
 	RecordTransition(model.RunStatus(run.Status), model.RunStatusFailed)

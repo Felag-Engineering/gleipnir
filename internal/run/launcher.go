@@ -193,7 +193,14 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		return LaunchResult{}, fmt.Errorf("create run for policy %q: %w", params.PolicyID, err)
 	}
 
-	sm := agent.NewRunStateMachine(run.ID, model.RunStatusPending, l.store.Queries(), agent.WithStateMachinePublisher(l.publisher))
+	sm := agent.NewRunStateMachine(
+		run.ID,
+		model.RunStatus(run.Status),
+		l.store.DB(),
+		l.store.Queries(),
+		agent.WithStateMachinePublisher(l.publisher),
+		agent.WithInitialVersion(run.Version),
+	)
 
 	resolvedTools, err := l.registry.ResolveForPolicy(ctx, params.ParsedPolicy)
 	if err != nil {
@@ -201,7 +208,11 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		// already be cancelled, but the DB write must complete so the run does
 		// not linger in 'pending' indefinitely.
 		if tErr := sm.Transition(context.Background(), model.RunStatusFailed, err.Error()); tErr != nil {
-			slog.Error("transition to failed on tool resolution error", "run_id", run.ID, "err", tErr)
+			if errors.Is(tErr, agent.ErrTransitionConflict) {
+				slog.Info("transition lost to concurrent writer on tool resolution error", "run_id", run.ID)
+			} else {
+				slog.Error("transition to failed on tool resolution error", "run_id", run.ID, "err", tErr)
+			}
 		}
 		return LaunchResult{}, err
 	}
@@ -228,7 +239,11 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		// already be cancelled, but the DB write must complete so the run does
 		// not linger in 'pending' indefinitely.
 		if tErr := sm.Transition(context.Background(), model.RunStatusFailed, err.Error()); tErr != nil {
-			slog.Error("transition to failed on agent construction error", "run_id", run.ID, "err", tErr)
+			if errors.Is(tErr, agent.ErrTransitionConflict) {
+				slog.Info("transition lost to concurrent writer on agent construction error", "run_id", run.ID)
+			} else {
+				slog.Error("transition to failed on agent construction error", "run_id", run.ID, "err", tErr)
+			}
 		}
 		if closeErr := audit.Close(); closeErr != nil {
 			slog.Error("audit writer drain error on failed launch", "run_id", run.ID, "err", closeErr)

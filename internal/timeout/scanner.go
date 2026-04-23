@@ -311,11 +311,13 @@ func (s *Scanner) resolveTimeout(ctx context.Context, item ExpiredItem) error {
 		return fmt.Errorf("create error step: %w", err)
 	}
 
-	if err := runstate.TransitionRunFailed(ctx, s.store.Queries(), s.publisher, item.RunID, errMsg); errors.Is(err, runstate.ErrIllegalTransition) {
-		// The scanner already verified the run status above. An illegal-
-		// transition error here means another component moved the run between
-		// our GetRun and this call. Benign race — skip silently.
-		slog.Debug("TransitionRunFailed race: run already moved",
+	if err := runstate.TransitionRunFailed(ctx, s.store.Queries(), s.publisher, item.RunID, errMsg); errors.Is(err, runstate.ErrIllegalTransition) ||
+		errors.Is(err, runstate.ErrTransitionConflict) {
+		// Either the run status changed between our status check and the CAS update
+		// (ErrIllegalTransition), or another writer committed a transition first
+		// (ErrTransitionConflict). Both mean the run is already in a valid state —
+		// skip silently rather than treating it as a scanner failure.
+		slog.Debug("scanner skipped: transition no longer valid",
 			"run_id", item.RunID,
 			"err", err,
 		)

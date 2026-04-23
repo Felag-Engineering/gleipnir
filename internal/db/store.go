@@ -21,6 +21,14 @@ import (
 	"github.com/rapp992/gleipnir/internal/model"
 )
 
+// errOrphanedRunCASMiss is a package-private sentinel returned by
+// interruptOrphanedRun when the CAS UPDATE finds rows_affected == 0.
+// It has the same string as runstate.ErrTransitionConflict — they are kept
+// separate to avoid an import cycle (internal/runstate imports internal/db).
+// Callers of ScanOrphanedRuns only need to distinguish "CAS miss" from real
+// errors; they never cross-compare with runstate.ErrTransitionConflict.
+var errOrphanedRunCASMiss = errors.New("run status transition lost to concurrent writer")
+
 //go:embed migrations/0001_initial.sql
 var initialSchema string
 
@@ -156,7 +164,15 @@ func (s *Store) ScanOrphanedRuns(ctx context.Context, logger *slog.Logger) error
 	}
 
 	for _, run := range runs {
-		if err := s.interruptOrphanedRun(ctx, run.ID); err != nil {
+		if err := s.interruptOrphanedRun(ctx, run); err != nil {
+			if errors.Is(err, errOrphanedRunCASMiss) {
+				// Another writer (e.g. the agent goroutine that was cleaning up
+				// during the previous shutdown) already advanced this run to a
+				// terminal state. Treat as non-fatal; log and move on.
+				logger.Warn("orphaned run already transitioned by another writer; skipping",
+					"run_id", run.ID)
+				continue
+			}
 			logger.Error("failed to mark orphaned run as interrupted", "run_id", run.ID, "err", err)
 			continue
 		}
@@ -166,8 +182,10 @@ func (s *Store) ScanOrphanedRuns(ctx context.Context, logger *slog.Logger) error
 }
 
 // interruptOrphanedRun inserts an error step and updates the run to 'interrupted'.
-func (s *Store) interruptOrphanedRun(ctx context.Context, runID string) error {
-	count, err := s.queries.CountRunSteps(ctx, runID)
+// The run argument must be the full row returned by ListOrphanedRuns so that the
+// version field is available for the CAS update.
+func (s *Store) interruptOrphanedRun(ctx context.Context, run Run) error {
+	count, err := s.queries.CountRunSteps(ctx, run.ID)
 	if err != nil {
 		return fmt.Errorf("count run steps: %w", err)
 	}
@@ -184,7 +202,7 @@ func (s *Store) interruptOrphanedRun(ctx context.Context, runID string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := s.queries.CreateRunStep(ctx, CreateRunStepParams{
 		ID:         model.NewULID(),
-		RunID:      runID,
+		RunID:      run.ID,
 		StepNumber: count,
 		Type:       string(model.StepTypeError),
 		Content:    string(content),
@@ -195,13 +213,19 @@ func (s *Store) interruptOrphanedRun(ctx context.Context, runID string) error {
 	}
 
 	errMsg := "process restarted while run was active"
-	if err := s.queries.UpdateRunError(ctx, UpdateRunErrorParams{
-		Status:      string(model.RunStatusInterrupted),
-		Error:       &errMsg,
-		CompletedAt: &now,
-		ID:          runID,
-	}); err != nil {
+	rows, err := s.queries.UpdateRunError(ctx, UpdateRunErrorParams{
+		Status:          string(model.RunStatusInterrupted),
+		Error:           &errMsg,
+		CompletedAt:     &now,
+		ID:              run.ID,
+		ExpectedVersion: run.Version,
+	})
+	if err != nil {
 		return fmt.Errorf("update run error: %w", err)
+	}
+	if rows == 0 {
+		// CAS miss: another writer already moved this run to a terminal state.
+		return fmt.Errorf("%w: run %s", errOrphanedRunCASMiss, run.ID)
 	}
 	return nil
 }
