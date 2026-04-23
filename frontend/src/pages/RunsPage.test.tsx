@@ -6,7 +6,8 @@ import React from 'react'
 
 import RunsPage from './RunsPage'
 import { computePageNumbers } from '@/utils/pagination'
-import type { ApiRun, ApiPolicyListItem, ApiAttentionItem } from '@/api/types'
+import type { ApiRun, ApiPolicyListItem } from '@/api/types'
+import type { AttentionItem } from '@/hooks/useAttentionItems'
 
 // --- Mocks ---
 
@@ -339,7 +340,7 @@ describe('RunsPage — stats subtitle', () => {
 
 // --- Needs Approval chip badge ---
 
-function makeApprovalItem(overrides?: Partial<ApiAttentionItem>): ApiAttentionItem {
+function makeApprovalItem(overrides?: Partial<AttentionItem>): AttentionItem {
   return {
     type: 'approval',
     request_id: 'req-001',
@@ -350,6 +351,7 @@ function makeApprovalItem(overrides?: Partial<ApiAttentionItem>): ApiAttentionIt
     message: 'Approve?',
     expires_at: new Date(Date.now() + 60_000).toISOString(),
     created_at: new Date().toISOString(),
+    sortKey: 0,
     ...overrides,
   }
 }
@@ -381,7 +383,7 @@ describe('RunsPage — Needs Approval chip', () => {
   })
 
   it('excludes feedback and failure items from the badge count', () => {
-    const items: ApiAttentionItem[] = [
+    const items: AttentionItem[] = [
       makeApprovalItem({ request_id: 'req-001' }),
       makeApprovalItem({ request_id: 'req-002' }),
       { ...makeApprovalItem(), type: 'feedback', request_id: 'req-003' },
