@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useRuns } from '@/hooks/queries/runs'
 import { usePolicies } from '@/hooks/queries/policies'
 import { useRunsFilters } from '@/hooks/useRunsFilters'
+import { useAttentionItems } from '@/hooks/useAttentionItems'
 import { queryKeys } from '@/hooks/queryKeys'
 import { QueryBoundary } from '@/components/QueryBoundary'
 import { StatusBadge } from '@/components/dashboard/StatusBadge'
@@ -23,7 +24,7 @@ const STATUS_FILTERS = [
   { key: 'complete', label: 'Complete' },
   { key: 'running', label: 'Running' },
   { key: 'failed', label: 'Failed' },
-  { key: 'waiting_for_approval', label: 'Approval' },
+  { key: 'waiting_for_approval', label: 'Needs Approval' },
 ] as const
 
 // Date range options for the secondary filter chip
@@ -57,6 +58,8 @@ export default function RunsPage() {
 
   usePageTitle('Run History')
   const { data: policies } = usePolicies()
+  const { items: attentionItems } = useAttentionItems()
+  const pendingApprovalCount = attentionItems.filter(i => i.type === 'approval').length
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const firstItem = offset + 1
@@ -86,15 +89,20 @@ export default function RunsPage() {
         <div role="radiogroup" aria-label="Filter by status" className={styles.statusGroup}>
           {STATUS_FILTERS.map(({ key, label }) => {
             const isActive = status === key
+            const showApprovalCount = key === 'waiting_for_approval' && pendingApprovalCount > 0
             return (
               <button
                 key={key}
                 role="radio"
                 aria-checked={isActive}
+                aria-label={showApprovalCount ? `Needs Approval, ${pendingApprovalCount} pending` : undefined}
                 className={isActive ? `${styles.chip} ${styles.chipActive}` : styles.chip}
                 onClick={() => setFilter('status', key)}
               >
                 {label}
+                {showApprovalCount && (
+                  <span className={styles.chipCount} aria-hidden="true">{pendingApprovalCount}</span>
+                )}
               </button>
             )
           })}
