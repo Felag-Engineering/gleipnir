@@ -8,8 +8,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
   background: none;
   border: none;
   border-radius: 4px;
@@ -30,8 +30,18 @@
   background: var(--bg-elevated);
 }
 
+.toggleLabel {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 1;
+}
+
 .compactButton {
   composes: toggleButton;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  gap: 0;
 }
 
 .compactButton:hover {
