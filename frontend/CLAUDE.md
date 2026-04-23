@@ -213,7 +213,7 @@ Response envelope: `{ data: T }` for success, `{ error: string, detail?: string 
 Organized by feature area:
 
 - **Layout** — sidebar navigation, content area, theme toggle, connection status banner
-- **dashboard/** — StatsBar, StatusBadge, StatusBoard, TriggerChip, ActivityFeed, OnboardingSteps
+- **dashboard/** — StatsBar, StatusBadge, StatusBoard, TriggerChip, ActivityFeed, SetupChecklist (context-aware onboarding checklist that renders until all setup steps are complete)
 - **AgentEditor/** — the agent editor (EditorTopBar, FormMode with 7 form sections)
 - **AgentList/** — agent list with folder grouping
 - **RunDetail/** — RunHeader, StepTimeline, FilterBar, MetadataGrid, CapabilitySnapshotCard, ThoughtBlock, ThinkingBlock, ToolBlock, CompleteBlock, ErrorBlock, FeedbackBlock, ApprovalActions, FeedbackActions
@@ -224,7 +224,9 @@ Organized by feature area:
 
 ### Hooks (`src/hooks/`)
 
-~28 custom hooks. Data-fetching hooks follow the pattern: `use{Resource}` wraps a TanStack `useQuery`, `use{Action}` wraps a `useMutation`. All query keys go through `queryKeys.ts`.
+~29 custom hooks. Data-fetching hooks follow the pattern: `use{Resource}` wraps a TanStack `useQuery`, `use{Action}` wraps a `useMutation`. All query keys go through `queryKeys.ts`.
+
+`useSetupReadiness` — composes `useModels`, `useMcpServers`, and `usePolicies` to derive system readiness state (`hasModel`, `hasServer`, `hasAgent`, `nextStep`). Used by the dashboard and agents page empty states.
 
 ### Storybook
 
