@@ -66,7 +66,7 @@ model:
 
 trigger:
 
-  # type: webhook | manual | scheduled | poll — required
+  # type: webhook | manual | scheduled | poll | cron — required
   type: webhook
 
 
@@ -117,6 +117,18 @@ trigger:
       #   greater_than: numeric greater-than
       #   less_than:    numeric less-than
       #   contains:     substring match (strings only)
+
+
+  # --- cron ---
+  # cron_expr: string — required for cron
+  #   Standard 5-field POSIX cron expression (minute hour dom month dow).
+  #   Examples:
+  #     "0 9 * * 1"     # every Monday at 09:00
+  #     "*/15 * * * *"  # every 15 minutes
+  #   The runner fires a run at each scheduled time. If the server was
+  #   down when a fire time passed, that fire is silently skipped (no
+  #   catch-up). Cron policies run indefinitely until paused or deleted.
+  cron_expr: "0 9 * * 1"
 
 
 # ---------------------------------------------------------------------------

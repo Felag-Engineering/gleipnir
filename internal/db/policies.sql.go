@@ -90,6 +90,42 @@ func (q *Queries) DeletePolicy(ctx context.Context, id string) error {
 	return err
 }
 
+const getCronActivePolicies = `-- name: GetCronActivePolicies :many
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'cron' AND paused_at IS NULL
+`
+
+func (q *Queries) GetCronActivePolicies(ctx context.Context) ([]Policy, error) {
+	rows, err := q.db.QueryContext(ctx, getCronActivePolicies)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Policy
+	for rows.Next() {
+		var i Policy
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.TriggerType,
+			&i.Yaml,
+			&i.WebhookSecretEncrypted,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.PausedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getPolicy = `-- name: GetPolicy :one
 SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE id = ?1
 `

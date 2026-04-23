@@ -253,9 +253,10 @@ describe('AgentEditorUtils — YAML ↔ form round-trip (pure functions)', () =>
     expect(rt.trigger.fireAt).toEqual(parsed.trigger.fireAt)
   })
 
-  it('cron trigger type falls back to webhook', () => {
-    const cronParsed = yamlToFormState('name: x\ntrigger:\n  type: cron\n  schedule: "0 * * * *"\ncapabilities:\n  tools: []\nagent:\n  task: t\n')
-    expect(cronParsed?.trigger.type).toBe('webhook')
+  it('cron trigger type is parsed as cron (first-class trigger)', () => {
+    const cronParsed = yamlToFormState('name: x\ntrigger:\n  type: cron\n  cron_expr: "0 9 * * 1"\ncapabilities:\n  tools: []\nagent:\n  task: t\n')
+    expect(cronParsed?.trigger.type).toBe('cron')
+    expect((cronParsed?.trigger as { cronExpr: string }).cronExpr).toBe('0 9 * * 1')
   })
 
   it('poll trigger type is parsed as poll (first-class trigger)', () => {

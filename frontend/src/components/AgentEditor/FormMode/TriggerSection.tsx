@@ -1,10 +1,11 @@
 import shared from './FormSections.module.css';
 import styles from './TriggerSection.module.css';
-import type { TriggerFormState, ManualTriggerState, ScheduledTriggerState, PollTriggerState, SectionIssues } from './types';
+import type { TriggerFormState, ManualTriggerState, ScheduledTriggerState, PollTriggerState, CronTriggerState, SectionIssues } from './types';
 import { TriggerCard } from './triggers/TriggerCard';
 import { WebhookConfig } from './triggers/WebhookConfig';
 import { ScheduledConfig } from './triggers/ScheduledConfig';
 import { PollConfig } from './triggers/PollConfig';
+import { CronConfig } from './triggers/CronConfig';
 
 export interface TriggerSectionProps {
   value: TriggerFormState;
@@ -21,12 +22,14 @@ const DEFAULT_POLL: PollTriggerState = {
   match: 'all',
   checks: [{ tool: '', input: '', path: '', comparator: 'equals', value: '' }],
 };
+const DEFAULT_CRON: CronTriggerState = { type: 'cron', cronExpr: '0 9 * * *' };
 
 export function TriggerSection({ value, onChange, policyId, errors = [] }: TriggerSectionProps) {
   function handleTypeSelect(type: TriggerFormState['type']) {
     if (type === 'webhook') onChange({ type: 'webhook', auth: 'hmac' });
     else if (type === 'manual') onChange(DEFAULT_MANUAL);
     else if (type === 'poll') onChange(DEFAULT_POLL);
+    else if (type === 'cron') onChange(DEFAULT_CRON);
     else onChange(DEFAULT_SCHEDULED);
   }
 
@@ -43,6 +46,8 @@ export function TriggerSection({ value, onChange, policyId, errors = [] }: Trigg
           title="Scheduled" desc="Fires once at each specified date and time, then pauses" />
         <TriggerCard type="poll" selected={value.type} onSelect={handleTypeSelect}
           title="Poll" desc="Periodically calls MCP tools and fires when conditions match" />
+        <TriggerCard type="cron" selected={value.type} onSelect={handleTypeSelect}
+          title="Cron" desc="Fires on a recurring schedule defined by a cron expression" />
       </div>
 
       <div className={styles.config}>
@@ -55,6 +60,7 @@ export function TriggerSection({ value, onChange, policyId, errors = [] }: Trigg
         )}
         {value.type === 'scheduled' && <ScheduledConfig value={value} onChange={onChange} errors={errors} />}
         {value.type === 'poll' && <PollConfig value={value} onChange={onChange} errors={errors} />}
+        {value.type === 'cron' && <CronConfig value={value} onChange={onChange} errors={errors} />}
         {value.type === 'manual' && null}
       </div>
     </div>

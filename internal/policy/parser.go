@@ -109,6 +109,10 @@ func convertTrigger(r rawTrigger) model.TriggerConfig {
 		}
 	}
 
+	if tc.Type == model.TriggerTypeCron {
+		tc.CronExpr = strings.TrimSpace(r.CronExpr)
+	}
+
 	if tc.Type == model.TriggerTypePoll {
 		if r.Interval != "" {
 			d, err := time.ParseDuration(r.Interval)
@@ -296,6 +300,7 @@ type rawTrigger struct {
 	Interval      string     `yaml:"interval"`       // poll only, Go duration string (e.g. "5m")
 	Match         string     `yaml:"match"`          // poll only, "all" or "any", default: "all"
 	Checks        []rawCheck `yaml:"checks"`         // poll only, at least one required
+	CronExpr      string     `yaml:"cron_expr"`      // cron only, 5-field POSIX expression
 }
 
 // rawCheck is one entry in a poll trigger's checks list.

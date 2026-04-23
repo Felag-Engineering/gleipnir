@@ -233,6 +233,11 @@ func run(cfg config.Config) error {
 		return fmt.Errorf("start poller: %w", err)
 	}
 
+	cronRunner := trigger.NewCronRunner(store, launcher, adminHandler)
+	if err := cronRunner.Start(ctx); err != nil {
+		return fmt.Errorf("start cron runner: %w", err)
+	}
+
 	authHandler := auth.NewHandler(store.Queries(), store.DB())
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
 
@@ -254,6 +259,7 @@ func run(cfg config.Config) error {
 		PolicyWebhookHandler: policyWebhookHandler,
 		Poller:               poller,
 		Scheduler:            scheduler,
+		Cron:                 cronRunner,
 		Version:              version,
 		StartTime:            startTime,
 		DBPath:               cfg.DBPath,
@@ -295,12 +301,13 @@ func run(cfg config.Config) error {
 	// Signal all in-flight agent runs to stop.
 	runManager.CancelAll()
 
-	// Wait for poll loops and agent runs to drain, with a timeout. Poll loops
-	// should exit quickly (they are just sleeping timers). Agent runs may take
-	// longer, so both are waited concurrently.
+	// Wait for poll loops, cron loops, and agent runs to drain, with a timeout.
+	// Poll and cron loops should exit quickly (they are just sleeping timers).
+	// Agent runs may take longer, so all are waited concurrently.
 	runsDrained := make(chan struct{})
 	go func() {
 		poller.Wait()
+		cronRunner.Wait()
 		runManager.Wait()
 		close(runsDrained)
 	}()

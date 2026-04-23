@@ -33,7 +33,7 @@ func newPolicyHandlerStore(t *testing.T) *db.Store {
 func newPolicyRouter(store *db.Store) http.Handler {
 	r := chi.NewRouter()
 	svc := policy.NewService(store, nil, nil, nil, nil)
-	h := api.NewPolicyHandler(store, svc, nil, nil)
+	h := api.NewPolicyHandler(store, svc, nil, nil, nil)
 	r.Get("/policies", h.List)
 	r.Post("/policies", h.Create)
 	r.Get("/policies/{id}", h.Get)
@@ -49,7 +49,7 @@ func newPolicyRouter(store *db.Store) http.Handler {
 func newPolicyRouterWithLookup(store *db.Store, lookup policy.ToolLookup) http.Handler {
 	r := chi.NewRouter()
 	svc := policy.NewService(store, lookup, nil, nil, nil)
-	h := api.NewPolicyHandler(store, svc, nil, nil)
+	h := api.NewPolicyHandler(store, svc, nil, nil, nil)
 	r.Get("/policies", h.List)
 	r.Post("/policies", h.Create)
 	r.Get("/policies/{id}", h.Get)
@@ -1238,11 +1238,11 @@ func (r *recordingNotifier) calls() []string {
 }
 
 // newPolicyRouterWithNotifiers wires a chi router with the policy handler and
-// the given notifiers. Both may be nil.
-func newPolicyRouterWithNotifiers(store *db.Store, poller, scheduler api.PolicyNotifier) http.Handler {
+// the given notifiers. All may be nil.
+func newPolicyRouterWithNotifiers(store *db.Store, poller, scheduler, cron api.PolicyNotifier) http.Handler {
 	r := chi.NewRouter()
 	svc := policy.NewService(store, nil, nil, nil, nil)
-	h := api.NewPolicyHandler(store, svc, poller, scheduler)
+	h := api.NewPolicyHandler(store, svc, poller, scheduler, cron)
 	r.Get("/policies", h.List)
 	r.Post("/policies", h.Create)
 	r.Get("/policies/{id}", h.Get)
@@ -1310,7 +1310,7 @@ func TestPolicyHandler_NotifiesPollerOnCreate(t *testing.T) {
 	store := newPolicyHandlerStore(t)
 	poller := &recordingNotifier{}
 	scheduler := &recordingNotifier{}
-	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler))
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler, nil))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Post(srv.URL+"/policies", "application/yaml", strings.NewReader(pollPolicyYAMLForHandler))
@@ -1349,7 +1349,7 @@ func TestPolicyHandler_NotifiesSchedulerOnCreate(t *testing.T) {
 	store := newPolicyHandlerStore(t)
 	poller := &recordingNotifier{}
 	scheduler := &recordingNotifier{}
-	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler))
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler, nil))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Post(srv.URL+"/policies", "application/yaml", strings.NewReader(scheduledPolicyYAMLForHandler))
@@ -1388,7 +1388,7 @@ func TestPolicyHandler_NoNotifyForWebhookPolicy(t *testing.T) {
 	store := newPolicyHandlerStore(t)
 	poller := &recordingNotifier{}
 	scheduler := &recordingNotifier{}
-	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler))
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler, nil))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Post(srv.URL+"/policies", "application/yaml", strings.NewReader(webhookPolicyYAMLForHandler))
@@ -1415,7 +1415,7 @@ func TestPolicyHandler_NotifiesPollerOnUpdate(t *testing.T) {
 	testutil.InsertPolicy(t, store, "pol-upd-poll", "my-poll", "poll", pollPolicyYAMLForHandler)
 	poller := &recordingNotifier{}
 	scheduler := &recordingNotifier{}
-	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler))
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler, nil))
 	t.Cleanup(srv.Close)
 
 	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/policies/pol-upd-poll", strings.NewReader(pollPolicyYAMLForHandler))
@@ -1444,7 +1444,7 @@ func TestPolicyHandler_NotifiesOnPauseAndResume(t *testing.T) {
 	testutil.InsertPolicy(t, store, "pol-pr", "my-poll", "poll", pollPolicyYAMLForHandler)
 	poller := &recordingNotifier{}
 	scheduler := &recordingNotifier{}
-	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler))
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler, nil))
 	t.Cleanup(srv.Close)
 
 	// Pause.
@@ -1485,7 +1485,7 @@ func TestPolicyHandler_NotifiesPollerOnDelete(t *testing.T) {
 	testutil.InsertPolicy(t, store, "pol-del-poll", "my-poll", "poll", pollPolicyYAMLForHandler)
 	poller := &recordingNotifier{}
 	scheduler := &recordingNotifier{}
-	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler))
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler, nil))
 	t.Cleanup(srv.Close)
 
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/policies/pol-del-poll", nil)
@@ -1500,6 +1500,130 @@ func TestPolicyHandler_NotifiesPollerOnDelete(t *testing.T) {
 
 	if len(poller.calls()) != 1 || poller.calls()[0] != "pol-del-poll" {
 		t.Errorf("poller.Notify calls = %v, want [pol-del-poll]", poller.calls())
+	}
+	if len(scheduler.calls()) != 0 {
+		t.Errorf("scheduler.Notify called unexpectedly: %v", scheduler.calls())
+	}
+}
+
+const cronPolicyYAMLForHandler = `
+name: my-cron
+trigger:
+  type: cron
+  cron_expr: "0 9 * * 1"
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+capabilities:
+  tools:
+    - tool: srv.check
+agent:
+  task: "cron task"
+`
+
+// TestPolicyHandler_NotifiesCronRunnerOnCreate verifies that creating a cron
+// policy calls cron.Notify exactly once with the new policy ID, and does not
+// call poller.Notify or scheduler.Notify.
+func TestPolicyHandler_NotifiesCronRunnerOnCreate(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	poller := &recordingNotifier{}
+	scheduler := &recordingNotifier{}
+	cron := &recordingNotifier{}
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler, cron))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/policies", "application/yaml", strings.NewReader(cronPolicyYAMLForHandler))
+	if err != nil {
+		t.Fatalf("POST /policies: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+
+	var envelope struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	cronCalls := cron.calls()
+	if len(cronCalls) != 1 {
+		t.Fatalf("cron.Notify called %d times, want 1", len(cronCalls))
+	}
+	if cronCalls[0] != envelope.Data.ID {
+		t.Errorf("cron notified with %q, want %q", cronCalls[0], envelope.Data.ID)
+	}
+	if len(poller.calls()) != 0 {
+		t.Errorf("poller.Notify called %d times, want 0", len(poller.calls()))
+	}
+	if len(scheduler.calls()) != 0 {
+		t.Errorf("scheduler.Notify called %d times, want 0", len(scheduler.calls()))
+	}
+}
+
+// TestPolicyHandler_NotifiesCronRunnerOnUpdate verifies that updating a cron
+// policy calls cron.Notify and does not call poller.Notify or scheduler.Notify.
+func TestPolicyHandler_NotifiesCronRunnerOnUpdate(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	testutil.InsertPolicy(t, store, "pol-upd-cron", "my-cron", "cron", cronPolicyYAMLForHandler)
+	poller := &recordingNotifier{}
+	scheduler := &recordingNotifier{}
+	cron := &recordingNotifier{}
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler, cron))
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/policies/pol-upd-cron", strings.NewReader(cronPolicyYAMLForHandler))
+	req.Header.Set("Content-Type", "application/yaml")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /policies/pol-upd-cron: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	if len(cron.calls()) != 1 || cron.calls()[0] != "pol-upd-cron" {
+		t.Errorf("cron.Notify calls = %v, want [pol-upd-cron]", cron.calls())
+	}
+	if len(poller.calls()) != 0 {
+		t.Errorf("poller.Notify called unexpectedly: %v", poller.calls())
+	}
+	if len(scheduler.calls()) != 0 {
+		t.Errorf("scheduler.Notify called unexpectedly: %v", scheduler.calls())
+	}
+}
+
+// TestPolicyHandler_NotifiesCronRunnerOnDelete verifies that deleting a cron
+// policy calls cron.Notify with the policy ID.
+func TestPolicyHandler_NotifiesCronRunnerOnDelete(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	testutil.InsertPolicy(t, store, "pol-del-cron", "my-cron", "cron", cronPolicyYAMLForHandler)
+	poller := &recordingNotifier{}
+	scheduler := &recordingNotifier{}
+	cron := &recordingNotifier{}
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler, cron))
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/policies/pol-del-cron", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE /policies/pol-del-cron: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+
+	if len(cron.calls()) != 1 || cron.calls()[0] != "pol-del-cron" {
+		t.Errorf("cron.Notify calls = %v, want [pol-del-cron]", cron.calls())
+	}
+	if len(poller.calls()) != 0 {
+		t.Errorf("poller.Notify called unexpectedly: %v", poller.calls())
 	}
 	if len(scheduler.calls()) != 0 {
 		t.Errorf("scheduler.Notify called unexpectedly: %v", scheduler.calls())

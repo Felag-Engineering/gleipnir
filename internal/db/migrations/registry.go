@@ -19,5 +19,6 @@ func All() []Migration {
 		&AddWebhookSecretEncrypted{},
 		&DeleteUserPrefDefaultModel{},
 		&AddRunsVersion{},
+		&AddCronTriggerType{},
 	}
 }

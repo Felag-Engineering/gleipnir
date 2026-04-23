@@ -50,6 +50,7 @@ type RouterConfig struct {
 	PolicyWebhookHandler *PolicyWebhookHandler
 	Poller               PolicyNotifier // notified on poll-trigger policy mutations
 	Scheduler            PolicyNotifier // notified on scheduled-trigger policy mutations
+	Cron                 PolicyNotifier // notified on cron-trigger policy mutations
 	Version              string
 	StartTime            time.Time
 	DBPath               string
@@ -146,7 +147,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 		// Policies, MCP, stats, models, and attention — mounted under /api/v1.
 		policySvc := policy.NewService(cfg.Store, nil, cfg.ProviderRegistry, cfg.ProviderRegistry, cfg.AdminHandler)
-		r.Mount("/api/v1", newAPISubRouter(cfg.Store, policySvc, cfg.Registry, cfg.ModelLister, cfg.ModelFilter, cfg.PolicyWebhookHandler, cfg.Poller, cfg.Scheduler))
+		r.Mount("/api/v1", newAPISubRouter(cfg.Store, policySvc, cfg.Registry, cfg.ModelLister, cfg.ModelFilter, cfg.PolicyWebhookHandler, cfg.Poller, cfg.Scheduler, cfg.Cron))
 
 		// Admin: provider key management, settings, and model configuration.
 		r.Route("/api/v1/admin", func(r chi.Router) {
@@ -198,7 +199,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 // newAPISubRouter builds the sub-router that was previously returned by NewRouter.
 // It is mounted at /api/v1 inside the authenticated group in BuildRouter.
-func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter, policyWebhook *PolicyWebhookHandler, poller, scheduler PolicyNotifier) chi.Router {
+func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter, policyWebhook *PolicyWebhookHandler, poller, scheduler, cron PolicyNotifier) chi.Router {
 	r := chi.NewRouter()
 	r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
 
@@ -211,7 +212,7 @@ func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registr
 	attentionHandler := NewAttentionHandler(store)
 	r.Get("/attention", attentionHandler.Get)
 
-	policies := NewPolicyHandler(store, svc, poller, scheduler)
+	policies := NewPolicyHandler(store, svc, poller, scheduler, cron)
 	r.Route("/policies", func(r chi.Router) {
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/", policies.List)
 		r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/", policies.Create)

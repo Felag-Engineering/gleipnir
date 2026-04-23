@@ -1044,3 +1044,48 @@ agent:
 		})
 	}
 }
+
+func TestParse_CronTrigger(t *testing.T) {
+	raw := `
+name: cron-test
+trigger:
+  type: cron
+  cron_expr: "0 9 * * 1"
+capabilities:
+  tools:
+    - tool: srv.check
+agent:
+  task: cron task
+`
+	p, err := Parse(raw, "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Trigger.Type != model.TriggerTypeCron {
+		t.Errorf("trigger.type = %q, want %q", p.Trigger.Type, model.TriggerTypeCron)
+	}
+	if p.Trigger.CronExpr != "0 9 * * 1" {
+		t.Errorf("trigger.cron_expr = %q, want %q", p.Trigger.CronExpr, "0 9 * * 1")
+	}
+}
+
+func TestParse_CronTrigger_TrimsWhitespace(t *testing.T) {
+	raw := `
+name: cron-whitespace
+trigger:
+  type: cron
+  cron_expr: "  */15 * * * *  "
+capabilities:
+  tools:
+    - tool: srv.check
+agent:
+  task: cron task
+`
+	p, err := Parse(raw, "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Trigger.CronExpr != "*/15 * * * *" {
+		t.Errorf("trigger.cron_expr = %q, want %q (whitespace should be trimmed)", p.Trigger.CronExpr, "*/15 * * * *")
+	}
+}

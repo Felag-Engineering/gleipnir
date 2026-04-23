@@ -97,9 +97,10 @@ describe('yamlToFormState — all trigger types', () => {
     expect(state!.trigger.auth).toBe('none')
   })
 
-  it('defaults cron trigger type to webhook (unsupported trigger type)', () => {
-    const state = yamlToFormState('name: p\ntrigger:\n  type: cron\n  schedule: "0 * * * *"\n')
-    expect(state!.trigger.type).toBe('webhook')
+  it('parses cron trigger type', () => {
+    const state = yamlToFormState('name: p\ntrigger:\n  type: cron\n  cron_expr: "0 9 * * 1"\n')
+    expect(state!.trigger.type).toBe('cron')
+    expect((state!.trigger as { cronExpr: string }).cronExpr).toBe('0 9 * * 1')
   })
 
   it('parses poll trigger with checks', () => {

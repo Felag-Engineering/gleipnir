@@ -65,7 +65,7 @@ CREATE INDEX idx_mcp_tools_server_id ON mcp_tools(server_id);
 CREATE TABLE policies (
     id              TEXT    PRIMARY KEY,  -- ULID
     name            TEXT    NOT NULL UNIQUE,
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll', 'cron')),
     yaml            TEXT    NOT NULL,
     -- Encrypted webhook shared secret (AES-256-GCM, key from GLEIPNIR_ENCRYPTION_KEY).
     -- Stored outside yaml because yaml is returned wholesale via GET /api/v1/policies/:id — see ADR-034.
@@ -109,7 +109,7 @@ CREATE TABLE runs (
                         'failed',
                         'interrupted'
                     )),
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll', 'cron')),
     trigger_payload TEXT    NOT NULL,     -- JSON blob
     started_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     completed_at    TEXT,                 -- nullable, ISO 8601 UTC
@@ -301,7 +301,7 @@ CREATE TABLE user_roles (
 CREATE TABLE trigger_queue (
     id              TEXT    PRIMARY KEY,  -- ULID
     policy_id       TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll', 'cron')),
     trigger_payload TEXT    NOT NULL,     -- JSON blob
     position        INTEGER NOT NULL,     -- monotonically increasing per-policy ordering
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC

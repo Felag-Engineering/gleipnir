@@ -69,6 +69,15 @@ export function validateFormState(state: FormState): FormIssue[] {
     }
   }
 
+  if (trigger.type === 'cron') {
+    if (trigger.cronExpr.trim() === '') {
+      add('trigger.cron_expr', 'trigger.cron_expr is required for cron triggers')
+    }
+    // Full cron syntax validation lives on the backend (robfig/cron);
+    // the client only checks for presence so server-side errors on the
+    // same field collapse into a single message in the ErrorBanner.
+  }
+
   if (trigger.type === 'poll') {
     const poll = trigger as PollTriggerState
     const intervalMs = parseGoDuration(poll.interval)

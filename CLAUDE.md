@@ -58,13 +58,14 @@ See `frontend/CLAUDE.md` for detailed frontend architecture (routes, design syst
 
 **Agent** — a run scoped to a specific policy. Tools not granted to a run are never registered with the agent; they do not exist from the agent's perspective.
 
-**Policy** — YAML config defining trigger, agent task prompt, capability grants, and limits. Four trigger types: `webhook`, `manual`, `scheduled`, `poll`.
+**Policy** — YAML config defining trigger, agent task prompt, capability grants, and limits. Five trigger types: `webhook`, `manual`, `scheduled`, `poll`, `cron`.
 
 **Trigger types:**
 - `webhook` — HTTP POST to `/api/v1/webhooks/{policyID}` fires a run
 - `manual` — operator triggers a run from the UI or API
-- `scheduled` — one-shot runs at specific ISO-8601 timestamps (defined via `fire_at` list in policy YAML; not recurring cron)
+- `scheduled` — one-shot runs at specific ISO-8601 timestamps (defined via `fire_at` list in policy YAML; auto-pauses when exhausted)
 - `poll` — recurring polling with MCP tool invocations and JSONPath condition checks
+- `cron` — recurring runs on a 5-field POSIX cron expression (`cron_expr`); runs indefinitely until paused
 
 **Capabilities** — two categories, tracked in Gleipnir's own DB (not in MCP servers):
 - `tool` — MCP tools the agent can call, optionally approval-gated, optionally parameter-scoped (ADR-017)
@@ -118,7 +119,7 @@ internal/
   sse/                — Server-Sent Events broadcaster
   testutil/           — shared test helpers
   timeout/            — generic scan-and-resolve loop for expiring requests (used by approval/ and feedback/)
-  trigger/            — trigger dispatch only: webhook, manual, scheduled, and poll handlers (imports run/ for launching)
+  trigger/            — trigger dispatch only: webhook, manual, scheduled, poll, and cron handlers (imports run/ for launching)
 ```
 
 **ADRs:** Architectural decisions are referenced in docs/ADR_Tracker.md, decisions should be tracked there and this document should be updated anytime architectural decisions are made. Do not reference in source code but do reference in commit messages and PR messages.

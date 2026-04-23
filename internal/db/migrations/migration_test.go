@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -51,7 +52,6 @@ func TestAllMigrationsIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	for _, m := range migrations.All() {
-		m := m // capture for parallel sub-test
 		t.Run(m.Name(), func(t *testing.T) {
 			t.Parallel()
 			db := openTestDB(t)
@@ -87,6 +87,33 @@ func TestAllMigrationsOrdered(t *testing.T) {
 	if count != 1 {
 		t.Errorf("schema_migrations version 1 row missing after migrations")
 	}
+}
+
+// TestFKToggleMigrationUpError verifies that when a FK-toggling migration's
+// Up() returns an error the runner does not deadlock. The pool is capped at
+// MaxOpenConns(1); without an explicit rollback before re-enabling FK the
+// runner's db.ExecContext("PRAGMA foreign_keys=ON") would wait forever for a
+// connection the open transaction is holding.
+func TestFKToggleMigrationUpError(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyInitialSchema(t, db)
+
+	boom := &failingFKMigration{}
+	err := migrations.Apply(ctx, db, []migrations.Migration{boom}, nil)
+	if err == nil {
+		t.Fatal("expected Apply to return an error, got nil")
+	}
+}
+
+// failingFKMigration is a FK-toggle migration whose Up() always fails.
+type failingFKMigration struct{}
+
+func (m *failingFKMigration) Version() int                 { return 999 }
+func (m *failingFKMigration) Name() string                 { return "failing_fk_migration" }
+func (m *failingFKMigration) RequiresForeignKeysOff() bool { return true }
+func (m *failingFKMigration) Up(_ context.Context, _ *sql.Tx) error {
+	return errors.New("intentional failure")
 }
 
 // TestDeleteUserPrefDefaultModel verifies that the migration removes only
