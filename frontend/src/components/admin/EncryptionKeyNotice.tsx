@@ -1,4 +1,4 @@
-import { ShieldAlert } from 'lucide-react'
+import { AlertTriangle } from 'lucide-react'
 import styles from './EncryptionKeyNotice.module.css'
 
 /**
@@ -10,20 +10,18 @@ import styles from './EncryptionKeyNotice.module.css'
  */
 export function EncryptionKeyNotice() {
   return (
-    <div className={styles.banner}>
-      <div className={styles.titleRow}>
-        <ShieldAlert size={16} strokeWidth={1.5} />
-        <span className={styles.title}>Encryption key protects stored credentials</span>
+    <div className={styles.banner} role="alert">
+      <AlertTriangle size={20} strokeWidth={1.5} className={styles.icon} aria-hidden="true" />
+      <div className={styles.content}>
+        <p className={styles.primary}>
+          Back up <code>GLEIPNIR_ENCRYPTION_KEY</code> in a password manager or secrets vault.
+        </p>
+        <p className={styles.body}>
+          Provider API keys and webhook secrets are encrypted with this key. If it is lost, every
+          credential stored in the database becomes permanently unrecoverable.
+        </p>
+        <p className={styles.footnote}>Key rotation is not supported in v1.0 — see Operations docs.</p>
       </div>
-      <p className={styles.body}>
-        Provider API keys and webhook secrets are encrypted with the server's{' '}
-        <code>GLEIPNIR_ENCRYPTION_KEY</code>. If that key is lost, every credential stored in
-        the database becomes permanently unrecoverable. Back it up in a password manager or
-        secrets vault.
-      </p>
-      <p className={styles.footnote}>
-        Key rotation is not supported in v1.0 — see Operations docs.
-      </p>
     </div>
   )
 }

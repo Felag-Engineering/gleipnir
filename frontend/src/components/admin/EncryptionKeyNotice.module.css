@@ -1,24 +1,44 @@
 .banner {
   composes: alertWarning from '../../styles/alerts.module.css';
-}
-
-.titleRow {
   display: flex;
-  align-items: center;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+
+.icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-2);
+  min-width: 0;
 }
 
-.title {
-  font-size: var(--text-sm);
+/* font-size override is required: the alertWarning base class sets
+   font-size: var(--text-sm) on the banner, which cascades into child <p>
+   elements. Without this explicit override, the primary line would inherit
+   --text-sm and the visual hierarchy fix would not take effect. */
+.primary {
+  font-size: var(--text-base);
   font-weight: var(--weight-semibold);
+  margin: 0;
+  line-height: 1.4;
 }
 
+/* margin: 0 on all paragraphs so vertical spacing comes only from the
+   container gap, preventing browser default paragraph margins from
+   doubling up with gap and breaking the 4px grid. */
 .body {
-  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  margin: 0;
+  opacity: 0.9;
 }
 
 .footnote {
-  margin-top: var(--space-2);
   font-size: var(--text-xs);
+  margin: 0;
   opacity: 0.75;
 }
