@@ -272,6 +272,29 @@ fails). An idle watchdog aborts and reconnects the stream if no bytes (including
 on mobile / VPN paths. This addendum does not supersede ADR-016; it documents the
 client-side contract the Go handler already implements.
 
+**Addendum (2026-04): Drop observability and buffer sizing**
+
+When a subscriber's per-client channel buffer is full, the broadcaster drops the event for
+that subscriber rather than blocking delivery to all other subscribers. This is a hard
+guarantee, not a best-effort hint. The new counter `gleipnir_sse_events_dropped_total`
+(no labels, matching the unlabelled style of `gleipnir_approval_timeouts_total`) is the
+production signal for undersized buffers. A sustained non-zero rate means clients are
+receiving events faster than they can drain their channel and the defaults should be raised.
+
+The documented recovery path for a client that missed events is automatic. On reconnect the
+frontend sends `Last-Event-ID` and the server's `Replay` method returns every buffered event
+with a higher id. Per-route REST queries (`useRuns`, `useRunDetail`, `useRunSteps`, etc.)
+invalidate on each SSE event via TanStack Query and act as a reconciliation layer when the
+replay window is exceeded — the UI re-fetches current state and converges even if some events
+were dropped and the ring buffer has already overwritten them.
+
+Default buffer sizes were raised to 256 per-subscriber and 2048 ring (from 64 and 512
+respectively). The original defaults were chosen before per-step event streaming; under load
+they dropped too readily. These are code defaults, not env vars, to keep the operational
+surface small. `WithChannelSize` and `WithRingSize` remain the escape hatch for tests and
+future tuning without adding `GLEIPNIR_SSE_*` environment variables that have no concrete
+per-deployment need today.
+
 ---
 
 ## ADR-017: Policy-level parameter scoping for MCP tools
