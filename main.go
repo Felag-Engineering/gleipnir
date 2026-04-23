@@ -13,19 +13,17 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/admin"
-	"github.com/rapp992/gleipnir/internal/http/api"
-	"github.com/rapp992/gleipnir/internal/http/auth"
 	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/db"
 	runpkg "github.com/rapp992/gleipnir/internal/execution/run"
+	"github.com/rapp992/gleipnir/internal/http/api"
+	"github.com/rapp992/gleipnir/internal/http/auth"
+	"github.com/rapp992/gleipnir/internal/http/sse"
 	"github.com/rapp992/gleipnir/internal/llm"
-	anthropicllm "github.com/rapp992/gleipnir/internal/llm/anthropic"
-	googlellm "github.com/rapp992/gleipnir/internal/llm/google"
-	openaillm "github.com/rapp992/gleipnir/internal/llm/openai"
+	llmfactory "github.com/rapp992/gleipnir/internal/llm/factory"
 	openaicompatllm "github.com/rapp992/gleipnir/internal/llm/openaicompat"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/policy"
-	"github.com/rapp992/gleipnir/internal/http/sse"
 	"github.com/rapp992/gleipnir/internal/timeout"
 	"github.com/rapp992/gleipnir/internal/trigger"
 )
@@ -122,20 +120,9 @@ func run(cfg config.Config) error {
 	// configureProvider creates an LLM client and registers it in the provider
 	// registry. Called both at bootstrap (from DB) and when an admin saves a key.
 	configureProvider := func(ctx context.Context, provider string, apiKey string) error {
-		var client llm.LLMClient
-		var err error
-		switch provider {
-		case "anthropic":
-			client = anthropicllm.NewClient(apiKey)
-		case "google":
-			client, err = googlellm.NewClient(ctx, apiKey)
-			if err != nil {
-				return fmt.Errorf("create google client: %w", err)
-			}
-		case "openai":
-			client = openaillm.NewClient(apiKey)
-		default:
-			return fmt.Errorf("unknown provider %q", provider)
+		client, err := llmfactory.NewClientForProvider(ctx, provider, apiKey)
+		if err != nil {
+			return err
 		}
 		providerRegistry.Register(provider, client)
 		return nil

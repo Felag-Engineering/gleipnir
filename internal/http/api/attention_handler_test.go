@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/http/api"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/http/api"
 	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
