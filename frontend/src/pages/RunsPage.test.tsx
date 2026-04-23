@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
@@ -7,16 +7,26 @@ import React from 'react'
 import RunsPage from './RunsPage'
 import { computePageNumbers } from '@/utils/pagination'
 import type { ApiRun, ApiPolicyListItem } from '@/api/types'
+import type { AttentionItem } from '@/hooks/useAttentionItems'
 
 // --- Mocks ---
 
 vi.mock('@/hooks/queries/runs')
 vi.mock('@/hooks/queries/policies')
+vi.mock('@/hooks/useAttentionItems')
 
 import { useRuns } from '@/hooks/queries/runs'
 import { usePolicies } from '@/hooks/queries/policies'
+import { useAttentionItems } from '@/hooks/useAttentionItems'
 
 // --- Helpers ---
+
+const DEFAULT_ATTENTION_RETURN = {
+  items: [],
+  count: 0,
+  isLoading: false,
+  dismissFailure: vi.fn(),
+}
 
 function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -86,6 +96,8 @@ function mockPending() {
     data: undefined,
     status: 'pending',
   } as ReturnType<typeof usePolicies>)
+
+  vi.mocked(useAttentionItems).mockReturnValue(DEFAULT_ATTENTION_RETURN)
 }
 
 function mockLoaded(runs: ApiRun[], total?: number, policies?: ApiPolicyListItem[]) {
@@ -100,6 +112,8 @@ function mockLoaded(runs: ApiRun[], total?: number, policies?: ApiPolicyListItem
     data: policies ?? [makePolicy()],
     status: 'success',
   } as ReturnType<typeof usePolicies>)
+
+  vi.mocked(useAttentionItems).mockReturnValue(DEFAULT_ATTENTION_RETURN)
 }
 
 function mockError() {
@@ -114,6 +128,8 @@ function mockError() {
     data: undefined,
     status: 'pending',
   } as ReturnType<typeof usePolicies>)
+
+  vi.mocked(useAttentionItems).mockReturnValue(DEFAULT_ATTENTION_RETURN)
 }
 
 // --- Tests ---
@@ -227,7 +243,7 @@ describe('RunsPage — filters', () => {
     expect(screen.getByRole('radio', { name: 'Complete' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Running' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Failed' })).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'Approval' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /needs approval/i })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'All' })).toHaveAttribute('aria-checked', 'true')
   })
 
@@ -319,6 +335,68 @@ describe('RunsPage — stats subtitle', () => {
     mockLoaded([])
     renderPage()
     expect(screen.queryByText(/\d+ runs?/)).not.toBeInTheDocument()
+  })
+})
+
+// --- Needs Approval chip badge ---
+
+function makeApprovalItem(overrides?: Partial<AttentionItem>): AttentionItem {
+  return {
+    type: 'approval',
+    request_id: 'req-001',
+    run_id: 'run-001',
+    policy_id: 'p1',
+    policy_name: 'My Policy',
+    tool_name: 'some_tool',
+    message: 'Approve?',
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    created_at: new Date().toISOString(),
+    sortKey: 0,
+    ...overrides,
+  }
+}
+
+describe('RunsPage — Needs Approval chip', () => {
+  it('renders the label without a count badge when there are no pending approvals', () => {
+    // mockLoaded sets the default (empty) attention return, which is what we want here
+    mockLoaded([makeRun()])
+    renderPage()
+
+    const chip = screen.getByRole('radio', { name: /needs approval/i })
+    expect(chip).toBeInTheDocument()
+    // No numeric badge inside the chip
+    expect(within(chip).queryByText(/^\d+$/)).toBeNull()
+  })
+
+  it('shows a badge with the count and updates aria-label when there are 3 pending approvals', () => {
+    const approvalItems = [makeApprovalItem(), makeApprovalItem({ request_id: 'req-002' }), makeApprovalItem({ request_id: 'req-003' })]
+    // Call mockLoaded first (it sets the default attention mock), then override with pending items
+    mockLoaded([makeRun()])
+    vi.mocked(useAttentionItems).mockReturnValue({ items: approvalItems, count: 3, isLoading: false, dismissFailure: vi.fn() })
+    renderPage()
+
+    // aria-label includes the count for screen readers
+    const chip = screen.getByRole('radio', { name: /needs approval, 3 pending/i })
+    expect(chip).toBeInTheDocument()
+    // Visual badge text is present inside the button
+    expect(within(chip).getByText('3')).toBeInTheDocument()
+  })
+
+  it('excludes feedback and failure items from the badge count', () => {
+    const items: AttentionItem[] = [
+      makeApprovalItem({ request_id: 'req-001' }),
+      makeApprovalItem({ request_id: 'req-002' }),
+      { ...makeApprovalItem(), type: 'feedback', request_id: 'req-003' },
+      { ...makeApprovalItem(), type: 'failure', request_id: 'req-004' },
+    ]
+    // Call mockLoaded first (it sets the default attention mock), then override with mixed items
+    mockLoaded([makeRun()])
+    vi.mocked(useAttentionItems).mockReturnValue({ items, count: 4, isLoading: false, dismissFailure: vi.fn() })
+    renderPage()
+
+    // Only the 2 approval items count — badge reads "2", not "4"
+    const chip = screen.getByRole('radio', { name: /needs approval, 2 pending/i })
+    expect(within(chip).getByText('2')).toBeInTheDocument()
   })
 })
 
