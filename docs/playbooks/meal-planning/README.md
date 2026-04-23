@@ -4,7 +4,7 @@
 
 ## What it does
 
-On a weekly scheduled trigger, this agent reads the next 7 days of your Google Calendar via `gcal.list_events` and identifies evenings that do not already have a `dinner:` event. For each empty slot it selects a recipe from TheMealDB — a free public recipe database — by calling `fetch.fetch_json` against `https://www.themealdb.com/api/json/v1/1/`. It parses the returned JSON (meal name, instructions, and up to 20 ingredient/measure pairs), avoids repeating a recipe within the same week, aggregates all ingredients into a single deduplicated grocery list, and then creates one Google Keep note titled `Grocery list — week of <YYYY-MM-DD>` via `keep.create_note`. If the agent is unsure which calendar to read or encounters an unexpected dietary constraint, it pauses the run and asks you via the feedback channel before proceeding.
+On a weekly scheduled trigger, this agent reads the next 7 days of your Google Calendar via `gcal.list_events` and identifies evenings that do not already have a `dinner:` event. For each empty slot it searches your local [Mealie](https://mealie.io) instance for a recipe via `mealie.get_recipes` and retrieves full ingredient details via `mealie.get_recipe_detailed`, avoiding repeating a recipe within the same week. It aggregates all ingredients into a single deduplicated grocery list and then creates one Google Keep note titled `Grocery list — week of <YYYY-MM-DD>` via `keep.create_note`. If the agent is unsure which calendar to read or encounters an unexpected dietary constraint, it pauses the run and asks you via the feedback channel before proceeding.
 
 ## Prerequisites
 
@@ -18,10 +18,8 @@ On a weekly scheduled trigger, this agent reads the next 7 days of your Google C
 | Server | Purpose | Source | Auth |
 |--------|---------|--------|------|
 | `gcal-mcp` | Read Google Calendar events | [nspady/google-calendar-mcp](https://github.com/nspady/google-calendar-mcp) | Google OAuth — Desktop app credentials JSON |
-| `fetch-mcp` | Generic HTTP fetch (calls TheMealDB REST API) | [zcaceres/fetch-mcp](https://github.com/zcaceres/fetch-mcp) | None |
+| `mealie-mcp` | Search and retrieve recipes from Mealie | [that0n3guy/mealie-mcp-server-ts](https://github.com/that0n3guy/mealie-mcp-server-ts) | Mealie API key |
 | `keep-mcp` | Create Google Keep notes | [feuerdev/keep-mcp](https://github.com/feuerdev/keep-mcp) | Google master token (see below) |
-
-[TheMealDB](https://www.themealdb.com/api.php) exposes a free public REST endpoint at `v1/1/` that requires no API key. The `fetch-mcp` server's `fetch_json` tool is used to call it — no dedicated recipe MCP server is required.
 
 ## Step 1 — Get your credentials
 
@@ -65,9 +63,19 @@ The two environment variables `keep-mcp` expects are:
 - `GOOGLE_EMAIL` — your Google account email address.
 - `GOOGLE_MASTER_TOKEN` — the master token obtained above.
 
-### Fetch server
+### Mealie API key
 
-`fetch-mcp` requires no credentials. TheMealDB's free tier (`v1/1/`) is unauthenticated.
+`mealie-mcp` connects to your self-hosted Mealie instance using an API key.
+
+1. Log in to your Mealie instance as an admin.
+2. Go to **Profile → API Tokens → Generate**.
+3. Give the token a name (e.g. `gleipnir`) and click **Generate**.
+4. Copy the token — it is shown only once.
+
+The two environment variables `mealie-mcp` expects are:
+
+- `MEALIE_BASE_URL` — the base URL of your Mealie instance, e.g. `http://mealie:9000` or `http://192.168.1.10:9000`. No trailing slash.
+- `MEALIE_API_KEY` — the API token generated above.
 
 ## Step 2 — Create .env
 
@@ -76,6 +84,8 @@ Create a file named `.env` inside `docs/playbooks/meal-planning/` — **the same
 ```
 GOOGLE_EMAIL=you@example.com
 GOOGLE_MASTER_TOKEN=<paste master token here>
+MEALIE_BASE_URL=http://<mealie-host>:<port>
+MEALIE_API_KEY=<paste Mealie API token here>
 ```
 
 `gcp-oauth.keys.json` is a file mount, not an environment variable — it does not go in `.env`.
@@ -101,7 +111,7 @@ All three should show `Up` status. If any show `Exited`, check the logs:
 
 ```bash
 docker compose logs gcal-mcp
-docker compose logs fetch-mcp
+docker compose logs mealie-mcp
 docker compose logs keep-mcp
 ```
 
@@ -114,12 +124,12 @@ In Gleipnir, go to **Settings → MCP Servers → Add Server** three times:
 | Name | URL (same Compose project) | URL (separate host) |
 |------|---------------------------|---------------------|
 | `gcal` | `http://gcal-mcp:8101/` | `http://<GLEIPNIR_HOST>:8101/` |
-| `fetch` | `http://fetch-mcp:8102/` | `http://<GLEIPNIR_HOST>:8102/` |
+| `mealie` | `http://mealie-mcp:8102/` | `http://<GLEIPNIR_HOST>:8102/` |
 | `keep` | `http://keep-mcp:8103/` | `http://<GLEIPNIR_HOST>:8103/` |
 
-Use the **service name** as the hostname (`gcal-mcp`, `fetch-mcp`, `keep-mcp`) when Gleipnir and the MCP servers are on the same Docker Compose network. Use the host IP or hostname and port numbers when they are on different hosts or Compose projects.
+Use the **service name** as the hostname (`gcal-mcp`, `mealie-mcp`, `keep-mcp`) when Gleipnir and the MCP servers are on the same Docker Compose network. Use the host IP or hostname and port numbers when they are on different hosts or Compose projects.
 
-After adding each server, click **Discover**. Note the exact tool names returned — the policy YAML below references `gcal.list_events`, `fetch.fetch_json`, and `keep.create_note`. If Discover returns different names, update the `tool:` entries in the policy YAML to match before saving.
+After adding each server, click **Discover**. Note the exact tool names returned — the policy YAML below references `gcal.list_events`, `mealie.get_recipes`, `mealie.get_recipe_detailed`, and `keep.create_note`. If Discover returns different names, update the `tool:` entries in the policy YAML to match before saving.
 
 ## Step 5 — Create the policy
 
@@ -150,7 +160,8 @@ trigger:
 capabilities:
   tools:
     - tool: gcal.list_events
-    - tool: fetch.fetch_json
+    - tool: mealie.get_recipes
+    - tool: mealie.get_recipe_detailed
     - tool: keep.create_note
       approval: required
       timeout: 30m
@@ -164,20 +175,17 @@ agent:
   task: |
     For each evening in the next 7 days starting tomorrow, check
     <YOUR_CALENDAR_ID> via gcal.list_events for an event whose
-    title begins with "dinner:". For evenings without one, pick
-    a recipe using TheMealDB's free public API by calling
-    fetch.fetch_json with one of:
-      - https://www.themealdb.com/api/json/v1/1/random.php
-      - https://www.themealdb.com/api/json/v1/1/search.php?s=<name>
-      - https://www.themealdb.com/api/json/v1/1/lookup.php?i=<id>
-    Parse the JSON response (meals[0].strMeal, .strInstructions,
-    and strIngredient1..20 / strMeasure1..20). Avoid repeating a
-    recipe within the same week.
+    title begins with "dinner:". For evenings without one, select
+    a recipe from the Mealie library:
+      1. Call mealie.get_recipes to list available recipes.
+      2. Call mealie.get_recipe_detailed for the chosen recipe to
+         retrieve its full ingredient list and quantities.
+    Avoid repeating a recipe within the same week.
 
-    When you have a full list, aggregate ingredients across all
-    chosen recipes into a single grocery list (deduplicated,
-    quantities summed where possible). Create a Google Keep
-    note via keep.create_note titled
+    When you have recipes for all empty slots, aggregate the
+    ingredients across all recipes into a single grocery list
+    (deduplicated, quantities summed where possible). Create a
+    Google Keep note via keep.create_note titled
     "<GROCERY_NOTE_TITLE_PREFIX> <Monday of the week, YYYY-MM-DD>"
     with the grocery list as the body and the chosen recipes
     (with dates) as a header section.
@@ -194,7 +202,7 @@ agent:
 **Why these choices:**
 
 - `trigger.type: scheduled` with `fire_at` is a list of one-shot ISO-8601 UTC timestamps. Add a new timestamp each week (or each month in advance) to keep it running. There is no recurring cron; when all timestamps are consumed the policy is automatically paused.
-- Only `keep.create_note` is approval-gated. Calendar reads and TheMealDB fetches are read-only and do not require approval. The operator approves the Keep write before it executes, giving a final review of the grocery list.
+- Only `keep.create_note` is approval-gated. Calendar reads and Mealie recipe lookups are read-only and do not require approval. The operator approves the Keep write before it executes, giving a final review of the grocery list.
 - `feedback.enabled: true` gives the agent `gleipnir.ask_operator` (ADR-031) to handle dietary questions or calendar ambiguity without failing the run.
 - Tools not listed in `capabilities.tools` are not registered with the agent at all — they literally do not exist from the agent's perspective (ADR-001).
 
@@ -214,6 +222,7 @@ Once you have confirmed the agent produces a correct grocery list, update the sc
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Discover returns 0 tools for `gcal-mcp` | `gcp-oauth.keys.json` not mounted or missing | Confirm the file exists at `docs/playbooks/meal-planning/gcp-oauth.keys.json` and the Compose volume mount path matches. |
+| Discover returns 0 tools for `mealie-mcp` | `MEALIE_BASE_URL` or `MEALIE_API_KEY` not set, or Mealie unreachable | Check that `.env` is in the same directory as `docker-compose.yml`. Verify Mealie is reachable from the Docker host: `curl $MEALIE_BASE_URL/api/app/about`. |
 | Discover returns 0 tools for `keep-mcp` | `GOOGLE_EMAIL` or `GOOGLE_MASTER_TOKEN` not set | Check that `.env` is in the same directory as `docker-compose.yml` and both variables are present. |
 | `gcal-mcp` tools fail with `-32600` or authentication errors | Refresh token missing or expired | Re-run the ephemeral auth container: `docker run --rm -it ... npx @cocal/google-calendar-mcp auth` (full command in Step 1). |
 | Google Calendar tokens expire after 7 days | GCP app is in "test mode" | Publish the OAuth consent screen to production mode, or re-run auth weekly. |

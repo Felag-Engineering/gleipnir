@@ -25,16 +25,19 @@ services:
       - gcal_tokens:/root/.config/google-calendar-mcp
     restart: unless-stopped
 
-  # Generic HTTP fetch MCP server — used to call TheMealDB's free REST API.
-  # Repo: https://github.com/zcaceres/fetch-mcp
-  fetch-mcp:
+  # Mealie MCP server — reads recipes from your local Mealie instance.
+  # Repo: https://github.com/that0n3guy/mealie-mcp-server-ts
+  mealie-mcp:
     image: node:22-alpine
     command: >
       npx -y supergateway
       --port 8102
-      --stdio "npx -y mcp-fetch-server"
+      --stdio "npx -y mealie-mcp-server-ts"
     ports:
       - "8102:8102"
+    environment:
+      - MEALIE_BASE_URL=${MEALIE_BASE_URL}
+      - MEALIE_API_KEY=${MEALIE_API_KEY}
     restart: unless-stopped
 
   # Google Keep MCP server — creates grocery list notes.
