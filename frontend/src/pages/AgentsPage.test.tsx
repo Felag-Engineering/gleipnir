@@ -28,6 +28,9 @@ const POLICIES: ApiPolicyListItem[] = [
   },
 ]
 
+const STUB_MODEL_RESPONSE = [{ provider: 'anthropic', models: [{ name: 'm1', display_name: 'Claude' }] }]
+const STUB_SERVER_RESPONSE = [{ id: 's1', name: 'my-server', url: 'http://localhost:9000', tool_count: 1 }]
+
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
@@ -49,6 +52,8 @@ describe('AgentsPage', () => {
         await delay(200)
         return HttpResponse.json({ data: POLICIES })
       }),
+      http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
+      http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: STUB_SERVER_RESPONSE })),
     )
 
     const qc = makeClient()
@@ -62,11 +67,11 @@ describe('AgentsPage', () => {
     await waitFor(() => expect(screen.getByText('vikunja-triage')).toBeInTheDocument())
   })
 
-  it('shows empty state when no agents exist', async () => {
+  it('shows default empty state when no agents exist (model and server configured)', async () => {
     server.use(
-      http.get('/api/v1/policies', () => {
-        return HttpResponse.json({ data: [] })
-      }),
+      http.get('/api/v1/policies', () => HttpResponse.json({ data: [] })),
+      http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
+      http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: STUB_SERVER_RESPONSE })),
     )
 
     const qc = makeClient()
@@ -84,11 +89,45 @@ describe('AgentsPage', () => {
     expect(ctaToNew).toBe(true)
   })
 
+  it('shows "Start by adding a model API key" empty state when no model is configured', async () => {
+    server.use(
+      http.get('/api/v1/policies', () => HttpResponse.json({ data: [] })),
+      http.get('/api/v1/models', () =>
+        HttpResponse.json({ data: [{ provider: 'anthropic', models: [] }] }),
+      ),
+      http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: [] })),
+    )
+
+    const qc = makeClient()
+    renderPage(qc)
+
+    await waitFor(() => {
+      expect(screen.getByText('Start by adding a model API key')).toBeInTheDocument()
+    })
+    expect(screen.getByRole('link', { name: 'Go to Models' })).toHaveAttribute('href', '/admin/models')
+  })
+
+  it('shows "Add an MCP server" empty state when model is set but no server', async () => {
+    server.use(
+      http.get('/api/v1/policies', () => HttpResponse.json({ data: [] })),
+      http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
+      http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: [] })),
+    )
+
+    const qc = makeClient()
+    renderPage(qc)
+
+    await waitFor(() => {
+      expect(screen.getByText('Add an MCP server to give agents tools')).toBeInTheDocument()
+    })
+    expect(screen.getByRole('link', { name: 'Go to Tools' })).toHaveAttribute('href', '/tools')
+  })
+
   it('edit button links to /agents/:id (editor)', async () => {
     server.use(
-      http.get('/api/v1/policies', () => {
-        return HttpResponse.json({ data: POLICIES })
-      }),
+      http.get('/api/v1/policies', () => HttpResponse.json({ data: POLICIES })),
+      http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
+      http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: STUB_SERVER_RESPONSE })),
     )
 
     const qc = makeClient()
@@ -102,9 +141,9 @@ describe('AgentsPage', () => {
 
   it('"New Agent" button in header links to /agents/new', async () => {
     server.use(
-      http.get('/api/v1/policies', () => {
-        return HttpResponse.json({ data: POLICIES })
-      }),
+      http.get('/api/v1/policies', () => HttpResponse.json({ data: POLICIES })),
+      http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
+      http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: STUB_SERVER_RESPONSE })),
     )
 
     const qc = makeClient()
@@ -122,6 +161,8 @@ describe('AgentsPage', () => {
       http.get('/api/v1/policies', () => {
         return HttpResponse.json({ error: 'internal server error' }, { status: 500 })
       }),
+      http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
+      http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: STUB_SERVER_RESPONSE })),
     )
 
     const qc = makeClient()
@@ -144,6 +185,8 @@ describe('AgentsPage', () => {
         }
         return HttpResponse.json({ data: POLICIES })
       }),
+      http.get('/api/v1/models', () => HttpResponse.json({ data: STUB_MODEL_RESPONSE })),
+      http.get('/api/v1/mcp/servers', () => HttpResponse.json({ data: STUB_SERVER_RESPONSE })),
     )
 
     const qc = makeClient()
