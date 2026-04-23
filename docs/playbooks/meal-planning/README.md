@@ -4,7 +4,7 @@
 
 ## What it does
 
-On a weekly cron trigger, this agent reads the next 7 days of your Google Calendar via `gcal.list_events` and identifies evenings that do not already have a dinner planned (any event whose title contains "dinner", "supper", or similar). For each empty slot it picks a recipe from your local [Mealie](https://mealie.io) instance via `mealie.get_recipes` and `mealie.get_recipe_detailed`, avoiding repeating a recipe within the same week. Once all slots are filled, it creates the week's meal plan in Mealie via `mealie.create_mealplan_bulk`. If the agent is unsure which calendar to read or encounters an unexpected dietary constraint, it pauses the run and asks you via the feedback channel before proceeding.
+On a weekly cron trigger, this agent reads the next 7 days of your Google Calendar via `gcal.list_events` and identifies evenings that do not already have a dinner planned (any event whose title contains "dinner", "supper", or similar). For each empty slot it picks a recipe from your local [Mealie](https://mealie.io) instance via `mealie.get_recipes`, avoiding repeating a recipe within the same week. Once all slots are filled, it creates the week's meal plan in Mealie via `mealie.create_mealplan_bulk`. If the agent is unsure which calendar to read or encounters an unexpected dietary constraint, it pauses the run and asks you via the feedback channel before proceeding.
 
 ## Prerequisites
 
@@ -182,6 +182,7 @@ agent:
 - `trigger.type: cron` with `cron_expr: "0 9 * * 0"` fires every Sunday at 09:00 UTC and runs indefinitely until the policy is paused. Adjust the time component to match your timezone offset (e.g. `0 17 * * 0` for 09:00 PT / UTC-8). The policy never auto-pauses — pause or delete it when you no longer want weekly runs.
 - Only `mealie.create_mealplan_bulk` is approval-gated — it is the only write operation. Calendar reads and recipe lookups are read-only and do not require approval. The operator approves the meal plan before it is written, giving a final review of the week's choices.
 - `feedback.enabled: true` gives the agent `gleipnir.ask_operator` (ADR-031) to handle dietary questions or calendar ambiguity without failing the run.
+- `concurrency: skip` prevents a second run from starting if the Sunday trigger fires while a previous run is still waiting for approval. Without it, two runs could race to write conflicting meal plans to Mealie.
 - Tools not listed in `capabilities.tools` are not registered with the agent at all — they literally do not exist from the agent's perspective (ADR-001).
 
 ## Step 6 — Trigger a test run
@@ -247,7 +248,7 @@ This requires no additional tools or capabilities — the calendar data is alrea
 | Discover returns 0 tools for `mealie-mcp` | `MEALIE_BASE_URL` or `MEALIE_API_KEY` not set, or Mealie unreachable | Check that `.env` is in the same directory as `docker-compose.yml`. Verify Mealie is reachable from the Docker host: `curl $MEALIE_BASE_URL/api/app/about`. |
 | `gcal-mcp` tools fail with authentication errors | Refresh token missing or expired | Re-run the ephemeral auth container: `docker run --rm -it ... npx @cocal/google-calendar-mcp auth` (full command in Step 1). |
 | Google Calendar tokens expire after 7 days | GCP app is in "test mode" | Publish the OAuth consent screen to production mode, or re-run auth weekly. |
-| `mealie.create_mealplan_bulk` fails | Recipe ID not found, or date format wrong | Check Discover output for the exact tool parameter schema. Verify the recipe IDs returned by `get_recipe_detailed` are being passed through correctly. |
+| `mealie.create_mealplan_bulk` fails | Recipe ID not found, or date format wrong | Check Discover output for the exact tool parameter schema. Verify the recipe IDs returned by `mealie.get_recipes` are being passed through correctly. |
 | `.env` variables are not applied | `.env` is in the wrong directory | The file must be in `docs/playbooks/meal-planning/`, the same directory where you run `docker compose up`. |
 | `docker compose down -v` deleted my Calendar tokens | `-v` flag removes all named volumes including `gcal_tokens` | Use `docker compose down` (without `-v`) to stop services without removing volumes. Re-run auth if tokens were deleted. |
 | Tool names in policy don't match Discover output | MCP server updated its tool names | Click Discover again on each server in Settings → MCP Servers, then update the `tool:` entries in the policy to match the new names. |
