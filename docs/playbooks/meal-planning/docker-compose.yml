@@ -25,7 +25,7 @@ services:
       - gcal_tokens:/root/.config/google-calendar-mcp
     restart: unless-stopped
 
-  # Mealie MCP server — reads recipes from your local Mealie instance.
+  # Mealie MCP server — reads recipes and creates meal plans.
   # Repo: https://github.com/that0n3guy/mealie-mcp-server-ts
   mealie-mcp:
     image: node:22-alpine
@@ -38,24 +38,6 @@ services:
     environment:
       - MEALIE_BASE_URL=${MEALIE_BASE_URL}
       - MEALIE_API_KEY=${MEALIE_API_KEY}
-    restart: unless-stopped
-
-  # Google Keep MCP server — creates grocery list notes.
-  # Repo: https://github.com/feuerdev/keep-mcp
-  # Uses python:3.11-alpine because keep-mcp is a Python package; Node is
-  # installed via apk so Supergateway (an npm tool) can run inside the same
-  # container.
-  keep-mcp:
-    image: python:3.11-alpine
-    command: >
-      sh -c "apk add --no-cache nodejs npm &&
-             pip install --break-system-packages keep-mcp &&
-             npx -y supergateway --port 8103 --stdio 'keep-mcp'"
-    ports:
-      - "8103:8103"
-    environment:
-      - GOOGLE_EMAIL=${GOOGLE_EMAIL}
-      - GOOGLE_MASTER_TOKEN=${GOOGLE_MASTER_TOKEN}
     restart: unless-stopped
 
 volumes:
