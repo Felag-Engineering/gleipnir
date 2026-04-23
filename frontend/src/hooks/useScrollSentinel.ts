@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, type RefObject } from 'react'
 
 export interface ScrollSentinelResult {
-  sentinelRef: RefObject<HTMLDivElement | null>
+  sentinelRef: RefObject<HTMLDivElement>
   showNewPill: boolean
   scrollToBottom: () => void
 }

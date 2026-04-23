@@ -28,7 +28,12 @@ export default function RunDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { data: run, status: runStatus, error: runErrorObj, refetch: runRefetch } = useRun(id)
-  const { data: rawSteps = [], status: stepsStatus } = useRunSteps(id)
+  const {
+    steps: rawSteps = [],
+    status: stepsStatus,
+    hasMore: hasOlderSteps,
+    loadMore: loadOlderSteps,
+  } = useRunSteps(id)
 
   usePageTitle(runStatus === 'error' ? 'Run not found' : (id ? `Run ${id.slice(0, 8)}` : 'Run'))
   const [filter, setFilter] = useState<FilterKey>('all')
@@ -160,6 +165,16 @@ export default function RunDetailPage() {
               <FilterBar active={filter} counts={counts} onChange={setFilter} />
 
               <div className={styles.timeline}>
+                {hasOlderSteps && (
+                  <button
+                    type="button"
+                    className={styles.loadOlderBtn}
+                    onClick={() => { void loadOlderSteps() }}
+                  >
+                    Load more steps
+                  </button>
+                )}
+
                 <StepTimeline items={timelineItems} systemPrompt={run.system_prompt} runId={id!} runStatus={run.status} triggerType={run.trigger_type} triggerPayload={run.trigger_payload} durationMs={duration} />
 
                 {hasMore && (

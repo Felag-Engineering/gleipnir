@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
 )
@@ -55,7 +56,7 @@ func TestAuditWriter_ConcurrentEnqueue(t *testing.T) {
 	}
 
 	// Verify step_numbers are unique and span 0..999
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -206,7 +207,7 @@ func TestAuditWriter_MultipleRuns(t *testing.T) {
 		}
 
 		// step_numbers must be 0..N-1 with no gaps for each run.
-		steps, err := s.ListRunSteps(context.Background(), runID)
+		steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: runID, After: -1, Limit: listAll})
 		if err != nil {
 			t.Fatalf("ListRunSteps(%s): %v", runID, err)
 		}

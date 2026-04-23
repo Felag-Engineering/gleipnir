@@ -79,11 +79,21 @@ func (q *Queries) GetLatestRunStep(ctx context.Context, runID string) (RunStep, 
 }
 
 const listRunSteps = `-- name: ListRunSteps :many
-SELECT id, run_id, step_number, type, content, token_cost, created_at FROM run_steps WHERE run_id = ?1 ORDER BY step_number ASC
+SELECT id, run_id, step_number, type, content, token_cost, created_at FROM run_steps
+WHERE run_id = ?1
+  AND step_number > ?2
+ORDER BY step_number ASC
+LIMIT ?3
 `
 
-func (q *Queries) ListRunSteps(ctx context.Context, runID string) ([]RunStep, error) {
-	rows, err := q.db.QueryContext(ctx, listRunSteps, runID)
+type ListRunStepsParams struct {
+	RunID string `json:"run_id"`
+	After int64  `json:"after"`
+	Limit int64  `json:"limit"`
+}
+
+func (q *Queries) ListRunSteps(ctx context.Context, arg ListRunStepsParams) ([]RunStep, error) {
+	rows, err := q.db.QueryContext(ctx, listRunSteps, arg.RunID, arg.After, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
