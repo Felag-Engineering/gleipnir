@@ -269,6 +269,14 @@ func (a *BoundAgent) runAPILoop(
 				return a.failRun(ctx, fmt.Errorf("writing complete step: %w", err))
 			}
 			if err := a.sm.Transition(ctx, model.RunStatusComplete, ""); err != nil {
+				if errors.Is(err, ErrTransitionConflict) {
+					// Another writer (e.g. the timeout scanner) already transitioned
+					// this run. The run is already in a terminal state in the DB — exit
+					// cleanly without treating this as a failure.
+					logctx.Logger(ctx).WarnContext(ctx, "complete transition lost to concurrent writer; run already terminal",
+						"run_id", runID)
+					return nil
+				}
 				return fmt.Errorf("transitioning run to complete: %w", err)
 			}
 			return nil
@@ -343,6 +351,13 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 
 	// Transition to running only after pre-flight checks pass.
 	if err := a.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
+		if errors.Is(err, ErrTransitionConflict) {
+			// Another writer already advanced this run (e.g. a concurrent cancel).
+			// Return the conflict error so Run() exits cleanly.
+			logctx.Logger(ctx).WarnContext(ctx, "pending→running transition lost to concurrent writer; exiting",
+				"run_id", runID)
+			return fmt.Errorf("transitioning run to running: %w", err)
+		}
 		if ctx.Err() != nil {
 			a.logAuditError(ctx, runID, "run cancelled", model.ErrorCodeCancelled)
 		}

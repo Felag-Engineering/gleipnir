@@ -701,10 +701,11 @@ func TestRunQueries(t *testing.T) {
 		t.Errorf("ListRuns by policy: got %d, want 2", len(allRuns))
 	}
 
-	if err := s.UpdateRunStatus(ctx, UpdateRunStatusParams{
-		Status:      "running",
-		CompletedAt: nil,
-		ID:          "run1",
+	if _, err := s.UpdateRunStatus(ctx, UpdateRunStatusParams{
+		Status:          "running",
+		CompletedAt:     nil,
+		ID:              "run1",
+		ExpectedVersion: 0,
 	}); err != nil {
 		t.Fatalf("UpdateRunStatus running: %v", err)
 	}
@@ -735,10 +736,11 @@ func TestRunQueries(t *testing.T) {
 	}
 
 	completedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	if err := s.UpdateRunStatus(ctx, UpdateRunStatusParams{
-		Status:      "complete",
-		CompletedAt: &completedAt,
-		ID:          "run1",
+	if _, err := s.UpdateRunStatus(ctx, UpdateRunStatusParams{
+		Status:          "complete",
+		CompletedAt:     &completedAt,
+		ID:              "run1",
+		ExpectedVersion: 1, // version was incremented to 1 by the UpdateRunStatus(running) call above
 	}); err != nil {
 		t.Fatalf("UpdateRunStatus complete: %v", err)
 	}
@@ -747,11 +749,12 @@ func TestRunQueries(t *testing.T) {
 	// Use a dedicated run so run2 stays 'pending' for the ListRunsByStatus check below.
 	insertRun(t, s, "run-fail", "pol1", "running")
 	errMsg := "tool returned non-zero exit code"
-	if err := s.UpdateRunError(ctx, UpdateRunErrorParams{
-		Status:      "failed",
-		Error:       &errMsg,
-		CompletedAt: &completedAt,
-		ID:          "run-fail",
+	if _, err := s.UpdateRunError(ctx, UpdateRunErrorParams{
+		Status:          "failed",
+		Error:           &errMsg,
+		CompletedAt:     &completedAt,
+		ID:              "run-fail",
+		ExpectedVersion: 0,
 	}); err != nil {
 		t.Fatalf("UpdateRunError: %v", err)
 	}

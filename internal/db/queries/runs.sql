@@ -9,11 +9,16 @@ RETURNING *;
 -- name: GetRun :one
 SELECT * FROM runs WHERE id = :id;
 
--- name: UpdateRunStatus :exec
-UPDATE runs SET status = :status, completed_at = :completed_at WHERE id = :id;
+-- name: UpdateRunStatus :execrows
+UPDATE runs SET status = :status, completed_at = :completed_at, version = version + 1
+WHERE id = :id AND version = :expected_version;
 
--- name: UpdateRunError :exec
-UPDATE runs SET status = :status, error = :error, completed_at = :completed_at WHERE id = :id;
+-- name: UpdateRunError :execrows
+UPDATE runs SET status = :status, error = :error, completed_at = :completed_at, version = version + 1
+WHERE id = :id AND version = :expected_version;
+
+-- name: GetRunVersion :one
+SELECT version FROM runs WHERE id = :id;
 
 -- name: IncrementRunTokenCost :exec
 UPDATE runs SET token_cost = token_cost + :token_cost WHERE id = :id;

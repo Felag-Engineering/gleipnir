@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
 )
@@ -214,5 +215,70 @@ func TestTerminalStates_NoOutgoingTransitions(t *testing.T) {
 				t.Errorf("IsLegalTransition(%s, %s) = true, want false: terminal states have no outgoing transitions", from, to)
 			}
 		}
+	}
+}
+
+// TestTransitionRunFailed_CASConflict verifies the CAS semantics of TransitionRunFailed.
+// TransitionRunFailed reads the current version via GetRun then updates via CAS. On a
+// single-connection DB, interposing between those two calls is not possible without
+// mocking, so we verify the CAS invariant directly at the db.Queries layer below.
+func TestTransitionRunFailed_CASConflict(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	// Bump the version so we can verify the CAS reads it correctly.
+	testutil.SetRunVersion(t, s, "run1", 5)
+
+	// Verify a normal call works — it reads version 5, CAS updates with version 5,
+	// and the row ends up at version 6.
+	if err := TransitionRunFailed(context.Background(), s.Queries(), nil, "run1", "first"); err != nil {
+		t.Fatalf("first TransitionRunFailed: unexpected error: %v", err)
+	}
+	run, err := s.Queries().GetRun(context.Background(), "run1")
+	if err != nil {
+		t.Fatalf("GetRun after first transition: %v", err)
+	}
+	if run.Status != string(model.RunStatusFailed) {
+		t.Errorf("status = %q, want failed", run.Status)
+	}
+	if run.Version != 6 {
+		t.Errorf("version = %d, want 6", run.Version)
+	}
+
+	// Reset the run to running, set version=10, then use UpdateRunError with
+	// expected_version=9 (stale) — this is the exact CAS miss condition.
+	_, resetErr := s.DB().Exec(`UPDATE runs SET status = 'running', version = 10, completed_at = NULL, error = NULL WHERE id = 'run1'`)
+	if resetErr != nil {
+		t.Fatalf("reset run state: %v", resetErr)
+	}
+
+	completedAt := "2099-01-01T00:00:00Z"
+	reason := "stale version"
+	// Using expected_version=9 when the real version is 10 — this is a CAS miss.
+	rows, updateErr := s.Queries().UpdateRunError(context.Background(), db.UpdateRunErrorParams{
+		Status:          string(model.RunStatusFailed),
+		Error:           &reason,
+		CompletedAt:     &completedAt,
+		ID:              "run1",
+		ExpectedVersion: 9, // stale
+	})
+	if updateErr != nil {
+		t.Fatalf("UpdateRunError: %v", updateErr)
+	}
+	if rows != 0 {
+		t.Errorf("rows = %d for stale version CAS, want 0", rows)
+	}
+
+	// Run status must be unchanged (still running).
+	afterMiss, err := s.Queries().GetRun(context.Background(), "run1")
+	if err != nil {
+		t.Fatalf("GetRun after CAS miss: %v", err)
+	}
+	if afterMiss.Status != string(model.RunStatusRunning) {
+		t.Errorf("status = %q after CAS miss, want running", afterMiss.Status)
+	}
+	if afterMiss.Version != 10 {
+		t.Errorf("version = %d after CAS miss, want 10 (unchanged)", afterMiss.Version)
 	}
 }

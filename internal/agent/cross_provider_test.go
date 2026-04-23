@@ -57,7 +57,7 @@ func TestCrossProvider_StructuralParity(t *testing.T) {
 				Tools:        tools,
 				Policy:       pol,
 				Audit:        NewAuditWriter(s.Queries()),
-				StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+				StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -256,7 +256,7 @@ func TestCrossProvider_MultiToolCallBatching(t *testing.T) {
 				Tools:        tools,
 				Policy:       pol,
 				Audit:        NewAuditWriter(s.Queries()),
-				StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+				StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -341,7 +341,7 @@ func TestToolResultBlocksBeforeTextInUserTurn(t *testing.T) {
 		Tools:        tools,
 		Policy:       pol,
 		Audit:        NewAuditWriter(s.Queries()),
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

@@ -52,7 +52,51 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-035 | DB-backed system settings for runtime configuration | 🟢 Decided | v1.0 | system_settings table, admin API, frontend /admin/system |
 | ADR-036 | Centralized scheduler dispatcher                    | 🟢 Decided | v1.0 | internal/dispatcher (new), internal/trigger/scheduled.go, internal/trigger/poll.go, main.go |
 | ADR-037 | Custom Prometheus registry in internal/metrics (leaf package) | 🟢 Decided | v1.0 | internal/metrics (new), all future instrumented packages |
+| ADR-038 | Atomic run-state transitions with optimistic locking   | 🟢 Decided | v1.0 | runs.version column, RunStateMachine.Transition (tx), runstate.ErrTransitionConflict |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
+
+---
+
+## ADR-038: Atomic run-state transitions with optimistic locking
+
+**Status:** Decided
+**Date:** 2026-04
+
+### Context
+
+`RunStateMachine.Transition()` performed multiple DB writes sequentially without a wrapping transaction:
+1. `UPDATE runs SET status = ...`
+2. (Conditionally) `INSERT INTO approval_requests ...` or `INSERT INTO feedback_requests ...`
+
+If step 2 failed, the run status was already changed in the DB with no rollback, leaving the run in an inconsistent state.
+
+Additionally, there was no optimistic locking on the `runs` table. The state machine used an in-process mutex to guard its own `current` field, but two separate state machine instances (e.g. the agent goroutine and the timeout scanner) could both pass the `IsLegalTransition` check in memory and then both issue UPDATEs to the DB. The last write would win silently.
+
+**Race scenario:** An approval times out (scanner transitions `waiting_for_approval → failed`) at the same millisecond the operator approves it (agent transitions `waiting_for_approval → running`). Both writes succeed; the final state is whichever UPDATE executes last in SQLite's WAL serialization order.
+
+### Decision
+
+**Transactions:** Wrap multi-step transitions in a DB transaction so that if `INSERT INTO approval_requests` fails, the `UPDATE runs` is rolled back.
+
+**Optimistic locking (CAS):** Add a `version INTEGER NOT NULL DEFAULT 0` column to `runs`. Increment it on every status UPDATE:
+
+```sql
+UPDATE runs SET status = :status, version = version + 1
+WHERE id = :id AND version = :expected_version
+```
+
+If `rows_affected == 0`, the transition was lost to a concurrent write — return `runstate.ErrTransitionConflict` so the caller can handle it explicitly.
+
+`ErrTransitionConflict` lives in `internal/runstate` (not `internal/agent`) because both `agent` and `timeout` packages need it. `internal/db` cannot import `runstate` (would be a cycle), so `store.go` defines a local-package sentinel with the same string.
+
+In-memory state (`sm.current`, `sm.version`) is updated ONLY after `tx.Commit()` succeeds, so a commit failure leaves the state machine consistent with the DB.
+
+### Consequences
+
+- Every transition is now durable-or-rolled-back; partial writes are impossible.
+- Concurrent writers fail loudly (`ErrTransitionConflict`) instead of silently overwriting each other.
+- Callers must handle the new error: timeout scanners treat it as a benign race (same as `ErrIllegalTransition`); the agent goroutine exits cleanly.
+- Reviving a state machine for an existing run requires loading the current `version` from the DB and passing it via `WithInitialVersion`.
 
 ---
 

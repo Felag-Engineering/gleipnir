@@ -141,6 +141,19 @@ func InsertQueueEntry(tb testing.TB, s *db.Store, policyID, triggerType string) 
 	}
 }
 
+// SetRunVersion directly sets the version column for a run row. Used by tests
+// that need to seed a non-zero version to verify CAS semantics.
+func SetRunVersion(tb testing.TB, s *db.Store, runID string, version int64) {
+	tb.Helper()
+	_, err := s.DB().ExecContext(context.Background(),
+		`UPDATE runs SET version = ? WHERE id = ?`,
+		version, runID,
+	)
+	if err != nil {
+		tb.Fatalf("SetRunVersion %s: %v", runID, err)
+	}
+}
+
 // InsertMcpServer inserts a minimal MCP server row.
 func InsertMcpServer(tb testing.TB, s *db.Store, id, name, url string) {
 	tb.Helper()
