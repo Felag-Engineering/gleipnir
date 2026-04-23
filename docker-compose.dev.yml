@@ -1,11 +1,15 @@
 # Local development stack — not for production use.
 # Adds the MCP test server to the base stack so you can register it by
 # container name (http://mcp-test-server:8090/mcp) from the Gleipnir UI.
+# Uses the :dev image (published on every merge to main).
 #
 # Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 services:
+  api:
+    image: felagengineering/gleipnir:dev
+
   mcp-test-server:
     build:
       context: ./mcp-test-server
