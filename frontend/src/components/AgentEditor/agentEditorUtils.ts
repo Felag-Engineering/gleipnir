@@ -30,6 +30,7 @@ export const DEFAULT_YAML = `name: ''
 description: ''
 trigger:
   type: webhook
+  auth: hmac
 capabilities:
   tools: []
 agent:
