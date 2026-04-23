@@ -4,7 +4,7 @@
 
 ## What it does
 
-On a weekly scheduled trigger, this agent reads the next 7 days of your Google Calendar via `gcal.list_events` and identifies evenings that do not already have a dinner planned (any event whose title contains "dinner", "supper", or similar). For each empty slot it picks a recipe from your local [Mealie](https://mealie.io) instance via `mealie.get_recipes` and `mealie.get_recipe_detailed`, avoiding repeating a recipe within the same week. Once all slots are filled, it creates the week's meal plan in Mealie via `mealie.create_mealplan_bulk`. If the agent is unsure which calendar to read or encounters an unexpected dietary constraint, it pauses the run and asks you via the feedback channel before proceeding.
+On a weekly cron trigger, this agent reads the next 7 days of your Google Calendar via `gcal.list_events` and identifies evenings that do not already have a dinner planned (any event whose title contains "dinner", "supper", or similar). For each empty slot it picks a recipe from your local [Mealie](https://mealie.io) instance via `mealie.get_recipes` and `mealie.get_recipe_detailed`, avoiding repeating a recipe within the same week. Once all slots are filled, it creates the week's meal plan in Mealie via `mealie.create_mealplan_bulk`. If the agent is unsure which calendar to read or encounters an unexpected dietary constraint, it pauses the run and asks you via the feedback channel before proceeding.
 
 ## Prerequisites
 
@@ -119,7 +119,6 @@ Go to **Policies → New Policy** and fill in the form. The YAML below is the pa
 Replace the substitution markers before saving:
 
 - `<YOUR_CALENDAR_ID>` — the calendar to check for dinner events. Use `primary` for your default calendar, or find the calendar ID in Google Calendar settings (it looks like `example@group.calendar.google.com`).
-- `<FIRE_AT_TIMESTAMP>` — an ISO-8601 UTC timestamp for the first run (e.g. `2026-04-27T16:00:00Z` for next Sunday at 09:00 PT). Add more timestamps to schedule multiple weeks in advance.
 
 ```yaml
 name: meal-planning
@@ -133,9 +132,8 @@ model:
     enable_prompt_caching: true
 
 trigger:
-  type: scheduled
-  fire_at:
-    - "<FIRE_AT_TIMESTAMP>"   # e.g. 2026-04-27T16:00:00Z — next Sunday 09:00 PT
+  type: cron
+  cron_expr: "0 9 * * 0"   # 09:00 UTC every Sunday; adjust to match your timezone offset
 
 capabilities:
   tools:
@@ -181,21 +179,20 @@ agent:
 
 **Why these choices:**
 
-- `trigger.type: scheduled` with `fire_at` is a list of one-shot ISO-8601 UTC timestamps. Add a new timestamp each week (or each month in advance) to keep it running. There is no recurring cron; when all timestamps are consumed the policy is automatically paused.
+- `trigger.type: cron` with `cron_expr: "0 9 * * 0"` fires every Sunday at 09:00 UTC and runs indefinitely until the policy is paused. Adjust the time component to match your timezone offset (e.g. `0 17 * * 0` for 09:00 PT / UTC-8). The policy never auto-pauses — pause or delete it when you no longer want weekly runs.
 - Only `mealie.create_mealplan_bulk` is approval-gated — it is the only write operation. Calendar reads and recipe lookups are read-only and do not require approval. The operator approves the meal plan before it is written, giving a final review of the week's choices.
 - `feedback.enabled: true` gives the agent `gleipnir.ask_operator` (ADR-031) to handle dietary questions or calendar ambiguity without failing the run.
 - Tools not listed in `capabilities.tools` are not registered with the agent at all — they literally do not exist from the agent's perspective (ADR-001).
 
 ## Step 6 — Trigger a test run
 
-Because `trigger.type: scheduled` is one-shot, the easiest way to test without consuming a real scheduled slot is to clone the policy and set `trigger.type: manual` on the clone:
+Before the first cron firing, test the policy by triggering it manually:
 
-1. Duplicate the policy in Gleipnir (or create a second policy with the same body and `trigger.type: manual`).
-2. Go to **Policies → [your test policy] → Trigger** to start a run immediately.
-3. Watch the run appear in the **Runs** list. Click into it to see the reasoning trace: tool calls, tool results, and the approval request for `mealie.create_mealplan_bulk`.
-4. Review the proposed meal plan and approve. Verify the entries appear in Mealie under **Meal Plan**.
+1. In Gleipnir, go to **Policies → meal-planning → Trigger** to start a run immediately.
+2. Watch the run appear in the **Runs** list. Click into it to see the reasoning trace: tool calls, tool results, and the approval request for `mealie.create_mealplan_bulk`.
+3. Review the proposed meal plan and approve. Verify the entries appear in Mealie under **Meal Plan**.
 
-Once you have confirmed the agent produces a correct plan, update the scheduled policy's `fire_at` list with real timestamps for future weeks.
+Once you have confirmed the agent produces a correct plan, the cron trigger will fire automatically each Sunday at the configured time. Pause the policy from the Policies list if you ever want to stop it.
 
 ## Extensions
 
