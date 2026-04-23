@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/rapp992/gleipnir/internal/httputil"
+	"github.com/rapp992/gleipnir/internal/http/httputil"
 	"github.com/rapp992/gleipnir/internal/policy"
 )
 

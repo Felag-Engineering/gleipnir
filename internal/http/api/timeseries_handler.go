@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/httputil"
+	"github.com/rapp992/gleipnir/internal/http/httputil"
 )
 
 // TimeSeriesHandler serves GET /api/v1/stats/timeseries.

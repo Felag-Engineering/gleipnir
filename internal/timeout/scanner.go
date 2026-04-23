@@ -14,8 +14,8 @@ import (
 
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/event"
-	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/execution/runstate"
+	"github.com/rapp992/gleipnir/internal/model"
 )
 
 // ExpiredItem is the minimal representation of an expired pending request as

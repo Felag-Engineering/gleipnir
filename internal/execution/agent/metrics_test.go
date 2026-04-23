@@ -8,8 +8,8 @@ import (
 	// smoke test covers all seven metric families in a single Describe pass.
 	"github.com/prometheus/client_golang/prometheus"
 	_ "github.com/rapp992/gleipnir/internal/execution/agent"
-	"github.com/rapp992/gleipnir/internal/metrics"
 	_ "github.com/rapp992/gleipnir/internal/execution/runstate"
+	"github.com/rapp992/gleipnir/internal/metrics"
 	_ "github.com/rapp992/gleipnir/internal/timeout"
 )
 

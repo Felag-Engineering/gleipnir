@@ -8,10 +8,10 @@ import (
 	"net/http"
 
 	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/httputil"
+	"github.com/rapp992/gleipnir/internal/execution/run"
+	"github.com/rapp992/gleipnir/internal/http/httputil"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
-	"github.com/rapp992/gleipnir/internal/execution/run"
 )
 
 // defaultModelResolver fetches the system-wide default LLM provider and model

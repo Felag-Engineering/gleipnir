@@ -22,7 +22,7 @@ RUN apk --no-cache add ca-certificates
 COPY --from=builder /gleipnir /usr/local/bin/gleipnir
 RUN mkdir -p /data
 EXPOSE 8080
-# Health check is public (no auth required) — see internal/api/router.go.
+# Health check is public (no auth required) — see internal/http/api/router.go.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD wget -qO- http://localhost:8080/api/v1/health || exit 1
 CMD ["/usr/local/bin/gleipnir"]

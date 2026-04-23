@@ -14,9 +14,9 @@ import (
 
 	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/execution/run"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
-	"github.com/rapp992/gleipnir/internal/execution/run"
 )
 
 // cronLoopHandle wraps a loop's cancel func so the map stores a pointer we can

@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/rapp992/gleipnir/internal/api"
+	"github.com/rapp992/gleipnir/internal/http/api"
 )
 
 func TestStatsHandler(t *testing.T) {

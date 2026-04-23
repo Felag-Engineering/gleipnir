@@ -97,27 +97,28 @@ schemas/
   sql_schemas.sql     — schema that explains the different tables in our datastore
 
 internal/
-  api/                — router builder (RouterConfig + BuildRouter), chi route handlers, validation middleware, response helper re-exports
   approval/           — approval-specific timeout wiring (thin wrapper over timeout/)
-  auth/               — authentication, sessions, user management, role middleware
   config/             — environment variable loading (leaf package, no internal imports)
   db/                 — sqlc-generated data access layer; queries live in internal/db/queries/
   event/              — event system for internal pub/sub
-  feedback/           — feedback-specific timeout wiring (thin wrapper over timeout/, ADR-031)
-  httputil/           — shared HTTP response helpers (JSON envelope encoding)
-  llm/                — LLM provider abstraction (ADR-026)
-    anthropic/        — Anthropic API client
-    google/           — Google AI client
-  logctx/             — context-based structured log correlation (run_id + policy_id); leaf package, no internal imports
-  metrics/            — custom Prometheus registry, histogram bucket presets (BucketsFast/BucketsSlow), shared label constants, Handler()/Registry() accessors; leaf package, no internal imports (ADR-037)
   execution/          — agent runtime subsystem
     agent/            — BoundAgent runner, LLM API loop, audit writer
     run/              — run lifecycle: RunManager (goroutine tracking), RunLauncher (concurrency + launch), AgentFactory, RunsHandler (HTTP endpoints for run inspection/control), sentinel concurrency errors
     runstate/         — canonical run status transition table and TransitionRunFailed helper
+  feedback/           — feedback-specific timeout wiring (thin wrapper over timeout/, ADR-031)
+  http/               — HTTP layer subsystem
+    api/              — router builder (RouterConfig + BuildRouter), chi route handlers, validation middleware, response helper re-exports
+    auth/             — authentication, sessions, user management, role middleware
+    httputil/         — shared HTTP response helpers (JSON envelope encoding)
+    sse/              — Server-Sent Events broadcaster
+  llm/                — LLM provider abstraction (ADR-026)
+    anthropic/        — Anthropic API client
+    google/           — Google AI client
+  logctx/             — context-based structured log correlation (run_id + policy_id); leaf package, no internal imports
   mcp/                — MCP HTTP client, tool registry, capability tags
+  metrics/            — custom Prometheus registry, histogram bucket presets (BucketsFast/BucketsSlow), shared label constants, Handler()/Registry() accessors; leaf package, no internal imports (ADR-037)
   model/              — domain types (Policy, Run, RunStep, ApprovalRequest, enums, ...)
   policy/             — YAML parser, validator, system prompt renderer
-  sse/                — Server-Sent Events broadcaster
   testutil/           — shared test helpers
   timeout/            — generic scan-and-resolve loop for expiring requests (used by approval/ and feedback/)
   trigger/            — trigger dispatch only: webhook, manual, scheduled, poll, and cron handlers (imports execution/run/ for launching)
@@ -145,7 +146,7 @@ internal/
 
 ## Key API surface
 
-Routes are registered in `internal/api/router.go` via `BuildRouter`, which constructs the complete route tree from a `RouterConfig` struct. `main.go` constructs dependencies and passes them to `BuildRouter`.
+Routes are registered in `internal/http/api/router.go` via `BuildRouter`, which constructs the complete route tree from a `RouterConfig` struct. `main.go` constructs dependencies and passes them to `BuildRouter`.
 
 **Response envelope:** `{ data: T }` for success, `{ error: string, detail?: string }` for failure.
 

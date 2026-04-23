@@ -12,9 +12,9 @@ import (
 
 	"github.com/rapp992/gleipnir/internal/config"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/execution/run"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
-	"github.com/rapp992/gleipnir/internal/execution/run"
 )
 
 // Scheduler watches scheduled policies and fires runs at their configured fire_at times.

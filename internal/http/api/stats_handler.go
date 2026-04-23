@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/rapp992/gleipnir/internal/httputil"
+	"github.com/rapp992/gleipnir/internal/http/httputil"
 )
 
 // StatsHandler serves GET /api/v1/stats.

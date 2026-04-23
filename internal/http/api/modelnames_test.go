@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/api"
+	"github.com/rapp992/gleipnir/internal/http/api"
 	"github.com/rapp992/gleipnir/internal/llm/anthropic"
 	"github.com/rapp992/gleipnir/internal/llm/google"
 	"github.com/rapp992/gleipnir/internal/llm/openai"

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/httputil"
+	"github.com/rapp992/gleipnir/internal/http/httputil"
 )
 
 // AttentionHandler serves GET /api/v1/attention.

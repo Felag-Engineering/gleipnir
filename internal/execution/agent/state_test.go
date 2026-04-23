@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/execution/runstate"
+	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
 )
 
