@@ -1,4 +1,5 @@
 .env
+gcp-oauth.keys.json
 .claude/agent-memory/go-code-reviewer/MEMORY.md
 .claude/worktrees/
 devflow/.devflow/
