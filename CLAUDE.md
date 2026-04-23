@@ -113,7 +113,10 @@ internal/
     sse/              — Server-Sent Events broadcaster
   llm/                — LLM provider abstraction (ADR-026)
     anthropic/        — Anthropic API client
+    factory/          — NewClientForProvider: maps a provider name string to a concrete LLMClient; lives in its own sub-package to avoid the cycle caused by provider packages importing internal/llm
     google/           — Google AI client
+    openai/           — OpenAI API client
+    openaicompat/     — OpenAI-compatible provider loader (bootstraps third-party OpenAI-compatible backends)
   logctx/             — context-based structured log correlation (run_id + policy_id); leaf package, no internal imports
   mcp/                — MCP HTTP client, tool registry, capability tags
   metrics/            — custom Prometheus registry, histogram bucket presets (BucketsFast/BucketsSlow), shared label constants, Handler()/Registry() accessors; leaf package, no internal imports (ADR-037)
