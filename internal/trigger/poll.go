@@ -281,10 +281,17 @@ func (p *Poller) poll(ctx context.Context, policyID string, parsed *model.Parsed
 			continue
 		}
 
-		result, err := client.CallTool(ctx, toolName, check.Input)
+		evalCtx, cancel := context.WithTimeout(ctx, parsed.Trigger.Interval)
+		result, err := client.CallTool(evalCtx, toolName, check.Input)
+		cancel()
 		if err != nil {
-			slog.Error("poller: check tool call failed",
-				"policy_id", policyID, "tool", check.Tool, "err", err)
+			if errors.Is(evalCtx.Err(), context.DeadlineExceeded) {
+				slog.Warn("poller: check tool call timed out",
+					"policy_id", policyID, "tool", check.Tool, "interval", parsed.Trigger.Interval)
+			} else {
+				slog.Error("poller: check tool call failed",
+					"policy_id", policyID, "tool", check.Tool, "err", err)
+			}
 			results[i] = checkResult{Err: err}
 			continue
 		}
