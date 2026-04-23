@@ -120,20 +120,26 @@ func (c *CronRunner) reconcile(ctx context.Context) {
 		activeSet[pol.ID] = pol
 	}
 
+	// Determine which policies to start and stop under the lock, but release
+	// before calling startCronLoop — that function does DB queries and policy
+	// parsing, which must not block Notify calls from API handlers.
+	var toStart []db.Policy
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	for _, pol := range activePolicies {
 		if _, running := c.loops[pol.ID]; !running {
-			c.startCronLoopLocked(ctx, pol)
+			toStart = append(toStart, pol)
 		}
 	}
-
 	for policyID, h := range c.loops {
 		if _, active := activeSet[policyID]; !active {
 			h.cancel()
 			delete(c.loops, policyID)
 		}
+	}
+	c.mu.Unlock()
+
+	for _, pol := range toStart {
+		c.startCronLoop(ctx, pol)
 	}
 }
 

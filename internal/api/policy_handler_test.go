@@ -1565,6 +1565,71 @@ func TestPolicyHandler_NotifiesCronRunnerOnCreate(t *testing.T) {
 	}
 }
 
+// TestPolicyHandler_NotifiesCronRunnerOnUpdate verifies that updating a cron
+// policy calls cron.Notify and does not call poller.Notify or scheduler.Notify.
+func TestPolicyHandler_NotifiesCronRunnerOnUpdate(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	testutil.InsertPolicy(t, store, "pol-upd-cron", "my-cron", "cron", cronPolicyYAMLForHandler)
+	poller := &recordingNotifier{}
+	scheduler := &recordingNotifier{}
+	cron := &recordingNotifier{}
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler, cron))
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/policies/pol-upd-cron", strings.NewReader(cronPolicyYAMLForHandler))
+	req.Header.Set("Content-Type", "application/yaml")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /policies/pol-upd-cron: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	if len(cron.calls()) != 1 || cron.calls()[0] != "pol-upd-cron" {
+		t.Errorf("cron.Notify calls = %v, want [pol-upd-cron]", cron.calls())
+	}
+	if len(poller.calls()) != 0 {
+		t.Errorf("poller.Notify called unexpectedly: %v", poller.calls())
+	}
+	if len(scheduler.calls()) != 0 {
+		t.Errorf("scheduler.Notify called unexpectedly: %v", scheduler.calls())
+	}
+}
+
+// TestPolicyHandler_NotifiesCronRunnerOnDelete verifies that deleting a cron
+// policy calls cron.Notify with the policy ID.
+func TestPolicyHandler_NotifiesCronRunnerOnDelete(t *testing.T) {
+	store := newPolicyHandlerStore(t)
+	testutil.InsertPolicy(t, store, "pol-del-cron", "my-cron", "cron", cronPolicyYAMLForHandler)
+	poller := &recordingNotifier{}
+	scheduler := &recordingNotifier{}
+	cron := &recordingNotifier{}
+	srv := httptest.NewServer(newPolicyRouterWithNotifiers(store, poller, scheduler, cron))
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/policies/pol-del-cron", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE /policies/pol-del-cron: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+
+	if len(cron.calls()) != 1 || cron.calls()[0] != "pol-del-cron" {
+		t.Errorf("cron.Notify calls = %v, want [pol-del-cron]", cron.calls())
+	}
+	if len(poller.calls()) != 0 {
+		t.Errorf("poller.Notify called unexpectedly: %v", poller.calls())
+	}
+	if len(scheduler.calls()) != 0 {
+		t.Errorf("scheduler.Notify called unexpectedly: %v", scheduler.calls())
+	}
+}
+
 // TestPolicyHandler_NilNotifiersDoNotPanic verifies that nil poller and
 // scheduler do not cause a panic — the defensive nil check in notifyTriggers
 // must hold for all handler paths.

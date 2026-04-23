@@ -446,3 +446,33 @@ func TestCronRunner_Notify_TypeSwitch(t *testing.T) {
 		}
 	})
 }
+
+// TestCronRunner_Stop_DoesNotDeadlock verifies that Stop() exits cleanly,
+// including the reconcile goroutine (which previously was not cancelled by Stop).
+func TestCronRunner_Stop_DoesNotDeadlock(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	registry := mcp.NewRegistry(store.Queries())
+	manager := run.NewRunManager()
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, cronAgentFactory(), nil, 0, resolver)
+	runner := NewCronRunner(store, launcher, resolver)
+
+	yaml := minCronYAML("cron-stop", "0 9 * * 1")
+	insertCronPolicy(t, store, "pol-cron-stop", "cron-stop", yaml)
+
+	if err := runner.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !hasCronLoop(runner, "pol-cron-stop") {
+		t.Fatal("expected loop to be running after Start")
+	}
+
+	done := make(chan struct{})
+	go func() { runner.Stop(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() deadlocked — reconcile goroutine was not cancelled")
+	}
+}
