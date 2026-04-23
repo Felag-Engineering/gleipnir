@@ -1,7 +1,7 @@
+import { ROLE_HIERARCHY, ROLE_TOOLTIP } from '@/components/UsersPage/roles'
 import styles from './RoleChips.module.css'
 
-const ALL_ROLES = ['admin', 'operator', 'approver', 'auditor'] as const
-type Role = (typeof ALL_ROLES)[number]
+type Role = (typeof ROLE_HIERARCHY)[number]
 
 const ROLE_CHIP_CLASS: Record<Role, string> = {
   admin: styles.roleChipAdmin,
@@ -20,7 +20,7 @@ interface Props {
 export function RoleChips({ userId, roles, onToggle, disabled }: Props) {
   return (
     <div className={styles.roleChips}>
-      {ALL_ROLES.map((role) => {
+      {ROLE_HIERARCHY.map((role) => {
         const active = roles.includes(role)
         return (
           <button
@@ -29,7 +29,7 @@ export function RoleChips({ userId, roles, onToggle, disabled }: Props) {
             className={`${styles.roleChip} ${active ? ROLE_CHIP_CLASS[role] : styles.roleChipInactive}`}
             onClick={() => onToggle(userId, role, !active)}
             disabled={disabled}
-            title={active ? `Remove ${role} role` : `Add ${role} role`}
+            title={`${active ? 'Remove' : 'Add'} ${role} role — ${ROLE_TOOLTIP[role]}`}
           >
             {role}
           </button>

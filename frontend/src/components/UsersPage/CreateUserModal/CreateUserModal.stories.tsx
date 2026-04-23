@@ -26,3 +26,9 @@ export const WithError: Story = {
     error: { message: 'Username already exists' } as never,
   },
 }
+
+// Shows the two-column layout with the permissions panel populated.
+// Interact with the role checkboxes to preview panel updates.
+export const WithRolesPreselected: Story = {
+  args: { onClose: () => {}, onSubmit: () => {}, isPending: false, error: null },
+}

@@ -186,7 +186,7 @@ describe('UsersPage — role chip interaction', () => {
     renderPage()
 
     // Click "admin" chip to add admin role to bob (who currently has operator)
-    fireEvent.click(screen.getByTitle('Add admin role'))
+    fireEvent.click(screen.getByTitle(/^Add admin role/))
 
     expect(mutateMock).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'u2', roles: expect.arrayContaining(['admin', 'operator']) }),
@@ -282,13 +282,14 @@ describe('UsersPage — create user modal', () => {
 
     fireEvent.change(screen.getByLabelText(/username/i), { target: { value: 'newuser' } })
     fireEvent.change(screen.getByLabelText(/password/i), { target: { value: 'securepass' } })
-    fireEvent.click(screen.getByLabelText(/operator/i))
+    // Click the leaf role (auditor) — no cascade below it, so roles: ['auditor'] exactly.
+    fireEvent.click(screen.getByLabelText(/auditor/i))
 
     const form = document.querySelector('#create-user-form') as HTMLFormElement
     fireEvent.submit(form)
 
     expect(mutateMock).toHaveBeenCalledWith(
-      { username: 'newuser', password: 'securepass', roles: ['operator'] },
+      { username: 'newuser', password: 'securepass', roles: ['auditor'] },
       expect.any(Object),
     )
   })
@@ -334,5 +335,71 @@ describe('UsersPage — create user modal', () => {
 
     // The mutation must not have been called — no server round-trip on empty inputs.
     expect(mutateMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('CreateUserModal — permissions panel placeholder', () => {
+  beforeEach(() => {
+    mockUsersLoaded([])
+    mockNoopMutations()
+  })
+
+  it('shows placeholder text when no roles are selected', () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /create user/i }))
+    expect(screen.getByText(/select a role to see its permissions/i)).toBeInTheDocument()
+  })
+})
+
+describe('CreateUserModal — role hierarchy cascade', () => {
+  beforeEach(() => {
+    mockUsersLoaded([])
+    mockNoopMutations()
+  })
+
+  it('checking operator cascades to operator, approver, and auditor — not admin', () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /create user/i }))
+
+    fireEvent.click(screen.getByLabelText(/operator/i))
+
+    expect(screen.getByLabelText(/operator/i)).toBeChecked()
+    expect(screen.getByLabelText(/approver/i)).toBeChecked()
+    expect(screen.getByLabelText(/auditor/i)).toBeChecked()
+    expect(screen.getByLabelText(/admin/i)).not.toBeChecked()
+  })
+
+  it('permissions panel shows operator capabilities after checking operator', () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /create user/i }))
+
+    fireEvent.click(screen.getByLabelText(/operator/i))
+
+    expect(screen.getAllByText(/trigger runs, manage policies/i).length).toBeGreaterThan(0)
+  })
+
+  it('unchecking operator removes operator, approver, and auditor', () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /create user/i }))
+
+    // Check operator first (cascades down), then uncheck it.
+    fireEvent.click(screen.getByLabelText(/operator/i))
+    fireEvent.click(screen.getByLabelText(/operator/i))
+
+    expect(screen.getByLabelText(/operator/i)).not.toBeChecked()
+    expect(screen.getByLabelText(/approver/i)).not.toBeChecked()
+    expect(screen.getByLabelText(/auditor/i)).not.toBeChecked()
+  })
+
+  it('checking admin selects all four roles', () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /create user/i }))
+
+    fireEvent.click(screen.getByLabelText(/admin/i))
+
+    expect(screen.getByLabelText(/admin/i)).toBeChecked()
+    expect(screen.getByLabelText(/operator/i)).toBeChecked()
+    expect(screen.getByLabelText(/approver/i)).toBeChecked()
+    expect(screen.getByLabelText(/auditor/i)).toBeChecked()
   })
 })
