@@ -1,5 +1,5 @@
 // Package mcp implements the MCP HTTP transport client and tool registry.
-// This package must not import internal/agent (package boundary, ADR-001).
+// This package must not import internal/execution/agent (package boundary, ADR-001).
 package mcp
 
 import (

@@ -22,7 +22,7 @@ Each diagram lives in its own file. Start with the system overview and runtime o
 ## Key invariants
 
 - **`internal/model` imports nothing internal.** Shared vocabulary; circular imports here would collapse the dependency graph.
-- **`internal/mcp` must never import `internal/agent`.** Enforced by the Go compiler.
+- **`internal/mcp` must never import `internal/execution/agent`.** Enforced by the Go compiler.
 - **`internal/db` types stay as plain strings.** sqlc generates them from SQLite TEXT columns. Conversion to typed model enums happens in the caller.
 - **Approval interception is a hard runtime guarantee.** `BoundAgent.handleToolCall` blocks on the approval channel before forwarding to MCP — not prompt-based, cannot be bypassed by the model.
 - **Audit writes are serialized.** `AuditWriter` funnels all `run_steps` inserts through a single goroutine to avoid SQLite write contention.

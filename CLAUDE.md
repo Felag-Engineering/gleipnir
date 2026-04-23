@@ -98,7 +98,6 @@ schemas/
 
 internal/
   api/                — router builder (RouterConfig + BuildRouter), chi route handlers, validation middleware, response helper re-exports
-  agent/              — BoundAgent runner, LLM API loop, audit writer
   approval/           — approval-specific timeout wiring (thin wrapper over timeout/)
   auth/               — authentication, sessions, user management, role middleware
   config/             — environment variable loading (leaf package, no internal imports)
@@ -111,15 +110,17 @@ internal/
     google/           — Google AI client
   logctx/             — context-based structured log correlation (run_id + policy_id); leaf package, no internal imports
   metrics/            — custom Prometheus registry, histogram bucket presets (BucketsFast/BucketsSlow), shared label constants, Handler()/Registry() accessors; leaf package, no internal imports (ADR-037)
+  execution/          — agent runtime subsystem
+    agent/            — BoundAgent runner, LLM API loop, audit writer
+    run/              — run lifecycle: RunManager (goroutine tracking), RunLauncher (concurrency + launch), AgentFactory, RunsHandler (HTTP endpoints for run inspection/control), sentinel concurrency errors
+    runstate/         — canonical run status transition table and TransitionRunFailed helper
   mcp/                — MCP HTTP client, tool registry, capability tags
   model/              — domain types (Policy, Run, RunStep, ApprovalRequest, enums, ...)
   policy/             — YAML parser, validator, system prompt renderer
-  run/                — run lifecycle: RunManager (goroutine tracking), RunLauncher (concurrency + launch), AgentFactory, RunsHandler (HTTP endpoints for run inspection/control), sentinel concurrency errors
-  runstate/           — canonical run status transition table and TransitionRunFailed helper
   sse/                — Server-Sent Events broadcaster
   testutil/           — shared test helpers
   timeout/            — generic scan-and-resolve loop for expiring requests (used by approval/ and feedback/)
-  trigger/            — trigger dispatch only: webhook, manual, scheduled, poll, and cron handlers (imports run/ for launching)
+  trigger/            — trigger dispatch only: webhook, manual, scheduled, poll, and cron handlers (imports execution/run/ for launching)
 ```
 
 **ADRs:** Architectural decisions are referenced in docs/ADR_Tracker.md, decisions should be tracked there and this document should be updated anytime architectural decisions are made. Do not reference in source code but do reference in commit messages and PR messages.
@@ -140,7 +141,7 @@ internal/
 
 **Comments explain why, not what.** Non-obvious decisions get a brief inline comment. Architectural reasoning belongs in ADRs — reference them by number in code comments when relevant.
 
-**Package boundaries are intentional.** `internal/mcp` must have no import dependencies on `internal/agent`. The poll trigger engine reuses the MCP client directly — a tight coupling here requires refactoring later.
+**Package boundaries are intentional.** `internal/mcp` must have no import dependencies on `internal/execution/agent`. The poll trigger engine reuses the MCP client directly — a tight coupling here requires refactoring later.
 
 ## Key API surface
 
@@ -173,7 +174,7 @@ These are resolved constraints — do not re-litigate them.
 - **Policy stored as a YAML blob (ADR-002):** `name` and `trigger_type` are indexed columns for routing and list views; all other policy fields live in the `yaml` column. No separate data model for policy fields.
 - **SQLite, WAL mode, no ORM (ADR-003):** WAL is enabled at the application layer on startup. Audit writes are serialized through an application-layer queue to avoid contention. All queries go through sqlc — raw `.sql` files only.
 - **MCP HTTP transport only (ADR-004):** capability tags (`tool`/`feedback`) are Gleipnir's metadata, stored in Gleipnir's DB — not in the MCP server.
-- **Package boundary:** `internal/mcp` must not import `internal/agent`.
+- **Package boundary:** `internal/mcp` must not import `internal/execution/agent`.
 - **Policy-gated approval is a hard runtime guarantee (ADR-008):** tools marked `approval: required` are intercepted by the runtime before execution, regardless of agent reasoning.
 - **Feedback channel resolution (ADR-009):** policy-level channel definition falls back to system-level config if absent.
 - **SSE for real-time UI transport (ADR-016):** Server-Sent Events push run status changes, new steps, and approval events. Mutations remain REST. No WebSockets.

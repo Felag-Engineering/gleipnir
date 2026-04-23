@@ -11,7 +11,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/httputil"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
-	"github.com/rapp992/gleipnir/internal/run"
+	"github.com/rapp992/gleipnir/internal/execution/run"
 )
 
 // defaultModelResolver fetches the system-wide default LLM provider and model

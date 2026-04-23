@@ -24,7 +24,7 @@ import (
 	openaicompatllm "github.com/rapp992/gleipnir/internal/llm/openaicompat"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/policy"
-	runpkg "github.com/rapp992/gleipnir/internal/run"
+	runpkg "github.com/rapp992/gleipnir/internal/execution/run"
 	"github.com/rapp992/gleipnir/internal/sse"
 	"github.com/rapp992/gleipnir/internal/timeout"
 	"github.com/rapp992/gleipnir/internal/trigger"

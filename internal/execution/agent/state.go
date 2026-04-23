@@ -12,7 +12,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/event"
 	"github.com/rapp992/gleipnir/internal/logctx"
 	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/runstate"
+	"github.com/rapp992/gleipnir/internal/execution/runstate"
 )
 
 // ErrTransitionConflict re-exports runstate.ErrTransitionConflict so callers in
