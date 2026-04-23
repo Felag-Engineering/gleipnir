@@ -253,9 +253,9 @@
 }
 
 .navSectionLabel {
-  font-size: 10px;
-  font-weight: var(--weight-semibold);
-  letter-spacing: 0.08em;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-normal);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
