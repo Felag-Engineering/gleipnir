@@ -40,11 +40,12 @@ type CronRunner struct {
 	store         *db.Store
 	launcher      *run.RunLauncher
 	modelResolver defaultModelResolver
-	parser        cronlib.Parser          // 5-field standard parser, built once
-	mu            sync.Mutex              // protects loops and rootCtx
+	parser        cronlib.Parser             // 5-field standard parser, built once
+	mu            sync.Mutex                 // protects loops, rootCtx, and rootCancel
 	loops         map[string]*cronLoopHandle // policyID → handle for that goroutine
-	wg            sync.WaitGroup          // tracks all cron loop goroutines
-	rootCtx       context.Context         // set in Start; used by Notify to outlive the HTTP request
+	wg            sync.WaitGroup             // tracks all cron loop goroutines
+	rootCtx       context.Context            // set in Start; used by Notify to outlive the HTTP request
+	rootCancel    context.CancelFunc         // cancels rootCtx; set in Start
 }
 
 // NewCronRunner returns a CronRunner ready to be started. modelResolver is used
@@ -64,23 +65,26 @@ func NewCronRunner(store *db.Store, launcher *run.RunLauncher, modelResolver def
 // running goroutines with DB state. This handles policies created, paused, or
 // deleted after startup. Start returns immediately; goroutines run in the background.
 func (c *CronRunner) Start(ctx context.Context) error {
+	rootCtx, rootCancel := context.WithCancel(ctx)
 	c.mu.Lock()
-	c.rootCtx = ctx
+	c.rootCtx = rootCtx
+	c.rootCancel = rootCancel
 	c.mu.Unlock()
 
-	policies, err := c.store.GetCronActivePolicies(ctx)
+	policies, err := c.store.GetCronActivePolicies(rootCtx)
 	if err != nil {
+		rootCancel()
 		return fmt.Errorf("load cron policies: %w", err)
 	}
 
 	for _, pol := range policies {
-		c.startCronLoop(ctx, pol)
+		c.startCronLoop(rootCtx, pol)
 	}
 
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		c.reconcileLoop(ctx)
+		c.reconcileLoop(rootCtx)
 	}()
 
 	return nil
@@ -316,13 +320,14 @@ func (c *CronRunner) Wait() {
 	c.wg.Wait()
 }
 
-// Stop cancels all active cron goroutines and waits for them to exit. It is
-// equivalent to cancelling the context passed to Start.
+// Stop cancels all active cron goroutines (including the reconcile loop) and
+// waits for them to exit. It is equivalent to cancelling the context passed to Start.
 func (c *CronRunner) Stop() {
 	c.mu.Lock()
-	for _, h := range c.loops {
-		h.cancel()
-	}
+	cancel := c.rootCancel
 	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	c.wg.Wait()
 }
