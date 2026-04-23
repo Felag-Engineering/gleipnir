@@ -38,10 +38,23 @@
   border-color: var(--color-red);
 }
 
+.rolesLayout {
+  display: flex;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+
+@media (max-width: 520px) {
+  .rolesLayout {
+    flex-direction: column;
+  }
+}
+
 .checkboxGroup {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  min-width: 140px;
 }
 
 .checkboxLabel {
