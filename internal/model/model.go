@@ -36,6 +36,7 @@ const (
 	TriggerTypeManual    TriggerType = "manual"
 	TriggerTypeScheduled TriggerType = "scheduled"
 	TriggerTypePoll      TriggerType = "poll"
+	TriggerTypeCron      TriggerType = "cron"
 )
 
 // StepType identifies the kind of event recorded in a run's reasoning trace.
@@ -184,7 +185,7 @@ func (s RunStatus) Valid() bool {
 func (t TriggerType) String() string { return string(t) }
 func (t TriggerType) Valid() bool {
 	switch t {
-	case TriggerTypeWebhook, TriggerTypeManual, TriggerTypeScheduled, TriggerTypePoll:
+	case TriggerTypeWebhook, TriggerTypeManual, TriggerTypeScheduled, TriggerTypePoll, TriggerTypeCron:
 		return true
 	}
 	return false
@@ -324,6 +325,7 @@ type TriggerConfig struct {
 	Interval    time.Duration   // poll only
 	Match       MatchMode       // poll only, defaults to MatchAll
 	Checks      []PollCheck     // poll only, at least one required
+	CronExpr    string          // cron only, 5-field POSIX expression
 }
 
 // FeedbackConfig controls the native human-in-the-loop feedback channel.

@@ -299,7 +299,7 @@ func TestHandler_ConnectionsActiveGauge(t *testing.T) {
 // internal/mcp/metrics_test.go:TestMCPMetricFamiliesRegistered.
 func TestSSEMetricFamiliesRegistered(t *testing.T) {
 	want := map[string]bool{
-		"gleipnir_sse_connections_active":  false,
+		"gleipnir_sse_connections_active":   false,
 		"gleipnir_sse_events_dropped_total": false,
 	}
 

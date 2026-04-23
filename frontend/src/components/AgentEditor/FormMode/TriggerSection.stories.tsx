@@ -75,6 +75,14 @@ export const ManualSelected: Story = {
   },
 };
 
+export const CronSelected: Story = {
+  args: {
+    value: { type: 'cron', cronExpr: '0 9 * * 1' },
+    policyId: 'cron-policy',
+    onChange: fn(),
+  },
+};
+
 export const PollSelected: Story = {
   args: {
     value: {

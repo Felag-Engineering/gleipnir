@@ -53,10 +53,37 @@ func TestValidate_InvalidTriggerType(t *testing.T) {
 	assertValidationContains(t, p, "trigger.type")
 }
 
-func TestValidate_CronTriggerIsInvalid(t *testing.T) {
-	p := validPolicy()
-	p.Trigger.Type = "cron"
-	assertValidationContains(t, p, "trigger.type")
+func TestValidate_CronTrigger(t *testing.T) {
+	t.Run("missing cron_expr", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.Type = model.TriggerTypeCron
+		p.Trigger.CronExpr = ""
+		assertValidationContains(t, p, "trigger.cron_expr is required for cron triggers")
+	})
+
+	t.Run("valid 5-field expression", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.Type = model.TriggerTypeCron
+		p.Trigger.CronExpr = "*/15 * * * *"
+		err := Validate(p)
+		if err != nil {
+			t.Errorf("expected no validation error for valid cron expression, got: %v", err)
+		}
+	})
+
+	t.Run("invalid expression", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.Type = model.TriggerTypeCron
+		p.Trigger.CronExpr = "not a cron"
+		assertValidationContains(t, p, "trigger.cron_expr invalid expression:")
+	})
+
+	t.Run("6-field expression rejected", func(t *testing.T) {
+		p := validPolicy()
+		p.Trigger.Type = model.TriggerTypeCron
+		p.Trigger.CronExpr = "0 0 9 * * 1" // 6-field (with seconds) — not supported
+		assertValidationContains(t, p, "trigger.cron_expr invalid expression:")
+	})
 }
 
 func validPollCheck() model.PollCheck {

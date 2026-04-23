@@ -76,6 +76,9 @@ export function yamlToFormState(yaml: string): FormState | null {
       type: 'scheduled',
       fireAt: fireAtRaw.filter((v: unknown) => typeof v === 'string') as string[],
     }
+  } else if (triggerType === 'cron') {
+    const cronExpr = typeof triggerRaw.cron_expr === 'string' ? triggerRaw.cron_expr : ''
+    trigger = { type: 'cron', cronExpr }
   } else if (triggerType === 'poll') {
     const interval = typeof triggerRaw.interval === 'string'
       ? triggerRaw.interval
@@ -243,6 +246,8 @@ export function formStateToYaml(state: FormState): string {
     triggerObj = { type: 'manual' }
   } else if (trigger.type === 'scheduled') {
     triggerObj = { type: 'scheduled', fire_at: trigger.fireAt }
+  } else if (trigger.type === 'cron') {
+    triggerObj = { type: 'cron', cron_expr: trigger.cronExpr }
   } else if (trigger.type === 'poll') {
     const checks = trigger.checks.map(c => {
       const entry: Record<string, unknown> = { tool: c.tool }

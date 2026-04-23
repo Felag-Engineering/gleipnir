@@ -25,7 +25,7 @@ export interface IdentityFormState {
   folder: string;
 }
 
-export type TriggerType = 'webhook' | 'manual' | 'scheduled' | 'poll';
+export type TriggerType = 'webhook' | 'manual' | 'scheduled' | 'poll' | 'cron';
 
 export type WebhookAuthMode = 'hmac' | 'bearer' | 'none';
 
@@ -58,11 +58,17 @@ export interface PollTriggerState {
   checks: PollCheckState[];
 }
 
+export interface CronTriggerState {
+  type: 'cron';
+  cronExpr: string; // 5-field POSIX cron expression
+}
+
 export type TriggerFormState =
   | WebhookTriggerState
   | ManualTriggerState
   | ScheduledTriggerState
-  | PollTriggerState;
+  | PollTriggerState
+  | CronTriggerState;
 
 export interface TaskInstructionsFormState {
   task: string;

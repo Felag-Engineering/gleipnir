@@ -26,12 +26,13 @@ type PolicyHandler struct {
 	svc       *policy.Service
 	poller    PolicyNotifier // may be nil; notified on poll-trigger mutations
 	scheduler PolicyNotifier // may be nil; notified on scheduled-trigger mutations
+	cron      PolicyNotifier // may be nil; notified on cron-trigger mutations
 }
 
 // NewPolicyHandler creates a PolicyHandler backed by the given store and service.
-// poller and scheduler may be nil — notifyTriggers skips nil notifiers.
-func NewPolicyHandler(store *db.Store, svc *policy.Service, poller, scheduler PolicyNotifier) *PolicyHandler {
-	return &PolicyHandler{store: store, svc: svc, poller: poller, scheduler: scheduler}
+// poller, scheduler, and cron may be nil — notifyTriggers skips nil notifiers.
+func NewPolicyHandler(store *db.Store, svc *policy.Service, poller, scheduler, cron PolicyNotifier) *PolicyHandler {
+	return &PolicyHandler{store: store, svc: svc, poller: poller, scheduler: scheduler, cron: cron}
 }
 
 // notifyTriggers dispatches to the appropriate background component after a
@@ -47,6 +48,10 @@ func (h *PolicyHandler) notifyTriggers(ctx context.Context, policyID string, tri
 	case model.TriggerTypeScheduled:
 		if h.scheduler != nil {
 			h.scheduler.Notify(ctx, policyID)
+		}
+	case model.TriggerTypeCron:
+		if h.cron != nil {
+			h.cron.Notify(ctx, policyID)
 		}
 	}
 }

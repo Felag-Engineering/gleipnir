@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"github.com/rapp992/gleipnir/internal/model"
 	"gopkg.in/yaml.v3"
 )
@@ -71,7 +72,7 @@ func validateTrigger(t model.TriggerConfig) []Issue {
 	}
 
 	if !t.Type.Valid() {
-		add("trigger.type", "trigger.type %q is invalid; must be webhook, manual, scheduled, or poll", t.Type)
+		add("trigger.type", "trigger.type %q is invalid; must be webhook, manual, scheduled, poll, or cron", t.Type)
 		return issues // can't validate type-specific fields without a valid type
 	}
 
@@ -92,6 +93,16 @@ func validateTrigger(t model.TriggerConfig) []Issue {
 		// so an entry count mismatch signals parse failures).
 		// Note: we do not validate that timestamps are in the future here, because
 		// historical timestamps in existing policies are valid on read.
+
+	case model.TriggerTypeCron:
+		if t.CronExpr == "" {
+			add("trigger.cron_expr", "trigger.cron_expr is required for cron triggers")
+		} else {
+			parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+			if _, err := parser.Parse(t.CronExpr); err != nil {
+				add("trigger.cron_expr", "trigger.cron_expr invalid expression: %v", err)
+			}
+		}
 
 	case model.TriggerTypePoll:
 		if t.Interval <= 0 {
