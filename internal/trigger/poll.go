@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/execution/run"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
-	"github.com/rapp992/gleipnir/internal/execution/run"
 )
 
 // toolResolver resolves a single MCP tool by dot-notation name. Used by

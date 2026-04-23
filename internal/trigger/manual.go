@@ -7,9 +7,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/httputil"
-	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/execution/run"
+	"github.com/rapp992/gleipnir/internal/http/httputil"
+	"github.com/rapp992/gleipnir/internal/model"
 )
 
 // ManualTriggerHandler handles POST /api/v1/policies/{policyID}/trigger.

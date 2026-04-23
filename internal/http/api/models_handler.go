@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/rapp992/gleipnir/internal/httputil"
+	"github.com/rapp992/gleipnir/internal/http/httputil"
 	"github.com/rapp992/gleipnir/internal/llm"
 )
 

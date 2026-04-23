@@ -73,7 +73,7 @@ In both cases, construct a `run.LaunchParams` with the correct `TriggerType` and
 
 ### 10. Register the route (if HTTP-driven)
 
-**File:** `internal/api/router.go`
+**File:** `internal/http/api/router.go`
 
 - Add the handler to the `RouterConfig` struct
 - Register the route in `BuildRouter()` — external triggers (no auth) go near the webhook handler; internal triggers (auth required) go near the manual trigger handler
