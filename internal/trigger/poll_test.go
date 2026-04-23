@@ -513,6 +513,98 @@ agent:
 `, name, intervalStr)
 }
 
+// hangingToolServer starts a test HTTP server that behaves as a minimal MCP
+// server until tools/call, at which point it blocks until the request context
+// is cancelled. This simulates an unresponsive MCP server for timeout tests.
+// initialize and notifications/initialized succeed immediately so the test
+// exercises the CallTool timeout, not the handshake path.
+func hangingToolServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		method, _ := req["method"].(string)
+		switch method {
+		case "tools/list":
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]any{
+					"tools": []map[string]any{{
+						"name":        "check",
+						"description": "poll check tool",
+						"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+					}},
+				},
+			})
+		case "tools/call":
+			// Block until the client cancels the request — simulates a hung MCP server.
+			<-r.Context().Done()
+		default:
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"jsonrpc": "2.0", "id": req["id"],
+				"result": map[string]any{},
+			})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestPoller_CheckTimeout_CancelsCallTool verifies that when the check tool
+// server hangs, the per-evaluation timeout (derived from the poll interval)
+// cancels the call within one interval, no run is launched, and
+// poller.Wait() returns promptly after the parent context is cancelled.
+func TestPoller_CheckTimeout_CancelsCallTool(t *testing.T) {
+	mcpSrv := hangingToolServer(t)
+	store, registry := setupPollerFixture(t, mcpSrv)
+
+	yamlStr := pollPolicyYAML("poll-timeout", "100ms")
+	insertTestPollPolicy(t, store, "pol-timeout", "poll-timeout", yamlStr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	manager := run.NewRunManager()
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	poller := trigger.NewPoller(store, launcher, registry, resolver)
+
+	if err := poller.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait several poll intervals to give the poller multiple chances to
+	// attempt and time out the hanging tool call.
+	time.Sleep(600 * time.Millisecond)
+
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{
+		PolicyID: "pol-timeout", Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Errorf("expected no runs when tool hangs (timed out), got %d", len(runs))
+	}
+
+	// Cancel the parent context and confirm the poll goroutine exits promptly,
+	// proving it is not wedged inside CallTool.
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		poller.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Goroutines exited cleanly.
+	case <-time.After(3 * time.Second):
+		t.Error("poller.Wait() did not return within 3s after context cancel — poll goroutine may be wedged")
+	}
+}
+
 // TestPoller_SkipsLoop_WhenNoSystemDefaultAndNoModelInYAML verifies that when
 // the system default model is unset (sql.ErrNoRows) and the policy YAML omits
 // the model block, startPollLoopLocked does not register the loop and no run
