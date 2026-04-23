@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
 	"github.com/rapp992/gleipnir/internal/timeout"
@@ -51,7 +52,7 @@ func TestFeedbackHandler_Wait_ResponseReceived(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	steps, err := s.ListRunSteps(context.Background(), "run1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestFeedbackHandler_Wait_Timeout_HandlerWins(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	steps, err := s.ListRunSteps(context.Background(), "run1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -187,7 +188,7 @@ func TestFeedbackHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 	}
 
 	// Exactly one error step (written by the scanner, not by the handler).
-	steps, err := s.ListRunSteps(context.Background(), "run1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -260,7 +261,7 @@ func TestFeedbackHandler_HandleAskOperator_FeedbackDisabled(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	steps, err := s.ListRunSteps(context.Background(), "run1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -305,7 +306,7 @@ func TestFeedbackHandler_HandleAskOperator_MissingReason(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	steps, err := s.ListRunSteps(context.Background(), "run1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}

@@ -272,10 +272,46 @@ func (h *RunsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, summary)
 }
 
+// defaultStepsLimit is the number of steps returned when the client does not
+// specify a limit. It keeps the initial page fast while covering most runs.
+const defaultStepsLimit = int64(500)
+
+// maxStepsLimit caps the limit a client may request in a single call. This
+// prevents a single request from pulling an arbitrarily large result set.
+const maxStepsLimit = int64(1000)
+
 // ListSteps handles GET /api/v1/runs/{runID}/steps.
+// Query params:
+//   - after  — step_number cursor (exclusive); any value < 0 means "from the beginning". Default: -1.
+//   - limit  — max steps to return; clamped to [1, 1000]. Default: 500.
 func (h *RunsHandler) ListSteps(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	runID := chi.URLParam(r, "runID")
+
+	q := r.URL.Query()
+
+	// Parse the cursor. Any absent, unparsable, or negative value defaults to -1
+	// (from beginning), matching the sentinel used in the SQL query.
+	after := int64(-1)
+	if v := q.Get("after"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			after = n
+		}
+	}
+
+	// Parse and clamp limit.
+	limit := defaultStepsLimit
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			limit = n
+		}
+	}
+	if limit < 1 {
+		limit = defaultStepsLimit
+	}
+	if limit > maxStepsLimit {
+		limit = maxStepsLimit
+	}
 
 	// Guard: ListRunSteps returns an empty slice for a nonexistent run, so we
 	// need a separate existence check to distinguish "no steps" from "no run".
@@ -289,7 +325,11 @@ func (h *RunsHandler) ListSteps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	steps, err := h.store.ListRunSteps(ctx, runID)
+	steps, err := h.store.ListRunSteps(ctx, db.ListRunStepsParams{
+		RunID: runID,
+		After: after,
+		Limit: limit,
+	})
 	if err != nil {
 		slog.Error("ListRunSteps query failed", "run_id", runID, "err", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")

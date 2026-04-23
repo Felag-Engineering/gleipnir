@@ -21,6 +21,11 @@ import (
 	"github.com/rapp992/gleipnir/internal/timeout"
 )
 
+// listAll is the sentinel page-size used by tests that want every step for a
+// run. The agent tests pre-date cursor pagination (ListRunSteps gained
+// After/Limit params) and assert on the full step list.
+const listAll = int64(10_000)
+
 // makeToolCallServer starts an httptest.Server that responds to tools/call
 // JSON-RPC requests with the given content payload and isError flag.
 func makeToolCallServer(t *testing.T, content json.RawMessage, isError bool) *httptest.Server {
@@ -313,7 +318,7 @@ func TestHandleToolCall(t *testing.T) {
 			// matches the spec: tool_call must have "tool_name" and "server_id";
 			// tool_result must have "tool_name" and "is_error".
 			if tc.name == "successful_call" {
-				steps, err := s.ListRunSteps(context.Background(), "run1")
+				steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 				if err != nil {
 					t.Fatalf("ListRunSteps: %v", err)
 				}
@@ -389,7 +394,7 @@ func TestRun_SingleTurnEndTurn(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -456,7 +461,7 @@ func TestRun_ToolCallLoop(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -566,7 +571,7 @@ func TestRun_MissingCapabilityFailsFast(t *testing.T) {
 	}
 
 	// An error step with code missing_capability and the tool name in the message must exist.
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -612,7 +617,7 @@ func TestRun_ToolNotFound(t *testing.T) {
 		t.Fatal("expected error for tool not found, got nil")
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -681,7 +686,7 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 		t.Fatal("expected token budget error, got nil")
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -727,7 +732,7 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -796,7 +801,7 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 		t.Errorf("MCP server called %d times; want 0 (schema violation blocks execution)", serverCallCount)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -865,7 +870,7 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 		t.Errorf("MCP server called %d times; want 0 (rejection blocks execution)", serverCallCount)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -958,7 +963,7 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 		t.Errorf("MCP server called %d times, want 1", mcpCallCount)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -1021,7 +1026,7 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 		t.Fatalf("Run returned unexpected error: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -1037,7 +1042,7 @@ func TestRun_Cancellation(t *testing.T) {
 	// and message "run cancelled" exists in the audit trail for the given run.
 	assertCancelledStep := func(t *testing.T, s *db.Store, runID string) {
 		t.Helper()
-		steps, err := s.ListRunSteps(context.Background(), runID)
+		steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: runID, After: -1, Limit: listAll})
 		if err != nil {
 			t.Fatalf("ListRunSteps: %v", err)
 		}
@@ -1677,7 +1682,7 @@ func TestRunAPILoop_EndTurn(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	steps, dbErr := s.ListRunSteps(context.Background(), "r1")
+	steps, dbErr := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if dbErr != nil {
 		t.Fatalf("ListRunSteps: %v", dbErr)
 	}
@@ -1715,7 +1720,7 @@ func TestLogAuditError(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	steps, dbErr := s.ListRunSteps(context.Background(), "run1")
+	steps, dbErr := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
 	if dbErr != nil {
 		t.Fatalf("ListRunSteps: %v", dbErr)
 	}
@@ -1779,7 +1784,7 @@ func TestHandleToolCall_AskOperator_Success(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -1889,7 +1894,7 @@ func TestHandleToolCall_AskOperator_NotAvailableWhenDisabled(t *testing.T) {
 	}
 
 	// At least one error step must exist.
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -1954,7 +1959,7 @@ func TestHandleToolCall_AskOperator_ReasonRequired(t *testing.T) {
 	}
 
 	// An error step with schema_violation code must exist.
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -2109,7 +2114,7 @@ func TestRun_feedback_timeout(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -2151,7 +2156,7 @@ func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -2251,7 +2256,7 @@ func countErrorStepsForRun(t *testing.T, s *db.Store, runID string) int {
 		t.Fatalf("CountRunSteps %s: %v", runID, err)
 	}
 	// CountRunSteps returns all steps; we need only error steps.
-	steps, err := s.ListRunSteps(context.Background(), runID)
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: runID, After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps %s: %v", runID, err)
 	}
@@ -2685,7 +2690,7 @@ func TestRun_ThinkingTokensIncludedInCost(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -2789,7 +2794,7 @@ func TestRun_MCPTransportError_BecomesToolResult(t *testing.T) {
 		t.Errorf("MCP tools/call count = %d, want 1", callCount)
 	}
 
-	steps, err := s.ListRunSteps(context.Background(), "r1")
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}

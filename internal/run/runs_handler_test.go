@@ -766,6 +766,151 @@ func TestRunsHandler_ListSteps(t *testing.T) {
 	}
 }
 
+// decodeStepEnvelope decodes the JSON response from ListSteps.
+func decodeStepEnvelope(t *testing.T, body *strings.Reader) []run.StepSummary {
+	t.Helper()
+	var env struct {
+		Data []run.StepSummary `json:"data"`
+	}
+	if err := json.NewDecoder(body).Decode(&env); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return env.Data
+}
+
+func TestRunsHandler_ListSteps_Pagination(t *testing.T) {
+	type paginationCase struct {
+		name      string
+		setup     func(t *testing.T, store *db.Store)
+		runID     string
+		query     string
+		wantCode  int
+		wantCount int
+		checkFn   func(t *testing.T, steps []run.StepSummary)
+	}
+
+	insertNSteps := func(t *testing.T, store *db.Store, runID string, n int) {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			insertTestStep(t, store, fmt.Sprintf("%s-step-%d", runID, i), runID, int64(i))
+		}
+	}
+
+	cases := []paginationCase{
+		{
+			name: "limit caps page size",
+			setup: func(t *testing.T, store *db.Store) {
+				testutil.InsertPolicy(t, store, "p-lim", "policy-p-lim", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-lim", "p-lim", model.RunStatusComplete)
+				insertNSteps(t, store, "r-lim", 5)
+			},
+			runID:     "r-lim",
+			query:     "?limit=2",
+			wantCode:  http.StatusOK,
+			wantCount: 2,
+			checkFn: func(t *testing.T, steps []run.StepSummary) {
+				// First page should start from step_number 0.
+				if steps[0].StepNumber != 0 {
+					t.Errorf("steps[0].StepNumber = %d, want 0", steps[0].StepNumber)
+				}
+				if steps[1].StepNumber != 1 {
+					t.Errorf("steps[1].StepNumber = %d, want 1", steps[1].StepNumber)
+				}
+			},
+		},
+		{
+			name: "after cursor returns next page",
+			setup: func(t *testing.T, store *db.Store) {
+				testutil.InsertPolicy(t, store, "p-cur", "policy-p-cur", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-cur", "p-cur", model.RunStatusComplete)
+				insertNSteps(t, store, "r-cur", 5)
+			},
+			runID:     "r-cur",
+			query:     "?after=1&limit=2",
+			wantCode:  http.StatusOK,
+			wantCount: 2,
+			checkFn: func(t *testing.T, steps []run.StepSummary) {
+				if steps[0].StepNumber != 2 {
+					t.Errorf("steps[0].StepNumber = %d, want 2", steps[0].StepNumber)
+				}
+				if steps[1].StepNumber != 3 {
+					t.Errorf("steps[1].StepNumber = %d, want 3", steps[1].StepNumber)
+				}
+			},
+		},
+		{
+			name: "after past end returns empty",
+			setup: func(t *testing.T, store *db.Store) {
+				testutil.InsertPolicy(t, store, "p-past", "policy-p-past", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-past", "p-past", model.RunStatusComplete)
+				insertNSteps(t, store, "r-past", 3)
+			},
+			runID:     "r-past",
+			query:     "?after=10",
+			wantCode:  http.StatusOK,
+			wantCount: 0,
+		},
+		{
+			name: "invalid limit falls back to default",
+			setup: func(t *testing.T, store *db.Store) {
+				testutil.InsertPolicy(t, store, "p-inv", "policy-p-inv", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-inv", "p-inv", model.RunStatusComplete)
+				insertNSteps(t, store, "r-inv", 3)
+			},
+			runID:    "r-inv",
+			query:    "?limit=abc",
+			wantCode: http.StatusOK,
+			// Default limit (500) covers all 3 inserted steps.
+			wantCount: 3,
+		},
+		{
+			name: "limit clamped to max 1000",
+			setup: func(t *testing.T, store *db.Store) {
+				testutil.InsertPolicy(t, store, "p-clamp", "policy-p-clamp", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-clamp", "p-clamp", model.RunStatusComplete)
+				// 5 steps is well under 1000 so this verifies the cap doesn't
+				// prevent returning real data; a higher-volume test lives in stress_test.go.
+				insertNSteps(t, store, "r-clamp", 5)
+			},
+			runID:     "r-clamp",
+			query:     "?limit=5000",
+			wantCode:  http.StatusOK,
+			wantCount: 5,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			if tc.setup != nil {
+				tc.setup(t, store)
+			}
+
+			h := run.NewRunsHandler(store, run.NewRunManager(), nil)
+			router := newRunsRouter(h)
+
+			url := "/api/v1/runs/" + tc.runID + "/steps" + tc.query
+			req := httptest.NewRequest(http.MethodGet, url, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d; body: %s", w.Code, tc.wantCode, w.Body.String())
+			}
+
+			if tc.wantCode == http.StatusOK {
+				steps := decodeStepEnvelope(t, strings.NewReader(w.Body.String()))
+				if len(steps) != tc.wantCount {
+					t.Errorf("len(steps) = %d, want %d", len(steps), tc.wantCount)
+				}
+				if tc.checkFn != nil {
+					tc.checkFn(t, steps)
+				}
+			}
+		})
+	}
+}
+
 func TestRunsHandler_Cancel(t *testing.T) {
 	type cancelSuccessBody struct {
 		Data map[string]string `json:"data"`

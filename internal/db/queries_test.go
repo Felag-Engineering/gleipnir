@@ -983,7 +983,7 @@ func TestRunStepQueries(t *testing.T) {
 		t.Fatalf("CreateRunStep 3: %v", err)
 	}
 
-	steps, err := s.ListRunSteps(ctx, "run1")
+	steps, err := s.ListRunSteps(ctx, ListRunStepsParams{RunID: "run1", After: -1, Limit: 100})
 	if err != nil {
 		t.Fatalf("ListRunSteps: %v", err)
 	}
@@ -995,6 +995,26 @@ func TestRunStepQueries(t *testing.T) {
 		if step.StepNumber != want {
 			t.Errorf("ListRunSteps[%d].StepNumber = %d, want %d", i, step.StepNumber, want)
 		}
+	}
+
+	// Cursor pagination: after=1 with limit=2 should return steps 2 only (step_number 2).
+	cursorSteps, err := s.ListRunSteps(ctx, ListRunStepsParams{RunID: "run1", After: 1, Limit: 2})
+	if err != nil {
+		t.Fatalf("ListRunSteps cursor: %v", err)
+	}
+	if len(cursorSteps) != 1 {
+		t.Errorf("ListRunSteps cursor: got %d, want 1 (only step_number 2)", len(cursorSteps))
+	} else if cursorSteps[0].StepNumber != 2 {
+		t.Errorf("ListRunSteps cursor: step_number = %d, want 2", cursorSteps[0].StepNumber)
+	}
+
+	// Cursor past the end returns empty.
+	emptySteps, err := s.ListRunSteps(ctx, ListRunStepsParams{RunID: "run1", After: 100, Limit: 100})
+	if err != nil {
+		t.Fatalf("ListRunSteps past end: %v", err)
+	}
+	if len(emptySteps) != 0 {
+		t.Errorf("ListRunSteps past end: got %d, want 0", len(emptySteps))
 	}
 
 	latest, err := s.GetLatestRunStep(ctx, "run1")
