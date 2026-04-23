@@ -110,7 +110,7 @@ In Gleipnir, go to **Settings → MCP Servers → Add Server** twice:
 
 Use the **service name** as the hostname (`gcal-mcp`, `mealie-mcp`) when Gleipnir and the MCP servers are on the same Docker Compose network. Use the host IP and port numbers when they are on different hosts or Compose projects.
 
-After adding each server, click **Discover**. Note the exact tool names returned — the policy YAML below references `gcal.list_events`, `mealie.get_recipes`, `mealie.get_recipe_detailed`, and `mealie.create_mealplan_bulk`. If Discover returns different names, update the `tool:` entries in the policy YAML to match before saving.
+After adding each server, click **Discover**. Note the exact tool names returned — the policy YAML below references `gcal.list_events`, `mealie.get_recipes`, and `mealie.create_mealplan_bulk`. If Discover returns different names, update the `tool:` entries in the policy YAML to match before saving.
 
 ## Step 5 — Create the policy
 
@@ -141,7 +141,6 @@ capabilities:
   tools:
     - tool: gcal.list_events
     - tool: mealie.get_recipes
-    - tool: mealie.get_recipe_detailed
     - tool: mealie.create_mealplan_bulk
       approval: required
       timeout: 30m
@@ -160,22 +159,23 @@ agent:
     or a restaurant name. Evenings without such an event need
     a recipe assigned.
 
-    For each evening that needs a recipe:
-      1. Call mealie.get_recipes to browse available recipes.
-      2. Call mealie.get_recipe_detailed on your chosen recipe
-         to confirm it exists and retrieve its details.
-    Avoid assigning the same recipe more than once in the week.
+    For each evening that needs a recipe, call mealie.get_recipes
+    to browse available recipes. Each result includes an "id"
+    (UUID) and "name" — that is all you need. Do not attempt to
+    fetch full recipe details. Avoid assigning the same recipe
+    more than once in the week.
 
     Once you have a recipe for every unplanned evening, call
-    mealie.create_mealplan_bulk to create all the meal plan
-    entries at once. Use entry type "dinner" for each.
+    mealie.create_mealplan_bulk with one entry per evening:
+    { date, recipe_id, entry_type: "dinner" }. Pass the "id"
+    field from get_recipes directly as recipe_id.
 
     If you are unsure which calendar to read, or uncertain about
     a dietary constraint, use the feedback channel to ask the
     operator before proceeding.
   limits:
     max_tokens_per_run: 30000
-    max_tool_calls_per_run: 40
+    max_tool_calls_per_run: 20
   concurrency: skip
 ```
 
