@@ -197,6 +197,51 @@ Because `trigger.type: scheduled` is one-shot, the easiest way to test without c
 
 Once you have confirmed the agent produces a correct plan, update the scheduled policy's `fire_at` list with real timestamps for future weeks.
 
+## Extensions
+
+### Avoid recently cooked meals
+
+The base policy only avoids repeating a recipe within the current week, so the same dish could appear two weeks in a row. To extend the lookback window, add `mealie.get_all_mealplans` to `capabilities.tools` and extend the agent task:
+
+```yaml
+capabilities:
+  tools:
+    - tool: mealie.get_all_mealplans   # add this
+    - tool: gcal.list_events
+    - tool: mealie.get_recipes
+    - tool: mealie.create_mealplan_bulk
+      approval: required
+      timeout: 30m
+      on_timeout: reject
+```
+
+Then prepend to the agent task:
+
+```
+Before selecting recipes, call mealie.get_all_mealplans to retrieve
+the meal plans for the past 3 weeks. Extract the recipe IDs already
+used in that window and exclude them from your selections this week.
+```
+
+`get_all_mealplans` accepts `startDate` and `endDate` parameters — pass the date 21 days ago and today to limit the response to recent history.
+
+### Calendar busyness-aware recipe selection
+
+The `gcal.list_events` response already includes full event details for each evening — start time, end time, and how many events are on the calendar. The agent can use this to calibrate recipe complexity: suggest something quick on a packed evening and something more involved when the calendar is clear.
+
+Extend the agent task with guidance on how to interpret busyness:
+
+```
+When selecting a recipe for each evening, also look at how many
+calendar events that day has and how late they run:
+- Evenings with events ending after 18:30, or 3+ events during
+  the day: prefer recipes tagged "quick" or with totalTime under
+  30 minutes if that information is available.
+- Evenings with no events after 17:00: any recipe is suitable.
+```
+
+This requires no additional tools or capabilities — the calendar data is already in context from the `gcal.list_events` call made earlier in the run.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
