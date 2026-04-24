@@ -1,6 +1,6 @@
 # Scheduler Dispatcher — Design
 
-This document describes the centralized scheduler dispatcher introduced by [ADR-036](../ADR_Tracker.md#adr-036-centralized-scheduler-dispatcher). It is the design reference for anyone adding a new timed primitive, modifying the scheduled or poll triggers, or migrating to a multi-node HA implementation.
+This document describes the centralized scheduler dispatcher introduced by [ADR-036](ADR_Tracker.md#adr-036-centralized-scheduler-dispatcher). It is the design reference for anyone adding a new timed primitive, modifying the scheduled or poll triggers, or migrating to a multi-node HA implementation.
 
 ## Purpose
 
@@ -336,7 +336,7 @@ All options reuse the existing callers and handlers verbatim. The in-memory choi
 
 ## References
 
-- [ADR-036 — Centralized scheduler dispatcher](../ADR_Tracker.md#adr-036-centralized-scheduler-dispatcher) — the decision record
-- [ADR-014 — Poll trigger MCP client architecture](../ADR_Tracker.md) — the poll trigger's original design
-- [ADR-016 — SSE over WebSockets](../ADR_Tracker.md#adr-016-real-time-ui-transport-sse-over-websockets) — shares the "interface-based, swappable for HA" design principle
+- [ADR-036 — Centralized scheduler dispatcher](ADR_Tracker.md#adr-036-centralized-scheduler-dispatcher) — the decision record
+- [ADR-014 — Poll trigger MCP client architecture](ADR_Tracker.md) — the poll trigger's original design
+- [ADR-016 — SSE over WebSockets](ADR_Tracker.md#adr-016-real-time-ui-transport-sse-over-websockets) — shares the "interface-based, swappable for HA" design principle
 - [`docs/developer/adding-a-trigger-type.md`](adding-a-trigger-type.md) — will be updated alongside Phase 2 of the migration to reflect the dispatcher-based handler pattern

@@ -138,7 +138,7 @@ internal/
   trigger/            — trigger dispatch only: webhook, manual, scheduled, poll, and cron handlers (imports execution/run/ for launching)
 ```
 
-**ADRs:** Architectural decisions are referenced in docs/ADR_Tracker.md, decisions should be tracked there and this document should be updated anytime architectural decisions are made. Do not reference in source code but do reference in commit messages and PR messages.
+**ADRs:** Architectural decisions are referenced in docs/developer/ADR_Tracker.md, decisions should be tracked there and this document should be updated anytime architectural decisions are made. Do not reference in source code but do reference in commit messages and PR messages.
 
 ## Code style
 
