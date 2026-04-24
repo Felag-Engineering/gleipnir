@@ -4,10 +4,9 @@ Gleipnir is a self-hosted runner for AI agents that quietly handle work you'd ra
 
 ## What you can do with it
 
-- **Plan the week's meals.** Checks your calendar for nights without dinner plans, picks recipes for the empty slots, and drops the grocery list into Google Keep. → [Playbook](docs/playbooks/meal-planning.md)
+- **Plan the week's meals.** Checks your calendar for nights without dinner plans, picks recipes from Mealie for the empty slots, and schedules them in your meal plan. → [Playbook](docs/playbooks/meal-planning/README.md)
 - **Keep your homelab up when hardware fails.** Watches Uptime Kuma for outages, stands the affected service back up on a different host, and updates DNS so users never notice. → [Playbook](docs/playbooks/homelab-failover.md)
-- **Weekly budget check-in.** Reviews the week's transactions in Actual Budget, flags anything unusual, and updates category notes. → [Playbook](docs/playbooks/budget-checkin.md)
-- **Research your own todo list.** Finds Todoist tasks tagged `research`, gathers context, and updates each task with what it found. → [Playbook](docs/playbooks/todoist-research.md)
+- **Research your own todo list.** Finds Todoist tasks tagged `research`, gathers context, and updates each task with what it found. → [Playbook](docs/playbooks/todoist-research/README.md)
 
 ## How it stays safe
 
