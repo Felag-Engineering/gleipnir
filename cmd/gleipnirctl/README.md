@@ -2,10 +2,10 @@
 
 gleipnirctl is the local admin CLI for Gleipnir. It provides direct database-level operations for maintenance and recovery tasks that require the server to be stopped or that need to bypass the web UI.
 
-All commands run as one-off containers using:
+All commands run as one-off containers against the `api` service (which has the correct volume mounts and environment already configured):
 
 ```bash
-docker compose run --rm gleipnirctl <command> [flags]
+docker compose run --rm api gleipnirctl <command> [flags]
 ```
 
 ## When to use it vs the web UI
@@ -59,14 +59,14 @@ openssl rand -hex 32
 **2. Stop the server:**
 
 ```bash
-docker compose stop gleipnir
+docker compose stop api
 ```
 
-**3. Run the rotation using the same service config** (`docker compose run` inherits the correct volume mounts automatically):
+**3. Run the rotation** (`docker compose run` inherits the volume mounts and environment from the `api` service automatically):
 
 ```bash
 printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
-  docker compose run --rm gleipnirctl rotate-key --old - --new -
+  docker compose run --rm api gleipnirctl rotate-key --old - --new -
 ```
 
 Keys are piped via stdin so they never appear in process listings or shell history. On success you'll see:
@@ -80,7 +80,7 @@ re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets
 **5. Bring the server back up:**
 
 ```bash
-docker compose up -d gleipnir
+docker compose up -d api
 ```
 
 ### Dry run
@@ -89,7 +89,7 @@ Before committing to a live rotation, use `--dry-run` to validate that the old k
 
 ```bash
 printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
-  docker compose run --rm gleipnirctl rotate-key --old - --new - --dry-run
+  docker compose run --rm api gleipnirctl rotate-key --old - --new - --dry-run
 ```
 
 Output on success:
@@ -102,7 +102,7 @@ re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets (dry-run;
 Keys passed as flag values are visible in `/proc/<pid>/cmdline` and shell history — the command will warn you when this is detected. Acceptable for local dev; avoid in production:
 
 ```bash
-docker compose run --rm gleipnirctl rotate-key --old <current-key> --new <new-key>
+docker compose run --rm api gleipnirctl rotate-key --old <current-key> --new <new-key>
 ```
 
 ### Flags

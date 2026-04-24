@@ -21,13 +21,13 @@ Use the `gleipnirctl rotate-key` subcommand to re-encrypt all secrets under a ne
 
 2. **Stop the server:**
    ```bash
-   docker compose stop gleipnir
+   docker compose stop api
    ```
 
 3. **Run the rotation** (pipe keys via stdin to avoid shell history exposure):
    ```bash
    printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
-     docker compose run --rm gleipnirctl rotate-key --old - --new -
+     docker compose run --rm api gleipnirctl rotate-key --old - --new -
    ```
    On success you'll see something like:
    ```
@@ -38,7 +38,7 @@ Use the `gleipnirctl rotate-key` subcommand to re-encrypt all secrets under a ne
 
 5. **Bring the server back up:**
    ```bash
-   docker compose up -d gleipnir
+   docker compose up -d api
    ```
 
 Before committing to a live rotation, use `--dry-run` to validate that the old key decrypts every ciphertext without writing anything:

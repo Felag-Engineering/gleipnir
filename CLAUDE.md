@@ -42,9 +42,10 @@ npm run storybook        # Storybook on port 6006
 
 **Encryption key rotation:** To rotate `GLEIPNIR_ENCRYPTION_KEY`, stop the server first and run:
 ```bash
-gleipnirctl rotate-key --old <hex|base64> --new <hex|base64> [--dry-run]
+docker compose stop api
+printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | docker compose run --rm api gleipnirctl rotate-key --old - --new -
 ```
-This re-encrypts all at-rest secrets (provider API keys, OpenAI-compat keys, webhook secrets) in a single transaction. Use `--dry-run` to validate the old key covers every ciphertext without committing changes. Both `--old` and `--new` accept `"-"` to read the key from stdin (one line each) so the key does not appear in shell history.
+This re-encrypts all at-rest secrets (provider API keys, OpenAI-compat keys, webhook secrets) in a single transaction. Use `--dry-run` to validate the old key covers every ciphertext without committing changes. See `cmd/gleipnirctl/README.md` for full usage.
 
 ## Stack
 
@@ -101,6 +102,9 @@ See `docs/architecture.md` for the full package dependency graph (Mermaid diagra
 schemas/
   policy.yaml         — schema that defines how policies will be stored
   sql_schemas.sql     — schema that explains the different tables in our datastore
+
+cmd/
+  gleipnirctl/        — local admin CLI; direct DB-level maintenance operations (rotate-key, and planned: reset-password, create-user, list-users, purge-runs, verify-keys, check). Run via `docker compose run --rm api gleipnirctl <command>`.
 
 internal/
   approval/           — approval-specific timeout wiring (thin wrapper over timeout/)
