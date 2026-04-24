@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/admin"
-	"github.com/rapp992/gleipnir/internal/config"
+	"github.com/rapp992/gleipnir/internal/infra/config"
 	"github.com/rapp992/gleipnir/internal/db"
 	runpkg "github.com/rapp992/gleipnir/internal/execution/run"
 	"github.com/rapp992/gleipnir/internal/http/api"

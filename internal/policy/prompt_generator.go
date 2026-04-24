@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/config"
+	"github.com/rapp992/gleipnir/internal/infra/config"
 	"github.com/rapp992/gleipnir/internal/model"
 )
 

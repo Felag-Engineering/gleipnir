@@ -98,9 +98,7 @@ schemas/
 
 internal/
   approval/           — approval-specific timeout wiring (thin wrapper over timeout/)
-  config/             — environment variable loading (leaf package, no internal imports)
   db/                 — sqlc-generated data access layer; queries live in internal/db/queries/
-  event/              — event system for internal pub/sub
   execution/          — agent runtime subsystem
     agent/            — BoundAgent runner, LLM API loop, audit writer
     run/              — run lifecycle: RunManager (goroutine tracking), RunLauncher (concurrency + launch), AgentFactory, RunsHandler (HTTP endpoints for run inspection/control), sentinel concurrency errors
@@ -111,15 +109,18 @@ internal/
     auth/             — authentication, sessions, user management, role middleware
     httputil/         — shared HTTP response helpers (JSON envelope encoding)
     sse/              — Server-Sent Events broadcaster
+  infra/              — cross-cutting leaf packages; no internal imports
+    config/           — environment variable loading
+    event/            — Publisher interface for internal pub/sub
+    logctx/           — context-based structured log correlation (run_id + policy_id)
+    metrics/          — custom Prometheus registry, histogram bucket presets (BucketsFast/BucketsSlow), shared label constants, Handler()/Registry() accessors (ADR-037)
   llm/                — LLM provider abstraction (ADR-026)
     anthropic/        — Anthropic API client
     factory/          — NewClientForProvider: maps a provider name string to a concrete LLMClient; lives in its own sub-package to avoid the cycle caused by provider packages importing internal/llm
     google/           — Google AI client
     openai/           — OpenAI API client
     openaicompat/     — OpenAI-compatible provider loader (bootstraps third-party OpenAI-compatible backends)
-  logctx/             — context-based structured log correlation (run_id + policy_id); leaf package, no internal imports
   mcp/                — MCP HTTP client, tool registry, capability tags
-  metrics/            — custom Prometheus registry, histogram bucket presets (BucketsFast/BucketsSlow), shared label constants, Handler()/Registry() accessors; leaf package, no internal imports (ADR-037)
   model/              — domain types (Policy, Run, RunStep, ApprovalRequest, enums, ...)
   policy/             — YAML parser, validator, system prompt renderer
   testutil/           — shared test helpers

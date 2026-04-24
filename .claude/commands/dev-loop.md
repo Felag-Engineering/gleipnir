@@ -212,7 +212,7 @@ After the implementation is approved, check whether the changes require updates 
 
 **Check `CLAUDE.md` if any of these changed:**
 - New or renamed packages under `internal/` → update Key packages section
-- New environment variables in `internal/config/config.go` → update Environment variables table
+- New environment variables in `internal/infra/config/config.go` → update Environment variables table
 - New API routes in `internal/api/router.go` (via `BuildRouter`) or `main.go` → update Key API surface section
 - New trigger types, run states, step types, or roles in `internal/model/model.go` → update Core domain concepts
 - New settled architectural decisions (new ADR referenced in commit) → update Settled architectural decisions

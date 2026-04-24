@@ -7,7 +7,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/rapp992/gleipnir/internal/logctx"
+	"github.com/rapp992/gleipnir/internal/infra/logctx"
 	"github.com/rapp992/gleipnir/internal/model"
 )
 

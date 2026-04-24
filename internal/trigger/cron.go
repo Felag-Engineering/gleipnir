@@ -12,7 +12,7 @@ import (
 
 	cronlib "github.com/robfig/cron/v3"
 
-	"github.com/rapp992/gleipnir/internal/config"
+	"github.com/rapp992/gleipnir/internal/infra/config"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/execution/run"
 	"github.com/rapp992/gleipnir/internal/model"

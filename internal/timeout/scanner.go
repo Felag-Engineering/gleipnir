@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/event"
+	"github.com/rapp992/gleipnir/internal/infra/event"
 	"github.com/rapp992/gleipnir/internal/execution/runstate"
 	"github.com/rapp992/gleipnir/internal/model"
 )

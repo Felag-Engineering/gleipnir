@@ -9,7 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	_ "github.com/rapp992/gleipnir/internal/execution/agent"
 	_ "github.com/rapp992/gleipnir/internal/execution/runstate"
-	"github.com/rapp992/gleipnir/internal/metrics"
+	"github.com/rapp992/gleipnir/internal/infra/metrics"
 	_ "github.com/rapp992/gleipnir/internal/timeout"
 )
 
