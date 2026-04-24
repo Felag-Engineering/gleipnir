@@ -7,6 +7,10 @@ interface Props {
   expanded: boolean
   onToggle: () => void
   usedBy?: string[]
+  // Enable/disable controls — only rendered when canManage is true.
+  canManage?: boolean
+  onSetEnabled?: (enabled: boolean) => void
+  isUpdatingEnabled?: boolean
 }
 
 interface ParsedParam {
@@ -31,11 +35,20 @@ function paramCountLabel(count: number): string {
   return `${count} param${count === 1 ? '' : 's'}`
 }
 
-export function ToolAccordionRow({ tool, expanded, onToggle, usedBy }: Props) {
+export function ToolAccordionRow({
+  tool,
+  expanded,
+  onToggle,
+  usedBy,
+  canManage,
+  onSetEnabled,
+  isUpdatingEnabled,
+}: Props) {
   const params = parseParams(tool.input_schema)
+  const isDisabled = tool.enabled === false
 
   return (
-    <div className={styles.row}>
+    <div className={`${styles.row} ${isDisabled ? styles.rowDisabled : ''}`}>
       <button
         type="button"
         className={`${styles.toggle} ${expanded ? styles.toggleExpanded : ''}`}
@@ -49,6 +62,7 @@ export function ToolAccordionRow({ tool, expanded, onToggle, usedBy }: Props) {
           &#9654;
         </span>
         <span className={styles.toolName}>{tool.name}</span>
+        {isDisabled && <span className={styles.disabledBadge}>Disabled</span>}
         <span className={styles.paramHint}>{paramCountLabel(params.length)}</span>
       </button>
 
@@ -75,6 +89,20 @@ export function ToolAccordionRow({ tool, expanded, onToggle, usedBy }: Props) {
               {usedBy.map((name) => (
                 <span key={name} className={styles.agentPill}>{name}</span>
               ))}
+            </div>
+          )}
+          {canManage && onSetEnabled && (
+            <div className={styles.toggleEnabledRow}>
+              <button
+                type="button"
+                className={styles.toggleEnabledBtn}
+                onClick={() => onSetEnabled(!tool.enabled)}
+                disabled={isUpdatingEnabled}
+              >
+                {isUpdatingEnabled
+                  ? isDisabled ? 'Enabling...' : 'Disabling...'
+                  : isDisabled ? 'Enable tool' : 'Disable tool'}
+              </button>
             </div>
           )}
         </div>

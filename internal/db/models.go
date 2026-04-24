@@ -46,6 +46,7 @@ type McpTool struct {
 	Description string `json:"description"`
 	InputSchema string `json:"input_schema"`
 	CreatedAt   string `json:"created_at"`
+	Enabled     int64  `json:"enabled"`
 }
 
 type ModelSetting struct {

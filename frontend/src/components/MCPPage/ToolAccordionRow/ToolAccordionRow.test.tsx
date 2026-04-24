@@ -15,6 +15,7 @@ const echoTool: ApiMcpTool = {
     required: ['message'],
     type: 'object',
   },
+  enabled: true,
 }
 
 const noParamTool: ApiMcpTool = {
@@ -23,6 +24,7 @@ const noParamTool: ApiMcpTool = {
   name: 'get_current_time',
   description: 'Return the current UTC time.',
   input_schema: { properties: {}, type: 'object' },
+  enabled: true,
 }
 
 const multiParamTool: ApiMcpTool = {
@@ -38,6 +40,7 @@ const multiParamTool: ApiMcpTool = {
     required: ['channel', 'message'],
     type: 'object',
   },
+  enabled: true,
 }
 
 const emptySchema: ApiMcpTool = {
@@ -46,6 +49,16 @@ const emptySchema: ApiMcpTool = {
   name: 'broken_tool',
   description: 'Has no schema.',
   input_schema: {},
+  enabled: true,
+}
+
+const disabledTool: ApiMcpTool = {
+  id: 't5',
+  server_id: 'srv-1',
+  name: 'delete_everything',
+  description: 'Destructive tool pending review.',
+  input_schema: { properties: {}, type: 'object' },
+  enabled: false,
 }
 
 const noop = () => {}
@@ -104,5 +117,68 @@ describe('ToolAccordionRow', () => {
     render(<ToolAccordionRow tool={echoTool} expanded={false} onToggle={onToggle} />)
     fireEvent.click(screen.getByRole('button'))
     expect(onToggle).toHaveBeenCalledOnce()
+  })
+
+  it('renders Disabled badge when enabled is false', () => {
+    render(<ToolAccordionRow tool={disabledTool} expanded={false} onToggle={noop} />)
+    expect(screen.getByText('Disabled')).toBeInTheDocument()
+  })
+
+  it('does not render Disabled badge when enabled is true', () => {
+    render(<ToolAccordionRow tool={echoTool} expanded={false} onToggle={noop} />)
+    expect(screen.queryByText('Disabled')).not.toBeInTheDocument()
+  })
+
+  it('applies muted styling class when disabled', () => {
+    const { container } = render(
+      <ToolAccordionRow tool={disabledTool} expanded={false} onToggle={noop} />,
+    )
+    // The outer row element should carry the rowDisabled class.
+    const row = container.firstChild as HTMLElement
+    expect(row.className).toMatch(/rowDisabled/)
+  })
+
+  it('calls onSetEnabled with true when Enable clicked on a disabled tool', () => {
+    const onSetEnabled = vi.fn()
+    render(
+      <ToolAccordionRow
+        tool={disabledTool}
+        expanded={true}
+        onToggle={noop}
+        canManage={true}
+        onSetEnabled={onSetEnabled}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /enable tool/i }))
+    expect(onSetEnabled).toHaveBeenCalledWith(true)
+  })
+
+  it('calls onSetEnabled with false when Disable clicked on an enabled tool', () => {
+    const onSetEnabled = vi.fn()
+    render(
+      <ToolAccordionRow
+        tool={echoTool}
+        expanded={true}
+        onToggle={noop}
+        canManage={true}
+        onSetEnabled={onSetEnabled}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /disable tool/i }))
+    expect(onSetEnabled).toHaveBeenCalledWith(false)
+  })
+
+  it('hides toggle button when canManage is false', () => {
+    render(
+      <ToolAccordionRow
+        tool={echoTool}
+        expanded={true}
+        onToggle={noop}
+        canManage={false}
+        onSetEnabled={noop as unknown as (enabled: boolean) => void}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /disable tool/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /enable tool/i })).not.toBeInTheDocument()
   })
 })

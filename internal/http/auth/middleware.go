@@ -56,6 +56,18 @@ func UserFromContext(ctx context.Context) (*UserContext, bool) {
 	return u, ok
 }
 
+// WithUserContext returns a copy of ctx with the given UserContext injected.
+// Intended for use in tests that need to simulate an authenticated request
+// without going through the full auth middleware stack.
+func WithUserContext(ctx context.Context, id, username string, roles []string) context.Context {
+	return context.WithValue(ctx, contextKey{}, &UserContext{
+		ID:       id,
+		Username: username,
+		Roles:    roles,
+		roleSet:  makeRoleSet(roles),
+	})
+}
+
 // RequireAuth returns a Chi middleware that validates the gleipnir_session
 // cookie. Unauthenticated or expired sessions receive a 401 and the handler
 // chain is short-circuited. Valid sessions inject a *UserContext into the

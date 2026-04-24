@@ -150,6 +150,7 @@ export interface ApiMcpTool {
   name: string
   description: string
   input_schema: Record<string, unknown>
+  enabled: boolean
 }
 
 // --- Settings ---

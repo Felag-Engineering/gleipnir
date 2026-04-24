@@ -33,7 +33,7 @@ func (q *Queries) DeleteMCPToolsByServer(ctx context.Context, serverID string) e
 }
 
 const getMCPTool = `-- name: GetMCPTool :one
-SELECT id, server_id, name, description, input_schema, created_at FROM mcp_tools WHERE id = ?1
+SELECT id, server_id, name, description, input_schema, created_at, enabled FROM mcp_tools WHERE id = ?1
 `
 
 func (q *Queries) GetMCPTool(ctx context.Context, id string) (McpTool, error) {
@@ -46,12 +46,13 @@ func (q *Queries) GetMCPTool(ctx context.Context, id string) (McpTool, error) {
 		&i.Description,
 		&i.InputSchema,
 		&i.CreatedAt,
+		&i.Enabled,
 	)
 	return i, err
 }
 
 const getMCPToolByServerAndName = `-- name: GetMCPToolByServerAndName :one
-SELECT t.id, t.server_id, t.name, t.description, t.input_schema, t.created_at
+SELECT t.id, t.server_id, t.name, t.description, t.input_schema, t.created_at, t.enabled
 FROM mcp_tools t
 JOIN mcp_servers s ON t.server_id = s.id
 WHERE s.name = ?1 AND t.name = ?2
@@ -72,14 +73,54 @@ func (q *Queries) GetMCPToolByServerAndName(ctx context.Context, arg GetMCPToolB
 		&i.Description,
 		&i.InputSchema,
 		&i.CreatedAt,
+		&i.Enabled,
 	)
 	return i, err
 }
 
-const listMCPToolsByServer = `-- name: ListMCPToolsByServer :many
-SELECT id, server_id, name, description, input_schema, created_at FROM mcp_tools WHERE server_id = ?1 ORDER BY name ASC
+const listEnabledMCPToolsByServer = `-- name: ListEnabledMCPToolsByServer :many
+SELECT id, server_id, name, description, input_schema, created_at, enabled FROM mcp_tools WHERE server_id = ?1 AND enabled = 1 ORDER BY name ASC
 `
 
+// Returns only enabled tools. Used by the capability registry API so policy
+// authors never see disabled tools in the form.
+func (q *Queries) ListEnabledMCPToolsByServer(ctx context.Context, serverID string) ([]McpTool, error) {
+	rows, err := q.db.QueryContext(ctx, listEnabledMCPToolsByServer, serverID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []McpTool
+	for rows.Next() {
+		var i McpTool
+		if err := rows.Scan(
+			&i.ID,
+			&i.ServerID,
+			&i.Name,
+			&i.Description,
+			&i.InputSchema,
+			&i.CreatedAt,
+			&i.Enabled,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMCPToolsByServer = `-- name: ListMCPToolsByServer :many
+SELECT id, server_id, name, description, input_schema, created_at, enabled FROM mcp_tools WHERE server_id = ?1 ORDER BY name ASC
+`
+
+// Returns all tools including disabled ones. Used by RefreshTools (which must
+// diff against every existing row) and the admin management endpoint.
 func (q *Queries) ListMCPToolsByServer(ctx context.Context, serverID string) ([]McpTool, error) {
 	rows, err := q.db.QueryContext(ctx, listMCPToolsByServer, serverID)
 	if err != nil {
@@ -96,6 +137,7 @@ func (q *Queries) ListMCPToolsByServer(ctx context.Context, serverID string) ([]
 			&i.Description,
 			&i.InputSchema,
 			&i.CreatedAt,
+			&i.Enabled,
 		); err != nil {
 			return nil, err
 		}
@@ -110,13 +152,27 @@ func (q *Queries) ListMCPToolsByServer(ctx context.Context, serverID string) ([]
 	return items, nil
 }
 
+const setMCPToolEnabled = `-- name: SetMCPToolEnabled :exec
+UPDATE mcp_tools SET enabled = ?1 WHERE id = ?2
+`
+
+type SetMCPToolEnabledParams struct {
+	Enabled int64  `json:"enabled"`
+	ID      string `json:"id"`
+}
+
+func (q *Queries) SetMCPToolEnabled(ctx context.Context, arg SetMCPToolEnabledParams) error {
+	_, err := q.db.ExecContext(ctx, setMCPToolEnabled, arg.Enabled, arg.ID)
+	return err
+}
+
 const upsertMCPTool = `-- name: UpsertMCPTool :one
 INSERT INTO mcp_tools (id, server_id, name, description, input_schema, created_at)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 ON CONFLICT (server_id, name) DO UPDATE SET
     description  = excluded.description,
     input_schema = excluded.input_schema
-RETURNING id, server_id, name, description, input_schema, created_at
+RETURNING id, server_id, name, description, input_schema, created_at, enabled
 `
 
 type UpsertMCPToolParams struct {
@@ -145,6 +201,7 @@ func (q *Queries) UpsertMCPTool(ctx context.Context, arg UpsertMCPToolParams) (M
 		&i.Description,
 		&i.InputSchema,
 		&i.CreatedAt,
+		&i.Enabled,
 	)
 	return i, err
 }

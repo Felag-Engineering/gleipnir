@@ -21,13 +21,13 @@ const server: ApiMcpServer = {
 }
 
 const tools: ApiMcpTool[] = [
-  { id: 't1', server_id: 'srv1', name: 'echo', description: 'Echo message.', input_schema: {} },
-  { id: 't2', server_id: 'srv1', name: 'get_current_time', description: 'Get time.', input_schema: {} },
-  { id: 't3', server_id: 'srv1', name: 'get_system_status', description: 'Get status.', input_schema: {} },
-  { id: 't4', server_id: 'srv1', name: 'list_items', description: 'List items.', input_schema: {} },
-  { id: 't5', server_id: 'srv1', name: 'send_notification', description: 'Send notification.', input_schema: {} },
-  { id: 't6', server_id: 'srv1', name: 'update_item_stock', description: 'Update stock.', input_schema: {} },
-  { id: 't7', server_id: 'srv1', name: 'write_file', description: 'Write file.', input_schema: {} },
+  { id: 't1', server_id: 'srv1', name: 'echo', description: 'Echo message.', input_schema: {}, enabled: true },
+  { id: 't2', server_id: 'srv1', name: 'get_current_time', description: 'Get time.', input_schema: {}, enabled: true },
+  { id: 't3', server_id: 'srv1', name: 'get_system_status', description: 'Get status.', input_schema: {}, enabled: true },
+  { id: 't4', server_id: 'srv1', name: 'list_items', description: 'List items.', input_schema: {}, enabled: true },
+  { id: 't5', server_id: 'srv1', name: 'send_notification', description: 'Send notification.', input_schema: {}, enabled: true },
+  { id: 't6', server_id: 'srv1', name: 'update_item_stock', description: 'Update stock.', input_schema: {}, enabled: true },
+  { id: 't7', server_id: 'srv1', name: 'write_file', description: 'Write file.', input_schema: {}, enabled: true },
 ]
 
 export const Healthy: Story = {

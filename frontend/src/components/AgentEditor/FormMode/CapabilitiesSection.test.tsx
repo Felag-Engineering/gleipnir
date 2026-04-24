@@ -36,6 +36,7 @@ const FIXTURE_TOOLS_SRV1: ApiMcpTool[] = [
     name: 'read_file',
     description: 'Read the contents of a file at the given path',
     input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    enabled: true,
   },
   {
     id: 'tool-2',
@@ -47,6 +48,7 @@ const FIXTURE_TOOLS_SRV1: ApiMcpTool[] = [
       properties: { path: { type: 'string' }, content: { type: 'string' } },
       required: ['path', 'content'],
     },
+    enabled: true,
   },
 ]
 
@@ -61,6 +63,7 @@ const FIXTURE_TOOLS_SRV2: ApiMcpTool[] = [
       properties: { repo: { type: 'string' }, title: { type: 'string' } },
       required: ['repo', 'title'],
     },
+    enabled: true,
   },
 ]
 
