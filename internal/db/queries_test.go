@@ -539,6 +539,110 @@ func TestMCPToolQueries(t *testing.T) {
 	}
 }
 
+func TestMCPToolEnabledQueries(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	insertMcpServer(t, s, "srv2")
+
+	// Newly inserted tools default to enabled = 1.
+	tool1, err := s.UpsertMCPTool(ctx, UpsertMCPToolParams{
+		ID:          "etool1",
+		ServerID:    "srv2",
+		Name:        "alpha",
+		Description: "first",
+		InputSchema: "{}",
+		CreatedAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertMCPTool: %v", err)
+	}
+	if tool1.Enabled != 1 {
+		t.Errorf("new tool enabled = %d, want 1", tool1.Enabled)
+	}
+
+	// Insert a second tool so we can compare filtered vs unfiltered.
+	_, err = s.UpsertMCPTool(ctx, UpsertMCPToolParams{
+		ID:          "etool2",
+		ServerID:    "srv2",
+		Name:        "beta",
+		Description: "second",
+		InputSchema: "{}",
+		CreatedAt:   now,
+	})
+	if err != nil {
+		t.Fatalf("UpsertMCPTool beta: %v", err)
+	}
+
+	// SetMCPToolEnabled toggles enabled 1 → 0.
+	if err := s.SetMCPToolEnabled(ctx, SetMCPToolEnabledParams{ID: "etool1", Enabled: 0}); err != nil {
+		t.Fatalf("SetMCPToolEnabled(0): %v", err)
+	}
+	got, err := s.GetMCPTool(ctx, "etool1")
+	if err != nil {
+		t.Fatalf("GetMCPTool after disable: %v", err)
+	}
+	if got.Enabled != 0 {
+		t.Errorf("after disable: enabled = %d, want 0", got.Enabled)
+	}
+
+	// Rediscovery upsert (same server+name) must NOT reset enabled back to 1.
+	if _, err := s.UpsertMCPTool(ctx, UpsertMCPToolParams{
+		ID:          "etool1-new",
+		ServerID:    "srv2",
+		Name:        "alpha",
+		Description: "refreshed desc",
+		InputSchema: `{"type":"object"}`,
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatalf("UpsertMCPTool rediscovery: %v", err)
+	}
+	got, err = s.GetMCPTool(ctx, "etool1")
+	if err != nil {
+		t.Fatalf("GetMCPTool after rediscovery upsert: %v", err)
+	}
+	if got.Enabled != 0 {
+		t.Errorf("after rediscovery upsert: enabled reset to %d, want 0 (operator flag must survive)", got.Enabled)
+	}
+	if got.Description != "refreshed desc" {
+		t.Errorf("after rediscovery: description = %q, want refreshed desc", got.Description)
+	}
+
+	// ListEnabledMCPToolsByServer returns only enabled rows.
+	enabled, err := s.ListEnabledMCPToolsByServer(ctx, "srv2")
+	if err != nil {
+		t.Fatalf("ListEnabledMCPToolsByServer: %v", err)
+	}
+	if len(enabled) != 1 {
+		t.Fatalf("ListEnabledMCPToolsByServer: got %d tools, want 1", len(enabled))
+	}
+	if enabled[0].Name != "beta" {
+		t.Errorf("ListEnabledMCPToolsByServer: got %q, want beta", enabled[0].Name)
+	}
+
+	// ListMCPToolsByServer returns all rows including disabled.
+	all, err := s.ListMCPToolsByServer(ctx, "srv2")
+	if err != nil {
+		t.Fatalf("ListMCPToolsByServer: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("ListMCPToolsByServer: got %d tools, want 2", len(all))
+	}
+
+	// SetMCPToolEnabled toggles 0 → 1 (re-enable).
+	if err := s.SetMCPToolEnabled(ctx, SetMCPToolEnabledParams{ID: "etool1", Enabled: 1}); err != nil {
+		t.Fatalf("SetMCPToolEnabled(1): %v", err)
+	}
+	got, err = s.GetMCPTool(ctx, "etool1")
+	if err != nil {
+		t.Fatalf("GetMCPTool after re-enable: %v", err)
+	}
+	if got.Enabled != 1 {
+		t.Errorf("after re-enable: enabled = %d, want 1", got.Enabled)
+	}
+}
+
 func TestPolicyQueries(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

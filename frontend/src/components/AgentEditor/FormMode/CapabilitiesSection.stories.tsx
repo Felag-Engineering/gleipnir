@@ -34,6 +34,7 @@ const FIXTURE_TOOLS_SRV1: ApiMcpTool[] = [
     name: 'read_file',
     description: 'Read the contents of a file at the given path',
     input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    enabled: true,
   },
   {
     id: 'tool-2',
@@ -45,6 +46,7 @@ const FIXTURE_TOOLS_SRV1: ApiMcpTool[] = [
       properties: { path: { type: 'string' }, content: { type: 'string' } },
       required: ['path', 'content'],
     },
+    enabled: true,
   },
   {
     id: 'tool-3',
@@ -52,6 +54,7 @@ const FIXTURE_TOOLS_SRV1: ApiMcpTool[] = [
     name: 'list_directory',
     description: 'List files and directories at the given path',
     input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    enabled: true,
   },
 ];
 
@@ -70,6 +73,7 @@ const FIXTURE_TOOLS_SRV2: ApiMcpTool[] = [
       },
       required: ['repo', 'title'],
     },
+    enabled: true,
   },
   {
     id: 'tool-5',
@@ -77,6 +81,7 @@ const FIXTURE_TOOLS_SRV2: ApiMcpTool[] = [
     name: 'list_issues',
     description: 'List open issues for a GitHub repository',
     input_schema: { type: 'object', properties: { repo: { type: 'string' } }, required: ['repo'] },
+    enabled: true,
   },
 ];
 

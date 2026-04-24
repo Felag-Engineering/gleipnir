@@ -20,5 +20,6 @@ func All() []Migration {
 		&DeleteUserPrefDefaultModel{},
 		&AddRunsVersion{},
 		&AddCronTriggerType{},
+		&AddMCPToolEnabled{},
 	}
 }

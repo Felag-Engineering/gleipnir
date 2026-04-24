@@ -10,6 +10,7 @@ import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 // --- Mocks ---
 
 vi.mock('@/hooks/queries/servers')
+vi.mock('@/hooks/queries/users')
 vi.mock('@/hooks/mutations/servers')
 vi.mock('@tanstack/react-query', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-query')>()
@@ -20,7 +21,8 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
 })
 
 import { useMcpServers } from '@/hooks/queries/servers'
-import { useAddMcpServer, useDeleteMcpServer, useDiscoverMcpServer, useTestMcpConnection } from '@/hooks/mutations/servers'
+import { useCurrentUser } from '@/hooks/queries/users'
+import { useAddMcpServer, useDeleteMcpServer, useDiscoverMcpServer, useTestMcpConnection, useSetMcpToolEnabled } from '@/hooks/mutations/servers'
 import { useQueries } from '@tanstack/react-query'
 
 // --- Fixtures ---
@@ -53,6 +55,7 @@ const TOOL_1: ApiMcpTool = {
     required: ['namespace'],
     type: 'object',
   },
+  enabled: true,
 }
 
 const TOOL_2: ApiMcpTool = {
@@ -61,6 +64,7 @@ const TOOL_2: ApiMcpTool = {
   name: 'kubectl.delete_pod',
   description: 'Delete a pod.',
   input_schema: { properties: {}, type: 'object' },
+  enabled: true,
 }
 
 // --- Helpers ---
@@ -80,11 +84,16 @@ function renderPage(queryClient = makeQueryClient()) {
 }
 
 function mockNoopMutations() {
-  const noop = { mutate: vi.fn(), isPending: false, error: null, reset: vi.fn() }
+  const noop = { mutate: vi.fn(), isPending: false, error: null, reset: vi.fn(), variables: undefined }
   vi.mocked(useAddMcpServer).mockReturnValue(noop as unknown as ReturnType<typeof useAddMcpServer>)
   vi.mocked(useDeleteMcpServer).mockReturnValue(noop as unknown as ReturnType<typeof useDeleteMcpServer>)
   vi.mocked(useDiscoverMcpServer).mockReturnValue(noop as unknown as ReturnType<typeof useDiscoverMcpServer>)
   vi.mocked(useTestMcpConnection).mockReturnValue(noop as unknown as ReturnType<typeof useTestMcpConnection>)
+  vi.mocked(useSetMcpToolEnabled).mockReturnValue(noop as unknown as ReturnType<typeof useSetMcpToolEnabled>)
+  vi.mocked(useCurrentUser).mockReturnValue({
+    data: { id: 'u1', username: 'operator', roles: ['operator'] },
+    status: 'success',
+  } as ReturnType<typeof useCurrentUser>)
 }
 
 function mockServersLoaded(servers: ApiMcpServer[], toolsByServer: Map<string, ApiMcpTool[]> = new Map()) {

@@ -5,6 +5,7 @@ import type { ApiMcpServer, ApiMcpTool, ApiPolicyListItem } from '@/api/types'
 import { ToolAccordionRow } from '@/components/MCPPage/ToolAccordionRow'
 import { SkeletonBlock } from '@/components/SkeletonBlock'
 import { formatTimeAgo } from '@/utils/format'
+import { useSetMcpToolEnabled } from '@/hooks/mutations/servers'
 import styles from './ServerDetailModal.module.css'
 
 interface Props {
@@ -13,6 +14,10 @@ interface Props {
   toolsLoading: boolean
   isDiscovering: boolean
   policies: ApiPolicyListItem[] | undefined
+  // canManage controls whether enable/disable toggles are shown.
+  // Derived from the current user's roles in MCPPage and passed as a prop
+  // to keep this component controlled and prop-driven.
+  canManage: boolean
   onClose: () => void
   onDiscover: (serverId: string) => void
   onDelete: (server: ApiMcpServer, toolCount: number) => void
@@ -44,10 +49,12 @@ export function ServerDetailModal({
   toolsLoading,
   isDiscovering,
   policies,
+  canManage,
   onClose,
   onDiscover,
   onDelete,
 }: Props) {
+  const setToolEnabledMutation = useSetMcpToolEnabled()
   const [expandedToolId, setExpandedToolId] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const toolCount = tools?.length ?? 0
@@ -190,6 +197,14 @@ export function ServerDetailModal({
                     expanded={expandedToolId === tool.id}
                     onToggle={() => setExpandedToolId(expandedToolId === tool.id ? null : tool.id)}
                     usedBy={usedBy}
+                    canManage={canManage}
+                    onSetEnabled={(enabled) =>
+                      setToolEnabledMutation.mutate({ serverId: server.id, toolId: tool.id, enabled })
+                    }
+                    isUpdatingEnabled={
+                      setToolEnabledMutation.isPending &&
+                      setToolEnabledMutation.variables?.toolId === tool.id
+                    }
                   />
                 )
               })

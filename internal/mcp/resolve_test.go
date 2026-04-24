@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 )
 
@@ -275,5 +276,89 @@ func TestResolveForPolicy_ToolsOrdered(t *testing.T) {
 	}
 	if result[2].ToolName != "tool_c" {
 		t.Errorf("result[2].ToolName = %q, want tool_c", result[2].ToolName)
+	}
+}
+
+func TestResolveForPolicy_DisabledTool(t *testing.T) {
+	reg, store := newTestRegistry(t)
+
+	tools := []map[string]any{
+		{"name": "read_pods", "description": "list pods", "inputSchema": map[string]any{"type": "object"}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServer: %v", err)
+	}
+
+	// Fetch the tool ID so we can disable it.
+	registered, err := store.Queries().GetMCPToolByServerAndName(context.Background(), db.GetMCPToolByServerAndNameParams{
+		ServerName: "my-server",
+		ToolName:   "read_pods",
+	})
+	if err != nil {
+		t.Fatalf("GetMCPToolByServerAndName: %v", err)
+	}
+
+	if err := store.Queries().SetMCPToolEnabled(context.Background(), db.SetMCPToolEnabledParams{
+		ID:      registered.ID,
+		Enabled: 0,
+	}); err != nil {
+		t.Fatalf("SetMCPToolEnabled: %v", err)
+	}
+
+	p := &model.ParsedPolicy{
+		Capabilities: model.CapabilitiesConfig{
+			Tools: []model.ToolCapability{
+				{Tool: "my-server.read_pods", Approval: model.ApprovalModeNone},
+			},
+		},
+	}
+
+	_, err = reg.ResolveForPolicy(context.Background(), p)
+	if err == nil {
+		t.Fatal("expected error for disabled tool, got nil")
+	}
+	if !strings.Contains(err.Error(), "read_pods") {
+		t.Errorf("error %q should mention tool name read_pods", err.Error())
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Errorf("error %q should contain the word 'disabled'", err.Error())
+	}
+}
+
+func TestResolveToolByName_DisabledTool(t *testing.T) {
+	reg, store := newTestRegistry(t)
+
+	tools := []map[string]any{
+		{"name": "read_pods", "description": "list pods", "inputSchema": map[string]any{"type": "object"}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServer: %v", err)
+	}
+
+	registered, err := store.Queries().GetMCPToolByServerAndName(context.Background(), db.GetMCPToolByServerAndNameParams{
+		ServerName: "my-server",
+		ToolName:   "read_pods",
+	})
+	if err != nil {
+		t.Fatalf("GetMCPToolByServerAndName: %v", err)
+	}
+
+	if err := store.Queries().SetMCPToolEnabled(context.Background(), db.SetMCPToolEnabledParams{
+		ID:      registered.ID,
+		Enabled: 0,
+	}); err != nil {
+		t.Fatalf("SetMCPToolEnabled: %v", err)
+	}
+
+	_, _, err = reg.ResolveToolByName(context.Background(), "my-server.read_pods")
+	if err == nil {
+		t.Fatal("expected error for disabled tool, got nil")
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Errorf("error %q should contain the word 'disabled'", err.Error())
 	}
 }
