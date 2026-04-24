@@ -71,11 +71,47 @@ trigger:
 
 
   # --- webhook ---
-  # No additional configuration. The webhook URL is derived from the policy
-  # ID and surfaced in the policy detail view:
+  # The webhook URL is derived from the policy ID and surfaced in the policy
+  # detail view:
   #   POST /api/v1/webhooks/:policy_id
   # The request body (any JSON) becomes the trigger payload, delivered to
   # the agent as the first user message.
+
+  # auth: hmac | bearer | none — optional, default: hmac
+  #   Authentication mode for incoming webhook requests.
+  #   hmac   — HMAC-SHA256 signature in X-Gleipnir-Signature header
+  #   bearer — opaque secret in Authorization: Bearer header
+  #   none   — unauthenticated (use only for internal/trusted sources)
+  auth: hmac
+
+  # match: all | any — optional, default: all
+  #   How multiple checks are combined when filtering webhook payloads.
+  #   all: every check must pass (AND). any: at least one must pass (OR).
+  #   Only evaluated when at least one check is configured; ignored otherwise.
+  match: all
+
+  # checks: list — optional (omit to fire on every webhook request)
+  #   Payload filter: each check evaluates a JSONPath expression against the
+  #   incoming JSON body. Payloads that do not satisfy the checks return
+  #   200 OK {"data":{"filtered":true}} without launching a run.
+  #   Unlike poll checks, webhook checks operate directly on the request
+  #   body — no MCP tool is called, and the "tool" field must be omitted.
+  #
+  #   Example: only fire when Uptime Kuma reports a service DOWN
+  #     match: all
+  #     checks:
+  #       - path: "$.heartbeat.status"
+  #         equals: 0
+  #
+  checks:
+    - path: "$.field"              # JSONPath into the webhook request body
+      equals: "value"              # exactly one comparator per check
+      # Comparators (exactly one required per check):
+      #   equals:       exact match (string, number, bool)
+      #   not_equals:   negated exact match
+      #   greater_than: numeric greater-than
+      #   less_than:    numeric less-than
+      #   contains:     substring match (strings only)
 
 
   # --- manual ---

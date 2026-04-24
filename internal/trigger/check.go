@@ -167,6 +167,53 @@ func toString(v any) string {
 	return string(b)
 }
 
+// evaluateBodyCheck applies a PollCheck against a raw JSON request body.
+// Unlike evaluateCheck it parses the body directly — no MCP content-array
+// unwrapping. Used for webhook payload filtering.
+func evaluateBodyCheck(body []byte, check model.PollCheck) bool {
+	parsed, err := oj.Parse(body)
+	if err != nil {
+		return false
+	}
+	expr, err := jp.ParseString(check.Path)
+	if err != nil {
+		return false
+	}
+	results := expr.Get(parsed)
+	if len(results) == 0 {
+		return false
+	}
+	matched := results[0]
+	switch check.Comparator {
+	case model.ComparatorEquals:
+		return compareEqual(matched, check.Value)
+	case model.ComparatorNotEquals:
+		return !compareEqual(matched, check.Value)
+	case model.ComparatorGreaterThan:
+		return compareNumeric(matched, check.Value, func(a, b float64) bool { return a > b })
+	case model.ComparatorLessThan:
+		return compareNumeric(matched, check.Value, func(a, b float64) bool { return a < b })
+	case model.ComparatorContains:
+		return compareContains(matched, check.Value)
+	}
+	return false
+}
+
+// evaluateBodyChecks evaluates all checks against a raw JSON request body
+// and applies the match mode. Used for webhook payload filtering.
+func evaluateBodyChecks(body []byte, checks []model.PollCheck, match model.MatchMode) bool {
+	for _, check := range checks {
+		passed := evaluateBodyCheck(body, check)
+		if match == model.MatchAny && passed {
+			return true
+		}
+		if match == model.MatchAll && !passed {
+			return false
+		}
+	}
+	return match == model.MatchAll
+}
+
 // evaluateChecks runs all checks against pre-fetched tool results and applies
 // the match mode. For MatchAll, every check must pass. For MatchAny, at least
 // one must pass. Checks with a non-nil Err are treated as not-passed.

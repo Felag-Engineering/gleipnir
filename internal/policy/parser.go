@@ -156,6 +156,38 @@ func convertTrigger(r rawTrigger) model.TriggerConfig {
 		}
 	}
 
+	if tc.Type == model.TriggerTypeWebhook {
+		tc.Match = model.MatchMode(r.Match)
+		if tc.Match == "" {
+			tc.Match = model.MatchAll
+		}
+		for _, rc := range r.Checks {
+			check := model.PollCheck{
+				Path: rc.Path,
+				// Tool and Input are intentionally omitted: webhook checks
+				// evaluate the request body directly, not an MCP tool call.
+			}
+			switch {
+			case rc.Equals != nil:
+				check.Comparator = model.ComparatorEquals
+				check.Value = rc.Equals
+			case rc.NotEquals != nil:
+				check.Comparator = model.ComparatorNotEquals
+				check.Value = rc.NotEquals
+			case rc.GreaterThan != nil:
+				check.Comparator = model.ComparatorGreaterThan
+				check.Value = rc.GreaterThan
+			case rc.LessThan != nil:
+				check.Comparator = model.ComparatorLessThan
+				check.Value = rc.LessThan
+			case rc.Contains != nil:
+				check.Comparator = model.ComparatorContains
+				check.Value = rc.Contains
+			}
+			tc.Checks = append(tc.Checks, check)
+		}
+	}
+
 	return tc
 }
 
@@ -298,8 +330,8 @@ type rawTrigger struct {
 	WebhookSecret string     `yaml:"webhook_secret"` // rejected at save time; never propagated to TriggerConfig
 	Auth          string     `yaml:"auth"`           // webhook only: hmac | bearer | none
 	Interval      string     `yaml:"interval"`       // poll only, Go duration string (e.g. "5m")
-	Match         string     `yaml:"match"`          // poll only, "all" or "any", default: "all"
-	Checks        []rawCheck `yaml:"checks"`         // poll only, at least one required
+	Match         string     `yaml:"match"`          // poll and webhook: "all" or "any", default: "all"
+	Checks        []rawCheck `yaml:"checks"`         // poll: at least one required; webhook: optional body filter
 	CronExpr      string     `yaml:"cron_expr"`      // cron only, 5-field POSIX expression
 }
 

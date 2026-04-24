@@ -5,5 +5,6 @@ End-to-end setups for common Gleipnir automations. Each playbook includes the tr
 ## Available playbooks
 
 - [Plan the week's meals](meal-planning/README.md)
+- [Homelab DevOps operations](devops/README.md)
 - [Keep your homelab up when hardware fails](homelab-failover.md) — **Status: Planned**
 - [Research your own todo list](todoist-research/README.md)

@@ -1,0 +1,9 @@
+# caddy-mcp is a Go binary. Build from source; copy into a minimal runtime image.
+# The binary supports httpstream transport natively — no supergateway needed.
+FROM golang:1.24-alpine AS builder
+RUN go install github.com/lum8rjack/caddy-mcp@latest
+
+FROM alpine:latest
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /go/bin/caddy-mcp /usr/local/bin/caddy-mcp
+ENTRYPOINT ["/usr/local/bin/caddy-mcp"]

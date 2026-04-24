@@ -632,3 +632,103 @@ func TestWebhookHandler_Returns500_WhenNoDefaultModelAndPolicyOmitsModel(t *test
 		t.Errorf("expected body to contain %q, got: %s", "no default model configured", w.Body.String())
 	}
 }
+
+// webhookPolicyWithChecks has match: all and a single check on $.heartbeat.status equals 0.
+// This mirrors the Uptime Kuma DOWN-only use case described in the implementation plan.
+const webhookPolicyWithChecks = `
+name: test-checks-policy
+trigger:
+  type: webhook
+  auth: none
+  match: all
+  checks:
+    - path: "$.heartbeat.status"
+      equals: 0
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+`
+
+// webhookPolicyMatchAny has match: any and two checks — only one needs to pass.
+const webhookPolicyMatchAny = `
+name: test-matchany-policy
+trigger:
+  type: webhook
+  auth: none
+  match: any
+  checks:
+    - path: "$.heartbeat.status"
+      equals: 0
+    - path: "$.event"
+      equals: "alert"
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+`
+
+// TestWebhookHandler_PayloadFilter verifies that webhook checks filter incoming
+// payloads before launching a run.
+func TestWebhookHandler_PayloadFilter(t *testing.T) {
+	cases := []struct {
+		name       string
+		policyID   string
+		policyYAML string
+		body       string
+		wantStatus int
+		wantBody   string // optional substring
+	}{
+		{
+			name:       "DOWN payload matches check — run launched",
+			policyID:   "p-filter-down",
+			policyYAML: webhookPolicyWithChecks,
+			body:       `{"heartbeat":{"status":0}}`,
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name:       "UP payload does not match — filtered with 200",
+			policyID:   "p-filter-up",
+			policyYAML: webhookPolicyWithChecks,
+			body:       `{"heartbeat":{"status":1}}`,
+			wantStatus: http.StatusOK,
+			wantBody:   `"filtered":true`,
+		},
+		{
+			name:       "match=any with one passing check — run launched",
+			policyID:   "p-filter-any-pass",
+			policyYAML: webhookPolicyMatchAny,
+			// Only the second check passes (event=alert); status is 1 (no match for first check)
+			body:       `{"heartbeat":{"status":1},"event":"alert"}`,
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name:       "match=any with no passing checks — filtered",
+			policyID:   "p-filter-any-fail",
+			policyYAML: webhookPolicyMatchAny,
+			body:       `{"heartbeat":{"status":1},"event":"ok"}`,
+			wantStatus: http.StatusOK,
+			wantBody:   `"filtered":true`,
+		},
+		{
+			name:       "invalid JSON body with checks configured — 400 (existing behaviour)",
+			policyID:   "p-filter-badjson",
+			policyYAML: webhookPolicyWithChecks,
+			body:       "not json",
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			insertTestPolicy(t, store, tc.policyID, tc.policyYAML)
+			h := newHandler(t, store, trigger.NewSecretLoader(store.Queries(), nil))
+			w := callHandler(t, h, tc.policyID, tc.body)
+			if w.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d; body: %s", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if tc.wantBody != "" && !strings.Contains(w.Body.String(), tc.wantBody) {
+				t.Errorf("body does not contain %q; got: %s", tc.wantBody, w.Body.String())
+			}
+		})
+	}
+}
