@@ -16,12 +16,13 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newShutdownCmd())
 	return root
 }
 
 func main() {
 	root := newRootCmd()
+	root.AddCommand(newRotateKeyCmd())
+	root.AddCommand(newResetPasswordCmd())
 	if err := root.Execute(); err != nil {
 		root.PrintErrln("error:", err)
 		os.Exit(1)
