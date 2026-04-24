@@ -33,14 +33,13 @@ var (
 )
 
 // newSeededPath creates a temp DB, seeds it with test data (all encrypted with
-// encKeyHex), closes the store, and returns the file path. The caller can then
-// open it separately — or let Run open it — without connection conflicts.
+// encKeyHex), closes the store, and returns the file path. The store is closed
+// so Rotate can open its own connection without SQLITE_BUSY.
 func newSeededPath(t *testing.T, encKeyHex string) string {
 	t.Helper()
 	s := testutil.NewTestStore(t)
 	seedDB(t, s, mustKey(encKeyHex))
 	path := storePath(t, s)
-	// Close so Run can open its own connection without SQLITE_BUSY.
 	s.Close()
 	return path
 }
@@ -147,8 +146,11 @@ func openForVerify(t *testing.T, path string) *db.Store {
 func TestRotate_RoundTripsAllThreeSecretTypes(t *testing.T) {
 	path := newSeededPath(t, keyA)
 
+	oldKey := mustKey(keyA)
+	newKey := mustKey(keyB)
+
 	var stdout, stderr bytes.Buffer
-	code := Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
+	code := Rotate(context.Background(), path, oldKey, newKey, false, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
 	}
@@ -169,8 +171,6 @@ func TestRotate_RoundTripsAllThreeSecretTypes(t *testing.T) {
 	defer s.Close()
 
 	ctx := context.Background()
-	newKey := mustKey(keyB)
-	oldKey := mustKey(keyA)
 
 	// Verify system_settings API keys decrypt with new key and not old key.
 	for _, key := range []string{"anthropic_api_key", "openai_api_key", "google_api_key"} {
@@ -251,11 +251,11 @@ func TestRotate_DryRunRollsBack(t *testing.T) {
 		origByKey[r.Key] = r.Value
 	}
 
-	// Close so Run can take the write lock.
+	// Close so Rotate can take the write lock.
 	s.Close()
 
 	var stdout, stderr bytes.Buffer
-	code := Run([]string{"--old", keyA, "--new", keyB, "--dry-run", "--db-path", path}, &stdout, &stderr)
+	code := Rotate(context.Background(), path, mustKey(keyA), mustKey(keyB), true, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
 	}
@@ -313,7 +313,7 @@ func TestRotate_WrongOldKeyFailsWithoutPartialWrites(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	// Try to rotate with keyA as old key — will fail when it hits openai_api_key.
-	code := Run([]string{"--old", keyA, "--new", keyC, "--db-path", path}, &stdout, &stderr)
+	code := Rotate(context.Background(), path, mustKey(keyA), mustKey(keyC), false, &stdout, &stderr)
 	if code == 0 {
 		t.Fatal("expected non-zero exit code on decrypt failure")
 	}
@@ -328,58 +328,6 @@ func TestRotate_WrongOldKeyFailsWithoutPartialWrites(t *testing.T) {
 	}
 	if _, err := admin.Decrypt(mustKey(keyA), row.Value); err != nil {
 		t.Errorf("anthropic_api_key should still decrypt with keyA after rollback: %v", err)
-	}
-}
-
-// TestRotate_RejectsInvalidKeys verifies that malformed key strings produce
-// exit code 2 with a clear error message.
-func TestRotate_RejectsInvalidKeys(t *testing.T) {
-	cases := []struct {
-		name    string
-		args    []string
-		wantMsg string
-	}{
-		{
-			name:    "bad hex in old",
-			args:    []string{"--old", "not-a-valid-key", "--new", keyB},
-			wantMsg: "parse --old key",
-		},
-		{
-			name:    "too short old key",
-			args:    []string{"--old", "aabbcc", "--new", keyB},
-			wantMsg: "parse --old key",
-		},
-		{
-			name:    "bad new key",
-			args:    []string{"--old", keyA, "--new", "not-valid"},
-			wantMsg: "parse --new key",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			code := Run(tc.args, &stdout, &stderr)
-			if code != 2 {
-				t.Errorf("expected exit 2, got %d", code)
-			}
-			if !strings.Contains(stderr.String(), tc.wantMsg) {
-				t.Errorf("expected %q in stderr, got: %q", tc.wantMsg, stderr.String())
-			}
-		})
-	}
-}
-
-// TestRotate_RejectsEqualKeys verifies that supplying the same key for --old
-// and --new exits with code 2 and a "nothing to do" message.
-func TestRotate_RejectsEqualKeys(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := Run([]string{"--old", keyA, "--new", keyA}, &stdout, &stderr)
-	if code != 2 {
-		t.Errorf("expected exit 2, got %d", code)
-	}
-	if !strings.Contains(stderr.String(), "nothing to do") {
-		t.Errorf("expected 'nothing to do' in stderr, got: %q", stderr.String())
 	}
 }
 
@@ -415,10 +363,10 @@ func TestRotate_ServerHoldingDBIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("holder INSERT: %v", err)
 	}
-	// Do NOT commit or roll back yet — the write lock must be held during Run.
+	// Do NOT commit or roll back yet — the write lock must be held during Rotate.
 
 	var stdout, stderr bytes.Buffer
-	code := Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
+	code := Rotate(ctx, path, mustKey(keyA), mustKey(keyB), false, &stdout, &stderr)
 	if code != 3 {
 		t.Errorf("expected exit 3 while DB is held, got %d; stderr: %s", code, stderr.String())
 	}
@@ -430,80 +378,16 @@ func TestRotate_ServerHoldingDBIsRefused(t *testing.T) {
 	_ = holderTx.Rollback()
 	holder.Close()
 
-	// Now rotate-key should succeed on an empty DB (no secrets to rotate).
+	// Now Rotate should succeed on an empty DB (no secrets to rotate).
 	stdout.Reset()
 	stderr.Reset()
-	code = Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
+	code = Rotate(ctx, path, mustKey(keyA), mustKey(keyB), false, &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("expected exit 0 after releasing holder, got %d; stderr: %s", code, stderr.String())
 	}
 }
 
-// TestRotate_ReadsKeysFromStdin verifies that "--old -" and "--new -" cause
-// the command to read key material from the supplied stdin reader.
-func TestRotate_ReadsKeysFromStdin(t *testing.T) {
-	path := newSeededPath(t, keyA)
-
-	// Supply both keys on stdin, one per line.
-	stdinContent := keyA + "\n" + keyB + "\n"
-	stdinReader := strings.NewReader(stdinContent)
-
-	var stdout, stderr bytes.Buffer
-	code := RunWithIO([]string{"--old", "-", "--new", "-", "--db-path", path}, stdinReader, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
-	}
-
-	// Verify rotation took effect: API keys now decrypt with keyB, not keyA.
-	s := openForVerify(t, path)
-	defer s.Close()
-
-	ctx := context.Background()
-	row, err := s.Queries().GetSystemSetting(ctx, "anthropic_api_key")
-	if err != nil {
-		t.Fatalf("get anthropic_api_key: %v", err)
-	}
-	if _, err := admin.Decrypt(mustKey(keyB), row.Value); err != nil {
-		t.Errorf("anthropic_api_key should decrypt with keyB after stdin rotation: %v", err)
-	}
-	if _, err := admin.Decrypt(mustKey(keyA), row.Value); err == nil {
-		t.Error("anthropic_api_key should no longer decrypt with keyA after stdin rotation")
-	}
-}
-
-// TestRotate_WarnsWhenKeysPassedViaFlags verifies that passing literal key
-// values via --old/--new emits a process-list leakage warning to stderr, and
-// that reading both keys from stdin suppresses the warning.
-func TestRotate_WarnsWhenKeysPassedViaFlags(t *testing.T) {
-	t.Run("flag values trigger warning", func(t *testing.T) {
-		path := newSeededPath(t, keyA)
-
-		var stdout, stderr bytes.Buffer
-		code := Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
-		if code != 0 {
-			t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
-		}
-		if !strings.Contains(stderr.String(), "visible in process listings") {
-			t.Errorf("expected process-list warning in stderr, got: %q", stderr.String())
-		}
-	})
-
-	t.Run("stdin keys suppress warning", func(t *testing.T) {
-		path := newSeededPath(t, keyA)
-
-		stdinReader := strings.NewReader(keyA + "\n" + keyB + "\n")
-		var stdout, stderr bytes.Buffer
-		code := RunWithIO([]string{"--old", "-", "--new", "-", "--db-path", path}, stdinReader, &stdout, &stderr)
-		if code != 0 {
-			t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
-		}
-		if strings.Contains(stderr.String(), "visible in process listings") {
-			t.Errorf("did not expect process-list warning in stderr when keys came from stdin, got: %q", stderr.String())
-		}
-	})
-}
-
-// TestRotate_StorePath uses a custom --db-path to verify the flag is respected.
+// TestRotate_StorePath verifies that Rotate opens the database at the supplied path.
 func TestRotate_StorePath(t *testing.T) {
 	// Use a separate temp dir so there is no pre-existing store.
 	dir := t.TempDir()
@@ -521,7 +405,7 @@ func TestRotate_StorePath(t *testing.T) {
 
 	// No secrets seeded — summary should show 0 for all counts.
 	var stdout, stderr bytes.Buffer
-	code := Run([]string{"--old", keyA, "--new", keyB, "--db-path", customPath}, &stdout, &stderr)
+	code := Rotate(context.Background(), customPath, mustKey(keyA), mustKey(keyB), false, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
 	}

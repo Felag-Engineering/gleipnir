@@ -1,45 +1,23 @@
 // Package main implements the gleipnirctl local admin CLI.
 //
-// rotate.go contains the core rotation logic: it re-encrypts every at-rest
-// secret in the database (provider API keys in system_settings, OpenAI-compat
-// provider keys, and per-policy webhook secrets) under a new AES-256-GCM key
-// in a single transaction. Run this command with the server stopped; the
-// command refuses to proceed if another process is holding the database write
-// lock.
+// rotate.go contains the core rotation logic: Rotate re-encrypts every
+// at-rest secret in the database (provider API keys in system_settings,
+// OpenAI-compat provider keys, and per-policy webhook secrets) under a new
+// AES-256-GCM key in a single transaction. The Cobra command wiring lives in
+// rotatekey.go. Run this operation with the server stopped; Rotate refuses to
+// proceed if another process holds the database write lock.
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/db"
 )
-
-// Run is the public entry point for the rotate-key subcommand. args are
-// already stripped of the leading "rotate-key" token. It writes human-readable
-// output to out and error messages to errOut, then returns a shell exit code:
-//   - 0  success
-//   - 1  unexpected error (I/O, DB)
-//   - 2  user error (bad flags, equal keys, invalid key format)
-//   - 3  DB held by another process
-func Run(args []string, out, errOut io.Writer) int {
-	return runWithIO(args, os.Stdin, out, errOut)
-}
-
-// RunWithIO is like Run but accepts an explicit stdin reader. It is exported
-// for integration tests that need to inject key material via stdin without
-// touching the real os.Stdin.
-func RunWithIO(args []string, stdin io.Reader, out, errOut io.Writer) int {
-	return runWithIO(args, stdin, out, errOut)
-}
 
 // Rotate re-encrypts all secrets under newKey. oldKey and newKey are already
 // parsed and validated by the caller. dbPath is the SQLite file to open.
@@ -121,92 +99,6 @@ func Rotate(ctx context.Context, dbPath string, oldKey, newKey []byte, dryRun bo
 	return 0
 }
 
-// runWithIO is the testable core: it accepts an explicit stdin reader so tests
-// can inject key material without touching the real stdin.
-func runWithIO(args []string, stdin io.Reader, out, errOut io.Writer) int {
-	fs := flag.NewFlagSet("rotate-key", flag.ContinueOnError)
-	fs.SetOutput(errOut)
-
-	var oldKeyFlag, newKeyFlag, dbPath string
-	var dryRun bool
-
-	fs.StringVar(&oldKeyFlag, "old", "", "current encryption key (hex or base64); use \"-\" to read from stdin (recommended — avoids process-list exposure)")
-	fs.StringVar(&newKeyFlag, "new", "", "new encryption key (hex or base64); use \"-\" to read from stdin (recommended — avoids process-list exposure)")
-	fs.BoolVar(&dryRun, "dry-run", false, "decrypt and re-encrypt in memory but roll back; validates the old key covers every ciphertext")
-
-	// Resolve default DB path: read env var, fall back to hardcoded default.
-	envDBPath := os.Getenv("GLEIPNIR_DB_PATH")
-	if envDBPath == "" {
-		envDBPath = defaultDBPath
-	}
-	fs.StringVar(&dbPath, "db-path", envDBPath, "path to the SQLite database file")
-
-	if err := fs.Parse(args); err != nil {
-		// flag already wrote the error to errOut
-		return 2
-	}
-
-	if oldKeyFlag == "" {
-		fmt.Fprintln(errOut, "error: --old is required")
-		return 2
-	}
-	if newKeyFlag == "" {
-		fmt.Fprintln(errOut, "error: --new is required")
-		return 2
-	}
-
-	// Record whether keys came in as literal values on the command line, so we
-	// can warn about process-list leakage after both keys are resolved.
-	oldFromFlag := oldKeyFlag != "" && oldKeyFlag != "-"
-	newFromFlag := newKeyFlag != "" && newKeyFlag != "-"
-
-	// Read key material from stdin when either flag is "-". If both are "-",
-	// we read old first, then new (one whitespace-trimmed line each).
-	stdinReader := bufio.NewReader(stdin)
-	if oldKeyFlag == "-" {
-		line, err := stdinReader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			fmt.Fprintf(errOut, "error: read --old from stdin: %v\n", err)
-			return 1
-		}
-		oldKeyFlag = strings.TrimSpace(line)
-	}
-	if newKeyFlag == "-" {
-		line, err := stdinReader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			fmt.Fprintf(errOut, "error: read --new from stdin: %v\n", err)
-			return 1
-		}
-		newKeyFlag = strings.TrimSpace(line)
-	}
-
-	oldKey, err := admin.ParseEncryptionKey(oldKeyFlag)
-	if err != nil {
-		fmt.Fprintf(errOut, "error: parse --old key: %v\n", err)
-		return 2
-	}
-	defer zero(oldKey)
-
-	newKey, err := admin.ParseEncryptionKey(newKeyFlag)
-	if err != nil {
-		fmt.Fprintf(errOut, "error: parse --new key: %v\n", err)
-		return 2
-	}
-	defer zero(newKey)
-
-	if oldFromFlag || newFromFlag {
-		fmt.Fprintln(errOut, "warning: keys passed via --old/--new flags are visible in process listings and shell history; prefer --old - and --new - to read from stdin")
-	}
-
-	if bytes.Equal(oldKey, newKey) {
-		fmt.Fprintln(errOut, "error: new key equals old key; nothing to do")
-		return 2
-	}
-
-	ctx := context.Background()
-	return Rotate(ctx, dbPath, oldKey, newKey, dryRun, out, errOut)
-}
-
 // rotateWithDryRun performs decrypt+re-encrypt for all three secret types
 // inside a single transaction. If dryRun is true the transaction is rolled back
 // so no changes are persisted; the returned counts still reflect what would
@@ -228,7 +120,7 @@ func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byt
 		return 0, 0, 0, fmt.Errorf("list api key settings: %w", err)
 	}
 	for _, row := range apiKeyRows {
-		// plaintext cannot be zeroed (Go string is immutable); key bytes are zeroed on return from runWithIO
+		// plaintext cannot be zeroed (Go string is immutable); key bytes are zeroed by the caller
 		plaintext, err := admin.Decrypt(oldKey, row.Value)
 		if err != nil {
 			return 0, 0, 0, fmt.Errorf("decrypt system_settings[%s]: %w", row.Key, err)
@@ -316,13 +208,4 @@ func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byt
 // driver. The driver surfaces the SQLite error mnemonic in the error text.
 func isBusy(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "sqlite_busy")
-}
-
-// zero overwrites b with zeros to reduce the window during which sensitive
-// bytes are readable in memory (e.g. from a core dump). This is best-effort
-// in Go because the GC may have already copied the slice.
-func zero(b []byte) {
-	for i := range b {
-		b[i] = 0
-	}
 }

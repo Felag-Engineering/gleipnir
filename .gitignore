@@ -16,4 +16,4 @@ node_modules
 .playwright-mcp/
 *.png
 *.jpeg
-gleipnirctl
+/gleipnirctl
