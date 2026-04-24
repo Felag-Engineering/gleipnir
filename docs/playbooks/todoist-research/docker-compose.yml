@@ -1,0 +1,40 @@
+# MCP servers for the todoist-research playbook.
+#
+# Run from this directory:
+#   docker compose up -d
+#
+# Only the Todoist API token is required — DuckDuckGo search needs no API key.
+# Secrets are loaded from .env in this directory (see README.md § Step 2).
+
+services:
+
+  # Todoist MCP server — reads tasks and adds comments.
+  # Repo: https://github.com/stanislavlysenko0912/todoist-mcp-server
+  todoist-mcp:
+    image: node:22-alpine
+    command: >
+      npx -y supergateway
+      --port 8111
+      --stdio "npx -y todoist-mcp"
+    ports:
+      - "8111:8111"
+    environment:
+      # The todoist-mcp package expects the env var to be named API_KEY.
+      - API_KEY=${TODOIST_API_KEY}
+    restart: unless-stopped
+
+  # DuckDuckGo MCP server — searches the web without an API key.
+  # Repo: https://github.com/nickclyde/duckduckgo-mcp-server
+  #
+  # The upstream package is Python-only, so we build a small image that adds
+  # Python + uv to node:22-alpine so supergateway can spawn it via uvx.
+  # Build is only needed once; subsequent "docker compose up -d" uses the cache.
+  duckduckgo-mcp:
+    build: ./duckduckgo-mcp
+    command: >
+      npx -y supergateway
+      --port 8112
+      --stdio "uvx duckduckgo-mcp-server"
+    ports:
+      - "8112:8112"
+    restart: unless-stopped
