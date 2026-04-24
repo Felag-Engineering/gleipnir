@@ -170,6 +170,11 @@ describe('UsersPage — users loaded', () => {
     expect(screen.getByText('operator')).toBeInTheDocument()
   })
 
+  it('shows — placeholder badge when a user has no roles', () => {
+    renderPage()
+    expect(screen.getByText('—')).toBeInTheDocument()
+  })
+
   it('shows an Edit button for each user row', () => {
     renderPage()
     const editBtns = screen.getAllByRole('button', { name: /^edit$/i })

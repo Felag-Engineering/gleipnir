@@ -10,6 +10,10 @@ const meta: Meta<typeof CreateUserModal> = {
 export default meta
 type Story = StoryObj<typeof CreateUserModal>
 
+// onSubmit is cast as `never` throughout because Storybook's arg type inference
+// can't resolve the discriminated union — the actual signature varies by `mode`.
+// The cast is safe here since stories don't exercise the submit path.
+
 export const CreateIdle: Story = {
   args: {
     mode: 'create',

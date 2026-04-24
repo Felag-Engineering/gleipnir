@@ -84,8 +84,7 @@
 }
 
 .roleBadgeAuditor {
-  color: var(--color-teal);
-  background: color-mix(in srgb, var(--color-teal) 12%, transparent);
+  composes: colorTeal from '../styles/badges.module.css';
 }
 
 .roleBadgeNone {
