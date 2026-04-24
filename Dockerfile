@@ -14,12 +14,14 @@ RUN go mod download
 COPY . .
 # Overwrite frontend/dist with the freshly built assets so go:embed picks them up.
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
-RUN CGO_ENABLED=0 go build -o /gleipnir .
+RUN CGO_ENABLED=0 go build -o /gleipnir . && \
+    CGO_ENABLED=0 go build -o /gleipnirctl ./cmd/gleipnirctl
 
 # Stage 3: Minimal runtime image
 FROM alpine:3.20
 RUN apk --no-cache add ca-certificates
 COPY --from=builder /gleipnir /usr/local/bin/gleipnir
+COPY --from=builder /gleipnirctl /usr/local/bin/gleipnirctl
 RUN mkdir -p /data
 EXPOSE 8080
 # Health check is public (no auth required) — see internal/http/api/router.go.
