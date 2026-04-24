@@ -17,7 +17,7 @@ The web UI handles day-to-day operations: managing policies, reviewing runs, app
 | Command | Status | Description |
 |---|---|---|
 | `rotate-key` | Available | Re-encrypt all at-rest secrets under a new encryption key |
-| `reset-password` | Coming soon | Reset a user's password directly in the database |
+| `reset-password` | Available | Reset a user's password directly in the database |
 | `create-user` | Coming soon | Create a new user account without going through the web UI |
 | `list-users` | Coming soon | List all user accounts and their roles |
 | `purge-runs` | Coming soon | Delete run history older than a given date |
@@ -129,3 +129,61 @@ docker compose run --rm api gleipnirctl rotate-key --old <current-key> --new <ne
 - **Atomicity:** All re-encryption happens in a single SQLite transaction. A crash or error mid-rotation leaves the database unchanged — the old key remains valid.
 - **In-memory key lifetime:** Key bytes are zeroed in memory when the command exits. Intermediate plaintext values (decrypted secrets) cannot be zeroed because Go strings are immutable; they are released to the garbage collector on function return.
 - **Server must be stopped:** The command probes for DB write-lock contention and refuses with exit code 3 if the server is running. This prevents the running process from caching stale plaintext while the DB holds new-key ciphertexts.
+
+---
+
+## reset-password
+
+Resets a user's password by writing a new bcrypt hash directly to the database. Uses the same bcrypt cost as the server so passwords set via CLI are accepted by the login handler.
+
+### When to use this
+
+- An admin is locked out of the UI and no other admin account exists to reset the password through the settings page
+- You need to set a known password on a user account during a recovery procedure
+
+### Full workflow
+
+**With auto-generated password** (recommended):
+
+```bash
+docker compose run --rm api gleipnirctl reset-password <username>
+```
+
+Example output:
+```
+generated password: dGhpcyBpcyBhIHRlc3Q
+password reset for user alice
+```
+
+The generated password is printed to stdout before the confirmation line. Store it immediately — it is shown only once.
+
+**With an explicit password:**
+
+```bash
+docker compose run --rm api gleipnirctl reset-password <username> --password <new-password>
+```
+
+The server does not need to be stopped. This command performs a single short UPDATE and does not require holding the database write lock across long operations.
+
+### Flags
+
+| Flag / Argument | Default | Description |
+|---|---|---|
+| `<username>` | *(required positional)* | Username of the account to update |
+| `--password` | *(auto-generated if omitted)* | New password. Must be at least 8 characters. |
+| `--db-path` | `$GLEIPNIR_DB_PATH` or `/data/gleipnir.db` | Path to the SQLite database file. |
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Unexpected error (I/O failure, DB error, hashing failure) |
+| 2 | Bad input (password shorter than 8 characters) |
+| 4 | User not found |
+
+### Security notes
+
+- **Generated password is secret material.** It is printed to stdout so it can be captured by downstream tools (`... | tee password.txt`). Do not share terminal output containing this line.
+- **Rotate via the UI after logging in.** Once access is restored, change the password through the settings page so it is set according to your organization's password policy.
+- **Deactivated users.** This command resets the password hash only. It does not reactivate a deactivated account. Use the web UI (admin role) to reactivate a user.
