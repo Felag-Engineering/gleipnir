@@ -40,6 +40,12 @@ npm run storybook        # Storybook on port 6006
 
 **Provider API keys:** All LLM provider API keys (Anthropic, Google, OpenAI, and any OpenAI-compatible backends) are configured through the admin UI at `/admin/models` and stored encrypted in the database. Env vars like `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` are intentionally ignored — a startup warning is logged if they are set.
 
+**Encryption key rotation:** To rotate `GLEIPNIR_ENCRYPTION_KEY`, stop the server first and run:
+```bash
+gleipnir rotate-key --old <hex|base64> --new <hex|base64> [--dry-run]
+```
+This re-encrypts all at-rest secrets (provider API keys, OpenAI-compat keys, webhook secrets) in a single transaction. Use `--dry-run` to validate the old key covers every ciphertext without committing changes. Both `--old` and `--new` accept `"-"` to read the key from stdin (one line each) so the key does not appear in shell history.
+
 ## Stack
 
 - **Backend:** Go, [chi](https://github.com/go-chi/chi) router, [sqlc](https://sqlc.dev/) for type-safe queries, multi-provider LLM support (Anthropic + Google)

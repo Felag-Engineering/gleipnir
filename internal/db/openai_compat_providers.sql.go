@@ -159,3 +159,20 @@ func (q *Queries) UpdateOpenAICompatProvider(ctx context.Context, arg UpdateOpen
 	)
 	return i, err
 }
+
+const updateOpenAICompatProviderAPIKey = `-- name: UpdateOpenAICompatProviderAPIKey :exec
+UPDATE openai_compat_providers
+SET api_key_encrypted = ?1, updated_at = ?2
+WHERE id = ?3
+`
+
+type UpdateOpenAICompatProviderAPIKeyParams struct {
+	ApiKeyEncrypted string `json:"api_key_encrypted"`
+	UpdatedAt       string `json:"updated_at"`
+	ID              int64  `json:"id"`
+}
+
+func (q *Queries) UpdateOpenAICompatProviderAPIKey(ctx context.Context, arg UpdateOpenAICompatProviderAPIKeyParams) error {
+	_, err := q.db.ExecContext(ctx, updateOpenAICompatProviderAPIKey, arg.ApiKeyEncrypted, arg.UpdatedAt, arg.ID)
+	return err
+}
