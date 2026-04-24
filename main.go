@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rapp992/gleipnir/cmd/rotatekey"
 	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/db"
 	runpkg "github.com/rapp992/gleipnir/internal/execution/run"
@@ -42,13 +41,6 @@ const (
 )
 
 func main() {
-	if len(os.Args) >= 2 {
-		switch os.Args[1] {
-		case "rotate-key":
-			os.Exit(rotatekey.Run(os.Args[2:], os.Stdout, os.Stderr))
-		}
-	}
-
 	cfg, err := config.Load()
 	if err != nil {
 		// Use plain stderr here — the structured logger is not set up yet.

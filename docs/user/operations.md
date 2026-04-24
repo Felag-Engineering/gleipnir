@@ -12,7 +12,7 @@ Back it up immediately upon generation, before starting the stack for the first 
 
 ## Rotating the encryption key
 
-Use the built-in `rotate-key` subcommand to re-encrypt all secrets under a new key in a single atomic transaction. No credentials need to be manually copied out or re-entered.
+Use the `gleipnirctl rotate-key` subcommand to re-encrypt all secrets under a new key in a single atomic transaction. No credentials need to be manually copied out or re-entered.
 
 1. **Generate a new key:**
    ```bash
@@ -27,7 +27,7 @@ Use the built-in `rotate-key` subcommand to re-encrypt all secrets under a new k
 3. **Run the rotation** (pipe keys via stdin to avoid shell history exposure):
    ```bash
    printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
-     docker compose run --rm gleipnir rotate-key --old - --new -
+     docker compose run --rm gleipnirctl rotate-key --old - --new -
    ```
    On success you'll see something like:
    ```
@@ -47,7 +47,7 @@ Before committing to a live rotation, use `--dry-run` to validate that the old k
 printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
   docker run --rm -i \
     -v gleipnir_data:/data \
-    felagengineering/gleipnir:latest \
+    felagengineering/gleipnirctl:latest \
     rotate-key --old - --new - --dry-run
 ```
 

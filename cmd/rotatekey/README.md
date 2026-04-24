@@ -1,4 +1,4 @@
-# gleipnir rotate-key
+# gleipnirctl rotate-key
 
 One-shot CLI subcommand that re-encrypts every at-rest secret in the Gleipnir database under a new `GLEIPNIR_ENCRYPTION_KEY`, in a single atomic transaction.
 
@@ -38,7 +38,7 @@ docker compose stop gleipnir
 
 ```bash
 printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
-  docker compose run --rm gleipnir rotate-key --old - --new -
+  docker compose run --rm gleipnirctl rotate-key --old - --new -
 ```
 
 Keys are piped via stdin so they never appear in process listings or shell history. On success you'll see:
@@ -61,7 +61,7 @@ Before committing to a live rotation, use `--dry-run` to validate that the old k
 
 ```bash
 printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
-  docker compose run --rm gleipnir rotate-key --old - --new - --dry-run
+  docker compose run --rm gleipnirctl rotate-key --old - --new - --dry-run
 ```
 
 Output on success:
@@ -74,7 +74,7 @@ re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets (dry-run;
 Keys passed as flag values are visible in `/proc/<pid>/cmdline` and shell history — the command will warn you when this is detected. Acceptable for local dev; avoid in production:
 
 ```bash
-docker compose run --rm gleipnir rotate-key --old <current-key> --new <new-key>
+docker compose run --rm gleipnirctl rotate-key --old <current-key> --new <new-key>
 ```
 
 ## Flags

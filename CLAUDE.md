@@ -42,7 +42,7 @@ npm run storybook        # Storybook on port 6006
 
 **Encryption key rotation:** To rotate `GLEIPNIR_ENCRYPTION_KEY`, stop the server first and run:
 ```bash
-gleipnir rotate-key --old <hex|base64> --new <hex|base64> [--dry-run]
+gleipnirctl rotate-key --old <hex|base64> --new <hex|base64> [--dry-run]
 ```
 This re-encrypts all at-rest secrets (provider API keys, OpenAI-compat keys, webhook secrets) in a single transaction. Use `--dry-run` to validate the old key covers every ciphertext without committing changes. Both `--old` and `--new` accept `"-"` to read the key from stdin (one line each) so the key does not appear in shell history.
 

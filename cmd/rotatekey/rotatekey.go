@@ -42,6 +42,86 @@ func RunWithIO(args []string, stdin io.Reader, out, errOut io.Writer) int {
 	return runWithIO(args, stdin, out, errOut)
 }
 
+// Rotate re-encrypts all secrets under newKey. oldKey and newKey are already
+// parsed and validated by the caller. dbPath is the SQLite file to open.
+// Returns a shell exit code (0 success, 1 error, 3 DB busy).
+func Rotate(ctx context.Context, dbPath string, oldKey, newKey []byte, dryRun bool, out, errOut io.Writer) int {
+	store, err := db.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(errOut, "error: open db: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+
+	// Liveness probe: detect whether another process holds the DB write lock
+	// BEFORE running migrations. We must probe first because Migrate itself
+	// performs writes that will hit SQLITE_BUSY if the server is running —
+	// that would produce a confusing "migrate" error instead of the clear
+	// "stop the server first" message.
+	//
+	// We set locking_mode=EXCLUSIVE so our next write attempt tries to acquire
+	// an exclusive lock immediately. modernc.org/sqlite surfaces SQLITE_BUSY
+	// in the error text when contention is detected (no busy_timeout is set).
+	if _, err := store.DB().ExecContext(ctx, "PRAGMA locking_mode=EXCLUSIVE"); err != nil {
+		fmt.Fprintf(errOut, "error: set locking mode: %v\n", err)
+		return 1
+	}
+
+	probeTx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		if isBusy(err) {
+			fmt.Fprintln(errOut, "error: refusing to rotate while another process holds the DB; stop the server first")
+			return 3
+		}
+		fmt.Fprintf(errOut, "error: begin probe transaction: %v\n", err)
+		return 1
+	}
+
+	// Write to the main DB schema (not a TEMP table) so the probe actually
+	// acquires the WAL write lock. We create/use a real table in the main file;
+	// if another process holds the write lock this INSERT will return SQLITE_BUSY.
+	_, probeErr := probeTx.ExecContext(ctx,
+		`CREATE TABLE IF NOT EXISTS _rotate_probe (x INTEGER)`,
+	)
+	if probeErr == nil {
+		_, probeErr = probeTx.ExecContext(ctx, `INSERT INTO _rotate_probe(x) VALUES (0)`)
+	}
+	// Always roll back — the CREATE TABLE and INSERT are never intended to persist.
+	// A crash between the CREATE and this Rollback will leave _rotate_probe in the
+	// schema, but it is harmless: it holds no data and IF NOT EXISTS prevents errors
+	// on subsequent runs.
+	_ = probeTx.Rollback()
+
+	if probeErr != nil {
+		if isBusy(probeErr) {
+			fmt.Fprintln(errOut, "error: refusing to rotate while another process holds the DB; stop the server first")
+			return 3
+		}
+		fmt.Fprintf(errOut, "error: write probe failed: %v\n", probeErr)
+		return 1
+	}
+
+	// Migration is idempotent; it ensures we can run rotation against a restored
+	// backup that may be on an older schema version.
+	if err := store.Migrate(ctx); err != nil {
+		fmt.Fprintf(errOut, "error: migrate db: %v\n", err)
+		return 1
+	}
+
+	providerCount, compatCount, webhookCount, rotErr := rotateWithDryRun(ctx, store, oldKey, newKey, dryRun)
+	if rotErr != nil {
+		fmt.Fprintf(errOut, "error: %v\n", rotErr)
+		return 1
+	}
+
+	summary := fmt.Sprintf("re-encrypted %d provider keys, %d openai-compat keys, %d webhook secrets", providerCount, compatCount, webhookCount)
+	if dryRun {
+		summary += " (dry-run; no changes written)"
+	}
+	fmt.Fprintln(out, summary)
+	return 0
+}
+
 // runWithIO is the testable core: it accepts an explicit stdin reader so tests
 // can inject key material without touching the real stdin.
 func runWithIO(args []string, stdin io.Reader, out, errOut io.Writer) int {
@@ -125,81 +205,7 @@ func runWithIO(args []string, stdin io.Reader, out, errOut io.Writer) int {
 	}
 
 	ctx := context.Background()
-
-	store, err := db.Open(dbPath)
-	if err != nil {
-		fmt.Fprintf(errOut, "error: open db: %v\n", err)
-		return 1
-	}
-	defer store.Close()
-
-	// Liveness probe: detect whether another process holds the DB write lock
-	// BEFORE running migrations. We must probe first because Migrate itself
-	// performs writes that will hit SQLITE_BUSY if the server is running —
-	// that would produce a confusing "migrate" error instead of the clear
-	// "stop the server first" message.
-	//
-	// We set locking_mode=EXCLUSIVE so our next write attempt tries to acquire
-	// an exclusive lock immediately. modernc.org/sqlite surfaces SQLITE_BUSY
-	// in the error text when contention is detected (no busy_timeout is set).
-	if _, err := store.DB().ExecContext(ctx, "PRAGMA locking_mode=EXCLUSIVE"); err != nil {
-		fmt.Fprintf(errOut, "error: set locking mode: %v\n", err)
-		return 1
-	}
-
-	probeTx, err := store.DB().BeginTx(ctx, nil)
-	if err != nil {
-		if isBusy(err) {
-			fmt.Fprintln(errOut, "error: refusing to rotate while another process holds the DB; stop the server first")
-			return 3
-		}
-		fmt.Fprintf(errOut, "error: begin probe transaction: %v\n", err)
-		return 1
-	}
-
-	// Write to the main DB schema (not a TEMP table) so the probe actually
-	// acquires the WAL write lock. We create/use a real table in the main file;
-	// if another process holds the write lock this INSERT will return SQLITE_BUSY.
-	_, probeErr := probeTx.ExecContext(ctx,
-		`CREATE TABLE IF NOT EXISTS _rotate_probe (x INTEGER)`,
-	)
-	if probeErr == nil {
-		_, probeErr = probeTx.ExecContext(ctx, `INSERT INTO _rotate_probe(x) VALUES (0)`)
-	}
-	// Always roll back — the CREATE TABLE and INSERT are never intended to persist.
-	// A crash between the CREATE and this Rollback will leave _rotate_probe in the
-	// schema, but it is harmless: it holds no data and IF NOT EXISTS prevents errors
-	// on subsequent runs.
-	_ = probeTx.Rollback()
-
-	if probeErr != nil {
-		if isBusy(probeErr) {
-			fmt.Fprintln(errOut, "error: refusing to rotate while another process holds the DB; stop the server first")
-			return 3
-		}
-		fmt.Fprintf(errOut, "error: write probe failed: %v\n", probeErr)
-		return 1
-	}
-
-	// Migration is idempotent; it ensures we can run rotation against a restored
-	// backup that may be on an older schema version.
-	if err := store.Migrate(ctx); err != nil {
-		fmt.Fprintf(errOut, "error: migrate db: %v\n", err)
-		return 1
-	}
-
-	providerCount, compatCount, webhookCount, rotErr := rotateWithDryRun(ctx, store, oldKey, newKey, dryRun)
-	if rotErr != nil {
-		fmt.Fprintf(errOut, "error: %v\n", rotErr)
-		return 1
-	}
-
-	summary := fmt.Sprintf("re-encrypted %d provider keys, %d openai-compat keys, %d webhook secrets", providerCount, compatCount, webhookCount)
-	if dryRun {
-		summary += " (dry-run; no changes written)"
-	}
-	fmt.Fprintln(out, summary)
-	return 0
+	return Rotate(ctx, dbPath, oldKey, newKey, dryRun, out, errOut)
 }
 
 // rotateWithDryRun performs decrypt+re-encrypt for all three secret types
