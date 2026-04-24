@@ -364,6 +364,41 @@ func (q *Queries) ListPoliciesWithLatestRun(ctx context.Context) ([]ListPolicies
 	return items, nil
 }
 
+const listPolicyWebhookSecrets = `-- name: ListPolicyWebhookSecrets :many
+SELECT id, webhook_secret_encrypted
+FROM policies
+WHERE webhook_secret_encrypted IS NOT NULL
+ORDER BY id
+`
+
+type ListPolicyWebhookSecretsRow struct {
+	ID                     string  `json:"id"`
+	WebhookSecretEncrypted *string `json:"webhook_secret_encrypted"`
+}
+
+func (q *Queries) ListPolicyWebhookSecrets(ctx context.Context) ([]ListPolicyWebhookSecretsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPolicyWebhookSecrets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPolicyWebhookSecretsRow
+	for rows.Next() {
+		var i ListPolicyWebhookSecretsRow
+		if err := rows.Scan(&i.ID, &i.WebhookSecretEncrypted); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setPolicyPausedAt = `-- name: SetPolicyPausedAt :exec
 UPDATE policies SET paused_at = ?1 WHERE id = ?2
 `

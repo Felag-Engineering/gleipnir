@@ -21,5 +21,10 @@ SET name = :name,
 WHERE id = :id
 RETURNING *;
 
+-- name: UpdateOpenAICompatProviderAPIKey :exec
+UPDATE openai_compat_providers
+SET api_key_encrypted = :api_key_encrypted, updated_at = :updated_at
+WHERE id = :id;
+
 -- name: DeleteOpenAICompatProvider :exec
 DELETE FROM openai_compat_providers WHERE id = :id;

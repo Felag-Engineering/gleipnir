@@ -11,3 +11,9 @@ DELETE FROM system_settings WHERE key = ?;
 
 -- name: ListSystemSettings :many
 SELECT key, value, updated_at FROM system_settings ORDER BY key;
+
+-- name: ListAPIKeySystemSettings :many
+SELECT key, value, updated_at
+FROM system_settings
+WHERE key LIKE '%_api_key'
+ORDER BY key;

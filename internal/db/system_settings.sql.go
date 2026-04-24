@@ -29,6 +29,36 @@ func (q *Queries) GetSystemSetting(ctx context.Context, key string) (SystemSetti
 	return i, err
 }
 
+const listAPIKeySystemSettings = `-- name: ListAPIKeySystemSettings :many
+SELECT key, value, updated_at
+FROM system_settings
+WHERE key LIKE '%_api_key'
+ORDER BY key
+`
+
+func (q *Queries) ListAPIKeySystemSettings(ctx context.Context) ([]SystemSetting, error) {
+	rows, err := q.db.QueryContext(ctx, listAPIKeySystemSettings)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SystemSetting
+	for rows.Next() {
+		var i SystemSetting
+		if err := rows.Scan(&i.Key, &i.Value, &i.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSystemSettings = `-- name: ListSystemSettings :many
 SELECT key, value, updated_at FROM system_settings ORDER BY key
 `

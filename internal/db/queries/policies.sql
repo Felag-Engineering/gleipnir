@@ -51,6 +51,12 @@ SELECT webhook_secret_encrypted FROM policies WHERE id = :id;
 -- name: ClearPolicyWebhookSecret :exec
 UPDATE policies SET webhook_secret_encrypted = NULL, updated_at = :updated_at WHERE id = :id;
 
+-- name: ListPolicyWebhookSecrets :many
+SELECT id, webhook_secret_encrypted
+FROM policies
+WHERE webhook_secret_encrypted IS NOT NULL
+ORDER BY id;
+
 -- name: ListPoliciesWithLatestRun :many
 SELECT
     p.id,
