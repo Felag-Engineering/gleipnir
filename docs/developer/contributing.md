@@ -25,7 +25,7 @@ See [`architecture.md`](architecture.md) for the full package layout.
 
 ## ADRs
 
-Architectural decisions are tracked in [`docs/ADR_Tracker.md`](../ADR_Tracker.md). When you make an architectural decision:
+Architectural decisions are tracked in [`ADR_Tracker.md`](ADR_Tracker.md). When you make an architectural decision:
 
 1. Add an entry to the tracker.
 2. Reference the ADR number in your commit message and PR description.
