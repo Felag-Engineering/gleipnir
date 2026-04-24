@@ -37,7 +37,15 @@ func setupNotifyPollerFixture(t *testing.T) (*db.Store, *Poller) {
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, notifyPollerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           notifyPollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	poller := NewPoller(store, launcher, registry, resolver)
 
 	// Set a root context so Notify can start loops.
@@ -175,7 +183,15 @@ func setupNotifySchedulerFixture(t *testing.T) (*db.Store, *Scheduler) {
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, notifyPollerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           notifyPollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	scheduler := NewScheduler(store, launcher, resolver)
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -208,7 +208,15 @@ func TestManualTriggerHandler(t *testing.T) {
 			providerReg := llm.NewProviderRegistry()
 			providerReg.Register("anthropic", noopClient)
 			resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-			launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0, resolver)
+			launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                run.NewRunManager(),
+		AgentFactory:           run.NewAgentFactory(providerReg),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 			h := trigger.NewManualTriggerHandler(store, launcher, resolver)
 
 			w := callManualHandler(t, h, tc.policyID, tc.body)
@@ -228,7 +236,15 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                run.NewRunManager(),
+		AgentFactory:           run.NewAgentFactory(providerReg),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	h := trigger.NewManualTriggerHandler(store, launcher, resolver)
 
 	w := callManualHandler(t, h, "mp-run-created", `{"message": "test"}`)
@@ -263,7 +279,15 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                run.NewRunManager(),
+		AgentFactory:           run.NewAgentFactory(providerReg),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	h := trigger.NewManualTriggerHandler(store, launcher, resolver)
 
 	// Empty body should be accepted (treated as '{}')

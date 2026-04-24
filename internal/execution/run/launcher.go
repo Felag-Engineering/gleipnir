@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/infra/event"
 	"github.com/rapp992/gleipnir/internal/execution/agent"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/rapp992/gleipnir/internal/infra/event"
 	"github.com/rapp992/gleipnir/internal/infra/logctx"
+	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
@@ -91,21 +91,33 @@ type registryResolver interface {
 	ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) ([]mcp.ResolvedTool, error)
 }
 
+// RunLauncherConfig holds all dependencies for a RunLauncher. Field order
+// mirrors the former positional parameters so a grep-diff is auditable.
+type RunLauncherConfig struct {
+	Store                  *db.Store
+	Registry               registryResolver
+	Manager                *RunManager
+	AgentFactory           AgentFactory
+	Publisher              event.Publisher      // nil = no real-time events
+	DefaultFeedbackTimeout time.Duration
+	ModelResolver          defaultModelResolver // nil = use launch-time snapshot only
+}
+
 // NewRunLauncher returns a RunLauncher ready to use.
 // publisher may be nil, in which case no real-time events are emitted.
 // defaultFeedbackTimeout is used when a policy does not specify its own timeout.
 // modelResolver is used by the drain path to re-parse policies with current
 // system settings; it may be nil, in which case the drain path uses the
 // snapshot captured at launch time.
-func NewRunLauncher(store *db.Store, registry registryResolver, manager *RunManager, factory AgentFactory, publisher event.Publisher, defaultFeedbackTimeout time.Duration, modelResolver defaultModelResolver) *RunLauncher {
+func NewRunLauncher(cfg RunLauncherConfig) *RunLauncher {
 	return &RunLauncher{
-		store:                  store,
-		registry:               registry,
-		manager:                manager,
-		newAgent:               factory,
-		publisher:              publisher,
-		defaultFeedbackTimeout: defaultFeedbackTimeout,
-		modelResolver:          modelResolver,
+		store:                  cfg.Store,
+		registry:               cfg.Registry,
+		manager:                cfg.Manager,
+		newAgent:               cfg.AgentFactory,
+		publisher:              cfg.Publisher,
+		defaultFeedbackTimeout: cfg.DefaultFeedbackTimeout,
+		modelResolver:          cfg.ModelResolver,
 	}
 }
 

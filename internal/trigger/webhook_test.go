@@ -162,7 +162,15 @@ func newHandler(t *testing.T, store *db.Store, loader trigger.SecretLoaderInterf
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                run.NewRunManager(),
+		AgentFactory:           run.NewAgentFactory(providerReg),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	return trigger.NewWebhookHandler(store, launcher, loader, resolver)
 }
 
@@ -526,7 +534,15 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                run.NewRunManager(),
+		AgentFactory:           run.NewAgentFactory(providerReg),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	h := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil), resolver)
 
 	w := callHandler(t, h, "p-run-created", `{"event": "test"}`)
@@ -596,7 +612,15 @@ func TestWebhookHandler_Returns500_WhenNoDefaultModelAndPolicyOmitsModel(t *test
 
 	// Resolver with no default configured.
 	noDefault := stubDefaultModelResolver{err: sql.ErrNoRows}
-	launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), run.NewAgentFactory(providerReg), nil, 0, noDefault)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                run.NewRunManager(),
+		AgentFactory:           run.NewAgentFactory(providerReg),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          noDefault,
+	})
 	h := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil), noDefault)
 
 	w := callHandler(t, h, "p-no-model-500", `{"event": "test"}`)
