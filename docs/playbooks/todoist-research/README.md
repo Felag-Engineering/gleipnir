@@ -8,11 +8,11 @@ On a 15-minute poll trigger, this agent queries your Todoist inbox for any tasks
 
 **Example tasks the agent handles well:**
 
-- "Find a physical therapist near Vienna VA" → 5 options with name, address, phone, and website
+- "Find a physical therapist near Burlington VT" → 5 options with name, address, phone, and website
 - "Best standing desks under $500" → ranked comparison with links
-- "Dog-friendly hiking trails within 1 hour of DC" → trail list with distance and difficulty
-- "Plumbers in Fairfax County with good reviews" → list with contact info and review summary
-- "How do I file for a homestead exemption in Fairfax County" → step-by-step with official links
+- "Dog-friendly hiking trails within 1 hour of Portland OR" → trail list with distance and difficulty
+- "Plumbers in Travis County TX with good reviews" → list with contact info and review summary
+- "How do I file for a homestead exemption in Maricopa County AZ" → step-by-step with official links
 
 The agent is intentionally narrow — it only reads tasks labeled `AI_Assist`, posts structured research comments, and removes the label. It does not re-order, close, or modify tasks beyond removing the label and adding the comment.
 
@@ -198,7 +198,7 @@ agent:
 Before waiting for the poll to fire, trigger a test run manually:
 
 1. In Todoist, create a task with a clear research prompt, e.g.:
-   `Find a physical therapist near Vienna VA`
+   `Find a physical therapist near Burlington VT`
 2. Apply the `AI_Assist` label to the task.
 3. In Gleipnir, go to **Policies → todoist-research → Trigger** to start a run immediately without waiting for the 15-minute poll.
 4. Watch the run appear in the **Runs** list. Click into it to see the reasoning trace: the search queries, and the approval requests for `create_comments` and `update_tasks`.
