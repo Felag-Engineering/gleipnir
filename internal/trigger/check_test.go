@@ -297,3 +297,200 @@ func TestEvaluateChecks(t *testing.T) {
 		})
 	}
 }
+
+// TestEvaluateBodyCheck verifies that evaluateBodyCheck applies comparators
+// directly against a raw JSON body, without MCP content-array unwrapping.
+func TestEvaluateBodyCheck(t *testing.T) {
+	cases := []struct {
+		name  string
+		body  []byte
+		check model.PollCheck
+		want  bool
+	}{
+		// --- equals ---
+		{
+			name:  "equals int match — Uptime Kuma DOWN",
+			body:  []byte(`{"heartbeat":{"status":0}}`),
+			check: model.PollCheck{Path: "$.heartbeat.status", Comparator: model.ComparatorEquals, Value: float64(0)},
+			want:  true,
+		},
+		{
+			name:  "equals int mismatch — Uptime Kuma UP",
+			body:  []byte(`{"heartbeat":{"status":1}}`),
+			check: model.PollCheck{Path: "$.heartbeat.status", Comparator: model.ComparatorEquals, Value: float64(0)},
+			want:  false,
+		},
+		{
+			name:  "equals string match",
+			body:  []byte(`{"event":"down"}`),
+			check: model.PollCheck{Path: "$.event", Comparator: model.ComparatorEquals, Value: "down"},
+			want:  true,
+		},
+		{
+			name:  "equals string mismatch",
+			body:  []byte(`{"event":"up"}`),
+			check: model.PollCheck{Path: "$.event", Comparator: model.ComparatorEquals, Value: "down"},
+			want:  false,
+		},
+
+		// --- not_equals ---
+		{
+			name:  "not_equals when values differ returns true",
+			body:  []byte(`{"status":"up"}`),
+			check: model.PollCheck{Path: "$.status", Comparator: model.ComparatorNotEquals, Value: "down"},
+			want:  true,
+		},
+		{
+			name:  "not_equals when values match returns false",
+			body:  []byte(`{"status":"down"}`),
+			check: model.PollCheck{Path: "$.status", Comparator: model.ComparatorNotEquals, Value: "down"},
+			want:  false,
+		},
+
+		// --- greater_than ---
+		{
+			name:  "greater_than above threshold",
+			body:  []byte(`{"count":10}`),
+			check: model.PollCheck{Path: "$.count", Comparator: model.ComparatorGreaterThan, Value: float64(5)},
+			want:  true,
+		},
+		{
+			name:  "greater_than below threshold",
+			body:  []byte(`{"count":3}`),
+			check: model.PollCheck{Path: "$.count", Comparator: model.ComparatorGreaterThan, Value: float64(5)},
+			want:  false,
+		},
+
+		// --- less_than ---
+		{
+			name:  "less_than below threshold",
+			body:  []byte(`{"count":2}`),
+			check: model.PollCheck{Path: "$.count", Comparator: model.ComparatorLessThan, Value: float64(5)},
+			want:  true,
+		},
+		{
+			name:  "less_than above threshold",
+			body:  []byte(`{"count":8}`),
+			check: model.PollCheck{Path: "$.count", Comparator: model.ComparatorLessThan, Value: float64(5)},
+			want:  false,
+		},
+
+		// --- contains ---
+		{
+			name:  "contains substring match",
+			body:  []byte(`{"message":"service is degraded now"}`),
+			check: model.PollCheck{Path: "$.message", Comparator: model.ComparatorContains, Value: "degraded"},
+			want:  true,
+		},
+		{
+			name:  "contains no match",
+			body:  []byte(`{"message":"all systems nominal"}`),
+			check: model.PollCheck{Path: "$.message", Comparator: model.ComparatorContains, Value: "degraded"},
+			want:  false,
+		},
+
+		// --- edge cases ---
+		{
+			name:  "missing path returns false",
+			body:  []byte(`{"other":"field"}`),
+			check: model.PollCheck{Path: "$.heartbeat.status", Comparator: model.ComparatorEquals, Value: float64(0)},
+			want:  false,
+		},
+		{
+			name:  "invalid JSON body returns false",
+			body:  []byte(`not json`),
+			check: model.PollCheck{Path: "$.status", Comparator: model.ComparatorEquals, Value: "ok"},
+			want:  false,
+		},
+		{
+			name:  "unknown comparator returns false",
+			body:  []byte(`{"status":"ok"}`),
+			check: model.PollCheck{Path: "$.status", Comparator: "unknown", Value: "ok"},
+			want:  false,
+		},
+		{
+			name:  "nested path match",
+			body:  []byte(`{"a":{"b":{"c":42}}}`),
+			check: model.PollCheck{Path: "$.a.b.c", Comparator: model.ComparatorEquals, Value: float64(42)},
+			want:  true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := evaluateBodyCheck(tc.body, tc.check)
+			if got != tc.want {
+				t.Errorf("evaluateBodyCheck() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEvaluateBodyChecks verifies match mode logic for raw JSON bodies.
+func TestEvaluateBodyChecks(t *testing.T) {
+	downBody := []byte(`{"heartbeat":{"status":0},"msg":"down"}`)
+
+	matchesDown := model.PollCheck{Path: "$.heartbeat.status", Comparator: model.ComparatorEquals, Value: float64(0)}
+	matchesMsg := model.PollCheck{Path: "$.msg", Comparator: model.ComparatorEquals, Value: "down"}
+	noMatch := model.PollCheck{Path: "$.heartbeat.status", Comparator: model.ComparatorEquals, Value: float64(1)}
+
+	cases := []struct {
+		name   string
+		body   []byte
+		checks []model.PollCheck
+		match  model.MatchMode
+		want   bool
+	}{
+		{
+			name:   "match=all, all checks pass",
+			body:   downBody,
+			checks: []model.PollCheck{matchesDown, matchesMsg},
+			match:  model.MatchAll,
+			want:   true,
+		},
+		{
+			name:   "match=all, one check fails",
+			body:   downBody,
+			checks: []model.PollCheck{matchesDown, noMatch},
+			match:  model.MatchAll,
+			want:   false,
+		},
+		{
+			name:   "match=any, one check passes",
+			body:   downBody,
+			checks: []model.PollCheck{noMatch, matchesDown},
+			match:  model.MatchAny,
+			want:   true,
+		},
+		{
+			name:   "match=any, none pass",
+			body:   downBody,
+			checks: []model.PollCheck{noMatch, noMatch},
+			match:  model.MatchAny,
+			want:   false,
+		},
+		{
+			name:   "empty checks with match=all returns true",
+			body:   downBody,
+			checks: []model.PollCheck{},
+			match:  model.MatchAll,
+			want:   true,
+		},
+		{
+			name:   "empty checks with match=any returns false",
+			body:   downBody,
+			checks: []model.PollCheck{},
+			match:  model.MatchAny,
+			want:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := evaluateBodyChecks(tc.body, tc.checks, tc.match)
+			if got != tc.want {
+				t.Errorf("evaluateBodyChecks() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

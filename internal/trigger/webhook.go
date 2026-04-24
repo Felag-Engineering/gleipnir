@@ -79,6 +79,17 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(parsed.Trigger.Checks) > 0 {
+		matchMode := parsed.Trigger.Match
+		if matchMode == "" {
+			matchMode = model.MatchAll
+		}
+		if !evaluateBodyChecks(body, parsed.Trigger.Checks, matchMode) {
+			httputil.WriteJSON(w, http.StatusOK, map[string]any{"filtered": true})
+			return
+		}
+	}
+
 	checkConcurrencyAndLaunch(ctx, w, h.launcher, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypeWebhook,

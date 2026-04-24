@@ -323,8 +323,8 @@ type TriggerConfig struct {
 	FireAt      []time.Time     // scheduled only
 	WebhookAuth WebhookAuthMode `json:"webhook_auth,omitempty" yaml:"auth,omitempty"` // webhook only
 	Interval    time.Duration   // poll only
-	Match       MatchMode       // poll only, defaults to MatchAll
-	Checks      []PollCheck     // poll only, at least one required
+	Match       MatchMode       // poll and webhook filter; defaults to MatchAll
+	Checks      []PollCheck     // poll: MCP tool checks (at least one required); webhook: body filter checks (optional)
 	CronExpr    string          // cron only, 5-field POSIX expression
 }
 

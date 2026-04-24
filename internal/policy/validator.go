@@ -81,6 +81,19 @@ func validateTrigger(t model.TriggerConfig) []Issue {
 		if t.WebhookAuth != "" && !t.WebhookAuth.Valid() {
 			add("trigger.auth", "trigger.auth %q is invalid; must be hmac, bearer, or none", t.WebhookAuth)
 		}
+		if t.Match != "" && !t.Match.Valid() {
+			add("trigger.match", "trigger.match %q is invalid; must be all or any", t.Match)
+		}
+		for i, c := range t.Checks {
+			if c.Path == "" {
+				add(fmt.Sprintf("trigger.checks[%d].path", i), "trigger.checks[%d].path is required", i)
+			}
+			if c.Comparator == "" {
+				add(fmt.Sprintf("trigger.checks[%d].comparator", i), "trigger.checks[%d] must specify exactly one comparator (equals, not_equals, greater_than, less_than, contains)", i)
+			} else if !c.Comparator.Valid() {
+				add(fmt.Sprintf("trigger.checks[%d].comparator", i), "trigger.checks[%d].comparator %q is invalid; must be equals, not_equals, greater_than, less_than, or contains", i, c.Comparator)
+			}
+		}
 
 	case model.TriggerTypeManual:
 		// No additional fields required.
