@@ -16,7 +16,6 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newShutdownCmd())
 	return root
 }
 
