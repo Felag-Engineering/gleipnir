@@ -472,6 +472,38 @@ func TestRotate_ReadsKeysFromStdin(t *testing.T) {
 	}
 }
 
+// TestRotate_WarnsWhenKeysPassedViaFlags verifies that passing literal key
+// values via --old/--new emits a process-list leakage warning to stderr, and
+// that reading both keys from stdin suppresses the warning.
+func TestRotate_WarnsWhenKeysPassedViaFlags(t *testing.T) {
+	t.Run("flag values trigger warning", func(t *testing.T) {
+		path := newSeededPath(t, keyA)
+
+		var stdout, stderr bytes.Buffer
+		code := rotatekey.Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "visible in process listings") {
+			t.Errorf("expected process-list warning in stderr, got: %q", stderr.String())
+		}
+	})
+
+	t.Run("stdin keys suppress warning", func(t *testing.T) {
+		path := newSeededPath(t, keyA)
+
+		stdinReader := strings.NewReader(keyA + "\n" + keyB + "\n")
+		var stdout, stderr bytes.Buffer
+		code := rotatekey.RunWithIO([]string{"--old", "-", "--new", "-", "--db-path", path}, stdinReader, &stdout, &stderr)
+		if code != 0 {
+			t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
+		}
+		if strings.Contains(stderr.String(), "visible in process listings") {
+			t.Errorf("did not expect process-list warning in stderr when keys came from stdin, got: %q", stderr.String())
+		}
+	})
+}
+
 // TestRotate_StorePath uses a custom --db-path to verify the flag is respected.
 func TestRotate_StorePath(t *testing.T) {
 	// Use a separate temp dir so there is no pre-existing store.

@@ -51,8 +51,8 @@ func runWithIO(args []string, stdin io.Reader, out, errOut io.Writer) int {
 	var oldKeyFlag, newKeyFlag, dbPath string
 	var dryRun bool
 
-	fs.StringVar(&oldKeyFlag, "old", "", "current encryption key (hex or base64; use \"-\" to read from stdin)")
-	fs.StringVar(&newKeyFlag, "new", "", "new encryption key (hex or base64; use \"-\" to read from stdin)")
+	fs.StringVar(&oldKeyFlag, "old", "", "current encryption key (hex or base64); use \"-\" to read from stdin (recommended — avoids process-list exposure)")
+	fs.StringVar(&newKeyFlag, "new", "", "new encryption key (hex or base64); use \"-\" to read from stdin (recommended — avoids process-list exposure)")
 	fs.BoolVar(&dryRun, "dry-run", false, "decrypt and re-encrypt in memory but roll back; validates the old key covers every ciphertext")
 
 	// Resolve default DB path: read env var, fall back to hardcoded default.
@@ -75,6 +75,11 @@ func runWithIO(args []string, stdin io.Reader, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "error: --new is required")
 		return 2
 	}
+
+	// Record whether keys came in as literal values on the command line, so we
+	// can warn about process-list leakage after both keys are resolved.
+	oldFromFlag := oldKeyFlag != "" && oldKeyFlag != "-"
+	newFromFlag := newKeyFlag != "" && newKeyFlag != "-"
 
 	// Read key material from stdin when either flag is "-". If both are "-",
 	// we read old first, then new (one whitespace-trimmed line each).
@@ -101,11 +106,17 @@ func runWithIO(args []string, stdin io.Reader, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "error: parse --old key: %v\n", err)
 		return 2
 	}
+	defer zero(oldKey)
 
 	newKey, err := admin.ParseEncryptionKey(newKeyFlag)
 	if err != nil {
 		fmt.Fprintf(errOut, "error: parse --new key: %v\n", err)
 		return 2
+	}
+	defer zero(newKey)
+
+	if oldFromFlag || newFromFlag {
+		fmt.Fprintln(errOut, "warning: keys passed via --old/--new flags are visible in process listings and shell history; prefer --old - and --new - to read from stdin")
 	}
 
 	if bytes.Equal(oldKey, newKey) {
@@ -212,6 +223,7 @@ func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byt
 		return 0, 0, 0, fmt.Errorf("list api key settings: %w", err)
 	}
 	for _, row := range apiKeyRows {
+		// plaintext cannot be zeroed (Go string is immutable); key bytes are zeroed on return from runWithIO
 		plaintext, err := admin.Decrypt(oldKey, row.Value)
 		if err != nil {
 			return 0, 0, 0, fmt.Errorf("decrypt system_settings[%s]: %w", row.Key, err)
@@ -299,4 +311,13 @@ func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byt
 // driver. The driver surfaces the SQLite error mnemonic in the error text.
 func isBusy(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "sqlite_busy")
+}
+
+// zero overwrites b with zeros to reduce the window during which sensitive
+// bytes are readable in memory (e.g. from a core dump). This is best-effort
+// in Go because the GC may have already copied the slice.
+func zero(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }

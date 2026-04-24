@@ -20,11 +20,13 @@ RUN CGO_ENABLED=0 go build -o /gleipnir . && \
 # Stage 3: Minimal runtime image
 FROM alpine:3.20
 RUN apk --no-cache add ca-certificates
+RUN addgroup -S gleipnir && adduser -S -G gleipnir gleipnir
 COPY --from=builder /gleipnir /usr/local/bin/gleipnir
 COPY --from=builder /gleipnirctl /usr/local/bin/gleipnirctl
-RUN mkdir -p /data
+RUN mkdir -p /data && chown gleipnir:gleipnir /data
 EXPOSE 8080
 # Health check is public (no auth required) — see internal/http/api/router.go.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD wget -qO- http://localhost:8080/api/v1/health || exit 1
+USER gleipnir
 CMD ["/usr/local/bin/gleipnir"]
