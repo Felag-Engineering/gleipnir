@@ -74,6 +74,11 @@
   background: color-mix(in srgb, var(--color-purple) 12%, transparent);
 }
 
+.colorTeal {
+  color: var(--color-teal);
+  background: color-mix(in srgb, var(--color-teal) 12%, transparent);
+}
+
 .colorMuted {
   color: var(--text-second);
   background: var(--bg-elevated);

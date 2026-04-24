@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
 import { useUsers } from '@/hooks/queries/users'
 import { useCreateUser } from '@/hooks/mutations/users'
 import { useUpdateUser } from '@/hooks/mutations/users'
@@ -7,24 +7,27 @@ import type { ApiError } from '@/api/fetch'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
-import { RoleChips } from '@/components/UsersPage/RoleChips'
 import { CreateUserModal } from '@/components/UsersPage/CreateUserModal'
+import { highestRoleFromArray } from '@/components/UsersPage/roles'
 import { formatDate } from '@/utils/format'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import styles from './UsersPage.module.css'
 
+const ROLE_BADGE_CLASS: Record<string, string> = {
+  admin: styles.roleBadgeAdmin,
+  operator: styles.roleBadgeOperator,
+  approver: styles.roleBadgeApprover,
+  auditor: styles.roleBadgeAuditor,
+}
+
 export default function UsersPage() {
   usePageTitle('Users')
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [editingUser, setEditingUser] = useState<ApiUser | null>(null)
 
   const { data: users, status } = useUsers()
   const createMutation = useCreateUser()
   const updateMutation = useUpdateUser()
-
-  const usersById = useMemo(
-    () => new Map(users?.map((u) => [u.id, u]) ?? []),
-    [users],
-  )
 
   function handleCreateSubmit(username: string, password: string, roles: string[]) {
     createMutation.mutate(
@@ -43,15 +46,22 @@ export default function UsersPage() {
     createMutation.reset()
   }
 
-  function handleRoleToggle(userId: string, role: string, add: boolean) {
-    const user = usersById.get(userId)
-    if (!user) return
+  function handleEditSubmit(roles: string[]) {
+    if (!editingUser) return
+    updateMutation.mutate(
+      { id: editingUser.id, roles },
+      {
+        onSuccess: () => {
+          setEditingUser(null)
+          updateMutation.reset()
+        },
+      },
+    )
+  }
 
-    const newRoles = add
-      ? [...user.roles, role]
-      : user.roles.filter((r) => r !== role)
-
-    updateMutation.mutate({ id: userId, roles: newRoles })
+  function handleEditClose() {
+    setEditingUser(null)
+    updateMutation.reset()
   }
 
   function handleStatusToggle(user: ApiUser) {
@@ -89,44 +99,61 @@ export default function UsersPage() {
             <thead>
               <tr>
                 <th>Username</th>
-                <th>Roles</th>
+                <th>Role</th>
                 <th>Status</th>
                 <th>Created</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {(users ?? []).map((user) => (
-                <tr key={user.id}>
-                  <td>{user.username}</td>
-                  <td>
-                    <RoleChips
-                      userId={user.id}
-                      roles={user.roles}
-                      onToggle={handleRoleToggle}
-                      disabled={updateMutation.isPending}
-                    />
-                  </td>
-                  <td>
-                    <span
-                      className={`${styles.statusBadge} ${user.deactivated_at ? styles.statusDeactivated : styles.statusActive}`}
-                    >
-                      {user.deactivated_at ? 'Deactivated' : 'Active'}
-                    </span>
-                  </td>
-                  <td>{formatDate(user.created_at)}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className={`${styles.actionBtn} ${user.deactivated_at ? '' : styles.actionBtnDestructive}`}
-                      onClick={() => handleStatusToggle(user)}
-                      disabled={updateMutation.isPending}
-                    >
-                      {user.deactivated_at ? 'Reactivate' : 'Deactivate'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {(users ?? []).map((user) => {
+                const topRole = highestRoleFromArray(user.roles)
+                return (
+                  <tr key={user.id}>
+                    <td>{user.username}</td>
+                    <td>
+                      {topRole ? (
+                        <span className={`${styles.roleBadge} ${ROLE_BADGE_CLASS[topRole] ?? ''}`}>
+                          {topRole}
+                        </span>
+                      ) : (
+                        <span className={`${styles.roleBadge} ${styles.roleBadgeNone}`}>—</span>
+                      )}
+                    </td>
+                    <td>
+                      <span
+                        className={`${styles.statusBadge} ${user.deactivated_at ? styles.statusDeactivated : styles.statusActive}`}
+                      >
+                        {user.deactivated_at ? 'Deactivated' : 'Active'}
+                      </span>
+                    </td>
+                    <td>{formatDate(user.created_at)}</td>
+                    <td>
+                      <div className={styles.actionsCell}>
+                        <button
+                          type="button"
+                          className={styles.actionBtn}
+                          onClick={() => {
+                            updateMutation.reset()
+                            setEditingUser(user)
+                          }}
+                          disabled={updateMutation.isPending}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className={`${styles.actionBtn} ${user.deactivated_at ? '' : styles.actionBtnDestructive}`}
+                          onClick={() => handleStatusToggle(user)}
+                          disabled={updateMutation.isPending}
+                        >
+                          {user.deactivated_at ? 'Reactivate' : 'Deactivate'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -134,10 +161,22 @@ export default function UsersPage() {
 
       {showCreateModal && (
         <CreateUserModal
+          mode="create"
           onClose={handleCreateClose}
           onSubmit={handleCreateSubmit}
           isPending={createMutation.isPending}
           error={createMutation.error as ApiError | null}
+        />
+      )}
+
+      {editingUser && (
+        <CreateUserModal
+          mode="edit"
+          initialRole={highestRoleFromArray(editingUser.roles)}
+          onClose={handleEditClose}
+          onSubmit={handleEditSubmit}
+          isPending={updateMutation.isPending}
+          error={updateMutation.error as ApiError | null}
         />
       )}
     </div>

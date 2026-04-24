@@ -10,25 +10,58 @@ const meta: Meta<typeof CreateUserModal> = {
 export default meta
 type Story = StoryObj<typeof CreateUserModal>
 
-export const Idle: Story = {
-  args: { onClose: () => {}, onSubmit: () => {}, isPending: false, error: null },
-}
+// onSubmit is cast as `never` throughout because Storybook's arg type inference
+// can't resolve the discriminated union — the actual signature varies by `mode`.
+// The cast is safe here since stories don't exercise the submit path.
 
-export const Pending: Story = {
-  args: { onClose: () => {}, onSubmit: () => {}, isPending: true, error: null },
-}
-
-export const WithError: Story = {
+export const CreateIdle: Story = {
   args: {
+    mode: 'create',
     onClose: () => {},
-    onSubmit: () => {},
+    onSubmit: (() => {}) as never,
+    isPending: false,
+    error: null,
+  },
+}
+
+export const CreatePending: Story = {
+  args: {
+    mode: 'create',
+    onClose: () => {},
+    onSubmit: (() => {}) as never,
+    isPending: true,
+    error: null,
+  },
+}
+
+export const CreateWithError: Story = {
+  args: {
+    mode: 'create',
+    onClose: () => {},
+    onSubmit: (() => {}) as never,
     isPending: false,
     error: { message: 'Username already exists' } as never,
   },
 }
 
-// Shows the two-column layout with the permissions panel populated.
-// Interact with the role checkboxes to preview panel updates.
-export const WithRolesPreselected: Story = {
-  args: { onClose: () => {}, onSubmit: () => {}, isPending: false, error: null },
+export const EditIdle: Story = {
+  args: {
+    mode: 'edit',
+    initialRole: 'operator',
+    onClose: () => {},
+    onSubmit: (() => {}) as never,
+    isPending: false,
+    error: null,
+  },
+}
+
+export const EditPending: Story = {
+  args: {
+    mode: 'edit',
+    initialRole: 'admin',
+    onClose: () => {},
+    onSubmit: (() => {}) as never,
+    isPending: true,
+    error: null,
+  },
 }

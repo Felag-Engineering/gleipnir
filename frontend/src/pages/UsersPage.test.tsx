@@ -160,37 +160,25 @@ describe('UsersPage — users loaded', () => {
 
   it('shows Deactivate button for active users', () => {
     renderPage()
-    const deactivateBtns = screen.getAllByRole('button', { name: /deactivate/i })
-    // Two active users → two deactivate buttons (plus the header Create button excluded)
+    const deactivateBtns = screen.getAllByRole('button', { name: /^deactivate$/i })
     expect(deactivateBtns.length).toBe(2)
   })
-})
 
-describe('UsersPage — role chip interaction', () => {
-  it('calls updateMutation.mutate when a role chip is clicked', () => {
-    mockUsersLoaded([USER_OPERATOR])
-    const mutateMock = vi.fn()
-    vi.mocked(useUpdateUser).mockReturnValue({
-      mutate: mutateMock,
-      isPending: false,
-      error: null,
-      reset: vi.fn(),
-    } as unknown as ReturnType<typeof useUpdateUser>)
-    vi.mocked(useCreateUser).mockReturnValue({
-      mutate: vi.fn(),
-      isPending: false,
-      error: null,
-      reset: vi.fn(),
-    } as unknown as ReturnType<typeof useCreateUser>)
-
+  it('shows highest role badge for each user', () => {
     renderPage()
+    expect(screen.getByText('admin')).toBeInTheDocument()
+    expect(screen.getByText('operator')).toBeInTheDocument()
+  })
 
-    // Click "admin" chip to add admin role to bob (who currently has operator)
-    fireEvent.click(screen.getByTitle(/^Add admin role/))
+  it('shows — placeholder badge when a user has no roles', () => {
+    renderPage()
+    expect(screen.getByText('—')).toBeInTheDocument()
+  })
 
-    expect(mutateMock).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'u2', roles: expect.arrayContaining(['admin', 'operator']) }),
-    )
+  it('shows an Edit button for each user row', () => {
+    renderPage()
+    const editBtns = screen.getAllByRole('button', { name: /^edit$/i })
+    expect(editBtns.length).toBe(3)
   })
 })
 
@@ -212,7 +200,7 @@ describe('UsersPage — deactivate action', () => {
     } as unknown as ReturnType<typeof useCreateUser>)
 
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /deactivate/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^deactivate$/i }))
 
     expect(mutateMock).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'u1', deactivated: true }),
@@ -282,11 +270,9 @@ describe('UsersPage — create user modal', () => {
 
     fireEvent.change(screen.getByLabelText(/username/i), { target: { value: 'newuser' } })
     fireEvent.change(screen.getByLabelText(/password/i), { target: { value: 'securepass' } })
-    // Click the leaf role (auditor) — no cascade below it, so roles: ['auditor'] exactly.
-    fireEvent.click(screen.getByLabelText(/auditor/i))
+    fireEvent.click(screen.getByRole('radio', { name: /auditor/i }))
 
-    const form = document.querySelector('#create-user-form') as HTMLFormElement
-    fireEvent.submit(form)
+    fireEvent.submit(document.querySelector('#user-modal-form') as HTMLFormElement)
 
     expect(mutateMock).toHaveBeenCalledWith(
       { username: 'newuser', password: 'securepass', roles: ['auditor'] },
@@ -308,7 +294,7 @@ describe('UsersPage — create user modal', () => {
     expect(submitBtn).toBeDisabled()
   })
 
-  it('Create User modal — empty fields show inline errors, not native tooltip', () => {
+  it('empty fields show inline errors, not native tooltip', () => {
     const mutateMock = vi.fn()
     vi.mocked(useCreateUser).mockReturnValue({
       mutate: mutateMock,
@@ -320,86 +306,166 @@ describe('UsersPage — create user modal', () => {
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: /create user/i }))
 
-    // Submit without filling any inputs.
-    fireEvent.submit(document.querySelector('#create-user-form') as HTMLFormElement)
+    fireEvent.submit(document.querySelector('#user-modal-form') as HTMLFormElement)
 
-    // Both error messages must appear (in the banner and/or inline FieldError).
-    // Use getAllByText because the message appears in both the FieldError element
-    // and the ErrorBanner summary list.
     expect(screen.getAllByText(/username is required/i).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/password is required/i).length).toBeGreaterThan(0)
 
-    // Each field must be marked invalid for accessibility.
     expect(screen.getByLabelText(/username/i)).toHaveAttribute('aria-invalid', 'true')
     expect(screen.getByLabelText(/password/i)).toHaveAttribute('aria-invalid', 'true')
 
-    // The mutation must not have been called — no server round-trip on empty inputs.
     expect(mutateMock).not.toHaveBeenCalled()
   })
 })
 
-describe('CreateUserModal — permissions panel placeholder', () => {
+describe('UsersPage — create modal role selection', () => {
   beforeEach(() => {
     mockUsersLoaded([])
     mockNoopMutations()
   })
 
-  it('shows placeholder text when no roles are selected', () => {
+  it('shows placeholder text when no role is selected', () => {
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: /create user/i }))
     expect(screen.getByText(/select a role to see its permissions/i)).toBeInTheDocument()
   })
-})
 
-describe('CreateUserModal — role hierarchy cascade', () => {
-  beforeEach(() => {
-    mockUsersLoaded([])
-    mockNoopMutations()
-  })
-
-  it('checking operator cascades to operator, approver, and auditor — not admin', () => {
+  it('selecting a radio marks only that role as checked', () => {
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: /create user/i }))
 
-    fireEvent.click(screen.getByLabelText(/operator/i))
+    fireEvent.click(screen.getByRole('radio', { name: /operator/i }))
 
-    expect(screen.getByLabelText(/operator/i)).toBeChecked()
-    expect(screen.getByLabelText(/approver/i)).toBeChecked()
-    expect(screen.getByLabelText(/auditor/i)).toBeChecked()
-    expect(screen.getByLabelText(/admin/i)).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: /operator/i })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /admin/i })).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: /approver/i })).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: /auditor/i })).not.toBeChecked()
   })
 
-  it('permissions panel shows operator capabilities after checking operator', () => {
+  it('switching radio selection deselects previous choice', () => {
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: /create user/i }))
 
-    fireEvent.click(screen.getByLabelText(/operator/i))
+    fireEvent.click(screen.getByRole('radio', { name: /admin/i }))
+    fireEvent.click(screen.getByRole('radio', { name: /auditor/i }))
+
+    expect(screen.getByRole('radio', { name: /auditor/i })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /admin/i })).not.toBeChecked()
+  })
+
+  it('permissions panel updates when radio selection changes', () => {
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /create user/i }))
+
+    fireEvent.click(screen.getByRole('radio', { name: /operator/i }))
 
     expect(screen.getAllByText(/trigger runs, manage policies/i).length).toBeGreaterThan(0)
   })
 
-  it('unchecking operator removes operator, approver, and auditor', () => {
+  it('submitting with operator radio sends all implied roles to the API', () => {
+    const mutateMock = vi.fn()
+    vi.mocked(useCreateUser).mockReturnValue({
+      mutate: mutateMock,
+      isPending: false,
+      error: null,
+      reset: vi.fn(),
+    } as unknown as ReturnType<typeof useCreateUser>)
+
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: /create user/i }))
 
-    // Check operator first (cascades down), then uncheck it.
-    fireEvent.click(screen.getByLabelText(/operator/i))
-    fireEvent.click(screen.getByLabelText(/operator/i))
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: 'newuser' } })
+    fireEvent.change(screen.getByLabelText(/password/i), { target: { value: 'pass' } })
+    fireEvent.click(screen.getByRole('radio', { name: /operator/i }))
+    fireEvent.submit(document.querySelector('#user-modal-form') as HTMLFormElement)
 
-    expect(screen.getByLabelText(/operator/i)).not.toBeChecked()
-    expect(screen.getByLabelText(/approver/i)).not.toBeChecked()
-    expect(screen.getByLabelText(/auditor/i)).not.toBeChecked()
+    expect(mutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        roles: expect.arrayContaining(['operator', 'approver', 'auditor']),
+      }),
+      expect.any(Object),
+    )
+    expect(mutateMock.mock.calls[0][0].roles).not.toContain('admin')
+  })
+})
+
+describe('UsersPage — edit user modal', () => {
+  it('opens edit modal with correct title when Edit is clicked', () => {
+    mockUsersLoaded([USER_OPERATOR])
+    mockNoopMutations()
+
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Edit user' })).toBeInTheDocument()
   })
 
-  it('checking admin selects all four roles', () => {
+  it('pre-selects the user\'s current highest role in the edit modal', () => {
+    mockUsersLoaded([USER_OPERATOR])
+    mockNoopMutations()
+
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /create user/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
 
-    fireEvent.click(screen.getByLabelText(/admin/i))
+    expect(screen.getByRole('radio', { name: /operator/i })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /admin/i })).not.toBeChecked()
+  })
 
-    expect(screen.getByLabelText(/admin/i)).toBeChecked()
-    expect(screen.getByLabelText(/operator/i)).toBeChecked()
-    expect(screen.getByLabelText(/approver/i)).toBeChecked()
-    expect(screen.getByLabelText(/auditor/i)).toBeChecked()
+  it('does not show username or password fields in edit modal', () => {
+    mockUsersLoaded([USER_OPERATOR])
+    mockNoopMutations()
+
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+
+    expect(screen.queryByLabelText(/username/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/password/i)).not.toBeInTheDocument()
+  })
+
+  it('calls updateMutation.mutate with expanded roles on save', () => {
+    mockUsersLoaded([USER_OPERATOR])
+    const mutateMock = vi.fn()
+    vi.mocked(useUpdateUser).mockReturnValue({
+      mutate: mutateMock,
+      isPending: false,
+      error: null,
+      reset: vi.fn(),
+    } as unknown as ReturnType<typeof useUpdateUser>)
+    vi.mocked(useCreateUser).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      error: null,
+      reset: vi.fn(),
+    } as unknown as ReturnType<typeof useCreateUser>)
+
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+
+    // Change role to admin
+    fireEvent.click(screen.getByRole('radio', { name: /admin/i }))
+    fireEvent.submit(document.querySelector('#user-modal-form') as HTMLFormElement)
+
+    expect(mutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'u2',
+        roles: expect.arrayContaining(['admin', 'operator', 'approver', 'auditor']),
+      }),
+      expect.any(Object),
+    )
+  })
+
+  it('closes edit modal on cancel', async () => {
+    mockUsersLoaded([USER_OPERATOR])
+    mockNoopMutations()
+
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
   })
 })
