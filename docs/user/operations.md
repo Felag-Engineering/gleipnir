@@ -14,23 +14,20 @@ Back it up immediately upon generation, before starting the stack for the first 
 
 Use the built-in `rotate-key` subcommand to re-encrypt all secrets under a new key in a single atomic transaction. No credentials need to be manually copied out or re-entered.
 
-1. **Stop the stack:**
-   ```bash
-   docker compose down
-   ```
-
-2. **Generate a new key:**
+1. **Generate a new key:**
    ```bash
    openssl rand -hex 32
+   ```
+
+2. **Stop the server:**
+   ```bash
+   docker compose stop gleipnir
    ```
 
 3. **Run the rotation** (pipe keys via stdin to avoid shell history exposure):
    ```bash
    printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
-     docker run --rm -i \
-       -v gleipnir_data:/data \
-       felagengineering/gleipnir:latest \
-       rotate-key --old - --new -
+     docker compose run --rm gleipnir rotate-key --old - --new -
    ```
    On success you'll see something like:
    ```
@@ -39,9 +36,9 @@ Use the built-in `rotate-key` subcommand to re-encrypt all secrets under a new k
 
 4. **Update `GLEIPNIR_ENCRYPTION_KEY`** in your `.env` to the new key.
 
-5. **Restart the stack:**
+5. **Bring the server back up:**
    ```bash
-   docker compose up -d
+   docker compose up -d gleipnir
    ```
 
 Before committing to a live rotation, use `--dry-run` to validate that the old key decrypts every ciphertext without writing anything:

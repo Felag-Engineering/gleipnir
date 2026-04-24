@@ -18,66 +18,50 @@ One-shot CLI subcommand that re-encrypts every at-rest secret in the Gleipnir da
 
 User passwords and session tokens are **not** affected — they use a separate one-way hash and do not need rotation here.
 
-## Prerequisites
+## Full rotation workflow
 
-**Stop the server before running.** The command will refuse to proceed if it detects another process holding the database write lock (exit code 3). Rotation with the server running would leave the in-memory key cache stale until the next restart.
+Key rotation requires a brief maintenance window. The server must be stopped because the command refuses to run while another process holds the database write lock.
 
-```bash
-docker compose down
-```
-
-## Usage
-
-### Recommended: read keys from stdin
-
-This is the safest form — keys never appear in process listings, shell history, or audit logs:
-
-```bash
-printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
-  docker run --rm -i \
-    -v gleipnir_data:/data \
-    felagengineering/gleipnir:latest \
-    rotate-key --old - --new -
-```
-
-Or interactively (you will be prompted, but input will be echoed — use the `printf` form in scripts):
-
-```bash
-docker run --rm -i \
-  -v gleipnir_data:/data \
-  felagengineering/gleipnir:latest \
-  rotate-key --old - --new -
-```
-
-### Inline flags (convenient but less secure)
-
-Keys passed as flag values are visible in `/proc/<pid>/cmdline` and shell history. Acceptable for local dev; avoid in production:
-
-```bash
-docker run --rm \
-  -v gleipnir_data:/data \
-  felagengineering/gleipnir:latest \
-  rotate-key --old <current-key> --new <new-key>
-```
-
-### Generating a new key
+**1. Generate a new key:**
 
 ```bash
 openssl rand -hex 32
 ```
 
-The key must be exactly 32 bytes, encoded as hex (64 chars) or base64 (44 chars).
+**2. Stop the server:**
 
-### Dry run
+```bash
+docker compose stop gleipnir
+```
 
-Validates that the old key can decrypt every ciphertext, then rolls back without writing anything. Use this to verify a backup is intact or to test before committing a live rotation:
+**3. Run the rotation using the same service config** (`docker compose run` inherits the correct volume mounts automatically):
 
 ```bash
 printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
-  docker run --rm -i \
-    -v gleipnir_data:/data \
-    felagengineering/gleipnir:latest \
-    rotate-key --old - --new - --dry-run
+  docker compose run --rm gleipnir rotate-key --old - --new -
+```
+
+Keys are piped via stdin so they never appear in process listings or shell history. On success you'll see:
+
+```
+re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets
+```
+
+**4. Update `GLEIPNIR_ENCRYPTION_KEY`** in your `.env` to the new key.
+
+**5. Bring the server back up:**
+
+```bash
+docker compose up -d gleipnir
+```
+
+## Dry run
+
+Before committing to a live rotation, use `--dry-run` to validate that the old key decrypts every ciphertext without writing anything. Useful for verifying a backup is intact:
+
+```bash
+printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
+  docker compose run --rm gleipnir rotate-key --old - --new - --dry-run
 ```
 
 Output on success:
@@ -85,15 +69,13 @@ Output on success:
 re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets (dry-run; no changes written)
 ```
 
-## After rotation
+## Inline flags (less secure)
 
-Update `GLEIPNIR_ENCRYPTION_KEY` in your environment (`.env` file, Docker secrets, or wherever you manage it) to the new key, then restart the server:
+Keys passed as flag values are visible in `/proc/<pid>/cmdline` and shell history — the command will warn you when this is detected. Acceptable for local dev; avoid in production:
 
 ```bash
-docker compose up -d
+docker compose run --rm gleipnir rotate-key --old <current-key> --new <new-key>
 ```
-
-Gleipnir will use the new key to decrypt secrets on the next read. The old key is no longer needed and should be discarded.
 
 ## Flags
 
