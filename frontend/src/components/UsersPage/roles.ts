@@ -27,33 +27,18 @@ export const ROLE_TOOLTIP: Record<Role, string> = {
   admin: 'Admin — full access, including user management, secret rotation, and system settings.',
 }
 
-// Returns the new checked set: `role` plus every role of lower privilege
-// (higher index in ROLE_HIERARCHY) added to `current`.
-export function rolesWhenChecked(role: Role, current: Set<Role>): Set<Role> {
-  const roleIndex = ROLE_HIERARCHY.indexOf(role)
-  const next = new Set(current)
-  for (let i = roleIndex; i < ROLE_HIERARCHY.length; i++) {
-    next.add(ROLE_HIERARCHY[i])
-  }
-  return next
+// Returns the role array to send to the API for a given radio selection:
+// the selected role plus all lower-privilege roles (higher index in ROLE_HIERARCHY).
+export function rolesForHighest(role: Role): Role[] {
+  return [...ROLE_HIERARCHY.slice(ROLE_HIERARCHY.indexOf(role))]
 }
 
-// Returns the new checked set: `role` and every role of lower privilege
-// (higher index in ROLE_HIERARCHY) removed from `current`.
-export function rolesWhenUnchecked(role: Role, current: Set<Role>): Set<Role> {
-  const roleIndex = ROLE_HIERARCHY.indexOf(role)
-  const next = new Set(current)
-  for (let i = roleIndex; i < ROLE_HIERARCHY.length; i++) {
-    next.delete(ROLE_HIERARCHY[i])
-  }
-  return next
-}
-
-// Returns the highest-privileged role in the set (lowest index in ROLE_HIERARCHY),
-// or null when the set is empty. Drives the permissions panel display.
-export function highestSelectedRole(current: Set<Role>): Role | null {
+// Returns the highest-privileged role from an API string array (lowest index in
+// ROLE_HIERARCHY), or null when the array is empty. Used to drive the role badge
+// and pre-populate the edit modal.
+export function highestRoleFromArray(roles: string[]): Role | null {
   for (const role of ROLE_HIERARCHY) {
-    if (current.has(role)) return role
+    if (roles.includes(role)) return role
   }
   return null
 }

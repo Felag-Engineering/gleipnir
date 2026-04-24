@@ -63,7 +63,42 @@
   composes: colorRed from '../styles/badges.module.css';
 }
 
+/* Role badges */
+
+.roleBadge {
+  composes: badgeRect from '../styles/badges.module.css';
+  font-weight: var(--weight-medium);
+  text-transform: capitalize;
+}
+
+.roleBadgeAdmin {
+  composes: colorPurple from '../styles/badges.module.css';
+}
+
+.roleBadgeOperator {
+  composes: colorBlue from '../styles/badges.module.css';
+}
+
+.roleBadgeApprover {
+  composes: colorOrange from '../styles/badges.module.css';
+}
+
+.roleBadgeAuditor {
+  color: var(--color-teal);
+  background: color-mix(in srgb, var(--color-teal) 12%, transparent);
+}
+
+.roleBadgeNone {
+  composes: colorMuted from '../styles/badges.module.css';
+}
+
 /* Actions */
+
+.actionsCell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 
 .actionBtn {
   display: inline-flex;
