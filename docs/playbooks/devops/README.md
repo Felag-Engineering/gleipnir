@@ -24,53 +24,7 @@ On a manual trigger, this agent carries out common homelab operations described 
 | `technitium-mcp` | Manage DNS zones and records | [rosschurchill/technitium-mcp-secure](https://github.com/rosschurchill/technitium-mcp-secure) | Technitium API token |
 | `caddy-mcp` | Read and update Caddy routing config | [lum8rjack/caddy-mcp](https://github.com/lum8rjack/caddy-mcp) | None (admin API on trusted network) |
 
-## Step 1 — Create the shared Docker network
-
-Gleipnir and the MCP servers run in separate Compose projects and are network-isolated by default. A named external network lets both projects join the same bridge so Gleipnir can reach MCP containers by name.
-
-Create the network once on the Docker host:
-
-```bash
-docker network create gleipnir_mcp
-```
-
-This only needs to be done once; the network persists across container restarts.
-
-## Step 2 — Attach Gleipnir to the shared network
-
-Without modifying the checked-in `docker-compose.yml`, create a `docker-compose.override.yml` in the **Gleipnir root directory** (next to `docker-compose.yml`). Docker Compose merges this file automatically:
-
-```yaml
-# gleipnir/docker-compose.override.yml
-services:
-  api:
-    networks:
-      - default
-      - gleipnir_mcp
-
-networks:
-  gleipnir_mcp:
-    external: true
-    name: gleipnir_mcp
-```
-
-Then restart Gleipnir to apply the new network attachment:
-
-```bash
-docker compose down && docker compose up -d
-```
-
-Verify Gleipnir is on the shared network:
-
-```bash
-docker network inspect gleipnir_mcp
-```
-
-The `gleipnir-api-1` container (or similar) should appear in the output.
-
-> **Why `networks: default` is included:** The override replaces the service's `networks` list rather than appending to it. Listing `default` explicitly keeps Gleipnir on its original project network (needed for the health check and any future services in the same compose project).
-
-## Step 3 — Set up credentials
+## Step 1 — Set up credentials
 
 ### Docker: SSH key
 
@@ -129,7 +83,7 @@ The four environment variables `proxmox-mcp` expects:
 
 No auth required by default. Note the full URL to the Caddy admin API, e.g. `http://192.168.1.20:2019`. Restrict access at the network level; do not expose port 2019 to untrusted networks.
 
-## Step 4 — Create .env
+## Step 2 — Create .env
 
 Create `.env` inside `docs/playbooks/devops/` — the same directory as `docker-compose.yml`:
 
@@ -156,7 +110,7 @@ CADDY_ADMIN_URL=http://<caddy-host>:2019
 
 Do not commit `.env`, `id_ed25519`, or `id_ed25519.pub`. All three are listed in `.gitignore` at the repo root.
 
-## Step 5 — Build and start the MCP servers
+## Step 3 — Build and start the MCP servers
 
 The `docker-mcp` and `proxmox-mcp` services share a custom base image (`Dockerfile.python-mcp`) that adds Python and `uvx` on top of a Node.js image. `caddy-mcp` is compiled from source in a multi-stage Go build (`Dockerfile.caddy-mcp`). The `--build` flag is required on first start.
 
@@ -180,26 +134,22 @@ docker compose logs technitium-mcp
 docker compose logs caddy-mcp
 ```
 
-## Step 6 — Register each MCP server in Gleipnir
+## Step 4 — Register each MCP server in Gleipnir
 
-In Gleipnir, go to **Settings → MCP Servers → Add Server** four times.
+In Gleipnir, go to **Settings → MCP Servers → Add Server** four times. Use the LAN IP of the host running the MCP containers:
 
-Because the MCP containers are on the `gleipnir_mcp` shared network, Gleipnir can reach them by container name. Use the **Container name** column when Gleipnir and the playbook are on the same Docker host:
-
-| Name | Container name URL | External host URL |
-|------|-------------------|-------------------|
-| `docker` | `http://devops-docker-mcp-1:8201/` | `http://<MCP_HOST>:8201/` |
-| `proxmox` | `http://devops-proxmox-mcp-1:8202/` | `http://<MCP_HOST>:8202/` |
-| `technitium` | `http://devops-technitium-mcp-1:8203/` | `http://<MCP_HOST>:8203/` |
-| `caddy` | `http://devops-caddy-mcp-1:8204/` | `http://<MCP_HOST>:8204/` |
-
-> **Container name:** Docker Compose names containers `<project>-<service>-<index>`. The project name defaults to the directory name (`devops`). If you run compose from a differently-named directory, adjust the container name prefix accordingly. You can confirm the exact name with `docker compose ps`.
+| Name | URL |
+|------|-----|
+| `docker` | `http://<HOST_IP>:8201/` |
+| `proxmox` | `http://<HOST_IP>:8202/` |
+| `technitium` | `http://<HOST_IP>:8203/` |
+| `caddy` | `http://<HOST_IP>:8204/` |
 
 > **caddy-mcp transport:** Unlike the other three, `caddy-mcp` speaks the `httpstream` MCP transport natively — it does not wrap a stdio server. Gleipnir connects to it directly on port 8204 without supergateway in the path.
 
 After adding each server, click **Discover**. Note the exact tool names returned — the policy YAML below uses representative names. If Discover returns different names (e.g. `list_containers` instead of `docker_list_containers`), update the `tool:` entries in the policy before saving.
 
-## Step 7 — Create the policy
+## Step 5 — Create the policy
 
 Go to **Policies → New Policy** and fill in the form. The YAML below is the payload the form produces.
 
@@ -318,7 +268,7 @@ agent:
 - `caddy.get_caddy_config` is not approval-gated; it is a read that never modifies state. `update_caddy_config` is, because Caddy applies config changes live with no undo.
 - Tools not listed in `capabilities.tools` do not exist from the agent's perspective (ADR-001). The agent cannot call tools it was not granted, regardless of what it reasons.
 
-## Step 8 — Trigger a test run
+## Step 6 — Trigger a test run
 
 1. In Gleipnir, go to **Policies → devops → Trigger**.
 2. Enter a read-only task to verify connectivity first: *"List all running containers on the Docker host."*
@@ -398,5 +348,5 @@ agent:
 | `technitium-mcp` returns 403 | API token invalid | Regenerate in Technitium → Administration → Sessions. |
 | `caddy-mcp` build fails | `go install` cannot reach the module proxy | Check internet access from the build host. If offline, add `--network=host` or pre-cache the module. |
 | `caddy-mcp` cannot reach Caddy | Caddy admin API bound to localhost only | On the Caddy host, change `admin localhost:2019` to `admin 0.0.0.0:2019` (or the Gleipnir host's LAN IP) in the Caddyfile and reload. |
-| Gleipnir cannot reach MCP containers by name | Override compose not applied or network not created | Confirm `docker network inspect gleipnir_mcp` lists both the Gleipnir api container and the MCP containers. Re-run `docker compose down && docker compose up -d` in the Gleipnir directory if not. |
+| Gleipnir cannot reach MCP servers | Wrong IP or ports not listening | Confirm MCP containers are up with `docker compose ps`. Test connectivity from the Gleipnir host: `curl http://<HOST_IP>:8201/`. |
 | Tool names in policy don't match Discover output | MCP server updated its tool names | Click Discover again in Settings → MCP Servers and update `tool:` entries in the policy. |

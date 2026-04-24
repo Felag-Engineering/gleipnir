@@ -4,11 +4,11 @@
 #   docker compose up -d --build
 #
 # Prerequisites:
-#   - External network must exist: docker network create gleipnir_mcp
-#   - Gleipnir must be attached to that network: see docker-compose.override.yml
-#     in the Gleipnir root directory (README.md § Step 2).
 #   - SSH key pair and known_hosts in this directory (README.md § Step 3).
 #   - .env file in this directory (README.md § Step 4).
+#
+# Ports are bound to all interfaces so Gleipnir can reach them via the
+# host's LAN IP. Register each server in Gleipnir as http://<HOST_IP>:820x/
 
 services:
 
@@ -24,14 +24,12 @@ services:
       --port 8201
       --stdio "uvx docker-mcp"
     ports:
-      - "127.0.0.1:8201:8201"
+      - "8201:8201"
     environment:
       - DOCKER_HOST=${DOCKER_HOST}
     volumes:
       - ./id_ed25519:/root/.ssh/id_ed25519:ro
       - ./known_hosts:/root/.ssh/known_hosts:ro
-    networks:
-      - gleipnir_mcp
     restart: unless-stopped
 
   # proxmox-mcp — manage VMs and LXC containers via the Proxmox REST API.
@@ -46,15 +44,13 @@ services:
       --port 8202
       --stdio "uvx mcp-proxmox"
     ports:
-      - "127.0.0.1:8202:8202"
+      - "8202:8202"
     environment:
       - PROXMOX_HOST=${PROXMOX_HOST}
       - PROXMOX_USER=${PROXMOX_USER}
       - PROXMOX_TOKEN_NAME=${PROXMOX_TOKEN_NAME}
       - PROXMOX_TOKEN_VALUE=${PROXMOX_TOKEN_VALUE}
       - PROXMOX_VERIFY_SSL=${PROXMOX_VERIFY_SSL:-false}
-    networks:
-      - gleipnir_mcp
     restart: unless-stopped
 
   # technitium-mcp — manage DNS zones and records via the Technitium HTTP API.
@@ -66,12 +62,10 @@ services:
       --port 8203
       --stdio "npx -y @rosschurchill/technitium-mcp-secure"
     ports:
-      - "127.0.0.1:8203:8203"
+      - "8203:8203"
     environment:
       - TECHNITIUM_BASE_URL=${TECHNITIUM_BASE_URL}
       - TECHNITIUM_TOKEN=${TECHNITIUM_TOKEN}
-    networks:
-      - gleipnir_mcp
     restart: unless-stopped
 
   # caddy-mcp — manage Caddy routes via the Caddy admin API.
@@ -83,12 +77,5 @@ services:
       dockerfile: Dockerfile.caddy-mcp
     command: ["-transport", "httpstream", "-port", "8204", "-url", "${CADDY_ADMIN_URL}"]
     ports:
-      - "127.0.0.1:8204:8204"
-    networks:
-      - gleipnir_mcp
+      - "8204:8204"
     restart: unless-stopped
-
-networks:
-  gleipnir_mcp:
-    external: true
-    name: gleipnir_mcp
