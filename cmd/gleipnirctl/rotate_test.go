@@ -1,4 +1,4 @@
-package rotatekey_test
+package main
 
 import (
 	"bytes"
@@ -11,7 +11,6 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/rapp992/gleipnir/cmd/rotatekey"
 	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/testutil"
@@ -35,13 +34,13 @@ var (
 
 // newSeededPath creates a temp DB, seeds it with test data (all encrypted with
 // encKeyHex), closes the store, and returns the file path. The caller can then
-// open it separately — or let rotatekey.Run open it — without connection conflicts.
+// open it separately — or let Run open it — without connection conflicts.
 func newSeededPath(t *testing.T, encKeyHex string) string {
 	t.Helper()
 	s := testutil.NewTestStore(t)
 	seedDB(t, s, mustKey(encKeyHex))
 	path := storePath(t, s)
-	// Close so rotatekey.Run can open its own connection without SQLITE_BUSY.
+	// Close so Run can open its own connection without SQLITE_BUSY.
 	s.Close()
 	return path
 }
@@ -149,7 +148,7 @@ func TestRotate_RoundTripsAllThreeSecretTypes(t *testing.T) {
 	path := newSeededPath(t, keyA)
 
 	var stdout, stderr bytes.Buffer
-	code := rotatekey.Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
+	code := Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
 	}
@@ -256,7 +255,7 @@ func TestRotate_DryRunRollsBack(t *testing.T) {
 	s.Close()
 
 	var stdout, stderr bytes.Buffer
-	code := rotatekey.Run([]string{"--old", keyA, "--new", keyB, "--dry-run", "--db-path", path}, &stdout, &stderr)
+	code := Run([]string{"--old", keyA, "--new", keyB, "--dry-run", "--db-path", path}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
 	}
@@ -314,7 +313,7 @@ func TestRotate_WrongOldKeyFailsWithoutPartialWrites(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	// Try to rotate with keyA as old key — will fail when it hits openai_api_key.
-	code := rotatekey.Run([]string{"--old", keyA, "--new", keyC, "--db-path", path}, &stdout, &stderr)
+	code := Run([]string{"--old", keyA, "--new", keyC, "--db-path", path}, &stdout, &stderr)
 	if code == 0 {
 		t.Fatal("expected non-zero exit code on decrypt failure")
 	}
@@ -360,7 +359,7 @@ func TestRotate_RejectsInvalidKeys(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := rotatekey.Run(tc.args, &stdout, &stderr)
+			code := Run(tc.args, &stdout, &stderr)
 			if code != 2 {
 				t.Errorf("expected exit 2, got %d", code)
 			}
@@ -375,7 +374,7 @@ func TestRotate_RejectsInvalidKeys(t *testing.T) {
 // and --new exits with code 2 and a "nothing to do" message.
 func TestRotate_RejectsEqualKeys(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := rotatekey.Run([]string{"--old", keyA, "--new", keyA}, &stdout, &stderr)
+	code := Run([]string{"--old", keyA, "--new", keyA}, &stdout, &stderr)
 	if code != 2 {
 		t.Errorf("expected exit 2, got %d", code)
 	}
@@ -419,7 +418,7 @@ func TestRotate_ServerHoldingDBIsRefused(t *testing.T) {
 	// Do NOT commit or roll back yet — the write lock must be held during Run.
 
 	var stdout, stderr bytes.Buffer
-	code := rotatekey.Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
+	code := Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
 	if code != 3 {
 		t.Errorf("expected exit 3 while DB is held, got %d; stderr: %s", code, stderr.String())
 	}
@@ -434,7 +433,7 @@ func TestRotate_ServerHoldingDBIsRefused(t *testing.T) {
 	// Now rotate-key should succeed on an empty DB (no secrets to rotate).
 	stdout.Reset()
 	stderr.Reset()
-	code = rotatekey.Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
+	code = Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("expected exit 0 after releasing holder, got %d; stderr: %s", code, stderr.String())
 	}
@@ -450,7 +449,7 @@ func TestRotate_ReadsKeysFromStdin(t *testing.T) {
 	stdinReader := strings.NewReader(stdinContent)
 
 	var stdout, stderr bytes.Buffer
-	code := rotatekey.RunWithIO([]string{"--old", "-", "--new", "-", "--db-path", path}, stdinReader, &stdout, &stderr)
+	code := RunWithIO([]string{"--old", "-", "--new", "-", "--db-path", path}, stdinReader, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
 	}
@@ -480,7 +479,7 @@ func TestRotate_WarnsWhenKeysPassedViaFlags(t *testing.T) {
 		path := newSeededPath(t, keyA)
 
 		var stdout, stderr bytes.Buffer
-		code := rotatekey.Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
+		code := Run([]string{"--old", keyA, "--new", keyB, "--db-path", path}, &stdout, &stderr)
 		if code != 0 {
 			t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
 		}
@@ -494,7 +493,7 @@ func TestRotate_WarnsWhenKeysPassedViaFlags(t *testing.T) {
 
 		stdinReader := strings.NewReader(keyA + "\n" + keyB + "\n")
 		var stdout, stderr bytes.Buffer
-		code := rotatekey.RunWithIO([]string{"--old", "-", "--new", "-", "--db-path", path}, stdinReader, &stdout, &stderr)
+		code := RunWithIO([]string{"--old", "-", "--new", "-", "--db-path", path}, stdinReader, &stdout, &stderr)
 		if code != 0 {
 			t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
 		}
@@ -522,7 +521,7 @@ func TestRotate_StorePath(t *testing.T) {
 
 	// No secrets seeded — summary should show 0 for all counts.
 	var stdout, stderr bytes.Buffer
-	code := rotatekey.Run([]string{"--old", keyA, "--new", keyB, "--db-path", customPath}, &stdout, &stderr)
+	code := Run([]string{"--old", keyA, "--new", keyB, "--db-path", customPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; stderr: %s", code, stderr.String())
 	}

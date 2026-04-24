@@ -1,14 +1,42 @@
-# gleipnirctl rotate-key
+# gleipnirctl
 
-One-shot CLI subcommand that re-encrypts every at-rest secret in the Gleipnir database under a new `GLEIPNIR_ENCRYPTION_KEY`, in a single atomic transaction.
+gleipnirctl is the local admin CLI for Gleipnir. It provides direct database-level operations for maintenance and recovery tasks that require the server to be stopped or that need to bypass the web UI.
 
-## When to use this
+All commands run as one-off containers using:
+
+```bash
+docker compose run --rm gleipnirctl <command> [flags]
+```
+
+## When to use it vs the web UI
+
+The web UI handles day-to-day operations: managing policies, reviewing runs, approving tool calls, and configuring models. Use gleipnirctl for emergencies and maintenance — recovering a locked-out account, rotating encryption keys, validating backups — where direct database access is needed or the server must be stopped.
+
+## Available commands
+
+| Command | Status | Description |
+|---|---|---|
+| `rotate-key` | Available | Re-encrypt all at-rest secrets under a new encryption key |
+| `reset-password` | Coming soon | Reset a user's password directly in the database |
+| `create-user` | Coming soon | Create a new user account without going through the web UI |
+| `list-users` | Coming soon | List all user accounts and their roles |
+| `purge-runs` | Coming soon | Delete run history older than a given date |
+| `verify-keys` | Coming soon | Verify that the current encryption key decrypts all stored secrets |
+| `check` | Coming soon | Run a health check against the database and configuration |
+
+---
+
+## rotate-key
+
+Re-encrypts every at-rest secret in the Gleipnir database under a new `GLEIPNIR_ENCRYPTION_KEY`, in a single atomic transaction.
+
+### When to use this
 
 - You suspect the current encryption key has been compromised
 - You want to rotate the key on a schedule as a security hygiene practice
 - You are restoring from a backup and need to re-key the secrets
 
-## What gets rotated
+### What gets rotated
 
 | Location | Column |
 |---|---|
@@ -18,7 +46,7 @@ One-shot CLI subcommand that re-encrypts every at-rest secret in the Gleipnir da
 
 User passwords and session tokens are **not** affected — they use a separate one-way hash and do not need rotation here.
 
-## Full rotation workflow
+### Full rotation workflow
 
 Key rotation requires a brief maintenance window. The server must be stopped because the command refuses to run while another process holds the database write lock.
 
@@ -55,7 +83,7 @@ re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets
 docker compose up -d gleipnir
 ```
 
-## Dry run
+### Dry run
 
 Before committing to a live rotation, use `--dry-run` to validate that the old key decrypts every ciphertext without writing anything. Useful for verifying a backup is intact:
 
@@ -69,7 +97,7 @@ Output on success:
 re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets (dry-run; no changes written)
 ```
 
-## Inline flags (less secure)
+### Inline flags (less secure)
 
 Keys passed as flag values are visible in `/proc/<pid>/cmdline` and shell history — the command will warn you when this is detected. Acceptable for local dev; avoid in production:
 
@@ -77,7 +105,7 @@ Keys passed as flag values are visible in `/proc/<pid>/cmdline` and shell histor
 docker compose run --rm gleipnirctl rotate-key --old <current-key> --new <new-key>
 ```
 
-## Flags
+### Flags
 
 | Flag | Default | Description |
 |---|---|---|
@@ -86,7 +114,7 @@ docker compose run --rm gleipnirctl rotate-key --old <current-key> --new <new-ke
 | `--dry-run` | `false` | Validate decryption and simulate rotation without writing. |
 | `--db-path` | `$GLEIPNIR_DB_PATH` or `/data/gleipnir.db` | Path to the SQLite database file. |
 
-## Exit codes
+### Exit codes
 
 | Code | Meaning |
 |---|---|
@@ -95,7 +123,7 @@ docker compose run --rm gleipnirctl rotate-key --old <current-key> --new <new-ke
 | 2 | Bad input (invalid key format, equal keys, missing flags) |
 | 3 | Database is held by another process — stop the server first |
 
-## Security notes
+### Security notes
 
 - **Key material in flags:** When `--old`/`--new` are passed as literal values, both keys are readable from `/proc/<pid>/cmdline` by any process with the same UID on the host, and are saved in shell history. The command emits a warning when this is detected. In production, always use `--old - --new -` and pipe the keys in.
 - **Atomicity:** All re-encryption happens in a single SQLite transaction. A crash or error mid-rotation leaves the database unchanged — the old key remains valid.

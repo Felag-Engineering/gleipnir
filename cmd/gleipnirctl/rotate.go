@@ -1,11 +1,12 @@
-// Package rotatekey implements the `gleipnir rotate-key` subcommand.
+// Package main implements the gleipnirctl local admin CLI.
 //
-// It re-encrypts every at-rest secret in the database (provider API keys in
-// system_settings, OpenAI-compat provider keys, and per-policy webhook
-// secrets) under a new AES-256-GCM key in a single transaction. Run this
-// command with the server stopped; the command refuses to proceed if another
-// process is holding the database write lock.
-package rotatekey
+// rotate.go contains the core rotation logic: it re-encrypts every at-rest
+// secret in the database (provider API keys in system_settings, OpenAI-compat
+// provider keys, and per-policy webhook secrets) under a new AES-256-GCM key
+// in a single transaction. Run this command with the server stopped; the
+// command refuses to proceed if another process is holding the database write
+// lock.
+package main
 
 import (
 	"bufio"
@@ -21,8 +22,6 @@ import (
 	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/db"
 )
-
-const defaultDBPath = "/data/gleipnir.db"
 
 // Run is the public entry point for the rotate-key subcommand. args are
 // already stripped of the leading "rotate-key" token. It writes human-readable

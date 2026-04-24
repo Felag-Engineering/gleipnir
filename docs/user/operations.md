@@ -51,7 +51,7 @@ printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
     rotate-key --old - --new - --dry-run
 ```
 
-See [`cmd/rotatekey/README.md`](../../cmd/rotatekey/README.md) for the full flag reference and security notes.
+See [`cmd/gleipnirctl/README.md`](../../cmd/gleipnirctl/README.md) for the full flag reference and security notes.
 
 ## Backing up the database
 

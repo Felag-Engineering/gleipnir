@@ -11,7 +11,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/rapp992/gleipnir/cmd/rotatekey"
 	"github.com/rapp992/gleipnir/internal/admin"
 )
 
@@ -104,7 +103,7 @@ func runRotateKey(cmd *cobra.Command, oldKeyFlag, newKeyFlag, dbPath string, dry
 		return fmt.Errorf("new key equals old key; nothing to do")
 	}
 
-	code := rotatekey.Rotate(context.Background(), dbPath, oldKey, newKey, dryRun, out, errOut)
+	code := Rotate(context.Background(), dbPath, oldKey, newKey, dryRun, out, errOut)
 	if code != 0 {
 		// rotatekey.Rotate already wrote the error message to errOut; exit with
 		// the appropriate code without adding another error layer.
