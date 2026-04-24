@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/model"
 )
@@ -37,6 +39,7 @@ type ToolDiff struct {
 type Registry struct {
 	queries    *db.Queries
 	mcpTimeout time.Duration
+	encKey     []byte // AES-256-GCM key for decrypting auth_headers_encrypted; nil if unset
 }
 
 // RegistryOption configures a Registry.
@@ -50,6 +53,15 @@ func WithMCPTimeout(d time.Duration) RegistryOption {
 	}
 }
 
+// WithEncryptionKey sets the AES-256 key used to decrypt auth_headers_encrypted
+// when building a Client for an MCP server. When nil, auth headers stored in
+// the DB are silently dropped (with a log warning) rather than causing errors.
+func WithEncryptionKey(key []byte) RegistryOption {
+	return func(r *Registry) {
+		r.encKey = key
+	}
+}
+
 // NewRegistry returns a Registry backed by the given sqlc Queries.
 func NewRegistry(queries *db.Queries, opts ...RegistryOption) *Registry {
 	r := &Registry{queries: queries}
@@ -59,17 +71,40 @@ func NewRegistry(queries *db.Queries, opts ...RegistryOption) *Registry {
 	return r
 }
 
-// newClient creates an MCP Client for the given server name and URL, applying
-// the Registry's mcpTimeout when it is non-zero. serverName is stored on the
-// Client so CallTool can use it as a Prometheus label.
-func (r *Registry) newClient(name, url string) *Client {
-	var cl *Client
+// newClientForServer creates an MCP Client for srv, applying the Registry's
+// mcpTimeout and decrypting any stored auth headers. On decrypt or unmarshal
+// error, or when the encryption key is unset, the client is returned with no
+// auth headers and a warning is logged — matching the fail-open pattern used
+// by the webhook secret loader.
+func (r *Registry) newClientForServer(srv db.McpServer) *Client {
+	opts := make([]ClientOption, 0, 2)
 	if r.mcpTimeout > 0 {
-		cl = NewClient(url, WithTimeout(r.mcpTimeout))
-	} else {
-		cl = NewClient(url)
+		opts = append(opts, WithTimeout(r.mcpTimeout))
 	}
-	cl.serverName = name
+
+	if srv.AuthHeadersEncrypted != nil {
+		if r.encKey == nil {
+			slog.Warn("encryption key unset; mcp server has stored auth headers but they will not be sent",
+				"server_id", srv.ID, "server_name", srv.Name)
+		} else {
+			plaintext, err := admin.Decrypt(r.encKey, *srv.AuthHeadersEncrypted)
+			if err != nil {
+				slog.Warn("failed to decrypt mcp server auth headers; headers will not be sent",
+					"server_id", srv.ID, "server_name", srv.Name, "err", err)
+			} else {
+				headers, err := UnmarshalAuthHeaders([]byte(plaintext))
+				if err != nil {
+					slog.Warn("failed to unmarshal mcp server auth headers; headers will not be sent",
+						"server_id", srv.ID, "server_name", srv.Name, "err", err)
+				} else if len(headers) > 0 {
+					opts = append(opts, WithAuthHeaders(headers))
+				}
+			}
+		}
+	}
+
+	cl := NewClient(srv.Url, opts...)
+	cl.serverName = srv.Name
 	return cl
 }
 
@@ -123,7 +158,7 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 
 		cl, ok := clients[srv.Url]
 		if !ok {
-			cl = r.newClient(serverName, srv.Url)
+			cl = r.newClientForServer(srv)
 			clients[srv.Url] = cl
 		}
 
@@ -170,7 +205,7 @@ func (r *Registry) ResolveToolByName(ctx context.Context, dotName string) (*Clie
 		return nil, "", fmt.Errorf("get server for tool %q: %w", dotName, err)
 	}
 
-	return r.newClient(serverName, srv.Url), toolName, nil
+	return r.newClientForServer(srv), toolName, nil
 }
 
 // RegisterServer stores a new MCP server record, discovers its tools via the
@@ -193,7 +228,11 @@ func (r *Registry) RegisterServer(ctx context.Context, name, url string) error {
 		return fmt.Errorf("create mcp server: %w", err)
 	}
 
-	tools, err := r.newClient(name, url).DiscoverTools(ctx)
+	// Build a synthetic server record so newClientForServer can apply auth headers.
+	// RegisterServer does not yet have a DB row to read from, so we construct the
+	// minimal record. auth_headers_encrypted is always nil at creation time —
+	// headers are added via the Update endpoint after the server is registered.
+	tools, err := r.newClientForServer(db.McpServer{ID: serverID, Name: name, Url: url}).DiscoverTools(ctx)
 	if err != nil {
 		return fmt.Errorf("discover tools for server %q: %w", name, err)
 	}
@@ -235,7 +274,7 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 		return ToolDiff{}, fmt.Errorf("get mcp server %q: %w", serverID, err)
 	}
 
-	freshTools, err := r.newClient(srv.Name, srv.Url).DiscoverTools(ctx)
+	freshTools, err := r.newClientForServer(srv).DiscoverTools(ctx)
 	if err != nil {
 		return ToolDiff{}, fmt.Errorf("discover tools for server %q: %w", serverID, err)
 	}

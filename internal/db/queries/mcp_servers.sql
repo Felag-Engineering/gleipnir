@@ -1,6 +1,6 @@
 -- name: CreateMCPServer :one
-INSERT INTO mcp_servers (id, name, url, created_at)
-VALUES (:id, :name, :url, :created_at)
+INSERT INTO mcp_servers (id, name, url, created_at, auth_headers_encrypted)
+VALUES (:id, :name, :url, :created_at, :auth_headers_encrypted)
 RETURNING *;
 
 -- name: GetMCPServer :one
@@ -19,6 +19,22 @@ UPDATE mcp_servers SET has_drift = :has_drift WHERE id = :id;
 
 -- name: DeleteMCPServer :exec
 DELETE FROM mcp_servers WHERE id = :id;
+
+-- name: UpdateMCPServer :one
+UPDATE mcp_servers
+SET name = :name, url = :url, auth_headers_encrypted = :auth_headers_encrypted
+WHERE id = :id
+RETURNING *;
+
+-- ListMCPServersWithAuthHeaders returns only rows that have a stored ciphertext.
+-- Used by rotate-key to re-encrypt all MCP auth header sets.
+-- name: ListMCPServersWithAuthHeaders :many
+SELECT id, auth_headers_encrypted FROM mcp_servers
+WHERE auth_headers_encrypted IS NOT NULL
+ORDER BY id;
+
+-- name: UpdateMCPServerAuthHeaders :exec
+UPDATE mcp_servers SET auth_headers_encrypted = :auth_headers_encrypted WHERE id = :id;
 
 -- name: CountMCPServers :one
 SELECT COUNT(*) FROM mcp_servers;

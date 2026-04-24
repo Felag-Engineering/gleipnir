@@ -2,6 +2,20 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { ServerDetailModal } from './ServerDetailModal'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
+import { MASKED_HEADER_VALUE } from '@/api/types'
+
+// Shared mutate spy — reset between tests that need to inspect calls.
+let mockMutate = vi.fn()
+
+// Mock useUpdateMcpServer so tests don't need a QueryClientProvider.
+vi.mock('@/hooks/mutations/servers', () => ({
+  useUpdateMcpServer: () => ({
+    mutate: mockMutate,
+    isPending: false,
+    error: null,
+    reset: vi.fn(),
+  }),
+}))
 
 const server: ApiMcpServer = {
   id: 'srv-1',
@@ -117,6 +131,64 @@ describe('ServerDetailModal', () => {
     render(<ServerDetailModal {...defaultProps} onClose={onClose} />)
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledOnce()
+  })
+})
+
+describe('ServerDetailModal — auth header editor', () => {
+  it('shows "Auth headers" label when server has no auth_header_keys', () => {
+    render(<ServerDetailModal {...defaultProps} />)
+    expect(screen.getByRole('button', { name: 'Auth headers' })).toBeInTheDocument()
+  })
+
+  it('shows "Auth (N)" label when server has auth_header_keys populated', () => {
+    const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key', 'x-token'] }
+    render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
+    expect(screen.getByRole('button', { name: 'Auth (2)' })).toBeInTheDocument()
+  })
+
+  it('opening the editor seeds one row per key with MASKED_HEADER_VALUE in the value field', () => {
+    const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key', 'x-token'] }
+    render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Auth (2)' }))
+
+    const keyInputs = screen.getAllByRole('textbox', { name: /header name/i })
+    const valueInputs = screen.getAllByRole('textbox', { name: /header value/i })
+
+    expect(keyInputs).toHaveLength(2)
+    expect(valueInputs).toHaveLength(2)
+    expect(keyInputs[0]).toHaveValue('x-api-key')
+    expect(keyInputs[1]).toHaveValue('x-token')
+    expect(valueInputs[0]).toHaveValue(MASKED_HEADER_VALUE)
+    expect(valueInputs[1]).toHaveValue(MASKED_HEADER_VALUE)
+  })
+
+  it('Save calls mutate with sentinel preserved for untouched rows and plaintext for edited rows', () => {
+    mockMutate = vi.fn()
+    const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key', 'x-token'] }
+    render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Auth (2)' }))
+
+    // Change only the second header's value; leave the first as-is (sentinel).
+    const valueInputs = screen.getAllByRole('textbox', { name: /header value/i })
+    fireEvent.change(valueInputs[1], { target: { value: 'new-secret' } })
+
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    expect(mockMutate).toHaveBeenCalledOnce()
+    expect(mockMutate).toHaveBeenCalledWith(
+      {
+        id: 'srv-1',
+        name: 'test-server',
+        url: 'http://mcp-test-server:8090/mcp',
+        auth_headers: [
+          { key: 'x-api-key', value: MASKED_HEADER_VALUE },
+          { key: 'x-token', value: 'new-secret' },
+        ],
+      },
+      expect.any(Object),
+    )
   })
 })
 

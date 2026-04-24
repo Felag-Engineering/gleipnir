@@ -1,8 +1,10 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, apiFetchVoid, ApiError } from '@/api/fetch'
 import type {
+  ApiMcpServer,
   ApiMcpServerCreateResponse,
   AddMcpServerRequest,
+  UpdateMcpServerRequest,
   TestMcpConnectionRequest,
   TestMcpConnectionResponse,
 } from '@/api/types'
@@ -15,6 +17,21 @@ export function useAddMcpServer() {
     mutationFn: (params: AddMcpServerRequest) =>
       apiFetch<ApiMcpServerCreateResponse>('/mcp/servers', {
         method: 'POST',
+        body: JSON.stringify(params),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.all })
+    },
+  })
+}
+
+export function useUpdateMcpServer() {
+  const queryClient = useQueryClient()
+
+  return useMutation<ApiMcpServer, ApiError, { id: string } & UpdateMcpServerRequest>({
+    mutationFn: ({ id, ...params }) =>
+      apiFetch<ApiMcpServer>(`/mcp/servers/${encodeURIComponent(id)}`, {
+        method: 'PUT',
         body: JSON.stringify(params),
       }),
     onSuccess: () => {

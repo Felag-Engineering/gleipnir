@@ -2,10 +2,17 @@ import { useEffect, useMemo, useState } from 'react'
 import FocusTrap from 'focus-trap-react'
 import { Search } from 'lucide-react'
 import type { ApiMcpServer, ApiMcpTool, ApiPolicyListItem } from '@/api/types'
+import { MASKED_HEADER_VALUE } from '@/api/types'
 import { ToolAccordionRow } from '@/components/MCPPage/ToolAccordionRow'
 import { SkeletonBlock } from '@/components/SkeletonBlock'
 import { formatTimeAgo } from '@/utils/format'
+import { useUpdateMcpServer } from '@/hooks/mutations/servers'
 import styles from './ServerDetailModal.module.css'
+
+interface HeaderRow {
+  key: string
+  value: string
+}
 
 interface Props {
   server: ApiMcpServer
@@ -50,9 +57,56 @@ export function ServerDetailModal({
 }: Props) {
   const [expandedToolId, setExpandedToolId] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
+  const [showHeaderEditor, setShowHeaderEditor] = useState(false)
+  const [headerRows, setHeaderRows] = useState<HeaderRow[]>([])
+  const updateMutation = useUpdateMcpServer()
+
   const toolCount = tools?.length ?? 0
   const isUnreachable = server.last_discovered_at === null
   const hasDrift = server.has_drift
+
+  // Seed the header editor from server.auth_header_keys when it opens.
+  // Existing values are pre-filled with the masked sentinel so the backend
+  // knows to preserve them unless the operator types a replacement.
+  function openHeaderEditor() {
+    const keys = server.auth_header_keys ?? []
+    setHeaderRows(keys.map((k) => ({ key: k, value: MASKED_HEADER_VALUE })))
+    setShowHeaderEditor(true)
+  }
+
+  function addHeaderRow() {
+    setHeaderRows((prev) => [...prev, { key: '', value: '' }])
+  }
+
+  function removeHeaderRow(index: number) {
+    setHeaderRows((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  function updateKey(index: number, key: string) {
+    setHeaderRows((prev) => prev.map((h, i) => (i === index ? { ...h, key } : h)))
+  }
+
+  function updateValue(index: number, value: string) {
+    setHeaderRows((prev) => prev.map((h, i) => (i === index ? { ...h, value } : h)))
+  }
+
+  function handleSaveHeaders() {
+    const nonEmpty = headerRows.filter((h) => h.key.trim())
+    updateMutation.mutate(
+      {
+        id: server.id,
+        name: server.name,
+        url: server.url,
+        auth_headers: nonEmpty,
+      },
+      {
+        onSuccess: () => {
+          setShowHeaderEditor(false)
+          updateMutation.reset()
+        },
+      },
+    )
+  }
 
   const toolUsageMap = useMemo(
     () => buildToolUsageMap(server.name, policies),
@@ -86,6 +140,7 @@ export function ServerDetailModal({
   }, [filteredTools, expandedToolId])
 
   const showFilter = !toolsLoading && toolCount > 5
+  const existingKeyCount = server.auth_header_keys?.length ?? 0
 
   return (
     <FocusTrap focusTrapOptions={{ initialFocus: false, allowOutsideClick: true, returnFocusOnDeactivate: true, fallbackFocus: '[role="dialog"]', escapeDeactivates: false }}>
@@ -134,6 +189,13 @@ export function ServerDetailModal({
               <div className={styles.actions}>
                 <button
                   type="button"
+                  className={styles.authHeadersBtn}
+                  onClick={openHeaderEditor}
+                >
+                  {existingKeyCount > 0 ? `Auth (${existingKeyCount})` : 'Auth headers'}
+                </button>
+                <button
+                  type="button"
                   className={styles.discoverBtn}
                   onClick={() => onDiscover(server.id)}
                   disabled={isDiscovering}
@@ -157,6 +219,68 @@ export function ServerDetailModal({
               </div>
             </div>
           </div>
+
+          {showHeaderEditor && (
+            <div className={styles.headerEditor}>
+              <div className={styles.headerEditorTitle}>Authentication headers</div>
+              <p className={styles.headerEditorHint}>
+                Existing values are masked. Leave a value as-is to preserve it, type a new value to overwrite, or remove a row to delete the header.
+              </p>
+              {headerRows.map((row, index) => (
+                <div key={index} className={styles.headerEditorRow}>
+                  <input
+                    type="text"
+                    className={styles.headerEditorKey}
+                    placeholder="Header name"
+                    value={row.key}
+                    onChange={(e) => updateKey(index, e.target.value)}
+                    aria-label={`Header name ${index + 1}`}
+                  />
+                  <input
+                    type="text"
+                    className={styles.headerEditorValue}
+                    placeholder="Value"
+                    value={row.value}
+                    onChange={(e) => updateValue(index, e.target.value)}
+                    aria-label={`Header value ${index + 1}`}
+                  />
+                  <button
+                    type="button"
+                    className={styles.headerEditorRemove}
+                    onClick={() => removeHeaderRow(index)}
+                    aria-label={`Remove header ${index + 1}`}
+                  >
+                    &times;
+                  </button>
+                </div>
+              ))}
+              <button type="button" className={styles.addHeaderBtn} onClick={addHeaderRow}>
+                + Add header
+              </button>
+              {updateMutation.error && (
+                <div className={styles.headerEditorError}>
+                  {updateMutation.error.message}
+                </div>
+              )}
+              <div className={styles.headerEditorFooter}>
+                <button
+                  type="button"
+                  className={styles.cancelBtn}
+                  onClick={() => { setShowHeaderEditor(false); updateMutation.reset() }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className={styles.saveBtn}
+                  onClick={handleSaveHeaders}
+                  disabled={updateMutation.isPending}
+                >
+                  {updateMutation.isPending ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+          )}
 
           {showFilter && (
             <div className={styles.filterBar}>

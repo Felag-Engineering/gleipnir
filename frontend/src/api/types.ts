@@ -85,6 +85,7 @@ export interface ApiMcpServer {
   last_discovered_at: string | null
   has_drift: boolean
   created_at: string
+  auth_header_keys?: string[] // sorted header names; values are never returned
 }
 
 // Matches mcp_handler.go → mcpServerCreateResponse (POST /api/v1/mcp/servers)
@@ -220,15 +221,29 @@ export interface TriggerPolicyResponse {
 
 // --- MCP servers ---
 
+// The sentinel value used in PUT /api/v1/mcp/servers/:id auth_headers to signal
+// "preserve the existing value". Must match mcp.MaskedHeaderValue in Go exactly.
+export const MASKED_HEADER_VALUE = '••••••••'
+
 // Matches api/mcp_handler.go → Create body (POST /api/v1/mcp/servers)
 export interface AddMcpServerRequest {
   name: string
   url: string
+  auth_headers?: { key: string; value: string }[]
+}
+
+// Matches api/mcp_handler.go → Update body (PUT /api/v1/mcp/servers/:id)
+// Values may be MASKED_HEADER_VALUE to preserve the existing stored value.
+export interface UpdateMcpServerRequest {
+  name: string
+  url: string
+  auth_headers?: { key: string; value: string }[]
 }
 
 // Matches api/mcp_handler.go → testConnectionResponse (POST /api/v1/mcp/servers/test)
 export interface TestMcpConnectionRequest {
   url: string
+  auth_headers?: { key: string; value: string }[]
 }
 
 // ok=true means the handshake succeeded; ok=false means the server was unreachable

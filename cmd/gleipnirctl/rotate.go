@@ -85,13 +85,14 @@ func Rotate(ctx context.Context, dbPath string, oldKey, newKey []byte, dryRun bo
 		return 1
 	}
 
-	providerCount, compatCount, webhookCount, rotErr := rotateWithDryRun(ctx, store, oldKey, newKey, dryRun)
+	providerCount, compatCount, webhookCount, mcpHeaderCount, rotErr := rotateWithDryRun(ctx, store, oldKey, newKey, dryRun)
 	if rotErr != nil {
 		fmt.Fprintf(errOut, "error: %v\n", rotErr)
 		return 1
 	}
 
-	summary := fmt.Sprintf("re-encrypted %d provider keys, %d openai-compat keys, %d webhook secrets", providerCount, compatCount, webhookCount)
+	summary := fmt.Sprintf("re-encrypted %d provider keys, %d openai-compat keys, %d webhook secrets, %d MCP auth header sets",
+		providerCount, compatCount, webhookCount, mcpHeaderCount)
 	if dryRun {
 		summary += " (dry-run; no changes written)"
 	}
@@ -99,14 +100,14 @@ func Rotate(ctx context.Context, dbPath string, oldKey, newKey []byte, dryRun bo
 	return 0
 }
 
-// rotateWithDryRun performs decrypt+re-encrypt for all three secret types
+// rotateWithDryRun performs decrypt+re-encrypt for all four secret types
 // inside a single transaction. If dryRun is true the transaction is rolled back
 // so no changes are persisted; the returned counts still reflect what would
 // have been written.
-func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byte, dryRun bool) (providerCount, compatCount, webhookCount int, err error) {
+func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byte, dryRun bool) (providerCount, compatCount, webhookCount, mcpHeaderCount int, err error) {
 	tx, err := store.DB().BeginTx(ctx, nil)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("begin rotation transaction: %w", err)
+		return 0, 0, 0, 0, fmt.Errorf("begin rotation transaction: %w", err)
 	}
 	// Rollback is a no-op after Commit, so this deferred call is always safe.
 	defer tx.Rollback() //nolint:errcheck
@@ -117,24 +118,24 @@ func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byt
 	// 1. system_settings rows whose key ends in "_api_key".
 	apiKeyRows, err := q.ListAPIKeySystemSettings(ctx)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("list api key settings: %w", err)
+		return 0, 0, 0, 0, fmt.Errorf("list api key settings: %w", err)
 	}
 	for _, row := range apiKeyRows {
 		// plaintext cannot be zeroed (Go string is immutable); key bytes are zeroed by the caller
 		plaintext, err := admin.Decrypt(oldKey, row.Value)
 		if err != nil {
-			return 0, 0, 0, fmt.Errorf("decrypt system_settings[%s]: %w", row.Key, err)
+			return 0, 0, 0, 0, fmt.Errorf("decrypt system_settings[%s]: %w", row.Key, err)
 		}
 		newCiphertext, err := admin.Encrypt(newKey, plaintext)
 		if err != nil {
-			return 0, 0, 0, fmt.Errorf("re-encrypt system_settings[%s]: %w", row.Key, err)
+			return 0, 0, 0, 0, fmt.Errorf("re-encrypt system_settings[%s]: %w", row.Key, err)
 		}
 		if err := q.UpsertSystemSetting(ctx, db.UpsertSystemSettingParams{
 			Key:       row.Key,
 			Value:     newCiphertext,
 			UpdatedAt: now,
 		}); err != nil {
-			return 0, 0, 0, fmt.Errorf("write system_settings[%s]: %w", row.Key, err)
+			return 0, 0, 0, 0, fmt.Errorf("write system_settings[%s]: %w", row.Key, err)
 		}
 		providerCount++
 	}
@@ -142,23 +143,23 @@ func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byt
 	// 2. openai_compat_providers.api_key_encrypted.
 	compatRows, err := q.ListOpenAICompatProviders(ctx)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("list openai-compat providers: %w", err)
+		return 0, 0, 0, 0, fmt.Errorf("list openai-compat providers: %w", err)
 	}
 	for _, row := range compatRows {
 		plaintext, err := admin.Decrypt(oldKey, row.ApiKeyEncrypted)
 		if err != nil {
-			return 0, 0, 0, fmt.Errorf("decrypt openai_compat_providers id=%d name=%q: %w", row.ID, row.Name, err)
+			return 0, 0, 0, 0, fmt.Errorf("decrypt openai_compat_providers id=%d name=%q: %w", row.ID, row.Name, err)
 		}
 		newCiphertext, err := admin.Encrypt(newKey, plaintext)
 		if err != nil {
-			return 0, 0, 0, fmt.Errorf("re-encrypt openai_compat_providers id=%d name=%q: %w", row.ID, row.Name, err)
+			return 0, 0, 0, 0, fmt.Errorf("re-encrypt openai_compat_providers id=%d name=%q: %w", row.ID, row.Name, err)
 		}
 		if err := q.UpdateOpenAICompatProviderAPIKey(ctx, db.UpdateOpenAICompatProviderAPIKeyParams{
 			ApiKeyEncrypted: newCiphertext,
 			UpdatedAt:       now,
 			ID:              row.ID,
 		}); err != nil {
-			return 0, 0, 0, fmt.Errorf("write openai_compat_providers id=%d: %w", row.ID, err)
+			return 0, 0, 0, 0, fmt.Errorf("write openai_compat_providers id=%d: %w", row.ID, err)
 		}
 		compatCount++
 	}
@@ -166,7 +167,7 @@ func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byt
 	// 3. policies.webhook_secret_encrypted (non-NULL rows only).
 	webhookRows, err := q.ListPolicyWebhookSecrets(ctx)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("list policy webhook secrets: %w", err)
+		return 0, 0, 0, 0, fmt.Errorf("list policy webhook secrets: %w", err)
 	}
 	for _, row := range webhookRows {
 		// The query filters WHERE webhook_secret_encrypted IS NOT NULL, so this
@@ -176,32 +177,58 @@ func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byt
 		}
 		plaintext, err := admin.Decrypt(oldKey, *row.WebhookSecretEncrypted)
 		if err != nil {
-			return 0, 0, 0, fmt.Errorf("decrypt policies.webhook_secret_encrypted id=%s: %w", row.ID, err)
+			return 0, 0, 0, 0, fmt.Errorf("decrypt policies.webhook_secret_encrypted id=%s: %w", row.ID, err)
 		}
 		newCiphertext, err := admin.Encrypt(newKey, plaintext)
 		if err != nil {
-			return 0, 0, 0, fmt.Errorf("re-encrypt policies.webhook_secret_encrypted id=%s: %w", row.ID, err)
+			return 0, 0, 0, 0, fmt.Errorf("re-encrypt policies.webhook_secret_encrypted id=%s: %w", row.ID, err)
 		}
 		if err := q.SetPolicyWebhookSecret(ctx, db.SetPolicyWebhookSecretParams{
 			Ciphertext: &newCiphertext,
 			UpdatedAt:  now,
 			ID:         row.ID,
 		}); err != nil {
-			return 0, 0, 0, fmt.Errorf("write policies.webhook_secret_encrypted id=%s: %w", row.ID, err)
+			return 0, 0, 0, 0, fmt.Errorf("write policies.webhook_secret_encrypted id=%s: %w", row.ID, err)
 		}
 		webhookCount++
+	}
+
+	// 4. mcp_servers.auth_headers_encrypted (non-NULL rows only).
+	mcpRows, err := q.ListMCPServersWithAuthHeaders(ctx)
+	if err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("list mcp server auth headers: %w", err)
+	}
+	for _, row := range mcpRows {
+		if row.AuthHeadersEncrypted == nil {
+			continue
+		}
+		plaintext, err := admin.Decrypt(oldKey, *row.AuthHeadersEncrypted)
+		if err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("decrypt mcp_servers.auth_headers_encrypted id=%s: %w", row.ID, err)
+		}
+		newCiphertext, err := admin.Encrypt(newKey, plaintext)
+		if err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("re-encrypt mcp_servers.auth_headers_encrypted id=%s: %w", row.ID, err)
+		}
+		if err := q.UpdateMCPServerAuthHeaders(ctx, db.UpdateMCPServerAuthHeadersParams{
+			AuthHeadersEncrypted: &newCiphertext,
+			ID:                   row.ID,
+		}); err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("write mcp_servers.auth_headers_encrypted id=%s: %w", row.ID, err)
+		}
+		mcpHeaderCount++
 	}
 
 	if dryRun {
 		// Intentional rollback: validate the old key covers all ciphertexts
 		// without persisting any changes.
-		return providerCount, compatCount, webhookCount, nil
+		return providerCount, compatCount, webhookCount, mcpHeaderCount, nil
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, 0, 0, fmt.Errorf("commit rotation: %w", err)
+		return 0, 0, 0, 0, fmt.Errorf("commit rotation: %w", err)
 	}
-	return providerCount, compatCount, webhookCount, nil
+	return providerCount, compatCount, webhookCount, mcpHeaderCount, nil
 }
 
 // isBusy reports whether err is an SQLITE_BUSY error from the modernc.org/sqlite

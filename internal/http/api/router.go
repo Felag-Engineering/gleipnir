@@ -51,6 +51,7 @@ type RouterConfig struct {
 	Poller               PolicyNotifier // notified on poll-trigger policy mutations
 	Scheduler            PolicyNotifier // notified on scheduled-trigger policy mutations
 	Cron                 PolicyNotifier // notified on cron-trigger policy mutations
+	EncryptionKey        []byte         // AES-256 key for MCP auth header encryption; nil when unset
 	Version              string
 	StartTime            time.Time
 	DBPath               string
@@ -147,7 +148,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 		// Policies, MCP, stats, models, and attention — mounted under /api/v1.
 		policySvc := policy.NewService(cfg.Store, nil, cfg.ProviderRegistry, cfg.ProviderRegistry, cfg.AdminHandler)
-		r.Mount("/api/v1", newAPISubRouter(cfg.Store, policySvc, cfg.Registry, cfg.ModelLister, cfg.ModelFilter, cfg.PolicyWebhookHandler, cfg.Poller, cfg.Scheduler, cfg.Cron))
+		r.Mount("/api/v1", newAPISubRouter(cfg.Store, policySvc, cfg.Registry, cfg.ModelLister, cfg.ModelFilter, cfg.PolicyWebhookHandler, cfg.Poller, cfg.Scheduler, cfg.Cron, cfg.EncryptionKey))
 
 		// Admin: provider key management, settings, and model configuration.
 		r.Route("/api/v1/admin", func(r chi.Router) {
@@ -199,7 +200,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 // newAPISubRouter builds the sub-router that was previously returned by NewRouter.
 // It is mounted at /api/v1 inside the authenticated group in BuildRouter.
-func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter, policyWebhook *PolicyWebhookHandler, poller, scheduler, cron PolicyNotifier) chi.Router {
+func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter, policyWebhook *PolicyWebhookHandler, poller, scheduler, cron PolicyNotifier, encKey []byte) chi.Router {
 	r := chi.NewRouter()
 	r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
 
@@ -238,13 +239,14 @@ func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registr
 
 	r.Route("/mcp", func(r chi.Router) {
 		r.Use(httputil.RequireJSON)
-		mcpH := NewMCPHandler(store, registry)
+		mcpH := NewMCPHandler(store, registry, encKey)
 		r.Route("/servers", func(r chi.Router) {
 			r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/", mcpH.List)
 			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/", mcpH.Create)
 			// /test must be registered before /{id} so chi does not capture "test" as an id parameter.
 			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/test", mcpH.TestConnection)
 			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Delete("/{id}", mcpH.Delete)
+			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Put("/{id}", mcpH.Update)
 			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/{id}/discover", mcpH.Discover)
 			r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/{id}/tools", mcpH.ListTools)
 		})

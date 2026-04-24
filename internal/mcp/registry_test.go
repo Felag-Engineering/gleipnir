@@ -2,11 +2,14 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
+	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/db"
 )
 
@@ -652,4 +655,142 @@ func TestRefreshTools_DriftClearedOnCleanRefresh(t *testing.T) {
 	if hasDrift != 0 {
 		t.Errorf("has_drift = %d, want 0 after clean re-discovery", hasDrift)
 	}
+}
+
+// newTestRegistryWithKey returns a Registry wired with an encryption key,
+// for testing auth header decryption.
+func newTestRegistryWithKey(t *testing.T, encKey []byte) (*Registry, *db.Store) {
+	t.Helper()
+	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("store.Migrate: %v", err)
+	}
+	return NewRegistry(store.Queries(), WithEncryptionKey(encKey)), store
+}
+
+// mustEncryptHeaders encrypts the given headers using the provided key and
+// returns the ciphertext as a string pointer.
+func mustEncryptHeaders(t *testing.T, key []byte, headers []AuthHeader) *string {
+	t.Helper()
+	raw, err := MarshalAuthHeaders(headers)
+	if err != nil {
+		t.Fatalf("marshal auth headers: %v", err)
+	}
+	if raw == nil {
+		return nil
+	}
+	ciphertext, err := admin.Encrypt(key, string(raw))
+	if err != nil {
+		t.Fatalf("encrypt auth headers: %v", err)
+	}
+	return &ciphertext
+}
+
+// TestRefreshTools_SendsAuthHeaders verifies that when a server has
+// auth_headers_encrypted set and the registry has an encryption key,
+// the discovered headers are sent on the tools/list request.
+func TestRefreshTools_SendsAuthHeaders(t *testing.T) {
+	testKey := mustTestKey(t)
+	reg, store := newTestRegistryWithKey(t, testKey)
+	rawDB := store.DB()
+
+	// Track requests to verify the auth header arrives.
+	var capturedHeader atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		method, _ := req["method"].(string)
+		switch method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sess-1")
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": "2024-11-05"}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusOK)
+		default:
+			capturedHeader.Store(r.Header.Get("X-Api-Key"))
+			writeJSON(w, map[string]any{
+				"jsonrpc": "2.0", "id": 1,
+				"result": map[string]any{"tools": []map[string]any{
+					{"name": "t", "description": "d", "inputSchema": map[string]any{"type": "object"}},
+				}},
+			})
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	// Insert a server row with encrypted auth headers.
+	headers := []AuthHeader{{Name: "X-Api-Key", Value: "my-secret"}}
+	ciphertext := mustEncryptHeaders(t, testKey, headers)
+
+	now := "2024-01-01T00:00:00Z"
+	var serverID string
+	if err := rawDB.QueryRow(
+		`INSERT INTO mcp_servers (id, name, url, created_at, auth_headers_encrypted) VALUES ('srv-auth', 'auth-server', ?, ?, ?) RETURNING id`,
+		srv.URL, now, *ciphertext,
+	).Scan(&serverID); err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+
+	if _, err := reg.RefreshTools(context.Background(), serverID); err != nil {
+		t.Fatalf("RefreshTools: %v", err)
+	}
+
+	if got, _ := capturedHeader.Load().(string); got != "my-secret" {
+		t.Errorf("X-Api-Key on tools/list = %q, want %q", got, "my-secret")
+	}
+}
+
+// TestRegistry_WarnAndFailOpenWhenNoEncKey verifies that when the registry has
+// no encryption key but a server has stored auth headers, the client is built
+// with no auth headers and no panic occurs.
+func TestRegistry_WarnAndFailOpenWhenNoEncKey(t *testing.T) {
+	// Registry with NO encryption key.
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
+
+	// Pick any test key just to produce a ciphertext we can store.
+	anyKey := mustTestKey(t)
+	headers := []AuthHeader{{Name: "X-Api-Key", Value: "secret"}}
+	ciphertext := mustEncryptHeaders(t, anyKey, headers)
+
+	now := "2024-01-01T00:00:00Z"
+	var serverID string
+	if err := rawDB.QueryRow(
+		`INSERT INTO mcp_servers (id, name, url, created_at, auth_headers_encrypted) VALUES ('srv-nokey', 'nokey-server', 'http://127.0.0.1:1', ?, ?) RETURNING id`,
+		now, *ciphertext,
+	).Scan(&serverID); err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+
+	srv, err := store.Queries().GetMCPServer(context.Background(), serverID)
+	if err != nil {
+		t.Fatalf("GetMCPServer: %v", err)
+	}
+
+	// newClientForServer must not panic; it logs a warning and returns a usable client.
+	cl := reg.newClientForServer(srv)
+	if cl == nil {
+		t.Fatal("newClientForServer returned nil")
+	}
+	// The client should have no auth headers.
+	if len(cl.authHeaders) != 0 {
+		t.Errorf("authHeaders = %v, want empty (no enc key)", cl.authHeaders)
+	}
+}
+
+// mustTestKey generates a deterministic 32-byte test key.
+func mustTestKey(t *testing.T) []byte {
+	t.Helper()
+	k, err := admin.ParseEncryptionKey("aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd")
+	if err != nil {
+		t.Fatalf("parse test key: %v", err)
+	}
+	return k
 }

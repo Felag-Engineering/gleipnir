@@ -9,9 +9,14 @@ import styles from './AddServerModal.module.css'
 import formStyles from '@/styles/forms.module.css'
 import alertStyles from '@/styles/alerts.module.css'
 
+interface HeaderRow {
+  key: string
+  value: string
+}
+
 interface Props {
   onClose: () => void
-  onSubmit: (name: string, url: string) => void
+  onSubmit: (name: string, url: string, headers: HeaderRow[]) => void
   isPending: boolean
   error: ApiError | null
   discoveryWarning?: string | null
@@ -20,12 +25,15 @@ interface Props {
 export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryWarning }: Props) {
   const [name, setName] = useState('')
   const [url, setUrl] = useState('')
+  const [headers, setHeaders] = useState<HeaderRow[]>([])
   const testMutation = useTestMcpConnection()
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
     if (name.trim() && url.trim()) {
-      onSubmit(name.trim(), url.trim())
+      // Filter out rows where both key and value are empty.
+      const nonEmpty = headers.filter((h) => h.key.trim() || h.value.trim())
+      onSubmit(name.trim(), url.trim(), nonEmpty)
     }
   }
 
@@ -39,8 +47,28 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
 
   function handleTestConnection() {
     if (url.trim()) {
-      testMutation.mutate({ url: url.trim() })
+      const nonEmpty = headers.filter((h) => h.key.trim() || h.value.trim())
+      testMutation.mutate({
+        url: url.trim(),
+        auth_headers: nonEmpty.length > 0 ? nonEmpty : undefined,
+      })
     }
+  }
+
+  function addHeaderRow() {
+    setHeaders((prev) => [...prev, { key: '', value: '' }])
+  }
+
+  function removeHeaderRow(index: number) {
+    setHeaders((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  function updateHeaderKey(index: number, key: string) {
+    setHeaders((prev) => prev.map((h, i) => (i === index ? { ...h, key } : h)))
+  }
+
+  function updateHeaderValue(index: number, value: string) {
+    setHeaders((prev) => prev.map((h, i) => (i === index ? { ...h, value } : h)))
   }
 
   const footer = (
@@ -119,6 +147,44 @@ export function AddServerModal({ onClose, onSubmit, isPending, error, discoveryW
             </div>
           )}
         </div>
+
+        <div className={formStyles.field}>
+          <label className={formStyles.labelMono}>
+            Authentication headers <span className={styles.optionalLabel}>(optional)</span>
+          </label>
+          {headers.map((header, index) => (
+            <div key={index} className={styles.headerRow}>
+              <input
+                type="text"
+                className={styles.headerKeyInput}
+                placeholder="Header name"
+                value={header.key}
+                onChange={(e) => updateHeaderKey(index, e.target.value)}
+                aria-label={`Auth header name ${index + 1}`}
+              />
+              <input
+                type="text"
+                className={styles.headerValueInput}
+                placeholder="Value"
+                value={header.value}
+                onChange={(e) => updateHeaderValue(index, e.target.value)}
+                aria-label={`Auth header value ${index + 1}`}
+              />
+              <button
+                type="button"
+                className={styles.headerRemoveButton}
+                onClick={() => removeHeaderRow(index)}
+                aria-label={`Remove header ${index + 1}`}
+              >
+                &times;
+              </button>
+            </div>
+          ))}
+          <button type="button" className={styles.addHeaderButton} onClick={addHeaderRow}>
+            + Add header
+          </button>
+        </div>
+
         <ErrorBanner
           issues={
             error

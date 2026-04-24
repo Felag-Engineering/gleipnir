@@ -209,14 +209,14 @@ func TestManualTriggerHandler(t *testing.T) {
 			providerReg.Register("anthropic", noopClient)
 			resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
 			launcher := run.NewRunLauncher(run.RunLauncherConfig{
-		Store:                  store,
-		Registry:               registry,
-		Manager:                run.NewRunManager(),
-		AgentFactory:           run.NewAgentFactory(providerReg),
-		Publisher:              nil,
-		DefaultFeedbackTimeout: 0,
-		ModelResolver:          resolver,
-	})
+				Store:                  store,
+				Registry:               registry,
+				Manager:                run.NewRunManager(),
+				AgentFactory:           run.NewAgentFactory(providerReg),
+				Publisher:              nil,
+				DefaultFeedbackTimeout: 0,
+				ModelResolver:          resolver,
+			})
 			h := trigger.NewManualTriggerHandler(store, launcher, resolver)
 
 			w := callManualHandler(t, h, tc.policyID, tc.body)
