@@ -17,7 +17,7 @@ import (
 	"github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/shared"
 	"github.com/rapp992/gleipnir/internal/llm"
-	"github.com/rapp992/gleipnir/internal/metrics"
+	"github.com/rapp992/gleipnir/internal/infra/metrics"
 )
 
 // Compile-time check that *Client satisfies the LLMClient interface.

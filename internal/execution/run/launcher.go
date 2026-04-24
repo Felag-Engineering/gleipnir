@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/event"
+	"github.com/rapp992/gleipnir/internal/infra/event"
 	"github.com/rapp992/gleipnir/internal/execution/agent"
 	"github.com/rapp992/gleipnir/internal/llm"
-	"github.com/rapp992/gleipnir/internal/logctx"
+	"github.com/rapp992/gleipnir/internal/infra/logctx"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"

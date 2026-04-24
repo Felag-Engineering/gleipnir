@@ -12,7 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
-	"github.com/rapp992/gleipnir/internal/metrics"
+	"github.com/rapp992/gleipnir/internal/infra/metrics"
 )
 
 // drainLines reads lines from the response body until either n non-empty lines

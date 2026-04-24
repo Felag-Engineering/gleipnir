@@ -15,7 +15,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/rapp992/gleipnir/internal/llm"
-	"github.com/rapp992/gleipnir/internal/metrics"
+	"github.com/rapp992/gleipnir/internal/infra/metrics"
 )
 
 const (

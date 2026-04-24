@@ -11,13 +11,13 @@ Gleipnir has structured JSON logging via `slog` and on-demand stats computed fro
 ## Decisions
 
 - **Prometheus `/metrics` endpoint** using `prometheus/client_golang`. Pull model, standard scrape.
-- **Hybrid metrics architecture** — thin `internal/metrics` package provides the registry, naming conventions, and helpers. Domain packages own their collectors.
+- **Hybrid metrics architecture** — thin `internal/infra/metrics` package provides the registry, naming conventions, and helpers. Domain packages own their collectors.
 - **Structured JSON logging to stdout only** — enriched with correlation context. Docker/Loki handles collection. No files, no in-app log storage.
 - **DB instrumentation: hot-path queries only** — wrap the 5-6 most important sqlc queries, not all of them. Expand later as needed.
 
 ## Architecture
 
-### New package: `internal/metrics`
+### New package: `internal/infra/metrics`
 
 A thin coordination layer (~100 lines) providing:
 
@@ -67,7 +67,7 @@ Three new middleware functions in `internal/api`, replacing chi's `Logger`:
 | `gleipnir_llm_errors_total` | Counter | provider, error_type | LLM failures by provider and error class |
 | `gleipnir_llm_tokens_total` | Counter | provider, model, direction | Token throughput (input/output) |
 
-### Priority 3: Runtime & Resources (`internal/metrics`, `internal/sse`)
+### Priority 3: Runtime & Resources (`internal/infra/metrics`, `internal/sse`)
 
 | Metric | Type | Labels | Purpose |
 |--------|------|--------|---------|
@@ -175,7 +175,7 @@ Each wrapper method starts a timer, calls the inner method, observes duration wi
 
 ## Testing Strategy
 
-- `internal/metrics`: test that registry creates collectors without panics, handler returns valid Prometheus text format
+- `internal/infra/metrics`: test that registry creates collectors without panics, handler returns valid Prometheus text format
 - Middleware: table-driven tests with `httptest.ResponseRecorder` — verify log output contains expected fields, verify metrics are recorded with correct labels
 - Per-package collectors: test in existing package test suites — verify counters increment and histograms observe on the expected code paths
 - DB wrapper: test that wrapper delegates correctly and records timing

@@ -3,7 +3,7 @@ package db
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/rapp992/gleipnir/internal/metrics"
+	"github.com/rapp992/gleipnir/internal/infra/metrics"
 )
 
 var dbQueryDurationSeconds = promauto.With(metrics.Registry()).NewHistogramVec(

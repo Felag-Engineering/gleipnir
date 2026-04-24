@@ -3,7 +3,7 @@ package agent
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/rapp992/gleipnir/internal/metrics"
+	"github.com/rapp992/gleipnir/internal/infra/metrics"
 )
 
 // runsActive tracks in-flight runs by state. Inc/Dec happen exclusively inside

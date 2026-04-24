@@ -51,7 +51,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-034 | Webhook secrets stored in encrypted DB column (scoped ADR-002 deviation) | 🟢 Decided | v1.0 | policies table, internal/policy, trigger/webhook_handler, frontend WebhookConfig |
 | ADR-035 | DB-backed system settings for runtime configuration | 🟢 Decided | v1.0 | system_settings table, admin API, frontend /admin/system |
 | ADR-036 | Centralized scheduler dispatcher                    | 🟢 Decided | v1.0 | internal/dispatcher (new), internal/trigger/scheduled.go, internal/trigger/poll.go, main.go |
-| ADR-037 | Custom Prometheus registry in internal/metrics (leaf package) | 🟢 Decided | v1.0 | internal/metrics (new), all future instrumented packages |
+| ADR-037 | Custom Prometheus registry in internal/infra/metrics (leaf package) | 🟢 Decided | v1.0 | internal/infra/metrics (new), all future instrumented packages |
 | ADR-038 | Atomic run-state transitions with optimistic locking   | 🟢 Decided | v1.0 | runs.version column, RunStateMachine.Transition (tx), runstate.ErrTransitionConflict |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
 
@@ -158,7 +158,7 @@ Design detail, diagrams, and handler contracts live in [`docs/developer/dispatch
 
 ---
 
-## ADR-037: Custom Prometheus registry in internal/metrics (leaf package)
+## ADR-037: Custom Prometheus registry in internal/infra/metrics (leaf package)
 
 **Status:** Decided
 **Date:** 2026-04
@@ -169,7 +169,7 @@ Design detail, diagrams, and handler contracts live in [`docs/developer/dispatch
 
 ### Decision
 
-Introduce `internal/metrics` as a leaf package that owns a package-private `*prometheus.Registry` (created with `prometheus.NewRegistry`, not `prometheus.NewPedanticRegistry`). The registry is initialized once in `init()` with the Go runtime collector (`collectors.NewGoCollector()`). Two exported accessors are provided:
+Introduce `internal/infra/metrics` as a leaf package that owns a package-private `*prometheus.Registry` (created with `prometheus.NewRegistry`, not `prometheus.NewPedanticRegistry`). The registry is initialized once in `init()` with the Go runtime collector (`collectors.NewGoCollector()`). Two exported accessors are provided:
 
 - `Registry() *prometheus.Registry` — domain packages call `promauto.With(metrics.Registry())` to register their own collectors. The concrete type is returned (not the `Registerer` or `Gatherer` interface) so callers can use it as both without forcing separate accessors.
 - `Handler() http.Handler` — returns `promhttp.HandlerFor(registry, promhttp.HandlerOpts{Registry: registry})` for mounting on the `/metrics` route in a follow-up PR.
@@ -182,7 +182,7 @@ Using `prometheus.DefaultRegisterer` (the global default registry). Rejected bec
 
 ### Consequences
 
-- Every future instrumented package imports `internal/metrics` for the registry and shared constants. `internal/metrics` imports no other internal package — it is a leaf package.
+- Every future instrumented package imports `internal/infra/metrics` for the registry and shared constants. `internal/infra/metrics` imports no other internal package — it is a leaf package.
 - The `/metrics` route and `GLEIPNIR_METRICS_ENABLED` / `GLEIPNIR_METRICS_PATH` env vars are added in a follow-up PR that mounts `metrics.Handler()` into the chi router.
 
 ---

@@ -1,6 +1,6 @@
 # Package Dependency Graph
 
-Packages are grouped by layer. Arrows show the primary architectural relationships — not every import. Packages in lower layers (`model`, `db`, `config`, `logctx`, `httputil`) are widely imported and omitted from the arrows to reduce noise.
+Packages are grouped by layer. Arrows show the primary architectural relationships — not every import. Packages in lower layers (`model`, `db`, `infra/config`, `infra/logctx`, `httputil`) are widely imported and omitted from the arrows to reduce noise.
 
 ```mermaid
 graph TD
@@ -30,20 +30,21 @@ graph TD
         LLM["<b>llm</b><br/>Provider interface<br/><i>anthropic · google<br/>openai · openaicompat</i>"]
     end
 
-    subgraph infra["Infrastructure layer"]
+    subgraph infra["Persistence + pub/sub layer"]
         direction LR
         DB["<b>db</b><br/>SQLite, sqlc queries"]
         SSE["<b>sse</b><br/>Broadcaster"]
-        EVENT["<b>event</b><br/>Pub/sub"]
         RUNSTATE["<b>runstate</b><br/>Transition table"]
         TIMEOUT["<b>timeout</b><br/>Scan-and-resolve"]
     end
 
-    subgraph leaf["Leaf packages — imported by nearly everything above"]
+    subgraph leaf["Leaf packages (internal/infra/ + shared types) — imported by nearly everything above"]
         direction LR
         MODEL["<b>model</b>"]
-        CONFIG["<b>config</b>"]
-        LOGCTX["<b>logctx</b>"]
+        CONFIG["<b>infra/config</b>"]
+        LOGCTX["<b>infra/logctx</b>"]
+        EVENT["<b>infra/event</b><br/>Pub/sub"]
+        METRICS["<b>infra/metrics</b><br/>Prometheus registry"]
         HTTPUTIL["<b>httputil</b>"]
     end
 
