@@ -77,6 +77,7 @@ For fully worked examples against specific services, follow one of the [playbook
 - [Operations](docs/user/operations.md) — upgrading, backups, environment variables.
 - [Playbooks](docs/playbooks/) — copy-pasteable setups for the use cases above.
 - [Developer docs](docs/developer/) — architecture, building, contributing.
+- [CLI commands](cmd/) — maintenance subcommands built into the `gleipnir` binary (e.g. [`rotate-key`](cmd/rotatekey/README.md) for encryption key rotation).
 - [Security notes](SECURITY.md)
 
 ## License

@@ -10,34 +10,51 @@ Day-to-day operational tasks for a running Gleipnir instance.
 
 Back it up immediately upon generation, before starting the stack for the first time. Store it in a location separate from your database backups — a single compromise should not expose both the data and the key that unlocks it.
 
-## Rotating the encryption key (v1.0 known limitation)
+## Rotating the encryption key
 
-Key rotation is not supported in v1.0. There is no re-encryption routine — replacing the key invalidates every ciphertext already in the database. Proper re-encryption support is planned for a future release.
+Use the built-in `rotate-key` subcommand to re-encrypt all secrets under a new key in a single atomic transaction. No credentials need to be manually copied out or re-entered.
 
-If you must rotate the key now, follow this manual workaround:
-
-1. **Copy out all secrets via the admin UI.** Note each provider API key and webhook secret before proceeding. Once the key is replaced these values will be unreadable.
-2. **Stop the stack:**
+1. **Stop the stack:**
    ```bash
-   docker compose stop
+   docker compose down
    ```
-3. **Generate a new key and update `.env`:**
+
+2. **Generate a new key:**
    ```bash
    openssl rand -hex 32
-   # Paste the output into GLEIPNIR_ENCRYPTION_KEY in your .env file.
    ```
-4. **Clear the encrypted rows and columns.** The old ciphertext is now unreadable, so delete it rather than leaving stale data:
+
+3. **Run the rotation** (pipe keys via stdin to avoid shell history exposure):
    ```bash
-   docker compose exec api sqlite3 /data/gleipnir.db \
-     "DELETE FROM system_settings WHERE key LIKE '%_api_key';
-      DELETE FROM openai_compat_providers;
-      UPDATE policies SET webhook_secret_encrypted = NULL;"
+   printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
+     docker run --rm -i \
+       -v gleipnir_data:/data \
+       felagengineering/gleipnir:latest \
+       rotate-key --old - --new -
    ```
-5. **Restart the stack and re-enter credentials:**
+   On success you'll see something like:
+   ```
+   re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets
+   ```
+
+4. **Update `GLEIPNIR_ENCRYPTION_KEY`** in your `.env` to the new key.
+
+5. **Restart the stack:**
    ```bash
    docker compose up -d
    ```
-   Re-enter each provider API key at `/admin/models`. Rotate each webhook secret via `POST /api/v1/policies/:id/webhook/rotate` or through the admin UI.
+
+Before committing to a live rotation, use `--dry-run` to validate that the old key decrypts every ciphertext without writing anything:
+
+```bash
+printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
+  docker run --rm -i \
+    -v gleipnir_data:/data \
+    felagengineering/gleipnir:latest \
+    rotate-key --old - --new - --dry-run
+```
+
+See [`cmd/rotatekey/README.md`](../../cmd/rotatekey/README.md) for the full flag reference and security notes.
 
 ## Backing up the database
 
