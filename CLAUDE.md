@@ -104,7 +104,7 @@ schemas/
   sql_schemas.sql     — schema that explains the different tables in our datastore
 
 cmd/
-  gleipnirctl/        — local admin CLI; direct DB-level maintenance operations (rotate-key, and planned: reset-password, create-user, list-users, purge-runs, verify-keys, check). Run via `docker compose run --rm api gleipnirctl <command>`.
+  gleipnirctl/        — local admin CLI; direct DB-level maintenance operations (rotate-key, reset-password, and planned: create-user, list-users, purge-runs, verify-keys, check). Run via `docker compose run --rm api gleipnirctl <command>`.
 
 internal/
   approval/           — approval-specific timeout wiring (thin wrapper over timeout/)
