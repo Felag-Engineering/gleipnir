@@ -44,7 +44,15 @@ func buildIntegrationRouter(store *db.Store, registry *mcp.Registry, llmClient l
 		return agent.New(cfg)
 	})
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, factory, nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           factory,
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	wh := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil), resolver)
 	rh := run.NewRunsHandler(store, manager, nil)
 

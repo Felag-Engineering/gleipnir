@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/admin"
-	"github.com/rapp992/gleipnir/internal/infra/config"
 	"github.com/rapp992/gleipnir/internal/db"
 	runpkg "github.com/rapp992/gleipnir/internal/execution/run"
 	"github.com/rapp992/gleipnir/internal/http/api"
 	"github.com/rapp992/gleipnir/internal/http/auth"
 	"github.com/rapp992/gleipnir/internal/http/sse"
+	"github.com/rapp992/gleipnir/internal/infra/config"
 	"github.com/rapp992/gleipnir/internal/llm"
 	llmfactory "github.com/rapp992/gleipnir/internal/llm/factory"
 	openaicompatllm "github.com/rapp992/gleipnir/internal/llm/openaicompat"
@@ -189,7 +189,15 @@ func run(cfg config.Config) error {
 		slog.Warn("could not ensure default model is enabled", "err", err)
 	}
 
-	launcher := runpkg.NewRunLauncher(store, registry, runManager, runpkg.NewAgentFactory(providerRegistry), broadcaster, cfg.DefaultFeedbackTimeout, adminHandler)
+	launcher := runpkg.NewRunLauncher(runpkg.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                runManager,
+		AgentFactory:           runpkg.NewAgentFactory(providerRegistry),
+		Publisher:              broadcaster,
+		DefaultFeedbackTimeout: cfg.DefaultFeedbackTimeout,
+		ModelResolver:          adminHandler,
+	})
 
 	webhookSecretLoader := trigger.NewSecretLoader(store.Queries(), encryptionKey)
 	webhookHandler := trigger.NewWebhookHandler(store, launcher, webhookSecretLoader, adminHandler)

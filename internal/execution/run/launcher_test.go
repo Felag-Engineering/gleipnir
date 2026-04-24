@@ -152,7 +152,15 @@ func TestCheckConcurrency(t *testing.T) {
 			registry := mcp.NewRegistry(store.Queries())
 			manager := run.NewRunManager()
 			// factory is nil — CheckConcurrency never calls it.
-			launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0, nil)
+			launcher := run.NewRunLauncher(run.RunLauncherConfig{
+				Store:                  store,
+				Registry:               registry,
+				Manager:                manager,
+				AgentFactory:           nil,
+				Publisher:              nil,
+				DefaultFeedbackTimeout: 0,
+				ModelResolver:          nil,
+			})
 
 			err := launcher.CheckConcurrency(context.Background(), policyID, tc.concurrency)
 			if tc.wantNil {
@@ -193,7 +201,15 @@ func TestCheckConcurrency_Replace(t *testing.T) {
 		}()
 
 		registry := mcp.NewRegistry(store.Queries())
-		launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0, nil)
+		launcher := run.NewRunLauncher(run.RunLauncherConfig{
+			Store:                  store,
+			Registry:               registry,
+			Manager:                manager,
+			AgentFactory:           nil,
+			Publisher:              nil,
+			DefaultFeedbackTimeout: 0,
+			ModelResolver:          nil,
+		})
 
 		err := launcher.CheckConcurrency(context.Background(), policyID, model.ConcurrencyReplace)
 		if err != nil {
@@ -238,7 +254,15 @@ func TestCheckConcurrency_Replace(t *testing.T) {
 		}
 
 		registry := mcp.NewRegistry(store.Queries())
-		launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0, nil)
+		launcher := run.NewRunLauncher(run.RunLauncherConfig{
+			Store:                  store,
+			Registry:               registry,
+			Manager:                manager,
+			AgentFactory:           nil,
+			Publisher:              nil,
+			DefaultFeedbackTimeout: 0,
+			ModelResolver:          nil,
+		})
 
 		err := launcher.CheckConcurrency(context.Background(), policyID, model.ConcurrencyReplace)
 		if err != nil {
@@ -259,7 +283,15 @@ func TestLaunch_ToolResolutionFailure(t *testing.T) {
 	// No MCP server registered, so any tool reference will fail resolution.
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0, nil)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           nil,
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          nil,
+	})
 
 	const policyWithMissingTool = `
 name: tool-failure-policy
@@ -308,7 +340,15 @@ func TestLaunch_AgentConstructionFailure(t *testing.T) {
 	manager := run.NewRunManager()
 
 	agentErr := errors.New("deliberate construction failure")
-	launcher := run.NewRunLauncher(store, registry, manager, failingAgentFactory(agentErr), nil, 0, nil)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           failingAgentFactory(agentErr),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          nil,
+	})
 
 	const launchPolicy = `
 name: agent-fail-policy
@@ -356,7 +396,15 @@ func TestLaunch_Successful(t *testing.T) {
 	// and payload, and LaunchResult.RunID should be non-empty.
 	store, registry := setupIntegrationFixture(t)
 	manager := run.NewRunManager()
-	launcher := run.NewRunLauncher(store, registry, manager, localAgentFactory(), nil, 0, nil)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           localAgentFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          nil,
+	})
 
 	const launchPolicy = `
 name: launch-success-policy
@@ -471,7 +519,15 @@ agent:
 			}
 
 			registry := mcp.NewRegistry(store.Queries())
-			launcher := run.NewRunLauncher(store, registry, run.NewRunManager(), nil, nil, 0, nil)
+			launcher := run.NewRunLauncher(run.RunLauncherConfig{
+				Store:                  store,
+				Registry:               registry,
+				Manager:                run.NewRunManager(),
+				AgentFactory:           nil,
+				Publisher:              nil,
+				DefaultFeedbackTimeout: 0,
+				ModelResolver:          nil,
+			})
 
 			parsed, err := policy.Parse(queuePolicyYAML, "anthropic", "claude-sonnet-4-6")
 			if err != nil {
@@ -517,7 +573,15 @@ agent:
 		testutil.InsertQueueEntry(t, store, "p-drain", "webhook")
 
 		manager := run.NewRunManager()
-		launcher := run.NewRunLauncher(store, registry, manager, localAgentFactory(), nil, 0, nil)
+		launcher := run.NewRunLauncher(run.RunLauncherConfig{
+			Store:                  store,
+			Registry:               registry,
+			Manager:                manager,
+			AgentFactory:           localAgentFactory(),
+			Publisher:              nil,
+			DefaultFeedbackTimeout: 0,
+			ModelResolver:          nil,
+		})
 
 		parsed, err := policy.Parse(policyYAML, "anthropic", "claude-sonnet-4-6")
 		if err != nil {
@@ -553,7 +617,15 @@ agent:
 		testutil.InsertPolicy(t, store, "p-drain-empty", "policy-p-drain-empty", "webhook", policyYAML)
 
 		manager := run.NewRunManager()
-		launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0, nil)
+		launcher := run.NewRunLauncher(run.RunLauncherConfig{
+			Store:                  store,
+			Registry:               registry,
+			Manager:                manager,
+			AgentFactory:           nil,
+			Publisher:              nil,
+			DefaultFeedbackTimeout: 0,
+			ModelResolver:          nil,
+		})
 
 		parsed, err := policy.Parse(policyYAML, "anthropic", "claude-sonnet-4-6")
 		if err != nil {
@@ -595,7 +667,15 @@ agent:
 		testutil.InsertQueueEntry(t, store, "p-drain-fail", "webhook")
 
 		manager := run.NewRunManager()
-		launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0, nil)
+		launcher := run.NewRunLauncher(run.RunLauncherConfig{
+			Store:                  store,
+			Registry:               registry,
+			Manager:                manager,
+			AgentFactory:           nil,
+			Publisher:              nil,
+			DefaultFeedbackTimeout: 0,
+			ModelResolver:          nil,
+		})
 
 		parsed, err := policy.Parse(policyYAML, "anthropic", "claude-sonnet-4-6")
 		if err != nil {
@@ -647,7 +727,15 @@ agent:
 
 		manager := run.NewRunManager()
 		registry := mcp.NewRegistry(store.Queries())
-		launcher := run.NewRunLauncher(store, registry, manager, nil, nil, 0, nil)
+		launcher := run.NewRunLauncher(run.RunLauncherConfig{
+			Store:                  store,
+			Registry:               registry,
+			Manager:                manager,
+			AgentFactory:           nil,
+			Publisher:              nil,
+			DefaultFeedbackTimeout: 0,
+			ModelResolver:          nil,
+		})
 
 		parsed, err := policy.Parse(policyYAML, "anthropic", "claude-sonnet-4-6")
 		if err != nil {
@@ -667,7 +755,15 @@ func TestLaunch_ToolResolutionFailure_PublishesEvent(t *testing.T) {
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
 	pub := &testutil.RecordingPublisher{}
-	launcher := run.NewRunLauncher(store, registry, manager, nil, pub, 0, nil)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           nil,
+		Publisher:              pub,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          nil,
+	})
 
 	const policyYAML = `
 name: tool-failure-event-policy
@@ -709,7 +805,15 @@ func TestLaunch_AgentConstructionFailure_PublishesEvent(t *testing.T) {
 	pub := &testutil.RecordingPublisher{}
 
 	agentErr := errors.New("deliberate construction failure")
-	launcher := run.NewRunLauncher(store, registry, manager, failingAgentFactory(agentErr), pub, 0, nil)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           failingAgentFactory(agentErr),
+		Publisher:              pub,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          nil,
+	})
 
 	const policyYAML = `
 name: agent-fail-event-policy

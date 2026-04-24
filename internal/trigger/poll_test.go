@@ -240,7 +240,15 @@ func TestPoller_CheckMatchFires(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           pollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
@@ -269,7 +277,15 @@ func TestPoller_CheckNoMatchNoRun(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           pollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
@@ -306,7 +322,15 @@ func TestPoller_MatchAny_OnePassFires(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           pollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
@@ -357,7 +381,15 @@ agent:
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           pollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
@@ -393,7 +425,15 @@ func TestPoller_ToolErrorTreatedAsNotPassed(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           pollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
@@ -431,7 +471,15 @@ func TestPoller_ConcurrencySkip(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           pollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
@@ -466,7 +514,15 @@ func TestPoller_GracefulShutdown(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           pollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
@@ -566,7 +622,15 @@ func TestPoller_CheckTimeout_CancelsCallTool(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           pollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	poller := trigger.NewPoller(store, launcher, registry, resolver)
 
 	if err := poller.Start(ctx); err != nil {
@@ -622,7 +686,15 @@ func TestPoller_SkipsLoop_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T) {
 	manager := run.NewRunManager()
 	// Resolver returns sql.ErrNoRows — simulates unconfigured system default.
 	noDefault := stubDefaultModelResolver{err: sql.ErrNoRows}
-	launcher := run.NewRunLauncher(store, registry, manager, pollerFactory(), nil, 0, noDefault)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           pollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          noDefault,
+	})
 	poller := trigger.NewPoller(store, launcher, registry, noDefault)
 
 	if err := poller.Start(ctx); err != nil {

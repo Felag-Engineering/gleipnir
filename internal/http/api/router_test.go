@@ -39,7 +39,15 @@ func buildTestRouterWithStore(t *testing.T, store *db.Store) http.Handler {
 	adminQuerier := admin.NewQuerierAdapter(store.Queries())
 	adminHandler := admin.NewHandler(adminQuerier, nil, []string{"anthropic"}, nil, nil, nil)
 
-	launcher := run.NewRunLauncher(store, registry, runManager, run.NewAgentFactory(providerRegistry), broadcaster, 30*time.Minute, adminHandler)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                runManager,
+		AgentFactory:           run.NewAgentFactory(providerRegistry),
+		Publisher:              broadcaster,
+		DefaultFeedbackTimeout: 30 * time.Minute,
+		ModelResolver:          adminHandler,
+	})
 	webhookHandler := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil), adminHandler)
 	openaiCompatHandler := admin.NewOpenAICompatHandler(nil, nil, providerRegistry, noopConnectionTester)
 

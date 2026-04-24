@@ -121,7 +121,15 @@ func TestScheduler_SkipsPastTimestampsOnStartup(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           schedulerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -156,7 +164,15 @@ func TestScheduler_FiresFutureTimestamp(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           schedulerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -192,7 +208,15 @@ func TestScheduler_AutoPausesAfterAllTimesConsumed(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           schedulerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -238,7 +262,15 @@ func TestScheduler_DeduplicatesAlreadyFiredTime(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           schedulerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -276,7 +308,15 @@ func TestScheduler_ConcurrencySkip_BlocksWhenActive(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           schedulerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -310,7 +350,15 @@ func TestScheduler_ConcurrencySkip_ProceedsWhenIdle(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           schedulerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -349,7 +397,15 @@ func TestScheduler_ConcurrencyQueue_EnqueuesWhenActive(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           schedulerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -393,7 +449,15 @@ func TestScheduler_ConcurrencyQueue_LaunchesWhenIdle(t *testing.T) {
 
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           schedulerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	scheduler := trigger.NewScheduler(store, launcher, resolver)
 
 	if err := scheduler.Start(ctx); err != nil {
@@ -459,7 +523,15 @@ func TestScheduler_SkipsPolicy_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T)
 	manager := run.NewRunManager()
 	// Resolver that returns sql.ErrNoRows — simulates unconfigured system default.
 	noDefault := stubDefaultModelResolver{err: sql.ErrNoRows}
-	launcher := run.NewRunLauncher(store, registry, manager, schedulerFactory(), nil, 0, noDefault)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           schedulerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          noDefault,
+	})
 	scheduler := trigger.NewScheduler(store, launcher, noDefault)
 
 	if err := scheduler.Start(ctx); err != nil {

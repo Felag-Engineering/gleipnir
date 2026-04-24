@@ -38,7 +38,15 @@ func setupCronFixture(t *testing.T) (*db.Store, *CronRunner) {
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, cronAgentFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           cronAgentFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	runner := NewCronRunner(store, launcher, resolver)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -211,7 +219,15 @@ func TestCronRunner_Start_LoadsActivePolicies(t *testing.T) {
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, cronAgentFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           cronAgentFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	runner := NewCronRunner(store, launcher, resolver)
 
 	yaml := minCronYAML("cron-start", "0 9 * * 1")
@@ -454,7 +470,15 @@ func TestCronRunner_Stop_DoesNotDeadlock(t *testing.T) {
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
 	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
-	launcher := run.NewRunLauncher(store, registry, manager, cronAgentFactory(), nil, 0, resolver)
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           cronAgentFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
 	runner := NewCronRunner(store, launcher, resolver)
 
 	yaml := minCronYAML("cron-stop", "0 9 * * 1")
