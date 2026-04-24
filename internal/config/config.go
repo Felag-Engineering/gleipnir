@@ -30,6 +30,8 @@ type Config struct {
 	ApprovalScanInterval   time.Duration
 	DefaultFeedbackTimeout time.Duration
 	FeedbackScanInterval   time.Duration
+	DrainTimeout           time.Duration
+	PIDFile                string
 	EncryptionKey          string
 }
 
@@ -56,6 +58,8 @@ func Load() (Config, error) {
 		ApprovalScanInterval:   envDuration("GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30*time.Second),
 		DefaultFeedbackTimeout: envDuration("GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", 30*time.Minute),
 		FeedbackScanInterval:   envDuration("GLEIPNIR_FEEDBACK_SCAN_INTERVAL", 30*time.Second),
+		DrainTimeout:           envDuration("GLEIPNIR_DRAIN_TIMEOUT", 5*time.Minute),
+		PIDFile:                envOrDefault("GLEIPNIR_PID_FILE", "/var/run/gleipnir.pid"),
 		EncryptionKey:          raw,
 	}, nil
 }

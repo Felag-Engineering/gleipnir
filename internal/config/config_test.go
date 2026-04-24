@@ -25,6 +25,8 @@ func TestLoad_Defaults(t *testing.T) {
 		"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
 		"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT",
 		"GLEIPNIR_FEEDBACK_SCAN_INTERVAL",
+		"GLEIPNIR_DRAIN_TIMEOUT",
+		"GLEIPNIR_PID_FILE",
 	} {
 		t.Setenv(key, "")
 	}
@@ -64,6 +66,12 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.FeedbackScanInterval != 30*time.Second {
 		t.Errorf("FeedbackScanInterval: got %v, want 30s", cfg.FeedbackScanInterval)
+	}
+	if cfg.DrainTimeout != 5*time.Minute {
+		t.Errorf("DrainTimeout: got %v, want 5m", cfg.DrainTimeout)
+	}
+	if cfg.PIDFile != "/var/run/gleipnir.pid" {
+		t.Errorf("PIDFile: got %q, want /var/run/gleipnir.pid", cfg.PIDFile)
 	}
 	if cfg.EncryptionKey != validKey {
 		t.Errorf("EncryptionKey: got %q, want %q", cfg.EncryptionKey, validKey)
@@ -158,6 +166,24 @@ func TestLoad_Overrides(t *testing.T) {
 			},
 		},
 		{
+			name: "drain timeout",
+			env:  map[string]string{"GLEIPNIR_DRAIN_TIMEOUT": "10m"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.DrainTimeout != 10*time.Minute {
+					t.Errorf("got %v, want 10m", cfg.DrainTimeout)
+				}
+			},
+		},
+		{
+			name: "pid file",
+			env:  map[string]string{"GLEIPNIR_PID_FILE": "/tmp/gleipnir.pid"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.PIDFile != "/tmp/gleipnir.pid" {
+					t.Errorf("got %q, want /tmp/gleipnir.pid", cfg.PIDFile)
+				}
+			},
+		},
+		{
 			name: "encryption key",
 			env:  map[string]string{"GLEIPNIR_ENCRYPTION_KEY": validKey},
 			check: func(t *testing.T, cfg Config) {
@@ -178,6 +204,7 @@ func TestLoad_Overrides(t *testing.T) {
 				"GLEIPNIR_HTTP_WRITE_TIMEOUT", "GLEIPNIR_HTTP_IDLE_TIMEOUT",
 				"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
 				"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", "GLEIPNIR_FEEDBACK_SCAN_INTERVAL",
+				"GLEIPNIR_DRAIN_TIMEOUT", "GLEIPNIR_PID_FILE",
 			} {
 				t.Setenv(key, "")
 			}
@@ -240,6 +267,7 @@ func TestLoad_InvalidDuration(t *testing.T) {
 		{"invalid approval scan interval falls back", "GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30 * time.Second},
 		{"invalid default feedback timeout falls back", "GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", 30 * time.Minute},
 		{"invalid feedback scan interval falls back", "GLEIPNIR_FEEDBACK_SCAN_INTERVAL", 30 * time.Second},
+		{"invalid drain timeout falls back", "GLEIPNIR_DRAIN_TIMEOUT", 5 * time.Minute},
 	}
 
 	for _, tc := range tests {
@@ -266,6 +294,8 @@ func TestLoad_InvalidDuration(t *testing.T) {
 				got = cfg.DefaultFeedbackTimeout
 			case "GLEIPNIR_FEEDBACK_SCAN_INTERVAL":
 				got = cfg.FeedbackScanInterval
+			case "GLEIPNIR_DRAIN_TIMEOUT":
+				got = cfg.DrainTimeout
 			}
 			if got != tc.want {
 				t.Errorf("%s: got %v, want %v", tc.key, got, tc.want)

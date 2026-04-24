@@ -35,10 +35,6 @@ var version = "dev"
 var knownProviders = []string{"anthropic", "google", "openai"}
 
 const (
-	// drainTimeout is how long we wait for in-flight agent runs to finish
-	// before proceeding with HTTP server shutdown.
-	drainTimeout = 25 * time.Second
-
 	// shutdownTimeout is the time budget for the HTTP server's graceful
 	// shutdown after agent runs have drained (or timed out).
 	shutdownTimeout = 5 * time.Second
@@ -80,6 +76,15 @@ func run(cfg config.Config) error {
 	// Mark any in-flight runs as interrupted (ADR-011).
 	if err := store.ScanOrphanedRuns(ctx, slog.Default()); err != nil {
 		return fmt.Errorf("scan orphaned runs: %w", err)
+	}
+
+	// Write the PID file so gleipnirctl (and operators) can signal the process.
+	// A write failure is non-fatal — log a warning and continue.
+	pidContent := fmt.Sprintf("%d\n", os.Getpid())
+	if err := os.WriteFile(cfg.PIDFile, []byte(pidContent), 0644); err != nil {
+		slog.Warn("could not write PID file", "path", cfg.PIDFile, "err", err)
+	} else {
+		defer os.Remove(cfg.PIDFile)
 	}
 
 	broadcaster := sse.NewBroadcaster()
@@ -302,7 +307,7 @@ func run(cfg config.Config) error {
 	select {
 	case <-runsDrained:
 		slog.Info("all agent runs drained")
-	case <-time.After(drainTimeout):
+	case <-time.After(cfg.DrainTimeout):
 		slog.Warn("agent run drain timed out, proceeding with server shutdown")
 	}
 
