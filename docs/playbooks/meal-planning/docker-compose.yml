@@ -3,26 +3,20 @@
 # Run from this directory:
 #   docker compose up -d
 #
-# Before starting, complete the first-run Google Calendar auth — see README.md.
 # Secrets are loaded from .env in this directory (see README.md § Step 2).
 
 services:
 
-  # Google Calendar MCP server — reads calendar events.
-  # Repo: https://github.com/nspady/google-calendar-mcp
-  gcal-mcp:
+  # Fetch MCP server — fetches arbitrary URLs (used to read the Google Calendar ICS feed).
+  # Repo: https://github.com/modelcontextprotocol/servers/tree/main/src/fetch
+  fetch-mcp:
     image: node:22-alpine
     command: >
       npx -y supergateway
       --port 8101
-      --stdio "npx -y @cocal/google-calendar-mcp"
+      --stdio "npx -y @modelcontextprotocol/server-fetch"
     ports:
       - "8101:8101"
-    environment:
-      - GOOGLE_OAUTH_CREDENTIALS=/config/gcp-oauth.keys.json
-    volumes:
-      - ./gcp-oauth.keys.json:/config/gcp-oauth.keys.json:ro
-      - gcal_tokens:/root/.config/google-calendar-mcp
     restart: unless-stopped
 
   # Mealie MCP server — reads recipes and creates meal plans.
@@ -39,12 +33,3 @@ services:
       - MEALIE_BASE_URL=${MEALIE_BASE_URL}
       - MEALIE_API_KEY=${MEALIE_API_KEY}
     restart: unless-stopped
-
-volumes:
-  # Named volume persists the Google Calendar OAuth refresh tokens across
-  # container restarts. Use "docker compose down" (without -v) to keep tokens.
-  # The explicit name prevents Compose from prepending the project name, so the
-  # pre-auth "docker run" command (which references "gcal_tokens" directly)
-  # writes into the same volume that gcal-mcp mounts.
-  gcal_tokens:
-    name: gcal_tokens
