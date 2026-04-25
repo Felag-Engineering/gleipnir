@@ -19,6 +19,11 @@ import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
 import styles from './MCPPage.module.css'
 
+interface HeaderRow {
+  key: string
+  value: string
+}
+
 interface DeleteTarget {
   server: ApiMcpServer
   toolCount: number
@@ -79,10 +84,10 @@ export default function MCPPage() {
     }
   })
 
-  function handleAddSubmit(name: string, url: string) {
+  function handleAddSubmit(name: string, url: string, headers: HeaderRow[]) {
     setAddDiscoveryWarning(null)
     addMutation.mutate(
-      { name, url },
+      { name, url, auth_headers: headers.length > 0 ? headers : undefined },
       {
         onSuccess: (data) => {
           if (data.discovery_error) {

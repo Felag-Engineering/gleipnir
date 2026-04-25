@@ -53,7 +53,52 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-036 | Centralized scheduler dispatcher                    | 🟢 Decided | v1.0 | internal/dispatcher (new), internal/trigger/scheduled.go, internal/trigger/poll.go, main.go |
 | ADR-037 | Custom Prometheus registry in internal/infra/metrics (leaf package) | 🟢 Decided | v1.0 | internal/infra/metrics (new), all future instrumented packages |
 | ADR-038 | Atomic run-state transitions with optimistic locking   | 🟢 Decided | v1.0 | runs.version column, RunStateMachine.Transition (tx), runstate.ErrTransitionConflict |
+| ADR-039 | Per-server encrypted auth headers for authenticated MCP providers | 🟢 Decided | v1.0 | mcp_servers table, internal/mcp, internal/admin, gleipnirctl rotate-key |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
+
+---
+
+## ADR-039: Per-server encrypted auth headers for authenticated MCP providers
+
+**Status:** Decided
+**Date:** 2026-04
+
+### Context
+
+Some MCP providers require authentication on every HTTP request. Composio, for example, requires an `x-api-key` header carrying a per-account API token. The `mcp_servers` table previously stored only `name` and `url` — there was no mechanism to attach authentication material to a server registration. Operators working around this would have to embed credentials in the URL (query parameters), which are visible in logs and in the Gleipnir UI.
+
+Gleipnir already has a pattern for this problem: `internal/admin` provides an AES-256-GCM encrypt/decrypt helper (keyed from `GLEIPNIR_ENCRYPTION_KEY`) used for provider API keys and webhook secrets.
+
+### Decision
+
+**Storage:** A new `auth_headers_encrypted TEXT` column is added to `mcp_servers`. It stores a JSON array of `{name, value}` objects, encrypted with AES-256-GCM via the existing `internal/admin` helper. The column is nullable — absence means no configured auth headers.
+
+**API surface (write-only values):** `POST /api/v1/mcp/servers` accepts an `auth_headers` field containing an array of `{key, value}` objects (plaintext, used only at creation time). `PUT /api/v1/mcp/servers/:id` updates `name` and `url` only — it does NOT touch `auth_headers_encrypted`. Auth headers are managed per-header via write-only endpoints that mirror ADR-034's webhook-secret pattern:
+
+- `PUT  /api/v1/mcp/servers/:id/headers/:name` — set or replace one header (admin|operator). Body: `{"value": "string"}`. The comparison against stored names is case-insensitive; the submitted casing wins.
+- `DELETE /api/v1/mcp/servers/:id/headers/:name` — remove one header (admin|operator). Idempotent: no-op if the header is absent. Deleting the last header sets the column to NULL.
+
+`GET` responses return header *names* only (`auth_header_keys`); values are never included in any response. There is no sentinel and no preserve-vs-overwrite ambiguity because edits are scoped to a single header at a time. `MaskedHeaderValue` was considered (as a bulk-PUT sentinel) and rejected before merge.
+
+**Header name validation:** Header names are validated with `golang.org/x/net/http/httpguts.ValidHeaderFieldName` (RFC 7230 token syntax), which rejects CR, LF, NUL, colon, and all non-token characters. A fixed reserved-name list (`Mcp-Session-Id`, `Content-Type`, `Accept`, `Content-Length`, `Host`) is additionally rejected — these headers are managed by the MCP client or the HTTP transport layer and must not be overridden.
+
+**MCP client injection:** `internal/mcp` registry decrypts `auth_headers_encrypted` when loading a server and passes the plaintext headers to the HTTP client. Every outbound request to that MCP server includes the configured headers. `internal/mcp` imports `internal/admin` for decryption — this avoids forcing every `Registry` caller (HTTP handlers, CLI commands, poll trigger) to know about the encryption key and perform decryption themselves. The existing `internal/trigger` → `internal/admin` import provides precedent for a non-leaf package importing `internal/admin`.
+
+**`POST /api/v1/mcp/servers/test`:** The test-connection endpoint accepts `auth_headers` inline. It injects the provided headers for the one-off connection test without persisting anything. This allows operators to verify a new server configuration (including auth) before committing it.
+
+**`gleipnirctl rotate-key`:** The key rotation command re-encrypts `auth_headers_encrypted` in the same transaction as all other encrypted columns (`provider_api_key_encrypted`, `openai_compat_key_encrypted`, `webhook_secret_encrypted`). No additional rotation path is needed.
+
+### Out of scope
+
+- Per-policy or per-user credential scoping. All policies that grant tools from a given MCP server share the same auth headers. Scoped credentials require URL templating and/or a new `policy_mcp_overrides` join table — deferred to a follow-up issue.
+- OAuth orchestration of the Composio account itself. Operators connect their OAuth integrations in the Composio dashboard; Gleipnir only holds the Composio API key, not downstream OAuth tokens.
+
+### Consequences
+
+- Operators can register any MCP server that requires a static API key or bearer token without embedding credentials in the URL.
+- Auth header values are never returned over the API. An operator who loses their Composio API key must regenerate it at the source and update the Gleipnir server registration — Gleipnir provides no recovery path for the plaintext value.
+- The trust expansion introduced by connecting to a hosted provider like Composio (where downstream OAuth tokens for Gmail, Slack, etc. reside with that provider) is operator-visible — documented in the Composio playbook (`docs/playbooks/composio/README.md`).
+- `internal/mcp` now imports `internal/admin`. This is an intentional package boundary adjustment, consistent with the `internal/trigger` → `internal/admin` precedent.
 
 ---
 

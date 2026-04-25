@@ -31,12 +31,13 @@ type FeedbackRequest struct {
 }
 
 type McpServer struct {
-	ID               string  `json:"id"`
-	Name             string  `json:"name"`
-	Url              string  `json:"url"`
-	LastDiscoveredAt *string `json:"last_discovered_at"`
-	HasDrift         int64   `json:"has_drift"`
-	CreatedAt        string  `json:"created_at"`
+	ID                   string  `json:"id"`
+	Name                 string  `json:"name"`
+	Url                  string  `json:"url"`
+	LastDiscoveredAt     *string `json:"last_discovered_at"`
+	HasDrift             int64   `json:"has_drift"`
+	CreatedAt            string  `json:"created_at"`
+	AuthHeadersEncrypted *string `json:"auth_headers_encrypted"`
 }
 
 type McpTool struct {

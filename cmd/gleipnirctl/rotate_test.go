@@ -44,13 +44,14 @@ func newSeededPath(t *testing.T, encKeyHex string) string {
 	return path
 }
 
-// seedDB seeds the store with all three secret types for rotation tests.
+// seedDB seeds the store with all four secret types for rotation tests.
 //
 // Seeded data:
 //   - system_settings: anthropic_api_key, openai_api_key, google_api_key (encrypted with encKey)
 //   - system_settings: public_url (plaintext — not an API key, must NOT be touched)
 //   - openai_compat_providers: two rows with encrypted API keys
 //   - policies: one with a webhook secret (encrypted), one without
+//   - mcp_servers: one with encrypted auth headers, one without
 func seedDB(t *testing.T, s *db.Store, encKey []byte) {
 	t.Helper()
 	ctx := context.Background()
@@ -117,6 +118,29 @@ func seedDB(t *testing.T, s *db.Store, encKey []byte) {
 
 	// Policy without webhook secret.
 	testutil.InsertPolicy(t, s, "policy-no-secret", "no-secret", "manual", testutil.MinimalWebhookPolicy)
+
+	// MCP server with encrypted auth headers.
+	mcpHeadersJSON := `[{"name":"x-api-key","value":"composio-secret"}]`
+	mcpCiphertext := encryptWith(mcpHeadersJSON)
+	if _, err := s.Queries().CreateMCPServer(ctx, db.CreateMCPServerParams{
+		ID:                   "mcp-with-headers",
+		Name:                 "composio",
+		Url:                  "https://example.com/mcp",
+		CreatedAt:            now,
+		AuthHeadersEncrypted: &mcpCiphertext,
+	}); err != nil {
+		t.Fatalf("seed mcp server with headers: %v", err)
+	}
+
+	// MCP server without auth headers.
+	if _, err := s.Queries().CreateMCPServer(ctx, db.CreateMCPServerParams{
+		ID:        "mcp-no-headers",
+		Name:      "local-mcp",
+		Url:       "http://localhost:8080/mcp",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed mcp server without headers: %v", err)
+	}
 }
 
 // storePath returns the filesystem path of the Store's underlying SQLite file.
@@ -164,6 +188,9 @@ func TestRotate_RoundTripsAllThreeSecretTypes(t *testing.T) {
 	}
 	if !strings.Contains(out, "1 webhook secrets") {
 		t.Errorf("summary missing '1 webhook secrets': %q", out)
+	}
+	if !strings.Contains(out, "MCP auth header sets") {
+		t.Errorf("summary missing 'MCP auth header sets': %q", out)
 	}
 
 	// Re-open to inspect post-rotation state.
@@ -229,6 +256,26 @@ func TestRotate_RoundTripsAllThreeSecretTypes(t *testing.T) {
 		}
 		if _, err := admin.Decrypt(oldKey, *row.WebhookSecretEncrypted); err == nil {
 			t.Errorf("policy %s: old key should no longer decrypt webhook secret", row.ID)
+		}
+	}
+
+	// Verify MCP auth headers are re-encrypted.
+	mcpRows, err := s.Queries().ListMCPServersWithAuthHeaders(ctx)
+	if err != nil {
+		t.Fatalf("list mcp server auth headers: %v", err)
+	}
+	if len(mcpRows) != 1 {
+		t.Fatalf("expected 1 mcp auth header row, got %d", len(mcpRows))
+	}
+	for _, row := range mcpRows {
+		if row.AuthHeadersEncrypted == nil {
+			t.Fatal("auth_headers_encrypted is nil")
+		}
+		if _, err := admin.Decrypt(newKey, *row.AuthHeadersEncrypted); err != nil {
+			t.Errorf("mcp server %s: decrypt auth headers with new key failed: %v", row.ID, err)
+		}
+		if _, err := admin.Decrypt(oldKey, *row.AuthHeadersEncrypted); err == nil {
+			t.Errorf("mcp server %s: old key should no longer decrypt auth headers", row.ID)
 		}
 	}
 }

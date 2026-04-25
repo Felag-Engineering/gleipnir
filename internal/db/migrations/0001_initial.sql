@@ -28,12 +28,16 @@ CREATE TABLE schema_migrations (
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE mcp_servers (
-    id                  TEXT    PRIMARY KEY,  -- ULID
-    name                TEXT    NOT NULL UNIQUE,
-    url                 TEXT    NOT NULL,
-    last_discovered_at  TEXT,                 -- nullable, ISO 8601 UTC
-    has_drift           INTEGER NOT NULL DEFAULT 0,  -- 1 when re-discovery found changes
-    created_at          TEXT    NOT NULL      -- ISO 8601 UTC
+    id                      TEXT    PRIMARY KEY,  -- ULID
+    name                    TEXT    NOT NULL UNIQUE,
+    url                     TEXT    NOT NULL,
+    last_discovered_at      TEXT,                 -- nullable, ISO 8601 UTC
+    has_drift               INTEGER NOT NULL DEFAULT 0,  -- 1 when re-discovery found changes
+    created_at              TEXT    NOT NULL,     -- ISO 8601 UTC
+    -- Encrypted auth headers (AES-256-GCM, key from GLEIPNIR_ENCRYPTION_KEY).
+    -- JSON array of {"name":"...","value":"..."} objects, serialized then encrypted.
+    -- Values are write-only; only header names are returned via the API (ADR-039).
+    auth_headers_encrypted  TEXT                  -- nullable; TEXT stores base64 ciphertext
 );
 
 -- ---------------------------------------------------------------------------

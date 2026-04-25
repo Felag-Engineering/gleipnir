@@ -98,7 +98,7 @@ type RunLauncherConfig struct {
 	Registry               registryResolver
 	Manager                *RunManager
 	AgentFactory           AgentFactory
-	Publisher              event.Publisher      // nil = no real-time events
+	Publisher              event.Publisher // nil = no real-time events
 	DefaultFeedbackTimeout time.Duration
 	ModelResolver          defaultModelResolver // nil = use launch-time snapshot only
 }

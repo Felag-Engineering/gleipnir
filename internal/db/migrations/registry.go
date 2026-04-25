@@ -21,5 +21,6 @@ func All() []Migration {
 		&AddRunsVersion{},
 		&AddCronTriggerType{},
 		&AddMCPToolEnabled{},
+		&AddMCPAuthHeaders{},
 	}
 }

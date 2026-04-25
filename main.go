@@ -104,7 +104,6 @@ func run(cfg config.Config) error {
 	)
 	feedbackScanner.Start(ctx)
 
-	registry := mcp.NewRegistry(store.Queries(), mcp.WithMCPTimeout(cfg.MCPTimeout))
 	runManager := runpkg.NewRunManager()
 	providerRegistry := llm.NewProviderRegistry()
 
@@ -121,6 +120,13 @@ func run(cfg config.Config) error {
 	if encryptionKey == nil {
 		slog.Warn("GLEIPNIR_ENCRYPTION_KEY not set — admin API key management will be unavailable")
 	}
+
+	// Registry construction is placed after encryption key parsing so
+	// WithEncryptionKey can be passed at construction time.
+	registry := mcp.NewRegistry(store.Queries(),
+		mcp.WithMCPTimeout(cfg.MCPTimeout),
+		mcp.WithEncryptionKey(encryptionKey),
+	)
 
 	// configureProvider creates an LLM client and registers it in the provider
 	// registry. Called both at bootstrap (from DB) and when an admin saves a key.
@@ -260,6 +266,7 @@ func run(cfg config.Config) error {
 		Poller:               poller,
 		Scheduler:            scheduler,
 		Cron:                 cronRunner,
+		EncryptionKey:        encryptionKey,
 		Version:              version,
 		StartTime:            startTime,
 		DBPath:               cfg.DBPath,

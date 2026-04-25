@@ -48,3 +48,86 @@
   font-size: var(--text-xs);
   color: var(--text-second);
 }
+
+/* "optional" label suffix in smaller muted text */
+.optionalLabel {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Auth header editor rows: key input + value input + remove button */
+.headerRow {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+
+.headerKeyInput {
+  flex: 0 0 40%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-mid);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  outline: none;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.headerKeyInput:focus {
+  border-color: var(--text-muted);
+}
+
+.headerValueInput {
+  flex: 1;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-mid);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  outline: none;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.headerValueInput:focus {
+  border-color: var(--text-muted);
+}
+
+.headerRemoveButton {
+  flex-shrink: 0;
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: var(--text-base);
+  cursor: pointer;
+  line-height: 1;
+  border-radius: 4px;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.headerRemoveButton:hover {
+  color: var(--color-red);
+}
+
+.addHeaderButton {
+  background: transparent;
+  border: 1px dashed var(--border-mid);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.addHeaderButton:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}

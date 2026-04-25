@@ -178,6 +178,9 @@ GET    /api/v1/runs/:id/steps          POST   /api/v1/runs/:id/cancel
 
 MCP / Tools:
 GET    /api/v1/mcp/servers             POST   /api/v1/mcp/servers
+PUT    /api/v1/mcp/servers/:id         (admin|operator; name + url only)
+PUT    /api/v1/mcp/servers/:id/headers/:name   (admin|operator; set/replace one header)
+DELETE /api/v1/mcp/servers/:id/headers/:name   (admin|operator; remove one header)
 POST   /api/v1/mcp/servers/test
 DELETE /api/v1/mcp/servers/:id
 POST   /api/v1/mcp/servers/:id/discover
@@ -219,7 +222,7 @@ Organized by feature area:
 - **AgentEditor/** — the agent editor (EditorTopBar, FormMode with 7 form sections)
 - **AgentList/** — agent list with folder grouping
 - **RunDetail/** — RunHeader, StepTimeline, FilterBar, MetadataGrid, CapabilitySnapshotCard, ThoughtBlock, ThinkingBlock, ToolBlock, CompleteBlock, ErrorBlock, FeedbackBlock, ApprovalActions, FeedbackActions
-- **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal
+- **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal, ServerDetailModal (per-header auth editor: existing name fields are read-only, value field is empty with placeholder; save fans out via `useSetMcpServerHeader`/`useDeleteMcpServerHeader`; no sentinel; see ADR-039)
 - **admin/** — EncryptionKeyNotice (persistent warning banner on the Models page about encryption key backup requirements)
 - **form/** — FieldError (inline message under a field), ErrorBanner (top-of-form bulleted summary with scroll-to-field). Shared primitives for surfacing validation/save errors.
 - **Shared** — Button, Modal, ModalFooter, EmptyState, ErrorBoundary, QueryBoundary, CopyBlock, CollapsibleJSON, SkeletonBlock, PageHeader, ApprovalBanner, ConnectionBanner, TriggerRunModal

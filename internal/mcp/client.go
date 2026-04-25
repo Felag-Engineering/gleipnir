@@ -94,11 +94,12 @@ type contentItem struct {
 
 // Client calls a single MCP server over HTTP transport.
 type Client struct {
-	serverURL  string
-	serverName string // Prometheus label; set by registry.newClient, empty for direct NewClient callers
-	httpClient *http.Client
-	mu         sync.Mutex
-	sessionID  string
+	serverURL   string
+	serverName  string       // Prometheus label; set by registry.newClient, empty for direct NewClient callers
+	authHeaders []AuthHeader // static headers injected on every outbound request
+	httpClient  *http.Client
+	mu          sync.Mutex
+	sessionID   string
 }
 
 // ClientOption configures a Client. Options are applied sequentially after
@@ -122,6 +123,15 @@ func WithHTTPClient(c *http.Client) ClientOption {
 func WithTimeout(d time.Duration) ClientOption {
 	return func(cl *Client) {
 		cl.httpClient.Timeout = d
+	}
+}
+
+// WithAuthHeaders configures static headers to be injected on every outbound
+// request. Headers are applied before Mcp-Session-Id so the client-managed
+// session header always takes precedence.
+func WithAuthHeaders(hs []AuthHeader) ClientOption {
+	return func(cl *Client) {
+		cl.authHeaders = hs
 	}
 }
 
@@ -415,6 +425,11 @@ func decodeResponse(resp *http.Response, dst any) error {
 // postRaw sends a JSON-RPC request body to c.serverURL and returns the HTTP
 // response. sessionID is included as "Mcp-Session-Id" when non-empty.
 // It returns an error for non-2xx status codes.
+//
+// Header injection order:
+//  1. Content-Type and Accept (transport requirements)
+//  2. c.authHeaders (operator-configured, applied in registration order)
+//  3. Mcp-Session-Id (client-managed, always wins — set last)
 func (c *Client) postRaw(ctx context.Context, body []byte, sessionID string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.serverURL, bytes.NewReader(body))
 	if err != nil {
@@ -424,6 +439,12 @@ func (c *Client) postRaw(ctx context.Context, body []byte, sessionID string) (*h
 	// MCP streamable-HTTP transport requires the client to accept both JSON
 	// (for single-response calls) and SSE (for streaming responses).
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	// Inject operator-configured auth headers before the session header so that
+	// Mcp-Session-Id always takes precedence if an operator mistakenly
+	// configures a header with that name.
+	for _, h := range c.authHeaders {
+		req.Header.Set(h.Name, h.Value)
+	}
 	if sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sessionID)
 	}

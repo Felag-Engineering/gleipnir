@@ -85,6 +85,7 @@ export interface ApiMcpServer {
   last_discovered_at: string | null
   has_drift: boolean
   created_at: string
+  auth_header_keys?: string[] // sorted header names; values are never returned
 }
 
 // Matches mcp_handler.go → mcpServerCreateResponse (POST /api/v1/mcp/servers)
@@ -225,11 +226,23 @@ export interface TriggerPolicyResponse {
 export interface AddMcpServerRequest {
   name: string
   url: string
+  auth_headers?: { key: string; value: string }[]
 }
+
+// Matches api/mcp_handler.go → Update body (PUT /api/v1/mcp/servers/:id)
+// Auth headers are NOT included — use SetMcpServerHeaderRequest instead.
+export interface UpdateMcpServerRequest {
+  name: string
+  url: string
+}
+
+// Matches api/mcp_handler.go → SetAuthHeader body (PUT /api/v1/mcp/servers/:id/headers/:name)
+export type SetMcpServerHeaderRequest = { value: string }
 
 // Matches api/mcp_handler.go → testConnectionResponse (POST /api/v1/mcp/servers/test)
 export interface TestMcpConnectionRequest {
   url: string
+  auth_headers?: { key: string; value: string }[]
 }
 
 // ok=true means the handshake succeeded; ok=false means the server was unreachable

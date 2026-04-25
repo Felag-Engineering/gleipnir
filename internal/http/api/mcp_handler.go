@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 
+	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/http/auth"
 	"github.com/rapp992/gleipnir/internal/http/httputil"
@@ -29,20 +31,37 @@ import (
 type MCPHandler struct {
 	store    *db.Store
 	registry *mcp.Registry
+	encKey   []byte // AES-256-GCM key; nil when GLEIPNIR_ENCRYPTION_KEY is unset
 }
 
-// NewMCPHandler creates an MCPHandler backed by the given store and registry.
-func NewMCPHandler(store *db.Store, registry *mcp.Registry) *MCPHandler {
-	return &MCPHandler{store: store, registry: registry}
+// NewMCPHandler creates an MCPHandler backed by the given store, registry, and
+// encryption key. encKey may be nil when the encryption key is not configured;
+// in that case, Create/Update requests that include auth_headers return 503.
+func NewMCPHandler(store *db.Store, registry *mcp.Registry, encKey []byte) *MCPHandler {
+	return &MCPHandler{store: store, registry: registry, encKey: encKey}
+}
+
+// authHeaderPayload is the JSON shape used in Create/Update/TestConnection
+// request bodies for individual auth headers. "key" mirrors HTTP header
+// naming conventions and maps to mcp.AuthHeader.Name in Go.
+type authHeaderPayload struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// toAuthHeader converts a payload row to the mcp.AuthHeader type.
+func (p authHeaderPayload) toAuthHeader() mcp.AuthHeader {
+	return mcp.AuthHeader{Name: p.Key, Value: p.Value}
 }
 
 type mcpServerResponse struct {
-	ID               string  `json:"id"`
-	Name             string  `json:"name"`
-	URL              string  `json:"url"`
-	LastDiscoveredAt *string `json:"last_discovered_at"`
-	HasDrift         bool    `json:"has_drift"`
-	CreatedAt        string  `json:"created_at"`
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
+	URL              string   `json:"url"`
+	LastDiscoveredAt *string  `json:"last_discovered_at"`
+	HasDrift         bool     `json:"has_drift"`
+	CreatedAt        string   `json:"created_at"`
+	AuthHeaderKeys   []string `json:"auth_header_keys"` // sorted header names; never includes values
 }
 
 type mcpServerCreateResponse struct {
@@ -56,7 +75,33 @@ type toolDiffResponse struct {
 	Modified []string `json:"modified"`
 }
 
-func serverToResponse(s db.McpServer) mcpServerResponse {
+// serverToResponse converts a DB row to the API response struct. It decrypts
+// auth_headers_encrypted (if present) to extract header names for the
+// auth_header_keys field. Values are never included in any response.
+// On decrypt or unmarshal failure, auth_header_keys is returned as an empty
+// slice and a warning is logged — the rest of the server data is still usable.
+func (h *MCPHandler) serverToResponse(s db.McpServer) mcpServerResponse {
+	keys := make([]string, 0)
+
+	if s.AuthHeadersEncrypted != nil && h.encKey != nil {
+		plaintext, err := admin.Decrypt(h.encKey, *s.AuthHeadersEncrypted)
+		if err != nil {
+			slog.Warn("failed to decrypt mcp server auth headers for response",
+				"server_id", s.ID, "err", err)
+		} else {
+			headers, err := mcp.UnmarshalAuthHeaders([]byte(plaintext))
+			if err != nil {
+				slog.Warn("failed to unmarshal mcp server auth headers for response",
+					"server_id", s.ID, "err", err)
+			} else {
+				for _, hdr := range headers {
+					keys = append(keys, hdr.Name)
+				}
+				sort.Strings(keys)
+			}
+		}
+	}
+
 	return mcpServerResponse{
 		ID:               s.ID,
 		Name:             s.Name,
@@ -64,6 +109,7 @@ func serverToResponse(s db.McpServer) mcpServerResponse {
 		LastDiscoveredAt: s.LastDiscoveredAt,
 		HasDrift:         s.HasDrift != 0,
 		CreatedAt:        s.CreatedAt,
+		AuthHeaderKeys:   keys,
 	}
 }
 
@@ -99,10 +145,13 @@ type testConnectionResponse struct {
 // TestConnection handles POST /api/v1/mcp/servers/test.
 // It performs a one-shot MCP discovery handshake against the provided URL without
 // persisting any data — useful for verifying connectivity before saving a server.
+// auth_headers are accepted inline and applied to the throwaway client only; they
+// are never stored. The frontend must send plaintext values here (no sentinels).
 // Always returns HTTP 200; the ok field in the body distinguishes success from failure.
 func (h *MCPHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		URL string `json:"url"`
+		URL         string              `json:"url"`
+		AuthHeaders []authHeaderPayload `json:"auth_headers"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
@@ -116,9 +165,23 @@ func (h *MCPHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid url", err.Error())
 		return
 	}
+	for _, p := range body.AuthHeaders {
+		if err := mcp.ValidateHeaderName(p.Key); err != nil {
+			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid header name %q: %s", p.Key, err), "")
+			return
+		}
+	}
 
-	// Throwaway client — never stored in h.registry or h.store.
-	client := mcp.NewClient(body.URL)
+	// Build throwaway client — never stored in h.registry or h.store.
+	clientOpts := make([]mcp.ClientOption, 0, 1)
+	if len(body.AuthHeaders) > 0 {
+		headers := make([]mcp.AuthHeader, len(body.AuthHeaders))
+		for i, p := range body.AuthHeaders {
+			headers[i] = p.toAuthHeader()
+		}
+		clientOpts = append(clientOpts, mcp.WithAuthHeaders(headers))
+	}
+	client := mcp.NewClient(body.URL, clientOpts...)
 
 	// 5-second deadline governs the entire handshake; no separate client timeout needed.
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -158,7 +221,7 @@ func (h *MCPHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]mcpServerResponse, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, serverToResponse(row))
+		items = append(items, h.serverToResponse(row))
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, items)
@@ -167,8 +230,9 @@ func (h *MCPHandler) List(w http.ResponseWriter, r *http.Request) {
 // Create handles POST /api/v1/mcp/servers.
 func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name string `json:"name"`
-		URL  string `json:"url"`
+		Name        string              `json:"name"`
+		URL         string              `json:"url"`
+		AuthHeaders []authHeaderPayload `json:"auth_headers"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
@@ -184,12 +248,35 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var ciphertext *string
+	if len(body.AuthHeaders) > 0 {
+		if h.encKey == nil {
+			httputil.WriteError(w, http.StatusServiceUnavailable, "encryption key not configured; cannot store auth headers", "")
+			return
+		}
+		authHeaders := make([]mcp.AuthHeader, len(body.AuthHeaders))
+		for i, p := range body.AuthHeaders {
+			if err := mcp.ValidateHeaderName(p.Key); err != nil {
+				httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid header name %q: %s", p.Key, err), "")
+				return
+			}
+			authHeaders[i] = p.toAuthHeader()
+		}
+		ct, status := h.encryptHeaders(authHeaders)
+		if status != 0 {
+			httputil.WriteError(w, status, "failed to encrypt auth headers", "")
+			return
+		}
+		ciphertext = ct
+	}
+
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	server, err := h.store.CreateMCPServer(r.Context(), db.CreateMCPServerParams{
-		ID:        model.NewULID(),
-		Name:      body.Name,
-		Url:       body.URL,
-		CreatedAt: now,
+		ID:                   model.NewULID(),
+		Name:                 body.Name,
+		Url:                  body.URL,
+		CreatedAt:            now,
+		AuthHeadersEncrypted: ciphertext,
 	})
 	if err != nil {
 		if isUniqueConstraintError(err) {
@@ -201,7 +288,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := mcpServerCreateResponse{
-		mcpServerResponse: serverToResponse(server),
+		mcpServerResponse: h.serverToResponse(server),
 	}
 
 	// Attempt auto-discovery; a failure is non-fatal — we still return 201 with the
@@ -213,7 +300,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Re-fetch so the response reflects the updated last_discovered_at.
 		if updated, err := h.store.GetMCPServer(r.Context(), server.ID); err == nil {
-			resp.mcpServerResponse = serverToResponse(updated)
+			resp.mcpServerResponse = h.serverToResponse(updated)
 		}
 	}
 
@@ -264,6 +351,228 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Update handles PUT /api/v1/mcp/servers/{id}.
+// Updates the server's name and url only. Auth headers are managed separately
+// via PUT/DELETE /api/v1/mcp/servers/:id/headers/:name (ADR-039).
+func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var body struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if body.Name == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "name is required", "")
+		return
+	}
+	if err := mcp.ValidateServerURL(r.Context(), body.URL); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid url", err.Error())
+		return
+	}
+
+	updated, err := h.store.UpdateMCPServer(r.Context(), db.UpdateMCPServerParams{
+		Name: body.Name,
+		Url:  body.URL,
+		ID:   id,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
+			return
+		}
+		if isUniqueConstraintError(err) {
+			httputil.WriteError(w, http.StatusConflict, "MCP server name already exists", "")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update MCP server", err.Error())
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, h.serverToResponse(updated))
+}
+
+// SetAuthHeader handles PUT /api/v1/mcp/servers/{id}/headers/{name}.
+// Creates or replaces a single auth header by name. The name comparison is
+// case-insensitive — submitting "X-Api-Key" when "x-api-key" exists replaces
+// the stored entry and adopts the submitted casing.
+func (h *MCPHandler) SetAuthHeader(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	headerName := chi.URLParam(r, "name")
+
+	if err := mcp.ValidateHeaderName(headerName); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid header name: %s", err), "")
+		return
+	}
+	if h.encKey == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "encryption key not configured; cannot store auth headers", "")
+		return
+	}
+
+	var body struct {
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+
+	server, err := h.store.GetMCPServer(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
+		return
+	}
+
+	// Decrypt existing headers (empty slice if none configured).
+	headers, err := h.decryptHeaders(server)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to load existing auth headers", err.Error())
+		return
+	}
+
+	// Replace by case-insensitive name match; append if not found.
+	found := false
+	for i, hdr := range headers {
+		if strings.EqualFold(hdr.Name, headerName) {
+			headers[i] = mcp.AuthHeader{Name: headerName, Value: body.Value}
+			found = true
+			break
+		}
+	}
+	if !found {
+		headers = append(headers, mcp.AuthHeader{Name: headerName, Value: body.Value})
+	}
+
+	ciphertext, encErr := h.encryptHeaders(headers)
+	if encErr != 0 {
+		httputil.WriteError(w, encErr, "failed to encrypt auth headers", "")
+		return
+	}
+
+	if err := h.store.UpdateMCPServerAuthHeaders(r.Context(), db.UpdateMCPServerAuthHeadersParams{
+		AuthHeadersEncrypted: ciphertext,
+		ID:                   id,
+	}); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to persist auth headers", err.Error())
+		return
+	}
+
+	// Re-fetch to return a consistent response.
+	updated, err := h.store.GetMCPServer(r.Context(), id)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to reload MCP server", err.Error())
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, h.serverToResponse(updated))
+}
+
+// DeleteAuthHeader handles DELETE /api/v1/mcp/servers/{id}/headers/{name}.
+// Removes a single auth header by case-insensitive name match. If the header
+// is not present, the response is still 200 with the current server state
+// (idempotent). Deleting the last header clears the column (sets it to NULL).
+func (h *MCPHandler) DeleteAuthHeader(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	headerName := chi.URLParam(r, "name")
+
+	server, err := h.store.GetMCPServer(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
+		return
+	}
+
+	headers, err := h.decryptHeaders(server)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to load existing auth headers", err.Error())
+		return
+	}
+
+	// Filter out the named header (case-insensitive). No-op if absent.
+	filtered := headers[:0]
+	for _, hdr := range headers {
+		if !strings.EqualFold(hdr.Name, headerName) {
+			filtered = append(filtered, hdr)
+		}
+	}
+
+	// Determine the new ciphertext: nil when empty (clears the column).
+	var ciphertext *string
+	if len(filtered) > 0 {
+		ct, encErr := h.encryptHeaders(filtered)
+		if encErr != 0 {
+			httputil.WriteError(w, encErr, "failed to encrypt auth headers", "")
+			return
+		}
+		ciphertext = ct
+	}
+
+	if err := h.store.UpdateMCPServerAuthHeaders(r.Context(), db.UpdateMCPServerAuthHeadersParams{
+		AuthHeadersEncrypted: ciphertext,
+		ID:                   id,
+	}); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to persist auth headers", err.Error())
+		return
+	}
+
+	updated, err := h.store.GetMCPServer(r.Context(), id)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to reload MCP server", err.Error())
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, h.serverToResponse(updated))
+}
+
+// decryptHeaders loads and decrypts auth headers from the server row.
+// Returns an empty (non-nil) slice when there are no stored headers.
+func (h *MCPHandler) decryptHeaders(server db.McpServer) ([]mcp.AuthHeader, error) {
+	if server.AuthHeadersEncrypted == nil {
+		return []mcp.AuthHeader{}, nil
+	}
+	if h.encKey == nil {
+		return nil, fmt.Errorf("encryption key not configured")
+	}
+	plaintext, err := admin.Decrypt(h.encKey, *server.AuthHeadersEncrypted)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt: %w", err)
+	}
+	headers, err := mcp.UnmarshalAuthHeaders([]byte(plaintext))
+	if err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
+	if headers == nil {
+		return []mcp.AuthHeader{}, nil
+	}
+	return headers, nil
+}
+
+// encryptHeaders serializes and encrypts a non-empty header slice.
+// Returns nil ciphertext (and status 0) for an empty slice.
+// Returns a non-zero HTTP status code on error.
+func (h *MCPHandler) encryptHeaders(headers []mcp.AuthHeader) (*string, int) {
+	raw, err := mcp.MarshalAuthHeaders(headers)
+	if err != nil {
+		return nil, http.StatusInternalServerError
+	}
+	if raw == nil {
+		return nil, 0
+	}
+	ct, err := admin.Encrypt(h.encKey, string(raw))
+	if err != nil {
+		return nil, http.StatusInternalServerError
+	}
+	return &ct, 0
 }
 
 // Discover handles POST /api/v1/mcp/servers/{id}/discover.

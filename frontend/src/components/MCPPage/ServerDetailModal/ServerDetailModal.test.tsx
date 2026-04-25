@@ -1,9 +1,39 @@
 import React from 'react'
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ServerDetailModal } from './ServerDetailModal'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
+
+// Shared mutation spies — reset in beforeEach where needed.
+let mockUpdateMutate = vi.fn()
+let mockSetHeaderMutate = vi.fn()
+let mockDeleteHeaderMutate = vi.fn()
+let mockSetToolEnabledMutate = vi.fn()
+
+vi.mock('@/hooks/mutations/servers', () => ({
+  useUpdateMcpServer: () => ({
+    mutate: mockUpdateMutate,
+    isPending: false,
+    error: null,
+    reset: vi.fn(),
+  }),
+  useSetMcpServerHeader: () => ({
+    mutate: mockSetHeaderMutate,
+    isPending: false,
+    error: null,
+  }),
+  useDeleteMcpServerHeader: () => ({
+    mutate: mockDeleteHeaderMutate,
+    isPending: false,
+    error: null,
+  }),
+  useSetMcpToolEnabled: () => ({
+    mutate: mockSetToolEnabledMutate,
+    isPending: false,
+    error: null,
+  }),
+}))
 
 function renderWithClient(ui: React.ReactElement) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -127,6 +157,135 @@ describe('ServerDetailModal', () => {
     renderWithClient(<ServerDetailModal {...defaultProps} onClose={onClose} />)
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledOnce()
+  })
+})
+
+describe('ServerDetailModal — auth header editor', () => {
+  beforeEach(() => {
+    mockUpdateMutate = vi.fn()
+    mockSetHeaderMutate = vi.fn()
+    mockDeleteHeaderMutate = vi.fn()
+  })
+
+  it('shows "Auth headers" label when server has no auth_header_keys', () => {
+    render(<ServerDetailModal {...defaultProps} />)
+    expect(screen.getByRole('button', { name: 'Auth headers' })).toBeInTheDocument()
+  })
+
+  it('shows "Auth (N)" label when server has auth_header_keys populated', () => {
+    const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key', 'x-token'] }
+    render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
+    expect(screen.getByRole('button', { name: 'Auth (2)' })).toBeInTheDocument()
+  })
+
+  it('opening the editor seeds one row per key with empty value fields and disabled name inputs', () => {
+    const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key', 'x-token'] }
+    render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Auth (2)' }))
+
+    const nameInputs = screen.getAllByRole('textbox', { name: /header name/i })
+    const valueInputs = screen.getAllByRole('textbox', { name: /header value/i })
+
+    expect(nameInputs).toHaveLength(2)
+    expect(valueInputs).toHaveLength(2)
+    expect(nameInputs[0]).toHaveValue('x-api-key')
+    expect(nameInputs[1]).toHaveValue('x-token')
+    // Values are empty — no sentinel literal.
+    expect(valueInputs[0]).toHaveValue('')
+    expect(valueInputs[1]).toHaveValue('')
+    // Existing rows have read-only name fields.
+    expect(nameInputs[0]).toBeDisabled()
+    expect(nameInputs[1]).toBeDisabled()
+  })
+
+  it('adding a new row and saving fires SetAuthHeader once', async () => {
+    mockSetHeaderMutate = vi.fn((_args, callbacks) => {
+      callbacks?.onSuccess?.()
+    })
+
+    render(<ServerDetailModal {...defaultProps} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Auth headers' }))
+    fireEvent.click(screen.getByRole('button', { name: /\+ add header/i }))
+
+    const nameInputs = screen.getAllByRole('textbox', { name: /header name/i })
+    const valueInputs = screen.getAllByRole('textbox', { name: /header value/i })
+    // The newly added row is at the end.
+    fireEvent.change(nameInputs[nameInputs.length - 1], { target: { value: 'x-new-key' } })
+    fireEvent.change(valueInputs[valueInputs.length - 1], { target: { value: 'new-secret' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+    })
+
+    expect(mockSetHeaderMutate).toHaveBeenCalledOnce()
+    expect(mockSetHeaderMutate).toHaveBeenCalledWith(
+      { id: 'srv-1', name: 'x-new-key', value: 'new-secret' },
+      expect.any(Object),
+    )
+    expect(mockDeleteHeaderMutate).not.toHaveBeenCalled()
+  })
+
+  it('editing an existing row value and saving fires SetAuthHeader for that name', async () => {
+    mockSetHeaderMutate = vi.fn((_args, callbacks) => {
+      callbacks?.onSuccess?.()
+    })
+
+    const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key'] }
+    render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Auth (1)' }))
+
+    const valueInputs = screen.getAllByRole('textbox', { name: /header value/i })
+    fireEvent.change(valueInputs[0], { target: { value: 'replaced-secret' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+    })
+
+    expect(mockSetHeaderMutate).toHaveBeenCalledOnce()
+    expect(mockSetHeaderMutate).toHaveBeenCalledWith(
+      { id: 'srv-1', name: 'x-api-key', value: 'replaced-secret' },
+      expect.any(Object),
+    )
+  })
+
+  it('clicking trash on an existing row and saving fires DeleteAuthHeader once', async () => {
+    mockDeleteHeaderMutate = vi.fn((_args, callbacks) => {
+      callbacks?.onSuccess?.()
+    })
+
+    const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key'] }
+    render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Auth (1)' }))
+
+    // Remove the row.
+    fireEvent.click(screen.getByRole('button', { name: /remove header 1/i }))
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+    })
+
+    expect(mockDeleteHeaderMutate).toHaveBeenCalledOnce()
+    expect(mockDeleteHeaderMutate).toHaveBeenCalledWith(
+      { id: 'srv-1', name: 'x-api-key' },
+      expect.any(Object),
+    )
+    expect(mockSetHeaderMutate).not.toHaveBeenCalled()
+  })
+
+  it('saving with no changes fires no mutations', async () => {
+    const serverWithKeys: ApiMcpServer = { ...server, auth_header_keys: ['x-api-key'] }
+    render(<ServerDetailModal {...defaultProps} server={serverWithKeys} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Auth (1)' }))
+
+    // Do not modify any row.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+    })
+
+    expect(mockSetHeaderMutate).not.toHaveBeenCalled()
+    expect(mockDeleteHeaderMutate).not.toHaveBeenCalled()
+    expect(mockUpdateMutate).not.toHaveBeenCalled()
   })
 })
 

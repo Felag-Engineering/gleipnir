@@ -449,3 +449,85 @@ func TestEnsureSession_ConcurrentCalls(t *testing.T) {
 		t.Errorf("initialize called %d times, want between 1 and %d", got, goroutines)
 	}
 }
+
+// TestPostRaw_InjectsAuthHeaders verifies that WithAuthHeaders causes the
+// configured headers to be sent on every outbound request, and that the
+// Mcp-Session-Id is still set correctly.
+func TestPostRaw_InjectsAuthHeaders(t *testing.T) {
+	var capturedHeader string
+	var capturedSession string
+
+	srv := makeServer(t, routingHandler(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		capturedHeader = r.Header.Get("X-Api-Key")
+		capturedSession = r.Header.Get("Mcp-Session-Id")
+		successToolCallHandler(w, r)
+	}))
+
+	c := NewClient(srv.URL, WithAuthHeaders([]AuthHeader{
+		{Name: "X-Api-Key", Value: "sk-test-123"},
+	}))
+
+	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	if capturedHeader != "sk-test-123" {
+		t.Errorf("X-Api-Key = %q, want %q", capturedHeader, "sk-test-123")
+	}
+	if capturedSession != "test-session" {
+		t.Errorf("Mcp-Session-Id = %q, want %q", capturedSession, "test-session")
+	}
+}
+
+// TestPostRaw_NoAuthHeaders_BackwardCompat verifies that a Client with no auth
+// headers configured behaves identically to before this feature was added.
+func TestPostRaw_NoAuthHeaders_BackwardCompat(t *testing.T) {
+	var gotExtraHeader string
+
+	srv := makeServer(t, routingHandler(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		gotExtraHeader = r.Header.Get("X-Custom")
+		successToolCallHandler(w, r)
+	}))
+
+	// No WithAuthHeaders — default client.
+	c := NewClient(srv.URL)
+
+	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	if gotExtraHeader != "" {
+		t.Errorf("X-Custom = %q, want empty (no auth headers configured)", gotExtraHeader)
+	}
+}
+
+// TestPostRaw_AuthHeaderCannotOverrideSessionID verifies that even if an
+// operator somehow configures "Mcp-Session-Id" as an auth header (bypassing
+// the validator), the client-managed value wins because it is set after the
+// auth headers loop in postRaw.
+func TestPostRaw_AuthHeaderCannotOverrideSessionID(t *testing.T) {
+	var capturedSession string
+
+	srv := makeServer(t, routingHandler(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		capturedSession = r.Header.Get("Mcp-Session-Id")
+		successToolCallHandler(w, r)
+	}))
+
+	// Bypass the validator by setting the header directly via the option.
+	c := NewClient(srv.URL, WithAuthHeaders([]AuthHeader{
+		{Name: "Mcp-Session-Id", Value: "injected-session"},
+	}))
+
+	if _, err := c.CallTool(context.Background(), "tool-x", nil); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+
+	// The server assigns "test-session" in routingHandler; the client stores and
+	// resends it. The auth header's "injected-session" must NOT win.
+	if capturedSession == "injected-session" {
+		t.Errorf("Mcp-Session-Id = %q: auth header overwrote client-managed session ID", capturedSession)
+	}
+	if capturedSession != "test-session" {
+		t.Errorf("Mcp-Session-Id = %q, want %q (client-managed)", capturedSession, "test-session")
+	}
+}
