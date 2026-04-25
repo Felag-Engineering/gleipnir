@@ -22,7 +22,7 @@ DELETE FROM mcp_servers WHERE id = :id;
 
 -- name: UpdateMCPServer :one
 UPDATE mcp_servers
-SET name = :name, url = :url, auth_headers_encrypted = :auth_headers_encrypted
+SET name = :name, url = :url
 WHERE id = :id
 RETURNING *;
 

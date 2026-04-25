@@ -158,25 +158,19 @@ func (q *Queries) ListMCPServersWithAuthHeaders(ctx context.Context) ([]ListMCPS
 
 const updateMCPServer = `-- name: UpdateMCPServer :one
 UPDATE mcp_servers
-SET name = ?1, url = ?2, auth_headers_encrypted = ?3
-WHERE id = ?4
+SET name = ?1, url = ?2
+WHERE id = ?3
 RETURNING id, name, url, last_discovered_at, has_drift, created_at, auth_headers_encrypted
 `
 
 type UpdateMCPServerParams struct {
-	Name                 string  `json:"name"`
-	Url                  string  `json:"url"`
-	AuthHeadersEncrypted *string `json:"auth_headers_encrypted"`
-	ID                   string  `json:"id"`
+	Name string `json:"name"`
+	Url  string `json:"url"`
+	ID   string `json:"id"`
 }
 
 func (q *Queries) UpdateMCPServer(ctx context.Context, arg UpdateMCPServerParams) (McpServer, error) {
-	row := q.db.QueryRowContext(ctx, updateMCPServer,
-		arg.Name,
-		arg.Url,
-		arg.AuthHeadersEncrypted,
-		arg.ID,
-	)
+	row := q.db.QueryRowContext(ctx, updateMCPServer, arg.Name, arg.Url, arg.ID)
 	var i McpServer
 	err := row.Scan(
 		&i.ID,

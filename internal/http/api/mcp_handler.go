@@ -54,39 +54,6 @@ func (p authHeaderPayload) toAuthHeader() mcp.AuthHeader {
 	return mcp.AuthHeader{Name: p.Key, Value: p.Value}
 }
 
-// validateAndEncryptHeaders validates header names, then serializes and
-// encrypts the list. Returns nil ciphertext (and no error) for an empty list.
-// Returns 400 on invalid names, 503 when encKey is nil but headers are present.
-func (h *MCPHandler) validateAndEncryptHeaders(headers []authHeaderPayload) (*string, int, string) {
-	if len(headers) == 0 {
-		return nil, 0, ""
-	}
-	if h.encKey == nil {
-		return nil, http.StatusServiceUnavailable, "encryption key not configured; cannot store auth headers"
-	}
-	for _, p := range headers {
-		if err := mcp.ValidateHeaderName(p.Key); err != nil {
-			return nil, http.StatusBadRequest, fmt.Sprintf("invalid header name %q: %s", p.Key, err)
-		}
-	}
-	authHeaders := make([]mcp.AuthHeader, len(headers))
-	for i, p := range headers {
-		authHeaders[i] = p.toAuthHeader()
-	}
-	raw, err := mcp.MarshalAuthHeaders(authHeaders)
-	if err != nil {
-		return nil, http.StatusInternalServerError, fmt.Sprintf("marshal auth headers: %s", err)
-	}
-	if raw == nil {
-		return nil, 0, ""
-	}
-	ciphertext, err := admin.Encrypt(h.encKey, string(raw))
-	if err != nil {
-		return nil, http.StatusInternalServerError, fmt.Sprintf("encrypt auth headers: %s", err)
-	}
-	return &ciphertext, 0, ""
-}
-
 type mcpServerResponse struct {
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`
@@ -281,10 +248,26 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ciphertext, errStatus, errMsg := h.validateAndEncryptHeaders(body.AuthHeaders)
-	if errStatus != 0 {
-		httputil.WriteError(w, errStatus, errMsg, "")
-		return
+	var ciphertext *string
+	if len(body.AuthHeaders) > 0 {
+		if h.encKey == nil {
+			httputil.WriteError(w, http.StatusServiceUnavailable, "encryption key not configured; cannot store auth headers", "")
+			return
+		}
+		authHeaders := make([]mcp.AuthHeader, len(body.AuthHeaders))
+		for i, p := range body.AuthHeaders {
+			if err := mcp.ValidateHeaderName(p.Key); err != nil {
+				httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid header name %q: %s", p.Key, err), "")
+				return
+			}
+			authHeaders[i] = p.toAuthHeader()
+		}
+		ct, status := h.encryptHeaders(authHeaders)
+		if status != 0 {
+			httputil.WriteError(w, status, "failed to encrypt auth headers", "")
+			return
+		}
+		ciphertext = ct
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -393,24 +376,16 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch existing server to carry its auth_headers_encrypted forward unchanged.
-	existing, err := h.store.GetMCPServer(r.Context(), id)
+	updated, err := h.store.UpdateMCPServer(r.Context(), db.UpdateMCPServerParams{
+		Name: body.Name,
+		Url:  body.URL,
+		ID:   id,
+	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
 			return
 		}
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
-		return
-	}
-
-	updated, err := h.store.UpdateMCPServer(r.Context(), db.UpdateMCPServerParams{
-		Name:                 body.Name,
-		Url:                  body.URL,
-		AuthHeadersEncrypted: existing.AuthHeadersEncrypted,
-		ID:                   id,
-	})
-	if err != nil {
 		if isUniqueConstraintError(err) {
 			httputil.WriteError(w, http.StatusConflict, "MCP server name already exists", "")
 			return

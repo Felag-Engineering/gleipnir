@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/rapp992/gleipnir/internal/infra/metrics"
 	"github.com/rapp992/gleipnir/internal/mcp"
+	"github.com/rapp992/gleipnir/internal/infra/metrics"
 )
 
 func TestClassifyMCPErrorType(t *testing.T) {

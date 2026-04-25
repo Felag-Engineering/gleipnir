@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/infra/metrics"
 	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/rapp992/gleipnir/internal/infra/metrics"
 )
 
 // Compile-time assertion that *Client satisfies the LLMClient interface.
