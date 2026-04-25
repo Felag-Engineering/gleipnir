@@ -17,11 +17,13 @@ const tools: ApiMcpTool[] = [
     id: 't1', server_id: 'srv-1', name: 'echo',
     description: 'Echo the provided message back unchanged.',
     input_schema: { properties: { message: { type: 'string' } }, required: ['message'], type: 'object' },
+    enabled: true,
   },
   {
     id: 't2', server_id: 'srv-1', name: 'get_current_time',
     description: 'Return the current UTC time as an ISO 8601 string.',
     input_schema: { properties: {}, type: 'object' },
+    enabled: true,
   },
   {
     id: 't3', server_id: 'srv-1', name: 'send_notification',
@@ -30,6 +32,7 @@ const tools: ApiMcpTool[] = [
       properties: { channel: { type: 'string' }, message: { type: 'string' } },
       required: ['channel', 'message'], type: 'object',
     },
+    enabled: true,
   },
 ]
 
@@ -44,7 +47,7 @@ type Story = StoryObj<typeof ServerDetailModal>
 
 export const Healthy: Story = {
   args: {
-    server, tools, toolsLoading: false, isDiscovering: false,
+    server, tools, toolsLoading: false, isDiscovering: false, canManage: true,
     policies: [
       { id: 'p1', name: 'system-health-check', trigger_type: 'webhook', folder: 'testing',
         model: '', tool_count: 3, tool_refs: ['test-server.echo', 'test-server.get_current_time', 'test-server.get_system_status'],
@@ -52,6 +55,10 @@ export const Healthy: Story = {
     ],
     onClose: () => {}, onDiscover: () => {}, onDelete: () => {},
   },
+}
+
+export const ReadOnly: Story = {
+  args: { ...Healthy.args, canManage: false },
 }
 
 export const WithDrift: Story = {
@@ -68,4 +75,14 @@ export const Discovering: Story = {
 
 export const Loading: Story = {
   args: { ...Healthy.args, toolsLoading: true, tools: undefined },
+}
+
+export const WithDisabledTool: Story = {
+  args: {
+    ...Healthy.args,
+    tools: [
+      ...tools.slice(0, 2),
+      { ...tools[2], enabled: false },
+    ],
+  },
 }

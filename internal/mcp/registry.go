@@ -143,6 +143,10 @@ func (r *Registry) ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) 
 			return nil, fmt.Errorf("look up tool %q: %w", t.Tool, err)
 		}
 
+		if tool.Enabled == 0 {
+			return nil, fmt.Errorf("tool %q on server %q is disabled", toolName, serverName)
+		}
+
 		srv, err := r.queries.GetMCPServer(ctx, tool.ServerID)
 		if err != nil {
 			return nil, fmt.Errorf("get server for tool %q: %w", t.Tool, err)
@@ -198,6 +202,10 @@ func (r *Registry) ResolveToolByName(ctx context.Context, dotName string) (*Clie
 			return nil, "", fmt.Errorf("tool %q not found in registry", dotName)
 		}
 		return nil, "", fmt.Errorf("look up tool %q: %w", dotName, err)
+	}
+
+	if tool.Enabled == 0 {
+		return nil, "", fmt.Errorf("tool %q on server %q is disabled", toolName, serverName)
 	}
 
 	srv, err := r.queries.GetMCPServer(ctx, tool.ServerID)
@@ -310,6 +318,8 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 
 	// Upsert all fresh tools. Preserve the existing ID for tools already in the
 	// DB so foreign key references (e.g. in audit steps) remain stable.
+	// ON CONFLICT does not touch the enabled column — operator-set disable state
+	// survives rediscovery (see the UpsertMCPTool query for the ON CONFLICT clause).
 	for _, t := range freshTools {
 		toolID := model.NewULID()
 		if old, exists := oldByName[t.Name]; exists {

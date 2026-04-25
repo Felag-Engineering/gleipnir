@@ -14,7 +14,7 @@ import (
 // is already present).
 type AddMCPAuthHeaders struct{}
 
-func (m *AddMCPAuthHeaders) Version() int { return 17 }
+func (m *AddMCPAuthHeaders) Version() int { return 18 }
 func (m *AddMCPAuthHeaders) Name() string { return "add_mcp_auth_headers" }
 
 func (m *AddMCPAuthHeaders) ShouldSkip(ctx context.Context, db *sql.DB) (bool, error) {

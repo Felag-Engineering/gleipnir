@@ -5,6 +5,7 @@ import { useMcpServers } from '@/hooks/queries/servers'
 import { queryKeys } from '@/hooks/queryKeys'
 import { usePolicies } from '@/hooks/queries/policies'
 import { useAddMcpServer, useDeleteMcpServer, useDiscoverMcpServer } from '@/hooks/mutations/servers'
+import { useCurrentUser } from '@/hooks/queries/users'
 import { apiFetch } from '@/api/fetch'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
@@ -38,12 +39,22 @@ export default function MCPPage() {
 
   const { data: servers, status: serversStatus } = useMcpServers()
   const { data: policies } = usePolicies()
+  const { data: currentUser } = useCurrentUser()
+  // canManage gates the enable/disable toggle — derived at page level so
+  // ServerDetailModal stays a controlled, prop-driven component.
+  const canManage =
+    currentUser?.roles?.some((r) => r === 'admin' || r === 'operator') ?? false
 
-  // Eagerly fetch all server tool lists for card chip previews.
+  // Eagerly fetch all tools including disabled ones (toolsAll key) for the
+  // management view. This uses a separate query key from queryKeys.servers.tools
+  // so the policy form's enabled-only cache is never polluted with disabled tools.
   const toolResults = useQueries({
     queries: (servers ?? []).map((server) => ({
-      queryKey: queryKeys.servers.tools(server.id),
-      queryFn: () => apiFetch<ApiMcpTool[]>(`/mcp/servers/${encodeURIComponent(server.id)}/tools`),
+      queryKey: queryKeys.servers.toolsAll(server.id),
+      queryFn: () =>
+        apiFetch<ApiMcpTool[]>(
+          `/mcp/servers/${encodeURIComponent(server.id)}/tools?include_disabled=true`,
+        ),
       enabled: Boolean(server.id),
       staleTime: 30_000,
     })),
@@ -197,6 +208,7 @@ export default function MCPPage() {
           toolsLoading={isToolsLoading(selectedServer.id)}
           isDiscovering={discoveringServerId === selectedServer.id}
           policies={policies}
+          canManage={canManage}
           onClose={() => setSelectedServer(null)}
           onDiscover={handleDiscover}
           onDelete={handleDeleteOpen}

@@ -14,6 +14,7 @@ import (
 	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/http/api"
+	"github.com/rapp992/gleipnir/internal/http/auth"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/testutil"
@@ -40,7 +41,27 @@ func newMCPRouter(store *db.Store, registry *mcp.Registry, encKey ...[]byte) htt
 	r.Delete("/servers/{id}/headers/{name}", h.DeleteAuthHeader)
 	r.Post("/servers/{id}/discover", h.Discover)
 	r.Get("/servers/{id}/tools", h.ListTools)
+	r.Put("/servers/{id}/tools/{toolID}/enabled", h.SetToolEnabled)
 	return r
+}
+
+// withAdminUser returns a request copy with an admin UserContext injected so
+// the in-handler role gate for include_disabled can be exercised in tests.
+func withAdminUser(r *http.Request) *http.Request {
+	ctx := auth.WithUserContext(r.Context(), "u1", "admin", []string{string(model.RoleAdmin)})
+	return r.WithContext(ctx)
+}
+
+// withAuditorUser returns a request copy with an auditor UserContext injected.
+func withAuditorUser(r *http.Request) *http.Request {
+	ctx := auth.WithUserContext(r.Context(), "u2", "auditor", []string{string(model.RoleAuditor)})
+	return r.WithContext(ctx)
+}
+
+// withOperatorUser returns a request copy with an operator UserContext injected.
+func withOperatorUser(r *http.Request) *http.Request {
+	ctx := auth.WithUserContext(r.Context(), "u3", "operator", []string{string(model.RoleOperator)})
+	return r.WithContext(ctx)
 }
 
 // insertTestMCPTool inserts an MCP tool row directly via the store.
@@ -809,6 +830,280 @@ func TestMCPToolListHandler(t *testing.T) {
 
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", resp.StatusCode)
+		}
+	})
+
+	t.Run("list tools omits disabled by default", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
+		enabledID := insertTestMCPTool(t, store, serverID, "enabled-tool")
+		disabledID := insertTestMCPTool(t, store, serverID, "disabled-tool")
+
+		// Disable the second tool.
+		if err := store.SetMCPToolEnabled(context.Background(), db.SetMCPToolEnabledParams{
+			ID:      disabledID,
+			Enabled: 0,
+		}); err != nil {
+			t.Fatalf("SetMCPToolEnabled: %v", err)
+		}
+		_ = enabledID
+
+		h := api.NewMCPHandler(store, registry, nil)
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req = setChiURLParams(req, "id", serverID)
+		w := httptest.NewRecorder()
+		h.ListTools(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+
+		var envelope struct {
+			Data []struct {
+				Name    string `json:"name"`
+				Enabled bool   `json:"enabled"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data) != 1 {
+			t.Fatalf("len(data) = %d, want 1 (disabled tool should be hidden)", len(envelope.Data))
+		}
+		if envelope.Data[0].Name != "enabled-tool" {
+			t.Errorf("data[0].name = %q, want enabled-tool", envelope.Data[0].Name)
+		}
+		if !envelope.Data[0].Enabled {
+			t.Errorf("enabled-tool should have enabled=true in response")
+		}
+	})
+
+	t.Run("include_disabled returns all for admin", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
+		insertTestMCPTool(t, store, serverID, "enabled-tool")
+		disabledID := insertTestMCPTool(t, store, serverID, "disabled-tool")
+
+		if err := store.SetMCPToolEnabled(context.Background(), db.SetMCPToolEnabledParams{
+			ID:      disabledID,
+			Enabled: 0,
+		}); err != nil {
+			t.Fatalf("SetMCPToolEnabled: %v", err)
+		}
+
+		h := api.NewMCPHandler(store, registry, nil)
+		req := httptest.NewRequest(http.MethodGet, "/?include_disabled=true", nil)
+		req = setChiURLParams(req, "id", serverID)
+		req = withAdminUser(req)
+		w := httptest.NewRecorder()
+		h.ListTools(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+
+		var envelope struct {
+			Data []struct {
+				Name    string `json:"name"`
+				Enabled bool   `json:"enabled"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data) != 2 {
+			t.Fatalf("len(data) = %d, want 2 (both tools)", len(envelope.Data))
+		}
+		// Results are ordered by name ASC: disabled-tool < enabled-tool.
+		if envelope.Data[0].Name != "disabled-tool" {
+			t.Errorf("data[0].name = %q, want disabled-tool", envelope.Data[0].Name)
+		}
+		if envelope.Data[0].Enabled {
+			t.Errorf("disabled-tool should have enabled=false in response")
+		}
+		if !envelope.Data[1].Enabled {
+			t.Errorf("enabled-tool should have enabled=true in response")
+		}
+	})
+
+	t.Run("include_disabled silently ignored for auditor", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
+		insertTestMCPTool(t, store, serverID, "enabled-tool")
+		disabledID := insertTestMCPTool(t, store, serverID, "disabled-tool")
+
+		if err := store.SetMCPToolEnabled(context.Background(), db.SetMCPToolEnabledParams{
+			ID:      disabledID,
+			Enabled: 0,
+		}); err != nil {
+			t.Fatalf("SetMCPToolEnabled: %v", err)
+		}
+
+		h := api.NewMCPHandler(store, registry, nil)
+		req := httptest.NewRequest(http.MethodGet, "/?include_disabled=true", nil)
+		req = setChiURLParams(req, "id", serverID)
+		req = withAuditorUser(req)
+		w := httptest.NewRecorder()
+		h.ListTools(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+
+		var envelope struct {
+			Data []struct {
+				Name string `json:"name"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		// Auditors get the default enabled-only list even with include_disabled=true.
+		if len(envelope.Data) != 1 {
+			t.Fatalf("len(data) = %d, want 1 (disabled tool invisible to auditor)", len(envelope.Data))
+		}
+		if envelope.Data[0].Name != "enabled-tool" {
+			t.Errorf("data[0].name = %q, want enabled-tool", envelope.Data[0].Name)
+		}
+	})
+}
+
+// setChiURLParams injects chi URL params into the request context so the handler
+// can read them via chi.URLParam. Used in direct handler tests that bypass the
+// chi router. Pairs must be provided as alternating key, value strings.
+func setChiURLParams(r *http.Request, keyVals ...string) *http.Request {
+	rctx := chi.NewRouteContext()
+	for i := 0; i+1 < len(keyVals); i += 2 {
+		rctx.URLParams.Add(keyVals[i], keyVals[i+1])
+	}
+	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
+}
+
+func TestMCPSetToolEnabledHandler(t *testing.T) {
+	t.Run("disable then re-enable", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
+		toolID := insertTestMCPTool(t, store, serverID, "my-tool")
+
+		h := api.NewMCPHandler(store, registry, nil)
+
+		// Disable the tool.
+		body, _ := json.Marshal(map[string]bool{"enabled": false})
+		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req = setChiURLParams(req, "id", serverID, "toolID", toolID)
+		w := httptest.NewRecorder()
+		h.SetToolEnabled(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("disable: status = %d, want 200", w.Code)
+		}
+		var envelope struct {
+			Data struct {
+				Enabled bool `json:"enabled"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode disable response: %v", err)
+		}
+		if envelope.Data.Enabled {
+			t.Error("after disable: enabled = true, want false")
+		}
+
+		// Re-enable the tool.
+		body, _ = json.Marshal(map[string]bool{"enabled": true})
+		req = httptest.NewRequest(http.MethodPut, "/", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req = setChiURLParams(req, "id", serverID, "toolID", toolID)
+		w = httptest.NewRecorder()
+		h.SetToolEnabled(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("re-enable: status = %d, want 200", w.Code)
+		}
+		if err := json.NewDecoder(w.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode re-enable response: %v", err)
+		}
+		if !envelope.Data.Enabled {
+			t.Error("after re-enable: enabled = false, want true")
+		}
+	})
+
+	t.Run("404 when server missing", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+
+		h := api.NewMCPHandler(store, registry, nil)
+		body, _ := json.Marshal(map[string]bool{"enabled": false})
+		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req = setChiURLParams(req, "id", "unknown-server", "toolID", "any-tool")
+		w := httptest.NewRecorder()
+		h.SetToolEnabled(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", w.Code)
+		}
+	})
+
+	t.Run("404 when tool missing", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
+
+		h := api.NewMCPHandler(store, registry, nil)
+		body, _ := json.Marshal(map[string]bool{"enabled": false})
+		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req = setChiURLParams(req, "id", serverID, "toolID", "unknown-tool")
+		w := httptest.NewRecorder()
+		h.SetToolEnabled(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", w.Code)
+		}
+	})
+
+	t.Run("400 when tool belongs to different server", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverA := insertTestMCPServer(t, store, "server-a", "http://localhost:9991")
+		serverB := insertTestMCPServer(t, store, "server-b", "http://localhost:9992")
+		toolOnB := insertTestMCPTool(t, store, serverB, "tool-b")
+
+		h := api.NewMCPHandler(store, registry, nil)
+		body, _ := json.Marshal(map[string]bool{"enabled": false})
+		// Use server A's ID but tool B's ID.
+		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req = setChiURLParams(req, "id", serverA, "toolID", toolOnB)
+		w := httptest.NewRecorder()
+		h.SetToolEnabled(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", w.Code)
+		}
+	})
+
+	t.Run("400 on malformed body", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
+		toolID := insertTestMCPTool(t, store, serverID, "my-tool")
+
+		h := api.NewMCPHandler(store, registry, nil)
+		req := httptest.NewRequest(http.MethodPut, "/", strings.NewReader("not json"))
+		req.Header.Set("Content-Type", "application/json")
+		req = setChiURLParams(req, "id", serverID, "toolID", toolID)
+		w := httptest.NewRecorder()
+		h.SetToolEnabled(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", w.Code)
 		}
 	})
 }

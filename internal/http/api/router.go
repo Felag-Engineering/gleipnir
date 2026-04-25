@@ -251,6 +251,8 @@ func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registr
 			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Delete("/{id}/headers/{name}", mcpH.DeleteAuthHeader)
 			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/{id}/discover", mcpH.Discover)
 			r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/{id}/tools", mcpH.ListTools)
+			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).
+				Put("/{id}/tools/{toolID}/enabled", mcpH.SetToolEnabled)
 		})
 	})
 

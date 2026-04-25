@@ -3,6 +3,7 @@ import { apiFetch, apiFetchVoid, ApiError } from '@/api/fetch'
 import type {
   ApiMcpServer,
   ApiMcpServerCreateResponse,
+  ApiMcpTool,
   AddMcpServerRequest,
   UpdateMcpServerRequest,
   SetMcpServerHeaderRequest,
@@ -113,7 +114,26 @@ export function useDiscoverMcpServer() {
       }),
     onSuccess: (_data, serverId) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.servers.tools(serverId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.toolsAll(serverId) })
       void queryClient.invalidateQueries({ queryKey: queryKeys.servers.all })
+    },
+  })
+}
+
+export function useSetMcpToolEnabled() {
+  const queryClient = useQueryClient()
+
+  return useMutation<ApiMcpTool, ApiError, { serverId: string; toolId: string; enabled: boolean }>({
+    mutationFn: ({ serverId, toolId, enabled }) =>
+      apiFetch<ApiMcpTool>(
+        `/mcp/servers/${encodeURIComponent(serverId)}/tools/${encodeURIComponent(toolId)}/enabled`,
+        { method: 'PUT', body: JSON.stringify({ enabled }) },
+      ),
+    onSuccess: (_data, { serverId }) => {
+      // Invalidate both cache keys so the Tools page (toolsAll) and the policy
+      // form (tools) both reflect the updated enabled state.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.tools(serverId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.toolsAll(serverId) })
     },
   })
 }

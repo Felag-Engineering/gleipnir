@@ -19,6 +19,7 @@ export const Collapsed: Story = {
         properties: { message: { title: 'Message', type: 'string' } },
         required: ['message'], type: 'object',
       },
+      enabled: true,
     },
     expanded: false,
     onToggle: () => {},
@@ -41,6 +42,7 @@ export const ExpandedMultiParam: Story = {
         properties: { channel: { title: 'Channel', type: 'string' }, message: { title: 'Message', type: 'string' } },
         required: ['channel', 'message'], type: 'object',
       },
+      enabled: true,
     },
     expanded: true,
     onToggle: () => {},
@@ -53,8 +55,39 @@ export const NoParams: Story = {
       id: 't2', server_id: 'srv-1', name: 'get_current_time',
       description: 'Return the current UTC time as an ISO 8601 string.',
       input_schema: { properties: {}, type: 'object' },
+      enabled: true,
     },
     expanded: true,
     onToggle: () => {},
+  },
+}
+
+export const Disabled: Story = {
+  args: {
+    tool: {
+      id: 't4', server_id: 'srv-1', name: 'delete_everything',
+      description: 'Destructive tool pending security review.',
+      input_schema: { properties: {}, type: 'object' },
+      enabled: false,
+    },
+    expanded: true,
+    onToggle: () => {},
+    canManage: true,
+    onSetEnabled: () => {},
+  },
+}
+
+export const EnabledToggleable: Story = {
+  args: {
+    ...ExpandedSingleParam.args,
+    canManage: true,
+    onSetEnabled: () => {},
+  },
+}
+
+export const EnabledReadOnly: Story = {
+  args: {
+    ...ExpandedSingleParam.args,
+    canManage: false,
   },
 }

@@ -119,7 +119,8 @@ queryKeys.runs.detail(id)       // ['runs', id]
 queryKeys.runs.steps(id)        // ['runs', id, 'steps']
 queryKeys.runs.list(params)     // ['runs', 'list', params]
 queryKeys.servers.all           // ['servers']
-queryKeys.servers.tools(id)     // ['servers', id, 'tools']
+queryKeys.servers.tools(id)     // ['servers', id, 'tools']        — enabled tools only (used by policy form)
+queryKeys.servers.toolsAll(id)  // ['servers', id, 'tools', 'all'] — all tools incl. disabled (used by Tools page)
 queryKeys.stats.all             // ['stats']
 queryKeys.approvals.all         // ['approvals']
 queryKeys.users.all             // ['users']
@@ -183,7 +184,8 @@ DELETE /api/v1/mcp/servers/:id/headers/:name   (admin|operator; remove one heade
 POST   /api/v1/mcp/servers/test
 DELETE /api/v1/mcp/servers/:id
 POST   /api/v1/mcp/servers/:id/discover
-GET    /api/v1/mcp/servers/:id/tools
+GET    /api/v1/mcp/servers/:id/tools           (?include_disabled=true for admin/operator)
+PUT    /api/v1/mcp/servers/:id/tools/:toolID/enabled
 
 Approvals:
 GET    /api/v1/approvals

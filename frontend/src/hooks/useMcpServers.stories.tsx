@@ -31,6 +31,7 @@ const FIXTURE_TOOLS: ApiMcpTool[] = [
     name: 'read_file',
     description: 'Read the contents of a file at the given path',
     input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    enabled: true,
   },
   {
     id: 'tool-2',
@@ -42,6 +43,7 @@ const FIXTURE_TOOLS: ApiMcpTool[] = [
       properties: { path: { type: 'string' }, content: { type: 'string' } },
       required: ['path', 'content'],
     },
+    enabled: true,
   },
   {
     id: 'tool-3',
@@ -49,6 +51,7 @@ const FIXTURE_TOOLS: ApiMcpTool[] = [
     name: 'request_feedback',
     description: 'Send a message to the operator and wait for a response',
     input_schema: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] },
+    enabled: true,
   },
 ]
 

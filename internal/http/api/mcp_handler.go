@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/rapp992/gleipnir/internal/admin"
 	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/rapp992/gleipnir/internal/http/auth"
 	"github.com/rapp992/gleipnir/internal/http/httputil"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
@@ -627,6 +629,7 @@ type mcpToolResponse struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
+	Enabled     bool            `json:"enabled"`
 }
 
 func toolToResponse(t db.McpTool) mcpToolResponse {
@@ -638,10 +641,16 @@ func toolToResponse(t db.McpTool) mcpToolResponse {
 		// InputSchema is stored as a JSON string in the DB; cast directly to
 		// json.RawMessage to avoid double-encoding it as a JSON string in the response.
 		InputSchema: json.RawMessage(t.InputSchema),
+		Enabled:     t.Enabled != 0,
 	}
 }
 
 // ListTools handles GET /api/v1/mcp/servers/{id}/tools.
+//
+// By default only enabled tools are returned, so the policy form's capability
+// registry never surfaces disabled tools. Passing ?include_disabled=true
+// returns all tools (enabled and disabled), but only when the caller holds
+// admin or operator role — auditors receive the default enabled-only list.
 func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	ctx := r.Context()
@@ -655,7 +664,27 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.store.ListMCPToolsByServer(ctx, id)
+	// include_disabled is honored only for admin and operator; silently ignored
+	// for auditors so their existing read access continues to work unchanged.
+	includeDisabled := false
+	if v := r.URL.Query().Get("include_disabled"); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil && parsed {
+			if user, ok := auth.UserFromContext(ctx); ok &&
+				(user.HasRole(model.RoleAdmin) || user.HasRole(model.RoleOperator)) {
+				includeDisabled = true
+			}
+		}
+	}
+
+	var (
+		rows []db.McpTool
+		err  error
+	)
+	if includeDisabled {
+		rows, err = h.store.ListMCPToolsByServer(ctx, id)
+	} else {
+		rows, err = h.store.ListEnabledMCPToolsByServer(ctx, id)
+	}
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to list MCP tools", err.Error())
 		return
@@ -667,6 +696,67 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, items)
+}
+
+// SetToolEnabled handles PUT /api/v1/mcp/servers/{id}/tools/{toolID}/enabled.
+// Body: {"enabled": bool}. Admin or operator only (enforced by router middleware).
+func (h *MCPHandler) SetToolEnabled(w http.ResponseWriter, r *http.Request) {
+	serverID := chi.URLParam(r, "id")
+	toolID := chi.URLParam(r, "toolID")
+	ctx := r.Context()
+
+	if _, err := h.store.GetMCPServer(ctx, serverID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
+		return
+	}
+
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+
+	tool, err := h.store.GetMCPTool(ctx, toolID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, "MCP tool not found", "")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get MCP tool", err.Error())
+		return
+	}
+
+	if tool.ServerID != serverID {
+		httputil.WriteError(w, http.StatusBadRequest, "tool does not belong to this server", "")
+		return
+	}
+
+	var enabledVal int64
+	if body.Enabled {
+		enabledVal = 1
+	}
+	if err := h.store.SetMCPToolEnabled(ctx, db.SetMCPToolEnabledParams{
+		ID:      toolID,
+		Enabled: enabledVal,
+	}); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update tool", err.Error())
+		return
+	}
+
+	// Re-fetch to return the canonical post-update row.
+	updated, err := h.store.GetMCPTool(ctx, toolID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to re-fetch tool after update", err.Error())
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, toolToResponse(updated))
 }
 
 // policyReferencesServer returns true if the raw policy YAML contains any tool
