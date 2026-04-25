@@ -73,9 +73,12 @@ Gleipnir already has a pattern for this problem: `internal/admin` provides an AE
 
 **Storage:** A new `auth_headers_encrypted TEXT` column is added to `mcp_servers`. It stores a JSON array of `{name, value}` objects, encrypted with AES-256-GCM via the existing `internal/admin` helper. The column is nullable — absence means no configured auth headers.
 
-**API surface (write-only values):** `POST /api/v1/mcp/servers` and `PUT /api/v1/mcp/servers/:id` accept an `auth_headers` field containing an array of `{name, value}` objects. `GET` responses return header *names* only — values are replaced with the `MaskedHeaderValue` sentinel (`••••••••`). This is the same write-only posture used for provider API keys.
+**API surface (write-only values):** `POST /api/v1/mcp/servers` accepts an `auth_headers` field containing an array of `{key, value}` objects (plaintext, used only at creation time). `PUT /api/v1/mcp/servers/:id` updates `name` and `url` only — it does NOT touch `auth_headers_encrypted`. Auth headers are managed per-header via write-only endpoints that mirror ADR-034's webhook-secret pattern:
 
-**Masked-string sentinel:** On `PUT`, a header value equal to `MaskedHeaderValue` (`••••••••`) means "preserve the existing encrypted value from storage." Any other value (including empty string) is written as-is and replaces whatever was stored. This mirrors the `isMaskedKey` pattern in the OpenAI-compat handler. Empty string is a valid distinct value — it writes an empty header value, it does not clear the header entry.
+- `PUT  /api/v1/mcp/servers/:id/headers/:name` — set or replace one header (admin|operator). Body: `{"value": "string"}`. The comparison against stored names is case-insensitive; the submitted casing wins.
+- `DELETE /api/v1/mcp/servers/:id/headers/:name` — remove one header (admin|operator). Idempotent: no-op if the header is absent. Deleting the last header sets the column to NULL.
+
+`GET` responses return header *names* only (`auth_header_keys`); values are never included in any response. There is no sentinel and no preserve-vs-overwrite ambiguity because edits are scoped to a single header at a time. `MaskedHeaderValue` was considered (as a bulk-PUT sentinel) and rejected before merge.
 
 **Header name validation:** Header names are validated with `golang.org/x/net/http/httpguts.ValidHeaderFieldName` (RFC 7230 token syntax), which rejects CR, LF, NUL, colon, and all non-token characters. A fixed reserved-name list (`Mcp-Session-Id`, `Content-Type`, `Accept`, `Content-Length`, `Host`) is additionally rejected — these headers are managed by the MCP client or the HTTP transport layer and must not be overridden.
 

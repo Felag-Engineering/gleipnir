@@ -5,6 +5,7 @@ import type {
   ApiMcpServerCreateResponse,
   AddMcpServerRequest,
   UpdateMcpServerRequest,
+  SetMcpServerHeaderRequest,
   TestMcpConnectionRequest,
   TestMcpConnectionResponse,
 } from '@/api/types'
@@ -34,6 +35,36 @@ export function useUpdateMcpServer() {
         method: 'PUT',
         body: JSON.stringify(params),
       }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.all })
+    },
+  })
+}
+
+export function useSetMcpServerHeader() {
+  const queryClient = useQueryClient()
+
+  return useMutation<ApiMcpServer, ApiError, { id: string; name: string } & SetMcpServerHeaderRequest>({
+    mutationFn: ({ id, name, value }) =>
+      apiFetch<ApiMcpServer>(
+        `/mcp/servers/${encodeURIComponent(id)}/headers/${encodeURIComponent(name)}`,
+        { method: 'PUT', body: JSON.stringify({ value }) },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.servers.all })
+    },
+  })
+}
+
+export function useDeleteMcpServerHeader() {
+  const queryClient = useQueryClient()
+
+  return useMutation<ApiMcpServer, ApiError, { id: string; name: string }>({
+    mutationFn: ({ id, name }) =>
+      apiFetch<ApiMcpServer>(
+        `/mcp/servers/${encodeURIComponent(id)}/headers/${encodeURIComponent(name)}`,
+        { method: 'DELETE' },
+      ),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.servers.all })
     },

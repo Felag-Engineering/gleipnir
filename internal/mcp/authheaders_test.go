@@ -124,18 +124,3 @@ func TestUnmarshalAuthHeaders_EmptyInput(t *testing.T) {
 	}
 }
 
-func TestIsMaskedHeaderValue(t *testing.T) {
-	if !IsMaskedHeaderValue(MaskedHeaderValue) {
-		t.Errorf("IsMaskedHeaderValue(%q) = false, want true", MaskedHeaderValue)
-	}
-	if IsMaskedHeaderValue("") {
-		t.Error("IsMaskedHeaderValue(\"\") = true, want false")
-	}
-	if IsMaskedHeaderValue("some-real-value") {
-		t.Error("IsMaskedHeaderValue(\"some-real-value\") = true, want false")
-	}
-	// Partial match must not trigger.
-	if IsMaskedHeaderValue(MaskedHeaderValue + "extra") {
-		t.Error("IsMaskedHeaderValue with extra suffix = true, want false")
-	}
-}

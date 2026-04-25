@@ -47,13 +47,15 @@ https://backend.composio.dev/v3/mcp/gmail?user_id=user_abc123
 2. Fill in the fields:
    - **Name:** `composio-gmail` (or whatever name makes sense for the integration)
    - **URL:** paste your full Composio MCP URL from Step 2
-3. Under **Auth Headers**, click **Add Header**:
-   - **Key:** `x-api-key`
+3. Under **Auth Headers**, click **Auth headers** to open the header editor, then click **+ Add header**:
+   - **Name:** `x-api-key`
    - **Value:** paste your Composio API key (`sk_live_...`)
 4. Click **Test Connection**. Gleipnir will call the Composio server and return a list of discovered tools. If the test fails, double-check the URL and API key.
 5. Click **Save**.
 
 The API key is stored encrypted in the Gleipnir database using AES-256-GCM. It is never returned in API responses — only the header name (`x-api-key`) is visible after saving.
+
+To update the API key later, open the server's detail panel, click **Auth headers**, type the new value in the value field for the existing `x-api-key` row (the name field is read-only), and click **Save**. To remove the header entirely, click the trash icon for that row before saving.
 
 ## Step 4 — Discover tools
 
@@ -113,7 +115,7 @@ If you need to act as two different Composio users, register two separate MCP se
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| Test Connection returns 401 | Wrong or expired API key | Regenerate the key at app.composio.dev → Settings → API Keys and update the auth header in Gleipnir. |
+| Test Connection returns 401 | Wrong or expired API key | Regenerate the key at app.composio.dev → Settings → API Keys. In Gleipnir, open the server, click **Auth headers**, then type the new value in the existing row's value field and click **Save**. |
 | Test Connection returns 404 | Wrong `server_id` in URL | Check the exact server ID in the Composio dashboard under MCP Servers and correct the URL. |
 | Discover returns 0 tools | Integration not connected in Composio | Log in to app.composio.dev, go to Apps, and connect the integration. Then click Discover again. |
 | Tool call returns "permission denied" | OAuth scope missing | In Composio, go to Connected Accounts and check that the required scopes are granted for the integration. |

@@ -36,6 +36,8 @@ func newMCPRouter(store *db.Store, registry *mcp.Registry, encKey ...[]byte) htt
 	r.Post("/servers/test", h.TestConnection)
 	r.Delete("/servers/{id}", h.Delete)
 	r.Put("/servers/{id}", h.Update)
+	r.Put("/servers/{id}/headers/{name}", h.SetAuthHeader)
+	r.Delete("/servers/{id}/headers/{name}", h.DeleteAuthHeader)
 	r.Post("/servers/{id}/discover", h.Discover)
 	r.Get("/servers/{id}/tools", h.ListTools)
 	return r
@@ -1029,7 +1031,7 @@ func TestMCPAuthHeaders_List(t *testing.T) {
 }
 
 func TestMCPAuthHeaders_Update(t *testing.T) {
-	t.Run("update preserves value when sentinel sent", func(t *testing.T) {
+	t.Run("update changes name and url without touching auth headers", func(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		encKey := testEncKey(t)
 		registry := mcp.NewRegistry(store.Queries())
@@ -1041,13 +1043,10 @@ func TestMCPAuthHeaders_Update(t *testing.T) {
 		srv := httptest.NewServer(newMCPRouter(store, registry, encKey))
 		t.Cleanup(srv.Close)
 
-		// PUT with masked sentinel — should preserve ORIGINAL-SECRET.
+		// PUT with only name + url — auth_headers_encrypted must be preserved unchanged.
 		body, _ := json.Marshal(map[string]any{
-			"name": "upd-server",
-			"url":  "http://localhost:9999",
-			"auth_headers": []map[string]string{
-				{"key": "x-api-key", "value": mcp.MaskedHeaderValue},
-			},
+			"name": "upd-server-renamed",
+			"url":  "http://localhost:8888",
 		})
 		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/servers/"+id, bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -1060,13 +1059,31 @@ func TestMCPAuthHeaders_Update(t *testing.T) {
 			t.Fatalf("status = %d, want 200", resp.StatusCode)
 		}
 
-		// Re-fetch and decrypt — value must still be ORIGINAL-SECRET.
+		// Verify the response does NOT include auth header values and name was updated.
+		var envelope struct {
+			Data struct {
+				Name           string   `json:"name"`
+				AuthHeaderKeys []string `json:"auth_header_keys"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Data.Name != "upd-server-renamed" {
+			t.Errorf("name = %q, want upd-server-renamed", envelope.Data.Name)
+		}
+		// Auth header key is still visible in response.
+		if len(envelope.Data.AuthHeaderKeys) != 1 || envelope.Data.AuthHeaderKeys[0] != "x-api-key" {
+			t.Errorf("auth_header_keys = %v, want [x-api-key]", envelope.Data.AuthHeaderKeys)
+		}
+
+		// Re-fetch from DB — encrypted value must still be ORIGINAL-SECRET.
 		row, err := store.GetMCPServer(context.Background(), id)
 		if err != nil {
 			t.Fatalf("get server: %v", err)
 		}
 		if row.AuthHeadersEncrypted == nil {
-			t.Fatal("auth_headers_encrypted is nil after update")
+			t.Fatal("auth_headers_encrypted is nil after update — should have been preserved")
 		}
 		plaintext, err := admin.Decrypt(encKey, *row.AuthHeadersEncrypted)
 		if err != nil {
@@ -1077,35 +1094,27 @@ func TestMCPAuthHeaders_Update(t *testing.T) {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		if len(headers) != 1 || headers[0].Value != "ORIGINAL-SECRET" {
-			t.Errorf("after sentinel update, value = %q, want ORIGINAL-SECRET", headers[0].Value)
+			t.Errorf("after name/url update, value = %q, want ORIGINAL-SECRET", headers[0].Value)
 		}
 	})
+}
 
-	t.Run("update with empty string value overwrites (not sentinel)", func(t *testing.T) {
+func TestSetAuthHeader(t *testing.T) {
+	t.Run("adds new header to server with no existing headers", func(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		encKey := testEncKey(t)
 		registry := mcp.NewRegistry(store.Queries())
-
-		id := insertTestMCPServerWithHeaders(t, store, "empty-server", "http://localhost:9999", encKey, []map[string]string{
-			{"key": "x-api-key", "value": "OLD-VALUE"},
-		})
+		id := insertTestMCPServer(t, store, "bare-server", "http://localhost:9999")
 
 		srv := httptest.NewServer(newMCPRouter(store, registry, encKey))
 		t.Cleanup(srv.Close)
 
-		// PUT with empty string — should store empty string, NOT preserve OLD-VALUE.
-		body, _ := json.Marshal(map[string]any{
-			"name": "empty-server",
-			"url":  "http://localhost:9999",
-			"auth_headers": []map[string]string{
-				{"key": "x-api-key", "value": ""},
-			},
-		})
-		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/servers/"+id, bytes.NewReader(body))
+		body, _ := json.Marshal(map[string]string{"value": "sk-new"})
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/servers/"+id+"/headers/x-api-key", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			t.Fatalf("PUT /servers/%s: %v", id, err)
+			t.Fatalf("PUT /servers/%s/headers/x-api-key: %v", id, err)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
@@ -1117,48 +1126,34 @@ func TestMCPAuthHeaders_Update(t *testing.T) {
 			t.Fatalf("get server: %v", err)
 		}
 		if row.AuthHeadersEncrypted == nil {
-			t.Fatal("auth_headers_encrypted is nil")
+			t.Fatal("auth_headers_encrypted is nil after set")
 		}
-		plaintext, err := admin.Decrypt(encKey, *row.AuthHeadersEncrypted)
-		if err != nil {
-			t.Fatalf("decrypt: %v", err)
-		}
-		headers, err := mcp.UnmarshalAuthHeaders([]byte(plaintext))
-		if err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if len(headers) != 1 || headers[0].Value != "" {
-			t.Errorf("after empty-string update, value = %q, want empty string", headers[0].Value)
+		plaintext, _ := admin.Decrypt(encKey, *row.AuthHeadersEncrypted)
+		headers, _ := mcp.UnmarshalAuthHeaders([]byte(plaintext))
+		if len(headers) != 1 || headers[0].Name != "x-api-key" || headers[0].Value != "sk-new" {
+			t.Errorf("headers = %+v, want [{x-api-key sk-new}]", headers)
 		}
 	})
 
-	t.Run("update adds removes and changes headers atomically", func(t *testing.T) {
+	t.Run("replaces existing header case-insensitively and adopts submitted casing", func(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		encKey := testEncKey(t)
 		registry := mcp.NewRegistry(store.Queries())
-
-		id := insertTestMCPServerWithHeaders(t, store, "multi-server", "http://localhost:9999", encKey, []map[string]string{
-			{"key": "x-keep-this", "value": "KEEP"},
-			{"key": "x-remove-this", "value": "REMOVE"},
+		// Server has "x-api-key" stored.
+		id := insertTestMCPServerWithHeaders(t, store, "cased-server", "http://localhost:9999", encKey, []map[string]string{
+			{"key": "x-api-key", "value": "OLD-VALUE"},
 		})
 
 		srv := httptest.NewServer(newMCPRouter(store, registry, encKey))
 		t.Cleanup(srv.Close)
 
-		// PUT: keep x-keep-this (sentinel), remove x-remove-this (omitted), add x-new.
-		body, _ := json.Marshal(map[string]any{
-			"name": "multi-server",
-			"url":  "http://localhost:9999",
-			"auth_headers": []map[string]string{
-				{"key": "x-keep-this", "value": mcp.MaskedHeaderValue},
-				{"key": "x-new", "value": "NEW-VALUE"},
-			},
-		})
-		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/servers/"+id, bytes.NewReader(body))
+		// PUT to /headers/X-Api-Key (different casing).
+		body, _ := json.Marshal(map[string]string{"value": "NEW-VALUE"})
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/servers/"+id+"/headers/X-Api-Key", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			t.Fatalf("PUT /servers/%s: %v", id, err)
+			t.Fatalf("PUT /servers/%s/headers/X-Api-Key: %v", id, err)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
@@ -1169,30 +1164,200 @@ func TestMCPAuthHeaders_Update(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get server: %v", err)
 		}
-		plaintext, err := admin.Decrypt(encKey, *row.AuthHeadersEncrypted)
+		plaintext, _ := admin.Decrypt(encKey, *row.AuthHeadersEncrypted)
+		headers, _ := mcp.UnmarshalAuthHeaders([]byte(plaintext))
+		// Must have exactly one header — no duplicates.
+		if len(headers) != 1 {
+			t.Fatalf("len(headers) = %d, want 1; headers = %+v", len(headers), headers)
+		}
+		// Casing must match the submitted name.
+		if headers[0].Name != "X-Api-Key" {
+			t.Errorf("name = %q, want X-Api-Key", headers[0].Name)
+		}
+		if headers[0].Value != "NEW-VALUE" {
+			t.Errorf("value = %q, want NEW-VALUE", headers[0].Value)
+		}
+	})
+
+	t.Run("rejects reserved header name with 400", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		encKey := testEncKey(t)
+		registry := mcp.NewRegistry(store.Queries())
+		id := insertTestMCPServer(t, store, "res-server", "http://localhost:9999")
+
+		srv := httptest.NewServer(newMCPRouter(store, registry, encKey))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"value": "v"})
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/servers/"+id+"/headers/Mcp-Session-Id", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			t.Fatalf("decrypt: %v", err)
+			t.Fatalf("PUT: %v", err)
 		}
-		headers, err := mcp.UnmarshalAuthHeaders([]byte(plaintext))
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", resp.StatusCode)
+		}
+	})
+
+	t.Run("rejects CRLF in header name with 400", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		encKey := testEncKey(t)
+		registry := mcp.NewRegistry(store.Queries())
+		id := insertTestMCPServer(t, store, "crlf-server", "http://localhost:9999")
+
+		srv := httptest.NewServer(newMCPRouter(store, registry, encKey))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"value": "v"})
+		// URL-encode the CRLF to get it through the HTTP layer.
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/servers/"+id+"/headers/X-Bad%0D%0AHeader", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			t.Fatalf("unmarshal: %v", err)
+			t.Fatalf("PUT: %v", err)
 		}
-		// Should have exactly 2 headers: x-keep-this=KEEP and x-new=NEW-VALUE.
-		if len(headers) != 2 {
-			t.Fatalf("len(headers) = %d, want 2; headers = %+v", len(headers), headers)
+		defer resp.Body.Close()
+		// Go's net/http will reject the CRLF at the transport layer (400 from client)
+		// or the handler will return 400. Either way we must not get a 2xx.
+		if resp.StatusCode == http.StatusOK {
+			t.Fatalf("status = 200, want non-200 for CRLF injection")
 		}
-		byName := make(map[string]string)
-		for _, h := range headers {
-			byName[h.Name] = h.Value
+	})
+
+	t.Run("returns 503 when encryption key is missing", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		id := insertTestMCPServer(t, store, "nokey-server", "http://localhost:9999")
+
+		// No encryption key.
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		body, _ := json.Marshal(map[string]string{"value": "v"})
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/servers/"+id+"/headers/x-api-key", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PUT: %v", err)
 		}
-		if byName["x-keep-this"] != "KEEP" {
-			t.Errorf("x-keep-this = %q, want KEEP", byName["x-keep-this"])
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503", resp.StatusCode)
 		}
-		if byName["x-new"] != "NEW-VALUE" {
-			t.Errorf("x-new = %q, want NEW-VALUE", byName["x-new"])
+	})
+}
+
+func TestDeleteAuthHeader(t *testing.T) {
+	t.Run("removes existing header", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		encKey := testEncKey(t)
+		registry := mcp.NewRegistry(store.Queries())
+		id := insertTestMCPServerWithHeaders(t, store, "del-server", "http://localhost:9999", encKey, []map[string]string{
+			{"key": "x-api-key", "value": "SECRET"},
+			{"key": "x-keep", "value": "KEEP"},
+		})
+
+		srv := httptest.NewServer(newMCPRouter(store, registry, encKey))
+		t.Cleanup(srv.Close)
+
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/servers/"+id+"/headers/x-api-key", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
 		}
-		if _, ok := byName["x-remove-this"]; ok {
-			t.Error("x-remove-this should have been removed but is still present")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+
+		row, err := store.GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("get server: %v", err)
+		}
+		if row.AuthHeadersEncrypted == nil {
+			t.Fatal("auth_headers_encrypted is nil — x-keep should still be stored")
+		}
+		plaintext, _ := admin.Decrypt(encKey, *row.AuthHeadersEncrypted)
+		headers, _ := mcp.UnmarshalAuthHeaders([]byte(plaintext))
+		if len(headers) != 1 || headers[0].Name != "x-keep" {
+			t.Errorf("headers = %+v, want [{x-keep KEEP}]", headers)
+		}
+	})
+
+	t.Run("no-op when header is absent returns 200 with current state", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		encKey := testEncKey(t)
+		registry := mcp.NewRegistry(store.Queries())
+		id := insertTestMCPServerWithHeaders(t, store, "noop-server", "http://localhost:9999", encKey, []map[string]string{
+			{"key": "x-existing", "value": "VALUE"},
+		})
+
+		srv := httptest.NewServer(newMCPRouter(store, registry, encKey))
+		t.Cleanup(srv.Close)
+
+		// Delete a header that does not exist.
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/servers/"+id+"/headers/x-nonexistent", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+
+		// Existing header must still be stored.
+		row, err := store.GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("get server: %v", err)
+		}
+		if row.AuthHeadersEncrypted == nil {
+			t.Fatal("auth_headers_encrypted became nil after no-op delete")
+		}
+	})
+
+	t.Run("deleting the last header sets column to NULL", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		encKey := testEncKey(t)
+		registry := mcp.NewRegistry(store.Queries())
+		id := insertTestMCPServerWithHeaders(t, store, "last-server", "http://localhost:9999", encKey, []map[string]string{
+			{"key": "x-only", "value": "ONLY"},
+		})
+
+		srv := httptest.NewServer(newMCPRouter(store, registry, encKey))
+		t.Cleanup(srv.Close)
+
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/servers/"+id+"/headers/x-only", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+
+		row, err := store.GetMCPServer(context.Background(), id)
+		if err != nil {
+			t.Fatalf("get server: %v", err)
+		}
+		if row.AuthHeadersEncrypted != nil {
+			t.Error("auth_headers_encrypted is non-nil after deleting the last header — want NULL")
+		}
+
+		// Response must also show no keys.
+		var envelope struct {
+			Data struct {
+				AuthHeaderKeys []string `json:"auth_header_keys"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data.AuthHeaderKeys) != 0 {
+			t.Errorf("auth_header_keys = %v, want empty", envelope.Data.AuthHeaderKeys)
 		}
 	})
 }

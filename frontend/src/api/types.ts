@@ -221,10 +221,6 @@ export interface TriggerPolicyResponse {
 
 // --- MCP servers ---
 
-// The sentinel value used in PUT /api/v1/mcp/servers/:id auth_headers to signal
-// "preserve the existing value". Must match mcp.MaskedHeaderValue in Go exactly.
-export const MASKED_HEADER_VALUE = '••••••••'
-
 // Matches api/mcp_handler.go → Create body (POST /api/v1/mcp/servers)
 export interface AddMcpServerRequest {
   name: string
@@ -233,12 +229,14 @@ export interface AddMcpServerRequest {
 }
 
 // Matches api/mcp_handler.go → Update body (PUT /api/v1/mcp/servers/:id)
-// Values may be MASKED_HEADER_VALUE to preserve the existing stored value.
+// Auth headers are NOT included — use SetMcpServerHeaderRequest instead.
 export interface UpdateMcpServerRequest {
   name: string
   url: string
-  auth_headers?: { key: string; value: string }[]
 }
+
+// Matches api/mcp_handler.go → SetAuthHeader body (PUT /api/v1/mcp/servers/:id/headers/:name)
+export type SetMcpServerHeaderRequest = { value: string }
 
 // Matches api/mcp_handler.go → testConnectionResponse (POST /api/v1/mcp/servers/test)
 export interface TestMcpConnectionRequest {

@@ -8,15 +8,6 @@ import (
 	"golang.org/x/net/http/httpguts"
 )
 
-// MaskedHeaderValue is the sentinel string used in API requests to indicate
-// "preserve the existing value" when updating auth headers. A client that
-// receives this value in a PUT body signals that it has not changed the header
-// — the backend copies the existing decrypted value from storage.
-//
-// Any other value (including empty string) is written as-is.
-// This mirrors the isMaskedKey pattern in internal/admin/openai_compat_handler.go.
-const MaskedHeaderValue = "••••••••"
-
 // reservedHeaderNames lists the headers that operators must not override via
 // auth headers. These are either managed by the MCP client itself or are
 // required HTTP transport headers that must remain under client control.
@@ -32,11 +23,6 @@ var reservedHeaderNames = []string{
 type AuthHeader struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
-}
-
-// IsMaskedHeaderValue reports whether v is the masked sentinel constant.
-func IsMaskedHeaderValue(v string) bool {
-	return v == MaskedHeaderValue
 }
 
 // ValidateHeaderName returns an error if name is not a valid HTTP header field

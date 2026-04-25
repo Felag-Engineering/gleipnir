@@ -2,15 +2,18 @@ import { useEffect, useMemo, useState } from 'react'
 import FocusTrap from 'focus-trap-react'
 import { Search } from 'lucide-react'
 import type { ApiMcpServer, ApiMcpTool, ApiPolicyListItem } from '@/api/types'
-import { MASKED_HEADER_VALUE } from '@/api/types'
 import { ToolAccordionRow } from '@/components/MCPPage/ToolAccordionRow'
 import { SkeletonBlock } from '@/components/SkeletonBlock'
 import { formatTimeAgo } from '@/utils/format'
-import { useUpdateMcpServer } from '@/hooks/mutations/servers'
+import { useUpdateMcpServer, useSetMcpServerHeader, useDeleteMcpServerHeader } from '@/hooks/mutations/servers'
 import styles from './ServerDetailModal.module.css'
 
+// A row in the header editor.
+// originalName is set for rows loaded from the server; absent for newly-added rows.
+// value is always empty for existing rows until the operator types a replacement.
 interface HeaderRow {
-  key: string
+  originalName?: string
+  name: string
   value: string
 }
 
@@ -59,53 +62,99 @@ export function ServerDetailModal({
   const [filter, setFilter] = useState('')
   const [showHeaderEditor, setShowHeaderEditor] = useState(false)
   const [headerRows, setHeaderRows] = useState<HeaderRow[]>([])
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
   const updateMutation = useUpdateMcpServer()
+  const setHeaderMutation = useSetMcpServerHeader()
+  const deleteHeaderMutation = useDeleteMcpServerHeader()
 
   const toolCount = tools?.length ?? 0
   const isUnreachable = server.last_discovered_at === null
   const hasDrift = server.has_drift
 
   // Seed the header editor from server.auth_header_keys when it opens.
-  // Existing values are pre-filled with the masked sentinel so the backend
-  // knows to preserve them unless the operator types a replacement.
+  // Existing rows have an empty value field — the operator must type a new
+  // value to replace it. A placeholder communicates that a value is stored.
   function openHeaderEditor() {
     const keys = server.auth_header_keys ?? []
-    setHeaderRows(keys.map((k) => ({ key: k, value: MASKED_HEADER_VALUE })))
+    setHeaderRows(keys.map((k) => ({ originalName: k, name: k, value: '' })))
+    setSaveError(null)
     setShowHeaderEditor(true)
   }
 
   function addHeaderRow() {
-    setHeaderRows((prev) => [...prev, { key: '', value: '' }])
+    setHeaderRows((prev) => [...prev, { originalName: undefined, name: '', value: '' }])
   }
 
   function removeHeaderRow(index: number) {
     setHeaderRows((prev) => prev.filter((_, i) => i !== index))
   }
 
-  function updateKey(index: number, key: string) {
-    setHeaderRows((prev) => prev.map((h, i) => (i === index ? { ...h, key } : h)))
-  }
-
   function updateValue(index: number, value: string) {
     setHeaderRows((prev) => prev.map((h, i) => (i === index ? { ...h, value } : h)))
   }
 
-  function handleSaveHeaders() {
-    const nonEmpty = headerRows.filter((h) => h.key.trim())
-    updateMutation.mutate(
-      {
-        id: server.id,
-        name: server.name,
-        url: server.url,
-        auth_headers: nonEmpty,
-      },
-      {
-        onSuccess: () => {
-          setShowHeaderEditor(false)
-          updateMutation.reset()
-        },
-      },
-    )
+  function updateName(index: number, name: string) {
+    setHeaderRows((prev) => prev.map((h, i) => (i === index ? { ...h, name } : h)))
+  }
+
+  async function handleSaveHeaders() {
+    setSaveError(null)
+    setIsSaving(true)
+
+    const loadedKeys = server.auth_header_keys ?? []
+    const currentNames = new Set(headerRows.map((r) => r.originalName).filter(Boolean) as string[])
+
+    const promises: Promise<unknown>[] = []
+
+    // Name or URL changed → update server metadata.
+    if (headerRows.length === 0 || server.name !== server.name || server.url !== server.url) {
+      // Only call updateMutation if name/url actually needs updating. The caller
+      // of this component owns those fields, so we skip the update here unless
+      // a dedicated name/url form fires it. The per-header endpoints are the
+      // focus of this editor.
+    }
+
+    // Set headers: any row with a non-empty value fires SetAuthHeader.
+    for (const row of headerRows) {
+      if (row.name.trim() && row.value !== '') {
+        const name = row.name.trim()
+        promises.push(
+          new Promise<void>((resolve, reject) => {
+            setHeaderMutation.mutate(
+              { id: server.id, name, value: row.value },
+              { onSuccess: () => resolve(), onError: (e) => reject(e) },
+            )
+          }),
+        )
+      }
+    }
+
+    // Delete headers: any originalName no longer present in local rows.
+    for (const original of loadedKeys) {
+      if (!currentNames.has(original)) {
+        const name = original
+        promises.push(
+          new Promise<void>((resolve, reject) => {
+            deleteHeaderMutation.mutate(
+              { id: server.id, name },
+              { onSuccess: () => resolve(), onError: (e) => reject(e) },
+            )
+          }),
+        )
+      }
+    }
+
+    try {
+      await Promise.all(promises)
+      setShowHeaderEditor(false)
+      setSaveError(null)
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Save failed')
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   const toolUsageMap = useMemo(
@@ -224,7 +273,7 @@ export function ServerDetailModal({
             <div className={styles.headerEditor}>
               <div className={styles.headerEditorTitle}>Authentication headers</div>
               <p className={styles.headerEditorHint}>
-                Existing values are masked. Leave a value as-is to preserve it, type a new value to overwrite, or remove a row to delete the header.
+                Existing header names are read-only. Type a new value to replace a stored secret, or remove a row to delete the header. Add a new row to create an additional header.
               </p>
               {headerRows.map((row, index) => (
                 <div key={index} className={styles.headerEditorRow}>
@@ -232,14 +281,16 @@ export function ServerDetailModal({
                     type="text"
                     className={styles.headerEditorKey}
                     placeholder="Header name"
-                    value={row.key}
-                    onChange={(e) => updateKey(index, e.target.value)}
+                    value={row.name}
+                    readOnly={row.originalName !== undefined}
+                    disabled={row.originalName !== undefined}
+                    onChange={(e) => updateName(index, e.target.value)}
                     aria-label={`Header name ${index + 1}`}
                   />
                   <input
                     type="text"
                     className={styles.headerEditorValue}
-                    placeholder="Value"
+                    placeholder={row.originalName !== undefined ? '•••• (saved — type to replace)' : 'Value'}
                     value={row.value}
                     onChange={(e) => updateValue(index, e.target.value)}
                     aria-label={`Header value ${index + 1}`}
@@ -257,16 +308,16 @@ export function ServerDetailModal({
               <button type="button" className={styles.addHeaderBtn} onClick={addHeaderRow}>
                 + Add header
               </button>
-              {updateMutation.error && (
+              {saveError && (
                 <div className={styles.headerEditorError}>
-                  {updateMutation.error.message}
+                  {saveError}
                 </div>
               )}
               <div className={styles.headerEditorFooter}>
                 <button
                   type="button"
                   className={styles.cancelBtn}
-                  onClick={() => { setShowHeaderEditor(false); updateMutation.reset() }}
+                  onClick={() => { setShowHeaderEditor(false); setSaveError(null) }}
                 >
                   Cancel
                 </button>
@@ -274,9 +325,9 @@ export function ServerDetailModal({
                   type="button"
                   className={styles.saveBtn}
                   onClick={handleSaveHeaders}
-                  disabled={updateMutation.isPending}
+                  disabled={isSaving}
                 >
-                  {updateMutation.isPending ? 'Saving…' : 'Save'}
+                  {isSaving ? 'Saving…' : 'Save'}
                 </button>
               </div>
             </div>
