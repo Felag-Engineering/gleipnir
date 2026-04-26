@@ -179,3 +179,25 @@ func TestWaitForCompletion_URLContainsWait10(t *testing.T) {
 		t.Errorf("expected URL to contain wait=10, got: %q", capturedURL)
 	}
 }
+
+// An authID containing reserved characters must be percent-encoded so the
+// wait parameter is not lost or the request mis-routed.
+func TestWaitForCompletion_AuthIDIsEscaped(t *testing.T) {
+	var gotID, gotWait string
+	_, client := stubArcade(t, func(w http.ResponseWriter, r *http.Request) {
+		gotID = r.URL.Query().Get("id")
+		gotWait = r.URL.Query().Get("wait")
+		writeJSON(w, map[string]string{"id": gotID, "status": "completed"})
+	})
+
+	_, err := client.WaitForCompletion(context.Background(), "weird&id=injected")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotID != "weird&id=injected" {
+		t.Errorf("authID round-trip failed: got %q", gotID)
+	}
+	if gotWait != "10" {
+		t.Errorf("wait param lost to query injection: got %q", gotWait)
+	}
+}

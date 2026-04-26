@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -19,12 +20,18 @@ import (
 	"github.com/rapp992/gleipnir/internal/mcp"
 )
 
+// arcadeHTTPTimeout bounds outbound calls to Arcade. The /wait endpoint uses
+// Arcade's wait=10 long-poll, so 30s leaves generous headroom for that single
+// request while still preventing a runaway goroutine if Arcade hangs.
+const arcadeHTTPTimeout = 30 * time.Second
+
 // ArcadeHandler serves the Arcade pre-authorization endpoints under
 // /api/v1/mcp/servers/{id}/arcade. It drives Arcade's /v1/auth/authorize
 // REST API on behalf of the operator (ADR-040).
 type ArcadeHandler struct {
-	store  *db.Store
-	encKey []byte
+	store      *db.Store
+	encKey     []byte
+	httpClient *http.Client
 
 	// newClient is the constructor for the Arcade REST client. It is a field
 	// (not a direct call to arcade.NewClient) so tests can inject a stub that
@@ -37,9 +44,10 @@ type ArcadeHandler struct {
 // to extract the Arcade API key and user ID.
 func NewArcadeHandler(store *db.Store, encKey []byte) *ArcadeHandler {
 	return &ArcadeHandler{
-		store:     store,
-		encKey:    encKey,
-		newClient: arcade.NewClient,
+		store:      store,
+		encKey:     encKey,
+		httpClient: &http.Client{Timeout: arcadeHTTPTimeout},
+		newClient:  arcade.NewClient,
 	}
 }
 
@@ -51,12 +59,12 @@ type ArcadeClientFactory = func(*http.Client, string, ...arcade.Option) *arcade.
 // client factory. Used in tests to point the handler at a stub Arcade server.
 func NewArcadeHandlerWithClientFactory(store *db.Store, encKey []byte, factory ArcadeClientFactory) *ArcadeHandler {
 	return &ArcadeHandler{
-		store:     store,
-		encKey:    encKey,
-		newClient: factory,
+		store:      store,
+		encKey:     encKey,
+		httpClient: &http.Client{Timeout: arcadeHTTPTimeout},
+		newClient:  factory,
 	}
 }
-
 
 // arcadeAuthorizeRequest is the request body for POST .../arcade/authorize.
 type arcadeAuthorizeRequest struct {
@@ -111,7 +119,7 @@ func (h *ArcadeHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := h.newClient(http.DefaultClient, apiKey)
+	client := h.newClient(h.httpClient, apiKey)
 
 	for _, tool := range filtered {
 		resp, err := client.Authorize(r.Context(), tool.Name, userID)
@@ -159,7 +167,7 @@ func (h *ArcadeHandler) AuthorizeWait(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := h.newClient(http.DefaultClient, apiKey)
+	client := h.newClient(h.httpClient, apiKey)
 
 	waited, err := client.WaitForCompletion(r.Context(), body.AuthID)
 	if err != nil {

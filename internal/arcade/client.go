@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 )
 
 const (
@@ -63,7 +64,7 @@ func NewClient(httpClient *http.Client, apiKey string, opts ...Option) *Client {
 // Arcade endpoints.
 type AuthResponse struct {
 	ID     string `json:"id"`
-	Status string `json:"status"`       // "pending" | "completed" | "failed"
+	Status string `json:"status"`        // "pending" | "completed" | "failed"
 	URL    string `json:"url,omitempty"` // populated when Status == "pending"
 }
 
@@ -97,7 +98,8 @@ func (c *Client) Authorize(ctx context.Context, toolName, userID string) (*AuthR
 // A single bounded request per call keeps each HTTP response comfortably
 // under GLEIPNIR_HTTP_WRITE_TIMEOUT (ADR-040).
 func (c *Client) WaitForCompletion(ctx context.Context, authID string) (*AuthResponse, error) {
-	reqURL := fmt.Sprintf("%s/v1/auth/status?id=%s&wait=%d", c.baseURL, authID, statusWaitSeconds)
+	reqURL := fmt.Sprintf("%s/v1/auth/status?id=%s&wait=%d",
+		c.baseURL, url.QueryEscape(authID), statusWaitSeconds)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("arcade: wait: build request: %w", err)
