@@ -56,8 +56,8 @@ func TestGroupToolsByToolkit(t *testing.T) {
 		{ID: "1", Name: "Gmail.SendEmail"},
 		{ID: "2", Name: "Gmail.ListEmails"},
 		{ID: "3", Name: "GoogleCalendar.CreateEvent"},
-		{ID: "4", Name: "nodot"},          // no dot — skipped
-		{ID: "5", Name: "Gmail.Archive"},  // preserves order within toolkit
+		{ID: "4", Name: "nodot"},         // no dot — skipped
+		{ID: "5", Name: "Gmail.Archive"}, // preserves order within toolkit
 	}
 
 	got := arcade.GroupToolsByToolkit(tools)

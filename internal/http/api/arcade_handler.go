@@ -275,19 +275,19 @@ func (h *ArcadeHandler) loadArcadeServer(ctx context.Context, id string) (db.Mcp
 	}
 
 	rawAuth, ok := valueByName["authorization"]
-	if !ok || rawAuth == "" {
+	if !ok || strings.TrimSpace(rawAuth) == "" {
 		return db.McpServer{}, "", "", http.StatusInternalServerError, "missing required Arcade headers"
 	}
-	// RFC 6750 requires "Bearer" capitalized; tolerate lowercase as a
-	// common defensive practice. Two cases cover all real-world usage.
-	apiKey := strings.TrimPrefix(rawAuth, "Bearer ")
-	apiKey = strings.TrimPrefix(apiKey, "bearer ")
-	if apiKey == "" {
+	// Bearer-token form per RFC 6750: "Bearer <token>", case-insensitive on
+	// the scheme. Tolerate stray whitespace from paste-and-save in the UI.
+	fields := strings.Fields(rawAuth)
+	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
 		return db.McpServer{}, "", "", http.StatusInternalServerError, "missing required Arcade headers"
 	}
+	apiKey := fields[1]
 
-	userID, ok := valueByName["arcade-user-id"]
-	if !ok || userID == "" {
+	userID := strings.TrimSpace(valueByName["arcade-user-id"])
+	if userID == "" {
 		return db.McpServer{}, "", "", http.StatusInternalServerError, "missing required Arcade headers"
 	}
 

@@ -314,6 +314,68 @@ func TestArcadeAuthorize_MissingArcadeUserID(t *testing.T) {
 	}
 }
 
+// Operators paste header values into a UI text field; trailing whitespace and
+// the lowercase "bearer" form must round-trip without mangling the API key.
+func TestArcadeAuthorize_BearerHeaderTolerantOfWhitespaceAndCase(t *testing.T) {
+	cases := []struct {
+		name      string
+		authValue string
+	}{
+		{"trailing newline", "Bearer test-api-key\n"},
+		{"leading whitespace", "  Bearer test-api-key"},
+		{"tab between scheme and key", "Bearer\ttest-api-key"},
+		{"lowercase scheme", "bearer test-api-key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			encKey := make([]byte, 32)
+			headers := []mcp.AuthHeader{
+				{Name: "Authorization", Value: tc.authValue},
+				{Name: "Arcade-User-ID", Value: "user@example.com"},
+			}
+			ct := encryptArcadeHeaders(t, encKey, headers)
+			id := model.NewULID()
+			_, err := store.CreateMCPServer(context.Background(), db.CreateMCPServerParams{
+				ID:                   id,
+				Name:                 "arcade-ws",
+				Url:                  "https://api.arcade.dev/mcp/test",
+				CreatedAt:            "2024-01-01T00:00:00Z",
+				AuthHeadersEncrypted: ct,
+			})
+			if err != nil {
+				t.Fatalf("CreateMCPServer: %v", err)
+			}
+			insertTestMCPTool(t, store, id, "Gmail.SendEmail")
+
+			var gotKey string
+			stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotKey = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+				json.NewEncoder(w).Encode(map[string]string{"id": "a1", "status": "completed"})
+			}))
+			t.Cleanup(stub.Close)
+
+			r := newArcadeRouter(store, encKey, stubArcadeClient(stub))
+			srv := httptest.NewServer(r)
+			t.Cleanup(srv.Close)
+
+			body, _ := json.Marshal(map[string]string{"toolkit": "Gmail"})
+			resp, err := http.Post(srv.URL+"/servers/"+id+"/arcade/authorize", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("POST: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("expected 200, got %d", resp.StatusCode)
+			}
+			if gotKey != "test-api-key" {
+				t.Errorf("Bearer parsing produced %q, want %q", gotKey, "test-api-key")
+			}
+		})
+	}
+}
+
 func TestArcadeAuthorizeWait_Pending(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	encKey := make([]byte, 32)

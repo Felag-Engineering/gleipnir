@@ -37,10 +37,6 @@
   color: var(--text-muted);
 }
 
-.badge {
-  flex-shrink: 0;
-}
-
 .badgeAuthorized {
   composes: badgePill from '../../../styles/badges.module.css';
   composes: colorGreen from '../../../styles/badges.module.css';

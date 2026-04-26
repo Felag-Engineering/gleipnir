@@ -110,7 +110,9 @@ export function ArcadeAuthSection({ server, tools, canManage }: Props) {
               <span className={styles.badgePending}>⚠ Action needed</span>
             )}
             {state?.status === 'failed' && (
-              <span className={styles.badgeFailed}>✗ Failed</span>
+              <span className={styles.badgeFailed} title={state.error || undefined}>
+                ✗ Failed{state.error ? `: ${state.error}` : ''}
+              </span>
             )}
 
             {canManage && (
