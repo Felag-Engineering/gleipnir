@@ -1,4 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { http, HttpResponse } from 'msw'
 import '@/tokens.css'
 import { ServerDetailModal } from './ServerDetailModal'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
@@ -40,7 +42,23 @@ const tools: ApiMcpTool[] = [
 const meta: Meta<typeof ServerDetailModal> = {
   title: 'ToolsPage/ServerDetailModal',
   component: ServerDetailModal,
-  parameters: { layout: 'fullscreen' },
+  parameters: {
+    layout: 'fullscreen',
+    msw: {
+      handlers: [
+        http.post('/api/v1/mcp/servers/:id/arcade/authorize', () =>
+          HttpResponse.json({ data: { status: 'completed' } }),
+        ),
+      ],
+    },
+  },
+  decorators: [
+    (Story) => (
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <Story />
+      </QueryClientProvider>
+    ),
+  ],
 }
 
 export default meta
