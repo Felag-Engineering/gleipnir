@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/rapp992/gleipnir/internal/infra/config"
-	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/infra/logctx"
+	"github.com/rapp992/gleipnir/internal/llm"
 	"github.com/rapp992/gleipnir/internal/mcp"
 	"github.com/rapp992/gleipnir/internal/model"
 	"github.com/rapp992/gleipnir/internal/policy"
