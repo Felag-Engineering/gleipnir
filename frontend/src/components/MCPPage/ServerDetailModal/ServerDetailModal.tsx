@@ -11,6 +11,7 @@ import {
   useDeleteMcpServerHeader,
   useSetMcpToolEnabled,
 } from '@/hooks/mutations/servers'
+import { ArcadeAuthSection } from './ArcadeAuthSection'
 import styles from './ServerDetailModal.module.css'
 
 // A row in the header editor.
@@ -342,6 +343,14 @@ export function ServerDetailModal({
                 </button>
               </div>
             </div>
+          )}
+
+          {server.is_arcade_gateway && tools && (
+            <ArcadeAuthSection
+              server={server}
+              tools={tools}
+              canManage={canManage}
+            />
           )}
 
           {showFilter && (

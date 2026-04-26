@@ -47,6 +47,7 @@ const server: ApiMcpServer = {
   last_discovered_at: '2026-04-03T15:44:01Z',
   has_drift: false,
   created_at: '2026-04-03T15:43:55Z',
+  is_arcade_gateway: false,
 }
 
 const tools: ApiMcpTool[] = [

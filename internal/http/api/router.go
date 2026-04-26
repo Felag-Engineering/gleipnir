@@ -253,6 +253,16 @@ func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registr
 			r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/{id}/tools", mcpH.ListTools)
 			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).
 				Put("/{id}/tools/{toolID}/enabled", mcpH.SetToolEnabled)
+
+			// Arcade pre-authorization routes (ADR-040). Constructed inside the
+			// /servers lambda so it shares the same closure-captured store and encKey.
+			arcadeH := NewArcadeHandler(store, encKey)
+			r.Route("/{id}/arcade", func(r chi.Router) {
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).
+					Post("/authorize", arcadeH.Authorize)
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).
+					Post("/authorize/wait", arcadeH.AuthorizeWait)
+			})
 		})
 	})
 

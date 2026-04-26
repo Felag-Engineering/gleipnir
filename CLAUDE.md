@@ -108,6 +108,7 @@ cmd/
 
 internal/
   approval/           — approval-specific timeout wiring (thin wrapper over timeout/)
+  arcade/             — Arcade.dev REST client + toolkit pre-authorization helpers (ADR-040)
   db/                 — sqlc-generated data access layer; queries live in internal/db/queries/
   execution/          — agent runtime subsystem
     agent/            — BoundAgent runner, LLM API loop, audit writer
@@ -168,7 +169,7 @@ Routes are registered in `internal/http/api/router.go` via `BuildRouter`, which 
 - `/api/v1/auth/*` — login, logout, setup, sessions, password change
 - `/api/v1/policies/*` — CRUD for policies
 - `/api/v1/runs/*` — list/get runs, steps, cancel, approval, feedback
-- `/api/v1/mcp/servers/*` — MCP server registry, tool discovery; `PUT /:id` updates name/url only; `PUT /:id/headers/:name` and `DELETE /:id/headers/:name` manage individual auth headers (admin|operator only; see ADR-039)
+- `/api/v1/mcp/servers/*` — MCP server registry, tool discovery; `PUT /:id` updates name/url only; `PUT /:id/headers/:name` and `DELETE /:id/headers/:name` manage individual auth headers (admin|operator only; see ADR-039); `POST /:id/arcade/authorize` and `POST /:id/arcade/authorize/wait` pre-authorize Arcade toolkits (admin|operator only; see ADR-040)
 - `/api/v1/webhooks/{policyID}` — fires a webhook-triggered run (auth dispatcher per `trigger.auth`: hmac | bearer | none)
 - `/api/v1/policies/{policyID}/trigger` — fires a manual run
 - `/api/v1/policies/{id}/webhook/rotate`, `/api/v1/policies/{id}/webhook/secret` — rotate/reveal the webhook secret (admin|operator only; see ADR-034)
@@ -206,5 +207,6 @@ These are resolved constraints — do not re-litigate them.
 - **Webhook secrets in encrypted DB column (ADR-034):** `webhook_secret_encrypted` is a dedicated column outside the YAML blob (scoped ADR-002 deviation). The `yaml` column is returned wholesale by GET /api/v1/policies/:id; storing a secret there would expose it to all authenticated roles. The `trigger.auth` mode (`hmac | bearer | none`) lives in YAML because it is configuration, not a secret. Auditors can see auth mode but cannot call the rotate/reveal endpoints (admin|operator only).
 - **Atomic run-state transitions (ADR-038):** every status change runs in a transaction with a `version`-column CAS guard. Conflicts surface as `runstate.ErrTransitionConflict`; callers must not assume their write won.
 - **Authenticated MCP servers (ADR-039):** `mcp_servers` rows may carry encrypted static auth headers (`auth_headers_encrypted` TEXT column) injected on every outbound MCP request. Values are write-only over the API — `GET` returns header *keys* only. Individual headers are managed via `PUT`/`DELETE /api/v1/mcp/servers/:id/headers/:name` (admin|operator); bulk `PUT /:id` does NOT touch credentials (mirrors ADR-034 webhook-secret pattern). Reserved headers (`Mcp-Session-Id`, `Content-Type`, `Accept`, `Content-Length`, `Host`) are rejected by validation. Per-policy and per-user credential scoping are explicitly deferred. `internal/mcp` imports `internal/admin` for in-registry decryption.
+- **Arcade gateway pre-authorization (ADR-040):** Arcade MCP servers are detected by URL + header heuristic (`internal/arcade.IsArcadeGateway`). Toolkits are pre-authorized one click at a time via Arcade's `/v1/auth/authorize` REST API. No DB schema changes — credentials reuse `auth_headers_encrypted` from ADR-039. The `/wait` endpoint uses a 10s Arcade wait window; the frontend loops until terminal so each request stays under `GLEIPNIR_HTTP_WRITE_TIMEOUT`. Per-policy user_id and runtime auth-required handling are explicitly deferred.
 - **CSS Modules, no inline styles:** All frontend styling goes through CSS Modules consuming CSS custom properties. No inline `style={}` attributes.
 - **4px spacing scale:** All margins, padding, and gaps snap to multiples of 4px (4, 8, 12, 16, 24, 32, 48, 64).

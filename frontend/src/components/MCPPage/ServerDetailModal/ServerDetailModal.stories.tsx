@@ -10,6 +10,7 @@ const server: ApiMcpServer = {
   last_discovered_at: new Date(Date.now() - 3_600_000 * 4).toISOString(),
   has_drift: false,
   created_at: new Date(Date.now() - 86_400_000).toISOString(),
+  is_arcade_gateway: false,
 }
 
 const tools: ApiMcpTool[] = [
@@ -83,6 +84,23 @@ export const WithDisabledTool: Story = {
     tools: [
       ...tools.slice(0, 2),
       { ...tools[2], enabled: false },
+    ],
+  },
+}
+
+export const ArcadeGateway: Story = {
+  args: {
+    ...Healthy.args,
+    server: {
+      ...server,
+      is_arcade_gateway: true,
+      url: 'https://api.arcade.dev/mcp/test',
+      auth_header_keys: ['Authorization', 'Arcade-User-ID'],
+    },
+    tools: [
+      { id: 't4', server_id: 'srv-1', name: 'Gmail.SendEmail', description: 'Send email.', input_schema: {}, enabled: true },
+      { id: 't5', server_id: 'srv-1', name: 'Gmail.ListEmails', description: 'List emails.', input_schema: {}, enabled: true },
+      { id: 't6', server_id: 'srv-1', name: 'GoogleCalendar.CreateEvent', description: 'Create event.', input_schema: {}, enabled: true },
     ],
   },
 }
