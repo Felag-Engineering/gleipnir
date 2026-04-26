@@ -171,6 +171,42 @@ func TestConsumeStream_ThinkingPart(t *testing.T) {
 	}
 }
 
+func TestConsumeStream_ThinkingPartEmptyTextSkipped(t *testing.T) {
+	// Gemini routinely emits Thought-flagged parts with empty Text around
+	// tool calls. These must not surface as empty Thinking chunks in the
+	// audit trail.
+	seq := makeStreamSeq([]*genai.GenerateContentResponse{
+		{
+			Candidates: []*genai.Candidate{{
+				Content: &genai.Content{Parts: []*genai.Part{
+					{Text: "", Thought: true},
+					{FunctionCall: &genai.FunctionCall{ID: "fc-1", Name: "noop", Args: nil}},
+					{Text: "", Thought: true},
+				}},
+				FinishReason: genai.FinishReasonStop,
+			}},
+		},
+	}, nil)
+
+	out := make(chan llm.MessageChunk, 32)
+	consumeStream(context.Background(), seq, out, emptyNames())
+	chunks := drainChunks(t, out)
+
+	for i, c := range chunks {
+		if c.Thinking != nil {
+			t.Errorf("chunks[%d] is an empty Thinking chunk; expected to be skipped", i)
+		}
+	}
+
+	// Expect: 1 tool call + 1 final chunk (both empty thoughts dropped).
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	}
+	if chunks[0].ToolCall == nil {
+		t.Errorf("chunks[0].ToolCall is nil; want tool call")
+	}
+}
+
 func TestConsumeStream_FunctionCallEmptyID(t *testing.T) {
 	seq := makeStreamSeq([]*genai.GenerateContentResponse{
 		{

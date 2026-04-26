@@ -63,6 +63,12 @@ func consumeStream(
 
 		for _, part := range candidate.Content.Parts {
 			if part.Thought {
+				// Gemini emits Thought-flagged parts with empty Text around tool calls;
+				// these carry no summary content and would surface as empty audit entries.
+				// Mirrors the guard in translateResponse (client.go).
+				if part.Text == "" {
+					continue
+				}
 				out <- llm.MessageChunk{Thinking: &llm.ThinkingBlock{
 					Provider: "google",
 					Text:     part.Text,
