@@ -123,4 +123,3 @@ func TestUnmarshalAuthHeaders_EmptyInput(t *testing.T) {
 		t.Errorf("UnmarshalAuthHeaders([]) = %v, want nil", got2)
 	}
 }
-
