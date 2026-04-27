@@ -348,7 +348,14 @@ func (p *Poller) poll(ctx context.Context, policyID string, parsed *model.Parsed
 		ParsedPolicy:   parsed,
 	})
 	if err != nil {
-		slog.Error("poller: failed to launch run", "policy_id", policyID, "err", err)
+		// run_id is populated when the failure happened after the row was
+		// created (tool resolution, agent construction). Operators can use it
+		// to find the failed run in history, where the recorded error lives.
+		slog.Error("poller: failed to launch run",
+			"policy_id", policyID,
+			"run_id", launchResult.RunID,
+			"err", err,
+		)
 		return
 	}
 

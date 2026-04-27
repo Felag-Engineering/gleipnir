@@ -234,7 +234,15 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 		ParsedPolicy:   parsed,
 	})
 	if err != nil {
-		slog.Error("scheduled: failed to launch run", "policy_id", policyID, "fire_at", fireTime, "err", err)
+		// run_id is populated when the failure happened after the row was
+		// created (tool resolution, agent construction). Operators can use it
+		// to find the failed run in history, where the recorded error lives.
+		slog.Error("scheduled: failed to launch run",
+			"policy_id", policyID,
+			"run_id", result.RunID,
+			"fire_at", fireTime,
+			"err", err,
+		)
 		return
 	}
 

@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Modal } from '@/components/Modal/Modal'
 import { ModalFooter } from '@/components/ModalFooter'
+import { ApiError } from '@/api/fetch'
 import { useTriggerPolicy } from '@/hooks/mutations/policies'
 import { formatTimeAgo } from '@/utils/format'
 import formStyles from '@/styles/forms.module.css'
@@ -64,7 +66,21 @@ export function TriggerRunModal({ policyId, policyName, onClose, onSuccess, init
           </p>
         )}
         {error && (
-          <div className={alertStyles.alertError} role="alert">{error.message}</div>
+          <div className={alertStyles.alertError} role="alert">
+            <div>{error.message}</div>
+            {error instanceof ApiError && error.detail && (
+              <div className={styles.errorDetail}>{error.detail}</div>
+            )}
+            {error instanceof ApiError && error.runId && (
+              <Link
+                to={`/runs/${encodeURIComponent(error.runId)}`}
+                className={styles.errorRunLink}
+                onClick={onClose}
+              >
+                View failed run →
+              </Link>
+            )}
+          </div>
         )}
       </form>
     </Modal>

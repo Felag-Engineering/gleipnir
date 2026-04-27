@@ -104,7 +104,20 @@ func checkConcurrencyAndLaunch(
 
 	result, err := launcher.Launch(ctx, params)
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to launch run", "")
+		// Log with the underlying error and run_id (when populated) so
+		// operators can correlate logs to the failed run row in history.
+		slog.ErrorContext(ctx, logPrefix+": failed to launch run",
+			"policy_id", params.PolicyID,
+			"run_id", result.RunID,
+			"err", err,
+		)
+		// Surface err.Error() as the response detail so the caller sees the
+		// real reason (e.g. `tool "my-server.foo" not found in registry`)
+		// instead of a generic 500. When result.RunID is non-empty, the run
+		// row was created and marked failed — include it so the UI can deep
+		// link to the run detail page where the recorded error is visible.
+		httputil.WriteLaunchError(w, http.StatusInternalServerError,
+			"failed to launch run", err.Error(), result.RunID)
 		return
 	}
 

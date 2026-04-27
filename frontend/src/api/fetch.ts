@@ -7,13 +7,25 @@ export class ApiError extends Error {
   status: number
   detail?: string
   issues?: ApiErrorIssue[]
+  // runId is populated when the backend failed to launch a run *after* the
+  // run row was created — the row has been transitioned to failed with the
+  // underlying error stored on it. Callers can deep-link to /runs/:runId to
+  // show the operator the recorded reason.
+  runId?: string
 
-  constructor(status: number, message: string, detail?: string, issues?: ApiErrorIssue[]) {
+  constructor(
+    status: number,
+    message: string,
+    detail?: string,
+    issues?: ApiErrorIssue[],
+    runId?: string,
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
     this.issues = issues
+    this.runId = runId
   }
 }
 
@@ -23,7 +35,7 @@ interface BaseRequestOptions {
 
 function parseApiErrorBody(
   body: unknown,
-): { error: string; detail?: string; issues?: ApiErrorIssue[] } | null {
+): { error: string; detail?: string; issues?: ApiErrorIssue[]; runId?: string } | null {
   if (
     typeof body === 'object' &&
     body !== null &&
@@ -44,6 +56,7 @@ function parseApiErrorBody(
       error: b.error as string,
       detail: typeof b.detail === 'string' ? b.detail : undefined,
       issues,
+      runId: typeof b.run_id === 'string' && b.run_id !== '' ? b.run_id : undefined,
     }
   }
   return null
@@ -70,6 +83,7 @@ async function baseRequest(
     let message = response.statusText
     let detail: string | undefined
     let issues: ApiErrorIssue[] | undefined
+    let runId: string | undefined
     try {
       const body = await response.json()
       const parsed = parseApiErrorBody(body)
@@ -77,11 +91,12 @@ async function baseRequest(
         message = parsed.error
         detail = parsed.detail
         issues = parsed.issues
+        runId = parsed.runId
       }
     } catch {
       // JSON parse failed, fall back to statusText already set above
     }
-    throw new ApiError(response.status, message, detail, issues)
+    throw new ApiError(response.status, message, detail, issues, runId)
   }
 
   return response

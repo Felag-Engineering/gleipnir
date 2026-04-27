@@ -60,7 +60,12 @@ type LaunchParams struct {
 	ParsedPolicy   *model.ParsedPolicy
 }
 
-// LaunchResult carries the output of a successful Launch call.
+// LaunchResult carries the output of a Launch call. RunID is populated on
+// success and on any failure path that occurred *after* the run row was
+// created — in those cases the row has been transitioned to status=failed
+// with the underlying error stored on it, so callers can deep-link to the
+// run detail page. RunID is empty only when the run row could not be created
+// at all (e.g. CreateRun returned a DB error).
 type LaunchResult struct {
 	RunID string
 }
@@ -189,7 +194,10 @@ func (l *RunLauncher) CheckConcurrency(ctx context.Context, policyID string, con
 // Launch creates a run record, resolves tools, constructs the agent, and
 // launches it in a background goroutine. On any setup error after the run row
 // is created, the run is marked failed before returning.
-// Returns LaunchResult with the new run ID on success.
+// Returns LaunchResult with the new run ID on success. On failure paths that
+// occurred after the run row was created, LaunchResult.RunID is also set so
+// the caller can surface a deep-link to the failed run row (which already has
+// the underlying error recorded on it).
 func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchResult, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	run, err := l.store.CreateRun(ctx, db.CreateRunParams{
@@ -226,7 +234,9 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 				slog.Error("transition to failed on tool resolution error", "run_id", run.ID, "err", tErr)
 			}
 		}
-		return LaunchResult{}, err
+		// Return RunID alongside the error so callers can link to the failed
+		// run row. The row already has the underlying error stored on it.
+		return LaunchResult{RunID: run.ID}, err
 	}
 
 	audit := agent.NewAuditWriter(l.store.Queries(), agent.WithPublisher(l.publisher))
@@ -260,7 +270,9 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		if closeErr := audit.Close(); closeErr != nil {
 			slog.Error("audit writer drain error on failed launch", "run_id", run.ID, "err", closeErr)
 		}
-		return LaunchResult{}, err
+		// Return RunID alongside the error so callers can link to the failed
+		// run row. The row already has the underlying error stored on it.
+		return LaunchResult{RunID: run.ID}, err
 	}
 
 	// context.Background() is used intentionally so the agent goroutine outlives

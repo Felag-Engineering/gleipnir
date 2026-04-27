@@ -78,6 +78,49 @@ describe('apiFetch', () => {
     expect(apiErr.message).toBe('Bad Request')
   })
 
+  it('parses run_id from launch-failure error envelope', async () => {
+    server.use(
+      http.post(TEST_URL, () =>
+        HttpResponse.json(
+          {
+            error: 'failed to launch run',
+            detail: 'tool "ghost-server.foo" not found in registry',
+            run_id: '01HG7Z9NWDRX0000000000',
+          },
+          { status: 500 },
+        ),
+      ),
+    )
+    let caught: unknown
+    try { await apiFetch(TEST_PATH, { method: 'POST' }) } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(ApiError)
+    const apiErr = caught as ApiError
+    expect(apiErr.runId).toBe('01HG7Z9NWDRX0000000000')
+    expect(apiErr.detail).toContain('ghost-server.foo')
+  })
+
+  it('leaves runId undefined when run_id is absent', async () => {
+    server.use(
+      http.get(TEST_URL, () =>
+        HttpResponse.json({ error: 'bad request' }, { status: 400 }),
+      ),
+    )
+    let caught: unknown
+    try { await apiFetch(TEST_PATH) } catch (err) { caught = err }
+    expect((caught as ApiError).runId).toBeUndefined()
+  })
+
+  it('leaves runId undefined when run_id is empty string (omitempty server)', async () => {
+    server.use(
+      http.get(TEST_URL, () =>
+        HttpResponse.json({ error: 'bad', run_id: '' }, { status: 400 }),
+      ),
+    )
+    let caught: unknown
+    try { await apiFetch(TEST_PATH) } catch (err) { caught = err }
+    expect((caught as ApiError).runId).toBeUndefined()
+  })
+
   it('ignores detail when detail is not a string', async () => {
     server.use(
       http.get(TEST_URL, () =>
