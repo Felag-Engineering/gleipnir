@@ -8,6 +8,7 @@ Each diagram lives in its own file. Start with the system overview and runtime o
 
 | Diagram | What it shows |
 |---------|---------------|
+| [Architecture at a glance](diagrams/architecture-at-a-glance.md) | Subsystem map, ownership tree, and trigger fan-in — start here |
 | [System overview](diagrams/system-overview.md) | Deployment view — what's in the container, what's external |
 | [Package dependencies](diagrams/package-dependencies.md) | Internal packages grouped by layer with key import relationships |
 | [Runtime object graph](diagrams/runtime-object-graph.md) | What `main.go` creates and how triggers flow through to BoundAgent |
