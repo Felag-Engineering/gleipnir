@@ -1,23 +1,13 @@
+import { Link } from 'react-router-dom'
 import type { ApiPolicyListItem } from '@/api/types'
 import { usePolicy } from '@/hooks/queries/policies'
 import { useRuns } from '@/hooks/queries/runs'
 import { yamlToFormState } from '@/components/AgentEditor/agentEditorUtils'
-import { formatTokens } from '@/utils/format'
+import { formatTokens, formatTimeAgo } from '@/utils/format'
+import { StatusBadge } from '@/components/dashboard/StatusBadge'
+import { isRunStatus } from '@/constants/status'
+import type { RunStatus } from '@/constants/status'
 import styles from './PolicyCardExpanded.module.css'
-
-const RUN_STATUS_COLORS: Record<string, string> = {
-  complete: 'var(--color-green)',
-  failed: 'var(--color-red)',
-  running: 'var(--color-blue)',
-  waiting_for_approval: 'var(--color-amber)',
-  waiting_for_feedback: 'var(--color-purple)',
-  interrupted: 'var(--color-purple)',
-  pending: 'var(--text-muted)',
-}
-
-function dotColor(status: string): string {
-  return RUN_STATUS_COLORS[status] ?? 'var(--text-muted)'
-}
 
 // groupByServer groups tool names like "server.tool_name" by their server prefix.
 // Returns an array of "server (N)" strings.
@@ -39,7 +29,7 @@ export function PolicyCardExpanded({ policy }: Props) {
   const { data: detail, isLoading: detailLoading } = usePolicy(policy.id)
   const { runs, isLoading: runsLoading } = useRuns({
     policy_id: policy.id,
-    limit: 5,
+    limit: 3,
     sort: 'started_at',
     order: 'desc',
   })
@@ -61,6 +51,8 @@ export function PolicyCardExpanded({ policy }: Props) {
   const concurrency = formState?.concurrency.concurrency ?? 'skip'
   const concurrencyLabel = concurrency.charAt(0).toUpperCase() + concurrency.slice(1)
 
+  const hasFeedbackPending = runs.some(r => r.status === 'waiting_for_feedback')
+
   return (
     <div className={styles.expanded}>
       {description && <p className={styles.description}>{description}</p>}
@@ -69,7 +61,7 @@ export function PolicyCardExpanded({ policy }: Props) {
         <div className={styles.stat}>
           <span className={styles.statLabel}>Avg Tokens / Run</span>
           <span className={styles.statValue}>
-            {policy.run_count === 0 ? '\u2014' : formatTokens(policy.avg_token_cost)}
+            {policy.run_count === 0 ? '—' : formatTokens(policy.avg_token_cost)}
           </span>
         </div>
         <div className={styles.divider} />
@@ -84,25 +76,30 @@ export function PolicyCardExpanded({ policy }: Props) {
           <span className={styles.statLabel}>Concurrency</span>
           <span className={styles.statValue}>{concurrencyLabel}</span>
         </div>
-        {runs.length > 0 && (
-          <>
-            <div className={styles.divider} />
-            <div className={styles.stat}>
-              <span className={styles.statLabel}>Recent</span>
-              <span className={styles.recentDots}>
-                {runs.map(run => (
-                  <span
-                    key={run.id}
-                    className={styles.recentDot}
-                    style={{ '--dot-color': dotColor(run.status) } as React.CSSProperties}
-                    title={run.status}
-                  />
-                ))}
-              </span>
-            </div>
-          </>
-        )}
       </div>
+
+      {runs.length > 0 && (
+        <div>
+          <div className={styles.recentLabel}>
+            Recent Runs
+            {hasFeedbackPending && (
+              <span className={styles.feedbackBadge}>feedback pending</span>
+            )}
+          </div>
+          <div className={styles.recentList}>
+            {runs.map(run => (
+              <Link
+                key={run.id}
+                to={`/runs/${run.id}`}
+                className={styles.recentRow}
+              >
+                {isRunStatus(run.status) && <StatusBadge status={run.status as RunStatus} />}
+                <span className={styles.recentTime}>{formatTimeAgo(run.started_at)}</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {serverPills.length > 0 && (
         <div>

@@ -43,7 +43,7 @@
 
 .row {
   display: grid;
-  grid-template-columns: minmax(160px, 1.5fr) 100px 80px 80px 1fr;
+  grid-template-columns: minmax(160px, 1.5fr) 140px 80px 80px 1fr;
   align-items: center;
   padding: var(--space-3) var(--space-5);
   cursor: pointer;
@@ -60,7 +60,7 @@
 
 .skeletonRow {
   display: grid;
-  grid-template-columns: minmax(160px, 1.5fr) 100px 80px 80px 1fr;
+  grid-template-columns: minmax(160px, 1.5fr) 140px 80px 80px 1fr;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-5);
