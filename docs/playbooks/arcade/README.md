@@ -6,7 +6,7 @@
 
 [Arcade](https://www.arcade.dev) is a hosted MCP runtime that brokers OAuth for many SaaS tools — Gmail, Google Calendar, Slack, GitHub, and many others. Instead of managing OAuth flows yourself, you point Gleipnir at Arcade's MCP gateway and use your Arcade API key to authenticate. Arcade holds the downstream OAuth tokens server-side; Gleipnir never stores them.
 
-Tools within a toolkit share OAuth scopes, so authorizing any tool in a toolkit (e.g. "Gmail") authorizes them all in a single OAuth click. A gateway with 50 tools typically needs only 3–5 OAuth clicks total.
+Authorization is granted at the **OAuth-scope** level, not the toolkit level. Toolkits whose tools share a single scope (e.g. Google Calendar) finish in one click. Toolkits whose tools span multiple scopes (notably Gmail) prompt **once per distinct scope** — Gmail in particular typically requires 4–5 consecutive OAuth screens covering `gmail.send`, `gmail.readonly`, `gmail.modify`, `gmail.compose`, and `gmail.labels`. Plan to keep the browser focused for the full chain.
 
 ### Trust expansion warning
 
@@ -63,7 +63,15 @@ Before an agent can call Arcade tools, you must pre-authorize each toolkit for t
 4. Complete the OAuth flow in the browser tab. Gleipnir polls Arcade in the background and flips the badge to **✓ Authorized** within ~60 seconds.
 5. Repeat for each toolkit.
 
-**Scope sharing:** Authorizing any one tool in a toolkit (e.g. `Gmail.SendEmail`) grants the OAuth scopes for the entire Gmail toolkit. You do not need to authorize each tool individually — one click per toolkit covers all tools in it.
+**Expect one OAuth screen per distinct scope, not per toolkit.** Arcade authorizes tools one at a time. When multiple tools share a scope, Arcade auto-completes the rest after the first grant and Gleipnir advances silently. When tools require *different* scopes, a new OAuth screen appears for each one. Concrete expectations:
+
+- **Google Calendar** — usually 1 click (all tools share `calendar.events`).
+- **Gmail** — usually 4–5 clicks in succession (`gmail.send`, `gmail.readonly`, `gmail.modify`, `gmail.compose`, `gmail.labels`).
+- **Slack, GitHub, etc.** — varies by toolkit; could be anywhere from 1 to several.
+
+For sensitive Google scopes (Gmail especially), Google may also show an **"unverified app"** warning on each screen if the Arcade OAuth client isn't verified for your account. Click **Advanced → Go to ... (unsafe)** to proceed. Including this bypass, Gmail can be ~10 total clicks.
+
+The popup chain is automatic — you do not need to click anything inside Gleipnir between popups. Just keep clicking through Google's screens until they stop appearing.
 
 **Persistence:** Once authorized, OAuth tokens live with Arcade (server-side). Grants persist across Gleipnir restarts, machine changes, and key rotations until the upstream token is revoked.
 
