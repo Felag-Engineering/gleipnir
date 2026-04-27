@@ -271,11 +271,13 @@ agent:
     # max_tokens_per_run: integer — optional, default: 20000
     #   Total token budget across the entire run (input + output).
     #   Run terminates with a failed state if exceeded.
+    #   Set to 0 for unlimited (no per-run cap).
     max_tokens_per_run: 20000
 
     # max_tool_calls_per_run: integer — optional, default: 50
     #   Maximum number of MCP tool calls across the entire run.
     #   Run terminates with a failed state if exceeded.
+    #   Set to 0 for unlimited (no per-run cap).
     max_tool_calls_per_run: 50
 
   # concurrency: skip | queue | parallel | replace — optional, default: skip

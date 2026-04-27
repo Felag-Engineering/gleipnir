@@ -281,13 +281,15 @@ func convertAgent(r rawAgent, mc model.ModelConfig) model.AgentConfig {
 		ModelConfig: mc,
 	}
 
-	ac.Limits.MaxTokensPerRun = r.Limits.MaxTokensPerRun
-	if ac.Limits.MaxTokensPerRun == 0 {
+	if r.Limits.MaxTokensPerRun != nil {
+		ac.Limits.MaxTokensPerRun = *r.Limits.MaxTokensPerRun
+	} else {
 		ac.Limits.MaxTokensPerRun = defaultMaxTokensPerRun
 	}
 
-	ac.Limits.MaxToolCallsPerRun = r.Limits.MaxToolCallsPerRun
-	if ac.Limits.MaxToolCallsPerRun == 0 {
+	if r.Limits.MaxToolCallsPerRun != nil {
+		ac.Limits.MaxToolCallsPerRun = *r.Limits.MaxToolCallsPerRun
+	} else {
 		ac.Limits.MaxToolCallsPerRun = defaultMaxToolCallsPerRun
 	}
 
@@ -376,7 +378,9 @@ type rawAgent struct {
 	QueueDepth  int       `yaml:"queue_depth"`
 }
 
+// Pointer fields let us distinguish "field omitted" (nil → apply default)
+// from "field explicitly 0" (non-nil → preserve as-is, meaning unlimited).
 type rawLimits struct {
-	MaxTokensPerRun    int `yaml:"max_tokens_per_run"`
-	MaxToolCallsPerRun int `yaml:"max_tool_calls_per_run"`
+	MaxTokensPerRun    *int `yaml:"max_tokens_per_run"`
+	MaxToolCallsPerRun *int `yaml:"max_tool_calls_per_run"`
 }

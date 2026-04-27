@@ -256,11 +256,11 @@ func validateAgent(a model.AgentConfig, c model.CapabilitiesConfig) []Issue {
 		add("model.provider", `model.provider "claude-code" is no longer supported; remove the policy or switch to an llm provider (anthropic, google, openai, openaicompat)`)
 	}
 
-	if a.Limits.MaxTokensPerRun <= 0 {
-		add("agent.limits.max_tokens_per_run", "agent.limits.max_tokens_per_run must be positive")
+	if a.Limits.MaxTokensPerRun < 0 {
+		add("agent.limits.max_tokens_per_run", "agent.limits.max_tokens_per_run must be zero (unlimited) or positive")
 	}
-	if a.Limits.MaxToolCallsPerRun <= 0 {
-		add("agent.limits.max_tool_calls_per_run", "agent.limits.max_tool_calls_per_run must be positive")
+	if a.Limits.MaxToolCallsPerRun < 0 {
+		add("agent.limits.max_tool_calls_per_run", "agent.limits.max_tool_calls_per_run must be zero (unlimited) or positive")
 	}
 
 	if !a.Concurrency.Valid() {

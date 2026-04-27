@@ -180,11 +180,11 @@ export function validateFormState(state: FormState): FormIssue[] {
   }
 
   // --- Run Limits ---
-  if (state.limits.max_tokens_per_run <= 0) {
-    add('agent.limits.max_tokens_per_run', 'agent.limits.max_tokens_per_run must be positive')
+  if (state.limits.max_tokens_per_run < 0) {
+    add('agent.limits.max_tokens_per_run', 'agent.limits.max_tokens_per_run must be zero (unlimited) or positive')
   }
-  if (state.limits.max_tool_calls_per_run <= 0) {
-    add('agent.limits.max_tool_calls_per_run', 'agent.limits.max_tool_calls_per_run must be positive')
+  if (state.limits.max_tool_calls_per_run < 0) {
+    add('agent.limits.max_tool_calls_per_run', 'agent.limits.max_tool_calls_per_run must be zero (unlimited) or positive')
   }
 
   // --- Concurrency ---

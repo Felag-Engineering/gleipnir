@@ -212,17 +212,29 @@ describe('validateFormState — model', () => {
 })
 
 describe('validateFormState — agent.limits', () => {
-  it('reports non-positive max_tokens_per_run', () => {
+  it('accepts zero max_tokens_per_run (unlimited)', () => {
     const s = valid()
     s.limits = { max_tokens_per_run: 0, max_tool_calls_per_run: 50 }
     const issues = validateFormState(s)
-    expect(findIssue(issues, 'agent.limits.max_tokens_per_run', 'must be positive')).toBe(true)
+    expect(issues.filter(i => i.field === 'agent.limits.max_tokens_per_run')).toHaveLength(0)
   })
-  it('reports non-positive max_tool_calls_per_run', () => {
+  it('accepts zero max_tool_calls_per_run (unlimited)', () => {
     const s = valid()
     s.limits = { max_tokens_per_run: 1000, max_tool_calls_per_run: 0 }
     const issues = validateFormState(s)
-    expect(findIssue(issues, 'agent.limits.max_tool_calls_per_run', 'must be positive')).toBe(true)
+    expect(issues.filter(i => i.field === 'agent.limits.max_tool_calls_per_run')).toHaveLength(0)
+  })
+  it('reports negative max_tokens_per_run', () => {
+    const s = valid()
+    s.limits = { max_tokens_per_run: -1, max_tool_calls_per_run: 50 }
+    const issues = validateFormState(s)
+    expect(findIssue(issues, 'agent.limits.max_tokens_per_run', 'must be zero (unlimited) or positive')).toBe(true)
+  })
+  it('reports negative max_tool_calls_per_run', () => {
+    const s = valid()
+    s.limits = { max_tokens_per_run: 1000, max_tool_calls_per_run: -1 }
+    const issues = validateFormState(s)
+    expect(findIssue(issues, 'agent.limits.max_tool_calls_per_run', 'must be zero (unlimited) or positive')).toBe(true)
   })
 })
 
