@@ -53,9 +53,31 @@ export function ArcadeAuthSection({ server, tools, canManage }: Props) {
         // Frontend re-issue loop: each /wait call is bounded to ~10s server-side,
         // well under HTTP WriteTimeout (15s default). Loop terminates when the
         // response reaches a terminal status or mutateAsync throws.
-        let waitResp = await waitMutation.mutateAsync({ toolkit, auth_id: resp.auth_id })
+        //
+        // The backend's AuthorizeWait re-walks the toolkit after Arcade reports
+        // "completed" and may return a fresh pending grant (different auth_id +
+        // url) for the next tool that needs OAuth. When that happens we must
+        // surface the new URL — otherwise the loop polls an auth_id the user
+        // never started, forever.
+        let currentAuthId = resp.auth_id
+        let waitResp = await waitMutation.mutateAsync({ toolkit, auth_id: currentAuthId })
         while (waitResp.status === 'pending') {
-          waitResp = await waitMutation.mutateAsync({ toolkit, auth_id: waitResp.auth_id })
+          // Bind to a local so the discriminated-union narrowing survives the
+          // setByToolkit closure below — TypeScript widens `waitResp` back to
+          // the full union once it sees the reassignment at the loop tail.
+          const pending = waitResp
+          if (pending.auth_id !== currentAuthId) {
+            window.open(pending.url, '_blank', 'noopener')
+            currentAuthId = pending.auth_id
+            setByToolkit((prev) =>
+              new Map(prev).set(toolkit, {
+                status: 'pending',
+                url: pending.url,
+                authId: pending.auth_id,
+              }),
+            )
+          }
+          waitResp = await waitMutation.mutateAsync({ toolkit, auth_id: currentAuthId })
         }
 
         if (waitResp.status === 'completed') {
@@ -107,7 +129,19 @@ export function ArcadeAuthSection({ server, tools, canManage }: Props) {
               <span className={styles.badgeAuthorized}>✓ Authorized</span>
             )}
             {state?.status === 'pending' && (
-              <span className={styles.badgePending}>⚠ Action needed</span>
+              <>
+                <span className={styles.badgePending}>⚠ Action needed</span>
+                {state.url && (
+                  <a
+                    className={styles.oauthLink}
+                    href={state.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open OAuth →
+                  </a>
+                )}
+              </>
             )}
             {state?.status === 'failed' && (
               <span className={styles.badgeFailed} title={state.error || undefined}>

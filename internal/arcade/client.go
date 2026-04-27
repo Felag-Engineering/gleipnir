@@ -20,9 +20,13 @@ const (
 	// the wait endpoint until the response reaches a terminal status.
 	statusWaitSeconds = 10
 
-	// maxErrorBodyBytes caps how many bytes of an error response body are
-	// included in error strings to avoid flooding logs with large payloads.
-	maxErrorBodyBytes = 1024
+	// maxBodyBytes caps how many bytes are read from an Arcade response
+	// body. Arcade auth responses include the full grant payload (token,
+	// user_info, scopes), which routinely runs ~2KB. We use 64KB so the
+	// JSON always parses; the only purpose of the cap is to prevent a
+	// malicious or misbehaving server from streaming an unbounded body
+	// into our logs.
+	maxBodyBytes = 64 * 1024
 )
 
 // Option is a functional option for constructing a Client.
@@ -68,9 +72,15 @@ type AuthResponse struct {
 	URL    string `json:"url,omitempty"` // populated when Status == "pending"
 }
 
-// Authorize calls POST /v1/auth/authorize to pre-authorize a (userID, toolName) pair.
+// Authorize calls POST /v1/tools/authorize to pre-authorize a (userID, toolName) pair.
 // Returns AuthCompleted when the grant already exists (idempotent) or AuthPending
 // with a one-time OAuth URL when the user must click through.
+//
+// We use /v1/tools/authorize (the tool-scoped wrapper) rather than the generic
+// /v1/auth/authorize endpoint — the latter requires the caller to supply an
+// AuthRequirement block, while the tool endpoint synthesizes it from the tool
+// name. This matches what the official arcadepy SDK's client.tools.authorize()
+// does.
 func (c *Client) Authorize(ctx context.Context, toolName, userID string) (*AuthResponse, error) {
 	body, err := json.Marshal(map[string]string{
 		"tool_name": toolName,
@@ -80,7 +90,7 @@ func (c *Client) Authorize(ctx context.Context, toolName, userID string) (*AuthR
 		return nil, fmt.Errorf("arcade: authorize: marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/auth/authorize", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/tools/authorize", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("arcade: authorize: build request: %w", err)
 	}
@@ -111,7 +121,9 @@ func (c *Client) WaitForCompletion(ctx context.Context, authID string) (*AuthRes
 
 // doRequest executes an HTTP request and decodes the JSON body into an AuthResponse.
 // Non-2xx responses are returned as errors with up to 1KB of the response body
-// included for debugging.
+// included for debugging. A 2xx with an empty body is treated as a "completed"
+// grant — Arcade returns 204 No Content for already-authorized (user_id, tool)
+// pairs in some flows.
 func (c *Client) doRequest(req *http.Request, op string) (*AuthResponse, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -119,7 +131,7 @@ func (c *Client) doRequest(req *http.Request, op string) (*AuthResponse, error) 
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("arcade: %s: read response body: %w", op, err)
 	}
@@ -128,9 +140,16 @@ func (c *Client) doRequest(req *http.Request, op string) (*AuthResponse, error) 
 		return nil, fmt.Errorf("arcade: %s: unexpected status %d: %s", op, resp.StatusCode, string(bodyBytes))
 	}
 
+	// 2xx with empty/whitespace body — Arcade signals "no further action" this
+	// way (e.g. 204 for already-authorized grants). Treat as completed.
+	if len(bytes.TrimSpace(bodyBytes)) == 0 {
+		return &AuthResponse{Status: "completed"}, nil
+	}
+
 	var result AuthResponse
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		return nil, fmt.Errorf("arcade: %s: decode response: %w", op, err)
+		return nil, fmt.Errorf("arcade: %s: decode response (status=%d, body=%q): %w",
+			op, resp.StatusCode, string(bodyBytes), err)
 	}
 	return &result, nil
 }

@@ -138,7 +138,7 @@ func TestArcadeAuthorize_ToolkitNotFound(t *testing.T) {
 	id := insertArcadeServer(t, store, encKey)
 
 	// Insert tools for a different toolkit.
-	insertTestMCPTool(t, store, id, "Slack.SendMessage")
+	insertTestMCPTool(t, store, id, "Slack_SendMessage")
 
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"id": "a1", "status": "completed"})
@@ -166,8 +166,8 @@ func TestArcadeAuthorize_AllCompleted(t *testing.T) {
 	encKey := make([]byte, 32)
 	id := insertArcadeServer(t, store, encKey)
 
-	insertTestMCPTool(t, store, id, "Gmail.SendEmail")
-	insertTestMCPTool(t, store, id, "Gmail.ListEmails")
+	insertTestMCPTool(t, store, id, "Gmail_SendEmail")
+	insertTestMCPTool(t, store, id, "Gmail_ListEmails")
 
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"id": "a1", "status": "completed"})
@@ -199,13 +199,54 @@ func TestArcadeAuthorize_AllCompleted(t *testing.T) {
 	}
 }
 
+// TestArcadeAuthorize_ConvertsUnderscoreToDotForRestAPI verifies that when
+// the handler calls Arcade's REST /v1/auth/authorize, it converts MCP-style
+// underscore tool names ("Gmail_SendEmail") to the dot form
+// ("Gmail.SendEmail") that the REST endpoint expects. MCP discovery returns
+// underscore-separated names; the REST authorize API uses dots.
+func TestArcadeAuthorize_ConvertsUnderscoreToDotForRestAPI(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	encKey := make([]byte, 32)
+	id := insertArcadeServer(t, store, encKey)
+
+	insertTestMCPTool(t, store, id, "Gmail_SendEmail")
+
+	var gotToolName string
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotToolName = body["tool_name"]
+		json.NewEncoder(w).Encode(map[string]string{"id": "a1", "status": "completed"})
+	}))
+	t.Cleanup(stub.Close)
+
+	r := newArcadeRouter(store, encKey, stubArcadeClient(stub))
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	body, _ := json.Marshal(map[string]string{"toolkit": "Gmail"})
+	resp, err := http.Post(srv.URL+"/servers/"+id+"/arcade/authorize", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	if gotToolName != "Gmail.SendEmail" {
+		t.Errorf("expected Arcade REST to receive dot-form tool name %q, got %q",
+			"Gmail.SendEmail", gotToolName)
+	}
+}
+
 func TestArcadeAuthorize_FirstToolPending(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	encKey := make([]byte, 32)
 	id := insertArcadeServer(t, store, encKey)
 
-	insertTestMCPTool(t, store, id, "Gmail.ListEmails")
-	insertTestMCPTool(t, store, id, "Gmail.SendEmail")
+	insertTestMCPTool(t, store, id, "Gmail_ListEmails")
+	insertTestMCPTool(t, store, id, "Gmail_SendEmail")
 
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// First call returns pending; subsequent calls return completed.
@@ -346,7 +387,7 @@ func TestArcadeAuthorize_BearerHeaderTolerantOfWhitespaceAndCase(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateMCPServer: %v", err)
 			}
-			insertTestMCPTool(t, store, id, "Gmail.SendEmail")
+			insertTestMCPTool(t, store, id, "Gmail_SendEmail")
 
 			var gotKey string
 			stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -423,7 +464,7 @@ func TestArcadeAuthorizeWait_Completed(t *testing.T) {
 	encKey := make([]byte, 32)
 	id := insertArcadeServer(t, store, encKey)
 
-	insertTestMCPTool(t, store, id, "Gmail.SendEmail")
+	insertTestMCPTool(t, store, id, "Gmail_SendEmail")
 
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"id": "a1", "status": "completed"})

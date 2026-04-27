@@ -1,6 +1,7 @@
 package arcade_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -98,20 +99,91 @@ func TestAuthorize_NonTwoxx(t *testing.T) {
 	}
 }
 
-func TestAuthorize_LargeErrorBodyTruncated(t *testing.T) {
+// The client caps body reads at maxBodyBytes (64KB) so a misbehaving Arcade
+// can't stream unbounded data into our logs, but otherwise we surface the full
+// body in error messages — truncating sub-KB caused real bugs (large success
+// responses got mangled into "unexpected end of JSON input" errors).
+func TestAuthorize_LargeErrorBodyBounded(t *testing.T) {
 	_, client := stubArcade(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		// Write more than 1KB of body.
-		_, _ = w.Write([]byte(strings.Repeat("x", 2048)))
+		// Write much more than the read cap.
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 200*1024))
 	})
 
 	_, err := client.Authorize(context.Background(), "Gmail.SendEmail", "user@example.com")
 	if err == nil {
 		t.Fatal("expected error for 500 response, got nil")
 	}
-	// Error should contain the body but not exceed 1KB.
-	if len(err.Error()) > 2000 {
-		t.Errorf("error string suspiciously long (%d chars) — body may not be truncated", len(err.Error()))
+	// Error message includes the read body, capped to maxBodyBytes (~64KB).
+	// We assert it's bounded but not artificially small.
+	if len(err.Error()) > 70*1024 {
+		t.Errorf("error string %d chars exceeds maxBodyBytes cap", len(err.Error()))
+	}
+}
+
+// Arcade returns the full grant payload on completed authorize calls — auth
+// id, user_info, scopes array, OAuth context. This routinely exceeds 1KB. The
+// client must read the entire body so JSON parsing succeeds; truncating mid-
+// JSON produces "unexpected end of JSON input".
+func TestAuthorize_LargeSuccessBodyParses(t *testing.T) {
+	bigPayload := map[string]any{
+		"id":          "ac_xyz",
+		"status":      "completed",
+		"user_id":     "user@example.com",
+		"provider_id": "arcade-google",
+		// padding to push the response well past the old 1024-byte cap.
+		"scopes": []string{
+			"https://www.googleapis.com/auth/calendar.events",
+			"https://www.googleapis.com/auth/calendar.readonly",
+			"https://www.googleapis.com/auth/gmail.labels",
+			"https://www.googleapis.com/auth/gmail.modify",
+			"https://www.googleapis.com/auth/gmail.readonly",
+			"https://www.googleapis.com/auth/userinfo.email",
+			"https://www.googleapis.com/auth/userinfo.profile",
+			"openid",
+		},
+		"context": map[string]any{
+			"token": strings.Repeat("a", 800),
+			"user_info": map[string]string{
+				"email":          "user@example.com",
+				"family_name":    "Doe",
+				"given_name":     "Jane",
+				"id":             "100436629886563732515",
+				"name":           "Jane Doe",
+				"picture":        "https://lh3.googleusercontent.com/a/" + strings.Repeat("a", 200),
+				"verified_email": "true",
+			},
+		},
+	}
+	_, client := stubArcade(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, bigPayload)
+	})
+
+	resp, err := client.Authorize(context.Background(), "Gmail.SendEmail", "user@example.com")
+	if err != nil {
+		t.Fatalf("unexpected error parsing large success body: %v", err)
+	}
+	if resp.Status != "completed" {
+		t.Errorf("expected completed, got %q", resp.Status)
+	}
+	if resp.ID != "ac_xyz" {
+		t.Errorf("expected id ac_xyz, got %q", resp.ID)
+	}
+}
+
+// 2xx with an empty body should be treated as a completed grant — Arcade
+// occasionally responds with 204 No Content for already-authorized pairs.
+func TestAuthorize_EmptyBodyTreatedAsCompleted(t *testing.T) {
+	_, client := stubArcade(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	resp, err := client.Authorize(context.Background(), "Gmail.SendEmail", "user@example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != "completed" {
+		t.Errorf("expected completed, got %q", resp.Status)
 	}
 }
 

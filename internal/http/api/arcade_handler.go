@@ -122,8 +122,13 @@ func (h *ArcadeHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 	client := h.newClient(h.httpClient, apiKey)
 
 	for _, tool := range filtered {
-		resp, err := client.Authorize(r.Context(), tool.Name, userID)
+		authName := arcade.AuthorizeToolName(tool.Name)
+		resp, err := client.Authorize(r.Context(), authName, userID)
 		if err != nil {
+			slog.Warn("arcade authorize call failed",
+				"server_id", id, "toolkit", body.Toolkit,
+				"mcp_tool_name", tool.Name, "arcade_tool_name", authName,
+				"err", err)
 			httputil.WriteError(w, http.StatusBadGateway, "arcade authorize failed", err.Error())
 			return
 		}
@@ -171,6 +176,8 @@ func (h *ArcadeHandler) AuthorizeWait(w http.ResponseWriter, r *http.Request) {
 
 	waited, err := client.WaitForCompletion(r.Context(), body.AuthID)
 	if err != nil {
+		slog.Warn("arcade wait call failed",
+			"server_id", id, "toolkit", body.Toolkit, "auth_id", body.AuthID, "err", err)
 		httputil.WriteError(w, http.StatusBadGateway, "arcade wait failed", err.Error())
 		return
 	}
@@ -205,8 +212,13 @@ func (h *ArcadeHandler) AuthorizeWait(w http.ResponseWriter, r *http.Request) {
 
 		filtered := filterByToolkit(tools, body.Toolkit)
 		for _, tool := range filtered {
-			resp, err := client.Authorize(r.Context(), tool.Name, userID)
+			authName := arcade.AuthorizeToolName(tool.Name)
+			resp, err := client.Authorize(r.Context(), authName, userID)
 			if err != nil {
+				slog.Warn("arcade authorize call failed (rewalk)",
+					"server_id", id, "toolkit", body.Toolkit,
+					"mcp_tool_name", tool.Name, "arcade_tool_name", authName,
+					"err", err)
 				httputil.WriteError(w, http.StatusBadGateway, "arcade authorize failed", err.Error())
 				return
 			}

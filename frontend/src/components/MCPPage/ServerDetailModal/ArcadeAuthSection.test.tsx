@@ -38,7 +38,7 @@ const tools: ApiMcpTool[] = [
   {
     id: 't1',
     server_id: 'srv-1',
-    name: 'Gmail.SendEmail',
+    name: 'Gmail_SendEmail',
     description: 'Send email',
     input_schema: {},
     enabled: true,
@@ -46,7 +46,7 @@ const tools: ApiMcpTool[] = [
   {
     id: 't2',
     server_id: 'srv-1',
-    name: 'Gmail.ListEmails',
+    name: 'Gmail_ListEmails',
     description: 'List emails',
     input_schema: {},
     enabled: true,
@@ -54,7 +54,7 @@ const tools: ApiMcpTool[] = [
   {
     id: 't3',
     server_id: 'srv-1',
-    name: 'GoogleCalendar.CreateEvent',
+    name: 'GoogleCalendar_CreateEvent',
     description: 'Create calendar event',
     input_schema: {},
     enabled: true,
@@ -166,6 +166,52 @@ describe('ArcadeAuthSection', () => {
     await waitFor(() => {
       expect(mockWaitMutateAsync).toHaveBeenCalledTimes(2)
     })
+    await waitFor(() => {
+      expect(screen.getByText('✓ Authorized')).toBeInTheDocument()
+    })
+
+    openSpy.mockRestore()
+  })
+
+  it('wait loop opens a new popup when a fresh pending grant is returned with a new auth_id', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+
+    // Initial Authorize: first tool needs OAuth (auth_id A1, url U1).
+    mockAuthorizeMutateAsync.mockResolvedValueOnce({
+      status: 'pending',
+      url: 'https://arcade.dev/oauth/A1',
+      auth_id: 'A1',
+    })
+    // First /wait poll: A1 still pending (user hasn't clicked yet).
+    // Second /wait poll: A1 completed, backend re-walked the toolkit and
+    //   surfaced a new pending grant (A2, U2) for the next tool.
+    // Third /wait poll: A2 still pending.
+    // Fourth /wait poll: completed.
+    mockWaitMutateAsync
+      .mockResolvedValueOnce({ status: 'pending', auth_id: 'A1', url: 'https://arcade.dev/oauth/A1' })
+      .mockResolvedValueOnce({ status: 'pending', auth_id: 'A2', url: 'https://arcade.dev/oauth/A2' })
+      .mockResolvedValueOnce({ status: 'pending', auth_id: 'A2', url: 'https://arcade.dev/oauth/A2' })
+      .mockResolvedValueOnce({ status: 'completed' })
+
+    renderWithClient(<ArcadeAuthSection server={server} tools={tools} canManage={true} />)
+
+    const buttons = screen.getAllByRole('button', { name: /check/i })
+    await act(async () => {
+      fireEvent.click(buttons[0])
+    })
+
+    // U1 popup is opened on the initial Authorize response, U2 popup is opened
+    // when the wait loop sees a new auth_id.
+    await waitFor(() => {
+      expect(openSpy).toHaveBeenCalledWith('https://arcade.dev/oauth/A1', '_blank', 'noopener')
+      expect(openSpy).toHaveBeenCalledWith('https://arcade.dev/oauth/A2', '_blank', 'noopener')
+    })
+
+    // Subsequent polls use the new auth_id (A2), not the original (A1).
+    await waitFor(() => {
+      expect(mockWaitMutateAsync).toHaveBeenLastCalledWith({ toolkit: 'Gmail', auth_id: 'A2' })
+    })
+
     await waitFor(() => {
       expect(screen.getByText('✓ Authorized')).toBeInTheDocument()
     })

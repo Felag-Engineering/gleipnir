@@ -76,6 +76,19 @@
   cursor: not-allowed;
 }
 
+.oauthLink {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--color-tool);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.oauthLink:hover {
+  color: var(--accent-hover);
+}
+
 .spinner {
   display: inline-block;
   width: 12px;
