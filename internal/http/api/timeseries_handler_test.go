@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/http/api"
-	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/http/api"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
 func TestTimeSeriesHandlerEmptyDB(t *testing.T) {

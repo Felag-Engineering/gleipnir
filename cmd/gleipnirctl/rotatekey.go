@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/rapp992/gleipnir/internal/admin"
+	"github.com/felag-engineering/gleipnir/internal/admin"
 )
 
 const defaultDBPath = "/data/gleipnir.db"

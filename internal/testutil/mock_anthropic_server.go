@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/rapp992/gleipnir/internal/llm/anthropic"
+	"github.com/felag-engineering/gleipnir/internal/llm/anthropic"
 )
 
 // MockAnthropicServer is a configurable HTTP test server that mimics the

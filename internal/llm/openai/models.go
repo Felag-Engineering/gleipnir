@@ -7,7 +7,7 @@
 // API mean we cannot guarantee the invariant for these models.
 package openai
 
-import "github.com/rapp992/gleipnir/internal/llm"
+import "github.com/felag-engineering/gleipnir/internal/llm"
 
 // curatedModels is the display list returned by ListModels. The order here is
 // the order users see in the UI — most capable first within each generation.

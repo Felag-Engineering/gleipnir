@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/rapp992/gleipnir/internal/llm"
-	"github.com/rapp992/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/mcp"
 )
 
 // resolvedToolEntry holds a ResolvedTool paired with its narrowed JSON schema.

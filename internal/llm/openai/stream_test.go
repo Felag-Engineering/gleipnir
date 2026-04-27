@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/openai/openai-go/responses"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // fakeStream implements streamIterator for tests.

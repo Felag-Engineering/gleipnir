@@ -3,7 +3,7 @@ package timeout
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/rapp992/gleipnir/internal/infra/metrics"
+	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 )
 
 // approvalTimeoutsTotal counts approval requests that expired before an operator

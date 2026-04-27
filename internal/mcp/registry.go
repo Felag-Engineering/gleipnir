@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/admin"
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/admin"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // ResolvedTool pairs a granted tool's model metadata with a ready Client

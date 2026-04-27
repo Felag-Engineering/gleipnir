@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/admin"
-	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/admin"
+	"github.com/felag-engineering/gleipnir/internal/db"
 )
 
 // newTestRegistry opens a fresh in-memory-backed SQLite store, applies the

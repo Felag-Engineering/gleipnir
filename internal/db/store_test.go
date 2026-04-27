@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db/migrations"
+	"github.com/felag-engineering/gleipnir/internal/db/migrations"
 )
 
 func TestOpen(t *testing.T) {

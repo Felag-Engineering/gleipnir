@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/infra/logctx"
-	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // ApprovalHandler manages the approval-gate lifecycle for a single run.

@@ -9,7 +9,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // parseSSEStream reads OpenAI Chat Completions SSE from body and emits

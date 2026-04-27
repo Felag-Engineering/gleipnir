@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
 )

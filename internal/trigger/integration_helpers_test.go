@@ -2,7 +2,7 @@ package trigger_test
 
 import (
 	"github.com/go-chi/chi/v5"
-	"github.com/rapp992/gleipnir/internal/execution/run"
+	"github.com/felag-engineering/gleipnir/internal/execution/run"
 )
 
 // newRunsRouter builds a chi router with the standard runs endpoints.

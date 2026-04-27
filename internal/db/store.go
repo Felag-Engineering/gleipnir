@@ -17,8 +17,8 @@ import (
 
 	_ "modernc.org/sqlite" // register the sqlite driver
 
-	"github.com/rapp992/gleipnir/internal/db/migrations"
-	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/db/migrations"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // errOrphanedRunCASMiss is a package-private sentinel returned by

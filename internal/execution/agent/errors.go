@@ -7,8 +7,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/rapp992/gleipnir/internal/infra/logctx"
-	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // failRun transitions the run to failed status and returns the original error.

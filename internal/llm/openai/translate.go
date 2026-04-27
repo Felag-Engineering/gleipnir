@@ -9,7 +9,7 @@ import (
 	openaisdk "github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/responses"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // buildInput translates the provider-neutral MessageRequest history into the

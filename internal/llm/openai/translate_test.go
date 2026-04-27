@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/openai/openai-go/responses"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 func TestTranslateResponse_TextOnly(t *testing.T) {

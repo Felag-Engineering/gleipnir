@@ -3,7 +3,7 @@ package arcade
 import (
 	"strings"
 
-	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/db"
 )
 
 // SplitToolkit splits a qualified MCP tool name like "Gmail_SendEmail" into

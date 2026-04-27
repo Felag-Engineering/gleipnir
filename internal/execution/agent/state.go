@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/execution/runstate"
-	"github.com/rapp992/gleipnir/internal/infra/event"
-	"github.com/rapp992/gleipnir/internal/infra/logctx"
-	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/execution/runstate"
+	"github.com/felag-engineering/gleipnir/internal/infra/event"
+	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // ErrTransitionConflict re-exports runstate.ErrTransitionConflict so callers in
