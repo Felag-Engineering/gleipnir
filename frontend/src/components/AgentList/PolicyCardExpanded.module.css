@@ -72,17 +72,72 @@
   border: 1px solid color-mix(in srgb, var(--color-blue) 12%, transparent);
 }
 
-.recentDots {
+.recentLabel {
   display: inline-flex;
-  gap: 3px;
   align-items: center;
+  gap: var(--space-2);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: var(--space-2);
 }
 
-.recentDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--dot-color, var(--text-muted));
+.feedbackBadge {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  padding: 2px var(--space-2);
+  border-radius: 3px;
+  color: var(--color-purple);
+  background: color-mix(in srgb, var(--color-purple) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-purple) 24%, transparent);
+  text-transform: none;
+  letter-spacing: 0;
+  animation: feedbackPulse 2.4s ease-in-out infinite;
+}
+
+.recentList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.recentRow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: 4px;
+  text-decoration: none;
+  color: inherit;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.recentRow:hover {
+  background: var(--bg-elevated);
+}
+
+.recentTime {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+@keyframes feedbackPulse {
+  0%, 100% {
+    border-color: color-mix(in srgb, var(--color-purple) 24%, transparent);
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--color-purple) 60%, transparent);
+    box-shadow: 0 0 6px 0 color-mix(in srgb, var(--color-purple) 20%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feedbackBadge {
+    animation: none;
+  }
 }
 
 .loading {

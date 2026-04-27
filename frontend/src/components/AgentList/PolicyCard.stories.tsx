@@ -42,7 +42,7 @@ concurrency:
   })
 
   // Key object must stay in sync with what useRuns constructs — a mismatch silently misses the preseed.
-  qc.setQueryData(queryKeys.runs.list({ policy_id: policyId, limit: '5', sort: 'started_at', order: 'desc' }), {
+  qc.setQueryData(queryKeys.runs.list({ policy_id: policyId, limit: '3', sort: 'started_at', order: 'desc' }), {
     runs: [
       { id: 'run-a', policy_id: policyId, status: 'complete', trigger_type: 'scheduled', started_at: '2026-04-08T02:00:00Z', completed_at: '2026-04-08T02:04:00Z', token_cost: 1200, error: null, created_at: '2026-04-08T02:00:00Z', system_prompt: null, model: 'claude-sonnet-4-20250514' },
       { id: 'run-b', policy_id: policyId, status: 'failed', trigger_type: 'scheduled', started_at: '2026-04-07T02:00:00Z', completed_at: '2026-04-07T02:01:00Z', token_cost: 400, error: 'Timeout', created_at: '2026-04-07T02:00:00Z', system_prompt: null, model: 'claude-sonnet-4-20250514' },
