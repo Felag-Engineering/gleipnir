@@ -189,9 +189,9 @@ agent:
 - `trigger.type: poll` with `interval: 15m` checks Todoist every 15 minutes. The poll check calls `todoist.get_tasks_list` filtered by the `AI_Assist` label, then evaluates `$[0].id not_equals ""` — this fires a run only when at least one matching task exists (non-empty array → first task has a non-empty ID), and stays silent when there are none. Polls that find no matching tasks consume one Todoist API call but do not start a run or burn LLM tokens.
 - The agent task tells the agent to read tasks from its trigger payload rather than re-fetching them. Gleipnir delivers the poll tool result as the first user message, so the task list is already in context — calling `get_tasks_list` again would double the API calls for no benefit.
 - Both `todoist.create_comments` and `todoist.update_tasks` are approval-gated. These are the only write operations — reading tasks and searching the web are read-only. The 1-hour approval window (longer than the meal-planning playbook's 30 minutes) gives you time to review the proposed comment and label removal before they are posted to Todoist. If you prefer fully automatic posting, set `approval: none` on both tools.
-- `feedback.enabled: true` gives the agent `gleipnir.ask_operator` (ADR-031) to handle ambiguous tasks without failing the run.
+- `feedback.enabled: true` gives the agent `gleipnir.ask_operator` to handle ambiguous tasks without failing the run.
 - `concurrency: queue` (depth 3) allows tasks labeled while a run is in progress to accumulate rather than being dropped. If more than 3 triggers queue up the extras are dropped with a warning in the Gleipnir logs; in practice 15-minute polling makes deep queuing unlikely.
-- Tools not listed in `capabilities.tools` are not registered with the agent at all — they literally do not exist from the agent's perspective (ADR-001).
+- Tools not listed in `capabilities.tools` are not registered with the agent at all — they literally do not exist from the agent's perspective.
 
 ## Step 6 — Label a task and test
 

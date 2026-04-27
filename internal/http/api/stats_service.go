@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/db"
 )
 
 // StatsService computes dashboard aggregate statistics from the DB.

@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/http/httputil"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 )
 
 // AttentionHandler serves GET /api/v1/attention.

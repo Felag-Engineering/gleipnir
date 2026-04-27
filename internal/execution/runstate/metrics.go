@@ -3,8 +3,8 @@ package runstate
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/rapp992/gleipnir/internal/infra/metrics"
-	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // runStateTransitionsTotal counts successful run state machine transitions.

@@ -3,8 +3,8 @@ package arcade_test
 import (
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/arcade"
-	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/arcade"
+	"github.com/felag-engineering/gleipnir/internal/db"
 )
 
 func TestSplitToolkit(t *testing.T) {

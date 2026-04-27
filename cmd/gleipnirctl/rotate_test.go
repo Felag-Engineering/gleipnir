@@ -11,9 +11,9 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/rapp992/gleipnir/internal/admin"
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/admin"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
 // mustKey parses a hex key or panics. Used only for test key constants.

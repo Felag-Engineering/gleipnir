@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/http/httputil"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 )
 
 // TimeSeriesHandler serves GET /api/v1/stats/timeseries.

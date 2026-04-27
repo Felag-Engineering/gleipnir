@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/testutil"
-	"github.com/rapp992/gleipnir/internal/timeout"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/timeout"
 )
 
 // approvalConfig returns a timeout.Config wired to the approval_requests table.

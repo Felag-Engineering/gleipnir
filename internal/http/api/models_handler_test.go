@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/rapp992/gleipnir/internal/http/api"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/http/api"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // stubModelLister implements api.ModelLister for tests.

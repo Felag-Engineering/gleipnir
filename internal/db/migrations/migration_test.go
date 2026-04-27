@@ -10,7 +10,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/rapp992/gleipnir/internal/db/migrations"
+	"github.com/felag-engineering/gleipnir/internal/db/migrations"
 )
 
 //go:embed 0001_initial.sql

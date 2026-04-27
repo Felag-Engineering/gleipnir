@@ -12,11 +12,11 @@ import (
 
 	cronlib "github.com/robfig/cron/v3"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/execution/run"
-	"github.com/rapp992/gleipnir/internal/infra/config"
-	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/execution/run"
+	"github.com/felag-engineering/gleipnir/internal/infra/config"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/policy"
 )
 
 // cronLoopHandle wraps a loop's cancel func so the map stores a pointer we can

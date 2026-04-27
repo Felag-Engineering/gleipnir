@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 func TestModelCache_LoadOnce_CallsFetchOnlyOnce(t *testing.T) {

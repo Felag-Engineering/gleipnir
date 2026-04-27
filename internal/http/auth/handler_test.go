@@ -15,8 +15,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // mockAuthQuerier implements AuthQuerier for testing Login, Logout, and Status.

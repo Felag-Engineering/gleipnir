@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // fakeOpenAICompatQuerier is an in-memory implementation for tests.

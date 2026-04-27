@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/rapp992/gleipnir/internal/http/httputil"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/http/httputil"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // ModelLister aliases llm.ModelLister so test files in this package can

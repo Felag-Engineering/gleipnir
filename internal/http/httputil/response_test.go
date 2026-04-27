@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/http/httputil"
+	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 )
 
 func TestWriteJSON(t *testing.T) {

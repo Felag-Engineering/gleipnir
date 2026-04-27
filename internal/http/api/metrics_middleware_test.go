@@ -8,7 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	dto "github.com/prometheus/client_model/go"
-	"github.com/rapp992/gleipnir/internal/infra/metrics"
+	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 )
 
 // findMetricFamily searches the gathered metric families for one matching name.

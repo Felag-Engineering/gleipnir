@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/http/api"
-	"github.com/rapp992/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/http/api"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
 // insertFeedbackRequest inserts a pending feedback request for a run.

@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/execution/run"
-	"github.com/rapp992/gleipnir/internal/infra/config"
-	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/execution/run"
+	"github.com/felag-engineering/gleipnir/internal/infra/config"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/policy"
 )
 
 // Scheduler watches scheduled policies and fires runs at their configured fire_at times.

@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/infra/logctx"
+	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 )
 
 func TestWithRunCorrelation_RoundTrip(t *testing.T) {

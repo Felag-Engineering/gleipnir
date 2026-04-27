@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/http/api"
-	"github.com/rapp992/gleipnir/internal/llm/anthropic"
-	"github.com/rapp992/gleipnir/internal/llm/google"
-	"github.com/rapp992/gleipnir/internal/llm/openai"
+	"github.com/felag-engineering/gleipnir/internal/http/api"
+	"github.com/felag-engineering/gleipnir/internal/llm/anthropic"
+	"github.com/felag-engineering/gleipnir/internal/llm/google"
+	"github.com/felag-engineering/gleipnir/internal/llm/openai"
 )
 
 // TestAllCuratedModelsHaveDisplayNames ensures that every model returned by

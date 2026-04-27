@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/execution/agent"
-	"github.com/rapp992/gleipnir/internal/execution/run"
-	"github.com/rapp992/gleipnir/internal/llm"
-	"github.com/rapp992/gleipnir/internal/mcp"
-	"github.com/rapp992/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/execution/agent"
+	"github.com/felag-engineering/gleipnir/internal/execution/run"
+	"github.com/felag-engineering/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
 // ---- Poller.Notify tests ---------------------------------------------------

@@ -12,7 +12,7 @@ import (
 	sdkanthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // newTestClient creates an AnthropicClient pointed at the given httptest server.

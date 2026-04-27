@@ -7,10 +7,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/mcp"
-	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
 // stubDefaultModelResolver is the external-package copy of the resolver stub.

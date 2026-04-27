@@ -11,13 +11,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/rapp992/gleipnir/internal/admin"
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/http/api"
-	"github.com/rapp992/gleipnir/internal/http/auth"
-	"github.com/rapp992/gleipnir/internal/mcp"
-	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/admin"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/http/api"
+	"github.com/felag-engineering/gleipnir/internal/http/auth"
+	"github.com/felag-engineering/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
 // newMCPRouter wires a chi router with the MCP handler, mirroring how

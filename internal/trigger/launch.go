@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/execution/run"
-	"github.com/rapp992/gleipnir/internal/http/httputil"
-	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/execution/run"
+	"github.com/felag-engineering/gleipnir/internal/http/httputil"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/policy"
 )
 
 // defaultModelResolver fetches the system-wide default LLM provider and model

@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // LoaderRow is the subset of openai_compat_providers needed at load time.

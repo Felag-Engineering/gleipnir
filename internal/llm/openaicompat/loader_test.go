@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/admin"
-	"github.com/rapp992/gleipnir/internal/llm"
-	"github.com/rapp992/gleipnir/internal/llm/openaicompat"
+	"github.com/felag-engineering/gleipnir/internal/admin"
+	"github.com/felag-engineering/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm/openaicompat"
 )
 
 // fakeLoaderQuerier returns canned rows and tracks which rows were seen.

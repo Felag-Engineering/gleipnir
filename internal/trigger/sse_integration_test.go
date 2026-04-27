@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/execution/agent"
-	"github.com/rapp992/gleipnir/internal/execution/run"
-	"github.com/rapp992/gleipnir/internal/http/sse"
-	"github.com/rapp992/gleipnir/internal/llm"
-	"github.com/rapp992/gleipnir/internal/testutil"
-	"github.com/rapp992/gleipnir/internal/trigger"
+	"github.com/felag-engineering/gleipnir/internal/execution/agent"
+	"github.com/felag-engineering/gleipnir/internal/execution/run"
+	"github.com/felag-engineering/gleipnir/internal/http/sse"
+	"github.com/felag-engineering/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/trigger"
 )
 
 // sseEvent holds the parsed fields of a single SSE event.

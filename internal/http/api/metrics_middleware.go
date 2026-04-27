@@ -9,7 +9,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/rapp992/gleipnir/internal/infra/metrics"
+	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 )
 
 // httpRequestDuration records HTTP request latency as a histogram, bucketed by

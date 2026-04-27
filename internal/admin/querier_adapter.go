@@ -3,7 +3,7 @@ package admin
 import (
 	"context"
 
-	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/db"
 )
 
 // QuerierAdapter wraps *db.Queries to satisfy the AdminQuerier interface.

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // Sentinel errors returned by webhook secret methods, exported so handler code

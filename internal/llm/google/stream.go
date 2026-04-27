@@ -7,7 +7,7 @@ import (
 	"iter"
 
 	"github.com/google/uuid"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 	"google.golang.org/genai"
 )
 

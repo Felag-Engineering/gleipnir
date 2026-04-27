@@ -3,7 +3,7 @@ package arcade_test
 import (
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/arcade"
+	"github.com/felag-engineering/gleipnir/internal/arcade"
 )
 
 func TestIsArcadeGateway(t *testing.T) {
