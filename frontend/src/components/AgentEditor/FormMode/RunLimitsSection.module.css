@@ -3,3 +3,17 @@
   grid-template-columns: 1fr 1fr;
   gap: var(--space-3);
 }
+
+.hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: var(--space-1);
+  min-height: var(--space-4);
+}
+
+/* Suppress spinners defensively in case any environment ignores type=text */
+.fieldRow input::-webkit-outer-spin-button,
+.fieldRow input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

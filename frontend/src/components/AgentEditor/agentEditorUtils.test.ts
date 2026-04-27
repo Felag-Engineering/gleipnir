@@ -724,3 +724,20 @@ describe('defaultFormState', () => {
     expect(fromDefault).toEqual(fromParsed)
   })
 })
+
+describe('yamlToFormState — zero limits preserved as unlimited', () => {
+  it('keeps explicit 0 for max_tokens_per_run and max_tool_calls_per_run', () => {
+    const yaml = `
+name: unlimited-test
+agent:
+  task: do it
+  limits:
+    max_tokens_per_run: 0
+    max_tool_calls_per_run: 0
+`
+    const state = yamlToFormState(yaml)
+    expect(state).not.toBeNull()
+    expect(state!.limits.max_tokens_per_run).toBe(0)
+    expect(state!.limits.max_tool_calls_per_run).toBe(0)
+  })
+})

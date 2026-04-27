@@ -274,13 +274,16 @@ func TestValidate_ReplacePlusApproval(t *testing.T) {
 func TestValidate_NegativeLimits(t *testing.T) {
 	p := validPolicy()
 	p.Agent.Limits.MaxTokensPerRun = -1
-	assertValidationContains(t, p, "max_tokens_per_run must be positive")
+	assertValidationContains(t, p, "max_tokens_per_run must be zero (unlimited) or positive")
 }
 
-func TestValidate_ZeroToolCalls(t *testing.T) {
+func TestValidate_ZeroLimitsAllowed(t *testing.T) {
 	p := validPolicy()
+	p.Agent.Limits.MaxTokensPerRun = 0
 	p.Agent.Limits.MaxToolCallsPerRun = 0
-	assertValidationContains(t, p, "max_tool_calls_per_run must be positive")
+	if err := Validate(p); err != nil {
+		t.Errorf("expected 0 limits to be valid (unlimited), got: %v", err)
+	}
 }
 
 func TestValidate_ToolWithApprovalValid(t *testing.T) {
@@ -747,13 +750,13 @@ func TestValidate_IssueFields(t *testing.T) {
 	t.Run("agent.limits.max_tokens_per_run field is tagged", func(t *testing.T) {
 		p := validPolicy()
 		p.Agent.Limits.MaxTokensPerRun = -1
-		assertIssueField(t, p, "agent.limits.max_tokens_per_run", "must be positive")
+		assertIssueField(t, p, "agent.limits.max_tokens_per_run", "must be zero (unlimited) or positive")
 	})
 
 	t.Run("agent.limits.max_tool_calls_per_run field is tagged", func(t *testing.T) {
 		p := validPolicy()
-		p.Agent.Limits.MaxToolCallsPerRun = 0
-		assertIssueField(t, p, "agent.limits.max_tool_calls_per_run", "must be positive")
+		p.Agent.Limits.MaxToolCallsPerRun = -1
+		assertIssueField(t, p, "agent.limits.max_tool_calls_per_run", "must be zero (unlimited) or positive")
 	})
 
 	t.Run("agent.concurrency field is tagged for invalid value", func(t *testing.T) {

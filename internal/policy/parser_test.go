@@ -1089,3 +1089,32 @@ agent:
 		t.Errorf("trigger.cron_expr = %q, want %q (whitespace should be trimmed)", p.Trigger.CronExpr, "*/15 * * * *")
 	}
 }
+
+// TestConvertAgent_ZeroLimitsPreserved verifies that an explicit 0 in YAML is
+// not replaced by the default. 0 means "unlimited" at runtime (agent.go treats
+// <= 0 as no cap); the parser must not silently upgrade it to 20000/50.
+func TestConvertAgent_ZeroLimitsPreserved(t *testing.T) {
+	raw := `
+name: test
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: s.t
+agent:
+  task: do it
+  limits:
+    max_tokens_per_run: 0
+    max_tool_calls_per_run: 0
+`
+	p, err := Parse(raw, "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if p.Agent.Limits.MaxTokensPerRun != 0 {
+		t.Errorf("max_tokens_per_run = %d, want 0 (explicit zero must not be replaced by default)", p.Agent.Limits.MaxTokensPerRun)
+	}
+	if p.Agent.Limits.MaxToolCallsPerRun != 0 {
+		t.Errorf("max_tool_calls_per_run = %d, want 0 (explicit zero must not be replaced by default)", p.Agent.Limits.MaxToolCallsPerRun)
+	}
+}

@@ -35,6 +35,13 @@ export const LowLimits: Story = {
   },
 };
 
+export const Unlimited: Story = {
+  args: {
+    value: { max_tokens_per_run: 0, max_tool_calls_per_run: 0 },
+    onChange: fn(),
+  },
+};
+
 function InteractiveRunLimitsSection() {
   const [value, setValue] = useState<RunLimitsFormState>({
     max_tokens_per_run: 100000,

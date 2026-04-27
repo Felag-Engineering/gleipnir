@@ -1844,7 +1844,7 @@ agent:
   concurrency: skip
 `
 		assertValidationEnvelope(t, yaml, []issueJSON{
-			{Field: "agent.limits.max_tokens_per_run", Message: "must be positive"},
+			{Field: "agent.limits.max_tokens_per_run", Message: "must be zero (unlimited) or positive"},
 		})
 	})
 
