@@ -263,10 +263,10 @@ agent:
 
 - Read-only tools (`list_*`, `get_*`) have no approval gate so the agent can assess state without interrupting the operator. Write tools are approval-gated with explicit timeouts.
 - `proxmox.execute_command` — the "break glass" tool for cases where none of the typed Proxmox tools cover the fix — always requires approval since it runs arbitrary commands on the hypervisor.
-- `feedback.enabled: true` gives the agent `gleipnir.ask_operator` for ambiguous tasks (e.g. "which nginx container — there are three?") without failing the run (ADR-031).
+- `feedback.enabled: true` gives the agent `gleipnir.ask_operator` for ambiguous tasks (e.g. "which nginx container — there are three?") without failing the run.
 - `concurrency: skip` prevents a second run from stacking behind a first that is waiting for approval. Concurrent runs on the same host could conflict.
 - `caddy.get_caddy_config` is not approval-gated; it is a read that never modifies state. `update_caddy_config` is, because Caddy applies config changes live with no undo.
-- Tools not listed in `capabilities.tools` do not exist from the agent's perspective (ADR-001). The agent cannot call tools it was not granted, regardless of what it reasons.
+- Tools not listed in `capabilities.tools` do not exist from the agent's perspective. The agent cannot call tools it was not granted, regardless of what it reasons.
 
 ## Step 6 — Trigger a test run
 
@@ -279,7 +279,7 @@ agent:
 
 ### Restrict Proxmox operations to specific nodes or VMs
 
-Use parameter scoping (ADR-017) to prevent the agent from touching resources outside the intended scope. For example, to restrict `proxmox.restart_vm` to a specific VM ID:
+Use parameter scoping to prevent the agent from touching resources outside the intended scope. For example, to restrict `proxmox.restart_vm` to a specific VM ID:
 
 ```yaml
 - tool: proxmox.restart_vm
