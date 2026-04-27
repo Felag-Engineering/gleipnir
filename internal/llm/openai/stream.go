@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/openai/openai-go/responses"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // consumeStream reads events from the SDK streaming response and emits

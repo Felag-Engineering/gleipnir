@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/arcade"
+	"github.com/felag-engineering/gleipnir/internal/arcade"
 )
 
 // stubArcade starts an httptest.Server that responds to Arcade API paths.

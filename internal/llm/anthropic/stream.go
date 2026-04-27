@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // streamIterator is the subset of *ssestream.Stream[anthropic.MessageStreamEventUnion]

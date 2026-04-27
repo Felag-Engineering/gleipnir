@@ -9,7 +9,7 @@
 // policies that reference dated model pins (e.g. schemas/policy.yaml:49).
 package anthropic
 
-import "github.com/rapp992/gleipnir/internal/llm"
+import "github.com/felag-engineering/gleipnir/internal/llm"
 
 // curatedModels is the display list returned by ListModels. The order here is
 // the order users see in the UI — most capable first within each generation.

@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/admin"
-	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/admin"
+	"github.com/felag-engineering/gleipnir/internal/db"
 )
 
 // Rotate re-encrypts all secrets under newKey. oldKey and newKey are already

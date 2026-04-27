@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/rapp992/gleipnir/internal/infra/metrics"
+	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 )
 
 // TestRegistry_GoCollectorRegistered verifies that the Go runtime collector

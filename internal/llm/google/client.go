@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/infra/metrics"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 	"google.golang.org/genai"
 )
 

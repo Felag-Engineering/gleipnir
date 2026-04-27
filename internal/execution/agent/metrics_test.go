@@ -7,10 +7,10 @@ import (
 	// Import packages that register their collectors at init time so the
 	// smoke test covers all seven metric families in a single Describe pass.
 	"github.com/prometheus/client_golang/prometheus"
-	_ "github.com/rapp992/gleipnir/internal/execution/agent"
-	_ "github.com/rapp992/gleipnir/internal/execution/runstate"
-	"github.com/rapp992/gleipnir/internal/infra/metrics"
-	_ "github.com/rapp992/gleipnir/internal/timeout"
+	_ "github.com/felag-engineering/gleipnir/internal/execution/agent"
+	_ "github.com/felag-engineering/gleipnir/internal/execution/runstate"
+	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
+	_ "github.com/felag-engineering/gleipnir/internal/timeout"
 )
 
 // TestMetricFamiliesRegistered verifies that all seven Priority-1 metric

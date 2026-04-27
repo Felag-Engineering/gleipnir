@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/llm"
-	"github.com/rapp992/gleipnir/internal/llm/anthropic"
-	googlellm "github.com/rapp992/gleipnir/internal/llm/google"
-	"github.com/rapp992/gleipnir/internal/mcp"
-	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm/anthropic"
+	googlellm "github.com/felag-engineering/gleipnir/internal/llm/google"
+	"github.com/felag-engineering/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
 // TestCrossProvider_StructuralParity verifies that the same policy run through

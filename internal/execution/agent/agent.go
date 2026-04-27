@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/infra/config"
-	"github.com/rapp992/gleipnir/internal/infra/logctx"
-	"github.com/rapp992/gleipnir/internal/llm"
-	"github.com/rapp992/gleipnir/internal/mcp"
-	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/infra/config"
+	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
+	"github.com/felag-engineering/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/policy"
 )
 
 // BoundAgent executes a single policy run. It owns the LLM API loop,

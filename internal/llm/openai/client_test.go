@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/openai/openai-go/option"
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // newTestClient builds a Client pointed at the given httptest.Server.

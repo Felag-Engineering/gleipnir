@@ -5,8 +5,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/rapp992/gleipnir/internal/http/httputil"
-	"github.com/rapp992/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/http/httputil"
+	"github.com/felag-engineering/gleipnir/internal/policy"
 )
 
 // PolicyWebhookHandler serves the rotate and reveal endpoints for webhook secrets.

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // mcpText builds the JSON bytes for an MCP content array containing one text item.

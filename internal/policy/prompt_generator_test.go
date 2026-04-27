@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 func TestRenderSystemPrompt_DefaultPreamble(t *testing.T) {

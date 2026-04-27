@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/llm/factory"
+	"github.com/felag-engineering/gleipnir/internal/llm/factory"
 )
 
 func TestNewClientForProvider(t *testing.T) {

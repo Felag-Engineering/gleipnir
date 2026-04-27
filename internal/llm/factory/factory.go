@@ -9,10 +9,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/rapp992/gleipnir/internal/llm"
-	"github.com/rapp992/gleipnir/internal/llm/anthropic"
-	"github.com/rapp992/gleipnir/internal/llm/google"
-	"github.com/rapp992/gleipnir/internal/llm/openai"
+	"github.com/felag-engineering/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm/anthropic"
+	"github.com/felag-engineering/gleipnir/internal/llm/google"
+	"github.com/felag-engineering/gleipnir/internal/llm/openai"
 )
 
 // NewClientForProvider creates an LLMClient for the named provider using the

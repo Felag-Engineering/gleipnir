@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 func loadStreamFixture(t *testing.T, name string) io.ReadCloser {

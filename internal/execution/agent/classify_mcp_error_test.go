@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/rapp992/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/mcp"
 )
 
 func TestClassifyMCPError(t *testing.T) {

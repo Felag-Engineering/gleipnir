@@ -6,7 +6,7 @@ import (
 
 	"github.com/ohler55/ojg/jp"
 	"github.com/ohler55/ojg/oj"
-	"github.com/rapp992/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // checkResult holds the raw output and any error from a single MCP tool call.

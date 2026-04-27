@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/db"
 )
 
 // mockSettingsQuerier implements SettingsQuerier for testing.

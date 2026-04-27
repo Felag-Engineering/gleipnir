@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/mcp"
-	"github.com/rapp992/gleipnir/internal/model"
-	"github.com/rapp992/gleipnir/internal/testutil"
-	"github.com/rapp992/gleipnir/internal/timeout"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/timeout"
 )
 
 // approvalEntry returns a resolvedToolEntry with the given timeout (0 means no timeout).

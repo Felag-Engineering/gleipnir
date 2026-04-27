@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rapp992/gleipnir/internal/db"
-	"github.com/rapp992/gleipnir/internal/http/auth"
-	"github.com/rapp992/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/http/auth"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
 // seedUser inserts a user with a placeholder password hash and returns the user ID.

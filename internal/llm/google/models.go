@@ -4,7 +4,7 @@
 // available, and must not throw errors simply by existing.
 package google
 
-import "github.com/rapp992/gleipnir/internal/llm"
+import "github.com/felag-engineering/gleipnir/internal/llm"
 
 // curatedModels is the display list returned by ListModels. The order here is
 // the order users see in the UI — most capable first within each generation.
