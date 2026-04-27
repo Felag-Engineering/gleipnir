@@ -8,4 +8,4 @@ End-to-end setups for common Gleipnir automations. Each playbook includes the tr
 - [Homelab DevOps operations](devops/README.md)
 - [Keep your homelab up when hardware fails](homelab-failover.md) — **Status: Planned**
 - [Research your own todo list](todoist-research/README.md)
-- [Connect to Composio (hosted MCP provider)](composio/README.md)
+- [Connect to Arcade (hosted MCP runtime)](arcade/README.md)
