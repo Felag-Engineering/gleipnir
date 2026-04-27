@@ -86,6 +86,7 @@ export interface ApiMcpServer {
   has_drift: boolean
   created_at: string
   auth_header_keys?: string[] // sorted header names; values are never returned
+  is_arcade_gateway: boolean
 }
 
 // Matches mcp_handler.go → mcpServerCreateResponse (POST /api/v1/mcp/servers)
@@ -348,4 +349,19 @@ export interface ApiOpenAICompatProviderTestResult {
   ok: boolean
   models_endpoint_available?: boolean
   error?: string
+}
+
+// Matches api/arcade_handler.go → response shapes (ADR-040)
+export type ApiArcadeAuthorizeResponse =
+  | { status: 'completed' }
+  | { status: 'pending'; url: string; auth_id: string }
+  | { status: 'failed'; error?: string }
+
+export interface ArcadeAuthorizeRequest {
+  toolkit: string
+}
+
+export interface ArcadeAuthorizeWaitRequest {
+  toolkit: string
+  auth_id: string
 }

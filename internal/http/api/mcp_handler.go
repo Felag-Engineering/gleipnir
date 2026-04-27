@@ -20,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/rapp992/gleipnir/internal/admin"
+	"github.com/rapp992/gleipnir/internal/arcade"
 	"github.com/rapp992/gleipnir/internal/db"
 	"github.com/rapp992/gleipnir/internal/http/auth"
 	"github.com/rapp992/gleipnir/internal/http/httputil"
@@ -62,6 +63,7 @@ type mcpServerResponse struct {
 	HasDrift         bool     `json:"has_drift"`
 	CreatedAt        string   `json:"created_at"`
 	AuthHeaderKeys   []string `json:"auth_header_keys"` // sorted header names; never includes values
+	IsArcadeGateway  bool     `json:"is_arcade_gateway"`
 }
 
 type mcpServerCreateResponse struct {
@@ -110,6 +112,7 @@ func (h *MCPHandler) serverToResponse(s db.McpServer) mcpServerResponse {
 		HasDrift:         s.HasDrift != 0,
 		CreatedAt:        s.CreatedAt,
 		AuthHeaderKeys:   keys,
+		IsArcadeGateway:  arcade.IsArcadeGateway(s.Url, keys),
 	}
 }
 

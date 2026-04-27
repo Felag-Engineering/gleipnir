@@ -54,7 +54,43 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-037 | Custom Prometheus registry in internal/infra/metrics (leaf package) | 🟢 Decided | v1.0 | internal/infra/metrics (new), all future instrumented packages |
 | ADR-038 | Atomic run-state transitions with optimistic locking   | 🟢 Decided | v1.0 | runs.version column, RunStateMachine.Transition (tx), runstate.ErrTransitionConflict |
 | ADR-039 | Per-server encrypted auth headers for authenticated MCP providers | 🟢 Decided | v1.0 | mcp_servers table, internal/mcp, internal/admin, gleipnirctl rotate-key |
+| ADR-040 | Arcade gateway pre-authorization (toolkit-level OAuth pre-warm) | 🟢 Decided | v1.0 | internal/arcade (new), internal/http/api/arcade_handler, frontend ServerDetailModal |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
+
+---
+
+## ADR-040: Arcade gateway pre-authorization
+
+**Status:** Decided
+**Date:** 2026-04
+
+### Context
+
+ADR-039 covered transport auth (Arcade API key + `Arcade-User-ID` header injected on every MCP request). However, Arcade-style hosted brokers also require per-(user_id, tool) OAuth grants to be completed before any tool call. The existing flow surfaces auth redirect URLs to the agent at runtime, defeating autonomous operation and requiring manual intervention in the middle of a run.
+
+### Decision
+
+- Detection heuristic in `internal/arcade.IsArcadeGateway`: a server is treated as an Arcade gateway iff the host is `api.arcade.dev`, the path starts with `/mcp/`, and the auth headers include both `Authorization` and `Arcade-User-ID`.
+- Toolkit-level pre-auth via Arcade's `/v1/auth/authorize` REST API: operators click one button per toolkit in the existing server detail panel, opening the OAuth flow in a browser tab.
+- Computed `is_arcade_gateway` flag on server responses: no DB column — computed at response-build time from the URL and header names already in the response.
+- New `internal/arcade/` package with no DB dependency: depends only on `internal/db` (for `db.McpTool` in toolkit grouping) and stdlib.
+- Reuses ADR-039 encrypted headers for credentials: API key extracted from `Authorization` header, user ID from `Arcade-User-ID`.
+- UI surface on existing MCP server detail page: `ArcadeAuthSection` rendered conditionally when `is_arcade_gateway && canManage`.
+- The `/authorize/wait` endpoint uses a **10-second Arcade `wait` window** to stay safely under `GLEIPNIR_HTTP_WRITE_TIMEOUT` (default 15s). The frontend re-issues the wait endpoint in a loop until the response reaches a terminal status (`completed` or `failed`).
+
+### Out of scope
+
+- Per-policy or per-user `user_id` scoping (deferred per ADR-039).
+- Runtime auth-required handling via the feedback channel (covered by issue #103 follow-up).
+- Background auth health scanner / auto-refresh of toolkit status.
+- `kind` discriminator column on `mcp_servers` — detection stays heuristic.
+
+### Consequences
+
+- Operators do one OAuth click per toolkit before any policy run; subsequent runs are fully autonomous.
+- No schema changes: credentials reuse `auth_headers_encrypted` from ADR-039.
+- `internal/arcade/` is leaf-package-shaped (depends on `internal/db` and stdlib only).
+- OAuth tokens live with Arcade (server-side); Gleipnir never stores them. Grants persist across restarts and key rotations until upstream revocation.
 
 ---
 
@@ -65,7 +101,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 
 ### Context
 
-Some MCP providers require authentication on every HTTP request. Composio, for example, requires an `x-api-key` header carrying a per-account API token. The `mcp_servers` table previously stored only `name` and `url` — there was no mechanism to attach authentication material to a server registration. Operators working around this would have to embed credentials in the URL (query parameters), which are visible in logs and in the Gleipnir UI.
+Some MCP providers require authentication on every HTTP request — for example, a hosted MCP gateway may require an `Authorization: Bearer <token>` or `x-api-key` header carrying a per-account API token. The `mcp_servers` table previously stored only `name` and `url` — there was no mechanism to attach authentication material to a server registration. Operators working around this would have to embed credentials in the URL (query parameters), which are visible in logs and in the Gleipnir UI.
 
 Gleipnir already has a pattern for this problem: `internal/admin` provides an AES-256-GCM encrypt/decrypt helper (keyed from `GLEIPNIR_ENCRYPTION_KEY`) used for provider API keys and webhook secrets.
 
@@ -91,13 +127,13 @@ Gleipnir already has a pattern for this problem: `internal/admin` provides an AE
 ### Out of scope
 
 - Per-policy or per-user credential scoping. All policies that grant tools from a given MCP server share the same auth headers. Scoped credentials require URL templating and/or a new `policy_mcp_overrides` join table — deferred to a follow-up issue.
-- OAuth orchestration of the Composio account itself. Operators connect their OAuth integrations in the Composio dashboard; Gleipnir only holds the Composio API key, not downstream OAuth tokens.
+- OAuth orchestration of the upstream provider account itself. Operators connect downstream OAuth integrations in their provider's dashboard; Gleipnir holds only the static auth headers (e.g. an API key or bearer token), not the downstream OAuth tokens themselves. (See ADR-040 for the Arcade-specific in-app pre-authorization flow built on top of this.)
 
 ### Consequences
 
 - Operators can register any MCP server that requires a static API key or bearer token without embedding credentials in the URL.
-- Auth header values are never returned over the API. An operator who loses their Composio API key must regenerate it at the source and update the Gleipnir server registration — Gleipnir provides no recovery path for the plaintext value.
-- The trust expansion introduced by connecting to a hosted provider like Composio (where downstream OAuth tokens for Gmail, Slack, etc. reside with that provider) is operator-visible — documented in the Composio playbook (`docs/playbooks/composio/README.md`).
+- Auth header values are never returned over the API. An operator who loses their upstream API key or bearer token must regenerate it at the source and update the Gleipnir server registration — Gleipnir provides no recovery path for the plaintext value.
+- The trust expansion introduced by connecting to a hosted provider (where downstream OAuth tokens for services like Gmail and Slack reside with that provider) is operator-visible — documented in the Arcade playbook (`docs/playbooks/arcade/README.md`).
 - `internal/mcp` now imports `internal/admin`. This is an intentional package boundary adjustment, consistent with the `internal/trigger` → `internal/admin` precedent.
 
 ---

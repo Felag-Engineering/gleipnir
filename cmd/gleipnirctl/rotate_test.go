@@ -120,11 +120,11 @@ func seedDB(t *testing.T, s *db.Store, encKey []byte) {
 	testutil.InsertPolicy(t, s, "policy-no-secret", "no-secret", "manual", testutil.MinimalWebhookPolicy)
 
 	// MCP server with encrypted auth headers.
-	mcpHeadersJSON := `[{"name":"x-api-key","value":"composio-secret"}]`
+	mcpHeadersJSON := `[{"name":"x-api-key","value":"hosted-mcp-secret"}]`
 	mcpCiphertext := encryptWith(mcpHeadersJSON)
 	if _, err := s.Queries().CreateMCPServer(ctx, db.CreateMCPServerParams{
 		ID:                   "mcp-with-headers",
-		Name:                 "composio",
+		Name:                 "hosted-mcp",
 		Url:                  "https://example.com/mcp",
 		CreatedAt:            now,
 		AuthHeadersEncrypted: &mcpCiphertext,

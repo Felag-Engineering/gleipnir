@@ -34,6 +34,7 @@ const SERVER_1: ApiMcpServer = {
   last_discovered_at: '2026-03-10T12:00:00Z',
   has_drift: false,
   created_at: '2026-03-01T00:00:00Z',
+  is_arcade_gateway: false,
 }
 
 const SERVER_2: ApiMcpServer = {
@@ -43,6 +44,7 @@ const SERVER_2: ApiMcpServer = {
   last_discovered_at: null,
   has_drift: false,
   created_at: '2026-03-02T00:00:00Z',
+  is_arcade_gateway: false,
 }
 
 const TOOL_1: ApiMcpTool = {

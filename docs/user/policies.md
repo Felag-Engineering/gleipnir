@@ -8,7 +8,7 @@ Every policy has exactly one trigger.
 
 ### `manual`
 
-Fired on demand from the UI (**Trigger** button on the policy detail page) or via the API. No additional configuration required. The trigger payload is empty unless you supply one through the API.
+Fired on demand from the UI (**Run now** button on the agent detail page, or the play icon on the agents list) or via the API. No additional configuration required. The trigger payload is empty unless you supply one through the API.
 
 ```yaml
 trigger:

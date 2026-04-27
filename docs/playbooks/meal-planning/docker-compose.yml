@@ -1,4 +1,7 @@
-# MCP servers for the meal-planning playbook.
+# Mealie MCP server for the meal-planning playbook.
+#
+# Calendar access goes through the Arcade gateway, which is registered in
+# Gleipnir's UI (not via this compose file). See the Arcade playbook for setup.
 #
 # Run from this directory:
 #   docker compose up -d
@@ -6,18 +9,6 @@
 # Secrets are loaded from .env in this directory (see README.md § Step 2).
 
 services:
-
-  # Fetch MCP server — fetches arbitrary URLs (used to read the Google Calendar ICS feed).
-  # Repo: https://github.com/modelcontextprotocol/servers/tree/main/src/fetch
-  fetch-mcp:
-    image: node:22-alpine
-    command: >
-      npx -y supergateway
-      --port 8101
-      --stdio "npx -y @modelcontextprotocol/server-fetch"
-    ports:
-      - "8101:8101"
-    restart: unless-stopped
 
   # Mealie MCP server — reads recipes and creates meal plans.
   # Repo: https://github.com/that0n3guy/mealie-mcp-server-ts

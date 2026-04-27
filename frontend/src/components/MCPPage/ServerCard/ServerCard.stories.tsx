@@ -18,6 +18,7 @@ const server: ApiMcpServer = {
   last_discovered_at: new Date(Date.now() - 3_600_000 * 4).toISOString(),
   has_drift: false,
   created_at: new Date(Date.now() - 86_400_000).toISOString(),
+  is_arcade_gateway: false,
 }
 
 const tools: ApiMcpTool[] = [

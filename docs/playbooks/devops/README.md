@@ -136,7 +136,7 @@ docker compose logs caddy-mcp
 
 ## Step 4 — Register each MCP server in Gleipnir
 
-In Gleipnir, go to **Settings → MCP Servers → Add Server** four times. Use the LAN IP of the host running the MCP containers:
+In Gleipnir, go to **Tools → Add MCP server** four times. Use the LAN IP of the host running the MCP containers:
 
 | Name | URL |
 |------|-----|
@@ -151,7 +151,7 @@ After adding each server, click **Discover**. Note the exact tool names returned
 
 ## Step 5 — Create the policy
 
-Go to **Policies → New Policy** and fill in the form. The YAML below is the payload the form produces.
+Go to **Agents → New Agent** and fill in the form. The YAML below is the payload the form produces.
 
 Read-only tools have no approval gate so the agent can gather state freely. Write tools (`restart_*`, `update_*`, `execute_*`) require approval — the operator reviews the exact parameters before the MCP server is called.
 
@@ -270,7 +270,7 @@ agent:
 
 ## Step 6 — Trigger a test run
 
-1. In Gleipnir, go to **Policies → devops → Trigger**.
+1. In Gleipnir, go to **Agents → devops → Run now**.
 2. Enter a read-only task to verify connectivity first: *"List all running containers on the Docker host."*
 3. The agent calls `docker.list_containers` — no approval required. Confirm the list looks correct.
 4. Next, test a write: *"Restart the nginx container on the Docker host."* The agent will call `docker.list_containers`, then `docker.restart_container` (approve in the approval modal), then verify. Review each step in the run trace.
@@ -349,4 +349,4 @@ agent:
 | `caddy-mcp` build fails | `go install` cannot reach the module proxy | Check internet access from the build host. If offline, add `--network=host` or pre-cache the module. |
 | `caddy-mcp` cannot reach Caddy | Caddy admin API bound to localhost only | On the Caddy host, change `admin localhost:2019` to `admin 0.0.0.0:2019` (or the Gleipnir host's LAN IP) in the Caddyfile and reload. |
 | Gleipnir cannot reach MCP servers | Wrong IP or ports not listening | Confirm MCP containers are up with `docker compose ps`. Test connectivity from the Gleipnir host: `curl http://<HOST_IP>:8201/`. |
-| Tool names in policy don't match Discover output | MCP server updated its tool names | Click Discover again in Settings → MCP Servers and update `tool:` entries in the policy. |
+| Tool names in policy don't match Discover output | MCP server updated its tool names | Click Discover again on the **Tools** page and update `tool:` entries in the policy. |

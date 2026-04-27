@@ -55,16 +55,15 @@ Create a `docker-compose.yml` and a `.env` file as shown in [Setup](docs/user/se
 
 `GLEIPNIR_ENCRYPTION_KEY` is a mandatory AES-256 key that encrypts every provider API key and webhook secret stored in the database. Losing it makes those credentials permanently unrecoverable — there is no fallback decryption path. Store it in a password manager or secrets vault immediately after generating it. See [Operations — Backing up the encryption key](docs/user/operations.md#backing-up-the-encryption-key).
 
-## Your first policy
+## Your first agent
 
 Once the stack is running and you're logged in, here's how to wire up your first agent:
 
-1. Go to **Tools** (`/tools`) and click **Add Server**. Give it a name and the URL of any MCP server you have running.
-2. Click **Discover** on the new server. Gleipnir reads the server's tool list and shows them in the UI.
-3. For each discovered tool, set its tag: `sensor` for read-only tools, `actuator` for tools that change something. Mark anything risky as requiring approval.
-4. Go to **Agents → New** (`/agents/new`). Pick a webhook trigger, write a short task description for the agent, and check the boxes for the tools you just tagged.
-5. Click **Trigger** on the new policy to fire a manual run.
-6. Open the run from the runs list and watch the trace populate as the agent works.
+1. Go to **Tools** (`/tools`) and click **Add MCP server**. Give it a name and the URL of any MCP server you have running.
+2. Click **Discover** on the new server. Gleipnir reads the server's tool list and shows them in the UI. Disable any tool you don't want any agent to use — the kill switch on the Tools page is server-wide.
+3. Go to **Agents → New Agent** (`/agents/new`). Pick a webhook (or manual) trigger, write a short task description for the agent, and grant the tools you want the agent to use. Mark any write/destructive tool as requiring approval — this gates that tool behind operator review at runtime.
+4. Click **Run now** on the new agent to fire a manual run.
+5. Open the run from the **Run History** list and watch the trace populate as the agent works.
 
 For fully worked examples against specific services, follow one of the [playbooks](docs/playbooks/).
 
