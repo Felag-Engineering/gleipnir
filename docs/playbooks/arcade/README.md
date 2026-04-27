@@ -35,7 +35,7 @@ This is an intentional trust expansion. Review the tools you grant to each polic
 
 ## Step 3 — Register the MCP server in Gleipnir
 
-1. In Gleipnir, go to **Settings → MCP Servers → Add Server**.
+1. In Gleipnir, go to **Tools → Add MCP server**.
 2. Fill in the fields:
    - **Name:** `arcade-gateway` (or a descriptive name for this gateway)
    - **URL:** `https://api.arcade.dev/mcp/<gateway-slug>` (replace `<gateway-slug>` with your gateway's slug)
@@ -49,7 +49,7 @@ The API key and user ID are stored encrypted using AES-256-GCM. Neither value is
 
 ## Step 4 — Discover tools
 
-After saving, Gleipnir attempts auto-discovery immediately. If it does not find tools, open the server detail panel and click **Rediscover**. The tool list should show qualified names like `Gmail.SendEmail`, `GoogleCalendar.CreateEvent`, etc.
+After saving, Gleipnir attempts auto-discovery immediately. If it does not find tools, open the server detail panel and click **Rediscover**. The tool list should show toolkit-qualified names like `Gmail_SendEmail`, `GoogleCalendar_CreateEvent`, etc. (note the underscore — MCP tool names use `Toolkit_Action`). In policy YAML, you reference these as `<server-name>.<tool-name>`, e.g. `arcade-gateway.Gmail_SendEmail`.
 
 ## Step 5 — Authorize each toolkit
 
@@ -92,6 +92,7 @@ If you need to act as two different Arcade users, register two separate MCP serv
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Tool call returns an OAuth URL despite the UI showing ✓ Authorized | `Arcade-User-ID` header in Gleipnir does not match the user ID used during the OAuth flow | Re-authorize after correcting the `Arcade-User-ID` header value to the email used in Arcade. |
+| Tool call returns `[TOOL_RUNTIME_FATAL] ... RefreshError` despite the UI showing ✓ Authorized | Arcade has a stale or invalidated OAuth token cached for this user_id; the pre-auth API still reports authorized because Arcade does not validate the token at check-time | Force a fresh OAuth flow: rotate `Arcade-User-ID` to a new value (treats it as a fresh user with no cached state) or revoke the user/grant in the Arcade dashboard, then re-authorize. |
 | All toolkits stuck on `[Check →]` after clicking | API key is invalid or the gateway has no tools yet | Verify the `Authorization` header value is correct. Ensure tools were discovered (Step 4). |
 | Test Connection fails with 401 | Wrong or expired API key | Regenerate the key in Arcade's Settings → API Keys, then update the `Authorization` header value in Gleipnir. |
 | Toolkit row stays in ⚠ Action needed after completing OAuth | OAuth was completed with a different browser session or the tab was closed before Arcade confirmed completion | Click **Check →** again on the row to re-check the authorization status. |

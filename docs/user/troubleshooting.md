@@ -33,7 +33,7 @@ At run start, Gleipnir re-validates all tool references in the policy against th
 docker compose exec api wget -qO- http://<mcp-server-host>:<port>/health
 ```
 
-If the server URL uses a hostname, verify it resolves inside the container network. If you recently changed the server URL, update the entry at **Settings → MCP Servers** and run **Discover** again.
+If the server URL uses a hostname, verify it resolves inside the container network. If you recently changed the server URL, update the entry on the **Tools** page and run **Discover** again.
 
 ### Run shows `interrupted` after a restart
 

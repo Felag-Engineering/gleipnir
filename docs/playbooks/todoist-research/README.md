@@ -76,7 +76,7 @@ docker compose logs duckduckgo-mcp
 
 ## Step 4 — Register each MCP server in Gleipnir
 
-In Gleipnir, go to **Settings → MCP Servers → Add Server** twice:
+In Gleipnir, go to **Tools → Add MCP server** twice:
 
 | Name | URL (same Compose project) | URL (separate host) |
 |------|---------------------------|---------------------|
@@ -89,7 +89,7 @@ After adding each server, click **Discover**. Note the exact tool names returned
 
 ## Step 5 — Create the policy
 
-Go to **Policies → New Policy** and fill in the form. The YAML below is the payload the form produces — it is included here as a reference and to make the field mapping explicit.
+Go to **Agents → New Agent** and fill in the form. The YAML below is the payload the form produces — it is included here as a reference and to make the field mapping explicit.
 
 ```yaml
 name: todoist-research
@@ -200,7 +200,7 @@ Before waiting for the poll to fire, trigger a test run manually:
 1. In Todoist, create a task with a clear research prompt, e.g.:
    `Find a physical therapist near Burlington VT`
 2. Apply the `AI_Assist` label to the task.
-3. In Gleipnir, go to **Policies → todoist-research → Trigger** to start a run immediately without waiting for the 15-minute poll.
+3. In Gleipnir, go to **Agents → todoist-research → Run now** to start a run immediately without waiting for the 15-minute poll.
 4. Watch the run appear in the **Runs** list. Click into it to see the reasoning trace: the search queries, and the approval requests for `create_comments` and `update_tasks`.
 5. Review the proposed comment and label removal, then approve both. Verify the comment appears on the task in Todoist and that the `AI_Assist` label has been removed.
 
@@ -264,4 +264,4 @@ If you want some tasks researched immediately rather than waiting for the next p
 | Comment is posted but label not removed | `update_tasks` approval timed out (1h) | Approve the `update_tasks` request in Gleipnir before the timeout expires, or widen the timeout. Alternatively remove the approval gate on `update_tasks` to make label removal automatic. |
 | Run hits token limit | Too many tasks in one poll batch | Add a `limit` parameter to `todoist.get_tasks_list` in both the trigger check and the policy capabilities to cap the number of tasks per run (e.g. `limit: 3`). |
 | `.env` variables are not applied | `.env` is in the wrong directory | The file must be in `docs/playbooks/todoist-research/`, the same directory where you run `docker compose up`. |
-| Tool names in policy don't match Discover output | MCP server updated its tool names | Click Discover again on each server in Settings → MCP Servers, then update the `tool:` entries in the policy to match the new names. |
+| Tool names in policy don't match Discover output | MCP server updated its tool names | Click Discover again on each server on the **Tools** page, then update the `tool:` entries in the policy to match the new names. |

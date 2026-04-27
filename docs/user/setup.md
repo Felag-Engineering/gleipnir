@@ -111,19 +111,20 @@ If this is a local-only instance, you can skip this step.
 Gleipnir calls external tools over MCP (Model Context Protocol). You need at least one MCP server configured before creating a useful policy.
 
 1. Go to **Tools** (`/tools`).
-2. Click **Add Server**, give it a name, and enter the HTTP URL of your MCP server (e.g. `http://my-mcp-server:8000`). Note: `localhost` inside the container refers to the Gleipnir container itself — use a hostname or the Docker network alias for servers running on the host.
+2. Click **Add MCP server**, give it a name, and enter the HTTP URL of your MCP server (e.g. `http://my-mcp-server:8000`). Note: `localhost` inside the container refers to the Gleipnir container itself — use a hostname or the Docker network alias for servers running on the host.
 3. Click **Discover** to fetch its tool list.
-4. For each tool, set the tag: `sensor` for read-only tools, `actuator` for tools that change state. The tags inform the approval workflow and operator review — label tools accurately.
-5. Mark any tool that requires human confirmation as requiring **Approval**.
+4. (Optional) Disable any tool you don't want any agent to be able to use. The toggle on the Tools page is a server-wide kill switch — disabled tools cannot be granted to any agent.
 
-## Create and verify your first policy
+Approval gating and parameter scoping are configured per-agent (in the agent editor), not on the Tools page.
 
-1. Go to **Agents → New** (`/agents/new`).
+## Create and verify your first agent
+
+1. Go to **Agents → New Agent** (`/agents/new`).
 2. Set the trigger to **Manual** — no external event source needed to test.
 3. Write a short task description in the **Task** field.
-4. Under **Capabilities**, check at least one tool from the MCP server you just added.
-5. Save the policy, then click **Trigger** to fire a manual run.
-6. Open the run from the runs list and watch the reasoning trace populate.
+4. Under **Capabilities**, grant at least one tool from the MCP server you just added. For any write/destructive tool, mark it as requiring approval — runs that try to use it will pause for operator review.
+5. Save the agent, then click **Run now** to fire a manual run.
+6. Open the run from **Run History** and watch the reasoning trace populate.
 
 If the run completes, the stack is working end to end.
 
