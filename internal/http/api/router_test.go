@@ -58,24 +58,31 @@ func buildTestRouterWithStore(t *testing.T, store *db.Store) http.Handler {
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
 
 	return api.BuildRouter(api.RouterConfig{
-		Store:                store,
-		Broadcaster:          broadcaster,
-		Registry:             registry,
-		RunManager:           runManager,
-		Launcher:             launcher,
-		ModelLister:          providerRegistry,
-		ProviderRegistry:     providerRegistry,
-		ModelFilter:          nil,
-		AuthHandler:          authHandler,
-		SettingsHandler:      settingsHandler,
-		AdminHandler:         adminHandler,
-		OpenAICompatHandler:  openaiCompatHandler,
-		WebhookHandler:       webhookHandler,
-		SSEHandler:           sseHandler,
-		PolicyWebhookHandler: policyWebhookHandler,
-		Version:              "test",
-		StartTime:            time.Now(),
-		DBPath:               "",
+		Handlers: api.HandlerBundle{
+			AuthHandler:          authHandler,
+			SettingsHandler:      settingsHandler,
+			AdminHandler:         adminHandler,
+			OpenAICompatHandler:  openaiCompatHandler,
+			WebhookHandler:       webhookHandler,
+			SSEHandler:           sseHandler,
+			PolicyWebhookHandler: policyWebhookHandler,
+		},
+		Services: api.BackgroundServices{
+			Store:            store,
+			Broadcaster:      broadcaster,
+			Registry:         registry,
+			RunManager:       runManager,
+			Launcher:         launcher,
+			ModelLister:      providerRegistry,
+			ProviderRegistry: providerRegistry,
+			// ModelFilter, Poller, Scheduler, Cron, EncryptionKey intentionally
+			// left as zero values — tests don't require them.
+		},
+		Metadata: api.Metadata{
+			Version:   "test",
+			StartTime: time.Now(),
+			DBPath:    "",
+		},
 	})
 }
 

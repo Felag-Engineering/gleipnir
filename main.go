@@ -59,6 +59,8 @@ func main() {
 func run(cfg config.Config) error {
 	startTime := time.Now()
 
+	// Phase 1: background services and infrastructure.
+
 	// Root context cancelled on shutdown so background components (Scheduler) can stop.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -244,18 +246,26 @@ func run(cfg config.Config) error {
 		return fmt.Errorf("start cron runner: %w", err)
 	}
 
+	services := api.BackgroundServices{
+		Store:            store,
+		Broadcaster:      broadcaster,
+		Registry:         registry,
+		RunManager:       runManager,
+		Launcher:         launcher,
+		ModelLister:      providerRegistry,
+		ProviderRegistry: providerRegistry,
+		ModelFilter:      &modelFilterAdapter{q: store.Queries()},
+		Poller:           poller,
+		Scheduler:        scheduler,
+		Cron:             cronRunner,
+		EncryptionKey:    encryptionKey,
+	}
+
+	// Phase 2: HTTP handlers.
 	authHandler := auth.NewHandler(store.Queries(), store.DB())
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
 
-	r := api.BuildRouter(api.RouterConfig{
-		Store:                store,
-		Broadcaster:          broadcaster,
-		Registry:             registry,
-		RunManager:           runManager,
-		Launcher:             launcher,
-		ModelLister:          providerRegistry,
-		ProviderRegistry:     providerRegistry,
-		ModelFilter:          &modelFilterAdapter{q: store.Queries()},
+	handlers := api.HandlerBundle{
 		AuthHandler:          authHandler,
 		SettingsHandler:      settingsHandler,
 		AdminHandler:         adminHandler,
@@ -263,13 +273,17 @@ func run(cfg config.Config) error {
 		WebhookHandler:       webhookHandler,
 		SSEHandler:           sseHandler,
 		PolicyWebhookHandler: policyWebhookHandler,
-		Poller:               poller,
-		Scheduler:            scheduler,
-		Cron:                 cronRunner,
-		EncryptionKey:        encryptionKey,
-		Version:              version,
-		StartTime:            startTime,
-		DBPath:               cfg.DBPath,
+	}
+
+	// Phase 3: build the router.
+	r := api.BuildRouter(api.RouterConfig{
+		Handlers: handlers,
+		Services: services,
+		Metadata: api.Metadata{
+			Version:   version,
+			StartTime: startTime,
+			DBPath:    cfg.DBPath,
+		},
 	})
 
 	srv := &http.Server{

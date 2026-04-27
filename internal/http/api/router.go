@@ -29,18 +29,9 @@ type PolicyNotifier interface {
 	Notify(ctx context.Context, policyID string)
 }
 
-// RouterConfig bundles all dependencies needed to build the complete route tree.
-// Every handler is pre-constructed so BuildRouter only wires routes — it does
-// not make construction decisions.
-type RouterConfig struct {
-	Store                *db.Store
-	Broadcaster          *sse.Broadcaster
-	Registry             *mcp.Registry
-	RunManager           *run.RunManager
-	Launcher             *run.RunLauncher
-	ModelLister          llm.ModelLister       // interface for listing available models
-	ProviderRegistry     *llm.ProviderRegistry // concrete registry for policy validation
-	ModelFilter          ModelFilter
+// HandlerBundle groups all pre-constructed HTTP handler structs. Every field is
+// a concrete handler type — BuildRouter never constructs handlers itself.
+type HandlerBundle struct {
 	AuthHandler          *auth.Handler
 	SettingsHandler      *auth.SettingsHandler
 	AdminHandler         *admin.Handler
@@ -48,13 +39,40 @@ type RouterConfig struct {
 	WebhookHandler       *trigger.WebhookHandler
 	SSEHandler           *sse.Handler
 	PolicyWebhookHandler *PolicyWebhookHandler
-	Poller               PolicyNotifier // notified on poll-trigger policy mutations
-	Scheduler            PolicyNotifier // notified on scheduled-trigger policy mutations
-	Cron                 PolicyNotifier // notified on cron-trigger policy mutations
-	EncryptionKey        []byte         // AES-256 key for MCP auth header encryption; nil when unset
-	Version              string
-	StartTime            time.Time
-	DBPath               string
+}
+
+// BackgroundServices groups shared infrastructure and long-lived dependencies.
+// These are constructed before any handlers and are referenced by both the
+// HTTP layer and shutdown logic (e.g. RunManager.CancelAll, poller.Wait).
+type BackgroundServices struct {
+	Store            *db.Store
+	Broadcaster      *sse.Broadcaster
+	Registry         *mcp.Registry
+	RunManager       *run.RunManager
+	Launcher         *run.RunLauncher
+	ModelLister      llm.ModelLister       // interface for listing available models
+	ProviderRegistry *llm.ProviderRegistry // concrete registry for policy validation
+	ModelFilter      ModelFilter
+	Poller           PolicyNotifier // notified on poll-trigger policy mutations
+	Scheduler        PolicyNotifier // notified on scheduled-trigger policy mutations
+	Cron             PolicyNotifier // notified on cron-trigger policy mutations
+	EncryptionKey    []byte         // AES-256 key for MCP auth header encryption; nil when unset
+}
+
+// Metadata holds descriptive, read-only values about the running instance.
+type Metadata struct {
+	Version   string
+	StartTime time.Time
+	DBPath    string
+}
+
+// RouterConfig bundles all dependencies needed to build the complete route tree.
+// Fields are grouped by concern so the caller's wiring code reads as three
+// sequential phases: services → handlers → router.
+type RouterConfig struct {
+	Handlers HandlerBundle
+	Services BackgroundServices
+	Metadata Metadata
 }
 
 // BuildRouter constructs the complete chi.Router for the application.
@@ -75,14 +93,14 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	r.Use(middleware.Compress(5))
 
 	// SSE endpoint is unprotected: the UI needs events before and during auth.
-	r.Get("/api/v1/events", cfg.SSEHandler.ServeHTTP)
+	r.Get("/api/v1/events", cfg.Handlers.SSEHandler.ServeHTTP)
 
 	// Webhook endpoint is unprotected at the session layer: the WebhookHandler
 	// dispatches authentication based on the trigger.auth mode stored in the
 	// policy YAML (hmac | bearer | none). The shared secret itself lives in the
 	// webhook_secret_encrypted DB column — not in YAML — per ADR-034.
 	r.With(middleware.Throttle(10), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).
-		Post("/api/v1/webhooks/{policyID}", cfg.WebhookHandler.Handle)
+		Post("/api/v1/webhooks/{policyID}", cfg.Handlers.WebhookHandler.Handle)
 
 	// Health check is intentionally public (no auth required).
 	// DO NOT move this route inside the authenticated sub-router — doing so
@@ -94,43 +112,43 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 	// Auth routes that do not require an existing session.
 	r.Route("/api/v1/auth", func(r chi.Router) {
-		r.Get("/status", cfg.AuthHandler.Status)
-		r.With(middleware.Throttle(5), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/setup", cfg.AuthHandler.Setup)
-		r.With(middleware.Throttle(10), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/login", cfg.AuthHandler.Login)
-		r.Post("/logout", cfg.AuthHandler.Logout)
+		r.Get("/status", cfg.Handlers.AuthHandler.Status)
+		r.With(middleware.Throttle(5), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/setup", cfg.Handlers.AuthHandler.Setup)
+		r.With(middleware.Throttle(10), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/login", cfg.Handlers.AuthHandler.Login)
+		r.Post("/logout", cfg.Handlers.AuthHandler.Logout)
 	})
 
-	requireAuth := auth.RequireAuth(cfg.Store.Queries())
+	requireAuth := auth.RequireAuth(cfg.Services.Store.Queries())
 
 	// All UI-facing API endpoints require a valid session cookie.
 	r.Group(func(r chi.Router) {
 		r.Use(requireAuth)
 
 		// Auth: session management and password operations.
-		r.Get("/api/v1/auth/me", cfg.AuthHandler.Me)
-		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/api/v1/auth/password", cfg.AuthHandler.ChangePasswordHandler)
-		r.Get("/api/v1/auth/sessions", cfg.AuthHandler.ListSessionsHandler)
-		r.Delete("/api/v1/auth/sessions/{sessionID}", cfg.AuthHandler.RevokeSessionHandler)
+		r.Get("/api/v1/auth/me", cfg.Handlers.AuthHandler.Me)
+		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/api/v1/auth/password", cfg.Handlers.AuthHandler.ChangePasswordHandler)
+		r.Get("/api/v1/auth/sessions", cfg.Handlers.AuthHandler.ListSessionsHandler)
+		r.Delete("/api/v1/auth/sessions/{sessionID}", cfg.Handlers.AuthHandler.RevokeSessionHandler)
 
 		// Settings: per-user preferences.
-		r.Get("/api/v1/settings/preferences", cfg.SettingsHandler.GetPreferences)
-		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Put("/api/v1/settings/preferences", cfg.SettingsHandler.UpdatePreferences)
+		r.Get("/api/v1/settings/preferences", cfg.Handlers.SettingsHandler.GetPreferences)
+		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Put("/api/v1/settings/preferences", cfg.Handlers.SettingsHandler.UpdatePreferences)
 
 		// Users: admin-only user management.
 		r.Route("/api/v1/users", func(r chi.Router) {
 			r.Use(auth.RequireRole(model.RoleAdmin))
-			r.Get("/", cfg.AuthHandler.ListUsersHandler)
-			r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/", cfg.AuthHandler.CreateUserHandler)
-			r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Patch("/{id}", cfg.AuthHandler.UpdateUserHandler)
+			r.Get("/", cfg.Handlers.AuthHandler.ListUsersHandler)
+			r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/", cfg.Handlers.AuthHandler.CreateUserHandler)
+			r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Patch("/{id}", cfg.Handlers.AuthHandler.UpdateUserHandler)
 		})
 
 		// Manual trigger: operators fire a run from the UI or API.
-		manualTriggerHandler := trigger.NewManualTriggerHandler(cfg.Store, cfg.Launcher, cfg.AdminHandler)
+		manualTriggerHandler := trigger.NewManualTriggerHandler(cfg.Services.Store, cfg.Services.Launcher, cfg.Handlers.AdminHandler)
 		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize), auth.RequireRole(model.RoleOperator)).
 			Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
 
 		// Runs: list, inspect, cancel, and submit approval/feedback decisions.
-		runsHandler := run.NewRunsHandler(cfg.Store, cfg.RunManager, cfg.Broadcaster)
+		runsHandler := run.NewRunsHandler(cfg.Services.Store, cfg.Services.RunManager, cfg.Services.Broadcaster)
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs", runsHandler.List)
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}", runsHandler.Get)
 		r.With(auth.RequireRole(model.RoleOperator, model.RoleApprover, model.RoleAuditor)).Get("/api/v1/runs/{runID}/steps", runsHandler.ListSteps)
@@ -144,49 +162,49 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		// Operators and auditors need public_url to construct full webhook URLs.
 		// This route must be registered before the r.Mount("/api/v1", ...) below;
 		// in chi, literal routes must precede mount prefix catch-alls to avoid shadowing.
-		r.Get("/api/v1/config", cfg.AdminHandler.GetPublicConfig)
+		r.Get("/api/v1/config", cfg.Handlers.AdminHandler.GetPublicConfig)
 
 		// Policies, MCP, stats, models, and attention — mounted under /api/v1.
-		policySvc := policy.NewService(cfg.Store, nil, cfg.ProviderRegistry, cfg.ProviderRegistry, cfg.AdminHandler)
-		r.Mount("/api/v1", newAPISubRouter(cfg.Store, policySvc, cfg.Registry, cfg.ModelLister, cfg.ModelFilter, cfg.PolicyWebhookHandler, cfg.Poller, cfg.Scheduler, cfg.Cron, cfg.EncryptionKey))
+		policySvc := policy.NewService(cfg.Services.Store, nil, cfg.Services.ProviderRegistry, cfg.Services.ProviderRegistry, cfg.Handlers.AdminHandler)
+		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, policySvc, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey))
 
 		// Admin: provider key management, settings, and model configuration.
 		r.Route("/api/v1/admin", func(r chi.Router) {
 			r.Use(auth.RequireRole(model.RoleAdmin))
 			r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
-			r.Get("/providers", cfg.AdminHandler.ListProviders)
-			r.Put("/providers/{name}/key", cfg.AdminHandler.SetProviderKey)
-			r.Delete("/providers/{name}/key", cfg.AdminHandler.DeleteProviderKey)
-			r.Get("/settings", cfg.AdminHandler.GetSettings)
-			r.Put("/settings", cfg.AdminHandler.UpdateSettings)
-			r.Get("/models", cfg.AdminHandler.ListModelsAdmin)
-			r.Get("/models/all", cfg.AdminHandler.ListAllModels(cfg.ModelLister))
-			r.Put("/models/{id}/enabled", cfg.AdminHandler.SetModelEnabled)
+			r.Get("/providers", cfg.Handlers.AdminHandler.ListProviders)
+			r.Put("/providers/{name}/key", cfg.Handlers.AdminHandler.SetProviderKey)
+			r.Delete("/providers/{name}/key", cfg.Handlers.AdminHandler.DeleteProviderKey)
+			r.Get("/settings", cfg.Handlers.AdminHandler.GetSettings)
+			r.Put("/settings", cfg.Handlers.AdminHandler.UpdateSettings)
+			r.Get("/models", cfg.Handlers.AdminHandler.ListModelsAdmin)
+			r.Get("/models/all", cfg.Handlers.AdminHandler.ListAllModels(cfg.Services.ModelLister))
+			r.Put("/models/{id}/enabled", cfg.Handlers.AdminHandler.SetModelEnabled)
 			r.Get("/system-info", admin.GetSystemInfo(admin.SystemInfoDeps{
-				Version:   cfg.Version,
-				StartTime: cfg.StartTime,
-				DBPath:    cfg.DBPath,
+				Version:   cfg.Metadata.Version,
+				StartTime: cfg.Metadata.StartTime,
+				DBPath:    cfg.Metadata.DBPath,
 				CountMCPServers: func(ctx context.Context) (int, error) {
-					n, err := cfg.Store.Queries().CountMCPServers(ctx)
+					n, err := cfg.Services.Store.Queries().CountMCPServers(ctx)
 					return int(n), err
 				},
 				CountPolicies: func(ctx context.Context) (int, error) {
-					n, err := cfg.Store.Queries().CountPolicies(ctx)
+					n, err := cfg.Services.Store.Queries().CountPolicies(ctx)
 					return int(n), err
 				},
 				CountUsers: func(ctx context.Context) (int, error) {
-					n, err := cfg.Store.Queries().CountUsers(ctx)
+					n, err := cfg.Services.Store.Queries().CountUsers(ctx)
 					return int(n), err
 				},
 			}))
 
 			r.Route("/openai-providers", func(r chi.Router) {
-				r.Get("/", cfg.OpenAICompatHandler.ListProviders)
-				r.Post("/", cfg.OpenAICompatHandler.CreateProvider)
-				r.Get("/{id}", cfg.OpenAICompatHandler.GetProvider)
-				r.Put("/{id}", cfg.OpenAICompatHandler.UpdateProvider)
-				r.Delete("/{id}", cfg.OpenAICompatHandler.DeleteProvider)
-				r.Post("/{id}/test", cfg.OpenAICompatHandler.TestProvider)
+				r.Get("/", cfg.Handlers.OpenAICompatHandler.ListProviders)
+				r.Post("/", cfg.Handlers.OpenAICompatHandler.CreateProvider)
+				r.Get("/{id}", cfg.Handlers.OpenAICompatHandler.GetProvider)
+				r.Put("/{id}", cfg.Handlers.OpenAICompatHandler.UpdateProvider)
+				r.Delete("/{id}", cfg.Handlers.OpenAICompatHandler.DeleteProvider)
+				r.Post("/{id}/test", cfg.Handlers.OpenAICompatHandler.TestProvider)
 			})
 		})
 	})
