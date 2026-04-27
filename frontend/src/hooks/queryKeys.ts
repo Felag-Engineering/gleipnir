@@ -12,9 +12,9 @@ export const queryKeys = {
   },
   servers: {
     all: ['servers'] as const,
-    // enabled-only tool list — consumed by the policy form (CapabilitiesSection)
+    // enabled-only tool list (legacy; no longer consumed by active components)
     tools: (serverId: string) => ['servers', serverId, 'tools'] as const,
-    // unfiltered tool list including disabled — consumed by the Tools management page only
+    // all tools including disabled — consumed by the Tools management page and CapabilitiesSection
     toolsAll: (serverId: string) => ['servers', serverId, 'tools', 'all'] as const,
   },
   stats: {

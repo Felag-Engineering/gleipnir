@@ -120,8 +120,8 @@ const FIXTURE_ASSIGNED_TOOLS: AssignedTool[] = [
 function makeQueryClient(): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS);
-  qc.setQueryData(queryKeys.servers.tools('srv-1'), FIXTURE_TOOLS_SRV1);
-  qc.setQueryData(queryKeys.servers.tools('srv-2'), FIXTURE_TOOLS_SRV2);
+  qc.setQueryData(queryKeys.servers.toolsAll('srv-1'), FIXTURE_TOOLS_SRV1);
+  qc.setQueryData(queryKeys.servers.toolsAll('srv-2'), FIXTURE_TOOLS_SRV2);
   return qc;
 }
 
@@ -189,4 +189,61 @@ function InteractiveCapabilitiesSection() {
 
 export const Interactive: Story = {
   render: () => <InteractiveCapabilitiesSection />,
+};
+
+// WithDisabledTool seeds the cache with a disabled tool so the warning badge
+// renders on the assigned-tool row. The tool is still shown in the registry
+// add panel (intentional — see Key decisions in plan.md).
+export const WithDisabledTool: Story = {
+  decorators: [
+    (Story) => {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS);
+      qc.setQueryData(queryKeys.servers.toolsAll('srv-1'), [
+        ...FIXTURE_TOOLS_SRV1.filter(t => t.name !== 'write_file'),
+        {
+          id: 'tool-2',
+          server_id: 'srv-1',
+          name: 'write_file',
+          description: 'Write content to a file at the given path',
+          input_schema: { type: 'object' },
+          enabled: false,
+        },
+      ]);
+      qc.setQueryData(queryKeys.servers.toolsAll('srv-2'), FIXTURE_TOOLS_SRV2);
+      return (
+        <QueryClientProvider client={qc}>
+          <div className={decoratorStyles.decorator}>
+            <Story />
+          </div>
+        </QueryClientProvider>
+      );
+    },
+  ],
+  args: {
+    value: {
+      tools: [
+        {
+          toolId: 'tool-2',
+          serverId: 'srv-1',
+          serverName: 'Filesystem Tools',
+          name: 'write_file',
+          description: 'Write content to a file at the given path',
+          approvalRequired: false,
+          approvalTimeout: '',
+        },
+        {
+          toolId: 'tool-1',
+          serverId: 'srv-1',
+          serverName: 'Filesystem Tools',
+          name: 'read_file',
+          description: 'Read the contents of a file at the given path',
+          approvalRequired: false,
+          approvalTimeout: '',
+        },
+      ],
+      feedback: DEFAULT_FEEDBACK,
+    },
+    onChange: () => {},
+  },
 };

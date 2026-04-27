@@ -119,8 +119,8 @@ queryKeys.runs.detail(id)       // ['runs', id]
 queryKeys.runs.steps(id)        // ['runs', id, 'steps']
 queryKeys.runs.list(params)     // ['runs', 'list', params]
 queryKeys.servers.all           // ['servers']
-queryKeys.servers.tools(id)     // ['servers', id, 'tools']        — enabled tools only (used by policy form)
-queryKeys.servers.toolsAll(id)  // ['servers', id, 'tools', 'all'] — all tools incl. disabled (used by Tools page)
+queryKeys.servers.tools(id)     // ['servers', id, 'tools']        — enabled tools only (legacy; kept for cache-invalidation compatibility)
+queryKeys.servers.toolsAll(id)  // ['servers', id, 'tools', 'all'] — all tools incl. disabled (used by Tools page and policy form)
 queryKeys.stats.all             // ['stats']
 queryKeys.approvals.all         // ['approvals']
 queryKeys.users.all             // ['users']

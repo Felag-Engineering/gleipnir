@@ -72,8 +72,8 @@ const FIXTURE_TOOLS_SRV2: ApiMcpTool[] = [
 function makeQueryClient(): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS)
-  qc.setQueryData(queryKeys.servers.tools('srv-1'), FIXTURE_TOOLS_SRV1)
-  qc.setQueryData(queryKeys.servers.tools('srv-2'), FIXTURE_TOOLS_SRV2)
+  qc.setQueryData(queryKeys.servers.toolsAll('srv-1'), FIXTURE_TOOLS_SRV1)
+  qc.setQueryData(queryKeys.servers.toolsAll('srv-2'), FIXTURE_TOOLS_SRV2)
   return qc
 }
 
@@ -193,8 +193,8 @@ describe('CapabilitiesSection — tool picker search filter', () => {
       defaultOptions: { queries: { retry: false, staleTime: Infinity } },
     })
     qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS)
-    qc.setQueryData(queryKeys.servers.tools('srv-1'), FIXTURE_TOOLS_SRV1)
-    qc.setQueryData(queryKeys.servers.tools('srv-2'), FIXTURE_TOOLS_SRV2)
+    qc.setQueryData(queryKeys.servers.toolsAll('srv-1'), FIXTURE_TOOLS_SRV1)
+    qc.setQueryData(queryKeys.servers.toolsAll('srv-2'), FIXTURE_TOOLS_SRV2)
     return qc
   }
 
@@ -499,5 +499,114 @@ describe('CapabilitiesSection — approval timeout input', () => {
     expect(lastCall.tools[0].approvalRequired).toBe(false)
     // approvalTimeout is preserved even though approval is off
     expect(lastCall.tools[0].approvalTimeout).toBe('30m')
+  })
+})
+
+describe('CapabilitiesSection — disabled tool warning', () => {
+  // A tool fixture that is disabled on the server side.
+  const DISABLED_TOOL: ApiMcpTool = {
+    id: 'tool-disabled',
+    server_id: 'srv-1',
+    name: 'write_file',
+    description: 'Write content to a file at the given path',
+    input_schema: { type: 'object' },
+    enabled: false,
+  }
+
+  function makeDisabledQueryClient(): QueryClient {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+    qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS)
+    // srv-1 has one disabled tool (write_file)
+    qc.setQueryData(queryKeys.servers.toolsAll('srv-1'), [
+      ...FIXTURE_TOOLS_SRV1.filter(t => t.name !== 'write_file'),
+      DISABLED_TOOL,
+    ])
+    qc.setQueryData(queryKeys.servers.toolsAll('srv-2'), FIXTURE_TOOLS_SRV2)
+    return qc
+  }
+
+  it('shows disabled badge on a granted tool that is currently disabled', async () => {
+    const assignedTools: AssignedTool[] = [
+      {
+        toolId: 'tool-disabled', // UUID-based toolId (added via picker)
+        serverId: 'srv-1',
+        serverName: 'Filesystem Tools',
+        name: 'write_file',
+        description: 'Write content to a file',
+        approvalRequired: false,
+        approvalTimeout: '',
+      },
+    ]
+
+    render(
+      <QueryClientProvider client={makeDisabledQueryClient()}>
+        <ControlledCapabilitiesSection initialTools={assignedTools} />
+      </QueryClientProvider>,
+    )
+
+    // The badge has a tooltip (title) distinguishing it from the feedback "Disabled" label.
+    await waitFor(() => {
+      const badge = screen.getByTitle(/Tool is disabled/)
+      expect(badge).toBeInTheDocument()
+      expect(badge).toHaveTextContent('Disabled')
+    })
+
+    // The row wrapping element should have data-disabled="true"
+    const row = document.querySelector('[data-disabled="true"]')
+    expect(row).not.toBeNull()
+  })
+
+  it('shows disabled badge when toolId is the YAML dot-notation composite key', async () => {
+    const assignedTools: AssignedTool[] = [
+      {
+        // yamlToFormState sets toolId to the full dot-notation string
+        toolId: 'Filesystem Tools.write_file',
+        serverId: 'Filesystem Tools',
+        serverName: 'Filesystem Tools',
+        name: 'write_file',
+        description: 'Write content to a file',
+        approvalRequired: false,
+        approvalTimeout: '',
+      },
+    ]
+
+    render(
+      <QueryClientProvider client={makeDisabledQueryClient()}>
+        <ControlledCapabilitiesSection initialTools={assignedTools} />
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTitle(/Tool is disabled/)).toBeInTheDocument()
+    })
+  })
+
+  it('does not show disabled badge for a granted tool that is enabled', async () => {
+    const assignedTools: AssignedTool[] = [
+      {
+        toolId: 'tool-1', // read_file is enabled in the fixture
+        serverId: 'srv-1',
+        serverName: 'Filesystem Tools',
+        name: 'read_file',
+        description: 'Read the contents of a file',
+        approvalRequired: false,
+        approvalTimeout: '',
+      },
+    ]
+
+    render(
+      <QueryClientProvider client={makeDisabledQueryClient()}>
+        <ControlledCapabilitiesSection initialTools={assignedTools} />
+      </QueryClientProvider>,
+    )
+
+    // Allow any async updates to settle
+    await waitFor(() => {
+      expect(screen.getByText('Filesystem Tools.read_file')).toBeInTheDocument()
+    })
+
+    // The disabled badge has a distinctive title attribute; the feedback label "Disabled" is separate.
+    expect(screen.queryByTitle(/Tool is disabled/)).not.toBeInTheDocument()
+    expect(document.querySelector('[data-disabled="true"]')).toBeNull()
   })
 })

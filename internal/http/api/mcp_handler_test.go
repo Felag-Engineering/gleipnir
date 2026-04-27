@@ -58,12 +58,6 @@ func withAuditorUser(r *http.Request) *http.Request {
 	return r.WithContext(ctx)
 }
 
-// withOperatorUser returns a request copy with an operator UserContext injected.
-func withOperatorUser(r *http.Request) *http.Request {
-	ctx := auth.WithUserContext(r.Context(), "u3", "operator", []string{string(model.RoleOperator)})
-	return r.WithContext(ctx)
-}
-
 // insertTestMCPTool inserts an MCP tool row directly via the store.
 func insertTestMCPTool(t *testing.T, s *db.Store, serverID, name string) string {
 	t.Helper()
@@ -928,7 +922,7 @@ func TestMCPToolListHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("include_disabled silently ignored for auditor", func(t *testing.T) {
+	t.Run("include_disabled returns all for auditor", func(t *testing.T) {
 		store := testutil.NewTestStore(t)
 		registry := mcp.NewRegistry(store.Queries())
 		serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
@@ -955,18 +949,26 @@ func TestMCPToolListHandler(t *testing.T) {
 
 		var envelope struct {
 			Data []struct {
-				Name string `json:"name"`
+				Name    string `json:"name"`
+				Enabled bool   `json:"enabled"`
 			} `json:"data"`
 		}
 		if err := json.NewDecoder(w.Body).Decode(&envelope); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
-		// Auditors get the default enabled-only list even with include_disabled=true.
-		if len(envelope.Data) != 1 {
-			t.Fatalf("len(data) = %d, want 1 (disabled tool invisible to auditor)", len(envelope.Data))
+		// Auditors can now see all tools when include_disabled=true is passed.
+		// Results are ordered by name ASC: disabled-tool < enabled-tool.
+		if len(envelope.Data) != 2 {
+			t.Fatalf("len(data) = %d, want 2 (both tools)", len(envelope.Data))
 		}
-		if envelope.Data[0].Name != "enabled-tool" {
-			t.Errorf("data[0].name = %q, want enabled-tool", envelope.Data[0].Name)
+		if envelope.Data[0].Name != "disabled-tool" {
+			t.Errorf("data[0].name = %q, want disabled-tool", envelope.Data[0].Name)
+		}
+		if envelope.Data[0].Enabled {
+			t.Errorf("disabled-tool should have enabled=false in response")
+		}
+		if !envelope.Data[1].Enabled {
+			t.Errorf("enabled-tool should have enabled=true in response")
 		}
 	})
 }

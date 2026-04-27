@@ -7,6 +7,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AgentEditorPage } from './AgentEditorPage'
 import { yamlToFormState, formStateToYaml } from '@/components/AgentEditor/agentEditorUtils'
 import { ApiError } from '@/api/fetch'
+import { queryKeys } from '@/hooks/queryKeys'
+import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
 
 // --- Mocks ---
 
@@ -738,5 +740,124 @@ describe('AgentEditorPage — server validation errors', () => {
       expect(screen.getAllByRole('alert').length).toBeGreaterThan(0)
       expect(screen.getByText(/policy already exists/)).toBeInTheDocument()
     })
+  })
+})
+
+// VALID_YAML grants "filesystem.read_file" so we can seed a matching disabled
+// tool to test the save-success banner. The tool UUID used below is arbitrary
+// but must match the cache entry we seed.
+const DISABLED_TOOL_FIXTURE: ApiMcpTool = {
+  id: 'tool-uuid-read-file',
+  server_id: 'srv-uuid-1',
+  name: 'read_file',
+  description: 'Read a file',
+  input_schema: { type: 'object' },
+  enabled: false,
+}
+
+const FIXTURE_SERVER: ApiMcpServer = {
+  id: 'srv-uuid-1',
+  name: 'filesystem',
+  url: 'http://mcp-fs:8080',
+  last_discovered_at: '2026-01-01T00:00:00Z',
+  has_drift: false,
+  created_at: '2026-01-01T00:00:00Z',
+  is_arcade_gateway: false,
+}
+
+describe('AgentEditorPage — save-success disabled-tool banner', () => {
+  function loadValidPolicyAndMockSave() {
+    vi.mocked(usePolicy).mockReturnValue({
+      data: {
+        id: 'valid-id',
+        name: 'my-agent',
+        trigger_type: 'webhook',
+        folder: '',
+        yaml: VALID_YAML,
+        created_at: '',
+        updated_at: '',
+      },
+      status: 'success',
+    } as ReturnType<typeof usePolicy>)
+
+    const mutateAsync = vi.fn().mockResolvedValue({
+      id: 'valid-id',
+      name: 'my-agent',
+      yaml: VALID_YAML,
+      trigger_type: 'webhook',
+      folder: '',
+      created_at: '',
+      updated_at: '',
+      warnings: [],
+    })
+
+    vi.mocked(useSavePolicy).mockReturnValue({
+      mutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useSavePolicy>)
+
+    return { mutateAsync }
+  }
+
+  it('shows warning banner with tool name when a granted tool is disabled in the cache', async () => {
+    mockHooksDefault()
+    loadValidPolicyAndMockSave()
+
+    // VALID_YAML grants filesystem.read_file; seed the cache with it disabled.
+    const qc = makeQueryClient()
+    qc.setQueryData(queryKeys.servers.all, [FIXTURE_SERVER])
+    qc.setQueryData(queryKeys.servers.toolsAll(FIXTURE_SERVER.id), [DISABLED_TOOL_FIXTURE])
+
+    renderEditor('/agents/valid-id', qc)
+
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+
+    await waitFor(() => {
+      expect(screen.getByText(/Policy saved\. Note: tool "filesystem\.read_file" is currently disabled/)).toBeInTheDocument()
+    })
+  })
+
+  it('does not show warning banner when no granted tools are disabled', async () => {
+    mockHooksDefault()
+    loadValidPolicyAndMockSave()
+
+    // Seed the server cache with the tool enabled.
+    const qc = makeQueryClient()
+    qc.setQueryData(queryKeys.servers.all, [FIXTURE_SERVER])
+    qc.setQueryData(queryKeys.servers.toolsAll(FIXTURE_SERVER.id), [{
+      ...DISABLED_TOOL_FIXTURE,
+      enabled: true,
+    }])
+
+    renderEditor('/agents/valid-id', qc)
+
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+
+    // Wait for the save to complete (isDirty should clear).
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    })
+
+    expect(screen.queryByText(/Policy saved\. Note:/)).not.toBeInTheDocument()
+  })
+
+  it('does not show warning banner when the toolsAll cache is cold (fail-open behavior)', async () => {
+    mockHooksDefault()
+    loadValidPolicyAndMockSave()
+
+    // Seed server list but NOT the toolsAll cache — simulates cache-cold state.
+    const qc = makeQueryClient()
+    qc.setQueryData(queryKeys.servers.all, [FIXTURE_SERVER])
+    // Deliberately do NOT seed queryKeys.servers.toolsAll(FIXTURE_SERVER.id)
+
+    renderEditor('/agents/valid-id', qc)
+
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    })
+
+    expect(screen.queryByText(/Policy saved\. Note:/)).not.toBeInTheDocument()
   })
 })
