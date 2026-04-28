@@ -8,19 +8,26 @@ interface Props {
   serverName: string
   toolCount: number
   onClose: () => void
-  onConfirm: () => void
+  onConfirm: (force: boolean) => void
   isPending: boolean
   error: ApiError | null
 }
 
 export function DeleteServerModal({ serverName, toolCount, onClose, onConfirm, isPending, error }: Props) {
+  // A 409 means the server is in use by one or more policies. The handler
+  // returns the conflicting policy names in error.detail. After the user has
+  // seen them, we let them retry with force=true to bypass the check.
+  const inUseConflict = error?.status === 409
+  const submitLabel = inUseConflict ? 'Force delete' : 'Delete MCP server'
+  const loadingLabel = inUseConflict ? 'Force deleting…' : 'Deleting…'
+
   const footer = (
     <ModalFooter
       onCancel={onClose}
-      onSubmit={onConfirm}
+      onSubmit={() => onConfirm(inUseConflict)}
       isLoading={isPending}
-      submitLabel="Delete MCP server"
-      loadingLabel="Deleting…"
+      submitLabel={submitLabel}
+      loadingLabel={loadingLabel}
       variant="danger"
     />
   )

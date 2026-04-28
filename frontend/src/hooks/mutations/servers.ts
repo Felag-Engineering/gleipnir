@@ -75,11 +75,11 @@ export function useDeleteMcpServerHeader() {
 export function useDeleteMcpServer() {
   const queryClient = useQueryClient()
 
-  return useMutation<void, ApiError, string>({
-    mutationFn: (serverId: string) =>
-      apiFetchVoid(`/mcp/servers/${encodeURIComponent(serverId)}`, {
-        method: 'DELETE',
-      }),
+  return useMutation<void, ApiError, { id: string; force?: boolean }>({
+    mutationFn: ({ id, force }) => {
+      const path = `/mcp/servers/${encodeURIComponent(id)}${force ? '?force=true' : ''}`
+      return apiFetchVoid(path, { method: 'DELETE' })
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.servers.all })
     },
