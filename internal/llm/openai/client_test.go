@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/openai/openai-go/option"
+
 	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 

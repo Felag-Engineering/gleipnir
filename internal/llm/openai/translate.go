@@ -9,6 +9,7 @@ import (
 	openaisdk "github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/responses"
+
 	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 

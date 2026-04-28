@@ -3,6 +3,7 @@ package runstate
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
 	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 	"github.com/felag-engineering/gleipnir/internal/model"
 )

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
+
 	"github.com/felag-engineering/gleipnir/internal/llm/anthropic"
 )
 

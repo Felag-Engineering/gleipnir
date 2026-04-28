@@ -8,8 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/felag-engineering/gleipnir/internal/llm"
 	"google.golang.org/genai"
+
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // mockGenerator implements contentGenerator for tests. It stores the captured

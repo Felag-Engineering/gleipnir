@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/openai/openai-go/responses"
+
 	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 

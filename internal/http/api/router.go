@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+
 	"github.com/felag-engineering/gleipnir/frontend"
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"

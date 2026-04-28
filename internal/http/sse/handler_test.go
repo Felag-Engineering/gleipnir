@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 )
 

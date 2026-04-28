@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+
 	"github.com/felag-engineering/gleipnir/internal/http/api"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/testutil"

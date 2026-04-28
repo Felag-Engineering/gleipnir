@@ -16,6 +16,7 @@ import (
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/shared"
+
 	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 	"github.com/felag-engineering/gleipnir/internal/llm"
 )

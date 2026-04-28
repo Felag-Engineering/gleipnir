@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/felag-engineering/gleipnir/internal/model"
 	"gopkg.in/yaml.v3"
+
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 const (

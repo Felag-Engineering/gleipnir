@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
+
 	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 

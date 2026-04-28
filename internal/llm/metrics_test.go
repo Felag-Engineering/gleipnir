@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 	"github.com/felag-engineering/gleipnir/internal/llm"
 )

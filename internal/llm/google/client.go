@@ -10,9 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/genai"
+
 	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 	"github.com/felag-engineering/gleipnir/internal/llm"
-	"google.golang.org/genai"
 )
 
 // contentGenerator abstracts genai.Models methods for test injection.
