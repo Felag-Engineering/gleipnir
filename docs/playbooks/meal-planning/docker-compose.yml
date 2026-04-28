@@ -17,6 +17,7 @@ services:
     command: >
       npx -y supergateway
       --port 8102
+      --outputTransport streamableHttp
       --stdio "npx -y mealie-mcp-server-ts"
     ports:
       - "8102:8102"
