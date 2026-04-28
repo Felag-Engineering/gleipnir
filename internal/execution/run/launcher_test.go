@@ -311,7 +311,7 @@ agent:
 		t.Fatalf("policy.Parse: %v", err)
 	}
 
-	_, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
+	result, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
 		PolicyID:       "p-tool-fail",
 		TriggerType:    model.TriggerTypeWebhook,
 		TriggerPayload: `{}`,
@@ -331,6 +331,14 @@ agent:
 	}
 	if runs[0].Status != string(model.RunStatusFailed) {
 		t.Errorf("run.Status = %q, want %q", runs[0].Status, model.RunStatusFailed)
+	}
+	// LaunchResult.RunID must point at the failed run row so callers (HTTP
+	// handlers, async trigger loggers) can deep-link to it.
+	if result.RunID == "" {
+		t.Error("Launch() returned empty RunID on tool resolution failure; expected the created run's ID so callers can deep-link to the failed row")
+	}
+	if result.RunID != runs[0].ID {
+		t.Errorf("Launch() returned RunID %q, want %q (the failed run's ID)", result.RunID, runs[0].ID)
 	}
 }
 
@@ -368,7 +376,7 @@ agent:
 		t.Fatalf("policy.Parse: %v", err)
 	}
 
-	_, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
+	result, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
 		PolicyID:       "p-agent-fail",
 		TriggerType:    model.TriggerTypeWebhook,
 		TriggerPayload: `{}`,
@@ -388,6 +396,14 @@ agent:
 	}
 	if runs[0].Status != string(model.RunStatusFailed) {
 		t.Errorf("run.Status = %q, want %q", runs[0].Status, model.RunStatusFailed)
+	}
+	// LaunchResult.RunID must point at the failed run row so callers (HTTP
+	// handlers, async trigger loggers) can deep-link to it.
+	if result.RunID == "" {
+		t.Error("Launch() returned empty RunID on agent construction failure; expected the created run's ID so callers can deep-link to the failed row")
+	}
+	if result.RunID != runs[0].ID {
+		t.Errorf("Launch() returned RunID %q, want %q (the failed run's ID)", result.RunID, runs[0].ID)
 	}
 }
 

@@ -7,6 +7,8 @@
 //	{"data": T}                          for success
 //	{"error": "...", "detail": "..."}    for failure
 //	{"error": "...", "detail": "...", "issues": [...]} for validation failures
+//	{"error": "...", "detail": "...", "run_id": "..."} for run launch failures
+//	    where a run row was created and marked failed before the error returned
 package httputil
 
 import (
@@ -23,6 +25,12 @@ type errorEnvelope struct {
 	Error  string       `json:"error"`
 	Detail string       `json:"detail,omitempty"`
 	Issues []ErrorIssue `json:"issues,omitempty"`
+	// RunID is populated only when a run launch failed after the run row was
+	// created (e.g. tool resolution or agent construction error). The row has
+	// already been transitioned to status=failed with the error stored on it,
+	// so clients can deep-link to the run detail page to see the recorded
+	// error. Empty when no run row exists.
+	RunID string `json:"run_id,omitempty"`
 }
 
 // ErrorIssue is a structured validation failure with an optional field path.
@@ -52,6 +60,20 @@ func WriteError(w http.ResponseWriter, status int, msg, detail string) {
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(errorEnvelope{Error: msg, Detail: detail}); err != nil {
 		slog.Error("failed to encode JSON error response", "err", err)
+	}
+}
+
+// WriteLaunchError writes a JSON error response for a run launch failure.
+// When runID is non-empty, the run row was created and marked failed before
+// the error returned, so the response includes run_id so the client can link
+// to the run detail page (where the recorded error is visible). When runID is
+// empty, behaves identically to WriteError.
+func WriteLaunchError(w http.ResponseWriter, status int, msg, detail, runID string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	env := errorEnvelope{Error: msg, Detail: detail, RunID: runID}
+	if err := json.NewEncoder(w).Encode(env); err != nil {
+		slog.Error("failed to encode JSON launch error response", "err", err)
 	}
 }
 

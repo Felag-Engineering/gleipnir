@@ -2,6 +2,7 @@ package trigger_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -267,6 +268,94 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 	}
 	if run.TriggerType != "manual" {
 		t.Errorf("run.TriggerType = %q, want %q", run.TriggerType, "manual")
+	}
+}
+
+// Policy that grants a tool not registered with any MCP server. Tool
+// resolution will fail and Launch should return an error after the run row
+// has already been created and marked failed.
+const policyWithMissingTool = `
+name: missing-tool-policy
+trigger:
+  type: manual
+capabilities:
+  tools:
+    - tool: ghost-server.nonexistent_tool
+agent:
+  model: claude-opus-4-6
+  task: "test task"
+`
+
+// When tool resolution fails, the manual trigger handler must return a 500
+// response that includes (a) the underlying error as `detail` so the operator
+// can see *what* went wrong (e.g. a removed tool) and (b) the `run_id` of the
+// failed run row so the UI can deep-link to it.
+func TestManualTriggerHandler_LaunchFailureSurfacesDetailAndRunID(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	insertTestManualPolicy(t, store, "mp-missing-tool", policyWithMissingTool)
+
+	// No MCP servers registered, so ghost-server.nonexistent_tool will fail
+	// to resolve.
+	registry := mcp.NewRegistry(store.Queries())
+	noopClient := testutil.NewNoopLLMClient()
+	providerReg := llm.NewProviderRegistry()
+	providerReg.Register("anthropic", noopClient)
+	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                run.NewRunManager(),
+		AgentFactory:           run.NewAgentFactory(providerReg),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
+	h := trigger.NewManualTriggerHandler(store, launcher, resolver)
+
+	w := callManualHandler(t, h, "mp-missing-tool", `{"message": "test"}`)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusInternalServerError, w.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+
+	// Top-level error should be the generic launch-failure label.
+	if body["error"] != "failed to launch run" {
+		t.Errorf(`body.error = %q, want %q`, body["error"], "failed to launch run")
+	}
+
+	// Detail must surface the underlying tool-resolution error so the operator
+	// can see exactly which tool is missing — that is the whole point of this
+	// PR. A bare "failed to launch run" with empty detail is a regression.
+	detail, ok := body["detail"].(string)
+	if !ok || detail == "" {
+		t.Fatalf("body.detail must be a non-empty string carrying the underlying error; got %v", body["detail"])
+	}
+	if !strings.Contains(detail, "nonexistent_tool") {
+		t.Errorf("body.detail = %q, expected it to mention the missing tool name", detail)
+	}
+
+	// run_id must be populated and must point at a real failed run row so the
+	// UI can deep-link to it.
+	runID, ok := body["run_id"].(string)
+	if !ok || runID == "" {
+		t.Fatalf("body.run_id must be a non-empty string when the run row was created; got %v", body["run_id"])
+	}
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "mp-missing-tool", Limit: 100})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected exactly 1 run row, got %d", len(runs))
+	}
+	if runs[0].ID != runID {
+		t.Errorf("body.run_id = %q, want %q (the failed run's ID)", runID, runs[0].ID)
+	}
+	if runs[0].Status != string(model.RunStatusFailed) {
+		t.Errorf("run.Status = %q, want %q", runs[0].Status, model.RunStatusFailed)
 	}
 }
 

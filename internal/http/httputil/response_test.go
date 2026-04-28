@@ -119,3 +119,57 @@ func TestWriteError(t *testing.T) {
 		}
 	})
 }
+
+func TestWriteLaunchError(t *testing.T) {
+	t.Run("includes run_id when non-empty", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		httputil.WriteLaunchError(w, http.StatusInternalServerError,
+			"failed to launch run",
+			`tool "my-server.foo" not found in registry`,
+			"01HG7Z9NWDRX0000000000",
+		)
+
+		var got map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if got["error"] != "failed to launch run" {
+			t.Errorf("got error=%q, want %q", got["error"], "failed to launch run")
+		}
+		if got["detail"] != `tool "my-server.foo" not found in registry` {
+			t.Errorf("got detail=%q, want the registry error", got["detail"])
+		}
+		if got["run_id"] != "01HG7Z9NWDRX0000000000" {
+			t.Errorf("got run_id=%q, want the supplied run id", got["run_id"])
+		}
+	})
+
+	t.Run("omits run_id when empty (pre-CreateRun failure)", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		httputil.WriteLaunchError(w, http.StatusInternalServerError,
+			"failed to launch run",
+			"create run for policy abc: database is locked",
+			"",
+		)
+
+		var got map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if _, present := got["run_id"]; present {
+			t.Error("expected 'run_id' key to be absent when runID is empty")
+		}
+		// Detail must still be present so the operator sees why it failed.
+		if got["detail"] != "create run for policy abc: database is locked" {
+			t.Errorf("got detail=%q, want the create-run error", got["detail"])
+		}
+	})
+
+	t.Run("uses the provided HTTP status code", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		httputil.WriteLaunchError(w, http.StatusInternalServerError, "x", "y", "")
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("got code %d, want %d", w.Code, http.StatusInternalServerError)
+		}
+	})
+}
