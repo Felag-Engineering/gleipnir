@@ -113,17 +113,20 @@ export default function MCPPage() {
     deleteMutation.reset()
   }
 
-  function handleDeleteConfirm() {
+  function handleDeleteConfirm(force: boolean) {
     if (!deleteTarget) return
-    deleteMutation.mutate(deleteTarget.server.id, {
-      onSuccess: () => {
-        setDeleteTarget(null)
-        // Close detail modal if the deleted server was open
-        if (selectedServer?.id === deleteTarget.server.id) {
-          setSelectedServer(null)
-        }
+    deleteMutation.mutate(
+      { id: deleteTarget.server.id, force },
+      {
+        onSuccess: () => {
+          setDeleteTarget(null)
+          // Close detail modal if the deleted server was open
+          if (selectedServer?.id === deleteTarget.server.id) {
+            setSelectedServer(null)
+          }
+        },
       },
-    })
+    )
   }
 
   function handleDeleteClose() {

@@ -3,7 +3,9 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -423,6 +425,53 @@ agent:
 		}
 		if !strings.Contains(envelope.Detail, "ref-policy") {
 			t.Errorf("detail %q should mention ref-policy", envelope.Detail)
+		}
+	})
+
+	t.Run("delete server referenced by policy with force=true returns 204", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		registry := mcp.NewRegistry(store.Queries())
+		id := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
+
+		policyYAML := `
+name: ref-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: my-server.some_tool
+agent:
+  task: test
+`
+		_, err := store.CreatePolicy(context.Background(), db.CreatePolicyParams{
+			ID:          model.NewULID(),
+			Name:        "ref-policy",
+			TriggerType: "webhook",
+			Yaml:        policyYAML,
+			CreatedAt:   "2024-01-01T00:00:00Z",
+			UpdatedAt:   "2024-01-01T00:00:00Z",
+		})
+		if err != nil {
+			t.Fatalf("CreatePolicy: %v", err)
+		}
+
+		srv := httptest.NewServer(newMCPRouter(store, registry))
+		t.Cleanup(srv.Close)
+
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/servers/"+id+"?force=true", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE /servers/%s?force=true: %v", id, err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", resp.StatusCode)
+		}
+
+		// Server row must actually be gone.
+		if _, err := store.GetMCPServer(context.Background(), id); !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("GetMCPServer after force delete: err = %v, want sql.ErrNoRows", err)
 		}
 	})
 }

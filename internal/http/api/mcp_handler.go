@@ -323,27 +323,34 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check whether any active policy references a tool from this server.
-	// Tool references use dot-notation: serverName.toolName, so we check for
-	// the server name prefix to catch all tools from this server.
-	policies, err := h.store.ListPolicies(r.Context())
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to list policies", err.Error())
-		return
-	}
+	// ?force=true skips the conflict check below. Callers (the delete modal)
+	// use this after the user has acknowledged that referencing agents will
+	// fail to run.
+	force := r.URL.Query().Get("force") == "true"
 
-	prefix := server.Name + "."
-	var conflicting []string
-	for _, p := range policies {
-		if policyReferencesServer(p.Yaml, prefix) {
-			conflicting = append(conflicting, p.Name)
+	if !force {
+		// Check whether any active policy references a tool from this server.
+		// Tool references use dot-notation: serverName.toolName, so we check for
+		// the server name prefix to catch all tools from this server.
+		policies, err := h.store.ListPolicies(r.Context())
+		if err != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to list policies", err.Error())
+			return
 		}
-	}
 
-	if len(conflicting) > 0 {
-		httputil.WriteError(w, http.StatusConflict, "MCP server is referenced by active policies",
-			fmt.Sprintf("policies referencing this server: %s", strings.Join(conflicting, ", ")))
-		return
+		prefix := server.Name + "."
+		var conflicting []string
+		for _, p := range policies {
+			if policyReferencesServer(p.Yaml, prefix) {
+				conflicting = append(conflicting, p.Name)
+			}
+		}
+
+		if len(conflicting) > 0 {
+			httputil.WriteError(w, http.StatusConflict, "MCP server is referenced by active policies",
+				fmt.Sprintf("policies referencing this server: %s — pass ?force=true to delete anyway", strings.Join(conflicting, ", ")))
+			return
+		}
 	}
 
 	// mcp_tools rows are cascade-deleted by the FK constraint on DELETE.
