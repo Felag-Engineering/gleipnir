@@ -283,7 +283,9 @@ func TestPolicyListModelAndToolCount(t *testing.T) {
 	t.Run("model and tool_count extracted from YAML", func(t *testing.T) {
 		store := newPolicyHandlerStore(t)
 		yaml := `
-model: claude-opus-4-5
+model:
+  provider: anthropic
+  name: claude-opus-4-5
 trigger: webhook
 capabilities:
   tools:

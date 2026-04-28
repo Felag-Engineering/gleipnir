@@ -108,7 +108,7 @@ func (h *PolicyHandler) List(w http.ResponseWriter, r *http.Request) {
 			Name:         row.Name,
 			TriggerType:  row.TriggerType,
 			Folder:       summary.Folder,
-			Model:        summary.Model,
+			Model:        summary.Model.Name,
 			ToolCount:    len(summary.Capabilities.Tools),
 			ToolRefs:     toolRefs,
 			AvgTokenCost: row.AvgTokenCost,
@@ -175,9 +175,18 @@ type policyToolEntry struct {
 	Tool string `yaml:"tool"`
 }
 
+// policyModelSummary mirrors the structured `model:` block in policy YAML
+// (see internal/policy/parser.go → rawModel). Declaring Model as a string
+// here previously caused every parse to fail with "cannot unmarshal !!map
+// into string" and silently dropped the model display from list responses.
+type policyModelSummary struct {
+	Provider string `yaml:"provider"`
+	Name     string `yaml:"name"`
+}
+
 type policyYAMLSummary struct {
-	Folder       string `yaml:"folder"`
-	Model        string `yaml:"model"`
+	Folder       string             `yaml:"folder"`
+	Model        policyModelSummary `yaml:"model"`
 	Capabilities struct {
 		Tools []policyToolEntry `yaml:"tools"`
 	} `yaml:"capabilities"`
