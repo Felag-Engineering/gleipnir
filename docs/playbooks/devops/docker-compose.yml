@@ -8,7 +8,8 @@
 #   - .env file in this directory (README.md § Step 4).
 #
 # Ports are bound to all interfaces so Gleipnir can reach them via the
-# host's LAN IP. Register each server in Gleipnir as http://<HOST_IP>:820x/
+# host's LAN IP. Register each supergateway-wrapped server in Gleipnir as
+# http://<HOST_IP>:820x/mcp (caddy-mcp uses native httpstream — see README).
 
 services:
 
@@ -22,6 +23,7 @@ services:
     command: >
       npx -y supergateway
       --port 8201
+      --outputTransport streamableHttp
       --stdio "uvx docker-mcp"
     ports:
       - "8201:8201"
@@ -42,6 +44,7 @@ services:
     command: >
       npx -y supergateway
       --port 8202
+      --outputTransport streamableHttp
       --stdio "uvx mcp-proxmox"
     ports:
       - "8202:8202"
@@ -60,6 +63,7 @@ services:
     command: >
       npx -y supergateway
       --port 8203
+      --outputTransport streamableHttp
       --stdio "npx -y @rosschurchill/technitium-mcp-secure"
     ports:
       - "8203:8203"

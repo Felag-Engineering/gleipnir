@@ -80,8 +80,8 @@ In Gleipnir, go to **Tools → Add MCP server** twice:
 
 | Name | URL (same Compose project) | URL (separate host) |
 |------|---------------------------|---------------------|
-| `todoist` | `http://todoist-mcp:8111/` | `http://<MCP_HOST>:8111/` |
-| `duckduckgo` | `http://duckduckgo-mcp:8112/` | `http://<MCP_HOST>:8112/` |
+| `todoist` | `http://todoist-mcp:8111/mcp` | `http://<MCP_HOST>:8111/mcp` |
+| `duckduckgo` | `http://duckduckgo-mcp:8112/mcp` | `http://<MCP_HOST>:8112/mcp` |
 
 Use the **service name** as the hostname (`todoist-mcp`, `duckduckgo-mcp`) when Gleipnir and the MCP servers are on the same Docker Compose network. Use the host IP and port numbers when they are on different hosts or Compose projects.
 

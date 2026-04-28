@@ -15,6 +15,7 @@ services:
     command: >
       npx -y supergateway
       --port 8111
+      --outputTransport streamableHttp
       --stdio "npx -y todoist-mcp"
     ports:
       - "8111:8111"
@@ -34,6 +35,7 @@ services:
     command: >
       npx -y supergateway
       --port 8112
+      --outputTransport streamableHttp
       --stdio "uvx duckduckgo-mcp-server"
     ports:
       - "8112:8112"

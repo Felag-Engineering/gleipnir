@@ -140,12 +140,12 @@ In Gleipnir, go to **Tools → Add MCP server** four times. Use the LAN IP of th
 
 | Name | URL |
 |------|-----|
-| `docker` | `http://<HOST_IP>:8201/` |
-| `proxmox` | `http://<HOST_IP>:8202/` |
-| `technitium` | `http://<HOST_IP>:8203/` |
+| `docker` | `http://<HOST_IP>:8201/mcp` |
+| `proxmox` | `http://<HOST_IP>:8202/mcp` |
+| `technitium` | `http://<HOST_IP>:8203/mcp` |
 | `caddy` | `http://<HOST_IP>:8204/` |
 
-> **caddy-mcp transport:** Unlike the other three, `caddy-mcp` speaks the `httpstream` MCP transport natively — it does not wrap a stdio server. Gleipnir connects to it directly on port 8204 without supergateway in the path.
+> **Transports:** The first three wrap stdio MCP servers via supergateway with `--outputTransport streamableHttp`, which serves the streamable-HTTP transport at `/mcp`. `caddy-mcp` is a Go binary speaking the `httpstream` MCP transport natively — Gleipnir connects to it directly on port 8204 at the root path without supergateway in the path.
 
 After adding each server, click **Discover**. Note the exact tool names returned — the policy YAML below uses representative names. If Discover returns different names (e.g. `list_containers` instead of `docker_list_containers`), update the `tool:` entries in the policy before saving.
 
@@ -348,5 +348,5 @@ agent:
 | `technitium-mcp` returns 403 | API token invalid | Regenerate in Technitium → Administration → Sessions. |
 | `caddy-mcp` build fails | `go install` cannot reach the module proxy | Check internet access from the build host. If offline, add `--network=host` or pre-cache the module. |
 | `caddy-mcp` cannot reach Caddy | Caddy admin API bound to localhost only | On the Caddy host, change `admin localhost:2019` to `admin 0.0.0.0:2019` (or the Gleipnir host's LAN IP) in the Caddyfile and reload. |
-| Gleipnir cannot reach MCP servers | Wrong IP or ports not listening | Confirm MCP containers are up with `docker compose ps`. Test connectivity from the Gleipnir host: `curl http://<HOST_IP>:8201/`. |
+| Gleipnir cannot reach MCP servers | Wrong IP or ports not listening | Confirm MCP containers are up with `docker compose ps`. Test connectivity from the Gleipnir host: `curl http://<HOST_IP>:8201/mcp`. |
 | Tool names in policy don't match Discover output | MCP server updated its tool names | Click Discover again on the **Tools** page and update `tool:` entries in the policy. |
