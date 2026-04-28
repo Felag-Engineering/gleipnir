@@ -1,0 +1,31 @@
+# SearXNG settings for the todoist-research playbook.
+#
+# `use_default_settings: true` inherits the upstream defaults; only the keys
+# below override them. The full default set lives at
+# https://github.com/searxng/searxng/blob/master/searx/settings.yml.
+
+use_default_settings: true
+
+general:
+  instance_name: "Gleipnir homelab search"
+
+server:
+  # secret_key signs SearXNG's CSRF and session tokens. This instance is
+  # reachable only on the docker-compose network plus the optional 8113 host
+  # port for ad-hoc curl testing — it is never exposed publicly. The value
+  # below is a placeholder; rotate it to your own with
+  #   openssl rand -hex 32
+  # if you ever expose this container outside your homelab.
+  secret_key: "homelab-todoist-research-rotate-me-with-openssl-rand-hex-32"
+  limiter: false
+  image_proxy: false
+
+search:
+  # mcp-searxng requests results as JSON; the upstream default only enables
+  # html, which would make every search 400.
+  formats:
+    - html
+    - json
+
+ui:
+  static_use_hash: true

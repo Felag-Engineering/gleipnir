@@ -3,7 +3,7 @@
 # Run from this directory:
 #   docker compose up -d
 #
-# Only the Todoist API token is required — DuckDuckGo search needs no API key.
+# Only the Todoist API token is required — SearXNG runs locally and needs no API key.
 # Secrets are loaded from .env in this directory (see README.md § Step 2).
 
 services:
@@ -23,20 +23,35 @@ services:
       # The todoist-mcp package expects the env var to be named API_KEY.
       - API_KEY=${TODOIST_API_KEY}
     restart: unless-stopped
+    mem_limit: 512m
 
-  # DuckDuckGo MCP server — searches the web without an API key.
-  # Repo: https://github.com/nickclyde/duckduckgo-mcp-server
-  #
-  # The upstream package is Python-only, so we build a small image that adds
-  # Python + uv to node:22-alpine so supergateway can spawn it via uvx.
-  # Build is only needed once; subsequent "docker compose up -d" uses the cache.
-  duckduckgo-mcp:
-    build: ./duckduckgo-mcp
-    command: >
-      npx -y supergateway
-      --port 8112
-      --outputTransport streamableHttp
-      --stdio "uvx duckduckgo-mcp-server"
+  # SearXNG — self-hosted privacy-respecting meta-search engine. Replaces the
+  # old duckduckgo-mcp, which was getting bot-blocked by DuckDuckGo. Port 8113
+  # is exposed on the host so you can sanity-check it with
+  #   curl 'http://localhost:8113/search?q=test&format=json'
+  # If you don't need that, remove the ports block — searxng-mcp talks to it
+  # over the compose network regardless.
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8113:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    restart: unless-stopped
+    mem_limit: 512m
+
+  # SearXNG MCP wrapper — exposes SearXNG search and URL-read tools to Gleipnir
+  # over streamable HTTP. Native HTTP transport via MCP_HTTP_PORT, so no
+  # supergateway shim is needed.
+  # Repo: https://github.com/ihor-sokoliuk/mcp-searxng
+  searxng-mcp:
+    image: isokoliuk/mcp-searxng:latest
+    environment:
+      - SEARXNG_URL=http://searxng:8080
+      - MCP_HTTP_PORT=8112
     ports:
       - "8112:8112"
+    depends_on:
+      - searxng
     restart: unless-stopped
+    mem_limit: 256m
