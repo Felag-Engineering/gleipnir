@@ -22,14 +22,15 @@ The agent is intentionally narrow — it only reads tasks labeled `AI_Assist`, p
 - Docker and Docker Compose available on the same host (or a host reachable from Gleipnir).
 - A Todoist account (free tier is sufficient).
 
-No API key is needed for web search — the DuckDuckGo MCP server uses DuckDuckGo's search endpoint without authentication.
+No API key is needed for web search — the playbook runs a self-hosted [SearXNG](https://docs.searxng.org/) meta-search engine and exposes it to the agent via an MCP wrapper. SearXNG queries Google, Bing, Brave, and ~70 other engines on your behalf, so you don't have to fight any single backend's bot detection (the previous DuckDuckGo MCP got rate-limited regularly).
 
 ## MCP servers used
 
 | Server | Purpose | Source | Auth |
 |--------|---------|--------|------|
 | `todoist-mcp` | Read tasks, add comments, update labels | [stanislavlysenko0912/todoist-mcp-server](https://github.com/stanislavlysenko0912/todoist-mcp-server) | Todoist API token |
-| `duckduckgo-mcp` | Web research | [nickclyde/duckduckgo-mcp-server](https://github.com/nickclyde/duckduckgo-mcp-server) | None |
+| `searxng` | Self-hosted meta-search backend (not directly registered in Gleipnir; only `searxng-mcp` talks to it) | [searxng/searxng](https://github.com/searxng/searxng) | None |
+| `searxng-mcp` | Web search and URL fetch tools for the agent | [ihor-sokoliuk/mcp-searxng](https://github.com/ihor-sokoliuk/mcp-searxng) | None |
 
 ## Step 1 — Get your Todoist API token
 
@@ -53,39 +54,47 @@ Do not commit `.env` to version control. It is listed in `.gitignore` at the rep
 
 ## Step 3 — Start the MCP servers
 
-The DuckDuckGo container requires a one-time image build because the upstream package is Python-only. Run the following from this directory (the one containing `docker-compose.yml`):
+All three images are pulled from registries — no local build needed. Run the following from this directory (the one containing `docker-compose.yml`):
 
 ```bash
 cd docs/playbooks/todoist-research
-docker compose build   # builds the duckduckgo-mcp image; only needed once
 docker compose up -d
 ```
 
-Verify both services are running:
+Verify all three services are running:
 
 ```bash
 docker compose ps
 ```
 
-Both should show `Up` status. If either shows `Exited`, check the logs:
+All should show `Up` status. If any show `Exited`, check the logs:
 
 ```bash
 docker compose logs todoist-mcp
-docker compose logs duckduckgo-mcp
+docker compose logs searxng
+docker compose logs searxng-mcp
 ```
+
+You can also sanity-check SearXNG itself by hitting the host-exposed port directly:
+
+```bash
+curl 'http://localhost:8113/search?q=test&format=json' | head
+```
+
+A JSON response with a `results` array means SearXNG is working. If it returns HTML or an error about format support, the JSON format isn't enabled — confirm `searxng/settings.yml` lists `json` under `search.formats` and restart with `docker compose up -d --force-recreate searxng`.
 
 ## Step 4 — Register each MCP server in Gleipnir
 
-In Gleipnir, go to **Tools → Add MCP server** twice:
+In Gleipnir, go to **Tools → Add MCP server** twice (the `searxng` backend is internal — only `searxng-mcp` talks to it, so don't register it in Gleipnir):
 
 | Name | URL (same Compose project) | URL (separate host) |
 |------|---------------------------|---------------------|
 | `todoist` | `http://todoist-mcp:8111/mcp` | `http://<MCP_HOST>:8111/mcp` |
-| `duckduckgo` | `http://duckduckgo-mcp:8112/mcp` | `http://<MCP_HOST>:8112/mcp` |
+| `searxng` | `http://searxng-mcp:8112/mcp` | `http://<MCP_HOST>:8112/mcp` |
 
-Use the **service name** as the hostname (`todoist-mcp`, `duckduckgo-mcp`) when Gleipnir and the MCP servers are on the same Docker Compose network. Use the host IP and port numbers when they are on different hosts or Compose projects.
+Use the **service name** as the hostname (`todoist-mcp`, `searxng-mcp`) when Gleipnir and the MCP servers are on the same Docker Compose network. Use the host IP and port numbers when they are on different hosts or Compose projects. Note the `/mcp` path for `searxng-mcp` — `mcp-searxng` exposes its endpoint there, not at the root.
 
-After adding each server, click **Discover**. Note the exact tool names returned — the policy YAML below references `todoist.get_tasks_list`, `todoist.create_comments`, `todoist.update_tasks`, and `duckduckgo.search`. If Discover returns different names, update the `tool:` entries in the policy YAML to match before saving.
+After adding each server, click **Discover**. Note the exact tool names returned — the policy YAML below references `todoist.get_tasks_list`, `todoist.create_comments`, `todoist.update_tasks`, and `searxng.searxng_web_search`. If Discover returns different names, update the `tool:` entries in the policy YAML to match before saving.
 
 ## Step 5 — Create the agent
 
@@ -127,7 +136,7 @@ Add four tools. The first two are read-only; the last two are the only writes an
 | Tool | Approval | Timeout | On timeout |
 |------|----------|---------|------------|
 | `todoist.get_tasks_list` | none | — | — |
-| `duckduckgo.search` | none | — | — |
+| `searxng.searxng_web_search` | none | — | — |
 | `todoist.create_comments` | required | `1h` | `reject` |
 | `todoist.update_tasks` | required | `1h` | `reject` |
 
@@ -148,7 +157,7 @@ Paste the following into the task instructions field:
 > For each task in the payload:
 >
 > 1. Read the `content` and `description` fields carefully to understand what research is needed.
-> 2. Use `duckduckgo.search` to gather information. For most tasks, 2–4 targeted searches are enough. Prefer searches that return specific, actionable results (business listings, official pages, how-to guides) over broad informational queries.
+> 2. Use `searxng.searxng_web_search` to gather information. For most tasks, 2–4 targeted searches are enough. Prefer searches that return specific, actionable results (business listings, official pages, how-to guides) over broad informational queries.
 > 3. Synthesize the search results into a clear, structured comment. Format guidelines:
 >    - Lead with a one-sentence summary of what you found.
 >    - Present options or results as a numbered list.
@@ -200,9 +209,9 @@ If you trust the agent's output and find the approval step inconvenient, edit th
 
 ### Add page fetching for deep dives
 
-The DuckDuckGo MCP server also exposes a `fetch_content` tool that reads the full text of a specific URL. This is useful for tasks that need more than search snippets — reading an official policy page, pulling contact details from a business website, or following up on a result.
+The `searxng-mcp` server also exposes a `web_url_read` tool that fetches a specific URL and returns its content as Markdown. This is useful for tasks that need more than search snippets — reading an official policy page, pulling contact details from a business website, or following up on a result.
 
-Edit the agent, open **Capabilities → Tools**, click **Add tool**, pick `duckduckgo.fetch_content`, and leave the approval dropdown at **none** (it is read-only). No additional infrastructure is needed — `fetch_content` is already part of the `duckduckgo-mcp` container.
+Edit the agent, open **Capabilities → Tools**, click **Add tool**, pick `searxng.web_url_read`, and leave the approval dropdown at **none** (it is read-only). No additional infrastructure is needed — `web_url_read` is already part of the `searxng-mcp` container.
 
 ### Add a second label for high-priority tasks
 
@@ -216,8 +225,9 @@ If you want some tasks researched immediately rather than waiting for the next p
 | Poll fires but agent says no tasks found | `AI_Assist` label spelling mismatch | Todoist label names are case-sensitive. Check the exact label name on the task matches the value you entered in the trigger check input JSON. |
 | Poll never triggers a run, even with labeled tasks | `get_tasks_list` returning unexpected JSON structure | On the **Tools** page, click Discover on the `todoist` server, then call `get_tasks_list` manually with `{"label": "AI_Assist"}`. Inspect the raw JSON to confirm `$[0].id` resolves to a task ID string. |
 | `todoist-mcp` Discover returns 0 tools | `TODOIST_API_KEY` not set in `.env` | Check that `.env` is in the same directory as `docker-compose.yml`. The compose file maps `TODOIST_API_KEY` to the `API_KEY` env var the package expects — confirm both names match. |
-| `duckduckgo-mcp` Discover returns 0 tools | Image not built or build failed | Run `docker compose build duckduckgo-mcp` and check for errors. Confirm `docker compose ps` shows the container as `Up`. |
-| DuckDuckGo returns no results for some queries | Rate limiting from DuckDuckGo | DuckDuckGo's endpoint may throttle bursts. Lower **Max tool calls per run** in the agent's run limits to space out searches, or make each search broader to reduce the number of calls per task. |
+| `searxng` Discover returns 0 tools | `searxng-mcp` cannot reach the SearXNG backend, or SearXNG is not returning JSON | `docker compose logs searxng-mcp` will show the connect error. Confirm `searxng/settings.yml` lists `json` under `search.formats`, then `docker compose up -d --force-recreate searxng searxng-mcp`. |
+| `searxng_web_search` returns empty results for every query | One of the upstream search engines SearXNG queries is failing, or the host is being rate-limited by all of them at once | Look at `docker compose logs searxng` for `engine timeout` / `403` lines. SearXNG queries multiple engines in parallel — if a few fail, results still come through; if all fail, no results. Bot-detection at the residential IP level can affect every engine simultaneously. |
+| `web_url_read` returns 403 / Cloudflare challenge for some URLs | The target site blocks server-side fetchers | This is fundamental — `web_url_read` runs a plain HTTP fetch. For sites behind Cloudflare or similar, expect failure. Fall back to using `searxng_web_search` snippets for those tasks. |
 | Comment is posted but label not removed | `update_tasks` approval timed out (1h) | Approve the `update_tasks` request in Gleipnir before the timeout expires, or widen the timeout in the tool's settings. Alternatively change the approval on `update_tasks` to **none** to make label removal automatic. |
 | Run hits token limit | Too many tasks in one poll batch | Add a `limit` field to the trigger check input JSON (e.g. `{"label": "AI_Assist", "limit": 3}`) to cap the number of tasks per run. |
 | `.env` variables are not applied | `.env` is in the wrong directory | The file must be in `docs/playbooks/todoist-research/`, the same directory where you run `docker compose up`. |
