@@ -6,8 +6,9 @@ import (
 	"iter"
 	"testing"
 
-	"github.com/felag-engineering/gleipnir/internal/llm"
 	"google.golang.org/genai"
+
+	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
 // makeStreamSeq builds an iter.Seq2 directly from a slice of responses and an

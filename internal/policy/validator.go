@@ -5,9 +5,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
+
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // Issue pairs a canonical field path with its error message. Field is empty for

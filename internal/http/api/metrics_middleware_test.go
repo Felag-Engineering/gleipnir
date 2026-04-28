@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	dto "github.com/prometheus/client_model/go"
+
 	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 )
 

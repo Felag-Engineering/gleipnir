@@ -6,6 +6,7 @@ import (
 
 	"github.com/ohler55/ojg/jp"
 	"github.com/ohler55/ojg/oj"
+
 	"github.com/felag-engineering/gleipnir/internal/model"
 )
 

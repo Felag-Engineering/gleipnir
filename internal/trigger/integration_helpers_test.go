@@ -2,6 +2,7 @@ package trigger_test
 
 import (
 	"github.com/go-chi/chi/v5"
+
 	"github.com/felag-engineering/gleipnir/internal/execution/run"
 )
 
