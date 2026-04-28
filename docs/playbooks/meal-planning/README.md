@@ -70,7 +70,9 @@ In Gleipnir, go to **Tools → Add MCP server**:
 
 | Name | URL (same Compose project) | URL (separate host) |
 |------|---------------------------|---------------------|
-| `mealie` | `http://mealie-mcp:8102/` | `http://<MCP_HOST>:8102/` |
+| `mealie` | `http://mealie-mcp:8102/mcp` | `http://<MCP_HOST>:8102/mcp` |
+
+Supergateway is configured with `--outputTransport streamableHttp`, so the MCP endpoint is served at `/mcp` (Gleipnir speaks the MCP streamable-HTTP transport, not the legacy two-endpoint SSE transport).
 
 Click **Discover** after saving. The policy references `mealie.get_recipes` and `mealie.create_mealplan_bulk`. If Discover returns different names, update the `tool:` entries in the policy to match before saving.
 
@@ -118,7 +120,7 @@ If you are unsure about a dietary constraint or encounter unexpected calendar
 data, use the feedback channel to ask the operator before proceeding.
 ```
 
-**Run limits:** max tokens 30000, max tool calls 20
+**Run limits:** max tokens 100000, max tool calls 20
 
 **Concurrency:** Skip
 
@@ -173,5 +175,6 @@ No additional tools needed — the calendar data is already in context from the 
 | `arcade.GoogleCalendar_ListEvents` returns `RefreshError` or `auth_required` | The Arcade gateway has stale or missing OAuth credentials for your user_id | Re-authorize the GoogleCalendar toolkit per the [Arcade playbook](../arcade/README.md) Step 5. If the error persists with a freshly authorized user_id, the issue is upstream of Gleipnir. |
 | Discover returns 0 tools for `arcade` | API key missing, wrong gateway URL, or no toolkits added in the Arcade dashboard | See the [Arcade playbook](../arcade/README.md) troubleshooting section. |
 | Discover returns 0 tools for `mealie-mcp` | `MEALIE_BASE_URL` or `MEALIE_API_KEY` not set, or Mealie unreachable | Check `.env` is in the same directory as `docker-compose.yml`. Verify Mealie is reachable: `curl $MEALIE_BASE_URL/api/app/about`. |
+| Discover hangs or returns connection errors against `http://.../sse` | Supergateway running with the legacy SSE transport instead of streamable HTTP | Confirm `--outputTransport streamableHttp` is in the supergateway command and register Gleipnir against the `/mcp` path, not `/sse`. |
 | `mealie.create_mealplan_bulk` fails | Recipe ID not found or date format wrong | Check Discover output for the exact parameter schema. Verify recipe IDs from `mealie.get_recipes` are passed through correctly. |
 | `.env` variables not applied | `.env` is in the wrong directory | The file must be in `docs/playbooks/meal-planning/`, the same directory where you run `docker compose up`. |
