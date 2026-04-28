@@ -22,7 +22,6 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/arcade"
 	"github.com/felag-engineering/gleipnir/internal/db"
-	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
@@ -625,10 +624,10 @@ func toolToResponse(t db.McpTool) mcpToolResponse {
 
 // ListTools handles GET /api/v1/mcp/servers/{id}/tools.
 //
-// By default only enabled tools are returned, so the policy form's capability
-// registry never surfaces disabled tools. Passing ?include_disabled=true
-// returns all tools (enabled and disabled), but only when the caller holds
-// admin or operator role — auditors receive the default enabled-only list.
+// By default only enabled tools are returned. Passing ?include_disabled=true
+// returns all tools (enabled and disabled). The flag is honored for any
+// authenticated caller of this route; access control is enforced by the
+// route's RequireRole middleware in router.go, not by the handler.
 func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	ctx := r.Context()
@@ -642,15 +641,10 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// include_disabled is honored only for admin and operator; silently ignored
-	// for auditors so their existing read access continues to work unchanged.
 	includeDisabled := false
 	if v := r.URL.Query().Get("include_disabled"); v != "" {
-		if parsed, err := strconv.ParseBool(v); err == nil && parsed {
-			if user, ok := auth.UserFromContext(ctx); ok &&
-				(user.HasRole(model.RoleAdmin) || user.HasRole(model.RoleOperator)) {
-				includeDisabled = true
-			}
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			includeDisabled = parsed
 		}
 	}
 

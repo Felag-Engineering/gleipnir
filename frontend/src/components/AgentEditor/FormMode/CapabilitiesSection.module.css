@@ -64,6 +64,15 @@
   white-space: nowrap;
 }
 
+/* Warning badge shown on assigned-tool rows when the tool is currently disabled
+   on its MCP server. Composes shared badge shape + amber color from badges.module.css. */
+.disabledBadge {
+  composes: badgeRect from '@/styles/badges.module.css';
+  composes: colorAmber from '@/styles/badges.module.css';
+  margin-left: var(--space-2);
+  flex-shrink: 0;
+}
+
 /* Approval toggle */
 
 .approvalToggle {

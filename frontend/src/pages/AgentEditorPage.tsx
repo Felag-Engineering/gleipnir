@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { EditorTopBar } from '@/components/AgentEditor/EditorTopBar/EditorTopBar'
 import { DeleteAgentModal } from '@/components/AgentEditor/DeleteAgentModal'
 import { TriggerRunModal } from '@/components/TriggerRunModal/TriggerRunModal'
@@ -15,11 +16,51 @@ import { ErrorBanner } from '@/components/form/ErrorBanner'
 import { usePolicy, usePolicies } from '@/hooks/queries/policies'
 import { useSavePolicy, useDeletePolicy, usePausePolicy, useResumePolicy } from '@/hooks/mutations/policies'
 import { ApiError } from '@/api/fetch'
+import type { ApiMcpTool } from '@/api/types'
+import { queryKeys } from '@/hooks/queryKeys'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import NotFoundPage from '@/pages/NotFoundPage'
 import { defaultFormState, FormState, formStateToYaml, yamlToFormState } from '@/components/AgentEditor/agentEditorUtils'
 import { validateFormState, type FormIssue } from '@/components/AgentEditor/validateFormState'
 import styles from './AgentEditorPage.module.css'
+import alerts from '@/styles/alerts.module.css'
+
+// findDisabledGrantNames returns display names ("serverName.toolName") for any
+// tools in formState.capabilities.tools that are currently disabled according
+// to the TanStack Query cache. It checks every server's toolsAll cache entry.
+//
+// Cache-cold guard: if getQueryData returns undefined for a server (cache not
+// yet populated), that server is skipped and contributes no names. This avoids
+// false-positive banners when the cache hasn't loaded yet — the runtime check
+// at internal/mcp/registry.go is the authoritative enforcement gate.
+function findDisabledGrantNames(formState: FormState, queryClient: ReturnType<typeof useQueryClient>): string[] {
+  // Collect all known disabled tool identifiers from every populated server cache.
+  // Each disabled tool is indexed by both its UUID (used when added via the picker)
+  // and its "serverName.toolName" composite (used when loaded from existing YAML).
+  const disabledIds = new Map<string, string>() // identifier → display name
+
+  const servers = queryClient.getQueryData<Array<{ id: string; name: string }>>(queryKeys.servers.all) ?? []
+  for (const server of servers) {
+    const tools = queryClient.getQueryData<ApiMcpTool[]>(queryKeys.servers.toolsAll(server.id))
+    if (!tools) continue // cache cold for this server — fail open, skip
+    for (const tool of tools) {
+      if (!tool.enabled) {
+        const displayName = `${server.name}.${tool.name}`
+        disabledIds.set(tool.id, displayName)
+        disabledIds.set(displayName, displayName)
+      }
+    }
+  }
+
+  if (disabledIds.size === 0) return []
+
+  return formState.capabilities.tools
+    .filter(t => disabledIds.has(t.toolId) || disabledIds.has(`${t.serverName}.${t.name}`))
+    .map(t => {
+      // Prefer the canonical display name from the cache; fall back to form state.
+      return disabledIds.get(t.toolId) ?? disabledIds.get(`${t.serverName}.${t.name}`) ?? `${t.serverName}.${t.name}`
+    })
+}
 
 // splitIssuesBySection partitions a flat FormIssue list into buckets by the
 // canonical field prefix. Each section receives only the issues that belong to
@@ -52,6 +93,7 @@ function scrollToField(field: string) {
 export function AgentEditorPage() {
   const { id } = useParams<{ id?: string }>()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
   const { data: policy, status: policyStatus, error: policyErrorObj } = usePolicy(id)
   const { data: allPolicies } = usePolicies()
@@ -75,6 +117,9 @@ export function AgentEditorPage() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [deleteError, setDeleteError] = useState<ApiError | null>(null)
   const [triggerModalOpen, setTriggerModalOpen] = useState(false)
+  // savedDisabledTools holds display names of tools that were still disabled
+  // after a successful save. Shown as a dismissible warning banner.
+  const [savedDisabledTools, setSavedDisabledTools] = useState<string[]>([])
 
   // Initialize from fetched policy data
   useEffect(() => {
@@ -93,6 +138,7 @@ export function AgentEditorPage() {
   function handleFormChange(patch: Partial<FormState>) {
     setFormState(prev => ({ ...prev, ...patch }))
     setIsDirty(true)
+    setSavedDisabledTools([])
   }
 
   async function handleSave() {
@@ -114,6 +160,7 @@ export function AgentEditorPage() {
       const result = await savePolicy.mutateAsync({ id, yaml })
       setIsDirty(false)
       setSavedPolicyId(result.id)
+      setSavedDisabledTools(findDisabledGrantNames(formState, queryClient))
       if (!id) {
         navigate(`/agents/${result.id}`, { replace: true })
       }
@@ -260,6 +307,18 @@ export function AgentEditorPage() {
       )}
       <ErrorBoundary>
         <div className={styles.content}>
+          {savedDisabledTools.length > 0 && (
+            <div className={`${alerts.alertWarning} ${styles.disabledToolBanner}`}>
+              {`Policy saved. Note: tool${savedDisabledTools.length > 1 ? 's' : ''} "${savedDisabledTools.join('", "')}" ${savedDisabledTools.length > 1 ? 'are' : 'is'} currently disabled and will block runs.`}
+              <button
+                className={styles.dismiss}
+                onClick={() => setSavedDisabledTools([])}
+                aria-label="Dismiss warning"
+              >
+                ×
+              </button>
+            </div>
+          )}
           <ErrorBanner
             issues={bannerIssues}
             onDismiss={() => { setIssues([]); setDetailMsg(null) }}

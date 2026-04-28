@@ -27,14 +27,25 @@ export function CapabilitiesSection({ value, onChange, errors = [] }: Capabiliti
 
   const toolQueries = useQueries({
     queries: (servers ?? []).map(s => ({
-      queryKey: queryKeys.servers.tools(s.id),
-      queryFn: () => apiFetch<ApiMcpTool[]>(`/mcp/servers/${encodeURIComponent(s.id)}/tools`),
+      queryKey: queryKeys.servers.toolsAll(s.id),
+      queryFn: () => apiFetch<ApiMcpTool[]>(`/mcp/servers/${encodeURIComponent(s.id)}/tools?include_disabled=true`),
       enabled: Boolean(s.id),
     })),
   });
 
   const allRegistryTools: RegistryEntry[] = (servers ?? []).flatMap((srv, i) =>
     (toolQueries[i]?.data ?? []).map(tool => ({ tool, serverName: srv.name }))
+  );
+
+  // Build the set of identifiers for disabled tools so assigned-tool rows can
+  // show a warning badge. Each disabled tool adds two entries: the UUID (used
+  // when the tool was added through the picker in this session) and the
+  // dot-notation composite key "serverName.toolName" (used when the tool was
+  // parsed from an existing policy YAML via yamlToFormState).
+  const disabledToolIds = new Set(
+    allRegistryTools
+      .filter(({ tool }) => !tool.enabled)
+      .flatMap(({ tool, serverName }) => [tool.id, `${serverName}.${tool.name}`])
   );
 
   const assignedIds = new Set(value.tools.map(t => t.toolId));
@@ -123,6 +134,7 @@ export function CapabilitiesSection({ value, onChange, errors = [] }: Capabiliti
                 tool={tool}
                 rowIndex={i}
                 rowIssues={rowIssues}
+                isDisabled={disabledToolIds.has(tool.toolId)}
                 onRemove={handleRemove}
                 onToggleApproval={handleToggleApproval}
                 onTimeoutChange={handleTimeoutChange}
@@ -192,19 +204,28 @@ interface AssignedToolRowProps {
   tool: AssignedTool;
   rowIndex: number;
   rowIssues: FormIssue[];
+  isDisabled: boolean;
   onRemove: (toolId: string) => void;
   onToggleApproval: (toolId: string) => void;
   onTimeoutChange: (toolId: string, timeout: string) => void;
 }
 
-function AssignedToolRow({ tool, rowIndex, rowIssues, onRemove, onToggleApproval, onTimeoutChange }: AssignedToolRowProps) {
+function AssignedToolRow({ tool, rowIndex, rowIssues, isDisabled, onRemove, onToggleApproval, onTimeoutChange }: AssignedToolRowProps) {
   const displayName = `${tool.serverName}.${tool.name}`;
   const toolErrors = rowIssues.filter(e => e.field === `capabilities.tools[${rowIndex}].tool`).map(e => e.message);
   const timeoutErrors = rowIssues.filter(e => e.field === `capabilities.tools[${rowIndex}].timeout`).map(e => e.message);
 
   return (
-    <div className={styles.toolRow} data-field={`capabilities.tools[${rowIndex}].tool`}>
+    <div className={styles.toolRow} data-field={`capabilities.tools[${rowIndex}].tool`} data-disabled={isDisabled ? 'true' : undefined}>
       <span className={styles.toolName}>{displayName}</span>
+      {isDisabled && (
+        <span
+          className={styles.disabledBadge}
+          title="Tool is disabled — runs will fail until it is re-enabled on the Tools page"
+        >
+          Disabled
+        </span>
+      )}
       <span className={styles.toolDesc}>{tool.description}</span>
       <FieldError messages={toolErrors} />
       <div className={styles.approvalToggle}>
