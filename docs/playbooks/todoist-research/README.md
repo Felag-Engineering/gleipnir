@@ -170,11 +170,12 @@ Paste the following into the task instructions field:
 >      - End with a line noting the research date so the user knows how fresh it is.
 >
 >    **OMIT the `project_id` field entirely** — do not include it at all, not even as an empty string, `null`, or a blank value. Including it in any form will cause Todoist to reject the request with `Invalid ProjectID` or route the comment to the project instead of the task. The same rule applies to any other optional field: pass ONLY `task_id` and `content`.
-> 3. Call `todoist.update_tasks` with an `items` array to remove the `AI_Assist` label. Each item must contain **exactly two fields**:
+> 3. Call `todoist.update_tasks` with an `items` array to remove the `AI_Assist` label. Each item must contain **exactly three fields**:
 >    - `task_id`: the task `id` from the trigger payload.
+>    - `content`: the task's existing `content` value from the trigger payload, passed back **unchanged**. This is required by the wrapper schema even on update — omitting it returns `Invalid arguments for tool update_tasks: items.0.content Required`.
 >    - `labels`: the task's existing `labels` array minus `AI_Assist` (use the `labels` from the trigger payload, not from your earlier search results). If the task has no other labels, pass `[]`.
 >
->    **OMIT every other field** — no `content`, no `description`, no `due_date`, no `priority`, no `assignee_id`, etc. Empty strings count as values and Todoist will reject them with `Invalid argument value`. Use `todoist.update_tasks` — NOT `todoist.update_labels`, which mutates a label entity by label ID and will fail with `label_id is invalid` if given a task ID.
+>    **OMIT every other field** — no `description`, no `due_date`, no `priority`, no `assignee_id`, etc. Empty strings count as values and Todoist will reject them with `Invalid argument value`. Use `todoist.update_tasks` — NOT `todoist.update_labels`, which mutates a label entity by label ID and will fail with `label_id is invalid` if given a task ID.
 >
 > If you are uncertain what a task is asking for — for example, the title is ambiguous or missing key context like a location — call `gleipnir.ask_operator` before searching. Process every task in the trigger payload; the run is complete only after every task has had both `todoist.create_comments` and `todoist.update_tasks` called for it.
 
