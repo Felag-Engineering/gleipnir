@@ -152,23 +152,32 @@ This grants the agent `gleipnir.ask_operator` so it can ask for clarification on
 
 Paste the following into the task instructions field:
 
-> Your trigger payload contains a JSON object with a `poll_results` array. Each entry includes a `result` field that is itself an array of Todoist tasks. Each task object includes an `id` field (the task ID), a `content` field (the task title), and a `description` field (optional extra context). Do not call `todoist.get_tasks_list` again — use the tasks already in your trigger payload.
+> Your trigger payload contains a JSON object with a `poll_results` array. Each entry includes a `result` field that is itself an array of Todoist tasks. Each task object includes an `id` field (the task ID), a `content` field (the task title), a `description` field (optional extra context), and a `labels` array (the task's current labels). Do not call `todoist.get_tasks_list` again — use the tasks already in your trigger payload.
 >
-> For each task in the payload:
+> **You must complete every task in the trigger payload by making BOTH a `todoist.create_comments` tool call AND a `todoist.update_tasks` tool call. Do NOT write the research summary as a chat message — the only place the research text should appear is inside the `content` argument of `todoist.create_comments`. A response without those two tool calls is incomplete; keep going until both are made for every task.**
 >
-> 1. Read the `content` and `description` fields carefully to understand what research is needed.
-> 2. Use `searxng.searxng_web_search` to gather information. For most tasks, 2–4 targeted searches are enough. Prefer searches that return specific, actionable results (business listings, official pages, how-to guides) over broad informational queries.
-> 3. Synthesize the search results into a clear, structured comment. Format guidelines:
->    - Lead with a one-sentence summary of what you found.
->    - Present options or results as a numbered list.
->    - For each item include: name, relevant detail (address/price/description), website URL if available, and contact info if applicable.
->    - Keep the comment concise — the goal is a useful reference, not an essay. Aim for 200–500 words.
->    - If the task asks for local services, include distance or neighborhood context when the search results provide it.
->    - Note the date the research was done at the bottom of the comment so the user knows how fresh it is.
-> 4. Call `todoist.create_comments` to post the formatted research to the task. Pass the task `id` from the trigger payload as the `task_id` parameter.
-> 5. Call `todoist.update_tasks` to remove the `AI_Assist` label from the task, so it is not re-processed on the next poll. Pass the task `id` and a `labels` list that contains the task's existing labels minus `AI_Assist`. If the task has no other labels, pass an empty list.
+> For each task in the payload, follow this exact sequence of tool calls:
 >
-> Process all tasks in the trigger payload before finishing. If you are uncertain what a task is asking for — for example, the title is ambiguous or missing key context like a location — use the feedback channel to ask the operator before searching.
+> 1. Call `searxng.searxng_web_search` to gather information about what the `content` and `description` fields ask for. For most tasks, 2–4 targeted searches are enough. Prefer searches that return specific, actionable results (business listings, official pages, how-to guides) over broad informational queries.
+> 2. Call `todoist.create_comments` with an `items` array. Each item must contain **exactly two fields**:
+>    - `task_id`: the task `id` from the trigger payload.
+>    - `content`: a markdown-formatted research summary built from the search results, following these guidelines:
+>      - Lead with a one-sentence summary of what you found.
+>      - Present options or results as a numbered list.
+>      - For each item include: name, relevant detail (address/price/description), website URL if available, and contact info if applicable.
+>      - Keep the comment concise — a useful reference, not an essay. Aim for 200–500 words.
+>      - If the task asks for local services, include distance or neighborhood context when the search results provide it.
+>      - End with a line noting the research date so the user knows how fresh it is.
+>
+>    **OMIT the `project_id` field entirely** — do not include it at all, not even as an empty string, `null`, or a blank value. Including it in any form will cause Todoist to reject the request with `Invalid ProjectID` or route the comment to the project instead of the task. The same rule applies to any other optional field: pass ONLY `task_id` and `content`.
+> 3. Call `todoist.update_tasks` with an `items` array to remove the `AI_Assist` label. Each item must contain **exactly three fields**:
+>    - `task_id`: the task `id` from the trigger payload.
+>    - `content`: the task's existing `content` value from the trigger payload, passed back **unchanged**. This is required by the wrapper schema even on update — omitting it returns `Invalid arguments for tool update_tasks: items.0.content Required`.
+>    - `labels`: the task's existing `labels` array minus `AI_Assist` (use the `labels` from the trigger payload, not from your earlier search results). If the task has no other labels, pass `[]`.
+>
+>    **OMIT every other field** — no `description`, no `due_date`, no `priority`, no `assignee_id`, etc. Empty strings count as values and Todoist will reject them with `Invalid argument value`. Use `todoist.update_tasks` — NOT `todoist.update_labels`, which mutates a label entity by label ID and will fail with `label_id is invalid` if given a task ID.
+>
+> If you are uncertain what a task is asking for — for example, the title is ambiguous or missing key context like a location — call `gleipnir.ask_operator` before searching. Process every task in the trigger payload; the run is complete only after every task has had both `todoist.create_comments` and `todoist.update_tasks` called for it.
 
 **Run limits**
 
