@@ -10,6 +10,14 @@ services:
 
   # Todoist MCP server — reads tasks and adds comments.
   # Repo: https://github.com/stanislavlysenko0912/todoist-mcp-server
+  #
+  # Memory cap: supergateway in stateless streamable-http mode forks a fresh
+  # `npx -y todoist-mcp` child for every tool call. Each cold start re-resolves
+  # and loads the package, which briefly spikes RSS. Three rapid calls (search →
+  # comment → label-update) can overlap and exceed a tight cap, producing
+  # SIGKILL mid-request. 1 GiB has comfortable headroom for the overlap; drop it
+  # back to 512 MiB only if you switch supergateway to stateful mode (one
+  # long-lived child) so cold starts don't repeat.
   todoist-mcp:
     image: node:22-alpine
     command: >
@@ -23,7 +31,7 @@ services:
       # The todoist-mcp package expects the env var to be named API_KEY.
       - API_KEY=${TODOIST_API_KEY}
     restart: unless-stopped
-    mem_limit: 512m
+    mem_limit: 1g
 
   # SearXNG — self-hosted privacy-respecting meta-search engine. Replaces the
   # old duckduckgo-mcp, which was getting bot-blocked by DuckDuckGo. Port 8113
