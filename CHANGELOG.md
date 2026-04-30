@@ -35,7 +35,7 @@ Initial public release.
 - **Role-based access control.** Four roles (`admin`, `operator`, `approver`, `auditor`) enforced by middleware.
 - **Server-Sent Events** push run status changes, new steps, and approval events to the UI in real time.
 - **Embedded React frontend.** The full UI is compiled into the Go binary via `go:embed` and served directly — no separate frontend container.
-- **Three end-to-end playbooks.** Meal planning (Google Calendar + Mealie), Todoist research (DuckDuckGo + Todoist), and homelab DevOps (Docker + Proxmox + Technitium + Caddy).
+- **Three end-to-end playbooks.** Meal planning (Google Calendar + Mealie), Todoist research (SearXNG + Todoist), and homelab DevOps (Docker + Proxmox + Technitium + Caddy).
 
 ### Security
 
