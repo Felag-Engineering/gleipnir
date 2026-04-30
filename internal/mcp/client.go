@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/felag-engineering/gleipnir/internal/infra/version"
 )
 
 const (
@@ -183,7 +185,7 @@ func (c *Client) initialize(ctx context.Context) (string, error) {
 			"capabilities":    map[string]any{},
 			"clientInfo": map[string]any{
 				"name":    "gleipnir",
-				"version": "0.1.0",
+				"version": version.Version,
 			},
 		},
 	})

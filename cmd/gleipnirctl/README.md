@@ -14,15 +14,10 @@ The web UI handles day-to-day operations: managing policies, reviewing runs, app
 
 ## Available commands
 
-| Command | Status | Description |
-|---|---|---|
-| `rotate-key` | Available | Re-encrypt all at-rest secrets under a new encryption key |
-| `reset-password` | Available | Reset a user's password directly in the database |
-| `create-user` | Coming soon | Create a new user account without going through the web UI |
-| `list-users` | Coming soon | List all user accounts and their roles |
-| `purge-runs` | Coming soon | Delete run history older than a given date |
-| `verify-keys` | Coming soon | Verify that the current encryption key decrypts all stored secrets |
-| `check` | Coming soon | Run a health check against the database and configuration |
+| Command | Description |
+|---|---|
+| `rotate-key` | Re-encrypt all at-rest secrets under a new encryption key |
+| `reset-password` | Reset a user's password directly in the database |
 
 ---
 

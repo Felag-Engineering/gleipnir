@@ -19,6 +19,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/http/sse"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
+	"github.com/felag-engineering/gleipnir/internal/infra/version"
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	llmfactory "github.com/felag-engineering/gleipnir/internal/llm/factory"
 	openaicompatllm "github.com/felag-engineering/gleipnir/internal/llm/openaicompat"
@@ -27,9 +28,6 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/timeout"
 	"github.com/felag-engineering/gleipnir/internal/trigger"
 )
-
-// version is set via ldflags at build time.
-var version = "dev"
 
 // knownProviders is the list of LLM providers the system supports.
 var knownProviders = []string{"anthropic", "google", "openai"}
@@ -280,7 +278,7 @@ func run(cfg config.Config) error {
 		Handlers: handlers,
 		Services: services,
 		Metadata: api.Metadata{
-			Version:   version,
+			Version:   version.Version,
 			StartTime: startTime,
 			DBPath:    cfg.DBPath,
 		},

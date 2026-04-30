@@ -235,7 +235,7 @@ The `Dispatcher` interface is designed for substitution. When multi-node Gleipni
 2. Migrate `scheduled.go`: register `scheduled_fire` handler, seed heap from `GetScheduledActivePolicies` on startup, call `Schedule()` from the policy save path, delete the `Scheduler` struct and its `PolicyNotifier` implementation. Closes #790.
 3. Migrate `poll.go`: register `poll_tick` handler that reschedules itself, seed first tick per active poll policy on startup, delete the `Poller` struct, its reconcile loop, and its `PolicyNotifier` implementation.
 
-Design detail, diagrams, and handler contracts live in [`docs/developer/dispatcher.md`](developer/dispatcher.md).
+Design detail, diagrams, and handler contracts live in [`docs/developer/dispatcher.md`](dispatcher.md).
 
 ---
 

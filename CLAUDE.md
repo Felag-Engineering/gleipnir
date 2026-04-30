@@ -104,7 +104,7 @@ schemas/
   sql_schemas.sql     — schema that explains the different tables in our datastore
 
 cmd/
-  gleipnirctl/        — local admin CLI; direct DB-level maintenance operations (rotate-key, reset-password, and planned: create-user, list-users, purge-runs, verify-keys, check). Run via `docker compose run --rm api gleipnirctl <command>`.
+  gleipnirctl/        — local admin CLI; direct DB-level maintenance operations (rotate-key, reset-password). Run via `docker compose run --rm api gleipnirctl <command>`.
 
 internal/
   approval/           — approval-specific timeout wiring (thin wrapper over timeout/)
@@ -125,6 +125,7 @@ internal/
     event/            — Publisher interface for internal pub/sub
     logctx/           — context-based structured log correlation (run_id + policy_id)
     metrics/          — custom Prometheus registry, histogram bucket presets (BucketsFast/BucketsSlow), shared label constants, Handler()/Registry() accessors (ADR-037)
+    version/          — single-source-of-truth release version constant; bump in the commit immediately preceding a release tag
   llm/                — LLM provider abstraction (ADR-026)
     anthropic/        — Anthropic API client
     factory/          — NewClientForProvider: maps a provider name string to a concrete LLMClient; lives in its own sub-package to avoid the cycle caused by provider packages importing internal/llm

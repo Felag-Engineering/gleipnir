@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for suggesting an improvement. Please check the [roadmap](https://github.com/Felag-Engineering/gleipnir/blob/main/docs/Backend_Roadmap.md) and [existing issues](https://github.com/Felag-Engineering/gleipnir/issues?q=is%3Aissue) first.
+        Thanks for suggesting an improvement. Please check [existing issues](https://github.com/Felag-Engineering/gleipnir/issues?q=is%3Aissue) first to avoid duplicates.
 
   - type: textarea
     id: problem
