@@ -1875,3 +1875,85 @@ agent:
 		})
 	})
 }
+
+func TestComputeNextFireAt(t *testing.T) {
+	const interval = "5m"
+	pollSummary := api.PolicyYAMLSummary{}
+	pollSummary.Trigger.Interval = interval
+
+	paused := "2026-01-01T00:00:00Z"
+
+	t.Run("poll, no latestRun, not paused — returns now+interval", func(t *testing.T) {
+		before := time.Now().UTC().Truncate(time.Second)
+		result := api.ComputeNextFireAt(string(model.TriggerTypePoll), pollSummary, nil, nil)
+		after := time.Now().UTC().Truncate(time.Second)
+
+		if result == nil {
+			t.Fatal("expected non-nil next_fire_at for active poll policy with no runs")
+		}
+		got, err := time.Parse(time.RFC3339, *result)
+		if err != nil {
+			t.Fatalf("parse result: %v", err)
+		}
+		// The result is RFC3339 (second precision). Allow a 2-second window to
+		// account for the truncation and any sub-second execution time.
+		low := before.Add(5 * time.Minute)
+		high := after.Add(5 * time.Minute).Add(2 * time.Second)
+		if got.Before(low) || got.After(high) {
+			t.Errorf("next_fire_at = %v, want between %v and %v", got, low, high)
+		}
+	})
+
+	t.Run("poll, latestRun.StartedAt+interval in the future — returns that time", func(t *testing.T) {
+		futureStart := time.Now().UTC().Add(-2 * time.Minute) // started 2m ago; next = 3m from now
+		latestRun := &api.RunSummary{
+			StartedAt: futureStart.Format(time.RFC3339Nano),
+		}
+		result := api.ComputeNextFireAt(string(model.TriggerTypePoll), pollSummary, latestRun, nil)
+		if result == nil {
+			t.Fatal("expected non-nil next_fire_at")
+		}
+		got, err := time.Parse(time.RFC3339, *result)
+		if err != nil {
+			t.Fatalf("parse result: %v", err)
+		}
+		want := futureStart.Add(5 * time.Minute).Truncate(time.Second)
+		if got.Sub(want).Abs() > time.Second {
+			t.Errorf("next_fire_at = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("poll, latestRun.StartedAt+interval in the past — returns now+interval", func(t *testing.T) {
+		oldStart := time.Now().UTC().Add(-10 * time.Minute) // started 10m ago; next was 5m ago
+		latestRun := &api.RunSummary{
+			StartedAt: oldStart.Format(time.RFC3339Nano),
+		}
+		before := time.Now().UTC().Truncate(time.Second)
+		result := api.ComputeNextFireAt(string(model.TriggerTypePoll), pollSummary, latestRun, nil)
+		after := time.Now().UTC().Truncate(time.Second)
+
+		if result == nil {
+			t.Fatal("expected non-nil next_fire_at when candidate is stale")
+		}
+		got, err := time.Parse(time.RFC3339, *result)
+		if err != nil {
+			t.Fatalf("parse result: %v", err)
+		}
+		// Allow a 2-second window for RFC3339 truncation and execution time.
+		low := before.Add(5 * time.Minute)
+		high := after.Add(5 * time.Minute).Add(2 * time.Second)
+		if got.Before(low) || got.After(high) {
+			t.Errorf("next_fire_at = %v, want between %v and %v (fallback to now+interval)", got, low, high)
+		}
+	})
+
+	t.Run("poll, paused — returns nil", func(t *testing.T) {
+		latestRun := &api.RunSummary{
+			StartedAt: time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339),
+		}
+		result := api.ComputeNextFireAt(string(model.TriggerTypePoll), pollSummary, latestRun, &paused)
+		if result != nil {
+			t.Errorf("expected nil for paused poll policy, got %v", *result)
+		}
+	})
+}

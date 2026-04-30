@@ -129,7 +129,7 @@ func (h *PolicyHandler) List(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		item.NextFireAt = computeNextFireAt(row.TriggerType, summary, item.LatestRun)
+		item.NextFireAt = computeNextFireAt(row.TriggerType, summary, item.LatestRun, row.PausedAt)
 
 		items = append(items, item)
 	}
@@ -222,7 +222,7 @@ func parsePolicySummary(rawYAML string) policyYAMLSummary {
 // computeNextFireAt returns the next scheduled fire time for scheduled and poll
 // trigger types, or nil for all others. Parse errors are silently ignored so a
 // bad YAML value never breaks the list endpoint.
-func computeNextFireAt(triggerType string, summary policyYAMLSummary, latestRun *runSummary) *string {
+func computeNextFireAt(triggerType string, summary policyYAMLSummary, latestRun *runSummary, pausedAt *string) *string {
 	now := time.Now().UTC()
 
 	switch triggerType {
@@ -244,23 +244,32 @@ func computeNextFireAt(triggerType string, summary policyYAMLSummary, latestRun 
 		}
 
 	case string(model.TriggerTypePoll):
-		if latestRun == nil {
+		if pausedAt != nil {
 			return nil
 		}
 		interval, err := time.ParseDuration(summary.Trigger.Interval)
 		if err != nil || interval <= 0 {
 			return nil
 		}
-		startedAt, err := time.Parse(time.RFC3339Nano, latestRun.StartedAt)
-		if err != nil {
-			// Also try without nanoseconds
-			startedAt, err = time.Parse(time.RFC3339, latestRun.StartedAt)
+		// Use latestRun.StartedAt + interval as the candidate next fire time.
+		// If there is no prior run, or the candidate has already passed, fall
+		// back to now + interval so the UI always shows an upcoming estimate.
+		var candidate time.Time
+		if latestRun != nil {
+			startedAt, err := time.Parse(time.RFC3339Nano, latestRun.StartedAt)
 			if err != nil {
-				return nil
+				// Also try without nanoseconds
+				startedAt, err = time.Parse(time.RFC3339, latestRun.StartedAt)
+				if err != nil {
+					startedAt = time.Time{} // zero → candidate will be in the past
+				}
 			}
+			candidate = startedAt.Add(interval)
 		}
-		next := startedAt.Add(interval).UTC()
-		s := next.Format(time.RFC3339)
+		if !candidate.After(now) {
+			candidate = now.Add(interval)
+		}
+		s := candidate.UTC().Format(time.RFC3339)
 		return &s
 	}
 
