@@ -19,6 +19,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/trigger"
 )
 
@@ -54,10 +55,11 @@ type BackgroundServices struct {
 	ModelLister      llm.ModelLister       // interface for listing available models
 	ProviderRegistry *llm.ProviderRegistry // concrete registry for policy validation
 	ModelFilter      ModelFilter
-	Poller           PolicyNotifier // notified on poll-trigger policy mutations
-	Scheduler        PolicyNotifier // notified on scheduled-trigger policy mutations
-	Cron             PolicyNotifier // notified on cron-trigger policy mutations
-	EncryptionKey    []byte         // AES-256 key for MCP auth header encryption; nil when unset
+	Poller           PolicyNotifier    // notified on poll-trigger policy mutations
+	Scheduler        PolicyNotifier    // notified on scheduled-trigger policy mutations
+	Cron             PolicyNotifier    // notified on cron-trigger policy mutations
+	EncryptionKey    []byte            // AES-256 key for MCP auth header encryption; nil when unset
+	Settings         *settings.Service // system-wide runtime settings; required by manual-trigger and policy services
 }
 
 // Metadata holds descriptive, read-only values about the running instance.
@@ -144,7 +146,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		})
 
 		// Manual trigger: operators fire a run from the UI or API.
-		manualTriggerHandler := trigger.NewManualTriggerHandler(cfg.Services.Store, cfg.Services.Launcher, cfg.Handlers.AdminHandler)
+		manualTriggerHandler := trigger.NewManualTriggerHandler(cfg.Services.Store, cfg.Services.Launcher, cfg.Services.Settings)
 		r.With(httputil.BodySizeLimit(httputil.MaxRequestBodySize), auth.RequireRole(model.RoleOperator)).
 			Post("/api/v1/policies/{policyID}/trigger", manualTriggerHandler.Handle)
 
@@ -166,7 +168,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		r.Get("/api/v1/config", cfg.Handlers.AdminHandler.GetPublicConfig)
 
 		// Policies, MCP, stats, models, and attention — mounted under /api/v1.
-		policySvc := policy.NewService(cfg.Services.Store, nil, cfg.Services.ProviderRegistry, cfg.Services.ProviderRegistry, cfg.Handlers.AdminHandler)
+		policySvc := policy.NewService(cfg.Services.Store, nil, cfg.Services.ProviderRegistry, cfg.Services.ProviderRegistry, cfg.Services.Settings)
 		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, policySvc, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey))
 
 		// Admin: provider key management, settings, and model configuration.

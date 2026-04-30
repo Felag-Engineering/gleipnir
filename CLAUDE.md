@@ -135,6 +135,7 @@ internal/
   mcp/                — MCP HTTP client, tool registry, capability tags
   model/              — domain types (Policy, Run, RunStep, ApprovalRequest, enums, ...)
   policy/             — YAML parser, validator, system prompt renderer
+  settings/           — read-side accessor for system_settings (default model, public URL); injected into runtime so non-admin packages don't depend on the admin HTTP handler
   testutil/           — shared test helpers
   timeout/            — generic scan-and-resolve loop for expiring requests (used by approval/ and feedback/)
   trigger/            — trigger dispatch only: webhook, manual, scheduled, poll, and cron handlers (imports execution/run/ for launching)

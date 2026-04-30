@@ -14,6 +14,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 )
 
 // mockQuerier is an in-memory AdminQuerier for tests.
@@ -83,13 +84,13 @@ func (m *mockQuerier) ListModelSettings(_ context.Context) ([]db.ModelSetting, e
 var testEncryptionKey = []byte("01234567890123456789012345678901")
 
 func newTestHandler(q *mockQuerier) *Handler {
-	return NewHandler(q, testEncryptionKey, []string{"anthropic", "openai"}, nil, nil, nil)
+	return NewHandler(q, settings.NewService(q), testEncryptionKey, []string{"anthropic", "openai"}, nil, nil, nil)
 }
 
 // newTestHandlerWithLister constructs a Handler with a nil configureProvider,
 // a no-op removeProvider, and the supplied lister.
 func newTestHandlerWithLister(q *mockQuerier, lister llm.ModelLister) *Handler {
-	return NewHandler(q, testEncryptionKey, []string{"anthropic", "openai"}, nil, nil, lister)
+	return NewHandler(q, settings.NewService(q), testEncryptionKey, []string{"anthropic", "openai"}, nil, nil, lister)
 }
 
 func withChiParam(r *http.Request, key, value string) *http.Request {
@@ -211,7 +212,7 @@ func TestSetProviderKey_ConfigureProviderFails(t *testing.T) {
 	failConfigure := func(_ context.Context, _ string, _ string) error {
 		return fmt.Errorf("invalid API key")
 	}
-	h := NewHandler(q, testEncryptionKey, []string{"anthropic"}, failConfigure, nil, nil)
+	h := NewHandler(q, settings.NewService(q), testEncryptionKey, []string{"anthropic"}, failConfigure, nil, nil)
 
 	body := `{"key": "bad-key"}`
 	req := httptest.NewRequest(http.MethodPut, "/providers/anthropic/key", strings.NewReader(body))
@@ -345,44 +346,10 @@ func TestUpdateSettings_OK(t *testing.T) {
 	}
 }
 
-func TestGetSystemDefault(t *testing.T) {
-	q := newMockQuerier()
-	h := newTestHandler(q)
-
-	q.settings["default_model"] = db.SystemSetting{
-		Key:   "default_model",
-		Value: "anthropic:claude-sonnet-4-20250514",
-	}
-
-	provider, model, err := h.GetSystemDefault(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if provider != "anthropic" || model != "claude-sonnet-4-20250514" {
-		t.Errorf("got provider=%q model=%q", provider, model)
-	}
-}
-
-func TestGetSystemDefault_Unset(t *testing.T) {
-	q := newMockQuerier()
-	h := newTestHandler(q)
-
-	// When no default_model row exists, GetSystemDefault must return ("", "", nil)
-	// rather than forwarding sql.ErrNoRows — the empty provider string is the
-	// caller-visible signal for "not configured".
-	provider, model, err := h.GetSystemDefault(context.Background())
-	if err != nil {
-		t.Fatalf("expected nil error when default_model not set, got: %v", err)
-	}
-	if provider != "" || model != "" {
-		t.Errorf("expected empty provider and model, got provider=%q model=%q", provider, model)
-	}
-}
-
 func TestDeleteProviderKey(t *testing.T) {
 	q := newMockQuerier()
 	var removedProvider string
-	h := NewHandler(q, testEncryptionKey, []string{"anthropic"}, nil, func(provider string) {
+	h := NewHandler(q, settings.NewService(q), testEncryptionKey, []string{"anthropic"}, nil, func(provider string) {
 		removedProvider = provider
 	}, nil)
 
@@ -805,35 +772,6 @@ func TestGetPublicConfig_DefaultModelDisabled(t *testing.T) {
 	if cfg.DefaultModel != nil {
 		t.Errorf("expected default_model to be nil when default is disabled, got %+v", cfg.DefaultModel)
 	}
-}
-
-func TestGetPublicURL_Helper(t *testing.T) {
-	t.Run("returns stored value", func(t *testing.T) {
-		q := newMockQuerier()
-		h := newTestHandler(q)
-		q.settings["public_url"] = db.SystemSetting{Key: "public_url", Value: "https://gleipnir.example.com"}
-
-		got, err := h.GetPublicURL(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != "https://gleipnir.example.com" {
-			t.Errorf("got %q, want %q", got, "https://gleipnir.example.com")
-		}
-	})
-
-	t.Run("returns empty string when not set", func(t *testing.T) {
-		q := newMockQuerier()
-		h := newTestHandler(q)
-
-		got, err := h.GetPublicURL(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != "" {
-			t.Errorf("expected empty string, got %q", got)
-		}
-	})
 }
 
 func TestFormatUptime(t *testing.T) {

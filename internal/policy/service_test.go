@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
@@ -409,15 +411,30 @@ func TestService_Create_WithModelSectionPasses(t *testing.T) {
 	}
 }
 
-// stubSettings implements SettingsReader for tests.
-type stubSettings struct {
-	provider string
-	model    string
-	err      error
+// stubSettingsQuerier is a minimal settings.Querier for policy service tests.
+type stubSettingsQuerier struct {
+	settings map[string]db.SystemSetting
 }
 
-func (s *stubSettings) GetSystemDefault(_ context.Context) (string, string, error) {
-	return s.provider, s.model, s.err
+func (q *stubSettingsQuerier) GetSystemSetting(_ context.Context, key string) (db.SystemSetting, error) {
+	row, ok := q.settings[key]
+	if !ok {
+		return db.SystemSetting{}, sql.ErrNoRows
+	}
+	return row, nil
+}
+
+// newTestSettings builds a *settings.Service that returns the given provider and
+// model name from GetSystemDefault. Pass ("", "") to simulate "no default configured".
+func newTestSettings(provider, modelName string) *settings.Service {
+	q := &stubSettingsQuerier{settings: make(map[string]db.SystemSetting)}
+	if provider != "" || modelName != "" {
+		q.settings["default_model"] = db.SystemSetting{
+			Key:   "default_model",
+			Value: provider + ":" + modelName,
+		}
+	}
+	return settings.NewService(q)
 }
 
 // noModelYAML is a policy YAML with no model block — used to test that the
@@ -461,8 +478,7 @@ func TestCreate_NoModelInYAMLAndNoSystemDefault(t *testing.T) {
 
 func TestCreate_UsesSystemDefault_WhenYAMLModelOmitted(t *testing.T) {
 	store := testutil.NewTestStore(t)
-	settings := &stubSettings{provider: "anthropic", model: "claude-sonnet-4-6"}
-	svc := NewService(store, nil, nil, nil, settings)
+	svc := NewService(store, nil, nil, nil, newTestSettings("anthropic", "claude-sonnet-4-6"))
 
 	result, err := svc.Create(context.Background(), noModelYAML)
 	if err != nil {

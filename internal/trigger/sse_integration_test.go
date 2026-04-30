@@ -37,7 +37,7 @@ func buildSSERouter(t *testing.T, policyID string, llmClient llm.LLMClient, broa
 		cfg.LLMClient = llmClient
 		return agent.New(cfg)
 	})
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -18,6 +17,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/llm"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 )
 
 var ErrNotFound = sql.ErrNoRows
@@ -43,6 +43,7 @@ type ProviderRemover func(provider string)
 
 type Handler struct {
 	q                 AdminQuerier
+	settings          *settings.Service
 	encryptionKey     []byte
 	knownProviders    []string
 	knownProviderSet  map[string]bool
@@ -51,13 +52,14 @@ type Handler struct {
 	lister            llm.ModelLister
 }
 
-func NewHandler(q AdminQuerier, encryptionKey []byte, knownProviders []string, configure ProviderConfigurator, remove ProviderRemover, lister llm.ModelLister) *Handler {
+func NewHandler(q AdminQuerier, s *settings.Service, encryptionKey []byte, knownProviders []string, configure ProviderConfigurator, remove ProviderRemover, lister llm.ModelLister) *Handler {
 	providerSet := make(map[string]bool, len(knownProviders))
 	for _, p := range knownProviders {
 		providerSet[p] = true
 	}
 	return &Handler{
 		q:                 q,
+		settings:          s,
 		encryptionKey:     encryptionKey,
 		knownProviders:    knownProviders,
 		knownProviderSet:  providerSet,
@@ -291,14 +293,7 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 // If the setting has not been configured, it returns an empty string (not an error).
 // Other database errors are returned as-is for the caller to handle.
 func (h *Handler) GetPublicURL(ctx context.Context) (string, error) {
-	row, err := h.q.GetSystemSetting(ctx, "public_url")
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read public_url: %w", err)
-	}
-	return row.Value, nil
+	return h.settings.GetPublicURL(ctx)
 }
 
 // publicConfigResponse is the JSON shape returned by GetPublicConfig.
@@ -473,18 +468,7 @@ func (h *Handler) SetModelEnabled(w http.ResponseWriter, r *http.Request) {
 // Returns ("", "", nil) when no default is configured (sql.ErrNoRows), so callers
 // can distinguish "unset" from "read failure" — matching the GetPublicURL pattern.
 func (h *Handler) GetSystemDefault(ctx context.Context) (string, string, error) {
-	row, err := h.q.GetSystemSetting(ctx, "default_model")
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", nil
-	}
-	if err != nil {
-		return "", "", fmt.Errorf("read default_model: %w", err)
-	}
-	parts := strings.SplitN(row.Value, ":", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid default_model format: %q", row.Value)
-	}
-	return parts[0], parts[1], nil
+	return h.settings.GetSystemDefault(ctx)
 }
 
 // SystemInfo holds data returned by the system info endpoint.

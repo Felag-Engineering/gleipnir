@@ -16,6 +16,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 )
 
 // AgentFactory constructs a BoundAgent from a fully-populated Config.
@@ -70,13 +71,6 @@ type LaunchResult struct {
 	RunID string
 }
 
-// defaultModelResolver fetches the system-wide default LLM provider and model
-// name. *admin.Handler satisfies this interface. Used by the drain path to
-// re-parse policies with current settings rather than a stale snapshot.
-type defaultModelResolver interface {
-	GetSystemDefault(ctx context.Context) (provider string, modelName string, err error)
-}
-
 // RunLauncher encapsulates the shared logic for creating a run record,
 // resolving tools, constructing the agent, and launching the goroutine.
 // All three trigger handlers (webhook, manual, scheduled) delegate to it.
@@ -87,7 +81,7 @@ type RunLauncher struct {
 	newAgent               AgentFactory
 	publisher              event.Publisher
 	defaultFeedbackTimeout time.Duration
-	modelResolver          defaultModelResolver
+	modelResolver          *settings.Service
 }
 
 // registryResolver is the subset of mcp.Registry used by RunLauncher, defined
@@ -103,9 +97,9 @@ type RunLauncherConfig struct {
 	Registry               registryResolver
 	Manager                *RunManager
 	AgentFactory           AgentFactory
-	Publisher              event.Publisher // nil = no real-time events
+	Publisher              event.Publisher  // nil = no real-time events
 	DefaultFeedbackTimeout time.Duration
-	ModelResolver          defaultModelResolver // nil = use launch-time snapshot only
+	ModelResolver          *settings.Service // nil = use launch-time snapshot only
 }
 
 // NewRunLauncher returns a RunLauncher ready to use.

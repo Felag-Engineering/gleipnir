@@ -15,6 +15,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 )
 
 // SecretLoaderInterface is the interface the webhook handler uses to load a
@@ -30,13 +31,13 @@ type WebhookHandler struct {
 	store         *db.Store
 	launcher      *run.RunLauncher
 	secretLoader  SecretLoaderInterface
-	modelResolver defaultModelResolver
+	modelResolver *settings.Service
 }
 
 // NewWebhookHandler returns a WebhookHandler backed by store, launcher, the
 // provided secret loader, and the given resolver for the system default model.
 // secretLoader is required; pass NewSecretLoader(q, key).
-func NewWebhookHandler(store *db.Store, launcher *run.RunLauncher, secretLoader SecretLoaderInterface, modelResolver defaultModelResolver) *WebhookHandler {
+func NewWebhookHandler(store *db.Store, launcher *run.RunLauncher, secretLoader SecretLoaderInterface, modelResolver *settings.Service) *WebhookHandler {
 	return &WebhookHandler{
 		store:         store,
 		launcher:      launcher,
