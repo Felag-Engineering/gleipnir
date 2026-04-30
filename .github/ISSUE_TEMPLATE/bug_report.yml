@@ -33,7 +33,7 @@ body:
     attributes:
       label: Gleipnir version
       description: Release tag, docker image tag, or commit SHA.
-      placeholder: "v0.1.0 or sha:abc123"
+      placeholder: "v1.0.0 or sha:abc123"
     validations:
       required: true
 
@@ -48,6 +48,7 @@ body:
         - manual
         - scheduled
         - poll
+        - cron
     validations:
       required: false
 
