@@ -288,35 +288,46 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	go func() {
 		defer cancel()
 		defer l.manager.Deregister(run.ID)
-		if err := ba.Run(runCtx, run.ID, payload); err != nil {
-			logctx.Logger(runCtx).ErrorContext(runCtx, "run failed", "trigger_type", string(params.TriggerType), "err", err)
-		}
-		// Drain the queue if this policy uses queue concurrency.
-		// ba.Run has completed so the run's DB status is terminal — DrainQueue's
-		// ListActiveRunsByPolicy (called inside Launch) will not see this run.
-		// Use context.Background() because runCtx may be cancelled.
-		// Re-fetch the policy so DrainQueue uses current settings (queue_depth,
-		// concurrency) rather than a snapshot captured at launch time.
-		if params.ParsedPolicy.Agent.Concurrency == model.ConcurrencyQueue {
-			drainCtx := context.Background()
-			currentPolicy := params.ParsedPolicy
-			if dbPol, dbErr := l.store.GetPolicy(drainCtx, params.PolicyID); dbErr == nil {
-				provider, modelName := l.drainResolveDefaults(drainCtx)
-				if provider == "" || modelName == "" {
-					slog.Warn("drain: system default model unavailable, using launch-time snapshot",
-						"policy_id", params.PolicyID)
-				} else if p, parseErr := policy.Parse(dbPol.Yaml, provider, modelName); parseErr == nil {
-					currentPolicy = p
-				} else {
-					slog.Warn("drain: failed to re-parse policy, using launch-time snapshot",
-						"policy_id", params.PolicyID, "err", parseErr)
-				}
-			}
-			l.DrainQueue(drainCtx, params.PolicyID, currentPolicy)
-		}
+		l.runAndDrain(runCtx, run.ID, params.TriggerType, params.PolicyID, params.ParsedPolicy, payload, ba)
 	}()
 
 	return LaunchResult{RunID: run.ID}, nil
+}
+
+// runAndDrain executes the agent run and, if the policy uses queue concurrency,
+// drains the next trigger from the queue. It is the body of the goroutine
+// launched by Launch — extracted so it can be tested independently.
+//
+// ctx should be the run-scoped context (already enriched with correlation IDs).
+// Use context.Background() for the drain step because ctx may be cancelled by
+// the time the run completes.
+func (l *RunLauncher) runAndDrain(ctx context.Context, runID string, triggerType model.TriggerType, policyID string, parsedPolicy *model.ParsedPolicy, payload string, ba *agent.BoundAgent) {
+	if err := ba.Run(ctx, runID, payload); err != nil {
+		logctx.Logger(ctx).ErrorContext(ctx, "run failed", "trigger_type", string(triggerType), "err", err)
+	}
+	// Drain the queue if this policy uses queue concurrency.
+	// ba.Run has completed so the run's DB status is terminal — DrainQueue's
+	// ListActiveRunsByPolicy (called inside Launch) will not see this run.
+	// Use context.Background() because ctx may be cancelled.
+	// Re-fetch the policy so DrainQueue uses current settings (queue_depth,
+	// concurrency) rather than a snapshot captured at launch time.
+	if parsedPolicy.Agent.Concurrency == model.ConcurrencyQueue {
+		drainCtx := context.Background()
+		currentPolicy := parsedPolicy
+		if dbPol, dbErr := l.store.GetPolicy(drainCtx, policyID); dbErr == nil {
+			provider, modelName := l.drainResolveDefaults(drainCtx)
+			if provider == "" || modelName == "" {
+				slog.Warn("drain: system default model unavailable, using launch-time snapshot",
+					"policy_id", policyID)
+			} else if p, parseErr := policy.Parse(dbPol.Yaml, provider, modelName); parseErr == nil {
+				currentPolicy = p
+			} else {
+				slog.Warn("drain: failed to re-parse policy, using launch-time snapshot",
+					"policy_id", policyID, "err", parseErr)
+			}
+		}
+		l.DrainQueue(drainCtx, policyID, currentPolicy)
+	}
 }
 
 // Enqueue checks queue depth and enqueues the trigger payload.
