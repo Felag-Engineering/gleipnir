@@ -15,6 +15,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 )
 
 // toolResolver resolves a single MCP tool by dot-notation name. Used by
@@ -46,7 +47,7 @@ type Poller struct {
 	store         *db.Store
 	launcher      *run.RunLauncher
 	toolResolver  toolResolver
-	modelResolver defaultModelResolver
+	modelResolver *settings.Service
 	mu            sync.Mutex                 // protects loops and rootCtx
 	loops         map[string]*pollLoopHandle // policyID -> handle for that goroutine
 	wg            sync.WaitGroup             // tracks all poll loop goroutines
@@ -56,7 +57,7 @@ type Poller struct {
 // NewPoller returns a Poller ready to be started. resolver is used to call
 // poll tools outside of any agent run context. modelResolver is used to look
 // up the system default model when the policy YAML omits the model block.
-func NewPoller(store *db.Store, launcher *run.RunLauncher, resolver toolResolver, modelResolver defaultModelResolver) *Poller {
+func NewPoller(store *db.Store, launcher *run.RunLauncher, resolver toolResolver, modelResolver *settings.Service) *Poller {
 	return &Poller{
 		store:         store,
 		launcher:      launcher,
@@ -209,8 +210,10 @@ func (p *Poller) startPollLoopLocked(ctx context.Context, policyRow db.Policy) {
 		return
 	}
 
+	// GetSystemDefault swallows sql.ErrNoRows and returns ("", "", nil) when no
+	// default is configured, so any non-nil error here is a real DB failure.
 	provider, modelName, err := p.modelResolver.GetSystemDefault(ctx)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
 		slog.Error("poller: failed to load system default model", "policy_id", policyRow.ID, "err", err)
 		return
 	}

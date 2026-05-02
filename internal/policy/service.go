@@ -12,6 +12,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 )
 
 // Sentinel errors returned by webhook secret methods, exported so handler code
@@ -63,13 +64,6 @@ type OptionsValidator interface {
 	ValidateProviderOptions(provider string, options map[string]any) error
 }
 
-// SettingsReader reads the system-wide default provider and model from the
-// admin settings store. The admin.Handler satisfies this interface via its
-// GetSystemDefault method.
-type SettingsReader interface {
-	GetSystemDefault(ctx context.Context) (provider, model string, err error)
-}
-
 // SaveResult holds the outcome of saving a policy, including any non-blocking
 // warnings (e.g. unresolved tool references).
 type SaveResult struct {
@@ -80,26 +74,26 @@ type SaveResult struct {
 // Service orchestrates policy parse → validate → store operations.
 type Service struct {
 	store            *db.Store
-	lookup           ToolLookup       // nil if MCP registry is unavailable
-	modelValidator   ModelValidator   // nil skips model name validation
-	optionsValidator OptionsValidator // nil skips provider options validation
-	settings         SettingsReader   // nil falls back to compiled defaults
-	encrypter        SecretCipher     // nil means encryption not configured
+	lookup           ToolLookup        // nil if MCP registry is unavailable
+	modelValidator   ModelValidator    // nil skips model name validation
+	optionsValidator OptionsValidator  // nil skips provider options validation
+	settings         *settings.Service // nil falls back to compiled defaults
+	encrypter        SecretCipher      // nil means encryption not configured
 }
 
 // NewService returns a policy Service. lookup may be nil if MCP registry
 // checking is not yet available — tool reference warnings will be skipped.
 // modelValidator may be nil — model name validation will be skipped.
 // optionsValidator may be nil — provider options validation will be skipped.
-// settings may be nil — model defaults will be unset, causing policies that
+// s may be nil — model defaults will be unset, causing policies that
 // omit the model block to fail validation with a clear error.
-func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidator, optionsValidator OptionsValidator, settings SettingsReader) *Service {
+func NewService(store *db.Store, lookup ToolLookup, modelValidator ModelValidator, optionsValidator OptionsValidator, s *settings.Service) *Service {
 	return &Service{
 		store:            store,
 		lookup:           lookup,
 		modelValidator:   modelValidator,
 		optionsValidator: optionsValidator,
-		settings:         settings,
+		settings:         s,
 	}
 }
 

@@ -12,20 +12,15 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 )
-
-// defaultModelResolver fetches the system-wide default LLM provider and model
-// name from persistent storage. *admin.Handler satisfies this interface.
-type defaultModelResolver interface {
-	GetSystemDefault(ctx context.Context) (provider string, modelName string, err error)
-}
 
 // fetchAndParsePolicy loads a policy by ID, resolves the system default model
 // (used when the policy YAML omits the model block), and parses the YAML.
 // If the resolved model is empty and the policy also omits the model block the
 // run cannot proceed; the handler writes a 500 and returns nil.
 // On any other failure it writes the appropriate HTTP error and returns nil.
-func fetchAndParsePolicy(ctx context.Context, w http.ResponseWriter, store *db.Store, policyID string, resolver defaultModelResolver) *model.ParsedPolicy {
+func fetchAndParsePolicy(ctx context.Context, w http.ResponseWriter, store *db.Store, policyID string, resolver *settings.Service) *model.ParsedPolicy {
 	dbPolicy, err := store.GetPolicy(ctx, policyID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -41,12 +36,14 @@ func fetchAndParsePolicy(ctx context.Context, w http.ResponseWriter, store *db.S
 		return nil
 	}
 
+	// GetSystemDefault swallows sql.ErrNoRows and returns ("", "", nil) when no
+	// default is configured, so any non-nil error here is a real DB failure.
 	provider, modelName, err := resolver.GetSystemDefault(ctx)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to load system default model", "")
 		return nil
 	}
-	// sql.ErrNoRows means no system default is configured — pass ("", "") so
+	// Empty provider means no system default is configured — pass ("", "") so
 	// policy.Parse leaves ModelConfig blank; Validate will catch it if the
 	// policy YAML also omits the model block.
 

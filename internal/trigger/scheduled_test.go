@@ -2,7 +2,6 @@ package trigger_test
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -120,7 +119,7 @@ func TestScheduler_SkipsPastTimestampsOnStartup(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -163,7 +162,7 @@ func TestScheduler_FiresFutureTimestamp(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -207,7 +206,7 @@ func TestScheduler_AutoPausesAfterAllTimesConsumed(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -261,7 +260,7 @@ func TestScheduler_DeduplicatesAlreadyFiredTime(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -307,7 +306,7 @@ func TestScheduler_ConcurrencySkip_BlocksWhenActive(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -349,7 +348,7 @@ func TestScheduler_ConcurrencySkip_ProceedsWhenIdle(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -396,7 +395,7 @@ func TestScheduler_ConcurrencyQueue_EnqueuesWhenActive(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -448,7 +447,7 @@ func TestScheduler_ConcurrencyQueue_LaunchesWhenIdle(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -521,8 +520,8 @@ func TestScheduler_SkipsPolicy_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T)
 	defer cancel()
 
 	manager := run.NewRunManager()
-	// Resolver that returns sql.ErrNoRows — simulates unconfigured system default.
-	noDefault := stubDefaultModelResolver{err: sql.ErrNoRows}
+	// Resolver with no default configured — simulates unconfigured system default.
+	noDefault := newTestSettings("", "")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,

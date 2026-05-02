@@ -2,7 +2,6 @@ package trigger_test
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -239,7 +238,7 @@ func TestPoller_CheckMatchFires(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -276,7 +275,7 @@ func TestPoller_CheckNoMatchNoRun(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -321,7 +320,7 @@ func TestPoller_MatchAny_OnePassFires(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -380,7 +379,7 @@ agent:
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -424,7 +423,7 @@ func TestPoller_ToolErrorTreatedAsNotPassed(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -470,7 +469,7 @@ func TestPoller_ConcurrencySkip(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -513,7 +512,7 @@ func TestPoller_GracefulShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -621,7 +620,7 @@ func TestPoller_CheckTimeout_CancelsCallTool(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -684,8 +683,8 @@ func TestPoller_SkipsLoop_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T) {
 	defer cancel()
 
 	manager := run.NewRunManager()
-	// Resolver returns sql.ErrNoRows — simulates unconfigured system default.
-	noDefault := stubDefaultModelResolver{err: sql.ErrNoRows}
+	// Resolver with no default configured — simulates unconfigured system default.
+	noDefault := newTestSettings("", "")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,

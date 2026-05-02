@@ -2,6 +2,7 @@ package trigger_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,21 +11,34 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
-// stubDefaultModelResolver is the external-package copy of the resolver stub.
-// Internal-package tests (notify_test.go) use their own copy in
-// notify_resolver_stub_test.go because Go test packages cannot share symbols
-// across package trigger and package trigger_test.
-type stubDefaultModelResolver struct {
-	provider string
-	name     string
-	err      error
+// stubSettingsQuerier is a minimal settings.Querier for external trigger tests.
+type stubSettingsQuerier struct {
+	settings map[string]db.SystemSetting
 }
 
-func (s stubDefaultModelResolver) GetSystemDefault(_ context.Context) (string, string, error) {
-	return s.provider, s.name, s.err
+func (q *stubSettingsQuerier) GetSystemSetting(_ context.Context, key string) (db.SystemSetting, error) {
+	row, ok := q.settings[key]
+	if !ok {
+		return db.SystemSetting{}, sql.ErrNoRows
+	}
+	return row, nil
+}
+
+// newTestSettings builds a *settings.Service that returns the given provider and
+// model name from GetSystemDefault. Pass ("", "") to simulate "no default configured".
+func newTestSettings(provider, modelName string) *settings.Service {
+	q := &stubSettingsQuerier{settings: make(map[string]db.SystemSetting)}
+	if provider != "" || modelName != "" {
+		q.settings["default_model"] = db.SystemSetting{
+			Key:   "default_model",
+			Value: provider + ":" + modelName,
+		}
+	}
+	return settings.NewService(q)
 }
 
 // minimalWebhookPolicy is the smallest YAML that parses cleanly with trigger

@@ -36,7 +36,7 @@ func setupNotifyPollerFixture(t *testing.T) (*db.Store, *Poller) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -182,7 +182,7 @@ func setupNotifySchedulerFixture(t *testing.T) (*db.Store, *Scheduler) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,

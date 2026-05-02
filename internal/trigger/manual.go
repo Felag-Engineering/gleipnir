@@ -11,6 +11,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 )
 
 // ManualTriggerHandler handles POST /api/v1/policies/{policyID}/trigger.
@@ -19,12 +20,12 @@ import (
 type ManualTriggerHandler struct {
 	store         *db.Store
 	launcher      *run.RunLauncher
-	modelResolver defaultModelResolver
+	modelResolver *settings.Service
 }
 
 // NewManualTriggerHandler returns a ManualTriggerHandler backed by store, launcher,
 // and the given resolver for fetching the system default model.
-func NewManualTriggerHandler(store *db.Store, launcher *run.RunLauncher, modelResolver defaultModelResolver) *ManualTriggerHandler {
+func NewManualTriggerHandler(store *db.Store, launcher *run.RunLauncher, modelResolver *settings.Service) *ManualTriggerHandler {
 	return &ManualTriggerHandler{
 		store:         store,
 		launcher:      launcher,

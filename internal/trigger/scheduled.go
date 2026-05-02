@@ -15,6 +15,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 )
 
 // Scheduler watches scheduled policies and fires runs at their configured fire_at times.
@@ -24,14 +25,14 @@ import (
 type Scheduler struct {
 	store         *db.Store
 	launcher      *run.RunLauncher
-	modelResolver defaultModelResolver
+	modelResolver *settings.Service
 	mu            sync.Mutex                      // protects timers and rootCtx
 	timers        map[string][]context.CancelFunc // policyID -> per-fire-time cancel funcs
 	rootCtx       context.Context                 // set in Start; used by Notify to outlive the HTTP request
 }
 
 // NewScheduler returns a Scheduler ready to be started.
-func NewScheduler(store *db.Store, launcher *run.RunLauncher, modelResolver defaultModelResolver) *Scheduler {
+func NewScheduler(store *db.Store, launcher *run.RunLauncher, modelResolver *settings.Service) *Scheduler {
 	return &Scheduler{
 		store:         store,
 		launcher:      launcher,

@@ -17,6 +17,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 )
 
 // cronLoopHandle wraps a loop's cancel func so the map stores a pointer we can
@@ -39,7 +40,7 @@ type cronLoopHandle struct {
 type CronRunner struct {
 	store         *db.Store
 	launcher      *run.RunLauncher
-	modelResolver defaultModelResolver
+	modelResolver *settings.Service
 	parser        cronlib.Parser             // 5-field standard parser, built once
 	mu            sync.Mutex                 // protects loops, rootCtx, and rootCancel
 	loops         map[string]*cronLoopHandle // policyID → handle for that goroutine
@@ -50,7 +51,7 @@ type CronRunner struct {
 
 // NewCronRunner returns a CronRunner ready to be started. modelResolver is used
 // to look up the system default model when the policy YAML omits the model block.
-func NewCronRunner(store *db.Store, launcher *run.RunLauncher, modelResolver defaultModelResolver) *CronRunner {
+func NewCronRunner(store *db.Store, launcher *run.RunLauncher, modelResolver *settings.Service) *CronRunner {
 	return &CronRunner{
 		store:         store,
 		launcher:      launcher,
@@ -205,8 +206,10 @@ func (c *CronRunner) startCronLoopLocked(ctx context.Context, policyRow db.Polic
 		return
 	}
 
+	// GetSystemDefault swallows sql.ErrNoRows and returns ("", "", nil) when no
+	// default is configured, so any non-nil error here is a real DB failure.
 	provider, modelName, err := c.modelResolver.GetSystemDefault(ctx)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
 		slog.Error("cron: failed to load system default model", "policy_id", policyRow.ID, "err", err)
 		return
 	}

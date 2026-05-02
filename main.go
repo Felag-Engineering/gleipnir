@@ -25,6 +25,7 @@ import (
 	openaicompatllm "github.com/felag-engineering/gleipnir/internal/llm/openaicompat"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
 	"github.com/felag-engineering/gleipnir/internal/trigger"
 )
@@ -144,7 +145,8 @@ func run(cfg config.Config) error {
 	}
 
 	adminQuerier := admin.NewQuerierAdapter(store.Queries())
-	adminHandler := admin.NewHandler(adminQuerier, encryptionKey, knownProviders, configureProvider, removeProvider, providerRegistry)
+	systemSettings := settings.NewService(store.Queries())
+	adminHandler := admin.NewHandler(adminQuerier, systemSettings, encryptionKey, knownProviders, configureProvider, removeProvider, providerRegistry)
 
 	// Bootstrap providers from DB-stored encrypted API keys.
 	for _, provName := range knownProviders {
@@ -191,7 +193,7 @@ func run(cfg config.Config) error {
 	// deployments are not locked out after the semantic flip (new/unseen models
 	// now default to disabled). If the row already exists with enabled=1, the
 	// upsert is a no-op.
-	if err := ensureDefaultModelEnabled(ctx, store.Queries(), adminHandler); err != nil {
+	if err := ensureDefaultModelEnabled(ctx, store.Queries(), systemSettings); err != nil {
 		slog.Warn("could not ensure default model is enabled", "err", err)
 	}
 
@@ -202,11 +204,11 @@ func run(cfg config.Config) error {
 		AgentFactory:           runpkg.NewAgentFactory(providerRegistry),
 		Publisher:              broadcaster,
 		DefaultFeedbackTimeout: cfg.DefaultFeedbackTimeout,
-		ModelResolver:          adminHandler,
+		ModelResolver:          systemSettings,
 	})
 
 	webhookSecretLoader := trigger.NewSecretLoader(store.Queries(), encryptionKey)
-	webhookHandler := trigger.NewWebhookHandler(store, launcher, webhookSecretLoader, adminHandler)
+	webhookHandler := trigger.NewWebhookHandler(store, launcher, webhookSecretLoader, systemSettings)
 
 	// Build encrypter for policy webhook secret management.
 	var webhookEncrypter *webhookSecretEncrypterAdapter
@@ -223,23 +225,23 @@ func run(cfg config.Config) error {
 	}
 
 	// Wire the policy webhook handler for rotate/reveal endpoints.
-	policyService := policy.NewService(store, nil, providerRegistry, providerRegistry, adminHandler)
+	policyService := policy.NewService(store, nil, providerRegistry, providerRegistry, systemSettings)
 	if webhookEncrypter != nil {
 		policyService.WithWebhookSecretEncrypter(webhookEncrypter)
 	}
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
 
-	scheduler := trigger.NewScheduler(store, launcher, adminHandler)
+	scheduler := trigger.NewScheduler(store, launcher, systemSettings)
 	if err := scheduler.Start(ctx); err != nil {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
 
-	poller := trigger.NewPoller(store, launcher, registry, adminHandler)
+	poller := trigger.NewPoller(store, launcher, registry, systemSettings)
 	if err := poller.Start(ctx); err != nil {
 		return fmt.Errorf("start poller: %w", err)
 	}
 
-	cronRunner := trigger.NewCronRunner(store, launcher, adminHandler)
+	cronRunner := trigger.NewCronRunner(store, launcher, systemSettings)
 	if err := cronRunner.Start(ctx); err != nil {
 		return fmt.Errorf("start cron runner: %w", err)
 	}
@@ -257,6 +259,7 @@ func run(cfg config.Config) error {
 		Scheduler:        scheduler,
 		Cron:             cronRunner,
 		EncryptionKey:    encryptionKey,
+		Settings:         systemSettings,
 	}
 
 	// Phase 2: HTTP handlers.
@@ -354,10 +357,11 @@ func run(cfg config.Config) error {
 // default model. This prevents existing deployments from being locked out
 // after the semantic flip where new/unseen models default to disabled.
 // If no default_model setting exists, the function is a no-op.
-func ensureDefaultModelEnabled(ctx context.Context, q *db.Queries, h *admin.Handler) error {
-	provider, model, err := h.GetSystemDefault(ctx)
+func ensureDefaultModelEnabled(ctx context.Context, q *db.Queries, s *settings.Service) error {
+	provider, model, err := s.GetSystemDefault(ctx)
 	if err != nil {
-		// No default model configured — nothing to do.
+		// Best-effort: a DB read failure here shouldn't block startup.
+		// (The no-default-configured case returns ("", "", nil), not an error.)
 		return nil
 	}
 

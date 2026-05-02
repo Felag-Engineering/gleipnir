@@ -209,7 +209,7 @@ func TestManualTriggerHandler(t *testing.T) {
 			noopClient := testutil.NewNoopLLMClient()
 			providerReg := llm.NewProviderRegistry()
 			providerReg.Register("anthropic", noopClient)
-			resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+			resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 			launcher := run.NewRunLauncher(run.RunLauncherConfig{
 				Store:                  store,
 				Registry:               registry,
@@ -237,7 +237,7 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -301,7 +301,7 @@ func TestManualTriggerHandler_LaunchFailureSurfacesDetailAndRunID(t *testing.T) 
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -368,7 +368,7 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,

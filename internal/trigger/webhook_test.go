@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -162,7 +161,7 @@ func newHandler(t *testing.T, store *db.Store, loader trigger.SecretLoaderInterf
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -534,7 +533,7 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 	noopClient := testutil.NewNoopLLMClient()
 	providerReg := llm.NewProviderRegistry()
 	providerReg.Register("anthropic", noopClient)
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -612,7 +611,7 @@ func TestWebhookHandler_Returns500_WhenNoDefaultModelAndPolicyOmitsModel(t *test
 	providerReg.Register("anthropic", noopClient)
 
 	// Resolver with no default configured.
-	noDefault := stubDefaultModelResolver{err: sql.ErrNoRows}
+	noDefault := newTestSettings("", "")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,

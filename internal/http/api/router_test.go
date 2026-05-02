@@ -17,6 +17,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/policy"
+	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 	"github.com/felag-engineering/gleipnir/internal/trigger"
 )
@@ -37,7 +38,8 @@ func buildTestRouterWithStore(t *testing.T, store *db.Store) http.Handler {
 	providerRegistry.Register("anthropic", noopClient)
 
 	adminQuerier := admin.NewQuerierAdapter(store.Queries())
-	adminHandler := admin.NewHandler(adminQuerier, nil, []string{"anthropic"}, nil, nil, nil)
+	systemSettings := settings.NewService(store.Queries())
+	adminHandler := admin.NewHandler(adminQuerier, systemSettings, nil, []string{"anthropic"}, nil, nil, nil)
 
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -46,15 +48,15 @@ func buildTestRouterWithStore(t *testing.T, store *db.Store) http.Handler {
 		AgentFactory:           run.NewAgentFactory(providerRegistry),
 		Publisher:              broadcaster,
 		DefaultFeedbackTimeout: 30 * time.Minute,
-		ModelResolver:          adminHandler,
+		ModelResolver:          systemSettings,
 	})
-	webhookHandler := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil), adminHandler)
+	webhookHandler := trigger.NewWebhookHandler(store, launcher, trigger.NewSecretLoader(store.Queries(), nil), systemSettings)
 	openaiCompatHandler := admin.NewOpenAICompatHandler(nil, nil, providerRegistry, noopConnectionTester)
 
 	authHandler := auth.NewHandler(store.Queries(), store.DB())
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
 
-	policyService := policy.NewService(store, nil, providerRegistry, providerRegistry, adminHandler)
+	policyService := policy.NewService(store, nil, providerRegistry, providerRegistry, systemSettings)
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
 
 	return api.BuildRouter(api.RouterConfig{
@@ -75,6 +77,7 @@ func buildTestRouterWithStore(t *testing.T, store *db.Store) http.Handler {
 			Launcher:         launcher,
 			ModelLister:      providerRegistry,
 			ProviderRegistry: providerRegistry,
+			Settings:         systemSettings,
 			// ModelFilter, Poller, Scheduler, Cron, EncryptionKey intentionally
 			// left as zero values — tests don't require them.
 		},

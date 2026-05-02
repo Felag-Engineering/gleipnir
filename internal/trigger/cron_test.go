@@ -37,7 +37,7 @@ func setupCronFixture(t *testing.T) (*db.Store, *CronRunner) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -218,7 +218,7 @@ func TestCronRunner_Start_LoadsActivePolicies(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -254,7 +254,7 @@ func TestCronRunner_Fire_PayloadShape(t *testing.T) {
 	yaml := minCronYAML("cron-fire", "0 9 * * 1")
 	insertCronPolicy(t, store, "pol-cron-fire", "cron-fire", yaml)
 
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	provider, modelName, _ := resolver.GetSystemDefault(context.Background())
 
 	polRow, err := store.GetPolicy(context.Background(), "pol-cron-fire")
@@ -321,7 +321,7 @@ func TestCronRunner_Fire_ConcurrencySkip(t *testing.T) {
 	// Insert a running run so CheckConcurrency returns ErrConcurrencySkipActive.
 	testutil.InsertRun(t, store, "r-cron-skip-active", "pol-cron-skip", model.RunStatusRunning)
 
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	provider, modelName, _ := resolver.GetSystemDefault(context.Background())
 
 	polRow, err := store.GetPolicy(context.Background(), "pol-cron-skip")
@@ -359,7 +359,7 @@ func TestCronRunner_Fire_ConcurrencyQueue(t *testing.T) {
 	// Insert a running run so CheckConcurrency returns ErrConcurrencyQueueActive.
 	testutil.InsertRun(t, store, "r-cron-queue-active", "pol-cron-queue", model.RunStatusRunning)
 
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	provider, modelName, _ := resolver.GetSystemDefault(context.Background())
 
 	polRow, err := store.GetPolicy(context.Background(), "pol-cron-queue")
@@ -469,7 +469,7 @@ func TestCronRunner_Stop_DoesNotDeadlock(t *testing.T) {
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
 	manager := run.NewRunManager()
-	resolver := stubDefaultModelResolver{provider: "anthropic", name: "claude-sonnet-4-6"}
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
