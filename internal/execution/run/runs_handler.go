@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -77,43 +78,79 @@ func NewRunsHandler(store *db.Store, manager *RunManager, publisher event.Publis
 	return &RunsHandler{store: store, manager: manager, publisher: publisher}
 }
 
-// List handles GET /api/v1/runs with optional filters and pagination.
-// Query params: policy_id, status, since (RFC3339), until (RFC3339),
-// sort ("started_at"|"started"|"duration"|"token_cost"), order ("asc"|"desc"), limit, offset.
-func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	q := r.URL.Query()
+// listFilters holds the parsed and validated query parameters for List.
+type listFilters struct {
+	policyID interface{} // nil when absent; string when set
+	status   interface{} // nil when absent; validated string otherwise
+	since    interface{} // nil when absent; RFC3339-validated string otherwise
+	until    interface{} // nil when absent; RFC3339-validated string otherwise
+	sort     string      // canonicalized: "started_at" | "duration" | "token_cost"
+	order    string      // "asc" | "desc"
+	limit    int64       // clamped to [1, 100]; default 25
+	offset   int64       // >= 0; default 0
+}
 
-	var policyID interface{}
+// httpError carries the (status, msg, detail) triple that parseListFilters
+// needs to communicate to the caller for each validation failure.
+type httpError struct {
+	status int
+	msg    string
+	detail string
+}
+
+// sortKey is the composite key for the listRunsDispatch map.
+type sortKey struct{ sort, order string }
+
+// listRunsDispatch maps a (sort, order) pair to the store method that
+// implements it. Built once at package init; each closure converts the
+// canonical ListRunsParams to the concrete *Params type required by sqlc.
+var listRunsDispatch = map[sortKey]func(ctx context.Context, store *db.Store, p db.ListRunsParams) ([]db.Run, error){
+	{"started_at", "asc"}:  func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsAsc(ctx, db.ListRunsAscParams(p)) },
+	{"started_at", "desc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRuns(ctx, p) },
+	{"token_cost", "asc"}:  func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsByTokenCostAsc(ctx, db.ListRunsByTokenCostAscParams(p)) },
+	{"token_cost", "desc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsByTokenCostDesc(ctx, db.ListRunsByTokenCostDescParams(p)) },
+	{"duration", "asc"}:    func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsByDurationAsc(ctx, db.ListRunsByDurationAscParams(p)) },
+	{"duration", "desc"}:   func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsByDurationDesc(ctx, db.ListRunsByDurationDescParams(p)) },
+}
+
+// parseListFilters reads and validates query parameters from r, returning the
+// parsed filters or an *httpError describing the first validation failure.
+func parseListFilters(r *http.Request) (listFilters, *httpError) {
+	q := r.URL.Query()
+	var f listFilters
+
 	if v := q.Get("policy_id"); v != "" {
-		policyID = v
+		f.policyID = v
 	}
 
-	var status interface{}
 	if v := q.Get("status"); v != "" {
 		if !model.RunStatus(v).Valid() {
-			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid status %q: must be one of pending, running, complete, failed, waiting_for_approval, waiting_for_feedback, interrupted", v), "")
-			return
+			return f, &httpError{
+				status: http.StatusBadRequest,
+				msg:    fmt.Sprintf("invalid status %q: must be one of pending, running, complete, failed, waiting_for_approval, waiting_for_feedback, interrupted", v),
+			}
 		}
-		status = v
+		f.status = v
 	}
 
-	var since interface{}
 	if v := q.Get("since"); v != "" {
 		if _, err := time.Parse(time.RFC3339, v); err != nil {
-			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid since %q: must be RFC3339", v), "")
-			return
+			return f, &httpError{
+				status: http.StatusBadRequest,
+				msg:    fmt.Sprintf("invalid since %q: must be RFC3339", v),
+			}
 		}
-		since = v
+		f.since = v
 	}
 
-	var until interface{}
 	if v := q.Get("until"); v != "" {
 		if _, err := time.Parse(time.RFC3339, v); err != nil {
-			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid until %q: must be RFC3339", v), "")
-			return
+			return f, &httpError{
+				status: http.StatusBadRequest,
+				msg:    fmt.Sprintf("invalid until %q: must be RFC3339", v),
+			}
 		}
-		until = v
+		f.until = v
 	}
 
 	sort := q.Get("sort")
@@ -125,66 +162,84 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	case "started_at", "started", "duration", "token_cost":
 		// valid
 	default:
-		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid sort %q: must be one of started_at, duration, token_cost", sort), "")
-		return
+		return f, &httpError{
+			status: http.StatusBadRequest,
+			msg:    fmt.Sprintf("invalid sort %q: must be one of started_at, duration, token_cost", sort),
+		}
 	}
+	// Normalize the alias after validation so the dispatch map only needs three sort keys.
+	if sort == "started" {
+		sort = "started_at"
+	}
+	f.sort = sort
 
 	order := q.Get("order")
 	if order == "" {
 		order = "desc"
 	}
 	if order != "asc" && order != "desc" {
-		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order), "")
-		return
+		return f, &httpError{
+			status: http.StatusBadRequest,
+			msg:    fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order),
+		}
 	}
+	f.order = order
 
-	limit := int64(25)
+	f.limit = int64(25)
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err == nil {
-			limit = n
+			f.limit = n
 		}
 	}
-	if limit < 1 {
-		limit = 25
+	if f.limit < 1 {
+		f.limit = 25
 	}
-	if limit > 100 {
-		limit = 100
+	if f.limit > 100 {
+		f.limit = 100
 	}
 
-	offset := int64(0)
+	f.offset = int64(0)
 	if v := q.Get("offset"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err == nil && n >= 0 {
-			offset = n
+			f.offset = n
 		}
 	}
 
-	filterBase := db.ListRunsParams{
-		PolicyID: policyID,
-		Status:   status,
-		Since:    since,
-		Until:    until,
-		Limit:    limit,
-		Offset:   offset,
+	return f, nil
+}
+
+// List handles GET /api/v1/runs with optional filters and pagination.
+// Query params: policy_id, status, since (RFC3339), until (RFC3339),
+// sort ("started_at"|"started"|"duration"|"token_cost"), order ("asc"|"desc"), limit, offset.
+func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	filters, herr := parseListFilters(r)
+	if herr != nil {
+		httputil.WriteError(w, herr.status, herr.msg, herr.detail)
+		return
 	}
 
-	var rows []db.Run
-	var err error
-	switch {
-	case (sort == "started_at" || sort == "started") && order == "asc":
-		rows, err = h.store.ListRunsAsc(ctx, db.ListRunsAscParams(filterBase))
-	case (sort == "started_at" || sort == "started") && order == "desc":
-		rows, err = h.store.ListRuns(ctx, filterBase)
-	case sort == "token_cost" && order == "asc":
-		rows, err = h.store.ListRunsByTokenCostAsc(ctx, db.ListRunsByTokenCostAscParams(filterBase))
-	case sort == "token_cost" && order == "desc":
-		rows, err = h.store.ListRunsByTokenCostDesc(ctx, db.ListRunsByTokenCostDescParams(filterBase))
-	case sort == "duration" && order == "asc":
-		rows, err = h.store.ListRunsByDurationAsc(ctx, db.ListRunsByDurationAscParams(filterBase))
-	case sort == "duration" && order == "desc":
-		rows, err = h.store.ListRunsByDurationDesc(ctx, db.ListRunsByDurationDescParams(filterBase))
+	filterBase := db.ListRunsParams{
+		PolicyID: filters.policyID,
+		Status:   filters.status,
+		Since:    filters.since,
+		Until:    filters.until,
+		Limit:    filters.limit,
+		Offset:   filters.offset,
 	}
+
+	dispatch, ok := listRunsDispatch[sortKey{filters.sort, filters.order}]
+	if !ok {
+		// Should never happen: parseListFilters normalizes sort and validates order.
+		slog.Error("listRunsDispatch: no entry for sort/order pair", "sort", filters.sort, "order", filters.order)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		return
+	}
+
+	rows, err := dispatch(ctx, h.store, filterBase)
 	if err != nil {
 		slog.Error("ListRuns query failed", "err", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
@@ -192,10 +247,10 @@ func (h *RunsHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	total, err := h.store.CountRuns(ctx, db.CountRunsParams{
-		PolicyID: policyID,
-		Status:   status,
-		Since:    since,
-		Until:    until,
+		PolicyID: filters.policyID,
+		Status:   filters.status,
+		Since:    filters.since,
+		Until:    filters.until,
 	})
 	if err != nil {
 		slog.Error("CountRuns query failed", "err", err)
@@ -377,12 +432,90 @@ func (h *RunsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID})
 }
 
+// resolveSpec carries the request-kind-specific behaviour for resolveRequest.
+// Approval and feedback share identical orchestration; only the data differs.
+type resolveSpec struct {
+	sendToGate         func() error
+	gateErrorMsg       string
+	fetchPending       func(ctx context.Context) (string, error)
+	updateStatus       func(ctx context.Context, requestID string) (int64, error)
+	alreadyResolvedMsg string
+	sseTopic           string
+	sseRequestIDKey    string            // "approval_id" or "feedback_id"
+	sseExtra           map[string]string // merged into the SSE payload alongside run_id and sseRequestIDKey
+	successResponse    map[string]string
+	logTagPending      string
+	logTagUpdate       string
+}
+
+// resolveRequest is the shared orchestration path for SubmitApproval and
+// SubmitFeedback. It executes: GetRun → sendToGate → fetchPending →
+// updateStatus → SSE publish → 202 response.
+//
+// updateStatus is called only when fetchPending returns a non-empty requestID.
+// SSE publish errors are silently swallowed to match the pre-refactor behaviour.
+// resolveRequest intentionally does NOT call any runstate.* function; the runs
+// table transition out of waiting_for_* is performed by the agent goroutine
+// after receiving on the channel (ADR-038).
+func (h *RunsHandler) resolveRequest(w http.ResponseWriter, r *http.Request, runID string, spec resolveSpec) {
+	ctx := r.Context()
+
+	if _, err := h.store.GetRun(ctx, runID); errors.Is(err, sql.ErrNoRows) {
+		httputil.WriteError(w, http.StatusNotFound, "run not found", "")
+		return
+	} else if err != nil {
+		slog.Error("GetRun query failed", "run_id", runID, "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		return
+	}
+
+	if err := spec.sendToGate(); err != nil {
+		httputil.WriteError(w, http.StatusConflict, spec.gateErrorMsg, "")
+		return
+	}
+
+	// Update the pending request record. Best-effort after the channel send —
+	// DB consistency is secondary to unblocking the agent.
+	requestID, err := spec.fetchPending(ctx)
+	if err != nil {
+		slog.Warn(spec.logTagPending, "run_id", runID, "err", err)
+	}
+
+	if requestID != "" {
+		rows, err := spec.updateStatus(ctx, requestID)
+		if err != nil {
+			slog.Warn(spec.logTagUpdate, spec.sseRequestIDKey, requestID, "run_id", runID, "err", err)
+			// proceed — best-effort semantics match the pre-refactor code
+		} else if rows == 0 {
+			// The scanner already resolved this request (e.g. timeout raced with
+			// the operator's decision). Return 409 so the caller knows it's too late.
+			httputil.WriteError(w, http.StatusConflict, spec.alreadyResolvedMsg, requestID)
+			return
+		}
+	}
+
+	if h.publisher != nil {
+		payload := map[string]string{
+			spec.sseRequestIDKey: requestID,
+			"run_id":             runID,
+		}
+		for k, v := range spec.sseExtra {
+			payload[k] = v
+		}
+		if data, err := json.Marshal(payload); err == nil {
+			h.publisher.Publish(spec.sseTopic, data)
+		}
+		// marshal errors silently ignored — matches pre-refactor behaviour
+	}
+
+	httputil.WriteJSON(w, http.StatusAccepted, spec.successResponse)
+}
+
 // SubmitApproval handles POST /api/v1/runs/{runID}/approval.
 // It routes the approval decision to the BoundAgent's approval gate via the
 // RunManager. Returns 409 if no goroutine is waiting on the approval gate.
 // The Approver role is required (enforced at the router level).
 func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	runID := chi.URLParam(r, "runID")
 
 	var req ApprovalDecisionRequest
@@ -395,20 +528,7 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.store.GetRun(ctx, runID); errors.Is(err, sql.ErrNoRows) {
-		httputil.WriteError(w, http.StatusNotFound, "run not found", "")
-		return
-	} else if err != nil {
-		slog.Error("GetRun query failed", "run_id", runID, "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
-		return
-	}
-
 	approved := req.Decision == "approved"
-	if err := h.manager.SendApproval(runID, approved); err != nil {
-		httputil.WriteError(w, http.StatusConflict, "no active approval gate for this run", "")
-		return
-	}
 
 	// Map API decision to DB status: "denied" → "rejected" (model enum).
 	dbStatus := string(model.ApprovalStatusApproved)
@@ -416,44 +536,37 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 		dbStatus = string(model.ApprovalStatusRejected)
 	}
 
-	// Update the pending approval_request record. Best-effort after the channel
-	// send — DB consistency is secondary to unblocking the agent.
-	pendingApprovals, err := h.store.GetPendingApprovalRequestsByRun(ctx, runID)
-	if err != nil {
-		slog.Warn("GetPendingApprovalRequestsByRun failed after approval send", "run_id", runID, "err", err)
-	}
-
-	var approvalID string
-	if len(pendingApprovals) > 0 {
-		approvalID = pendingApprovals[0].ID
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		rows, err := h.store.UpdateApprovalRequestStatus(ctx, db.UpdateApprovalRequestStatusParams{
-			Status:    dbStatus,
-			DecidedAt: &now,
-			Note:      nil,
-			ID:        approvalID,
-		})
-		if err != nil {
-			slog.Warn("UpdateApprovalRequestStatus failed", "approval_id", approvalID, "err", err)
-		} else if rows == 0 {
-			// The scanner already resolved this request (e.g. timeout raced with the
-			// operator's decision). Return 409 so the caller knows the action is too late.
-			httputil.WriteError(w, http.StatusConflict, "approval request already resolved", approvalID)
-			return
-		}
-	}
-
-	if h.publisher != nil {
-		if data, err := json.Marshal(map[string]string{
-			"approval_id": approvalID,
-			"run_id":      runID,
-			"status":      dbStatus,
-		}); err == nil {
-			h.publisher.Publish("approval.resolved", data)
-		}
-	}
-
-	httputil.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID, "decision": req.Decision})
+	h.resolveRequest(w, r, runID, resolveSpec{
+		sendToGate:   func() error { return h.manager.SendApproval(runID, approved) },
+		gateErrorMsg: "no active approval gate for this run",
+		fetchPending: func(ctx context.Context) (string, error) {
+			pendingApprovals, err := h.store.GetPendingApprovalRequestsByRun(ctx, runID)
+			if err != nil {
+				return "", err
+			}
+			if len(pendingApprovals) > 0 {
+				return pendingApprovals[0].ID, nil
+			}
+			return "", nil
+		},
+		updateStatus: func(ctx context.Context, requestID string) (int64, error) {
+			// now must be evaluated here, at DB-write time, not captured at spec-construction time.
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			return h.store.UpdateApprovalRequestStatus(ctx, db.UpdateApprovalRequestStatusParams{
+				Status:    dbStatus,
+				DecidedAt: &now,
+				Note:      nil,
+				ID:        requestID,
+			})
+		},
+		alreadyResolvedMsg: "approval request already resolved",
+		sseTopic:           "approval.resolved",
+		sseRequestIDKey:    "approval_id",
+		sseExtra:           map[string]string{"status": dbStatus},
+		successResponse:    map[string]string{"run_id": runID, "decision": req.Decision},
+		logTagPending:      "GetPendingApprovalRequestsByRun failed after approval send",
+		logTagUpdate:       "UpdateApprovalRequestStatus failed",
+	})
 }
 
 // SubmitFeedback handles POST /api/v1/runs/{runID}/feedback.
@@ -461,7 +574,6 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 // RunManager and updates the feedback_requests DB record. Returns 409 if no
 // goroutine is waiting on the feedback gate.
 func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	runID := chi.URLParam(r, "runID")
 
 	var req FeedbackDecisionRequest
@@ -474,57 +586,37 @@ func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.store.GetRun(ctx, runID); errors.Is(err, sql.ErrNoRows) {
-		httputil.WriteError(w, http.StatusNotFound, "run not found", "")
-		return
-	} else if err != nil {
-		slog.Error("GetRun query failed", "run_id", runID, "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
-		return
-	}
-
-	if err := h.manager.SendFeedback(runID, req.Response); err != nil {
-		httputil.WriteError(w, http.StatusConflict, "no active feedback gate for this run", "")
-		return
-	}
-
-	// Update the pending feedback_request record. Best-effort after the channel
-	// send — DB consistency is secondary to unblocking the agent.
-	pendingFeedbacks, err := h.store.GetPendingFeedbackRequestsByRun(ctx, runID)
-	if err != nil {
-		slog.Warn("GetPendingFeedbackRequestsByRun failed after feedback send", "run_id", runID, "err", err)
-	}
-
-	var feedbackID string
-	if len(pendingFeedbacks) > 0 {
-		feedbackID = pendingFeedbacks[0].ID
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		rows, err := h.store.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
-			Status:     "resolved",
-			Response:   &req.Response,
-			ResolvedAt: &now,
-			ID:         feedbackID,
-		})
-		if err != nil {
-			slog.Warn("UpdateFeedbackRequestStatus failed", "feedback_id", feedbackID, "err", err)
-		} else if rows == 0 {
-			// The scanner already resolved this request (timeout raced with the
-			// operator's response). Return 409 so the caller knows the action is too late.
-			httputil.WriteError(w, http.StatusConflict, "feedback request already resolved", feedbackID)
-			return
-		}
-	}
-
-	if h.publisher != nil {
-		if data, err := json.Marshal(map[string]string{
-			"feedback_id": feedbackID,
-			"run_id":      runID,
-		}); err == nil {
-			h.publisher.Publish("feedback.resolved", data)
-		}
-	}
-
-	httputil.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID})
+	h.resolveRequest(w, r, runID, resolveSpec{
+		sendToGate:   func() error { return h.manager.SendFeedback(runID, req.Response) },
+		gateErrorMsg: "no active feedback gate for this run",
+		fetchPending: func(ctx context.Context) (string, error) {
+			pendingFeedbacks, err := h.store.GetPendingFeedbackRequestsByRun(ctx, runID)
+			if err != nil {
+				return "", err
+			}
+			if len(pendingFeedbacks) > 0 {
+				return pendingFeedbacks[0].ID, nil
+			}
+			return "", nil
+		},
+		updateStatus: func(ctx context.Context, requestID string) (int64, error) {
+			// now must be evaluated here, at DB-write time, not captured at spec-construction time.
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			return h.store.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
+				Status:     "resolved",
+				Response:   &req.Response,
+				ResolvedAt: &now,
+				ID:         requestID,
+			})
+		},
+		alreadyResolvedMsg: "feedback request already resolved",
+		sseTopic:           "feedback.resolved",
+		sseRequestIDKey:    "feedback_id",
+		sseExtra:           nil,
+		successResponse:    map[string]string{"run_id": runID},
+		logTagPending:      "GetPendingFeedbackRequestsByRun failed after feedback send",
+		logTagUpdate:       "UpdateFeedbackRequestStatus failed",
+	})
 }
 
 func toRunSummary(r db.Run) RunSummary {
