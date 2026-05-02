@@ -152,10 +152,7 @@ func (h *Handler) autoEnableModelsForProvider(ctx context.Context, provider stri
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, m := range models {
-		if err := h.q.UpsertModelSetting(ctx, provider, m.Name, 1, now); err != nil {
-			slog.Warn("auto-enable: upsert model failed", "provider", provider, "model", m.Name, "err", err)
-			// Continue — best-effort, other models should still be enabled.
-		}
+		h.upsertModelEnabled(ctx, "auto-enable", provider, m.Name, 1, now)
 	}
 }
 
@@ -197,10 +194,18 @@ func (h *Handler) disableModelsForProvider(ctx context.Context, provider string)
 		if row.Provider != provider || row.Enabled == 0 {
 			continue
 		}
-		if err := h.q.UpsertModelSetting(ctx, provider, row.ModelName, 0, now); err != nil {
-			slog.Warn("disable-models: upsert model failed", "provider", provider, "model", row.ModelName, "err", err)
-			// Continue — best-effort, disable remaining models.
-		}
+		h.upsertModelEnabled(ctx, "disable-models", provider, row.ModelName, 0, now)
+	}
+}
+
+// upsertModelEnabled writes a single (provider, modelName) row with the
+// given enabled flag. The action label ("auto-enable" or "disable-models")
+// is propagated into the warn log so operators can grep enable vs disable
+// events the same way they do today.
+func (h *Handler) upsertModelEnabled(ctx context.Context, action, provider, modelName string, enabled int64, now string) {
+	if err := h.q.UpsertModelSetting(ctx, provider, modelName, enabled, now); err != nil {
+		slog.Warn(action+": upsert model failed", "provider", provider, "model", modelName, "err", err)
+		// Continue — best-effort, other models should still be processed.
 	}
 }
 
