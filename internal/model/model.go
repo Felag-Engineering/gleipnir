@@ -4,6 +4,7 @@ package model
 
 import (
 	"crypto/rand"
+	"slices"
 	"sync"
 	"time"
 
@@ -196,12 +197,7 @@ func (s RunStatus) Valid() bool {
 
 func (t TriggerType) String() string { return string(t) }
 func (t TriggerType) Valid() bool {
-	for _, v := range AllTriggerTypes {
-		if t == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(AllTriggerTypes, t)
 }
 
 func (s StepType) String() string { return string(s) }
