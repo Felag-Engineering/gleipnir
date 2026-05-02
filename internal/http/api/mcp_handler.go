@@ -167,11 +167,9 @@ func (h *MCPHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid url", err.Error())
 		return
 	}
-	for _, p := range body.AuthHeaders {
-		if err := mcp.ValidateHeaderName(p.Key); err != nil {
-			httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid header name %q: %s", p.Key, err), "")
-			return
-		}
+	if status, msg := validateHeaderPayloadNames(body.AuthHeaders); status != 0 {
+		httputil.WriteError(w, status, msg, "")
+		return
 	}
 
 	// Build throwaway client — never stored in h.registry or h.store.
@@ -256,12 +254,12 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteError(w, http.StatusServiceUnavailable, "encryption key not configured; cannot store auth headers", "")
 			return
 		}
+		if status, msg := validateHeaderPayloadNames(body.AuthHeaders); status != 0 {
+			httputil.WriteError(w, status, msg, "")
+			return
+		}
 		authHeaders := make([]mcp.AuthHeader, len(body.AuthHeaders))
 		for i, p := range body.AuthHeaders {
-			if err := mcp.ValidateHeaderName(p.Key); err != nil {
-				httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("invalid header name %q: %s", p.Key, err), "")
-				return
-			}
 			authHeaders[i] = p.toAuthHeader()
 		}
 		ct, status := h.encryptHeaders(authHeaders)
@@ -431,54 +429,22 @@ func (h *MCPHandler) SetAuthHeader(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	server, err := h.store.GetMCPServer(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
-			return
+	updated, status, msg, err := h.withMutatedHeaders(r.Context(), id, func(headers []mcp.AuthHeader) []mcp.AuthHeader {
+		// Replace by case-insensitive name match; append if not found.
+		for i, hdr := range headers {
+			if strings.EqualFold(hdr.Name, headerName) {
+				headers[i] = mcp.AuthHeader{Name: headerName, Value: body.Value}
+				return headers
+			}
 		}
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
-		return
-	}
-
-	// Decrypt existing headers (empty slice if none configured).
-	headers, err := h.decryptHeaders(server)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to load existing auth headers", err.Error())
-		return
-	}
-
-	// Replace by case-insensitive name match; append if not found.
-	found := false
-	for i, hdr := range headers {
-		if strings.EqualFold(hdr.Name, headerName) {
-			headers[i] = mcp.AuthHeader{Name: headerName, Value: body.Value}
-			found = true
-			break
+		return append(headers, mcp.AuthHeader{Name: headerName, Value: body.Value})
+	})
+	if status != 0 {
+		detail := ""
+		if err != nil {
+			detail = err.Error()
 		}
-	}
-	if !found {
-		headers = append(headers, mcp.AuthHeader{Name: headerName, Value: body.Value})
-	}
-
-	ciphertext, encErr := h.encryptHeaders(headers)
-	if encErr != 0 {
-		httputil.WriteError(w, encErr, "failed to encrypt auth headers", "")
-		return
-	}
-
-	if err := h.store.UpdateMCPServerAuthHeaders(r.Context(), db.UpdateMCPServerAuthHeadersParams{
-		AuthHeadersEncrypted: ciphertext,
-		ID:                   id,
-	}); err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to persist auth headers", err.Error())
-		return
-	}
-
-	// Re-fetch to return a consistent response.
-	updated, err := h.store.GetMCPServer(r.Context(), id)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to reload MCP server", err.Error())
+		httputil.WriteError(w, status, msg, detail)
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, h.serverToResponse(updated))
@@ -492,55 +458,92 @@ func (h *MCPHandler) DeleteAuthHeader(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	headerName := chi.URLParam(r, "name")
 
-	server, err := h.store.GetMCPServer(r.Context(), id)
+	updated, status, msg, err := h.withMutatedHeaders(r.Context(), id, func(headers []mcp.AuthHeader) []mcp.AuthHeader {
+		// Filter out the named header (case-insensitive). No-op if absent.
+		filtered := headers[:0]
+		for _, hdr := range headers {
+			if !strings.EqualFold(hdr.Name, headerName) {
+				filtered = append(filtered, hdr)
+			}
+		}
+		return filtered
+	})
+	if status != 0 {
+		detail := ""
+		if err != nil {
+			detail = err.Error()
+		}
+		httputil.WriteError(w, status, msg, detail)
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, h.serverToResponse(updated))
+}
+
+// validateHeaderPayloadNames checks every payload's Key against ValidateHeaderName.
+// Returns a non-zero HTTP status and a formatted message on the first failure,
+// or (0, "") when all names are valid.
+func validateHeaderPayloadNames(payloads []authHeaderPayload) (status int, message string) {
+	for _, p := range payloads {
+		if err := mcp.ValidateHeaderName(p.Key); err != nil {
+			return http.StatusBadRequest, fmt.Sprintf("invalid header name %q: %s", p.Key, err)
+		}
+	}
+	return 0, ""
+}
+
+// withMutatedHeaders decrypts the stored auth headers for serverID, applies
+// mutate to produce a new slice, re-encrypts, persists, and re-fetches the
+// updated server row. An empty post-mutation slice sets the column to NULL
+// (matching the "delete last header" semantics).
+//
+// Returns (server, 0, "", nil) on success. On any failure, status and msg
+// describe the error; err carries the underlying error when it exists so the
+// caller can decide whether to include err.Error() in the response detail.
+func (h *MCPHandler) withMutatedHeaders(
+	ctx context.Context,
+	serverID string,
+	mutate func([]mcp.AuthHeader) []mcp.AuthHeader,
+) (db.McpServer, int, string, error) {
+	var zero db.McpServer
+
+	server, err := h.store.GetMCPServer(ctx, serverID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
-			return
+			return zero, http.StatusNotFound, "MCP server not found", nil
 		}
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
-		return
+		return zero, http.StatusInternalServerError, "failed to get MCP server", err
 	}
 
 	headers, err := h.decryptHeaders(server)
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to load existing auth headers", err.Error())
-		return
+		return zero, http.StatusInternalServerError, "failed to load existing auth headers", err
 	}
 
-	// Filter out the named header (case-insensitive). No-op if absent.
-	filtered := headers[:0]
-	for _, hdr := range headers {
-		if !strings.EqualFold(hdr.Name, headerName) {
-			filtered = append(filtered, hdr)
+	headers = mutate(headers)
+
+	var ct *string
+	if len(headers) == 0 {
+		ct = nil // clears the column
+	} else {
+		var encStatus int
+		ct, encStatus = h.encryptHeaders(headers)
+		if encStatus != 0 {
+			return zero, encStatus, "failed to encrypt auth headers", nil
 		}
 	}
 
-	// Determine the new ciphertext: nil when empty (clears the column).
-	var ciphertext *string
-	if len(filtered) > 0 {
-		ct, encErr := h.encryptHeaders(filtered)
-		if encErr != 0 {
-			httputil.WriteError(w, encErr, "failed to encrypt auth headers", "")
-			return
-		}
-		ciphertext = ct
-	}
-
-	if err := h.store.UpdateMCPServerAuthHeaders(r.Context(), db.UpdateMCPServerAuthHeadersParams{
-		AuthHeadersEncrypted: ciphertext,
-		ID:                   id,
+	if err := h.store.UpdateMCPServerAuthHeaders(ctx, db.UpdateMCPServerAuthHeadersParams{
+		AuthHeadersEncrypted: ct,
+		ID:                   serverID,
 	}); err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to persist auth headers", err.Error())
-		return
+		return zero, http.StatusInternalServerError, "failed to persist auth headers", err
 	}
 
-	updated, err := h.store.GetMCPServer(r.Context(), id)
+	updated, err := h.store.GetMCPServer(ctx, serverID)
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to reload MCP server", err.Error())
-		return
+		return zero, http.StatusInternalServerError, "failed to reload MCP server", err
 	}
-	httputil.WriteJSON(w, http.StatusOK, h.serverToResponse(updated))
+	return updated, 0, "", nil
 }
 
 // decryptHeaders loads and decrypts auth headers from the server row.
