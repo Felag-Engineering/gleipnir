@@ -28,7 +28,7 @@ func TestEnumValid(t *testing.T) {
 	})
 
 	t.Run("TriggerType", func(t *testing.T) {
-		valid := []TriggerType{TriggerTypeWebhook, TriggerTypeManual, TriggerTypeScheduled, TriggerTypePoll, TriggerTypeCron}
+		valid := AllTriggerTypes
 		for _, v := range valid {
 			if !v.Valid() {
 				t.Errorf("expected %q to be valid", v)

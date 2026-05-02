@@ -1090,6 +1090,104 @@ agent:
 	}
 }
 
+// TestParse_AllTriggerTypesRoundTrip verifies that every TriggerType constant
+// in model.AllTriggerTypes can be parsed and validated successfully from a
+// minimal YAML body. This acts as a CI tripwire: adding a new TriggerType
+// without updating the parser or this test's fixture map will fail here.
+func TestParse_AllTriggerTypesRoundTrip(t *testing.T) {
+	// One minimal valid YAML body per trigger type.
+	// Each must include the universal required fields (name, trigger.type,
+	// capabilities.tools, agent.task) plus the per-type required fields from
+	// schemas/policy.yaml. Update this map when a new TriggerType is added.
+	yamls := map[model.TriggerType]string{
+		model.TriggerTypeWebhook: `
+name: rt-webhook
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: do it
+`,
+		model.TriggerTypeManual: `
+name: rt-manual
+trigger:
+  type: manual
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: do it
+`,
+		model.TriggerTypeScheduled: `
+name: rt-scheduled
+trigger:
+  type: scheduled
+  fire_at:
+    - "2099-01-01T00:00:00Z"
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: do it
+`,
+		model.TriggerTypePoll: `
+name: rt-poll
+trigger:
+  type: poll
+  interval: 5m
+  checks:
+    - tool: srv.tool
+      path: "$.x"
+      equals: "y"
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: do it
+`,
+		model.TriggerTypeCron: `
+name: rt-cron
+trigger:
+  type: cron
+  cron_expr: "0 9 * * 1"
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: do it
+`,
+	}
+
+	// Catch the case where AllTriggerTypes grew but the fixture map above was not updated.
+	if len(yamls) != len(model.AllTriggerTypes) {
+		t.Fatalf("yamls fixture map has %d entries but model.AllTriggerTypes has %d — add a minimal YAML fixture for every new TriggerType", len(yamls), len(model.AllTriggerTypes))
+	}
+
+	for _, tt := range model.AllTriggerTypes {
+		tt := tt
+		t.Run(string(tt), func(t *testing.T) {
+			raw, ok := yamls[tt]
+			if !ok {
+				t.Fatalf("no minimal YAML fixture for trigger type %q — add one to keep parser, schema, and enum in sync", tt)
+			}
+
+			parsed, err := Parse(raw, "anthropic", "claude-sonnet-4-6")
+			if err != nil {
+				t.Fatalf("Parse() error: %v", err)
+			}
+			if parsed.Trigger.Type != tt {
+				t.Errorf("Trigger.Type = %q, want %q", parsed.Trigger.Type, tt)
+			}
+
+			if err := Validate(parsed); err != nil {
+				t.Errorf("Validate() error: %v", err)
+			}
+		})
+	}
+}
+
 // TestConvertAgent_ZeroLimitsPreserved verifies that an explicit 0 in YAML is
 // not replaced by the default. 0 means "unlimited" at runtime (agent.go treats
 // <= 0 as no cap); the parser must not silently upgrade it to 20000/50.

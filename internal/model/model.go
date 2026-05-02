@@ -4,6 +4,7 @@ package model
 
 import (
 	"crypto/rand"
+	"slices"
 	"sync"
 	"time"
 
@@ -38,6 +39,18 @@ const (
 	TriggerTypePoll      TriggerType = "poll"
 	TriggerTypeCron      TriggerType = "cron"
 )
+
+// AllTriggerTypes lists every TriggerType constant. Update this slice when a
+// new TriggerType is added — the parser round-trip test in internal/policy
+// iterates it to enforce that schema, enum, and parser stay in sync.
+// Do not mutate this slice at runtime.
+var AllTriggerTypes = []TriggerType{
+	TriggerTypeWebhook,
+	TriggerTypeManual,
+	TriggerTypeScheduled,
+	TriggerTypePoll,
+	TriggerTypeCron,
+}
 
 // StepType identifies the kind of event recorded in a run's reasoning trace.
 type StepType string
@@ -184,11 +197,7 @@ func (s RunStatus) Valid() bool {
 
 func (t TriggerType) String() string { return string(t) }
 func (t TriggerType) Valid() bool {
-	switch t {
-	case TriggerTypeWebhook, TriggerTypeManual, TriggerTypeScheduled, TriggerTypePoll, TriggerTypeCron:
-		return true
-	}
-	return false
+	return slices.Contains(AllTriggerTypes, t)
 }
 
 func (s StepType) String() string { return string(s) }
