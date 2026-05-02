@@ -320,6 +320,43 @@ func buildMutateResponse(result *policy.SaveResult) policyMutateResponse {
 	}
 }
 
+// writePolicyMutationError translates a policy.Service Create/Update
+// error into an HTTP response. Returns true if a response was
+// written (caller should return immediately), false if err is nil
+// or the caller still needs to handle a non-policy error.
+//
+// The fallback "failed to create/update policy" message differs
+// between Create and Update, so this helper does NOT handle the
+// generic 500 case — callers do that themselves after this returns
+// false.
+func writePolicyMutationError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		httputil.WriteError(w, http.StatusNotFound, "policy not found", "")
+		return true
+	}
+	var pe *policy.ParseError
+	if errors.As(err, &pe) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid policy YAML", pe.Error())
+		return true
+	}
+	var ve *policy.ValidationError
+	if errors.As(err, &ve) {
+		messages := make([]string, 0, len(ve.Errors))
+		issues := make([]httputil.ErrorIssue, 0, len(ve.Errors))
+		for _, iss := range ve.Errors {
+			messages = append(messages, iss.Message)
+			issues = append(issues, httputil.ErrorIssue{Field: iss.Field, Message: iss.Message})
+		}
+		httputil.WriteValidationError(w, http.StatusBadRequest,
+			"policy validation failed", strings.Join(messages, "; "), issues)
+		return true
+	}
+	return false
+}
+
 // Create handles POST /api/v1/policies.
 func (h *PolicyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -330,21 +367,7 @@ func (h *PolicyHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.svc.Create(r.Context(), string(body))
 	if err != nil {
-		var pe *policy.ParseError
-		if errors.As(err, &pe) {
-			httputil.WriteError(w, http.StatusBadRequest, "invalid policy YAML", pe.Error())
-			return
-		}
-		var ve *policy.ValidationError
-		if errors.As(err, &ve) {
-			messages := make([]string, 0, len(ve.Errors))
-			issues := make([]httputil.ErrorIssue, 0, len(ve.Errors))
-			for _, iss := range ve.Errors {
-				messages = append(messages, iss.Message)
-				issues = append(issues, httputil.ErrorIssue{Field: iss.Field, Message: iss.Message})
-			}
-			httputil.WriteValidationError(w, http.StatusBadRequest,
-				"policy validation failed", strings.Join(messages, "; "), issues)
+		if writePolicyMutationError(w, err) {
 			return
 		}
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create policy", err.Error())
@@ -367,25 +390,7 @@ func (h *PolicyHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.svc.Update(r.Context(), id, string(body))
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			httputil.WriteError(w, http.StatusNotFound, "policy not found", "")
-			return
-		}
-		var pe *policy.ParseError
-		if errors.As(err, &pe) {
-			httputil.WriteError(w, http.StatusBadRequest, "invalid policy YAML", pe.Error())
-			return
-		}
-		var ve *policy.ValidationError
-		if errors.As(err, &ve) {
-			messages := make([]string, 0, len(ve.Errors))
-			issues := make([]httputil.ErrorIssue, 0, len(ve.Errors))
-			for _, iss := range ve.Errors {
-				messages = append(messages, iss.Message)
-				issues = append(issues, httputil.ErrorIssue{Field: iss.Field, Message: iss.Message})
-			}
-			httputil.WriteValidationError(w, http.StatusBadRequest,
-				"policy validation failed", strings.Join(messages, "; "), issues)
+		if writePolicyMutationError(w, err) {
 			return
 		}
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update policy", err.Error())
@@ -396,12 +401,18 @@ func (h *PolicyHandler) Update(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, buildMutateResponse(result))
 }
 
-// Pause handles POST /api/v1/policies/{id}/pause.
-// It sets paused_at to the current time, preventing webhook and manual triggers from firing.
-// Returns 409 if the policy is already paused.
-func (h *PolicyHandler) Pause(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-
+// togglePolicyPaused is the shared body of Pause and Resume. It fetches the
+// policy, checks the precondition, runs the mutate function, refetches, notifies
+// trigger components, and writes the updated policy as the response.
+func (h *PolicyHandler) togglePolicyPaused(
+	w http.ResponseWriter,
+	r *http.Request,
+	id string,
+	wantPaused bool,
+	alreadyInStateMsg string,
+	mutate func(ctx context.Context, policyID string) error,
+	mutateErrMsg string,
+) {
 	dbPolicy, err := h.store.GetPolicy(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -412,13 +423,17 @@ func (h *PolicyHandler) Pause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if dbPolicy.PausedAt != nil {
-		httputil.WriteError(w, http.StatusConflict, "policy is already paused", "")
+	if wantPaused && dbPolicy.PausedAt != nil {
+		httputil.WriteError(w, http.StatusConflict, alreadyInStateMsg, "")
+		return
+	}
+	if !wantPaused && dbPolicy.PausedAt == nil {
+		httputil.WriteError(w, http.StatusConflict, alreadyInStateMsg, "")
 		return
 	}
 
-	if err := h.svc.SetPolicyPausedAt(r.Context(), id); err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to pause policy", err.Error())
+	if err := mutate(r.Context(), id); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, mutateErrMsg, err.Error())
 		return
 	}
 
@@ -432,40 +447,30 @@ func (h *PolicyHandler) Pause(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, toPolicyDetail(updated))
 }
 
+// Pause handles POST /api/v1/policies/{id}/pause.
+// It sets paused_at to the current time, preventing webhook and manual triggers from firing.
+// Returns 409 if the policy is already paused.
+func (h *PolicyHandler) Pause(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	h.togglePolicyPaused(w, r, id,
+		true,
+		"policy is already paused",
+		h.svc.SetPolicyPausedAt,
+		"failed to pause policy",
+	)
+}
+
 // Resume handles POST /api/v1/policies/{id}/resume.
 // It clears paused_at, allowing webhook and manual triggers to fire again.
 // Returns 409 if the policy is not currently paused.
 func (h *PolicyHandler) Resume(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-
-	dbPolicy, err := h.store.GetPolicy(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			httputil.WriteError(w, http.StatusNotFound, "policy not found", "")
-			return
-		}
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get policy", err.Error())
-		return
-	}
-
-	if dbPolicy.PausedAt == nil {
-		httputil.WriteError(w, http.StatusConflict, "policy is not paused", "")
-		return
-	}
-
-	if err := h.svc.ClearPolicyPausedAt(r.Context(), id); err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to resume policy", err.Error())
-		return
-	}
-
-	updated, err := h.store.GetPolicy(r.Context(), id)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch updated policy", err.Error())
-		return
-	}
-
-	h.notifyTriggers(r.Context(), id, model.TriggerType(updated.TriggerType))
-	httputil.WriteJSON(w, http.StatusOK, toPolicyDetail(updated))
+	h.togglePolicyPaused(w, r, id,
+		false,
+		"policy is not paused",
+		h.svc.ClearPolicyPausedAt,
+		"failed to resume policy",
+	)
 }
 
 // Delete handles DELETE /api/v1/policies/{id}.
