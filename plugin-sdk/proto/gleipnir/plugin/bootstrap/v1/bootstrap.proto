@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+// Package gleipnir.plugin.bootstrap.v1 provides the additive bootstrap
+// handshake that informs a plugin of the broker stream ID it must Dial to
+// reach the host's HostService.
+//
+// Called by the host immediately after Negotiate to inform the plugin of the
+// broker stream ID it must `Dial` to reach the host's HostService.  This
+// service is additive and may evolve independently of HandshakeService.
+//
+// Background: The HandshakeService proto is IMMORTAL and forbids new fields.
+// The host must expose HostService via the go-plugin GRPCBroker mechanism,
+// which requires the plugin to know the broker stream ID before making host
+// calls.  This separate, additive service is the only conformant way to
+// communicate that ID post-Negotiate.
+package gleipnir.plugin.bootstrap.v1;
+
+option go_package = "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/bootstrap/v1;bootstrapv1";
+
+// BindRequest carries the broker stream ID the plugin must Dial to reach
+// HostService.
+message BindRequest {
+  // host_broker_id is the uint32 broker stream ID allocated by the host.
+  // The plugin must call broker.Dial(host_broker_id) before making any
+  // HostService RPC.
+  uint32 host_broker_id = 1;
+}
+
+// BindResponse confirms the plugin received and successfully dialed the
+// broker stream.
+message BindResponse {
+  // ok is true if the plugin successfully connected to the HostService stream.
+  bool ok = 1;
+
+  // error_detail is set when ok is false and describes why the dial failed.
+  string error_detail = 2;
+}
+
+// BootstrapService is called by the host exactly once per plugin process
+// start, immediately after HandshakeService.Negotiate succeeds.  It exists
+// solely to pass the HostService broker stream ID to the plugin; no other
+// semantic is attached to it.
+service BootstrapService {
+  // Bind informs the plugin of the broker stream ID it must Dial to reach
+  // HostService.  The host calls this; the plugin handles it.
+  rpc Bind(BindRequest) returns (BindResponse);
+}

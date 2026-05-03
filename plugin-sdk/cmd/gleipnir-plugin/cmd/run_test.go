@@ -1,0 +1,495 @@
+package cmd
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/fakehost"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/hostwire"
+)
+
+// ── Scenario YAML parsing ────────────────────────────────────────────────────
+
+func TestLoadScenario_Valid(t *testing.T) {
+	const yamlContent = `
+steps:
+  - rpc: Handshake.Negotiate
+    request:
+      host_version: "0.0.0-dev"
+    assert_response:
+      ok: true
+  - rpc: Tool.ListTools
+    request: {}
+    assert_response:
+      min_tools: 1
+`
+	path := writeTempFile(t, "scenario.yaml", yamlContent)
+	sc, err := loadScenario(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sc.Steps) != 2 {
+		t.Fatalf("want 2 steps, got %d", len(sc.Steps))
+	}
+	if sc.Steps[0].RPC != "Handshake.Negotiate" {
+		t.Errorf("step 0 rpc: want Handshake.Negotiate, got %q", sc.Steps[0].RPC)
+	}
+}
+
+func TestLoadScenario_UnknownField(t *testing.T) {
+	const yamlContent = `
+steps:
+  - rpc: Handshake.Negotiate
+    unknown_field: oops
+`
+	path := writeTempFile(t, "scenario.yaml", yamlContent)
+	_, err := loadScenario(path)
+	if err == nil {
+		t.Fatal("expected error for unknown field, got nil")
+	}
+}
+
+func TestLoadScenario_NotFound(t *testing.T) {
+	_, err := loadScenario("/nonexistent/scenario.yaml")
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+}
+
+func TestLoadScenario_AssertHost(t *testing.T) {
+	const yamlContent = `
+steps:
+  - assert_host:
+      min_events: 2
+      min_metrics: 1
+`
+	path := writeTempFile(t, "scenario.yaml", yamlContent)
+	sc, err := loadScenario(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sc.Steps) != 1 {
+		t.Fatalf("want 1 step, got %d", len(sc.Steps))
+	}
+	if sc.Steps[0].AssertHost == nil {
+		t.Fatal("expected assert_host to be parsed")
+	}
+	if sc.Steps[0].AssertHost.MinEvents != 2 {
+		t.Errorf("want min_events=2, got %d", sc.Steps[0].AssertHost.MinEvents)
+	}
+}
+
+// ── Capture JSONL roundtrip ──────────────────────────────────────────────────
+
+func TestWriteAndReadJSONL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "capture.jsonl")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	header := captureHeader{
+		Sequence:             -1,
+		CaptureFormatVersion: 1,
+		Binary:               "./myplugin",
+		CapturedAt:           time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := writeJSONLLine(f, header); err != nil {
+		t.Fatalf("write header: %v", err)
+	}
+
+	rec := captureRecord{
+		CapturedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		Sequence:    1,
+		EventID:     "evt-abc",
+		EventKind:   "github.push",
+		PayloadJSON: `{"ref":"main"}`,
+	}
+	if err := writeJSONLLine(f, rec); err != nil {
+		t.Fatalf("write record: %v", err)
+	}
+	f.Close()
+
+	// Read back and parse.
+	rf, _ := os.Open(path)
+	defer rf.Close()
+	lines, err := readJSONLLines(rf)
+	if err != nil {
+		t.Fatalf("read lines: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("want 2 lines, got %d", len(lines))
+	}
+
+	var gotHeader captureHeader
+	if err := json.Unmarshal([]byte(lines[0]), &gotHeader); err != nil {
+		t.Fatalf("unmarshal header: %v", err)
+	}
+	if gotHeader.Sequence != -1 {
+		t.Errorf("header sequence: want -1, got %d", gotHeader.Sequence)
+	}
+	if gotHeader.CaptureFormatVersion != 1 {
+		t.Errorf("format version: want 1, got %d", gotHeader.CaptureFormatVersion)
+	}
+
+	var gotRec captureRecord
+	if err := json.Unmarshal([]byte(lines[1]), &gotRec); err != nil {
+		t.Fatalf("unmarshal record: %v", err)
+	}
+	if gotRec.EventID != "evt-abc" {
+		t.Errorf("event_id: want evt-abc, got %q", gotRec.EventID)
+	}
+}
+
+// ── Replay JSONL header validation ──────────────────────────────────────────
+
+func TestRunReplay_HeaderValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{
+			name:    "empty file",
+			content: "",
+			wantErr: "empty",
+		},
+		{
+			name:    "invalid JSON on first line",
+			content: "not-json\n",
+			wantErr: "invalid JSON",
+		},
+		{
+			name:    "wrong sequence in header",
+			content: `{"sequence":0,"capture_format_version":1,"binary":"x","captured_at":""}` + "\n",
+			wantErr: "sequence=-1",
+		},
+		{
+			name:    "unsupported format version",
+			content: `{"sequence":-1,"capture_format_version":99,"binary":"x","captured_at":""}` + "\n",
+			wantErr: "unsupported capture_format_version",
+		},
+		{
+			name: "valid header no events",
+			content: `{"sequence":-1,"capture_format_version":1,"binary":"x","captured_at":""}` + "\n",
+			wantErr: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTempFile(t, "capture.jsonl", tc.content)
+			cmd := &cobra.Command{}
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+
+			err := runReplay(cmd, "/bin/true", replayOpts{inFile: path})
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tc.wantErr)
+				}
+			}
+		})
+	}
+}
+
+func TestRunReplay_LineNumberedErrors(t *testing.T) {
+	// Line 2 has invalid JSON.
+	content := `{"sequence":-1,"capture_format_version":1,"binary":"x","captured_at":""}` + "\n" +
+		`not-json` + "\n"
+	path := writeTempFile(t, "capture.jsonl", content)
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+
+	err := runReplay(cmd, "/bin/true", replayOpts{inFile: path})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("expected line number in error, got: %v", err)
+	}
+}
+
+func TestRunReplay_FilterByKind(t *testing.T) {
+	content := buildTestJSONL(t, []captureRecord{
+		{Sequence: 1, EventID: "a", EventKind: "github.push", PayloadJSON: "{}"},
+		{Sequence: 2, EventID: "b", EventKind: "slack.message", PayloadJSON: "{}"},
+		{Sequence: 3, EventID: "c", EventKind: "github.push", PayloadJSON: "{}"},
+	})
+	path := writeTempFile(t, "capture.jsonl", content)
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	// Use /bin/true which always exits 0.
+	err := runReplay(cmd, "/bin/true", replayOpts{
+		inFile: path,
+		filter: "event_kind=github.push",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := out.String()
+	if strings.Contains(output, "slack.message") {
+		t.Error("filtered event slack.message should not appear in output")
+	}
+	if !strings.Contains(output, "2 OK") {
+		t.Errorf("expected 2 OK events in output, got: %q", output)
+	}
+}
+
+// ── CLI flag-combination validation ─────────────────────────────────────────
+
+func TestRunCmd_FlagValidation(t *testing.T) {
+	// Save and restore the launchPlugin stub.
+	origLaunch := launchPlugin
+	origFakeHost := newFakeHost
+	defer func() {
+		launchPlugin = origLaunch
+		newFakeHost = origFakeHost
+	}()
+	// Stub that never returns (not called in validation-error tests).
+	launchPlugin = func(_ context.Context, _ string, _ hostwire.HostServer, _ hostwire.Options) (*hostwire.Client, func(), error) {
+		return nil, nil, fmt.Errorf("should not be called")
+	}
+	newFakeHost = func(_ fakehost.Options) *fakehost.Host {
+		return fakehost.New(fakehost.Options{})
+	}
+
+	cases := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "no mode flag",
+			args:    []string{"./myplugin"},
+			wantErr: "one of --scenario, --capture, or --replay is required",
+		},
+		{
+			name:    "two mode flags",
+			args:    []string{"./myplugin", "--scenario", "s.yaml", "--capture", "c.jsonl"},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "three mode flags",
+			args:    []string{"./myplugin", "--scenario", "s.yaml", "--capture", "c.jsonl", "--replay", "r.jsonl"},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "missing binary argument",
+			args:    []string{"--scenario", "s.yaml"},
+			wantErr: "accepts 1 arg(s)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := &cobra.Command{Use: "gleipnir-plugin"}
+			runCmd := NewRunCmd()
+			root.AddCommand(runCmd)
+			root.SetOut(&bytes.Buffer{})
+			root.SetErr(&bytes.Buffer{})
+
+			root.SetArgs(append([]string{"run"}, tc.args...))
+			err := root.Execute()
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// ── E2E test using runfixture binary (Linux only) ───────────────────────────
+
+// TestE2E_RunFixture builds the runfixture binary (tagged //go:build runfixture)
+// and drives a 2-step scenario + capture + replay roundtrip. The test is
+// skipped when:
+//   - GOOS is not linux (runfixture uses plugin.Serve which works on any POSIX
+//     platform, but we only guarantee the test in CI which is linux/amd64).
+//   - the `go` binary is not on PATH.
+func TestE2E_RunFixture(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("e2e runfixture test requires linux")
+	}
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go binary not on PATH; skipping e2e test")
+	}
+
+	// Build the runfixture binary.
+	dir := t.TempDir()
+	fixtureBin := filepath.Join(dir, "runfixture")
+	fixturePkg := "github.com/felag-engineering/gleipnir/plugin-sdk/cmd/gleipnir-plugin/cmd/internal/runfixture"
+	buildCmd := exec.Command(goPath, "build", "-tags", "runfixture", "-o", fixtureBin, fixturePkg)
+	buildCmd.Dir = filepath.Join(repoRoot(t), "plugin-sdk")
+	buildOut, buildErr := buildCmd.CombinedOutput()
+	if buildErr != nil {
+		t.Fatalf("build runfixture: %v\n%s", buildErr, buildOut)
+	}
+
+	// Restore stubs after test.
+	origLaunch := launchPlugin
+	origFakeHost := newFakeHost
+	defer func() {
+		launchPlugin = origLaunch
+		newFakeHost = origFakeHost
+	}()
+	launchPlugin = hostwire.Launch
+	newFakeHost = fakehost.New
+
+	t.Run("scenario", func(t *testing.T) {
+		scenarioYAML := `steps:
+  - rpc: Handshake.Negotiate
+    request:
+      host_version: "0.0.0-dev"
+    assert_response:
+      ok: true
+  - rpc: Tool.ListTools
+    request: {}
+    assert_response:
+      min_tools: 1
+`
+		scenarioPath := writeTempFile(t, "scenario.yaml", scenarioYAML)
+
+		var out bytes.Buffer
+		cmd := &cobra.Command{}
+		cmd.SetOut(&out)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := runScenario(ctx, cmd, fixtureBin, scenarioPath); err != nil {
+			t.Fatalf("scenario failed: %v", err)
+		}
+		if !strings.Contains(out.String(), "OK") {
+			t.Errorf("expected OK in output, got: %q", out.String())
+		}
+	})
+
+	t.Run("capture_and_replay", func(t *testing.T) {
+		capturePath := filepath.Join(dir, "capture.jsonl")
+
+		var captureOut bytes.Buffer
+		capCmd := &cobra.Command{}
+		capCmd.SetOut(&captureOut)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// The runfixture emits exactly one synthetic event via EmitEvent and then
+		// the Trigger.Start stream closes. --max-events 1 is redundant but
+		// defensive.
+		if err := runCapture(ctx, capCmd, fixtureBin, captureOpts{
+			outFile:    capturePath,
+			watchScope: "{}",
+			maxEvents:  1,
+		}); err != nil {
+			t.Fatalf("capture failed: %v", err)
+		}
+
+		// Verify the capture file has a header and at least one event.
+		rf, err := os.Open(capturePath)
+		if err != nil {
+			t.Fatalf("open capture file: %v", err)
+		}
+		lines, _ := readJSONLLines(rf)
+		rf.Close()
+		if len(lines) < 2 {
+			t.Fatalf("expected at least 2 JSONL lines (header + event), got %d", len(lines))
+		}
+
+		// Replay the captured events against the runfixture binary. The
+		// runfixture implements --replay-event and exits 0 on success.
+		var replayOut bytes.Buffer
+		repCmd := &cobra.Command{}
+		repCmd.SetOut(&replayOut)
+
+		if err := runReplay(repCmd, fixtureBin, replayOpts{inFile: capturePath}); err != nil {
+			t.Fatalf("replay failed: %v\noutput: %s", err, replayOut.String())
+		}
+		if !strings.Contains(replayOut.String(), "OK") {
+			t.Errorf("expected OK in replay output, got: %q", replayOut.String())
+		}
+	})
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+// writeTempFile creates a temp file with the given content and returns its path.
+func writeTempFile(t *testing.T, name, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	return path
+}
+
+// buildTestJSONL constructs a JSONL string with a valid header and the given
+// events for replay tests.
+func buildTestJSONL(t *testing.T, events []captureRecord) string {
+	t.Helper()
+	var sb strings.Builder
+	header := captureHeader{
+		Sequence:             -1,
+		CaptureFormatVersion: 1,
+		Binary:               "./myplugin",
+		CapturedAt:           time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	b, _ := json.Marshal(header)
+	sb.Write(b)
+	sb.WriteByte('\n')
+	for _, e := range events {
+		b, _ = json.Marshal(e)
+		sb.Write(b)
+		sb.WriteByte('\n')
+	}
+	return sb.String()
+}
+
+// repoRoot walks up from the current file to find the repository root (the
+// directory containing plugin-sdk/).
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	// Walk up until we find a directory containing plugin-sdk/.
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "plugin-sdk")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("could not find repo root from %s", dir)
+		}
+		dir = parent
+	}
+}
+

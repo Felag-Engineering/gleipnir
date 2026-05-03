@@ -20,7 +20,7 @@ go build ./cmd/gleipnir-plugin
 | `keygen` | Generate a Minisign keypair | #170 |
 | `sign` | Sign a binary + manifest | #170 |
 | `package` | Build, sign, and tar a release bundle | #170 |
-| `run` | Local REPL/TUI dev mode against a fake host | #171 |
+| `run` | Non-interactive dev mode against a fake host (scenario/capture/replay) | #171 |
 
 ## Usage
 
@@ -183,6 +183,122 @@ Full upstream-CLI verification (requires `minisign` binary on PATH):
 ```bash
 go test -tags integration ./plugin-sdk/signing/...
 ```
+
+## run
+
+Non-interactive local development mode. Boots a plugin binary as a go-plugin
+subprocess connected to an in-process fake host. No REPL/TUI mode — the three
+batch modes below cover all automation-friendly workflows.
+
+```bash
+gleipnir-plugin run <binary> --scenario script.yaml
+gleipnir-plugin run <binary> --capture events.jsonl [--max-events N] [--watch-scope JSON]
+gleipnir-plugin run <binary> --replay events.jsonl [--filter event_kind=X] [--continue-on-error]
+```
+
+### Scenario YAML schema
+
+```yaml
+steps:
+  # Negotiate the handshake with the plugin.
+  - rpc: Handshake.Negotiate
+    request:
+      host_version: "0.0.0-dev"
+      expected_capabilities: []   # optional; omit to accept any
+    assert_response:
+      ok: true                    # bool
+      sdk_version: "1.0.0"       # optional string equality
+
+  # Verify the plugin exposes at least N tools.
+  - rpc: Tool.ListTools
+    request: {}
+    assert_response:
+      min_tools: 1                # minimum tool count
+
+  # Call a named tool and assert the output contains a substring.
+  - rpc: Tool.Call
+    request:
+      tool_name: echo
+      input_json: '{"text":"hello"}'
+    assert_response:
+      result_contains: "hello"    # substring match against output_json
+
+  # Assert on fake-host recorder state after preceding steps.
+  - assert_host:
+      min_events: 1
+      min_metrics: 0
+      min_audit_steps: 0
+      min_logs: 0
+```
+
+`KnownFields(true)` is enforced: unknown field names in the YAML cause an
+immediate error rather than silent no-ops.
+
+### Capture JSONL format
+
+`--capture <file.jsonl>` writes:
+
+**Header line** (always first, sequence = -1):
+```json
+{"sequence":-1,"capture_format_version":1,"binary":"./myplugin","captured_at":"RFC3339Nano"}
+```
+
+**Event line** (one per EmitEvent call the plugin makes):
+```json
+{"captured_at":"RFC3339Nano","sequence":1,"event_id":"...","event_kind":"github.push","payload_json":"{...}","watch_scope_json":"{...}"}
+```
+
+The format is stable across minor SDK versions; readers must check
+`capture_format_version == 1` before processing.
+
+### `--replay-event` convention
+
+For `--replay` to work, your plugin binary must implement a `--replay-event
+<json>` flag. When invoked with that flag the plugin should:
+
+1. Parse the event JSON (same shape as an `EmitEventRequest` payload).
+2. Process it as if received from the real substrate.
+3. Exit 0 on success, non-zero on failure.
+
+Example in a plugin `main.go`:
+
+```go
+if len(os.Args) >= 3 && os.Args[1] == "--replay-event" {
+    var evt map[string]interface{}
+    if err := json.Unmarshal([]byte(os.Args[2]), &evt); err != nil {
+        fmt.Fprintln(os.Stderr, "bad event JSON:", err)
+        os.Exit(1)
+    }
+    // process evt...
+    os.Exit(0)
+}
+```
+
+Plugins that do not implement this flag will produce non-zero exits during
+`--replay`, which the runner reports as FAILED. This is expected and harmless
+for plugins that do not need offline payload iteration.
+
+### `WriteAuditStep` step_type contract
+
+The fake host (and the production host) enforce that `step_type` must be
+`"feedback_response"` in v1. Any other value returns:
+
+- gRPC status code: `codes.PermissionDenied`
+- Detail string: `"unauthorized_step_type"`
+
+Production host implementations MUST mirror this contract exactly so plugin
+authors can rely on consistent behavior between local dev and production.
+
+### Non-goals
+
+- No interactive REPL / TUI mode (explicitly out of scope for #171).
+- Does NOT simulate signature verification, version mismatch, or a real
+  LLM/SQLite.
+- `GLEIPNIR_PLUGINS_ENABLED` is unaffected — `gleipnir-plugin run` runs
+  out-of-band, not through the host's plugin loader.
+
+See `docs/developer/plugin-system-spec.md §14.4` for the testing harness spec
+and `§7.5` for the trigger-payload sharp edge that capture/replay addresses.
 
 ## See also
 
