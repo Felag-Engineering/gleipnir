@@ -7,8 +7,8 @@ import (
 )
 
 var (
-	ErrSigInvalid           = errors.New("signing: signature verification failed")
-	ErrKeyIDMismatch        = errors.New("signing: key ID mismatch")
+	ErrSigInvalid             = errors.New("signing: signature verification failed")
+	ErrKeyIDMismatch          = errors.New("signing: key ID mismatch")
 	ErrTrustedCommentTampered = errors.New("signing: trusted comment signature verification failed")
 )
 
@@ -65,4 +65,3 @@ func PluginPayload(binary, manifest []byte) []byte {
 	copy(out[32:], mHash[:])
 	return out
 }
-

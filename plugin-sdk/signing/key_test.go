@@ -1,6 +1,7 @@
 package signing
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -109,8 +110,8 @@ func TestDecryptBadPassphrase(t *testing.T) {
 		t.Fatalf("encrypt: %v", err)
 	}
 
-	if _, _, err := DecryptSecretKey(enc, []byte("wrong")); err != ErrChecksumMismatch {
-		t.Errorf("expected ErrChecksumMismatch for wrong passphrase, got: %v", err)
+	if _, _, err := DecryptSecretKey(enc, []byte("wrong")); !errors.Is(err, ErrBadPassphrase) {
+		t.Errorf("expected ErrBadPassphrase for wrong passphrase, got: %v", err)
 	}
 }
 
@@ -125,8 +126,8 @@ func TestDecryptBadPassphraseArgon2(t *testing.T) {
 		t.Fatalf("encrypt: %v", err)
 	}
 
-	if _, _, err := DecryptSecretKey(enc, []byte("wrong")); err != ErrChecksumMismatch {
-		t.Errorf("expected ErrChecksumMismatch for wrong passphrase, got: %v", err)
+	if _, _, err := DecryptSecretKey(enc, []byte("wrong")); !errors.Is(err, ErrBadPassphrase) {
+		t.Errorf("expected ErrBadPassphrase for wrong passphrase, got: %v", err)
 	}
 }
 

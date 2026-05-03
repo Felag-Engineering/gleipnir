@@ -254,6 +254,31 @@ func TestRunPackageMinisigFilenameFromManifestName(t *testing.T) {
 	}
 }
 
+func TestRunPackageRejectsPathTraversalInName(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := writeTestBinary(t, dir)
+
+	// Write a manifest with a path-traversal name.
+	evilManifest := []byte("name: \"../evil\"\nversion: \"1.0.0\"\nkind: tool\n")
+	manifestPath := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(manifestPath, evilManifest, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	fakeCmd := &cobra.Command{}
+	fakeCmd.SetOut(&bytes.Buffer{})
+	fakeCmd.SetErr(&bytes.Buffer{})
+	fakeCmd.SetIn(strings.NewReader(""))
+
+	err := runPackage(fakeCmd, binaryPath, manifestPath, "", false, "", filepath.Join(dir, "dist"), "", true)
+	if err == nil {
+		t.Fatal("expected error for path-traversal name, got nil")
+	}
+	if !strings.Contains(err.Error(), "path separator") && !strings.Contains(err.Error(), "starts with '.'") {
+		t.Errorf("expected path-traversal error, got: %v", err)
+	}
+}
+
 // writeTestBinary writes a fake executable and returns its path.
 func writeTestBinary(t *testing.T, dir string) string {
 	t.Helper()

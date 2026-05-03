@@ -3,6 +3,7 @@ package signing
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"testing"
 )
 
@@ -199,5 +200,39 @@ func TestParseSignatureErrors(t *testing.T) {
 				t.Error("expected error, got nil")
 			}
 		})
+	}
+}
+
+func TestParseSignatureLine4HeaderMismatch(t *testing.T) {
+	pk, sk, err := GenerateKeypair(nil)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	_ = pk
+
+	payload := []byte("hello")
+	sig, err := Sign(sk.SecretKey, sk.KeyID, payload, "comment")
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	// Marshal, then tamper with the leading 2 bytes (sigalg) of line 4's raw data.
+	data := MarshalSignature(sig, "test")
+	// Decode line 4, corrupt sigalg, re-encode.
+	lines := bytes.SplitN(data, []byte("\n"), 5)
+	globalRaw, err := base64.StdEncoding.DecodeString(string(lines[3]))
+	if err != nil {
+		t.Fatalf("decode line 4: %v", err)
+	}
+	globalRaw[0] ^= 0xff // corrupt sigalg byte
+	lines[3] = []byte(base64.StdEncoding.EncodeToString(globalRaw))
+	tampered := bytes.Join(lines, []byte("\n"))
+
+	_, _, parseErr := ParseSignature(tampered)
+	if parseErr == nil {
+		t.Fatal("expected error for line 4 header mismatch, got nil")
+	}
+	if !errors.Is(parseErr, ErrInvalidFormat) {
+		t.Errorf("expected errors.Is(err, ErrInvalidFormat), got: %v", parseErr)
 	}
 }

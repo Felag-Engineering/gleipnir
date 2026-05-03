@@ -91,6 +91,12 @@ func runPackage(cmd *cobra.Command, binary, manifestPath, flagKey string, flagKe
 	if m.Name == "" || m.Version == "" {
 		return fmt.Errorf("package: manifest must have name and version set")
 	}
+	if err := validateBundleNameComponent("name", m.Name); err != nil {
+		return fmt.Errorf("package: %w", err)
+	}
+	if err := validateBundleNameComponent("version", m.Version); err != nil {
+		return fmt.Errorf("package: %w", err)
+	}
 
 	binaryData, err := os.ReadFile(binary)
 	if err != nil {
@@ -155,18 +161,24 @@ func runPackage(cmd *cobra.Command, binary, manifestPath, flagKey string, flagKe
 	return nil
 }
 
+// validateBundleNameComponent rejects values that could escape a tar path:
+// those containing '/', '\', or starting with '.'.
+func validateBundleNameComponent(field, value string) error {
+	if strings.ContainsAny(value, `/\`) || strings.HasPrefix(value, ".") {
+		return fmt.Errorf("manifest %s contains path separator or starts with '.': %q", field, value)
+	}
+	return nil
+}
+
 // writeTarball writes the plugin bundle tarball per spec §14.5.
 func writeTarball(tarPath, binaryPath string, binaryData, manifestData, sigData, pubData, sbomData []byte, name, version string) error {
 	f, err := os.Create(tarPath)
 	if err != nil {
 		return fmt.Errorf("create tarball: %w", err)
 	}
-	defer f.Close()
 
 	gw := gzip.NewWriter(f)
-	defer gw.Close()
 	tw := tar.NewWriter(gw)
-	defer tw.Close()
 
 	mtime := sourceDateEpoch()
 	prefix := fmt.Sprintf("%s-%s", name, version)
@@ -212,6 +224,16 @@ func writeTarball(tarPath, binaryPath string, binaryData, manifestData, sigData,
 		if _, err := tw.Write(e.data); err != nil {
 			return fmt.Errorf("write tar entry %s: %w", e.name, err)
 		}
+	}
+
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("flush tar: %w", err)
+	}
+	if err := gw.Close(); err != nil {
+		return fmt.Errorf("flush gzip: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close output: %w", err)
 	}
 	return nil
 }

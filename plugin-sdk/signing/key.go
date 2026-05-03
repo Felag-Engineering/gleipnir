@@ -18,6 +18,35 @@ var (
 	ErrUnsupportedKDF   = errors.New("signing: unsupported KDF algorithm")
 )
 
+// kdfScryptN is the scrypt N parameter used during key derivation. The
+// canonical production value is 1<<20 (1 MiB per block, ~1 GiB total RAM).
+// Tests lower this via SetScryptNForTesting to avoid OOM in CI.
+//
+// The stored .key file always records the canonical opsLimit/memLimit values
+// for upstream format compatibility. We do not re-derive scrypt N from the
+// stored values — kdfScryptN is the authoritative runtime parameter.
+//
+// Encrypted secret-key interop with the upstream minisign binary is explicitly
+// out of scope: upstream derives N from the stored opsLimit via libsodium's
+// crypto_pwhash_scryptsalsa208sha256, whereas we use a fixed runtime N here.
+// Public keys and .minisig signatures remain fully upstream-compatible.
+var kdfScryptN uint64 = 1 << 20
+
+// SetScryptNForTesting overrides kdfScryptN for test use and returns a restore
+// function. Call it from TestMain so the reduced N applies to all tests in the
+// package.
+//
+//	func TestMain(m *testing.M) {
+//	    restore := signing.SetScryptNForTesting(1 << 14)
+//	    defer restore()
+//	    os.Exit(m.Run())
+//	}
+func SetScryptNForTesting(n uint64) (restore func()) {
+	old := kdfScryptN
+	kdfScryptN = n
+	return func() { kdfScryptN = old }
+}
+
 // GenerateKeypair generates a new Ed25519 keypair with a random 8-byte KeyID.
 // The returned SecretKey is unencrypted (KDFAlg == zero). Call EncryptSecretKey
 // before writing to disk.
@@ -72,7 +101,7 @@ func EncryptSecretKey(sk SecretKey, passphrase []byte, kdf [2]byte) (SecretKey, 
 		opsLimit = 1 << 20  // N = 1048576
 		memLimit = 33554432 // upstream MEMLIMIT_DEFAULT (32 MiB); informational only — scrypt memory is determined by N, r, p above
 	case KDFAlgArgon2id:
-		opsLimit = 2      // time cost
+		opsLimit = 2       // time cost
 		memLimit = 1 << 26 // 64 MiB
 	default:
 		return SecretKey{}, ErrUnsupportedKDF
@@ -150,7 +179,9 @@ func DecryptSecretKey(sk SecretKey, passphrase []byte) (raw [64]byte, keyID [8]b
 
 	computed := computeChecksum(sigAlg, keyID, rawSK[:])
 	if storedChk != computed {
-		return [64]byte{}, [8]byte{}, ErrChecksumMismatch
+		// For an encrypted key the most likely cause is a wrong passphrase;
+		// return ErrBadPassphrase so callers can surface a useful message.
+		return [64]byte{}, [8]byte{}, ErrBadPassphrase
 	}
 
 	return rawSK, keyID, nil
@@ -171,8 +202,10 @@ func computeChecksum(sigAlg [2]byte, keyID [8]byte, rawSK []byte) [32]byte {
 func deriveKDFStream(passphrase, salt []byte, kdf [2]byte, opsLimit, memLimit uint64) ([]byte, error) {
 	switch kdf {
 	case KDFAlgScrypt:
-		// N = opsLimit, r = 8, p = 1
-		stream, err := scrypt.Key(passphrase, salt, int(opsLimit), 8, 1, encryptedBlobLen)
+		// N = kdfScryptN (runtime param), r = 8, p = 1.
+		// The stored opsLimit in the .key file is the canonical upstream value and
+		// is kept for format compatibility, but we do not derive N from it at runtime.
+		stream, err := scrypt.Key(passphrase, salt, int(kdfScryptN), 8, 1, encryptedBlobLen)
 		if err != nil {
 			return nil, fmt.Errorf("signing: scrypt: %w", err)
 		}

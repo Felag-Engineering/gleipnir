@@ -202,6 +202,58 @@ func TestRunSignEncryptedKeyProducesVerifiableSignature(t *testing.T) {
 	}
 }
 
+// TestRunSignKeyStdinEncryptedKeyEnvPassphrase covers the --key-stdin path
+// with an encrypted key where the passphrase comes from the environment.
+func TestRunSignKeyStdinEncryptedKeyEnvPassphrase(t *testing.T) {
+	const passphrase = "stdin-encrypted-passphrase"
+	dir := t.TempDir()
+	pk := writeEncryptedTestKey(t, dir, passphrase)
+
+	// Read back the encrypted .key bytes to supply via stdin.
+	keyData, err := os.ReadFile(filepath.Join(dir, "signing.key"))
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+
+	binaryPath := filepath.Join(dir, "myplugin")
+	manifestPath := filepath.Join(dir, "manifest.yaml")
+	outPath := filepath.Join(dir, "out.minisig")
+
+	binaryData := []byte("binary data for stdin encrypted test")
+	manifestData := []byte(canonicalManifestYAML)
+
+	if err := os.WriteFile(binaryPath, binaryData, 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, manifestData, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	t.Setenv("GLEIPNIR_PLUGIN_SIGNING_KEY_PASSPHRASE", passphrase)
+
+	fakeCmd := &cobra.Command{}
+	fakeCmd.SetOut(&bytes.Buffer{})
+	fakeCmd.SetErr(&bytes.Buffer{})
+	fakeCmd.SetIn(bytes.NewReader(keyData))
+
+	if err := runSign(fakeCmd, "", true, binaryPath, manifestPath, outPath, "tc-encrypted-stdin"); err != nil {
+		t.Fatalf("runSign --key-stdin encrypted: %v", err)
+	}
+
+	sigData, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read .minisig: %v", err)
+	}
+	sig, _, err := signing.ParseSignature(sigData)
+	if err != nil {
+		t.Fatalf("parse sig: %v", err)
+	}
+	payload := signing.PluginPayload(binaryData, manifestData)
+	if err := signing.Verify(pk, payload, sig, "tc-encrypted-stdin"); err != nil {
+		t.Errorf("verify: %v", err)
+	}
+}
+
 func TestRunSignKeyStdin(t *testing.T) {
 	dir := t.TempDir()
 	pk, sk, err := signing.GenerateKeypair(nil)

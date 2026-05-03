@@ -40,6 +40,20 @@ For Argon2id-encrypted keys (private key KDF = Ar), upstream `minisign >= 0.11`
 is required (released 2023). Scrypt-encrypted keys (KDF = Sc) work with any
 version.
 
+## Interop scope
+
+**Public keys and signatures** produced by this library are fully upstream-compatible:
+the wire format (base64 + 4-line .minisig) matches what upstream `minisign` produces
+and can be verified by the upstream binary.
+
+**Encrypted secret-key format** (the .key file) is _not_ interop-tested against the
+upstream binary. Upstream uses `libsodium`'s `crypto_pwhash_scryptsalsa208sha256`
+with an N parameter derived from the stored `opsLimit` field, whereas this library
+uses a fixed runtime N (`kdfScryptN`) that is independent of the stored value.
+Keys generated here cannot be read by upstream `minisign` (and vice versa) when
+encryption is in use.  This is a known, accepted limitation — key files stay within
+the Gleipnir toolchain.
+
 ## AC#7 interop verification
 
 The in-process format-shape test runs unconditionally with `go test ./signing/...`.

@@ -8,6 +8,10 @@ import (
 	"strings"
 )
 
+// ErrInvalidFormat is returned when a Minisign file cannot be parsed due to
+// a structural or consistency violation.
+var ErrInvalidFormat = errors.New("signing: invalid format")
+
 // Wire-format algorithm identifiers matching upstream Minisign.
 var (
 	SigAlgED25519        = [2]byte{'E', 'd'} // non-prehashed Ed25519 (we produce this)
@@ -225,6 +229,16 @@ func ParseSignature(data []byte) (Signature, string, error) {
 	}
 	if len(globalRaw) != 2+8+64 {
 		return Signature{}, "", fmt.Errorf("parse signature: wrong global sig length %d", len(globalRaw))
+	}
+
+	// The first 10 bytes of globalRaw (sigalg[2]+keyID[8]) must match line 2.
+	if globalRaw[0] != raw[0] || globalRaw[1] != raw[1] {
+		return Signature{}, "", fmt.Errorf("parse signature: signature line 4 header does not match line 2: %w", ErrInvalidFormat)
+	}
+	for i := 2; i < 10; i++ {
+		if globalRaw[i] != raw[i] {
+			return Signature{}, "", fmt.Errorf("parse signature: signature line 4 header does not match line 2: %w", ErrInvalidFormat)
+		}
 	}
 
 	var sig Signature
