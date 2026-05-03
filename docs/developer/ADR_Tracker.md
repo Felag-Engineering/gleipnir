@@ -56,7 +56,50 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-039 | Per-server encrypted auth headers for authenticated MCP providers | 🟢 Decided | v1.0 | mcp_servers table, internal/mcp, internal/admin, gleipnirctl rotate-key |
 | ADR-040 | Arcade gateway pre-authorization (toolkit-level OAuth pre-warm) | 🟢 Decided | v1.0 | internal/arcade (new), internal/http/api/arcade_handler, frontend ServerDetailModal |
 | ADR-041 | Plugin system architecture (umbrella) | 🟢 Decided | v2.0 | internal/plugin (new), internal/execution/agent/feedback.go, plugin-sdk (new module), admin UI, ADR-004 (parallel to MCP) |
+| ADR-042 | Plugin service & HostAPI versioning policy | 🟢 Decided | v1.0 (plugins) | docs/developer/plugin-system-spec.md §10, buf.yaml, .github/workflows/ci.yml |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
+
+---
+
+## ADR-042: Plugin service & HostAPI versioning policy
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+The plugin system (ADR-041, #252) introduces a gRPC service surface that third-party and community plugins must remain compatible with for years. A plugin binary may go dormant for many months between operator upgrade cycles; without an explicit versioning policy, every service change creates an ambiguous compatibility question. This ADR codifies the versioning and compatibility rules. The proto contracts themselves — concrete message definitions, RPC signatures, and field names — are deferred to issue #167. See `docs/developer/plugin-system-spec.md` §10 for the full specification.
+
+This ADR depends on ADR-041 merging first (#252). Until that merge lands, treat this as contingent on that umbrella decision.
+
+### Decision
+
+1. **Per-service SemVer on four independent axes.** TriggerService, ToolService, ChannelService, and HostAPI each carry their own version. Shared protobuf messages live in `gleipnir.plugin.common.v1` and ride along with whichever service bumps them — they are not independently versioned. (spec §10.1)
+
+2. **Three change classes.** Additive (non-breaking: new optional fields, new RPCs); Behavioral (always a major bump — a semantics shift on `Notify` becomes `NotifyV2`, no "soft semantic shift"); Removal (always a major bump, two-version deprecation window: vN deprecates with warnings, vN+1 still ships with warnings, vN+2 removes). The window is deliberately generous because operators don't watch release notes weekly and community plugins go dormant. New enum values are additive rather than breaking because plugins are required to handle a mandatory `UNKNOWN = 0` first value — this is structurally enforced by `buf lint` on every `.proto` file. Lint enforcement lives in `buf.yaml` and is gated by the `proto-lint` CI job; with no `.proto` files in tree today the rule is a no-op until #167 introduces them. Note that the `buf.yaml` module path is provisional and will be revisited when #167 establishes the proto directory layout. (spec §10.2)
+
+3. **Plugin version vs service version are distinct.** Plugin authors set their own SemVer (`slack v2.5.0`) independently of the service versions their binary implements (`ToolService v1`, `ChannelService v1`, …). Both appear in the manifest. The plugin's own version is informational and authored by the plugin author; the service version drives compatibility and the deprecation window. Bumping plugin version alone is not a §5.4 material change unless a declared service or capability also changes. (spec §10.2 callout)
+
+4. **HostAPI is single-version per running host in v1.** Asymmetric to plugin-side multi-version by design. Plugins must implement the host's current HostAPI; major bumps follow the same two-version deprecation window. Rationale: plugins evolve independently and may go dormant (long support windows needed); HostAPI evolves with the host (operators upgrade as a unit). Revisit if a paid third-party storefront materializes. (spec §10.4)
+
+5. **`buf lint` as the structural enforcement gate.** `buf.yaml` at repo root selects the STANDARD lint group and FILE-level breaking-change detection. The `proto-lint` CI job (PR-only, modeled on `sqlc-drift`) runs `buf lint` on every pull request. With no `.proto` files today this is a no-op; once #167 introduces service definitions the gate activates automatically with no further CI changes.
+
+### Out of scope
+
+- The proto contracts themselves: concrete message schemas, RPC signatures, field names (#167).
+- Channel routing semantics — a separate ADR.
+- Plugin binary signing and TOFU key management — a separate ADR.
+- Audit-table split for plugin events — a separate ADR.
+- Plugin observability (metrics, structured logs from subprocesses) — a separate ADR.
+- Subscribed trigger semantics — a separate ADR.
+- Enabling `GLEIPNIR_PLUGINS_ENABLED` (#174).
+
+### Consequences
+
+- Compatibility policy is now writable into manifest validation logic and CI lint rules without re-deriving it per PR.
+- The two-version deprecation window means at most three concurrent supported majors per service at any time: the version under active deprecation warning (vN), the version still shipping with warnings (vN+1), and the current version (vN+2).
+- HostAPI asymmetry locks v1 out of mixed-HostAPI plugin sets — a plugin compiled against HostAPI v2 cannot run on a v1 host. Recorded as a known constraint to revisit (spec §10.4), not a bug.
+- Adding a new enum value is always allowed without a major bump as long as plugins fall through to the `UNKNOWN` arm. The `buf lint` rule is the structural guarantee that makes this safe.
 
 ---
 
