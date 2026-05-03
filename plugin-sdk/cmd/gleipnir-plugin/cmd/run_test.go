@@ -14,7 +14,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
 
+	handshakev1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/handshake/v1"
+	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/fakehost"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/hostwire"
 )
@@ -182,7 +185,7 @@ func TestRunReplay_HeaderValidation(t *testing.T) {
 			wantErr: "unsupported capture_format_version",
 		},
 		{
-			name: "valid header no events",
+			name:    "valid header no events",
 			content: `{"sequence":-1,"capture_format_version":1,"binary":"x","captured_at":""}` + "\n",
 			wantErr: "",
 		},
@@ -437,6 +440,215 @@ func TestE2E_RunFixture(t *testing.T) {
 	})
 }
 
+// ── Fix #1: expected_capabilities parsing ────────────────────────────────────
+
+// TestExecScenarioStep_NegotiateCapabilities verifies that expected_capabilities
+// entries in a Handshake.Negotiate request are parsed and sent on the wire,
+// and that unknown capability names return a clear error.
+func TestExecScenarioStep_NegotiateCapabilities(t *testing.T) {
+	// Stub client that captures what NegotiateRequest was sent.
+	var capturedReq *handshakev1.NegotiateRequest
+	stubClient := &hostwire.Client{
+		Handshake: &stubHandshakeClient{
+			negotiateFn: func(req *handshakev1.NegotiateRequest) (*handshakev1.NegotiateResponse, error) {
+				capturedReq = req
+				return &handshakev1.NegotiateResponse{Ok: true}, nil
+			},
+		},
+	}
+
+	t.Run("short names accepted", func(t *testing.T) {
+		capturedReq = nil
+		step := scenarioStep{
+			RPC: "Handshake.Negotiate",
+			Request: map[string]interface{}{
+				"host_version":          "1.0.0",
+				"expected_capabilities": []interface{}{"TOOL", "TRIGGER"},
+			},
+			AssertResponse: map[string]interface{}{"ok": true},
+		}
+		if err := execScenarioStep(context.Background(), step, stubClient, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if capturedReq == nil {
+			t.Fatal("NegotiateRequest was never sent")
+		}
+		caps := capturedReq.GetExpectedCapabilities()
+		if len(caps) != 2 {
+			t.Fatalf("want 2 capabilities, got %d", len(caps))
+		}
+		if caps[0] != handshakev1.ServiceCapability_SERVICE_CAPABILITY_TOOL {
+			t.Errorf("caps[0]: want TOOL, got %v", caps[0])
+		}
+		if caps[1] != handshakev1.ServiceCapability_SERVICE_CAPABILITY_TRIGGER {
+			t.Errorf("caps[1]: want TRIGGER, got %v", caps[1])
+		}
+	})
+
+	t.Run("full proto names accepted", func(t *testing.T) {
+		capturedReq = nil
+		step := scenarioStep{
+			RPC: "Handshake.Negotiate",
+			Request: map[string]interface{}{
+				"expected_capabilities": []interface{}{"SERVICE_CAPABILITY_CHANNEL"},
+			},
+			AssertResponse: map[string]interface{}{"ok": true},
+		}
+		if err := execScenarioStep(context.Background(), step, stubClient, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		caps := capturedReq.GetExpectedCapabilities()
+		if len(caps) != 1 || caps[0] != handshakev1.ServiceCapability_SERVICE_CAPABILITY_CHANNEL {
+			t.Errorf("want CHANNEL, got %v", caps)
+		}
+	})
+
+	t.Run("unknown capability name returns error", func(t *testing.T) {
+		step := scenarioStep{
+			RPC: "Handshake.Negotiate",
+			Request: map[string]interface{}{
+				"expected_capabilities": []interface{}{"DOES_NOT_EXIST"},
+			},
+			AssertResponse: map[string]interface{}{},
+		}
+		err := execScenarioStep(context.Background(), step, stubClient, nil)
+		if err == nil {
+			t.Fatal("expected error for unknown capability, got nil")
+		}
+		if !strings.Contains(err.Error(), "unknown capability") {
+			t.Errorf("error %q should mention 'unknown capability'", err.Error())
+		}
+	})
+
+	t.Run("non-string entry returns error", func(t *testing.T) {
+		step := scenarioStep{
+			RPC: "Handshake.Negotiate",
+			Request: map[string]interface{}{
+				"expected_capabilities": []interface{}{42},
+			},
+			AssertResponse: map[string]interface{}{},
+		}
+		err := execScenarioStep(context.Background(), step, stubClient, nil)
+		if err == nil {
+			t.Fatal("expected error for non-string entry, got nil")
+		}
+	})
+}
+
+// ── Fix #3: unrecognized assert_response key after min_tools ─────────────────
+
+// TestExecScenarioStep_ListToolsUnknownAssertKey verifies that an unrecognized
+// key in assert_response is rejected even when min_tools is also present.
+func TestExecScenarioStep_ListToolsUnknownAssertKey(t *testing.T) {
+	stubClient := &hostwire.Client{
+		Tool: &stubToolClient{
+			listToolsFn: func() (*toolv1.ListToolsResponse, error) {
+				return &toolv1.ListToolsResponse{
+					Tools: []*toolv1.ToolSchema{{Name: "echo"}},
+				}, nil
+			},
+		},
+	}
+
+	step := scenarioStep{
+		RPC:     "Tool.ListTools",
+		Request: map[string]interface{}{},
+		AssertResponse: map[string]interface{}{
+			"min_tools":   1,
+			"bogus_field": "oops",
+		},
+	}
+	err := execScenarioStep(context.Background(), step, stubClient, nil)
+	if err == nil {
+		t.Fatal("expected error for unrecognized assert_response key, got nil")
+	}
+	if !strings.Contains(err.Error(), "bogus_field") {
+		t.Errorf("error %q should name the unknown key 'bogus_field'", err.Error())
+	}
+}
+
+// ── Fix #2: large JSONL line handling ────────────────────────────────────────
+
+// TestReadJSONLLines_LargePayload verifies that lines up to 16MB are read
+// without error. The previous bufio.Scanner default of 64KB would have
+// returned bufio.ErrTooLong for webhook payloads larger than that.
+func TestReadJSONLLines_LargePayload(t *testing.T) {
+	// Build a JSONL line that's about 200KB — well above the default 64KB limit.
+	bigValue := strings.Repeat("x", 200*1024)
+	line := `{"sequence":1,"payload":"` + bigValue + `"}`
+
+	r := strings.NewReader(line + "\n")
+	lines, err := readJSONLLines(r)
+	if err != nil {
+		t.Fatalf("unexpected error for 200KB line: %v", err)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("want 1 line, got %d", len(lines))
+	}
+}
+
+// TestReadJSONLLines_ExceedsMaxBuffer verifies that a line exceeding 16MB
+// returns a human-readable error mentioning the size limit.
+func TestReadJSONLLines_ExceedsMaxBuffer(t *testing.T) {
+	// Build a line just over 16MB.
+	oversize := strings.Repeat("y", 16*1024*1024+1)
+	r := strings.NewReader(oversize + "\n")
+	_, err := readJSONLLines(r)
+	if err == nil {
+		t.Fatal("expected error for >16MB line, got nil")
+	}
+	if !strings.Contains(err.Error(), "16MB") {
+		t.Errorf("error %q should mention 16MB", err.Error())
+	}
+}
+
+// ── Fix #6: empty --filter event_kind= is rejected ───────────────────────────
+
+func TestRunReplay_EmptyFilterKindRejected(t *testing.T) {
+	content := buildTestJSONL(t, []captureRecord{
+		{Sequence: 1, EventID: "a", EventKind: "github.push", PayloadJSON: "{}"},
+	})
+	path := writeTempFile(t, "capture.jsonl", content)
+
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	err := runReplay(cmd, "/bin/true", replayOpts{inFile: path, filter: "event_kind="})
+	if err == nil {
+		t.Fatal("expected error for empty event_kind value, got nil")
+	}
+	if !strings.Contains(err.Error(), "non-empty") {
+		t.Errorf("error %q should mention non-empty requirement", err.Error())
+	}
+}
+
+// ── stub helpers used by unit tests above ────────────────────────────────────
+
+// stubHandshakeClient wraps the handshake client call in a function pointer
+// so individual tests can control its behavior without a real gRPC server.
+type stubHandshakeClient struct {
+	negotiateFn func(*handshakev1.NegotiateRequest) (*handshakev1.NegotiateResponse, error)
+}
+
+func (s *stubHandshakeClient) Negotiate(_ context.Context, req *handshakev1.NegotiateRequest, _ ...grpc.CallOption) (*handshakev1.NegotiateResponse, error) {
+	return s.negotiateFn(req)
+}
+
+// stubToolClient wraps the tool client calls in function pointers.
+type stubToolClient struct {
+	listToolsFn func() (*toolv1.ListToolsResponse, error)
+	callFn      func(*toolv1.CallRequest) (*toolv1.CallResponse, error)
+}
+
+func (s *stubToolClient) ListTools(_ context.Context, _ *toolv1.ListToolsRequest, _ ...grpc.CallOption) (*toolv1.ListToolsResponse, error) {
+	return s.listToolsFn()
+}
+
+func (s *stubToolClient) Call(_ context.Context, req *toolv1.CallRequest, _ ...grpc.CallOption) (*toolv1.CallResponse, error) {
+	return s.callFn(req)
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 // writeTempFile creates a temp file with the given content and returns its path.
@@ -492,4 +704,3 @@ func repoRoot(t *testing.T) string {
 		dir = parent
 	}
 }
-

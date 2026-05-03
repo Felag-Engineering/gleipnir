@@ -51,10 +51,10 @@ type Options struct {
 
 // RunContext holds the fields returned by GetRunContext.
 type RunContext struct {
-	RunID      string
-	PolicyID   string
-	StepIndex  int64
-	StartedAt  time.Time
+	RunID     string
+	PolicyID  string
+	StepIndex int64
+	StartedAt time.Time
 }
 
 // Host is an in-process implementation of hostv1.HostServiceServer. All

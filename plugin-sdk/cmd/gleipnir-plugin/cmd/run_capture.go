@@ -38,11 +38,11 @@ type captureHeader struct {
 
 // captureRecord is one event line in the JSONL file.
 type captureRecord struct {
-	CapturedAt    string `json:"captured_at"`
-	Sequence      int    `json:"sequence"`
-	EventID       string `json:"event_id"`
-	EventKind     string `json:"event_kind"`
-	PayloadJSON   string `json:"payload_json"`
+	CapturedAt     string `json:"captured_at"`
+	Sequence       int    `json:"sequence"`
+	EventID        string `json:"event_id"`
+	EventKind      string `json:"event_kind"`
+	PayloadJSON    string `json:"payload_json"`
 	WatchScopeJSON string `json:"watch_scope_json,omitempty"`
 }
 

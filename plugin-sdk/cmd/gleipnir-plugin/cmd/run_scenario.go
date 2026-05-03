@@ -144,6 +144,29 @@ func execScenarioStep(ctx context.Context, step scenarioStep, client *hostwire.C
 		if v, ok := step.Request["host_version"].(string); ok {
 			req.HostVersion = v
 		}
+		if raw, ok := step.Request["expected_capabilities"]; ok {
+			slice, ok := raw.([]interface{})
+			if !ok {
+				return fmt.Errorf("expected_capabilities must be a list of strings")
+			}
+			for _, item := range slice {
+				name, ok := item.(string)
+				if !ok {
+					return fmt.Errorf("expected_capabilities entries must be strings, got %T", item)
+				}
+				// Accept both short names (TOOL) and full proto enum names
+				// (SERVICE_CAPABILITY_TOOL) so scenario YAML is concise.
+				lookupName := name
+				if _, known := handshakev1.ServiceCapability_value[lookupName]; !known {
+					lookupName = "SERVICE_CAPABILITY_" + name
+				}
+				val, known := handshakev1.ServiceCapability_value[lookupName]
+				if !known {
+					return fmt.Errorf("unknown capability %q — valid values: TOOL, CHANNEL, TRIGGER (full form SERVICE_CAPABILITY_* also accepted)", name)
+				}
+				req.ExpectedCapabilities = append(req.ExpectedCapabilities, handshakev1.ServiceCapability(val))
+			}
+		}
 		resp, err := client.Handshake.Negotiate(ctx, req)
 		if err != nil {
 			return fmt.Errorf("Negotiate RPC failed: %w", err)
@@ -159,11 +182,14 @@ func execScenarioStep(ctx context.Context, step scenarioStep, client *hostwire.C
 		if err != nil {
 			return fmt.Errorf("ListTools RPC failed: %w", err)
 		}
-		assertions := map[string]interface{}{
-			"tool_count": len(resp.GetTools()),
+		// Build a copy of assert_response so we can consume known special keys
+		// without silently ignoring any unknown keys that follow.
+		remaining := make(map[string]interface{}, len(step.AssertResponse))
+		for k, v := range step.AssertResponse {
+			remaining[k] = v
 		}
-		// min_tools check handled in evalResponseFields
-		if minRaw, ok := step.AssertResponse["min_tools"]; ok {
+
+		if minRaw, ok := remaining["min_tools"]; ok {
 			minInt, ok := minRaw.(int)
 			if !ok {
 				return fmt.Errorf("assert_response.min_tools must be an integer")
@@ -171,9 +197,13 @@ func execScenarioStep(ctx context.Context, step scenarioStep, client *hostwire.C
 			if len(resp.GetTools()) < minInt {
 				return fmt.Errorf("min_tools assertion failed: got %d tools, want at least %d", len(resp.GetTools()), minInt)
 			}
-			return nil
+			delete(remaining, "min_tools")
 		}
-		return evalResponseFields(step.AssertResponse, assertions)
+
+		// Any remaining keys are checked against supported response fields.
+		return evalResponseFields(remaining, map[string]interface{}{
+			"tool_count": len(resp.GetTools()),
+		})
 
 	case "Tool.Call":
 		toolName, _ := step.Request["tool_name"].(string)
@@ -185,13 +215,19 @@ func execScenarioStep(ctx context.Context, step scenarioStep, client *hostwire.C
 		if err != nil {
 			return fmt.Errorf("Tool.Call RPC failed: %w", err)
 		}
-		if rc, ok := step.AssertResponse["result_contains"].(string); ok {
+		remaining := make(map[string]interface{}, len(step.AssertResponse))
+		for k, v := range step.AssertResponse {
+			remaining[k] = v
+		}
+
+		if rc, ok := remaining["result_contains"].(string); ok {
 			if !strings.Contains(resp.GetOutputJson(), rc) {
 				return fmt.Errorf("result_contains assertion failed: %q not found in %q", rc, resp.GetOutputJson())
 			}
-			return nil
+			delete(remaining, "result_contains")
 		}
-		return evalResponseFields(step.AssertResponse, map[string]interface{}{
+
+		return evalResponseFields(remaining, map[string]interface{}{
 			"output_json": resp.GetOutputJson(),
 			"ok":          resp.GetError() == nil,
 		})

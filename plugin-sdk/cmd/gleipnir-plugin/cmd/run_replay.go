@@ -3,7 +3,9 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -50,6 +52,10 @@ type replayLineEvent struct {
 // per-event summary line and exits 1 on the first failure unless
 // --continue-on-error is set.
 func runReplay(cmd *cobra.Command, binary string, opts replayOpts) error {
+	return runReplayCtx(context.Background(), cmd, binary, opts)
+}
+
+func runReplayCtx(ctx context.Context, cmd *cobra.Command, binary string, opts replayOpts) error {
 	f, err := os.Open(opts.inFile)
 	if err != nil {
 		return fmt.Errorf("open replay file: %w", err)
@@ -84,6 +90,9 @@ func runReplay(cmd *cobra.Command, binary string, opts replayOpts) error {
 			return fmt.Errorf("--filter must be in the form event_kind=<kind>, got %q", opts.filter)
 		}
 		filterKind = strings.TrimPrefix(opts.filter, prefix)
+		if filterKind == "" {
+			return fmt.Errorf("--filter event_kind= requires a non-empty kind value, e.g. event_kind=github.push")
+		}
 	}
 
 	var succeeded, failed, skipped int
@@ -107,7 +116,7 @@ func runReplay(cmd *cobra.Command, binary string, opts replayOpts) error {
 			break
 		}
 
-		exitErr := replayEvent(binary, evt.PayloadJSON, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		exitErr := replayEvent(ctx, binary, evt.PayloadJSON, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		if exitErr == nil {
 			succeeded++
 			fmt.Fprintf(cmd.OutOrStdout(), "[%d] event_id=%s kind=%s OK\n", evt.Sequence, evt.EventID, evt.EventKind)
@@ -139,9 +148,9 @@ func runReplay(cmd *cobra.Command, binary string, opts replayOpts) error {
 // Subprocess stderr is always forwarded to errW so the author can see parse
 // errors and panics. Subprocess stdout is captured and forwarded to outW only
 // on failure, keeping successful output quiet by default.
-func replayEvent(binary, payloadJSON string, outW, errW io.Writer) error {
+func replayEvent(ctx context.Context, binary, payloadJSON string, outW, errW io.Writer) error {
 	var stdoutBuf bytes.Buffer
-	cmd := exec.Command(binary, "--replay-event", payloadJSON)
+	cmd := exec.CommandContext(ctx, binary, "--replay-event", payloadJSON)
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = errW
 	err := cmd.Run()
@@ -156,14 +165,24 @@ func replayEvent(binary, payloadJSON string, outW, errW io.Writer) error {
 }
 
 // readJSONLLines reads all non-empty lines from r.
+//
+// The scanner buffer is sized at 1MB initial / 16MB max to accommodate large
+// webhook payloads that exceed bufio's default 64KB token limit.
 func readJSONLLines(r io.Reader) ([]string, error) {
 	var lines []string
 	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line != "" {
 			lines = append(lines, line)
 		}
 	}
-	return lines, sc.Err()
+	if err := sc.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return nil, fmt.Errorf("a line in the JSONL file exceeds 16MB; consider splitting the capture file")
+		}
+		return nil, err
+	}
+	return lines, nil
 }

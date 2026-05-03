@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	goplugin "github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
@@ -107,16 +108,16 @@ type fixturePlugin struct {
 	triggerv1.UnimplementedTriggerServiceServer
 
 	// broker is stored after Bootstrap.Bind so Trigger.Start can call EmitEvent.
-	broker    *goplugin.GRPCBroker
-	brokerID  uint32
+	broker   *goplugin.GRPCBroker
+	brokerID uint32
 }
 
 // Negotiate declares Tool + Trigger capabilities.
 func (f *fixturePlugin) Negotiate(_ context.Context, req *handshakev1.NegotiateRequest) (*handshakev1.NegotiateResponse, error) {
 	return &handshakev1.NegotiateResponse{
-		SdkVersion:     "0.0.0-runfixture",
-		PluginVersion:  "0.1.0",
-		Ok:             true,
+		SdkVersion:    "0.0.0-runfixture",
+		PluginVersion: "0.1.0",
+		Ok:            true,
 		ActualCapabilities: []handshakev1.ServiceCapability{
 			handshakev1.ServiceCapability_SERVICE_CAPABILITY_TOOL,
 			handshakev1.ServiceCapability_SERVICE_CAPABILITY_TRIGGER,
@@ -163,10 +164,19 @@ func (f *fixturePlugin) Start(req *triggerv1.StartRequest, stream triggerv1.Trig
 		if err == nil {
 			defer conn.Close()
 			hostClient := hostv1.NewHostServiceClient(conn)
+
+			watchScope := strings.TrimSpace(req.GetWatchScopeJson())
+			if watchScope == "" {
+				watchScope = "{}"
+			}
+			payload, _ := json.Marshal(map[string]interface{}{
+				"source":      "runfixture",
+				"watch_scope": json.RawMessage(watchScope),
+			})
 			_, _ = hostClient.EmitEvent(ctx, &hostv1.EmitEventRequest{
 				EventId:     "fixture-evt-1",
 				EventKind:   "fixture.event",
-				PayloadJson: `{"source":"runfixture","watch_scope":` + req.GetWatchScopeJson() + `}`,
+				PayloadJson: string(payload),
 			})
 		}
 	}

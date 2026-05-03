@@ -21,14 +21,14 @@ var (
 
 // runOpts collects all flags for the `run` subcommand.
 type runOpts struct {
-	scenario       string
-	capture        string
-	replay         string
-	maxEvents      int
-	watchScope     string
-	timeout        time.Duration
-	filter         string
-	continueOnErr  bool
+	scenario      string
+	capture       string
+	replay        string
+	maxEvents     int
+	watchScope    string
+	timeout       time.Duration
+	filter        string
+	continueOnErr bool
 }
 
 // NewRunCmd returns the cobra.Command for the `run` subcommand.
@@ -122,7 +122,7 @@ func runRun(cmd *cobra.Command, binary string, opts runOpts) error {
 			maxEvents:  opts.maxEvents,
 		})
 	case opts.replay != "":
-		return runReplay(cmd, binary, replayOpts{
+		return runReplayCtx(ctx, cmd, binary, replayOpts{
 			inFile:        opts.replay,
 			maxEvents:     opts.maxEvents,
 			filter:        opts.filter,
