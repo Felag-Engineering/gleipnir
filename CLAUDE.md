@@ -36,6 +36,7 @@ npm run storybook        # Storybook on port 6006
 | `GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT` | `30m` | Default timeout for feedback requests |
 | `GLEIPNIR_FEEDBACK_SCAN_INTERVAL` | `30s` | How often to check for timed-out feedback |
 | `GLEIPNIR_DEFAULT_PROVIDER` | `anthropic` | Default LLM provider |
+| `GLEIPNIR_PLUGINS_ENABLED` | `false` | Enable the host-side plugin loader (off by default this release; see docs/developer/plugin-system-spec.md §15.2). |
 | `GLEIPNIR_ENCRYPTION_KEY` | *(required)* | 64-char hex key (32-byte AES-256) for encrypting provider API keys and webhook secrets; generate with `openssl rand -hex 32` |
 
 **Provider API keys:** All LLM provider API keys (Anthropic, Google, OpenAI, and any OpenAI-compatible backends) are configured through the admin UI at `/admin/models` and stored encrypted in the database. Env vars like `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` are intentionally ignored — a startup warning is logged if they are set.
@@ -134,6 +135,7 @@ internal/
     openaicompat/     — OpenAI-compatible provider loader (bootstraps third-party OpenAI-compatible backends)
   mcp/                — MCP HTTP client, tool registry, capability tags
   model/              — domain types (Policy, Run, RunStep, ApprovalRequest, enums, ...)
+  plugin/             — host-side plugin loader (stub; gated by GLEIPNIR_PLUGINS_ENABLED. Real loader lands in Phase 3 of the plugin system rollout — see docs/developer/plugin-system-spec.md)
   policy/             — YAML parser, validator, system prompt renderer
   settings/           — read-side accessor for system_settings (default model, public URL); injected into runtime so non-admin packages don't depend on the admin HTTP handler
   testutil/           — shared test helpers

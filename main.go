@@ -15,6 +15,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
+	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
 	"github.com/felag-engineering/gleipnir/internal/http/api"
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/http/sse"
@@ -63,6 +64,13 @@ func run(cfg config.Config) error {
 	// Root context cancelled on shutdown so background components (Scheduler) can stop.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Plugin loader is a stub today; Init is a no-op when GLEIPNIR_PLUGINS_ENABLED
+	// is false (the default for this release; spec §15.2). Init currently cannot
+	// fail — the error return is for the Phase 3 loader.
+	if err := pluginpkg.NewLoader().Init(ctx, cfg); err != nil {
+		return fmt.Errorf("init plugin loader: %w", err)
+	}
 
 	store, err := db.Open(cfg.DBPath)
 	if err != nil {
