@@ -111,7 +111,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: bufbuild/buf-setup-action@v1
-      - run: buf lint
+      # `buf lint` errors when a module has zero .proto files. The lint gate
+      # is intentionally a no-op until #167 lands the proto contracts; skip
+      # the invocation entirely while the tree has no .proto files.
+      - name: Lint protos (skipped when none present)
+        run: |
+          if find . -type f -name '*.proto' -not -path './.git/*' | grep -q .; then
+            buf lint
+          else
+            echo "No .proto files in tree; skipping buf lint."
+          fi
 
   storybook-build:
     if: github.event_name == 'push'

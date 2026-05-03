@@ -55,6 +55,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-038 | Atomic run-state transitions with optimistic locking   | 🟢 Decided | v1.0 | runs.version column, RunStateMachine.Transition (tx), runstate.ErrTransitionConflict |
 | ADR-039 | Per-server encrypted auth headers for authenticated MCP providers | 🟢 Decided | v1.0 | mcp_servers table, internal/mcp, internal/admin, gleipnirctl rotate-key |
 | ADR-040 | Arcade gateway pre-authorization (toolkit-level OAuth pre-warm) | 🟢 Decided | v1.0 | internal/arcade (new), internal/http/api/arcade_handler, frontend ServerDetailModal |
+| ADR-041 | Plugin system architecture (umbrella) | 🟢 Decided | v2.0 | internal/plugin (new), internal/execution/agent/feedback.go, plugin-sdk (new module), admin UI, ADR-004 (parallel to MCP) |
 | ADR-042 | Plugin service & HostAPI versioning policy | 🟢 Decided | v1.0 (plugins) | docs/developer/plugin-system-spec.md §10, buf.yaml, .github/workflows/ci.yml |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
 
@@ -99,6 +100,169 @@ This ADR depends on ADR-041 merging first (#252). Until that merge lands, treat 
 - The two-version deprecation window means at most three concurrent supported majors per service at any time: the version under active deprecation warning (vN), the version still shipping with warnings (vN+1), and the current version (vN+2).
 - HostAPI asymmetry locks v1 out of mixed-HostAPI plugin sets — a plugin compiled against HostAPI v2 cannot run on a v1 host. Recorded as a known constraint to revisit (spec §10.4), not a bug.
 - Adding a new enum value is always allowed without a major bump as long as plugins fall through to the `UNKNOWN` arm. The `buf lint` rule is the structural guarantee that makes this safe.
+
+---
+
+## ADR-041: Plugin system architecture (umbrella)
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+Gleipnir's only first-party extension surface today is MCP (HTTP transport,
+capability tags host-side per ADR-004). MCP serves power users with custom
+tooling but is not approachable to non-engineer extension authors and
+gives Gleipnir no first-party control over OAuth flows, signed releases,
+structured config, or admin UX. A second extension system is required to
+grow the ecosystem without forcing every author to operate an MCP server.
+
+The full design (process model, services, capability model, versioning,
+distribution, trust model, audit substrate split, observability, DX) is
+specified in `docs/developer/plugin-system-spec.md`. This ADR records the
+umbrella decisions and serves as the index for the follow-up ADRs listed
+in spec §16. Any detail not summarized below is governed by the spec.
+
+### Decision
+
+Adopt a HashiCorp `go-plugin`-based subprocess plugin system that runs
+parallel to (not in place of) MCP. The umbrella records seven decisions:
+
+1. **Process model.** Plugins are subprocesses launched by the host,
+   speaking gRPC over a Unix domain socket via `go-plugin`. Filesystem
+   dropin into a mounted `/plugins` directory; `fsnotify` drives
+   install/hot-reload. See spec §3.1.
+
+2. **Services.** A plugin binary may implement any subset of three
+   capability surfaces — `ToolService`, `ChannelService` (Notify and/or
+   Request), `TriggerService` — plus the always-present `Handshake/v1`
+   and `grpc.health.v1.Health`. One binary, multiple capabilities.
+   See spec §4.
+
+3. **Capability model.** Hard capability enforcement (ADR-001) carries
+   forward unchanged: plugin tools and MCP tools share one namespace
+   (`<source>.<tool>`), only granted tools are registered with the
+   agent, and per-policy parameter scoping (ADR-017), policy-gated
+   approval (ADR-008), and capability snapshot (ADR-018) apply
+   identically to plugin tools. Plugin → host RPCs are tiered (Tier 1
+   always-on, Tier 2 manifest-declared and admin-approved at install,
+   Tier 3 deferred). See spec §3.3 and §8.
+
+4. **Versioning.** Per-service SemVer on four independent axes
+   (`TriggerService`, `ToolService`, `ChannelService`, `HostAPI`).
+   Plugin SemVer is independent of and informational relative to its
+   declared service versions. Removals follow a two-major-version
+   deprecation window. HostAPI ships single-version per host in v1
+   (no side-by-side). The detailed deprecation policy is the subject
+   of a follow-up ADR. See spec §10.
+
+5. **Distribution.** v1 is filesystem dropin only; no curated registry,
+   no upload-via-UI. New manifests land in "Pending review" and require
+   admin click-through to activate. Hot-reload is supported with
+   material-vs-cosmetic manifest change discipline. See spec §5.1
+   and §5.4.
+
+6. **Trust model.** Minisign (Ed25519) tamper-evidence with TOFU pubkey
+   pinning at first install. Updates must verify against the pinned
+   key; key rotation requires explicit admin approval. Identity
+   attestation (Sigstore-keyless) is deferred to a future storefront
+   era. v1 buys tamper-evidence, not author identity. The detailed
+   signing/TOFU policy is the subject of a follow-up ADR. See spec §5.
+
+7. **Audit substrate split.** Two distinct substrates with different
+   audiences: `run_steps` carries LLM-relevant operations (visible to
+   the LLM); a new `plugin_audit_events` table carries
+   operational/admin events (install, manifest changes, signature
+   outcomes, key rotations, credential lifecycle, unauthorized RPC
+   attempts) and is NOT visible to the LLM. The detailed schema and
+   write discipline are the subject of a follow-up ADR. See spec §12.3.
+
+### Relationship to prior decisions
+
+- **ADR-001 (hard capability enforcement) — carried forward unchanged.**
+  Disallowed plugin capabilities are never registered with the agent.
+  No prompt-based restrictions.
+- **ADR-004 (MCP HTTP transport) — unchanged.** The plugin system is a
+  parallel extension surface, NOT a replacement for MCP. Plugin tools
+  and MCP tools share one tool namespace (`<source>.<tool>`); MCP
+  remains the power-user escape hatch (spec §1, §11.6).
+- **ADR-007 (BoundAgent: sensor / actuator / feedback roles) — feedback
+  role fully absorbed into the Channel model.** The agent never sees
+  `gleipnir.ask_operator` directly; it sees a synthetic
+  `request_feedback` tool, and the runtime resolves the audience and
+  routes to the appropriate Channel implementation (spec §3.3). This
+  completes the supersession that ADR-031 began.
+- **ADR-008 (two approval modes) — carried forward unchanged.** Plugin
+  tools obey policy-gated approval identically to MCP tools; the
+  runtime intercepts before invocation.
+- **ADR-017 (policy-level parameter scoping) — carried forward unchanged.**
+  Plugin tool parameters are narrowed per-policy before the agent
+  sees them.
+- **ADR-018 (capability snapshot as first run step) — carried forward
+  unchanged.** The snapshot records every granted tool at run start
+  regardless of whether the source is a plugin instance or an MCP
+  server. Hot-reloaded plugin generations preserve this guarantee:
+  in-flight runs hold a reference to the generation captured in their
+  snapshot.
+- **ADR-031 (native feedback) — first-class-feedback principle stands;
+  in-app implementation detail superseded by Channel routing.** The
+  runtime's `waiting_for_feedback` state and timeout machinery
+  (`internal/timeout/`) are unchanged. What changes is the dispatcher:
+  `internal/execution/agent/feedback.go` is refactored so the in-app
+  surface becomes one Channel implementation among many
+  (`gleipnir.in-app` is auto-appended as the lowest-priority entry per
+  spec §6.2), and the runtime resolves the feedback audience before
+  dispatch. The refactor is behavior-neutral (spec §15.1 step 2). The
+  Channel routing model is detailed in its own follow-up ADR.
+
+### Pending child ADRs
+
+Spec §16 enumerates six follow-up ADRs that decide details out of scope
+for this umbrella. Issue numbers for these ADRs will be assigned at
+write time:
+
+- Channel routing model (supersedes ADR-031's in-app implementation
+  detail; ADR-031's first-class-feedback principle stands)
+- Subscribed trigger type
+- Plugin signing & TOFU trust
+- HostAPI versioning policy (issue #166)
+- Plugin observability surface
+- Audit-table split: `run_steps` vs `plugin_audit_events`
+
+Proto contracts (gRPC service definitions) are tracked separately as
+issue #167.
+
+### Out of scope for this ADR
+
+This umbrella does NOT define HostAPI versioning policy in detail, proto
+contracts, or any of the other follow-up ADRs listed above. It also
+does not reopen any of the v1 non-goals enumerated in spec §2 and §17
+(no hard sandboxing, no cross-plugin RPCs, no plugin storefront, no
+user-credentials mode in v1, no OpenTelemetry, etc.).
+
+### Consequences
+
+- The plugin system ships parallel to MCP; both stacks coexist
+  permanently. `/admin/plugins` and `/admin/mcp` are siblings (spec
+  §11.6).
+- A new top-level package `internal/plugin/` and a new SDK module
+  `plugin-sdk/` (with its own `go.mod`) will be introduced as the
+  build sequence in spec §15.1 progresses. Neither is created by
+  this ADR.
+- `internal/execution/agent/feedback.go` will be refactored
+  behavior-neutrally to route through a Channel dispatcher, so
+  plugin-provided channels can serve feedback requests without
+  further runtime changes.
+- A new `plugin_audit_events` table will be added in a follow-up to
+  house operational events outside the LLM-visible `run_steps`
+  substrate.
+- Single global env var `GLEIPNIR_PLUGINS_ENABLED` (default off in
+  v1, removed two minor releases later) gates the external loader;
+  the in-app feedback Channel refactor lands flag-independent.
+- Existing v1 invariants from ADR-001/004/007/008/017/018 remain the
+  authoritative runtime guarantees; the plugin host must preserve them.
+- For any detail not addressed above,
+  `docs/developer/plugin-system-spec.md` is the canonical specification.
 
 ---
 
