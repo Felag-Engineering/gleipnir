@@ -20,6 +20,10 @@ func NewLoader() *Loader { return &Loader{} }
 // cfg.PluginsEnabled is false it returns nil immediately; when true it logs
 // that the loader is enabled but does not actually discover or launch any
 // plugins. The Phase 3 loader PR replaces this with the real implementation.
+//
+// TODO(#186): import github.com/felag-engineering/gleipnir/plugin-sdk/signing
+// here for signature verification. plugin-sdk/signing is the single source of
+// truth for the Minisign format — do not add a second implementation.
 func (l *Loader) Init(ctx context.Context, cfg config.Config) error {
 	if !cfg.PluginsEnabled {
 		slog.Default().Debug("plugin loader disabled")

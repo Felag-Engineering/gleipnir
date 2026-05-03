@@ -57,6 +57,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-040 | Arcade gateway pre-authorization (toolkit-level OAuth pre-warm) | 🟢 Decided | v1.0 | internal/arcade (new), internal/http/api/arcade_handler, frontend ServerDetailModal |
 | ADR-041 | Plugin system architecture (umbrella) | 🟢 Decided | v2.0 | internal/plugin (new), internal/execution/agent/feedback.go, plugin-sdk (new module), admin UI, ADR-004 (parallel to MCP) |
 | ADR-042 | Plugin service & HostAPI versioning policy | 🟢 Decided | v1.0 (plugins) | docs/developer/plugin-system-spec.md §10, buf.yaml, .github/workflows/ci.yml |
+| ADR-043 | Plugin signing tooling — bundled Minisign in plugin-sdk/signing, fresh-written | 🟢 Decided | v2.0 (plugins) | plugin-sdk/signing (new), gleipnir-plugin keygen/sign/package subcommands, spec §5.2 §14.5 |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
 
 ---
