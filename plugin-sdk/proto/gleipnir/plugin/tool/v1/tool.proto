@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package gleipnir.plugin.tool.v1;
+
+import "gleipnir/plugin/common/v1/common.proto";
+
+option go_package = "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1;toolv1";
+
+// ToolSchema describes a single tool exposed by this plugin.
+// The host merges plugin tools into the unified tool namespace alongside MCP
+// tools (spec §3.3).  The tool name must be unique across all sources at
+// registration time.
+message ToolSchema {
+  // name is the tool identifier visible to the agent (e.g. "search_files").
+  // The host prepends the plugin instance name to form the namespaced name
+  // "slack-prod.search_files" in the capability registry.
+  string name        = 1;
+  string description = 2;
+
+  // input_schema is a JSON Schema (serialized as a JSON string) describing the
+  // tool's input parameters.  The host uses this for per-policy parameter
+  // scoping (ADR-017) and agent schema narrowing.
+  string input_schema = 3;
+}
+
+// ListToolsRequest is sent by the host to discover the tools this plugin
+// instance exposes.  Called once on startup and after hot-reload.
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message ListToolsRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// ListToolsResponse returns the full list of tools this plugin instance
+// currently exposes.  The host snapshots this list at run start (ADR-018).
+message ListToolsResponse {
+  repeated ToolSchema tools = 1;
+}
+
+// CallRequest is sent by the host when the agent invokes a plugin tool.
+// The host has already verified the tool is granted by the policy (ADR-001)
+// and applied parameter scoping (ADR-017) before forwarding the call.
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message CallRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  // tool_name matches the name in ToolSchema (without the instance prefix).
+  string tool_name = 2;
+
+  // input_json is the agent-supplied argument map serialized as a JSON object.
+  // Guaranteed to conform to the tool's input_schema after host-side scoping.
+  string input_json = 3;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// CallResponse carries the tool's output back to the host.
+// On success, output_json is returned and the host writes a tool_result step.
+// On failure, error is populated and the host writes a tool_error step.
+message CallResponse {
+  // output_json is the tool result serialized as a JSON value.  May be an
+  // object, array, string, or number; the agent receives it as-is.
+  string output_json = 1;
+
+  // error is set when the tool call failed.  Mutually exclusive with output_json.
+  gleipnir.plugin.common.v1.ErrorEnvelope error = 2;
+}
+
+// ToolService is implemented by plugin binaries that expose agent-callable
+// tools.  Declared in the manifest under `services: [tool]`.
+//
+// gRPC deadlines applied by the host (spec §13.6):
+//   ListTools: 5s
+//   Call:      30s (matches GLEIPNIR_MCP_TIMEOUT)
+service ToolService {
+  // ListTools returns all tools this plugin instance currently exposes.
+  rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
+
+  // Call invokes a single tool and returns its result.
+  // The RPC name is "Call" (spec §4.1) — not "Invoke".
+  rpc Call(CallRequest) returns (CallResponse);
+}

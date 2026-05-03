@@ -58,3 +58,8 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+// plugin-sdk is a sub-module in this repository.  The replace directive lets
+// the root module resolve it from disk when GOWORK is not active (e.g. CI jobs
+// that set GOWORK=off for the root module pass).
+replace github.com/felag-engineering/gleipnir/plugin-sdk => ./plugin-sdk
