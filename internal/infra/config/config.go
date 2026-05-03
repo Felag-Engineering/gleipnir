@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -33,6 +34,7 @@ type Config struct {
 	DrainTimeout           time.Duration
 	PIDFile                string
 	EncryptionKey          string
+	PluginsEnabled         bool
 }
 
 // Load reads configuration from environment variables, applies defaults for
@@ -61,6 +63,7 @@ func Load() (Config, error) {
 		DrainTimeout:           envDuration("GLEIPNIR_DRAIN_TIMEOUT", 5*time.Minute),
 		PIDFile:                envOrDefault("GLEIPNIR_PID_FILE", "/var/run/gleipnir.pid"),
 		EncryptionKey:          raw,
+		PluginsEnabled:         envBool("GLEIPNIR_PLUGINS_ENABLED", false),
 	}, nil
 }
 
@@ -125,4 +128,17 @@ func envLogLevel(key string, def slog.Level) slog.Level {
 		return def
 	}
 	return level
+}
+
+func envBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: invalid bool value %q for %s, using default %v\n", v, key, def)
+		return def
+	}
+	return b
 }
