@@ -62,6 +62,130 @@ gleipnir-plugin validate --binary ./myplugin --manifest manifest.yaml
 
 Exits 0 on match, 1 with a diff on mismatch. Run `gen-manifest` to fix drift.
 
+### `gleipnir-plugin keygen`
+
+Generate a Minisign-compatible Ed25519 signing keypair:
+
+```bash
+gleipnir-plugin keygen
+gleipnir-plugin keygen --out-dir ./keys --name myplugin
+gleipnir-plugin keygen --kdf argon2   # requires minisign >= 0.11 on operator side
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out-dir` | `~/.config/gleipnir-plugin/keys/` | Output directory |
+| `--name` | `signing` | Base filename (`<name>.key`, `<name>.pub`) |
+| `--kdf` | `scrypt` | KDF: `scrypt` (default) or `argon2` |
+| `--force` | false | Overwrite existing key files |
+| `--passphrase-stdin` | false | Read passphrase from stdin (CI) |
+| `--unencrypted` | false | Skip passphrase (testing only) |
+
+**KDF notes:**
+- `scrypt` is the default and works with all `minisign` versions.
+- `argon2` (`Ar`) requires upstream `minisign >= 0.11` (2023). Use when both the
+  key generator and operator's `minisign` tool are known to be >= 0.11.
+
+**CI passphrase:** Set `GLEIPNIR_PLUGIN_SIGNING_KEY_PASSPHRASE` env var, or use
+`--passphrase-stdin`.
+
+### `gleipnir-plugin sign`
+
+Sign a plugin binary + manifest:
+
+```bash
+gleipnir-plugin sign --binary ./myplugin --manifest manifest.yaml
+gleipnir-plugin sign --binary ./myplugin --manifest manifest.yaml \
+    --key ./keys/signing.key --out myplugin.minisig
+```
+
+The signed payload is `sha256(binary) || sha256(manifest)` per spec §5.2.
+The `.minisig` defaults to `<binary-basename>.minisig` in the current directory.
+
+**Key resolution order:**
+1. `--key-stdin` — read .key content from stdin
+2. `GLEIPNIR_PLUGIN_SIGNING_KEY` env var — path or inline .key content
+3. `--key` flag
+4. `~/.config/gleipnir-plugin/keys/signing.key`
+
+**Passphrase resolution order:**
+1. `GLEIPNIR_PLUGIN_SIGNING_KEY_PASSPHRASE` env var
+2. Interactive terminal prompt
+
+### `gleipnir-plugin package`
+
+Build a signed release tarball:
+
+```bash
+gleipnir-plugin package --binary ./myplugin
+gleipnir-plugin package --binary ./myplugin --manifest manifest.yaml \
+    --key ./keys/signing.key --pubkey ./keys/signing.pub \
+    --out-dir ./dist
+gleipnir-plugin package --binary ./myplugin --sbom sbom.cyclonedx.json
+```
+
+**Bundle layout** (spec §14.5):
+
+```
+<name>-<version>.tar.gz
+  <name>-<version>/
+    <binary-basename>         (mode 0755)
+    manifest.yaml             (mode 0644)
+    <manifest.Name>.minisig   (mode 0644)
+    signing.pub               (mode 0644)
+    sbom.cyclonedx.json       (mode 0644, optional)
+```
+
+The `.minisig` filename derives from `manifest.Name`, not the binary basename.
+
+**Unsigned bundles:**
+
+Use `--unsigned` to produce a bundle without `.minisig`/`signing.pub`. The host
+must have `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true` set to load it; a red banner
+appears in the admin UI and audit events are logged on every load. Even in
+permissive mode, signed plugins are fully verified. See spec §5.5.
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--binary` | (required) | Path to plugin binary |
+| `--manifest` | `manifest.yaml` | Path to manifest.yaml |
+| `--key` | `~/.config/gleipnir-plugin/keys/signing.key` | Secret key path |
+| `--key-stdin` | false | Read .key from stdin (CI) |
+| `--pubkey` | sibling of .key | Public key path for bundle |
+| `--out-dir` | `./dist` | Output directory |
+| `--sbom` | (none) | CycloneDX SBOM JSON path |
+| `--unsigned` | false | Produce unsigned bundle |
+
+**Deterministic tarballs:** Entry order is sorted; `SOURCE_DATE_EPOCH` env var
+sets the mtime for reproducible builds.
+
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `GLEIPNIR_PLUGIN_SIGNING_KEY` | Path to `.key` file, or inline `.key` content |
+| `GLEIPNIR_PLUGIN_SIGNING_KEY_PASSPHRASE` | Passphrase for the signing key |
+
+## Interop verification (AC#7)
+
+The in-process format-shape test runs unconditionally:
+
+```bash
+go test ./plugin-sdk/signing/...
+```
+
+Full upstream-CLI verification (requires `minisign` binary on PATH):
+
+```bash
+go test -tags integration ./plugin-sdk/signing/...
+```
+
 ## See also
 
-`docs/developer/plugin-system-spec.md §14.2` for the full subcommand reference.
+`docs/developer/plugin-system-spec.md §14.5` for the full subcommand reference
+and bundle layout. `docs/developer/plugin-system-spec.md §5.2` for the signing
+scheme.

@@ -3,7 +3,6 @@ package cmd
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -40,15 +39,9 @@ Run 'gleipnir-plugin gen-manifest' to regenerate manifest.yaml from the binary.`
 // runValidate implements the validate subcommand logic. Extracted for
 // testability.
 func runValidate(binary, manifestPath string, cmd *cobra.Command) error {
-	// Read the on-disk manifest and canonicalise it.
-	onDisk, err := os.ReadFile(manifestPath)
+	canonicalDisk, err := loadCanonicalManifest(manifestPath)
 	if err != nil {
-		return fmt.Errorf("validate: read %s: %w", manifestPath, err)
-	}
-
-	canonicalDisk, err := canonicaliseYAML(onDisk)
-	if err != nil {
-		return fmt.Errorf("validate: canonicalise on-disk manifest: %w", err)
+		return fmt.Errorf("validate: %w", err)
 	}
 
 	// Invoke the binary to get its manifest.
