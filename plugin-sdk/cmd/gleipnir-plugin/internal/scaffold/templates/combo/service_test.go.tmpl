@@ -1,0 +1,42 @@
+package main
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+func TestToolService(t *testing.T) {
+	svc := &ToolService{}
+	tools, err := svc.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) == 0 {
+		t.Fatal("ListTools returned empty list")
+	}
+	out, err := svc.Call(context.Background(), "example_tool", nil)
+	if err != nil {
+		t.Fatalf("Call example_tool: %v", err)
+	}
+	if len(out) == 0 {
+		t.Error("example_tool returned empty output")
+	}
+}
+
+func TestChannelNotify(t *testing.T) {
+	svc := &ChannelService{}
+	if err := svc.Notify(context.Background(), []byte(`{"text":"hello"}`)); err != nil {
+		t.Errorf("Notify: %v", err)
+	}
+}
+
+func TestTriggerCancellation(t *testing.T) {
+	svc := &TriggerService{}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := svc.Start(ctx, func(_ string, _ []byte) error { return nil })
+	if err == nil {
+		t.Error("expected non-nil error when context cancelled")
+	}
+}

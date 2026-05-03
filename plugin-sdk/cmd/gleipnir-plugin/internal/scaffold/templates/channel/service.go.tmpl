@@ -1,0 +1,31 @@
+package main
+
+import (
+	"context"
+	"fmt"
+)
+
+// ChannelService implements the ChannelService gRPC contract.
+//
+// Delete the methods you don't implement and update manifest.go accordingly.
+// TODO: replace stubbed methods with real implementations.
+type ChannelService struct{}
+
+// Notify delivers a fire-and-forget notification.
+// Failures are audited and metric-counted but do NOT fail the run.
+func (s *ChannelService) Notify(_ context.Context, msg []byte) error {
+	// TODO: implement Notify.
+	_ = msg
+	return nil
+}
+
+// Request sends a notification and asynchronously awaits a human response.
+// The plugin acks the request within 5s, then later calls WriteAuditStep with
+// a feedback_response step carrying the request_id.
+func (s *ChannelService) Request(_ context.Context, requestID string, msg []byte) error {
+	// TODO: implement Request.
+	// Delete this method if you only implement Notify.
+	_ = requestID
+	_ = msg
+	return fmt.Errorf("Request: not yet implemented")
+}

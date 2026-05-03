@@ -1,0 +1,60 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+// ToolService implements the ToolService gRPC contract.
+// TODO: replace with real implementations.
+type ToolService struct{}
+
+func (s *ToolService) ListTools(_ context.Context) ([]string, error) {
+	return []string{"example_tool"}, nil
+}
+
+func (s *ToolService) Call(_ context.Context, tool string, input []byte) ([]byte, error) {
+	switch tool {
+	case "example_tool":
+		_ = input
+		return []byte(`{"result":"ok"}`), nil
+	default:
+		return nil, fmt.Errorf("unknown tool: %s", tool)
+	}
+}
+
+// ChannelService implements the ChannelService gRPC contract.
+// Delete Notify or Request if you only implement one.
+// TODO: replace with real implementations.
+type ChannelService struct{}
+
+func (s *ChannelService) Notify(_ context.Context, msg []byte) error {
+	_ = msg
+	return nil
+}
+
+func (s *ChannelService) Request(_ context.Context, requestID string, msg []byte) error {
+	_ = requestID
+	_ = msg
+	return fmt.Errorf("Request: not yet implemented")
+}
+
+// TriggerService implements the TriggerService gRPC contract.
+// TODO: replace with real substrate subscription logic.
+type TriggerService struct{}
+
+func (s *TriggerService) Start(ctx context.Context, emit func(kind string, payload []byte) error) error {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if err := emit("example_event", []byte(`{"example":true}`)); err != nil {
+				return err
+			}
+		}
+	}
+}

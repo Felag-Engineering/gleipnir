@@ -1,0 +1,34 @@
+package main
+
+import (
+	"context"
+	"testing"
+)
+
+func TestExampleTool(t *testing.T) {
+	svc := &ToolService{}
+
+	tools, err := svc.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) == 0 {
+		t.Fatal("ListTools returned empty list")
+	}
+
+	out, err := svc.Call(context.Background(), "example_tool", nil)
+	if err != nil {
+		t.Fatalf("Call example_tool: %v", err)
+	}
+	if len(out) == 0 {
+		t.Error("example_tool returned empty output")
+	}
+}
+
+func TestUnknownTool(t *testing.T) {
+	svc := &ToolService{}
+	_, err := svc.Call(context.Background(), "does_not_exist", nil)
+	if err == nil {
+		t.Error("expected error for unknown tool, got nil")
+	}
+}

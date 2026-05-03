@@ -1,0 +1,20 @@
+package main
+
+import (
+	"flag"
+	"os"
+
+	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
+)
+
+func main() {
+	emitManifest := flag.Bool("emit-manifest", false, "write manifest JSON to stdout and exit")
+	flag.Parse()
+
+	if *emitManifest {
+		serve.EmitManifest()
+		os.Exit(0)
+	}
+
+	serve.Serve()
+}
