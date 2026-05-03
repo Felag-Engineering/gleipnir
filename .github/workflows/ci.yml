@@ -104,6 +104,15 @@ jobs:
       - name: Check for drift
         run: git diff --exit-code internal/db/
 
+  proto-lint:
+    name: Proto lint
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-setup-action@v1
+      - run: buf lint
+
   storybook-build:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
