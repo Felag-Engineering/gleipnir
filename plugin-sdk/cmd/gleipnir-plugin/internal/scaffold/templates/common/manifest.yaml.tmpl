@@ -1,0 +1,16 @@
+schema_version: v1
+name: {{.Name}}
+version: 0.1.0
+auth:
+  mode: instance_credentials
+  strategy: none
+services:
+{{- if or (eq .Kind "tool") (eq .Kind "combo")}}
+  tool: v1
+{{- end}}
+{{- if or (eq .Kind "channel") (eq .Kind "combo")}}
+  channel: v1
+{{- end}}
+{{- if or (eq .Kind "trigger") (eq .Kind "combo")}}
+  trigger: v1
+{{- end}}

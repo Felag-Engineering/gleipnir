@@ -1,0 +1,10 @@
+module {{.Module}}
+
+go 1.22.0
+
+require github.com/felag-engineering/gleipnir/plugin-sdk v0.0.0-dev
+{{- if .SDKReplace}}
+
+// replace directive for local development — remove before publishing.
+replace github.com/felag-engineering/gleipnir/plugin-sdk => {{.SDKReplace}}
+{{- end}}

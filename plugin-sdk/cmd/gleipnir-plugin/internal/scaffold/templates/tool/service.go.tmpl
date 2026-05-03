@@ -1,0 +1,33 @@
+package main
+
+import (
+	"context"
+	"fmt"
+)
+
+// ToolService implements the ToolService gRPC contract.
+//
+// TODO: replace stubbed methods with real implementations.
+// Each tool declared in manifest.go needs a corresponding case in Call.
+type ToolService struct{}
+
+// ListTools returns the list of tool names this plugin implements.
+// The list must match what is declared in manifest.go / manifest.yaml.
+func (s *ToolService) ListTools(_ context.Context) ([]string, error) {
+	return []string{"example_tool"}, nil
+}
+
+// Call dispatches a tool call to the appropriate handler.
+func (s *ToolService) Call(_ context.Context, tool string, input []byte) ([]byte, error) {
+	switch tool {
+	case "example_tool":
+		return s.exampleTool(input)
+	default:
+		return nil, fmt.Errorf("unknown tool: %s", tool)
+	}
+}
+
+func (s *ToolService) exampleTool(_ []byte) ([]byte, error) {
+	// TODO: implement example_tool.
+	return []byte(`{"result": "ok"}`), nil
+}

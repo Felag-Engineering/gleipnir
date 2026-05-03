@@ -1,0 +1,14 @@
+package main
+
+import (
+	"context"
+	"testing"
+)
+
+func TestNotify(t *testing.T) {
+	svc := &ChannelService{}
+	// Notify must not return an error for a well-formed message.
+	if err := svc.Notify(context.Background(), []byte(`{"text":"hello"}`)); err != nil {
+		t.Errorf("Notify: %v", err)
+	}
+}

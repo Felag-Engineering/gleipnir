@@ -1,0 +1,23 @@
+package main
+
+// declareManifest returns the builder-style manifest declarations for this
+// plugin. gleipnir-plugin gen-manifest invokes the binary with --emit-manifest
+// which calls serve.EmitManifest(), which calls this function.
+//
+// TODO: replace with real manifest builder API when serve.EmitManifest is
+// implemented (Phase 3 loader PR, #170).
+func declareManifest() interface{} {
+	return map[string]interface{}{
+		"schema_version": "v1",
+		"name":           "{{.Name}}",
+		"version":        "0.1.0",
+		"services":       map[string]string{"channel": "v1"},
+		"auth":           map[string]string{"mode": "instance_credentials", "strategy": "none"},
+		"channels": []map[string]interface{}{
+			{
+				"implements_notify":  true,
+				"implements_request": true, // delete if not implementing Request
+			},
+		},
+	}
+}

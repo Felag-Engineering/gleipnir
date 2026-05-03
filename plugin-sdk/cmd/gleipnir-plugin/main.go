@@ -7,6 +7,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	plugincmd "github.com/felag-engineering/gleipnir/plugin-sdk/cmd/gleipnir-plugin/cmd"
 )
 
 func newRootCmd() *cobra.Command {
@@ -21,13 +23,16 @@ docs/developer/plugin-system-spec.md §14.2 for the full subcommand reference.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+
+	root.AddCommand(plugincmd.NewNewCmd())
+	root.AddCommand(plugincmd.NewGenManifestCmd())
+	root.AddCommand(plugincmd.NewValidateCmd())
+
 	return root
 }
 
 func main() {
 	root := newRootCmd()
-	// Subcommands (new, validate, keygen, sign, package, run, gen-manifest)
-	// are added in subsequent issues (#169, #171). See spec §14.2.
 	if err := root.Execute(); err != nil {
 		root.PrintErrln("error:", err)
 		os.Exit(1)

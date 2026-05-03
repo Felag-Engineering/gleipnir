@@ -1,0 +1,18 @@
+.PHONY: build test validate gen-manifest package
+
+BINARY := {{.Name}}
+
+build:
+	go build -o $(BINARY) .
+
+test:
+	go test ./...
+
+validate: build
+	gleipnir-plugin validate --binary ./$(BINARY) --manifest manifest.yaml
+
+gen-manifest: build
+	gleipnir-plugin gen-manifest --binary ./$(BINARY) --out manifest.yaml
+
+package: build gen-manifest
+	gleipnir-plugin package --binary ./$(BINARY) --manifest manifest.yaml
