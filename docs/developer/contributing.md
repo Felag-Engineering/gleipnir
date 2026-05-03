@@ -23,6 +23,32 @@ Package boundaries are intentional. `internal/mcp` must have no import dependenc
 
 See [`architecture.md`](architecture.md) for the full package layout.
 
+## Plugin import boundary
+
+Go files under `/plugins/` may only import:
+
+- The Go standard library
+- Third-party dependencies
+- `github.com/felag-engineering/gleipnir/plugin-sdk/...`
+
+Importing anything else under `github.com/felag-engineering/gleipnir/` (e.g. `internal/db`, `internal/execution/agent`) is a boundary violation. This rule ensures that when v1.0 GA ships the plugin repo split (per the plugin system spec §14.7), moving `/plugins/` to its own repository is a `git mv` rather than a refactor.
+
+**How to check locally:**
+
+```bash
+make lint-plugins
+```
+
+The rule is enforced by `scripts/lint-plugins.sh`. It scans `/plugins/` for import lines that reference host internals and exits non-zero on any match. If `/plugins/` does not yet exist the script exits 0 silently — this is expected today.
+
+**Self-test:**
+
+```bash
+make lint-plugins-self-test
+```
+
+This passes the deliberate-violation fixture at `tests/lint-fixtures/plugins-forbidden-import/` to the script and asserts that the script correctly rejects it. Both `lint-plugins` and `lint-plugins-self-test` run as PR-only CI jobs.
+
 ## ADRs
 
 Architectural decisions are tracked in [`ADR_Tracker.md`](ADR_Tracker.md). When you make an architectural decision:

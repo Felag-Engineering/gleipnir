@@ -144,6 +144,17 @@ jobs:
       - name: Check for drift
         run: git diff --exit-code plugin-sdk/gen/
 
+  lint-plugins:
+    name: Plugin import boundary
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint /plugins/ imports
+        run: make lint-plugins
+      - name: Self-test (fixture must fail the lint)
+        run: make lint-plugins-self-test
+
   # Build and test the plugin-sdk module independently of the root module.
   # Uses GOWORK=off so the workspace does not bleed into this job; the
   # replace directive in go.mod is the only cross-module link needed here.
