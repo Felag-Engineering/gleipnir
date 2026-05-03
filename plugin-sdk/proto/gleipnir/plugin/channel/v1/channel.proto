@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package gleipnir.plugin.channel.v1;
+
+import "gleipnir/plugin/common/v1/common.proto";
+
+option go_package = "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1;channelv1";
+
+// ChannelCapability declares which ChannelService operations this plugin
+// implements.  A plugin may implement Notify only, Request only, or both.
+// Declared in the manifest; the audience editor disables toggles accordingly
+// (spec §6.3).
+enum ChannelCapability {
+  CHANNEL_CAPABILITY_UNSPECIFIED = 0;  // must be first per buf STANDARD lint
+  CHANNEL_CAPABILITY_NOTIFY      = 1;
+  CHANNEL_CAPABILITY_REQUEST     = 2;
+}
+
+// NotifyRequest is sent by the host to deliver a fire-and-forget notification.
+// Fan-out: the host calls Notify in parallel on all audience entries with
+// notify: true.  Deadline: 10s per call (spec §13.6).
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message NotifyRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  // event_type classifies the notification (e.g. "run_failed", "approval_requested").
+  string event_type = 2;
+
+  // payload_json is the notification body serialized as a JSON object.
+  // Schema is event_type-specific; plugin authors should be tolerant of
+  // unknown fields to handle future Gleipnir additions gracefully.
+  string payload_json = 3;
+
+  // channel_config_json is the per-audience-entry config block validated
+  // against the plugin's manifest channel_config_schema at audience save time.
+  string channel_config_json = 4;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// NotifyResponse is returned by the plugin after delivering the notification.
+// Failures do not fail the run; the host audits and metric-counts them.
+message NotifyResponse {
+  // ok is false when the notification could not be delivered.
+  bool   ok    = 1;
+  gleipnir.plugin.common.v1.ErrorEnvelope error = 2;
+}
+
+// RequestRequest is sent by the host to open a request/response feedback
+// channel.  The plugin must synchronously ack (return RequestResponse with
+// acked: true) within 5s and later call the host's WriteAuditStep Host RPC
+// with a feedback_response step when the human replies (spec §4.2).
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message RequestRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  // request_id is a host-generated token that is instance-scoped (not
+  // generation-scoped) so callbacks can be matched across hot-reloads.
+  // The plugin echoes this in WriteAuditStep when the human replies.
+  string request_id = 2;
+
+  // prompt is the message to display to the human operator.
+  string prompt = 3;
+
+  // channel_config_json is the per-audience-entry config block.
+  string channel_config_json = 4;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// RequestResponse is the synchronous pre-ack from the plugin.
+// Pre-ack failure (acked: false or timeout > 5s) → host writes
+// feedback_dispatch_error step and fails the run fast (spec §4.2).
+message RequestResponse {
+  // acked is true when the plugin has successfully queued the request for
+  // human delivery.  It does NOT mean the human has replied.
+  bool   acked = 1;
+  gleipnir.plugin.common.v1.ErrorEnvelope error = 2;
+}
+
+// ChannelService is implemented by plugin binaries that act as notification or
+// feedback channels.  Declared in the manifest under `services: [channel]`.
+// Plugins may implement Notify only, Request only, or both; the manifest
+// declares which via channel_capabilities (spec §6.3).
+//
+// gRPC deadlines applied by the host (spec §13.6):
+//   Notify:  10s
+//   Request: 5s (pre-ack only; post-ack resolution is async via WriteAuditStep)
+service ChannelService {
+  // Notify delivers a fire-and-forget notification.  Failure does not fail the
+  // run.
+  rpc Notify(NotifyRequest) returns (NotifyResponse);
+
+  // Request opens a request/response feedback channel.  The plugin acks within
+  // 5s then later calls the host's WriteAuditStep when the human replies.
+  rpc Request(RequestRequest) returns (RequestResponse);
+}

@@ -1,0 +1,348 @@
+syntax = "proto3";
+
+package gleipnir.plugin.host.v1;
+
+import "gleipnir/plugin/common/v1/common.proto";
+
+option go_package = "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1;hostv1";
+
+// ── Tier 1 Host RPCs ────────────────────────────────────────────────────────
+//
+// Tier 1 RPCs are always available to all plugin instances.  No manifest
+// declaration required.  See spec §8.1.
+
+// GetInstanceConfigRequest is sent by the plugin to retrieve its structured
+// instance config (no audit event; reads go to slog only).
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message GetInstanceConfigRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// GetInstanceConfigResponse returns the plugin instance's config as a JSON
+// object validated against the manifest's instance config_schema at save time.
+message GetInstanceConfigResponse {
+  string config_json = 1;
+}
+
+// GetCredentialsRequest retrieves decrypted credentials for the plugin instance.
+// Mutation events (issue/refresh/revoke) go to plugin_audit_events; reads go
+// to slog only (spec §9.4).
+//
+// Plugins are forbidden from caching credentials; call this once per RPC.
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+// In v2, user_id selects per-user credentials within one instance.
+message GetCredentialsRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// GetCredentialsResponse returns the decrypted credentials as a JSON object.
+// Schema matches the plugin's manifest credential_schema.
+message GetCredentialsResponse {
+  string credentials_json = 1;
+}
+
+// GetRunContextRequest retrieves metadata about the currently executing run.
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message GetRunContextRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// GetRunContextResponse returns IDs only — no payload.  Plugins use this to
+// build structured log attributes or audit annotations (spec §8.1).
+message GetRunContextResponse {
+  string run_id      = 1;
+  string policy_id   = 2;
+  string started_at  = 3;  // RFC 3339
+  int64  step_index  = 4;
+}
+
+// WriteAuditStepRequest writes a step into run_steps for the active run
+// context.
+//
+// Allowed step types in v1: "feedback_response" only (carries request_id).
+// tool_call and tool_result are host-authored.  Other step types are rejected
+// and logged as unauthorized_step_type (spec §8.1).
+//
+// WriteAuditStep from a call-detached context (no valid call_id) is rejected
+// as unauthorized_call_context.  Channel Request post-ack callbacks are exempt:
+// they carry request_id instead of call_id (spec §8.5).
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message WriteAuditStepRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  // step_type must be "feedback_response" in v1.
+  string step_type = 2;
+
+  // payload_json is the step payload serialized as a JSON object.
+  // For feedback_response: {"request_id": "<id>", "body": "<human reply>"}.
+  string payload_json = 3;
+
+  // request_id is the host-generated token from RequestRequest.  Must be set
+  // for step_type "feedback_response".  The host verifies it was routed to
+  // the calling instance (spec §8.4).
+  string request_id = 4;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// WriteAuditStepResponse is returned after the step is persisted.
+message WriteAuditStepResponse {
+  bool   ok    = 1;
+  gleipnir.plugin.common.v1.ErrorEnvelope error = 2;
+}
+
+// EmitMetricRequest emits a plugin metric to Prometheus.
+// The host force-prefixes "gleipnir_plugin_" and auto-injects "plugin" and
+// "instance" labels.  Labels beyond the cardinality cap (~100 distinct values)
+// are rejected with an error (spec §8.1).
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message EmitMetricRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  // name is the metric name WITHOUT the gleipnir_plugin_ prefix (host adds it).
+  string name  = 2;
+  double value = 3;
+
+  // labels are additional label key/value pairs beyond the auto-injected ones.
+  map<string, string> labels = 4;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// EmitMetricResponse is returned after the metric is recorded.
+message EmitMetricResponse {
+  bool   ok    = 1;
+  gleipnir.plugin.common.v1.ErrorEnvelope error = 2;
+}
+
+// EmitEventRequest is sent by Trigger plugins to deliver a substrate event to
+// the host.  The host dedupes and routes to matching policies (spec §4.3).
+//
+// This RPC does not carry a run_id because Trigger streams are not scoped to
+// a specific run.  Host RPCs lacking a valid call_id are accepted and logged
+// with plugin/instance labels only (spec §8.5).
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message EmitEventRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  string event_id    = 2;  // stable substrate-derived identifier for dedup
+  string event_kind  = 3;  // must match a kind declared in the manifest
+  string payload_json = 4;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// EmitEventResponse is returned after the host has accepted and queued the event.
+message EmitEventResponse {
+  bool   ok    = 1;
+  gleipnir.plugin.common.v1.ErrorEnvelope error = 2;
+}
+
+// LogRequest sends a structured log line to the host.
+// The host resolves run_id/policy_id/step_index from call_id and routes
+// through slog with logctx correlation (spec §8.1).
+//
+// Prefer Log over stdout/stderr — concurrent runs cannot be attributed from
+// stdout (spec §8.1 "Why Log over stdout").
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message LogRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  LogLevel level = 2;
+  string   msg   = 3;
+
+  // attrs are additional structured key/value pairs appended to the log record.
+  map<string, string> attrs = 4;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// LogLevel mirrors slog's standard levels so the host can route without
+// string parsing.
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;  // must be first per buf STANDARD lint
+  LOG_LEVEL_DEBUG       = 1;
+  LOG_LEVEL_INFO        = 2;
+  LOG_LEVEL_WARN        = 3;
+  LOG_LEVEL_ERROR       = 4;
+}
+
+// LogResponse is returned after the log line is routed.
+message LogResponse {
+  bool ok = 1;
+}
+
+// SetHealthStateRequest lets a plugin self-report its health.
+// The host takes the worst value across plugin-reported and host-detected
+// states (spec §8.1).
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message SetHealthStateRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  PluginHealthState state  = 2;
+  string            detail = 3;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// PluginHealthState mirrors the per-instance health states in the admin UI
+// (spec §5.6).  A plugin can only self-report states that represent degradation;
+// the host merges with its own assessment.
+enum PluginHealthState {
+  PLUGIN_HEALTH_STATE_UNSPECIFIED        = 0;  // must be first per buf STANDARD lint
+  PLUGIN_HEALTH_STATE_HEALTHY            = 1;
+  PLUGIN_HEALTH_STATE_UNAVAILABLE        = 2;  // transient; will auto-recover
+  PLUGIN_HEALTH_STATE_UNHEALTHY          = 3;  // persistent; admin may need to intervene
+}
+
+// SetHealthStateResponse confirms the state was recorded.
+message SetHealthStateResponse {
+  bool ok = 1;
+}
+
+// ── Tier 2 Host RPCs ────────────────────────────────────────────────────────
+//
+// Tier 2 RPCs are manifest-declared and require admin approval at install time.
+// Declarations appear on the install consent screen (spec §8.2).
+//
+// Tier 2 capability declarations are a "material manifest change" (spec §5.4)
+// — adding a Tier-2 capability to an existing plugin blocks hot-reload until
+// the admin re-approves.
+
+// RunHistoryReadRequest retrieves run history for policies belonging to the
+// calling plugin instance.
+//
+// Tier-2 capability: run_history_read (spec §8.2).
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message RunHistoryReadRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  // policy_id filters to a specific policy; empty returns all policies for
+  // this plugin instance.
+  string policy_id = 2;
+
+  // limit caps the number of runs returned (max 100).
+  int32  limit     = 3;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// RunSummary is a single run entry in the history response.
+message RunSummary {
+  string run_id    = 1;
+  string policy_id = 2;
+  string status    = 3;  // mirrors model.RunStatus string values
+  string started_at  = 4;  // RFC 3339
+  string finished_at = 5;  // RFC 3339; empty if not yet finished
+}
+
+// RunHistoryReadResponse carries the matching runs.
+message RunHistoryReadResponse {
+  repeated RunSummary runs = 1;
+}
+
+// UserDirectoryReadRequest retrieves user and role information.
+//
+// Tier-2 capability: user_directory_read (spec §8.2).
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message UserDirectoryReadRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  // role_filter limits results to users with the specified role.
+  // Empty returns all users.
+  string role_filter = 2;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// UserEntry is a single user entry in the directory response.
+message UserEntry {
+  string user_id  = 1;
+  string username = 2;
+  string role     = 3;
+}
+
+// UserDirectoryReadResponse carries matching user entries.
+message UserDirectoryReadResponse {
+  repeated UserEntry users = 1;
+}
+
+// HostService exposes the host API to plugins.  Plugins call Host RPCs from
+// within their service RPC handlers; the host verifies the calling identity
+// on every call (spec §8.4).
+//
+// The call_id injected in gRPC metadata ("gleipnir-call-id") must be propagated
+// back on every Host RPC made within a handler's scope (spec §8.5).
+service HostService {
+  // ── Tier 1 ──────────────────────────────────────────────────────────────
+
+  // GetInstanceConfig returns the instance's structured config (no audit).
+  rpc GetInstanceConfig(GetInstanceConfigRequest) returns (GetInstanceConfigResponse);
+
+  // GetCredentials returns decrypted credentials.  Do not cache the result.
+  rpc GetCredentials(GetCredentialsRequest) returns (GetCredentialsResponse);
+
+  // GetRunContext returns IDs for the active run (IDs only, no payload).
+  rpc GetRunContext(GetRunContextRequest) returns (GetRunContextResponse);
+
+  // WriteAuditStep writes a feedback_response step for the active run.
+  rpc WriteAuditStep(WriteAuditStepRequest) returns (WriteAuditStepResponse);
+
+  // EmitMetric records a plugin metric in Prometheus (gleipnir_plugin_ prefix added).
+  rpc EmitMetric(EmitMetricRequest) returns (EmitMetricResponse);
+
+  // EmitEvent delivers a substrate event to the host's trigger dispatcher.
+  rpc EmitEvent(EmitEventRequest) returns (EmitEventResponse);
+
+  // Log routes a structured log line through the host's slog pipeline.
+  rpc Log(LogRequest) returns (LogResponse);
+
+  // SetHealthState lets the plugin self-report its health state.
+  rpc SetHealthState(SetHealthStateRequest) returns (SetHealthStateResponse);
+
+  // ── Tier 2 (manifest-declared, admin-approved at install) ────────────────
+
+  // RunHistoryRead returns past runs for this plugin instance's policies.
+  // Requires tier-2 capability: run_history_read.
+  rpc RunHistoryRead(RunHistoryReadRequest) returns (RunHistoryReadResponse);
+
+  // UserDirectoryRead returns user and role information.
+  // Requires tier-2 capability: user_directory_read.
+  rpc UserDirectoryRead(UserDirectoryReadRequest) returns (UserDirectoryReadResponse);
+}

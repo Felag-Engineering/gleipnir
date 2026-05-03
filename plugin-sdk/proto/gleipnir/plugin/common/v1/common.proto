@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package gleipnir.plugin.common.v1;
+
+option go_package = "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1;commonv1";
+
+// RequestContext is embedded in every host→plugin service RPC to carry the
+// ambient execution context.  All fields are populated by the host; plugin
+// authors treat them as read-only.
+//
+// field 100: user_id is reserved for v2 user_credentials mode (§4.4).
+// It is always empty in v1 — do not read or write it in v1 implementations.
+message RequestContext {
+  // run_id is the ULID of the currently executing run, if the call originates
+  // from within a run.  Empty for calls from background contexts (e.g. Trigger
+  // streams, health probes).
+  string run_id    = 1;
+
+  // policy_id is the ULID of the policy whose run this call belongs to.
+  // Empty when run_id is empty.
+  string policy_id = 2;
+
+  // call_id is the host-generated identifier injected into gRPC metadata under
+  // the key "gleipnir-call-id" (see plugin-sdk/proto/metadata.go).  Plugins
+  // must propagate this value back on every Host RPC made within the same
+  // handler scope.
+  string call_id   = 3;
+
+  // Reserved for v2: user_id will carry the end-user identity when the plugin
+  // instance is configured with user_credentials mode (spec §4.4).
+  // Always empty in v1.
+  reserved 100;
+  reserved "user_id";
+}
+
+// ErrorCode classifies plugin-side errors returned in ErrorEnvelope.
+// Every enum in the plugin SDK must start with an UNSPECIFIED zero value so
+// that new values added by future protocol versions are non-breaking (spec
+// §10.2) and are caught by buf lint's STANDARD group.
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED    = 0;
+  ERROR_CODE_INTERNAL       = 1;  // unexpected plugin-internal error
+  ERROR_CODE_INVALID_ARG    = 2;  // caller passed invalid arguments
+  ERROR_CODE_NOT_FOUND      = 3;  // requested resource does not exist
+  ERROR_CODE_UNAVAILABLE    = 4;  // transient; caller may retry
+  ERROR_CODE_PERMISSION     = 5;  // plugin lacks required credential/scope
+  ERROR_CODE_RATE_LIMITED   = 6;  // substrate rate limit; caller should back off
+  ERROR_CODE_UNIMPLEMENTED  = 7;  // RPC is declared but not implemented by this plugin
+}
+
+// ErrorEnvelope carries a structured error from a plugin back to the host.
+// The host writes an appropriate run step (e.g. tool_error) based on the code.
+message ErrorEnvelope {
+  ErrorCode code    = 1;
+
+  // message is a short, human-readable summary suitable for the run timeline.
+  string    message = 2;
+
+  // detail carries additional diagnostic information (stack traces, upstream
+  // error bodies).  Not shown to the agent; recorded in plugin_audit_events.
+  string    detail  = 3;
+}

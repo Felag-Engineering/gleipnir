@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+// IMMORTAL — this file and its package must never change their wire format.
+//
+// HandshakeService/v1 is the one API in the plugin system that never bumps.
+// It is called at every plugin process start — before any capability-specific
+// service is used — to verify that the binary's declared services match what
+// the manifest claimed at install time.  The handshake must remain readable
+// by any past or future version of the host.
+//
+// Rules for this file:
+//   - Do NOT add, remove, or renumber fields in any message.
+//   - Do NOT add or remove RPCs from HandshakeService.
+//   - Do NOT change the package name or go_package option.
+//   - New services (ToolService v2, ChannelService v2, …) live in their own
+//     versioned proto packages; they never appear here.
+//
+// If you believe you need to change this file, you don't — write a new
+// document-level ADR first.
+package gleipnir.plugin.handshake.v1;
+
+import "gleipnir/plugin/common/v1/common.proto";
+
+option go_package = "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/handshake/v1;handshakev1";
+
+// ServiceCapability enumerates the gRPC services a plugin binary may implement.
+// Declared in NegotiateRequest; host verifies the binary implements each one
+// before forwarding real traffic.
+enum ServiceCapability {
+  SERVICE_CAPABILITY_UNSPECIFIED = 0;  // must be first per buf STANDARD lint
+  SERVICE_CAPABILITY_TOOL        = 1;  // implements ToolService
+  SERVICE_CAPABILITY_CHANNEL     = 2;  // implements ChannelService
+  SERVICE_CAPABILITY_TRIGGER     = 3;  // implements TriggerService
+}
+
+// NegotiateRequest is sent by the host immediately after the subprocess starts.
+message NegotiateRequest {
+  // host_version is the semantic version of the Gleipnir host binary.
+  string host_version = 1;
+
+  // expected_capabilities are the services the manifest claims this binary
+  // implements.  The binary must declare a subset of these.
+  repeated ServiceCapability expected_capabilities = 2;
+
+  // context carries the ambient execution context.  call_id is set; run_id
+  // and policy_id are empty during handshake (no run is active yet).
+  gleipnir.plugin.common.v1.RequestContext context = 3;
+}
+
+// NegotiateResponse is returned by the plugin binary.
+message NegotiateResponse {
+  // sdk_version is the semantic version of the plugin-sdk the binary was
+  // compiled against.
+  string sdk_version = 1;
+
+  // plugin_version is the plugin's own SemVer as declared in its manifest.
+  // Informational; not used for compatibility checks.
+  string plugin_version = 2;
+
+  // actual_capabilities are the services this binary actually implements.
+  // Must be a subset of NegotiateRequest.expected_capabilities.
+  // Mismatch (superset or mismatched set) → host kills plugin, audit, unhealthy.
+  repeated ServiceCapability actual_capabilities = 3;
+
+  // ok is false when the plugin detected a fatal misconfiguration during
+  // startup (e.g. required env var missing).  The host kills the process and
+  // surfaces error_detail in the admin UI.
+  bool   ok           = 4;
+  string error_detail = 5;
+}
+
+// HandshakeService is the one immortal gRPC service in the plugin system.
+// It is called exactly once per plugin process start, before any other service.
+service HandshakeService {
+  rpc Negotiate(NegotiateRequest) returns (NegotiateResponse);
+}

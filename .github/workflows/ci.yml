@@ -27,9 +27,13 @@ jobs:
 
       - name: Build
         run: go build ./...
+        env:
+          GOWORK: off
 
       - name: Test
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        env:
+          GOWORK: off
 
       - name: Coverage summary
         run: go tool cover -func=coverage.out
@@ -121,6 +125,52 @@ jobs:
           else
             echo "No .proto files in tree; skipping buf lint."
           fi
+
+  # Verify that checked-in stubs in plugin-sdk/gen/ exactly match what
+  # `buf generate` would produce from the .proto sources.  Mirrors the
+  # sqlc-drift job pattern.  Fails the PR if stubs are stale.
+  proto-gen-drift:
+    name: Proto gen drift
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: bufbuild/buf-setup-action@v1
+
+      - name: Regenerate stubs
+        run: buf generate
+
+      - name: Check for drift
+        run: git diff --exit-code plugin-sdk/gen/
+
+  # Build and test the plugin-sdk module independently of the root module.
+  # Uses GOWORK=off so the workspace does not bleed into this job; the
+  # replace directive in go.mod is the only cross-module link needed here.
+  plugin-sdk-build:
+    name: Plugin SDK build
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugin-sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'plugin-sdk/go.mod'
+          cache: true
+
+      - name: Build
+        run: go build ./...
+        env:
+          GOWORK: off
+
+      - name: Test
+        run: go test ./...
+        env:
+          GOWORK: off
 
   storybook-build:
     if: github.event_name == 'push'

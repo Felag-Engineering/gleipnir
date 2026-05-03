@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package gleipnir.plugin.trigger.v1;
+
+import "gleipnir/plugin/common/v1/common.proto";
+
+option go_package = "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1;triggerv1";
+
+// StartRequest is sent by the host to open the long-lived trigger stream.
+// The plugin monitors its substrate (e.g. Slack WebSocket, webhook listener)
+// and calls the host's EmitEvent Host RPC for each incoming event.
+//
+// The stream has no deadline; the health ping covers liveness (spec §13.6).
+//
+// field 100: user_id reserved for v2 user_credentials mode (§4.4).
+message StartRequest {
+  gleipnir.plugin.common.v1.RequestContext context = 1;
+
+  // watch_scope_json is the coarse subscription scope set by the admin on the
+  // plugin instance (e.g. {"channels": ["#incidents", "#ops"]} for Slack).
+  // Validated against the plugin's manifest watch_scope_schema at instance
+  // config save time.
+  string watch_scope_json = 2;
+
+  // Reserved for v2: user_id will carry end-user identity in user_credentials mode.
+  reserved 100;
+  reserved "user_id";
+}
+
+// StartResponse is streamed by the plugin for the lifetime of the trigger.
+// Each message is an event the plugin has received from its substrate.
+//
+// The host:
+//   1. Dedupes against a 1-hour rolling window per (plugin_instance, event_kind, event_id).
+//   2. Scans policies subscribed to (plugin_instance, event_kind).
+//   3. Evaluates per-binding filters.
+//   4. Fires matching policies through RunLauncher.
+//
+// Ordering: events on one stream are ordered; cross-stream ordering is not
+// guaranteed (spec §4.3).
+message StartResponse {
+  // event_id is a stable, substrate-derived identifier for this specific event
+  // occurrence.  Used by the host for deduplication within the rolling window.
+  // Plugins that cannot derive a stable ID from the substrate should hash the
+  // canonical payload as a fallback; duplicate detection outside the 1-hour
+  // window is then best-effort (spec §4.3).
+  string event_id   = 1;
+
+  // event_kind must match one of the event_kinds declared in the plugin manifest.
+  string event_kind = 2;
+
+  // payload_json carries the event payload as a JSON object.  The host
+  // evaluates per-policy bindings against this payload using field-typed
+  // operators (spec §7.3).
+  string payload_json = 3;
+}
+
+// TriggerService is implemented by plugin binaries that emit events from an
+// external substrate (e.g. Slack, GitHub webhooks).  Declared in the manifest
+// under `services: [trigger]`.
+//
+// The Start RPC is a long-lived server-streaming call.  One stream per plugin
+// instance is maintained by the host; reconnect on failure with exponential
+// backoff (spec §13.5).
+service TriggerService {
+  // Start opens the event stream.  The plugin emits one StartResponse per
+  // substrate event; the stream runs indefinitely until the host closes it
+  // (on shutdown or hot-reload).
+  rpc Start(StartRequest) returns (stream StartResponse);
+}
