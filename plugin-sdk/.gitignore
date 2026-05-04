@@ -1,3 +1,4 @@
 # Compiled CLI / test fixture binaries
 /gleipnir-plugin
 /runfixture
+/examples/minimal-tool/minimal-tool

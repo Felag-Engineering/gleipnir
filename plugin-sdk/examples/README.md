@@ -1,13 +1,19 @@
 # Plugin SDK Examples
 
-End-to-end examples will be added in issue #173 once the plugin loader and
-`serve.Serve()` implementation land (Phase 3).
+End-to-end examples showing how to build Gleipnir plugins with the SDK.
+For the planned structure of each example see
+`docs/developer/plugin-system-spec.md §14.7`.
 
-Planned examples:
-- `minimal-tool/` — the simplest possible ToolService plugin
-- `minimal-trigger/` — a TriggerService plugin emitting one event kind
-- `minimal-channel/` — a ChannelService plugin with Notify only
-- `static-api-key/` — a ToolService plugin using `static_api_key` credentials
+## Shipped
 
-For now, see `docs/developer/plugin-system-spec.md §14.7` for the planned
-structure of each example.
+| Directory | What it shows |
+|-----------|---------------|
+| [`minimal-tool/`](minimal-tool/README.md) | Smallest possible `ToolService` plugin: one `echo` tool, one host RPC each of `GetInstanceConfig` / `EmitMetric` / `Log`. Start here. |
+
+## Planned (tracked in follow-up issues)
+
+| Directory | What it will show |
+|-----------|-------------------|
+| `minimal-trigger/` | A `TriggerService` plugin emitting one event kind |
+| `minimal-channel/` | A `ChannelService` plugin with Notify only |
+| `static-api-key/` | A `ToolService` plugin using `static_api_key` credentials |
