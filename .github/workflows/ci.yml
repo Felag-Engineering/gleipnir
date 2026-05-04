@@ -183,6 +183,14 @@ jobs:
         env:
           GOWORK: off
 
+      # Examples live in their own go.mod files and resolve plugin-sdk via the
+      # repo-root go.work (no replace directive in-tree). Run them in workspace
+      # mode from the repo root so the manifest canonicalness test guards
+      # against drift in CI, not just locally.
+      - name: Test examples (workspace)
+        working-directory: ${{ github.workspace }}
+        run: go test ./plugin-sdk/examples/minimal-tool/...
+
   storybook-build:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest

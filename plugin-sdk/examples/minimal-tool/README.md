@@ -92,10 +92,11 @@ func main() {
 }
 ```
 
-Then run:
+Then run (passing `manifest.go` so `go run` compiles it alongside the
+helper — `pluginManifest` is declared there):
 
 ```sh
-go run gen_manifest_local.go > manifest.yaml
+go run gen_manifest_local.go manifest.go > manifest.yaml
 ```
 
 Delete `gen_manifest_local.go` before committing — the canonical `manifest.yaml`
