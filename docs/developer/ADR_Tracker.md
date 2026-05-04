@@ -58,7 +58,110 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-041 | Plugin system architecture (umbrella) | 🟢 Decided | v2.0 | internal/plugin (new), internal/execution/agent/feedback.go, plugin-sdk (new module), admin UI, ADR-004 (parallel to MCP) |
 | ADR-042 | Plugin service & HostAPI versioning policy | 🟢 Decided | v1.0 (plugins) | docs/developer/plugin-system-spec.md §10, buf.yaml, .github/workflows/ci.yml |
 | ADR-043 | Plugin signing tooling — bundled Minisign in plugin-sdk/signing, fresh-written | 🟢 Decided | v2.0 (plugins) | plugin-sdk/signing (new), gleipnir-plugin keygen/sign/package subcommands, spec §5.2 §14.5 |
+| ADR-044 | Channel routing model — Notify/Request semantics, audience as shared resource | 🟢 Decided | v2.0 (plugins) | internal/plugin/channel (new), internal/execution/agent/feedback.go, admin audiences UI, ADR-031 (partial supersession) |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
+
+---
+
+## ADR-044: Channel routing model
+
+**Status:** Decided
+**Date:** 2026-05
+**Supersedes (partially):** ADR-031 (native feedback as a Gleipnir runtime primitive) — the in-app dispatcher implementation detail is superseded; the first-class-feedback principle stands.
+
+### Context
+
+ADR-031 established that feedback is a first-class runtime primitive: the agent calls a synthetic `gleipnir.ask_operator` tool, `BoundAgent` intercepts it, the run pauses at `waiting_for_feedback`, and an operator supplies a response through the UI. The in-app UI was the only delivery surface. Notification dispatch lived in `internal/notify` as a separate fan-out concern.
+
+The plugin system umbrella (ADR-041) extends feedback delivery to plugin-provided channels (Slack, PagerDuty, ntfy, email, etc.) and introduces a general-purpose `Notify` surface for run-state alerts alongside the existing `Request` surface for operator input. Both surfaces share a single routing abstraction — the **Audience** — that is policy-referenced and admin-managed.
+
+This ADR records the routing model: how `Notify` and `Request` differ, how audiences are structured, the lifecycle rules for `request_id`, and the failure modes for both operation types. The proto contracts (gRPC RPC signatures, message schemas) are specified separately in issue #167; this ADR governs the semantics those contracts must implement.
+
+### Decision
+
+#### 1. Two channel operations with different semantics
+
+A `ChannelService` implementation may support either or both of two operations:
+
+**`Notify`** — fire-and-forget, parallel fan-out. The host calls `Notify` on every audience entry that has `notify: true` and whose plugin instance implements `Notify`, concurrently. A per-call deadline of 10 seconds applies. Failures from individual channels are audited and metric-counted but do NOT fail the run — the best-effort guarantee means a broken ntfy server does not stop an in-flight agent. Total latency is bounded by the single slowest channel subject to the 10s deadline, not by the count of channels.
+
+**`Request`** — request/response, exactly one channel per request. The host routes to the first ordered audience entry that has `request: true` and whose plugin instance implements `Request`. There is no inter-channel fallback: once an entry is selected, it owns the request. The protocol is async via callback: the plugin synchronously acknowledges the request within a 5-second pre-ack deadline (confirming it received and will track the request), then later calls the host's `WriteAuditStep` Host RPC with a `feedback_response` step when the human replies.
+
+#### 2. Audience as a shared resource
+
+An **audience** is a named, ordered list of channel entries. Audiences are first-class admin-managed resources, editable at `/admin/audiences` (admin/operator edit; auditor read), referenced by name from policy YAML. They are shared: the same audience may be used by multiple policies.
+
+Each entry in an audience specifies:
+- `plugin_instance` — which plugin instance to route to (or the built-in `gleipnir.in-app` token).
+- `notify: true/false` — whether this entry participates in `Notify` fan-out.
+- `request: true/false` — whether this entry is eligible for `Request` routing.
+- `config` — per-entry configuration validated against the plugin's `config_schema` (e.g. Slack channel name, mention group).
+
+The audience editor validates the per-entry `config` against the channel plugin's manifest `config_schema` at save time. Partial implementations (a plugin that supports only `Notify`, not `Request`) cause the editor to disable the corresponding toggle with an explanatory tooltip.
+
+When an audience referenced by one or more policies is edited, the save dialog lists the affected policies and requires confirmation. Audiences with active in-flight runs that reference them are flagged: the change applies to subsequent steps only; `Request` operations already in-flight continue to resolve against the routing that was active when they were issued.
+
+#### 3. `gleipnir.in-app` is auto-appended to every audience
+
+The built-in `gleipnir.in-app` channel is automatically appended as the lowest-priority entry of every audience by default. This guarantees that first-class feedback (ADR-031) always has a landing surface — an operator can always respond through the Gleipnir UI even if every plugin-provided channel is broken or misconfigured.
+
+Audiences include an advanced toggle to disable the `gleipnir.in-app` auto-append. If disabled, the audience editor enforces a save-time validation: at least one remaining entry must have `request: true`. Disabling `gleipnir.in-app` with no remaining `Request`-capable entries is a validation error — an audience in that state could leave a `Request` operation permanently unresolvable.
+
+#### 4. `request_id` is instance-scoped, not generation-scoped
+
+When the host routes a `Request` to a channel, it issues a `request_id` token. The `request_id` is **instance-scoped**: it identifies the plugin instance that owns the request, not the specific subprocess generation that received it.
+
+This distinction matters because hot-reload can occur while a `Request` is awaiting human response — the operator may not reply for minutes or hours. When the plugin is reloaded (old generation replaced by a new generation), the new generation may service the callback for a request that was issued to the old generation. The `request_id` survives the reload because it is bound to the instance, not to the generation.
+
+Lifecycle:
+- `request_id` is created when the host issues a `Request` to a channel entry.
+- It remains valid as long as the feedback request is open (run is in `waiting_for_feedback`).
+- If the old generation is force-killed at the 60-second drain grace without delivering a response, the open `Request` resolves via the normal feedback timeout path (existing `internal/timeout/scanner.go` machinery). Runs in `waiting_for_feedback` are NOT eagerly failed at force-kill — the timeout scanner handles expiry uniformly.
+- After force-kill, the substrate (Slack, PagerDuty, etc.) may still surface the original message to a human. If the human replies, the new generation can service the callback using the same `request_id`, provided the substrate connection state is recoverable.
+
+Authorization for `WriteAuditStep` is also instance-scoped: the host verifies that the calling plugin process (identified by its per-generation gRPC connection identity) belongs to the instance that was originally routed the request. A mismatch (e.g. a different plugin instance attempting to resolve another instance's `request_id`) is rejected and recorded as an `unauthorized_request_id` audit event at high severity.
+
+#### 5. Late-callback rejection — `feedback_response_late` event
+
+A `WriteAuditStep` call carrying a `feedback_response` step for a `request_id` that has already been resolved (response received through another path, or timed out) is rejected. The run state is not mutated. The host emits a `feedback_response_late` event into `plugin_audit_events` (the operational audit substrate introduced by ADR-041's audit split decision).
+
+The `feedback_response_late` event carries: `request_id`, `plugin_instance`, `generation_id`, the `feedback_response` body that arrived late, and the timestamp. It is not surfaced in `run_steps` and is not visible to the LLM. Operators and auditors can view it in the plugin audit log.
+
+This rule applies regardless of why the original request resolved — normal operator response, timeout expiry, or run cancellation. Once resolved, the `request_id` is closed and any subsequent `WriteAuditStep` for it is a late callback.
+
+#### 6. Pre-ack vs post-ack failure modes for `Request`
+
+**Pre-ack failure** — the plugin does not acknowledge the `Request` within the 5-second deadline. The host treats this as a dispatch failure: it writes a `feedback_dispatch_error` step to `run_steps` and the run fails fast. There is no retry and no fallback to the next audience entry. The operator must investigate the channel plugin and relaunch the run.
+
+**Post-ack failure** — the plugin acknowledged the request but the human never responds (or the plugin crashes before delivering the response). This is handled by the existing `internal/timeout/scanner.go` machinery: the feedback request has a configured timeout, and if it expires without a response, the scanner resolves the request with a timeout outcome and the run continues (or fails, depending on policy configuration). The same timeout machinery handles both in-app and plugin-provided channels.
+
+The asymmetry is deliberate: pre-ack failure means the channel never took responsibility for the request (the operator may not have been paged at all), which is a hard failure. Post-ack failure means the channel took responsibility but the human did not respond in time, which is a soft timeout the run can reason about.
+
+### Supersedes / Preserves
+
+**What this ADR supersedes from ADR-031:**
+
+The dispatcher implementation detail. ADR-031's `internal/execution/agent/feedback.go` routed directly to the in-app mechanism (writing a `feedback_request` step and blocking on `feedbackCh`). This ADR supersedes that direct coupling: `feedback.go` is refactored so the in-app surface becomes one Channel implementation (`gleipnir.in-app`) among many, and the host resolves the feedback audience before dispatch. The refactor is behavior-neutral for existing deployments — `gleipnir.in-app` is auto-appended to every audience and is always the lowest-priority (and only) entry in a default single-channel deployment.
+
+**What this ADR preserves from ADR-031:**
+
+The first-class-feedback principle. Feedback remains a runtime primitive: `BoundAgent` still intercepts the synthetic `request_feedback` tool call, the run still pauses at `waiting_for_feedback`, and the operator's response still flows through `WriteAuditStep` → `internal/timeout/` machinery. The principle that feedback is not an MCP concept, not prompt-based, and not externally dispatched is unchanged. The in-app UI remains fully functional as the built-in `gleipnir.in-app` channel.
+
+### Out of scope
+
+- The proto contracts (gRPC RPC signatures, message schemas for `Notify`, `Request`, and `WriteAuditStep`). These are tracked in issue #167.
+- Per-event-type routing overrides (e.g. `run_failed → pagerduty`, `feedback_request → slack-ops`). Deferred; v1 audiences are flat.
+- `RecoverChannelRequests` RPC for substrate-side request recovery after generation replacement. Deferred; v1 relies on the drain grace and timeout scanner.
+- Cross-plugin or cross-instance routing. Each audience entry maps to exactly one plugin instance.
+
+### Consequences
+
+- `internal/execution/agent/feedback.go` is refactored to route through a Channel dispatcher. The in-process `inAppChannel` becomes a Channel implementation. `runsHandler.SubmitFeedback` calls `inAppChannel.Resolve(request_id, body)`. The existing `internal/feedback/` and `internal/timeout/` machinery is unchanged; the refactor only changes what is called before the pause, not the pause mechanics.
+- A new `plugin/channel` package (or equivalent) is introduced to hold the Channel dispatcher, the `gleipnir.in-app` built-in implementation, and the routing logic that consults the audience configuration.
+- `request_id` tokens are issued at the host level and are durable across hot-reloads. They must be stored with enough context (instance ID, associated run, feedback request row) to allow late-callback detection and `unauthorized_request_id` checks.
+- `feedback_response_late` events land in `plugin_audit_events`, not `run_steps`. The LLM does not see them. The audit split (ADR-041 decision 7) must be in place before plugin-provided channels ship.
+- The `gleipnir.in-app` auto-append guarantee means no existing deployment changes behavior. The toggle to disable it is an advanced opt-out; disabling it without a replacement `Request`-capable entry is a save-time validation error.
+- Audience save-guard (listing affected policies, requiring confirmation) prevents silent routing changes on shared audiences.
 
 ---
 
@@ -1395,6 +1498,7 @@ user-visible text uses "Tools" and "source" vocabulary. Backend API routes are n
 **Status:** Decided
 **Date:** 2026-04
 **Supersedes (partially):** ADR-007 (sensor/actuator/feedback role model), ADR-008 (two approval modes), ADR-009 (feedback channel resolution)
+**Partially superseded by:** ADR-044 (Channel routing model) — the in-app dispatcher implementation detail is superseded; the first-class-feedback principle and `waiting_for_feedback` state machinery are preserved.
 
 ### Background
 
