@@ -1,0 +1,12 @@
+auth:
+  mode: instance_credentials
+  strategy: none
+description: Demonstration plugin with a single echo tool.
+name: minimal-tool
+schema_version: v1
+services:
+  tool: v1
+tools:
+  - description: Returns the message it received.
+    name: echo
+version: 0.1.0
