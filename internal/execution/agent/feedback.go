@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	"github.com/felag-engineering/gleipnir/internal/model"
@@ -52,16 +51,23 @@ type FeedbackHandler struct {
 	sm             *RunStateMachine
 	feedbackCh     <-chan string // receive-only: handler never closes the channel
 	defaultTimeout time.Duration
+	dispatcher     *channelDispatcher
 }
 
 // NewFeedbackHandler constructs a FeedbackHandler. feedbackCh must be receive-only
 // (compile-time guarantee the handler does not close it).
 func NewFeedbackHandler(audit *AuditWriter, sm *RunStateMachine, feedbackCh <-chan string, defaultTimeout time.Duration) *FeedbackHandler {
+	inApp := &localFeedbackChannel{
+		audit:      audit,
+		sm:         sm,
+		feedbackCh: feedbackCh,
+	}
 	return &FeedbackHandler{
 		audit:          audit,
 		sm:             sm,
 		feedbackCh:     feedbackCh,
 		defaultTimeout: defaultTimeout,
+		dispatcher:     newChannelDispatcher(inApp),
 	}
 }
 
@@ -79,88 +85,15 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 		expiresAt = time.Now().UTC().Add(feedbackTimeout).Format(time.RFC3339Nano)
 	}
 
-	if err := h.audit.Write(ctx, Step{
-		RunID: runID,
-		Type:  model.StepTypeFeedbackRequest,
-		Content: map[string]any{
-			"feedback_id": feedbackID,
-			"tool":        toolName,
-			"message":     mcpOutput,
-			"expires_at":  expiresAt,
-		},
-	}); err != nil {
-		return "", fmt.Errorf("writing feedback_request step: %w", err)
-	}
-
-	if err := h.sm.Transition(ctx, model.RunStatusWaitingForFeedback, "", WithFeedbackPayload(FeedbackPayload{
+	return h.dispatcher.Request(ctx, feedbackRequest{
+		RunID:         runID,
 		FeedbackID:    feedbackID,
 		ToolName:      toolName,
 		ProposedInput: inputJSON,
 		Message:       mcpOutput,
+		Timeout:       feedbackTimeout,
 		ExpiresAt:     expiresAt,
-	})); err != nil {
-		return "", fmt.Errorf("transitioning run to waiting_for_feedback: %w", err)
-	}
-
-	// nil timeoutCh (when feedbackTimeout == 0) blocks forever in the select,
-	// meaning no in-process timeout is applied. Use NewTimer so we can Stop it
-	// on early response — time.After leaks until the duration fires.
-	var timeoutCh <-chan time.Time
-	if feedbackTimeout > 0 {
-		timer := time.NewTimer(feedbackTimeout)
-		defer timer.Stop()
-		timeoutCh = timer.C
-	}
-
-	select {
-	case responseText := <-h.feedbackCh:
-		if err := h.audit.Write(ctx, Step{
-			RunID:   runID,
-			Type:    model.StepTypeFeedbackResponse,
-			Content: map[string]any{"feedback_id": feedbackID, "response": responseText},
-		}); err != nil {
-			return "", fmt.Errorf("writing feedback_response step: %w", err)
-		}
-		if err := h.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
-			return "", fmt.Errorf("transitioning run back to running after feedback: %w", err)
-		}
-		return responseText, nil
-	case <-timeoutCh:
-		logctx.Logger(ctx).WarnContext(ctx, "feedback timeout reached",
-			"tool", toolName,
-			"timeout", feedbackTimeout.String())
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		// Race the scanner: only the first writer (rows==1) owns the error step.
-		// If the scanner already resolved it (rows==0), return a sentinel error so
-		// Run() still terminates, but skip logAuditError to avoid a duplicate step.
-		rows, dbErr := h.sm.Queries().UpdateFeedbackRequestStatus(
-			context.Background(),
-			db.UpdateFeedbackRequestStatusParams{
-				Status:     "timed_out",
-				Response:   nil,
-				ResolvedAt: &now,
-				ID:         feedbackID,
-			},
-		)
-		if dbErr != nil {
-			logctx.Logger(ctx).WarnContext(ctx, "failed to update feedback status on timeout", "feedback_id", feedbackID, "err", dbErr)
-		}
-		if rows == 1 {
-			err := fmt.Errorf("feedback timeout: operator did not respond within %s", feedbackTimeout)
-			logAuditError(ctx, h.audit, Step{
-				RunID:   runID,
-				Type:    model.StepTypeError,
-				Content: model.ErrorStepContent{Message: err.Error(), Code: model.ErrorCodeFeedbackTimeout},
-			})
-			return "", err
-		}
-		// Scanner won the race: it already wrote the error step and transitioned
-		// the run. Return a sentinel so Run() knows to stop, but avoid a duplicate step.
-		logctx.Logger(ctx).DebugContext(ctx, "feedback already resolved by scanner", "feedback_id", feedbackID)
-		return "", fmt.Errorf("feedback timeout: already resolved by scanner for tool %s", toolName)
-	case <-ctx.Done():
-		return "", fmt.Errorf("context cancelled waiting for feedback: %w", ctx.Err())
-	}
+	})
 }
 
 // HandleAskOperator dispatches a gleipnir.ask_operator tool call. It validates
