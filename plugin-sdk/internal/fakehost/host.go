@@ -47,6 +47,14 @@ type Options struct {
 	// Logger receives forwarded Log RPCs from the plugin. If nil, the default
 	// slog logger is used.
 	Logger *slog.Logger
+
+	// RunHistoryRuns, when non-nil, is returned by RunHistoryRead instead of
+	// codes.Unimplemented. A nil slice preserves the Unimplemented stub behaviour.
+	RunHistoryRuns []*hostv1.RunSummary
+
+	// UserDirectoryUsers, when non-nil, is returned by UserDirectoryRead instead
+	// of codes.Unimplemented. A nil slice preserves the Unimplemented stub behaviour.
+	UserDirectoryUsers []*hostv1.UserEntry
 }
 
 // RunContext holds the fields returned by GetRunContext.
@@ -65,11 +73,13 @@ type Host struct {
 	opts Options
 	mu   sync.Mutex
 
-	auditSteps  []*hostv1.WriteAuditStepRequest
-	metrics     []*hostv1.EmitMetricRequest
-	events      []*hostv1.EmitEventRequest
-	logs        []*hostv1.LogRequest
-	healthState *hostv1.SetHealthStateRequest
+	auditSteps      []*hostv1.WriteAuditStepRequest
+	metrics         []*hostv1.EmitMetricRequest
+	events          []*hostv1.EmitEventRequest
+	logs            []*hostv1.LogRequest
+	healthState     *hostv1.SetHealthStateRequest
+	runHistoryCalls int
+	userDirCalls    int
 }
 
 // New creates a new fake Host with the given options. Default values are
@@ -147,6 +157,21 @@ func (h *Host) HealthStates() *hostv1.SetHealthStateRequest {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.healthState
+}
+
+// Reset clears all recorded calls (audit steps, metrics, events, logs, health
+// state, and Tier-2 call counts). Options (including canned Tier-2 data) are
+// unchanged.
+func (h *Host) Reset() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.auditSteps = nil
+	h.metrics = nil
+	h.events = nil
+	h.logs = nil
+	h.healthState = nil
+	h.runHistoryCalls = 0
+	h.userDirCalls = 0
 }
 
 // ── Tier-1 RPC implementations ───────────────────────────────────────────────
@@ -235,16 +260,54 @@ func (h *Host) SetHealthState(_ context.Context, req *hostv1.SetHealthStateReque
 
 // ── Tier-2 RPC stubs ─────────────────────────────────────────────────────────
 
-// RunHistoryRead returns Unimplemented. Tier-2 RPCs require manifest
-// declaration and admin approval; the fake host does not implement them.
+// RunHistoryRead returns codes.Unimplemented when no canned data is configured.
+// If opts.RunHistoryRuns is non-nil, it returns the seeded slice and records
+// the call so RunHistoryCalls() can be checked in tests.
 func (h *Host) RunHistoryRead(_ context.Context, _ *hostv1.RunHistoryReadRequest) (*hostv1.RunHistoryReadResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "fake host: tier-2 stubbed")
+	h.mu.Lock()
+	runs := h.opts.RunHistoryRuns
+	if runs != nil {
+		h.runHistoryCalls++
+	}
+	h.mu.Unlock()
+
+	if runs == nil {
+		return nil, status.Error(codes.Unimplemented, "fake host: tier-2 stubbed")
+	}
+	return &hostv1.RunHistoryReadResponse{Runs: runs}, nil
 }
 
-// UserDirectoryRead returns Unimplemented. Tier-2 RPCs require manifest
-// declaration and admin approval; the fake host does not implement them.
+// UserDirectoryRead returns codes.Unimplemented when no canned data is configured.
+// If opts.UserDirectoryUsers is non-nil, it returns the seeded slice and records
+// the call so UserDirectoryCalls() can be checked in tests.
 func (h *Host) UserDirectoryRead(_ context.Context, _ *hostv1.UserDirectoryReadRequest) (*hostv1.UserDirectoryReadResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "fake host: tier-2 stubbed")
+	h.mu.Lock()
+	users := h.opts.UserDirectoryUsers
+	if users != nil {
+		h.userDirCalls++
+	}
+	h.mu.Unlock()
+
+	if users == nil {
+		return nil, status.Error(codes.Unimplemented, "fake host: tier-2 stubbed")
+	}
+	return &hostv1.UserDirectoryReadResponse{Users: users}, nil
+}
+
+// RunHistoryCalls returns the number of RunHistoryRead calls received when
+// canned data was configured.
+func (h *Host) RunHistoryCalls() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.runHistoryCalls
+}
+
+// UserDirectoryCalls returns the number of UserDirectoryRead calls received
+// when canned data was configured.
+func (h *Host) UserDirectoryCalls() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.userDirCalls
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

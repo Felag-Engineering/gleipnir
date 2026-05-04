@@ -3,4 +3,5 @@ go 1.25.9
 use (
 	.
 	./plugin-sdk
+	./plugin-sdk/examples/minimal-tool
 )
