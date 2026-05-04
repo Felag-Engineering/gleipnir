@@ -235,19 +235,19 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 
 	audit := agent.NewAuditWriter(l.store.Queries(), agent.WithPublisher(l.publisher))
 
-	// Cap 1 so SendApproval/SendFeedback (non-blocking select) can deliver a
-	// decision that arrives in the narrow window between the agent unparking and
-	// reading the channel. Protocol is single-producer/single-consumer per gate,
-	// so cap 1 is sufficient and extra sends are still correctly dropped.
+	// Cap 1 so SendApproval (non-blocking select) can deliver a decision that
+	// arrives in the narrow window between the agent unparking and reading the
+	// channel. feedbackCh is DEAD (kept for #180 parallel-impl harness; #181
+	// removes), but still allocated so Config.FeedbackCh is satisfied.
 	approvalCh := make(chan bool, 1)
-	feedbackCh := make(chan string, 1)
+	feedbackCh := make(chan string, 1) // DEAD: kept for #180 parallel-impl harness; #181 removes.
 	ba, err := l.newAgent(agent.Config{
 		Tools:                  resolvedTools,
 		Policy:                 params.ParsedPolicy,
 		Audit:                  audit,
 		StateMachine:           sm,
 		ApprovalCh:             approvalCh,
-		FeedbackCh:             feedbackCh,
+		FeedbackCh:             feedbackCh, // DEAD: kept for #180 parallel-impl harness; #181 removes.
 		DefaultFeedbackTimeout: l.defaultFeedbackTimeout,
 	})
 	if err != nil {
@@ -276,7 +276,9 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	// Enrich the run context with correlation IDs so all downstream log calls
 	// automatically include run_id and policy_id in structured output.
 	runCtx = logctx.WithRunCorrelation(runCtx, run.ID, params.PolicyID)
-	l.manager.Register(run.ID, cancel, approvalCh, feedbackCh)
+	// RegisterWithFeedbackResolver performs a single atomic lock acquisition so
+	// there is zero window between run registration and resolver attachment.
+	l.manager.RegisterWithFeedbackResolver(run.ID, cancel, approvalCh, feedbackCh, ba.FeedbackResolver())
 
 	payload := params.TriggerPayload
 	go func() {

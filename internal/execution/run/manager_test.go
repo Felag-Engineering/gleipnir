@@ -443,3 +443,122 @@ func waitWithTimeout(t *testing.T, m *RunManager, label string) {
 		t.Fatalf("Wait did not return within deadline (%s)", label)
 	}
 }
+
+// fakeResolver is a test double for FeedbackResolver. It records the last call
+// and returns the configured error.
+type fakeResolver struct {
+	err         error
+	lastID      string
+	lastBody    string
+	calledCount int
+}
+
+func (f *fakeResolver) Resolve(requestID, body string) error {
+	f.calledCount++
+	f.lastID = requestID
+	f.lastBody = body
+	return f.err
+}
+
+// TestRegisterWithFeedbackResolver_AtomicRegistration verifies that immediately
+// after RegisterWithFeedbackResolver returns, the resolver is observable via
+// ResolveFeedback with no intermediate window where it is nil.
+func TestRegisterWithFeedbackResolver_AtomicRegistration(t *testing.T) {
+	m := NewRunManager()
+	r := &fakeResolver{}
+
+	m.RegisterWithFeedbackResolver("run-atomic", func() {}, noopApprovalCh(), noopFeedbackCh(), r)
+
+	err := m.ResolveFeedback("run-atomic", "req-1", "hello")
+	if err != nil {
+		t.Errorf("ResolveFeedback returned %v, want nil", err)
+	}
+	if r.calledCount != 1 {
+		t.Errorf("resolver called %d times, want 1", r.calledCount)
+	}
+	if r.lastID != "req-1" {
+		t.Errorf("lastID = %q, want %q", r.lastID, "req-1")
+	}
+	m.Deregister("run-atomic")
+	waitWithTimeout(t, m, "atomic registration")
+}
+
+// TestRegisterFeedbackResolver_Unregistered_NoOp verifies that calling
+// RegisterFeedbackResolver for a run that is not registered does nothing.
+func TestRegisterFeedbackResolver_Unregistered_NoOp(t *testing.T) {
+	m := NewRunManager()
+	r := &fakeResolver{}
+
+	// Should not panic or error.
+	m.RegisterFeedbackResolver("no-such-run", r)
+
+	err := m.ResolveFeedback("no-such-run", "req-1", "hello")
+	if !errors.Is(err, ErrRunNotFound) {
+		t.Errorf("ResolveFeedback returned %v, want ErrRunNotFound", err)
+	}
+	if r.calledCount != 0 {
+		t.Errorf("resolver called %d times, want 0", r.calledCount)
+	}
+}
+
+// TestResolveFeedback_RunNotFound verifies that ResolveFeedback returns
+// ErrRunNotFound for a run that was never registered.
+func TestResolveFeedback_RunNotFound(t *testing.T) {
+	m := NewRunManager()
+	err := m.ResolveFeedback("ghost-run", "req-1", "body")
+	if !errors.Is(err, ErrRunNotFound) {
+		t.Errorf("ResolveFeedback returned %v, want ErrRunNotFound", err)
+	}
+}
+
+// TestResolveFeedback_DelegatesToResolver verifies that ResolveFeedback calls
+// the registered resolver and propagates its return value.
+func TestResolveFeedback_DelegatesToResolver(t *testing.T) {
+	m := NewRunManager()
+	sentinelErr := errors.New("resolver error")
+	r := &fakeResolver{err: sentinelErr}
+
+	m.Register("run-delegate", func() {}, noopApprovalCh(), noopFeedbackCh())
+	m.RegisterFeedbackResolver("run-delegate", r)
+
+	err := m.ResolveFeedback("run-delegate", "req-42", "payload")
+	if !errors.Is(err, sentinelErr) {
+		t.Errorf("ResolveFeedback returned %v, want %v", err, sentinelErr)
+	}
+	if r.calledCount != 1 {
+		t.Errorf("resolver called %d times, want 1", r.calledCount)
+	}
+	if r.lastID != "req-42" {
+		t.Errorf("lastID = %q, want %q", r.lastID, "req-42")
+	}
+	if r.lastBody != "payload" {
+		t.Errorf("lastBody = %q, want %q", r.lastBody, "payload")
+	}
+	m.Deregister("run-delegate")
+	waitWithTimeout(t, m, "delegate run")
+}
+
+// TestResolveFeedback_AfterCancelAll_ReturnsErrRunNotFound verifies that
+// CancelAll nils the feedbackResolver so that a subsequent ResolveFeedback
+// returns ErrRunNotFound rather than racing with CancelAll.
+func TestResolveFeedback_AfterCancelAll_ReturnsErrRunNotFound(t *testing.T) {
+	m := NewRunManager()
+	r := &fakeResolver{}
+
+	m.Register("run-cancelall", func() {}, noopApprovalCh(), noopFeedbackCh())
+	m.RegisterFeedbackResolver("run-cancelall", r)
+
+	m.CancelAll()
+
+	err := m.ResolveFeedback("run-cancelall", "req-1", "body")
+	if !errors.Is(err, ErrRunNotFound) {
+		t.Errorf("ResolveFeedback after CancelAll returned %v, want ErrRunNotFound", err)
+	}
+	if r.calledCount != 0 {
+		t.Errorf("resolver called %d times after CancelAll, want 0", r.calledCount)
+	}
+
+	// Drain the WaitGroup.
+	m.Deregister("run-cancelall")
+	waitWithTimeout(t, m, "cancelall run")
+}

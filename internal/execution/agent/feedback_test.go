@@ -18,15 +18,14 @@ import (
 )
 
 // TestFeedbackHandler_Wait_ResponseReceived verifies the happy path: operator
-// responds before timeout; feedback_request and feedback_response steps are written;
-// run transitions back to running.
+// responds via h.Resolve before timeout; feedback_request and feedback_response
+// steps are written; run transitions back to running.
 func TestFeedbackHandler_Wait_ResponseReceived(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string, 1)
-	feedbackCh <- "operator response"
+	feedbackCh := make(chan string, 1) // DEAD: kept for #180 parallel-impl harness; #181 removes.
 
 	pub := &capturePublisher{}
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
@@ -35,12 +34,52 @@ func TestFeedbackHandler_Wait_ResponseReceived(t *testing.T) {
 
 	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
 
-	got, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 200*time.Millisecond)
-	if err != nil {
-		t.Fatalf("Wait: unexpected error: %v", err)
+	// Spawn Wait in a goroutine and deliver the response via h.Resolve once
+	// the feedback row appears in the DB (register-before-transition guarantee).
+	type waitResult struct {
+		body string
+		err  error
 	}
-	if got != "operator response" {
-		t.Errorf("response = %q, want %q", got, "operator response")
+	done := make(chan waitResult, 1)
+	go func() {
+		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 500*time.Millisecond)
+		done <- waitResult{body: body, err: err}
+	}()
+
+	// Poll until the feedback row appears in the DB.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	var feedbackID string
+	for time.Now().Before(deadline) {
+		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+		if err != nil {
+			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+		}
+		if len(rows) > 0 {
+			feedbackID = rows[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if feedbackID == "" {
+		t.Fatal("timed out waiting for feedback row to appear in DB")
+	}
+
+	// Deliver the operator response through the inAppChannel.
+	if err := h.Resolve(feedbackID, "operator response"); err != nil {
+		t.Fatalf("Resolve: unexpected error: %v", err)
+	}
+
+	// Wait for the goroutine to return.
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("Wait: unexpected error: %v", res.err)
+		}
+		if res.body != "operator response" {
+			t.Errorf("response = %q, want %q", res.body, "operator response")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not return within deadline")
 	}
 
 	// Run must be back to running.
