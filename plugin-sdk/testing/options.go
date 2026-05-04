@@ -57,7 +57,8 @@ func WithLogger(l *slog.Logger) Option {
 // OnEmitEvent registers a callback invoked synchronously for every EmitEvent
 // call, with the event projected to the local Event type. The callback must
 // not call back into the FakeHost — it runs after the inner host has released
-// its mutex (per the host.go:203–213 guarantee) but a re-entrant host call
+// its mutex (per the EmitEvent implementation in internal/fakehost: the inner
+// host releases h.mu before invoking the callback) but a re-entrant host call
 // would still cause a deadlock.
 func OnEmitEvent(cb func(Event)) Option {
 	return func(c *config) {

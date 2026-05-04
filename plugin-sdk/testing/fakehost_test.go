@@ -310,12 +310,34 @@ func TestAssertMetricEmitted_Pass(t *testing.T) {
 }
 
 func TestAssertMetricEmitted_Fail(t *testing.T) {
-	fh := plugintest.NewFakeHost()
-	rtb := &recordingTB{t: t}
-	fh.AssertMetricEmitted(rtb, "missing_metric", nil)
-	if rtb.fatal == "" {
-		t.Fatal("expected Fatalf to be called")
-	}
+	t.Run("no metric emitted", func(t *testing.T) {
+		fh := plugintest.NewFakeHost()
+		rtb := &recordingTB{t: t}
+		fh.AssertMetricEmitted(rtb, "missing_metric", nil)
+		if rtb.fatal == "" {
+			t.Fatal("expected Fatalf to be called")
+		}
+	})
+
+	t.Run("label mismatch", func(t *testing.T) {
+		fh := plugintest.NewFakeHost()
+		addr, stop := startFakeServer(t, fh)
+		defer stop()
+		client, close := dialFakeHost(t, addr)
+		defer close()
+
+		_, _ = client.EmitMetric(context.Background(), &hostv1.EmitMetricRequest{
+			Name:   "my_metric",
+			Value:  1,
+			Labels: map[string]string{"env": "prod"},
+		})
+
+		rtb := &recordingTB{t: t}
+		fh.AssertMetricEmitted(rtb, "my_metric", map[string]string{"env": "test"})
+		if rtb.fatal == "" {
+			t.Fatal("expected Fatalf to be called for label mismatch")
+		}
+	})
 }
 
 func TestAssertMetricEmitted_SubsetLabelMatch(t *testing.T) {
@@ -397,12 +419,33 @@ func TestAssertLogContains_Pass(t *testing.T) {
 }
 
 func TestAssertLogContains_Fail(t *testing.T) {
-	fh := plugintest.NewFakeHost()
-	rtb := &recordingTB{t: t}
-	fh.AssertLogContains(rtb, slog.LevelInfo, "not here")
-	if rtb.fatal == "" {
-		t.Fatal("expected Fatalf to be called")
-	}
+	t.Run("empty log", func(t *testing.T) {
+		fh := plugintest.NewFakeHost()
+		rtb := &recordingTB{t: t}
+		fh.AssertLogContains(rtb, slog.LevelInfo, "not here")
+		if rtb.fatal == "" {
+			t.Fatal("expected Fatalf to be called")
+		}
+	})
+
+	t.Run("level mismatch", func(t *testing.T) {
+		fh := plugintest.NewFakeHost()
+		addr, stop := startFakeServer(t, fh)
+		defer stop()
+		client, close := dialFakeHost(t, addr)
+		defer close()
+
+		_, _ = client.Log(context.Background(), &hostv1.LogRequest{
+			Level: hostv1.LogLevel_LOG_LEVEL_INFO,
+			Msg:   "hi",
+		})
+
+		rtb := &recordingTB{t: t}
+		fh.AssertLogContains(rtb, slog.LevelError, "hi")
+		if rtb.fatal == "" {
+			t.Fatal("expected Fatalf to be called for level mismatch")
+		}
+	})
 }
 
 // ── AssertAuditStep ───────────────────────────────────────────────────────────

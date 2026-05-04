@@ -34,11 +34,14 @@ func (f *FakeHost) AssertMetricEmitted(tb TB, name string, labels map[string]str
 // AssertNoMetricEmitted fails the test if any recorded metric has the given name.
 func (f *FakeHost) AssertNoMetricEmitted(tb TB, name string) {
 	tb.Helper()
+	count := 0
 	for _, m := range f.Metrics() {
 		if m.Name == name {
-			tb.Fatalf("AssertNoMetricEmitted: metric %q was recorded but should not have been", name)
-			return
+			count++
 		}
+	}
+	if count > 0 {
+		tb.Fatalf("AssertNoMetricEmitted: metric %q was emitted %d time(s) but should not have been", name, count)
 	}
 }
 

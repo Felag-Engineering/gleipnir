@@ -12,7 +12,7 @@ import (
 
 // ToolService implements toolv1.ToolServiceServer with a single "echo" tool.
 // It communicates with the host via hostClient, which is provided at
-// construction time (in production by serve.Serve; in tests by bufconn).
+// construction time (in production by serve.Serve; in tests by loopback TCP (127.0.0.1:0)).
 type ToolService struct {
 	toolv1.UnimplementedToolServiceServer
 	host hostv1.HostServiceClient

@@ -14,7 +14,7 @@
 //	    plugintest.WithInstanceConfigJSON(`{"greeting":"hi"}`),
 //	    plugintest.WithRunContext(plugintest.RunContext{RunID: "r-1"}),
 //	)
-//	// wire host into a bufconn gRPC server, invoke your service, then:
+//	// wire host into a gRPC server, invoke your service, then:
 //	host.AssertMetricEmitted(t, "echo_calls_total", map[string]string{"tool":"echo"})
 //
 // # Spec reference
