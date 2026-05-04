@@ -1761,8 +1761,6 @@ func TestHandleToolCall_AskOperator_Success(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
-	feedbackCh := make(chan string, 1) // DEAD: kept for #180 parallel-impl harness; #181 removes.
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		LLMClient: testutil.NewMockLLMClient(
@@ -1773,7 +1771,6 @@ func TestHandleToolCall_AskOperator_Success(t *testing.T) {
 		Tools:        nil,
 		Policy:       feedbackPolicy(),
 		Audit:        w,
-		FeedbackCh:   feedbackCh, // DEAD: kept for #180 parallel-impl harness; #181 removes.
 		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
@@ -1961,8 +1958,6 @@ func TestHandleToolCall_AskOperator_ReasonRequired(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
-	feedbackCh := make(chan string, 1)
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		LLMClient: testutil.NewMockLLMClient(
@@ -1973,7 +1968,6 @@ func TestHandleToolCall_AskOperator_ReasonRequired(t *testing.T) {
 		Tools:        nil,
 		Policy:       feedbackPolicy(),
 		Audit:        w,
-		FeedbackCh:   feedbackCh,
 		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
@@ -2109,9 +2103,6 @@ func TestRun_feedback_timeout(t *testing.T) {
 		},
 	}
 
-	// feedbackCh is never sent on — the operator does not respond (testing timeout path).
-	feedbackCh := make(chan string) // unbuffered — nothing sends on this channel in this test
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		LLMClient: testutil.NewMockLLMClient(
@@ -2121,7 +2112,6 @@ func TestRun_feedback_timeout(t *testing.T) {
 		Tools:                  nil,
 		Policy:                 pol,
 		Audit:                  w,
-		FeedbackCh:             feedbackCh,
 		StateMachine:           NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 		DefaultFeedbackTimeout: 50 * time.Millisecond,
 	})
@@ -2181,7 +2171,6 @@ func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 		Tools:        nil,
 		Policy:       feedbackPolicy(),
 		Audit:        w,
-		FeedbackCh:   make(chan string), // unbuffered — test verifies run completes without feedback
 		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
@@ -2226,7 +2215,7 @@ func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 
 // makeAgentWithFeedback builds a BoundAgent with feedback enabled and a fresh test store.
 // The run starts in RunStatusRunning (same as makeAgentWithTools).
-func makeAgentWithFeedback(t *testing.T, feedbackCh chan string, feedbackTimeout time.Duration) (*BoundAgent, *db.Store, *AuditWriter) {
+func makeAgentWithFeedback(t *testing.T, feedbackTimeout time.Duration) (*BoundAgent, *db.Store, *AuditWriter) {
 	t.Helper()
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
@@ -2238,7 +2227,6 @@ func makeAgentWithFeedback(t *testing.T, feedbackCh chan string, feedbackTimeout
 		Tools:                  nil,
 		LLMClient:              testutil.NewNoopLLMClient(),
 		Audit:                  w,
-		FeedbackCh:             (<-chan string)(feedbackCh),
 		DefaultFeedbackTimeout: feedbackTimeout,
 		StateMachine:           NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
@@ -2453,10 +2441,8 @@ func TestWaitForApproval_ScannerWins(t *testing.T) {
 // TestWaitForFeedback_BufferedLateResponse verifies that after the feedback
 // timeout fires and waitForFeedback returns, a late Resolve call returns
 // ErrUnknownRequestID (the waiter was unregistered by the deferred delete).
-// The dead feedbackCh is retained for the #180 parallel-impl harness.
 func TestWaitForFeedback_BufferedLateResponse(t *testing.T) {
-	feedbackCh := make(chan string, 1) // DEAD: kept for #180 parallel-impl harness; #181 removes.
-	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 50*time.Millisecond)
+	ba, s, w := makeAgentWithFeedback(t, 50*time.Millisecond)
 	defer w.Close()
 
 	var requestID string
@@ -2497,8 +2483,7 @@ func TestWaitForFeedback_BufferedLateResponse(t *testing.T) {
 // feedback path: the scanner resolves the feedback row before the in-agent timer
 // fires, leaving exactly one error step.
 func TestWaitForFeedback_ScannerWins(t *testing.T) {
-	feedbackCh := make(chan string, 1)
-	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 200*time.Millisecond)
+	ba, s, w := makeAgentWithFeedback(t, 200*time.Millisecond)
 	pub := &capturePublisher{}
 	ba.sm = NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 
@@ -2573,8 +2558,7 @@ func TestWaitForFeedback_ScannerWins(t *testing.T) {
 // before the timer fires, and subsequent scanner.scan() is a no-op (the row is
 // no longer pending).
 func TestWaitForFeedback_ResponseWins(t *testing.T) {
-	feedbackCh := make(chan string, 1) // DEAD: kept for #180 parallel-impl harness; #181 removes.
-	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 500*time.Millisecond)
+	ba, s, w := makeAgentWithFeedback(t, 500*time.Millisecond)
 	defer w.Close()
 
 	// Spawn waitForFeedback in a goroutine and deliver the response via Resolve

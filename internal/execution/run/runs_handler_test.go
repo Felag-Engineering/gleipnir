@@ -935,7 +935,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
 				testutil.InsertPolicy(t, store, "p-cancel-run", "policy-"+"p-cancel-run", "webhook", testutil.MinimalWebhookPolicy)
 				testutil.InsertRun(t, store, "r-cancel-running", "p-cancel-run", model.RunStatusRunning)
-				manager.Register("r-cancel-running", func() {}, make(chan bool, 1), make(chan string, 1))
+				manager.Register("r-cancel-running", func() {}, make(chan bool, 1))
 			},
 			runID:    "r-cancel-running",
 			wantCode: http.StatusAccepted,
@@ -1007,7 +1007,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
 				testutil.InsertPolicy(t, store, "p-cancel-waiting", "policy-"+"p-cancel-waiting", "webhook", testutil.MinimalWebhookPolicy)
 				testutil.InsertRun(t, store, "r-cancel-waiting", "p-cancel-waiting", model.RunStatusWaitingForApproval)
-				manager.Register("r-cancel-waiting", func() {}, make(chan bool, 1), make(chan string, 1))
+				manager.Register("r-cancel-waiting", func() {}, make(chan bool, 1))
 			},
 			runID:    "r-cancel-waiting",
 			wantCode: http.StatusAccepted,
@@ -1022,7 +1022,7 @@ func TestRunsHandler_Cancel(t *testing.T) {
 			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
 				testutil.InsertPolicy(t, store, "p-cancel-feedback", "policy-"+"p-cancel-feedback", "webhook", testutil.MinimalWebhookPolicy)
 				testutil.InsertRun(t, store, "r-cancel-feedback", "p-cancel-feedback", model.RunStatusWaitingForFeedback)
-				manager.Register("r-cancel-feedback", func() {}, make(chan bool, 1), make(chan string, 1))
+				manager.Register("r-cancel-feedback", func() {}, make(chan bool, 1))
 			},
 			runID:    "r-cancel-feedback",
 			wantCode: http.StatusAccepted,
@@ -1213,7 +1213,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 				// responded). The handler's non-blocking send must fail and return 409.
 				ch := make(chan bool, 1)
 				ch <- false // fill the buffer
-				manager.Register("r-approval-no-gate", func() {}, ch, make(chan string, 1))
+				manager.Register("r-approval-no-gate", func() {}, ch)
 				return nil
 			},
 			runID:    "r-approval-no-gate",
@@ -1234,7 +1234,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 				// Buffered so the non-blocking send in SendApproval succeeds without
 				// needing a goroutine to be scheduled and blocking on the channel.
 				ch := make(chan bool, 1)
-				manager.Register("r-approval-ok", func() {}, ch, make(chan string, 1))
+				manager.Register("r-approval-ok", func() {}, ch)
 				return ch
 			},
 			runID:    "r-approval-ok",
@@ -1258,7 +1258,7 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 				// Buffered so the non-blocking send in SendApproval succeeds without
 				// needing a goroutine to be scheduled and blocking on the channel.
 				ch := make(chan bool, 1)
-				manager.Register("r-approval-deny", func() {}, ch, make(chan string, 1))
+				manager.Register("r-approval-deny", func() {}, ch)
 				return ch
 			},
 			runID:    "r-approval-deny",
@@ -1419,7 +1419,7 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 						return agent.ErrUnknownRequestID
 					},
 				}
-				manager.Register("r-feedback-late", func() {}, make(chan bool, 1), make(chan string, 1))
+				manager.Register("r-feedback-late", func() {}, make(chan bool, 1))
 				manager.RegisterFeedbackResolver("r-feedback-late", resolver)
 			},
 			runID:    "r-feedback-late",
@@ -1439,7 +1439,7 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 				// Insert pending row so step (b) finds it; register a resolver that returns nil.
 				insertFeedbackRequest(t, store, "fr-ok-1", "r-feedback-ok")
 				resolver := &stubResolver{ResolveFunc: nil} // nil ResolveFunc → returns nil
-				manager.Register("r-feedback-ok", func() {}, make(chan bool, 1), make(chan string, 1))
+				manager.Register("r-feedback-ok", func() {}, make(chan bool, 1))
 				manager.RegisterFeedbackResolver("r-feedback-ok", resolver)
 			},
 			runID:    "r-feedback-ok",
@@ -1513,7 +1513,7 @@ func TestRunsHandler_SubmitFeedback_LateCallback(t *testing.T) {
 			return agent.ErrUnknownRequestID
 		},
 	}
-	manager.Register("r-late-cb", func() {}, make(chan bool, 1), make(chan string, 1))
+	manager.Register("r-late-cb", func() {}, make(chan bool, 1))
 	manager.RegisterFeedbackResolver("r-late-cb", resolver)
 
 	h := run.NewRunsHandler(store, manager, nil)

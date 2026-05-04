@@ -186,7 +186,7 @@ func TestCheckConcurrency_Replace(t *testing.T) {
 		manager := run.NewRunManager()
 		cancelCalled := false
 		// Cap-1 channels match the production channels created by launcher.go.
-		manager.Register("r-replace-active", func() { cancelCalled = true }, make(chan bool, 1), make(chan string, 1))
+		manager.Register("r-replace-active", func() { cancelCalled = true }, make(chan bool, 1))
 
 		// Simulate the agent goroutine acknowledging cancellation quickly.
 		// WaitGroup + t.Cleanup ensures the goroutine has exited before the test
@@ -235,7 +235,7 @@ func TestCheckConcurrency_Replace(t *testing.T) {
 		for _, id := range runIDs {
 			id := id
 			// Cap-1 channels match the production channels created by launcher.go.
-			manager.Register(id, func() { cancelled[id] = true }, make(chan bool, 1), make(chan string, 1))
+			manager.Register(id, func() { cancelled[id] = true }, make(chan bool, 1))
 		}
 
 		// Simulate all goroutines exiting after cancellation.

@@ -49,20 +49,17 @@ func askOperatorToolDefinition() llm.ToolDefinition {
 type FeedbackHandler struct {
 	audit          *AuditWriter
 	sm             *RunStateMachine
-	feedbackCh     <-chan string // DEAD: kept for #180 parallel-impl harness; #181 removes.
 	defaultTimeout time.Duration
 	inApp          *inAppChannel
 	dispatcher     *channelDispatcher
 }
 
-// NewFeedbackHandler constructs a FeedbackHandler. feedbackCh is ignored in the
-// production path (DEAD: kept for #180 parallel-impl harness; #181 removes).
-func NewFeedbackHandler(audit *AuditWriter, sm *RunStateMachine, feedbackCh <-chan string, defaultTimeout time.Duration) *FeedbackHandler {
+// NewFeedbackHandler constructs a FeedbackHandler.
+func NewFeedbackHandler(audit *AuditWriter, sm *RunStateMachine, defaultTimeout time.Duration) *FeedbackHandler {
 	inApp := newInAppChannel(audit, sm)
 	return &FeedbackHandler{
 		audit:          audit,
 		sm:             sm,
-		feedbackCh:     feedbackCh, // DEAD: kept for #180 parallel-impl harness; #181 removes.
 		defaultTimeout: defaultTimeout,
 		inApp:          inApp,
 		dispatcher:     newChannelDispatcher(inApp),

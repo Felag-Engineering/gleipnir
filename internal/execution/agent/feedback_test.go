@@ -25,14 +25,12 @@ func TestFeedbackHandler_Wait_ResponseReceived(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string, 1) // DEAD: kept for #180 parallel-impl harness; #181 removes.
-
 	pub := &capturePublisher{}
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	// Spawn Wait in a goroutine and deliver the response via h.Resolve once
 	// the feedback row appears in the DB (register-before-transition guarantee).
@@ -120,14 +118,12 @@ func TestFeedbackHandler_Wait_Timeout_HandlerWins(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string) // unbuffered — nothing sends
-
 	pub := &capturePublisher{}
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	_, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 50*time.Millisecond)
 	if err == nil {
@@ -165,14 +161,12 @@ func TestFeedbackHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string, 1)
-
 	pub := &capturePublisher{}
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	done := make(chan error, 1)
 	go func() {
@@ -249,13 +243,11 @@ func TestFeedbackHandler_Wait_ContextCancelled(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string) // unbuffered — nothing sends
-
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
@@ -277,12 +269,11 @@ func TestFeedbackHandler_HandleAskOperator_FeedbackDisabled(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string)
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	// feedbackCfg.Enabled = false — hard runtime rejection.
 	_, isError, err := h.HandleAskOperator(context.Background(), "run1", AskOperatorToolName,
@@ -322,12 +313,11 @@ func TestFeedbackHandler_HandleAskOperator_MissingReason(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string)
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	// No 'reason' field — schema violation.
 	_, isError, err := h.HandleAskOperator(context.Background(), "run1", AskOperatorToolName,
@@ -367,12 +357,11 @@ func TestFeedbackHandler_HandleAskOperator_ReasonNotString(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string)
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	_, isError, err := h.HandleAskOperator(context.Background(), "run1", AskOperatorToolName,
 		map[string]any{"reason": 42}, model.FeedbackConfig{Enabled: true})
@@ -423,12 +412,11 @@ func TestFeedbackHandler_HandleAskOperator_TimeoutResolution(t *testing.T) {
 			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-			feedbackCh := make(chan string) // never receives
 			sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 			w := NewAuditWriter(s.Queries())
 			defer w.Close() //nolint:errcheck
 
-			h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), defaultTimeout)
+			h := NewFeedbackHandler(w, sm, defaultTimeout)
 
 			start := time.Now()
 			_, _, err := h.HandleAskOperator(context.Background(), "run1", AskOperatorToolName,

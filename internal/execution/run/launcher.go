@@ -237,17 +237,14 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 
 	// Cap 1 so SendApproval (non-blocking select) can deliver a decision that
 	// arrives in the narrow window between the agent unparking and reading the
-	// channel. feedbackCh is DEAD (kept for #180 parallel-impl harness; #181
-	// removes), but still allocated so Config.FeedbackCh is satisfied.
+	// channel.
 	approvalCh := make(chan bool, 1)
-	feedbackCh := make(chan string, 1) // DEAD: kept for #180 parallel-impl harness; #181 removes.
 	ba, err := l.newAgent(agent.Config{
 		Tools:                  resolvedTools,
 		Policy:                 params.ParsedPolicy,
 		Audit:                  audit,
 		StateMachine:           sm,
 		ApprovalCh:             approvalCh,
-		FeedbackCh:             feedbackCh, // DEAD: kept for #180 parallel-impl harness; #181 removes.
 		DefaultFeedbackTimeout: l.defaultFeedbackTimeout,
 	})
 	if err != nil {
@@ -278,7 +275,7 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	runCtx = logctx.WithRunCorrelation(runCtx, run.ID, params.PolicyID)
 	// RegisterWithFeedbackResolver performs a single atomic lock acquisition so
 	// there is zero window between run registration and resolver attachment.
-	l.manager.RegisterWithFeedbackResolver(run.ID, cancel, approvalCh, feedbackCh, ba.FeedbackResolver())
+	l.manager.RegisterWithFeedbackResolver(run.ID, cancel, approvalCh, ba.FeedbackResolver())
 
 	payload := params.TriggerPayload
 	go func() {
