@@ -305,6 +305,53 @@ func assertUnimplemented(t *testing.T, err error) {
 	}
 }
 
+// ── Tier-2 stubs with canned data ───────────────────────────────────────────
+
+func TestTier2_RunHistoryRead_WithCannedData(t *testing.T) {
+	h := fakehost.New(fakehost.Options{
+		RunHistoryRuns: []*hostv1.RunSummary{
+			{RunId: "r-1", Status: "complete"},
+			{RunId: "r-2", Status: "failed"},
+		},
+	})
+
+	resp, err := h.RunHistoryRead(context.Background(), &hostv1.RunHistoryReadRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.GetRuns()) != 2 {
+		t.Fatalf("want 2 runs, got %d", len(resp.GetRuns()))
+	}
+	if resp.GetRuns()[0].GetRunId() != "r-1" {
+		t.Errorf("want r-1, got %q", resp.GetRuns()[0].GetRunId())
+	}
+	if h.RunHistoryCalls() != 1 {
+		t.Errorf("want RunHistoryCalls=1, got %d", h.RunHistoryCalls())
+	}
+}
+
+func TestTier2_UserDirectoryRead_WithCannedData(t *testing.T) {
+	h := fakehost.New(fakehost.Options{
+		UserDirectoryUsers: []*hostv1.UserEntry{
+			{UserId: "u-1", Username: "alice", Role: "admin"},
+		},
+	})
+
+	resp, err := h.UserDirectoryRead(context.Background(), &hostv1.UserDirectoryReadRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.GetUsers()) != 1 {
+		t.Fatalf("want 1 user, got %d", len(resp.GetUsers()))
+	}
+	if resp.GetUsers()[0].GetUsername() != "alice" {
+		t.Errorf("want alice, got %q", resp.GetUsers()[0].GetUsername())
+	}
+	if h.UserDirectoryCalls() != 1 {
+		t.Errorf("want UserDirectoryCalls=1, got %d", h.UserDirectoryCalls())
+	}
+}
+
 // ── Concurrent EmitEvent under -race ────────────────────────────────────────
 
 func TestEmitEvent_ConcurrentSafe(t *testing.T) {
