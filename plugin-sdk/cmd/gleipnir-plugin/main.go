@@ -30,6 +30,7 @@ docs/developer/plugin-system-spec.md §14.2 for the full subcommand reference.`,
 	root.AddCommand(plugincmd.NewKeygenCmd())
 	root.AddCommand(plugincmd.NewSignCmd())
 	root.AddCommand(plugincmd.NewPackageCmd())
+	root.AddCommand(plugincmd.NewRunCmd())
 
 	return root
 }
