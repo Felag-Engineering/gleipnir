@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sync"
@@ -42,7 +44,10 @@ type captureRecord struct {
 	Sequence       int    `json:"sequence"`
 	EventID        string `json:"event_id"`
 	EventKind      string `json:"event_kind"`
-	PayloadJSON    string `json:"payload_json"`
+	PayloadJSON string `json:"payload_json"`
+	// WatchScopeJSON is the watch scope passed to Trigger.Start by the
+	// capture host (--watch-scope CLI flag). It is the same value for every
+	// record in a single capture file; it does NOT vary per emitted event.
 	WatchScopeJSON string `json:"watch_scope_json,omitempty"`
 }
 
@@ -173,7 +178,9 @@ func runCapture(ctx context.Context, cmd *cobra.Command, binary string, opts cap
 	case <-stopCh:
 		fmt.Fprintf(cmd.OutOrStdout(), "\nmax-events reached — closing capture\n")
 	case err := <-drainDone:
-		if err != nil {
+		// io.EOF is the normal end-of-stream signal when the plugin's
+		// Trigger.Start returns cleanly; only surface real errors.
+		if err != nil && !errors.Is(err, io.EOF) {
 			fmt.Fprintf(cmd.OutOrStdout(), "stream ended: %v\n", err)
 		}
 	case <-ctx.Done():

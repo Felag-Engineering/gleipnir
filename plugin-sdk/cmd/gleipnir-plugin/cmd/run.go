@@ -62,7 +62,9 @@ host. Three mutually exclusive modes are available:
 
   --replay <file.jsonl>
       Feeds each captured event back into the plugin by re-exec-ing the
-      binary with --replay-event <json>. The plugin must implement that flag
+      binary with the --replay-event flag and piping the event JSON to its
+      stdin (this avoids ARG_MAX limits on large payloads). The plugin must
+      implement that flag and read the payload via io.ReadAll(os.Stdin)
       (see docs/developer/plugin-system-spec.md §14.4). Prints a per-event
       OK/FAILED summary. Use this to iterate on payload parsing offline.
 
