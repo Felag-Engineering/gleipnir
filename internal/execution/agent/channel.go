@@ -75,11 +75,10 @@ func (d *channelDispatcher) Request(ctx context.Context, req feedbackRequest) (s
 	return d.inApp.Request(ctx, req)
 }
 
-// localFeedbackChannel is the in-app channel implementation: it transitions the
-// run to waiting_for_feedback and blocks on the runtime feedback channel. It
-// holds the same three dependencies that FeedbackHandler carries today; removal
-// of the duplicate fields on FeedbackHandler is #181's job.
-type localFeedbackChannel struct {
+// localFeedbackChannel is the legacy in-app channel implementation that routes
+// feedback through the runtime channel (feedbackCh). Superseded by inAppChannel
+// in #179. DEAD: kept for #180 parallel-impl harness; #181 removes.
+type localFeedbackChannel struct { // DEAD: kept for #180 parallel-impl harness; #181 removes.
 	audit      *AuditWriter
 	sm         *RunStateMachine
 	feedbackCh <-chan string

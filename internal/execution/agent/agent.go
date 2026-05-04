@@ -40,7 +40,7 @@ type Config struct {
 	LLMClient              llm.LLMClient
 	Audit                  *AuditWriter
 	ApprovalCh             <-chan bool
-	FeedbackCh             <-chan string
+	FeedbackCh             <-chan string // DEAD: kept for #180 parallel-impl harness; #181 removes.
 	StateMachine           *RunStateMachine
 	DefaultFeedbackTimeout time.Duration
 }
@@ -107,6 +107,13 @@ func (a *BoundAgent) waitForApproval(ctx context.Context, runID string, entry re
 // to handler-level tests.
 func (a *BoundAgent) waitForFeedback(ctx context.Context, runID, toolName, inputJSON, mcpOutput string, feedbackTimeout time.Duration) (string, error) {
 	return a.feedback.Wait(ctx, runID, toolName, inputJSON, mcpOutput, feedbackTimeout)
+}
+
+// FeedbackResolver returns the FeedbackHandler for this agent. Used by the
+// launcher to register the resolver with the RunManager so SubmitFeedback can
+// deliver operator responses directly through the inAppChannel waiter map.
+func (a *BoundAgent) FeedbackResolver() *FeedbackHandler {
+	return a.feedback
 }
 
 // assignTokenCost computes per-step token cost allocation for a single LLM turn.

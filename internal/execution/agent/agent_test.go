@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1760,8 +1761,7 @@ func TestHandleToolCall_AskOperator_Success(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
-	feedbackCh := make(chan string, 1)
-	feedbackCh <- "operator says hello"
+	feedbackCh := make(chan string, 1) // DEAD: kept for #180 parallel-impl harness; #181 removes.
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
@@ -1773,15 +1773,51 @@ func TestHandleToolCall_AskOperator_Success(t *testing.T) {
 		Tools:        nil,
 		Policy:       feedbackPolicy(),
 		Audit:        w,
-		FeedbackCh:   feedbackCh,
+		FeedbackCh:   feedbackCh, // DEAD: kept for #180 parallel-impl harness; #181 removes.
 		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
-	if err := ba.Run(context.Background(), "r1", "trigger"); err != nil {
-		t.Fatalf("Run: %v", err)
+	// Run the agent in a goroutine. It will block in inAppChannel.Request waiting
+	// for Resolve — we deliver the response after the feedback row appears in DB.
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- ba.Run(context.Background(), "r1", "trigger")
+	}()
+
+	// Poll until the feedback row appears in the DB (register-before-transition guarantee).
+	deadline := time.Now().Add(5 * time.Second)
+	var feedbackID string
+	for time.Now().Before(deadline) {
+		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "r1")
+		if err != nil {
+			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+		}
+		if len(rows) > 0 {
+			feedbackID = rows[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if feedbackID == "" {
+		t.Fatal("timed out waiting for feedback row to appear in DB")
+	}
+
+	// Deliver the operator response through the inAppChannel.
+	if err := ba.FeedbackResolver().Resolve(feedbackID, "operator says hello"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// Wait for ba.Run to complete.
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not complete within deadline")
 	}
 
 	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
@@ -2414,28 +2450,39 @@ func TestWaitForApproval_ScannerWins(t *testing.T) {
 	}
 }
 
-// TestWaitForFeedback_BufferedLateResponse mirrors TestWaitForApproval_BufferedLateRejection:
-// after feedback timeout fires and the function returns, a late response send lands
-// safely in the buffered channel without blocking.
+// TestWaitForFeedback_BufferedLateResponse verifies that after the feedback
+// timeout fires and waitForFeedback returns, a late Resolve call returns
+// ErrUnknownRequestID (the waiter was unregistered by the deferred delete).
+// The dead feedbackCh is retained for the #180 parallel-impl harness.
 func TestWaitForFeedback_BufferedLateResponse(t *testing.T) {
-	feedbackCh := make(chan string, 1)
+	feedbackCh := make(chan string, 1) // DEAD: kept for #180 parallel-impl harness; #181 removes.
 	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 50*time.Millisecond)
 	defer w.Close()
+
+	var requestID string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Poll for the feedback row so we can capture the request ID before timeout.
+		rows, _ := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1") //nolint:errcheck
+		if len(rows) > 0 {
+			requestID = rows[0].ID
+		}
+	}()
 
 	_, err := ba.waitForFeedback(context.Background(), "run1", "ask_operator", "{}", "please answer", 50*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
+	<-done
 
-	// Late response must land in the cap-1 buffer after the receiver exits.
-	sentToBuffer := false
-	select {
-	case feedbackCh <- "late response":
-		sentToBuffer = true
-	default:
-	}
-	if !sentToBuffer {
-		t.Error("late response send hit default arm; expected it to land in the cap-1 buffer")
+	// A late Resolve call after timeout must return ErrUnknownRequestID because
+	// the waiter is removed by inAppChannel.Request's deferred delete.
+	if requestID != "" {
+		lateErr := ba.FeedbackResolver().Resolve(requestID, "late response")
+		if !errors.Is(lateErr, ErrUnknownRequestID) {
+			t.Errorf("late Resolve returned %v, want ErrUnknownRequestID", lateErr)
+		}
 	}
 
 	if err := w.Close(); err != nil {
@@ -2526,17 +2573,39 @@ func TestWaitForFeedback_ScannerWins(t *testing.T) {
 // before the timer fires, and subsequent scanner.scan() is a no-op (the row is
 // no longer pending).
 func TestWaitForFeedback_ResponseWins(t *testing.T) {
-	feedbackCh := make(chan string, 1)
-	feedbackCh <- "operator's answer" // pre-fill so the channel is ready immediately
-	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 200*time.Millisecond)
+	feedbackCh := make(chan string, 1) // DEAD: kept for #180 parallel-impl harness; #181 removes.
+	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 500*time.Millisecond)
 	defer w.Close()
 
-	response, err := ba.waitForFeedback(context.Background(), "run1", "ask_operator", "{}", "please answer", 200*time.Millisecond)
-	if err != nil {
-		t.Fatalf("waitForFeedback: %v", err)
+	// Spawn waitForFeedback in a goroutine and deliver the response via Resolve
+	// once the feedback row appears in the DB.
+	type result struct {
+		response string
+		err      error
 	}
-	if response != "operator's answer" {
-		t.Errorf("response = %q, want %q", response, "operator's answer")
+	done := make(chan result, 1)
+	go func() {
+		resp, err := ba.waitForFeedback(context.Background(), "run1", "ask_operator", "{}", "please answer", 500*time.Millisecond)
+		done <- result{resp, err}
+	}()
+
+	feedbackID := pollForFeedbackRow(t, s, time.Now().Add(200*time.Millisecond))
+	if err := ba.FeedbackResolver().Resolve(feedbackID, "operator's answer"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	var res result
+	select {
+	case res = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitForFeedback did not return within deadline")
+	}
+
+	if res.err != nil {
+		t.Fatalf("waitForFeedback: %v", res.err)
+	}
+	if res.response != "operator's answer" {
+		t.Errorf("response = %q, want %q", res.response, "operator's answer")
 	}
 
 	// Run must be back to running (sm transitioned back).

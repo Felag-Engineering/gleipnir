@@ -49,26 +49,32 @@ func askOperatorToolDefinition() llm.ToolDefinition {
 type FeedbackHandler struct {
 	audit          *AuditWriter
 	sm             *RunStateMachine
-	feedbackCh     <-chan string // receive-only: handler never closes the channel
+	feedbackCh     <-chan string // DEAD: kept for #180 parallel-impl harness; #181 removes.
 	defaultTimeout time.Duration
+	inApp          *inAppChannel
 	dispatcher     *channelDispatcher
 }
 
-// NewFeedbackHandler constructs a FeedbackHandler. feedbackCh must be receive-only
-// (compile-time guarantee the handler does not close it).
+// NewFeedbackHandler constructs a FeedbackHandler. feedbackCh is ignored in the
+// production path (DEAD: kept for #180 parallel-impl harness; #181 removes).
 func NewFeedbackHandler(audit *AuditWriter, sm *RunStateMachine, feedbackCh <-chan string, defaultTimeout time.Duration) *FeedbackHandler {
-	inApp := &localFeedbackChannel{
-		audit:      audit,
-		sm:         sm,
-		feedbackCh: feedbackCh,
-	}
+	inApp := newInAppChannel(audit, sm)
 	return &FeedbackHandler{
 		audit:          audit,
 		sm:             sm,
-		feedbackCh:     feedbackCh,
+		feedbackCh:     feedbackCh, // DEAD: kept for #180 parallel-impl harness; #181 removes.
 		defaultTimeout: defaultTimeout,
+		inApp:          inApp,
 		dispatcher:     newChannelDispatcher(inApp),
 	}
+}
+
+// Resolve delivers an operator response to the in-app waiter for requestID.
+// Returns agent.ErrUnknownRequestID if no waiter is currently registered
+// (timed out, already answered, or the run was cancelled). Callers should treat
+// that as a benign late-callback signal, not an error.
+func (h *FeedbackHandler) Resolve(requestID, body string) error {
+	return h.inApp.Resolve(requestID, body)
 }
 
 // Wait suspends the run waiting for a freeform operator response.

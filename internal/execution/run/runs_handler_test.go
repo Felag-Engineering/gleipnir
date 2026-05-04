@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/execution/agent"
 	"github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
@@ -1320,6 +1321,38 @@ func TestRunsHandler_SubmitApproval(t *testing.T) {
 	}
 }
 
+// stubResolver is a test double that implements run.FeedbackResolver with a
+// configurable ResolveFunc so individual test cases can control the return value.
+type stubResolver struct {
+	ResolveFunc func(requestID, body string) error
+}
+
+func (s *stubResolver) Resolve(requestID, body string) error {
+	if s.ResolveFunc != nil {
+		return s.ResolveFunc(requestID, body)
+	}
+	return nil
+}
+
+// insertFeedbackRequest inserts a pending feedback_requests row directly via
+// the store. Used by tests that need a row to exist before SubmitFeedback runs.
+func insertFeedbackRequest(t *testing.T, store *db.Store, feedbackID, runID string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := store.CreateFeedbackRequest(context.Background(), db.CreateFeedbackRequestParams{
+		ID:            feedbackID,
+		RunID:         runID,
+		ToolName:      "gleipnir.ask_operator",
+		ProposedInput: "{}",
+		Message:       "test message",
+		ExpiresAt:     nil,
+		CreatedAt:     now,
+	})
+	if err != nil {
+		t.Fatalf("insertFeedbackRequest %s: %v", feedbackID, err)
+	}
+}
+
 func TestRunsHandler_SubmitFeedback(t *testing.T) {
 	type successBody struct {
 		Data map[string]string `json:"data"`
@@ -1331,7 +1364,7 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 
 	cases := []struct {
 		name         string
-		setup        func(t *testing.T, store *db.Store, manager *run.RunManager) chan string
+		setup        func(t *testing.T, store *db.Store, manager *run.RunManager)
 		runID        string
 		body         string
 		wantCode     int
@@ -1340,8 +1373,7 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 	}{
 		{
 			name: "run not found returns 404",
-			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan string {
-				return nil
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
 			},
 			runID:    "r-feedback-missing",
 			body:     `{"response":"yes proceed"}`,
@@ -1349,11 +1381,10 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 		},
 		{
 			name: "run not waiting_for_feedback returns 409",
-			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan string {
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
 				testutil.InsertPolicy(t, store, "p-feedback-running", "policy-"+"p-feedback-running", "webhook", testutil.MinimalWebhookPolicy)
 				testutil.InsertRun(t, store, "r-feedback-running", "p-feedback-running", model.RunStatusRunning)
-				// Intentionally do NOT register the run — it is not in a feedback gate.
-				return nil
+				// No pending feedback row → step (b) returns zero rows → 409.
 			},
 			runID:    "r-feedback-running",
 			body:     `{"response":"yes proceed"}`,
@@ -1369,44 +1400,47 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 		},
 		{
 			name: "empty response returns 400",
-			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan string {
-				return nil
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
 			},
 			runID:    "r-feedback-empty",
 			body:     `{"response":""}`,
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name: "waiting_for_feedback but no active gate returns 409",
-			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan string {
-				testutil.InsertPolicy(t, store, "p-feedback-no-gate", "policy-"+"p-feedback-no-gate", "webhook", testutil.MinimalWebhookPolicy)
-				testutil.InsertRun(t, store, "r-feedback-no-gate", "p-feedback-no-gate", model.RunStatusWaitingForFeedback)
-				// Pre-fill the buffer to simulate a gate that has already closed
-				// (e.g. the agent's feedback timeout fired before the operator
-				// responded). The handler's non-blocking send must fail and return 409.
-				ch := make(chan string, 1)
-				ch <- "" // fill the buffer
-				manager.Register("r-feedback-no-gate", func() {}, make(chan bool, 1), ch)
-				return nil
+			name: "late callback returns 410",
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
+				testutil.InsertPolicy(t, store, "p-feedback-late", "policy-"+"p-feedback-late", "webhook", testutil.MinimalWebhookPolicy)
+				testutil.InsertRun(t, store, "r-feedback-late", "p-feedback-late", model.RunStatusWaitingForFeedback)
+				// Insert a pending row so step (b) succeeds, but register a resolver
+				// returning ErrUnknownRequestID (simulating a timed-out waiter).
+				insertFeedbackRequest(t, store, "fr-late-1", "r-feedback-late")
+				resolver := &stubResolver{
+					ResolveFunc: func(requestID, body string) error {
+						return agent.ErrUnknownRequestID
+					},
+				}
+				manager.Register("r-feedback-late", func() {}, make(chan bool, 1), make(chan string, 1))
+				manager.RegisterFeedbackResolver("r-feedback-late", resolver)
 			},
-			runID:    "r-feedback-no-gate",
+			runID:    "r-feedback-late",
 			body:     `{"response":"yes proceed"}`,
-			wantCode: http.StatusConflict,
+			wantCode: http.StatusGone,
 			checkError: func(t *testing.T, body feedbackErrorBody) {
-				if body.Error != "no active feedback gate for this run" {
-					t.Errorf("error = %q, want %q", body.Error, "no active feedback gate for this run")
+				if body.Error != "feedback request expired or already answered" {
+					t.Errorf("error = %q, want %q", body.Error, "feedback request expired or already answered")
 				}
 			},
 		},
 		{
 			name: "response delivered returns 202",
-			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) chan string {
+			setup: func(t *testing.T, store *db.Store, manager *run.RunManager) {
 				testutil.InsertPolicy(t, store, "p-feedback-ok", "policy-"+"p-feedback-ok", "webhook", testutil.MinimalWebhookPolicy)
 				testutil.InsertRun(t, store, "r-feedback-ok", "p-feedback-ok", model.RunStatusWaitingForFeedback)
-				// Buffered so the non-blocking send in SendFeedback succeeds.
-				ch := make(chan string, 1)
-				manager.Register("r-feedback-ok", func() {}, make(chan bool, 1), ch)
-				return ch
+				// Insert pending row so step (b) finds it; register a resolver that returns nil.
+				insertFeedbackRequest(t, store, "fr-ok-1", "r-feedback-ok")
+				resolver := &stubResolver{ResolveFunc: nil} // nil ResolveFunc → returns nil
+				manager.Register("r-feedback-ok", func() {}, make(chan bool, 1), make(chan string, 1))
+				manager.RegisterFeedbackResolver("r-feedback-ok", resolver)
 			},
 			runID:    "r-feedback-ok",
 			body:     `{"response":"yes, proceed with caution"}`,
@@ -1459,4 +1493,51 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 			manager.Deregister(tc.runID)
 		})
 	}
+}
+
+// TestRunsHandler_SubmitFeedback_LateCallback explicitly exercises the 410 path:
+// a pending DB row exists but the waiter map entry has already been cleared
+// (e.g. the in-agent timeout fired or another response arrived first).
+func TestRunsHandler_SubmitFeedback_LateCallback(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	manager := run.NewRunManager()
+
+	testutil.InsertPolicy(t, store, "p-late-cb", "policy-p-late-cb", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-late-cb", "p-late-cb", model.RunStatusWaitingForFeedback)
+	insertFeedbackRequest(t, store, "fr-late-cb-1", "r-late-cb")
+
+	// Register a resolver that returns ErrUnknownRequestID, simulating the
+	// in-app waiter having already been cleared by a timeout or prior response.
+	resolver := &stubResolver{
+		ResolveFunc: func(requestID, body string) error {
+			return agent.ErrUnknownRequestID
+		},
+	}
+	manager.Register("r-late-cb", func() {}, make(chan bool, 1), make(chan string, 1))
+	manager.RegisterFeedbackResolver("r-late-cb", resolver)
+
+	h := run.NewRunsHandler(store, manager, nil)
+	router := newRunsRouter(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/r-late-cb/feedback",
+		strings.NewReader(`{"response":"late response"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusGone {
+		t.Fatalf("status = %d, want 410; body: %s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Error != "feedback request expired or already answered" {
+		t.Errorf("error = %q, want %q", body.Error, "feedback request expired or already answered")
+	}
+
+	manager.Deregister("r-late-cb")
 }
