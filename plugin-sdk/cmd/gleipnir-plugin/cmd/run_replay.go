@@ -41,11 +41,14 @@ type replayLineEvent struct {
 
 // runReplay is the entry point for --replay mode.
 //
-// Replay contract: the plugin binary must implement a --replay-event <json>
-// flag. When invoked with that flag, the plugin should parse the event JSON,
-// process it as if it had received it from the substrate, and exit 0 on
-// success or non-zero on failure. This convention is documented in the plugin
-// spec (§14.4) and in the README.
+// Replay contract: the plugin binary must implement a --replay-event flag.
+// When invoked with that flag the host pipes the JSON event payload to the
+// plugin's stdin; the plugin must io.ReadAll(os.Stdin) and parse it. The
+// plugin should process the event as if it had received it from the substrate,
+// and exit 0 on success or non-zero on failure. Using stdin avoids ARG_MAX
+// (~2MB on Linux) which would silently truncate large webhook payloads passed
+// as CLI arguments. This convention is documented in the plugin spec (§14.4)
+// and in the README.
 //
 // This runner opens the JSONL file, validates the header, and re-executes the
 // binary once per event that passes the optional --filter. It prints a
@@ -136,8 +139,8 @@ func runReplayCtx(ctx context.Context, cmd *cobra.Command, binary string, opts r
 	return nil
 }
 
-// replayEvent executes the plugin binary with --replay-event <payloadJSON> and
-// returns the exit error (nil on success).
+// replayEvent executes the plugin binary with --replay-event and pipes the
+// payloadJSON to its stdin.
 //
 // The --replay-event convention is a documented SDK contract: plugin authors
 // who implement this flag can use `gleipnir-plugin run --replay` to iterate on
@@ -145,12 +148,17 @@ func runReplayCtx(ctx context.Context, cmd *cobra.Command, binary string, opts r
 // not implement this flag will produce a non-zero exit, which the replay runner
 // reports as FAILED.
 //
+// The payload is delivered via stdin rather than as a CLI argument to avoid the
+// ~2MB ARG_MAX limit on Linux (E2BIG) — a critical constraint given the JSONL
+// scanner supports up to 16MB payloads.
+//
 // Subprocess stderr is always forwarded to errW so the author can see parse
 // errors and panics. Subprocess stdout is captured and forwarded to outW only
 // on failure, keeping successful output quiet by default.
 func replayEvent(ctx context.Context, binary, payloadJSON string, outW, errW io.Writer) error {
 	var stdoutBuf bytes.Buffer
-	cmd := exec.CommandContext(ctx, binary, "--replay-event", payloadJSON)
+	cmd := exec.CommandContext(ctx, binary, "--replay-event")
+	cmd.Stdin = strings.NewReader(payloadJSON)
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = errW
 	err := cmd.Run()

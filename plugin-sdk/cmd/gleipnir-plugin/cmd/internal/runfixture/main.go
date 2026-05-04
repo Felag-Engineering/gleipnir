@@ -9,7 +9,7 @@
 //   - ToolService.ListTools — returns one echo tool
 //   - ToolService.Call — echoes the input back
 //   - TriggerService.Start — emits one synthetic event via EmitEvent then closes
-//   - --replay-event <json> — parses the event, prints JSON, exits 0
+//   - --replay-event — reads event JSON from stdin (io.ReadAll), prints JSON, exits 0
 //
 // This binary intentionally does NOT use plugin-sdk/serve (which is still a
 // stub). Instead it calls plugin.Serve directly from hashicorp/go-plugin with
@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -38,9 +39,16 @@ import (
 )
 
 func main() {
-	// --replay-event <json> mode: parse the event JSON, print a summary, exit.
-	if len(os.Args) >= 3 && os.Args[1] == "--replay-event" {
-		handleReplayEvent(os.Args[2])
+	// --replay-event mode: read the event JSON from stdin, print a summary, exit.
+	// The payload arrives via stdin rather than as a CLI arg to avoid ARG_MAX
+	// (~2MB on Linux) truncating large webhook payloads.
+	if len(os.Args) >= 2 && os.Args[1] == "--replay-event" {
+		raw, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "replay-event: read stdin: %v\n", err)
+			os.Exit(1)
+		}
+		handleReplayEvent(string(raw))
 		return
 	}
 
@@ -55,9 +63,10 @@ func main() {
 	})
 }
 
-// handleReplayEvent parses the given JSON event, prints a result line, and
-// exits 0 on success or 1 on parse failure. This implements the --replay-event
-// convention documented in plugin-spec §14.4 and README §run.
+// handleReplayEvent parses the JSON event (read from stdin by the caller),
+// prints a result line, and exits 0 on success or 1 on parse failure. This
+// implements the --replay-event convention documented in plugin-spec §14.4 and
+// README §run.
 func handleReplayEvent(eventJSON string) {
 	var parsed map[string]interface{}
 	if err := json.Unmarshal([]byte(eventJSON), &parsed); err != nil {

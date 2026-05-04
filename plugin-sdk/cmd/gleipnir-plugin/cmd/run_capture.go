@@ -86,8 +86,8 @@ func runCapture(ctx context.Context, cmd *cobra.Command, binary string, opts cap
 				PayloadJSON:    req.GetPayloadJson(),
 				WatchScopeJSON: opts.watchScope,
 			}
-			// Ignore write errors here — they will surface as a missing record,
-			// not a panic. The file is flushed on close.
+			// Errors here are not surfaced; a write failure (e.g. disk full)
+			// will appear as a missing record in the output file.
 			writeMu.Lock()
 			_ = writeJSONLLine(outFile, rec)
 			writeMu.Unlock()

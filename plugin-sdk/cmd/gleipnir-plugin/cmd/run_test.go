@@ -623,6 +623,141 @@ func TestRunReplay_EmptyFilterKindRejected(t *testing.T) {
 	}
 }
 
+// ── Fix #4: Tool.Call unit test coverage ─────────────────────────────────────
+
+// TestExecScenarioStep_ToolCall covers happy path, result_contains match/mismatch,
+// non-string result_contains, and unknown assert_response key.
+func TestExecScenarioStep_ToolCall(t *testing.T) {
+	cases := []struct {
+		name           string
+		callFn         func(*toolv1.CallRequest) (*toolv1.CallResponse, error)
+		assertResponse map[string]interface{}
+		wantErr        string
+	}{
+		{
+			name: "happy path no assertions",
+			callFn: func(_ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+				return &toolv1.CallResponse{OutputJson: `{"text":"hello"}`}, nil
+			},
+			assertResponse: map[string]interface{}{},
+		},
+		{
+			name: "result_contains match",
+			callFn: func(_ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+				return &toolv1.CallResponse{OutputJson: `{"text":"hello"}`}, nil
+			},
+			assertResponse: map[string]interface{}{"result_contains": "hello"},
+		},
+		{
+			name: "result_contains mismatch",
+			callFn: func(_ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+				return &toolv1.CallResponse{OutputJson: `{"text":"world"}`}, nil
+			},
+			assertResponse: map[string]interface{}{"result_contains": "hello"},
+			wantErr:        "result_contains assertion failed",
+		},
+		{
+			name: "non-string result_contains",
+			callFn: func(_ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+				return &toolv1.CallResponse{OutputJson: `{}`}, nil
+			},
+			assertResponse: map[string]interface{}{"result_contains": 42},
+			wantErr:        "result_contains must be a string",
+		},
+		{
+			name: "unknown assert key",
+			callFn: func(_ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+				return &toolv1.CallResponse{OutputJson: `{}`}, nil
+			},
+			assertResponse: map[string]interface{}{"unknown_key": "oops"},
+			wantErr:        "not a supported response field",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubClient := &hostwire.Client{
+				Tool: &stubToolClient{callFn: tc.callFn},
+			}
+			step := scenarioStep{
+				RPC:            "Tool.Call",
+				Request:        map[string]interface{}{"tool_name": "echo", "input_json": `{"text":"hi"}`},
+				AssertResponse: tc.assertResponse,
+			}
+			err := execScenarioStep(context.Background(), step, stubClient, nil)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tc.wantErr)
+				}
+			}
+		})
+	}
+}
+
+// ── Fix #2 (Issue 2): UNSPECIFIED capability rejected ────────────────────────
+
+// TestExecScenarioStep_UnspecifiedCapabilityRejected verifies that listing
+// UNSPECIFIED (or its full proto name) as an expected_capability is rejected
+// with the same error as an unknown name.
+func TestExecScenarioStep_UnspecifiedCapabilityRejected(t *testing.T) {
+	stubClient := &hostwire.Client{
+		Handshake: &stubHandshakeClient{
+			negotiateFn: func(_ *handshakev1.NegotiateRequest) (*handshakev1.NegotiateResponse, error) {
+				return &handshakev1.NegotiateResponse{Ok: true}, nil
+			},
+		},
+	}
+
+	for _, capName := range []string{"UNSPECIFIED", "SERVICE_CAPABILITY_UNSPECIFIED"} {
+		t.Run(capName, func(t *testing.T) {
+			step := scenarioStep{
+				RPC: "Handshake.Negotiate",
+				Request: map[string]interface{}{
+					"expected_capabilities": []interface{}{capName},
+				},
+				AssertResponse: map[string]interface{}{},
+			}
+			err := execScenarioStep(context.Background(), step, stubClient, nil)
+			if err == nil {
+				t.Fatalf("expected error for UNSPECIFIED capability, got nil")
+			}
+			if !strings.Contains(err.Error(), "unknown capability") {
+				t.Errorf("error %q should mention 'unknown capability'", err.Error())
+			}
+		})
+	}
+}
+
+// ── Fix #1: replayEvent pipes payload over stdin ──────────────────────────────
+
+// TestReplayEvent_LargePayloadViaStdin verifies that replayEvent can deliver a
+// payload larger than 2MB. If the payload were passed as a CLI argument, Linux
+// would reject the exec with E2BIG (ARG_MAX ≈ 2MB). Piping over stdin avoids
+// this limit entirely.
+//
+// The test uses /bin/true as the subprocess — it ignores stdin and exits 0,
+// which is sufficient to prove no E2BIG occurs at the exec boundary.
+func TestReplayEvent_LargePayloadViaStdin(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("stdin pipe test requires linux")
+	}
+
+	// 3MB payload — well above Linux ARG_MAX (~2MB).
+	bigPayload := `{"data":"` + strings.Repeat("x", 3*1024*1024) + `"}`
+
+	var outBuf, errBuf bytes.Buffer
+	if err := replayEvent(context.Background(), "/bin/true", bigPayload, &outBuf, &errBuf); err != nil {
+		t.Fatalf("replayEvent with 3MB payload failed (E2BIG if passed as arg): %v", err)
+	}
+}
+
 // ── stub helpers used by unit tests above ────────────────────────────────────
 
 // stubHandshakeClient wraps the handshake client call in a function pointer

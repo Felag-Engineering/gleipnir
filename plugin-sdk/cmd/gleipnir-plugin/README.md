@@ -253,19 +253,31 @@ The format is stable across minor SDK versions; readers must check
 
 ### `--replay-event` convention
 
-For `--replay` to work, your plugin binary must implement a `--replay-event
-<json>` flag. When invoked with that flag the plugin should:
+For `--replay` to work, your plugin binary must implement a `--replay-event`
+flag. When invoked with that flag the host **pipes the JSON event payload to
+the plugin's stdin** — the plugin must call `io.ReadAll(os.Stdin)` to receive
+it. The payload is never passed as a CLI argument: Linux `ARG_MAX` (~2MB)
+would silently fail for large webhook payloads, which can reach the 16MB JSONL
+scanner limit.
 
-1. Parse the event JSON (same shape as an `EmitEventRequest` payload).
-2. Process it as if received from the real substrate.
-3. Exit 0 on success, non-zero on failure.
+The plugin should:
+
+1. Read the full event JSON from stdin with `io.ReadAll(os.Stdin)`.
+2. Parse it (same shape as an `EmitEventRequest` payload).
+3. Process it as if received from the real substrate.
+4. Exit 0 on success, non-zero on failure.
 
 Example in a plugin `main.go`:
 
 ```go
-if len(os.Args) >= 3 && os.Args[1] == "--replay-event" {
+if len(os.Args) >= 2 && os.Args[1] == "--replay-event" {
+    raw, err := io.ReadAll(os.Stdin)
+    if err != nil {
+        fmt.Fprintln(os.Stderr, "replay-event: read stdin:", err)
+        os.Exit(1)
+    }
     var evt map[string]interface{}
-    if err := json.Unmarshal([]byte(os.Args[2]), &evt); err != nil {
+    if err := json.Unmarshal(raw, &evt); err != nil {
         fmt.Fprintln(os.Stderr, "bad event JSON:", err)
         os.Exit(1)
     }

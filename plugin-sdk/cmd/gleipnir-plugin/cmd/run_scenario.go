@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -86,12 +85,7 @@ func loadScenario(path string) (*scenario, error) {
 	}
 	defer f.Close()
 
-	raw, err := io.ReadAll(f)
-	if err != nil {
-		return nil, fmt.Errorf("read scenario file: %w", err)
-	}
-
-	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
+	dec := yaml.NewDecoder(f)
 	dec.KnownFields(true)
 
 	var s scenario
@@ -164,6 +158,12 @@ func execScenarioStep(ctx context.Context, step scenarioStep, client *hostwire.C
 				if !known {
 					return fmt.Errorf("unknown capability %q — valid values: TOOL, CHANNEL, TRIGGER (full form SERVICE_CAPABILITY_* also accepted)", name)
 				}
+				if val == 0 {
+					// Value 0 is SERVICE_CAPABILITY_UNSPECIFIED and is never a
+					// valid capability to declare. Reject it explicitly so that
+					// a YAML typo doesn't silently pass as "unspecified".
+					return fmt.Errorf("unknown capability %q — valid values: TOOL, CHANNEL, TRIGGER (full form SERVICE_CAPABILITY_* also accepted)", name)
+				}
 				req.ExpectedCapabilities = append(req.ExpectedCapabilities, handshakev1.ServiceCapability(val))
 			}
 		}
@@ -220,7 +220,11 @@ func execScenarioStep(ctx context.Context, step scenarioStep, client *hostwire.C
 			remaining[k] = v
 		}
 
-		if rc, ok := remaining["result_contains"].(string); ok {
+		if rcRaw, ok := remaining["result_contains"]; ok {
+			rc, ok := rcRaw.(string)
+			if !ok {
+				return fmt.Errorf("assert_response.result_contains must be a string, got %T", rcRaw)
+			}
 			if !strings.Contains(resp.GetOutputJson(), rc) {
 				return fmt.Errorf("result_contains assertion failed: %q not found in %q", rc, resp.GetOutputJson())
 			}
