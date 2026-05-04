@@ -1,0 +1,31 @@
+# E2E test stack for #179 — builds from local source on this branch.
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up --build -d
+#   tests/e2e-feedback/run.sh
+#   docker compose -f docker-compose.test.yml down -v
+
+services:
+  api-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${GLEIPNIR_TEST_PORT:-3001}:8080"
+    environment:
+      - GLEIPNIR_DB_PATH=/data/gleipnir.db
+      - GLEIPNIR_LOG_LEVEL=${GLEIPNIR_LOG_LEVEL:-info}
+      - GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT=${GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT:-2m}
+      - GLEIPNIR_FEEDBACK_SCAN_INTERVAL=${GLEIPNIR_FEEDBACK_SCAN_INTERVAL:-5s}
+      - GLEIPNIR_ENCRYPTION_KEY=${GLEIPNIR_ENCRYPTION_KEY:?set GLEIPNIR_ENCRYPTION_KEY in .env}
+    volumes:
+      - gleipnir_test_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/health"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+
+volumes:
+  gleipnir_test_data:
