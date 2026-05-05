@@ -98,7 +98,7 @@ CREATE TABLE plugin_audit_events (
   id INTEGER PRIMARY KEY,
   plugin_instance_id INTEGER NULL,  -- nullable for plugin-level (not instance-scoped) events
   event_type TEXT NOT NULL,
-  severity TEXT NOT NULL,            -- 'info' | 'warn' | 'error' | 'critical'
+  severity TEXT NOT NULL,            -- 'info' | 'warning' | 'high' | 'critical'
   actor_user_id INTEGER NULL,        -- nullable for system-driven events
   payload_json TEXT NOT NULL,
   created_at TIMESTAMP NOT NULL
