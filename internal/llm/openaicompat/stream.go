@@ -88,14 +88,8 @@ func parseSSEStream(ctx context.Context, body io.ReadCloser, out chan<- llm.Mess
 
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-				// Drop deltas whose only content is whitespace. Local models
-				// (LM Studio, Ollama) frequently sprinkle bare "\n" deltas
-				// alongside tool calls; surfacing them creates empty text
-				// blocks downstream.
-				if strings.TrimSpace(*choice.Delta.Content) != "" {
-					text := *choice.Delta.Content
-					out <- llm.MessageChunk{Text: &text}
-				}
+				text := *choice.Delta.Content
+				out <- llm.MessageChunk{Text: &text}
 			}
 			for _, part := range choice.Delta.ToolCalls {
 				p := partials[part.Index]
