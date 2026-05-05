@@ -38,6 +38,7 @@ type HandlerBundle struct {
 	SettingsHandler      *auth.SettingsHandler
 	AdminHandler         *admin.Handler
 	OpenAICompatHandler  *admin.OpenAICompatHandler
+	PluginAdminHandler   *admin.PluginHandler
 	WebhookHandler       *trigger.WebhookHandler
 	SSEHandler           *sse.Handler
 	PolicyWebhookHandler *PolicyWebhookHandler
@@ -214,6 +215,10 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 					return int(n), err
 				},
 			}))
+
+			if cfg.Handlers.PluginAdminHandler != nil {
+				r.Get("/plugins/{id}/instances/{iid}", cfg.Handlers.PluginAdminHandler.GetInstance)
+			}
 
 			r.Route("/openai-providers", func(r chi.Router) {
 				r.Get("/", cfg.Handlers.OpenAICompatHandler.ListProviders)

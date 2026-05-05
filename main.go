@@ -288,6 +288,7 @@ func run(cfg config.Config) error {
 		SettingsHandler:      settingsHandler,
 		AdminHandler:         adminHandler,
 		OpenAICompatHandler:  openaiCompatHandler,
+		PluginAdminHandler:   admin.NewPluginHandler(store.Queries()),
 		WebhookHandler:       webhookHandler,
 		SSEHandler:           sseHandler,
 		PolicyWebhookHandler: policyWebhookHandler,

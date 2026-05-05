@@ -365,3 +365,31 @@ export interface ArcadeAuthorizeWaitRequest {
   toolkit: string
   auth_id: string
 }
+
+// Matches internal/model/plugin_health.go → PluginHealthState.
+// Ten states across three severity tiers:
+//   Green  — healthy
+//   Yellow — degraded but operational
+//   Red    — non-functional
+export type PluginHealthState =
+  | 'healthy'
+  | 'unsigned_permissive'
+  | 'pending_key_approval'
+  | 'pending_manifest_approval'
+  | 'pending_config_migration'
+  | 'unhealthy'
+  | 'circuit_broken'
+  | 'verification_error'
+  | 'signature_invalid'
+  | 'crashed'
+
+// Matches internal/admin/plugin_handler.go → instanceResponse.
+export interface ApiPluginInstance {
+  id: string
+  plugin_id: string
+  instance_name: string
+  state: PluginHealthState
+  detail: string | null
+  version: number
+  updated_at: string
+}

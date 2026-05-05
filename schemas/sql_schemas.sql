@@ -425,8 +425,11 @@ CREATE TABLE plugin_instances (
                                          'pending_manifest_approval',
                                          'pending_config_migration',
                                          'verification_error',
-                                         'unsigned_permissive'
-                                     )),                                                  -- ADR-045 §7
+                                         'unsigned_permissive',
+                                         'unhealthy',
+                                         'crashed',
+                                         'circuit_broken'
+                                     )),                                                  -- ADR-038, ADR-045 §7, issue #191
     health_detail            TEXT,                                                        -- nullable; operator-facing reason for non-healthy state
     last_oauth_callback_url  TEXT,                                                        -- nullable; OAuth-flow plumbing (#230)
     version                  INTEGER NOT NULL DEFAULT 0,                                  -- ADR-038 CAS counter
