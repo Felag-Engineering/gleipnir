@@ -15,7 +15,6 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
-	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
 	"github.com/felag-engineering/gleipnir/internal/http/api"
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/http/sse"
@@ -25,6 +24,7 @@ import (
 	llmfactory "github.com/felag-engineering/gleipnir/internal/llm/factory"
 	openaicompatllm "github.com/felag-engineering/gleipnir/internal/llm/openaicompat"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
+	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
@@ -65,10 +65,11 @@ func run(cfg config.Config) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Plugin loader is a stub today; Init is a no-op when GLEIPNIR_PLUGINS_ENABLED
-	// is false (the default for this release; spec §15.2). Init currently cannot
-	// fail — the error return is for the Phase 3 loader.
-	if err := pluginpkg.NewLoader().Init(ctx, cfg); err != nil {
+	// Plugin loader: Init sets up the Verifier; StartWatcher starts the fsnotify
+	// watcher after the DB is migrated. Both are no-ops when GLEIPNIR_PLUGINS_ENABLED
+	// is false (the default for this release; spec §15.2).
+	loader := pluginpkg.NewLoader()
+	if err := loader.Init(ctx, cfg); err != nil {
 		return fmt.Errorf("init plugin loader: %w", err)
 	}
 
@@ -80,6 +81,14 @@ func run(cfg config.Config) error {
 
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrate: %w", err)
+	}
+
+	// Start the plugin watcher after migration so the schema is ready.
+	// No-op when GLEIPNIR_PLUGINS_ENABLED=false.
+	if cfg.PluginsEnabled {
+		if err := loader.StartWatcher(ctx, store.Queries(), cfg.PluginsDir); err != nil {
+			return fmt.Errorf("start plugin watcher: %w", err)
+		}
 	}
 
 	// Mark any in-flight runs as interrupted (ADR-011).
