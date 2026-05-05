@@ -22,5 +22,6 @@ func All() []Migration {
 		&AddCronTriggerType{},
 		&AddMCPToolEnabled{},
 		&AddMCPAuthHeaders{},
+		&AddPluginTables{},
 	}
 }

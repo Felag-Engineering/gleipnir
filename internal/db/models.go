@@ -66,6 +66,44 @@ type OpenaiCompatProvider struct {
 	UpdatedAt       string `json:"updated_at"`
 }
 
+type Plugin struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	PluginVersion    string `json:"plugin_version"`
+	ManifestSnapshot string `json:"manifest_snapshot"`
+	TrustedPubkey    string `json:"trusted_pubkey"`
+	Status           string `json:"status"`
+	Version          int64  `json:"version"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
+}
+
+type PluginAuditEvent struct {
+	ID               int64   `json:"id"`
+	PluginInstanceID *string `json:"plugin_instance_id"`
+	EventType        string  `json:"event_type"`
+	Severity         string  `json:"severity"`
+	ActorUserID      *string `json:"actor_user_id"`
+	PayloadJson      string  `json:"payload_json"`
+	CreatedAt        string  `json:"created_at"`
+}
+
+type PluginInstance struct {
+	ID                   string  `json:"id"`
+	PluginID             string  `json:"plugin_id"`
+	InstanceName         string  `json:"instance_name"`
+	ConfigJson           string  `json:"config_json"`
+	CredentialsEncrypted *string `json:"credentials_encrypted"`
+	CredentialsExpiresAt *string `json:"credentials_expires_at"`
+	HandshakeVersions    string  `json:"handshake_versions"`
+	HealthState          string  `json:"health_state"`
+	HealthDetail         *string `json:"health_detail"`
+	LastOauthCallbackUrl *string `json:"last_oauth_callback_url"`
+	Version              int64   `json:"version"`
+	CreatedAt            string  `json:"created_at"`
+	UpdatedAt            string  `json:"updated_at"`
+}
+
 type Policy struct {
 	ID                     string  `json:"id"`
 	Name                   string  `json:"name"`

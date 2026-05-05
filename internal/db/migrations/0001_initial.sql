@@ -356,6 +356,72 @@ CREATE TABLE user_preferences (
 );
 
 -- ---------------------------------------------------------------------------
+-- Plugin system (ADR-041, ADR-045, ADR-046)
+--
+-- See schemas/sql_schemas.sql for the canonical definition and rationale.
+-- Three tables: plugins (one per binary+manifest, TOFU-pinned pubkey),
+-- plugin_instances (configured deployments), plugin_audit_events (operator-
+-- only audit trail; NEVER surfaced to the LLM — see ADR-046). Existing
+-- deployments get these via the AddPluginTables Go migration.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugins (
+    id                 TEXT    PRIMARY KEY,
+    name               TEXT    NOT NULL UNIQUE,
+    plugin_version     TEXT    NOT NULL,
+    manifest_snapshot  TEXT    NOT NULL,
+    trusted_pubkey     TEXT    NOT NULL,
+    status             TEXT    NOT NULL CHECK(status IN ('pending_review','active','removed')),
+    version            INTEGER NOT NULL DEFAULT 0,
+    created_at         TEXT    NOT NULL,
+    updated_at         TEXT    NOT NULL
+);
+
+CREATE INDEX idx_plugins_status ON plugins(status);
+
+CREATE TABLE plugin_instances (
+    id                       TEXT    PRIMARY KEY,
+    plugin_id                TEXT    NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+    instance_name            TEXT    NOT NULL,
+    config_json              TEXT    NOT NULL DEFAULT '{}',
+    credentials_encrypted    TEXT,
+    credentials_expires_at   TEXT,
+    handshake_versions       TEXT    NOT NULL DEFAULT '{}',
+    health_state             TEXT    NOT NULL DEFAULT 'pending_key_approval'
+                                     CHECK(health_state IN (
+                                         'healthy',
+                                         'signature_invalid',
+                                         'pending_key_approval',
+                                         'pending_manifest_approval',
+                                         'pending_config_migration',
+                                         'verification_error',
+                                         'unsigned_permissive'
+                                     )),
+    health_detail            TEXT,
+    last_oauth_callback_url  TEXT,
+    version                  INTEGER NOT NULL DEFAULT 0,
+    created_at               TEXT    NOT NULL,
+    updated_at               TEXT    NOT NULL,
+    UNIQUE (plugin_id, instance_name)
+);
+
+CREATE INDEX idx_plugin_instances_plugin_id    ON plugin_instances(plugin_id);
+CREATE INDEX idx_plugin_instances_health_state ON plugin_instances(health_state);
+
+CREATE TABLE plugin_audit_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    plugin_instance_id  TEXT    REFERENCES plugin_instances(id) ON DELETE SET NULL,
+    event_type          TEXT    NOT NULL,
+    severity            TEXT    NOT NULL CHECK(severity IN ('info','warning','high','critical')),
+    actor_user_id       TEXT    REFERENCES users(id) ON DELETE SET NULL,
+    payload_json        TEXT    NOT NULL,
+    created_at          TEXT    NOT NULL
+);
+
+CREATE INDEX idx_pae_instance_created ON plugin_audit_events(plugin_instance_id, created_at);
+CREATE INDEX idx_pae_event_created    ON plugin_audit_events(event_type, created_at);
+
+-- ---------------------------------------------------------------------------
 -- Seed migration version
 -- ---------------------------------------------------------------------------
 

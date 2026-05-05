@@ -124,3 +124,12 @@ See `internal/db/migrations/0013_add_thinking_step_type.go` for the pattern.
 - **Foreign keys:** Enforced via `PRAGMA foreign_keys=ON` at startup. Migrations that recreate tables must toggle this off.
 - **All types are strings:** sqlc generates plain `string` and `int64` fields from SQLite TEXT/INTEGER columns. Conversion to typed model enums happens in the caller, not in `db`.
 - **Generated code is committed:** The `internal/db/*.sql.go` and `models.go` files are checked into git. Run `sqlc generate` locally and commit the results.
+- **Stick to ASCII inside `internal/db/queries/*.sql`:** sqlc 1.30's parameter rewriter has a byte-vs-rune position bug with multi-byte UTF-8 characters in the same file as a parameterised query. A single em-dash or section sign in a comment will silently corrupt downstream `:param` substitutions. Use plain ASCII (`--`, `sec`) in query files; non-ASCII is fine in `schemas/sql_schemas.sql` and migration files because sqlc only parses the queries directory.
+
+## Plugin system tables (ADR-041, ADR-045, ADR-046)
+
+Three tables back the plugin system; they live alongside the rest of the schema and are queried via the `plugins.sql` and `plugin_audit_events.sql` query files:
+
+- **`plugins`** — one row per installed plugin (binary + manifest pair). Holds the TOFU-pinned `trusted_pubkey`, the `manifest_snapshot` used for hot-reload material-change detection, and the install-flow `status` (`pending_review` / `active` / `removed`). The `version` column is the ADR-038 CAS counter; do not confuse with `plugin_version`, which is the author's SemVer string.
+- **`plugin_instances`** — one row per configured deployment. Carries `config_json`, `credentials_encrypted` (write-only via the API per ADR-039 / ADR-034 pattern), `handshake_versions` (per-service versions pinned from the `Handshake/v1` exchange), and the `health_state` enum from ADR-045 §7. Same CAS `version` semantics.
+- **`plugin_audit_events`** — operator-only audit trail (ADR-046). Append-only, INTEGER primary key. Foreign keys to `plugin_instances` and `users` are nullable with `ON DELETE SET NULL` so audit history outlives uninstalls and user deletions. **Never surfaced to the LLM.**
