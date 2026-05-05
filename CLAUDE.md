@@ -138,6 +138,7 @@ internal/
   mcp/                — MCP HTTP client, tool registry, capability tags
   model/              — domain types (Policy, Run, RunStep, ApprovalRequest, enums, ...)
   plugin/             — host-side plugin loader; gated by GLEIPNIR_PLUGINS_ENABLED. Implements fsnotify watcher, tarball extractor, minisign verifier, and DB installer. Out-of-process subprocess spawning and generation refcounts remain as follow-up work.
+    state/            — per-instance health-state machine; mirrors execution/runstate (transition table + version-CAS, ADR-038). Severity ranking encodes §8.1 "plugin can only mark itself worse" merge rule.
   policy/             — YAML parser, validator, system prompt renderer
   settings/           — read-side accessor for system_settings (default model, public URL); injected into runtime so non-admin packages don't depend on the admin HTTP handler
   testutil/           — shared test helpers
@@ -176,6 +177,7 @@ Routes are registered in `internal/http/api/router.go` via `BuildRouter`, which 
 - `/api/v1/policies/*` — CRUD for policies
 - `/api/v1/runs/*` — list/get runs, steps, cancel, approval, feedback
 - `/api/v1/mcp/servers/*` — MCP server registry, tool discovery; `PUT /:id` updates name/url only; `PUT /:id/headers/:name` and `DELETE /:id/headers/:name` manage individual auth headers (admin|operator only; see ADR-039); `POST /:id/arcade/authorize` and `POST /:id/arcade/authorize/wait` pre-authorize Arcade toolkits (admin|operator only; see ADR-040)
+- `/api/v1/admin/plugins/{id}/instances/{iid}` — per-instance plugin health (state, detail, version) for the admin plugins UI; admin-only
 - `/api/v1/webhooks/{policyID}` — fires a webhook-triggered run (auth dispatcher per `trigger.auth`: hmac | bearer | none)
 - `/api/v1/policies/{policyID}/trigger` — fires a manual run
 - `/api/v1/policies/{id}/webhook/rotate`, `/api/v1/policies/{id}/webhook/secret` — rotate/reveal the webhook secret (admin|operator only; see ADR-034)

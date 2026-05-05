@@ -395,7 +395,10 @@ CREATE TABLE plugin_instances (
                                          'pending_manifest_approval',
                                          'pending_config_migration',
                                          'verification_error',
-                                         'unsigned_permissive'
+                                         'unsigned_permissive',
+                                         'unhealthy',
+                                         'crashed',
+                                         'circuit_broken'
                                      )),
     health_detail            TEXT,
     last_oauth_callback_url  TEXT,
