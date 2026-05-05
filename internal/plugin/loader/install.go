@@ -1,18 +1,24 @@
 package loader
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 	manifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 
@@ -69,6 +75,7 @@ const (
 	auditSignatureInvalid = "plugin_signature_invalid"
 	auditPluginInstalled  = "plugin_installed"
 	auditUpdatePending    = "plugin_update_pending"
+	auditPubkeyMismatch   = "plugin_pubkey_mismatch"
 
 	// Audit severity levels.
 	severityHigh = "high"
@@ -80,15 +87,17 @@ const (
 // Watcher; Install is called sequentially (ADR-003 serialization via the
 // watcher's fire channel).
 type Installer struct {
-	verifier BundleVerifier
-	q        *db.Queries
+	verifier  BundleVerifier
+	q         *db.Queries
+	publisher event.Publisher
 	// clock is injectable so tests can assert on timestamps without racing real time.
 	clock func() time.Time
 }
 
-// NewInstaller returns an Installer wired to the given verifier and query set.
-func NewInstaller(v BundleVerifier, q *db.Queries) *Installer {
-	return &Installer{verifier: v, q: q, clock: time.Now}
+// NewInstaller returns an Installer wired to the given verifier, query set, and
+// event publisher. publisher may be nil — state change events are skipped when nil.
+func NewInstaller(v BundleVerifier, q *db.Queries, publisher event.Publisher) *Installer {
+	return &Installer{verifier: v, q: q, publisher: publisher, clock: time.Now}
 }
 
 // Install runs the full install pipeline for the tarball at tarPath:
@@ -210,7 +219,107 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 		return nil
 	}
 
+	// TOFU pubkey trust check: only applies to verified (signed) bundles.
+	if result.Outcome == OutcomeVerified {
+		if existing.TrustedPubkey == "" {
+			// Delayed TOFU: plugin was first installed under GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true
+			// and a signed update has now arrived. Capture the pubkey silently — no mismatch event.
+			rows, updateErr := in.q.UpdatePluginTrustedPubkey(ctx, db.UpdatePluginTrustedPubkeyParams{
+				TrustedPubkey:   string(result.Pubkey),
+				UpdatedAt:       nowStr,
+				ID:              existing.ID,
+				ExpectedVersion: existing.Version,
+			})
+			if updateErr != nil {
+				return fmt.Errorf("capture trusted pubkey for %q (delayed TOFU): %w", m.Name, updateErr)
+			}
+			if rows == 0 {
+				return fmt.Errorf("capture trusted pubkey for %q: CAS conflict (version mismatch)", m.Name)
+			}
+			// Re-read so updatePlugin sees the bumped version.
+			existing, err = in.q.GetPluginByName(ctx, m.Name)
+			if err != nil {
+				return fmt.Errorf("re-read plugin %q after TOFU capture: %w", m.Name, err)
+			}
+		} else if !bytes.Equal(result.Pubkey, []byte(existing.TrustedPubkey)) {
+			// Key mismatch: a different signing key was used for this update.
+			// Block the update and transition all instances to pending_key_approval
+			// so admins are alerted. Do not call updatePlugin.
+			return in.handlePubkeyMismatch(ctx, existing, result, m.Version, nowStr)
+		}
+	}
+
 	return in.updatePlugin(ctx, existing, m, manifestBytes, nowStr)
+}
+
+// handlePubkeyMismatch transitions all instances of the plugin to
+// pending_key_approval and emits a plugin_pubkey_mismatch audit event.
+// It returns nil so the watcher continues — the audit event is the operator signal.
+func (in *Installer) handlePubkeyMismatch(ctx context.Context, existing db.Plugin, result VerifyResult, newVersion, nowStr string) error {
+	// Compute fingerprints from old and new pubkeys for the audit payload.
+	oldFingerprint := pubkeyFingerprint([]byte(existing.TrustedPubkey))
+	newFingerprint := pubkeyFingerprint(result.Pubkey)
+
+	// Transition all instances to pending_key_approval. Each uses the state machine
+	// CAS guard. ErrTransitionConflict means another writer already moved the instance;
+	// log and continue rather than failing the whole operation.
+	// If listing instances fails, log the error and fall through to emit the audit event
+	// anyway — the audit row is the operator's only signal that a mismatch happened.
+	instances, listErr := in.q.ListPluginInstancesByPlugin(ctx, existing.ID)
+	if listErr != nil {
+		slog.WarnContext(ctx, "pubkey mismatch: list instances failed; skipping state transitions",
+			"plugin", existing.Name, "err", listErr)
+	}
+	for _, inst := range instances {
+		current := model.PluginHealthState(inst.HealthState)
+		if !pluginstate.IsLegalTransition(current, model.PluginHealthStatePendingKeyApproval) {
+			continue
+		}
+		if stateErr := pluginstate.SetHealthState(ctx, in.q, in.publisher, inst.ID, pluginstate.OriginHost, model.PluginHealthStatePendingKeyApproval, "signing key changed; admin approval required"); stateErr != nil {
+			if !errors.Is(stateErr, pluginstate.ErrTransitionConflict) {
+				slog.WarnContext(ctx, "pubkey mismatch: set pending_key_approval failed",
+					"instance_id", inst.ID, "err", stateErr)
+			}
+		}
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"plugin_id":              existing.ID,
+		"name":                   existing.Name,
+		"old_pubkey_fingerprint": oldFingerprint,
+		"new_pubkey_fingerprint": newFingerprint,
+		"new_pubkey_b64":         base64.StdEncoding.EncodeToString(result.Pubkey),
+		"version":                newVersion,
+	})
+	_, auditErr := in.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
+		PluginInstanceID: nil,
+		EventType:        auditPubkeyMismatch,
+		Severity:         severityHigh,
+		ActorUserID:      nil,
+		PayloadJson:      string(payload),
+		CreatedAt:        nowStr,
+	})
+	if auditErr != nil {
+		return fmt.Errorf("record pubkey_mismatch audit for %q: %w", existing.Name, auditErr)
+	}
+
+	return nil
+}
+
+// pubkeyFingerprint derives a short human-readable fingerprint from the
+// Minisign public key bytes. Returns the hex-encoded 8-byte key ID, which is
+// already embedded in the wire format and unique per keypair.
+// If the bytes cannot be parsed (e.g. empty string for an unsigned plugin),
+// a fallback of "(unknown)" is returned.
+func pubkeyFingerprint(pubkeyBytes []byte) string {
+	if len(pubkeyBytes) == 0 {
+		return "(unknown)"
+	}
+	pk, _, err := signing.ParsePublicKey(pubkeyBytes)
+	if err != nil {
+		return "(unparseable)"
+	}
+	return fmt.Sprintf("%x", pk.KeyID)
 }
 
 // createPlugin inserts a new plugin row with status=pending_review.

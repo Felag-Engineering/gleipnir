@@ -248,6 +248,17 @@ The full set of v1 health states (per spec §5.6) is enumerated here so that dow
 
 Each state is rendered as a colored chip on `/admin/plugins`, click-through reveals detail and admin actions (Accept new key / Approve manifest / View error / Revert / Remove pending update). Chip rendering and the action set are owned by issue #191; this ADR fixes the state names and the conditions under which the loader assigns them.
 
+### Audit event types (issue #188)
+
+Two audit event types are emitted by the TOFU trust machinery (both at severity `high`):
+
+| Event type              | When emitted                                                                 | Key payload fields |
+|-------------------------|------------------------------------------------------------------------------|--------------------|
+| `plugin_pubkey_mismatch`| A signed update arrives with a different key than the captured trusted pubkey. The update is blocked; all instances move to `pending_key_approval`. | `plugin_id`, `name`, `old_pubkey_fingerprint`, `new_pubkey_fingerprint`, `new_pubkey_b64` (base64 of the full signing.pub bytes), `version` |
+| `plugin_pubkey_rotated` | An admin accepts the new key via `POST /api/v1/admin/plugins/:id/accept-new-key`. The `trusted_pubkey` column is updated (CAS-guarded); `pending_key_approval` instances transition to `healthy`. | `plugin_id`, `name`, `old_pubkey_fingerprint`, `new_pubkey_fingerprint` |
+
+`PluginInstanceID` is `nil` for both events (plugin-level, not instance-level). `ActorUserID` is set for `plugin_pubkey_rotated` from the authenticated session.
+
 ### Out of scope
 
 - The Minisign Go library implementation itself (ADR-043 covers it from the producer side; the host imports the same `plugin-sdk/signing` package for verification).
@@ -257,6 +268,7 @@ Each state is rendered as a colored chip on `/admin/plugins`, click-through reve
 - Revocation lists. v1 has no revocation channel; admins remove a compromised plugin by uninstalling it. CRL-style infrastructure is deferred.
 - Verifying plugin behavior against the manifest at runtime. Out of scope — that's a sandboxing concern (not v1).
 - The admin UI flows for "Accept new key" and "Approve manifest". Owned by issues #188 (TOFU UI) and #189 (material-change detection); this ADR specifies the conditions, not the screens.
+- Out-of-band pubkey paste at install time (deferred to a follow-up per issue #188 scope-down). The TOFU first-leap plus `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` is the v1 escape hatch.
 
 ### Consequences
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 	_ "modernc.org/sqlite"
 )
@@ -236,7 +237,7 @@ func writeTarball(t *testing.T, path string, entries []tarEntry) {
 func newTestInstaller(t *testing.T, q *db.Queries, allowUnsigned bool) *Installer {
 	t.Helper()
 	v := &realVerifier{allowUnsigned: allowUnsigned}
-	inst := NewInstaller(v, q)
+	inst := NewInstaller(v, q, nil)
 	inst.clock = func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
 	return inst
 }
@@ -314,14 +315,42 @@ func TestInstall_VersionBump_PendingReview(t *testing.T) {
 	q := openTestDB(t)
 	inst := newTestInstaller(t, q, false)
 
+	// Generate a single keypair so both installs are signed by the same key.
+	// Using the same key avoids triggering the pubkey-mismatch path.
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	buildVersionedTarball := func(t *testing.T, version string) string {
+		t.Helper()
+		manifestBytes := []byte("schema_version: v1\nname: bump-plugin\nversion: " + version + "\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+		binaryBytes := []byte("binary for bump-plugin " + version)
+		payload := signing.PluginPayload(binaryBytes, manifestBytes)
+		sig, err := signing.Sign(sk.SecretKey, sk.KeyID, payload, "trusted comment")
+		if err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		sigBytes := signing.MarshalSignature(sig, "test sig")
+		tarPath := filepath.Join(t.TempDir(), "bump-plugin-"+version+".tar.gz")
+		writeTarball(t, tarPath, []tarEntry{
+			{name: "manifest.yaml", content: manifestBytes, mode: 0o644},
+			{name: "bump-plugin", content: binaryBytes, mode: 0o755},
+			{name: "signing.pub", content: pubkeyBytes, mode: 0o644},
+			{name: "bump-plugin.minisig", content: sigBytes, mode: 0o644},
+		})
+		return tarPath
+	}
+
 	// First install — v1.0.0.
-	tarPath1, _ := signedPluginTarball(t, "bump-plugin", "1.0.0")
+	tarPath1 := buildVersionedTarball(t, "1.0.0")
 	if err := inst.Install(context.Background(), tarPath1); err != nil {
 		t.Fatalf("initial Install: %v", err)
 	}
 
-	// Second install — v1.1.0 (version bump).
-	tarPath2, _ := signedPluginTarball(t, "bump-plugin", "1.1.0")
+	// Second install — v1.1.0 (version bump, same key).
+	tarPath2 := buildVersionedTarball(t, "1.1.0")
 	if err := inst.Install(context.Background(), tarPath2); err != nil {
 		t.Fatalf("version-bump Install: %v", err)
 	}
@@ -407,6 +436,227 @@ func TestInstall_UnsignedPermissive_PendingReview(t *testing.T) {
 	}
 }
 
+// seedPluginInstance creates a plugin_instances row for testing TOFU transitions.
+func seedPluginInstance(t *testing.T, q *db.Queries, pluginID, instanceID string, state model.PluginHealthState) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := q.CreatePluginInstance(context.Background(), db.CreatePluginInstanceParams{
+		ID:                instanceID,
+		PluginID:          pluginID,
+		InstanceName:      "test",
+		ConfigJson:        "{}",
+		HandshakeVersions: "{}",
+		HealthState:       string(state),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	})
+	if err != nil {
+		t.Fatalf("CreatePluginInstance: %v", err)
+	}
+}
+
+func TestInstall_TOFUFirstInstall_CapturesPubkey(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	tarPath, _ := signedPluginTarball(t, "tofu-plugin", "1.0.0")
+	if err := inst.Install(context.Background(), tarPath); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	row, err := q.GetPluginByName(context.Background(), "tofu-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+	if row.TrustedPubkey == "" {
+		t.Error("trusted_pubkey: want non-empty after first install (TOFU capture)")
+	}
+}
+
+func TestInstall_SamePubkeyUpdate_PassesThrough(t *testing.T) {
+	// Install v1 with key A, then install v2 built from the same key A.
+	// The update should proceed without a mismatch event.
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	// Generate one keypair and build two tarballs with it.
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	buildTar := func(t *testing.T, version string) string {
+		t.Helper()
+		manifestBytes := []byte("schema_version: v1\nname: same-key-plugin\nversion: " + version + "\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+		binaryBytes := []byte("binary for " + version)
+		payload := signing.PluginPayload(binaryBytes, manifestBytes)
+		sig, err := signing.Sign(sk.SecretKey, sk.KeyID, payload, "trusted comment")
+		if err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		sigBytes := signing.MarshalSignature(sig, "test sig")
+		tarPath := filepath.Join(t.TempDir(), "same-key-plugin-"+version+".tar.gz")
+		writeTarball(t, tarPath, []tarEntry{
+			{name: "manifest.yaml", content: manifestBytes, mode: 0o644},
+			{name: "same-key-plugin", content: binaryBytes, mode: 0o755},
+			{name: "signing.pub", content: pubkeyBytes, mode: 0o644},
+			{name: "same-key-plugin.minisig", content: sigBytes, mode: 0o644},
+		})
+		return tarPath
+	}
+
+	if err := inst.Install(context.Background(), buildTar(t, "1.0.0")); err != nil {
+		t.Fatalf("Install v1: %v", err)
+	}
+	if err := inst.Install(context.Background(), buildTar(t, "1.1.0")); err != nil {
+		t.Fatalf("Install v1.1.0 (same key): %v", err)
+	}
+
+	row, err := q.GetPluginByName(context.Background(), "same-key-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+	if row.PluginVersion != "1.1.0" {
+		t.Errorf("plugin_version = %q, want 1.1.0", row.PluginVersion)
+	}
+
+	// No mismatch event should have been recorded.
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditPubkeyMismatch,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) > 0 {
+		t.Errorf("got %d pubkey_mismatch events, want 0 (same key update)", len(events))
+	}
+}
+
+func TestInstall_DifferentPubkeyUpdate_BlocksAndAudits(t *testing.T) {
+	// Install v1 with key A, then attempt v2 signed by key B.
+	// Expect: no UpdatePluginManifest call (version stays at v1), mismatch audit event,
+	// and any healthy instance transitions to pending_key_approval.
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	// First install with key A.
+	tarPath1, _ := signedPluginTarball(t, "mismatch-plugin", "1.0.0")
+	if err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1: %v", err)
+	}
+
+	pluginRow, err := q.GetPluginByName(context.Background(), "mismatch-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after v1: %v", err)
+	}
+
+	// Seed a healthy instance for the plugin.
+	seedPluginInstance(t, q, pluginRow.ID, "inst-1", model.PluginHealthStateHealthy)
+
+	// Second tarball signed by a different key (signedPluginTarball generates a fresh keypair).
+	tarPath2, _ := signedPluginTarball(t, "mismatch-plugin", "2.0.0")
+	if err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v2 (different key): %v", err)
+	}
+
+	// Plugin version must remain at 1.0.0 (blocked).
+	pluginRow2, err := q.GetPluginByName(context.Background(), "mismatch-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after v2: %v", err)
+	}
+	if pluginRow2.PluginVersion != "1.0.0" {
+		t.Errorf("plugin_version = %q, want 1.0.0 (mismatch should block update)", pluginRow2.PluginVersion)
+	}
+
+	// A plugin_pubkey_mismatch audit event must have been recorded.
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditPubkeyMismatch,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list mismatch events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected a plugin_pubkey_mismatch audit event, got none")
+	}
+	if events[0].Severity != "high" {
+		t.Errorf("audit severity = %q, want high", events[0].Severity)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(events[0].PayloadJson), &payload); err != nil {
+		t.Fatalf("parse mismatch audit payload: %v", err)
+	}
+	if payload["new_pubkey_b64"] == "" {
+		t.Error("mismatch audit payload: new_pubkey_b64 must be non-empty")
+	}
+	if payload["name"] != "mismatch-plugin" {
+		t.Errorf("mismatch audit payload: name = %q, want mismatch-plugin", payload["name"])
+	}
+
+	// The instance must be in pending_key_approval now.
+	inst1, err := q.GetPluginInstanceByID(context.Background(), "inst-1")
+	if err != nil {
+		t.Fatalf("GetPluginInstanceByID: %v", err)
+	}
+	if inst1.HealthState != string(model.PluginHealthStatePendingKeyApproval) {
+		t.Errorf("instance health_state = %q, want pending_key_approval", inst1.HealthState)
+	}
+}
+
+func TestInstall_DelayedTOFU_CapturesSilently(t *testing.T) {
+	// First install unsigned (empty trusted_pubkey), then signed update arrives.
+	// Expect: pubkey is captured via UpdatePluginTrustedPubkey, no mismatch event.
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, true) // allowUnsigned to accept the first install
+
+	tarPath1 := unsignedPluginTarball(t, "delayed-tofu", "1.0.0")
+	if err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1 (unsigned): %v", err)
+	}
+
+	row1, err := q.GetPluginByName(context.Background(), "delayed-tofu")
+	if err != nil {
+		t.Fatalf("GetPluginByName after v1: %v", err)
+	}
+	if row1.TrustedPubkey != "" {
+		t.Errorf("trusted_pubkey after unsigned install = %q, want empty", row1.TrustedPubkey)
+	}
+
+	// Install signed v2 — should capture pubkey, not mismatch.
+	tarPath2, _ := signedPluginTarball(t, "delayed-tofu", "2.0.0")
+	if err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v2 (signed): %v", err)
+	}
+
+	row2, err := q.GetPluginByName(context.Background(), "delayed-tofu")
+	if err != nil {
+		t.Fatalf("GetPluginByName after v2: %v", err)
+	}
+	if row2.TrustedPubkey == "" {
+		t.Error("trusted_pubkey: want non-empty after delayed TOFU capture")
+	}
+	if row2.PluginVersion != "2.0.0" {
+		t.Errorf("plugin_version = %q, want 2.0.0 after delayed TOFU", row2.PluginVersion)
+	}
+
+	// No mismatch events.
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditPubkeyMismatch,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list mismatch events: %v", err)
+	}
+	if len(events) > 0 {
+		t.Errorf("got %d pubkey_mismatch events after delayed TOFU, want 0", len(events))
+	}
+}
+
 // traversalTarball builds a tarball whose manifest.yaml contains the given name.
 // The tarball itself uses "binary" as the actual file entry to avoid OS-level
 // path issues when creating the archive; the manifest is what triggers the check.
@@ -461,7 +711,7 @@ func TestInstall_RejectedWithNilErr_NoPanic(t *testing.T) {
 	// Build a valid signed tarball so we get past manifest parsing.
 	tarPath, _ := signedPluginTarball(t, "nil-err-plugin", "1.0.0")
 
-	inst := &Installer{verifier: nilErrVerifier{}, q: q, clock: time.Now}
+	inst := &Installer{verifier: nilErrVerifier{}, q: q, publisher: nil, clock: time.Now}
 
 	// Must not panic; Install should record an audit event and return nil.
 	if err := inst.Install(context.Background(), tarPath); err != nil {

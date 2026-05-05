@@ -393,3 +393,21 @@ export interface ApiPluginInstance {
   version: number
   updated_at: string
 }
+
+// Payload embedded in a plugin_pubkey_mismatch audit event's payload_json field.
+// Sourced by AcceptNewKeyModal to obtain the candidate pubkey and display fingerprints.
+export interface ApiPluginPubkeyMismatchAuditPayload {
+  plugin_id: string
+  name: string
+  old_pubkey_fingerprint: string
+  new_pubkey_fingerprint: string
+  // Base64-encoded Minisign signing.pub bytes — passed as-is to accept-new-key.
+  new_pubkey_b64: string
+  version: string
+}
+
+// Matches internal/admin/plugin_handler.go → acceptNewKeyResponse.
+export interface ApiAcceptNewKeyResponse {
+  accepted_pubkey_fingerprint: string
+  instances_unblocked: number
+}
