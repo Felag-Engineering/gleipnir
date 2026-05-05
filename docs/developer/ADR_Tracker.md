@@ -91,21 +91,27 @@ The plugin system spec calls this out in §12.3 as a structural decision because
 
 #### 2. `plugin_audit_events` schema
 
-The schema matches the plugin-system-spec §12.3 SQL block verbatim:
+The schema follows the plugin-system-spec §12.3 SQL block, adjusted to project conventions (TEXT ULIDs for cross-table references per ADR-013, TEXT ISO-8601 timestamps per ADR-003):
 
 ```sql
 CREATE TABLE plugin_audit_events (
-  id INTEGER PRIMARY KEY,
-  plugin_instance_id INTEGER NULL,  -- nullable for plugin-level (not instance-scoped) events
-  event_type TEXT NOT NULL,
-  severity TEXT NOT NULL,            -- 'info' | 'warning' | 'high' | 'critical'
-  actor_user_id INTEGER NULL,        -- nullable for system-driven events
-  payload_json TEXT NOT NULL,
-  created_at TIMESTAMP NOT NULL
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  plugin_instance_id  TEXT    NULL REFERENCES plugin_instances(id) ON DELETE SET NULL,
+  event_type          TEXT    NOT NULL,
+  severity            TEXT    NOT NULL CHECK(severity IN ('info','warning','high','critical')),
+  actor_user_id       TEXT    NULL REFERENCES users(id) ON DELETE SET NULL,
+  payload_json        TEXT    NOT NULL,
+  created_at          TEXT    NOT NULL  -- ISO 8601 UTC
 );
 CREATE INDEX idx_pae_instance_created ON plugin_audit_events(plugin_instance_id, created_at);
 CREATE INDEX idx_pae_event_created    ON plugin_audit_events(event_type, created_at);
 ```
+
+The deviations from the spec block are:
+- `id` is `INTEGER PRIMARY KEY AUTOINCREMENT` rather than the spec's bare `INTEGER PRIMARY KEY`. Audit-event rows are append-only and have no cross-table references, so a monotonic surrogate is the right shape — matches `openai_compat_providers` precedent.
+- `plugin_instance_id` and `actor_user_id` are `TEXT` ULIDs with proper foreign keys to the actual id columns of their tables. The spec block's `INTEGER NULL` placeholders predate the project's TEXT-ULID convention.
+- `created_at` is `TEXT` ISO-8601 UTC. SQLite has no real `TIMESTAMP` type; the project standardises on TEXT ISO-8601 (per ADR-003 / 0001_initial.sql).
+- `ON DELETE SET NULL` on both nullable foreign keys means audit-event history outlives the deletion of a plugin instance or user — operators retain a tamper-evident trail of "an instance that no longer exists did this on 2026-05-04".
 
 `plugin_instance_id` is nullable because some events fire before any instance row exists (e.g. signature verification on install of a previously-unknown plugin) or apply to a plugin definition rather than a single instance. `actor_user_id` is nullable because background events (fsnotify-driven installs, scheduled key rotations, automated revocations) have no human actor. `payload_json` carries the event-specific fields (e.g. `{"old_pubkey": "...", "new_pubkey": "...", "approver_user_id": 7}` for a TOFU acceptance) and is structurally validated by the writing call site, not by the database.
 
