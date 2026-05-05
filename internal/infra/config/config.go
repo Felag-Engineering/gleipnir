@@ -35,6 +35,7 @@ type Config struct {
 	PIDFile                string
 	EncryptionKey          string
 	PluginsEnabled         bool
+	AllowUnsignedPlugins   bool
 }
 
 // Load reads configuration from environment variables, applies defaults for
@@ -64,6 +65,7 @@ func Load() (Config, error) {
 		PIDFile:                envOrDefault("GLEIPNIR_PID_FILE", "/var/run/gleipnir.pid"),
 		EncryptionKey:          raw,
 		PluginsEnabled:         envBool("GLEIPNIR_PLUGINS_ENABLED", false),
+		AllowUnsignedPlugins:   envBool("GLEIPNIR_ALLOW_UNSIGNED_PLUGINS", false),
 	}, nil
 }
 

@@ -37,6 +37,7 @@ npm run storybook        # Storybook on port 6006
 | `GLEIPNIR_FEEDBACK_SCAN_INTERVAL` | `30s` | How often to check for timed-out feedback |
 | `GLEIPNIR_DEFAULT_PROVIDER` | `anthropic` | Default LLM provider |
 | `GLEIPNIR_PLUGINS_ENABLED` | `false` | Enable the host-side plugin loader (off by default this release; see docs/developer/plugin-system-spec.md §15.2). |
+| `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` | `false` | When `true`, the loader accepts plugins lacking a Minisign `.minisig`/`signing.pub` pair (instance health = `unsigned_permissive`). Every load emits a high-severity audit event; admin UI shows a non-dismissible red banner; `/api/v1/health` reports `signature_verification: disabled`. **Signed plugins are still fully verified even in permissive mode.** Scope is global, not per-plugin. Read once at startup. See ADR-045 §6. |
 | `GLEIPNIR_ENCRYPTION_KEY` | *(required)* | 64-char hex key (32-byte AES-256) for encrypting provider API keys and webhook secrets; generate with `openssl rand -hex 32` |
 
 **Provider API keys:** All LLM provider API keys (Anthropic, Google, OpenAI, and any OpenAI-compatible backends) are configured through the admin UI at `/admin/models` and stored encrypted in the database. Env vars like `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` are intentionally ignored — a startup warning is logged if they are set.
