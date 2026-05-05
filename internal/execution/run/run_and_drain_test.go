@@ -74,7 +74,6 @@ func buildBoundAgent(t *testing.T, store *db.Store, runRow db.Run, resolvedTools
 		Audit:        audit,
 		StateMachine: sm,
 		ApprovalCh:   make(chan bool, 1),
-		FeedbackCh:   make(chan string, 1),
 		LLMClient: testutil.NewMockLLMClient(
 			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
 		),

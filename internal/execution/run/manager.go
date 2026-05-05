@@ -33,10 +33,6 @@ type trackedRun struct {
 	// be delivered; nil means SendApproval returns ErrRunNotFound instead of
 	// blocking forever on a nil channel send.
 	approval chan bool
-	// feedback is the buffered (cap 1) channel that the legacy localFeedbackChannel
-	// reads from. Nilled by CancelAll for the same reason as approval.
-	// DEAD: kept for #180 parallel-impl harness; #181 removes.
-	feedback chan string
 	// feedbackResolver is the inAppChannel-backed resolver for this run. Set
 	// atomically with Register by RegisterWithFeedbackResolver. Nilled by
 	// CancelAll so ResolveFeedback returns ErrRunNotFound rather than racing.
@@ -58,21 +54,19 @@ func NewRunManager() *RunManager {
 	}
 }
 
-// Register stores the cancel func, approval channel, and feedback channel for
-// the given run ID and increments the internal WaitGroup. Must be called before
-// the run goroutine is launched. approvalCh and feedbackCh must be buffered
-// (cap 1) channels that the BoundAgent's gates read from; the cap-1 buffer is
-// what makes the non-blocking select in SendApproval/SendFeedback correct
-// rather than lossy when the decision arrives before the agent blocks on the
-// channel.
-func (m *RunManager) Register(runID string, cancel context.CancelFunc, approvalCh chan bool, feedbackCh chan string) {
+// Register stores the cancel func and approval channel for the given run ID
+// and increments the internal WaitGroup. Must be called before the run goroutine
+// is launched. approvalCh must be a buffered (cap 1) channel that the BoundAgent's
+// approval gate reads from; the cap-1 buffer is what makes the non-blocking select
+// in SendApproval correct rather than lossy when the decision arrives before the
+// agent blocks on the channel.
+func (m *RunManager) Register(runID string, cancel context.CancelFunc, approvalCh chan bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.wg.Add(1)
 	m.runs[runID] = &trackedRun{
 		cancel:   cancel,
 		approval: approvalCh,
-		feedback: feedbackCh,
 	}
 }
 
@@ -84,7 +78,6 @@ func (m *RunManager) RegisterWithFeedbackResolver(
 	runID string,
 	cancel context.CancelFunc,
 	approvalCh chan bool,
-	feedbackCh chan string,
 	resolver FeedbackResolver,
 ) {
 	m.mu.Lock()
@@ -93,7 +86,6 @@ func (m *RunManager) RegisterWithFeedbackResolver(
 	m.runs[runID] = &trackedRun{
 		cancel:           cancel,
 		approval:         approvalCh,
-		feedback:         feedbackCh,
 		feedbackResolver: resolver,
 	}
 }
@@ -227,19 +219,6 @@ func (m *RunManager) SendApproval(runID string, approved bool) error {
 	return sendToChannel(tr.approval, approved)
 }
 
-// SendFeedback routes an operator's freeform response to the run's waiting agent
-// goroutine via the legacy runtime channel. DEAD: kept for #180 parallel-impl
-// harness; #181 removes. Production delivery now goes through ResolveFeedback.
-func (m *RunManager) SendFeedback(runID string, response string) error { // DEAD: kept for #180 parallel-impl harness; #181 removes.
-	m.mu.Lock()
-	tr, ok := m.runs[runID]
-	m.mu.Unlock()
-	if !ok {
-		return ErrRunNotFound
-	}
-	return sendToChannel(tr.feedback, response)
-}
-
 // CancelAll cancels every in-flight run. It does NOT call wg.Done — each
 // goroutine's deferred Deregister will do that when it exits.
 func (m *RunManager) CancelAll() {
@@ -248,13 +227,12 @@ func (m *RunManager) CancelAll() {
 	for _, tr := range m.runs {
 		tr.cancel()
 		// Nil out the fields that are no longer valid so that subsequent calls
-		// to Cancel/SendApproval/SendFeedback/ResolveFeedback return ErrRunNotFound
-		// rather than panicking or blocking. The trackedRun entry itself stays in
-		// the map so that Deregister can still call wg.Done when each goroutine exits.
+		// to Cancel/SendApproval/ResolveFeedback return ErrRunNotFound rather than
+		// panicking or blocking. The trackedRun entry itself stays in the map so
+		// that Deregister can still call wg.Done when each goroutine exits.
 		tr.cancel = nil
 		tr.approval = nil
-		tr.feedback = nil           // DEAD: kept for #180 parallel-impl harness; #181 removes.
-		tr.feedbackResolver = nil   // niled so ResolveFeedback returns ErrRunNotFound
+		tr.feedbackResolver = nil // niled so ResolveFeedback returns ErrRunNotFound
 	}
 }
 

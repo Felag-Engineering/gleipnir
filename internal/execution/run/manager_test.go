@@ -11,10 +11,6 @@ import (
 // Register when tests don't exercise the approval path.
 func noopApprovalCh() chan bool { return make(chan bool, 1) }
 
-// noopFeedbackCh returns a new cap-1 buffered channel suitable for passing to
-// Register when tests don't exercise the feedback path.
-func noopFeedbackCh() chan string { return make(chan string, 1) }
-
 func TestRunManager(t *testing.T) {
 	cases := []struct {
 		name string
@@ -24,7 +20,7 @@ func TestRunManager(t *testing.T) {
 			name: "register then cancel returns nil and calls cancel func",
 			run: func(t *testing.T, m *RunManager) {
 				cancelled := false
-				m.Register("run-1", func() { cancelled = true }, noopApprovalCh(), noopFeedbackCh())
+				m.Register("run-1", func() { cancelled = true }, noopApprovalCh())
 				got := m.Cancel("run-1")
 				if got != nil {
 					t.Errorf("Cancel returned %v, want nil", got)
@@ -50,7 +46,7 @@ func TestRunManager(t *testing.T) {
 			name: "deregister calls cancel func then cancel returns ErrRunNotFound",
 			run: func(t *testing.T, m *RunManager) {
 				cancelled := false
-				m.Register("run-2", func() { cancelled = true }, noopApprovalCh(), noopFeedbackCh())
+				m.Register("run-2", func() { cancelled = true }, noopApprovalCh())
 				m.Deregister("run-2")
 				// Deregister calls the cancel func to clean up the context on
 				// normal goroutine exit (before the goroutine's own defer cancel).
@@ -71,7 +67,7 @@ func TestRunManager(t *testing.T) {
 				called := make([]bool, 3)
 				ids := []string{"run-a", "run-b", "run-c"}
 				for i, id := range ids {
-					m.Register(id, func() { called[i] = true }, noopApprovalCh(), noopFeedbackCh())
+					m.Register(id, func() { called[i] = true }, noopApprovalCh())
 				}
 
 				m.CancelAll()
@@ -131,7 +127,7 @@ func TestSendApproval(t *testing.T) {
 		// Cap-1 channel: the first send fills the buffer (returns nil).
 		// The second send with a full buffer and no reader must return ErrNoReceiver.
 		approvalCh := make(chan bool, 1)
-		m.Register("run-blocked", func() {}, approvalCh, noopFeedbackCh())
+		m.Register("run-blocked", func() {}, approvalCh)
 		first := m.SendApproval("run-blocked", true)
 		if first != nil {
 			t.Errorf("first SendApproval returned %v, want nil (buffer was empty)", first)
@@ -147,7 +143,7 @@ func TestSendApproval(t *testing.T) {
 	t.Run("approved delivered to waiting goroutine returns true", func(t *testing.T) {
 		m := NewRunManager()
 		ch := make(chan bool, 1) // cap 1: matches production channel from launcher.go
-		m.Register("run-approve", func() {}, ch, noopFeedbackCh())
+		m.Register("run-approve", func() {}, ch)
 
 		received := make(chan bool, 1)
 		ready := make(chan struct{})
@@ -178,7 +174,7 @@ func TestSendApproval(t *testing.T) {
 	t.Run("denied delivered to waiting goroutine returns true", func(t *testing.T) {
 		m := NewRunManager()
 		ch := make(chan bool, 1) // cap 1: matches production channel from launcher.go
-		m.Register("run-deny", func() {}, ch, noopFeedbackCh())
+		m.Register("run-deny", func() {}, ch)
 
 		received := make(chan bool, 1)
 		ready := make(chan struct{})
@@ -208,7 +204,7 @@ func TestSendApproval(t *testing.T) {
 
 	t.Run("deregistered run returns ErrRunNotFound", func(t *testing.T) {
 		m := NewRunManager()
-		m.Register("run-dereg", func() {}, noopApprovalCh(), noopFeedbackCh())
+		m.Register("run-dereg", func() {}, noopApprovalCh())
 		m.Deregister("run-dereg")
 		waitWithTimeout(t, m, "deregistered run")
 		got := m.SendApproval("run-dereg", true)
@@ -218,79 +214,10 @@ func TestSendApproval(t *testing.T) {
 	})
 }
 
-func TestSendFeedback(t *testing.T) {
-	t.Run("run not registered returns ErrRunNotFound", func(t *testing.T) {
-		m := NewRunManager()
-		got := m.SendFeedback("unknown-run", "hello")
-		if !errors.Is(got, ErrRunNotFound) {
-			t.Errorf("SendFeedback returned %v for unregistered run, want ErrRunNotFound", got)
-		}
-	})
-
-	t.Run("registered with full buffer returns ErrNoReceiver", func(t *testing.T) {
-		m := NewRunManager()
-		// Cap-1 channel: the first send fills the buffer (returns nil).
-		// The second send with a full buffer and no reader must return ErrNoReceiver.
-		feedbackCh := make(chan string, 1)
-		m.Register("run-blocked", func() {}, noopApprovalCh(), feedbackCh)
-		first := m.SendFeedback("run-blocked", "first response")
-		if first != nil {
-			t.Errorf("first SendFeedback returned %v, want nil (buffer was empty)", first)
-		}
-		got := m.SendFeedback("run-blocked", "second response")
-		if !errors.Is(got, ErrNoReceiver) {
-			t.Errorf("second SendFeedback returned %v with full buffer, want ErrNoReceiver", got)
-		}
-		m.Deregister("run-blocked")
-		waitWithTimeout(t, m, "blocked run")
-	})
-
-	t.Run("response delivered to waiting goroutine returns true", func(t *testing.T) {
-		m := NewRunManager()
-		ch := make(chan string, 1) // cap 1: matches production channel from launcher.go
-		m.Register("run-feedback", func() {}, noopApprovalCh(), ch)
-
-		received := make(chan string, 1)
-		ready := make(chan struct{})
-		go func() {
-			close(ready)
-			received <- <-ch
-		}()
-		<-ready
-		time.Sleep(time.Millisecond)
-
-		got := m.SendFeedback("run-feedback", "yes, proceed")
-		if got != nil {
-			t.Errorf("SendFeedback returned %v, want nil", got)
-		}
-		select {
-		case val := <-received:
-			if val != "yes, proceed" {
-				t.Errorf("received %q, want %q", val, "yes, proceed")
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("goroutine did not receive feedback within deadline")
-		}
-		m.Deregister("run-feedback")
-		waitWithTimeout(t, m, "feedback run")
-	})
-
-	t.Run("deregistered run returns ErrRunNotFound", func(t *testing.T) {
-		m := NewRunManager()
-		m.Register("run-dereg-fb", func() {}, noopApprovalCh(), noopFeedbackCh())
-		m.Deregister("run-dereg-fb")
-		waitWithTimeout(t, m, "deregistered run")
-		got := m.SendFeedback("run-dereg-fb", "hello")
-		if !errors.Is(got, ErrRunNotFound) {
-			t.Errorf("SendFeedback returned %v after Deregister, want ErrRunNotFound", got)
-		}
-	})
-}
-
 func TestWaitForDeregistration(t *testing.T) {
 	t.Run("returns true immediately when run is not active", func(t *testing.T) {
 		m := NewRunManager()
-		m.Register("run-gone", func() {}, noopApprovalCh(), noopFeedbackCh())
+		m.Register("run-gone", func() {}, noopApprovalCh())
 		m.Deregister("run-gone")
 		waitWithTimeout(t, m, "before WaitForDeregistration")
 
@@ -302,7 +229,7 @@ func TestWaitForDeregistration(t *testing.T) {
 
 	t.Run("returns true when run deregisters within timeout", func(t *testing.T) {
 		m := NewRunManager()
-		m.Register("run-delayed", func() {}, noopApprovalCh(), noopFeedbackCh())
+		m.Register("run-delayed", func() {}, noopApprovalCh())
 
 		go func() {
 			time.Sleep(100 * time.Millisecond)
@@ -318,7 +245,7 @@ func TestWaitForDeregistration(t *testing.T) {
 
 	t.Run("returns false when timeout expires before deregister", func(t *testing.T) {
 		m := NewRunManager()
-		m.Register("run-stuck", func() {}, noopApprovalCh(), noopFeedbackCh())
+		m.Register("run-stuck", func() {}, noopApprovalCh())
 
 		got := m.WaitForDeregistration("run-stuck", 50*time.Millisecond)
 		if got {
@@ -331,7 +258,7 @@ func TestWaitForDeregistration(t *testing.T) {
 
 	t.Run("multiple waiters all notified on deregister", func(t *testing.T) {
 		m := NewRunManager()
-		m.Register("run-multi", func() {}, noopApprovalCh(), noopFeedbackCh())
+		m.Register("run-multi", func() {}, noopApprovalCh())
 
 		results := make([]bool, 3)
 		var wg sync.WaitGroup
@@ -375,7 +302,7 @@ func TestWaitForDeregistration(t *testing.T) {
 func TestSendApproval_BufferedDeliversAcrossGoroutineScheduling(t *testing.T) {
 	m := NewRunManager()
 	ch := make(chan bool, 1) // cap 1: same as production
-	m.Register("run-buf-approve", func() {}, ch, noopFeedbackCh())
+	m.Register("run-buf-approve", func() {}, ch)
 
 	// Deliver the decision before any goroutine is reading the channel.
 	// With an unbuffered channel this would return ErrNoReceiver; cap 1 must return nil.
@@ -396,35 +323,6 @@ func TestSendApproval_BufferedDeliversAcrossGoroutineScheduling(t *testing.T) {
 
 	m.Deregister("run-buf-approve")
 	waitWithTimeout(t, m, "buffered approval")
-}
-
-// TestSendFeedback_BufferedDeliversAcrossGoroutineScheduling is the symmetric
-// version of TestSendApproval_BufferedDeliversAcrossGoroutineScheduling for the
-// feedback channel.
-func TestSendFeedback_BufferedDeliversAcrossGoroutineScheduling(t *testing.T) {
-	m := NewRunManager()
-	ch := make(chan string, 1) // cap 1: same as production
-	m.Register("run-buf-feedback", func() {}, noopApprovalCh(), ch)
-
-	// Deliver the response before any goroutine is reading the channel.
-	// With an unbuffered channel this would return ErrNoReceiver; cap 1 must return nil.
-	got := m.SendFeedback("run-buf-feedback", "proceed")
-	if got != nil {
-		t.Fatalf("SendFeedback returned %v before reader started, want nil (buffer should hold the value)", got)
-	}
-
-	// The value must be present in the buffer for the agent to receive later.
-	select {
-	case val := <-ch:
-		if val != "proceed" {
-			t.Errorf("received %q from channel, want %q", val, "proceed")
-		}
-	default:
-		t.Fatal("channel was empty after SendFeedback returned true — buffer did not hold the value")
-	}
-
-	m.Deregister("run-buf-feedback")
-	waitWithTimeout(t, m, "buffered feedback")
 }
 
 // waitWithTimeout calls m.Wait() in a goroutine and fails the test if it does
@@ -467,7 +365,7 @@ func TestRegisterWithFeedbackResolver_AtomicRegistration(t *testing.T) {
 	m := NewRunManager()
 	r := &fakeResolver{}
 
-	m.RegisterWithFeedbackResolver("run-atomic", func() {}, noopApprovalCh(), noopFeedbackCh(), r)
+	m.RegisterWithFeedbackResolver("run-atomic", func() {}, noopApprovalCh(), r)
 
 	err := m.ResolveFeedback("run-atomic", "req-1", "hello")
 	if err != nil {
@@ -518,7 +416,7 @@ func TestResolveFeedback_DelegatesToResolver(t *testing.T) {
 	sentinelErr := errors.New("resolver error")
 	r := &fakeResolver{err: sentinelErr}
 
-	m.Register("run-delegate", func() {}, noopApprovalCh(), noopFeedbackCh())
+	m.Register("run-delegate", func() {}, noopApprovalCh())
 	m.RegisterFeedbackResolver("run-delegate", r)
 
 	err := m.ResolveFeedback("run-delegate", "req-42", "payload")
@@ -545,7 +443,7 @@ func TestResolveFeedback_AfterCancelAll_ReturnsErrRunNotFound(t *testing.T) {
 	m := NewRunManager()
 	r := &fakeResolver{}
 
-	m.Register("run-cancelall", func() {}, noopApprovalCh(), noopFeedbackCh())
+	m.Register("run-cancelall", func() {}, noopApprovalCh())
 	m.RegisterFeedbackResolver("run-cancelall", r)
 
 	m.CancelAll()

@@ -40,7 +40,6 @@ type Config struct {
 	LLMClient              llm.LLMClient
 	Audit                  *AuditWriter
 	ApprovalCh             <-chan bool
-	FeedbackCh             <-chan string // DEAD: kept for #180 parallel-impl harness; #181 removes.
 	StateMachine           *RunStateMachine
 	DefaultFeedbackTimeout time.Duration
 }
@@ -65,7 +64,7 @@ func New(cfg Config) (*BoundAgent, error) {
 		audit:       cfg.Audit,
 		sm:          cfg.StateMachine,
 		approvals:   NewApprovalHandler(cfg.Audit, cfg.StateMachine, cfg.ApprovalCh),
-		feedback:    NewFeedbackHandler(cfg.Audit, cfg.StateMachine, cfg.FeedbackCh, cfg.DefaultFeedbackTimeout),
+		feedback:    NewFeedbackHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout),
 	}, nil
 }
 
