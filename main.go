@@ -15,7 +15,6 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
-	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
 	"github.com/felag-engineering/gleipnir/internal/http/api"
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/http/sse"
@@ -25,6 +24,7 @@ import (
 	llmfactory "github.com/felag-engineering/gleipnir/internal/llm/factory"
 	openaicompatllm "github.com/felag-engineering/gleipnir/internal/llm/openaicompat"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
+	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
@@ -86,7 +86,9 @@ func run(cfg config.Config) error {
 	// Start the plugin watcher after migration so the schema is ready.
 	// No-op when GLEIPNIR_PLUGINS_ENABLED=false.
 	if cfg.PluginsEnabled {
-		loader.StartWatcher(ctx, store.Queries(), cfg.PluginsDir)
+		if err := loader.StartWatcher(ctx, store.Queries(), cfg.PluginsDir); err != nil {
+			return fmt.Errorf("start plugin watcher: %w", err)
+		}
 	}
 
 	// Mark any in-flight runs as interrupted (ADR-011).

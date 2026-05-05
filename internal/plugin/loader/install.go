@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
@@ -19,9 +20,9 @@ import (
 type VerifyOutcome int
 
 const (
-	OutcomeVerified          VerifyOutcome = iota // bundle signed and valid
-	OutcomeUnsignedPermissive                     // unsigned but host allows it
-	OutcomeRejected                               // verification failed
+	OutcomeVerified           VerifyOutcome = iota // bundle signed and valid
+	OutcomeUnsignedPermissive                      // unsigned but host allows it
+	OutcomeRejected                                // verification failed
 )
 
 func (o VerifyOutcome) String() string {
@@ -48,6 +49,11 @@ type VerifyResult struct {
 // internal/plugin.Verifier satisfies this interface; using an interface here
 // avoids the import cycle between internal/plugin and internal/plugin/loader.
 type BundleVerifier interface {
+	// VerifyBundle verifies the plugin bundle rooted at bundleDir against the
+	// binary at binaryPath. Err must be non-nil when Outcome == OutcomeRejected.
+	// Pubkey must be non-nil and non-empty when Outcome == OutcomeVerified
+	// (TOFU guarantee per ADR-045 — without this, trusted_pubkey could be stored
+	// as empty string and silently break the key-pinning path in #188).
 	VerifyBundle(bundleDir, binaryPath string) VerifyResult
 }
 
@@ -116,6 +122,9 @@ func (in *Installer) Install(ctx context.Context, tarPath string) error {
 	}
 
 	binaryPath := filepath.Join(tmpDir, m.Name)
+	if rel, err := filepath.Rel(tmpDir, binaryPath); err != nil || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("manifest.name %q escapes bundle directory", m.Name)
+	}
 	result := in.verifier.VerifyBundle(tmpDir, binaryPath)
 
 	if result.Outcome == OutcomeRejected {
@@ -142,6 +151,12 @@ func readManifest(bundleDir string) (*manifest.Manifest, []byte, error) {
 	if m.Name == "" {
 		return nil, nil, fmt.Errorf("manifest.name is required")
 	}
+	if strings.ContainsAny(m.Name, `/\`) || m.Name == ".." || m.Name == "." {
+		return nil, nil, fmt.Errorf("manifest.name %q must be a plain filename (no path separators)", m.Name)
+	}
+	if m.Version == "" {
+		return nil, nil, fmt.Errorf("manifest.version is required")
+	}
 
 	return &m, data, nil
 }
@@ -149,10 +164,17 @@ func readManifest(bundleDir string) (*manifest.Manifest, []byte, error) {
 // recordSignatureInvalid inserts a plugin_audit_events row for a failed
 // signature check and returns nil (the event is the operator signal).
 func (in *Installer) recordSignatureInvalid(ctx context.Context, tarPath, pluginName string, verifyErr error) error {
+	// Guard against a BundleVerifier that returns OutcomeRejected with Err==nil,
+	// which would panic on verifyErr.Error(). The interface contract requires
+	// Err to be non-nil, but we defend here regardless.
+	errMsg := "unknown rejection"
+	if verifyErr != nil {
+		errMsg = verifyErr.Error()
+	}
 	payload, _ := json.Marshal(map[string]string{
 		"tarball":       tarPath,
 		"manifest_name": pluginName,
-		"error":         verifyErr.Error(),
+		"error":         errMsg,
 	})
 
 	_, err := in.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
@@ -192,6 +214,10 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 }
 
 // createPlugin inserts a new plugin row with status=pending_review.
+//
+// TODO(plugin): wrap createPlugin + audit insert in a single transaction once
+// Installer takes *sql.DB instead of *db.Queries. Today an audit-insert failure
+// leaves an orphan plugins row; same-version idempotency masks the retry.
 func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, manifestBytes []byte, result VerifyResult, nowStr string) error {
 	_, err := in.q.CreatePlugin(ctx, db.CreatePluginParams{
 		ID:               model.NewULID(),
@@ -229,6 +255,11 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 
 // updatePlugin updates the manifest snapshot on an existing plugin row when the
 // version has changed. Uses the CAS guard (ADR-038).
+//
+// TODO(plugin): wrap updatePlugin + audit insert in a single transaction once
+// Installer takes *sql.DB instead of *db.Queries. Today an audit-insert failure
+// leaves the plugins row updated but the event unrecorded; same-version
+// idempotency masks the retry.
 func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *manifest.Manifest, manifestBytes []byte, nowStr string) error {
 	rows, err := in.q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
 		ManifestSnapshot: string(manifestBytes),

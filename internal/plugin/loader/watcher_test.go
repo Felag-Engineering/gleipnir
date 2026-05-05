@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -44,6 +45,19 @@ func (s *stubInstaller) waitForCount(n int, deadline time.Duration) int {
 
 const testDebounce = 50 * time.Millisecond
 
+// runWatcher calls Setup, starts Run in a goroutine, and returns a done channel.
+// The test is fatally failed if Setup returns an error.
+func runWatcher(t *testing.T, ctx context.Context, w *Watcher) <-chan error {
+	t.Helper()
+	fw, err := w.Setup()
+	if err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx, fw) }()
+	return done
+}
+
 func TestWatcher_DebouncesBurstWrites(t *testing.T) {
 	dir := t.TempDir()
 	stub := &stubInstaller{}
@@ -52,9 +66,7 @@ func TestWatcher_DebouncesBurstWrites(t *testing.T) {
 	defer cancel()
 
 	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
-
-	done := make(chan error, 1)
-	go func() { done <- w.Run(ctx) }()
+	done := runWatcher(t, ctx, w)
 
 	// Give the watcher time to register the inotify watch.
 	time.Sleep(20 * time.Millisecond)
@@ -93,9 +105,7 @@ func TestWatcher_InitialSweep(t *testing.T) {
 	defer cancel()
 
 	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
-
-	done := make(chan error, 1)
-	go func() { done <- w.Run(ctx) }()
+	done := runWatcher(t, ctx, w)
 
 	// The initial sweep enqueues the file immediately, then the debounce window fires.
 	n := stub.waitForCount(1, testDebounce*10)
@@ -115,9 +125,7 @@ func TestWatcher_IgnoresNonTarball(t *testing.T) {
 	defer cancel()
 
 	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
-
-	done := make(chan error, 1)
-	go func() { done <- w.Run(ctx) }()
+	done := runWatcher(t, ctx, w)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -148,9 +156,7 @@ func TestWatcher_ContextCancel_StopsCleanly(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	w := NewWatcher(dir, install, WithDebounce(testDebounce))
-
-	done := make(chan error, 1)
-	go func() { done <- w.Run(ctx) }()
+	done := runWatcher(t, ctx, w)
 
 	time.Sleep(20 * time.Millisecond)
 	cancel()
@@ -177,9 +183,7 @@ func TestWatcher_CancelDuringDebounce_NoRace(t *testing.T) {
 
 	const debounce = 50 * time.Millisecond
 	w := NewWatcher(dir, stub.install, WithDebounce(debounce))
-
-	done := make(chan error, 1)
-	go func() { done <- w.Run(ctx) }()
+	done := runWatcher(t, ctx, w)
 
 	// Give the watcher time to register the inotify watch.
 	time.Sleep(20 * time.Millisecond)
@@ -207,6 +211,40 @@ func TestWatcher_CancelDuringDebounce_NoRace(t *testing.T) {
 	// may not have fired once depending on timing — either is acceptable.
 }
 
+// TestWatcher_FsnotifySetupFailure_NoGoroutineLeak verifies that when Setup
+// fails (os.MkdirAll receives a path that is a regular file rather than a
+// directory, which returns ENOTDIR), it returns an error without leaking the
+// dispatch goroutine. The dispatch goroutine is spawned inside Run, which is
+// never reached when Setup fails.
+func TestWatcher_FsnotifySetupFailure_NoGoroutineLeak(t *testing.T) {
+	// Create a regular file where the watcher expects a directory.
+	// os.MkdirAll on a path that is a regular file returns ENOTDIR.
+	dir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(dir, []byte("file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := &stubInstaller{}
+	w := NewWatcher(dir, stub.install, WithDebounce(20*time.Millisecond))
+
+	before := runtime.NumGoroutine()
+
+	_, err := w.Setup()
+	if err == nil {
+		t.Fatal("expected Setup to return an error when dir is a regular file")
+	}
+
+	// Give the runtime a moment to clean up any transient goroutines.
+	time.Sleep(50 * time.Millisecond)
+
+	after := runtime.NumGoroutine()
+	// Allow a small delta for unrelated runtime goroutines. The dispatch goroutine
+	// must not have been started, so the count should not have grown.
+	if after > before+2 {
+		t.Errorf("goroutine count grew from %d to %d after failed Setup — possible leak", before, after)
+	}
+}
+
 func TestWatcher_RemoveCancelsPendingTimer(t *testing.T) {
 	dir := t.TempDir()
 	stub := &stubInstaller{}
@@ -215,9 +253,7 @@ func TestWatcher_RemoveCancelsPendingTimer(t *testing.T) {
 	defer cancel()
 
 	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
-
-	done := make(chan error, 1)
-	go func() { done <- w.Run(ctx) }()
+	done := runWatcher(t, ctx, w)
 
 	time.Sleep(20 * time.Millisecond)
 

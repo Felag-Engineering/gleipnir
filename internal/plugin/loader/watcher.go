@@ -39,6 +39,12 @@ type Watcher struct {
 
 	mu      sync.Mutex
 	pending map[string]*time.Timer
+
+	// ctx and fire are set during Run and used by schedule/AfterFunc callbacks.
+	// They are only written once (at the start of Run) before any goroutines that
+	// read them are spawned, so no additional synchronisation is needed.
+	ctx  context.Context
+	fire chan string
 }
 
 // WatcherOption configures a Watcher.
@@ -66,16 +72,47 @@ func NewWatcher(dir string, install installFunc, opts ...WatcherOption) *Watcher
 	return w
 }
 
-// Run blocks until ctx is cancelled, dispatching settled tarballs to Install.
-// It creates the watch directory if it does not exist, performs an initial sweep
-// of any existing tarballs, then enters the fsnotify event loop.
-func (w *Watcher) Run(ctx context.Context) error {
+// Setup creates the plugins directory if it does not exist, opens the fsnotify
+// watcher, and registers the directory with it. The returned *fsnotify.Watcher
+// must be passed to Run. Separating Setup from Run lets callers (StartWatcher)
+// surface pre-flight errors synchronously before spawning any goroutines.
+func (w *Watcher) Setup() (*fsnotify.Watcher, error) {
 	if err := os.MkdirAll(w.dir, 0o755); err != nil {
-		return fmt.Errorf("ensure plugins dir %q: %w", w.dir, err)
+		return nil, fmt.Errorf("ensure plugins dir %q: %w", w.dir, err)
 	}
 
+	fw, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, fmt.Errorf("create fsnotify watcher: %w", err)
+	}
+
+	if err := fw.Add(w.dir); err != nil {
+		fw.Close()
+		return nil, fmt.Errorf("watch plugins dir %q: %w", w.dir, err)
+	}
+
+	return fw, nil
+}
+
+// Run blocks until ctx is cancelled, dispatching settled tarballs to Install.
+// It takes the fsnotify.Watcher created by Setup, spawns the dispatch goroutine,
+// performs an initial sweep of any existing tarballs, then enters the event loop.
+//
+// Run must not be called more than once on the same Watcher: it writes w.ctx and
+// w.fire at startup, and a second call would stomp those fields while the first
+// call's AfterFunc callbacks are still reading them.
+func (w *Watcher) Run(ctx context.Context, fw *fsnotify.Watcher) error {
+	defer fw.Close()
+
 	// fire receives absolute paths of tarballs that have settled (debounce expired).
+	// Buffer of 16 absorbs an initial sweep burst without blocking schedule callbacks.
 	fire := make(chan string, 16)
+
+	// Store ctx and fire so schedule()'s AfterFunc callbacks can reach them without
+	// capturing the loop variables from Run (which would require passing them through
+	// every call site).
+	w.ctx = ctx
+	w.fire = fire
 
 	// Sequential dispatch goroutine. One Install at a time, mirroring ADR-003.
 	// We select on both fire and ctx.Done() rather than ranging over fire so the
@@ -83,6 +120,9 @@ func (w *Watcher) Run(ctx context.Context) error {
 	// fire after cancelAllTimers() would race: a timer whose AfterFunc callback
 	// already fired but hasn't sent yet would panic writing to a closed channel.
 	// The channel is GC'd once both goroutines drop their references.
+	//
+	// The dispatch goroutine is started AFTER fsnotify is set up so that if
+	// fsnotify setup fails we don't leak a goroutine waiting for a ctx cancel.
 	go func() {
 		for {
 			select {
@@ -97,6 +137,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}()
 
 	// Initial sweep: enqueue tarballs already present before the watcher starts.
+	// The dispatch goroutine is already running so AfterFunc sends will be drained.
 	entries, err := os.ReadDir(w.dir)
 	if err != nil {
 		return fmt.Errorf("read plugins dir %q: %w", w.dir, err)
@@ -104,18 +145,8 @@ func (w *Watcher) Run(ctx context.Context) error {
 	for _, e := range entries {
 		if !e.IsDir() && isTarball(e.Name()) {
 			abs := filepath.Join(w.dir, e.Name())
-			w.schedule(ctx, abs, fire)
+			w.schedule(abs)
 		}
-	}
-
-	fw, err := fsnotify.NewWatcher()
-	if err != nil {
-		return fmt.Errorf("create fsnotify watcher: %w", err)
-	}
-	defer fw.Close()
-
-	if err := fw.Add(w.dir); err != nil {
-		return fmt.Errorf("watch plugins dir %q: %w", w.dir, err)
 	}
 
 	for {
@@ -134,7 +165,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 			}
 			switch {
 			case event.Has(fsnotify.Create) || event.Has(fsnotify.Write) || event.Has(fsnotify.Rename):
-				w.schedule(ctx, abs, fire)
+				w.schedule(abs)
 			case event.Has(fsnotify.Remove):
 				w.cancelTimer(abs)
 			}
@@ -148,15 +179,16 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 }
 
-// schedule arms (or resets) the debounce timer for the tarball at abs. When
-// the timer fires it posts abs on the fire channel.
-func (w *Watcher) schedule(ctx context.Context, abs string, fire chan<- string) {
+// schedule arms the debounce timer for the tarball at abs. If a timer is
+// already pending it is stopped and replaced with a fresh one to avoid the
+// Reset-after-fire-already-queued race under Go 1.23+ AfterFunc semantics.
+func (w *Watcher) schedule(abs string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if t, ok := w.pending[abs]; ok {
-		t.Reset(w.debounce)
-		return
+	if existing, ok := w.pending[abs]; ok {
+		existing.Stop()
+		delete(w.pending, abs)
 	}
 
 	w.pending[abs] = time.AfterFunc(w.debounce, func() {
@@ -165,8 +197,8 @@ func (w *Watcher) schedule(ctx context.Context, abs string, fire chan<- string) 
 		w.mu.Unlock()
 
 		select {
-		case fire <- abs:
-		case <-ctx.Done():
+		case w.fire <- abs:
+		case <-w.ctx.Done():
 		}
 	})
 }

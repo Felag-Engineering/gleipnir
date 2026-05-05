@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,7 +75,7 @@ func (v *realVerifier) VerifyBundle(bundleDir, binaryPath string) VerifyResult {
 
 // sentinel errors for the test verifier stubs.
 var (
-	errUnsigned  = os.ErrNotExist // matches expected behaviour for unsigned check
+	errUnsigned   = os.ErrNotExist // matches expected behaviour for unsigned check
 	errHalfSigned = os.ErrInvalid
 )
 
@@ -182,7 +183,7 @@ func badSignatureTarball(t *testing.T, name, version string) string {
 func oversizedTarball(t *testing.T, name string) string {
 	t.Helper()
 
-	// Write 101 MiB of content (just over the 100 MiB cap).
+	// 101 MiB is intentional: it sits just over the 100 MiB cumulative cap to exercise that limit.
 	huge := bytes.Repeat([]byte("X"), 101<<20)
 
 	tarPath := filepath.Join(t.TempDir(), name+"-huge.tar.gz")
@@ -403,5 +404,133 @@ func TestInstall_UnsignedPermissive_PendingReview(t *testing.T) {
 	}
 	if row.Status != "pending_review" {
 		t.Errorf("status = %q, want pending_review", row.Status)
+	}
+}
+
+// traversalTarball builds a tarball whose manifest.yaml contains the given name.
+// The tarball itself uses "binary" as the actual file entry to avoid OS-level
+// path issues when creating the archive; the manifest is what triggers the check.
+func traversalTarball(t *testing.T, manifestName string) string {
+	t.Helper()
+
+	manifestBytes := []byte("schema_version: v1\nname: " + manifestName + "\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	binaryBytes := []byte("fake binary")
+
+	tarPath := filepath.Join(t.TempDir(), "traversal.tar.gz")
+	writeTarball(t, tarPath, []tarEntry{
+		{name: "manifest.yaml", content: manifestBytes, mode: 0o644},
+		{name: "binary", content: binaryBytes, mode: 0o755},
+	})
+	return tarPath
+}
+
+// TestInstall_ManifestNamePathTraversal_Rejected verifies that a manifest whose
+// name field contains path separators (e.g. "../escape") is rejected before any
+// DB writes occur.
+func TestInstall_ManifestNamePathTraversal_Rejected(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, true) // allowUnsigned so verifier is not the rejection path
+
+	tarPath := traversalTarball(t, "../escape")
+
+	err := inst.Install(context.Background(), tarPath)
+	if err == nil {
+		t.Fatal("Install: expected error for path-traversal manifest name, got nil")
+	}
+
+	// No plugin row must have been created.
+	_, dbErr := q.GetPluginByName(context.Background(), "../escape")
+	if dbErr == nil {
+		t.Error("expected no plugin row for traversal name, but found one")
+	}
+}
+
+// nilErrVerifier is a stub BundleVerifier that returns OutcomeRejected with
+// Err==nil, violating the interface contract, to confirm Install doesn't panic.
+type nilErrVerifier struct{}
+
+func (nilErrVerifier) VerifyBundle(_, _ string) VerifyResult {
+	return VerifyResult{Outcome: OutcomeRejected, Err: nil}
+}
+
+// TestInstall_RejectedWithNilErr_NoPanic confirms that Install does not panic
+// when a BundleVerifier returns OutcomeRejected with Err==nil.
+func TestInstall_RejectedWithNilErr_NoPanic(t *testing.T) {
+	q := openTestDB(t)
+
+	// Build a valid signed tarball so we get past manifest parsing.
+	tarPath, _ := signedPluginTarball(t, "nil-err-plugin", "1.0.0")
+
+	inst := &Installer{verifier: nilErrVerifier{}, q: q, clock: time.Now}
+
+	// Must not panic; Install should record an audit event and return nil.
+	if err := inst.Install(context.Background(), tarPath); err != nil {
+		t.Fatalf("Install returned unexpected error: %v", err)
+	}
+
+	// No plugin row — only an audit event.
+	_, dbErr := q.GetPluginByName(context.Background(), "nil-err-plugin")
+	if dbErr == nil {
+		t.Error("expected no plugin row for rejected install, but found one")
+	}
+
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditSignatureInvalid,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Error("expected a signature_invalid audit event, got none")
+	}
+}
+
+func TestReadManifest_Validation(t *testing.T) {
+	base := "schema_version: v1\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n"
+
+	cases := []struct {
+		name        string
+		manifest    string
+		wantErrFrag string
+	}{
+		{
+			name:        "empty name",
+			manifest:    base + "version: 1.0.0\n",
+			wantErrFrag: "manifest.name is required",
+		},
+		{
+			name:        "empty version",
+			manifest:    base + "name: my-plugin\n",
+			wantErrFrag: "manifest.version is required",
+		},
+		{
+			name:        "valid manifest",
+			manifest:    base + "name: my-plugin\nversion: 1.0.0\n",
+			wantErrFrag: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte(tc.manifest), 0o644); err != nil {
+				t.Fatalf("write manifest: %v", err)
+			}
+			_, _, err := readManifest(dir)
+			if tc.wantErrFrag == "" {
+				if err != nil {
+					t.Errorf("readManifest: unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("readManifest: expected error containing %q, got nil", tc.wantErrFrag)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrFrag) {
+				t.Errorf("readManifest error = %q, want substring %q", err.Error(), tc.wantErrFrag)
+			}
+		})
 	}
 }

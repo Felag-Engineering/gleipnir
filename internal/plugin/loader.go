@@ -8,10 +8,9 @@
 //     GLEIPNIR_ALLOW_UNSIGNED_PLUGINS toggle and logs a permissive-mode banner
 //     if applicable. The verifier itself (verify.go) is fully wired into
 //     plugin-sdk/signing — single source of truth for the Minisign format.
-//
-// The fsnotify watcher (#187), material-change detection (#189), and the
-// generation manager (#190-impl, #193-impl) land in follow-up PRs and consume
-// the Verifier built here.
+//   - StartWatcher (#187, this PR) sets up the fsnotify watcher and runs the
+//     debounced install loop. Material-change detection (#189) and the
+//     generation/shutdown manager (#190/#193 implementations) are follow-up PRs.
 package plugin
 
 import (
@@ -67,28 +66,40 @@ func (l *Loader) Init(_ context.Context, cfg config.Config) error {
 }
 
 // StartWatcher wires the fsnotify watcher for the given plugins directory and
-// starts it in a goroutine. It returns immediately; the watcher logs its own
-// exit. q must be non-nil; dir is the watch path (typically cfg.PluginsDir).
+// starts the event loop in a goroutine. q must be non-nil; dir is the watch
+// path (typically cfg.PluginsDir).
+//
+// The pre-flight — creating the watch directory and registering it with
+// fsnotify — runs synchronously before spawning any goroutine. If pre-flight
+// fails, StartWatcher returns an error so main.go can treat it as fatal,
+// matching the pattern used by other subsystem starts (scheduler, poller,
+// cronRunner).
 //
 // StartWatcher must be called after Init and after store.Migrate so the DB
-// schema is ready for plugin rows and audit events. It is a no-op when Init
-// was not called (i.e. when GLEIPNIR_PLUGINS_ENABLED=false) — l.verifier will
-// be nil in that case and we return early.
-func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, dir string) {
+// schema is ready for plugin rows and audit events. It is a no-op (returns nil)
+// when Init was not called (i.e. when GLEIPNIR_PLUGINS_ENABLED=false) —
+// l.verifier will be nil in that case and we return early.
+func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, dir string) error {
 	if l.verifier == nil {
-		return
+		return nil
 	}
 
 	inst := loader.NewInstaller(&verifierAdapter{v: l.verifier}, q)
 	l.watcher = loader.NewWatcher(dir, inst.Install)
 
+	fw, err := l.watcher.Setup()
+	if err != nil {
+		return err
+	}
+
 	go func() {
-		if err := l.watcher.Run(ctx); err != nil && err != ctx.Err() {
+		if err := l.watcher.Run(ctx, fw); err != nil && err != ctx.Err() {
 			slog.Default().Error("plugin watcher exited with error", "dir", dir, "err", err)
 		} else {
 			slog.Default().Debug("plugin watcher stopped", "dir", dir)
 		}
 	}()
+	return nil
 }
 
 // verifierAdapter bridges *Verifier (returns plugin.VerifyResult) to
