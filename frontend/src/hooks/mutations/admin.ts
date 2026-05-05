@@ -51,9 +51,9 @@ export function useSetModelEnabled() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: ({ modelId, provider, enabled }: { modelId: string; provider: string; enabled: boolean }) =>
-      apiFetch<{ status: string }>(`/admin/models/${encodeURIComponent(modelId)}/enabled`, {
+      apiFetch<{ status: string }>(`/admin/models/enabled`, {
         method: 'PUT',
-        body: JSON.stringify({ provider, enabled }),
+        body: JSON.stringify({ provider, model_name: modelId, enabled }),
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.models })

@@ -1,0 +1,22 @@
+# Build overlay — builds the gleipnir image from local source instead of
+# pulling felagengineering/gleipnir:latest. Layer this on top of the base
+# compose file so the rest of the service definition (env, volumes, health
+# check, port mapping) is shared.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
+#
+# Combine with the dev overlay to also start the MCP test server:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml -f docker-compose.dev.yml up --build
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gleipnir:local
+    # host.docker.internal lets the container reach services on the host
+    # (e.g. an LMStudio server bound to 127.0.0.1:1234). Required on Linux
+    # where the alias is not added automatically; harmless on Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
