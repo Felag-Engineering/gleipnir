@@ -66,10 +66,22 @@
   text-align: center;
 }
 
+.tableWrap {
+  overflow-x: auto;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
   font-size: var(--text-sm);
+  table-layout: auto;
+}
+
+.table td.url {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .table th,
@@ -116,6 +128,7 @@
 .actions {
   display: flex;
   gap: var(--space-2);
+  white-space: nowrap;
 }
 
 .actions button {

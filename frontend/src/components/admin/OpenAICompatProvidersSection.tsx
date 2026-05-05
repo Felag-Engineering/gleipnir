@@ -53,6 +53,7 @@ export function OpenAICompatProvidersSection() {
           <p>Add one to use OpenAI, Ollama, vLLM, or any compatible backend.</p>
         </div>
       ) : (
+        <div className={styles.tableWrap}>
         <table className={styles.table}>
           <thead>
             <tr>
@@ -68,13 +69,13 @@ export function OpenAICompatProvidersSection() {
             {rows.map((p) => (
               <tr key={p.id}>
                 <td className={styles.name}>{p.name}</td>
-                <td className={styles.url}>{p.base_url}</td>
+                <td className={styles.url} title={p.base_url}>{p.base_url}</td>
                 <td className={styles.key}>{p.masked_key}</td>
                 <td>
                   {p.models_endpoint_available ? (
                     <span className={styles.badgeOk}>Available</span>
                   ) : (
-                    <span className={styles.badgeWarn}>models endpoint unavailable</span>
+                    <span className={styles.badgeWarn} title="GET /models returned 404 or was unreachable; model-name validation is skipped">Unavailable</span>
                   )}
                 </td>
                 <td>{formatTimestamp(p.updated_at)}</td>
@@ -106,6 +107,7 @@ export function OpenAICompatProvidersSection() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
 
       {modalState !== null && (
