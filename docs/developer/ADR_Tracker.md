@@ -59,7 +59,213 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-042 | Plugin service & HostAPI versioning policy | 🟢 Decided | v1.0 (plugins) | docs/developer/plugin-system-spec.md §10, buf.yaml, .github/workflows/ci.yml |
 | ADR-043 | Plugin signing tooling — bundled Minisign in plugin-sdk/signing, fresh-written | 🟢 Decided | v2.0 (plugins) | plugin-sdk/signing (new), gleipnir-plugin keygen/sign/package subcommands, spec §5.2 §14.5 |
 | ADR-044 | Channel routing model — Notify/Request semantics, audience as shared resource | 🟢 Decided | v2.0 (plugins) | internal/plugin/channel (new), internal/execution/agent/feedback.go, admin audiences UI, ADR-031 (partial supersession) |
+| ADR-045 | Plugin signing & TOFU trust — Minisign tamper-evidence + first-install pubkey capture | 🟢 Decided | v2.0 (plugins) | internal/plugin (loader), plugin_instances.trusted_pubkey, GLEIPNIR_ALLOW_UNSIGNED_PLUGINS, spec §5 |
+| ADR-046 | Audit-table split — run_steps (LLM-visible) vs plugin_audit_events (operator-only) | 🟢 Decided | v2.0 (plugins) | plugin_audit_events table, WriteAuditStep RPC authorization, spec §12.3 |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
+
+---
+
+## ADR-046: Audit-table split — `run_steps` vs `plugin_audit_events`
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+Gleipnir already has one audit substrate: `run_steps`. It records the agent's reasoning trace and is **visible to the LLM** as it executes a run (per ADR-018, the capability snapshot is the first step of every run; subsequent `tool_call`, `tool_result`, `feedback_request`, `feedback_response`, `thought`, `thinking`, `error`, and `complete` steps form the conversation context the agent sees on the next turn). Anything written to `run_steps` is part of that conversational context.
+
+The plugin system (ADR-041) adds an entire class of operational events that have no place in the LLM's context: plugin install, signature verification outcomes, TOFU pubkey captures and admin "Accept new key" decisions, key rotations, manifest material-change blocks, credential issue/refresh/revoke, unauthorized RPC attempts, deactivate/remove, and late-callback rejections from ADR-044's `feedback_response_late` event. These are operator-and-auditor concerns. Routing them through `run_steps` would (a) leak operator-side information into agent context — for example a TOFU key-rotation rejection visible to the agent — and (b) mix two unrelated audit purposes into one table with one query path.
+
+The plugin system spec calls this out in §12.3 as a structural decision because it determines what plugins are allowed to write where. The `WriteAuditStep` Host RPC introduced by ADR-044 lets plugins write into Gleipnir's audit substrate; without an explicit boundary, a misbehaving or malicious plugin could inject arbitrary content into the LLM's context window.
+
+### Decision
+
+#### 1. Two substrates, two purposes
+
+| Substrate | Purpose | Visible to LLM? | Step / event types |
+|-----------|---------|-----------------|--------------------|
+| `run_steps` | LLM-relevant operations on a specific run | **Yes** — replayed into the agent's context on each turn | `capability_snapshot`, `thought`, `thinking`, `tool_call`, `tool_result`, `approval_request`, `feedback_request`, `feedback_response`, `error`, `complete` (existing v1 set) |
+| `plugin_audit_events` | Operational / admin / security events about plugins and instances | **No** — never enters agent context | install, manifest changes, signature verification outcomes, TOFU pubkey events, key rotations, credential lifecycle, unauthorized RPC attempts, deactivate/remove, `feedback_response_late` (ADR-044) |
+
+`run_steps` is unchanged from its v1 shape. This ADR does not migrate, rename, or restructure it; it only fixes the boundary.
+
+#### 2. `plugin_audit_events` schema
+
+The schema follows the plugin-system-spec §12.3 SQL block, adjusted to project conventions (TEXT ULIDs for cross-table references per ADR-013, TEXT ISO-8601 timestamps per ADR-003):
+
+```sql
+CREATE TABLE plugin_audit_events (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  plugin_instance_id  TEXT    NULL REFERENCES plugin_instances(id) ON DELETE SET NULL,
+  event_type          TEXT    NOT NULL,
+  severity            TEXT    NOT NULL CHECK(severity IN ('info','warning','high','critical')),
+  actor_user_id       TEXT    NULL REFERENCES users(id) ON DELETE SET NULL,
+  payload_json        TEXT    NOT NULL,
+  created_at          TEXT    NOT NULL  -- ISO 8601 UTC
+);
+CREATE INDEX idx_pae_instance_created ON plugin_audit_events(plugin_instance_id, created_at);
+CREATE INDEX idx_pae_event_created    ON plugin_audit_events(event_type, created_at);
+```
+
+The deviations from the spec block are:
+- `id` is `INTEGER PRIMARY KEY AUTOINCREMENT` rather than the spec's bare `INTEGER PRIMARY KEY`. Audit-event rows are append-only and have no cross-table references, so a monotonic surrogate is the right shape — matches `openai_compat_providers` precedent.
+- `plugin_instance_id` and `actor_user_id` are `TEXT` ULIDs with proper foreign keys to the actual id columns of their tables. The spec block's `INTEGER NULL` placeholders predate the project's TEXT-ULID convention.
+- `created_at` is `TEXT` ISO-8601 UTC. SQLite has no real `TIMESTAMP` type; the project standardises on TEXT ISO-8601 (per ADR-003 / 0001_initial.sql).
+- `ON DELETE SET NULL` on both nullable foreign keys means audit-event history outlives the deletion of a plugin instance or user — operators retain a tamper-evident trail of "an instance that no longer exists did this on 2026-05-04".
+
+`plugin_instance_id` is nullable because some events fire before any instance row exists (e.g. signature verification on install of a previously-unknown plugin) or apply to a plugin definition rather than a single instance. `actor_user_id` is nullable because background events (fsnotify-driven installs, scheduled key rotations, automated revocations) have no human actor. `payload_json` carries the event-specific fields (e.g. `{"old_pubkey": "...", "new_pubkey": "...", "approver_user_id": 7}` for a TOFU acceptance) and is structurally validated by the writing call site, not by the database.
+
+#### 3. `WriteAuditStep` is restricted to `feedback_response` only
+
+The `WriteAuditStep` Host RPC introduced by ADR-044 (so plugin-provided channels can resolve a `Request` once a human replies) is the **only path by which a plugin can write into `run_steps`**, and it is restricted to a single step type: `feedback_response`. Any other step type submitted via `WriteAuditStep` is rejected with `permission_denied` and recorded as an `unauthorized_audit_step` event in `plugin_audit_events` at high severity.
+
+This restriction is structural, not advisory. Plugins cannot write `tool_call`, `tool_result`, `thought`, `thinking`, `approval_request`, `error`, or any other LLM-visible step type — that surface is reserved for the host runtime. The host writes `tool_call` / `tool_result` itself when invoking a plugin's ToolService; a tool-result step originating from `WriteAuditStep` is by definition an attempt to inject content the host did not authorize.
+
+All other plugin-originated events flow into `plugin_audit_events` via host-side write paths (the plugin loader, the trust manager, the credential manager). Plugins do not have direct write access to `plugin_audit_events`; the host writes on their behalf based on observed state changes.
+
+#### 4. Authorization semantics for `WriteAuditStep`
+
+A `WriteAuditStep(request_id, feedback_response)` call is authorized only when:
+1. The calling plugin process (identified by its per-generation gRPC connection identity) belongs to the plugin instance that was originally routed the `request_id` (per ADR-044 §4 — `request_id` is instance-scoped, not generation-scoped, so a post-hot-reload generation can resolve a request issued by its predecessor).
+2. The `request_id` is still open (run is in `waiting_for_feedback`, no prior response written, no timeout fired).
+
+A mismatch on (1) is rejected as `unauthorized_request_id` (logged at high severity, `plugin_audit_events`). A mismatch on (2) — i.e. the request has already been resolved — is the late-callback path: rejected with `feedback_response_late` (ADR-044 §5), `plugin_audit_events`, normal severity. Neither case mutates `run_steps` or run state.
+
+#### 5. Operator-facing surfaces
+
+`plugin_audit_events` is queryable by admin and auditor roles via a new admin endpoint (deferred to the admin-UI work package; not specified here). The LLM has no read path. `run_steps` keeps its existing endpoints and SSE feeds.
+
+### Out of scope
+
+- Migration of any existing `run_steps` content. There is none to migrate; `plugin_audit_events` is purely additive.
+- The admin UI surfaces for browsing `plugin_audit_events` (filter by event type, severity, instance). Tracked in the admin-UI work package.
+- Retention / compaction policy for `plugin_audit_events`. v1 keeps everything; revisit when volumes warrant.
+- Cross-substrate joins (e.g. "show me the run_step that failed because the plugin instance was unhealthy at the time"). Operators can correlate by timestamp and `run_id`; structured cross-references are deferred.
+- Generic `WriteAuditEvent` Host RPC for plugins to push their own structured events into `plugin_audit_events`. v1 does not expose this; all `plugin_audit_events` writes are host-internal.
+
+### Consequences
+
+- A new `plugin_audit_events` table is added in the schema migration tracked by issue #184. `run_steps` is unchanged.
+- The `WriteAuditStep` Host RPC handler enforces the `feedback_response`-only restriction at the boundary; an enum/oneof guard in the proto definition (issue #167) makes a wider type structurally unrepresentable on the wire.
+- ADR-044's `feedback_response_late` event lands in `plugin_audit_events`. The audit split is therefore a hard prerequisite for plugin-provided channels shipping. Captured as a dependency in #184.
+- Plugins have no path to inject arbitrary content into the agent's context window. The structural guarantee is the same shape as ADR-001 (hard capability enforcement): plugins cannot prompt-inject, cannot impersonate tool calls, and cannot fabricate feedback for requests they don't own.
+- Operator workflows for trust events (TOFU acceptance, key rotation review) have a stable backing table from day one; the admin UI work can evolve without re-shaping the substrate.
+
+---
+
+## ADR-045: Plugin signing & TOFU trust
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+ADR-041 chose `go-plugin` subprocesses launched from a `/plugins` filesystem dropin as the v1 distribution model: no curated registry, no upload-via-UI, just operator-controlled tarballs. ADR-043 chose the signing-tooling implementation (bundled Minisign Go library at `plugin-sdk/signing`, fresh-written, no external `minisign` binary dependency, surfaced via `gleipnir-plugin keygen|sign|package` subcommands). What is still missing is the **trust model** the host applies when it sees a signed tarball: which keys are trusted, when verification runs, what counts as a manifest change worth blocking on, and what happens when verification fails.
+
+This ADR records that model. The signing scheme itself (Minisign / Ed25519, signed payload, hash strategy) is owned by ADR-043 from the producer side; this ADR governs the consumer side — the host loader, the per-instance trust state, and the failure-mode policy. Spec sections §5.2-§5.5 are the source of truth for the matrices below; this ADR is the formal decision record.
+
+### Decision
+
+#### 1. Honest framing: tamper-evidence, not author identity attestation
+
+Minisign verification proves that the bundle was signed by the holder of the captured Ed25519 private key. It does **not** prove that the holder is the named author, that the binary does what the manifest says it does, or that the author is who they claim to be. v1 buys *tamper-evidence between admin install and admin run* — a meaningful security property, but a narrower one than a curated registry with an identity layer would provide. Sigstore-keyless transparency-log verification is the v2 path once a storefront-era identity layer materializes.
+
+The admin install gate (`plugins:install` permission, manual review of declared capabilities at `/admin/plugins`) is the bridge: the human in the loop is the identity check. This honest framing is the load-bearing assumption for every other decision in this ADR.
+
+#### 2. Trust model: TOFU per plugin instance
+
+Trust is captured at the instance level (one row per `plugin_instances`, see issue #185), keyed by the plugin's identity (manifest `name` + `version`-independent key). On first install of a plugin name, the embedded `signing.pub` is captured into `plugin_instances.trusted_pubkey`. All subsequent updates to that plugin must be signed by the captured key; mismatch is a hard block until an admin explicitly approves the new key via the "Accept new key" flow.
+
+Rotation = manual admin approval. Rotation certificates (signed-by-old-key statements that authorize a successor key) are deferred to v2; in v1, every key rotation is an explicit human decision, audited as a `plugin_pubkey_rotated` event in `plugin_audit_events` (per ADR-046) with the approving `actor_user_id`.
+
+An advanced "pin out-of-band" toggle is available at first install: an admin can paste a pubkey acquired through a separate trusted channel (e.g. a project's website over HTTPS) instead of taking the leap on the embedded one. This skips the TOFU first-install gap for security-conscious operators without changing the steady-state machinery.
+
+#### 3. Validation timing
+
+| Trigger                       | Action                                                                 |
+|-------------------------------|------------------------------------------------------------------------|
+| Install                       | Verify signature; capture pubkey (TOFU) or check against pinned pubkey; snapshot manifest into DB |
+| Plugin process start          | Verify signature against snapshotted manifest                          |
+| Hot-reload (`fsnotify` event) | Verify signature; if manifest has **material changes**, block reload pending admin re-approval |
+| Per-RPC call                  | None — verification is process-boundary, not call-boundary             |
+| Background scan               | None — next process start covers it                                    |
+
+Per-RPC verification is deliberately omitted: the security boundary is the subprocess identity (which the host launched and connected to over a private socket), not each RPC. Adding per-call verification would burn CPU without changing the threat model.
+
+#### 4. Material vs. cosmetic manifest changes
+
+A hot-reload that re-verifies signature successfully is still **blocked** if the new manifest differs from the snapshotted manifest in any **material** field. The bright-line list, taken from spec §5.4:
+
+**Material (block until admin re-approves):**
+- Embedded pubkey claim
+- Declared services (TriggerService / ToolService / ChannelService presence or version)
+- Tier-2 Host capability declarations
+- OAuth scopes, OAuth strategy
+- Declared tool list (any addition, removal, or schema change)
+- Per-instance `config_schema` shape
+- `event_kinds[].binding_schema` shape
+
+**Cosmetic (flow silently with audit log):**
+- Description, version string, author email
+- Default values inside config schemas
+- JSON Schema `description` strings
+- Example fixtures
+
+Material changes raise a `pending_manifest_approval` health state on every existing instance of the plugin; the new generation does not start until an admin reviews and approves the diff. This preserves ADR-018's capability-snapshot invariant: a run that started under one declared tool surface cannot suddenly see a different surface mid-flight.
+
+`config_schema` material changes are particularly load-bearing: the new generation cannot start until each existing instance's configuration is brought into compliance, which moves those instances into `pending_config_migration` (per spec §5.4). **No automated config migration tooling ships in v1** — admin manually edits each instance's config before the new generation activates. Migration tooling is a v2 concern.
+
+#### 5. Failure modes
+
+| Condition                             | Behavior                                                                         |
+|---------------------------------------|----------------------------------------------------------------------------------|
+| Invalid signature                     | Hard block. No override. (Distinct from "unsigned" — a signature was claimed and is wrong.) |
+| TOFU violation (signed by unknown key)| Block + "Accept new key" UI; instance enters `pending_key_approval`              |
+| Material manifest change on hot-reload| Block reload; instance enters `pending_manifest_approval`                        |
+| Verification system error (missing `.minisig`, I/O failure) | Fail closed; surface detailed error; instance enters `verification_error` |
+| Unsigned plugin                       | Block by default. See decision 6 for permissive override.                        |
+| Hot-reload failure on running plugin  | Old generation drains in-flight; new generation never starts. Admin sees "serving in-flight, no new requests accepted" with View error / Revert / Remove pending update actions. |
+
+"Block" means the new generation does not start; existing healthy generations continue serving until drained. The host never silently swaps a generation under an unverified or unapproved manifest.
+
+#### 6. `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` permissive-mode override
+
+Unsigned plugins are blocked by default. Operators who need to run an unsigned local development build, or a vendored fork still being signed, can set the **global** environment variable `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true`. The semantics are deliberately blunt:
+
+- Scope is global, not per-plugin. There is no per-plugin allowlist — that would create a slow drift toward "well, just this one more" until the trust model has rotted.
+- Every load of an unsigned plugin emits a high-severity `unsigned_plugin_loaded` event into `plugin_audit_events`.
+- The admin UI shows a red banner across `/admin/plugins` while permissive mode is active. The banner is non-dismissible.
+- `/api/v1/health` reports `signature_verification: disabled` so health-checking infrastructure can detect the mode externally.
+- **Signed plugins are still fully verified** even in permissive mode. Permissive mode does not relax verification of bundles that *do* carry a signature; a tampered signed bundle is still hard-blocked. The toggle affects unsigned bundles only.
+
+The variable is read once at host startup; runtime toggling is not supported (it would require recomputing the trust state of every loaded plugin).
+
+#### 7. Per-instance health states
+
+The full set of v1 health states (per spec §5.6) is enumerated here so that downstream UI work has a stable contract:
+
+`healthy`, `signature_invalid`, `pending_key_approval`, `pending_manifest_approval`, `pending_config_migration`, `verification_error`, `unsigned_permissive`.
+
+Each state is rendered as a colored chip on `/admin/plugins`, click-through reveals detail and admin actions (Accept new key / Approve manifest / View error / Revert / Remove pending update). Chip rendering and the action set are owned by issue #191; this ADR fixes the state names and the conditions under which the loader assigns them.
+
+### Out of scope
+
+- The Minisign Go library implementation itself (ADR-043 covers it from the producer side; the host imports the same `plugin-sdk/signing` package for verification).
+- Sigstore / Rekor transparency logs. Deferred to v2 storefront era.
+- Per-plugin unsigned-allow lists. Explicitly rejected (decision 6).
+- Rotation certificates (signed-by-old-key authorizations of a new key). Deferred to v2; v1 = manual admin approval per rotation.
+- Revocation lists. v1 has no revocation channel; admins remove a compromised plugin by uninstalling it. CRL-style infrastructure is deferred.
+- Verifying plugin behavior against the manifest at runtime. Out of scope — that's a sandboxing concern (not v1).
+- The admin UI flows for "Accept new key" and "Approve manifest". Owned by issues #188 (TOFU UI) and #189 (material-change detection); this ADR specifies the conditions, not the screens.
+
+### Consequences
+
+- `internal/plugin` (host loader) gains a verification step on install and on every process start. It imports `plugin-sdk/signing` for the verification primitive.
+- `plugin_instances.trusted_pubkey` (TEXT) and a snapshotted manifest column are required by issue #185 — the trust model presumes per-instance state.
+- `plugin_audit_events` (issue #184, ADR-046) is a hard prerequisite: every trust-relevant action emits an event into that table. Fail-loud rather than fail-silent is only meaningful with a recorded trail.
+- `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` joins the documented env var list in the project-level CLAUDE.md table. The red banner and the `/api/v1/health` field are the two operator-visible signals that the toggle is on.
+- The "block on material manifest change" rule means a signed plugin update that adds a new declared tool will not auto-load — it sits in `pending_manifest_approval` until an admin reviews it. This is intentional friction; operators who want a smooth path negotiate manifest stability with their plugin authors.
+- TOFU's first-install gap is acknowledged, not closed. The `plugins:install` permission gate and the optional pin-out-of-band toggle are the v1 mitigations.
 
 ---
 
