@@ -74,6 +74,18 @@ func TestLoader_Init_Disabled_LeavesVerifierNil(t *testing.T) {
 	}
 }
 
+// TestLoader_StartWatcher_DisabledIsNoOp asserts that StartWatcher is a no-op
+// when GLEIPNIR_PLUGINS_ENABLED=false (i.e. Init was never called, verifier is nil).
+func TestLoader_StartWatcher_DisabledIsNoOp(t *testing.T) {
+	l := NewLoader()
+	if err := l.Init(context.Background(), config.Config{PluginsEnabled: false}); err != nil {
+		t.Fatalf("Init disabled: %v", err)
+	}
+	// StartWatcher must return without panicking or starting anything.
+	// Pass nil for q — the code must not reach any q calls when disabled.
+	l.StartWatcher(context.Background(), nil, t.TempDir())
+}
+
 // captureLogs swaps slog.Default with a buffer-backed handler for the
 // duration of the test and returns the buffer.
 func captureLogs(t *testing.T) *bytes.Buffer {

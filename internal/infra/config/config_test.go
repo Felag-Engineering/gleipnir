@@ -29,6 +29,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"GLEIPNIR_PID_FILE",
 		"GLEIPNIR_PLUGINS_ENABLED",
 		"GLEIPNIR_ALLOW_UNSIGNED_PLUGINS",
+		"GLEIPNIR_PLUGINS_DIR",
 	} {
 		t.Setenv(key, "")
 	}
@@ -83,6 +84,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.AllowUnsignedPlugins != false {
 		t.Errorf("AllowUnsignedPlugins: got %v, want false", cfg.AllowUnsignedPlugins)
+	}
+	if cfg.PluginsDir != "/plugins" {
+		t.Errorf("PluginsDir: got %q, want /plugins", cfg.PluginsDir)
 	}
 }
 
@@ -209,6 +213,15 @@ func TestLoad_Overrides(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "plugins dir override",
+			env:  map[string]string{"GLEIPNIR_PLUGINS_DIR": "/mnt/plugins"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.PluginsDir != "/mnt/plugins" {
+					t.Errorf("got %q, want /mnt/plugins", cfg.PluginsDir)
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -222,7 +235,7 @@ func TestLoad_Overrides(t *testing.T) {
 				"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
 				"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", "GLEIPNIR_FEEDBACK_SCAN_INTERVAL",
 				"GLEIPNIR_DRAIN_TIMEOUT", "GLEIPNIR_PID_FILE", "GLEIPNIR_PLUGINS_ENABLED",
-				"GLEIPNIR_ALLOW_UNSIGNED_PLUGINS",
+				"GLEIPNIR_ALLOW_UNSIGNED_PLUGINS", "GLEIPNIR_PLUGINS_DIR",
 			} {
 				t.Setenv(key, "")
 			}

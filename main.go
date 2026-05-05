@@ -65,10 +65,11 @@ func run(cfg config.Config) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Plugin loader is a stub today; Init is a no-op when GLEIPNIR_PLUGINS_ENABLED
-	// is false (the default for this release; spec §15.2). Init currently cannot
-	// fail — the error return is for the Phase 3 loader.
-	if err := pluginpkg.NewLoader().Init(ctx, cfg); err != nil {
+	// Plugin loader: Init sets up the Verifier; StartWatcher starts the fsnotify
+	// watcher after the DB is migrated. Both are no-ops when GLEIPNIR_PLUGINS_ENABLED
+	// is false (the default for this release; spec §15.2).
+	loader := pluginpkg.NewLoader()
+	if err := loader.Init(ctx, cfg); err != nil {
 		return fmt.Errorf("init plugin loader: %w", err)
 	}
 
@@ -80,6 +81,12 @@ func run(cfg config.Config) error {
 
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrate: %w", err)
+	}
+
+	// Start the plugin watcher after migration so the schema is ready.
+	// No-op when GLEIPNIR_PLUGINS_ENABLED=false.
+	if cfg.PluginsEnabled {
+		loader.StartWatcher(ctx, store.Queries(), cfg.PluginsDir)
 	}
 
 	// Mark any in-flight runs as interrupted (ADR-011).
