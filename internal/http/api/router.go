@@ -67,6 +67,13 @@ type Metadata struct {
 	Version   string
 	StartTime time.Time
 	DBPath    string
+	// SignatureVerificationDisabled is true when the host is running with
+	// GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true (ADR-045 §6). It is surfaced via
+	// the public /api/v1/health endpoint so health-checking infrastructure
+	// and the admin UI can detect the permissive mode externally. Signed
+	// plugins are still fully verified — the flag only governs unsigned
+	// bundles.
+	SignatureVerificationDisabled bool
 }
 
 // RouterConfig bundles all dependencies needed to build the complete route tree.
@@ -110,7 +117,14 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	// would break Docker HEALTHCHECK directives, load balancer probes, and
 	// uptime monitors that cannot send session cookies.
 	r.Get("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		body := map[string]string{"status": "ok"}
+		if cfg.Metadata.SignatureVerificationDisabled {
+			// Per ADR-045 §6: the value is reported as a string so the field
+			// type stays stable when v2 introduces additional verification
+			// states (e.g. "degraded" if a TOFU re-pin is mid-flight).
+			body["signature_verification"] = "disabled"
+		}
+		httputil.WriteJSON(w, http.StatusOK, body)
 	})
 
 	// Auth routes that do not require an existing session.

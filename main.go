@@ -289,9 +289,10 @@ func run(cfg config.Config) error {
 		Handlers: handlers,
 		Services: services,
 		Metadata: api.Metadata{
-			Version:   version.Version,
-			StartTime: startTime,
-			DBPath:    cfg.DBPath,
+			Version:                       version.Version,
+			StartTime:                     startTime,
+			DBPath:                        cfg.DBPath,
+			SignatureVerificationDisabled: cfg.PluginsEnabled && cfg.AllowUnsignedPlugins,
 		},
 	})
 
