@@ -83,7 +83,7 @@ func TestLoader_StartWatcher_DisabledIsNoOp(t *testing.T) {
 	}
 	// StartWatcher must return without panicking or starting anything.
 	// Pass nil for q — the code must not reach any q calls when disabled.
-	l.StartWatcher(context.Background(), nil, t.TempDir())
+	l.StartWatcher(context.Background(), nil, t.TempDir(), nil)
 }
 
 // captureLogs swaps slog.Default with a buffer-backed handler for the

@@ -117,26 +117,31 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		model.PluginHealthStateCrashed,
 		model.PluginHealthStateCircuitBroken,
 		model.PluginHealthStatePendingManifestApproval, // hot-reload detects manifest change
+		model.PluginHealthStatePendingKeyApproval,      // new signed update with mismatched key (#188)
 	},
 	model.PluginHealthStateUnsignedPermissive: {
 		model.PluginHealthStateUnhealthy,
 		model.PluginHealthStateCrashed,
 		model.PluginHealthStateCircuitBroken,
 		model.PluginHealthStatePendingManifestApproval,
+		model.PluginHealthStatePendingKeyApproval, // signed update arrives for previously-unsigned plugin (#188)
 	},
 	model.PluginHealthStateUnhealthy: {
 		model.PluginHealthStateHealthy,
 		model.PluginHealthStateCrashed,
 		model.PluginHealthStateCircuitBroken,
+		model.PluginHealthStatePendingKeyApproval, // key mismatch detected during unhealthy state (#188)
 	},
 	model.PluginHealthStateCircuitBroken: {
 		model.PluginHealthStateHealthy,
 		model.PluginHealthStateUnhealthy,
 		model.PluginHealthStateCrashed,
+		model.PluginHealthStatePendingKeyApproval, // key mismatch detected during circuit-broken state (#188)
 	},
 	model.PluginHealthStateCrashed: {
 		model.PluginHealthStateHealthy,
 		model.PluginHealthStateUnhealthy,
+		model.PluginHealthStatePendingKeyApproval, // key mismatch detected after crash (#188)
 	},
 	// signature_invalid and verification_error are terminal — no outgoing edges.
 	// A re-install or admin key-rotation creates a fresh instance row.

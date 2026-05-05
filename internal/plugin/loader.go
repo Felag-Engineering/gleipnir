@@ -19,6 +19,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
+	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/plugin/loader"
 )
 
@@ -79,12 +80,16 @@ func (l *Loader) Init(_ context.Context, cfg config.Config) error {
 // schema is ready for plugin rows and audit events. It is a no-op (returns nil)
 // when Init was not called (i.e. when GLEIPNIR_PLUGINS_ENABLED=false) —
 // l.verifier will be nil in that case and we return early.
-func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, dir string) error {
+//
+// publisher is used to emit plugin.health_changed events when a pubkey mismatch
+// transitions instances to pending_key_approval. It may be nil — events are
+// skipped when nil.
+func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, dir string, publisher event.Publisher) error {
 	if l.verifier == nil {
 		return nil
 	}
 
-	inst := loader.NewInstaller(&verifierAdapter{v: l.verifier}, q)
+	inst := loader.NewInstaller(&verifierAdapter{v: l.verifier}, q, publisher)
 	l.watcher = loader.NewWatcher(dir, inst.Install)
 
 	fw, err := l.watcher.Setup()

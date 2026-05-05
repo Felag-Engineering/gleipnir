@@ -83,13 +83,8 @@ func run(cfg config.Config) error {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
-	// Start the plugin watcher after migration so the schema is ready.
-	// No-op when GLEIPNIR_PLUGINS_ENABLED=false.
-	if cfg.PluginsEnabled {
-		if err := loader.StartWatcher(ctx, store.Queries(), cfg.PluginsDir); err != nil {
-			return fmt.Errorf("start plugin watcher: %w", err)
-		}
-	}
+	// Plugin watcher start is deferred until after broadcaster is initialized;
+	// see below after sse.NewBroadcaster().
 
 	// Mark any in-flight runs as interrupted (ADR-011).
 	if err := store.ScanOrphanedRuns(ctx, slog.Default()); err != nil {
@@ -107,6 +102,15 @@ func run(cfg config.Config) error {
 
 	broadcaster := sse.NewBroadcaster()
 	sseHandler := sse.NewHandler(broadcaster)
+
+	// Start the plugin watcher after broadcaster is initialized so pubkey-mismatch
+	// transitions can emit plugin.health_changed SSE events. Schema is already
+	// migrated at this point. No-op when GLEIPNIR_PLUGINS_ENABLED=false.
+	if cfg.PluginsEnabled {
+		if err := loader.StartWatcher(ctx, store.Queries(), cfg.PluginsDir, broadcaster); err != nil {
+			return fmt.Errorf("start plugin watcher: %w", err)
+		}
+	}
 
 	approvalScanner := timeout.NewApprovalScanner(
 		store,
@@ -288,7 +292,7 @@ func run(cfg config.Config) error {
 		SettingsHandler:      settingsHandler,
 		AdminHandler:         adminHandler,
 		OpenAICompatHandler:  openaiCompatHandler,
-		PluginAdminHandler:   admin.NewPluginHandler(store.Queries()),
+		PluginAdminHandler:   admin.NewPluginHandler(store.Queries(), broadcaster, nil),
 		WebhookHandler:       webhookHandler,
 		SSEHandler:           sseHandler,
 		PolicyWebhookHandler: policyWebhookHandler,

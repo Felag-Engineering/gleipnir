@@ -90,6 +90,12 @@ func TestIsLegalTransition(t *testing.T) {
 		{model.PluginHealthStateHealthy, model.PluginHealthStateCrashed},
 		{model.PluginHealthStateHealthy, model.PluginHealthStateCircuitBroken},
 		{model.PluginHealthStateHealthy, model.PluginHealthStatePendingManifestApproval},
+		// New edges: pending_key_approval is reachable from non-terminal states (#188).
+		{model.PluginHealthStateHealthy, model.PluginHealthStatePendingKeyApproval},
+		{model.PluginHealthStateUnsignedPermissive, model.PluginHealthStatePendingKeyApproval},
+		{model.PluginHealthStateUnhealthy, model.PluginHealthStatePendingKeyApproval},
+		{model.PluginHealthStateCircuitBroken, model.PluginHealthStatePendingKeyApproval},
+		{model.PluginHealthStateCrashed, model.PluginHealthStatePendingKeyApproval},
 		{model.PluginHealthStateUnsignedPermissive, model.PluginHealthStateUnhealthy},
 		{model.PluginHealthStateUnsignedPermissive, model.PluginHealthStateCrashed},
 		{model.PluginHealthStateUnhealthy, model.PluginHealthStateHealthy},
@@ -110,7 +116,7 @@ func TestIsLegalTransition(t *testing.T) {
 	illegal := [][2]model.PluginHealthState{
 		{model.PluginHealthStateSignatureInvalid, model.PluginHealthStateHealthy},
 		{model.PluginHealthStateVerificationError, model.PluginHealthStateHealthy},
-		{model.PluginHealthStateHealthy, model.PluginHealthStatePendingKeyApproval},
+		// signature_invalid and verification_error are terminal — no outgoing edges.
 		{model.PluginHealthStateCrashed, model.PluginHealthStateSignatureInvalid},
 	}
 	for _, pair := range illegal {
