@@ -179,9 +179,12 @@ func ParseChatCompletionResponse(wire *chatResponse, names llm.ToolNameMapping) 
 	choice := wire.Choices[0]
 
 	// Content is omitted (nil) when the response is tool-calls-only; an empty
-	// string string also carries no useful text and would create a spurious block
-	// that confuses callers expecting at least one real token.
-	if choice.Message.Content != nil && *choice.Message.Content != "" {
+	// or whitespace-only string also carries no useful text and would create a
+	// spurious block that confuses callers expecting at least one real token.
+	// Local models served via LM Studio / Ollama frequently emit "\n" or "\n\n"
+	// alongside tool calls — we strip those out here rather than every caller
+	// having to filter blank thought steps.
+	if choice.Message.Content != nil && strings.TrimSpace(*choice.Message.Content) != "" {
 		out.Text = []llm.TextBlock{{Text: *choice.Message.Content}}
 	}
 
