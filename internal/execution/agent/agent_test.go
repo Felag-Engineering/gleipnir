@@ -3382,6 +3382,284 @@ func TestNew_PluginSchemaCannotBypassScoping(t *testing.T) {
 	assertSchemaProperties(t, pluginDef.InputSchema, []string{"namespace"})
 }
 
+// TestHandleToolCall_PluginTool_ApprovalGated verifies that the approval
+// interceptor in handleToolCall runs BEFORE the plugin generation guard —
+// i.e. there is exactly one approval chokepoint regardless of tool source
+// (ADR-008, ADR-029).
+func TestHandleToolCall_PluginTool_ApprovalGated(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// approvalRequired controls whether the plugin tool is registered with
+		// ApprovalModeRequired and whether approvalCh is wired in the harness.
+		approvalRequired bool
+
+		// approvalCh configuration.
+		approvalChSend *bool  // nil = don't send, pointer to false = reject, pointer to true = approve
+		toolTimeout    time.Duration
+		cancelCtx      bool // cancel the context before calling handleToolCall
+
+		// Plugin configuration.
+		generation       int64
+		activeGeneration int64
+		registered       bool
+
+		// Expected outcomes.
+		wantErr             string  // substring expected in returned error (empty = no error)
+		wantApprovalRequest bool    // expect approval_request step written
+		wantToolResult      bool    // expect tool_result step written
+		wantApprovalErrCode *string // expected ErrorCode in error step (nil = any/none)
+	}{
+		{
+			// Approved + generation match → proceeds to placeholder dispatch.
+			// Returning errPluginDispatchUnimplemented here confirms the gate
+			// fired before dispatch was attempted.
+			name:             "approved",
+			approvalRequired: true,
+			approvalChSend:   boolPtr(true),
+			generation:       1,
+			activeGeneration: 1,
+			registered:       true,
+			wantErr:          "plugin tool dispatch is not yet implemented",
+			wantApprovalRequest: true,
+		},
+		{
+			// Operator rejects → approval_request written, error returned, no tool_result.
+			name:             "rejected",
+			approvalRequired: true,
+			approvalChSend:   boolPtr(false),
+			generation:       1,
+			activeGeneration: 1,
+			registered:       true,
+			wantErr:          "rejected by operator",
+			wantApprovalRequest: true,
+			wantApprovalErrCode: strPtr(string(model.ErrorCodeApprovalRejected)),
+		},
+		{
+			// Approval times out before a decision arrives.
+			name:             "timeout",
+			approvalRequired: true,
+			approvalChSend:   nil,   // no send → select falls through to timeout
+			toolTimeout:      20 * time.Millisecond,
+			generation:       1,
+			activeGeneration: 1,
+			registered:       true,
+			wantErr:          "approval timeout",
+			wantApprovalRequest: true,
+			wantApprovalErrCode: strPtr(string(model.ErrorCodeApprovalRejected)),
+		},
+		{
+			// Context is cancelled before handleToolCall is even entered.
+			name:             "ctx_cancelled",
+			approvalRequired: true,
+			approvalChSend:   nil,
+			cancelCtx:        true,
+			generation:       1,
+			activeGeneration: 1,
+			registered:       true,
+			wantErr:          "context cancelled",
+			wantApprovalRequest: false,
+		},
+		{
+			// Sanity case: approval NOT required + generation mismatch → generation
+			// guard produces a structural tool_result error, no approval gate involved.
+			name:             "approval_not_required_generation_mismatch_returns_structural_error",
+			approvalRequired: false,
+			approvalChSend:   nil,
+			generation:       1,
+			activeGeneration: 2, // mismatch
+			registered:       true,
+			wantErr:          "",  // no error returned
+			wantApprovalRequest: false,
+			wantToolResult:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testutil.NewTestStore(t)
+			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+			testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+			registrar := &fakePluginRegistrar{
+				activeGen:  tc.activeGeneration,
+				registered: tc.registered,
+			}
+
+			// Wire ApprovalCh only for cases that need approval gating.
+			var approvalCh chan bool
+			approval := model.ApprovalModeNone
+			if tc.approvalRequired {
+				approval = model.ApprovalModeRequired
+				approvalCh = make(chan bool, 1)
+				if tc.approvalChSend != nil {
+					approvalCh <- *tc.approvalChSend
+				}
+			}
+
+			w := NewAuditWriter(s.Queries())
+			ba, err := New(Config{
+				Policy: minimalPolicy(),
+				PluginTools: []PluginToolEntry{
+					{
+						InstanceName: "my-plugin",
+						ToolName:     "do-thing",
+						Generation:   tc.generation,
+						Approval:     approval,
+						Timeout:      tc.toolTimeout,
+					},
+				},
+				PluginRegistrar: registrar,
+				LLMClient:       testutil.NewNoopLLMClient(),
+				Audit:           w,
+				ApprovalCh:      approvalCh,
+				StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			ctx := context.Background()
+			if tc.cancelCtx {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+
+			_, _, callErr := ba.handleToolCall(ctx, "r1", "my-plugin.do-thing", map[string]any{})
+
+			if tc.wantErr != "" {
+				if callErr == nil {
+					t.Fatalf("handleToolCall returned nil; want error containing %q", tc.wantErr)
+				}
+				if !strings.Contains(callErr.Error(), tc.wantErr) {
+					t.Errorf("handleToolCall error = %q; want it to contain %q", callErr.Error(), tc.wantErr)
+				}
+			} else if callErr != nil {
+				t.Fatalf("handleToolCall returned unexpected error: %v", callErr)
+			}
+
+			steps, listErr := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+			if listErr != nil {
+				t.Fatalf("ListRunSteps: %v", listErr)
+			}
+
+			var approvalRequestFound, toolResultFound bool
+			var foundErrCode string
+			for _, step := range steps {
+				switch step.Type {
+				case string(model.StepTypeApprovalRequest):
+					approvalRequestFound = true
+				case string(model.StepTypeToolResult):
+					toolResultFound = true
+				case string(model.StepTypeError):
+					var content map[string]string
+					if jsonErr := json.Unmarshal([]byte(step.Content), &content); jsonErr == nil {
+						foundErrCode = content["code"]
+					}
+				}
+			}
+
+			if tc.wantApprovalRequest && !approvalRequestFound {
+				t.Error("expected approval_request step to be written; none found")
+			}
+			if !tc.wantApprovalRequest && approvalRequestFound {
+				t.Error("approval_request step written unexpectedly")
+			}
+			if tc.wantToolResult && !toolResultFound {
+				t.Error("expected tool_result step to be written; none found")
+			}
+			if tc.wantApprovalErrCode != nil && foundErrCode != *tc.wantApprovalErrCode {
+				t.Errorf("error step code = %q; want %q", foundErrCode, *tc.wantApprovalErrCode)
+			}
+		})
+	}
+}
+
+// boolPtr returns a pointer to a bool literal.
+func boolPtr(b bool) *bool { return &b }
+
+// strPtr returns a pointer to a string literal.
+func strPtr(s string) *string { return &s }
+
+// TestHandleToolCall_PluginTool_ApprovalGated_GateFiredBeforeGenerationGuard
+// verifies the specific invariant: when a plugin tool has Approval: required AND
+// the generation is mismatched, the approval gate fires FIRST (approval_request
+// step is written and the run waits), and only after approval does the generation
+// guard produce the structural tool_result error.
+func TestHandleToolCall_PluginTool_ApprovalGated_GateFiredBeforeGenerationGuard(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	// Generation mismatch: snapshot captured generation 1, registrar says 2 is active.
+	registrar := &fakePluginRegistrar{activeGen: 2, registered: true}
+
+	// Operator approves — we want to confirm approval runs before the guard.
+	approvalCh := make(chan bool, 1)
+	approvalCh <- true
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy: minimalPolicy(),
+		PluginTools: []PluginToolEntry{
+			{
+				InstanceName: "my-plugin",
+				ToolName:     "do-thing",
+				Generation:   1, // stale generation
+				Approval:     model.ApprovalModeRequired,
+			},
+		},
+		PluginRegistrar: registrar,
+		LLMClient:       testutil.NewNoopLLMClient(),
+		Audit:           w,
+		ApprovalCh:      approvalCh,
+		StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// The call should succeed at the handleToolCall level (structural tool_result, no error).
+	output, isErr, callErr := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if callErr != nil {
+		t.Fatalf("handleToolCall returned unexpected error: %v", callErr)
+	}
+	if !isErr {
+		t.Error("expected isErr=true for generation mismatch after approval")
+	}
+	if !strings.Contains(output, "no longer active") {
+		t.Errorf("output = %q; want it to contain 'no longer active'", output)
+	}
+
+	steps, listErr := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if listErr != nil {
+		t.Fatalf("ListRunSteps: %v", listErr)
+	}
+
+	var approvalRequestFound, toolResultFound bool
+	for _, step := range steps {
+		switch step.Type {
+		case string(model.StepTypeApprovalRequest):
+			approvalRequestFound = true
+		case string(model.StepTypeToolResult):
+			var content map[string]any
+			if jsonErr := json.Unmarshal([]byte(step.Content), &content); jsonErr == nil {
+				if isErrFlag, _ := content["is_error"].(bool); isErrFlag {
+					toolResultFound = true
+				}
+			}
+		}
+	}
+
+	if !approvalRequestFound {
+		t.Error("approval_request step not written — gate must fire before generation guard")
+	}
+	if !toolResultFound {
+		t.Error("expected tool_result step with is_error=true for generation mismatch")
+	}
+}
+
 // TestNew_PluginToolValidateCallRejectsUndeclared verifies that handleToolCall
 // runs ValidateCall against the narrowed plugin schema before reaching the plugin
 // generation guard or dispatch placeholder. The reorder in agent.go ensures

@@ -37,6 +37,7 @@ type PluginToolEntry struct {
 	Description  string
 	Schema       map[string]any
 	Approval     model.ApprovalMode
+	Timeout      time.Duration  // approval timeout; zero means no timeout (same semantics as GrantedTool.Timeout)
 	Params       map[string]any // narrowed schema per ADR-017
 }
 
@@ -112,6 +113,7 @@ func New(cfg Config) (*BoundAgent, error) {
 					ServerName: "", // no MCP server; plugin dispatch is via pluginSource
 					ToolName:   pt.ToolName,
 					Approval:   pt.Approval,
+					Timeout:    pt.Timeout,
 					Params:     pt.Params,
 				},
 				Client:      nil, // real dispatch wired in #198
@@ -514,7 +516,9 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 
 // handleToolCall dispatches a single tool call from the agent.
 // For approval-gated tools it suspends the run and waits for a decision
-// before proceeding. This is the hard runtime guarantee (ADR-001).
+// before any source-specific dispatch. This is the hard runtime guarantee
+// (ADR-008): the approval interceptor runs unconditionally regardless of
+// whether the tool is MCP- or plugin-backed.
 // On error, it writes an error step and returns the error.
 //
 // toolName is the original MCP dot-separated name (e.g. "myserver.read_data"),
@@ -549,11 +553,26 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		return "", false, fmt.Errorf("schema validation for %s: %w", toolName, err)
 	}
 
+	// Approval gating for tools with approval: required (ADR-008).
+	// This interceptor is source-agnostic and runs BEFORE any source-specific
+	// dispatch (plugin generation guard, MCP transport). A single chokepoint
+	// here mirrors how ValidateCall is structured — it is impossible for any
+	// future dispatch path to accidentally bypass it.
+	//
+	// Note: an operator who approves a call for a plugin with a stale generation
+	// will still receive a structural tool_result error below. Approval is
+	// unconditional per ADR-008's "no bypass based on tool source".
+	if entry.tool.Approval == model.ApprovalModeRequired {
+		if err := a.approvals.Wait(ctx, runID, entry, toolName, input); err != nil {
+			return "", false, err
+		}
+	}
+
 	// Plugin generation guard: verify the plugin instance that provided this tool
 	// is still active and on the same generation captured in the snapshot. If not,
 	// write a tool_result structural error (same shape as MCP transport failures)
-	// so the agent can reason about it. Schema validation has already passed above;
-	// this block only handles generation/dispatch routing.
+	// so the agent can reason about it. Schema validation and approval gating have
+	// already run above; this block only handles generation/dispatch routing.
 	//
 	// The registrar is guaranteed non-nil when entry.pluginSource != nil because
 	// New() panics if PluginTools is non-empty without a PluginRegistrar.
@@ -580,18 +599,8 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		return "", false, errPluginDispatchUnimplemented
 	}
 
-	// Approval gating for tools with approval: required (ADR-008).
-	// This interception must remain BEFORE the tool_call step is written and
-	// BEFORE MCP dispatch — it is the hard runtime guarantee.
-	if entry.tool.Approval == model.ApprovalModeRequired {
-		if err := a.approvals.Wait(ctx, runID, entry, toolName, input); err != nil {
-			return "", false, err
-		}
-	}
-
 	// Write tool_call step. server_id is the MCP ServerName for MCP-source tools;
-	// it would be empty for plugin entries — but plugin tools are intercepted above
-	// before this point, so only MCP tools reach here (#198 will wire plugin dispatch).
+	// plugin tools return before reaching this point (#198 will wire plugin dispatch).
 	if err := a.audit.Write(ctx, Step{
 		RunID: runID,
 		Type:  model.StepTypeToolCall,
