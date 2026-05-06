@@ -15,17 +15,18 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 )
 
 // fakePluginQuerier is an in-memory PluginQuerier for tests.
 type fakePluginQuerier struct {
-	instances    map[string]db.PluginInstance
-	plugins      map[string]db.Plugin
-	auditEvents  []db.PluginAuditEvent
+	instances   map[string]db.PluginInstance
+	plugins     map[string]db.Plugin
+	auditEvents []db.PluginAuditEvent
 	// casFailOn is the plugin ID that should return 0 rows for UpdatePluginTrustedPubkey
-	// to simulate a CAS conflict.
+	// or UpdatePluginManifest to simulate a CAS conflict.
 	casFailOn    string
 	updatePubkey string // last value written by UpdatePluginTrustedPubkey
 }
@@ -110,6 +111,36 @@ func (f *fakePluginQuerier) InsertPluginAuditEvent(_ context.Context, arg db.Ins
 	}
 	f.auditEvents = append(f.auditEvents, ev)
 	return ev, nil
+}
+
+func (f *fakePluginQuerier) ListPluginAuditEventsByType(_ context.Context, arg db.ListPluginAuditEventsByTypeParams) ([]db.PluginAuditEvent, error) {
+	var result []db.PluginAuditEvent
+	for i := len(f.auditEvents) - 1; i >= 0; i-- {
+		ev := f.auditEvents[i]
+		if ev.EventType == arg.EventType {
+			result = append(result, ev)
+		}
+		if int64(len(result)) >= arg.Limit {
+			break
+		}
+	}
+	return result, nil
+}
+
+func (f *fakePluginQuerier) UpdatePluginManifest(_ context.Context, arg db.UpdatePluginManifestParams) (int64, error) {
+	if f.casFailOn == arg.ID {
+		return 0, nil // simulate CAS conflict
+	}
+	p, ok := f.plugins[arg.ID]
+	if !ok || p.Version != arg.ExpectedVersion {
+		return 0, nil
+	}
+	p.ManifestSnapshot = arg.ManifestSnapshot
+	p.PluginVersion = arg.PluginVersion
+	p.Status = arg.Status
+	p.Version++
+	f.plugins[arg.ID] = p
+	return 1, nil
 }
 
 func TestPluginHandler_GetInstance(t *testing.T) {
@@ -388,4 +419,234 @@ func withChiParams(r *http.Request, params map[string]string) *http.Request {
 		rctx.URLParams.Add(k, v)
 	}
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
+}
+
+// candidateManifestAuditEvent builds a fake plugin_manifest_material_change audit
+// event payload containing the given candidate manifest bytes for the given plugin.
+func candidateManifestAuditEvent(pluginID string, candidateManifest []byte) db.PluginAuditEvent {
+	payload, _ := json.Marshal(map[string]any{
+		"plugin_id":                    pluginID,
+		"name":                         "test-plugin",
+		"old_version":                  "1.0.0",
+		"new_version":                  "2.0.0",
+		"material_fields":              []string{"services.tool"},
+		"cosmetic_fields":              []string{},
+		"candidate_manifest_b64":       base64.StdEncoding.EncodeToString(candidateManifest),
+		"newly_required_config_fields": []string{},
+	})
+	return db.PluginAuditEvent{
+		EventType:   "plugin_manifest_material_change",
+		Severity:    "high",
+		PayloadJson: string(payload),
+		CreatedAt:   "2026-05-05T00:00:00Z",
+	}
+}
+
+const (
+	// v1 manifest for accept-manifest tests.
+	v1ManifestYAML = "schema_version: v1\nname: test-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n"
+	// v2 manifest for accept-manifest tests (material change: services.tool v1→v2).
+	v2ManifestYAML = "schema_version: v1\nname: test-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\n"
+	// v2 manifest with a newly required config field.
+	v2ManifestWithRequiredField = "schema_version: v1\nname: test-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\nconfig_schema:\n  type: object\n  properties:\n    api_key:\n      type: string\n  required:\n    - api_key\n"
+)
+
+func TestPluginHandler_AcceptManifest(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+
+	t.Run("happy path: updates snapshot and unblocks instances", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-1",
+			Name:             "test-plugin",
+			ManifestSnapshot: v1ManifestYAML,
+			PluginVersion:    "1.0.0",
+			Status:           "pending_review",
+			Version:          1,
+		})
+		q.seed(db.PluginInstance{
+			ID:          "inst-a",
+			PluginID:    "plugin-1",
+			HealthState: string(model.PluginHealthStatePendingManifestApproval),
+			Version:     0,
+		})
+		// Seed the audit event as if a material change was previously detected.
+		q.auditEvents = append(q.auditEvents, candidateManifestAuditEvent("plugin-1", []byte(v2ManifestYAML)))
+
+		h := NewPluginHandler(q, nil, fixedClock)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-1/accept-manifest", bytes.NewBufferString(`{}`))
+		req = withChiParams(req, map[string]string{"id": "plugin-1"})
+		rec := httptest.NewRecorder()
+		h.AcceptManifest(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+		}
+
+		data := parseDataResponse(t, rec)
+		var resp acceptManifestResponse
+		if err := json.Unmarshal(data, &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if resp.AcceptedManifestVersion != "2.0.0" {
+			t.Errorf("accepted_manifest_version = %q, want 2.0.0", resp.AcceptedManifestVersion)
+		}
+		if resp.InstancesUnblocked != 1 {
+			t.Errorf("instances_unblocked = %d, want 1", resp.InstancesUnblocked)
+		}
+		if resp.InstancesPendingConfig != 0 {
+			t.Errorf("instances_pending_config = %d, want 0", resp.InstancesPendingConfig)
+		}
+
+		// Instance must now be healthy.
+		instA := q.instances["inst-a"]
+		if instA.HealthState != string(model.PluginHealthStateHealthy) {
+			t.Errorf("inst-a health_state = %q, want healthy", instA.HealthState)
+		}
+		// Snapshot must be updated.
+		if q.plugins["plugin-1"].ManifestSnapshot != v2ManifestYAML {
+			t.Error("manifest_snapshot must be updated to v2 on accept")
+		}
+	})
+
+	t.Run("newly required config field transitions to pending_config_migration", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-2",
+			Name:             "test-plugin",
+			ManifestSnapshot: v1ManifestYAML,
+			PluginVersion:    "1.0.0",
+			Status:           "pending_review",
+			Version:          1,
+		})
+		q.seed(db.PluginInstance{
+			ID:          "inst-b",
+			PluginID:    "plugin-2",
+			HealthState: string(model.PluginHealthStatePendingManifestApproval),
+			Version:     0,
+		})
+		q.auditEvents = append(q.auditEvents, candidateManifestAuditEvent("plugin-2", []byte(v2ManifestWithRequiredField)))
+
+		h := NewPluginHandler(q, nil, fixedClock)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-2/accept-manifest", bytes.NewBufferString(`{}`))
+		req = withChiParams(req, map[string]string{"id": "plugin-2"})
+		rec := httptest.NewRecorder()
+		h.AcceptManifest(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+		}
+
+		data := parseDataResponse(t, rec)
+		var resp acceptManifestResponse
+		if err := json.Unmarshal(data, &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if resp.InstancesPendingConfig != 1 {
+			t.Errorf("instances_pending_config = %d, want 1", resp.InstancesPendingConfig)
+		}
+		if resp.InstancesUnblocked != 0 {
+			t.Errorf("instances_unblocked = %d, want 0", resp.InstancesUnblocked)
+		}
+
+		instB := q.instances["inst-b"]
+		if instB.HealthState != string(model.PluginHealthStatePendingConfigMigration) {
+			t.Errorf("inst-b health_state = %q, want pending_config_migration", instB.HealthState)
+		}
+	})
+
+	t.Run("no pending change returns 409", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-3", Name: "test-plugin", ManifestSnapshot: v1ManifestYAML, Version: 0})
+
+		h := NewPluginHandler(q, nil, fixedClock)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-3/accept-manifest", bytes.NewBufferString(`{}`))
+		req = withChiParams(req, map[string]string{"id": "plugin-3"})
+		rec := httptest.NewRecorder()
+		h.AcceptManifest(rec, req)
+
+		if rec.Code != http.StatusConflict {
+			t.Errorf("status = %d, want 409 when no pending change", rec.Code)
+		}
+	})
+
+	t.Run("plugin not found returns 404", func(t *testing.T) {
+		q := newFakePluginQuerier()
+
+		h := NewPluginHandler(q, nil, fixedClock)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/nonexistent/accept-manifest", bytes.NewBufferString(`{}`))
+		req = withChiParams(req, map[string]string{"id": "nonexistent"})
+		rec := httptest.NewRecorder()
+		h.AcceptManifest(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 for unknown plugin", rec.Code)
+		}
+	})
+
+	t.Run("CAS conflict on UpdatePluginManifest returns 409", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-4",
+			Name:             "test-plugin",
+			ManifestSnapshot: v1ManifestYAML,
+			PluginVersion:    "1.0.0",
+			Version:          0,
+		})
+		q.auditEvents = append(q.auditEvents, candidateManifestAuditEvent("plugin-4", []byte(v2ManifestYAML)))
+		q.casFailOn = "plugin-4" // trigger CAS miss on UpdatePluginManifest
+
+		h := NewPluginHandler(q, nil, fixedClock)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-4/accept-manifest", bytes.NewBufferString(`{}`))
+		req = withChiParams(req, map[string]string{"id": "plugin-4"})
+		rec := httptest.NewRecorder()
+		h.AcceptManifest(rec, req)
+
+		if rec.Code != http.StatusConflict {
+			t.Errorf("status = %d, want 409 for CAS conflict", rec.Code)
+		}
+	})
+
+	t.Run("emits plugin_manifest_accepted audit event with actor", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-5",
+			Name:             "test-plugin",
+			ManifestSnapshot: v1ManifestYAML,
+			PluginVersion:    "1.0.0",
+			Status:           "pending_review",
+			Version:          1,
+		})
+		q.auditEvents = append(q.auditEvents, candidateManifestAuditEvent("plugin-5", []byte(v2ManifestYAML)))
+
+		h := NewPluginHandler(q, nil, fixedClock)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-5/accept-manifest", bytes.NewBufferString(`{}`))
+		req = withChiParams(req, map[string]string{"id": "plugin-5"})
+		// Inject an authenticated user so AcceptManifest can record actor_user_id.
+		req = req.WithContext(auth.WithUserContext(req.Context(), "user-admin-1", "admin", []string{"admin"}))
+		rec := httptest.NewRecorder()
+		h.AcceptManifest(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+		}
+
+		var found *db.PluginAuditEvent
+		for i := range q.auditEvents {
+			if q.auditEvents[i].EventType == "plugin_manifest_accepted" {
+				found = &q.auditEvents[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatal("expected a plugin_manifest_accepted audit event, got none")
+		}
+		if found.Severity != "info" {
+			t.Errorf("audit severity = %q, want info", found.Severity)
+		}
+		wantActorID := "user-admin-1"
+		if found.ActorUserID == nil || *found.ActorUserID != wantActorID {
+			t.Errorf("actor_user_id = %v, want %q", found.ActorUserID, wantActorID)
+		}
+	})
 }
