@@ -20,6 +20,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
 
 // newMCPRouter wires a chi router with the MCP handler, mirroring how
@@ -44,6 +45,22 @@ func newMCPRouter(store *db.Store, registry *mcp.Registry, encKey ...[]byte) htt
 	r.Post("/servers/{id}/discover", h.Discover)
 	r.Get("/servers/{id}/tools", h.ListTools)
 	r.Put("/servers/{id}/tools/{toolID}/enabled", h.SetToolEnabled)
+	return r
+}
+
+// newMCPRouterWithArbiter wires a chi router with an MCPHandler that has a
+// cross-source namespace arbiter. Used for tests that exercise namespace
+// conflict enforcement.
+func newMCPRouterWithArbiter(store *db.Store, registry *mcp.Registry, arbiter *toolregistry.Registry) http.Handler {
+	r := chi.NewRouter()
+	h := api.NewMCPHandler(store, registry, nil, api.WithToolNamespaceArbiter(arbiter))
+	r.Get("/servers", h.List)
+	r.Post("/servers", h.Create)
+	r.Post("/servers/test", h.TestConnection)
+	r.Delete("/servers/{id}", h.Delete)
+	r.Put("/servers/{id}", h.Update)
+	r.Get("/servers/{id}/tools", h.ListTools)
+	r.Post("/servers/{id}/discover", h.Discover)
 	return r
 }
 
@@ -1757,4 +1774,164 @@ func TestMCPAuthHeaders_TestConnection(t *testing.T) {
 			t.Errorf("X-Api-Key on test request = %q, want %q", gotAPIKey, "test-key-123")
 		}
 	})
+}
+
+// TestListTools_SourceField verifies that every tool row in the ListTools
+// response carries a "source" field formatted as "mcp:<serverName>".
+func TestListTools_SourceField(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	registry := mcp.NewRegistry(store.Queries())
+	serverID := insertTestMCPServer(t, store, "my-server", "http://localhost:9999")
+	insertTestMCPTool(t, store, serverID, "tool-alpha")
+
+	h := api.NewMCPHandler(store, registry, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = setChiURLParams(req, "id", serverID)
+	w := httptest.NewRecorder()
+	h.ListTools(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var envelope struct {
+		Data []struct {
+			Name   string `json:"name"`
+			Source string `json:"source"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(envelope.Data) != 1 {
+		t.Fatalf("len(data) = %d, want 1", len(envelope.Data))
+	}
+	if envelope.Data[0].Source != "mcp:my-server" {
+		t.Errorf("source = %q, want mcp:my-server", envelope.Data[0].Source)
+	}
+}
+
+// TestCreate_Returns409_OnPluginNamespaceConflict verifies that POST /servers
+// returns 409 when the probe discovers a tool whose dot-name is already owned
+// by a plugin, and no mcp_servers row is created.
+func TestCreate_Returns409_OnPluginNamespaceConflict(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	arbiter := toolregistry.New()
+	registry := mcp.NewRegistry(store.Queries(), mcp.WithToolNamespaceArbiter(arbiter))
+
+	// Pre-claim "test-server.tool-a" with a plugin source.
+	pluginSrc := toolregistry.Source{Kind: toolregistry.KindPlugin, Name: "test-server"}
+	if err := arbiter.Reserve(toolregistry.DotName("test-server", "tool-a"), pluginSrc); err != nil {
+		t.Fatalf("pre-reserve: %v", err)
+	}
+
+	fakeMCP := makeFakeMCPServer(t, []string{"tool-a"})
+	srv := httptest.NewServer(newMCPRouterWithArbiter(store, registry, arbiter))
+	t.Cleanup(srv.Close)
+
+	body, _ := json.Marshal(map[string]string{"name": "test-server", "url": fakeMCP.URL})
+	resp, err := http.Post(srv.URL+"/servers", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /servers: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+
+	// No mcp_servers row must have been created.
+	rawDB := store.DB()
+	var count int
+	if err := rawDB.QueryRow(`SELECT COUNT(*) FROM mcp_servers`).Scan(&count); err != nil {
+		t.Fatalf("count mcp_servers: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("mcp_servers count = %d after 409, want 0", count)
+	}
+}
+
+// TestCreate_DiscoveryError_PreservedAndNoReservation verifies that when the
+// pre-flight probe fails (unreachable URL), the server is still created with
+// discovery_error populated and the arbiter holds no reservations for it.
+func TestCreate_DiscoveryError_PreservedAndNoReservation(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	arbiter := toolregistry.New()
+	registry := mcp.NewRegistry(store.Queries(), mcp.WithToolNamespaceArbiter(arbiter))
+
+	// Start and immediately close so URL is valid but unreachable.
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+
+	srv := httptest.NewServer(newMCPRouterWithArbiter(store, registry, arbiter))
+	t.Cleanup(srv.Close)
+
+	body, _ := json.Marshal(map[string]string{"name": "unreachable-server", "url": deadURL})
+	resp, err := http.Post(srv.URL+"/servers", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /servers: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+
+	var envelope struct {
+		Data struct {
+			ID             string  `json:"id"`
+			DiscoveryError *string `json:"discovery_error"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Data.DiscoveryError == nil {
+		t.Error("discovery_error must be set when probe fails")
+	}
+
+	// Arbiter must have no reservations for this server.
+	snap := arbiter.Snapshot()
+	for dotName, owner := range snap {
+		if owner == (toolregistry.Source{Kind: toolregistry.KindMCP, Name: "unreachable-server"}) {
+			t.Errorf("arbiter has unexpected reservation %q after probe failure", dotName)
+		}
+	}
+}
+
+// TestCreate_RollbackOnDBFailure verifies that when the mcp_servers INSERT
+// fails (duplicate name), the arbiter reservations are released so the namespace
+// is not permanently locked.
+func TestCreate_RollbackOnDBFailure(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	arbiter := toolregistry.New()
+	registry := mcp.NewRegistry(store.Queries(), mcp.WithToolNamespaceArbiter(arbiter))
+
+	fakeMCP := makeFakeMCPServer(t, []string{"tool-a"})
+
+	// Insert the server first so a duplicate will fail.
+	insertTestMCPServer(t, store, "dup-server", "http://localhost:9999")
+
+	srv := httptest.NewServer(newMCPRouterWithArbiter(store, registry, arbiter))
+	t.Cleanup(srv.Close)
+
+	body, _ := json.Marshal(map[string]string{"name": "dup-server", "url": fakeMCP.URL})
+	resp, err := http.Post(srv.URL+"/servers", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /servers: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+
+	// Arbiter must be empty for this server after the rollback.
+	snap := arbiter.Snapshot()
+	for dotName, owner := range snap {
+		if owner == (toolregistry.Source{Kind: toolregistry.KindMCP, Name: "dup-server"}) {
+			t.Errorf("arbiter has stale reservation %q after DB failure rollback", dotName)
+		}
+	}
 }

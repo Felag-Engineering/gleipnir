@@ -20,6 +20,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
+	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 	"github.com/felag-engineering/gleipnir/internal/trigger"
 )
 
@@ -59,8 +60,9 @@ type BackgroundServices struct {
 	Poller           PolicyNotifier    // notified on poll-trigger policy mutations
 	Scheduler        PolicyNotifier    // notified on scheduled-trigger policy mutations
 	Cron             PolicyNotifier    // notified on cron-trigger policy mutations
-	EncryptionKey    []byte            // AES-256 key for MCP auth header encryption; nil when unset
-	Settings         *settings.Service // system-wide runtime settings; required by manual-trigger and policy services
+	EncryptionKey    []byte                  // AES-256 key for MCP auth header encryption; nil when unset
+	Arbiter          *toolregistry.Registry  // cross-source tool namespace arbiter; nil disables enforcement
+	Settings         *settings.Service       // system-wide runtime settings; required by manual-trigger and policy services
 }
 
 // Metadata holds descriptive, read-only values about the running instance.
@@ -184,7 +186,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 		// Policies, MCP, stats, models, and attention — mounted under /api/v1.
 		policySvc := policy.NewService(cfg.Services.Store, nil, cfg.Services.ProviderRegistry, cfg.Services.ProviderRegistry, cfg.Services.Settings)
-		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, policySvc, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey))
+		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, policySvc, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey, cfg.Services.Arbiter))
 
 		// Admin: provider key management, settings, and model configuration.
 		r.Route("/api/v1/admin", func(r chi.Router) {
@@ -242,7 +244,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 // newAPISubRouter builds the sub-router that was previously returned by NewRouter.
 // It is mounted at /api/v1 inside the authenticated group in BuildRouter.
-func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter, policyWebhook *PolicyWebhookHandler, poller, scheduler, cron PolicyNotifier, encKey []byte) chi.Router {
+func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter, policyWebhook *PolicyWebhookHandler, poller, scheduler, cron PolicyNotifier, encKey []byte, arbiter *toolregistry.Registry) chi.Router {
 	r := chi.NewRouter()
 	r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
 
@@ -281,7 +283,7 @@ func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registr
 
 	r.Route("/mcp", func(r chi.Router) {
 		r.Use(httputil.RequireJSON)
-		mcpH := NewMCPHandler(store, registry, encKey)
+		mcpH := NewMCPHandler(store, registry, encKey, WithToolNamespaceArbiter(arbiter))
 		r.Route("/servers", func(r chi.Router) {
 			r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/", mcpH.List)
 			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/", mcpH.Create)

@@ -102,15 +102,23 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		model.PluginHealthStateSignatureInvalid,
 		model.PluginHealthStateVerificationError,
 		model.PluginHealthStatePendingManifestApproval,
+		// #194: a tool-namespace conflict at start is a real availability problem
+		// that must be visible regardless of operator-action-pending state.
+		// §8.1 severity ordering places unhealthy (3) strictly above any pending_* (2).
+		model.PluginHealthStateUnhealthy,
 	},
 	model.PluginHealthStatePendingManifestApproval: {
 		model.PluginHealthStateHealthy,
 		model.PluginHealthStateVerificationError,
 		model.PluginHealthStatePendingConfigMigration,
+		// #194: same rationale as pending_key_approval above.
+		model.PluginHealthStateUnhealthy,
 	},
 	model.PluginHealthStatePendingConfigMigration: {
 		model.PluginHealthStateHealthy,
 		model.PluginHealthStateVerificationError,
+		// #194: same rationale as pending_key_approval above.
+		model.PluginHealthStateUnhealthy,
 	},
 	model.PluginHealthStateHealthy: {
 		model.PluginHealthStateUnhealthy,

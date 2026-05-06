@@ -140,10 +140,12 @@ internal/
   plugin/             — host-side plugin loader; gated by GLEIPNIR_PLUGINS_ENABLED. Implements fsnotify watcher, tarball extractor, minisign verifier, and DB installer. Out-of-process subprocess spawning and generation refcounts remain as follow-up work.
     state/            — per-instance health-state machine; mirrors execution/runstate (transition table + version-CAS, ADR-038). Severity ranking encodes §8.1 "plugin can only mark itself worse" merge rule.
     manifest/         — host-side manifest diff (material vs cosmetic) consumed by the loader on hot-reload (spec §5.4). Schema-shape comparison strips `description`/`default` keys at every depth; depends only on plugin-sdk/manifest + stdlib.
+    tools/            — plugin-side tool registrar; reserves `<instance>.<tool>` names with `internal/toolregistry`, writes `plugin_tool_namespace_conflict` audit events on collision, and drives the instance to `unhealthy` (issue #194).
   policy/             — YAML parser, validator, system prompt renderer
   settings/           — read-side accessor for system_settings (default model, public URL); injected into runtime so non-admin packages don't depend on the admin HTTP handler
   testutil/           — shared test helpers
   timeout/            — generic scan-and-resolve loop for expiring requests (used by approval/ and feedback/)
+  toolregistry/       — neutral leaf package: in-memory uniqueness arbiter for the shared `<source>.<tool>` namespace. Imported by `internal/mcp` (MCP-side reservations) and `internal/plugin/tools` (plugin-side reservations); neither side imports the other (issue #194).
   trigger/            — trigger dispatch only: webhook, manual, scheduled, poll, and cron handlers (imports execution/run/ for launching)
 ```
 
