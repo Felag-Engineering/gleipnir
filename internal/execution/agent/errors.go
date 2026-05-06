@@ -11,6 +11,11 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
+// errPluginDispatchUnimplemented is returned by handleToolCall when a plugin
+// tool's generation matches the captured snapshot but real gRPC dispatch is not
+// yet wired (#198). Exercised by tests; not reachable in production until #198.
+var errPluginDispatchUnimplemented = errors.New("plugin tool dispatch is not yet implemented (#198)")
+
 // failRun transitions the run to failed status and returns the original error.
 // If the context is already cancelled, a background context is used so the DB
 // write still lands.

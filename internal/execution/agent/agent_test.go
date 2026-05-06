@@ -717,10 +717,14 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 	pol.Agent.ModelConfig.Provider = "anthropic"
 	pol.Agent.ModelConfig.Name = "claude-sonnet-4-6"
 
+	// Use an MCP tool so we can assert its source is "mcp:<server>".
+	fakeSrv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"ok"}]`), false)
+	mcpTool := makeResolvedTool(fakeSrv.URL, "my-server", "read_data")
+
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		LLMClient:    testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 5)),
-		Tools:        nil,
+		Tools:        []mcp.ResolvedTool{mcpTool},
 		Policy:       pol,
 		Audit:        w,
 		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
@@ -748,10 +752,11 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 		t.Errorf("capability snapshot token cost = %d, want 0", first.TokenCost)
 	}
 
-	// Verify provider and model are recorded in the snapshot content JSON.
+	// Verify provider, model, and MCP tool source are recorded in the snapshot.
 	type snapshotContent struct {
-		Provider string `json:"provider"`
-		Model    string `json:"model"`
+		Provider string              `json:"provider"`
+		Model    string              `json:"model"`
+		Tools    []model.GrantedTool `json:"tools"`
 	}
 	var snap snapshotContent
 	if err := json.Unmarshal([]byte(first.Content), &snap); err != nil {
@@ -762,6 +767,16 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 	}
 	if snap.Model != "claude-sonnet-4-6" {
 		t.Errorf("snapshot model = %q, want %q", snap.Model, "claude-sonnet-4-6")
+	}
+	// Every MCP-source tool must carry source = "mcp:<serverName>".
+	for _, gt := range snap.Tools {
+		if gt.ServerName == "" {
+			continue // synthetic tools have empty server name; skip
+		}
+		wantSource := "mcp:" + gt.ServerName
+		if gt.Source != wantSource {
+			t.Errorf("tool %q source = %q, want %q", gt.ToolName, gt.Source, wantSource)
+		}
 	}
 }
 
@@ -2206,6 +2221,10 @@ func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 	for _, gt := range snap.Tools {
 		if gt.ServerName == "gleipnir" && gt.ToolName == "ask_operator" {
 			found = true
+			// Synthetic tools must have empty Source — they have no MCP server or plugin instance.
+			if gt.Source != "" {
+				t.Errorf("gleipnir.ask_operator source = %q, want empty string", gt.Source)
+			}
 		}
 	}
 	if !found {
@@ -2882,5 +2901,252 @@ func TestRun_MCPTransportError_BecomesToolResult(t *testing.T) {
 	}
 	if foundErrorStep {
 		t.Error("transport error should NOT produce an error step — it should be a tool_result")
+	}
+}
+
+// fakePluginRegistrar is a test double for PluginGenerationLookup.
+type fakePluginRegistrar struct {
+	activeGen  int64
+	registered bool
+}
+
+func (f *fakePluginRegistrar) Generation(_ string) (int64, bool) {
+	return f.activeGen, f.registered
+}
+
+func TestNew_PanicsWhenPluginToolsWithoutRegistrar(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic when PluginTools is non-empty and PluginRegistrar is nil")
+		}
+	}()
+	s := testutil.NewTestStore(t)
+	_, _ = New(Config{
+		Policy:       minimalPolicy(),
+		Tools:        nil,
+		PluginTools:  []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
+		PluginRegistrar: nil, // intentionally nil — must panic
+		LLMClient:    testutil.NewNoopLLMClient(),
+		Audit:        NewAuditWriter(s.Queries()),
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+	})
+}
+
+func TestCapabilitySnapshot_IncludesPluginSourceTools(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	fakeSrv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"ok"}]`), false)
+	mcpTool := makeResolvedTool(fakeSrv.URL, "mcp-server", "mcp-tool")
+
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		LLMClient: testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 5, 5)),
+		Tools:     []mcp.ResolvedTool{mcpTool},
+		PluginTools: []PluginToolEntry{
+			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1, Description: "a plugin tool"},
+		},
+		PluginRegistrar: registrar,
+		Policy:          minimalPolicy(),
+		Audit:           w,
+		StateMachine:    NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := ba.Run(context.Background(), "r1", "trigger"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	if len(steps) == 0 {
+		t.Fatal("no steps written")
+	}
+	if steps[0].Type != string(model.StepTypeCapabilitySnapshot) {
+		t.Fatalf("first step type = %q, want capability_snapshot", steps[0].Type)
+	}
+
+	type snapshotContent struct {
+		Tools []model.GrantedTool `json:"tools"`
+	}
+	var snap snapshotContent
+	if err := json.Unmarshal([]byte(steps[0].Content), &snap); err != nil {
+		t.Fatalf("unmarshal snapshot content: %v", err)
+	}
+
+	var foundMCP, foundPlugin bool
+	for _, gt := range snap.Tools {
+		switch gt.Source {
+		case "mcp:mcp-server":
+			foundMCP = true
+		case "plugin:my-plugin@1":
+			foundPlugin = true
+		}
+	}
+	if !foundMCP {
+		t.Errorf("MCP tool source not found in snapshot; tools = %v", snap.Tools)
+	}
+	if !foundPlugin {
+		t.Errorf("plugin tool source not found in snapshot; tools = %v", snap.Tools)
+	}
+}
+
+func TestHandleToolCall_PluginGenerationMismatch_StructuralError(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	// Registrar reports generation 2 is active; snapshot captured generation 1.
+	registrar := &fakePluginRegistrar{activeGen: 2, registered: true}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy: minimalPolicy(),
+		PluginTools: []PluginToolEntry{
+			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1},
+		},
+		PluginRegistrar: registrar,
+		LLMClient:       testutil.NewNoopLLMClient(),
+		Audit:           w,
+		StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	output, isErr, err := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if err != nil {
+		t.Fatalf("handleToolCall returned unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected isErr=true for generation mismatch")
+	}
+	if !strings.Contains(output, "no longer active") {
+		t.Errorf("output = %q; want it to contain 'no longer active'", output)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+
+	var toolResultFound, toolCallFound bool
+	for _, step := range steps {
+		switch step.Type {
+		case string(model.StepTypeToolResult):
+			var content map[string]any
+			if jsonErr := json.Unmarshal([]byte(step.Content), &content); jsonErr != nil {
+				t.Fatalf("unmarshal tool_result: %v", jsonErr)
+			}
+			if isErrFlag, _ := content["is_error"].(bool); isErrFlag {
+				toolResultFound = true
+			}
+		case string(model.StepTypeToolCall):
+			toolCallFound = true
+		}
+	}
+	if !toolResultFound {
+		t.Error("expected tool_result step with is_error=true")
+	}
+	if toolCallFound {
+		t.Error("tool_call step must NOT be written for a generation mismatch")
+	}
+}
+
+func TestHandleToolCall_PluginGenerationUnregistered_StructuralError(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	// Registrar reports instance is not registered.
+	registrar := &fakePluginRegistrar{activeGen: 0, registered: false}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy: minimalPolicy(),
+		PluginTools: []PluginToolEntry{
+			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1},
+		},
+		PluginRegistrar: registrar,
+		LLMClient:       testutil.NewNoopLLMClient(),
+		Audit:           w,
+		StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	output, isErr, err := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if err != nil {
+		t.Fatalf("handleToolCall returned unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected isErr=true for unregistered instance")
+	}
+	if !strings.Contains(output, "no longer active") {
+		t.Errorf("output = %q; want it to contain 'no longer active'", output)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+
+	var toolResultFound, toolCallFound bool
+	for _, step := range steps {
+		switch step.Type {
+		case string(model.StepTypeToolResult):
+			var content map[string]any
+			if jsonErr := json.Unmarshal([]byte(step.Content), &content); jsonErr != nil {
+				t.Fatalf("unmarshal tool_result: %v", jsonErr)
+			}
+			if isErrFlag, _ := content["is_error"].(bool); isErrFlag {
+				toolResultFound = true
+			}
+		case string(model.StepTypeToolCall):
+			toolCallFound = true
+		}
+	}
+	if !toolResultFound {
+		t.Error("expected tool_result step with is_error=true")
+	}
+	if toolCallFound {
+		t.Error("tool_call step must NOT be written for an unregistered instance")
+	}
+}
+
+func TestHandleToolCall_PluginGenerationMatch_ReachesPlaceholderDispatch(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	// Registrar reports the same generation as captured — generation check passes.
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy: minimalPolicy(),
+		PluginTools: []PluginToolEntry{
+			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1},
+		},
+		PluginRegistrar: registrar,
+		LLMClient:       testutil.NewNoopLLMClient(),
+		Audit:           w,
+		StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, _, err = ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if !errors.Is(err, errPluginDispatchUnimplemented) {
+		t.Errorf("handleToolCall error = %v; want errPluginDispatchUnimplemented", err)
 	}
 }

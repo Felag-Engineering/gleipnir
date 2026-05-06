@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
@@ -29,17 +30,25 @@ type PluginAuditQuerier interface {
 }
 
 // Registrar manages plugin tool namespace reservations on behalf of a plugin
-// instance. It is safe for concurrent use (the arbiter handles its own locking).
+// instance. It is safe for concurrent use (the arbiter handles its own locking;
+// generation tracking uses its own mu).
 type Registrar struct {
-	arbiter *toolregistry.Registry
-	q       PluginAuditQuerier
-	pub     event.Publisher
+	arbiter     *toolregistry.Registry
+	q           PluginAuditQuerier
+	pub         event.Publisher
+	mu          sync.Mutex
+	generations map[string]int64 // keyed by instanceName; process-local (not persisted)
 }
 
 // New returns a Registrar wired to the given arbiter, DB querier, and event
 // publisher. The publisher may be nil; audit events are written to DB regardless.
 func New(arbiter *toolregistry.Registry, q PluginAuditQuerier, pub event.Publisher) *Registrar {
-	return &Registrar{arbiter: arbiter, q: q, pub: pub}
+	return &Registrar{
+		arbiter:     arbiter,
+		q:           q,
+		pub:         pub,
+		generations: make(map[string]int64),
+	}
 }
 
 // RegisterInstanceTools attempts to claim each "instanceName.toolName" dot-name
@@ -48,8 +57,10 @@ func New(arbiter *toolregistry.Registry, q PluginAuditQuerier, pub event.Publish
 // plugin_audit_events row is inserted with event_type
 // "plugin_tool_namespace_conflict", and the conflict error is returned.
 //
-// On success, the arbiter holds all reservations until UnregisterInstance is called.
-func (r *Registrar) RegisterInstanceTools(ctx context.Context, instanceID, instanceName string, toolNames []string) error {
+// On success, the arbiter holds all reservations until UnregisterInstance is called,
+// and the provided generation is recorded so agent runners can detect stale captures
+// via Generation().
+func (r *Registrar) RegisterInstanceTools(ctx context.Context, instanceID, instanceName string, toolNames []string, generation int64) error {
 	if len(toolNames) == 0 {
 		return nil
 	}
@@ -108,14 +119,33 @@ func (r *Registrar) RegisterInstanceTools(ctx context.Context, instanceID, insta
 		return fmt.Errorf("plugin %q: %w", instanceName, err)
 	}
 
+	r.mu.Lock()
+	r.generations[instanceName] = generation
+	r.mu.Unlock()
+
 	return nil
 }
 
+// Generation returns the active generation for the named plugin instance, or
+// (0, false) if the instance is not currently registered. Agent runners call
+// this at tool-call time to detect when a plugin has been replaced since the
+// capability snapshot was taken.
+func (r *Registrar) Generation(instanceName string) (int64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	gen, ok := r.generations[instanceName]
+	return gen, ok
+}
+
 // UnregisterInstance releases all arbiter reservations owned by the given
-// instance name. Safe to call even if the instance was never registered or
-// already unregistered.
+// instance name and removes its generation record. Safe to call even if the
+// instance was never registered or already unregistered.
 func (r *Registrar) UnregisterInstance(_ context.Context, instanceName string) {
 	r.arbiter.ReleaseAllFor(toolregistry.Source{Kind: toolregistry.KindPlugin, Name: instanceName})
+
+	r.mu.Lock()
+	delete(r.generations, instanceName)
+	r.mu.Unlock()
 }
 
 // conflictPayload is the JSON structure written to plugin_audit_events.payload_json

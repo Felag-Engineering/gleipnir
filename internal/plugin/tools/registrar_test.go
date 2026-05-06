@@ -84,7 +84,7 @@ func TestRegister_Succeeds_WhenNamesFree(t *testing.T) {
 	reg, arbiter, store := newRegistrar(t, nil)
 	seedInstance(t, store, "inst1", "my-plugin", model.PluginHealthStateHealthy)
 
-	err := reg.RegisterInstanceTools(context.Background(), "inst1", "my-plugin", []string{"tool-a", "tool-b"})
+	err := reg.RegisterInstanceTools(context.Background(), "inst1", "my-plugin", []string{"tool-a", "tool-b"}, 1)
 	if err != nil {
 		t.Fatalf("RegisterInstanceTools: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestRegister_Conflict_WithMCPOwner(t *testing.T) {
 		t.Fatalf("pre-reserve: %v", err)
 	}
 
-	err := reg.RegisterInstanceTools(context.Background(), "inst1", "my-plugin", []string{"tool-a"})
+	err := reg.RegisterInstanceTools(context.Background(), "inst1", "my-plugin", []string{"tool-a"}, 1)
 	if err == nil {
 		t.Fatal("expected conflict error, got nil")
 	}
@@ -192,7 +192,7 @@ func TestRegister_Conflict_TwoPlugins(t *testing.T) {
 
 	// Plugin A (instanceName "ns") claims "ns.send".
 	seedInstance(t, store, "inst-a", "ns", model.PluginHealthStateHealthy)
-	if err := reg.RegisterInstanceTools(context.Background(), "inst-a", "ns", []string{"send"}); err != nil {
+	if err := reg.RegisterInstanceTools(context.Background(), "inst-a", "ns", []string{"send"}, 1); err != nil {
 		t.Fatalf("RegisterInstanceTools (inst-a): %v", err)
 	}
 
@@ -213,7 +213,7 @@ func TestRegister_Conflict_TwoPlugins(t *testing.T) {
 
 	// inst-b (instanceName "ns") now tries to claim "ns.send" — conflicts with MCP.
 	seedInstance(t, store, "inst-b", "ns", model.PluginHealthStateHealthy)
-	err := reg.RegisterInstanceTools(context.Background(), "inst-b", "ns", []string{"send"})
+	err := reg.RegisterInstanceTools(context.Background(), "inst-b", "ns", []string{"send"}, 1)
 	if err == nil {
 		t.Fatal("expected conflict error, got nil")
 	}
@@ -234,12 +234,12 @@ func TestRegister_Idempotent_SameOwnerRetry(t *testing.T) {
 	reg, arbiter, store := newRegistrar(t, nil)
 	seedInstance(t, store, "inst1", "my-plugin", model.PluginHealthStateHealthy)
 
-	if err := reg.RegisterInstanceTools(context.Background(), "inst1", "my-plugin", []string{"tool-a"}); err != nil {
+	if err := reg.RegisterInstanceTools(context.Background(), "inst1", "my-plugin", []string{"tool-a"}, 1); err != nil {
 		t.Fatalf("first RegisterInstanceTools: %v", err)
 	}
 
 	// Retry with the same instance and tool — idempotent, must not error.
-	if err := reg.RegisterInstanceTools(context.Background(), "inst1", "my-plugin", []string{"tool-a"}); err != nil {
+	if err := reg.RegisterInstanceTools(context.Background(), "inst1", "my-plugin", []string{"tool-a"}, 1); err != nil {
 		t.Fatalf("idempotent RegisterInstanceTools: %v", err)
 	}
 
@@ -265,7 +265,7 @@ func TestRegister_Conflict_FromPendingState(t *testing.T) {
 		t.Fatalf("pre-reserve: %v", err)
 	}
 
-	err := reg.RegisterInstanceTools(context.Background(), "inst1", "my-plugin", []string{"tool-a"})
+	err := reg.RegisterInstanceTools(context.Background(), "inst1", "my-plugin", []string{"tool-a"}, 1)
 	if err == nil {
 		t.Fatal("expected conflict error, got nil")
 	}
@@ -284,7 +284,7 @@ func TestUnregister_FreesNamesForReuse(t *testing.T) {
 	seedInstance(t, store, "inst1", "my-plugin", model.PluginHealthStateHealthy)
 	seedInstance(t, store, "inst2", "other-plugin", model.PluginHealthStateHealthy)
 
-	if err := reg.RegisterInstanceTools(context.Background(), "inst1", "my-plugin", []string{"tool-a"}); err != nil {
+	if err := reg.RegisterInstanceTools(context.Background(), "inst1", "my-plugin", []string{"tool-a"}, 1); err != nil {
 		t.Fatalf("RegisterInstanceTools: %v", err)
 	}
 
@@ -297,8 +297,41 @@ func TestUnregister_FreesNamesForReuse(t *testing.T) {
 
 	// Another instance can now claim the same dot-name.
 	reg2 := tools.New(arbiter, store.Queries(), nil)
-	if err := reg2.RegisterInstanceTools(context.Background(), "inst2", "my-plugin", []string{"tool-a"}); err != nil {
+	if err := reg2.RegisterInstanceTools(context.Background(), "inst2", "my-plugin", []string{"tool-a"}, 2); err != nil {
 		t.Errorf("RegisterInstanceTools after unregister: %v", err)
+	}
+}
+
+func TestRegistrar_Generation_TracksAndReplaces(t *testing.T) {
+	reg, _, store := newRegistrar(t, nil)
+	seedInstance(t, store, "inst1", "foo", model.PluginHealthStateHealthy)
+
+	// Before registration, no generation is recorded.
+	if gen, ok := reg.Generation("foo"); ok {
+		t.Errorf("Generation before register = (%d, true), want (0, false)", gen)
+	}
+
+	// Register generation 1.
+	if err := reg.RegisterInstanceTools(context.Background(), "inst1", "foo", []string{"bar"}, 1); err != nil {
+		t.Fatalf("RegisterInstanceTools gen=1: %v", err)
+	}
+	if gen, ok := reg.Generation("foo"); !ok || gen != 1 {
+		t.Errorf("Generation after gen=1 register = (%d, %v), want (1, true)", gen, ok)
+	}
+
+	// Unregister removes the generation entry.
+	reg.UnregisterInstance(context.Background(), "foo")
+	if gen, ok := reg.Generation("foo"); ok {
+		t.Errorf("Generation after unregister = (%d, true), want (0, false)", gen)
+	}
+
+	// Re-register with generation 2.
+	seedInstance(t, store, "inst2", "foo", model.PluginHealthStateHealthy)
+	if err := reg.RegisterInstanceTools(context.Background(), "inst2", "foo", []string{"bar"}, 2); err != nil {
+		t.Fatalf("RegisterInstanceTools gen=2: %v", err)
+	}
+	if gen, ok := reg.Generation("foo"); !ok || gen != 2 {
+		t.Errorf("Generation after gen=2 register = (%d, %v), want (2, true)", gen, ok)
 	}
 }
 
