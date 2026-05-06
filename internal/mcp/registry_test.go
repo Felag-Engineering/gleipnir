@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
 
 // newTestRegistry opens a fresh in-memory-backed SQLite store, applies the
@@ -793,4 +795,190 @@ func mustTestKey(t *testing.T) []byte {
 		t.Fatalf("parse test key: %v", err)
 	}
 	return k
+}
+
+// newTestRegistryWithArbiter returns a Registry wired with the given arbiter.
+func newTestRegistryWithArbiter(t *testing.T, arbiter *toolregistry.Registry) (*Registry, *db.Store) {
+	t.Helper()
+	store, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("store.Migrate: %v", err)
+	}
+	reg := NewRegistry(store.Queries(), WithToolNamespaceArbiter(arbiter))
+	return reg, store
+}
+
+// TestRefreshTools_ReservesAddedNames verifies that RefreshTools reserves newly
+// discovered tool dot-names in the arbiter under the MCP source.
+func TestRefreshTools_ReservesAddedNames(t *testing.T) {
+	arbiter := toolregistry.New()
+	reg, store := newTestRegistryWithArbiter(t, arbiter)
+	rawDB := store.DB()
+
+	tools := []map[string]any{
+		{"name": "tool-a", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "tool-b", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	now := "2024-01-01T00:00:00Z"
+	var serverID string
+	if err := rawDB.QueryRow(
+		`INSERT INTO mcp_servers (id, name, url, created_at) VALUES ('srv-res', 'my-srv', ?, ?) RETURNING id`,
+		srv.URL, now,
+	).Scan(&serverID); err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+
+	if _, err := reg.RefreshTools(context.Background(), serverID); err != nil {
+		t.Fatalf("RefreshTools: %v", err)
+	}
+
+	wantSrc := toolregistry.Source{Kind: toolregistry.KindMCP, Name: "my-srv"}
+	for _, name := range []string{"tool-a", "tool-b"} {
+		dotName := toolregistry.DotName("my-srv", name)
+		got, ok := arbiter.Lookup(dotName)
+		if !ok {
+			t.Errorf("arbiter does not have reservation for %q", dotName)
+			continue
+		}
+		if got != wantSrc {
+			t.Errorf("arbiter[%q] = %v, want %v", dotName, got, wantSrc)
+		}
+	}
+}
+
+// TestRefreshTools_ReleasesRemovedNames verifies that RefreshTools releases
+// arbiter reservations for tools that are no longer present on the server.
+func TestRefreshTools_ReleasesRemovedNames(t *testing.T) {
+	arbiter := toolregistry.New()
+	reg, store := newTestRegistryWithArbiter(t, arbiter)
+	rawDB := store.DB()
+
+	twoTools := []map[string]any{
+		{"name": "tool-a", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "tool-b", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
+	}
+	firstSrv := makeMCPServer(t, twoTools)
+
+	now := "2024-01-01T00:00:00Z"
+	var serverID string
+	if err := rawDB.QueryRow(
+		`INSERT INTO mcp_servers (id, name, url, created_at) VALUES ('srv-rel', 'my-srv', ?, ?) RETURNING id`,
+		firstSrv.URL, now,
+	).Scan(&serverID); err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+
+	if _, err := reg.RefreshTools(context.Background(), serverID); err != nil {
+		t.Fatalf("RefreshTools (initial): %v", err)
+	}
+
+	// Second discovery returns only tool-a; tool-b should be released.
+	oneTool := []map[string]any{
+		{"name": "tool-a", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
+	}
+	secondSrv := makeMCPServer(t, oneTool)
+	if _, err := rawDB.Exec(`UPDATE mcp_servers SET url = ? WHERE id = ?`, secondSrv.URL, serverID); err != nil {
+		t.Fatalf("update server url: %v", err)
+	}
+
+	if _, err := reg.RefreshTools(context.Background(), serverID); err != nil {
+		t.Fatalf("RefreshTools (refresh): %v", err)
+	}
+
+	// tool-a must still be reserved.
+	if _, ok := arbiter.Lookup(toolregistry.DotName("my-srv", "tool-a")); !ok {
+		t.Error("tool-a should still be reserved after second refresh")
+	}
+	// tool-b must have been released.
+	if _, ok := arbiter.Lookup(toolregistry.DotName("my-srv", "tool-b")); ok {
+		t.Error("tool-b should have been released after removal")
+	}
+}
+
+// TestRefreshTools_ReturnsErrToolNamespaceConflict_WhenPluginOwnsName verifies
+// that RefreshTools returns ErrToolNamespaceConflict when a tool's dot-name is
+// already owned by a plugin source, and the DB is not mutated.
+func TestRefreshTools_ReturnsErrToolNamespaceConflict_WhenPluginOwnsName(t *testing.T) {
+	arbiter := toolregistry.New()
+	reg, store := newTestRegistryWithArbiter(t, arbiter)
+	rawDB := store.DB()
+
+	// Pre-claim the dot-name with a plugin source.
+	pluginSrc := toolregistry.Source{Kind: toolregistry.KindPlugin, Name: "my-srv"}
+	if err := arbiter.Reserve(toolregistry.DotName("my-srv", "tool-a"), pluginSrc); err != nil {
+		t.Fatalf("pre-reserve: %v", err)
+	}
+
+	tools := []map[string]any{
+		{"name": "tool-a", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	now := "2024-01-01T00:00:00Z"
+	var serverID string
+	if err := rawDB.QueryRow(
+		`INSERT INTO mcp_servers (id, name, url, created_at) VALUES ('srv-conflict', 'my-srv', ?, ?) RETURNING id`,
+		srv.URL, now,
+	).Scan(&serverID); err != nil {
+		t.Fatalf("insert server: %v", err)
+	}
+
+	_, err := reg.RefreshTools(context.Background(), serverID)
+	if err == nil {
+		t.Fatal("expected error for namespace conflict, got nil")
+	}
+	if !errors.Is(err, ErrToolNamespaceConflict) {
+		t.Errorf("errors.Is(err, ErrToolNamespaceConflict) = false; err = %v", err)
+	}
+
+	// The tool must NOT have been written to the DB.
+	var count int
+	if err := rawDB.QueryRow(`SELECT COUNT(*) FROM mcp_tools WHERE server_id = ?`, serverID).Scan(&count); err != nil {
+		t.Fatalf("count mcp_tools: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("mcp_tools count = %d after conflict, want 0", count)
+	}
+}
+
+// TestProbeTools_NoDBWrites verifies that ProbeTools performs discovery without
+// writing any rows to mcp_servers or mcp_tools.
+func TestProbeTools_NoDBWrites(t *testing.T) {
+	reg, store := newTestRegistry(t)
+	rawDB := store.DB()
+
+	tools := []map[string]any{
+		{"name": "tool-a", "description": "desc", "inputSchema": map[string]any{"type": "object"}},
+	}
+	srv := makeMCPServer(t, tools)
+
+	discovered, err := reg.ProbeTools(context.Background(), "probe-server", srv.URL, nil)
+	if err != nil {
+		t.Fatalf("ProbeTools: %v", err)
+	}
+	if len(discovered) != 1 || discovered[0].Name != "tool-a" {
+		t.Errorf("ProbeTools = %v, want [{tool-a}]", discovered)
+	}
+
+	var serverCount int
+	if err := rawDB.QueryRow(`SELECT COUNT(*) FROM mcp_servers`).Scan(&serverCount); err != nil {
+		t.Fatalf("count mcp_servers: %v", err)
+	}
+	if serverCount != 0 {
+		t.Errorf("mcp_servers count = %d after ProbeTools, want 0", serverCount)
+	}
+
+	var toolCount int
+	if err := rawDB.QueryRow(`SELECT COUNT(*) FROM mcp_tools`).Scan(&toolCount); err != nil {
+		t.Fatalf("count mcp_tools: %v", err)
+	}
+	if toolCount != 0 {
+		t.Errorf("mcp_tools count = %d after ProbeTools, want 0", toolCount)
+	}
 }

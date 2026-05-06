@@ -84,6 +84,10 @@ func TestIsLegalTransition(t *testing.T) {
 		{model.PluginHealthStatePendingManifestApproval, model.PluginHealthStateHealthy},
 		{model.PluginHealthStatePendingManifestApproval, model.PluginHealthStateVerificationError},
 		{model.PluginHealthStatePendingManifestApproval, model.PluginHealthStatePendingConfigMigration},
+		// #194: tool-namespace conflict must drive unhealthy from any pending_* state.
+		{model.PluginHealthStatePendingKeyApproval, model.PluginHealthStateUnhealthy},
+		{model.PluginHealthStatePendingManifestApproval, model.PluginHealthStateUnhealthy},
+		{model.PluginHealthStatePendingConfigMigration, model.PluginHealthStateUnhealthy},
 		{model.PluginHealthStatePendingConfigMigration, model.PluginHealthStateHealthy},
 		{model.PluginHealthStatePendingConfigMigration, model.PluginHealthStateVerificationError},
 		{model.PluginHealthStateHealthy, model.PluginHealthStateUnhealthy},

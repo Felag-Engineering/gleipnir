@@ -28,6 +28,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
+	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 	"github.com/felag-engineering/gleipnir/internal/trigger"
 )
 
@@ -143,11 +144,22 @@ func run(cfg config.Config) error {
 		slog.Warn("GLEIPNIR_ENCRYPTION_KEY not set — admin API key management will be unavailable")
 	}
 
+	// Cross-source tool namespace arbiter: a single in-memory registry shared
+	// by the MCP server creation path and (once plugin start lands) the plugin
+	// tool registrar. Constructed once here so both sides see the same state.
+	arbiter := toolregistry.New()
+
+	// TODO #194 follow-up: inject arbiter into plugin tools.Registrar when
+	// plugin start lands. The Registrar constructor is:
+	//   tools.New(arbiter, store.Queries(), broadcaster)
+	// Wire it wherever the plugin instance start sequence calls RegisterInstanceTools.
+
 	// Registry construction is placed after encryption key parsing so
 	// WithEncryptionKey can be passed at construction time.
 	registry := mcp.NewRegistry(store.Queries(),
 		mcp.WithMCPTimeout(cfg.MCPTimeout),
 		mcp.WithEncryptionKey(encryptionKey),
+		mcp.WithToolNamespaceArbiter(arbiter),
 	)
 
 	// configureProvider creates an LLM client and registers it in the provider
@@ -280,6 +292,7 @@ func run(cfg config.Config) error {
 		Scheduler:        scheduler,
 		Cron:             cronRunner,
 		EncryptionKey:    encryptionKey,
+		Arbiter:          arbiter,
 		Settings:         systemSettings,
 	}
 

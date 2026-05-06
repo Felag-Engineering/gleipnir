@@ -25,20 +25,39 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
 
 // MCPHandler serves MCP server management endpoints under /api/v1/mcp/servers.
 type MCPHandler struct {
 	store    *db.Store
 	registry *mcp.Registry
-	encKey   []byte // AES-256-GCM key; nil when GLEIPNIR_ENCRYPTION_KEY is unset
+	arbiter  *toolregistry.Registry // cross-source namespace arbiter; nil when not configured
+	encKey   []byte                 // AES-256-GCM key; nil when GLEIPNIR_ENCRYPTION_KEY is unset
 }
 
 // NewMCPHandler creates an MCPHandler backed by the given store, registry, and
 // encryption key. encKey may be nil when the encryption key is not configured;
 // in that case, Create/Update requests that include auth_headers return 503.
-func NewMCPHandler(store *db.Store, registry *mcp.Registry, encKey []byte) *MCPHandler {
-	return &MCPHandler{store: store, registry: registry, encKey: encKey}
+// arbiter may be nil to disable cross-source uniqueness enforcement.
+func NewMCPHandler(store *db.Store, registry *mcp.Registry, encKey []byte, opts ...MCPHandlerOption) *MCPHandler {
+	h := &MCPHandler{store: store, registry: registry, encKey: encKey}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+// MCPHandlerOption configures an MCPHandler.
+type MCPHandlerOption func(*MCPHandler)
+
+// WithToolNamespaceArbiter wires the shared cross-source uniqueness arbiter
+// into the handler so Create can enforce namespace uniqueness before writing
+// the server row.
+func WithToolNamespaceArbiter(a *toolregistry.Registry) MCPHandlerOption {
+	return func(h *MCPHandler) {
+		h.arbiter = a
+	}
 }
 
 // authHeaderPayload is the JSON shape used in Create/Update/TestConnection
@@ -228,6 +247,19 @@ func (h *MCPHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 // Create handles POST /api/v1/mcp/servers.
+//
+// Flow (atomicity guarantee per #194):
+//  1. Validate name and URL.
+//  2. Validate and encrypt auth headers.
+//  3. Pre-flight probe (ProbeTools): discover tools without writing any DB rows.
+//     A probe failure is non-fatal — the server is still created so the operator
+//     can fix the URL later; discovery_error is populated in the 201 response.
+//  4. If probe succeeded and tools were found, reserve their dot-names in the
+//     cross-source arbiter. A conflict → 409 with no orphan DB row.
+//  5. Create the mcp_servers row. On failure → release arbiter reservations.
+//  6. Upsert the probed tools directly (no second round-trip). On failure →
+//     release arbiter reservations and return 500.
+//  7. Return 201.
 func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name        string              `json:"name"`
@@ -248,6 +280,7 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Step 2: validate and encrypt auth headers.
 	var ciphertext *string
 	if len(body.AuthHeaders) > 0 {
 		if h.encKey == nil {
@@ -270,6 +303,48 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ciphertext = ct
 	}
 
+	// Step 3: pre-flight probe — discover tools without writing any DB rows.
+	// A network failure here is non-fatal; we still create the server so the
+	// operator can correct the URL later.
+	var (
+		probedTools    []mcp.Tool
+		discoveryError *string
+	)
+	probed, probeErr := h.registry.ProbeTools(r.Context(), body.Name, body.URL, ciphertext)
+	if probeErr != nil {
+		slog.Warn("MCP pre-flight probe failed on server create", "server_name", body.Name, "err", probeErr)
+		errStr := probeErr.Error()
+		discoveryError = &errStr
+	} else {
+		probedTools = probed
+	}
+
+	// Step 4: reserve namespace in the arbiter (only when probe succeeded and
+	// returned tools). A conflict means another source already owns the name.
+	mcpSrc := toolregistry.Source{Kind: toolregistry.KindMCP, Name: body.Name}
+	if h.arbiter != nil && len(probedTools) > 0 {
+		entries := make([]toolregistry.Reservation, len(probedTools))
+		for i, t := range probedTools {
+			entries[i] = toolregistry.Reservation{
+				DotName: toolregistry.DotName(body.Name, t.Name),
+				Owner:   mcpSrc,
+			}
+		}
+		if err := h.arbiter.ReserveBulk(entries); err != nil {
+			var ce *toolregistry.ConflictError
+			if errors.As(err, &ce) {
+				httputil.WriteError(w, http.StatusConflict,
+					fmt.Sprintf("tool %q is already provided by %s", ce.DotName, ce.Existing.String()),
+					"")
+				return
+			}
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to reserve tool namespace", err.Error())
+			return
+		}
+	}
+
+	// Step 5: create the mcp_servers row. On DB error, release the arbiter
+	// reservations we just claimed.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	server, err := h.store.CreateMCPServer(r.Context(), db.CreateMCPServerParams{
 		ID:                   model.NewULID(),
@@ -279,6 +354,9 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 		AuthHeadersEncrypted: ciphertext,
 	})
 	if err != nil {
+		if h.arbiter != nil {
+			h.arbiter.ReleaseAllFor(mcpSrc)
+		}
 		if isUniqueConstraintError(err) {
 			httputil.WriteError(w, http.StatusConflict, "MCP server name already exists", "")
 			return
@@ -289,15 +367,43 @@ func (h *MCPHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	resp := mcpServerCreateResponse{
 		mcpServerResponse: h.serverToResponse(server),
+		DiscoveryError:    discoveryError,
 	}
 
-	// Attempt auto-discovery; a failure is non-fatal — we still return 201 with the
-	// server record plus a discovery_error field so the caller knows to retry.
-	if _, err := h.registry.RefreshTools(r.Context(), server.ID); err != nil {
-		slog.Warn("MCP auto-discovery failed on server create", "server_id", server.ID, "server_name", body.Name, "err", err)
-		errStr := err.Error()
-		resp.DiscoveryError = &errStr
-	} else {
+	// Step 6: upsert the tools discovered in the pre-flight probe. Skipped when
+	// probe failed (probedTools is empty) or the server returned no tools.
+	if len(probedTools) > 0 {
+		for _, t := range probedTools {
+			if _, err := h.store.UpsertMCPTool(r.Context(), db.UpsertMCPToolParams{
+				ID:          model.NewULID(),
+				ServerID:    server.ID,
+				Name:        t.Name,
+				Description: t.Description,
+				InputSchema: string(t.InputSchema),
+				CreatedAt:   now,
+			}); err != nil {
+				if h.arbiter != nil {
+					h.arbiter.ReleaseAllFor(mcpSrc)
+				}
+				httputil.WriteError(w, http.StatusInternalServerError, "failed to upsert discovered tools", err.Error())
+				return
+			}
+		}
+
+		// Update last_discovered_at and clear drift to preserve the "first
+		// discovery" semantics that RefreshTools provides.
+		if err := h.store.UpdateMCPServerLastDiscovered(r.Context(), db.UpdateMCPServerLastDiscoveredParams{
+			LastDiscoveredAt: &now,
+			ID:               server.ID,
+		}); err != nil {
+			slog.Warn("failed to set last_discovered_at after create", "server_id", server.ID, "err", err)
+		} else if err := h.store.UpdateMCPServerDrift(r.Context(), db.UpdateMCPServerDriftParams{
+			HasDrift: 0,
+			ID:       server.ID,
+		}); err != nil {
+			slog.Warn("failed to clear has_drift after create", "server_id", server.ID, "err", err)
+		}
+
 		// Re-fetch so the response reflects the updated last_discovered_at.
 		if updated, err := h.store.GetMCPServer(r.Context(), server.ID); err == nil {
 			resp.mcpServerResponse = h.serverToResponse(updated)
@@ -363,6 +469,12 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // Update handles PUT /api/v1/mcp/servers/{id}.
 // Updates the server's name and url only. Auth headers are managed separately
 // via PUT/DELETE /api/v1/mcp/servers/:id/headers/:name (ADR-039).
+//
+// TODO #194 follow-up: server rename leaves stale arbiter reservations. A rename
+// changes the server's name (and therefore the dot-name prefix for all its
+// tools), but this handler does not refresh tools, so the arbiter still holds
+// reservations under the old name. A follow-up should release the old
+// reservations and re-reserve under the new name.
 func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
@@ -617,18 +729,22 @@ type mcpToolResponse struct {
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
 	Enabled     bool            `json:"enabled"`
+	// Source identifies which registry owns this tool. Format: "mcp:<server-name>"
+	// for tools from MCP servers, or "plugin:<instance-name>" for plugin tools.
+	Source string `json:"source"`
 }
 
-func toolToResponse(t db.McpTool) mcpToolResponse {
+func toolToResponse(t db.McpTool, serverName string) mcpToolResponse {
 	return mcpToolResponse{
-		ID:          t.ID,
-		ServerID:    t.ServerID,
-		Name:        t.Name,
-		Description: t.Description,
+		ID:       t.ID,
+		ServerID: t.ServerID,
+		Name:     t.Name,
 		// InputSchema is stored as a JSON string in the DB; cast directly to
 		// json.RawMessage to avoid double-encoding it as a JSON string in the response.
+		Description: t.Description,
 		InputSchema: json.RawMessage(t.InputSchema),
 		Enabled:     t.Enabled != 0,
+		Source:      "mcp:" + serverName,
 	}
 }
 
@@ -642,7 +758,8 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	ctx := r.Context()
 
-	if _, err := h.store.GetMCPServer(ctx, id); err != nil {
+	server, err := h.store.GetMCPServer(ctx, id)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
 			return
@@ -658,10 +775,7 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var (
-		rows []db.McpTool
-		err  error
-	)
+	var rows []db.McpTool
 	if includeDisabled {
 		rows, err = h.store.ListMCPToolsByServer(ctx, id)
 	} else {
@@ -674,7 +788,7 @@ func (h *MCPHandler) ListTools(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]mcpToolResponse, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, toolToResponse(row))
+		items = append(items, toolToResponse(row, server.Name))
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, items)
@@ -738,7 +852,14 @@ func (h *MCPHandler) SetToolEnabled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, toolToResponse(updated))
+	// Re-load the server name so the source field in the response is accurate.
+	srv, err := h.store.GetMCPServer(ctx, serverID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to re-fetch server after tool update", err.Error())
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, toolToResponse(updated, srv.Name))
 }
 
 // policyReferencesServer returns true if the raw policy YAML contains any tool
