@@ -219,6 +219,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			if cfg.Handlers.PluginAdminHandler != nil {
 				r.Get("/plugins/{id}/instances/{iid}", cfg.Handlers.PluginAdminHandler.GetInstance)
 				r.Post("/plugins/{id}/accept-new-key", cfg.Handlers.PluginAdminHandler.AcceptNewKey)
+				r.Post("/plugins/{id}/accept-manifest", cfg.Handlers.PluginAdminHandler.AcceptManifest)
 			}
 
 			r.Route("/openai-providers", func(r chi.Router) {

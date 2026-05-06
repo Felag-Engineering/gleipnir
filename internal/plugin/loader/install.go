@@ -17,9 +17,10 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
-	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 	manifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 )
 
 // VerifyOutcome mirrors internal/plugin.VerifyOutcome without creating an import cycle.
@@ -72,10 +73,12 @@ const (
 	statusPendingReview = "pending_review"
 
 	// Audit event types (ADR-046).
-	auditSignatureInvalid = "plugin_signature_invalid"
-	auditPluginInstalled  = "plugin_installed"
-	auditUpdatePending    = "plugin_update_pending"
-	auditPubkeyMismatch   = "plugin_pubkey_mismatch"
+	auditSignatureInvalid       = "plugin_signature_invalid"
+	auditPluginInstalled        = "plugin_installed"
+	auditUpdatePending          = "plugin_update_pending"
+	auditPubkeyMismatch         = "plugin_pubkey_mismatch"
+	auditManifestMaterialChange = "plugin_manifest_material_change"
+	auditManifestCosmeticChange = "plugin_manifest_cosmetic_change"
 
 	// Audit severity levels.
 	severityHigh = "high"
@@ -249,6 +252,21 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 		}
 	}
 
+	// Diff the incoming manifest against the stored snapshot before calling
+	// updatePlugin. Material changes block the update and enter pending_manifest_approval.
+	// Cosmetic-only changes update the snapshot silently.
+	var oldManifest manifest.Manifest
+	if parseErr := manifest.Unmarshal([]byte(existing.ManifestSnapshot), &oldManifest); parseErr != nil {
+		return fmt.Errorf("parse stored manifest snapshot for %q: %w", m.Name, parseErr)
+	}
+	changes := pluginmanifest.Diff(&oldManifest, m)
+	if pluginmanifest.HasMaterial(changes) {
+		return in.handleManifestMaterialChange(ctx, existing, &oldManifest, m, manifestBytes, changes, nowStr)
+	}
+	if len(changes) > 0 {
+		return in.updatePluginCosmetic(ctx, existing, m, manifestBytes, changes, nowStr)
+	}
+
 	return in.updatePlugin(ctx, existing, m, manifestBytes, nowStr)
 }
 
@@ -301,6 +319,101 @@ func (in *Installer) handlePubkeyMismatch(ctx context.Context, existing db.Plugi
 	})
 	if auditErr != nil {
 		return fmt.Errorf("record pubkey_mismatch audit for %q: %w", existing.Name, auditErr)
+	}
+
+	return nil
+}
+
+// handleManifestMaterialChange blocks the manifest update and transitions all
+// eligible instances to pending_manifest_approval. The candidate manifest is
+// persisted in the audit-event payload (as base64) rather than the plugins row;
+// the running generation continues serving the existing snapshot until an admin
+// calls POST /api/v1/admin/plugins/{id}/accept-manifest.
+//
+// oldManifest is the already-parsed existing snapshot — passed in to avoid a
+// second parse of the same bytes that upsertPlugin already completed.
+func (in *Installer) handleManifestMaterialChange(ctx context.Context, existing db.Plugin, oldManifest *manifest.Manifest, m *manifest.Manifest, candidateBytes []byte, changes []pluginmanifest.Change, nowStr string) error {
+	instances, listErr := in.q.ListPluginInstancesByPlugin(ctx, existing.ID)
+	if listErr != nil {
+		slog.WarnContext(ctx, "manifest material change: list instances failed; skipping state transitions",
+			"plugin", existing.Name, "err", listErr)
+	}
+	for _, inst := range instances {
+		current := model.PluginHealthState(inst.HealthState)
+		if !pluginstate.IsLegalTransition(current, model.PluginHealthStatePendingManifestApproval) {
+			continue
+		}
+		if stateErr := pluginstate.SetHealthState(ctx, in.q, in.publisher, inst.ID, pluginstate.OriginHost, model.PluginHealthStatePendingManifestApproval, "manifest changed materially; admin re-approval required"); stateErr != nil {
+			if !errors.Is(stateErr, pluginstate.ErrTransitionConflict) {
+				slog.WarnContext(ctx, "manifest material change: set pending_manifest_approval failed",
+					"instance_id", inst.ID, "err", stateErr)
+			}
+		}
+	}
+
+	newlyRequired := pluginmanifest.ConfigSchemaNewlyRequiredFields(oldManifest, m)
+
+	payload, _ := json.Marshal(map[string]any{
+		"plugin_id":                    existing.ID,
+		"name":                         existing.Name,
+		"old_version":                  existing.PluginVersion,
+		"new_version":                  m.Version,
+		"material_fields":              pluginmanifest.MaterialFields(changes),
+		"cosmetic_fields":              pluginmanifest.CosmeticFields(changes),
+		"candidate_manifest_b64":       base64.StdEncoding.EncodeToString(candidateBytes),
+		"newly_required_config_fields": newlyRequired,
+	})
+	_, auditErr := in.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
+		PluginInstanceID: nil,
+		EventType:        auditManifestMaterialChange,
+		Severity:         severityHigh,
+		ActorUserID:      nil,
+		PayloadJson:      string(payload),
+		CreatedAt:        nowStr,
+	})
+	if auditErr != nil {
+		return fmt.Errorf("record manifest_material_change audit for %q: %w", existing.Name, auditErr)
+	}
+
+	return nil
+}
+
+// updatePluginCosmetic updates the manifest snapshot for a cosmetic-only change,
+// preserving the current plugin status so an already-active plugin is not
+// regressed to pending_review for a description tweak.
+func (in *Installer) updatePluginCosmetic(ctx context.Context, existing db.Plugin, m *manifest.Manifest, manifestBytes []byte, changes []pluginmanifest.Change, nowStr string) error {
+	rows, err := in.q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
+		ManifestSnapshot: string(manifestBytes),
+		PluginVersion:    m.Version,
+		Status:           existing.Status, // preserve current status — cosmetic change must not regress an active plugin
+		UpdatedAt:        nowStr,
+		ID:               existing.ID,
+		ExpectedVersion:  existing.Version,
+	})
+	if err != nil {
+		return fmt.Errorf("update plugin %q manifest (cosmetic): %w", m.Name, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("update plugin %q manifest (cosmetic): CAS conflict (version mismatch)", m.Name)
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"plugin_id":       existing.ID,
+		"name":            existing.Name,
+		"old_version":     existing.PluginVersion,
+		"new_version":     m.Version,
+		"cosmetic_fields": pluginmanifest.CosmeticFields(changes),
+	})
+	_, auditErr := in.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
+		PluginInstanceID: nil,
+		EventType:        auditManifestCosmeticChange,
+		Severity:         severityInfo,
+		ActorUserID:      nil,
+		PayloadJson:      string(payload),
+		CreatedAt:        nowStr,
+	})
+	if auditErr != nil {
+		return fmt.Errorf("record manifest_cosmetic_change audit for %q: %w", existing.Name, auditErr)
 	}
 
 	return nil

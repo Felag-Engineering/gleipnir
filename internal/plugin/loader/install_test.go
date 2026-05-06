@@ -366,17 +366,18 @@ func TestInstall_VersionBump_PendingReview(t *testing.T) {
 		t.Errorf("status = %q, want %q", row.Status, "pending_review")
 	}
 
-	// Expect a plugin_update_pending audit event.
+	// A version-string-only bump produces a cosmetic diff (version is a cosmetic field),
+	// so we now expect plugin_manifest_cosmetic_change rather than plugin_update_pending.
 	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
-		EventType: auditUpdatePending,
+		EventType: auditManifestCosmeticChange,
 		Offset:    0,
 		Limit:     10,
 	})
 	if err != nil {
-		t.Fatalf("list update_pending events: %v", err)
+		t.Fatalf("list cosmetic_change events: %v", err)
 	}
 	if len(events) == 0 {
-		t.Error("expected plugin_update_pending audit event after version bump")
+		t.Error("expected plugin_manifest_cosmetic_change audit event after version-only bump")
 	}
 }
 
@@ -436,14 +437,23 @@ func TestInstall_UnsignedPermissive_PendingReview(t *testing.T) {
 	}
 }
 
-// seedPluginInstance creates a plugin_instances row for testing TOFU transitions.
+// seedPluginInstance creates a plugin_instances row with instance_name="test".
+// Use seedPluginInstanceNamed when seeding multiple instances for the same plugin.
 func seedPluginInstance(t *testing.T, q *db.Queries, pluginID, instanceID string, state model.PluginHealthState) {
+	t.Helper()
+	seedPluginInstanceNamed(t, q, pluginID, instanceID, "test", state)
+}
+
+// seedPluginInstanceNamed creates a plugin_instances row with a specified instance name.
+// Required when seeding multiple instances for the same plugin to satisfy the
+// (plugin_id, instance_name) UNIQUE constraint.
+func seedPluginInstanceNamed(t *testing.T, q *db.Queries, pluginID, instanceID, instanceName string, state model.PluginHealthState) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := q.CreatePluginInstance(context.Background(), db.CreatePluginInstanceParams{
 		ID:                instanceID,
 		PluginID:          pluginID,
-		InstanceName:      "test",
+		InstanceName:      instanceName,
 		ConfigJson:        "{}",
 		HandshakeVersions: "{}",
 		HealthState:       string(state),
@@ -782,5 +792,318 @@ func TestReadManifest_Validation(t *testing.T) {
 				t.Errorf("readManifest error = %q, want substring %q", err.Error(), tc.wantErrFrag)
 			}
 		})
+	}
+}
+
+// buildSignedTarWithContent builds a tarball signed by a given keypair with specific
+// manifest content and binary content. Returns the tarball path.
+func buildSignedTarWithContent(t *testing.T, name string, manifestContent, binaryContent, pubkeyBytes []byte, skSecret [64]byte, skKeyID [8]byte) string {
+	t.Helper()
+
+	payload := signing.PluginPayload(binaryContent, manifestContent)
+	sig, err := signing.Sign(skSecret, skKeyID, payload, "trusted comment")
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	sigBytes := signing.MarshalSignature(sig, "test sig")
+	tarPath := filepath.Join(t.TempDir(), name+".tar.gz")
+	writeTarball(t, tarPath, []tarEntry{
+		{name: "manifest.yaml", content: manifestContent, mode: 0o644},
+		{name: name, content: binaryContent, mode: 0o755},
+		{name: "signing.pub", content: pubkeyBytes, mode: 0o644},
+		{name: name + ".minisig", content: sigBytes, mode: 0o644},
+	})
+	return tarPath
+}
+
+// TestInstall_HotReload_MaterialChange_DoesNotUpdateSnapshot verifies that a hot-reload
+// tarball with a material manifest change does not update the plugin row's manifest_snapshot.
+func TestInstall_HotReload_MaterialChange_DoesNotUpdateSnapshot(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	v1Manifest := []byte("schema_version: v1\nname: mat-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath1 := buildSignedTarWithContent(t, "mat-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1: %v", err)
+	}
+
+	row1, err := q.GetPluginByName(context.Background(), "mat-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after v1: %v", err)
+	}
+
+	// v2 adds a new tool — material change.
+	v2Manifest := []byte("schema_version: v1\nname: mat-plugin\nversion: 2.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\ntools:\n- name: my_tool\n  description: a tool\n")
+	tarPath2 := buildSignedTarWithContent(t, "mat-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v2 (material change): %v", err)
+	}
+
+	row2, err := q.GetPluginByName(context.Background(), "mat-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after v2: %v", err)
+	}
+	// Snapshot must remain at v1 — material change must NOT update the row.
+	if row2.ManifestSnapshot != row1.ManifestSnapshot {
+		t.Errorf("manifest_snapshot was updated despite material change; want unchanged v1 snapshot")
+	}
+	if row2.PluginVersion != "1.0.0" {
+		t.Errorf("plugin_version = %q, want 1.0.0 (blocked by material change)", row2.PluginVersion)
+	}
+}
+
+// TestInstall_HotReload_MaterialChange_TransitionsInstancesToPendingManifestApproval
+// verifies that healthy and unsigned_permissive instances are transitioned to
+// pending_manifest_approval on a material change; terminal-state instances are skipped.
+func TestInstall_HotReload_MaterialChange_TransitionsInstancesToPendingManifestApproval(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	v1Manifest := []byte("schema_version: v1\nname: trans-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath1 := buildSignedTarWithContent(t, "trans-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1: %v", err)
+	}
+
+	pluginRow, err := q.GetPluginByName(context.Background(), "trans-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+
+	// Use the instanceID as the instance_name to satisfy the (plugin_id, instance_name) UNIQUE constraint.
+	seedPluginInstanceNamed(t, q, pluginRow.ID, "inst-healthy", "inst-healthy", model.PluginHealthStateHealthy)
+	seedPluginInstanceNamed(t, q, pluginRow.ID, "inst-crashed", "inst-crashed", model.PluginHealthStateCrashed) // terminal — should be skipped
+
+	v2Manifest := []byte("schema_version: v1\nname: trans-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath2 := buildSignedTarWithContent(t, "trans-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v2 (material change): %v", err)
+	}
+
+	instHealthy, err := q.GetPluginInstanceByID(context.Background(), "inst-healthy")
+	if err != nil {
+		t.Fatalf("GetPluginInstanceByID inst-healthy: %v", err)
+	}
+	if instHealthy.HealthState != string(model.PluginHealthStatePendingManifestApproval) {
+		t.Errorf("inst-healthy health_state = %q, want pending_manifest_approval", instHealthy.HealthState)
+	}
+
+	instCrashed, err := q.GetPluginInstanceByID(context.Background(), "inst-crashed")
+	if err != nil {
+		t.Fatalf("GetPluginInstanceByID inst-crashed: %v", err)
+	}
+	if instCrashed.HealthState != string(model.PluginHealthStateCrashed) {
+		t.Errorf("inst-crashed health_state = %q, want crashed (unchanged)", instCrashed.HealthState)
+	}
+}
+
+// TestInstall_HotReload_MaterialChange_EmitsHighSeverityAuditEvent verifies that a
+// plugin_manifest_material_change audit event with high severity is emitted.
+func TestInstall_HotReload_MaterialChange_EmitsHighSeverityAuditEvent(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	v1Manifest := []byte("schema_version: v1\nname: audit-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath1 := buildSignedTarWithContent(t, "audit-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1: %v", err)
+	}
+
+	v2Manifest := []byte("schema_version: v1\nname: audit-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath2 := buildSignedTarWithContent(t, "audit-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v2 (material change): %v", err)
+	}
+
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditManifestMaterialChange,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected a plugin_manifest_material_change audit event, got none")
+	}
+	if events[0].Severity != "high" {
+		t.Errorf("audit severity = %q, want high", events[0].Severity)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(events[0].PayloadJson), &payload); err != nil {
+		t.Fatalf("parse audit payload: %v", err)
+	}
+	if payload["candidate_manifest_b64"] == "" {
+		t.Error("audit payload: candidate_manifest_b64 must be non-empty")
+	}
+	materialFields, ok := payload["material_fields"].([]any)
+	if !ok || len(materialFields) == 0 {
+		t.Errorf("audit payload: material_fields must be non-empty, got %v", payload["material_fields"])
+	}
+}
+
+// TestInstall_HotReload_MaterialChange_NewlyRequiredConfigField_PayloadIncludesField
+// verifies that the audit event payload includes newly-required config fields when
+// the new manifest's config_schema gains a required property.
+func TestInstall_HotReload_MaterialChange_NewlyRequiredConfigField_PayloadIncludesField(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	// v1 has no config_schema.
+	v1Manifest := []byte("schema_version: v1\nname: config-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath1 := buildSignedTarWithContent(t, "config-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1: %v", err)
+	}
+
+	// v2 adds a required config field AND changes services (to ensure it's material).
+	v2Manifest := []byte("schema_version: v1\nname: config-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\nconfig_schema:\n  type: object\n  properties:\n    api_key:\n      type: string\n  required:\n    - api_key\n")
+	tarPath2 := buildSignedTarWithContent(t, "config-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v2 (with newly required config field): %v", err)
+	}
+
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditManifestMaterialChange,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected a plugin_manifest_material_change audit event, got none")
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(events[0].PayloadJson), &payload); err != nil {
+		t.Fatalf("parse audit payload: %v", err)
+	}
+	newlyRequired, ok := payload["newly_required_config_fields"].([]any)
+	if !ok || len(newlyRequired) == 0 {
+		t.Errorf("expected newly_required_config_fields to contain api_key, got %v", payload["newly_required_config_fields"])
+		return
+	}
+	if newlyRequired[0] != "api_key" {
+		t.Errorf("newly_required_config_fields[0] = %v, want api_key", newlyRequired[0])
+	}
+}
+
+// TestInstall_HotReload_CosmeticChange_UpdatesSnapshot_EmitsInfoAuditEvent verifies
+// that a cosmetic-only change (description update) updates the snapshot and emits
+// a plugin_manifest_cosmetic_change info-severity audit event.
+func TestInstall_HotReload_CosmeticChange_UpdatesSnapshot_EmitsInfoAuditEvent(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	v1Manifest := []byte("schema_version: v1\nname: cosm-plugin\nversion: 1.0.0\ndescription: old description\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath1 := buildSignedTarWithContent(t, "cosm-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1: %v", err)
+	}
+
+	// v2 changes only the description and version — both cosmetic.
+	v2Manifest := []byte("schema_version: v1\nname: cosm-plugin\nversion: 1.0.1\ndescription: new description\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath2 := buildSignedTarWithContent(t, "cosm-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v2 (cosmetic change): %v", err)
+	}
+
+	row2, err := q.GetPluginByName(context.Background(), "cosm-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after v2: %v", err)
+	}
+	if row2.PluginVersion != "1.0.1" {
+		t.Errorf("plugin_version = %q, want 1.0.1 (cosmetic update must advance version)", row2.PluginVersion)
+	}
+	if !strings.Contains(row2.ManifestSnapshot, "new description") {
+		t.Error("manifest_snapshot must be updated to v2 content on cosmetic change")
+	}
+
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditManifestCosmeticChange,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list cosmetic audit events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected a plugin_manifest_cosmetic_change audit event, got none")
+	}
+	if events[0].Severity != "info" {
+		t.Errorf("audit severity = %q, want info", events[0].Severity)
+	}
+}
+
+// TestInstall_HotReload_NoChange_NoOp verifies that a tarball with a new version but
+// structurally identical manifest content (differing only in version field) uses the
+// cosmetic path and does not emit a material-change event.
+func TestInstall_HotReload_NoChange_NoOp(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	v1Manifest := []byte("schema_version: v1\nname: noop-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath1 := buildSignedTarWithContent(t, "noop-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1: %v", err)
+	}
+
+	// v2 only bumps the version — cosmetic, no structural change.
+	v2Manifest := []byte("schema_version: v1\nname: noop-plugin\nversion: 2.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath2 := buildSignedTarWithContent(t, "noop-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v2 (version-only bump): %v", err)
+	}
+
+	// No material-change event must have been emitted.
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditManifestMaterialChange,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list material events: %v", err)
+	}
+	if len(events) > 0 {
+		t.Errorf("got %d material-change events for version-only bump, want 0", len(events))
 	}
 }
