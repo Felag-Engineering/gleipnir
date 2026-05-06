@@ -10,10 +10,28 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 )
 
+// pluginToolSource identifies the plugin instance and generation captured at run
+// start. Used by handleToolCall to detect when the plugin has been replaced.
+type pluginToolSource struct {
+	InstanceName string
+	Generation   int64
+}
+
 // resolvedToolEntry holds a ResolvedTool paired with its narrowed JSON schema.
+// pluginSource is non-nil for plugin-backed tools; nil for MCP-source tools.
 type resolvedToolEntry struct {
 	tool           mcp.ResolvedTool
 	narrowedSchema json.RawMessage
+	pluginSource   *pluginToolSource // nil for MCP-source tools
+}
+
+// sourceString returns the source identifier for the tool: "plugin:<name>@<gen>"
+// for plugin-source tools, or "mcp:<ServerName>" for MCP-source tools.
+func sourceString(entry resolvedToolEntry) string {
+	if entry.pluginSource != nil {
+		return fmt.Sprintf("plugin:%s@%d", entry.pluginSource.InstanceName, entry.pluginSource.Generation)
+	}
+	return "mcp:" + entry.tool.ServerName
 }
 
 // buildResolvedToolMap constructs the name→entry map used at runtime to dispatch
@@ -45,6 +63,10 @@ func (a *BoundAgent) checkCapabilities() error {
 	// time. The feedback channel (FeedbackConfig) is not an MCP tool and
 	// requires no registry check — it is injected by the runtime when Enabled
 	// is true.
+	//
+	// Note: plugin tools come from Config.PluginTools (loaded into toolsByName by
+	// New()), NOT from policy capabilities — so they are correctly exempt from this
+	// check. A plugin tool that fails namespace reservation never reaches toolsByName.
 	for _, t := range a.policy.Capabilities.Tools {
 		if _, ok := a.toolsByName[t.Tool]; !ok {
 			return fmt.Errorf("capability '%s' not found in MCP registry — verify the MCP server is registered and the tool exists", t.Tool)

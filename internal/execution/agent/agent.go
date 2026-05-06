@@ -19,24 +19,49 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/policy"
 )
 
+// PluginGenerationLookup is the narrow interface the agent uses to verify a
+// plugin tool's generation is still active at call time. *tools.Registrar from
+// internal/plugin/tools satisfies this interface structurally — the agent does
+// NOT import that package to preserve the package boundary.
+type PluginGenerationLookup interface {
+	Generation(instanceName string) (int64, bool)
+}
+
+// PluginToolEntry describes a single plugin-backed tool to expose to the agent.
+// New() derives both the dispatch-side toolsByName entry and the snapshot-side
+// pluginGrantedTools slice from this single input (decision (f) in plan).
+type PluginToolEntry struct {
+	InstanceName string
+	ToolName     string
+	Generation   int64
+	Description  string
+	Schema       map[string]any
+	Approval     model.ApprovalMode
+	Params       map[string]any // narrowed schema per ADR-017
+}
+
 // BoundAgent executes a single policy run. It owns the LLM API loop,
 // dispatches tool calls to MCP clients, intercepts approval-gated tools,
 // and writes every step to the audit trail via AuditWriter.
 type BoundAgent struct {
-	policy      *model.ParsedPolicy
-	tools       []mcp.ResolvedTool
-	toolsByName map[string]resolvedToolEntry
-	llmClient   llm.LLMClient
-	audit       *AuditWriter
-	sm          *RunStateMachine
-	approvals   *ApprovalHandler
-	feedback    *FeedbackHandler
+	policy             *model.ParsedPolicy
+	tools              []mcp.ResolvedTool
+	toolsByName        map[string]resolvedToolEntry
+	pluginGrantedTools []model.GrantedTool // snapshot entries for plugin-source tools
+	pluginRegistrar    PluginGenerationLookup
+	llmClient          llm.LLMClient
+	audit              *AuditWriter
+	sm                 *RunStateMachine
+	approvals          *ApprovalHandler
+	feedback           *FeedbackHandler
 }
 
 // Config holds the dependencies needed to construct a BoundAgent.
 type Config struct {
 	Policy                 *model.ParsedPolicy
 	Tools                  []mcp.ResolvedTool
+	PluginTools            []PluginToolEntry      // plugin-backed tools; requires PluginRegistrar when non-empty
+	PluginRegistrar        PluginGenerationLookup // may be nil when PluginTools is empty
 	LLMClient              llm.LLMClient
 	Audit                  *AuditWriter
 	ApprovalCh             <-chan bool
@@ -45,10 +70,16 @@ type Config struct {
 }
 
 // New returns a BoundAgent ready to run, or an error if schema narrowing fails
-// for any of the provided tools.
+// for any of the provided tools. Panics if PluginTools is non-empty but
+// PluginRegistrar is nil — this invariant simplifies handleToolCall (when
+// entry.pluginSource != nil, the registrar is guaranteed non-nil).
 func New(cfg Config) (*BoundAgent, error) {
 	if cfg.StateMachine == nil {
 		return nil, fmt.Errorf("config.StateMachine is required")
+	}
+
+	if len(cfg.PluginTools) > 0 && cfg.PluginRegistrar == nil {
+		panic("agent.Config: PluginTools is non-empty but PluginRegistrar is nil — provide a PluginGenerationLookup")
 	}
 
 	toolsByName, err := buildResolvedToolMap(cfg.Tools)
@@ -56,15 +87,56 @@ func New(cfg Config) (*BoundAgent, error) {
 		return nil, err
 	}
 
+	// Derive dispatch-side entries and snapshot-side granted tools from plugin
+	// tool configs in a single pass (plan decision (f)).
+	pluginGrantedTools := make([]model.GrantedTool, 0, len(cfg.PluginTools))
+	for _, pt := range cfg.PluginTools {
+		dotName := pt.InstanceName + "." + pt.ToolName
+
+		schemaJSON, err := json.Marshal(pt.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling schema for plugin tool %s: %w", dotName, err)
+		}
+
+		toolsByName[dotName] = resolvedToolEntry{
+			tool: mcp.ResolvedTool{
+				GrantedTool: model.GrantedTool{
+					ServerName: "", // no MCP server; plugin dispatch is via pluginSource
+					ToolName:   pt.ToolName,
+					Approval:   pt.Approval,
+					Params:     pt.Params,
+				},
+				Client:      nil, // real dispatch wired in #198
+				Description: pt.Description,
+				InputSchema: schemaJSON,
+			},
+			narrowedSchema: schemaJSON,
+			pluginSource: &pluginToolSource{
+				InstanceName: pt.InstanceName,
+				Generation:   pt.Generation,
+			},
+		}
+
+		pluginGrantedTools = append(pluginGrantedTools, model.GrantedTool{
+			ServerName: "",
+			ToolName:   pt.ToolName,
+			Approval:   pt.Approval,
+			Params:     pt.Params,
+			Source:     sourceString(toolsByName[dotName]),
+		})
+	}
+
 	return &BoundAgent{
-		policy:      cfg.Policy,
-		tools:       cfg.Tools,
-		toolsByName: toolsByName,
-		llmClient:   cfg.LLMClient,
-		audit:       cfg.Audit,
-		sm:          cfg.StateMachine,
-		approvals:   NewApprovalHandler(cfg.Audit, cfg.StateMachine, cfg.ApprovalCh),
-		feedback:    NewFeedbackHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout),
+		policy:             cfg.Policy,
+		tools:              cfg.Tools,
+		toolsByName:        toolsByName,
+		pluginGrantedTools: pluginGrantedTools,
+		pluginRegistrar:    cfg.PluginRegistrar,
+		llmClient:          cfg.LLMClient,
+		audit:              cfg.Audit,
+		sm:                 cfg.StateMachine,
+		approvals:          NewApprovalHandler(cfg.Audit, cfg.StateMachine, cfg.ApprovalCh),
+		feedback:           NewFeedbackHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout),
 	}, nil
 }
 
@@ -371,20 +443,26 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		return fmt.Errorf("transitioning run to running: %w", err)
 	}
 
-	// Extract granted tools for system prompt rendering.
+	// Extract granted tools for system prompt rendering, populating the Source
+	// field so the capability snapshot identifies each tool's origin.
 	grantedTools := make([]model.GrantedTool, len(a.tools))
 	for i, rt := range a.tools {
-		grantedTools[i] = rt.GrantedTool
+		gt := rt.GrantedTool // copy: GrantedTool is a value type
+		gt.Source = sourceString(resolvedToolEntry{tool: rt})
+		grantedTools[i] = gt
 	}
 	// Include the synthetic ask_operator tool in the capability snapshot when
 	// feedback is enabled, so the audit trail reflects the full set of tools
-	// available to the agent at run start.
+	// available to the agent at run start. Source is intentionally empty for
+	// synthetic tools (they have no MCP server or plugin instance).
 	if a.policy.Capabilities.Feedback.Enabled {
 		grantedTools = append(grantedTools, model.GrantedTool{
 			ServerName: "gleipnir",
 			ToolName:   "ask_operator",
 		})
 	}
+	// Append plugin-source tools; their Source strings were set at New() time.
+	grantedTools = append(grantedTools, a.pluginGrantedTools...)
 
 	// Render system prompt (ADR-001: only granted tools are visible to the agent).
 	systemPrompt := policy.RenderSystemPrompt(a.policy, grantedTools, time.Now().UTC())
@@ -454,6 +532,37 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		return "", false, err
 	}
 
+	// Plugin generation guard: verify the plugin instance that provided this tool
+	// is still active and on the same generation captured in the snapshot. If not,
+	// write a tool_result structural error (same shape as MCP transport failures)
+	// so the agent can reason about it. No tool_call step is written first —
+	// the call never reached a server.
+	//
+	// The registrar is guaranteed non-nil when entry.pluginSource != nil because
+	// New() panics if PluginTools is non-empty without a PluginRegistrar.
+	if entry.pluginSource != nil {
+		active, registered := a.pluginRegistrar.Generation(entry.pluginSource.InstanceName)
+		if !registered || active != entry.pluginSource.Generation {
+			msg := fmt.Sprintf("plugin generation %d for instance %q is no longer active",
+				entry.pluginSource.Generation, entry.pluginSource.InstanceName)
+			if writeErr := a.audit.Write(ctx, Step{
+				RunID: runID,
+				Type:  model.StepTypeToolResult,
+				Content: map[string]any{
+					"tool_name": toolName,
+					"output":    msg,
+					"is_error":  true,
+				},
+			}); writeErr != nil {
+				return "", false, fmt.Errorf("writing plugin generation mismatch tool_result: %w", writeErr)
+			}
+			return msg, true, nil
+		}
+		// Generation matches — real dispatch is not yet wired (#198).
+		// server_id would be empty for plugin entries (no MCP server).
+		return "", false, errPluginDispatchUnimplemented
+	}
+
 	// Validate input against narrowed schema.
 	if err := mcp.ValidateCall(entry.narrowedSchema, input); err != nil {
 		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeSchemaViolation)
@@ -469,7 +578,9 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		}
 	}
 
-	// Write tool_call step.
+	// Write tool_call step. server_id is the MCP ServerName for MCP-source tools;
+	// it would be empty for plugin entries — but plugin tools are intercepted above
+	// before this point, so only MCP tools reach here (#198 will wire plugin dispatch).
 	if err := a.audit.Write(ctx, Step{
 		RunID: runID,
 		Type:  model.StepTypeToolCall,
