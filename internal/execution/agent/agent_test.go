@@ -3150,3 +3150,292 @@ func TestHandleToolCall_PluginGenerationMatch_ReachesPlaceholderDispatch(t *test
 		t.Errorf("handleToolCall error = %v; want errPluginDispatchUnimplemented", err)
 	}
 }
+
+// assertSchemaProperties unmarshals schema and checks that the keys in the
+// properties map exactly match wantKeys (order-independent). Mirrors the helper
+// in internal/mcp/narrow_test.go — copied here to avoid a cross-package export.
+func assertSchemaProperties(t *testing.T, schema json.RawMessage, wantKeys []string) {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(schema, &m); err != nil {
+		t.Fatalf("assertSchemaProperties: unmarshal: %v", err)
+	}
+
+	propsRaw, ok := m["properties"]
+	if !ok {
+		if len(wantKeys) > 0 {
+			t.Errorf("schema has no 'properties', want keys %v", wantKeys)
+		}
+		return
+	}
+	propsMap, ok := propsRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("assertSchemaProperties: 'properties' is not map[string]any")
+	}
+
+	var gotKeys []string
+	for k := range propsMap {
+		gotKeys = append(gotKeys, k)
+	}
+	sortStrings(gotKeys)
+
+	want := make([]string, len(wantKeys))
+	copy(want, wantKeys)
+	sortStrings(want)
+
+	if len(gotKeys) != len(want) {
+		t.Errorf("property keys = %v, want %v", gotKeys, want)
+		return
+	}
+	for i := range gotKeys {
+		if gotKeys[i] != want[i] {
+			t.Errorf("property keys = %v, want %v", gotKeys, want)
+			return
+		}
+	}
+}
+
+// sortStrings sorts a string slice in-place; avoids importing sort at the top level.
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
+}
+
+// pluginSchemaWith builds a simple JSON Schema object for use in plugin tool tests.
+func pluginSchemaWith(keys ...string) map[string]any {
+	props := make(map[string]any, len(keys))
+	for _, k := range keys {
+		props[k] = map[string]any{"type": "string"}
+	}
+	return map[string]any{
+		"type":       "object",
+		"properties": props,
+	}
+}
+
+// TestNew_NarrowsPluginToolSchema verifies that New() applies ADR-017 parameter
+// scoping to plugin tools: narrowedSchema is set to the policy-constrained view,
+// while tool.InputSchema retains the full raw schema. Mirrors TestNarrowSchema in
+// internal/mcp/narrow_test.go for parity across all v1 ADR-017 operations.
+func TestNew_NarrowsPluginToolSchema(t *testing.T) {
+	baseSchema := pluginSchemaWith("namespace", "pod", "force")
+	noPropsSchema := map[string]any{"type": "object"} // no "properties" key
+
+	tests := []struct {
+		name          string
+		schema        map[string]any
+		params        map[string]any
+		wantKeys      []string // nil means don't check properties
+		wantUnchanged bool     // narrowedSchema must equal marshaled schema
+	}{
+		{
+			name:          "nil Params — schema unchanged",
+			schema:        baseSchema,
+			params:        nil,
+			wantUnchanged: true,
+		},
+		{
+			name:          "empty Params — schema unchanged",
+			schema:        baseSchema,
+			params:        map[string]any{},
+			wantUnchanged: true,
+		},
+		{
+			name:     "single key in Params — only that property survives",
+			schema:   baseSchema,
+			params:   map[string]any{"namespace": "x"},
+			wantKeys: []string{"namespace"},
+		},
+		{
+			name:     "multiple keys in Params — only listed properties survive",
+			schema:   baseSchema,
+			params:   map[string]any{"namespace": "x", "pod": "y"},
+			wantKeys: []string{"namespace", "pod"},
+		},
+		{
+			name:     "Params key not in schema — silently dropped",
+			schema:   baseSchema,
+			params:   map[string]any{"namespace": "x", "nonexistent": "y"},
+			wantKeys: []string{"namespace"},
+		},
+		{
+			name:     "Params drops a required key — required entry removed",
+			schema:   baseSchema,
+			params:   map[string]any{"force": true},
+			wantKeys: []string{"force"},
+		},
+		{
+			name:          "schema with no properties — returned unchanged",
+			schema:        noPropsSchema,
+			params:        map[string]any{"namespace": "x"},
+			wantUnchanged: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testutil.NewTestStore(t)
+			registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+
+			ba, err := New(Config{
+				Policy: minimalPolicy(),
+				PluginTools: []PluginToolEntry{
+					{
+						InstanceName: "my-plugin",
+						ToolName:     "do-thing",
+						Generation:   1,
+						Schema:       tc.schema,
+						Params:       tc.params,
+					},
+				},
+				PluginRegistrar: registrar,
+				LLMClient:       testutil.NewNoopLLMClient(),
+				Audit:           NewAuditWriter(s.Queries()),
+				StateMachine:    NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			entry, ok := ba.toolsByName["my-plugin.do-thing"]
+			if !ok {
+				t.Fatal("tool entry not found in toolsByName")
+			}
+
+			rawSchema, err := json.Marshal(tc.schema)
+			if err != nil {
+				t.Fatalf("marshal base schema: %v", err)
+			}
+
+			if tc.wantUnchanged {
+				if string(entry.narrowedSchema) != string(rawSchema) {
+					t.Errorf("narrowedSchema = %s, want unchanged %s", entry.narrowedSchema, rawSchema)
+				}
+				return
+			}
+
+			assertSchemaProperties(t, entry.narrowedSchema, tc.wantKeys)
+
+			// Raw InputSchema must always be the full original schema.
+			if string(entry.tool.InputSchema) != string(rawSchema) {
+				t.Errorf("InputSchema modified; got %s, want %s", entry.tool.InputSchema, rawSchema)
+			}
+		})
+	}
+}
+
+// TestNew_PluginSchemaCannotBypassScoping verifies that a plugin tool's Params
+// field restricts what the LLM sees (via buildToolDefinitions), closing the
+// "no escape hatch" acceptance criterion in issue #197.
+func TestNew_PluginSchemaCannotBypassScoping(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+
+	// Plugin declares both "namespace" and "secret", but policy only permits "namespace".
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"namespace": map[string]any{"type": "string"},
+			"secret":    map[string]any{"type": "string"},
+		},
+	}
+
+	ba, err := New(Config{
+		Policy: minimalPolicy(),
+		PluginTools: []PluginToolEntry{
+			{
+				InstanceName: "my-plugin",
+				ToolName:     "do-thing",
+				Generation:   1,
+				Schema:       schema,
+				Params:       map[string]any{"namespace": "x"},
+			},
+		},
+		PluginRegistrar: registrar,
+		LLMClient:       testutil.NewNoopLLMClient(),
+		Audit:           NewAuditWriter(s.Queries()),
+		StateMachine:    NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// narrowedSchema must expose only "namespace".
+	entry := ba.toolsByName["my-plugin.do-thing"]
+	assertSchemaProperties(t, entry.narrowedSchema, []string{"namespace"})
+
+	// buildToolDefinitions feeds the narrowedSchema to the LLM — check that too.
+	defs := ba.buildToolDefinitions()
+	var pluginDef *llm.ToolDefinition
+	for i, d := range defs {
+		if d.Name == "my-plugin.do-thing" {
+			pluginDef = &defs[i]
+			break
+		}
+	}
+	if pluginDef == nil {
+		t.Fatal("plugin tool definition not found in buildToolDefinitions output")
+	}
+	assertSchemaProperties(t, pluginDef.InputSchema, []string{"namespace"})
+}
+
+// TestNew_PluginToolValidateCallRejectsUndeclared verifies that handleToolCall
+// runs ValidateCall against the narrowed plugin schema before reaching the plugin
+// generation guard or dispatch placeholder. The reorder in agent.go ensures
+// schema errors surface even for plugin tools.
+func TestNew_PluginToolValidateCallRejectsUndeclared(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	// Generation matches — if ValidateCall were absent, execution would reach errPluginDispatchUnimplemented.
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+
+	ba, err := New(Config{
+		Policy: minimalPolicy(),
+		PluginTools: []PluginToolEntry{
+			{
+				InstanceName: "my-plugin",
+				ToolName:     "do-thing",
+				Generation:   1,
+				Schema:       pluginSchemaWith("a"),
+				Params:       map[string]any{"a": "x"}, // narrows schema to only "a"
+			},
+		},
+		PluginRegistrar: registrar,
+		LLMClient:       testutil.NewNoopLLMClient(),
+		Audit:           NewAuditWriter(s.Queries()),
+		StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Call with undeclared key "b" — ValidateCall must reject it before dispatch.
+	_, _, err = ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{"b": 1})
+
+	if err == nil {
+		t.Fatal("handleToolCall returned nil; want schema validation error")
+	}
+	if !strings.Contains(err.Error(), "b") {
+		t.Errorf("error %q should reference the rejected key %q", err.Error(), "b")
+	}
+	// Must NOT be the dispatch placeholder — schema validation ran first.
+	if errors.Is(err, errPluginDispatchUnimplemented) {
+		t.Error("got errPluginDispatchUnimplemented; schema validation should have fired before dispatch")
+	}
+
+	// No tool_call step should have been written (validation precedes audit writes).
+	steps, err2 := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if err2 != nil {
+		t.Fatalf("ListRunSteps: %v", err2)
+	}
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeToolCall) {
+			t.Error("tool_call step must NOT be written when schema validation fails")
+		}
+	}
+}
