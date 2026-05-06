@@ -183,24 +183,13 @@ func (in *Installer) recordSignatureInvalid(ctx context.Context, tarPath, plugin
 	if verifyErr != nil {
 		errMsg = verifyErr.Error()
 	}
-	payload, _ := json.Marshal(map[string]string{
+	if err := in.recordAuditEvent(ctx, auditSignatureInvalid, severityHigh, in.nowStr(), map[string]any{
 		"tarball":       tarPath,
 		"manifest_name": pluginName,
 		"error":         errMsg,
-	})
-
-	_, err := in.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
-		PluginInstanceID: nil,
-		EventType:        auditSignatureInvalid,
-		Severity:         severityHigh,
-		ActorUserID:      nil,
-		PayloadJson:      string(payload),
-		CreatedAt:        in.nowStr(),
-	})
-	if err != nil {
+	}); err != nil {
 		return fmt.Errorf("record signature_invalid audit: %w", err)
 	}
-
 	return nil
 }
 
@@ -274,53 +263,23 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 // pending_key_approval and emits a plugin_pubkey_mismatch audit event.
 // It returns nil so the watcher continues — the audit event is the operator signal.
 func (in *Installer) handlePubkeyMismatch(ctx context.Context, existing db.Plugin, result VerifyResult, newVersion, nowStr string) error {
-	// Compute fingerprints from old and new pubkeys for the audit payload.
-	oldFingerprint := pubkeyFingerprint([]byte(existing.TrustedPubkey))
-	newFingerprint := pubkeyFingerprint(result.Pubkey)
+	in.transitionAllInstances(
+		ctx, existing,
+		model.PluginHealthStatePendingKeyApproval,
+		"signing key changed; admin approval required",
+		"pubkey mismatch",
+	)
 
-	// Transition all instances to pending_key_approval. Each uses the state machine
-	// CAS guard. ErrTransitionConflict means another writer already moved the instance;
-	// log and continue rather than failing the whole operation.
-	// If listing instances fails, log the error and fall through to emit the audit event
-	// anyway — the audit row is the operator's only signal that a mismatch happened.
-	instances, listErr := in.q.ListPluginInstancesByPlugin(ctx, existing.ID)
-	if listErr != nil {
-		slog.WarnContext(ctx, "pubkey mismatch: list instances failed; skipping state transitions",
-			"plugin", existing.Name, "err", listErr)
-	}
-	for _, inst := range instances {
-		current := model.PluginHealthState(inst.HealthState)
-		if !pluginstate.IsLegalTransition(current, model.PluginHealthStatePendingKeyApproval) {
-			continue
-		}
-		if stateErr := pluginstate.SetHealthState(ctx, in.q, in.publisher, inst.ID, pluginstate.OriginHost, model.PluginHealthStatePendingKeyApproval, "signing key changed; admin approval required"); stateErr != nil {
-			if !errors.Is(stateErr, pluginstate.ErrTransitionConflict) {
-				slog.WarnContext(ctx, "pubkey mismatch: set pending_key_approval failed",
-					"instance_id", inst.ID, "err", stateErr)
-			}
-		}
-	}
-
-	payload, _ := json.Marshal(map[string]string{
+	if err := in.recordAuditEvent(ctx, auditPubkeyMismatch, severityHigh, nowStr, map[string]any{
 		"plugin_id":              existing.ID,
 		"name":                   existing.Name,
-		"old_pubkey_fingerprint": oldFingerprint,
-		"new_pubkey_fingerprint": newFingerprint,
+		"old_pubkey_fingerprint": pubkeyFingerprint([]byte(existing.TrustedPubkey)),
+		"new_pubkey_fingerprint": pubkeyFingerprint(result.Pubkey),
 		"new_pubkey_b64":         base64.StdEncoding.EncodeToString(result.Pubkey),
 		"version":                newVersion,
-	})
-	_, auditErr := in.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
-		PluginInstanceID: nil,
-		EventType:        auditPubkeyMismatch,
-		Severity:         severityHigh,
-		ActorUserID:      nil,
-		PayloadJson:      string(payload),
-		CreatedAt:        nowStr,
-	})
-	if auditErr != nil {
-		return fmt.Errorf("record pubkey_mismatch audit for %q: %w", existing.Name, auditErr)
+	}); err != nil {
+		return fmt.Errorf("record pubkey_mismatch audit for %q: %w", existing.Name, err)
 	}
-
 	return nil
 }
 
@@ -333,27 +292,14 @@ func (in *Installer) handlePubkeyMismatch(ctx context.Context, existing db.Plugi
 // oldManifest is the already-parsed existing snapshot — passed in to avoid a
 // second parse of the same bytes that upsertPlugin already completed.
 func (in *Installer) handleManifestMaterialChange(ctx context.Context, existing db.Plugin, oldManifest *manifest.Manifest, m *manifest.Manifest, candidateBytes []byte, changes []pluginmanifest.Change, nowStr string) error {
-	instances, listErr := in.q.ListPluginInstancesByPlugin(ctx, existing.ID)
-	if listErr != nil {
-		slog.WarnContext(ctx, "manifest material change: list instances failed; skipping state transitions",
-			"plugin", existing.Name, "err", listErr)
-	}
-	for _, inst := range instances {
-		current := model.PluginHealthState(inst.HealthState)
-		if !pluginstate.IsLegalTransition(current, model.PluginHealthStatePendingManifestApproval) {
-			continue
-		}
-		if stateErr := pluginstate.SetHealthState(ctx, in.q, in.publisher, inst.ID, pluginstate.OriginHost, model.PluginHealthStatePendingManifestApproval, "manifest changed materially; admin re-approval required"); stateErr != nil {
-			if !errors.Is(stateErr, pluginstate.ErrTransitionConflict) {
-				slog.WarnContext(ctx, "manifest material change: set pending_manifest_approval failed",
-					"instance_id", inst.ID, "err", stateErr)
-			}
-		}
-	}
+	in.transitionAllInstances(
+		ctx, existing,
+		model.PluginHealthStatePendingManifestApproval,
+		"manifest changed materially; admin re-approval required",
+		"manifest material change",
+	)
 
-	newlyRequired := pluginmanifest.ConfigSchemaNewlyRequiredFields(oldManifest, m)
-
-	payload, _ := json.Marshal(map[string]any{
+	if err := in.recordAuditEvent(ctx, auditManifestMaterialChange, severityHigh, nowStr, map[string]any{
 		"plugin_id":                    existing.ID,
 		"name":                         existing.Name,
 		"old_version":                  existing.PluginVersion,
@@ -361,21 +307,53 @@ func (in *Installer) handleManifestMaterialChange(ctx context.Context, existing 
 		"material_fields":              pluginmanifest.MaterialFields(changes),
 		"cosmetic_fields":              pluginmanifest.CosmeticFields(changes),
 		"candidate_manifest_b64":       base64.StdEncoding.EncodeToString(candidateBytes),
-		"newly_required_config_fields": newlyRequired,
-	})
-	_, auditErr := in.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
+		"newly_required_config_fields": pluginmanifest.ConfigSchemaNewlyRequiredFields(oldManifest, m),
+	}); err != nil {
+		return fmt.Errorf("record manifest_material_change audit for %q: %w", existing.Name, err)
+	}
+	return nil
+}
+
+// transitionAllInstances moves every instance of the plugin to target if the
+// state-machine graph permits the transition. List failures and per-instance
+// CAS conflicts are logged and skipped — the caller's audit event is the
+// operator's signal that the transition was attempted. logTag is included in
+// the log lines so install-pipeline failures can be grep'd by reason.
+func (in *Installer) transitionAllInstances(ctx context.Context, existing db.Plugin, target model.PluginHealthState, detail, logTag string) {
+	instances, err := in.q.ListPluginInstancesByPlugin(ctx, existing.ID)
+	if err != nil {
+		slog.WarnContext(ctx, logTag+": list instances failed; skipping state transitions",
+			"plugin", existing.Name, "err", err)
+		return
+	}
+	for _, inst := range instances {
+		current := model.PluginHealthState(inst.HealthState)
+		if !pluginstate.IsLegalTransition(current, target) {
+			continue
+		}
+		if stateErr := pluginstate.SetHealthState(ctx, in.q, in.publisher, inst.ID, pluginstate.OriginHost, target, detail); stateErr != nil {
+			if !errors.Is(stateErr, pluginstate.ErrTransitionConflict) {
+				slog.WarnContext(ctx, logTag+": set "+string(target)+" failed",
+					"instance_id", inst.ID, "err", stateErr)
+			}
+		}
+	}
+}
+
+// recordAuditEvent writes a plugin-level audit row (PluginInstanceID = nil,
+// ActorUserID = nil — the install pipeline runs without an operator). Returns
+// the InsertPluginAuditEvent error so callers can wrap it with their own context.
+func (in *Installer) recordAuditEvent(ctx context.Context, eventType, severity, nowStr string, payload map[string]any) error {
+	body, _ := json.Marshal(payload)
+	_, err := in.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
 		PluginInstanceID: nil,
-		EventType:        auditManifestMaterialChange,
-		Severity:         severityHigh,
+		EventType:        eventType,
+		Severity:         severity,
 		ActorUserID:      nil,
-		PayloadJson:      string(payload),
+		PayloadJson:      string(body),
 		CreatedAt:        nowStr,
 	})
-	if auditErr != nil {
-		return fmt.Errorf("record manifest_material_change audit for %q: %w", existing.Name, auditErr)
-	}
-
-	return nil
+	return err
 }
 
 // updatePluginCosmetic updates the manifest snapshot for a cosmetic-only change,
@@ -397,25 +375,15 @@ func (in *Installer) updatePluginCosmetic(ctx context.Context, existing db.Plugi
 		return fmt.Errorf("update plugin %q manifest (cosmetic): CAS conflict (version mismatch)", m.Name)
 	}
 
-	payload, _ := json.Marshal(map[string]any{
+	if err := in.recordAuditEvent(ctx, auditManifestCosmeticChange, severityInfo, nowStr, map[string]any{
 		"plugin_id":       existing.ID,
 		"name":            existing.Name,
 		"old_version":     existing.PluginVersion,
 		"new_version":     m.Version,
 		"cosmetic_fields": pluginmanifest.CosmeticFields(changes),
-	})
-	_, auditErr := in.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
-		PluginInstanceID: nil,
-		EventType:        auditManifestCosmeticChange,
-		Severity:         severityInfo,
-		ActorUserID:      nil,
-		PayloadJson:      string(payload),
-		CreatedAt:        nowStr,
-	})
-	if auditErr != nil {
-		return fmt.Errorf("record manifest_cosmetic_change audit for %q: %w", existing.Name, auditErr)
+	}); err != nil {
+		return fmt.Errorf("record manifest_cosmetic_change audit for %q: %w", existing.Name, err)
 	}
-
 	return nil
 }
 
@@ -455,23 +423,13 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 		return fmt.Errorf("create plugin %q: %w", m.Name, err)
 	}
 
-	payload, _ := json.Marshal(map[string]string{
+	if err := in.recordAuditEvent(ctx, auditPluginInstalled, severityInfo, nowStr, map[string]any{
 		"name":    m.Name,
 		"version": m.Version,
 		"outcome": result.Outcome.String(),
-	})
-	_, auditErr := in.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
-		PluginInstanceID: nil,
-		EventType:        auditPluginInstalled,
-		Severity:         severityInfo,
-		ActorUserID:      nil,
-		PayloadJson:      string(payload),
-		CreatedAt:        nowStr,
-	})
-	if auditErr != nil {
-		return fmt.Errorf("record plugin_installed audit: %w", auditErr)
+	}); err != nil {
+		return fmt.Errorf("record plugin_installed audit: %w", err)
 	}
-
 	return nil
 }
 
@@ -500,23 +458,13 @@ func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *ma
 		return fmt.Errorf("update plugin %q: CAS conflict (version mismatch)", m.Name)
 	}
 
-	payload, _ := json.Marshal(map[string]string{
+	if err := in.recordAuditEvent(ctx, auditUpdatePending, severityInfo, nowStr, map[string]any{
 		"name":        m.Name,
 		"old_version": existing.PluginVersion,
 		"new_version": m.Version,
-	})
-	_, auditErr := in.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
-		PluginInstanceID: nil,
-		EventType:        auditUpdatePending,
-		Severity:         severityInfo,
-		ActorUserID:      nil,
-		PayloadJson:      string(payload),
-		CreatedAt:        nowStr,
-	})
-	if auditErr != nil {
-		return fmt.Errorf("record plugin_update_pending audit: %w", auditErr)
+	}); err != nil {
+		return fmt.Errorf("record plugin_update_pending audit: %w", err)
 	}
-
 	return nil
 }
 
