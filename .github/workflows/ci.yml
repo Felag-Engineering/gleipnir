@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, plugin-architecture]
   push:
-    branches: [main]
+    branches: [main, plugin-architecture]
     # Match semver tags: v1.2.3 and pre-releases like v1.2.3-rc1. The two
     # patterns avoid the false-positives of a single `v*.*.*` glob (which
     # would also match `v1.2.3.4`). GHA glob: `+` is a quantifier for the
