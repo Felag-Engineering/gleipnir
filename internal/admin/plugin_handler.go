@@ -31,6 +31,11 @@ const (
 	// auditManifestAccepted is the event type emitted when an admin accepts a
 	// material manifest change via POST /api/v1/admin/plugins/{id}/accept-manifest.
 	auditManifestAccepted = "plugin_manifest_accepted"
+
+	// auditManifestMaterialChange is the event type written by the install pipeline
+	// when a hot-reload introduces a material manifest change. AcceptManifest
+	// scans these to find the candidate awaiting admin approval.
+	auditManifestMaterialChange = "plugin_manifest_material_change"
 )
 
 // PluginQuerier is the narrow DB interface required by PluginHandler.
@@ -104,8 +109,8 @@ func (h *PluginHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate that the instance belongs to the requested plugin. Return 404
-	// rather than 403 to avoid leaking instance existence across plugins.
+	// Return 404 (not 403) on a plugin/instance mismatch to avoid leaking
+	// instance existence across plugins.
 	if row.PluginID != pluginID {
 		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
 		return
@@ -154,7 +159,6 @@ func (h *PluginHandler) AcceptNewKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Decode the base64 candidate and parse as a Minisign public key to validate format.
 	rawPubkey, err := base64.StdEncoding.DecodeString(body.CandidatePubkey)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "candidate_pubkey: invalid base64", "")
@@ -166,7 +170,6 @@ func (h *PluginHandler) AcceptNewKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Look up the plugin row.
 	plugin, err := h.q.GetPluginByID(ctx, pluginID)
 	if errors.Is(err, ErrNotFound) {
 		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
@@ -177,9 +180,7 @@ func (h *PluginHandler) AcceptNewKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := h.clock().UTC()
-	nowStr := now.Format(time.RFC3339Nano)
-
+	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
 	oldFingerprint := fmt.Sprintf("%x", deriveFingerprint([]byte(plugin.TrustedPubkey)))
 	newFingerprint := fmt.Sprintf("%x", newKey.KeyID)
 
@@ -195,56 +196,24 @@ func (h *PluginHandler) AcceptNewKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if rows == 0 {
-		// CAS miss — a concurrent writer advanced the version.
 		httputil.WriteError(w, http.StatusConflict, "concurrent modification detected; retry", "")
 		return
 	}
 
-	// Unblock all instances currently in pending_key_approval.
-	instances, err := h.q.ListPluginInstancesByPlugin(ctx, pluginID)
-	if err != nil {
-		// Non-fatal — pubkey is already rotated; log and report 0 unblocked.
-		slog.ErrorContext(ctx, "accept-new-key: list instances failed", "plugin_id", pluginID, "err", err)
-		instances = nil
-	}
+	unblocked := h.unblockInstances(
+		ctx, pluginID,
+		model.PluginHealthStatePendingKeyApproval,
+		model.PluginHealthStateHealthy,
+		"operator accepted new signing key",
+		"accept-new-key",
+	)
 
-	unblocked := 0
-	for _, inst := range instances {
-		if model.PluginHealthState(inst.HealthState) != model.PluginHealthStatePendingKeyApproval {
-			continue
-		}
-		if stateErr := pluginstate.SetHealthState(ctx, h.q, h.publisher, inst.ID, pluginstate.OriginHost, model.PluginHealthStateHealthy, "operator accepted new signing key"); stateErr != nil {
-			if !errors.Is(stateErr, pluginstate.ErrTransitionConflict) {
-				slog.WarnContext(ctx, "accept-new-key: set health state failed", "instance_id", inst.ID, "err", stateErr)
-			}
-			continue
-		}
-		unblocked++
-	}
-
-	// Emit a plugin_pubkey_rotated audit event.
-	caller, _ := auth.UserFromContext(ctx)
-	var actorUserID *string
-	if caller != nil {
-		actorUserID = &caller.ID
-	}
-	auditPayload, _ := json.Marshal(map[string]string{
+	h.writeAuditEvent(ctx, auditPubkeyRotated, "high", nowStr, map[string]any{
 		"plugin_id":              pluginID,
 		"name":                   plugin.Name,
 		"old_pubkey_fingerprint": oldFingerprint,
 		"new_pubkey_fingerprint": newFingerprint,
 	})
-	if _, auditErr := h.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
-		PluginInstanceID: nil,
-		EventType:        auditPubkeyRotated,
-		Severity:         "high",
-		ActorUserID:      actorUserID,
-		PayloadJson:      string(auditPayload),
-		CreatedAt:        nowStr,
-	}); auditErr != nil {
-		// Non-fatal — the rotation already succeeded; log the audit failure.
-		slog.ErrorContext(ctx, "accept-new-key: audit event failed", "plugin_id", pluginID, "err", auditErr)
-	}
 
 	httputil.WriteJSON(w, http.StatusOK, acceptNewKeyResponse{
 		AcceptedPubkeyFingerprint: newFingerprint,
@@ -280,61 +249,18 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find the most recent unaccepted plugin_manifest_material_change event for
-	// this plugin. plugin_audit_events has no dedicated plugin_id column, so we
-	// fetch by event type with a generous limit and filter in Go.
-	// TODO(v2): add a plugin-scoped query to avoid this in-Go filter on busy installs.
-	allEvents, err := h.q.ListPluginAuditEventsByType(ctx, db.ListPluginAuditEventsByTypeParams{
-		EventType: "plugin_manifest_material_change",
-		Offset:    0,
-		Limit:     200,
-	})
+	candidatePayload, err := h.findCandidateManifestEvent(ctx, pluginID)
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to list audit events", "")
+		writeCandidateError(w, err)
 		return
 	}
 
-	var candidateEvent *db.PluginAuditEvent
-	for i := range allEvents {
-		ev := &allEvents[i]
-		var payload map[string]any
-		if jsonErr := json.Unmarshal([]byte(ev.PayloadJson), &payload); jsonErr != nil {
-			continue
-		}
-		if payload["plugin_id"] == pluginID {
-			candidateEvent = ev
-			break // events are ordered DESC by created_at; first match is newest
-		}
-	}
-	if candidateEvent == nil {
-		httputil.WriteError(w, http.StatusConflict, "no pending manifest change found for this plugin", "")
-		return
-	}
-
-	var candidatePayload map[string]any
-	if err := json.Unmarshal([]byte(candidateEvent.PayloadJson), &candidatePayload); err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse candidate audit event", "")
-		return
-	}
-	candidateB64, _ := candidatePayload["candidate_manifest_b64"].(string)
-	if candidateB64 == "" {
-		httputil.WriteError(w, http.StatusUnprocessableEntity, "candidate manifest not found in audit event", "")
-		return
-	}
-
-	candidateBytes, err := base64.StdEncoding.DecodeString(candidateB64)
+	candidateBytes, newManifest, err := decodeCandidateManifest(candidatePayload)
 	if err != nil {
-		httputil.WriteError(w, http.StatusUnprocessableEntity, "candidate manifest: invalid base64", "")
+		writeCandidateError(w, err)
 		return
 	}
 
-	var newManifest sdkmanifest.Manifest
-	if parseErr := sdkmanifest.Unmarshal(candidateBytes, &newManifest); parseErr != nil {
-		httputil.WriteError(w, http.StatusUnprocessableEntity, "candidate manifest: parse failed", parseErr.Error())
-		return
-	}
-
-	// Determine which config fields are newly required so we can branch each instance.
 	var oldManifest sdkmanifest.Manifest
 	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &oldManifest); parseErr != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
@@ -342,8 +268,7 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 	}
 	newlyRequired := pluginmanifest.ConfigSchemaNewlyRequiredFields(&oldManifest, &newManifest)
 
-	now := h.clock().UTC()
-	nowStr := now.Format(time.RFC3339Nano)
+	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
 
 	// CAS-guarded manifest commit (ADR-038). Verify rows-affected before touching instances.
 	rows, err := h.q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
@@ -363,47 +288,26 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Unblock instances currently in pending_manifest_approval.
-	instances, err := h.q.ListPluginInstancesByPlugin(ctx, pluginID)
-	if err != nil {
-		slog.ErrorContext(ctx, "accept-manifest: list instances failed", "plugin_id", pluginID, "err", err)
-		instances = nil
+	targetState := model.PluginHealthStateHealthy
+	if len(newlyRequired) > 0 {
+		targetState = model.PluginHealthStatePendingConfigMigration
 	}
-
-	unblocked := 0
-	pendingConfig := 0
-	for _, inst := range instances {
-		if model.PluginHealthState(inst.HealthState) != model.PluginHealthStatePendingManifestApproval {
-			continue
-		}
-		var targetState model.PluginHealthState
-		if len(newlyRequired) == 0 {
-			targetState = model.PluginHealthStateHealthy
-		} else {
-			targetState = model.PluginHealthStatePendingConfigMigration
-		}
-		detail := "admin accepted manifest change"
-		if stateErr := pluginstate.SetHealthState(ctx, h.q, h.publisher, inst.ID, pluginstate.OriginHost, targetState, detail); stateErr != nil {
-			if !errors.Is(stateErr, pluginstate.ErrTransitionConflict) {
-				slog.WarnContext(ctx, "accept-manifest: set health state failed", "instance_id", inst.ID, "err", stateErr)
-			}
-			continue
-		}
-		if targetState == model.PluginHealthStateHealthy {
-			unblocked++
-		} else {
-			pendingConfig++
-		}
-	}
-
-	caller, _ := auth.UserFromContext(ctx)
-	var actorUserID *string
-	if caller != nil {
-		actorUserID = &caller.ID
+	transitioned := h.unblockInstances(
+		ctx, pluginID,
+		model.PluginHealthStatePendingManifestApproval,
+		targetState,
+		"admin accepted manifest change",
+		"accept-manifest",
+	)
+	unblocked, pendingConfig := 0, 0
+	if targetState == model.PluginHealthStateHealthy {
+		unblocked = transitioned
+	} else {
+		pendingConfig = transitioned
 	}
 
 	oldVersion, _ := candidatePayload["old_version"].(string)
-	auditPayload, _ := json.Marshal(map[string]any{
+	h.writeAuditEvent(ctx, auditManifestAccepted, "info", nowStr, map[string]any{
 		"plugin_id":                pluginID,
 		"name":                     plugin.Name,
 		"old_version":              oldVersion,
@@ -411,22 +315,153 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 		"instances_unblocked":      unblocked,
 		"instances_pending_config": pendingConfig,
 	})
-	if _, auditErr := h.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
-		PluginInstanceID: nil,
-		EventType:        auditManifestAccepted,
-		Severity:         "info",
-		ActorUserID:      actorUserID,
-		PayloadJson:      string(auditPayload),
-		CreatedAt:        nowStr,
-	}); auditErr != nil {
-		slog.ErrorContext(ctx, "accept-manifest: audit event failed", "plugin_id", pluginID, "err", auditErr)
-	}
 
 	httputil.WriteJSON(w, http.StatusOK, acceptManifestResponse{
 		AcceptedManifestVersion: newManifest.Version,
 		InstancesUnblocked:      unblocked,
 		InstancesPendingConfig:  pendingConfig,
 	})
+}
+
+// candidateLookupError categorises failures locating the pending candidate
+// manifest so the HTTP boundary can map them to the right status code.
+type candidateLookupError struct {
+	status int
+	msg    string
+	detail string
+}
+
+func (e *candidateLookupError) Error() string { return e.msg }
+
+// writeCandidateError maps a candidateLookupError to the configured HTTP
+// status. All call sites in this file produce *candidateLookupError values, so
+// the type assertion is a tight contract; an unexpected error type still
+// surfaces as 500 rather than panicking.
+func writeCandidateError(w http.ResponseWriter, err error) {
+	var cle *candidateLookupError
+	if errors.As(err, &cle) {
+		httputil.WriteError(w, cle.status, cle.msg, cle.detail)
+		return
+	}
+	httputil.WriteError(w, http.StatusInternalServerError, err.Error(), "")
+}
+
+// findCandidateManifestEvent scans the most recent material-change audit events
+// for one matching pluginID. plugin_audit_events has no plugin_id column, so
+// filtering happens in Go.
+// TODO(v2): add a plugin-scoped query to avoid this in-Go filter on busy installs.
+func (h *PluginHandler) findCandidateManifestEvent(ctx context.Context, pluginID string) (map[string]any, error) {
+	events, err := h.q.ListPluginAuditEventsByType(ctx, db.ListPluginAuditEventsByTypeParams{
+		EventType: auditManifestMaterialChange,
+		Offset:    0,
+		Limit:     200,
+	})
+	if err != nil {
+		return nil, &candidateLookupError{
+			status: http.StatusInternalServerError,
+			msg:    "failed to list audit events",
+		}
+	}
+
+	// Events are ordered DESC by created_at; first match for this plugin is newest.
+	for i := range events {
+		var payload map[string]any
+		if jsonErr := json.Unmarshal([]byte(events[i].PayloadJson), &payload); jsonErr != nil {
+			continue
+		}
+		if payload["plugin_id"] == pluginID {
+			return payload, nil
+		}
+	}
+	return nil, &candidateLookupError{
+		status: http.StatusConflict,
+		msg:    "no pending manifest change found for this plugin",
+	}
+}
+
+// decodeCandidateManifest extracts and parses the candidate manifest from the
+// audit event payload.
+func decodeCandidateManifest(payload map[string]any) ([]byte, sdkmanifest.Manifest, error) {
+	candidateB64, _ := payload["candidate_manifest_b64"].(string)
+	if candidateB64 == "" {
+		return nil, sdkmanifest.Manifest{}, &candidateLookupError{
+			status: http.StatusUnprocessableEntity,
+			msg:    "candidate manifest not found in audit event",
+		}
+	}
+	candidateBytes, err := base64.StdEncoding.DecodeString(candidateB64)
+	if err != nil {
+		return nil, sdkmanifest.Manifest{}, &candidateLookupError{
+			status: http.StatusUnprocessableEntity,
+			msg:    "candidate manifest: invalid base64",
+		}
+	}
+	var m sdkmanifest.Manifest
+	if parseErr := sdkmanifest.Unmarshal(candidateBytes, &m); parseErr != nil {
+		return nil, sdkmanifest.Manifest{}, &candidateLookupError{
+			status: http.StatusUnprocessableEntity,
+			msg:    "candidate manifest: parse failed",
+			detail: parseErr.Error(),
+		}
+	}
+	return candidateBytes, m, nil
+}
+
+// unblockInstances transitions every instance of pluginID currently in fromState
+// to toState, returning the count of successful transitions. Listing failures
+// and per-instance state-machine failures are logged and skipped — the caller
+// has already committed the upstream change (pubkey rotation or manifest commit)
+// and the audit event is the operator's signal.
+func (h *PluginHandler) unblockInstances(
+	ctx context.Context,
+	pluginID string,
+	fromState, toState model.PluginHealthState,
+	detail, logTag string,
+) int {
+	instances, err := h.q.ListPluginInstancesByPlugin(ctx, pluginID)
+	if err != nil {
+		slog.ErrorContext(ctx, logTag+": list instances failed", "plugin_id", pluginID, "err", err)
+		return 0
+	}
+
+	count := 0
+	for _, inst := range instances {
+		if model.PluginHealthState(inst.HealthState) != fromState {
+			continue
+		}
+		stateErr := pluginstate.SetHealthState(ctx, h.q, h.publisher, inst.ID, pluginstate.OriginHost, toState, detail)
+		if stateErr != nil {
+			if !errors.Is(stateErr, pluginstate.ErrTransitionConflict) {
+				slog.WarnContext(ctx, logTag+": set health state failed", "instance_id", inst.ID, "err", stateErr)
+			}
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+// writeAuditEvent inserts a plugin-level audit row (PluginInstanceID = nil) with
+// the calling user as actor when one is on the request context. Failures are
+// logged but not surfaced — the upstream DB change has already committed.
+func (h *PluginHandler) writeAuditEvent(ctx context.Context, eventType, severity, nowStr string, payload map[string]any) {
+	caller, _ := auth.UserFromContext(ctx)
+	var actorUserID *string
+	if caller != nil {
+		actorUserID = &caller.ID
+	}
+	payloadJSON, _ := json.Marshal(payload)
+	_, err := h.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
+		PluginInstanceID: nil,
+		EventType:        eventType,
+		Severity:         severity,
+		ActorUserID:      actorUserID,
+		PayloadJson:      string(payloadJSON),
+		CreatedAt:        nowStr,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "audit event failed", "event_type", eventType, "err", err)
+	}
 }
 
 // deriveFingerprint extracts the 8-byte key ID from a Minisign public key blob.
