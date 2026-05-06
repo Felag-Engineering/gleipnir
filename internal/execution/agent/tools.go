@@ -18,6 +18,8 @@ type pluginToolSource struct {
 }
 
 // resolvedToolEntry holds a ResolvedTool paired with its narrowed JSON schema.
+// narrowedSchema is the policy-scoped view of the tool's input schema (ADR-017)
+// and is what the LLM sees; tool.InputSchema is the raw schema of record.
 // pluginSource is non-nil for plugin-backed tools; nil for MCP-source tools.
 type resolvedToolEntry struct {
 	tool           mcp.ResolvedTool
@@ -34,9 +36,11 @@ func sourceString(entry resolvedToolEntry) string {
 	return "mcp:" + entry.tool.ServerName
 }
 
-// buildResolvedToolMap constructs the name→entry map used at runtime to dispatch
-// tool calls. It applies policy-level parameter scoping (ADR-017) by narrowing
-// each tool's input schema.
+// buildResolvedToolMap constructs the name→entry map for MCP-source tools. It
+// applies policy-level parameter scoping (ADR-017) by narrowing each tool's
+// input schema. Plugin-source tools are added by New() in a separate loop
+// because they carry different fields (pluginSource pointer, schema from
+// map[string]any vs json.RawMessage, snapshot side-effects).
 func buildResolvedToolMap(tools []mcp.ResolvedTool) (map[string]resolvedToolEntry, error) {
 	toolsByName := make(map[string]resolvedToolEntry, len(tools))
 	for _, rt := range tools {

@@ -98,6 +98,14 @@ func New(cfg Config) (*BoundAgent, error) {
 			return nil, fmt.Errorf("marshaling schema for plugin tool %s: %w", dotName, err)
 		}
 
+		// Apply policy-level parameter scoping (ADR-017) to plugin tools, exactly
+		// as buildResolvedToolMap does for MCP tools. narrowedSchema feeds the LLM;
+		// InputSchema is the raw schema of record.
+		narrowed, err := mcp.NarrowSchema(schemaJSON, pt.Params)
+		if err != nil {
+			return nil, fmt.Errorf("narrowing schema for plugin tool %s: %w", dotName, err)
+		}
+
 		toolsByName[dotName] = resolvedToolEntry{
 			tool: mcp.ResolvedTool{
 				GrantedTool: model.GrantedTool{
@@ -110,7 +118,7 @@ func New(cfg Config) (*BoundAgent, error) {
 				Description: pt.Description,
 				InputSchema: schemaJSON,
 			},
-			narrowedSchema: schemaJSON,
+			narrowedSchema: narrowed,
 			pluginSource: &pluginToolSource{
 				InstanceName: pt.InstanceName,
 				Generation:   pt.Generation,
@@ -532,11 +540,20 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		return "", false, err
 	}
 
+	// Validate input against narrowed schema. This runs for both MCP and plugin
+	// tools — schema enforcement is source-agnostic (ADR-017). Running it before
+	// source-specific routing means a call with a bad parameter shape surfaces a
+	// schema error regardless of whether the plugin is also stale.
+	if err := mcp.ValidateCall(entry.narrowedSchema, input); err != nil {
+		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeSchemaViolation)
+		return "", false, fmt.Errorf("schema validation for %s: %w", toolName, err)
+	}
+
 	// Plugin generation guard: verify the plugin instance that provided this tool
 	// is still active and on the same generation captured in the snapshot. If not,
 	// write a tool_result structural error (same shape as MCP transport failures)
-	// so the agent can reason about it. No tool_call step is written first —
-	// the call never reached a server.
+	// so the agent can reason about it. Schema validation has already passed above;
+	// this block only handles generation/dispatch routing.
 	//
 	// The registrar is guaranteed non-nil when entry.pluginSource != nil because
 	// New() panics if PluginTools is non-empty without a PluginRegistrar.
@@ -561,12 +578,6 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 		// Generation matches — real dispatch is not yet wired (#198).
 		// server_id would be empty for plugin entries (no MCP server).
 		return "", false, errPluginDispatchUnimplemented
-	}
-
-	// Validate input against narrowed schema.
-	if err := mcp.ValidateCall(entry.narrowedSchema, input); err != nil {
-		a.logAuditError(ctx, runID, err.Error(), model.ErrorCodeSchemaViolation)
-		return "", false, fmt.Errorf("schema validation for %s: %w", toolName, err)
 	}
 
 	// Approval gating for tools with approval: required (ADR-008).
