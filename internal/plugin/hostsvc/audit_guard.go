@@ -23,6 +23,12 @@ const EventTypeUnauthorizedCallContext = "unauthorized_call_context"
 // capability in its manifest (spec §8.2).
 const EventTypeUnauthorizedTier2Call = "unauthorized_tier2_call"
 
+// EventTypeUnauthorizedRequestID is the plugin_audit_events.event_type value
+// written when a plugin calls WriteAuditStep(feedback_response) with a
+// request_id that was not routed to the calling instance (spec §8.4).
+// Severity is always "high".
+const EventTypeUnauthorizedRequestID = "unauthorized_request_id"
+
 // AuditQuerier is the narrow DB interface this package needs. A *db.Queries
 // value satisfies it; the narrow interface makes tests cheaper to write.
 type AuditQuerier interface {
