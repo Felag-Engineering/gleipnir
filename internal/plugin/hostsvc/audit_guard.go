@@ -18,6 +18,11 @@ import (
 // It slots into the same event taxonomy as "plugin_tool_namespace_conflict".
 const EventTypeUnauthorizedCallContext = "unauthorized_call_context"
 
+// EventTypeUnauthorizedTier2Call is the plugin_audit_events.event_type value
+// written when a plugin calls a Tier-2 RPC without declaring the corresponding
+// capability in its manifest (spec §8.2).
+const EventTypeUnauthorizedTier2Call = "unauthorized_tier2_call"
+
 // AuditQuerier is the narrow DB interface this package needs. A *db.Queries
 // value satisfies it; the narrow interface makes tests cheaper to write.
 type AuditQuerier interface {
@@ -72,4 +77,48 @@ func RejectIfDetached(ctx context.Context, q AuditQuerier, instanceID, rpcMethod
 	}
 
 	return status.Error(codes.PermissionDenied, "unauthorized_call_context")
+}
+
+// RejectIfTier2NotDeclared enforces the Tier-2 capability gate (spec §8.2).
+// It returns nil immediately when hasCapability is true.
+//
+// When hasCapability is false the function:
+//  1. Inserts a plugin_audit_events row with event_type
+//     "unauthorized_tier2_call" and severity "high".
+//  2. Returns a gRPC PermissionDenied error with detail
+//     "unauthorized_tier2_call".
+//
+// An audit-insert failure is logged at Warn but does not change the returned
+// error — the call is still rejected (mirrors RejectIfDetached).
+func RejectIfTier2NotDeclared(ctx context.Context, q AuditQuerier, instanceID, capability, rpcMethod string, hasCapability bool) error {
+	if hasCapability {
+		return nil
+	}
+
+	payload, marshalErr := json.Marshal(map[string]string{
+		"rpc_method": rpcMethod,
+		"capability": capability,
+	})
+	if marshalErr != nil {
+		payload = []byte("{}")
+	}
+
+	iid := instanceID
+	_, insertErr := q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
+		PluginInstanceID: &iid,
+		EventType:        EventTypeUnauthorizedTier2Call,
+		Severity:         "high",
+		PayloadJson:      string(payload),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if insertErr != nil {
+		slog.WarnContext(ctx, "unauthorized_tier2_call: audit event insert failed",
+			"instance_id", instanceID,
+			"rpc_method", rpcMethod,
+			"capability", capability,
+			"err", insertErr,
+		)
+	}
+
+	return status.Error(codes.PermissionDenied, "unauthorized_tier2_call")
 }

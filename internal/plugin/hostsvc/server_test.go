@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -55,6 +56,23 @@ type fakeQuerier struct {
 	updateHealthRows int64
 	updateHealthErr  error
 
+	// Tier-2 RPC support
+	plugin    db.Plugin
+	pluginErr error
+
+	policies    []db.Policy
+	policiesErr error
+
+	// runsByPolicy maps policy_id → rows; ListRunsByPolicy returns the slice for the queried policy_id.
+	runsByPolicy    map[string][]db.ListRunsByPolicyRow
+	runsByPolicyErr error
+
+	allUsersWithRoles    []db.ListAllActiveUsersWithRolesRow
+	allUsersWithRolesErr error
+
+	usersByRole    []db.ListActiveUsersByRoleRow
+	usersByRoleErr error
+
 	mu sync.Mutex
 }
 
@@ -87,6 +105,37 @@ func (f *fakeQuerier) CreateRunStep(_ context.Context, _ db.CreateRunStepParams)
 
 func (f *fakeQuerier) GetRun(_ context.Context, _ string) (db.Run, error) {
 	return f.run, f.runErr
+}
+
+func (f *fakeQuerier) GetPluginByID(_ context.Context, _ string) (db.Plugin, error) {
+	return f.plugin, f.pluginErr
+}
+
+func (f *fakeQuerier) ListPolicies(_ context.Context) ([]db.Policy, error) {
+	return f.policies, f.policiesErr
+}
+
+func (f *fakeQuerier) ListRunsByPolicy(_ context.Context, arg db.ListRunsByPolicyParams) ([]db.ListRunsByPolicyRow, error) {
+	if f.runsByPolicyErr != nil {
+		return nil, f.runsByPolicyErr
+	}
+	if f.runsByPolicy == nil {
+		return nil, nil
+	}
+	rows := f.runsByPolicy[arg.PolicyID]
+	// Respect the limit from the SQL call.
+	if int64(len(rows)) > arg.Limit {
+		rows = rows[:arg.Limit]
+	}
+	return rows, nil
+}
+
+func (f *fakeQuerier) ListAllActiveUsersWithRoles(_ context.Context) ([]db.ListAllActiveUsersWithRolesRow, error) {
+	return f.allUsersWithRoles, f.allUsersWithRolesErr
+}
+
+func (f *fakeQuerier) ListActiveUsersByRole(_ context.Context, _ string) ([]db.ListActiveUsersByRoleRow, error) {
+	return f.usersByRole, f.usersByRoleErr
 }
 
 // compile-time check
@@ -923,4 +972,386 @@ func TestNewServer_NilBinderPanics(t *testing.T) {
 
 	q := &fakeQuerier{}
 	hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, nil, &fakePublisher{})
+}
+
+// ── test helpers: Tier-2 manifest snapshots ───────────────────────────────────
+
+// manifestWithTier2 returns a minimal manifest YAML snapshot that declares the
+// given tier2_capabilities entries.
+func manifestWithTier2(caps ...string) string {
+	capYAML := ""
+	for _, c := range caps {
+		capYAML += "\n  - " + c
+	}
+	if len(caps) == 0 {
+		return `schema_version: v1
+name: myplugin
+version: 1.0.0
+auth:
+  mode: instance_credentials
+  strategy: none
+services:
+  tool: v1
+`
+	}
+	return `schema_version: v1
+name: myplugin
+version: 1.0.0
+auth:
+  mode: instance_credentials
+  strategy: none
+services:
+  tool: v1
+tier2_capabilities:` + capYAML + "\n"
+}
+
+// policyYAMLWithTool returns a minimal policy YAML blob that grants the named
+// tool — used to test policyIDsForInstance scoping.
+func policyYAMLWithTool(toolName string) string {
+	return `task: do something
+capabilities:
+  tools:
+    - tool: ` + toolName + `
+`
+}
+
+// ── tests: RunHistoryRead ─────────────────────────────────────────────────────
+
+func TestRunHistoryRead_CapabilityDenied(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2()}, // no tier2
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	_, err := srv.RunHistoryRead(context.Background(), &hostv1.RunHistoryReadRequest{})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", err)
+	}
+	if st.Message() != "unauthorized_tier2_call" {
+		t.Errorf("message = %q, want unauthorized_tier2_call", st.Message())
+	}
+
+	// Must have written one audit event.
+	events := q.all()
+	if len(events) != 1 {
+		t.Fatalf("audit event count = %d, want 1", len(events))
+	}
+	e := events[0]
+	if e.EventType != hostsvc.EventTypeUnauthorizedTier2Call {
+		t.Errorf("event_type = %q, want %q", e.EventType, hostsvc.EventTypeUnauthorizedTier2Call)
+	}
+	if e.Severity != "high" {
+		t.Errorf("severity = %q, want high", e.Severity)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(e.PayloadJson), &payload); err != nil {
+		t.Fatalf("payload json parse: %v", err)
+	}
+	if payload["capability"] != "run_history_read" {
+		t.Errorf("payload.capability = %q, want run_history_read", payload["capability"])
+	}
+	if payload["rpc_method"] == "" {
+		t.Error("payload.rpc_method is empty")
+	}
+}
+
+func TestRunHistoryRead_NoPoliciesInScope(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("run_history_read")},
+		policies: []db.Policy{
+			// Policy grants a tool from a different plugin.
+			{ID: "pol-other", Yaml: policyYAMLWithTool("otherplugin.some_tool")},
+		},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	resp, err := srv.RunHistoryRead(context.Background(), &hostv1.RunHistoryReadRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.GetRuns()) != 0 {
+		t.Errorf("runs = %d, want 0 (no scoped policies)", len(resp.GetRuns()))
+	}
+}
+
+func TestRunHistoryRead_ScopedPolicyMatch(t *testing.T) {
+	t.Parallel()
+
+	completedAt := "2024-06-01T12:00:00Z"
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("run_history_read")},
+		policies: []db.Policy{
+			{ID: "pol-mine", Yaml: policyYAMLWithTool("myplugin.do_thing")},
+		},
+		runsByPolicy: map[string][]db.ListRunsByPolicyRow{
+			"pol-mine": {
+				{ID: "run-1", PolicyID: "pol-mine", Status: "complete", StartedAt: "2024-06-01T10:00:00Z", CompletedAt: &completedAt, CreatedAt: "2024-06-01T09:55:00Z"},
+			},
+		},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	resp, err := srv.RunHistoryRead(context.Background(), &hostv1.RunHistoryReadRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.GetRuns()) != 1 {
+		t.Fatalf("runs = %d, want 1", len(resp.GetRuns()))
+	}
+	r := resp.GetRuns()[0]
+	if r.GetRunId() != "run-1" {
+		t.Errorf("run_id = %q, want run-1", r.GetRunId())
+	}
+	if r.GetFinishedAt() != completedAt {
+		t.Errorf("finished_at = %q, want %q", r.GetFinishedAt(), completedAt)
+	}
+}
+
+func TestRunHistoryRead_RequestedPolicyNotInScope(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("run_history_read")},
+		policies: []db.Policy{
+			{ID: "pol-mine", Yaml: policyYAMLWithTool("myplugin.do_thing")},
+		},
+		runsByPolicy: map[string][]db.ListRunsByPolicyRow{
+			"pol-mine": {{ID: "run-1", PolicyID: "pol-mine", Status: "complete", StartedAt: "2024-06-01T00:00:00Z", CreatedAt: "2024-06-01T00:00:00Z"}},
+		},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	// Request a policy the instance does not own — must get empty list, not an error.
+	resp, err := srv.RunHistoryRead(context.Background(), &hostv1.RunHistoryReadRequest{
+		PolicyId: "pol-someone-elses",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.GetRuns()) != 0 {
+		t.Errorf("runs = %d, want 0 (policy not in scope)", len(resp.GetRuns()))
+	}
+}
+
+func TestRunHistoryRead_LimitClamping(t *testing.T) {
+	t.Parallel()
+
+	// Build 150 rows for the scoped policy.
+	rows := make([]db.ListRunsByPolicyRow, 150)
+	for i := range rows {
+		rows[i] = db.ListRunsByPolicyRow{
+			ID:        fmt.Sprintf("run-%03d", i),
+			PolicyID:  "pol-mine",
+			Status:    "complete",
+			StartedAt: fmt.Sprintf("2024-01-%02dT00:00:00Z", (i%28)+1),
+			CreatedAt: fmt.Sprintf("2024-01-%02dT00:00:00Z", (i%28)+1),
+		}
+	}
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("run_history_read")},
+		policies: []db.Policy{{ID: "pol-mine", Yaml: policyYAMLWithTool("myplugin.do_thing")}},
+		runsByPolicy: map[string][]db.ListRunsByPolicyRow{
+			"pol-mine": rows,
+		},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	tests := []struct {
+		name      string
+		reqLimit  int32
+		wantCount int
+	}{
+		{"zero → 100", 0, 100},
+		{"500 → 100", 500, 100},
+		{"50 → 50", 50, 50},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resp, err := srv.RunHistoryRead(context.Background(), &hostv1.RunHistoryReadRequest{
+				Limit: tt.reqLimit,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(resp.GetRuns()) != tt.wantCount {
+				t.Errorf("runs count = %d, want %d", len(resp.GetRuns()), tt.wantCount)
+			}
+		})
+	}
+}
+
+func TestRunHistoryRead_MergeOrderAcrossPolicies(t *testing.T) {
+	t.Parallel()
+
+	// Two policies with runs whose created_at order differs from started_at order.
+	// This verifies the merge sorts by created_at (not started_at).
+	//
+	// created_at order (newest-first): run-b1 > run-a2 > run-a1
+	// started_at order (newest-first): run-a2 > run-b1 > run-a1  (differs!)
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("run_history_read")},
+		policies: []db.Policy{
+			{ID: "pol-a", Yaml: policyYAMLWithTool("myplugin.tool_a")},
+			{ID: "pol-b", Yaml: policyYAMLWithTool("myplugin.tool_b")},
+		},
+		runsByPolicy: map[string][]db.ListRunsByPolicyRow{
+			"pol-a": {
+				{ID: "run-a2", PolicyID: "pol-a", Status: "complete", StartedAt: "2024-06-03T00:00:00Z", CreatedAt: "2024-06-02T12:00:00Z"},
+				{ID: "run-a1", PolicyID: "pol-a", Status: "complete", StartedAt: "2024-06-01T00:00:00Z", CreatedAt: "2024-06-01T00:00:00Z"},
+			},
+			"pol-b": {
+				{ID: "run-b1", PolicyID: "pol-b", Status: "complete", StartedAt: "2024-06-02T00:00:00Z", CreatedAt: "2024-06-03T00:00:00Z"},
+			},
+		},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	resp, err := srv.RunHistoryRead(context.Background(), &hostv1.RunHistoryReadRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.GetRuns()) != 3 {
+		t.Fatalf("runs = %d, want 3", len(resp.GetRuns()))
+	}
+	// Expect order by created_at DESC: run-b1 (Jun 3), run-a2 (Jun 2 noon), run-a1 (Jun 1).
+	// If the merge sorted by started_at instead, the order would be run-a2, run-b1, run-a1 — wrong.
+	want := []string{"run-b1", "run-a2", "run-a1"}
+	for i, r := range resp.GetRuns() {
+		if r.GetRunId() != want[i] {
+			t.Errorf("runs[%d].run_id = %q, want %q (merge must sort by created_at, not started_at)", i, r.GetRunId(), want[i])
+		}
+	}
+}
+
+func TestRunHistoryRead_ManifestParseError(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: "{{not valid yaml:::"},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	_, err := srv.RunHistoryRead(context.Background(), &hostv1.RunHistoryReadRequest{})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Internal {
+		t.Errorf("expected Internal on manifest parse error, got %v", err)
+	}
+}
+
+// ── tests: UserDirectoryRead ─────────────────────────────────────────────────
+
+func TestUserDirectoryRead_CapabilityDenied(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2()}, // no tier2
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	_, err := srv.UserDirectoryRead(context.Background(), &hostv1.UserDirectoryReadRequest{})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", err)
+	}
+	events := q.all()
+	if len(events) != 1 || events[0].EventType != hostsvc.EventTypeUnauthorizedTier2Call {
+		t.Errorf("expected one unauthorized_tier2_call audit event, got %v", events)
+	}
+}
+
+func TestUserDirectoryRead_AllUsers(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("user_directory_read")},
+		allUsersWithRoles: []db.ListAllActiveUsersWithRolesRow{
+			{UserID: "u1", Username: "alice", Role: "admin"},
+			{UserID: "u1", Username: "alice", Role: "operator"},
+			{UserID: "u2", Username: "bob", Role: "auditor"},
+		},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	resp, err := srv.UserDirectoryRead(context.Background(), &hostv1.UserDirectoryReadRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.GetUsers()) != 3 {
+		t.Fatalf("users = %d, want 3 (one entry per (user,role) pair)", len(resp.GetUsers()))
+	}
+
+	// Verify no credential or deactivated fields are present in the proto shape
+	// (UserEntry only has user_id, username, role — verified by field existence).
+	for _, u := range resp.GetUsers() {
+		if u.GetUserId() == "" {
+			t.Error("user_id is empty")
+		}
+		if u.GetUsername() == "" {
+			t.Error("username is empty")
+		}
+		if u.GetRole() == "" {
+			t.Error("role is empty")
+		}
+	}
+}
+
+func TestUserDirectoryRead_RoleFilter(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("user_directory_read")},
+		usersByRole: []db.ListActiveUsersByRoleRow{
+			{UserID: "u1", Username: "alice"},
+		},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	resp, err := srv.UserDirectoryRead(context.Background(), &hostv1.UserDirectoryReadRequest{
+		RoleFilter: "admin",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.GetUsers()) != 1 {
+		t.Fatalf("users = %d, want 1", len(resp.GetUsers()))
+	}
+	// Role must be stamped from the request (ListActiveUsersByRoleRow has no Role field).
+	if resp.GetUsers()[0].GetRole() != "admin" {
+		t.Errorf("role = %q, want admin (stamped from request)", resp.GetUsers()[0].GetRole())
+	}
+}
+
+func TestUserDirectoryRead_ManifestParseError(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: "{{not valid yaml:::"},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	_, err := srv.UserDirectoryRead(context.Background(), &hostv1.UserDirectoryReadRequest{})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Internal {
+		t.Errorf("expected Internal on manifest parse error, got %v", err)
+	}
 }
