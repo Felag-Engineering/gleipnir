@@ -2394,8 +2394,9 @@ func TestWaitForApproval_ScannerWins(t *testing.T) {
 	}()
 
 	// Poll until the approval row appears in the DB (waitForApproval creates it
-	// inside sm.Transition). Bounded at 100ms to keep the test fast.
-	approvalID := pollForApprovalRow(t, s, time.Now().Add(100*time.Millisecond))
+	// inside sm.Transition). Bounded at 2s — generous headroom for loaded CI
+	// runners; the loop sleeps 1ms per check so passing tests still finish fast.
+	approvalID := pollForApprovalRow(t, s, time.Now().Add(2*time.Second))
 
 	// Back-date the approval so the scanner picks it up as expired.
 	past := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339Nano)
@@ -2513,7 +2514,7 @@ func TestWaitForFeedback_ScannerWins(t *testing.T) {
 	}()
 
 	// Poll until the feedback row appears in the DB.
-	feedbackID := pollForFeedbackRow(t, s, time.Now().Add(100*time.Millisecond))
+	feedbackID := pollForFeedbackRow(t, s, time.Now().Add(2*time.Second))
 
 	// Back-date the feedback row so the scanner picks it up as expired.
 	past := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339Nano)
@@ -2592,7 +2593,7 @@ func TestWaitForFeedback_ResponseWins(t *testing.T) {
 		done <- result{resp, err}
 	}()
 
-	feedbackID := pollForFeedbackRow(t, s, time.Now().Add(200*time.Millisecond))
+	feedbackID := pollForFeedbackRow(t, s, time.Now().Add(2*time.Second))
 	if err := ba.FeedbackResolver().Resolve(feedbackID, "operator's answer"); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
