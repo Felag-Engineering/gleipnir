@@ -276,6 +276,7 @@ func (q *Queries) ListActiveRunsByPolicy(ctx context.Context, policyID string) (
 }
 
 const listAttentionItems = `-- name: ListAttentionItems :many
+
 SELECT
   'approval' AS item_type,
   ar.id AS request_id,
@@ -643,6 +644,60 @@ func (q *Queries) ListRunsByDurationDesc(ctx context.Context, arg ListRunsByDura
 			&i.SystemPrompt,
 			&i.Model,
 			&i.Version,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunsByPolicy = `-- name: ListRunsByPolicy :many
+SELECT id, policy_id, status, started_at, completed_at, created_at FROM runs
+WHERE policy_id = ?1
+ORDER BY created_at DESC
+LIMIT ?2
+`
+
+type ListRunsByPolicyParams struct {
+	PolicyID string `json:"policy_id"`
+	Limit    int64  `json:"limit"`
+}
+
+type ListRunsByPolicyRow struct {
+	ID          string  `json:"id"`
+	PolicyID    string  `json:"policy_id"`
+	Status      string  `json:"status"`
+	StartedAt   string  `json:"started_at"`
+	CompletedAt *string `json:"completed_at"`
+	CreatedAt   string  `json:"created_at"`
+}
+
+// ListRunsByPolicy returns runs for a single policy ordered newest-first, used
+// by the plugin host-service RunHistoryRead handler. The Go handler merges
+// per-policy result sets and truncates to the requested limit.
+func (q *Queries) ListRunsByPolicy(ctx context.Context, arg ListRunsByPolicyParams) ([]ListRunsByPolicyRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRunsByPolicy, arg.PolicyID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRunsByPolicyRow
+	for rows.Next() {
+		var i ListRunsByPolicyRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

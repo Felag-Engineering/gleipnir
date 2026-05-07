@@ -170,6 +170,49 @@ func TestIndentAndLineEndings(t *testing.T) {
 	}
 }
 
+// TestHasTier2 verifies the HasTier2 helper against declared and undeclared
+// capability strings, including the tier2_capabilities YAML key round-trip.
+func TestHasTier2(t *testing.T) {
+	t.Parallel()
+
+	yamlSrc := `schema_version: v1
+name: testplugin
+version: 1.0.0
+auth:
+  mode: instance_credentials
+  strategy: none
+services:
+  tool: v1
+tier2_capabilities:
+  - run_history_read
+`
+	var m manifest.Manifest
+	if err := manifest.Unmarshal([]byte(yamlSrc), &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if !m.HasTier2(manifest.Tier2RunHistoryRead) {
+		t.Error("HasTier2(run_history_read) = false, want true")
+	}
+	if m.HasTier2(manifest.Tier2UserDirectoryRead) {
+		t.Error("HasTier2(user_directory_read) = true, want false (not declared)")
+	}
+	if m.HasTier2("nonexistent") {
+		t.Error("HasTier2(nonexistent) = true, want false")
+	}
+}
+
+// TestHasTier2_Empty verifies HasTier2 returns false for a manifest with no
+// tier2_capabilities declared.
+func TestHasTier2_Empty(t *testing.T) {
+	t.Parallel()
+
+	m := sampleManifest()
+	if m.HasTier2(manifest.Tier2RunHistoryRead) {
+		t.Error("HasTier2 = true on manifest with no tier2 capabilities")
+	}
+}
+
 // TestYAMLNodeFieldsPreserved verifies that *yaml.Node fields (like
 // ConfigSchema) survive a Marshal → Unmarshal round-trip intact.
 func TestYAMLNodeFieldsPreserved(t *testing.T) {

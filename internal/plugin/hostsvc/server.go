@@ -23,6 +23,12 @@ type Querier interface {
 	GetFeedbackRequest(ctx context.Context, id string) (db.FeedbackRequest, error)
 	UpdateFeedbackRequestStatus(ctx context.Context, arg db.UpdateFeedbackRequestStatusParams) (int64, error)
 	GetRun(ctx context.Context, id string) (db.Run, error)
+	// Tier-2 RPC support
+	GetPluginByID(ctx context.Context, id string) (db.Plugin, error)
+	ListPolicies(ctx context.Context) ([]db.Policy, error)
+	ListRunsByPolicy(ctx context.Context, arg db.ListRunsByPolicyParams) ([]db.ListRunsByPolicyRow, error)
+	ListAllActiveUsersWithRoles(ctx context.Context) ([]db.ListAllActiveUsersWithRolesRow, error)
+	ListActiveUsersByRole(ctx context.Context, role string) ([]db.ListActiveUsersByRoleRow, error)
 }
 
 // CallContextResolver resolves (run_id, policy_id, instance_name) from a
@@ -47,9 +53,9 @@ type InstanceBinder interface {
 	InstanceIDFromContext(ctx context.Context) (instanceID string, ok bool)
 }
 
-// Server implements hostv1.HostServiceServer for the eight Tier-1 Host RPCs.
-// Tier-2 RPCs (RunHistoryRead, UserDirectoryRead) fall through to the embedded
-// UnimplementedHostServiceServer until parent issue #158 routes Tier-2 work.
+// Server implements hostv1.HostServiceServer for all Host RPCs. Tier-1 RPCs
+// are always available; Tier-2 RPCs (RunHistoryRead, UserDirectoryRead) require
+// a matching capability declaration in the plugin manifest (spec §8.2).
 type Server struct {
 	hostv1.UnimplementedHostServiceServer
 

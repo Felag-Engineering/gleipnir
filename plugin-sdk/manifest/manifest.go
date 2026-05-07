@@ -8,6 +8,14 @@ package manifest
 
 import "gopkg.in/yaml.v3"
 
+// Tier-2 capability identifiers declared in the manifest under
+// tier2_capabilities. Each identifier corresponds to a manifest-declared,
+// admin-approved Host RPC (spec §8.2).
+const (
+	Tier2RunHistoryRead    = "run_history_read"
+	Tier2UserDirectoryRead = "user_directory_read"
+)
+
 // Manifest is the top-level structure for a Gleipnir plugin manifest file
 // (manifest.yaml). It is the install-time authority for UX, gating, and
 // consent screens. See docs/developer/plugin-system-spec.md §5.
@@ -52,7 +60,7 @@ type Manifest struct {
 
 	// Tier2 lists any Tier-2 Host RPCs this binary declares (shown in the
 	// install consent screen). See spec §8.2.
-	Tier2 []string `yaml:"tier2,omitempty"`
+	Tier2 []string `yaml:"tier2_capabilities,omitempty"`
 
 	// ConfigSchema is a JSON Schema (stored as a raw YAML node to preserve
 	// structure without re-ordering) for the per-instance config block.
@@ -83,7 +91,7 @@ func (m *Manifest) UnmarshalYAML(value *yaml.Node) error {
 		Tools         []ToolDecl      `yaml:"tools,omitempty"`
 		EventKinds    []EventKindDecl `yaml:"event_kinds,omitempty"`
 		Channels      []ChannelDecl   `yaml:"channels,omitempty"`
-		Tier2         []string        `yaml:"tier2,omitempty"`
+		Tier2         []string        `yaml:"tier2_capabilities,omitempty"`
 		ConfigSchema  yaml.Node       `yaml:"config_schema,omitempty"`
 		SBOM          string          `yaml:"sbom,omitempty"`
 	}
@@ -275,6 +283,18 @@ type ChannelDecl struct {
 	// ConfigSchema is a JSON Schema (as a raw YAML node) for the per-audience-
 	// entry config block validated when operators configure this channel.
 	ConfigSchema *yaml.Node `yaml:"config_schema,omitempty"`
+}
+
+// HasTier2 reports whether the manifest declares the given Tier-2 capability.
+// The capability string must match one of the Tier2* constants (e.g.
+// Tier2RunHistoryRead). Comparison is case-sensitive.
+func (m *Manifest) HasTier2(cap string) bool {
+	for _, c := range m.Tier2 {
+		if c == cap {
+			return true
+		}
+	}
+	return false
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for ChannelDecl.

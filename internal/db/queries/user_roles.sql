@@ -30,3 +30,13 @@ FROM user_roles ur
 JOIN users u ON u.id = ur.user_id
 WHERE ur.role = :role AND u.deactivated_at IS NULL
 ORDER BY u.username;
+
+-- ListAllActiveUsersWithRoles returns one row per (user, role) pair for
+-- all non-deactivated users, used by the plugin host-service UserDirectoryRead
+-- handler. The 1:1 row-to-UserEntry mapping avoids GROUP_CONCAT.
+-- name: ListAllActiveUsersWithRoles :many
+SELECT u.id AS user_id, u.username, ur.role
+FROM users u
+JOIN user_roles ur ON ur.user_id = u.id
+WHERE u.deactivated_at IS NULL
+ORDER BY u.username, ur.role;
