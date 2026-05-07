@@ -58,6 +58,23 @@ type instanceState struct {
 // CancelRun can route the Cancel RPC to the right connection.
 type inflightCall struct {
 	instanceName string
+	policyID     string
+}
+
+// callBinding is the index entry stored in the callID → binding reverse map.
+// It carries everything needed by host-service RPCs that resolve context from a call_id.
+type callBinding struct {
+	runID        string
+	policyID     string
+	instanceName string
+}
+
+// CallInfo is the public view of a callBinding returned by LookupCall.
+// hostsvc uses this to resolve run/policy/instance context from a call_id.
+type CallInfo struct {
+	RunID        string
+	PolicyID     string
+	InstanceName string
 }
 
 // Pool routes agent tool calls to plugin instances via gRPC. It owns:
@@ -79,8 +96,12 @@ type Pool struct {
 	instances   map[string]*instanceState
 
 	// inflight maps runID → callID → inflightCall.
-	inflightMu sync.Mutex
-	inflight   map[string]map[string]*inflightCall
+	// inflightByCallID is the reverse index: callID → callBinding.
+	// Both maps are guarded by inflightMu. LookupCall and snapshotInflightForRun
+	// acquire RLock; all writes (register, deregister) acquire the full Lock.
+	inflightMu       sync.RWMutex
+	inflight         map[string]map[string]*inflightCall
+	inflightByCallID map[string]callBinding
 }
 
 // New returns a Pool ready to use. cfg.Connect must be non-nil.
@@ -98,9 +119,10 @@ func New(cfg Config) *Pool {
 		cfg.DefaultMaxQueueDepth = 50
 	}
 	return &Pool{
-		cfg:       cfg,
-		instances: make(map[string]*instanceState),
-		inflight:  make(map[string]map[string]*inflightCall),
+		cfg:              cfg,
+		instances:        make(map[string]*instanceState),
+		inflight:         make(map[string]map[string]*inflightCall),
+		inflightByCallID: make(map[string]callBinding),
 	}
 }
 
@@ -142,18 +164,21 @@ func (p *Pool) getOrCreate(instanceName string) (*instanceState, error) {
 	return st, nil
 }
 
-// registerInflight records (runID, callID) → instanceName in the inflight map.
-// The caller must deregister via deregisterInflight when the call completes.
-func (p *Pool) registerInflight(runID, callID, instanceName string) {
+// registerInflight records (runID, callID) → instanceName in the inflight map
+// and in the callID reverse index. The caller must deregister via deregisterInflight
+// when the call completes.
+func (p *Pool) registerInflight(runID, policyID, callID, instanceName string) {
 	p.inflightMu.Lock()
 	defer p.inflightMu.Unlock()
 	if p.inflight[runID] == nil {
 		p.inflight[runID] = make(map[string]*inflightCall)
 	}
-	p.inflight[runID][callID] = &inflightCall{instanceName: instanceName}
+	p.inflight[runID][callID] = &inflightCall{instanceName: instanceName, policyID: policyID}
+	p.inflightByCallID[callID] = callBinding{runID: runID, policyID: policyID, instanceName: instanceName}
 }
 
-// deregisterInflight removes a single (runID, callID) pair from the inflight map.
+// deregisterInflight removes a single (runID, callID) pair from the inflight map
+// and the callID reverse index.
 func (p *Pool) deregisterInflight(runID, callID string) {
 	p.inflightMu.Lock()
 	defer p.inflightMu.Unlock()
@@ -161,13 +186,28 @@ func (p *Pool) deregisterInflight(runID, callID string) {
 	if len(p.inflight[runID]) == 0 {
 		delete(p.inflight, runID)
 	}
+	delete(p.inflightByCallID, callID)
+}
+
+// LookupCall returns context information for the in-flight call identified by callID.
+// Returns (CallInfo{}, false) when no call with that ID is currently in-flight.
+// Safe for concurrent use; reads under inflightMu.RLock so concurrent lookups
+// do not serialize with each other (host-RPC hot path).
+func (p *Pool) LookupCall(callID string) (CallInfo, bool) {
+	p.inflightMu.RLock()
+	defer p.inflightMu.RUnlock()
+	b, ok := p.inflightByCallID[callID]
+	if !ok {
+		return CallInfo{}, false
+	}
+	return CallInfo{RunID: b.runID, PolicyID: b.policyID, InstanceName: b.instanceName}, true
 }
 
 // snapshotInflightForRun returns a copy of the inflight map for the given run.
 // The copy is safe to iterate outside the lock.
 func (p *Pool) snapshotInflightForRun(runID string) map[string]inflightCall {
-	p.inflightMu.Lock()
-	defer p.inflightMu.Unlock()
+	p.inflightMu.RLock()
+	defer p.inflightMu.RUnlock()
 	calls := p.inflight[runID]
 	if len(calls) == 0 {
 		return nil
@@ -223,7 +263,7 @@ func (p *Pool) Call(ctx context.Context, runID, policyID, instanceName, toolName
 	}()
 
 	// Step 4: register inflight and build the per-call context.
-	p.registerInflight(runID, callID, instanceName)
+	p.registerInflight(runID, policyID, callID, instanceName)
 
 	callCtx, cancelCall := context.WithTimeout(ctx, p.cfg.CallTimeout)
 	defer cancelCall()
@@ -319,13 +359,14 @@ func (p *Pool) CancelRun(runID string) {
 // Close cancels all in-flight runs (best-effort) and closes all connections.
 // Used during host shutdown.
 func (p *Pool) Close() error {
-	// Collect all in-flight run IDs under lock.
-	p.inflightMu.Lock()
+	// Collect all in-flight run IDs under read lock; CancelRun acquires its own
+	// locks internally so we release early.
+	p.inflightMu.RLock()
 	runIDs := make([]string, 0, len(p.inflight))
 	for runID := range p.inflight {
 		runIDs = append(runIDs, runID)
 	}
-	p.inflightMu.Unlock()
+	p.inflightMu.RUnlock()
 
 	for _, runID := range runIDs {
 		p.CancelRun(runID)
