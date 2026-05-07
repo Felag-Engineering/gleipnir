@@ -114,6 +114,13 @@ func run(cfg config.Config) error {
 		if err := loader.StartWatcher(ctx, store.Queries(), cfg.PluginsDir, broadcaster); err != nil {
 			return fmt.Errorf("start plugin watcher: %w", err)
 		}
+
+		// StartManager spawns subprocesses for all active plugin instances. It
+		// must run after StartWatcher so the DB schema and plugin rows are
+		// consistent. No-op when verifier is nil (i.e. when plugins are disabled).
+		if err := loader.StartManager(ctx, store.Queries(), broadcaster); err != nil {
+			return fmt.Errorf("start plugin manager: %w", err)
+		}
 	}
 
 	approvalScanner := timeout.NewApprovalScanner(
@@ -406,6 +413,17 @@ func run(cfg config.Config) error {
 		slog.Info("all agent runs drained")
 	case <-time.After(cfg.DrainTimeout):
 		slog.Warn("agent run drain timed out, proceeding with server shutdown")
+	}
+
+	// Stop all plugin subprocesses before closing the dispatch pool. This order
+	// matters: any in-flight cancel RPCs from the pool (#292/#198) must still
+	// have live transport while subprocesses are stopping.
+	if mgr := loader.Manager(); mgr != nil {
+		stopCtx, cancelStop := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := mgr.StopAll(stopCtx); err != nil {
+			slog.Warn("plugin StopAll error", "err", err)
+		}
+		cancelStop()
 	}
 
 	// Close the plugin dispatch pool after all runs have drained so no new

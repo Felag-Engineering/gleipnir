@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync/atomic"
 	"time"
@@ -83,6 +84,21 @@ type Options struct {
 	// Logger is the slog logger for host-side log output. If nil, the default
 	// slog logger is used.
 	Logger *slog.Logger
+
+	// OnProcessExited is called in a goroutine when the plugin subprocess has
+	// exited and all of go-plugin's internal goroutines have finished (including
+	// the stderr copy goroutine). Callers use this to detect subprocess crashes
+	// without polling. If nil, it is not called.
+	//
+	// At the point this function is called, go-plugin has stopped writing to
+	// Stderr; any teardown of the Stderr writer (e.g. closing an io.PipeWriter)
+	// should happen inside this callback.
+	OnProcessExited func()
+
+	// Env is a list of extra environment variables to set in the subprocess, in
+	// "KEY=VALUE" form. These are appended to the subprocess's inherited
+	// environment. If nil, no extra variables are added.
+	Env []string
 }
 
 // gleipnirPlugin is the go-plugin GRPCPlugin implementation for the Gleipnir
@@ -182,11 +198,19 @@ func Launch(ctx context.Context, binaryPath string, host HostServer, opts Option
 	// loader) can reference the plugin set for plugin.Serve on the plugin side.
 	p := newGleipnirPlugin(host)
 
+	cmd := exec.CommandContext(ctx, binaryPath)
+	if len(opts.Env) > 0 {
+		// Append extra env vars to the subprocess's full inherited environment.
+		// Cmd.Env wins over clientConfig.Env when both are set; by setting it
+		// here we ensure the subprocess sees all of os.Environ() plus our extras.
+		cmd.Env = append(os.Environ(), opts.Env...)
+	}
+
 	clientConfig := &plugin.ClientConfig{
 		HandshakeConfig:     HandshakeConfig,
 		Plugins:             plugin.PluginSet{"gleipnir": p},
 		AllowedProtocols:    []plugin.Protocol{plugin.ProtocolGRPC},
-		Cmd:                 exec.CommandContext(ctx, binaryPath),
+		Cmd:                 cmd,
 		StartTimeout:        opts.StartupTimeout,
 		Logger:              newHCLogger(logger),
 		GRPCBrokerMultiplex: true,
@@ -231,6 +255,30 @@ func Launch(ctx context.Context, binaryPath string, host HostServer, opts Option
 	if !bindResp.GetOk() {
 		c.Kill()
 		return nil, nil, fmt.Errorf("hostwire: bootstrap bind rejected by plugin: %s", bindResp.GetErrorDetail())
+	}
+
+	// Start a goroutine that polls c.Exited() and fires opts.OnProcessExited
+	// when the subprocess has exited and all go-plugin goroutines have cleaned
+	// up. This is the mechanism the host process package uses to detect crashes
+	// without having to call Kill() first. When Kill() is called explicitly, the
+	// goroutine also unblocks because Kill() sets c.exited = true.
+	//
+	// The goroutine also exits on ctx cancellation as a defence-in-depth measure
+	// to avoid goroutine leaks when the caller abandons the launch context.
+	if opts.OnProcessExited != nil {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(100 * time.Millisecond):
+				}
+				if c.Exited() {
+					opts.OnProcessExited()
+					return
+				}
+			}
+		}()
 	}
 
 	teardown := func() { c.Kill() }

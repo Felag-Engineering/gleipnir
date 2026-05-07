@@ -11,6 +11,9 @@
 //   - StartWatcher (#187, this PR) sets up the fsnotify watcher and runs the
 //     debounced install loop. Material-change detection (#189) and the
 //     generation/shutdown manager (#190/#193 implementations) are follow-up PRs.
+//   - StartManager (#291) constructs the process.Manager and calls
+//     StartAllActive so existing plugin instances are re-spawned on server
+//     restart. No-op when GLEIPNIR_PLUGINS_ENABLED=false.
 package plugin
 
 import (
@@ -20,7 +23,9 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
+	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
 	"github.com/felag-engineering/gleipnir/internal/plugin/loader"
+	"github.com/felag-engineering/gleipnir/internal/plugin/process"
 )
 
 // Loader owns plugin-subsystem initialization. It is the host's entry point
@@ -29,9 +34,14 @@ import (
 type Loader struct {
 	verifier *Verifier
 	watcher  *loader.Watcher
+	manager  *process.Manager
 }
 
 func NewLoader() *Loader { return &Loader{} }
+
+// Manager returns the process.Manager constructed by StartManager. Returns nil
+// when the plugin subsystem is disabled or StartManager has not been called.
+func (l *Loader) Manager() *process.Manager { return l.manager }
 
 // Verifier returns the verifier configured at Init time. nil when the plugin
 // subsystem is disabled. Callers downstream of Init (the fsnotify watcher,
@@ -105,6 +115,32 @@ func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, dir string, pu
 		}
 	}()
 	return nil
+}
+
+// StartManager constructs a process.Manager with its own identity.Registry and
+// calls StartAllActive so that any plugin instances whose plugin row has
+// status="active" are spawned on server startup.
+//
+// Returns nil immediately when the plugin subsystem is disabled (Init was not
+// called or GLEIPNIR_PLUGINS_ENABLED=false). Any per-instance start errors are
+// logged at Warn inside Manager.StartAllActive and do not propagate here.
+//
+// q and publisher are the same dependencies passed to StartWatcher; they are
+// passed separately so this method can be called without a running watcher
+// (e.g. in tests).
+func (l *Loader) StartManager(ctx context.Context, q *db.Queries, publisher event.Publisher) error {
+	if l.verifier == nil {
+		return nil
+	}
+
+	reg := identity.New()
+	l.manager = process.NewManager(process.ManagerConfig{
+		Querier:        q,
+		Publisher:      publisher,
+		IdentityIssuer: reg,
+	})
+
+	return l.manager.StartAllActive(ctx)
 }
 
 // verifierAdapter bridges *Verifier (returns plugin.VerifyResult) to

@@ -1,0 +1,229 @@
+//go:build unix
+
+package process_test
+
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
+	"github.com/felag-engineering/gleipnir/internal/plugin/process"
+)
+
+// ── fakeQuerier ──────────────────────────────────────────────────────────────
+
+// fakeQuerier is an in-memory implementation of the querier interface required
+// by Manager. No real DB connection is needed for unit tests.
+type fakeQuerier struct {
+	plugins   []db.Plugin
+	instances map[string][]db.PluginInstance // keyed by plugin_id
+}
+
+func (q *fakeQuerier) ListPluginsByStatus(_ context.Context, status string) ([]db.Plugin, error) {
+	var out []db.Plugin
+	for _, p := range q.plugins {
+		if p.Status == status {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (q *fakeQuerier) ListPluginInstancesByPlugin(_ context.Context, pluginID string) ([]db.PluginInstance, error) {
+	return q.instances[pluginID], nil
+}
+
+func (q *fakeQuerier) GetPluginInstanceByID(_ context.Context, id string) (db.PluginInstance, error) {
+	for _, instances := range q.instances {
+		for _, inst := range instances {
+			if inst.ID == id {
+				return inst, nil
+			}
+		}
+	}
+	return db.PluginInstance{}, errors.New("not found")
+}
+
+func (q *fakeQuerier) UpdatePluginInstanceHealth(_ context.Context, _ db.UpdatePluginInstanceHealthParams) (int64, error) {
+	return 1, nil
+}
+
+// ── Manager unit tests (blocked states, skip logic, StopAll) ─────────────────
+
+// TestManager_SkipNonActivePlugin verifies that Manager.Start refuses to spawn
+// a subprocess when the plugin's status is not "active".
+func TestManager_SkipNonActivePlugin(t *testing.T) {
+	reg := identity.New()
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        &fakeQuerier{},
+		IdentityIssuer: reg,
+	})
+
+	plugin := db.Plugin{ID: "p1", Status: "inactive"}
+	instance := db.PluginInstance{ID: "i1", PluginID: "p1", InstanceName: "inst1", HealthState: "healthy"}
+
+	if err := mgr.Start(context.Background(), plugin, instance, "/bin/true"); err == nil {
+		t.Fatal("expected error for non-active plugin, got nil")
+	}
+}
+
+// TestManager_SkipBlockedHealthState verifies that Manager.Start returns nil
+// (no subprocess started) for every health state in the blocked set.
+func TestManager_SkipBlockedHealthState(t *testing.T) {
+	blockedStates := []model.PluginHealthState{
+		model.PluginHealthStateSignatureInvalid,
+		model.PluginHealthStateVerificationError,
+		model.PluginHealthStatePendingKeyApproval,
+		model.PluginHealthStatePendingConfigMigration,
+		model.PluginHealthStatePendingManifestApproval,
+		model.PluginHealthStateCrashed,
+	}
+
+	for _, state := range blockedStates {
+		t.Run(string(state), func(t *testing.T) {
+			reg := identity.New()
+			var started bool
+			mgr := process.NewManager(process.ManagerConfig{
+				Querier:        &fakeQuerier{},
+				IdentityIssuer: reg,
+				TestProcessStarter: func(_ context.Context, _ process.Config) (*process.Instance, error) {
+					started = true
+					return nil, errors.New("should not be called")
+				},
+			})
+
+			plugin := db.Plugin{ID: "p1", Status: "active"}
+			instance := db.PluginInstance{
+				ID:           "i1",
+				PluginID:     "p1",
+				InstanceName: "inst1",
+				HealthState:  string(state),
+			}
+
+			if err := mgr.Start(context.Background(), plugin, instance, "/bin/true"); err != nil {
+				t.Fatalf("unexpected error for blocked state %s: %v", state, err)
+			}
+			if started {
+				t.Errorf("processStarter was called for blocked health state %s", state)
+			}
+		})
+	}
+}
+
+// TestManager_IdempotentStart verifies that starting the same instance twice
+// returns an error on the second call without calling the starter again.
+func TestManager_IdempotentStart(t *testing.T) {
+	reg := identity.New()
+	var callCount int
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        &fakeQuerier{},
+		IdentityIssuer: reg,
+		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+			callCount++
+			fc := fixtureConfig(t, "serve-and-block", reg, nil)
+			fc.InstanceID = cfg.InstanceID
+			return process.Start(ctx, fc)
+		},
+	})
+
+	plugin := db.Plugin{ID: "p1", Status: "active"}
+	instance := db.PluginInstance{ID: "i1", PluginID: "p1", InstanceName: "i1", HealthState: "healthy"}
+
+	if err := mgr.Start(ctx, plugin, instance, os.Args[0]); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	defer mgr.Stop(ctx, "i1") //nolint:errcheck
+
+	if err := mgr.Start(ctx, plugin, instance, os.Args[0]); err == nil {
+		t.Fatal("expected error for duplicate Start, got nil")
+	}
+	if callCount != 1 {
+		t.Errorf("processStarter called %d times, want 1", callCount)
+	}
+}
+
+// TestManager_StopAll verifies that StopAll terminates all running instances
+// and Lookup returns nil for each afterward.
+func TestManager_StopAll(t *testing.T) {
+	reg := identity.New()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        &fakeQuerier{},
+		IdentityIssuer: reg,
+		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+			fc := fixtureConfig(t, "serve-and-block", reg, nil)
+			fc.InstanceID = cfg.InstanceID
+			return process.Start(ctx, fc)
+		},
+	})
+
+	plugin := db.Plugin{ID: "p1", Status: "active"}
+	instanceIDs := []string{"i1", "i2"}
+	for _, id := range instanceIDs {
+		inst := db.PluginInstance{ID: id, PluginID: "p1", InstanceName: id, HealthState: "healthy"}
+		if err := mgr.Start(ctx, plugin, inst, os.Args[0]); err != nil {
+			t.Fatalf("Start %s: %v", id, err)
+		}
+	}
+
+	if err := mgr.StopAll(ctx); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+
+	for _, id := range instanceIDs {
+		if mgr.Lookup(id) != nil {
+			t.Errorf("Lookup(%s): expected nil after StopAll", id)
+		}
+	}
+}
+
+// TestManager_StopMissingID verifies that stopping a non-existent instance ID
+// returns nil (idempotent).
+func TestManager_StopMissingID(t *testing.T) {
+	reg := identity.New()
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        &fakeQuerier{},
+		IdentityIssuer: reg,
+	})
+
+	if err := mgr.Stop(context.Background(), "nonexistent"); err != nil {
+		t.Errorf("Stop for nonexistent instance: want nil, got %v", err)
+	}
+}
+
+// TestManager_StartAllActive_ContinuesPastErrors verifies that StartAllActive
+// returns nil even when all instances have no binary path available (which is
+// the current state for #291 — binary path is not yet DB-persisted).
+func TestManager_StartAllActive_ContinuesPastErrors(t *testing.T) {
+	q := &fakeQuerier{
+		plugins: []db.Plugin{
+			{ID: "p1", Status: "active"},
+		},
+		instances: map[string][]db.PluginInstance{
+			"p1": {{ID: "i1", PluginID: "p1", InstanceName: "i1", HealthState: "healthy"}},
+		},
+	}
+	reg := identity.New()
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        q,
+		IdentityIssuer: reg,
+	})
+
+	// StartAllActive should return nil even though it cannot spawn the instance
+	// (binary path not available in DB for #291).
+	if err := mgr.StartAllActive(context.Background()); err != nil {
+		t.Fatalf("StartAllActive: %v", err)
+	}
+}
