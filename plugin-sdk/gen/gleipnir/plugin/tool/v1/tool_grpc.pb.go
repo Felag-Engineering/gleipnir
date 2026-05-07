@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	ToolService_ListTools_FullMethodName = "/gleipnir.plugin.tool.v1.ToolService/ListTools"
 	ToolService_Call_FullMethodName      = "/gleipnir.plugin.tool.v1.ToolService/Call"
+	ToolService_Cancel_FullMethodName    = "/gleipnir.plugin.tool.v1.ToolService/Cancel"
 )
 
 // ToolServiceClient is the client API for ToolService service.
@@ -34,12 +35,15 @@ const (
 //
 //	ListTools: 5s
 //	Call:      30s (matches GLEIPNIR_MCP_TIMEOUT)
+//	Cancel:    5s  (spec §13.8; host force-disconnects on timeout)
 type ToolServiceClient interface {
 	// ListTools returns all tools this plugin instance currently exposes.
 	ListTools(ctx context.Context, in *ListToolsRequest, opts ...grpc.CallOption) (*ListToolsResponse, error)
 	// Call invokes a single tool and returns its result.
 	// The RPC name is "Call" (spec §4.1) — not "Invoke".
 	Call(ctx context.Context, in *CallRequest, opts ...grpc.CallOption) (*CallResponse, error)
+	// Cancel asks the plugin to abort an in-flight Call identified by call_id.
+	Cancel(ctx context.Context, in *CancelRequest, opts ...grpc.CallOption) (*CancelResponse, error)
 }
 
 type toolServiceClient struct {
@@ -70,6 +74,16 @@ func (c *toolServiceClient) Call(ctx context.Context, in *CallRequest, opts ...g
 	return out, nil
 }
 
+func (c *toolServiceClient) Cancel(ctx context.Context, in *CancelRequest, opts ...grpc.CallOption) (*CancelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelResponse)
+	err := c.cc.Invoke(ctx, ToolService_Cancel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ToolServiceServer is the server API for ToolService service.
 // All implementations should embed UnimplementedToolServiceServer
 // for forward compatibility.
@@ -81,12 +95,15 @@ func (c *toolServiceClient) Call(ctx context.Context, in *CallRequest, opts ...g
 //
 //	ListTools: 5s
 //	Call:      30s (matches GLEIPNIR_MCP_TIMEOUT)
+//	Cancel:    5s  (spec §13.8; host force-disconnects on timeout)
 type ToolServiceServer interface {
 	// ListTools returns all tools this plugin instance currently exposes.
 	ListTools(context.Context, *ListToolsRequest) (*ListToolsResponse, error)
 	// Call invokes a single tool and returns its result.
 	// The RPC name is "Call" (spec §4.1) — not "Invoke".
 	Call(context.Context, *CallRequest) (*CallResponse, error)
+	// Cancel asks the plugin to abort an in-flight Call identified by call_id.
+	Cancel(context.Context, *CancelRequest) (*CancelResponse, error)
 }
 
 // UnimplementedToolServiceServer should be embedded to have
@@ -101,6 +118,9 @@ func (UnimplementedToolServiceServer) ListTools(context.Context, *ListToolsReque
 }
 func (UnimplementedToolServiceServer) Call(context.Context, *CallRequest) (*CallResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Call not implemented")
+}
+func (UnimplementedToolServiceServer) Cancel(context.Context, *CancelRequest) (*CancelResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Cancel not implemented")
 }
 func (UnimplementedToolServiceServer) testEmbeddedByValue() {}
 
@@ -158,6 +178,24 @@ func _ToolService_Call_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ToolService_Cancel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ToolServiceServer).Cancel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ToolService_Cancel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ToolServiceServer).Cancel(ctx, req.(*CancelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ToolService_ServiceDesc is the grpc.ServiceDesc for ToolService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -172,6 +210,10 @@ var ToolService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Call",
 			Handler:    _ToolService_Call_Handler,
+		},
+		{
+			MethodName: "Cancel",
+			Handler:    _ToolService_Cancel_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

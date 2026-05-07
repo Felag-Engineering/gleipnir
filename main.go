@@ -14,6 +14,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
+	agentpkg "github.com/felag-engineering/gleipnir/internal/execution/agent"
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/http/api"
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
@@ -25,11 +26,13 @@ import (
 	openaicompatllm "github.com/felag-engineering/gleipnir/internal/llm/openaicompat"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
+	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 	"github.com/felag-engineering/gleipnir/internal/trigger"
+	"google.golang.org/grpc"
 )
 
 // knownProviders is the list of LLM providers the system supports.
@@ -127,7 +130,30 @@ func run(cfg config.Config) error {
 	)
 	feedbackScanner.Start(ctx)
 
+	// Plugin dispatch pool: routes agent tool calls to plugin instances via gRPC.
+	// stubConnFactory returns an error because subprocess lifecycle (process start,
+	// UDS socket path) is wired in a follow-up issue. Plugin tools are only added
+	// to agent.Config.PluginTools once the registrar has registered them, and that
+	// registration is gated on the loader-side subprocess-up event — so this stub
+	// is unreachable in practice until that follow-up lands.
+	stubConnFactory := func(instanceName string) (*grpc.ClientConn, error) {
+		return nil, fmt.Errorf("plugin %q not started (subprocess lifecycle not yet wired)", instanceName)
+	}
+	pluginPool := dispatch.New(dispatch.Config{
+		CallTimeout:          cfg.MCPTimeout,
+		CancelTimeout:        5 * time.Second,
+		DefaultMaxConcurrent: 50,
+		DefaultMaxQueueDepth: 50,
+		Connect:              stubConnFactory,
+	})
+
+	// pluginDispatchAdapter wraps *dispatch.Pool to satisfy agent.PluginToolDispatcher,
+	// translating dispatch-package sentinel errors to agent-package sentinels so the
+	// agent package does not need to import internal/plugin/dispatch.
+	pluginDispatchAdapter := &pluginDispatchAdapter{pool: pluginPool}
+
 	runManager := runpkg.NewRunManager()
+	runManager.WithPluginCanceller(pluginPool)
 	providerRegistry := llm.NewProviderRegistry()
 
 	// Parse the encryption key for admin API key storage.
@@ -238,6 +264,11 @@ func run(cfg config.Config) error {
 		Publisher:              broadcaster,
 		DefaultFeedbackTimeout: cfg.DefaultFeedbackTimeout,
 		ModelResolver:          systemSettings,
+		// PluginTools and PluginRegistrar are intentionally nil here; they will be
+		// populated in the follow-up that wires subprocess lifecycle and tool
+		// registration.  PluginDispatcher is pre-wired so the pool is ready when
+		// the registrar hands off its first set of plugin tools.
+		PluginDispatcher: pluginDispatchAdapter,
 	})
 
 	webhookSecretLoader := trigger.NewSecretLoader(store.Queries(), encryptionKey)
@@ -375,6 +406,12 @@ func run(cfg config.Config) error {
 		slog.Info("all agent runs drained")
 	case <-time.After(cfg.DrainTimeout):
 		slog.Warn("agent run drain timed out, proceeding with server shutdown")
+	}
+
+	// Close the plugin dispatch pool after all runs have drained so no new
+	// Cancel RPCs are issued after the connections are torn down.
+	if err := pluginPool.Close(); err != nil {
+		slog.Warn("plugin dispatch pool close error", "err", err)
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -557,4 +594,25 @@ func countEncryptedWebhookSecrets(ctx context.Context, store *db.Store) (int, er
 		`SELECT COUNT(*) FROM policies WHERE webhook_secret_encrypted IS NOT NULL`,
 	).Scan(&n)
 	return n, err
+}
+
+// pluginDispatchAdapter wraps *dispatch.Pool to satisfy agent.PluginToolDispatcher.
+// It translates dispatch-package sentinel errors (dispatch.ErrCallTimeout,
+// dispatch.ErrQueueFull) to the agent-package sentinels so the agent package
+// does not need to import internal/plugin/dispatch (package boundary).
+type pluginDispatchAdapter struct {
+	pool *dispatch.Pool
+}
+
+func (a *pluginDispatchAdapter) Call(ctx context.Context, runID, policyID, instanceName, toolName, inputJSON string) (string, bool, error) {
+	output, isError, err := a.pool.Call(ctx, runID, policyID, instanceName, toolName, inputJSON)
+	if err != nil {
+		if errors.Is(err, dispatch.ErrCallTimeout) {
+			return "", false, fmt.Errorf("%w", agentpkg.ErrPluginCallTimeout)
+		}
+		if errors.Is(err, dispatch.ErrQueueFull) {
+			return "", false, fmt.Errorf("%w", agentpkg.ErrPluginQueueFull)
+		}
+	}
+	return output, isError, err
 }

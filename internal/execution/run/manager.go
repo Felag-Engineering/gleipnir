@@ -41,17 +41,35 @@ type trackedRun struct {
 	waiters []chan struct{}
 }
 
-// RunManager tracks active run goroutines so they can be cancelled on demand.
-type RunManager struct {
-	mu   sync.Mutex
-	runs map[string]*trackedRun
-	wg   sync.WaitGroup
+// pluginRunCanceller is the narrow interface RunManager uses to propagate run
+// cancellation to the plugin dispatcher. internal/plugin/dispatch.Pool satisfies
+// it structurally; the interface lives here so RunManager does NOT import that
+// package (preserves the package boundary documented in CLAUDE.md).
+type pluginRunCanceller interface {
+	CancelRun(runID string)
 }
 
+// RunManager tracks active run goroutines so they can be cancelled on demand.
+type RunManager struct {
+	mu               sync.Mutex
+	runs             map[string]*trackedRun
+	wg               sync.WaitGroup
+	pluginCanceller  pluginRunCanceller // nil = no plugin dispatcher wired (tests, pre-plugin runs)
+}
+
+// NewRunManager returns a RunManager with no plugin canceller wired.
+// Pass the dispatcher via WithPluginCanceller if plugin tools are enabled.
 func NewRunManager() *RunManager {
 	return &RunManager{
 		runs: make(map[string]*trackedRun),
 	}
+}
+
+// WithPluginCanceller attaches a plugin dispatcher to the manager so that
+// Cancel and CancelAll also drive CancelRun for every in-flight plugin call.
+// Must be called before any runs are registered. nil is a no-op.
+func (m *RunManager) WithPluginCanceller(c pluginRunCanceller) {
+	m.pluginCanceller = c
 }
 
 // Register stores the cancel func and approval channel for the given run ID
@@ -121,18 +139,30 @@ func (m *RunManager) ResolveFeedback(runID, requestID, body string) error {
 // the run ID is not registered or has already been cancelled (including by
 // CancelAll). Does NOT call wg.Done — the goroutine's deferred Deregister is
 // responsible for that.
+//
+// After the context cancel fires, CancelRun is called on the plugin canceller
+// (if wired) outside the lock — the canceller acquires its own mutex and may
+// block briefly on conn.Close in the worst case.
 func (m *RunManager) Cancel(runID string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	tr, ok := m.runs[runID]
 	// tr.cancel is nilled by CancelAll so that Cancel returns ErrRunNotFound
 	// rather than panicking on a nil function call. The trackedRun entry itself
 	// remains in the map until Deregister so the WaitGroup can be decremented.
 	if !ok || tr.cancel == nil {
+		m.mu.Unlock()
 		return ErrRunNotFound
 	}
 	tr.cancel()
 	tr.cancel = nil
+	m.mu.Unlock()
+
+	// Notify the plugin dispatcher about the cancellation outside the lock.
+	// The dispatcher acquires its own mutex; holding m.mu here would risk a
+	// lock-order violation and unnecessary latency on the conn.Close fallback.
+	if m.pluginCanceller != nil {
+		m.pluginCanceller.CancelRun(runID)
+	}
 	return nil
 }
 
@@ -221,11 +251,17 @@ func (m *RunManager) SendApproval(runID string, approved bool) error {
 
 // CancelAll cancels every in-flight run. It does NOT call wg.Done — each
 // goroutine's deferred Deregister will do that when it exits.
+//
+// After all context cancels fire, CancelRun is called on the plugin canceller
+// (if wired) for each run ID, outside the lock.
 func (m *RunManager) CancelAll() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, tr := range m.runs {
+	// Snapshot run IDs before mutating so we can notify the canceller outside
+	// the lock (the canceller acquires its own mutex).
+	runIDs := make([]string, 0, len(m.runs))
+	for id, tr := range m.runs {
 		tr.cancel()
+		runIDs = append(runIDs, id)
 		// Nil out the fields that are no longer valid so that subsequent calls
 		// to Cancel/SendApproval/ResolveFeedback return ErrRunNotFound rather than
 		// panicking or blocking. The trackedRun entry itself stays in the map so
@@ -233,6 +269,13 @@ func (m *RunManager) CancelAll() {
 		tr.cancel = nil
 		tr.approval = nil
 		tr.feedbackResolver = nil // niled so ResolveFeedback returns ErrRunNotFound
+	}
+	m.mu.Unlock()
+
+	if m.pluginCanceller != nil {
+		for _, id := range runIDs {
+			m.pluginCanceller.CancelRun(id)
+		}
 	}
 }
 

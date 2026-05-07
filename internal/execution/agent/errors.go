@@ -11,10 +11,16 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
-// errPluginDispatchUnimplemented is returned by handleToolCall when a plugin
-// tool's generation matches the captured snapshot but real gRPC dispatch is not
-// yet wired (#198). Exercised by tests; not reachable in production until #198.
-var errPluginDispatchUnimplemented = errors.New("plugin tool dispatch is not yet implemented (#198)")
+// ErrPluginCallTimeout is returned by the PluginToolDispatcher adapter when the
+// per-call deadline fires and the parent run context is still healthy. The adapter
+// in main.go maps dispatch.ErrCallTimeout to this sentinel so the agent package
+// does not need to import internal/plugin/dispatch.
+var ErrPluginCallTimeout = errors.New("plugin: call timed out")
+
+// ErrPluginQueueFull is returned by the PluginToolDispatcher adapter when the
+// plugin instance's concurrency queue is at capacity and the call is rejected
+// immediately. The adapter in main.go maps dispatch.ErrQueueFull to this.
+var ErrPluginQueueFull = errors.New("plugin: queue full")
 
 // failRun transitions the run to failed status and returns the original error.
 // If the context is already cancelled, a background context is used so the DB

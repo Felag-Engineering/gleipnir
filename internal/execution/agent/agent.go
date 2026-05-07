@@ -46,10 +46,12 @@ type PluginToolEntry struct {
 // and writes every step to the audit trail via AuditWriter.
 type BoundAgent struct {
 	policy             *model.ParsedPolicy
+	policyID           string
 	tools              []mcp.ResolvedTool
 	toolsByName        map[string]resolvedToolEntry
 	pluginGrantedTools []model.GrantedTool // snapshot entries for plugin-source tools
 	pluginRegistrar    PluginGenerationLookup
+	pluginDispatcher   PluginToolDispatcher
 	llmClient          llm.LLMClient
 	audit              *AuditWriter
 	sm                 *RunStateMachine
@@ -60,9 +62,11 @@ type BoundAgent struct {
 // Config holds the dependencies needed to construct a BoundAgent.
 type Config struct {
 	Policy                 *model.ParsedPolicy
+	PolicyID               string                 // DB row ID for the policy; used in plugin dispatch context
 	Tools                  []mcp.ResolvedTool
 	PluginTools            []PluginToolEntry      // plugin-backed tools; requires PluginRegistrar when non-empty
 	PluginRegistrar        PluginGenerationLookup // may be nil when PluginTools is empty
+	PluginDispatcher       PluginToolDispatcher   // may be nil when PluginTools is empty
 	LLMClient              llm.LLMClient
 	Audit                  *AuditWriter
 	ApprovalCh             <-chan bool
@@ -72,8 +76,8 @@ type Config struct {
 
 // New returns a BoundAgent ready to run, or an error if schema narrowing fails
 // for any of the provided tools. Panics if PluginTools is non-empty but
-// PluginRegistrar is nil — this invariant simplifies handleToolCall (when
-// entry.pluginSource != nil, the registrar is guaranteed non-nil).
+// PluginRegistrar or PluginDispatcher is nil — these invariants simplify
+// handleToolCall (when entry.pluginSource != nil, both are guaranteed non-nil).
 func New(cfg Config) (*BoundAgent, error) {
 	if cfg.StateMachine == nil {
 		return nil, fmt.Errorf("config.StateMachine is required")
@@ -81,6 +85,9 @@ func New(cfg Config) (*BoundAgent, error) {
 
 	if len(cfg.PluginTools) > 0 && cfg.PluginRegistrar == nil {
 		panic("agent.Config: PluginTools is non-empty but PluginRegistrar is nil — provide a PluginGenerationLookup")
+	}
+	if len(cfg.PluginTools) > 0 && cfg.PluginDispatcher == nil {
+		panic("agent.Config: PluginTools is non-empty but PluginDispatcher is nil — provide a PluginToolDispatcher")
 	}
 
 	toolsByName, err := buildResolvedToolMap(cfg.Tools)
@@ -138,10 +145,12 @@ func New(cfg Config) (*BoundAgent, error) {
 
 	return &BoundAgent{
 		policy:             cfg.Policy,
+		policyID:           cfg.PolicyID,
 		tools:              cfg.Tools,
 		toolsByName:        toolsByName,
 		pluginGrantedTools: pluginGrantedTools,
 		pluginRegistrar:    cfg.PluginRegistrar,
+		pluginDispatcher:   cfg.PluginDispatcher,
 		llmClient:          cfg.LLMClient,
 		audit:              cfg.Audit,
 		sm:                 cfg.StateMachine,
@@ -594,13 +603,81 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 			}
 			return msg, true, nil
 		}
-		// Generation matches — real dispatch is not yet wired (#198).
-		// server_id would be empty for plugin entries (no MCP server).
-		return "", false, errPluginDispatchUnimplemented
+
+		// Generation matches — marshal input and dispatch via gRPC.
+
+		inputJSON, marshalErr := json.Marshal(input)
+		if marshalErr != nil {
+			return "", false, fmt.Errorf("marshaling input for plugin tool %s: %w", toolName, marshalErr)
+		}
+
+		// Write tool_call step before dispatching (mirrors MCP path below).
+		// server_id reuses the MCP column to carry the plugin instance name —
+		// documented convention so the audit UI shows the originating source.
+		if writeErr := a.audit.Write(ctx, Step{
+			RunID: runID,
+			Type:  model.StepTypeToolCall,
+			Content: map[string]any{
+				"tool_name": toolName,
+				"server_id": entry.pluginSource.InstanceName,
+				"input":     input,
+			},
+		}); writeErr != nil {
+			return "", false, fmt.Errorf("writing plugin tool_call step: %w", writeErr)
+		}
+
+		output, isErr, dispatchErr := a.pluginDispatcher.Call(
+			ctx,
+			runID,
+			a.policyID,
+			entry.pluginSource.InstanceName,
+			entry.tool.ToolName,
+			string(inputJSON),
+		)
+		if dispatchErr != nil {
+			if ctx.Err() != nil {
+				// Run cancellation — treat the same as the MCP cancel path.
+				a.logAuditError(ctx, runID, "run cancelled", model.ErrorCodeCancelled)
+				return "", false, fmt.Errorf("calling plugin tool %s: %w", toolName, dispatchErr)
+			}
+			// Non-cancellation error (timeout / queue full / unavailable) —
+			// surface as a tool_result so the agent can reason about it.
+			sanitized := classifyPluginError(entry.pluginSource.InstanceName, dispatchErr)
+			logctx.Logger(ctx).ErrorContext(ctx, "plugin tool call failed",
+				"tool", toolName,
+				"instance", entry.pluginSource.InstanceName,
+				"error", dispatchErr,
+			)
+			if writeErr := a.audit.Write(ctx, Step{
+				RunID: runID,
+				Type:  model.StepTypeToolResult,
+				Content: map[string]any{
+					"tool_name": toolName,
+					"output":    sanitized,
+					"is_error":  true,
+				},
+			}); writeErr != nil {
+				return "", false, fmt.Errorf("writing plugin tool_result error step: %w", writeErr)
+			}
+			return sanitized, true, nil
+		}
+
+		if writeErr := a.audit.Write(ctx, Step{
+			RunID: runID,
+			Type:  model.StepTypeToolResult,
+			Content: map[string]any{
+				"tool_name": toolName,
+				"output":    output,
+				"is_error":  isErr,
+			},
+		}); writeErr != nil {
+			return "", false, fmt.Errorf("writing plugin tool_result step: %w", writeErr)
+		}
+		return output, isErr, nil
 	}
 
-	// Write tool_call step. server_id is the MCP ServerName for MCP-source tools;
-	// plugin tools return before reaching this point (#198 will wire plugin dispatch).
+	// Write tool_call step. server_id is the MCP ServerName for MCP-source tools.
+	// Plugin tools write their own tool_call step above and never reach this point.
 	if err := a.audit.Write(ctx, Step{
 		RunID: runID,
 		Type:  model.StepTypeToolCall,
@@ -660,6 +737,20 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 	}
 
 	return outputStr, result.IsError, nil
+}
+
+// classifyPluginError produces a sanitized, agent-facing error message from a
+// dispatcher error. Raw errors are only logged, not surfaced to the agent.
+// The caller maps dispatch-package sentinels to ErrPluginCallTimeout /
+// ErrPluginQueueFull before calling here (via the adapter in main.go).
+func classifyPluginError(instanceName string, err error) string {
+	if errors.Is(err, ErrPluginCallTimeout) {
+		return fmt.Sprintf("plugin %q timed out", instanceName)
+	}
+	if errors.Is(err, ErrPluginQueueFull) {
+		return fmt.Sprintf("plugin %q is at capacity", instanceName)
+	}
+	return fmt.Sprintf("plugin %q is unavailable", instanceName)
 }
 
 // classifyMCPError produces a sanitized, agent-facing error message from a raw
