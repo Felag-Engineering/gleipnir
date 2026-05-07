@@ -605,3 +605,80 @@ func TestPool_CrossRunBlastRadius(t *testing.T) {
 		t.Log("runB returned nil (connection re-established before blast-radius — acceptable in tests)")
 	}
 }
+
+// TestPool_LookupCall_ReverseIndex verifies that a call is visible in LookupCall
+// while in-flight and absent after the call completes.
+func TestPool_LookupCall_ReverseIndex(t *testing.T) {
+	// callIDSeen receives the call_id the server observed in the RequestContext.
+	callIDSeen := make(chan string, 1)
+	// unblock lets the test release the in-flight call; closeOnce prevents
+	// the double-close that would occur if the deferred cleanup fires after the
+	// explicit release below.
+	unblock := make(chan struct{})
+	var closeOnce sync.Once
+	doUnblock := func() { closeOnce.Do(func() { close(unblock) }) }
+
+	srv := &fakeToolServer{
+		callHook: func(ctx context.Context, req *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			callIDSeen <- req.GetContext().GetCallId()
+			select {
+			case <-unblock:
+				return &toolv1.CallResponse{OutputJson: `"ok"`}, nil
+			case <-ctx.Done():
+				return nil, status.Error(codes.Canceled, "cancelled")
+			}
+		},
+	}
+
+	pool, cleanup := newTestPool(t, srv, func(cfg *dispatch.Config) {
+		cfg.CallTimeout = 2 * time.Second
+	})
+	defer func() {
+		doUnblock()
+		cleanup()
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		pool.Call(context.Background(), "run-rev", "pol-rev", "inst", "tool", `{}`) //nolint:errcheck
+	}()
+
+	// Wait for the server to signal the call is active, then observe LookupCall.
+	var callID string
+	select {
+	case callID = <-callIDSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server hook was not called")
+	}
+
+	info, ok := pool.LookupCall(callID)
+	if !ok {
+		t.Fatalf("LookupCall(%q) = false while call is in-flight", callID)
+	}
+	if info.RunID != "run-rev" {
+		t.Errorf("RunID = %q, want %q", info.RunID, "run-rev")
+	}
+	if info.PolicyID != "pol-rev" {
+		t.Errorf("PolicyID = %q, want %q", info.PolicyID, "pol-rev")
+	}
+	if info.InstanceName != "inst" {
+		t.Errorf("InstanceName = %q, want %q", info.InstanceName, "inst")
+	}
+
+	// Release the call and confirm it is no longer visible.
+	doUnblock()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("call goroutine did not return")
+	}
+
+	_, ok = pool.LookupCall(callID)
+	if ok {
+		t.Errorf("LookupCall(%q) = true after call completed, want false", callID)
+	}
+}
