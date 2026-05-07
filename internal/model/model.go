@@ -397,7 +397,7 @@ type GrantedTool struct {
 	Approval   ApprovalMode   `json:"approval"`
 	Timeout    time.Duration  `json:"timeout"` // zero means no timeout; serializes as nanoseconds
 	OnTimeout  OnTimeout      `json:"on_timeout"`
-	Params     map[string]any `json:"params,omitempty"`  // policy-level parameter scoping (ADR-017)
+	Params     map[string]any `json:"params,omitempty"` // policy-level parameter scoping (ADR-017)
 	Source     string         `json:"source,omitempty"` // "mcp:<server>", "plugin:<instance>@<generation>", or empty for synthetic tools
 }
 

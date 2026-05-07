@@ -229,7 +229,6 @@ func familyNames(mfs []*io_prometheus_client.MetricFamily) []string {
 	return names
 }
 
-
 // --- tests: GetInstanceConfig ---
 
 func TestGetInstanceConfig_ReturnsConfig(t *testing.T) {
@@ -472,9 +471,9 @@ func TestWriteAuditStep_HappyPath(t *testing.T) {
 	t.Parallel()
 
 	q := &fakeQuerier{
-		instance:                db.PluginInstance{ID: "iid-1", PluginID: "plug-1"},
-		feedbackRequest:         db.FeedbackRequest{ID: "fr-ok", RunID: "run-ok", Status: "pending"},
-		latestStep:              db.RunStep{StepNumber: 2},
+		instance:                 db.PluginInstance{ID: "iid-1", PluginID: "plug-1"},
+		feedbackRequest:          db.FeedbackRequest{ID: "fr-ok", RunID: "run-ok", Status: "pending"},
+		latestStep:               db.RunStep{StepNumber: 2},
 		updateFeedbackStatusRows: 1,
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
@@ -628,7 +627,7 @@ func TestEmitMetric_CardinalityCap(t *testing.T) {
 		_, err := srv.EmitMetric(context.Background(), &hostv1.EmitMetricRequest{
 			Name:   "cap_metric",
 			Value:  float64(i),
-			Labels: map[string]string{"env": string(rune('a' + i%26)) + string(rune('0'+i/26))},
+			Labels: map[string]string{"env": string(rune('a'+i%26)) + string(rune('0'+i/26))},
 		})
 		if err != nil {
 			t.Fatalf("emission %d: unexpected error: %v", i, err)

@@ -46,13 +46,13 @@ type notifyRequest struct {
 
 // feedbackRequest carries the arguments for a blocking operator-response request.
 type feedbackRequest struct {
-	RunID          string
-	FeedbackID     string
-	ToolName       string
-	ProposedInput  string // maps to the inputJSON argument in Wait; only used in state-machine payload
-	Message        string
-	Timeout        time.Duration
-	ExpiresAt      string
+	RunID         string
+	FeedbackID    string
+	ToolName      string
+	ProposedInput string // maps to the inputJSON argument in Wait; only used in state-machine payload
+	Message       string
+	Timeout       time.Duration
+	ExpiresAt     string
 }
 
 // channelDispatcher routes feedback calls to the configured channel
