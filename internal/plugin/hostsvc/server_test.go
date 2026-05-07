@@ -13,6 +13,7 @@ import (
 
 	io_prometheus_client "github.com/prometheus/client_model/go"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/felag-engineering/gleipnir/internal/admin"
@@ -20,7 +21,9 @@ import (
 	inframetrics "github.com/felag-engineering/gleipnir/internal/infra/metrics"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostsvc"
+	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	sdkproto "github.com/felag-engineering/gleipnir/plugin-sdk/proto"
 )
 
 // testEncryptionKey is a 32-byte AES-256 key used in tests. Declared locally
@@ -55,6 +58,10 @@ type fakeQuerier struct {
 
 	updateHealthRows int64
 	updateHealthErr  error
+
+	// policy is returned by GetPolicy; used for request_id scope verification.
+	policy    db.Policy
+	policyErr error
 
 	// Tier-2 RPC support
 	plugin    db.Plugin
@@ -105,6 +112,10 @@ func (f *fakeQuerier) CreateRunStep(_ context.Context, _ db.CreateRunStepParams)
 
 func (f *fakeQuerier) GetRun(_ context.Context, _ string) (db.Run, error) {
 	return f.run, f.runErr
+}
+
+func (f *fakeQuerier) GetPolicy(_ context.Context, _ string) (db.Policy, error) {
+	return f.policy, f.policyErr
 }
 
 func (f *fakeQuerier) GetPluginByID(_ context.Context, _ string) (db.Plugin, error) {
@@ -471,10 +482,13 @@ func TestWriteAuditStep_HappyPath(t *testing.T) {
 	t.Parallel()
 
 	q := &fakeQuerier{
-		instance:                 db.PluginInstance{ID: "iid-1", PluginID: "plug-1"},
+		// instance_name must match the prefix in the policy YAML tool grant.
+		instance:                 db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
 		feedbackRequest:          db.FeedbackRequest{ID: "fr-ok", RunID: "run-ok", Status: "pending"},
 		latestStep:               db.RunStep{StepNumber: 2},
 		updateFeedbackStatusRows: 1,
+		run:                      db.Run{ID: "run-ok", PolicyID: "pol-ok"},
+		policy:                   db.Policy{ID: "pol-ok", Yaml: policyYAMLWithTool("myplugin.do_thing")},
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
 
@@ -483,6 +497,206 @@ func TestWriteAuditStep_HappyPath(t *testing.T) {
 		StepType:    "feedback_response",
 		RequestId:   "fr-ok",
 		PayloadJson: `{"body":"yes please"}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetOk() {
+		t.Error("ok = false, want true")
+	}
+}
+
+// ctxWithCallIDAndToken builds a context with both a gleipnir-call-id and a
+// gleipnir-instance-token in incoming metadata and runs UnaryCallIDInterceptor
+// to attach the call ID as a context value. The instance token remains in the
+// incoming metadata for callWriteAuditStep to process via
+// UnaryInstanceTokenInterceptor.
+func ctxWithCallIDAndToken(callID, token string) context.Context {
+	md := metadata.Pairs(
+		sdkproto.CallIDMetadataKey, callID,
+		sdkproto.InstanceTokenMetadataKey, token,
+	)
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+
+	// Run UnaryCallIDInterceptor so CallIDFromContext works.
+	callIDInterceptor := hostsvc.UnaryCallIDInterceptor()
+	var afterCallID context.Context
+	_, _ = callIDInterceptor(ctx, nil, nil, func(c context.Context, _ any) (any, error) {
+		afterCallID = c
+		return nil, nil
+	})
+	return afterCallID
+}
+
+// newTestServerWithContextBinder builds a Server using the production
+// contextBinder, which resolves the instance ID from the value
+// UnaryInstanceTokenInterceptor attaches to the request context.
+// callWriteAuditStep applies that interceptor before invoking the handler.
+func newTestServerWithContextBinder(
+	t *testing.T,
+	q *fakeQuerier,
+	resolver hostsvc.CallContextResolver,
+	pub *fakePublisher,
+) *hostsvc.Server {
+	t.Helper()
+	return hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub)
+}
+
+// callWriteAuditStep runs UnaryInstanceTokenInterceptor then calls
+// srv.WriteAuditStep with the resulting context. This simulates the production
+// path where the interceptor chain runs before the handler.
+func callWriteAuditStep(
+	reg *identity.Registry,
+	srv *hostsvc.Server,
+	baseCtx context.Context,
+	req *hostv1.WriteAuditStepRequest,
+) (*hostv1.WriteAuditStepResponse, error) {
+	interceptor := hostsvc.UnaryInstanceTokenInterceptor(reg)
+	var resp *hostv1.WriteAuditStepResponse
+	var handlerErr error
+	_, interceptorErr := interceptor(baseCtx, req, nil, func(ctx context.Context, r any) (any, error) {
+		resp, handlerErr = srv.WriteAuditStep(ctx, r.(*hostv1.WriteAuditStepRequest))
+		return resp, handlerErr
+	})
+	if interceptorErr != nil {
+		return nil, interceptorErr
+	}
+	return resp, handlerErr
+}
+
+func TestWriteAuditStep_RequestIDOutOfScope(t *testing.T) {
+	t.Parallel()
+
+	// The policy YAML does NOT grant any tool prefixed "myplugin.".
+	q := &fakeQuerier{
+		instance:        db.PluginInstance{ID: "iid-oos", PluginID: "plug-oos", InstanceName: "myplugin"},
+		feedbackRequest: db.FeedbackRequest{ID: "fr-oos", RunID: "run-oos", Status: "pending"},
+		run:             db.Run{ID: "run-oos", PolicyID: "pol-other"},
+		policy:          db.Policy{ID: "pol-other", Yaml: policyYAMLWithTool("otherplugin.do_thing")},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	ctx := ctxWithCallID("call-oos")
+	_, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
+		StepType:  "feedback_response",
+		RequestId: "fr-oos",
+	})
+
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", err)
+	}
+	if st.Message() != "unauthorized_request_id" {
+		t.Errorf("message = %q, want unauthorized_request_id", st.Message())
+	}
+
+	// Verify the audit event was written with the expected fields.
+	events := q.all()
+	var found bool
+	for _, e := range events {
+		if e.EventType != hostsvc.EventTypeUnauthorizedRequestID {
+			continue
+		}
+		found = true
+		if e.Severity != "high" {
+			t.Errorf("severity = %q, want high", e.Severity)
+		}
+		var payload map[string]string
+		if err := json.Unmarshal([]byte(e.PayloadJson), &payload); err != nil {
+			t.Fatalf("payload json parse: %v", err)
+		}
+		if payload["request_id"] != "fr-oos" {
+			t.Errorf("payload.request_id = %q, want fr-oos", payload["request_id"])
+		}
+		if payload["run_id"] != "run-oos" {
+			t.Errorf("payload.run_id = %q, want run-oos", payload["run_id"])
+		}
+		if payload["rpc_method"] == "" {
+			t.Error("payload.rpc_method is empty")
+		}
+	}
+	if !found {
+		t.Errorf("expected %s audit event, got: %v", hostsvc.EventTypeUnauthorizedRequestID, events)
+	}
+}
+
+func TestWriteAuditStep_RequestIDInScope_Success(t *testing.T) {
+	t.Parallel()
+
+	// Policy YAML grants "myplugin.do_thing" — instance is in scope.
+	q := &fakeQuerier{
+		instance:                 db.PluginInstance{ID: "iid-inscope", PluginID: "plug-inscope", InstanceName: "myplugin"},
+		feedbackRequest:          db.FeedbackRequest{ID: "fr-inscope", RunID: "run-inscope", Status: "pending"},
+		latestStep:               db.RunStep{StepNumber: 0},
+		updateFeedbackStatusRows: 1,
+		run:                      db.Run{ID: "run-inscope", PolicyID: "pol-inscope"},
+		policy:                   db.Policy{ID: "pol-inscope", Yaml: policyYAMLWithTool("myplugin.do_thing")},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	ctx := ctxWithCallID("call-inscope")
+	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
+		StepType:  "feedback_response",
+		RequestId: "fr-inscope",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetOk() {
+		t.Error("ok = false, want true")
+	}
+}
+
+// TestWriteAuditStep_RequestIDInScopeAcrossGenerations exercises the end-to-end
+// path from identity.Registry token verification through the contextBinder to
+// the request_id scope check, simulating a hot-reload mid-request:
+//
+//  1. Token T1 is issued for instance I (generation 1).
+//  2. Token T2 is issued for the same instance I (generation 2), auto-revoking T1.
+//  3. A WriteAuditStep call arrives carrying T2 and a request_id originally
+//     routed to I. The policy YAML grants I.<tool>.
+//  4. The call must succeed — verifying that request_id is instance-scoped,
+//     not generation-scoped, even though T1 is now invalid.
+//
+// NOTE: This test covers tool-grant ownership only. Audience-based scoping
+// (audiences.plugin_instance per spec §4.2/§6) is a follow-up (#158-adjacent);
+// a feedback_request routed to an instance purely via an audience entry would
+// be falsely rejected today.
+func TestWriteAuditStep_RequestIDInScopeAcrossGenerations(t *testing.T) {
+	t.Parallel()
+
+	reg := identity.New()
+
+	// Generation 1: issue T1.
+	_, err := reg.Issue("inst-crossgen")
+	if err != nil {
+		t.Fatalf("Issue T1: %v", err)
+	}
+
+	// Generation 2: issue T2, which auto-revokes T1.
+	t2, err := reg.Issue("inst-crossgen")
+	if err != nil {
+		t.Fatalf("Issue T2: %v", err)
+	}
+
+	q := &fakeQuerier{
+		instance:                 db.PluginInstance{ID: "inst-crossgen", PluginID: "plug-crossgen", InstanceName: "crossgen"},
+		feedbackRequest:          db.FeedbackRequest{ID: "fr-crossgen", RunID: "run-crossgen", Status: "pending"},
+		latestStep:               db.RunStep{StepNumber: 0},
+		updateFeedbackStatusRows: 1,
+		run:                      db.Run{ID: "run-crossgen", PolicyID: "pol-crossgen"},
+		policy:                   db.Policy{ID: "pol-crossgen", Yaml: policyYAMLWithTool("crossgen.action")},
+	}
+
+	pub := &fakePublisher{}
+	srv := newTestServerWithContextBinder(t, q, &fakeResolver{}, pub)
+
+	// Call arrives under T2 (the new generation's token) with the same request_id.
+	baseCtx := ctxWithCallIDAndToken("call-crossgen", t2)
+
+	resp, err := callWriteAuditStep(reg, srv, baseCtx, &hostv1.WriteAuditStepRequest{
+		StepType:  "feedback_response",
+		RequestId: "fr-crossgen",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

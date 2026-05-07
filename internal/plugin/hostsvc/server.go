@@ -23,6 +23,7 @@ type Querier interface {
 	GetFeedbackRequest(ctx context.Context, id string) (db.FeedbackRequest, error)
 	UpdateFeedbackRequestStatus(ctx context.Context, arg db.UpdateFeedbackRequestStatusParams) (int64, error)
 	GetRun(ctx context.Context, id string) (db.Run, error)
+	GetPolicy(ctx context.Context, id string) (db.Policy, error)
 	// Tier-2 RPC support
 	GetPluginByID(ctx context.Context, id string) (db.Plugin, error)
 	ListPolicies(ctx context.Context) ([]db.Policy, error)
@@ -41,13 +42,13 @@ type CallContextResolver interface {
 }
 
 // InstanceBinder resolves the calling plugin instance ID from the gRPC
-// connection context. In production, each plugin instance connects over a
-// dedicated Unix domain socket so the 1:1 connection ↔ instance binding
-// provides identity without per-RPC credentials (spec §8.4).
+// request context. In production, the context value is set by
+// UnaryInstanceTokenInterceptor, which verifies the gleipnir-instance-token
+// metadata key against the in-memory identity.Registry on every incoming RPC
+// (spec §8.4). NewContextBinder() returns the standard implementation.
 //
-// Wiring is deferred to the loader/subprocess follow-up (#158). For now,
-// NewServer accepts the interface so callers (and tests) can inject a fixed
-// identity. A nil binder causes NewServer to panic — preferred over silent
+// Tests may inject a fakeInstanceBinder to avoid needing a real registry.
+// A nil binder causes NewServer to panic — preferred over silent
 // zero-instance behavior.
 type InstanceBinder interface {
 	InstanceIDFromContext(ctx context.Context) (instanceID string, ok bool)
@@ -68,8 +69,9 @@ type Server struct {
 }
 
 // NewServer constructs a Server ready to be registered with a gRPC server.
-// binder must be non-nil; pass a concrete implementation that maps UDS peer
-// identity to plugin instance ID.
+// binder must be non-nil; pass a concrete implementation that resolves the
+// caller's plugin instance ID from the request context (production wiring uses
+// NewContextBinder paired with UnaryInstanceTokenInterceptor — see issue #202).
 func NewServer(
 	q Querier,
 	encryptionKey []byte,
