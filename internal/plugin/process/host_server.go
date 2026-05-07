@@ -2,9 +2,9 @@
 // It wraps plugin-sdk/hostwire (HashiCorp go-plugin) with identity-token issuance,
 // per-instance log labelling, graceful Stop, and crash-health callbacks.
 //
-// The HostServer seam allows #292 to inject hostsvc.Server without changing this
-// package. For #291 we ship NoopHostServer as the default so the go-plugin broker
-// handshake completes without functional Host RPCs yet.
+// Production wiring of a real hostsvc.Server is injected via Manager.HostServerFor
+// from cmd/server (issue #295); NoopHostServer{} is the default for
+// handshake-only tests.
 package process
 
 import (
@@ -12,8 +12,9 @@ import (
 )
 
 // NoopHostServer is a hostwire.HostServer that registers no services on the
-// broker-allocated gRPC server. It is the default host server for #291 wiring;
-// #292 will replace it with hostsvc.Server once the Host RPC surface is wired.
+// broker-allocated gRPC server. Production wiring uses Manager.HostServerFor
+// injected from cmd/server (issue #295); NoopHostServer{} remains the default
+// for handshake-only tests.
 type NoopHostServer struct{}
 
 // Register satisfies hostwire.HostServer. It intentionally does nothing so the
