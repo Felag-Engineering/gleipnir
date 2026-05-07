@@ -533,8 +533,10 @@ func TestPool_ErrorClassification_Canceled_ParentCancelled(t *testing.T) {
 // timeout kills other in-flight calls on the same connection (v1 blast radius).
 func TestPool_CrossRunBlastRadius(t *testing.T) {
 	unblock := make(chan struct{})
+	arrived := make(chan struct{}, 2)
 	srv := &fakeToolServer{
 		callHook: func(ctx context.Context, _ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			arrived <- struct{}{}
 			select {
 			case <-unblock:
 				return &toolv1.CallResponse{OutputJson: `"ok"`}, nil
@@ -580,7 +582,17 @@ func TestPool_CrossRunBlastRadius(t *testing.T) {
 		_, _, errB = pool.Call(context.Background(), "run-B", "pol-1", "inst", "tool", `{}`)
 	}()
 
-	time.Sleep(20 * time.Millisecond) // both in-flight
+	// Wait until both calls have reached the server (and thus are registered
+	// as in-flight in the pool). A fixed sleep here is flaky on slow CI runners:
+	// if CancelRun fires before run-A is registered, snapshotInflightForRun
+	// returns empty and the test blocks until the 3s deadline.
+	for range 2 {
+		select {
+		case <-arrived:
+		case <-time.After(2 * time.Second):
+			t.Fatal("calls did not arrive at server")
+		}
+	}
 
 	// Cancelling runA causes Cancel timeout → conn.Close() → runB also killed.
 	pool.CancelRun("run-A")
