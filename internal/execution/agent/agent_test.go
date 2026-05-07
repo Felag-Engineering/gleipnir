@@ -2922,13 +2922,13 @@ func TestNew_PanicsWhenPluginToolsWithoutRegistrar(t *testing.T) {
 	}()
 	s := testutil.NewTestStore(t)
 	_, _ = New(Config{
-		Policy:       minimalPolicy(),
-		Tools:        nil,
-		PluginTools:  []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
+		Policy:          minimalPolicy(),
+		Tools:           nil,
+		PluginTools:     []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
 		PluginRegistrar: nil, // intentionally nil — must panic
-		LLMClient:    testutil.NewNoopLLMClient(),
-		Audit:        NewAuditWriter(s.Queries()),
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+		LLMClient:       testutil.NewNoopLLMClient(),
+		Audit:           NewAuditWriter(s.Queries()),
+		StateMachine:    NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 }
 
@@ -2949,10 +2949,11 @@ func TestCapabilitySnapshot_IncludesPluginSourceTools(t *testing.T) {
 		PluginTools: []PluginToolEntry{
 			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1, Description: "a plugin tool"},
 		},
-		PluginRegistrar: registrar,
-		Policy:          minimalPolicy(),
-		Audit:           w,
-		StateMachine:    NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+		PluginRegistrar:  registrar,
+		PluginDispatcher: &fakePluginDispatcher{output: `"ok"`},
+		Policy:           minimalPolicy(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -3012,10 +3013,11 @@ func TestHandleToolCall_PluginGenerationMismatch_StructuralError(t *testing.T) {
 		PluginTools: []PluginToolEntry{
 			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1},
 		},
-		PluginRegistrar: registrar,
-		LLMClient:       testutil.NewNoopLLMClient(),
-		Audit:           w,
-		StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+		PluginRegistrar:  registrar,
+		PluginDispatcher: &fakePluginDispatcher{}, // not reached on generation mismatch
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -3074,10 +3076,11 @@ func TestHandleToolCall_PluginGenerationUnregistered_StructuralError(t *testing.
 		PluginTools: []PluginToolEntry{
 			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1},
 		},
-		PluginRegistrar: registrar,
-		LLMClient:       testutil.NewNoopLLMClient(),
-		Audit:           w,
-		StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+		PluginRegistrar:  registrar,
+		PluginDispatcher: &fakePluginDispatcher{}, // not reached on unregistered instance
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -3122,13 +3125,44 @@ func TestHandleToolCall_PluginGenerationUnregistered_StructuralError(t *testing.
 	}
 }
 
-func TestHandleToolCall_PluginGenerationMatch_ReachesPlaceholderDispatch(t *testing.T) {
+// fakePluginDispatcher is a test double for PluginToolDispatcher.
+// It records calls and can be programmed to return specific output or errors.
+type fakePluginDispatcher struct {
+	mu      sync.Mutex
+	calls   int
+	output  string
+	isError bool
+	err     error
+	// blockCh, when non-nil, causes Call to block until the channel is closed.
+	blockCh <-chan struct{}
+}
+
+func (f *fakePluginDispatcher) Call(ctx context.Context, _, _, _, _, _ string) (string, bool, error) {
+	f.mu.Lock()
+	f.calls++
+	blockCh := f.blockCh
+	output := f.output
+	isError := f.isError
+	err := f.err
+	f.mu.Unlock()
+
+	if blockCh != nil {
+		select {
+		case <-blockCh:
+		case <-ctx.Done():
+			return "", false, ctx.Err()
+		}
+	}
+	return output, isError, err
+}
+
+func TestHandleToolCall_PluginDispatch_HappyPath(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
-	// Registrar reports the same generation as captured — generation check passes.
 	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+	dispatcher := &fakePluginDispatcher{output: `{"result":"ok"}`, isError: false}
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
@@ -3136,18 +3170,223 @@ func TestHandleToolCall_PluginGenerationMatch_ReachesPlaceholderDispatch(t *test
 		PluginTools: []PluginToolEntry{
 			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1},
 		},
-		PluginRegistrar: registrar,
-		LLMClient:       testutil.NewNoopLLMClient(),
-		Audit:           w,
-		StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+		PluginRegistrar:  registrar,
+		PluginDispatcher: dispatcher,
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
-	_, _, err = ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
-	if !errors.Is(err, errPluginDispatchUnimplemented) {
-		t.Errorf("handleToolCall error = %v; want errPluginDispatchUnimplemented", err)
+	output, isErr, callErr := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if callErr != nil {
+		t.Fatalf("handleToolCall returned unexpected error: %v", callErr)
+	}
+	if output != `{"result":"ok"}` {
+		t.Errorf("output = %q; want %q", output, `{"result":"ok"}`)
+	}
+	if isErr {
+		t.Error("isErr should be false for success")
+	}
+	if dispatcher.calls != 1 {
+		t.Errorf("dispatcher called %d times; want 1", dispatcher.calls)
+	}
+
+	// Verify tool_call step has server_id = instance name, and tool_result is written.
+	steps, listErr := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if listErr != nil {
+		t.Fatalf("ListRunSteps: %v", listErr)
+	}
+	var toolCallFound, toolResultFound bool
+	for _, step := range steps {
+		switch step.Type {
+		case string(model.StepTypeToolCall):
+			var content map[string]any
+			if jsonErr := json.Unmarshal([]byte(step.Content), &content); jsonErr != nil {
+				t.Fatalf("unmarshal tool_call: %v", jsonErr)
+			}
+			if content["server_id"] != "my-plugin" {
+				t.Errorf("tool_call server_id = %v; want 'my-plugin'", content["server_id"])
+			}
+			toolCallFound = true
+		case string(model.StepTypeToolResult):
+			toolResultFound = true
+		}
+	}
+	if !toolCallFound {
+		t.Error("expected tool_call step; none found")
+	}
+	if !toolResultFound {
+		t.Error("expected tool_result step; none found")
+	}
+}
+
+func TestHandleToolCall_PluginDispatch_Timeout(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+	dispatcher := &fakePluginDispatcher{err: ErrPluginCallTimeout}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy:           minimalPolicy(),
+		PluginTools:      []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: dispatcher,
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	output, isErr, callErr := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if callErr != nil {
+		t.Fatalf("handleToolCall returned unexpected Go error: %v", callErr)
+	}
+	if !isErr {
+		t.Error("isErr should be true for timeout")
+	}
+	if !strings.Contains(output, "timed out") {
+		t.Errorf("output = %q; want it to contain 'timed out'", output)
+	}
+
+	// Verify tool_result is written with is_error=true.
+	steps, _ := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	var toolResultFound bool
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeToolResult) {
+			var content map[string]any
+			json.Unmarshal([]byte(step.Content), &content) //nolint:errcheck
+			if isErrFlag, _ := content["is_error"].(bool); isErrFlag {
+				toolResultFound = true
+			}
+		}
+	}
+	if !toolResultFound {
+		t.Error("expected tool_result with is_error=true for timeout")
+	}
+}
+
+func TestHandleToolCall_PluginDispatch_QueueFull(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+	dispatcher := &fakePluginDispatcher{err: ErrPluginQueueFull}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy:           minimalPolicy(),
+		PluginTools:      []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: dispatcher,
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	output, isErr, callErr := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if callErr != nil {
+		t.Fatalf("unexpected Go error: %v", callErr)
+	}
+	if !isErr {
+		t.Error("isErr should be true for queue full")
+	}
+	if !strings.Contains(output, "at capacity") {
+		t.Errorf("output = %q; want it to contain 'at capacity'", output)
+	}
+}
+
+func TestHandleToolCall_PluginDispatch_CtxCancellation(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+	// blockCh is never closed; Call will block until ctx is cancelled.
+	blockCh := make(chan struct{})
+	dispatcher := &fakePluginDispatcher{blockCh: blockCh}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy:           minimalPolicy(),
+		PluginTools:      []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: dispatcher,
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	done := make(chan struct{})
+	var gotErr error
+	go func() {
+		defer close(done)
+		_, _, gotErr = ba.handleToolCall(ctx, "r1", "my-plugin.do-thing", map[string]any{})
+	}()
+
+	// Cancel after a short delay to ensure the call is in-flight.
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleToolCall did not return after ctx cancellation")
+	}
+
+	if gotErr == nil {
+		t.Error("expected error after ctx cancellation, got nil")
+	}
+}
+
+func TestHandleToolCall_PluginDispatch_GenerationMismatch_DispatcherNotCalled(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	// Generation mismatch: registrar reports 2 but snapshot captured 1.
+	registrar := &fakePluginRegistrar{activeGen: 2, registered: true}
+	dispatcher := &fakePluginDispatcher{output: "should not be called"}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy:           minimalPolicy(),
+		PluginTools:      []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: dispatcher,
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, isErr, callErr := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if callErr != nil {
+		t.Fatalf("unexpected Go error: %v", callErr)
+	}
+	if !isErr {
+		t.Error("expected isErr=true for generation mismatch")
+	}
+	if dispatcher.calls != 0 {
+		t.Errorf("dispatcher called %d times; want 0 (should not be reached on generation mismatch)", dispatcher.calls)
 	}
 }
 
@@ -3291,10 +3530,11 @@ func TestNew_NarrowsPluginToolSchema(t *testing.T) {
 						Params:       tc.params,
 					},
 				},
-				PluginRegistrar: registrar,
-				LLMClient:       testutil.NewNoopLLMClient(),
-				Audit:           NewAuditWriter(s.Queries()),
-				StateMachine:    NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+				PluginRegistrar:  registrar,
+				PluginDispatcher: &fakePluginDispatcher{},
+				LLMClient:        testutil.NewNoopLLMClient(),
+				Audit:            NewAuditWriter(s.Queries()),
+				StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -3354,10 +3594,11 @@ func TestNew_PluginSchemaCannotBypassScoping(t *testing.T) {
 				Params:       map[string]any{"namespace": "x"},
 			},
 		},
-		PluginRegistrar: registrar,
-		LLMClient:       testutil.NewNoopLLMClient(),
-		Audit:           NewAuditWriter(s.Queries()),
-		StateMachine:    NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+		PluginRegistrar:  registrar,
+		PluginDispatcher: &fakePluginDispatcher{},
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            NewAuditWriter(s.Queries()),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -3395,7 +3636,7 @@ func TestHandleToolCall_PluginTool_ApprovalGated(t *testing.T) {
 		approvalRequired bool
 
 		// approvalCh configuration.
-		approvalChSend *bool  // nil = don't send, pointer to false = reject, pointer to true = approve
+		approvalChSend *bool // nil = don't send, pointer to false = reject, pointer to true = approve
 		toolTimeout    time.Duration
 		cancelCtx      bool // cancel the context before calling handleToolCall
 
@@ -3411,67 +3652,67 @@ func TestHandleToolCall_PluginTool_ApprovalGated(t *testing.T) {
 		wantApprovalErrCode *string // expected ErrorCode in error step (nil = any/none)
 	}{
 		{
-			// Approved + generation match → proceeds to placeholder dispatch.
-			// Returning errPluginDispatchUnimplemented here confirms the gate
-			// fired before dispatch was attempted.
-			name:             "approved",
-			approvalRequired: true,
-			approvalChSend:   boolPtr(true),
-			generation:       1,
-			activeGeneration: 1,
-			registered:       true,
-			wantErr:          "plugin tool dispatch is not yet implemented",
+			// Approved + generation match → approval_request written, then real
+			// dispatch runs and returns a tool_result step.
+			name:                "approved",
+			approvalRequired:    true,
+			approvalChSend:      boolPtr(true),
+			generation:          1,
+			activeGeneration:    1,
+			registered:          true,
+			wantErr:             "", // no error — dispatch succeeds
 			wantApprovalRequest: true,
+			wantToolResult:      true,
 		},
 		{
 			// Operator rejects → approval_request written, error returned, no tool_result.
-			name:             "rejected",
-			approvalRequired: true,
-			approvalChSend:   boolPtr(false),
-			generation:       1,
-			activeGeneration: 1,
-			registered:       true,
-			wantErr:          "rejected by operator",
+			name:                "rejected",
+			approvalRequired:    true,
+			approvalChSend:      boolPtr(false),
+			generation:          1,
+			activeGeneration:    1,
+			registered:          true,
+			wantErr:             "rejected by operator",
 			wantApprovalRequest: true,
 			wantApprovalErrCode: strPtr(string(model.ErrorCodeApprovalRejected)),
 		},
 		{
 			// Approval times out before a decision arrives.
-			name:             "timeout",
-			approvalRequired: true,
-			approvalChSend:   nil,   // no send → select falls through to timeout
-			toolTimeout:      20 * time.Millisecond,
-			generation:       1,
-			activeGeneration: 1,
-			registered:       true,
-			wantErr:          "approval timeout",
+			name:                "timeout",
+			approvalRequired:    true,
+			approvalChSend:      nil, // no send → select falls through to timeout
+			toolTimeout:         20 * time.Millisecond,
+			generation:          1,
+			activeGeneration:    1,
+			registered:          true,
+			wantErr:             "approval timeout",
 			wantApprovalRequest: true,
 			wantApprovalErrCode: strPtr(string(model.ErrorCodeApprovalRejected)),
 		},
 		{
 			// Context is cancelled before handleToolCall is even entered.
-			name:             "ctx_cancelled",
-			approvalRequired: true,
-			approvalChSend:   nil,
-			cancelCtx:        true,
-			generation:       1,
-			activeGeneration: 1,
-			registered:       true,
-			wantErr:          "context cancelled",
+			name:                "ctx_cancelled",
+			approvalRequired:    true,
+			approvalChSend:      nil,
+			cancelCtx:           true,
+			generation:          1,
+			activeGeneration:    1,
+			registered:          true,
+			wantErr:             "context cancelled",
 			wantApprovalRequest: false,
 		},
 		{
 			// Sanity case: approval NOT required + generation mismatch → generation
 			// guard produces a structural tool_result error, no approval gate involved.
-			name:             "approval_not_required_generation_mismatch_returns_structural_error",
-			approvalRequired: false,
-			approvalChSend:   nil,
-			generation:       1,
-			activeGeneration: 2, // mismatch
-			registered:       true,
-			wantErr:          "",  // no error returned
+			name:                "approval_not_required_generation_mismatch_returns_structural_error",
+			approvalRequired:    false,
+			approvalChSend:      nil,
+			generation:          1,
+			activeGeneration:    2, // mismatch
+			registered:          true,
+			wantErr:             "", // no error returned
 			wantApprovalRequest: false,
-			wantToolResult:   true,
+			wantToolResult:      true,
 		},
 	}
 
@@ -3497,6 +3738,12 @@ func TestHandleToolCall_PluginTool_ApprovalGated(t *testing.T) {
 				}
 			}
 
+			// Provide a no-op dispatcher so the agent can be constructed.
+			// For the "approved" case it returns a successful result; for others
+			// it should not be reached (approval rejection / timeout / ctx cancel
+			// terminate before dispatch).
+			testDispatcher := &fakePluginDispatcher{output: `"dispatched"`}
+
 			w := NewAuditWriter(s.Queries())
 			ba, err := New(Config{
 				Policy: minimalPolicy(),
@@ -3509,11 +3756,12 @@ func TestHandleToolCall_PluginTool_ApprovalGated(t *testing.T) {
 						Timeout:      tc.toolTimeout,
 					},
 				},
-				PluginRegistrar: registrar,
-				LLMClient:       testutil.NewNoopLLMClient(),
-				Audit:           w,
-				ApprovalCh:      approvalCh,
-				StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+				PluginRegistrar:  registrar,
+				PluginDispatcher: testDispatcher,
+				LLMClient:        testutil.NewNoopLLMClient(),
+				Audit:            w,
+				ApprovalCh:       approvalCh,
+				StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -3610,11 +3858,12 @@ func TestHandleToolCall_PluginTool_ApprovalGated_GateFiredBeforeGenerationGuard(
 				Approval:     model.ApprovalModeRequired,
 			},
 		},
-		PluginRegistrar: registrar,
-		LLMClient:       testutil.NewNoopLLMClient(),
-		Audit:           w,
-		ApprovalCh:      approvalCh,
-		StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+		PluginRegistrar:  registrar,
+		PluginDispatcher: &fakePluginDispatcher{}, // not reached — generation guard fires first
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		ApprovalCh:       approvalCh,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -3669,8 +3918,9 @@ func TestNew_PluginToolValidateCallRejectsUndeclared(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
 
-	// Generation matches — if ValidateCall were absent, execution would reach errPluginDispatchUnimplemented.
+	// Generation matches — if ValidateCall were absent, execution would reach the dispatcher.
 	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+	dispatcher := &fakePluginDispatcher{output: "should not be called"}
 
 	ba, err := New(Config{
 		Policy: minimalPolicy(),
@@ -3683,10 +3933,11 @@ func TestNew_PluginToolValidateCallRejectsUndeclared(t *testing.T) {
 				Params:       map[string]any{"a": "x"}, // narrows schema to only "a"
 			},
 		},
-		PluginRegistrar: registrar,
-		LLMClient:       testutil.NewNoopLLMClient(),
-		Audit:           NewAuditWriter(s.Queries()),
-		StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+		PluginRegistrar:  registrar,
+		PluginDispatcher: dispatcher,
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            NewAuditWriter(s.Queries()),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -3701,9 +3952,9 @@ func TestNew_PluginToolValidateCallRejectsUndeclared(t *testing.T) {
 	if !strings.Contains(err.Error(), "b") {
 		t.Errorf("error %q should reference the rejected key %q", err.Error(), "b")
 	}
-	// Must NOT be the dispatch placeholder — schema validation ran first.
-	if errors.Is(err, errPluginDispatchUnimplemented) {
-		t.Error("got errPluginDispatchUnimplemented; schema validation should have fired before dispatch")
+	// Must NOT have called the dispatcher — schema validation ran first.
+	if dispatcher.calls != 0 {
+		t.Errorf("dispatcher called %d times; schema validation should have fired before dispatch", dispatcher.calls)
 	}
 
 	// No tool_call step should have been written (validation precedes audit writes).

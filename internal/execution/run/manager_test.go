@@ -436,6 +436,99 @@ func TestResolveFeedback_DelegatesToResolver(t *testing.T) {
 	waitWithTimeout(t, m, "delegate run")
 }
 
+// fakePluginCanceller records CancelRun calls for testing.
+type fakePluginCanceller struct {
+	mu    sync.Mutex
+	calls []string // run IDs passed to CancelRun
+}
+
+func (f *fakePluginCanceller) CancelRun(runID string) {
+	f.mu.Lock()
+	f.calls = append(f.calls, runID)
+	f.mu.Unlock()
+}
+
+func (f *fakePluginCanceller) calledFor(runID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, id := range f.calls {
+		if id == runID {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fakePluginCanceller) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+// TestRunManager_PluginCanceller_CalledOnCancel verifies that Cancel calls
+// CancelRun on the plugin canceller for the cancelled run ID.
+func TestRunManager_PluginCanceller_CalledOnCancel(t *testing.T) {
+	canceller := &fakePluginCanceller{}
+	m := NewRunManager()
+	m.WithPluginCanceller(canceller)
+
+	m.Register("run-1", func() {}, noopApprovalCh())
+	if err := m.Cancel("run-1"); err != nil {
+		t.Fatalf("Cancel returned %v, want nil", err)
+	}
+
+	if !canceller.calledFor("run-1") {
+		t.Error("CancelRun not called for 'run-1'")
+	}
+	m.Deregister("run-1")
+	waitWithTimeout(t, m, "plugin canceller cancel")
+}
+
+// TestRunManager_PluginCanceller_CalledOnCancelAll verifies that CancelAll
+// calls CancelRun for every registered run.
+func TestRunManager_PluginCanceller_CalledOnCancelAll(t *testing.T) {
+	canceller := &fakePluginCanceller{}
+	m := NewRunManager()
+	m.WithPluginCanceller(canceller)
+
+	ids := []string{"run-a", "run-b", "run-c"}
+	for _, id := range ids {
+		m.Register(id, func() {}, noopApprovalCh())
+	}
+	m.CancelAll()
+
+	for _, id := range ids {
+		if !canceller.calledFor(id) {
+			t.Errorf("CancelRun not called for %q", id)
+		}
+	}
+	if canceller.count() != len(ids) {
+		t.Errorf("CancelRun called %d times, want %d", canceller.count(), len(ids))
+	}
+	for _, id := range ids {
+		m.Deregister(id)
+	}
+	waitWithTimeout(t, m, "plugin canceller cancelall")
+}
+
+// TestRunManager_NilPluginCanceller_NoOp verifies that Cancel and CancelAll
+// work without a plugin canceller (backward-compat for tests and pre-plugin runs).
+func TestRunManager_NilPluginCanceller_NoOp(t *testing.T) {
+	m := NewRunManager() // no WithPluginCanceller
+	m.Register("run-1", func() {}, noopApprovalCh())
+	// Must not panic.
+	if err := m.Cancel("run-1"); err != nil {
+		t.Fatalf("Cancel returned %v, want nil", err)
+	}
+	m.Deregister("run-1")
+	waitWithTimeout(t, m, "nil canceller cancel")
+
+	m.Register("run-2", func() {}, noopApprovalCh())
+	m.CancelAll()
+	m.Deregister("run-2")
+	waitWithTimeout(t, m, "nil canceller cancelall")
+}
+
 // TestResolveFeedback_AfterCancelAll_ReturnsErrRunNotFound verifies that
 // CancelAll nils the feedbackResolver so that a subsequent ResolveFeedback
 // returns ErrRunNotFound rather than racing with CancelAll.

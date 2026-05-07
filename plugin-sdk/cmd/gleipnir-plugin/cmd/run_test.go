@@ -784,6 +784,10 @@ func (s *stubToolClient) Call(_ context.Context, req *toolv1.CallRequest, _ ...g
 	return s.callFn(req)
 }
 
+func (s *stubToolClient) Cancel(_ context.Context, _ *toolv1.CancelRequest, _ ...grpc.CallOption) (*toolv1.CancelResponse, error) {
+	return &toolv1.CancelResponse{}, nil
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 // writeTempFile creates a temp file with the given content and returns its path.

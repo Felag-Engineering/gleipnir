@@ -36,11 +36,26 @@ func (s *ToolService) ListTools(_ context.Context, _ *toolv1.ListToolsRequest) (
 	}, nil
 }
 
+// Cancel is a no-op for this trivial echo handler because it has no in-flight
+// goroutine state to abort.  Real plugins MUST honor ctx.Done() inside Call:
+// when the host cancels the call (run cancelled, or operator cancellation),
+// every blocking I/O performed inside Call must use that ctx so the goroutine
+// returns promptly.  The host enforces a 5s grace period before
+// force-disconnecting the gRPC connection (spec §13.8).
+func (s *ToolService) Cancel(_ context.Context, _ *toolv1.CancelRequest) (*toolv1.CancelResponse, error) {
+	return &toolv1.CancelResponse{}, nil
+}
+
 // Call handles the "echo" tool. It:
 //  1. Calls GetInstanceConfig so tests can verify host connectivity.
 //  2. Emits a metric counting each invocation.
 //  3. Logs a confirmation line.
 //  4. Returns the echoed message as output JSON.
+//
+// Plugins MUST honor ctx.Done(): when the host cancels the call (run
+// cancelled, or operator cancellation), every blocking I/O performed inside
+// Call must use this ctx so the goroutine returns promptly.  The host
+// enforces a 5s grace before force-disconnecting (spec §13.8).
 //
 // Any JSON parse error results in a populated ErrorEnvelope in the response.
 func (s *ToolService) Call(ctx context.Context, req *toolv1.CallRequest) (*toolv1.CallResponse, error) {

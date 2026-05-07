@@ -82,6 +82,9 @@ type RunLauncher struct {
 	publisher              event.Publisher
 	defaultFeedbackTimeout time.Duration
 	modelResolver          *settings.Service
+	pluginTools            []agent.PluginToolEntry
+	pluginRegistrar        agent.PluginGenerationLookup
+	pluginDispatcher       agent.PluginToolDispatcher
 }
 
 // registryResolver is the subset of mcp.Registry used by RunLauncher, defined
@@ -97,9 +100,12 @@ type RunLauncherConfig struct {
 	Registry               registryResolver
 	Manager                *RunManager
 	AgentFactory           AgentFactory
-	Publisher              event.Publisher  // nil = no real-time events
+	Publisher              event.Publisher // nil = no real-time events
 	DefaultFeedbackTimeout time.Duration
-	ModelResolver          *settings.Service // nil = use launch-time snapshot only
+	ModelResolver          *settings.Service            // nil = use launch-time snapshot only
+	PluginTools            []agent.PluginToolEntry      // nil until plugin subprocess lifecycle lands
+	PluginRegistrar        agent.PluginGenerationLookup // nil when PluginTools is empty
+	PluginDispatcher       agent.PluginToolDispatcher   // nil when PluginTools is empty
 }
 
 // NewRunLauncher returns a RunLauncher ready to use.
@@ -117,6 +123,9 @@ func NewRunLauncher(cfg RunLauncherConfig) *RunLauncher {
 		publisher:              cfg.Publisher,
 		defaultFeedbackTimeout: cfg.DefaultFeedbackTimeout,
 		modelResolver:          cfg.ModelResolver,
+		pluginTools:            cfg.PluginTools,
+		pluginRegistrar:        cfg.PluginRegistrar,
+		pluginDispatcher:       cfg.PluginDispatcher,
 	}
 }
 
@@ -242,10 +251,14 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	ba, err := l.newAgent(agent.Config{
 		Tools:                  resolvedTools,
 		Policy:                 params.ParsedPolicy,
+		PolicyID:               params.PolicyID,
 		Audit:                  audit,
 		StateMachine:           sm,
 		ApprovalCh:             approvalCh,
 		DefaultFeedbackTimeout: l.defaultFeedbackTimeout,
+		PluginTools:            l.pluginTools,
+		PluginRegistrar:        l.pluginRegistrar,
+		PluginDispatcher:       l.pluginDispatcher,
 	})
 	if err != nil {
 		// context.Background(): the HTTP request context that produced ctx may

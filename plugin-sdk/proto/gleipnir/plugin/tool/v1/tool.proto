@@ -73,17 +73,39 @@ message CallResponse {
   gleipnir.plugin.common.v1.ErrorEnvelope error = 2;
 }
 
+// CancelRequest is sent by the host to cancel an in-flight Call.
+// call_id is the value the host previously injected via the
+// gleipnir-call-id gRPC metadata key (spec §8.5).
+message CancelRequest {
+  string call_id = 1;
+}
+
+// CancelResponse is empty; the host only needs acknowledgement.
+message CancelResponse {}
+
 // ToolService is implemented by plugin binaries that expose agent-callable
 // tools.  Declared in the manifest under `services: [tool]`.
 //
 // gRPC deadlines applied by the host (spec §13.6):
 //   ListTools: 5s
 //   Call:      30s (matches GLEIPNIR_MCP_TIMEOUT)
+//   Cancel:    5s  (spec §13.8; host force-disconnects on timeout)
 service ToolService {
   // ListTools returns all tools this plugin instance currently exposes.
   rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
 
   // Call invokes a single tool and returns its result.
   // The RPC name is "Call" (spec §4.1) — not "Invoke".
+  //
+  // Plugins MUST honor ctx.Done(): when the host cancels the call (run
+  // cancelled, or operator cancellation), every blocking I/O performed
+  // inside Call must use this ctx so the goroutine returns promptly.
+  // The host enforces a 5s grace period before force-disconnecting.
   rpc Call(CallRequest) returns (CallResponse);
+
+  // Cancel asks the plugin to abort an in-flight Call identified by call_id.
+  // The host sends this with a 5s deadline; on timeout it calls conn.Close()
+  // to force-disconnect (spec §13.8).  The plugin must abort any outbound
+  // work and let the in-flight Call return.
+  rpc Cancel(CancelRequest) returns (CancelResponse);
 }
