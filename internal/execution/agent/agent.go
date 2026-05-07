@@ -62,7 +62,7 @@ type BoundAgent struct {
 // Config holds the dependencies needed to construct a BoundAgent.
 type Config struct {
 	Policy                 *model.ParsedPolicy
-	PolicyID               string                 // DB row ID for the policy; used in plugin dispatch context
+	PolicyID               string // DB row ID for the policy; used in plugin dispatch context
 	Tools                  []mcp.ResolvedTool
 	PluginTools            []PluginToolEntry      // plugin-backed tools; requires PluginRegistrar when non-empty
 	PluginRegistrar        PluginGenerationLookup // may be nil when PluginTools is empty

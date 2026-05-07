@@ -51,10 +51,10 @@ type pluginRunCanceller interface {
 
 // RunManager tracks active run goroutines so they can be cancelled on demand.
 type RunManager struct {
-	mu               sync.Mutex
-	runs             map[string]*trackedRun
-	wg               sync.WaitGroup
-	pluginCanceller  pluginRunCanceller // nil = no plugin dispatcher wired (tests, pre-plugin runs)
+	mu              sync.Mutex
+	runs            map[string]*trackedRun
+	wg              sync.WaitGroup
+	pluginCanceller pluginRunCanceller // nil = no plugin dispatcher wired (tests, pre-plugin runs)
 }
 
 // NewRunManager returns a RunManager with no plugin canceller wired.

@@ -100,7 +100,7 @@ type RunLauncherConfig struct {
 	Registry               registryResolver
 	Manager                *RunManager
 	AgentFactory           AgentFactory
-	Publisher              event.Publisher  // nil = no real-time events
+	Publisher              event.Publisher // nil = no real-time events
 	DefaultFeedbackTimeout time.Duration
 	ModelResolver          *settings.Service            // nil = use launch-time snapshot only
 	PluginTools            []agent.PluginToolEntry      // nil until plugin subprocess lifecycle lands

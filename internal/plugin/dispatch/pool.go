@@ -12,10 +12,10 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/felag-engineering/gleipnir/internal/model"
 	commonv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	sdkproto "github.com/felag-engineering/gleipnir/plugin-sdk/proto"
-	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // ConnFactory creates or returns a gRPC connection to the named plugin instance.
@@ -98,7 +98,7 @@ func New(cfg Config) *Pool {
 		cfg.DefaultMaxQueueDepth = 50
 	}
 	return &Pool{
-		cfg:      cfg,
+		cfg:       cfg,
 		instances: make(map[string]*instanceState),
 		inflight:  make(map[string]map[string]*inflightCall),
 	}

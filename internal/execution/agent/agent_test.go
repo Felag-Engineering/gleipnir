@@ -2922,13 +2922,13 @@ func TestNew_PanicsWhenPluginToolsWithoutRegistrar(t *testing.T) {
 	}()
 	s := testutil.NewTestStore(t)
 	_, _ = New(Config{
-		Policy:       minimalPolicy(),
-		Tools:        nil,
-		PluginTools:  []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
+		Policy:          minimalPolicy(),
+		Tools:           nil,
+		PluginTools:     []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
 		PluginRegistrar: nil, // intentionally nil — must panic
-		LLMClient:    testutil.NewNoopLLMClient(),
-		Audit:        NewAuditWriter(s.Queries()),
-		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+		LLMClient:       testutil.NewNoopLLMClient(),
+		Audit:           NewAuditWriter(s.Queries()),
+		StateMachine:    NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 }
 
@@ -3170,11 +3170,11 @@ func TestHandleToolCall_PluginDispatch_HappyPath(t *testing.T) {
 		PluginTools: []PluginToolEntry{
 			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1},
 		},
-		PluginRegistrar: registrar,
+		PluginRegistrar:  registrar,
 		PluginDispatcher: dispatcher,
-		LLMClient:       testutil.NewNoopLLMClient(),
-		Audit:           w,
-		StateMachine:    NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -3636,7 +3636,7 @@ func TestHandleToolCall_PluginTool_ApprovalGated(t *testing.T) {
 		approvalRequired bool
 
 		// approvalCh configuration.
-		approvalChSend *bool  // nil = don't send, pointer to false = reject, pointer to true = approve
+		approvalChSend *bool // nil = don't send, pointer to false = reject, pointer to true = approve
 		toolTimeout    time.Duration
 		cancelCtx      bool // cancel the context before calling handleToolCall
 
@@ -3654,65 +3654,65 @@ func TestHandleToolCall_PluginTool_ApprovalGated(t *testing.T) {
 		{
 			// Approved + generation match → approval_request written, then real
 			// dispatch runs and returns a tool_result step.
-			name:             "approved",
-			approvalRequired: true,
-			approvalChSend:   boolPtr(true),
-			generation:       1,
-			activeGeneration: 1,
-			registered:       true,
-			wantErr:          "", // no error — dispatch succeeds
+			name:                "approved",
+			approvalRequired:    true,
+			approvalChSend:      boolPtr(true),
+			generation:          1,
+			activeGeneration:    1,
+			registered:          true,
+			wantErr:             "", // no error — dispatch succeeds
 			wantApprovalRequest: true,
-			wantToolResult:   true,
+			wantToolResult:      true,
 		},
 		{
 			// Operator rejects → approval_request written, error returned, no tool_result.
-			name:             "rejected",
-			approvalRequired: true,
-			approvalChSend:   boolPtr(false),
-			generation:       1,
-			activeGeneration: 1,
-			registered:       true,
-			wantErr:          "rejected by operator",
+			name:                "rejected",
+			approvalRequired:    true,
+			approvalChSend:      boolPtr(false),
+			generation:          1,
+			activeGeneration:    1,
+			registered:          true,
+			wantErr:             "rejected by operator",
 			wantApprovalRequest: true,
 			wantApprovalErrCode: strPtr(string(model.ErrorCodeApprovalRejected)),
 		},
 		{
 			// Approval times out before a decision arrives.
-			name:             "timeout",
-			approvalRequired: true,
-			approvalChSend:   nil,   // no send → select falls through to timeout
-			toolTimeout:      20 * time.Millisecond,
-			generation:       1,
-			activeGeneration: 1,
-			registered:       true,
-			wantErr:          "approval timeout",
+			name:                "timeout",
+			approvalRequired:    true,
+			approvalChSend:      nil, // no send → select falls through to timeout
+			toolTimeout:         20 * time.Millisecond,
+			generation:          1,
+			activeGeneration:    1,
+			registered:          true,
+			wantErr:             "approval timeout",
 			wantApprovalRequest: true,
 			wantApprovalErrCode: strPtr(string(model.ErrorCodeApprovalRejected)),
 		},
 		{
 			// Context is cancelled before handleToolCall is even entered.
-			name:             "ctx_cancelled",
-			approvalRequired: true,
-			approvalChSend:   nil,
-			cancelCtx:        true,
-			generation:       1,
-			activeGeneration: 1,
-			registered:       true,
-			wantErr:          "context cancelled",
+			name:                "ctx_cancelled",
+			approvalRequired:    true,
+			approvalChSend:      nil,
+			cancelCtx:           true,
+			generation:          1,
+			activeGeneration:    1,
+			registered:          true,
+			wantErr:             "context cancelled",
 			wantApprovalRequest: false,
 		},
 		{
 			// Sanity case: approval NOT required + generation mismatch → generation
 			// guard produces a structural tool_result error, no approval gate involved.
-			name:             "approval_not_required_generation_mismatch_returns_structural_error",
-			approvalRequired: false,
-			approvalChSend:   nil,
-			generation:       1,
-			activeGeneration: 2, // mismatch
-			registered:       true,
-			wantErr:          "",  // no error returned
+			name:                "approval_not_required_generation_mismatch_returns_structural_error",
+			approvalRequired:    false,
+			approvalChSend:      nil,
+			generation:          1,
+			activeGeneration:    2, // mismatch
+			registered:          true,
+			wantErr:             "", // no error returned
 			wantApprovalRequest: false,
-			wantToolResult:   true,
+			wantToolResult:      true,
 		},
 	}
 

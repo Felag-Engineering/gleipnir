@@ -438,8 +438,8 @@ func TestResolveFeedback_DelegatesToResolver(t *testing.T) {
 
 // fakePluginCanceller records CancelRun calls for testing.
 type fakePluginCanceller struct {
-	mu      sync.Mutex
-	calls   []string // run IDs passed to CancelRun
+	mu    sync.Mutex
+	calls []string // run IDs passed to CancelRun
 }
 
 func (f *fakePluginCanceller) CancelRun(runID string) {

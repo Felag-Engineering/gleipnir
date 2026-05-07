@@ -41,8 +41,16 @@ type ToolServiceClient interface {
 	ListTools(ctx context.Context, in *ListToolsRequest, opts ...grpc.CallOption) (*ListToolsResponse, error)
 	// Call invokes a single tool and returns its result.
 	// The RPC name is "Call" (spec §4.1) — not "Invoke".
+	//
+	// Plugins MUST honor ctx.Done(): when the host cancels the call (run
+	// cancelled, or operator cancellation), every blocking I/O performed
+	// inside Call must use this ctx so the goroutine returns promptly.
+	// The host enforces a 5s grace period before force-disconnecting.
 	Call(ctx context.Context, in *CallRequest, opts ...grpc.CallOption) (*CallResponse, error)
 	// Cancel asks the plugin to abort an in-flight Call identified by call_id.
+	// The host sends this with a 5s deadline; on timeout it calls conn.Close()
+	// to force-disconnect (spec §13.8).  The plugin must abort any outbound
+	// work and let the in-flight Call return.
 	Cancel(ctx context.Context, in *CancelRequest, opts ...grpc.CallOption) (*CancelResponse, error)
 }
 
@@ -101,8 +109,16 @@ type ToolServiceServer interface {
 	ListTools(context.Context, *ListToolsRequest) (*ListToolsResponse, error)
 	// Call invokes a single tool and returns its result.
 	// The RPC name is "Call" (spec §4.1) — not "Invoke".
+	//
+	// Plugins MUST honor ctx.Done(): when the host cancels the call (run
+	// cancelled, or operator cancellation), every blocking I/O performed
+	// inside Call must use this ctx so the goroutine returns promptly.
+	// The host enforces a 5s grace period before force-disconnecting.
 	Call(context.Context, *CallRequest) (*CallResponse, error)
 	// Cancel asks the plugin to abort an in-flight Call identified by call_id.
+	// The host sends this with a 5s deadline; on timeout it calls conn.Close()
+	// to force-disconnect (spec §13.8).  The plugin must abort any outbound
+	// work and let the in-flight Call return.
 	Cancel(context.Context, *CancelRequest) (*CancelResponse, error)
 }
 

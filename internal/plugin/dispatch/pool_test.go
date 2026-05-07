@@ -16,10 +16,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
+	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	commonv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	sdkproto "github.com/felag-engineering/gleipnir/plugin-sdk/proto"
-	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 )
 
 func TestMain(m *testing.M) {

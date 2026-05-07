@@ -312,6 +312,90 @@ func (x *CallResponse) GetError() *v1.ErrorEnvelope {
 	return nil
 }
 
+// CancelRequest is sent by the host to cancel an in-flight Call.
+// call_id is the value the host previously injected via the
+// gleipnir-call-id gRPC metadata key (spec §8.5).
+type CancelRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CallId        string                 `protobuf:"bytes,1,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelRequest) Reset() {
+	*x = CancelRequest{}
+	mi := &file_gleipnir_plugin_tool_v1_tool_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelRequest) ProtoMessage() {}
+
+func (x *CancelRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_gleipnir_plugin_tool_v1_tool_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelRequest.ProtoReflect.Descriptor instead.
+func (*CancelRequest) Descriptor() ([]byte, []int) {
+	return file_gleipnir_plugin_tool_v1_tool_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CancelRequest) GetCallId() string {
+	if x != nil {
+		return x.CallId
+	}
+	return ""
+}
+
+// CancelResponse is empty; the host only needs acknowledgement.
+type CancelResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelResponse) Reset() {
+	*x = CancelResponse{}
+	mi := &file_gleipnir_plugin_tool_v1_tool_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelResponse) ProtoMessage() {}
+
+func (x *CancelResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_gleipnir_plugin_tool_v1_tool_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelResponse.ProtoReflect.Descriptor instead.
+func (*CancelResponse) Descriptor() ([]byte, []int) {
+	return file_gleipnir_plugin_tool_v1_tool_proto_rawDescGZIP(), []int{6}
+}
+
 var File_gleipnir_plugin_tool_v1_tool_proto protoreflect.FileDescriptor
 
 const file_gleipnir_plugin_tool_v1_tool_proto_rawDesc = "" +
@@ -334,10 +418,14 @@ const file_gleipnir_plugin_tool_v1_tool_proto_rawDesc = "" +
 	"\fCallResponse\x12\x1f\n" +
 	"\voutput_json\x18\x01 \x01(\tR\n" +
 	"outputJson\x12>\n" +
-	"\x05error\x18\x02 \x01(\v2(.gleipnir.plugin.common.v1.ErrorEnvelopeR\x05error2\xc6\x01\n" +
+	"\x05error\x18\x02 \x01(\v2(.gleipnir.plugin.common.v1.ErrorEnvelopeR\x05error\"(\n" +
+	"\rCancelRequest\x12\x17\n" +
+	"\acall_id\x18\x01 \x01(\tR\x06callId\"\x10\n" +
+	"\x0eCancelResponse2\xa1\x02\n" +
 	"\vToolService\x12b\n" +
 	"\tListTools\x12).gleipnir.plugin.tool.v1.ListToolsRequest\x1a*.gleipnir.plugin.tool.v1.ListToolsResponse\x12S\n" +
-	"\x04Call\x12$.gleipnir.plugin.tool.v1.CallRequest\x1a%.gleipnir.plugin.tool.v1.CallResponseBUZSgithub.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1;toolv1b\x06proto3"
+	"\x04Call\x12$.gleipnir.plugin.tool.v1.CallRequest\x1a%.gleipnir.plugin.tool.v1.CallResponse\x12Y\n" +
+	"\x06Cancel\x12&.gleipnir.plugin.tool.v1.CancelRequest\x1a'.gleipnir.plugin.tool.v1.CancelResponseBUZSgithub.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1;toolv1b\x06proto3"
 
 var (
 	file_gleipnir_plugin_tool_v1_tool_proto_rawDescOnce sync.Once
@@ -351,27 +439,31 @@ func file_gleipnir_plugin_tool_v1_tool_proto_rawDescGZIP() []byte {
 	return file_gleipnir_plugin_tool_v1_tool_proto_rawDescData
 }
 
-var file_gleipnir_plugin_tool_v1_tool_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_gleipnir_plugin_tool_v1_tool_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_gleipnir_plugin_tool_v1_tool_proto_goTypes = []any{
 	(*ToolSchema)(nil),        // 0: gleipnir.plugin.tool.v1.ToolSchema
 	(*ListToolsRequest)(nil),  // 1: gleipnir.plugin.tool.v1.ListToolsRequest
 	(*ListToolsResponse)(nil), // 2: gleipnir.plugin.tool.v1.ListToolsResponse
 	(*CallRequest)(nil),       // 3: gleipnir.plugin.tool.v1.CallRequest
 	(*CallResponse)(nil),      // 4: gleipnir.plugin.tool.v1.CallResponse
-	(*v1.RequestContext)(nil), // 5: gleipnir.plugin.common.v1.RequestContext
-	(*v1.ErrorEnvelope)(nil),  // 6: gleipnir.plugin.common.v1.ErrorEnvelope
+	(*CancelRequest)(nil),     // 5: gleipnir.plugin.tool.v1.CancelRequest
+	(*CancelResponse)(nil),    // 6: gleipnir.plugin.tool.v1.CancelResponse
+	(*v1.RequestContext)(nil), // 7: gleipnir.plugin.common.v1.RequestContext
+	(*v1.ErrorEnvelope)(nil),  // 8: gleipnir.plugin.common.v1.ErrorEnvelope
 }
 var file_gleipnir_plugin_tool_v1_tool_proto_depIdxs = []int32{
-	5, // 0: gleipnir.plugin.tool.v1.ListToolsRequest.context:type_name -> gleipnir.plugin.common.v1.RequestContext
+	7, // 0: gleipnir.plugin.tool.v1.ListToolsRequest.context:type_name -> gleipnir.plugin.common.v1.RequestContext
 	0, // 1: gleipnir.plugin.tool.v1.ListToolsResponse.tools:type_name -> gleipnir.plugin.tool.v1.ToolSchema
-	5, // 2: gleipnir.plugin.tool.v1.CallRequest.context:type_name -> gleipnir.plugin.common.v1.RequestContext
-	6, // 3: gleipnir.plugin.tool.v1.CallResponse.error:type_name -> gleipnir.plugin.common.v1.ErrorEnvelope
+	7, // 2: gleipnir.plugin.tool.v1.CallRequest.context:type_name -> gleipnir.plugin.common.v1.RequestContext
+	8, // 3: gleipnir.plugin.tool.v1.CallResponse.error:type_name -> gleipnir.plugin.common.v1.ErrorEnvelope
 	1, // 4: gleipnir.plugin.tool.v1.ToolService.ListTools:input_type -> gleipnir.plugin.tool.v1.ListToolsRequest
 	3, // 5: gleipnir.plugin.tool.v1.ToolService.Call:input_type -> gleipnir.plugin.tool.v1.CallRequest
-	2, // 6: gleipnir.plugin.tool.v1.ToolService.ListTools:output_type -> gleipnir.plugin.tool.v1.ListToolsResponse
-	4, // 7: gleipnir.plugin.tool.v1.ToolService.Call:output_type -> gleipnir.plugin.tool.v1.CallResponse
-	6, // [6:8] is the sub-list for method output_type
-	4, // [4:6] is the sub-list for method input_type
+	5, // 6: gleipnir.plugin.tool.v1.ToolService.Cancel:input_type -> gleipnir.plugin.tool.v1.CancelRequest
+	2, // 7: gleipnir.plugin.tool.v1.ToolService.ListTools:output_type -> gleipnir.plugin.tool.v1.ListToolsResponse
+	4, // 8: gleipnir.plugin.tool.v1.ToolService.Call:output_type -> gleipnir.plugin.tool.v1.CallResponse
+	6, // 9: gleipnir.plugin.tool.v1.ToolService.Cancel:output_type -> gleipnir.plugin.tool.v1.CancelResponse
+	7, // [7:10] is the sub-list for method output_type
+	4, // [4:7] is the sub-list for method input_type
 	4, // [4:4] is the sub-list for extension type_name
 	4, // [4:4] is the sub-list for extension extendee
 	0, // [0:4] is the sub-list for field type_name
@@ -388,7 +480,7 @@ func file_gleipnir_plugin_tool_v1_tool_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gleipnir_plugin_tool_v1_tool_proto_rawDesc), len(file_gleipnir_plugin_tool_v1_tool_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
