@@ -76,7 +76,7 @@ Hard capability enforcement (ADR-001) is preserved:
 - Plugin tools and MCP tools live in **one namespace**: `<source>.<tool>`, where `<source>` is either an MCP server name or a plugin instance name. Uniqueness is enforced across both registries at registration time.
 - Agents only see the tools their policy grants. Tools not granted are never registered with the LLM.
 - Capability snapshot (ADR-018) records all granted tools at run start, regardless of source.
-- Per-policy parameter scoping (ADR-017) and approval gating (ADR-008) apply to plugin tools identically.
+- Per-policy parameter scoping (ADR-017) and approval gating (ADR-008) apply to plugin tools identically. Implementation invariant: the approval interceptor in `handleToolCall` runs BEFORE source-specific dispatch (MCP transport or plugin generation guard); there is exactly one approval chokepoint.
 - The agent never sees `gleipnir.ask_operator` directly. Internally it sees a synthetic `request_feedback` tool; the runtime resolves the audience and routes to the appropriate Channel implementation. From the agent's perspective, who gets paged is not its concern.
 
 ## 4. Plugin model
