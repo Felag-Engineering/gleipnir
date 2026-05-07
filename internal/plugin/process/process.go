@@ -13,6 +13,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 )
 
 // defaultStartupTimeout is how long we wait for the go-plugin handshake to
@@ -68,7 +69,8 @@ type Config struct {
 
 	// HostServer registers the host-side gRPC service on the broker-allocated
 	// server. If nil, NoopHostServer{} is used so the handshake still completes.
-	// #292 will inject hostsvc.Server here.
+	// Production wiring is via Manager.HostServerFor from cmd/server (tracked
+	// under #295); NoopHostServer{} remains the default for handshake-only tests.
 	HostServer hostwire.HostServer
 
 	// Logger is the base logger for this instance. If nil, logctx.Logger(ctx)
@@ -158,11 +160,14 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		Logger:         logger,
 		OnProcessExited: onProcessExited,
 		// Inject per-instance env vars so the plugin binary knows its own
-		// identity. GLEIPNIR_INSTANCE_ID and GLEIPNIR_PLUGIN_ID are the two
-		// required vars per the acceptance criteria for #291.
+		// identity and can authenticate Host RPCs. GLEIPNIR_INSTANCE_ID and
+		// GLEIPNIR_PLUGIN_ID were introduced by #291; GLEIPNIR_INSTANCE_TOKEN is
+		// the per-generation credential the plugin attaches to every Host RPC via
+		// serve.TokenInterceptorFromEnv() (spec §8.4, #292).
 		Env: []string{
 			"GLEIPNIR_INSTANCE_ID=" + cfg.InstanceID,
 			"GLEIPNIR_PLUGIN_ID=" + cfg.PluginID,
+			serve.InstanceTokenEnvVar + "=" + token,
 		},
 	})
 	if err != nil {
@@ -182,8 +187,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		logger:   logger,
 	}
 
-	// waitForExit monitors stderr EOF as the crash-detection signal (best-effort
-	// for #291; #292 will upgrade to go-plugin's Client.Exited() polling).
+	// waitForExit monitors stderr EOF as the crash-detection signal (best-effort).
 	go inst.waitForExit(ctx, stderrDone)
 
 	return inst, nil
@@ -233,12 +237,14 @@ func (i *Instance) Stop(ctx context.Context) error {
 // InstanceID returns the stable instance ID this Instance was started with.
 func (i *Instance) InstanceID() string { return i.cfg.InstanceID }
 
-// Token returns the identity token issued at Start time. #292 uses this to
-// deliver the token to the plugin via Bootstrap.Bind.
+// Token returns the identity token issued at Start time. The token is delivered
+// to the plugin subprocess via the serve.InstanceTokenEnvVar env var at Start
+// time; plugins read it with serve.TokenInterceptorFromEnv().
 func (i *Instance) Token() string { return i.token }
 
 // Client returns the typed gRPC client set for making host→plugin RPCs.
-// #292's dispatcher will call Client() to access Bootstrap.Bind and Tool RPCs.
+// The host-side dispatcher (internal/plugin/dispatch) calls Client() to access
+// Bootstrap.Bind and Tool RPCs.
 func (i *Instance) Client() *hostwire.Client { return i.client }
 
 // Done returns a channel that is closed when the subprocess has exited (either
@@ -249,11 +255,9 @@ func (i *Instance) Done() <-chan struct{} { return i.doneCh }
 // closed its stderr pipe), then determines whether the exit was requested or a
 // crash, and updates health state / revokes token accordingly.
 //
-// Crash detection via stderr EOF is a documented best-effort signal for #291.
-// A plugin that explicitly closes stderr while still running will be
-// misclassified as crashed, but the spec contract is that plugins must not
-// close stderr. #292 will replace this seam with go-plugin's Client.Exited()
-// once we hold the *plugin.Client directly.
+// Crash detection uses stderr EOF as a best-effort signal. A plugin that
+// explicitly closes stderr while still running will be misclassified as
+// crashed; the spec contract is that plugins must not close stderr.
 func (i *Instance) waitForExit(ctx context.Context, stderrDone <-chan struct{}) {
 	<-stderrDone
 

@@ -77,3 +77,39 @@ func TestTokenInterceptor_EmptyTokenIsPassThrough(t *testing.T) {
 		t.Errorf("outgoing metadata[%s] = %v, want empty for empty token", sdkproto.InstanceTokenMetadataKey, vals)
 	}
 }
+
+func TestTokenInterceptorFromEnv_ReadsEnv(t *testing.T) {
+	t.Setenv(serve.InstanceTokenEnvVar, "abc")
+	interceptor := serve.TokenInterceptorFromEnv()
+
+	cap := &captureInvoker{}
+	if err := interceptor(context.Background(), "/svc/Method", nil, nil, nil, cap.invoke); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cap.called {
+		t.Fatal("invoker was not called")
+	}
+
+	vals := outgoingTokenVals(cap.ctx)
+	if len(vals) != 1 || vals[0] != "abc" {
+		t.Errorf("outgoing metadata[%s] = %v, want [%q]", sdkproto.InstanceTokenMetadataKey, vals, "abc")
+	}
+}
+
+func TestTokenInterceptorFromEnv_EmptyEnvIsPassThrough(t *testing.T) {
+	t.Setenv(serve.InstanceTokenEnvVar, "")
+	interceptor := serve.TokenInterceptorFromEnv()
+
+	cap := &captureInvoker{}
+	if err := interceptor(context.Background(), "/svc/Method", nil, nil, nil, cap.invoke); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cap.called {
+		t.Fatal("invoker was not called")
+	}
+
+	vals := outgoingTokenVals(cap.ctx)
+	if len(vals) != 0 {
+		t.Errorf("outgoing metadata[%s] = %v, want empty when env var is empty", sdkproto.InstanceTokenMetadataKey, vals)
+	}
+}

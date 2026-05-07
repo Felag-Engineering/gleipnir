@@ -46,6 +46,9 @@ func TestMain(m *testing.M) {
 	case "echo-env":
 		runFixtureServeEchoEnv()
 		os.Exit(0)
+	case "echo-token":
+		runFixtureServeEchoToken()
+		os.Exit(0)
 	}
 	os.Exit(m.Run())
 }
@@ -440,6 +443,104 @@ func TestStart_EnvInjected(t *testing.T) {
 	}
 	if !strings.Contains(output, wantPluginID) {
 		t.Errorf("log output does not contain %q\nfull output:\n%s", wantPluginID, output)
+	}
+}
+
+// TestStart_TokenInjectedIntoEnv verifies that the identity token issued at Start
+// time is delivered to the subprocess via the GLEIPNIR_INSTANCE_TOKEN env var.
+// The "echo-token" fixture writes the value to stderr; the host log pipe captures
+// it, and we assert the captured output contains the exact token.
+func TestStart_TokenInjectedIntoEnv(t *testing.T) {
+	reg := identity.New()
+	cfg := fixtureConfig(t, "echo-token", reg, nil)
+
+	captureLogger, captureHandler := newCapturingLogger()
+	cfg.Logger = captureLogger
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	inst, err := process.Start(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Give the subprocess time to write the env line before we stop it.
+	time.Sleep(500 * time.Millisecond)
+
+	stopCtx, stopCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer stopCancel()
+	if err := inst.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Wait for done so the log pipe has fully flushed all buffered lines.
+	select {
+	case <-inst.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("done channel did not close within 10s")
+	}
+
+	want := "GLEIPNIR_INSTANCE_TOKEN=" + inst.Token()
+	output := captureHandler.String()
+	if !strings.Contains(output, want) {
+		t.Errorf("log output does not contain %q\nfull output:\n%s", want, output)
+	}
+}
+
+// TestStart_OldTokenRejectedAfterReissue verifies the per-generation rotation
+// guarantee: after stopping an instance and starting it again, the old token is
+// revoked and only the new token is valid in the registry.
+//
+// We wait on <-inst.Done() between Stop and the second Start because waitForExit
+// calls Revoke; without the wait there would be a race between the revoke in
+// waitForExit and the new Issue call.
+func TestStart_OldTokenRejectedAfterReissue(t *testing.T) {
+	reg := identity.New()
+	cfg := fixtureConfig(t, "serve-and-block", reg, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// First generation.
+	inst1, err := process.Start(ctx, cfg)
+	if err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	oldToken := inst1.Token()
+
+	stopCtx, stopCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer stopCancel()
+	if err := inst1.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Wait for waitForExit to complete so the Revoke inside it has run before
+	// the second Issue. Without this, the race between Revoke and Issue can
+	// leave the old token present when we check below.
+	select {
+	case <-inst1.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("first instance done channel did not close within 10s")
+	}
+
+	// Second generation for the same instance ID.
+	inst2, err := process.Start(ctx, cfg)
+	if err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	newToken := inst2.Token()
+	defer inst2.Stop(ctx) //nolint:errcheck
+
+	// Old token must be revoked.
+	if _, ok := reg.Lookup(oldToken); ok {
+		t.Error("old token still valid after reissue — per-generation rotation broken")
+	}
+	// New token must resolve to the correct instance.
+	if id, ok := reg.Lookup(newToken); !ok {
+		t.Error("new token not found in registry")
+	} else if id != cfg.InstanceID {
+		t.Errorf("new token resolved to %q, want %q", id, cfg.InstanceID)
 	}
 }
 

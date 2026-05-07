@@ -123,6 +123,37 @@ func runFixtureServeEchoEnv() {
 	}
 }
 
+// runFixtureServeEchoToken starts the plugin protocol, then writes the value of
+// GLEIPNIR_INSTANCE_TOKEN to stderr so the host-side log pipe can capture it.
+// Used by TestStart_TokenInjectedIntoEnv.
+func runFixtureServeEchoToken() {
+	// Echo the token to stderr before serving so the host pipe sees it. Written
+	// as "KEY=VALUE" so the test can grep for the exact pair.
+	fmt.Fprintf(os.Stderr, "GLEIPNIR_INSTANCE_TOKEN=%s\n", os.Getenv("GLEIPNIR_INSTANCE_TOKEN"))
+
+	// Block until killed so the host has time to read the log line.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGTERM)
+
+	impl := &fixtureImpl{}
+	done := make(chan struct{})
+	go func() {
+		goplugin.Serve(&goplugin.ServeConfig{
+			HandshakeConfig: hostwire.HandshakeConfig,
+			Plugins: goplugin.PluginSet{
+				"gleipnir": &fixtureGRPCPlugin{impl: impl},
+			},
+			GRPCServer: goplugin.DefaultGRPCServer,
+		})
+		close(done)
+	}()
+
+	select {
+	case <-quit:
+	case <-done:
+	}
+}
+
 // ── go-plugin GRPCPlugin implementation ─────────────────────────────────────
 
 // fixtureGRPCPlugin adapts fixtureImpl to go-plugin's GRPCPlugin interface.
