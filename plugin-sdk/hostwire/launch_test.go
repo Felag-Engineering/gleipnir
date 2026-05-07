@@ -11,8 +11,8 @@ import (
 	"time"
 
 	handshakev1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/handshake/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/fakehost"
-	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/hostwire"
 )
 
 // TestLaunch_BootstrapAndNegotiate builds the runfixture binary and runs a
