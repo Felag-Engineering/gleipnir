@@ -40,10 +40,10 @@ type captureHeader struct {
 
 // captureRecord is one event line in the JSONL file.
 type captureRecord struct {
-	CapturedAt     string `json:"captured_at"`
-	Sequence       int    `json:"sequence"`
-	EventID        string `json:"event_id"`
-	EventKind      string `json:"event_kind"`
+	CapturedAt  string `json:"captured_at"`
+	Sequence    int    `json:"sequence"`
+	EventID     string `json:"event_id"`
+	EventKind   string `json:"event_kind"`
 	PayloadJSON string `json:"payload_json"`
 	// WatchScopeJSON is the watch scope passed to Trigger.Start by the
 	// capture host (--watch-scope CLI flag). It is the same value for every

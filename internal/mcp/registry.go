@@ -46,8 +46,8 @@ type ToolDiff struct {
 type Registry struct {
 	queries    *db.Queries
 	mcpTimeout time.Duration
-	encKey     []byte                  // AES-256-GCM key for decrypting auth_headers_encrypted; nil if unset
-	arbiter    *toolregistry.Registry  // cross-source tool namespace arbiter; nil means no uniqueness enforcement
+	encKey     []byte                 // AES-256-GCM key for decrypting auth_headers_encrypted; nil if unset
+	arbiter    *toolregistry.Registry // cross-source tool namespace arbiter; nil means no uniqueness enforcement
 }
 
 // RegistryOption configures a Registry.

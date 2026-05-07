@@ -106,12 +106,24 @@ type sortKey struct{ sort, order string }
 // implements it. Built once at package init; each closure converts the
 // canonical ListRunsParams to the concrete *Params type required by sqlc.
 var listRunsDispatch = map[sortKey]func(ctx context.Context, store *db.Store, p db.ListRunsParams) ([]db.Run, error){
-	{"started_at", "asc"}:  func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsAsc(ctx, db.ListRunsAscParams(p)) },
-	{"started_at", "desc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRuns(ctx, p) },
-	{"token_cost", "asc"}:  func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsByTokenCostAsc(ctx, db.ListRunsByTokenCostAscParams(p)) },
-	{"token_cost", "desc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsByTokenCostDesc(ctx, db.ListRunsByTokenCostDescParams(p)) },
-	{"duration", "asc"}:    func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsByDurationAsc(ctx, db.ListRunsByDurationAscParams(p)) },
-	{"duration", "desc"}:   func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsByDurationDesc(ctx, db.ListRunsByDurationDescParams(p)) },
+	{"started_at", "asc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) {
+		return s.ListRunsAsc(ctx, db.ListRunsAscParams(p))
+	},
+	{"started_at", "desc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) {
+		return s.ListRuns(ctx, p)
+	},
+	{"token_cost", "asc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) {
+		return s.ListRunsByTokenCostAsc(ctx, db.ListRunsByTokenCostAscParams(p))
+	},
+	{"token_cost", "desc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) {
+		return s.ListRunsByTokenCostDesc(ctx, db.ListRunsByTokenCostDescParams(p))
+	},
+	{"duration", "asc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) {
+		return s.ListRunsByDurationAsc(ctx, db.ListRunsByDurationAscParams(p))
+	},
+	{"duration", "desc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) {
+		return s.ListRunsByDurationDesc(ctx, db.ListRunsByDurationDescParams(p))
+	},
 }
 
 // parseListFilters reads and validates query parameters from r, returning the

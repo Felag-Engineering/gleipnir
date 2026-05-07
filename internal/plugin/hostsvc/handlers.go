@@ -20,9 +20,9 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	commonv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 
 // resolveInstance resolves the calling plugin instance ID from the connection

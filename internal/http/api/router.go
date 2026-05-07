@@ -57,12 +57,12 @@ type BackgroundServices struct {
 	ModelLister      llm.ModelLister       // interface for listing available models
 	ProviderRegistry *llm.ProviderRegistry // concrete registry for policy validation
 	ModelFilter      ModelFilter
-	Poller           PolicyNotifier    // notified on poll-trigger policy mutations
-	Scheduler        PolicyNotifier    // notified on scheduled-trigger policy mutations
-	Cron             PolicyNotifier    // notified on cron-trigger policy mutations
-	EncryptionKey    []byte                  // AES-256 key for MCP auth header encryption; nil when unset
-	Arbiter          *toolregistry.Registry  // cross-source tool namespace arbiter; nil disables enforcement
-	Settings         *settings.Service       // system-wide runtime settings; required by manual-trigger and policy services
+	Poller           PolicyNotifier         // notified on poll-trigger policy mutations
+	Scheduler        PolicyNotifier         // notified on scheduled-trigger policy mutations
+	Cron             PolicyNotifier         // notified on cron-trigger policy mutations
+	EncryptionKey    []byte                 // AES-256 key for MCP auth header encryption; nil when unset
+	Arbiter          *toolregistry.Registry // cross-source tool namespace arbiter; nil disables enforcement
+	Settings         *settings.Service      // system-wide runtime settings; required by manual-trigger and policy services
 }
 
 // Metadata holds descriptive, read-only values about the running instance.

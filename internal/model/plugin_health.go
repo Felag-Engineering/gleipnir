@@ -12,14 +12,14 @@ package model
 type PluginHealthState string
 
 const (
-	PluginHealthStateHealthy                PluginHealthState = "healthy"
-	PluginHealthStateUnsignedPermissive     PluginHealthState = "unsigned_permissive"
-	PluginHealthStatePendingKeyApproval     PluginHealthState = "pending_key_approval"
+	PluginHealthStateHealthy                 PluginHealthState = "healthy"
+	PluginHealthStateUnsignedPermissive      PluginHealthState = "unsigned_permissive"
+	PluginHealthStatePendingKeyApproval      PluginHealthState = "pending_key_approval"
 	PluginHealthStatePendingManifestApproval PluginHealthState = "pending_manifest_approval"
-	PluginHealthStatePendingConfigMigration PluginHealthState = "pending_config_migration"
-	PluginHealthStateUnhealthy              PluginHealthState = "unhealthy"
-	PluginHealthStateCircuitBroken          PluginHealthState = "circuit_broken"
-	PluginHealthStateVerificationError      PluginHealthState = "verification_error"
-	PluginHealthStateSignatureInvalid       PluginHealthState = "signature_invalid"
-	PluginHealthStateCrashed                PluginHealthState = "crashed"
+	PluginHealthStatePendingConfigMigration  PluginHealthState = "pending_config_migration"
+	PluginHealthStateUnhealthy               PluginHealthState = "unhealthy"
+	PluginHealthStateCircuitBroken           PluginHealthState = "circuit_broken"
+	PluginHealthStateVerificationError       PluginHealthState = "verification_error"
+	PluginHealthStateSignatureInvalid        PluginHealthState = "signature_invalid"
+	PluginHealthStateCrashed                 PluginHealthState = "crashed"
 )

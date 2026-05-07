@@ -22,8 +22,8 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostsvc"
 	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
-	sdkproto "github.com/felag-engineering/gleipnir/plugin-sdk/proto"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	sdkproto "github.com/felag-engineering/gleipnir/plugin-sdk/proto"
 )
 
 // testEncryptionKey is a 32-byte AES-256 key used in tests. Declared locally
@@ -239,7 +239,6 @@ func familyNames(mfs []*io_prometheus_client.MetricFamily) []string {
 	}
 	return names
 }
-
 
 // --- tests: GetInstanceConfig ---
 
@@ -484,12 +483,12 @@ func TestWriteAuditStep_HappyPath(t *testing.T) {
 
 	q := &fakeQuerier{
 		// instance_name must match the prefix in the policy YAML tool grant.
-		instance:                db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
-		feedbackRequest:         db.FeedbackRequest{ID: "fr-ok", RunID: "run-ok", Status: "pending"},
-		latestStep:              db.RunStep{StepNumber: 2},
+		instance:                 db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		feedbackRequest:          db.FeedbackRequest{ID: "fr-ok", RunID: "run-ok", Status: "pending"},
+		latestStep:               db.RunStep{StepNumber: 2},
 		updateFeedbackStatusRows: 1,
-		run:                     db.Run{ID: "run-ok", PolicyID: "pol-ok"},
-		policy:                  db.Policy{ID: "pol-ok", Yaml: policyYAMLWithTool("myplugin.do_thing")},
+		run:                      db.Run{ID: "run-ok", PolicyID: "pol-ok"},
+		policy:                   db.Policy{ID: "pol-ok", Yaml: policyYAMLWithTool("myplugin.do_thing")},
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
 
@@ -626,12 +625,12 @@ func TestWriteAuditStep_RequestIDInScope_Success(t *testing.T) {
 
 	// Policy YAML grants "myplugin.do_thing" — instance is in scope.
 	q := &fakeQuerier{
-		instance:                db.PluginInstance{ID: "iid-inscope", PluginID: "plug-inscope", InstanceName: "myplugin"},
-		feedbackRequest:         db.FeedbackRequest{ID: "fr-inscope", RunID: "run-inscope", Status: "pending"},
-		latestStep:              db.RunStep{StepNumber: 0},
+		instance:                 db.PluginInstance{ID: "iid-inscope", PluginID: "plug-inscope", InstanceName: "myplugin"},
+		feedbackRequest:          db.FeedbackRequest{ID: "fr-inscope", RunID: "run-inscope", Status: "pending"},
+		latestStep:               db.RunStep{StepNumber: 0},
 		updateFeedbackStatusRows: 1,
-		run:                     db.Run{ID: "run-inscope", PolicyID: "pol-inscope"},
-		policy:                  db.Policy{ID: "pol-inscope", Yaml: policyYAMLWithTool("myplugin.do_thing")},
+		run:                      db.Run{ID: "run-inscope", PolicyID: "pol-inscope"},
+		policy:                   db.Policy{ID: "pol-inscope", Yaml: policyYAMLWithTool("myplugin.do_thing")},
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
 
@@ -681,12 +680,12 @@ func TestWriteAuditStep_RequestIDInScopeAcrossGenerations(t *testing.T) {
 	}
 
 	q := &fakeQuerier{
-		instance:                db.PluginInstance{ID: "inst-crossgen", PluginID: "plug-crossgen", InstanceName: "crossgen"},
-		feedbackRequest:         db.FeedbackRequest{ID: "fr-crossgen", RunID: "run-crossgen", Status: "pending"},
-		latestStep:              db.RunStep{StepNumber: 0},
+		instance:                 db.PluginInstance{ID: "inst-crossgen", PluginID: "plug-crossgen", InstanceName: "crossgen"},
+		feedbackRequest:          db.FeedbackRequest{ID: "fr-crossgen", RunID: "run-crossgen", Status: "pending"},
+		latestStep:               db.RunStep{StepNumber: 0},
 		updateFeedbackStatusRows: 1,
-		run:                     db.Run{ID: "run-crossgen", PolicyID: "pol-crossgen"},
-		policy:                  db.Policy{ID: "pol-crossgen", Yaml: policyYAMLWithTool("crossgen.action")},
+		run:                      db.Run{ID: "run-crossgen", PolicyID: "pol-crossgen"},
+		policy:                   db.Policy{ID: "pol-crossgen", Yaml: policyYAMLWithTool("crossgen.action")},
 	}
 
 	pub := &fakePublisher{}
@@ -842,7 +841,7 @@ func TestEmitMetric_CardinalityCap(t *testing.T) {
 		_, err := srv.EmitMetric(context.Background(), &hostv1.EmitMetricRequest{
 			Name:   "cap_metric",
 			Value:  float64(i),
-			Labels: map[string]string{"env": string(rune('a' + i%26)) + string(rune('0'+i/26))},
+			Labels: map[string]string{"env": string(rune('a'+i%26)) + string(rune('0'+i/26))},
 		})
 		if err != nil {
 			t.Fatalf("emission %d: unexpected error: %v", i, err)

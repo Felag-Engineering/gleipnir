@@ -1,6 +1,6 @@
 module github.com/felag-engineering/gleipnir
 
-go 1.25.9
+go 1.25.10
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.37.0
@@ -17,7 +17,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.50.0
-	golang.org/x/net v0.52.0
+	golang.org/x/net v0.53.0
 	golang.org/x/sync v0.20.0
 	google.golang.org/genai v1.54.0
 	google.golang.org/grpc v1.79.3
