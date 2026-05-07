@@ -211,11 +211,27 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 		}, nil
 	}
 
-	// TODO (v1 security gap): validate that feedback_request.run_id →
-	// runs.policy_id → policies.plugin_instance_id == inst.ID to confirm the
-	// request belongs to a run owned by the calling instance. Any plugin knowing
-	// a request_id can currently resolve another instance's request. Tracking
-	// issue: TBD.
+	// Verify that the feedback_request's run belongs to a policy that grants
+	// tools to the calling instance (i.e. has at least one capabilities.tools
+	// entry with the prefix "<instanceName>."). This is the heuristic available
+	// today; audience-based routing (audiences.plugin_instance per spec §4.2/§6)
+	// is a follow-up — no audiences DB schema exists yet.
+	run, err := s.q.GetRun(ctx, fr.RunID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get run for request_id scope check: %v", err)
+	}
+	policy, err := s.q.GetPolicy(ctx, run.PolicyID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get policy for request_id scope check: %v", err)
+	}
+	if !policyGrantsInstance(policy.Yaml, inst.InstanceName) {
+		s.writeAuditEvent(ctx, inst.ID, EventTypeUnauthorizedRequestID, "high", map[string]string{
+			"request_id": req.GetRequestId(),
+			"run_id":     fr.RunID,
+			"rpc_method": rpcMethod,
+		})
+		return nil, status.Error(codes.PermissionDenied, "unauthorized_request_id")
+	}
 
 	// Determine the next step number.
 	latestStep, err := s.latestStepNumber(ctx, fr.RunID)
@@ -456,6 +472,24 @@ type scopeProbe struct {
 			Tool string `yaml:"tool"`
 		} `yaml:"tools"`
 	} `yaml:"capabilities"`
+}
+
+// policyGrantsInstance reports whether the policy YAML blob grants at least one
+// tool whose name begins with "<instanceName>.". Used to verify that a
+// feedback_request's run belongs to a policy scoped to the calling instance.
+func policyGrantsInstance(policyYAML, instanceName string) bool {
+	var probe scopeProbe
+	if err := yaml.Unmarshal([]byte(policyYAML), &probe); err != nil {
+		// Unparseable policy YAML → treat as no match (reject).
+		return false
+	}
+	prefix := instanceName + "."
+	for _, t := range probe.Capabilities.Tools {
+		if strings.HasPrefix(t.Tool, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // policyIDsForInstance returns the IDs of policies that reference inst's
