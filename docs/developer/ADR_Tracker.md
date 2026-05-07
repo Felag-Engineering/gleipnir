@@ -62,6 +62,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-045 | Plugin signing & TOFU trust — Minisign tamper-evidence + first-install pubkey capture | 🟢 Decided | v2.0 (plugins) | internal/plugin (loader), plugin_instances.trusted_pubkey, GLEIPNIR_ALLOW_UNSIGNED_PLUGINS, spec §5 |
 | ADR-046 | Audit-table split — run_steps (LLM-visible) vs plugin_audit_events (operator-only) | 🟢 Decided | v2.0 (plugins) | plugin_audit_events table, WriteAuditStep RPC authorization, spec §12.3 |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
+| #199    | call_id propagation through gRPC metadata (spec §8.5)  | 🟢 Decided | v2.0 (plugins) | plugin-sdk/serve/callcontext.go, internal/plugin/hostsvc (new package), no new ADR — implements existing spec §8.5 contract |
 
 ---
 

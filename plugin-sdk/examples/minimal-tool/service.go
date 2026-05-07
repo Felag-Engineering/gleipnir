@@ -8,6 +8,7 @@ import (
 	commonv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 )
 
 // ToolService implements toolv1.ToolServiceServer with a single "echo" tool.
@@ -80,8 +81,13 @@ func (s *ToolService) Call(ctx context.Context, req *toolv1.CallRequest) (*toolv
 		}, nil
 	}
 
+	// Propagate the host-injected call ID to all outgoing host RPCs so the host
+	// can correlate Log, EmitMetric, and WriteAuditStep calls back to this run
+	// and step. See serve.WithCallContext and plugin-system-spec.md §8.5.
+	hostCtx := serve.WithCallContext(ctx)
+
 	// 1. GetInstanceConfig — exercises host connectivity.
-	if _, err := s.host.GetInstanceConfig(ctx, &hostv1.GetInstanceConfigRequest{}); err != nil {
+	if _, err := s.host.GetInstanceConfig(hostCtx, &hostv1.GetInstanceConfigRequest{}); err != nil {
 		return &toolv1.CallResponse{
 			Error: &commonv1.ErrorEnvelope{
 				Code:    commonv1.ErrorCode_ERROR_CODE_INTERNAL,
@@ -91,7 +97,7 @@ func (s *ToolService) Call(ctx context.Context, req *toolv1.CallRequest) (*toolv
 	}
 
 	// 2. EmitMetric.
-	if _, err := s.host.EmitMetric(ctx, &hostv1.EmitMetricRequest{
+	if _, err := s.host.EmitMetric(hostCtx, &hostv1.EmitMetricRequest{
 		Name:   "echo_calls_total",
 		Value:  1,
 		Labels: map[string]string{"tool": "echo"},
@@ -105,7 +111,7 @@ func (s *ToolService) Call(ctx context.Context, req *toolv1.CallRequest) (*toolv
 	}
 
 	// 3. Log confirmation.
-	if _, err := s.host.Log(ctx, &hostv1.LogRequest{
+	if _, err := s.host.Log(hostCtx, &hostv1.LogRequest{
 		Level: hostv1.LogLevel_LOG_LEVEL_INFO,
 		Msg:   "echo handled",
 	}); err != nil {
