@@ -29,6 +29,12 @@ const EventTypeUnauthorizedTier2Call = "unauthorized_tier2_call"
 // Severity is always "high".
 const EventTypeUnauthorizedRequestID = "unauthorized_request_id"
 
+// EventTypeFeedbackResponseLate is the plugin_audit_events.event_type value
+// written when a plugin delivers a feedback_response for a request that has
+// already been resolved or timed out (spec §4.2 late-callback paragraph).
+// Severity is "warning". Run state is not mutated.
+const EventTypeFeedbackResponseLate = "feedback_response_late"
+
 // AuditQuerier is the narrow DB interface this package needs. A *db.Queries
 // value satisfies it; the narrow interface makes tests cheaper to write.
 type AuditQuerier interface {

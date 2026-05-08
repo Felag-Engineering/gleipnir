@@ -19,6 +19,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
 	commonv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
@@ -191,22 +192,104 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 		return nil, status.Error(codes.InvalidArgument, "request_id must be set for feedback_response steps")
 	}
 
+	requestID := req.GetRequestId()
+	payloadJSON := req.GetPayloadJson()
+
+	// Plugin-substrate path: look up plugin_pending_requests first. On
+	// sql.ErrNoRows, fall through to the native feedback_requests path below.
+	pendingReq, perr := s.q.GetPluginPendingRequest(ctx, requestID)
+	if perr == nil {
+		// Row exists — this is a plugin-substrate feedback_response.
+		if pendingReq.PluginInstanceID != inst.ID {
+			// Wrong instance: ownership violation.
+			s.writeAuditEvent(ctx, inst.ID, EventTypeUnauthorizedRequestID, "high", map[string]string{
+				"request_id": requestID,
+				"run_id":     pendingReq.RunID,
+				"rpc_method": rpcMethod,
+			})
+			return nil, status.Error(codes.PermissionDenied, "unauthorized_request_id")
+		}
+
+		if s.channels == nil {
+			// Resolver not wired — treat as late callback to avoid silent drop.
+			slog.WarnContext(ctx, "plugin channel resolver not wired; treating as late callback",
+				"request_id", requestID,
+			)
+			s.writeAuditEvent(ctx, inst.ID, EventTypeFeedbackResponseLate, "warning", map[string]string{
+				"request_id": requestID,
+				"reason":     "resolver_unwired",
+				"substrate":  "plugin",
+				"status":     pendingReq.Status,
+			})
+			return &hostv1.WriteAuditStepResponse{
+				Ok: false,
+				Error: &commonv1.ErrorEnvelope{
+					Code:    commonv1.ErrorCode_ERROR_CODE_INVALID_ARG,
+					Message: EventTypeFeedbackResponseLate,
+				},
+			}, nil
+		}
+
+		resolved, rerr := s.channels.Resolve(ctx, requestID, payloadJSON)
+		if rerr != nil && !errors.Is(rerr, dispatch.ErrUnknownRequestID) {
+			return nil, status.Errorf(codes.Internal, "resolve plugin request: %v", rerr)
+		}
+
+		if !resolved {
+			reason := "late"
+			if errors.Is(rerr, dispatch.ErrUnknownRequestID) {
+				// The in-memory waiter was evicted (server restart or scanner race)
+				// but the DB row exists, so the request is no longer actionable.
+				reason = "evicted_waiter"
+			}
+			s.writeAuditEvent(ctx, inst.ID, EventTypeFeedbackResponseLate, "warning", map[string]string{
+				"request_id": requestID,
+				"reason":     reason,
+				"substrate":  "plugin",
+				"status":     pendingReq.Status,
+			})
+			return &hostv1.WriteAuditStepResponse{
+				Ok: false,
+				Error: &commonv1.ErrorEnvelope{
+					Code:    commonv1.ErrorCode_ERROR_CODE_INVALID_ARG,
+					Message: EventTypeFeedbackResponseLate,
+				},
+			}, nil
+		}
+
+		// CAS won: publish SSE event and return ok=true. The agent loop's
+		// Dispatcher.Wait writes its own audit step; we do not duplicate it here.
+		if eventData, marshalErr := json.Marshal(map[string]string{
+			"run_id":      pendingReq.RunID,
+			"request_id":  requestID,
+			"instance_id": inst.ID,
+			"step_type":   "feedback_response",
+		}); marshalErr == nil {
+			s.publisher.Publish("plugin.feedback_response_written", eventData)
+		}
+		return &hostv1.WriteAuditStepResponse{Ok: true}, nil
+	}
+	if !errors.Is(perr, sql.ErrNoRows) {
+		return nil, status.Errorf(codes.Internal, "get plugin pending request: %v", perr)
+	}
+	// sql.ErrNoRows: not a plugin-substrate request — fall through to native path.
+
 	// Look up the feedback request; reject late responses without mutating state.
-	fr, err := s.q.GetFeedbackRequest(ctx, req.GetRequestId())
+	fr, err := s.q.GetFeedbackRequest(ctx, requestID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "get feedback request: %v", err)
 	}
 	if fr.Status != "pending" {
 		// Spec §4.2 line 106: record the late attempt and return ok=false.
-		s.writeAuditEvent(ctx, inst.ID, "feedback_response_late", "medium", map[string]string{
-			"request_id": req.GetRequestId(),
+		s.writeAuditEvent(ctx, inst.ID, EventTypeFeedbackResponseLate, "warning", map[string]string{
+			"request_id": requestID,
 			"status":     fr.Status,
 		})
 		return &hostv1.WriteAuditStepResponse{
 			Ok: false,
 			Error: &commonv1.ErrorEnvelope{
 				Code:    commonv1.ErrorCode_ERROR_CODE_INVALID_ARG,
-				Message: "feedback_response_late",
+				Message: EventTypeFeedbackResponseLate,
 			},
 		}, nil
 	}
@@ -226,7 +309,7 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 	}
 	if !policyGrantsInstance(policy.Yaml, inst.InstanceName) {
 		s.writeAuditEvent(ctx, inst.ID, EventTypeUnauthorizedRequestID, "high", map[string]string{
-			"request_id": req.GetRequestId(),
+			"request_id": requestID,
 			"run_id":     fr.RunID,
 			"rpc_method": rpcMethod,
 		})
@@ -250,7 +333,7 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 		RunID:      fr.RunID,
 		StepNumber: nextStep,
 		Type:       "feedback_response",
-		Content:    req.GetPayloadJson(),
+		Content:    payloadJSON,
 		TokenCost:  0,
 		CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
 	})
@@ -259,12 +342,11 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	payloadJSON := req.GetPayloadJson()
 	_, err = s.q.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
 		Status:     "resolved",
 		Response:   &payloadJSON,
 		ResolvedAt: &now,
-		ID:         req.GetRequestId(),
+		ID:         requestID,
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "update feedback request status: %v", err)
@@ -272,10 +354,10 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 
 	// Publish so SSE subscribers and tests can observe the step.
 	if eventData, marshalErr := json.Marshal(map[string]string{
-		"run_id":     fr.RunID,
-		"request_id": req.GetRequestId(),
+		"run_id":      fr.RunID,
+		"request_id":  requestID,
 		"instance_id": inst.ID,
-		"step_type":  "feedback_response",
+		"step_type":   "feedback_response",
 	}); marshalErr == nil {
 		s.publisher.Publish("plugin.feedback_response_written", eventData)
 	}

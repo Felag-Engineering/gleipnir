@@ -26,6 +26,7 @@ type Querier interface {
 	UpdateFeedbackRequestStatus(ctx context.Context, arg db.UpdateFeedbackRequestStatusParams) (int64, error)
 	GetRun(ctx context.Context, id string) (db.Run, error)
 	GetPolicy(ctx context.Context, id string) (db.Policy, error)
+	GetPluginPendingRequest(ctx context.Context, id string) (db.PluginPendingRequest, error)
 	// Tier-2 RPC support
 	GetPluginByID(ctx context.Context, id string) (db.Plugin, error)
 	ListPolicies(ctx context.Context) ([]db.Policy, error)
@@ -56,6 +57,13 @@ type InstanceBinder interface {
 	InstanceIDFromContext(ctx context.Context) (instanceID string, ok bool)
 }
 
+// ChannelResolver delivers a plugin-substrate feedback response to the
+// in-flight Request waiter identified by requestID.  Satisfied by
+// *dispatch.Dispatcher.  nil is a valid value for NewServer (see docs there).
+type ChannelResolver interface {
+	Resolve(ctx context.Context, requestID, responseJSON string) (resolved bool, err error)
+}
+
 // Server implements hostv1.HostServiceServer for all Host RPCs. Tier-1 RPCs
 // are always available; Tier-2 RPCs (RunHistoryRead, UserDirectoryRead) require
 // a matching capability declaration in the plugin manifest (spec §8.2).
@@ -68,6 +76,9 @@ type Server struct {
 	binder        InstanceBinder
 	publisher     event.Publisher
 	metrics       *pluginMetrics
+	// channels is nil when the plugin substrate is disabled; WriteAuditStep
+	// treats nil as "resolver unwired" and collapses into the late-callback path.
+	channels ChannelResolver
 }
 
 // Register implements hostwire.HostServer by registering *Server as the
@@ -82,12 +93,19 @@ func (s *Server) Register(srv *grpc.Server) {
 // binder must be non-nil; pass a concrete implementation that resolves the
 // caller's plugin instance ID from the request context (production wiring uses
 // NewContextBinder paired with UnaryInstanceTokenInterceptor — see issue #202).
+//
+// channels may be nil (e.g. in tests that only exercise the native
+// feedback_requests path). When nil and a plugin_pending_requests row is found
+// for a WriteAuditStep request_id, the call is treated as a late callback with
+// reason="resolver_unwired" and a warning is logged. Production wiring passes
+// the *dispatch.Dispatcher.
 func NewServer(
 	q Querier,
 	encryptionKey []byte,
 	resolver CallContextResolver,
 	binder InstanceBinder,
 	publisher event.Publisher,
+	channels ChannelResolver,
 ) *Server {
 	if binder == nil {
 		panic("hostsvc.NewServer: binder must not be nil")
@@ -99,5 +117,6 @@ func NewServer(
 		binder:        binder,
 		publisher:     publisher,
 		metrics:       newPluginMetrics(),
+		channels:      channels,
 	}
 }

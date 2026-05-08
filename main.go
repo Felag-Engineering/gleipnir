@@ -197,12 +197,18 @@ func run(cfg config.Config) error {
 		identityReg := identity.New()
 		genCtrl := generation.New()
 
+		pluginDispatcher := dispatch.NewDispatcher(dispatch.DispatcherConfig{
+			Queries: store.Queries(),
+			Connect: stubConnFactory,
+		})
+
 		hostSvc := hostsvc.NewServer(
 			store.Queries(),
 			encryptionKey,
 			pluginPool,
 			hostsvc.NewContextBinder(),
 			broadcaster,
+			pluginDispatcher,
 		)
 
 		interceptors := []grpc.UnaryServerInterceptor{

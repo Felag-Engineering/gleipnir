@@ -67,15 +67,6 @@ type DispatcherConfig struct {
 //
 // Package boundary: internal/plugin must not import internal/execution/agent.
 // WriteRunStep is injected via DispatcherConfig to preserve that boundary.
-//
-// KNOWN DEPENDENCY / DEAD-CODE WINDOW: Dispatcher.Resolve is currently dead
-// code in production.  At the time this was written, WriteAuditStep in
-// internal/plugin/hostsvc/handlers.go dispatches feedback_response payloads
-// exclusively via q.GetFeedbackRequest.  It does NOT consult
-// plugin_pending_requests and does NOT call Dispatcher.Resolve.  Resolve
-// becomes reachable once a follow-up issue extends WriteAuditStep to also look
-// up plugin_pending_requests and invoke Dispatcher.Resolve.  Until then, the
-// unit tests exercise Resolve directly.
 type Dispatcher struct {
 	cfg DispatcherConfig
 
@@ -399,18 +390,19 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 // by requestID.  It sends the response on the buffered waiter channel and
 // advances the persisted status to "resolved".
 //
-// If the scanner has already timed out the row (ErrTransitionConflict from
-// TransitionResolved), Resolve logs at debug and returns nil — the scanner
-// already handled the run-failure side effects.
-//
-// ErrUnknownRequestID is returned when the requestID is not in the waiters
-// map (never issued, already resolved, or expired).
-func (d *Dispatcher) Resolve(ctx context.Context, requestID, responseJSON string) error {
+// Return values:
+//   - (true, nil)  — CAS transition succeeded; waiter notified.
+//   - (false, nil) — ErrTransitionConflict from TransitionResolved: the scanner
+//     already timed out the row; caller should treat this as a late callback.
+//   - (false, ErrUnknownRequestID) — requestID not in the in-memory waiters map;
+//     may mean the server restarted (evicted waiter) or the ID was never issued.
+//   - (false, err) — unexpected DB error; caller should return Internal.
+func (d *Dispatcher) Resolve(ctx context.Context, requestID, responseJSON string) (resolved bool, err error) {
 	d.waitersMu.Lock()
 	ch, ok := d.waiters[requestID]
 	if !ok {
 		d.waitersMu.Unlock()
-		return ErrUnknownRequestID
+		return false, ErrUnknownRequestID
 	}
 	delete(d.waiters, requestID)
 	d.waitersMu.Unlock()
@@ -430,11 +422,11 @@ func (d *Dispatcher) Resolve(ctx context.Context, requestID, responseJSON string
 			slog.Debug("resolve: transition conflict — scanner already timed out request",
 				"request_id", requestID,
 			)
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
-	return nil
+	return true, nil
 }
 
 // Wait blocks until the request identified by requestID is resolved, the
