@@ -601,3 +601,163 @@ func TestScanner_RestartInterrupted_ThenTimeout(t *testing.T) {
 		t.Errorf("run.status_changed events from scanner = %d, want 0", n)
 	}
 }
+
+// ---- plugin_request scanner tests ----
+
+// insertPluginForScanner inserts the minimum rows required by
+// plugin_pending_requests foreign keys: a plugin row and a plugin_instances row.
+// Returns the instance ID.
+func insertPluginForScanner(t *testing.T, s *db.Store) string {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.DB().Exec(
+		`INSERT INTO plugins(id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, version, created_at, updated_at)
+		 VALUES ('plug1', 'test-plugin', '1.0.0', '{}', 'pk', 'active', 0, ?, ?)`,
+		now, now,
+	)
+	if err != nil {
+		t.Fatalf("insertPlugin: %v", err)
+	}
+	_, err = s.DB().Exec(
+		`INSERT INTO plugin_instances(id, plugin_id, instance_name, config_json, version, created_at, updated_at)
+		 VALUES ('inst1', 'plug1', 'inst', '{}', 0, ?, ?)`,
+		now, now,
+	)
+	if err != nil {
+		t.Fatalf("insertPluginInstance: %v", err)
+	}
+	return "inst1"
+}
+
+// insertPluginPendingRequest inserts a plugin_pending_requests row with the given
+// expiresAt (RFC3339Nano string).  Pass an empty string for no timeout.
+func insertPluginPendingRequest(t *testing.T, s *db.Store, id, instanceID, runID, toolName string, expiresAt string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	var expiresAtArg interface{}
+	if expiresAt != "" {
+		expiresAtArg = expiresAt
+	}
+	_, err := s.DB().Exec(
+		`INSERT INTO plugin_pending_requests(id, plugin_instance_id, run_id, tool_name, status, expires_at, created_at)
+		 VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+		id, instanceID, runID, toolName, expiresAtArg, now,
+	)
+	if err != nil {
+		t.Fatalf("insertPluginPendingRequest %s: %v", id, err)
+	}
+}
+
+// TestPluginRequestScanner_ExpiredRequest_MarksTimeoutAndFails verifies the
+// happy-path timeout: expired pending request is marked timed_out and the run
+// is failed with an error step.
+func TestPluginRequestScanner_ExpiredRequest_MarksTimeoutAndFails(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusWaitingForFeedback)
+	instID := insertPluginForScanner(t, s)
+	insertPluginPendingRequest(t, s, "req1", instID, "r1", "ask_tool", pastTimestamp())
+
+	scanner := timeout.NewPluginRequestScanner(s, time.Minute)
+	if err := scanner.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	var status string
+	if err := s.DB().QueryRow(`SELECT status FROM plugin_pending_requests WHERE id = 'req1'`).Scan(&status); err != nil {
+		t.Fatalf("query request: %v", err)
+	}
+	if status != "timed_out" {
+		t.Errorf("status = %q, want timed_out", status)
+	}
+
+	var runStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = 'r1'`).Scan(&runStatus); err != nil {
+		t.Fatalf("query run: %v", err)
+	}
+	if runStatus != "failed" {
+		t.Errorf("run status = %q, want failed", runStatus)
+	}
+
+	// An error step must exist with plugin_request_timeout code.
+	var content string
+	if err := s.DB().QueryRow(`SELECT content FROM run_steps WHERE run_id = 'r1' AND type = 'error'`).Scan(&content); err != nil {
+		t.Fatalf("query error step: %v", err)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		t.Errorf("step content not valid JSON: %v", err)
+	} else if payload["code"] != "plugin_request_timeout" {
+		t.Errorf("step code = %q, want plugin_request_timeout", payload["code"])
+	}
+}
+
+// TestPluginRequestScanner_NoExpiry_NotCollected verifies that rows without
+// an expires_at are never collected (indefinite-wait semantics).
+func TestPluginRequestScanner_NoExpiry_NotCollected(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusWaitingForFeedback)
+	instID := insertPluginForScanner(t, s)
+	insertPluginPendingRequest(t, s, "req1", instID, "r1", "ask_tool", "") // no expires_at
+
+	scanner := timeout.NewPluginRequestScanner(s, time.Minute)
+	if err := scanner.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	var status string
+	if err := s.DB().QueryRow(`SELECT status FROM plugin_pending_requests WHERE id = 'req1'`).Scan(&status); err != nil {
+		t.Fatalf("query request: %v", err)
+	}
+	if status != "pending" {
+		t.Errorf("status = %q, want pending (no expires_at must not be collected)", status)
+	}
+}
+
+// TestPluginRequestScanner_RunNotWaiting_RowTimedOutNoRunStep verifies that
+// when the run is not in waiting_for_feedback (e.g. already interrupted), the
+// scanner still marks the row timed_out but does NOT write an error step or
+// change the run status.
+func TestPluginRequestScanner_RunNotWaiting_RowTimedOutNoRunStep(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	// Run already interrupted — not in waiting_for_feedback.
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusInterrupted)
+	instID := insertPluginForScanner(t, s)
+	insertPluginPendingRequest(t, s, "req1", instID, "r1", "ask_tool", pastTimestamp())
+
+	pub := &testutil.RecordingPublisher{}
+	scanner := timeout.NewPluginRequestScanner(s, time.Minute, timeout.WithPublisher(pub))
+	if err := scanner.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	// Row must still be marked timed_out.
+	var status string
+	if err := s.DB().QueryRow(`SELECT status FROM plugin_pending_requests WHERE id = 'req1'`).Scan(&status); err != nil {
+		t.Fatalf("query request: %v", err)
+	}
+	if status != "timed_out" {
+		t.Errorf("status = %q, want timed_out", status)
+	}
+
+	// Run must remain interrupted (not changed).
+	var runStatus string
+	if err := s.DB().QueryRow(`SELECT status FROM runs WHERE id = 'r1'`).Scan(&runStatus); err != nil {
+		t.Fatalf("query run: %v", err)
+	}
+	if runStatus != "interrupted" {
+		t.Errorf("run status = %q, want interrupted", runStatus)
+	}
+
+	// No error step should have been written.
+	if n := countErrorSteps(t, s, "r1"); n != 0 {
+		t.Errorf("error steps = %d, want 0 (run was not waiting_for_feedback)", n)
+	}
+
+	// No events published because run was not in waiting state.
+	if n := countEventsByType(pub, "run.status_changed"); n != 0 {
+		t.Errorf("run.status_changed events = %d, want 0", n)
+	}
+}
