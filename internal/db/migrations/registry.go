@@ -24,5 +24,6 @@ func All() []Migration {
 		&AddMCPAuthHeaders{},
 		&AddPluginTables{},
 		&AddPluginAudiencesAndPendingRequests{},
+		&AddDisableInAppFallback{},
 	}
 }

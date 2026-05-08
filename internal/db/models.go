@@ -89,12 +89,13 @@ type Plugin struct {
 }
 
 type PluginAudience struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	CreatedByUserID *string `json:"created_by_user_id"`
-	Version         int64   `json:"version"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
+	ID                   string  `json:"id"`
+	Name                 string  `json:"name"`
+	CreatedByUserID      *string `json:"created_by_user_id"`
+	Version              int64   `json:"version"`
+	CreatedAt            string  `json:"created_at"`
+	UpdatedAt            string  `json:"updated_at"`
+	DisableInAppFallback int64   `json:"disable_in_app_fallback"`
 }
 
 type PluginAuditEvent struct {

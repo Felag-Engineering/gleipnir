@@ -1,23 +1,26 @@
 -- name: CreatePluginAudience :one
-INSERT INTO plugin_audiences (id, name, created_by_user_id, version, created_at, updated_at)
-VALUES (:id, :name, :created_by_user_id, 0, :created_at, :updated_at)
-RETURNING *;
+INSERT INTO plugin_audiences (id, name, created_by_user_id, version, created_at, updated_at, disable_in_app_fallback)
+VALUES (:id, :name, :created_by_user_id, 0, :created_at, :updated_at, :disable_in_app_fallback)
+RETURNING id, name, created_by_user_id, version, created_at, updated_at, disable_in_app_fallback;
 
 -- name: GetPluginAudienceByID :one
-SELECT * FROM plugin_audiences WHERE id = :id;
+SELECT id, name, created_by_user_id, version, created_at, updated_at, disable_in_app_fallback
+FROM plugin_audiences WHERE id = :id;
 
 -- name: GetPluginAudienceByName :one
-SELECT * FROM plugin_audiences WHERE name = :name;
+SELECT id, name, created_by_user_id, version, created_at, updated_at, disable_in_app_fallback
+FROM plugin_audiences WHERE name = :name;
 
 -- name: ListPluginAudiences :many
-SELECT * FROM plugin_audiences ORDER BY name;
+SELECT id, name, created_by_user_id, version, created_at, updated_at, disable_in_app_fallback
+FROM plugin_audiences ORDER BY name;
 
--- UpdatePluginAudience edits the audience name and bumps the CAS version.
--- rows_affected == 0 means the expected_version did not match (concurrent
--- writer) -- see ADR-038.
+-- UpdatePluginAudience edits the audience name and disable_in_app_fallback flag,
+-- and bumps the CAS version. rows_affected == 0 means the expected_version did
+-- not match (concurrent writer) -- see ADR-038.
 -- name: UpdatePluginAudience :execrows
 UPDATE plugin_audiences
-SET name = :name, version = version + 1, updated_at = :updated_at
+SET name = :name, disable_in_app_fallback = :disable_in_app_fallback, version = version + 1, updated_at = :updated_at
 WHERE id = :id AND version = :expected_version;
 
 -- name: DeletePluginAudience :execrows
@@ -29,13 +32,14 @@ DELETE FROM plugin_audiences WHERE id = :id;
 -- ambiguity for sqlc.
 -- name: GetPluginAudienceWithEntries :many
 SELECT
-    pa.id              AS audience_id,
-    pa.name            AS audience_name,
+    pa.id                      AS audience_id,
+    pa.name                    AS audience_name,
     pa.created_by_user_id,
-    pa.version         AS audience_version,
-    pa.created_at      AS audience_created_at,
-    pa.updated_at      AS audience_updated_at,
-    ae.id              AS entry_id,
+    pa.version                 AS audience_version,
+    pa.created_at              AS audience_created_at,
+    pa.updated_at              AS audience_updated_at,
+    pa.disable_in_app_fallback AS disable_in_app_fallback,
+    ae.id                      AS entry_id,
     ae.plugin_instance_id,
     ae.position,
     ae.notify,
@@ -49,10 +53,11 @@ ORDER BY ae.position;
 -- name: CreateAudienceEntry :one
 INSERT INTO audience_entries (id, audience_id, plugin_instance_id, position, notify, request, config_json)
 VALUES (:id, :audience_id, :plugin_instance_id, :position, :notify, :request, :config_json)
-RETURNING *;
+RETURNING id, audience_id, plugin_instance_id, position, notify, request, config_json;
 
 -- name: ListAudienceEntries :many
-SELECT * FROM audience_entries WHERE audience_id = :audience_id ORDER BY position;
+SELECT id, audience_id, plugin_instance_id, position, notify, request, config_json
+FROM audience_entries WHERE audience_id = :audience_id ORDER BY position;
 
 -- UpdateAudienceEntry updates the notify, request, and config_json fields of
 -- an entry. Position is not changed here; use ReorderAudienceEntry for that.
