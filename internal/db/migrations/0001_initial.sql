@@ -429,12 +429,13 @@ CREATE INDEX idx_pae_event_created    ON plugin_audit_events(event_type, created
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE plugin_audiences (
-    id                  TEXT    PRIMARY KEY,                                 -- ULID (ADR-013)
-    name                TEXT    NOT NULL UNIQUE,
-    created_by_user_id  TEXT    REFERENCES users(id) ON DELETE SET NULL,
-    version             INTEGER NOT NULL DEFAULT 0,                          -- ADR-038 CAS counter
-    created_at          TEXT    NOT NULL,                                    -- ISO 8601 UTC
-    updated_at          TEXT    NOT NULL                                     -- ISO 8601 UTC
+    id                      TEXT    PRIMARY KEY,                             -- ULID (ADR-013)
+    name                    TEXT    NOT NULL UNIQUE,
+    created_by_user_id      TEXT    REFERENCES users(id) ON DELETE SET NULL,
+    version                 INTEGER NOT NULL DEFAULT 0,                      -- ADR-038 CAS counter
+    created_at              TEXT    NOT NULL,                                -- ISO 8601 UTC
+    updated_at              TEXT    NOT NULL,                                -- ISO 8601 UTC
+    disable_in_app_fallback INTEGER NOT NULL DEFAULT 0                       -- §6.2 opt-out toggle
 );
 
 CREATE TABLE audience_entries (

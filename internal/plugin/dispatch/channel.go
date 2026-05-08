@@ -12,6 +12,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/audience"
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	commonv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1"
 )
@@ -120,9 +121,14 @@ func (d *Dispatcher) channelClient(instanceName string) (channelv1.ChannelServic
 // propagated — the run is unaffected regardless of how many entries fail.
 // Worst-case wall-clock is bounded by cfg.NotifyTimeout.
 func (d *Dispatcher) Notify(ctx context.Context, audienceID string, rc RouteContext, eventType, payloadJSON string) error {
-	entries, err := d.cfg.Queries.GetPluginAudienceWithEntries(ctx, audienceID)
+	rawRows, err := d.cfg.Queries.GetPluginAudienceWithEntries(ctx, audienceID)
 	if err != nil {
 		return fmt.Errorf("get audience %s: %w", audienceID, err)
+	}
+
+	effective, err := audience.Resolve(rawRows)
+	if err != nil {
+		return fmt.Errorf("resolve audience %s: %w", audienceID, err)
 	}
 
 	// Collect the entries that are eligible for Notify dispatch.
@@ -134,34 +140,30 @@ func (d *Dispatcher) Notify(ctx context.Context, audienceID string, rc RouteCont
 		configJSON   string
 	}
 	var targets []target
-	for _, ae := range entries {
-		// LEFT JOIN rows where the audience has no entries have nil EntryID.
-		if ae.EntryID == nil || ae.PluginInstanceID == nil {
+	for _, ae := range effective {
+		if !ae.Notify {
 			continue
 		}
-		// Notify is an *int64 from SQLite's integer boolean column.
-		if ae.Notify == nil || *ae.Notify == 0 {
+		// Skip the synthetic in-app entry — inAppChannel.Notify is a no-op
+		// and there is no plugin_instances row to look up.
+		if ae.Auto && ae.PluginInstanceID == audience.InAppPluginID {
 			continue
 		}
-		inst, err := d.cfg.Queries.GetPluginInstanceByID(ctx, *ae.PluginInstanceID)
+		inst, err := d.cfg.Queries.GetPluginInstanceByID(ctx, ae.PluginInstanceID)
 		if err != nil {
 			slog.Warn("notify: could not load plugin instance",
-				"entry_id", *ae.EntryID,
-				"instance_id", *ae.PluginInstanceID,
+				"entry_id", ae.EntryID,
+				"instance_id", ae.PluginInstanceID,
 				"err", err,
 			)
 			continue
 		}
-		configJSON := ""
-		if ae.ConfigJson != nil {
-			configJSON = *ae.ConfigJson
-		}
 		targets = append(targets, target{
-			entryID:      *ae.EntryID,
+			entryID:      ae.EntryID,
 			instanceName: inst.InstanceName,
 			instanceID:   inst.ID,
 			pluginID:     inst.PluginID,
-			configJSON:   configJSON,
+			configJSON:   ae.ConfigJSON,
 		})
 	}
 
@@ -245,52 +247,59 @@ func (d *Dispatcher) notifyOne(ctx context.Context, rc RouteContext, instanceNam
 // Request dispatches a channel request to the first audience entry with
 // request: true (in position order).  It applies a 5s pre-ack deadline; on
 // pre-ack success it inserts a plugin_pending_requests row and returns the
-// requestID so the caller can block on Wait.
+// requestID and RouteToPlugin so the caller can block on Wait.
+//
+// When the first Request-capable entry is the synthetic gleipnir.in-app entry,
+// it returns ("", RouteToInApp, nil) without making any gRPC call or inserting
+// a DB row — the feedback_requests substrate handles in-app Requests.
 //
 // On pre-ack failure, it calls WriteRunStep with a "feedback_dispatch_error"
 // step and returns ErrPreAckFailed.  The caller should map this to
 // runstate.TransitionRunFailed.
-func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteContext, prompt string, expiresAt *time.Time) (requestID string, err error) {
-	entries, err := d.cfg.Queries.GetPluginAudienceWithEntries(ctx, audienceID)
+//
+// ErrNoRequestCapableEntry is returned only when disable_in_app_fallback=true
+// and the audience has no persisted Request-capable entries (a state the
+// audience validator blocks at save time; this is defense-in-depth only).
+func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteContext, prompt string, expiresAt *time.Time) (requestID string, outcome RoutingOutcome, err error) {
+	rawRows, err := d.cfg.Queries.GetPluginAudienceWithEntries(ctx, audienceID)
 	if err != nil {
-		return "", fmt.Errorf("get audience %s: %w", audienceID, err)
+		return "", 0, fmt.Errorf("get audience %s: %w", audienceID, err)
+	}
+
+	effective, err := audience.Resolve(rawRows)
+	if err != nil {
+		return "", 0, fmt.Errorf("resolve audience %s: %w", audienceID, err)
 	}
 
 	// Find the first entry with request capability.
-	var (
-		targetEntry    *db.GetPluginAudienceWithEntriesRow
-		targetInstance db.PluginInstance
-	)
-	for i := range entries {
-		ae := &entries[i]
-		if ae.EntryID == nil || ae.PluginInstanceID == nil {
-			continue
+	var firstRequest *audience.EffectiveEntry
+	for i := range effective {
+		if effective[i].Request {
+			firstRequest = &effective[i]
+			break
 		}
-		// Request is an *int64 from SQLite's integer boolean column.
-		if ae.Request == nil || *ae.Request == 0 {
-			continue
-		}
-		inst, lookupErr := d.cfg.Queries.GetPluginInstanceByID(ctx, *ae.PluginInstanceID)
-		if lookupErr != nil {
-			slog.Warn("request: could not load plugin instance",
-				"entry_id", *ae.EntryID,
-				"instance_id", *ae.PluginInstanceID,
-				"err", lookupErr,
-			)
-			continue
-		}
-		targetEntry = ae
-		targetInstance = inst
-		break
 	}
 
-	if targetEntry == nil {
-		return "", ErrNoRequestCapableEntry
+	if firstRequest == nil {
+		// Defense-in-depth: validator blocks this at save time when disable=true.
+		return "", 0, ErrNoRequestCapableEntry
+	}
+
+	// Synthetic in-app entry: no gRPC call, no DB row.
+	if firstRequest.Auto && firstRequest.PluginInstanceID == audience.InAppPluginID {
+		// TODO(#209): wire RouteToInApp into the caller so it can await
+		// the feedback_requests substrate instead of plugin_pending_requests.
+		return "", RouteToInApp, nil
+	}
+
+	targetInstance, lookupErr := d.cfg.Queries.GetPluginInstanceByID(ctx, firstRequest.PluginInstanceID)
+	if lookupErr != nil {
+		return "", 0, fmt.Errorf("load plugin instance %q: %w", firstRequest.PluginInstanceID, lookupErr)
 	}
 
 	client, err := d.channelClient(targetInstance.InstanceName)
 	if err != nil {
-		return "", fmt.Errorf("connecting to plugin instance %q: %w", targetInstance.InstanceName, err)
+		return "", 0, fmt.Errorf("connecting to plugin instance %q: %w", targetInstance.InstanceName, err)
 	}
 
 	// §4.2: request_id is instance-scoped, NOT generation-scoped. Never append a
@@ -306,11 +315,6 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 	d.waiters[reqID] = waiter
 	d.waitersMu.Unlock()
 
-	configJSON := ""
-	if targetEntry.ConfigJson != nil {
-		configJSON = *targetEntry.ConfigJson
-	}
-
 	preCtx, cancelPre := context.WithTimeout(ctx, d.cfg.PreAckTimeout)
 	defer cancelPre()
 
@@ -323,7 +327,7 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 		},
 		RequestId:         reqID,
 		Prompt:            prompt,
-		ChannelConfigJson: configJSON,
+		ChannelConfigJson: firstRequest.ConfigJSON,
 	})
 	observeRPC("Request", targetInstance.PluginID, targetInstance.ID, start)
 
@@ -352,13 +356,13 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 
 		if d.cfg.WriteRunStep != nil {
 			_ = d.cfg.WriteRunStep(ctx, rc.RunID, "feedback_dispatch_error", map[string]interface{}{
-				"message":     preAckFailMsg,
-				"code":        "feedback_dispatch_error",
-				"instance":    targetInstance.InstanceName,
-				"request_id":  reqID,
+				"message":    preAckFailMsg,
+				"code":       "feedback_dispatch_error",
+				"instance":   targetInstance.InstanceName,
+				"request_id": reqID,
 			})
 		}
-		return "", fmt.Errorf("%w: %s", ErrPreAckFailed, preAckFailMsg)
+		return "", 0, fmt.Errorf("%w: %s", ErrPreAckFailed, preAckFailMsg)
 	}
 
 	// Pre-ack succeeded: persist the pending request row.
@@ -369,8 +373,8 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 		expiresAtStr = &s
 	}
 	var entryID *string
-	if targetEntry.EntryID != nil {
-		entryID = targetEntry.EntryID
+	if firstRequest.EntryID != "" {
+		entryID = &firstRequest.EntryID
 	}
 	if _, dbErr := d.cfg.Queries.CreatePluginPendingRequest(ctx, db.CreatePluginPendingRequestParams{
 		ID:               reqID,
@@ -385,10 +389,10 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 		d.waitersMu.Lock()
 		delete(d.waiters, reqID)
 		d.waitersMu.Unlock()
-		return "", fmt.Errorf("persist plugin pending request: %w", dbErr)
+		return "", 0, fmt.Errorf("persist plugin pending request: %w", dbErr)
 	}
 
-	return reqID, nil
+	return reqID, RouteToPlugin, nil
 }
 
 // Resolve delivers the operator's response to the in-flight Request identified

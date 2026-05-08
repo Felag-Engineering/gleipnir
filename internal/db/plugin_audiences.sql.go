@@ -49,17 +49,18 @@ func (q *Queries) CreateAudienceEntry(ctx context.Context, arg CreateAudienceEnt
 }
 
 const createPluginAudience = `-- name: CreatePluginAudience :one
-INSERT INTO plugin_audiences (id, name, created_by_user_id, version, created_at, updated_at)
-VALUES (?1, ?2, ?3, 0, ?4, ?5)
-RETURNING id, name, created_by_user_id, version, created_at, updated_at
+INSERT INTO plugin_audiences (id, name, created_by_user_id, version, created_at, updated_at, disable_in_app_fallback)
+VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)
+RETURNING id, name, created_by_user_id, version, created_at, updated_at, disable_in_app_fallback
 `
 
 type CreatePluginAudienceParams struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	CreatedByUserID *string `json:"created_by_user_id"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
+	ID                   string  `json:"id"`
+	Name                 string  `json:"name"`
+	CreatedByUserID      *string `json:"created_by_user_id"`
+	CreatedAt            string  `json:"created_at"`
+	UpdatedAt            string  `json:"updated_at"`
+	DisableInAppFallback int64   `json:"disable_in_app_fallback"`
 }
 
 func (q *Queries) CreatePluginAudience(ctx context.Context, arg CreatePluginAudienceParams) (PluginAudience, error) {
@@ -69,6 +70,7 @@ func (q *Queries) CreatePluginAudience(ctx context.Context, arg CreatePluginAudi
 		arg.CreatedByUserID,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.DisableInAppFallback,
 	)
 	var i PluginAudience
 	err := row.Scan(
@@ -78,6 +80,7 @@ func (q *Queries) CreatePluginAudience(ctx context.Context, arg CreatePluginAudi
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DisableInAppFallback,
 	)
 	return i, err
 }
@@ -107,7 +110,8 @@ func (q *Queries) DeletePluginAudience(ctx context.Context, id string) (int64, e
 }
 
 const getPluginAudienceByID = `-- name: GetPluginAudienceByID :one
-SELECT id, name, created_by_user_id, version, created_at, updated_at FROM plugin_audiences WHERE id = ?1
+SELECT id, name, created_by_user_id, version, created_at, updated_at, disable_in_app_fallback
+FROM plugin_audiences WHERE id = ?1
 `
 
 func (q *Queries) GetPluginAudienceByID(ctx context.Context, id string) (PluginAudience, error) {
@@ -120,12 +124,14 @@ func (q *Queries) GetPluginAudienceByID(ctx context.Context, id string) (PluginA
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DisableInAppFallback,
 	)
 	return i, err
 }
 
 const getPluginAudienceByName = `-- name: GetPluginAudienceByName :one
-SELECT id, name, created_by_user_id, version, created_at, updated_at FROM plugin_audiences WHERE name = ?1
+SELECT id, name, created_by_user_id, version, created_at, updated_at, disable_in_app_fallback
+FROM plugin_audiences WHERE name = ?1
 `
 
 func (q *Queries) GetPluginAudienceByName(ctx context.Context, name string) (PluginAudience, error) {
@@ -138,19 +144,21 @@ func (q *Queries) GetPluginAudienceByName(ctx context.Context, name string) (Plu
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DisableInAppFallback,
 	)
 	return i, err
 }
 
 const getPluginAudienceWithEntries = `-- name: GetPluginAudienceWithEntries :many
 SELECT
-    pa.id              AS audience_id,
-    pa.name            AS audience_name,
+    pa.id                      AS audience_id,
+    pa.name                    AS audience_name,
     pa.created_by_user_id,
-    pa.version         AS audience_version,
-    pa.created_at      AS audience_created_at,
-    pa.updated_at      AS audience_updated_at,
-    ae.id              AS entry_id,
+    pa.version                 AS audience_version,
+    pa.created_at              AS audience_created_at,
+    pa.updated_at              AS audience_updated_at,
+    pa.disable_in_app_fallback AS disable_in_app_fallback,
+    ae.id                      AS entry_id,
     ae.plugin_instance_id,
     ae.position,
     ae.notify,
@@ -163,18 +171,19 @@ ORDER BY ae.position
 `
 
 type GetPluginAudienceWithEntriesRow struct {
-	AudienceID        string  `json:"audience_id"`
-	AudienceName      string  `json:"audience_name"`
-	CreatedByUserID   *string `json:"created_by_user_id"`
-	AudienceVersion   int64   `json:"audience_version"`
-	AudienceCreatedAt string  `json:"audience_created_at"`
-	AudienceUpdatedAt string  `json:"audience_updated_at"`
-	EntryID           *string `json:"entry_id"`
-	PluginInstanceID  *string `json:"plugin_instance_id"`
-	Position          *int64  `json:"position"`
-	Notify            *int64  `json:"notify"`
-	Request           *int64  `json:"request"`
-	ConfigJson        *string `json:"config_json"`
+	AudienceID           string  `json:"audience_id"`
+	AudienceName         string  `json:"audience_name"`
+	CreatedByUserID      *string `json:"created_by_user_id"`
+	AudienceVersion      int64   `json:"audience_version"`
+	AudienceCreatedAt    string  `json:"audience_created_at"`
+	AudienceUpdatedAt    string  `json:"audience_updated_at"`
+	DisableInAppFallback int64   `json:"disable_in_app_fallback"`
+	EntryID              *string `json:"entry_id"`
+	PluginInstanceID     *string `json:"plugin_instance_id"`
+	Position             *int64  `json:"position"`
+	Notify               *int64  `json:"notify"`
+	Request              *int64  `json:"request"`
+	ConfigJson           *string `json:"config_json"`
 }
 
 // GetPluginAudienceWithEntries returns the audience row joined with all its
@@ -197,6 +206,7 @@ func (q *Queries) GetPluginAudienceWithEntries(ctx context.Context, audienceID s
 			&i.AudienceVersion,
 			&i.AudienceCreatedAt,
 			&i.AudienceUpdatedAt,
+			&i.DisableInAppFallback,
 			&i.EntryID,
 			&i.PluginInstanceID,
 			&i.Position,
@@ -218,7 +228,8 @@ func (q *Queries) GetPluginAudienceWithEntries(ctx context.Context, audienceID s
 }
 
 const listAudienceEntries = `-- name: ListAudienceEntries :many
-SELECT id, audience_id, plugin_instance_id, position, notify, request, config_json FROM audience_entries WHERE audience_id = ?1 ORDER BY position
+SELECT id, audience_id, plugin_instance_id, position, notify, request, config_json
+FROM audience_entries WHERE audience_id = ?1 ORDER BY position
 `
 
 func (q *Queries) ListAudienceEntries(ctx context.Context, audienceID string) ([]AudienceEntry, error) {
@@ -253,7 +264,8 @@ func (q *Queries) ListAudienceEntries(ctx context.Context, audienceID string) ([
 }
 
 const listPluginAudiences = `-- name: ListPluginAudiences :many
-SELECT id, name, created_by_user_id, version, created_at, updated_at FROM plugin_audiences ORDER BY name
+SELECT id, name, created_by_user_id, version, created_at, updated_at, disable_in_app_fallback
+FROM plugin_audiences ORDER BY name
 `
 
 func (q *Queries) ListPluginAudiences(ctx context.Context) ([]PluginAudience, error) {
@@ -272,6 +284,7 @@ func (q *Queries) ListPluginAudiences(ctx context.Context) ([]PluginAudience, er
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.DisableInAppFallback,
 		); err != nil {
 			return nil, err
 		}
@@ -337,23 +350,25 @@ func (q *Queries) UpdateAudienceEntry(ctx context.Context, arg UpdateAudienceEnt
 
 const updatePluginAudience = `-- name: UpdatePluginAudience :execrows
 UPDATE plugin_audiences
-SET name = ?1, version = version + 1, updated_at = ?2
-WHERE id = ?3 AND version = ?4
+SET name = ?1, disable_in_app_fallback = ?2, version = version + 1, updated_at = ?3
+WHERE id = ?4 AND version = ?5
 `
 
 type UpdatePluginAudienceParams struct {
-	Name            string `json:"name"`
-	UpdatedAt       string `json:"updated_at"`
-	ID              string `json:"id"`
-	ExpectedVersion int64  `json:"expected_version"`
+	Name                 string `json:"name"`
+	DisableInAppFallback int64  `json:"disable_in_app_fallback"`
+	UpdatedAt            string `json:"updated_at"`
+	ID                   string `json:"id"`
+	ExpectedVersion      int64  `json:"expected_version"`
 }
 
-// UpdatePluginAudience edits the audience name and bumps the CAS version.
-// rows_affected == 0 means the expected_version did not match (concurrent
-// writer) -- see ADR-038.
+// UpdatePluginAudience edits the audience name and disable_in_app_fallback flag,
+// and bumps the CAS version. rows_affected == 0 means the expected_version did
+// not match (concurrent writer) -- see ADR-038.
 func (q *Queries) UpdatePluginAudience(ctx context.Context, arg UpdatePluginAudienceParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updatePluginAudience,
 		arg.Name,
+		arg.DisableInAppFallback,
 		arg.UpdatedAt,
 		arg.ID,
 		arg.ExpectedVersion,

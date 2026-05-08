@@ -13,6 +13,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/audience"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
@@ -78,13 +79,18 @@ func insertPluginInstance(t *testing.T, s *db.Store, id, pluginID, instanceName 
 }
 
 // insertAudience inserts a plugin_audiences row and returns its ID.
-func insertAudience(t *testing.T, s *db.Store, id, name string) string {
+// disableInAppFallback mirrors the disable_in_app_fallback column (0 = enabled).
+func insertAudience(t *testing.T, s *db.Store, id, name string, disableInAppFallback ...int) string {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	disable := 0
+	if len(disableInAppFallback) > 0 {
+		disable = disableInAppFallback[0]
+	}
 	_, err := s.DB().Exec(
-		`INSERT INTO plugin_audiences(id, name, version, created_at, updated_at)
-		 VALUES (?, ?, 0, ?, ?)`,
-		id, name, now, now,
+		`INSERT INTO plugin_audiences(id, name, version, created_at, updated_at, disable_in_app_fallback)
+		 VALUES (?, ?, 0, ?, ?, ?)`,
+		id, name, now, now, disable,
 	)
 	if err != nil {
 		t.Fatalf("insertAudience %s: %v", id, err)
@@ -379,12 +385,15 @@ func TestRequest_PicksFirstRequestEntry(t *testing.T) {
 	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
 
 	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
-	reqID, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "hello", nil)
+	reqID, outcome, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "hello", nil)
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
 	if reqID == "" {
 		t.Fatal("requestID should not be empty")
+	}
+	if outcome != dispatch.RouteToPlugin {
+		t.Errorf("outcome = %v, want RouteToPlugin", outcome)
 	}
 	if calledInst.Load() != "req-first" {
 		t.Errorf("calledInst = %q, want req-first", calledInst.Load())
@@ -412,12 +421,15 @@ func TestRequest_PreAckSuccess_RowInserted_ResolveFlipsStatus(t *testing.T) {
 	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
 
 	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
-	reqID, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	reqID, outcome, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
 	if reqID == "" {
 		t.Fatal("requestID is empty")
+	}
+	if outcome != dispatch.RouteToPlugin {
+		t.Errorf("outcome = %v, want RouteToPlugin", outcome)
 	}
 	// Validate that the requestID is a valid ULID.
 	if _, parseErr := ulid.ParseStrict(reqID); parseErr != nil {
@@ -467,7 +479,7 @@ func TestRequest_PreAckAckedFalse(t *testing.T) {
 	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
 
 	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
-	_, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	_, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
 	if !errors.Is(err, dispatch.ErrPreAckFailed) {
 		t.Errorf("expected ErrPreAckFailed, got %v", err)
 	}
@@ -510,7 +522,7 @@ func TestRequest_PreAckTimeout(t *testing.T) {
 
 	// Very short pre-ack timeout so the test completes quickly.
 	d := ds.newDispatcher(200*time.Millisecond, 20*time.Millisecond)
-	_, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	_, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
 	if !errors.Is(err, dispatch.ErrPreAckFailed) {
 		t.Errorf("expected ErrPreAckFailed, got %v", err)
 	}
@@ -544,24 +556,75 @@ func TestRequest_PreAckRespError(t *testing.T) {
 	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
 
 	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
-	_, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	_, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
 	if !errors.Is(err, dispatch.ErrPreAckFailed) {
 		t.Errorf("expected ErrPreAckFailed, got %v", err)
 	}
 }
 
-// TestRequest_ZeroRequestEntries verifies that an audience with no request=true
-// entries returns ErrNoRequestCapableEntry.
-func TestRequest_ZeroRequestEntries(t *testing.T) {
+// TestRequest_ZeroEntries_DisableFalse_RouteToInApp verifies that an audience
+// with no entries and disable_in_app_fallback=false returns RouteToInApp (the
+// synthetic entry covers Request).
+func TestRequest_ZeroEntries_DisableFalse_RouteToInApp(t *testing.T) {
+	ds := newSetup(t)
+	audID := insertAudience(t, ds.store, "aud1", "aud") // disable=0 (default)
+	// No entries.
+
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+	reqID, outcome, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "r", PolicyID: "p", ToolName: "t"}, "prompt", nil)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if reqID != "" {
+		t.Errorf("reqID = %q, want empty for RouteToInApp", reqID)
+	}
+	if outcome != dispatch.RouteToInApp {
+		t.Errorf("outcome = %v, want RouteToInApp", outcome)
+	}
+
+	var count int
+	if err := ds.store.DB().QueryRow(`SELECT COUNT(*) FROM plugin_pending_requests`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("pending requests count = %d, want 0 (no row for synthetic entry)", count)
+	}
+}
+
+// TestRequest_NotifyOnly_DisableFalse_RouteToInApp verifies that a notify-only
+// audience with disable_in_app_fallback=false returns RouteToInApp.
+func TestRequest_NotifyOnly_DisableFalse_RouteToInApp(t *testing.T) {
 	ds := newSetup(t)
 
 	pluginID := insertPlugin(t, ds.store, "p1", "plug")
 	instID := insertPluginInstance(t, ds.store, "i1", pluginID, "notify-only")
-	audID := insertAudience(t, ds.store, "aud1", "aud")
+	audID := insertAudience(t, ds.store, "aud1", "aud") // disable=0
 	insertAudienceEntry(t, ds.store, "ae1", audID, instID, 0, true, false)
 
 	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
-	_, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "r", PolicyID: "p", ToolName: "t"}, "prompt", nil)
+	_, outcome, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "r", PolicyID: "p", ToolName: "t"}, "prompt", nil)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if outcome != dispatch.RouteToInApp {
+		t.Errorf("outcome = %v, want RouteToInApp", outcome)
+	}
+}
+
+// TestRequest_ZeroRequestEntries_DisableTrue_ErrNoRequestCapable verifies that
+// an audience with disable_in_app_fallback=true and no Request-capable entries
+// returns ErrNoRequestCapableEntry (defense-in-depth path; validator blocks
+// this at save time).
+func TestRequest_ZeroRequestEntries_DisableTrue_ErrNoRequestCapable(t *testing.T) {
+	ds := newSetup(t)
+
+	pluginID := insertPlugin(t, ds.store, "p1", "plug")
+	instID := insertPluginInstance(t, ds.store, "i1", pluginID, "notify-only")
+	audID := insertAudience(t, ds.store, "aud1", "aud", 1) // disable=1
+	insertAudienceEntry(t, ds.store, "ae1", audID, instID, 0, true, false)
+
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+	_, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "r", PolicyID: "p", ToolName: "t"}, "prompt", nil)
 	if !errors.Is(err, dispatch.ErrNoRequestCapableEntry) {
 		t.Errorf("expected ErrNoRequestCapableEntry, got %v", err)
 	}
@@ -607,7 +670,7 @@ func TestResolve_ScannerRace(t *testing.T) {
 	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
 
 	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
-	reqID, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	reqID, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
@@ -650,7 +713,7 @@ func TestWait_TimerWins_WritesRunStep(t *testing.T) {
 	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
 
 	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
-	reqID, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	reqID, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
@@ -698,7 +761,7 @@ func TestWait_ScannerWon_NoRunStep(t *testing.T) {
 	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
 
 	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
-	reqID, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	reqID, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
@@ -721,5 +784,80 @@ func TestWait_ScannerWon_NoRunStep(t *testing.T) {
 	steps := ds.stepsByType("plugin_request_timeout")
 	if len(steps) != 0 {
 		t.Errorf("plugin_request_timeout steps = %d, want 0 (scanner already won)", len(steps))
+	}
+}
+
+// ---- Routing outcome tests ----
+
+// TestRequest_RequestCapable_DisableFalse_RouteToPlugin verifies that a
+// persisted Request-capable entry is used first; the synthetic never reached.
+func TestRequest_RequestCapable_DisableFalse_RouteToPlugin(t *testing.T) {
+	ds := newSetup(t)
+
+	pluginID := insertPlugin(t, ds.store, "p1", "plug")
+	instID := insertPluginInstance(t, ds.store, "i1", pluginID, "req-inst")
+	audID := insertAudience(t, ds.store, "aud1", "aud") // disable=0
+	insertAudienceEntry(t, ds.store, "ae1", audID, instID, 0, false, true)
+
+	ds.clientMap["req-inst"] = &fakeChannelClient{
+		requestHook: func(_ context.Context, _ *channelv1.RequestRequest) (*channelv1.RequestResponse, error) {
+			return &channelv1.RequestResponse{Acked: true}, nil
+		},
+	}
+
+	testutil.InsertPolicy(t, ds.store, "pol1", "policy-pol1", "webhook", "{}")
+	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
+
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+	reqID, outcome, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if outcome != dispatch.RouteToPlugin {
+		t.Errorf("outcome = %v, want RouteToPlugin", outcome)
+	}
+	if reqID == "" {
+		t.Error("reqID should not be empty for RouteToPlugin")
+	}
+}
+
+// TestRequest_AudienceDeleted_ErrAudienceNotFound verifies that Request returns
+// ErrAudienceNotFound when the audience row was deleted between fetch and resolve.
+func TestRequest_AudienceDeleted_ErrAudienceNotFound(t *testing.T) {
+	ds := newSetup(t)
+	// Query a non-existent audience — GetPluginAudienceWithEntries returns zero
+	// rows, so Resolve returns ErrAudienceNotFound.
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+	_, _, err := d.Request(context.Background(), "nonexistent-aud", dispatch.RouteContext{RunID: "r", PolicyID: "p", ToolName: "t"}, "prompt", nil)
+	if !errors.Is(err, audience.ErrAudienceNotFound) {
+		t.Errorf("expected ErrAudienceNotFound, got %v", err)
+	}
+}
+
+// TestNotify_SyntheticSkipped verifies that Notify skips the synthetic in-app
+// entry and invokes only the persisted notify-enabled instance.
+func TestNotify_SyntheticSkipped(t *testing.T) {
+	ds := newSetup(t)
+
+	pluginID := insertPlugin(t, ds.store, "p1", "plug")
+	instID := insertPluginInstance(t, ds.store, "i1", pluginID, "notified")
+	audID := insertAudience(t, ds.store, "aud1", "aud") // disable=0 → synthetic appended
+	insertAudienceEntry(t, ds.store, "ae1", audID, instID, 0, true, false)
+
+	var invokeCount atomic.Int32
+	ds.clientMap["notified"] = &fakeChannelClient{
+		notifyHook: func(_ context.Context, _ *channelv1.NotifyRequest) (*channelv1.NotifyResponse, error) {
+			invokeCount.Add(1)
+			return &channelv1.NotifyResponse{Ok: true}, nil
+		},
+	}
+
+	d := ds.newDispatcher(200*time.Millisecond, 50*time.Millisecond)
+	if err := d.Notify(context.Background(), audID, dispatch.RouteContext{RunID: "r", PolicyID: "p", ToolName: "t"}, "ev", "{}"); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+	// Exactly one invocation — the synthetic entry must be skipped.
+	if invokeCount.Load() != 1 {
+		t.Errorf("notify invocations = %d, want 1 (synthetic should be skipped)", invokeCount.Load())
 	}
 }
