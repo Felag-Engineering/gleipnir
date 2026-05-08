@@ -302,6 +302,87 @@ func TestCache_SamePointerForIdenticalSchemas(t *testing.T) {
 	}
 }
 
+func TestValidateChannelCapabilities(t *testing.T) {
+	notifyOnly := &sdkmanifest.Manifest{
+		Services: sdkmanifest.Services{Channel: "v1"},
+		Channels: []sdkmanifest.ChannelDecl{
+			{ImplementsNotify: true, ImplementsRequest: false},
+		},
+	}
+	requestOnly := &sdkmanifest.Manifest{
+		Services: sdkmanifest.Services{Channel: "v1"},
+		Channels: []sdkmanifest.ChannelDecl{
+			{ImplementsNotify: false, ImplementsRequest: true},
+		},
+	}
+	noChannel := &sdkmanifest.Manifest{
+		Services: sdkmanifest.Services{Tool: "v1"},
+	}
+
+	tests := []struct {
+		name       string
+		manifest   *sdkmanifest.Manifest
+		notify     bool
+		request    bool
+		wantFields []string // expected FieldError.Field values; nil means no errors
+	}{
+		{
+			name:     "notify-only manifest, notify=true request=false",
+			manifest: notifyOnly,
+			notify:   true, request: false,
+			wantFields: nil,
+		},
+		{
+			name:     "notify-only manifest, request=true",
+			manifest: notifyOnly,
+			notify:   false, request: true,
+			wantFields: []string{"request"},
+		},
+		{
+			name:     "request-only manifest, notify=true",
+			manifest: requestOnly,
+			notify:   true, request: false,
+			wantFields: []string{"notify"},
+		},
+		{
+			name:     "both flags off",
+			manifest: notifyOnly,
+			notify:   false, request: false,
+			wantFields: nil,
+		},
+		{
+			name:     "no ChannelService",
+			manifest: noChannel,
+			notify:   true, request: false,
+			wantFields: []string{"plugin_instance_id"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := configvalidate.ValidateChannelCapabilities(tc.manifest, tc.notify, tc.request)
+			if len(tc.wantFields) == 0 {
+				if len(errs) != 0 {
+					t.Errorf("expected no errors, got %v", errs)
+				}
+				return
+			}
+			if len(errs) != len(tc.wantFields) {
+				t.Fatalf("got %d errors, want %d: %v", len(errs), len(tc.wantFields), errs)
+			}
+			got := make(map[string]bool, len(errs))
+			for _, e := range errs {
+				got[e.Field] = true
+			}
+			for _, f := range tc.wantFields {
+				if !got[f] {
+					t.Errorf("expected FieldError with Field=%q, got %v", f, errs)
+				}
+			}
+		})
+	}
+}
+
 // containsString reports whether s contains substr.
 func containsString(s, substr string) bool {
 	return strings.Contains(s, substr)
