@@ -261,13 +261,23 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	payloadJSON := req.GetPayloadJson()
 	_, err = s.q.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
-		Status:     "responded",
+		Status:     "resolved",
 		Response:   &payloadJSON,
 		ResolvedAt: &now,
 		ID:         req.GetRequestId(),
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "update feedback request status: %v", err)
+	}
+
+	// Publish so SSE subscribers and tests can observe the step.
+	if eventData, marshalErr := json.Marshal(map[string]string{
+		"run_id":     fr.RunID,
+		"request_id": req.GetRequestId(),
+		"instance_id": inst.ID,
+		"step_type":  "feedback_response",
+	}); marshalErr == nil {
+		s.publisher.Publish("plugin.feedback_response_written", eventData)
 	}
 
 	return &hostv1.WriteAuditStepResponse{Ok: true}, nil

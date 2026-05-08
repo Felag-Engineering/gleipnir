@@ -11,21 +11,26 @@
 //   - StartWatcher (#187, this PR) sets up the fsnotify watcher and runs the
 //     debounced install loop. Material-change detection (#189) and the
 //     generation/shutdown manager (#190/#193 implementations) are follow-up PRs.
-//   - StartManager (#291) constructs the process.Manager and calls
+//   - StartManager (#291, #295) constructs the process.Manager and calls
 //     StartAllActive so existing plugin instances are re-spawned on server
 //     restart. No-op when GLEIPNIR_PLUGINS_ENABLED=false.
 package plugin
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+
+	"google.golang.org/grpc"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
+	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
 	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
 	"github.com/felag-engineering/gleipnir/internal/plugin/loader"
 	"github.com/felag-engineering/gleipnir/internal/plugin/process"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
 )
 
 // Loader owns plugin-subsystem initialization. It is the host's entry point
@@ -117,27 +122,55 @@ func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, dir string, pu
 	return nil
 }
 
-// StartManager constructs a process.Manager with its own identity.Registry and
-// calls StartAllActive so that any plugin instances whose plugin row has
-// status="active" are spawned on server startup.
+// StartManagerConfig wires Loader.StartManager to the host-side plugin substrate
+// constructed in main.go. All fields are required when plugins are enabled.
+type StartManagerConfig struct {
+	Querier              *db.Queries
+	Publisher            event.Publisher
+	HostServer           hostwire.HostServer        // shared *hostsvc.Server
+	IdentityRegistry     *identity.Registry
+	GenerationController *generation.Controller
+	ServerInterceptors   []grpc.UnaryServerInterceptor
+}
+
+// StartManager constructs a process.Manager wired to the host-side substrate
+// supplied in cfg and calls StartAllActive so that any plugin instances whose
+// plugin row has status="active" are spawned on server startup.
 //
 // Returns nil immediately when the plugin subsystem is disabled (Init was not
 // called or GLEIPNIR_PLUGINS_ENABLED=false). Any per-instance start errors are
 // logged at Warn inside Manager.StartAllActive and do not propagate here.
 //
-// q and publisher are the same dependencies passed to StartWatcher; they are
-// passed separately so this method can be called without a running watcher
-// (e.g. in tests).
-func (l *Loader) StartManager(ctx context.Context, q *db.Queries, publisher event.Publisher) error {
+// The IdentityRegistry must be the same registry backing the token interceptor
+// so that the per-generation rotation guarantee (one registry, one source of
+// truth) holds. main.go owns this registry and passes it to both the interceptor
+// chain and StartManager.
+func (l *Loader) StartManager(ctx context.Context, cfg StartManagerConfig) error {
 	if l.verifier == nil {
 		return nil
 	}
 
-	reg := identity.New()
+	if cfg.IdentityRegistry == nil {
+		return fmt.Errorf("StartManager: IdentityRegistry must not be nil")
+	}
+	if cfg.GenerationController == nil {
+		return fmt.Errorf("StartManager: GenerationController must not be nil")
+	}
+	if cfg.HostServer == nil {
+		return fmt.Errorf("StartManager: HostServer must not be nil")
+	}
+	if cfg.ServerInterceptors == nil {
+		return fmt.Errorf("StartManager: ServerInterceptors must not be nil")
+	}
+
 	l.manager = process.NewManager(process.ManagerConfig{
-		Querier:        q,
-		Publisher:      publisher,
-		IdentityIssuer: reg,
+		Querier:              cfg.Querier,
+		Publisher:            cfg.Publisher,
+		IdentityIssuer:       cfg.IdentityRegistry,
+		GenerationController: cfg.GenerationController,
+		// One shared server per host; per-instance routing via token interceptor.
+		HostServerFor:      func(_ string) hostwire.HostServer { return cfg.HostServer },
+		ServerInterceptors: cfg.ServerInterceptors,
 	})
 
 	return l.manager.StartAllActive(ctx)

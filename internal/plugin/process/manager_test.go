@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
@@ -227,6 +229,49 @@ func TestManager_StartAllActive_ContinuesPastErrors(t *testing.T) {
 	// (binary path not available in DB for #291).
 	if err := mgr.StartAllActive(context.Background()); err != nil {
 		t.Fatalf("StartAllActive: %v", err)
+	}
+}
+
+// TestManager_ServerInterceptors_PropagateToConfig verifies that interceptors
+// set on ManagerConfig.ServerInterceptors are passed through to the process.Config
+// that the TestProcessStarter receives. This is the unit check for the wiring
+// that production hostsvc activation depends on.
+func TestManager_ServerInterceptors_PropagateToConfig(t *testing.T) {
+	reg := identity.New()
+
+	// Build a counting interceptor to use as a fixture.
+	var interceptorCalls atomic.Int32
+	fixtureInterceptor := func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		interceptorCalls.Add(1)
+		return handler(ctx, req)
+	}
+
+	var capturedInterceptors []grpc.UnaryServerInterceptor
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        &fakeQuerier{},
+		IdentityIssuer: reg,
+		ServerInterceptors: []grpc.UnaryServerInterceptor{fixtureInterceptor},
+		TestProcessStarter: func(_ context.Context, cfg process.Config) (*process.Instance, error) {
+			capturedInterceptors = cfg.ServerInterceptors
+			// Return an error to avoid needing a real subprocess.
+			return nil, errors.New("stub: no subprocess needed for this test")
+		},
+	})
+
+	plugin := db.Plugin{ID: "p1", Status: "active"}
+	instance := db.PluginInstance{ID: "i1", PluginID: "p1", InstanceName: "i1", HealthState: "healthy"}
+
+	// The start will fail (stub returns error), but the interceptors must have
+	// been captured before the error path.
+	_ = mgr.Start(context.Background(), plugin, instance, "/bin/true")
+
+	if len(capturedInterceptors) != 1 {
+		t.Fatalf("interceptor count in Config = %d, want 1", len(capturedInterceptors))
+	}
+	// Invoke the captured interceptor to verify it is our fixture function.
+	_, _ = capturedInterceptors[0](context.Background(), nil, nil, func(_ context.Context, _ any) (any, error) { return nil, nil })
+	if interceptorCalls.Load() != 1 {
+		t.Errorf("captured interceptor call count = %d, want 1", interceptorCalls.Load())
 	}
 }
 

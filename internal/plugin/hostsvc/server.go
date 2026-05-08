@@ -3,6 +3,8 @@ package hostsvc
 import (
 	"context"
 
+	"google.golang.org/grpc"
+
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
@@ -66,6 +68,14 @@ type Server struct {
 	binder        InstanceBinder
 	publisher     event.Publisher
 	metrics       *pluginMetrics
+}
+
+// Register implements hostwire.HostServer by registering *Server as the
+// HostService implementation on srv. This lets *Server satisfy the
+// hostwire.HostServer interface so it can be returned directly from
+// Manager.HostServerFor without a wrapper.
+func (s *Server) Register(srv *grpc.Server) {
+	hostv1.RegisterHostServiceServer(srv, s)
 }
 
 // NewServer constructs a Server ready to be registered with a gRPC server.
