@@ -1,0 +1,308 @@
+package configvalidate_test
+
+import (
+	"strings"
+	"testing"
+
+	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
+	"gopkg.in/yaml.v3"
+)
+
+// parseNode decodes a YAML literal into a *yaml.Node for use in test fixtures.
+func parseNode(t *testing.T, src string) *yaml.Node {
+	t.Helper()
+	var node yaml.Node
+	if err := yaml.Unmarshal([]byte(src), &node); err != nil {
+		t.Fatalf("parseNode: %v", err)
+	}
+	// yaml.Unmarshal wraps in a document node; unwrap to the content node.
+	if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
+		return node.Content[0]
+	}
+	return &node
+}
+
+// channelSchema is a simple channel config schema used across tests.
+const channelSchema = `
+type: object
+additionalProperties: false
+required: [channel]
+properties:
+  channel: { type: string }
+  mention: { type: string }
+`
+
+// channelManifest builds a *Manifest with a ChannelService and one ChannelDecl
+// whose ConfigSchema is parsed from src.
+func channelManifest(t *testing.T, schemaSrc string) *sdkmanifest.Manifest {
+	t.Helper()
+	return &sdkmanifest.Manifest{
+		Services: sdkmanifest.Services{Channel: "v1"},
+		Channels: []sdkmanifest.ChannelDecl{
+			{ConfigSchema: parseNode(t, schemaSrc)},
+		},
+	}
+}
+
+func TestForChannelAudience_HappyPath(t *testing.T) {
+	m := channelManifest(t, channelSchema)
+	v, err := configvalidate.ForChannelAudience(m)
+	if err != nil {
+		t.Fatalf("ForChannelAudience: %v", err)
+	}
+	errs, err := v.Validate(map[string]any{"channel": "#general"})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(errs) != 0 {
+		t.Errorf("expected no errors, got %v", errs)
+	}
+}
+
+func TestForChannelAudience_MissingRequired(t *testing.T) {
+	m := channelManifest(t, channelSchema)
+	v, err := configvalidate.ForChannelAudience(m)
+	if err != nil {
+		t.Fatalf("ForChannelAudience: %v", err)
+	}
+	// Empty object — "channel" is required.
+	errs, err := v.Validate(map[string]any{})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+	if errs[0].Field != "channel" {
+		t.Errorf("Field = %q, want %q", errs[0].Field, "channel")
+	}
+	if !containsString(errs[0].Message, "missing") {
+		t.Errorf("Message = %q, want it to contain %q", errs[0].Message, "missing")
+	}
+}
+
+func TestForChannelAudience_MissingRequired_MultipleFields(t *testing.T) {
+	// Both "channel" and "mention" are required; a single *kind.Required leaf
+	// should produce TWO FieldErrors via Path A (type assertion on Missing).
+	const schema = `
+type: object
+additionalProperties: false
+required: [channel, mention]
+properties:
+  channel: { type: string }
+  mention: { type: string }
+`
+	m := channelManifest(t, schema)
+	v, err := configvalidate.ForChannelAudience(m)
+	if err != nil {
+		t.Fatalf("ForChannelAudience: %v", err)
+	}
+	errs, err := v.Validate(map[string]any{})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(errs) != 2 {
+		t.Fatalf("expected 2 errors (one per missing field), got %d: %v", len(errs), errs)
+	}
+	fields := map[string]bool{}
+	for _, e := range errs {
+		fields[e.Field] = true
+		if !containsString(e.Message, "missing") {
+			t.Errorf("Message = %q, want it to contain %q", e.Message, "missing")
+		}
+	}
+	for _, want := range []string{"channel", "mention"} {
+		if !fields[want] {
+			t.Errorf("expected a FieldError for %q, got fields=%v", want, fields)
+		}
+	}
+}
+
+func TestForChannelAudience_TypeMismatch(t *testing.T) {
+	// channel should be a string; supply int — Path B (InstanceLocation).
+	m := channelManifest(t, channelSchema)
+	v, err := configvalidate.ForChannelAudience(m)
+	if err != nil {
+		t.Fatalf("ForChannelAudience: %v", err)
+	}
+	errs, err := v.Validate(map[string]any{"channel": 7})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+	if errs[0].Field != "channel" {
+		t.Errorf("Field = %q, want %q", errs[0].Field, "channel")
+	}
+	if !containsString(errs[0].Message, "string") {
+		t.Errorf("Message = %q, want it to contain %q", errs[0].Message, "string")
+	}
+}
+
+func TestForChannelAudience_AdditionalProperties(t *testing.T) {
+	// Two unexpected properties — Path A (*kind.AdditionalProperties.Properties)
+	// should yield TWO FieldErrors from a single leaf.
+	m := channelManifest(t, channelSchema)
+	v, err := configvalidate.ForChannelAudience(m)
+	if err != nil {
+		t.Fatalf("ForChannelAudience: %v", err)
+	}
+	errs, err := v.Validate(map[string]any{
+		"channel": "#x",
+		"bogus":   1,
+		"other":   2,
+	})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(errs) != 2 {
+		t.Fatalf("expected 2 errors (bogus + other), got %d: %v", len(errs), errs)
+	}
+	fields := map[string]bool{}
+	for _, e := range errs {
+		fields[e.Field] = true
+		if !containsString(e.Message, "unexpected") {
+			t.Errorf("Message = %q, want it to contain %q", e.Message, "unexpected")
+		}
+	}
+	for _, want := range []string{"bogus", "other"} {
+		if !fields[want] {
+			t.Errorf("expected a FieldError for %q, got fields=%v", want, fields)
+		}
+	}
+}
+
+func TestForChannelAudience_NestedPath(t *testing.T) {
+	// Nested schema: outer.inner must be a string; supply int.
+	// FieldError.Field should be "outer.inner" via Path B.
+	const schema = `
+type: object
+properties:
+  outer:
+    type: object
+    properties:
+      inner: { type: string }
+`
+	m := channelManifest(t, schema)
+	v, err := configvalidate.ForChannelAudience(m)
+	if err != nil {
+		t.Fatalf("ForChannelAudience: %v", err)
+	}
+	errs, err := v.Validate(map[string]any{
+		"outer": map[string]any{"inner": 7},
+	})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+	if errs[0].Field != "outer.inner" {
+		t.Errorf("Field = %q, want %q", errs[0].Field, "outer.inner")
+	}
+}
+
+func TestForChannelAudience_NonChannelPlugin(t *testing.T) {
+	m := &sdkmanifest.Manifest{
+		Services: sdkmanifest.Services{Tool: "v1"},
+	}
+	_, err := configvalidate.ForChannelAudience(m)
+	if err != configvalidate.ErrNotChannelPlugin {
+		t.Errorf("err = %v, want ErrNotChannelPlugin", err)
+	}
+}
+
+func TestForChannelAudience_NonChannelPlugin_EmptyChannels(t *testing.T) {
+	// Services.Channel is set but Channels slice is empty.
+	m := &sdkmanifest.Manifest{
+		Services: sdkmanifest.Services{Channel: "v1"},
+		Channels: []sdkmanifest.ChannelDecl{},
+	}
+	_, err := configvalidate.ForChannelAudience(m)
+	if err != configvalidate.ErrNotChannelPlugin {
+		t.Errorf("err = %v, want ErrNotChannelPlugin", err)
+	}
+}
+
+func TestForTriggerBinding_SelectsByKind(t *testing.T) {
+	// Two event kinds with different schemas. ForTriggerBinding("b") must use
+	// b's schema, NOT a's.
+	const schemaA = `
+type: object
+required: [fieldA]
+properties:
+  fieldA: { type: string }
+`
+	const schemaB = `
+type: object
+required: [fieldB]
+properties:
+  fieldB: { type: string }
+`
+	m := &sdkmanifest.Manifest{
+		EventKinds: []sdkmanifest.EventKindDecl{
+			{Kind: "a", BindingSchema: parseNode(t, schemaA)},
+			{Kind: "b", BindingSchema: parseNode(t, schemaB)},
+		},
+	}
+
+	v, err := configvalidate.ForTriggerBinding(m, "b")
+	if err != nil {
+		t.Fatalf("ForTriggerBinding: %v", err)
+	}
+
+	// fieldB present → valid.
+	if errs, err := v.Validate(map[string]any{"fieldB": "x"}); err != nil || len(errs) != 0 {
+		t.Errorf("expected valid for fieldB; errs=%v err=%v", errs, err)
+	}
+
+	// fieldA present but fieldB missing → invalid (b's schema requires fieldB).
+	errs, err := v.Validate(map[string]any{"fieldA": "x"})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(errs) == 0 {
+		t.Error("expected validation errors for missing fieldB, got none")
+	}
+}
+
+func TestForTriggerBinding_NotFound(t *testing.T) {
+	m := &sdkmanifest.Manifest{
+		EventKinds: []sdkmanifest.EventKindDecl{
+			{Kind: "a"},
+		},
+	}
+	_, err := configvalidate.ForTriggerBinding(m, "missing")
+	if err != configvalidate.ErrEventKindNotFound {
+		t.Errorf("err = %v, want ErrEventKindNotFound", err)
+	}
+}
+
+func TestCache_SamePointerForIdenticalSchemas(t *testing.T) {
+	configvalidate.ResetCache()
+	defer configvalidate.ResetCache()
+
+	m1 := channelManifest(t, channelSchema)
+	m2 := channelManifest(t, channelSchema) // semantically identical
+
+	v1, err := configvalidate.ForChannelAudience(m1)
+	if err != nil {
+		t.Fatalf("ForChannelAudience m1: %v", err)
+	}
+	v2, err := configvalidate.ForChannelAudience(m2)
+	if err != nil {
+		t.Fatalf("ForChannelAudience m2: %v", err)
+	}
+
+	// Same compiled schema bytes → same *Validator pointer from the cache.
+	if v1 != v2 {
+		t.Error("expected the same *Validator pointer for identical schemas (cache miss)")
+	}
+}
+
+// containsString reports whether s contains substr.
+func containsString(s, substr string) bool {
+	return strings.Contains(s, substr)
+}
