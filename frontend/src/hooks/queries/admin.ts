@@ -1,6 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/api/fetch'
-import type { ApiProviderStatus, ApiModelSetting, ApiAllModelEntry, ApiSystemSettings, ApiSystemInfo } from '@/api/types'
+import type {
+  ApiProviderStatus,
+  ApiModelSetting,
+  ApiAllModelEntry,
+  ApiSystemSettings,
+  ApiSystemInfo,
+  ApiAudienceListItem,
+  ApiAudience,
+  ApiAudienceReferences,
+} from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
 export function useProviders() {
@@ -37,5 +46,29 @@ export function useSystemInfo() {
     queryFn: () => apiFetch<ApiSystemInfo>('/admin/system-info'),
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
+  })
+}
+
+export function useAudiences() {
+  return useQuery({
+    queryKey: queryKeys.admin.audiences,
+    queryFn: () => apiFetch<ApiAudienceListItem[]>('/admin/audiences'),
+  })
+}
+
+export function useAudience(id: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.admin.audienceDetail(id ?? ''),
+    queryFn: () => apiFetch<ApiAudience>(`/admin/audiences/${encodeURIComponent(id!)}`),
+    enabled: !!id,
+  })
+}
+
+export function useAudienceReferences(id: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.admin.audienceReferences(id ?? ''),
+    queryFn: () =>
+      apiFetch<ApiAudienceReferences>(`/admin/audiences/${encodeURIComponent(id!)}/references`),
+    enabled: !!id,
   })
 }

@@ -411,3 +411,61 @@ export interface ApiAcceptNewKeyResponse {
   accepted_pubkey_fingerprint: string
   instances_unblocked: number
 }
+
+// --- Audiences ---
+
+// Matches internal/http/api/audience_handler.go → audienceListItemDTO (GET /api/v1/admin/audiences).
+export interface ApiAudienceListItem {
+  id: string
+  name: string
+  entry_count: number
+  referenced_by_policy_count: number
+  has_in_flight_runs: boolean
+  disable_in_app_fallback: boolean
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+// Matches internal/http/api/audience_handler.go → audienceEntryDTO.
+// `auto: true` is set on the synthetic gleipnir.in-app fallback entry (not stored in the DB).
+export interface ApiAudienceEntry {
+  id: string
+  plugin_instance_id: string
+  position: number
+  notify: boolean
+  request: boolean
+  config: Record<string, unknown>
+  auto?: boolean
+}
+
+// Matches internal/http/api/audience_handler.go → audienceDTO (GET /api/v1/admin/audiences/:id).
+export interface ApiAudience {
+  id: string
+  name: string
+  disable_in_app_fallback: boolean
+  version: number
+  created_at: string
+  updated_at: string
+  entries: ApiAudienceEntry[]
+}
+
+// Matches internal/http/api/audience_handler.go → policyRefDTO.
+export interface ApiAudiencePolicyRef {
+  id: string
+  name: string
+}
+
+// Matches internal/http/api/audience_handler.go → inFlightRunDTO.
+export interface ApiAudienceInFlightRun {
+  id: string
+  policy_id: string
+  status: string
+}
+
+// Matches internal/http/api/audience_handler.go → audienceReferencesDTO
+// (GET /api/v1/admin/audiences/:id/references).
+export interface ApiAudienceReferences {
+  policies: ApiAudiencePolicyRef[]
+  in_flight_runs: ApiAudienceInFlightRun[]
+}

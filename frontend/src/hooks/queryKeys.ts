@@ -49,6 +49,9 @@ export const queryKeys = {
     settings: ['admin', 'settings'] as const,
     systemInfo: ['admin', 'system-info'] as const,
     openaiCompatProviders: ['admin', 'openai-compat-providers'] as const,
+    audiences: ['admin', 'audiences'] as const,
+    audienceDetail: (id: string) => ['admin', 'audiences', id] as const,
+    audienceReferences: (id: string) => ['admin', 'audiences', id, 'references'] as const,
   },
   config: {
     all: ['config'] as const,

@@ -1,0 +1,119 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.intro {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-second);
+}
+
+/* Table */
+
+.tableWrapper {
+  overflow-x: auto;
+  border-radius: var(--radius-section);
+  border: 1px solid var(--border-mid);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.table thead tr {
+  background: var(--bg-elevated);
+}
+
+.table th {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  font-weight: var(--weight-medium);
+  color: var(--text-second);
+  border-bottom: 1px solid var(--border-mid);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: var(--space-3) var(--space-4);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.table tbody tr:hover {
+  background: var(--bg-elevated);
+}
+
+.numCol {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.nameLink {
+  color: var(--color-blue);
+  text-decoration: none;
+  font-weight: var(--weight-medium);
+}
+
+.nameLink:hover {
+  text-decoration: underline;
+}
+
+.refCount {
+  color: var(--text-primary);
+}
+
+.refNone {
+  color: var(--text-faint);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.statusBadge {
+  composes: badgeLabel from '../styles/badges.module.css';
+  gap: var(--space-1);
+}
+
+.statusInFlight {
+  composes: colorAmber from '../styles/badges.module.css';
+}
+
+.statusIdle {
+  composes: colorMuted from '../styles/badges.module.css';
+}
+
+/* Empty state */
+
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-12) 0;
+  text-align: center;
+}
+
+.emptyHeadline {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  color: var(--text-second);
+  margin: 0;
+}
+
+.emptySubtext {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  margin: 0;
+}
