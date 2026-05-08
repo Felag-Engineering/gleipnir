@@ -453,3 +453,68 @@ CREATE TABLE plugin_audit_events (
 
 CREATE INDEX idx_pae_instance_created ON plugin_audit_events(plugin_instance_id, created_at);
 CREATE INDEX idx_pae_event_created    ON plugin_audit_events(event_type, created_at);
+
+-- ---------------------------------------------------------------------------
+-- Plugin audiences and pending requests (spec §6.1, §4.2, §11.5)
+--
+-- plugin_audiences — first-class shared resources. Each audience is a named
+--   ordered list of plugin-instance entries. The version column is the
+--   ADR-038 CAS counter for atomic edits.
+--
+-- audience_entries — ordered member list for an audience. The position
+--   column drives ordering; the UNIQUE constraint on (audience_id, position)
+--   is NOT DEFERRABLE (modernc.org/sqlite rejects DEFERRABLE on table
+--   constraints). Multi-row reorders inside a single transaction must use a
+--   temporary sentinel position to avoid transient violations. CASCADE from
+--   plugin_audiences so deleting an audience removes its entries. RESTRICT
+--   from plugin_instances so an instance cannot be uninstalled while
+--   referenced (§11.5 uninstall gate).
+--
+-- plugin_pending_requests — tracks ChannelService.Request rows once
+--   pre-ack has succeeded. Status enum mirrors feedback_requests so
+--   internal/timeout/scanner.go can drive both tables. The (status,
+--   expires_at) index reuses the same access pattern as feedback_requests.
+--   audience_entry_id is nullable with SET NULL so in-flight Channel
+--   Requests continue to resolve after an entry is edited/deleted (§11.7).
+--   No CASCADE from plugin_instances — uninstall is blocked upstream by
+--   §11.5; an orphaned row should never exist but must not be silently
+--   deleted. tool_name mirrors feedback_requests.tool_name so the timeout
+--   scanner has the field it reads when building ExpiredItem values.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugin_audiences (
+    id                  TEXT    PRIMARY KEY,                                 -- ULID (ADR-013)
+    name                TEXT    NOT NULL UNIQUE,
+    created_by_user_id  TEXT    REFERENCES users(id) ON DELETE SET NULL,
+    version             INTEGER NOT NULL DEFAULT 0,                          -- ADR-038 CAS counter
+    created_at          TEXT    NOT NULL,                                    -- ISO 8601 UTC
+    updated_at          TEXT    NOT NULL                                     -- ISO 8601 UTC
+);
+
+CREATE TABLE audience_entries (
+    id                 TEXT    PRIMARY KEY,                                  -- ULID
+    audience_id        TEXT    NOT NULL REFERENCES plugin_audiences(id) ON DELETE CASCADE,
+    plugin_instance_id TEXT    NOT NULL REFERENCES plugin_instances(id) ON DELETE RESTRICT,
+    position           INTEGER NOT NULL,
+    notify             INTEGER NOT NULL DEFAULT 0,
+    request            INTEGER NOT NULL DEFAULT 0,
+    config_json        TEXT    NOT NULL DEFAULT '{}',
+    UNIQUE (audience_id, position)
+);
+CREATE INDEX idx_audience_entries_audience  ON audience_entries(audience_id);
+CREATE INDEX idx_audience_entries_instance  ON audience_entries(plugin_instance_id);
+
+CREATE TABLE plugin_pending_requests (
+    id                  TEXT    PRIMARY KEY,                                 -- ULID; spec's request_id
+    plugin_instance_id  TEXT    NOT NULL REFERENCES plugin_instances(id) ON DELETE RESTRICT,
+    run_id              TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    audience_entry_id   TEXT    REFERENCES audience_entries(id) ON DELETE SET NULL,
+    tool_name           TEXT    NOT NULL DEFAULT '',
+    status              TEXT    NOT NULL CHECK(status IN ('pending','resolved','timed_out')),
+    response            TEXT,
+    expires_at          TEXT,
+    resolved_at         TEXT,
+    created_at          TEXT    NOT NULL
+);
+CREATE INDEX idx_plugin_pending_requests_run_status      ON plugin_pending_requests(run_id, status);
+CREATE INDEX idx_plugin_pending_requests_status_expires  ON plugin_pending_requests(status, expires_at);

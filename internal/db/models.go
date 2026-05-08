@@ -17,6 +17,16 @@ type ApprovalRequest struct {
 	CreatedAt        string  `json:"created_at"`
 }
 
+type AudienceEntry struct {
+	ID               string `json:"id"`
+	AudienceID       string `json:"audience_id"`
+	PluginInstanceID string `json:"plugin_instance_id"`
+	Position         int64  `json:"position"`
+	Notify           int64  `json:"notify"`
+	Request          int64  `json:"request"`
+	ConfigJson       string `json:"config_json"`
+}
+
 type FeedbackRequest struct {
 	ID            string  `json:"id"`
 	RunID         string  `json:"run_id"`
@@ -78,6 +88,15 @@ type Plugin struct {
 	UpdatedAt        string `json:"updated_at"`
 }
 
+type PluginAudience struct {
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	CreatedByUserID *string `json:"created_by_user_id"`
+	Version         int64   `json:"version"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+}
+
 type PluginAuditEvent struct {
 	ID               int64   `json:"id"`
 	PluginInstanceID *string `json:"plugin_instance_id"`
@@ -102,6 +121,19 @@ type PluginInstance struct {
 	Version              int64   `json:"version"`
 	CreatedAt            string  `json:"created_at"`
 	UpdatedAt            string  `json:"updated_at"`
+}
+
+type PluginPendingRequest struct {
+	ID               string  `json:"id"`
+	PluginInstanceID string  `json:"plugin_instance_id"`
+	RunID            string  `json:"run_id"`
+	AudienceEntryID  *string `json:"audience_entry_id"`
+	ToolName         string  `json:"tool_name"`
+	Status           string  `json:"status"`
+	Response         *string `json:"response"`
+	ExpiresAt        *string `json:"expires_at"`
+	ResolvedAt       *string `json:"resolved_at"`
+	CreatedAt        string  `json:"created_at"`
 }
 
 type Policy struct {

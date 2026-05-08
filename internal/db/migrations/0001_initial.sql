@@ -425,6 +425,47 @@ CREATE INDEX idx_pae_instance_created ON plugin_audit_events(plugin_instance_id,
 CREATE INDEX idx_pae_event_created    ON plugin_audit_events(event_type, created_at);
 
 -- ---------------------------------------------------------------------------
+-- Plugin audiences and pending requests
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugin_audiences (
+    id                  TEXT    PRIMARY KEY,                                 -- ULID (ADR-013)
+    name                TEXT    NOT NULL UNIQUE,
+    created_by_user_id  TEXT    REFERENCES users(id) ON DELETE SET NULL,
+    version             INTEGER NOT NULL DEFAULT 0,                          -- ADR-038 CAS counter
+    created_at          TEXT    NOT NULL,                                    -- ISO 8601 UTC
+    updated_at          TEXT    NOT NULL                                     -- ISO 8601 UTC
+);
+
+CREATE TABLE audience_entries (
+    id                 TEXT    PRIMARY KEY,                                  -- ULID
+    audience_id        TEXT    NOT NULL REFERENCES plugin_audiences(id) ON DELETE CASCADE,
+    plugin_instance_id TEXT    NOT NULL REFERENCES plugin_instances(id) ON DELETE RESTRICT,
+    position           INTEGER NOT NULL,
+    notify             INTEGER NOT NULL DEFAULT 0,
+    request            INTEGER NOT NULL DEFAULT 0,
+    config_json        TEXT    NOT NULL DEFAULT '{}',
+    UNIQUE (audience_id, position)
+);
+CREATE INDEX idx_audience_entries_audience  ON audience_entries(audience_id);
+CREATE INDEX idx_audience_entries_instance  ON audience_entries(plugin_instance_id);
+
+CREATE TABLE plugin_pending_requests (
+    id                  TEXT    PRIMARY KEY,                                 -- ULID; spec's request_id
+    plugin_instance_id  TEXT    NOT NULL REFERENCES plugin_instances(id) ON DELETE RESTRICT,
+    run_id              TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    audience_entry_id   TEXT    REFERENCES audience_entries(id) ON DELETE SET NULL,
+    tool_name           TEXT    NOT NULL DEFAULT '',
+    status              TEXT    NOT NULL CHECK(status IN ('pending','resolved','timed_out')),
+    response            TEXT,
+    expires_at          TEXT,
+    resolved_at         TEXT,
+    created_at          TEXT    NOT NULL
+);
+CREATE INDEX idx_plugin_pending_requests_run_status      ON plugin_pending_requests(run_id, status);
+CREATE INDEX idx_plugin_pending_requests_status_expires  ON plugin_pending_requests(status, expires_at);
+
+-- ---------------------------------------------------------------------------
 -- Seed migration version
 -- ---------------------------------------------------------------------------
 
