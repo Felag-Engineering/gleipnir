@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
@@ -71,9 +73,18 @@ type ManagerConfig struct {
 
 	// HostServerFor returns the hostwire.HostServer to register on the broker
 	// for a given instance. If nil, defaults to a function that always returns
-	// NoopHostServer{}. #292 will inject a function that constructs a live
-	// hostsvc.Server per instance.
+	// NoopHostServer{}. Returns the shared *hostsvc.Server for every instance ID
+	// (one server per host). Per-instance routing happens at RPC time: the token
+	// interceptor reads gleipnir-instance-token metadata and binds the resolved
+	// instance ID into the request context before the handler runs.
 	HostServerFor func(instanceID string) hostwire.HostServer
+
+	// ServerInterceptors are chained onto the host-side gRPC broker server for
+	// every subprocess this Manager spawns. Production wiring supplies
+	// [UnaryInstanceTokenInterceptor, UnaryGenerationRefcountInterceptor,
+	// UnaryCallIDInterceptor] (chain order is significant; token must be first).
+	// nil means no interceptors are added, preserving handshake-only test behaviour.
+	ServerInterceptors []grpc.UnaryServerInterceptor
 
 	// Logger is the base logger. If nil, slog.Default() is used.
 	Logger *slog.Logger
@@ -156,16 +167,17 @@ func (m *Manager) Start(ctx context.Context, plugin db.Plugin, instance db.Plugi
 	}
 
 	cfg := Config{
-		BinaryPath:     binaryPath,
-		InstanceID:     instance.ID,
-		PluginID:       plugin.ID,
-		InstanceName:   instance.InstanceName,
-		StartupTimeout: m.cfg.DefaultStartupTimeout,
-		StopGrace:      m.cfg.DefaultStopGrace,
-		IdentityIssuer: m.cfg.IdentityIssuer,
-		HealthSetter:   m.buildHealthSetter(),
-		HostServer:     host,
-		Logger:         m.cfg.Logger,
+		BinaryPath:         binaryPath,
+		InstanceID:         instance.ID,
+		PluginID:           plugin.ID,
+		InstanceName:       instance.InstanceName,
+		StartupTimeout:     m.cfg.DefaultStartupTimeout,
+		StopGrace:          m.cfg.DefaultStopGrace,
+		IdentityIssuer:     m.cfg.IdentityIssuer,
+		HealthSetter:       m.buildHealthSetter(),
+		HostServer:         host,
+		Logger:             m.cfg.Logger,
+		ServerInterceptors: m.cfg.ServerInterceptors,
 	}
 
 	inst, err := m.starter(ctx, cfg)

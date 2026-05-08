@@ -34,13 +34,20 @@ import (
 
 // TestMain intercepts the test binary in fixture mode so it acts as a plugin
 // subprocess rather than running the test suite. The integration tests in this
-// file re-exec os.Args[0] (this binary) with GLEIPNIR_TEST_FIXTURE set to
-// "serve-and-block", which tells TestMain to run as a plugin process instead of
-// a test runner. This is the standard Go re-exec pattern for testing code that
-// spawns subprocesses.
+// file re-exec os.Args[0] (this binary) with GLEIPNIR_TEST_FIXTURE set to a
+// fixture mode string. This is the standard Go re-exec pattern for testing code
+// that spawns subprocesses.
+//
+// Modes:
+//   - "serve-and-block"           — used by process_token_integration_test.go
+//   - "serve-and-writeauditstep"  — used by end_to_end_integration_test.go
 func TestMain(m *testing.M) {
-	if os.Getenv("GLEIPNIR_TEST_FIXTURE") == "serve-and-block" {
+	switch os.Getenv("GLEIPNIR_TEST_FIXTURE") {
+	case "serve-and-block":
 		runHostsvcFixtureServePlugin()
+		os.Exit(0)
+	case "serve-and-writeauditstep":
+		runHostsvcFixtureWriteAuditStep()
 		os.Exit(0)
 	}
 	os.Exit(m.Run())

@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
@@ -76,6 +78,13 @@ type Config struct {
 	// Logger is the base logger for this instance. If nil, logctx.Logger(ctx)
 	// is used at Start time.
 	Logger *slog.Logger
+
+	// ServerInterceptors are chained onto the host-side gRPC server in slice
+	// order before service registration. Production wiring (#295) supplies the
+	// chain [UnaryInstanceTokenInterceptor, UnaryGenerationRefcountInterceptor,
+	// UnaryCallIDInterceptor]; nil preserves NoopHostServer-style behaviour for
+	// handshake-only tests.
+	ServerInterceptors []grpc.UnaryServerInterceptor
 
 	// Launch is the function used to start the subprocess. If nil, defaults to
 	// hostwire.Launch. Tests inject a stub here.
@@ -155,9 +164,9 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	onProcessExited := func() { _ = stderrW.Close() }
 
 	client, teardown, err := launchFn(ctx, cfg.BinaryPath, host, hostwire.Options{
-		Stderr:         stderrW,
-		StartupTimeout: cfg.StartupTimeout,
-		Logger:         logger,
+		Stderr:          stderrW,
+		StartupTimeout:  cfg.StartupTimeout,
+		Logger:          logger,
 		OnProcessExited: onProcessExited,
 		// Inject per-instance env vars so the plugin binary knows its own
 		// identity and can authenticate Host RPCs. GLEIPNIR_INSTANCE_ID and
@@ -169,6 +178,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 			"GLEIPNIR_PLUGIN_ID=" + cfg.PluginID,
 			serve.InstanceTokenEnvVar + "=" + token,
 		},
+		ServerInterceptors: cfg.ServerInterceptors,
 	})
 	if err != nil {
 		// Revoke the token because no subprocess is running to use it.

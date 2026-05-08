@@ -27,6 +27,9 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
+	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
+	"github.com/felag-engineering/gleipnir/internal/plugin/hostsvc"
+	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
@@ -114,13 +117,8 @@ func run(cfg config.Config) error {
 		if err := loader.StartWatcher(ctx, store.Queries(), cfg.PluginsDir, broadcaster); err != nil {
 			return fmt.Errorf("start plugin watcher: %w", err)
 		}
-
-		// StartManager spawns subprocesses for all active plugin instances. It
-		// must run after StartWatcher so the DB schema and plugin rows are
-		// consistent. No-op when verifier is nil (i.e. when plugins are disabled).
-		if err := loader.StartManager(ctx, store.Queries(), broadcaster); err != nil {
-			return fmt.Errorf("start plugin manager: %w", err)
-		}
+		// StartManager is called below, after pluginPool and encryptionKey are
+		// in scope, so the hostsvc.Server can be constructed with full dependencies.
 	}
 
 	approvalScanner := timeout.NewApprovalScanner(
@@ -186,6 +184,44 @@ func run(cfg config.Config) error {
 	// plugin start lands. The Registrar constructor is:
 	//   tools.New(arbiter, store.Queries(), broadcaster)
 	// Wire it wherever the plugin instance start sequence calls RegisterInstanceTools.
+
+	// Activate the hostsvc.Server and start the process.Manager when plugins are
+	// enabled. This block runs after pluginPool (needed as CallContextResolver),
+	// encryptionKey (needed for GetCredentials), and arbiter are all in scope.
+	//
+	// Chain order: token MUST be first because UnaryGenerationRefcountInterceptor
+	// reads the instance ID from the context populated by UnaryInstanceTokenInterceptor.
+	// UnaryCallIDInterceptor is last so it only attaches to authenticated,
+	// generation-tracked calls.
+	if cfg.PluginsEnabled {
+		identityReg := identity.New()
+		genCtrl := generation.New()
+
+		hostSvc := hostsvc.NewServer(
+			store.Queries(),
+			encryptionKey,
+			pluginPool,
+			hostsvc.NewContextBinder(),
+			broadcaster,
+		)
+
+		interceptors := []grpc.UnaryServerInterceptor{
+			hostsvc.UnaryInstanceTokenInterceptor(identityReg),
+			hostsvc.UnaryGenerationRefcountInterceptor(genCtrl),
+			hostsvc.UnaryCallIDInterceptor(),
+		}
+
+		if err := loader.StartManager(ctx, pluginpkg.StartManagerConfig{
+			Querier:              store.Queries(),
+			Publisher:            broadcaster,
+			HostServer:           hostSvc,
+			IdentityRegistry:     identityReg,
+			GenerationController: genCtrl,
+			ServerInterceptors:   interceptors,
+		}); err != nil {
+			return fmt.Errorf("start plugin manager: %w", err)
+		}
+	}
 
 	// Registry construction is placed after encryption key parsing so
 	// WithEncryptionKey can be passed at construction time.
