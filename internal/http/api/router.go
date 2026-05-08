@@ -40,6 +40,7 @@ type HandlerBundle struct {
 	AdminHandler         *admin.Handler
 	OpenAICompatHandler  *admin.OpenAICompatHandler
 	PluginAdminHandler   *admin.PluginHandler
+	AudienceHandler      *AudienceHandler
 	WebhookHandler       *trigger.WebhookHandler
 	SSEHandler           *sse.Handler
 	PolicyWebhookHandler *PolicyWebhookHandler
@@ -233,6 +234,28 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				r.Post("/{id}/test", cfg.Handlers.OpenAICompatHandler.TestProvider)
 			})
 		})
+
+		// Audience management: admin/operator for mutations, auditor for reads.
+		// Registered outside the admin-only sub-router (which uses RequireRole(Admin)
+		// globally) so auditors can access GETs per spec §11.7.
+		// Per-route RequireRole mirrors the /api/v1/policies pattern.
+		if cfg.Handlers.AudienceHandler != nil {
+			r.Route("/api/v1/admin/audiences", func(r chi.Router) {
+				r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor)).
+					Get("/", cfg.Handlers.AudienceHandler.List)
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).
+					Post("/", cfg.Handlers.AudienceHandler.Create)
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor)).
+					Get("/{id}", cfg.Handlers.AudienceHandler.Get)
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).
+					Put("/{id}", cfg.Handlers.AudienceHandler.Update)
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).
+					Delete("/{id}", cfg.Handlers.AudienceHandler.Delete)
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor)).
+					Get("/{id}/references", cfg.Handlers.AudienceHandler.References)
+			})
+		}
 	})
 
 	// SPA catch-all: serve the embedded React frontend for all non-API routes.

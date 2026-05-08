@@ -111,6 +111,39 @@ func (q *Queries) GetPluginPendingRequest(ctx context.Context, id string) (Plugi
 	return i, err
 }
 
+const listAudienceIDsWithPendingRequests = `-- name: ListAudienceIDsWithPendingRequests :many
+SELECT DISTINCT ae.audience_id
+FROM plugin_pending_requests p
+JOIN audience_entries ae ON ae.id = p.audience_entry_id
+WHERE p.status = 'pending'
+`
+
+// ListAudienceIDsWithPendingRequests returns the distinct audience IDs that
+// currently have at least one pending plugin request. Used for bulk
+// has_in_flight_runs on the list endpoint (no N+1).
+func (q *Queries) ListAudienceIDsWithPendingRequests(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listAudienceIDsWithPendingRequests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var audience_id string
+		if err := rows.Scan(&audience_id); err != nil {
+			return nil, err
+		}
+		items = append(items, audience_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listExpiredPluginPendingRequests = `-- name: ListExpiredPluginPendingRequests :many
 SELECT id, run_id, tool_name FROM plugin_pending_requests
 WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?1
@@ -135,6 +168,54 @@ func (q *Queries) ListExpiredPluginPendingRequests(ctx context.Context, cutoff *
 	for rows.Next() {
 		var i ListExpiredPluginPendingRequestsRow
 		if err := rows.Scan(&i.ID, &i.RunID, &i.ToolName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingPluginRequestsByAudience = `-- name: ListPendingPluginRequestsByAudience :many
+SELECT p.id, p.run_id, p.audience_entry_id, p.status, r.status AS run_status
+FROM plugin_pending_requests p
+JOIN audience_entries ae ON ae.id = p.audience_entry_id
+JOIN runs r ON r.id = p.run_id
+WHERE ae.audience_id = ?1 AND p.status = 'pending'
+`
+
+type ListPendingPluginRequestsByAudienceRow struct {
+	ID              string  `json:"id"`
+	RunID           string  `json:"run_id"`
+	AudienceEntryID *string `json:"audience_entry_id"`
+	Status          string  `json:"status"`
+	RunStatus       string  `json:"run_status"`
+}
+
+// ListPendingPluginRequestsByAudience returns all pending requests whose
+// audience_entry_id belongs to the given audience. Used by the /references
+// endpoint to surface in-flight runs for a specific audience.
+func (q *Queries) ListPendingPluginRequestsByAudience(ctx context.Context, audienceID string) ([]ListPendingPluginRequestsByAudienceRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingPluginRequestsByAudience, audienceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPendingPluginRequestsByAudienceRow
+	for rows.Next() {
+		var i ListPendingPluginRequestsByAudienceRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.AudienceEntryID,
+			&i.Status,
+			&i.RunStatus,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

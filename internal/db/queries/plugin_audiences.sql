@@ -75,3 +75,15 @@ DELETE FROM audience_entries WHERE id = :id;
 -- modernc.org/sqlite does not support DEFERRABLE on table constraints.
 -- name: ReorderAudienceEntry :execrows
 UPDATE audience_entries SET position = :position WHERE id = :id;
+
+-- DeleteAudienceEntriesByAudience removes all entries for a given audience.
+-- Used by the Update handler's clear-then-reinsert pattern.
+-- name: DeleteAudienceEntriesByAudience :exec
+DELETE FROM audience_entries WHERE audience_id = :audience_id;
+
+-- CountAudienceEntriesGrouped returns the count of entries per audience.
+-- Used for bulk entry_count on the list endpoint (no N+1).
+-- name: CountAudienceEntriesGrouped :many
+SELECT audience_id, COUNT(*) AS entry_count
+FROM audience_entries
+GROUP BY audience_id;
