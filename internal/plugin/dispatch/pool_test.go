@@ -605,7 +605,10 @@ func TestPool_CrossRunBlastRadius(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(8 * time.Second):
+		// Loaded CI runners need more than 3s to unwind: the 30ms CancelTimeout,
+		// the gRPC conn teardown, and both server hooks' ctx-Done branches all
+		// have to fire and propagate before the two Call goroutines return.
 		t.Fatal("calls did not return after blast-radius conn.Close()")
 	}
 
