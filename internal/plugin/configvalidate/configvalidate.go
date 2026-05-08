@@ -87,6 +87,37 @@ func ForTriggerBinding(m *sdkmanifest.Manifest, eventKind string) (*Validator, e
 	return nil, ErrEventKindNotFound
 }
 
+// ValidateChannelCapabilities checks that the notify/request toggles on an
+// audience entry are consistent with what the plugin's manifest declares.
+//
+// Returns a []FieldError (never a wrapped error) so callers can merge these
+// errors into the same envelope as config_schema errors from Validate.
+// Returns nil when all checks pass.
+func ValidateChannelCapabilities(m *sdkmanifest.Manifest, notify, request bool) []FieldError {
+	if m.Services.Channel == "" || len(m.Channels) == 0 {
+		return []FieldError{{
+			Field:   "plugin_instance_id",
+			Message: "plugin does not provide a ChannelService",
+		}}
+	}
+
+	decl := m.Channels[0]
+	var errs []FieldError
+	if notify && !decl.ImplementsNotify {
+		errs = append(errs, FieldError{
+			Field:   "notify",
+			Message: "plugin does not implement Notify",
+		})
+	}
+	if request && !decl.ImplementsRequest {
+		errs = append(errs, FieldError{
+			Field:   "request",
+			Message: "plugin does not implement Request",
+		})
+	}
+	return errs
+}
+
 // Compile builds a Validator directly from raw JSON Schema bytes. Use the
 // For* helpers when working with a manifest; use Compile only when you already
 // have raw bytes.
