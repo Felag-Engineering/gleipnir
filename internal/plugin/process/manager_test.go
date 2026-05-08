@@ -6,11 +6,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
 	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
 	"github.com/felag-engineering/gleipnir/internal/plugin/process"
 )
@@ -225,5 +227,182 @@ func TestManager_StartAllActive_ContinuesPastErrors(t *testing.T) {
 	// (binary path not available in DB for #291).
 	if err := mgr.StartAllActive(context.Background()); err != nil {
 		t.Fatalf("StartAllActive: %v", err)
+	}
+}
+
+// ── ReloadInstance tests ──────────────────────────────────────────────────────
+
+// fakeInstance is returned by the fake processStarter below. It satisfies the
+// *process.Instance shape by being a real Instance from process.Start — but
+// for these tests we use a TestProcessStarter that returns a minimal stub.
+//
+// Because process.Instance has no exported constructor we drive ReloadInstance
+// through a TestProcessStarter that records calls and returns an *Instance
+// obtained from a real (but trivially short) Start so the Manager can call
+// Stop() on it without panicking.
+//
+// To avoid real subprocess spawning (which requires the UNIX re-exec fixture),
+// we use the same os.Args[0] + GLEIPNIR_TEST_FIXTURE pattern the other tests use.
+
+// TestReloadInstance_DrainsAndRestarts verifies the happy-path reload:
+// an in-flight Host RPC refcount is released within the grace period,
+// BeginDrain returns drained=true, the subprocess starter is called twice
+// (once for initial Start, once for the post-reload Start), and the controller
+// advances to generation 2.
+func TestReloadInstance_DrainsAndRestarts(t *testing.T) {
+	reg := identity.New()
+	ctrl := generation.New()
+
+	var startCount atomic.Int32
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:              &fakeQuerier{},
+		IdentityIssuer:       reg,
+		GenerationController: ctrl,
+		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+			startCount.Add(1)
+			fc := fixtureConfig(t, "serve-and-block", reg, nil)
+			fc.InstanceID = cfg.InstanceID
+			return process.Start(ctx, fc)
+		},
+	})
+
+	plugin := db.Plugin{ID: "p1", Status: "active"}
+	instance := db.PluginInstance{ID: "i-reload-1", PluginID: "p1", InstanceName: "inst1", HealthState: "healthy"}
+
+	if err := mgr.Start(ctx, plugin, instance, os.Args[0]); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer mgr.Stop(ctx, instance.ID) //nolint:errcheck
+
+	// Simulate an in-flight Host RPC by acquiring a refcount slot directly.
+	wrappedCtx, release, _, err := ctrl.Acquire(ctx, instance.ID)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	reloadDone := make(chan error, 1)
+	go func() {
+		reloadDone <- mgr.ReloadInstance(ctx, plugin, instance, os.Args[0], 5*time.Second)
+	}()
+
+	// Release the slot before the grace deadline → drain should complete naturally.
+	time.Sleep(20 * time.Millisecond)
+	release()
+
+	select {
+	case err := <-reloadDone:
+		if err != nil {
+			t.Fatalf("ReloadInstance: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("ReloadInstance did not return")
+	}
+
+	// The held call's context must NOT have been force-cancelled.
+	if wrappedCtx.Err() != nil {
+		t.Errorf("held call ctx was cancelled; drain must have completed naturally")
+	}
+
+	// processStarter should have been called twice: initial Start + post-reload Start.
+	if n := startCount.Load(); n != 2 {
+		t.Errorf("processStarter called %d times, want 2", n)
+	}
+
+	// Generation must have advanced to 2.
+	gen := ctrl.RegisterInstance(instance.ID)
+	if gen != 2 {
+		t.Errorf("generation after reload = %d, want 2", gen)
+	}
+}
+
+// TestReloadInstance_ForceCancelsExceedingGrace verifies the force-cancel path:
+// when the held refcount is not released within the grace period, BeginDrain
+// force-cancels the call, ReloadInstance still completes, and the generation
+// advances to 2.
+func TestReloadInstance_ForceCancelsExceedingGrace(t *testing.T) {
+	reg := identity.New()
+	ctrl := generation.New()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:              &fakeQuerier{},
+		IdentityIssuer:       reg,
+		GenerationController: ctrl,
+		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+			fc := fixtureConfig(t, "serve-and-block", reg, nil)
+			fc.InstanceID = cfg.InstanceID
+			return process.Start(ctx, fc)
+		},
+	})
+
+	plugin := db.Plugin{ID: "p1", Status: "active"}
+	instance := db.PluginInstance{ID: "i-reload-2", PluginID: "p1", InstanceName: "inst2", HealthState: "healthy"}
+
+	if err := mgr.Start(ctx, plugin, instance, os.Args[0]); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer mgr.Stop(ctx, instance.ID) //nolint:errcheck
+
+	// Acquire a slot and never release it within the grace window.
+	wrappedCtx, release, _, err := ctrl.Acquire(ctx, instance.ID)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer release() // idempotent guard
+
+	reloadDone := make(chan error, 1)
+	go func() {
+		// Very short grace so the force-cancel path is exercised quickly.
+		reloadDone <- mgr.ReloadInstance(ctx, plugin, instance, os.Args[0], 30*time.Millisecond)
+	}()
+
+	// Wait for the held call's ctx to be force-cancelled.
+	select {
+	case <-wrappedCtx.Done():
+		// Expected.
+	case <-time.After(10 * time.Second):
+		t.Fatal("held call ctx was not force-cancelled within 10s")
+	}
+
+	// Release after force-cancel (simulates the handler observing ctx.Done).
+	release()
+
+	select {
+	case err := <-reloadDone:
+		if err != nil {
+			t.Fatalf("ReloadInstance returned error after force-cancel: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("ReloadInstance did not return after force-cancel")
+	}
+
+	// Generation must have advanced to 2 regardless of force-cancel.
+	gen := ctrl.RegisterInstance(instance.ID)
+	if gen != 2 {
+		t.Errorf("generation after reload = %d, want 2", gen)
+	}
+}
+
+// TestReloadInstance_WithoutControllerReturnsError verifies that ReloadInstance
+// returns an error when ManagerConfig.GenerationController is nil.
+func TestReloadInstance_WithoutControllerReturnsError(t *testing.T) {
+	reg := identity.New()
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        &fakeQuerier{},
+		IdentityIssuer: reg,
+		// No GenerationController set.
+	})
+
+	plugin := db.Plugin{ID: "p1", Status: "active"}
+	instance := db.PluginInstance{ID: "i-reload-3", PluginID: "p1", InstanceName: "inst3", HealthState: "healthy"}
+
+	err := mgr.ReloadInstance(context.Background(), plugin, instance, "/bin/true", time.Second)
+	if err == nil {
+		t.Fatal("expected error when GenerationController is nil, got nil")
 	}
 }

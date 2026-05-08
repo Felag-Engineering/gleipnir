@@ -12,6 +12,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
 )
@@ -76,6 +77,13 @@ type ManagerConfig struct {
 
 	// Logger is the base logger. If nil, slog.Default() is used.
 	Logger *slog.Logger
+
+	// GenerationController tracks in-flight Host RPC refcounts per instance and
+	// coordinates hot-reload drains. When nil, the Manager skips generation
+	// tracking — this preserves test injection ergonomics and the
+	// GLEIPNIR_PLUGINS_ENABLED=false path. ReloadInstance requires a non-nil
+	// controller and returns an error when one is not configured.
+	GenerationController *generation.Controller
 
 	// TestProcessStarter overrides process.Start. Intended for unit tests only;
 	// production callers must leave this nil. When set, Manager.Start calls
@@ -165,6 +173,13 @@ func (m *Manager) Start(ctx context.Context, plugin db.Plugin, instance db.Plugi
 		return fmt.Errorf("manager: start instance %s: %w", instance.ID, err)
 	}
 
+	// Register with the generation controller before the instance is visible in
+	// the instances map. Idempotent: safe on cold start and post-reload restart
+	// (RegisterInstance never resets the counter after BeginDrain has bumped it).
+	if m.cfg.GenerationController != nil {
+		m.cfg.GenerationController.RegisterInstance(instance.ID)
+	}
+
 	m.mu.Lock()
 	m.instances[instance.ID] = inst
 	m.mu.Unlock()
@@ -175,6 +190,20 @@ func (m *Manager) Start(ctx context.Context, plugin db.Plugin, instance db.Plugi
 // Stop terminates the subprocess for instanceID and removes it from the
 // running-instances map. Returns nil if instanceID is not found (idempotent).
 func (m *Manager) Stop(ctx context.Context, instanceID string) error {
+	if err := m.stopWithoutUnregister(ctx, instanceID); err != nil {
+		return err
+	}
+	if m.cfg.GenerationController != nil {
+		m.cfg.GenerationController.UnregisterInstance(instanceID)
+	}
+	return nil
+}
+
+// stopWithoutUnregister terminates the subprocess and revokes the identity token
+// but does NOT call GenerationController.UnregisterInstance. ReloadInstance uses
+// this helper so it can call BeginDrain before stopping and then let the
+// post-reload Start's RegisterInstance reuse the already-bumped generation.
+func (m *Manager) stopWithoutUnregister(ctx context.Context, instanceID string) error {
 	m.mu.Lock()
 	inst, ok := m.instances[instanceID]
 	if ok {
@@ -193,6 +222,56 @@ func (m *Manager) Stop(ctx context.Context, instanceID string) error {
 	}
 
 	return inst.Stop(ctx)
+}
+
+// ReloadInstance stops the current subprocess for instanceID, drains its
+// in-flight Host RPCs (in-flight RPCs continue under a cancellable context for
+// up to graceTimeout, then are force-cancelled per spec §13.8; new RPCs return
+// codes.Unavailable while drain is active), and starts a fresh subprocess for
+// the same instance ID. The new generation does not begin accepting Host RPCs
+// until BeginDrain returns.
+//
+// Note: if Start fails after BeginDrain and stopWithoutUnregister have already
+// succeeded, the instance is in a stopped state with a bumped generation but no
+// running subprocess. The caller is responsible for calling Stop to fully
+// unregister the instance from the generation controller before retrying.
+//
+// The actual hot-reload trigger (loader watcher → fresh tarball → calling
+// ReloadInstance) is out of scope for #294; this method is the public API that
+// #295 / the loader will call.
+//
+// See issue #294.
+func (m *Manager) ReloadInstance(ctx context.Context, plugin db.Plugin, instance db.PluginInstance, binaryPath string, graceTimeout time.Duration) error {
+	if m.cfg.GenerationController == nil {
+		return errors.New("manager: generation controller not configured; reload requires #294 wiring")
+	}
+
+	// BeginDrain must run BEFORE we stop the subprocess so that in-flight Host
+	// RPCs under the old generation can complete within the grace window. It also
+	// bumps the generation counter — Start's RegisterInstance call afterward is
+	// idempotent and returns the already-bumped value.
+	_, drained, err := m.cfg.GenerationController.BeginDrain(ctx, instance.ID, graceTimeout)
+	if err != nil {
+		return fmt.Errorf("manager: begin drain for %s: %w", instance.ID, err)
+	}
+	if !drained {
+		m.logger().Warn("plugin reload: not all in-flight Host RPCs drained within grace; force-cancelled",
+			"instance_id", instance.ID,
+		)
+	}
+
+	// Stop the subprocess without unregistering from the controller: the
+	// generation was already bumped by BeginDrain, and RegisterInstance (called
+	// inside Start below) is idempotent and will not reset it.
+	if err := m.stopWithoutUnregister(ctx, instance.ID); err != nil {
+		return fmt.Errorf("manager: stop instance %s for reload: %w", instance.ID, err)
+	}
+
+	if err := m.Start(ctx, plugin, instance, binaryPath); err != nil {
+		return fmt.Errorf("manager: restart instance %s after reload: %w", instance.ID, err)
+	}
+
+	return nil
 }
 
 // StopAll stops all running instances concurrently. Each Stop call shares the

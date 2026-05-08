@@ -99,6 +99,20 @@ type Options struct {
 	// "KEY=VALUE" form. These are appended to the subprocess's inherited
 	// environment. If nil, no extra variables are added.
 	Env []string
+
+	// ServerInterceptors are chained (in slice order) onto the host-side gRPC
+	// server before service registration. Order matters: token-auth must come
+	// before any interceptor that reads instanceID from context.
+	//
+	// This is the seam through which the three host-RPC interceptors —
+	// UnaryInstanceTokenInterceptor, UnaryGenerationRefcountInterceptor, and
+	// UnaryCallIDInterceptor — are wired in production (#295). Closing this
+	// single gap in hostwire activates all three with one additive SDK change.
+	//
+	// Zero-value (nil slice) preserves the current behaviour: no interceptors
+	// are added to the broker gRPC server. This is an additive public-API
+	// change per ADR-042 SDK stability rules.
+	ServerInterceptors []grpc.UnaryServerInterceptor
 }
 
 // gleipnirPlugin is the go-plugin GRPCPlugin implementation for the Gleipnir
@@ -113,16 +127,24 @@ type gleipnirPlugin struct {
 	// Set by newGleipnirPlugin before Dispense is called.
 	host HostServer
 
+	// serverInterceptors are chained onto the broker gRPC server in slice order.
+	// When non-empty, GRPCClient prepends grpc.ChainUnaryInterceptor(...) to the
+	// server options before calling grpc.NewServer.
+	serverInterceptors []grpc.UnaryServerInterceptor
+
 	// allocatedBrokerID is set inside GRPCClient after calling broker.NextId().
 	// Launch reads this after Dispense to pass to Bootstrap.Bind.
 	allocatedBrokerID uint32
 }
 
-// newGleipnirPlugin creates a gleipnirPlugin wired to the given host. It is
-// used instead of a bare struct literal so the host field is always set before
-// GRPCClient runs.
-func newGleipnirPlugin(host HostServer) *gleipnirPlugin {
-	return &gleipnirPlugin{host: host}
+// newGleipnirPlugin creates a gleipnirPlugin wired to the given host and
+// optional server interceptors. It is used instead of a bare struct literal so
+// the host and interceptor fields are always set before GRPCClient runs.
+func newGleipnirPlugin(host HostServer, interceptors []grpc.UnaryServerInterceptor) *gleipnirPlugin {
+	return &gleipnirPlugin{
+		host:               host,
+		serverInterceptors: interceptors,
+	}
 }
 
 // GRPCServer is not used on the host side — plugins implement the server, not
@@ -148,6 +170,12 @@ func (p *gleipnirPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBrok
 	// Start the host-side gRPC server that the plugin will Dial. This must run
 	// in a goroutine because AcceptAndServe blocks until the listener is closed.
 	go broker.AcceptAndServe(id, func(opts []grpc.ServerOption) *grpc.Server {
+		if len(p.serverInterceptors) > 0 {
+			// Prepend the chain interceptor before the broker-provided server
+			// options. Slice order determines invocation order; the caller is
+			// responsible for placing token-auth first.
+			opts = append([]grpc.ServerOption{grpc.ChainUnaryInterceptor(p.serverInterceptors...)}, opts...)
+		}
 		s := grpc.NewServer(opts...)
 		if p.host != nil {
 			p.host.Register(s)
@@ -196,7 +224,7 @@ func Launch(ctx context.Context, binaryPath string, host HostServer, opts Option
 	// Create a fresh gleipnirPlugin for this launch. It must not be shared with
 	// PluginMap — that is only exported so callers (runfixture, production
 	// loader) can reference the plugin set for plugin.Serve on the plugin side.
-	p := newGleipnirPlugin(host)
+	p := newGleipnirPlugin(host, opts.ServerInterceptors)
 
 	cmd := exec.CommandContext(ctx, binaryPath)
 	if len(opts.Env) > 0 {
