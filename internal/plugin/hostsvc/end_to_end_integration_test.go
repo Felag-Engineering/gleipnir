@@ -448,7 +448,7 @@ func TestHostsvcE2E_WriteAuditStep_HappyPath(t *testing.T) {
 		countingInterceptor(hostsvc.UnaryCallIDInterceptor(), &callIDCount),
 	}
 
-	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub)
+	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, nil)
 
 	resultPath := t.TempDir() + "/result.json"
 	env := []string{
@@ -558,7 +558,7 @@ func TestHostsvcE2E_WriteAuditStep_WrongStepType(t *testing.T) {
 		countingInterceptor(hostsvc.UnaryCallIDInterceptor(), &callIDCount),
 	}
 
-	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub)
+	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, nil)
 
 	resultPath := t.TempDir() + "/result.json"
 	env := []string{
@@ -651,7 +651,7 @@ func TestHostsvcE2E_WriteAuditStep_MissingToken(t *testing.T) {
 		countingInterceptor(hostsvc.UnaryCallIDInterceptor(), &callIDCount),
 	}
 
-	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub)
+	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, nil)
 
 	resultPath := t.TempDir() + "/result.json"
 	env := []string{
@@ -698,6 +698,210 @@ func TestHostsvcE2E_WriteAuditStep_MissingToken(t *testing.T) {
 	}
 	if callIDCount.Load() != 0 {
 		t.Errorf("call-id interceptor count = %d, want 0 (short-circuit)", callIDCount.Load())
+	}
+}
+
+// ── plugin-substrate integration tests ───────────────────────────────────────
+
+// TestHostsvcE2E_WriteAuditStep_PluginSubstrate_Late verifies that when a
+// plugin_pending_requests row exists with status='resolved', WriteAuditStep
+// returns ok=false and emits a feedback_response_late audit event at severity
+// "warning" without touching run state.
+func TestHostsvcE2E_WriteAuditStep_PluginSubstrate_Late(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: subprocess re-exec")
+	}
+
+	store, q := openE2EStore(t)
+	defer store.Close()
+
+	instanceID := "e2e-ps-late-" + model.NewULID()
+	runID, policyID, _ := seedE2EData(t, q, instanceID, "e2e-ps-instance")
+
+	// Insert a plugin_pending_requests row with status='resolved'.
+	pluginReqID := model.NewULID()
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := q.CreatePluginPendingRequest(ctx, db.CreatePluginPendingRequestParams{
+		ID:               pluginReqID,
+		PluginInstanceID: instanceID,
+		RunID:            runID,
+		ToolName:         "ask",
+		CreatedAt:        now,
+	}); err != nil {
+		t.Fatalf("CreatePluginPendingRequest: %v", err)
+	}
+	// Advance to resolved so the handler treats it as late.
+	if _, err := store.DB().ExecContext(ctx,
+		`UPDATE plugin_pending_requests SET status='resolved', resolved_at=? WHERE id=?`,
+		now, pluginReqID,
+	); err != nil {
+		t.Fatalf("set resolved: %v", err)
+	}
+
+	fabricatedCallID := "call-" + model.NewULID()
+	resolver := &fakeCallResolver{callID: fabricatedCallID, runID: runID, policyID: policyID}
+	pub := &countingPublisher{}
+	reg := identity.New()
+	genCtrl := generation.New()
+	genCtrl.RegisterInstance(instanceID)
+
+	var tokenCount, genCount, callIDCount atomic.Int32
+	interceptors := []grpc.UnaryServerInterceptor{
+		countingInterceptor(hostsvc.UnaryInstanceTokenInterceptor(reg), &tokenCount),
+		countingInterceptor(hostsvc.UnaryGenerationRefcountInterceptor(genCtrl), &genCount),
+		countingInterceptor(hostsvc.UnaryCallIDInterceptor(), &callIDCount),
+	}
+
+	// fakeChannelResolver returns (false, nil) simulating a scanner-conflict
+	// (row resolved, waiter gone).
+	ch := &fakeChannelResolver{resolved: false, err: nil}
+	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, ch)
+
+	resultPath := t.TempDir() + "/result.json"
+	env := []string{
+		"GLEIPNIR_TEST_CALL_ID=" + fabricatedCallID,
+		"GLEIPNIR_TEST_FEEDBACK_REQUEST_ID=" + pluginReqID,
+		"GLEIPNIR_TEST_RESULT_PATH=" + resultPath,
+	}
+
+	inst := startWriteAuditStepFixture(t, instanceID, hostSvc, reg, interceptors, env)
+	raw := pollResultFile(t, resultPath, 30*time.Second)
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer stopCancel()
+	_ = inst.Stop(stopCtx)
+
+	var result struct {
+		Ok  bool   `json:"ok"`
+		Err string `json:"err"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	// ok=false: late callback
+	if result.Ok {
+		t.Error("ok = true, want false for late plugin callback")
+	}
+
+	// Audit event must exist with severity "warning".
+	auditRows, err := q.ListPluginAuditEventsByType(ctx, db.ListPluginAuditEventsByTypeParams{
+		EventType: hostsvc.EventTypeFeedbackResponseLate,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("ListPluginAuditEventsByType: %v", err)
+	}
+	if len(auditRows) == 0 {
+		t.Error("expected feedback_response_late audit event")
+	}
+	for _, row := range auditRows {
+		if row.Severity != "warning" {
+			t.Errorf("severity = %q, want warning", row.Severity)
+		}
+	}
+
+	// Run state must be unchanged (no run_steps for this request).
+	step, stepErr := q.GetLatestRunStep(ctx, runID)
+	if stepErr == nil && step.Type == "feedback_response" {
+		t.Error("feedback_response run_step written on late callback; want none")
+	}
+}
+
+// TestHostsvcE2E_WriteAuditStep_PluginSubstrate_Happy verifies the happy path:
+// a plugin_pending_requests row with status='pending' causes the handler to
+// call Resolve, which (on success) returns ok=true and publishes an SSE event.
+func TestHostsvcE2E_WriteAuditStep_PluginSubstrate_Happy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: subprocess re-exec")
+	}
+
+	store, q := openE2EStore(t)
+	defer store.Close()
+
+	instanceID := "e2e-ps-happy-" + model.NewULID()
+	runID, policyID, _ := seedE2EData(t, q, instanceID, "e2e-ps-happy-instance")
+
+	pluginReqID := model.NewULID()
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := q.CreatePluginPendingRequest(ctx, db.CreatePluginPendingRequestParams{
+		ID:               pluginReqID,
+		PluginInstanceID: instanceID,
+		RunID:            runID,
+		ToolName:         "ask",
+		CreatedAt:        now,
+	}); err != nil {
+		t.Fatalf("CreatePluginPendingRequest: %v", err)
+	}
+
+	fabricatedCallID := "call-" + model.NewULID()
+	resolver := &fakeCallResolver{callID: fabricatedCallID, runID: runID, policyID: policyID}
+	pub := &countingPublisher{}
+	reg := identity.New()
+	genCtrl := generation.New()
+	genCtrl.RegisterInstance(instanceID)
+
+	var tokenCount, genCount, callIDCount atomic.Int32
+	interceptors := []grpc.UnaryServerInterceptor{
+		countingInterceptor(hostsvc.UnaryInstanceTokenInterceptor(reg), &tokenCount),
+		countingInterceptor(hostsvc.UnaryGenerationRefcountInterceptor(genCtrl), &genCount),
+		countingInterceptor(hostsvc.UnaryCallIDInterceptor(), &callIDCount),
+	}
+
+	// Fake resolver simulates CAS win.
+	ch := &fakeChannelResolver{resolved: true, err: nil}
+	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, ch)
+
+	resultPath := t.TempDir() + "/result.json"
+	env := []string{
+		"GLEIPNIR_TEST_CALL_ID=" + fabricatedCallID,
+		"GLEIPNIR_TEST_FEEDBACK_REQUEST_ID=" + pluginReqID,
+		"GLEIPNIR_TEST_RESULT_PATH=" + resultPath,
+	}
+
+	inst := startWriteAuditStepFixture(t, instanceID, hostSvc, reg, interceptors, env)
+	raw := pollResultFile(t, resultPath, 30*time.Second)
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer stopCancel()
+	_ = inst.Stop(stopCtx)
+
+	var result struct {
+		Ok  bool   `json:"ok"`
+		Err string `json:"err"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	if !result.Ok {
+		t.Errorf("ok = false, err = %q; want ok=true for happy-path plugin substrate", result.Err)
+	}
+
+	// SSE event must have been published.
+	pubEvents, _ := pub.snapshot()
+	found := false
+	for _, ev := range pubEvents {
+		if ev == "plugin.feedback_response_written" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no plugin.feedback_response_written event; got %v", pubEvents)
+	}
+
+	// No feedback_response_late event must have been emitted.
+	auditRows, err := q.ListPluginAuditEventsByType(ctx, db.ListPluginAuditEventsByTypeParams{
+		EventType: hostsvc.EventTypeFeedbackResponseLate,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("ListPluginAuditEventsByType: %v", err)
+	}
+	if len(auditRows) != 0 {
+		t.Errorf("unexpected feedback_response_late events: %d", len(auditRows))
 	}
 }
 

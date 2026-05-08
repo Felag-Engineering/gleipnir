@@ -445,9 +445,13 @@ func TestRequest_PreAckSuccess_RowInserted_ResolveFlipsStatus(t *testing.T) {
 		t.Errorf("status = %q, want pending", status)
 	}
 
-	// Resolve must flip it to resolved.
-	if err := d.Resolve(context.Background(), reqID, `{"answer":"yes"}`); err != nil {
-		t.Fatalf("Resolve: %v", err)
+	// Resolve must flip it to resolved and return (true, nil).
+	resolved, resolveErr := d.Resolve(context.Background(), reqID, `{"answer":"yes"}`)
+	if resolveErr != nil {
+		t.Fatalf("Resolve error: %v", resolveErr)
+	}
+	if !resolved {
+		t.Error("Resolve resolved = false, want true")
 	}
 
 	if err := ds.store.DB().QueryRow(`SELECT status FROM plugin_pending_requests WHERE id = ?`, reqID).Scan(&status); err != nil {
@@ -640,13 +644,102 @@ func TestRequest_ZeroRequestEntries_DisableTrue_ErrNoRequestCapable(t *testing.T
 
 // ---- Resolve tests ----
 
-// TestResolve_UnknownRequestID returns ErrUnknownRequestID.
+// TestResolve_UnknownRequestID verifies (false, ErrUnknownRequestID) when the
+// requestID is not in the in-memory waiters map.
 func TestResolve_UnknownRequestID(t *testing.T) {
 	ds := newSetup(t)
 	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
-	err := d.Resolve(context.Background(), "01JUNK00000NOTREAL0000000", `{}`)
+	resolved, err := d.Resolve(context.Background(), "01JUNK00000NOTREAL0000000", `{}`)
 	if !errors.Is(err, dispatch.ErrUnknownRequestID) {
 		t.Errorf("expected ErrUnknownRequestID, got %v", err)
+	}
+	if resolved {
+		t.Error("resolved = true, want false for unknown request ID")
+	}
+}
+
+// TestResolve_HappyPath verifies (true, nil) when the request is pending and
+// no scanner has raced.
+func TestResolve_HappyPath(t *testing.T) {
+	ds := newSetup(t)
+
+	pluginID := insertPlugin(t, ds.store, "p1", "plug")
+	instID := insertPluginInstance(t, ds.store, "i1", pluginID, "inst-ok")
+	audID := insertAudience(t, ds.store, "aud1", "aud")
+	insertAudienceEntry(t, ds.store, "ae1", audID, instID, 0, false, true)
+
+	ds.clientMap["inst-ok"] = &fakeChannelClient{
+		requestHook: func(_ context.Context, _ *channelv1.RequestRequest) (*channelv1.RequestResponse, error) {
+			return &channelv1.RequestResponse{Acked: true}, nil
+		},
+	}
+
+	testutil.InsertPolicy(t, ds.store, "pol1", "policy-pol1", "webhook", "{}")
+	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
+
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+	reqID, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+
+	resolved, resolveErr := d.Resolve(context.Background(), reqID, `{"answer":"yes"}`)
+	if resolveErr != nil {
+		t.Fatalf("Resolve error: %v", resolveErr)
+	}
+	if !resolved {
+		t.Error("resolved = false, want true for pending request")
+	}
+
+	var status string
+	if err := ds.store.DB().QueryRow(`SELECT status FROM plugin_pending_requests WHERE id = ?`, reqID).Scan(&status); err != nil {
+		t.Fatalf("query after Resolve: %v", err)
+	}
+	if status != "resolved" {
+		t.Errorf("status = %q, want resolved", status)
+	}
+}
+
+// TestResolve_ScannerConflict verifies (false, nil) when the scanner has
+// already set status='timed_out' (ErrTransitionConflict is swallowed).
+func TestResolve_ScannerConflict(t *testing.T) {
+	ds := newSetup(t)
+
+	pluginID := insertPlugin(t, ds.store, "p1", "plug")
+	instID := insertPluginInstance(t, ds.store, "i1", pluginID, "inst-ok")
+	audID := insertAudience(t, ds.store, "aud1", "aud")
+	insertAudienceEntry(t, ds.store, "ae1", audID, instID, 0, false, true)
+
+	ds.clientMap["inst-ok"] = &fakeChannelClient{
+		requestHook: func(_ context.Context, _ *channelv1.RequestRequest) (*channelv1.RequestResponse, error) {
+			return &channelv1.RequestResponse{Acked: true}, nil
+		},
+	}
+
+	testutil.InsertPolicy(t, ds.store, "pol1", "policy-pol1", "webhook", "{}")
+	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
+
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+	reqID, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+
+	// Scanner wins: pre-set status to timed_out.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := ds.store.DB().Exec(
+		`UPDATE plugin_pending_requests SET status='timed_out', resolved_at=? WHERE id=?`,
+		now, reqID,
+	); err != nil {
+		t.Fatalf("pre-set timed_out: %v", err)
+	}
+
+	resolved, resolveErr := d.Resolve(context.Background(), reqID, `{"answer":"late"}`)
+	if resolveErr != nil {
+		t.Errorf("Resolve returned unexpected error: %v", resolveErr)
+	}
+	if resolved {
+		t.Error("resolved = true, want false when scanner already timed out")
 	}
 }
 
@@ -685,9 +778,13 @@ func TestResolve_ScannerRace(t *testing.T) {
 		t.Fatalf("pre-set timed_out: %v", err)
 	}
 
-	// Resolve must return nil (conflict swallowed).
-	if err := d.Resolve(context.Background(), reqID, `{"answer":"late"}`); err != nil {
+	// Resolve must return (false, nil) — conflict swallowed, resolved=false.
+	resolved, err := d.Resolve(context.Background(), reqID, `{"answer":"late"}`)
+	if err != nil {
 		t.Errorf("Resolve returned error after scanner won race: %v", err)
+	}
+	if resolved {
+		t.Error("resolved = true, want false when scanner already won race")
 	}
 }
 
