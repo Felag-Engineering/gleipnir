@@ -148,6 +148,48 @@ func NewFeedbackScanner(store *db.Store, interval time.Duration, opts ...Scanner
 	return NewScanner(store, interval, cfg, opts...)
 }
 
+// NewPluginRequestScanner creates a Scanner that checks for expired plugin
+// pending requests on the given interval.  Only rows with a non-NULL expires_at
+// are candidates (rows without a timeout are excluded).
+func NewPluginRequestScanner(store *db.Store, interval time.Duration, opts ...ScannerOption) *Scanner {
+	cfg := Config{
+		Name: "plugin_request",
+		ListExpired: func(ctx context.Context, cutoff string) ([]ExpiredItem, error) {
+			rows, err := store.Queries().ListExpiredPluginPendingRequests(ctx, &cutoff)
+			if err != nil {
+				return nil, err
+			}
+			items := make([]ExpiredItem, len(rows))
+			for i, r := range rows {
+				items[i] = ExpiredItem{ID: r.ID, RunID: r.RunID, ToolName: r.ToolName}
+			}
+			return items, nil
+		},
+		ClaimTimeout: func(ctx context.Context, id string, now string) (int64, error) {
+			return store.Queries().UpdatePluginPendingRequestStatus(ctx, db.UpdatePluginPendingRequestStatusParams{
+				Status:     "timed_out",
+				Response:   nil,
+				ResolvedAt: &now,
+				ID:         id,
+			})
+		},
+		WaitingRunStatus: model.RunStatusWaitingForFeedback,
+		ErrorCode:        "plugin_request_timeout",
+		ErrorMessage: func(toolName string) string {
+			return fmt.Sprintf("plugin request timeout: no response received within the configured timeout for %s", toolName)
+		},
+		SSEEventName: "plugin.request.timed_out",
+		SSEPayload: func(id, runID string) map[string]string {
+			return map[string]string{
+				"request_id": id,
+				"run_id":     runID,
+				"status":     "timed_out",
+			}
+		},
+	}
+	return NewScanner(store, interval, cfg, opts...)
+}
+
 // Scanner periodically scans for expired pending requests and resolves them as
 // timed-out failures. It is constructed via NewApprovalScanner or
 // NewFeedbackScanner, which supply domain-specific callbacks.
