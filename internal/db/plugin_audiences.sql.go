@@ -9,6 +9,42 @@ import (
 	"context"
 )
 
+const countAudienceEntriesGrouped = `-- name: CountAudienceEntriesGrouped :many
+SELECT audience_id, COUNT(*) AS entry_count
+FROM audience_entries
+GROUP BY audience_id
+`
+
+type CountAudienceEntriesGroupedRow struct {
+	AudienceID string `json:"audience_id"`
+	EntryCount int64  `json:"entry_count"`
+}
+
+// CountAudienceEntriesGrouped returns the count of entries per audience.
+// Used for bulk entry_count on the list endpoint (no N+1).
+func (q *Queries) CountAudienceEntriesGrouped(ctx context.Context) ([]CountAudienceEntriesGroupedRow, error) {
+	rows, err := q.db.QueryContext(ctx, countAudienceEntriesGrouped)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountAudienceEntriesGroupedRow
+	for rows.Next() {
+		var i CountAudienceEntriesGroupedRow
+		if err := rows.Scan(&i.AudienceID, &i.EntryCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createAudienceEntry = `-- name: CreateAudienceEntry :one
 INSERT INTO audience_entries (id, audience_id, plugin_instance_id, position, notify, request, config_json)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -83,6 +119,17 @@ func (q *Queries) CreatePluginAudience(ctx context.Context, arg CreatePluginAudi
 		&i.DisableInAppFallback,
 	)
 	return i, err
+}
+
+const deleteAudienceEntriesByAudience = `-- name: DeleteAudienceEntriesByAudience :exec
+DELETE FROM audience_entries WHERE audience_id = ?1
+`
+
+// DeleteAudienceEntriesByAudience removes all entries for a given audience.
+// Used by the Update handler's clear-then-reinsert pattern.
+func (q *Queries) DeleteAudienceEntriesByAudience(ctx context.Context, audienceID string) error {
+	_, err := q.db.ExecContext(ctx, deleteAudienceEntriesByAudience, audienceID)
+	return err
 }
 
 const deleteAudienceEntry = `-- name: DeleteAudienceEntry :execrows

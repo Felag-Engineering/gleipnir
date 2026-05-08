@@ -26,6 +26,7 @@ import (
 	openaicompatllm "github.com/felag-engineering/gleipnir/internal/llm/openaicompat"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
+	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostsvc"
@@ -380,12 +381,16 @@ func run(cfg config.Config) error {
 	authHandler := auth.NewHandler(store.Queries(), store.DB())
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
 
+	snap := configvalidate.NewSnapshotter(store.Queries())
+	audienceH := api.NewAudienceHandler(store, snap, time.Now)
+
 	handlers := api.HandlerBundle{
 		AuthHandler:          authHandler,
 		SettingsHandler:      settingsHandler,
 		AdminHandler:         adminHandler,
 		OpenAICompatHandler:  openaiCompatHandler,
 		PluginAdminHandler:   admin.NewPluginHandler(store.Queries(), broadcaster, nil),
+		AudienceHandler:      audienceH,
 		WebhookHandler:       webhookHandler,
 		SSEHandler:           sseHandler,
 		PolicyWebhookHandler: policyWebhookHandler,
