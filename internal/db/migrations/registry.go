@@ -23,5 +23,6 @@ func All() []Migration {
 		&AddMCPToolEnabled{},
 		&AddMCPAuthHeaders{},
 		&AddPluginTables{},
+		&AddPluginAudiencesAndPendingRequests{},
 	}
 }

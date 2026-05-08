@@ -133,3 +133,21 @@ Three tables back the plugin system; they live alongside the rest of the schema 
 - **`plugins`** — one row per installed plugin (binary + manifest pair). Holds the TOFU-pinned `trusted_pubkey`, the `manifest_snapshot` used for hot-reload material-change detection, and the install-flow `status` (`pending_review` / `active` / `removed`). The `version` column is the ADR-038 CAS counter; do not confuse with `plugin_version`, which is the author's SemVer string.
 - **`plugin_instances`** — one row per configured deployment. Carries `config_json`, `credentials_encrypted` (write-only via the API per ADR-039 / ADR-034 pattern), `handshake_versions` (per-service versions pinned from the `Handshake/v1` exchange), and the `health_state` enum from ADR-045 §7. Same CAS `version` semantics.
 - **`plugin_audit_events`** — operator-only audit trail (ADR-046). Append-only, INTEGER primary key. Foreign keys to `plugin_instances` and `users` are nullable with `ON DELETE SET NULL` so audit history outlives uninstalls and user deletions. **Never surfaced to the LLM.**
+
+## Plugin audience tables (spec §6.1, §4.2, §11.5)
+
+Three additional tables support the audience and Channel Request subsystem, added by migration `0030_add_plugin_audiences_and_pending_requests.go` and queried via `plugin_audiences.sql` and `plugin_pending_requests.sql`:
+
+- **`plugin_audiences`** — first-class shared resources (spec §6.1). Each audience is a named ordered list of plugin-instance entries. The `version` column is the ADR-038 CAS counter for atomic edits.
+
+- **`audience_entries`** — ordered member list for an audience. Each row references a `plugin_instances` row. Key FK semantics:
+  - `audience_id` → `plugin_audiences(id) ON DELETE CASCADE` — deleting an audience removes all its entries.
+  - `plugin_instance_id` → `plugin_instances(id) ON DELETE RESTRICT` — uninstalling an instance is blocked while any audience entry references it (spec §11.5 uninstall gate).
+  - The `UNIQUE(audience_id, position)` constraint is **not deferrable** — `modernc.org/sqlite` rejects `DEFERRABLE INITIALLY DEFERRED` on table constraints. Multi-row position swaps inside a single transaction must use a temporary sentinel position to avoid transient violations (e.g. move entry A to a large out-of-range value, move entry B to A's old position, then move A to B's old position).
+
+- **`plugin_pending_requests`** — tracks ChannelService.Request rows once pre-ack has succeeded (spec §4.2). Status enum (`pending` / `resolved` / `timed_out`) mirrors `feedback_requests` so `internal/timeout/scanner.go` can drive both tables with the same `(status, expires_at)` index. Key FK semantics:
+  - `run_id` → `runs(id) ON DELETE CASCADE` — deleting a run removes its pending requests.
+  - `plugin_instance_id` → `plugin_instances(id) ON DELETE RESTRICT` — matches the §11.5 uninstall gate.
+  - `audience_entry_id` → `audience_entries(id) ON DELETE SET NULL` — in-flight Channel Requests continue to resolve after an entry is edited or deleted (spec §11.7 late-callback semantics).
+  - The `tool_name TEXT NOT NULL DEFAULT ''` column mirrors `feedback_requests.tool_name` so the timeout scanner has the field it reads when building `ExpiredItem` values.
+  - `plugin_pending_requests` is deliberately **not merged** into `feedback_requests`. Combining them would force a `kind` discriminator column across every `internal/feedback/` query; the two tables have different pre-states and substrate semantics (native ADR-031 feedback vs. Channel Request).
