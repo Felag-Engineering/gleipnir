@@ -1,39 +1,45 @@
-import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Bell, MessageSquare } from 'lucide-react'
+import { useCallback } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { ArrowLeft } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { CollapsibleJSON } from '@/components/CollapsibleJSON/CollapsibleJSON'
-import { useAudience, useAudienceReferences } from '@/hooks/queries/admin'
+import { AudienceEditor } from '@/components/admin/AudienceEditor'
+import { RoutingPreview } from '@/components/admin/AudienceEditor'
+import { useAudience, useAudienceReferences, usePluginInstancesForAudience } from '@/hooks/queries/admin'
+import { useUpdateAudience, useDeleteAudience } from '@/hooks/mutations/admin'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import { formatDate, formatTimeAgo } from '@/utils/format'
-import type { ApiAudienceEntry } from '@/api/types'
+import type { ApiAudienceEntry, AudienceUpdateRequest } from '@/api/types'
+import type { ApiError } from '@/api/fetch'
 import styles from './AdminAudienceDetailPage.module.css'
-
-const SYNTHETIC_IN_APP_LABEL = 'gleipnir.in-app (built-in fallback)'
-
-function entryDisplayName(entry: ApiAudienceEntry): string {
-  if (entry.auto) return SYNTHETIC_IN_APP_LABEL
-  return entry.plugin_instance_id || '(unset)'
-}
-
-function routingPreview(entries: ApiAudienceEntry[]): { notify: string[]; request: string | null } {
-  const notify = entries.filter((e) => e.notify).map(entryDisplayName)
-  const requestEntry = entries.find((e) => e.request)
-  return {
-    notify,
-    request: requestEntry ? entryDisplayName(requestEntry) : null,
-  }
-}
 
 export default function AdminAudienceDetailPage() {
   const { id } = useParams<{ id: string }>()
   usePageTitle('Audience')
+  const navigate = useNavigate()
 
   const audienceQuery = useAudience(id)
   const referencesQuery = useAudienceReferences(id)
+  const pluginInstancesQuery = usePluginInstancesForAudience()
   const { data: currentUser } = useCurrentUser()
   const canManage = currentUser?.roles?.some((r) => r === 'admin' || r === 'operator') ?? false
+
+  const updateMutation = useUpdateAudience()
+  const deleteMutation = useDeleteAudience()
+
+  const handleSave = useCallback(
+    async (req: AudienceUpdateRequest) => {
+      return updateMutation.mutateAsync({ id: id!, req })
+    },
+    [id, updateMutation],
+  )
+
+  const handleDelete = useCallback(async () => {
+    await deleteMutation.mutateAsync(id!)
+    navigate('/admin/audiences')
+  }, [id, deleteMutation, navigate])
 
   return (
     <div className={styles.page}>
@@ -52,57 +58,70 @@ export default function AdminAudienceDetailPage() {
       >
         {audienceQuery.data && (
           <>
-            <RoutingPreview entries={audienceQuery.data.entries} />
+            {canManage ? (
+              <AudienceEditor
+                initial={audienceQuery.data}
+                pluginInstances={pluginInstancesQuery.data ?? []}
+                references={referencesQuery.data ?? null}
+                canManage={canManage}
+                onSave={handleSave as Parameters<typeof AudienceEditor>[0]['onSave']}
+                onDelete={handleDelete}
+                saveError={updateMutation.error as ApiError | null}
+                deleteError={deleteMutation.error as ApiError | null}
+              />
+            ) : (
+              <>
+                <RoutingPreview entries={audienceQuery.data.entries} />
 
-            <section className={styles.section}>
-              <h2 className={styles.sectionTitle}>Entries</h2>
-              <p className={styles.sectionDesc}>
-                Channels are tried in order. The synthetic <code>gleipnir.in-app</code> fallback
-                is appended automatically unless explicitly disabled.
-              </p>
-              <ol className={styles.entryList}>
-                {audienceQuery.data.entries.map((entry) => (
-                  <EntryCard key={`${entry.id}:${entry.position}`} entry={entry} />
-                ))}
-              </ol>
-            </section>
+                <section className={styles.section}>
+                  <h2 className={styles.sectionTitle}>Entries</h2>
+                  <p className={styles.sectionDesc}>
+                    Channels are tried in order. The synthetic <code>gleipnir.in-app</code> fallback
+                    is appended automatically unless explicitly disabled.
+                  </p>
+                  <ol className={styles.entryList}>
+                    {audienceQuery.data.entries.map((entry) => (
+                      <EntryCard key={`${entry.id}:${entry.position}`} entry={entry} />
+                    ))}
+                  </ol>
+                </section>
 
-            <section className={styles.section}>
-              <h2 className={styles.sectionTitle}>Metadata</h2>
-              <dl className={styles.meta}>
-                <div className={styles.metaRow}>
-                  <dt>ID</dt>
-                  <dd className={styles.mono}>{audienceQuery.data.id}</dd>
-                </div>
-                <div className={styles.metaRow}>
-                  <dt>Version</dt>
-                  <dd>{audienceQuery.data.version}</dd>
-                </div>
-                <div className={styles.metaRow}>
-                  <dt>Disable in-app fallback</dt>
-                  <dd>{audienceQuery.data.disable_in_app_fallback ? 'Yes' : 'No'}</dd>
-                </div>
-                <div className={styles.metaRow}>
-                  <dt>Created</dt>
-                  <dd>{formatDate(audienceQuery.data.created_at)}</dd>
-                </div>
-                <div className={styles.metaRow}>
-                  <dt>Updated</dt>
-                  <dd>{formatTimeAgo(audienceQuery.data.updated_at)}</dd>
-                </div>
-              </dl>
-            </section>
+                <section className={styles.section}>
+                  <h2 className={styles.sectionTitle}>Metadata</h2>
+                  <dl className={styles.meta}>
+                    <div className={styles.metaRow}>
+                      <dt>ID</dt>
+                      <dd className={styles.mono}>{audienceQuery.data.id}</dd>
+                    </div>
+                    <div className={styles.metaRow}>
+                      <dt>Version</dt>
+                      <dd>{audienceQuery.data.version}</dd>
+                    </div>
+                    <div className={styles.metaRow}>
+                      <dt>Disable in-app fallback</dt>
+                      <dd>{audienceQuery.data.disable_in_app_fallback ? 'Yes' : 'No'}</dd>
+                    </div>
+                    <div className={styles.metaRow}>
+                      <dt>Created</dt>
+                      <dd>{formatDate(audienceQuery.data.created_at)}</dd>
+                    </div>
+                    <div className={styles.metaRow}>
+                      <dt>Updated</dt>
+                      <dd>{formatTimeAgo(audienceQuery.data.updated_at)}</dd>
+                    </div>
+                  </dl>
+                </section>
 
-            <ReferencesSection
-              status={referencesQuery.status}
-              data={referencesQuery.data}
-              onRetry={() => { void referencesQuery.refetch() }}
-            />
+                <ReferencesSection
+                  status={referencesQuery.status}
+                  data={referencesQuery.data}
+                  onRetry={() => { void referencesQuery.refetch() }}
+                />
 
-            {!canManage && (
-              <p className={styles.readOnlyNotice}>
-                You have read-only access. Editing requires an admin or operator role.
-              </p>
+                <p className={styles.readOnlyNotice}>
+                  You have read-only access. Editing requires an admin or operator role.
+                </p>
+              </>
             )}
           </>
         )}
@@ -111,29 +130,12 @@ export default function AdminAudienceDetailPage() {
   )
 }
 
-function RoutingPreview({ entries }: { entries: ApiAudienceEntry[] }) {
-  const { notify, request } = routingPreview(entries)
-  return (
-    <section className={styles.routingPreview} aria-label="Routing preview">
-      <div className={styles.routingRow}>
-        <Bell size={14} strokeWidth={1.5} aria-hidden className={styles.routingIcon} />
-        <span className={styles.routingLabel}>Notifications fan out to:</span>
-        <span className={styles.routingValue}>
-          {notify.length > 0 ? notify.join(', ') : <em className={styles.muted}>no entries</em>}
-        </span>
-      </div>
-      <div className={styles.routingRow}>
-        <MessageSquare size={14} strokeWidth={1.5} aria-hidden className={styles.routingIcon} />
-        <span className={styles.routingLabel}>Requests routed to:</span>
-        <span className={styles.routingValue}>
-          {request ?? <em className={styles.muted}>no Request-capable entry</em>}
-        </span>
-      </div>
-    </section>
-  )
-}
-
 function EntryCard({ entry }: { entry: ApiAudienceEntry }) {
+  function entryDisplayName(e: ApiAudienceEntry): string {
+    if (e.auto) return 'gleipnir.in-app (built-in fallback)'
+    return e.plugin_instance_id || '(unset)'
+  }
+
   return (
     <li className={`${styles.entryCard} ${entry.auto ? styles.entryCardAuto : ''}`}>
       <div className={styles.entryHeader}>
