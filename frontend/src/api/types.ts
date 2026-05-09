@@ -469,3 +469,40 @@ export interface ApiAudienceReferences {
   policies: ApiAudiencePolicyRef[]
   in_flight_runs: ApiAudienceInFlightRun[]
 }
+
+// Matches internal/http/api/audience_handler.go (GET /api/v1/admin/plugin-instances).
+// Pending in #290.
+export interface ApiPluginInstanceForAudience {
+  id: string
+  plugin_id: string
+  instance_name: string
+  state: PluginHealthState
+  implements_notify: boolean
+  implements_request: boolean
+  config_schema: Record<string, unknown> | null
+}
+
+// Request body interfaces for audience mutations.
+// Matches internal/http/api/audience_handler.go.
+
+export interface AudienceEntryInput {
+  plugin_instance_id: string
+  notify: boolean
+  request: boolean
+  config: Record<string, unknown>
+}
+
+export interface AudienceCreateRequest {
+  name: string
+  disable_in_app_fallback: boolean
+  entries: AudienceEntryInput[]
+}
+
+export interface AudienceUpdateRequest {
+  name: string
+  disable_in_app_fallback: boolean
+  // Must be `expected_version` to match audienceSaveRequest.ExpectedVersion's
+  // json:"expected_version,omitempty" tag in audience_handler.go.
+  expected_version: number
+  entries: AudienceEntryInput[]
+}

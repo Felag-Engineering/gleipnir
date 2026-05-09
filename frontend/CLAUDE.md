@@ -32,6 +32,9 @@ npm run build-storybook  # static Storybook build
 /admin/users        → user management (admin)
 /admin/models       → model enable/disable, provider key management (admin)
 /admin/system       → system settings (public URL, run limits, system info) (admin)
+/admin/audiences    → audience list (admin|operator: + new; auditor: read-only)
+/admin/audiences/new → create audience (admin|operator)
+/admin/audiences/:id → audience detail/editor (admin|operator: edit; auditor: read-only)
 *                   → 404 not found
 ```
 

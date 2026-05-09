@@ -1,0 +1,36 @@
+.routingPreview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  background: color-mix(in srgb, var(--color-blue) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-blue) 24%, transparent);
+  border-radius: var(--radius-section);
+}
+
+.routingRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-sm);
+}
+
+.routingIcon {
+  color: var(--color-blue);
+  flex-shrink: 0;
+}
+
+.routingLabel {
+  color: var(--text-second);
+  font-weight: var(--weight-medium);
+}
+
+.routingValue {
+  color: var(--text-primary);
+}
+
+.muted {
+  color: var(--text-muted);
+  font-style: italic;
+}

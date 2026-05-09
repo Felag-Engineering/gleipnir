@@ -52,6 +52,7 @@ export const queryKeys = {
     audiences: ['admin', 'audiences'] as const,
     audienceDetail: (id: string) => ['admin', 'audiences', id] as const,
     audienceReferences: (id: string) => ['admin', 'audiences', id, 'references'] as const,
+    pluginInstances: ['admin', 'plugin-instances'] as const,
   },
   config: {
     all: ['config'] as const,

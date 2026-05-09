@@ -1,6 +1,7 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { PageHeader } from '@/components/PageHeader'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
+import { Button } from '@/components/Button'
 import { useAudiences } from '@/hooks/queries/admin'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { usePageTitle } from '@/hooks/usePageTitle'
@@ -9,6 +10,7 @@ import styles from './AdminAudiencesPage.module.css'
 
 export default function AdminAudiencesPage() {
   usePageTitle('Audiences')
+  const navigate = useNavigate()
 
   const { data: audiences, status, refetch } = useAudiences()
   const { data: currentUser } = useCurrentUser()
@@ -16,7 +18,18 @@ export default function AdminAudiencesPage() {
 
   return (
     <div className={styles.page}>
-      <PageHeader title="Audiences" />
+      <PageHeader title="Audiences">
+        {canManage && (
+          <Button
+            variant="primary"
+            size="small"
+            type="button"
+            onClick={() => navigate('/admin/audiences/new')}
+          >
+            + New audience
+          </Button>
+        )}
+      </PageHeader>
 
       <p className={styles.intro}>
         Audiences are shared notification routing groups referenced from policies by name.
@@ -32,9 +45,17 @@ export default function AdminAudiencesPage() {
         emptyState={
           <div className={styles.emptyState}>
             <p className={styles.emptyHeadline}>No audiences</p>
-            <p className={styles.emptySubtext}>
-              Audiences are created by the API. Editing UI is coming soon.
-            </p>
+            {canManage ? (
+              <Button
+                variant="primary"
+                type="button"
+                onClick={() => navigate('/admin/audiences/new')}
+              >
+                Create your first audience
+              </Button>
+            ) : (
+              <p className={styles.emptySubtext}>No audiences have been created yet.</p>
+            )}
           </div>
         }
       >

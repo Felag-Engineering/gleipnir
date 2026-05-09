@@ -9,6 +9,7 @@ import type {
   ApiAudienceListItem,
   ApiAudience,
   ApiAudienceReferences,
+  ApiPluginInstanceForAudience,
 } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
@@ -70,5 +71,13 @@ export function useAudienceReferences(id: string | undefined) {
     queryFn: () =>
       apiFetch<ApiAudienceReferences>(`/admin/audiences/${encodeURIComponent(id!)}/references`),
     enabled: !!id,
+  })
+}
+
+// Pending in #290 — GET /api/v1/admin/plugin-instances.
+export function usePluginInstancesForAudience() {
+  return useQuery({
+    queryKey: queryKeys.admin.pluginInstances,
+    queryFn: () => apiFetch<ApiPluginInstanceForAudience[]>('/admin/plugin-instances'),
   })
 }

@@ -1,0 +1,185 @@
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.rowAuto {
+  border-style: dashed;
+  background: var(--bg-canvas);
+}
+
+.dragging {
+  opacity: 0.5;
+}
+
+.dragOver {
+  border-top: 2px solid var(--color-blue);
+}
+
+.rowHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.dragHandle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: grab;
+  border-radius: 3px;
+}
+
+.dragHandle:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.dragHandle:not(:disabled):hover {
+  color: var(--text-second);
+  background: var(--bg-subtle);
+}
+
+.reorderButtons {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.reorderBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px var(--space-1);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.reorderBtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.reorderBtn:not(:disabled):hover {
+  color: var(--text-second);
+  background: var(--bg-subtle);
+}
+
+.position {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-muted);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.autoLabel {
+  flex: 1;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-second);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.pickerWrapper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.picker {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: 4px;
+  padding: var(--space-1) var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-family: var(--font-body);
+}
+
+.picker:focus {
+  outline: none;
+  border-color: var(--color-blue);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+.picker:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.toggleLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-second);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.toggleLabel:has(input:disabled) {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.removeBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 3px;
+  margin-left: auto;
+}
+
+.removeBtn:not(:disabled):hover {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 10%, transparent);
+}
+
+.removeBtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.configSection {
+  padding-left: calc(var(--space-3) + 14px + var(--space-2) + 14px + var(--space-2) + 24px + var(--space-2));
+}
+
+.noConfig {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-style: italic;
+}
