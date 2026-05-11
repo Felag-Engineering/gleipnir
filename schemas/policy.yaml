@@ -25,6 +25,15 @@ description: string
 #   Stored in the YAML blob, not as a separate column.
 folder: string
 
+# audience: string — optional
+#   Name of a shared audience (defined under /admin/audiences) used for
+#   notification fan-out and operator-request routing. Omit for policies
+#   that do not use the audience system.
+#   Stored in the YAML blob (ADR-002). The Go side already reads this field
+#   via internal/policy/audience_refs.go. No validator change needed — the
+#   policy editor enforces selection via the AudienceSection dropdown.
+audience: string
+
 
 # ---------------------------------------------------------------------------
 # Model (preferred format, introduced in issue #344)

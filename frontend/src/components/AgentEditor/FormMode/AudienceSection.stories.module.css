@@ -1,0 +1,5 @@
+.decorator {
+  padding: var(--space-6);
+  background: var(--bg-canvas);
+  max-width: 640px;
+}

@@ -700,6 +700,35 @@ agent:
   })
 })
 
+// --- Audience field ---
+
+describe('yamlToFormState — audience field', () => {
+  it('parses audience: ops-team into { name: "ops-team" }', () => {
+    const yaml = 'name: p\naudience: ops-team\n'
+    const state = yamlToFormState(yaml)
+    expect(state!.audience).toEqual({ name: 'ops-team' })
+  })
+
+  it('defaults absent audience field to { name: "" }', () => {
+    const state = yamlToFormState('name: p\n')
+    expect(state!.audience).toEqual({ name: '' })
+  })
+})
+
+describe('formStateToYaml — audience field', () => {
+  it('does NOT emit audience when name is empty', () => {
+    const state = yamlToFormState('name: p\n')!
+    const output = formStateToYaml(state)
+    expect(output).not.toContain('audience:')
+  })
+
+  it('emits audience: ops-team at top level when name is "ops-team"', () => {
+    const state = yamlToFormState('name: p\naudience: ops-team\n')!
+    const output = formStateToYaml(state)
+    expect(output).toContain('audience: ops-team')
+  })
+})
+
 // --- defaultFormState ---
 
 describe('defaultFormState', () => {
@@ -716,6 +745,8 @@ describe('defaultFormState', () => {
     // task must start empty so the textarea placeholder guides the user and saving
     // without editing correctly surfaces the "agent.task is required" validation error.
     expect(state.task.task).toBe('')
+    // audience must always be explicitly present (not relying on YAML round-trip)
+    expect(state.audience).toEqual({ name: '' })
   })
 
   it('matches what yamlToFormState(DEFAULT_YAML) returns', () => {
