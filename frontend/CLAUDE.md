@@ -224,7 +224,7 @@ Organized by feature area:
 
 - **Layout** — sidebar navigation, content area, theme toggle, connection status banner
 - **dashboard/** — StatsBar, StatusBadge, StatusBoard, TriggerChip, ActivityFeed, SetupChecklist (context-aware onboarding checklist that renders until all setup steps are complete)
-- **AgentEditor/** — the agent editor (EditorTopBar, FormMode with 7 form sections)
+- **AgentEditor/** — the agent editor (EditorTopBar, FormMode with 8 form sections)
 - **AgentList/** — agent list with folder grouping
 - **RunDetail/** — RunHeader, StepTimeline, FilterBar, MetadataGrid, CapabilitySnapshotCard, ThoughtBlock, ThinkingBlock, ToolBlock, CompleteBlock, ErrorBlock, FeedbackBlock, ApprovalActions, FeedbackActions
 - **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal, ServerDetailModal (per-header auth editor: existing name fields are read-only, value field is empty with placeholder; save fans out via `useSetMcpServerHeader`/`useDeleteMcpServerHeader`; no sentinel; see ADR-039), ArcadeAuthSection (toolkit-level OAuth pre-authorization for Arcade gateways; renders only when `server.is_arcade_gateway && canManage`; see ADR-040)

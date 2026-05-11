@@ -91,6 +91,10 @@ export interface ModelFormState {
   model: string;
 }
 
+export interface AudienceFormState {
+  name: string; // empty string means no audience selected
+}
+
 // FormIssue is defined in validateFormState.ts (single source of truth).
 // It is re-exported here so section components only need to import from './types'.
 // SectionIssues is the array form: a flat list of issues pre-filtered to a

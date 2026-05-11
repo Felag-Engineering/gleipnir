@@ -1,5 +1,6 @@
 import { dump, load } from 'js-yaml'
 import type {
+  AudienceFormState,
   CapabilitiesFormState,
   ConcurrencyFormState,
   ConcurrencyValue,
@@ -20,6 +21,7 @@ export interface FormState {
   identity: IdentityFormState
   trigger: TriggerFormState
   capabilities: CapabilitiesFormState
+  audience: AudienceFormState
   task: TaskInstructionsFormState
   limits: RunLimitsFormState
   concurrency: ConcurrencyFormState
@@ -226,10 +228,17 @@ export function yamlToFormState(yaml: string): FormState | null {
     ? { provider: modelRaw.provider, model: modelRaw.name }
     : { provider: '', model: '' }
 
+  // Audience — top-level optional string field, matches the Go scanner in
+  // internal/policy/audience_refs.go (`Audience string \`yaml:"audience"\``).
+  const audience: AudienceFormState = {
+    name: typeof p.audience === 'string' ? p.audience : '',
+  }
+
   return {
     identity,
     trigger,
     capabilities,
+    audience,
     task,
     limits,
     concurrency,
@@ -239,7 +248,7 @@ export function yamlToFormState(yaml: string): FormState | null {
 
 // formStateToYaml serializes FormState back to a YAML string.
 export function formStateToYaml(state: FormState): string {
-  const { identity, trigger, capabilities, task, limits, concurrency, model } = state
+  const { identity, trigger, capabilities, audience, task, limits, concurrency, model } = state
 
   // Build trigger object
   let triggerObj: Record<string, unknown>
@@ -315,6 +324,10 @@ export function formStateToYaml(state: FormState): string {
   }
   if (identity.description) doc.description = identity.description
   if (identity.folder) doc.folder = identity.folder
+  // Emit audience only when set — an empty string means "no audience", which
+  // must not be serialized as an empty reference. Placed in the metadata
+  // cluster (name / description / folder / audience) before model.
+  if (audience.name) doc.audience = audience.name
   doc.model = { provider: model.provider, name: model.model }
   doc.trigger = triggerObj
   doc.capabilities = capsObj
@@ -323,8 +336,10 @@ export function formStateToYaml(state: FormState): string {
   return dump(doc, { lineWidth: -1 })
 }
 
-// defaultFormState returns the parsed form state from DEFAULT_YAML.
+// defaultFormState returns a FormState seeded from DEFAULT_YAML.
+// DEFAULT_YAML is valid, so yamlToFormState will never return null.
+// yamlToFormState already populates audience: { name: '' } when the field
+// is absent, so no additional seeding is needed here.
 export function defaultFormState(): FormState {
-  // DEFAULT_YAML is valid, so this will never return null
   return yamlToFormState(DEFAULT_YAML) as FormState
 }
