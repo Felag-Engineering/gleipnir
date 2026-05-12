@@ -99,3 +99,17 @@ In both cases, construct a `run.LaunchParams` with the correct `TriggerType` and
 | `manual` | `internal/trigger/manual.go` | No | Simplest — good starting point |
 | `scheduled` | `internal/trigger/scheduled.go` | Yes | Loads fire_at times, arms timers |
 | `poll` | `internal/trigger/poll.go` | Yes | Cron expression, MCP tool check, hash dedup |
+
+## Plugin-sourced (`subscribed`) triggers
+
+Plugin-sourced triggers use a single internal trigger type — `subscribed` — that binds a policy to a `(plugin_instance, event_kind)` pair declared by an installed plugin's manifest. All plugin event_kinds share this one enum value; there is no separate trigger type per plugin or per event_kind.
+
+Operators do not see the word "subscribed" in the UI. The trigger picker is flat and lists every plugin event_kind alongside the five built-in trigger types as peers. Multiple instances of the same plugin contribute disambiguated entries (e.g. `Slack (slack-prod): Channel message` vs `Slack (slack-personal): Channel message`).
+
+Per-binding filters are typed form fields derived from the manifest's `event_kinds[].binding_schema` (JSON Schema). JSONPath is not used for plugin trigger bindings — bindings are typed Go-struct fields surfaced as a structured form. (JSONPath remains in the built-in `poll` trigger, which evaluates arbitrary MCP tool output where no per-tool typed schema exists.)
+
+v1 allows one trigger binding per policy. The `trigger:` key remains a single object; multi-trigger generalization (object → list) is deferred until there is a real user requirement.
+
+See **ADR-048** in `ADR_Tracker.md` for full rationale on each of these decisions, and `docs/developer/plugin-system-spec.md` §7 for the complete design.
+
+**Implementation note:** adding a new plugin-sourced trigger event_kind does **not** add a new value to the `TriggerType` enum — `subscribed` covers all plugin-sourced triggers. Steps 1, 6, and 11 of the checklist above are one-time work when `subscribed` itself ships; subsequent plugin event_kinds are additive at the manifest level only and require no changes to the host trigger dispatch path.

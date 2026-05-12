@@ -62,8 +62,85 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-045 | Plugin signing & TOFU trust — Minisign tamper-evidence + first-install pubkey capture | 🟢 Decided | v2.0 (plugins) | internal/plugin (loader), plugin_instances.trusted_pubkey, GLEIPNIR_ALLOW_UNSIGNED_PLUGINS, spec §5 |
 | ADR-046 | Audit-table split — run_steps (LLM-visible) vs plugin_audit_events (operator-only) | 🟢 Decided | v2.0 (plugins) | plugin_audit_events table, WriteAuditStep RPC authorization, spec §12.3 |
 | ADR-047 | Plugin observability surface — metrics prefix, cardinality cap, Log RPC instead of stdout, OTEL deferred | 🟢 Decided | v2.0 (plugins) | internal/plugin/hostsvc/metrics.go, internal/plugin/hostsvc/handlers.go (Log/EmitMetric), internal/plugin/process/logpipe.go, internal/plugin/state/metrics.go, spec §12 |
+| ADR-048 | Subscribed trigger type — internal-only name, flat picker, no JSONPath for plugin bindings, single-trigger-per-policy v1 | 🟢 Decided | v2.0 (plugins) | internal/model (TriggerType), internal/policy (parser/validator), internal/trigger (new subscribed handler), policy editor trigger picker, spec §7 |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
 | #199    | call_id propagation through gRPC metadata (spec §8.5)  | 🟢 Decided | v2.0 (plugins) | plugin-sdk/serve/callcontext.go, internal/plugin/hostsvc (new package), no new ADR — implements existing spec §8.5 contract |
+
+---
+
+## ADR-048: Subscribed trigger type
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+The plugin system (ADR-041) introduces event-emitting plugin triggers via `TriggerService.Start` (spec §4.3 / §7). Today there are five built-in trigger types (`webhook`, `manual`, `scheduled`, `poll`, `cron`); a sixth internal type is needed to bind a policy to a `(plugin_instance, event_kind)` pair declared in an installed plugin's manifest.
+
+This ADR records the four settled decisions that define how plugin-sourced triggers integrate with the existing policy model. The primary spec reference is `docs/developer/plugin-system-spec.md` §7. This ADR refines (does not supersede) `docs/developer/adding-a-trigger-type.md`.
+
+### Decision
+
+#### 1. Internal-only trigger type name; flat conceptual picker
+
+The new trigger type is named `subscribed` for storage and dispatch purposes. It is used as the DB CHECK constraint value on `policies.trigger_type`, `runs.trigger_type`, and `trigger_queue.trigger_type`, and as the discriminator in handler switch-cases. It is never shown to operators.
+
+From spec §7.1: "**The trigger picker UI is flat at the conceptual level** — operators see built-ins (`webhook`, `manual`, `scheduled`, `poll`, `cron`) and every plugin event_kind as peer options. … The internal `subscribed` type is never rendered as a label."
+
+The user-facing model is a `(source, event_kind)` pair. The picker presents plugin event_kinds alongside the five built-ins as peers. At scale, entries are grouped visually by source (built-ins as one top-of-list group; each plugin instance as its own group), with a search box across all entries — but the grouping is purely presentational. The underlying selection is still a single `(source, event_kind)` pair stored as `trigger_type: subscribed` in the policy YAML.
+
+#### 2. Multi-instance disambiguation in the picker
+
+Multiple instances of the same plugin contribute separate, disambiguated entries in the trigger picker. The spec example (§7.1): `Slack (slack-prod): Channel message` vs `Slack (slack-personal): Channel message`. Both map to the same internal `subscribed` type but carry different `source:` values in the policy YAML binding (§7.2).
+
+Instances are credential/configuration envelopes — two instances of the same plugin may watch entirely disjoint workspaces, channels, or tenants. Combining them under a single picker entry would require the operator to then disambiguate in a second step; listing them separately makes the `(source, event_kind)` pair the first-class selection unit. The YAML representation is:
+
+```yaml
+trigger:
+  type: subscribed              # internal, never rendered in UI
+  source: slack-prod            # plugin instance
+  event_kind: channel_message
+  binding:
+    channel: "#incidents"
+    mention_only: true
+```
+
+#### 3. No JSONPath for plugin trigger bindings — rich field types instead
+
+Plugin trigger bindings use typed form fields (regex, contains, equals, etc.) derived from the manifest's `event_kinds[].binding_schema`. JSONPath is explicitly excluded from plugin trigger filtering.
+
+From spec §7.2: "Plugin authors express filters via richer fields (regex, contains, equals, etc.) — **JSONPath is not used for plugin trigger filtering.**" (JSONPath remains in the built-in `poll` trigger, which evaluates MCP tool output.)
+
+Rationale:
+
+- **JSONPath is stringly-typed.** It provides no autocomplete, no schema validation, and no UI affordance. An operator who mistyped a path gets a silent non-match, not a validation error.
+- **Typed binding schema enables a structured form.** The manifest's `binding_schema` is a JSON Schema document (reflection-derived from Go struct types). The policy editor renders it as a typed form per `event_kind` — the same mechanism used for instance config in §4.2.
+- **Filters run host-side against typed Go fields (§7.3).** There is no per-match round-trip RPC to the plugin; the host evaluates binding predicates directly against the event payload. This means the host, not the plugin, owns the evaluation semantics — and the schema defines those semantics at install time.
+- **Filter expressiveness extends additively.** New operator types (prefix, suffix, numeric range) widen the binding schema without changing the trigger type or the YAML shape. JSONPath cannot be extended this way without versioning the expression language.
+- **Explicit asymmetry with `poll`.** The `poll` trigger evaluates arbitrary MCP tool output — no per-tool typed schema is available, so JSONPath is the only tractable option. Plugin triggers have a manifest-declared schema; the typed approach is strictly better in that context. The asymmetry is intentional.
+
+#### 4. v1 single-trigger-per-policy limit; structured-form path for future generalization
+
+From spec §7.4: "One trigger binding per policy. Multiple triggers per policy is deferred. The structured-form approach generalizes cleanly when needed."
+
+Today's policy YAML `trigger:` key is a single object across all five built-in trigger types. Widening it to a list before there is a real user requirement would compound parser, validator, and UI complexity with no concrete gain.
+
+Forward path: when multi-trigger per policy becomes a real requirement, `trigger:` becomes a list of `(source, event_kind, binding)` entries. Each entry is still rendered by the same per-`event_kind` form component — a `map(renderForm)` call over the list rather than a new abstraction. No proto-level changes and no new DB CHECK constraint values are forced at that point; `subscribed` continues to cover all plugin-sourced trigger entries regardless of how many appear in the list.
+
+### Out of scope
+
+- Multi-trigger per policy (deferred per §7.4).
+- Per-event-type routing overrides on the audience side (§6.4).
+- Paste-your-own-JSON binding tester (§7.5; v1 surface is "Test against sample" using manifest `examples`).
+- Operator-side JSONPath in plugin bindings (rejected, see decision §3).
+- Implementation of the `subscribed` handler, parser, validator, migration, and frontend picker — tracked separately under parent #160.
+
+### Consequences
+
+- `TriggerType` enum (`internal/model`) and DB CHECK constraints on `policies.trigger_type`, `runs.trigger_type`, and `trigger_queue.trigger_type` must accept `subscribed` (steps 1 and 6 of `adding-a-trigger-type.md`). This is one-time work when `subscribed` ships; subsequent plugin event_kinds are additive at the manifest level only.
+- The policy-editor trigger picker grows from a fixed list of five built-ins to a dynamic list assembled from "five built-ins + (plugin instances × declared `event_kinds`)". The internal storage discriminator stays small (six enum values).
+- Plugin authors cannot use JSONPath expressions in their manifest's `binding_schema` — bindings are typed Go-struct fields surfaced as a structured form. Plugin authors get a schema validation error at manifest install time if they attempt one.
+- When multi-trigger per policy becomes a real requirement, the schema migration is YAML-shape only (single object → list of objects). No new trigger type enum value and no new handler dispatch path is required.
 
 ---
 
