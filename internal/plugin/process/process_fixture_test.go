@@ -16,8 +16,11 @@ import (
 	"google.golang.org/grpc/status"
 
 	bootstrapv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/bootstrap/v1"
+	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	handshakev1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/handshake/v1"
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 )
 
 // runFixtureServePlugin starts a go-plugin subprocess listener and blocks until
@@ -152,6 +155,28 @@ func runFixtureServeEchoToken() {
 	case <-quit:
 	case <-done:
 	}
+}
+
+// runFixtureServeViaSDK calls serve.Serve with a trivial ChannelService stub so
+// the host-side process tests exercise the real SDK Serve path rather than a
+// hand-rolled go-plugin listener. This catches regressions where the SDK's
+// serve.Serve is broken but the hand-rolled fixture still passes.
+func runFixtureServeViaSDK() {
+	serve.Serve(
+		serve.WithChannelService(func(_ hostv1.HostServiceClient) channelv1.ChannelServiceServer {
+			return &sdkFixtureChannelService{}
+		}),
+	)
+}
+
+// sdkFixtureChannelService is a trivial ChannelService that returns Ok=true on
+// every Notify call. Used only by runFixtureServeViaSDK.
+type sdkFixtureChannelService struct {
+	channelv1.UnimplementedChannelServiceServer
+}
+
+func (s *sdkFixtureChannelService) Notify(_ context.Context, _ *channelv1.NotifyRequest) (*channelv1.NotifyResponse, error) {
+	return &channelv1.NotifyResponse{Ok: true}, nil
 }
 
 // ── go-plugin GRPCPlugin implementation ─────────────────────────────────────

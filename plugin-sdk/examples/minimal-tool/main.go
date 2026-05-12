@@ -1,13 +1,25 @@
 package main
 
-import "github.com/felag-engineering/gleipnir/plugin-sdk/serve"
+import (
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
+)
 
 func main() {
-	// serve.Serve() is the last call in every plugin binary. It wires up the
-	// go-plugin transport, registers ToolService, and blocks until the host
-	// disconnects.
+	// serve.Serve wires up the go-plugin transport, registers ToolService, and
+	// blocks until the host disconnects or a signal is received.
 	//
-	// This is a Phase-3 stub and panics if called directly. Run service_test.go
-	// instead to exercise ToolService in-process via loopback TCP (127.0.0.1:0).
-	serve.Serve()
+	// Passing --emit-manifest as the first argument causes it to write the
+	// manifest JSON to stdout and exit (used by gleipnir-plugin gen-manifest).
+	//
+	// A bare serve.Serve() with no options is valid: the plugin responds to
+	// the handshake and Bootstrap.Bind but all service RPCs return
+	// codes.Unavailable, which is the correct documented behaviour.
+	serve.Serve(
+		serve.WithManifest(pluginManifest),
+		serve.WithToolService(func(host hostv1.HostServiceClient) toolv1.ToolServiceServer {
+			return NewToolService(host)
+		}),
+	)
 }

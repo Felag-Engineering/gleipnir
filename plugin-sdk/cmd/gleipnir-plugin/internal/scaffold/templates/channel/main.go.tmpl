@@ -1,20 +1,24 @@
 package main
 
 import (
-	"flag"
-	"os"
+	"net/http"
 
+	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 )
 
 func main() {
-	emitManifest := flag.Bool("emit-manifest", false, "write manifest JSON to stdout and exit")
-	flag.Parse()
-
-	if *emitManifest {
-		serve.EmitManifest()
-		os.Exit(0)
-	}
-
-	serve.Serve()
+	// serve.Serve is the last call in every plugin binary. Passing
+	// --emit-manifest as the first argument causes it to write the manifest
+	// JSON to stdout and exit, which is what gleipnir-plugin gen-manifest uses.
+	serve.Serve(
+		serve.WithManifest(pluginManifest),
+		serve.WithChannelService(func(host hostv1.HostServiceClient) channelv1.ChannelServiceServer {
+			// TODO: replace with your ChannelService constructor. The host
+			// client is used for GetInstanceConfig, GetCredentials, and
+			// other Host RPCs.
+			return NewChannelService(host, http.DefaultClient)
+		}),
+	)
 }
