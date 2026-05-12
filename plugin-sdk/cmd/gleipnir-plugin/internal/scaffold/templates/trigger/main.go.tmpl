@@ -1,20 +1,20 @@
 package main
 
 import (
-	"flag"
-	"os"
-
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 )
 
 func main() {
-	emitManifest := flag.Bool("emit-manifest", false, "write manifest JSON to stdout and exit")
-	flag.Parse()
-
-	if *emitManifest {
-		serve.EmitManifest()
-		os.Exit(0)
-	}
-
-	serve.Serve()
+	// serve.Serve is the last call in every plugin binary. Passing
+	// --emit-manifest as the first argument causes it to write the manifest
+	// JSON to stdout and exit, which is what gleipnir-plugin gen-manifest uses.
+	serve.Serve(
+		serve.WithManifest(pluginManifest),
+		serve.WithTriggerService(func(host hostv1.HostServiceClient) triggerv1.TriggerServiceServer {
+			// TODO: replace with your TriggerService constructor.
+			return NewTriggerService(host)
+		}),
+	)
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
 	"github.com/felag-engineering/gleipnir/internal/plugin/process"
+	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
 )
 
@@ -48,6 +49,9 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	case "echo-token":
 		runFixtureServeEchoToken()
+		os.Exit(0)
+	case "serve-via-sdk":
+		runFixtureServeViaSDK()
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -541,6 +545,64 @@ func TestStart_OldTokenRejectedAfterReissue(t *testing.T) {
 		t.Error("new token not found in registry")
 	} else if id != cfg.InstanceID {
 		t.Errorf("new token resolved to %q, want %q", id, cfg.InstanceID)
+	}
+}
+
+// TestStart_RealSDKServe verifies that a subprocess started via the real
+// serve.Serve (the "serve-via-sdk" fixture mode) starts, completes the
+// hostwire.Launch handshake, responds to a ChannelService.Notify RPC, and
+// stops cleanly. The Notify dispatch is the critical assertion: it confirms
+// that serve.Serve actually registered the adapter on the gRPC server. Without
+// it, a broken adapter registration would not be caught by the handshake alone.
+func TestStart_RealSDKServe(t *testing.T) {
+	reg := identity.New()
+	cfg := fixtureConfig(t, "serve-via-sdk", reg, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	inst, err := process.Start(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Start with serve-via-sdk fixture: %v", err)
+	}
+
+	// Token must be present and valid.
+	if inst.Token() == "" {
+		t.Fatal("Token() is empty")
+	}
+	if _, ok := reg.Lookup(inst.Token()); !ok {
+		t.Fatal("token not found in registry")
+	}
+
+	// Dispatch a Notify RPC to confirm the ChannelService adapter is wired.
+	// If serve.Serve did not register the adapter, this call returns
+	// codes.Unavailable and the test fails — catching the regression described
+	// in the issue.
+	notifyCtx, notifyCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer notifyCancel()
+	resp, err := inst.Client().Channel.Notify(notifyCtx, &channelv1.NotifyRequest{})
+	if err != nil {
+		t.Fatalf("Channel.Notify: %v", err)
+	}
+	if !resp.GetOk() {
+		t.Errorf("Channel.Notify: want Ok=true, got Ok=false; error=%v", resp.GetError())
+	}
+
+	stopCtx, stopCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer stopCancel()
+	if err := inst.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	select {
+	case <-inst.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("done channel did not close within 10s after Stop")
+	}
+
+	// Token must be revoked after stop.
+	if _, ok := reg.Lookup(inst.Token()); ok {
+		t.Error("token still in registry after Stop")
 	}
 }
 
