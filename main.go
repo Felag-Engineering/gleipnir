@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostsvc"
 	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
+	"github.com/felag-engineering/gleipnir/internal/plugin/process"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
@@ -136,21 +138,22 @@ func run(cfg config.Config) error {
 	)
 	feedbackScanner.Start(ctx)
 
+	// connFactory bridges the dispatch layer to the host's process.Manager.
+	// It is constructed now (before pluginPool and pluginDispatcher) but the
+	// manager is injected later via setManager, after loader.StartManager
+	// succeeds. Using an atomic pointer lets the factory be captured by value
+	// in both call sites while still seeing the manager once it is available.
+	// Before setManager runs, Connect returns ErrManagerUnavailable — correct
+	// because no plugin subprocesses are running yet.
+	connFactory := &managerConnFactory{}
+
 	// Plugin dispatch pool: routes agent tool calls to plugin instances via gRPC.
-	// stubConnFactory returns an error because subprocess lifecycle (process start,
-	// UDS socket path) is wired in a follow-up issue. Plugin tools are only added
-	// to agent.Config.PluginTools once the registrar has registered them, and that
-	// registration is gated on the loader-side subprocess-up event — so this stub
-	// is unreachable in practice until that follow-up lands.
-	stubConnFactory := func(instanceName string) (*grpc.ClientConn, error) {
-		return nil, fmt.Errorf("plugin %q not started (subprocess lifecycle not yet wired)", instanceName)
-	}
 	pluginPool := dispatch.New(dispatch.Config{
 		CallTimeout:          cfg.MCPTimeout,
 		CancelTimeout:        5 * time.Second,
 		DefaultMaxConcurrent: 50,
 		DefaultMaxQueueDepth: 50,
-		Connect:              stubConnFactory,
+		Connect:              connFactory.Connect,
 	})
 
 	// pluginDispatchAdapter wraps *dispatch.Pool to satisfy agent.PluginToolDispatcher,
@@ -200,7 +203,7 @@ func run(cfg config.Config) error {
 
 		pluginDispatcher := dispatch.NewDispatcher(dispatch.DispatcherConfig{
 			Queries: store.Queries(),
-			Connect: stubConnFactory,
+			Connect: connFactory.Connect,
 		})
 
 		hostSvc := hostsvc.NewServer(
@@ -228,6 +231,10 @@ func run(cfg config.Config) error {
 		}); err != nil {
 			return fmt.Errorf("start plugin manager: %w", err)
 		}
+		// Publish the manager to the factory so Connect calls can now resolve
+		// running instances. This runs after StartManager so the manager is
+		// fully initialised before any call can reach it.
+		connFactory.setManager(loader.Manager())
 	}
 
 	// Registry construction is placed after encryption key parsing so
@@ -475,6 +482,10 @@ func run(cfg config.Config) error {
 
 	// Close the plugin dispatch pool after all runs have drained so no new
 	// Cancel RPCs are issued after the connections are torn down.
+	// Note: StopAll above already tore down each subprocess's gRPC transport
+	// via go-plugin's Kill(). pluginPool.Close() may therefore hit already-closed
+	// connections; grpc.ErrClientConnClosing is swallowed by Pool.Close's firstErr
+	// capture and is not surfaced here. This re-close is benign post-StopAll.
 	if err := pluginPool.Close(); err != nil {
 		slog.Warn("plugin dispatch pool close error", "err", err)
 	}
@@ -680,4 +691,41 @@ func (a *pluginDispatchAdapter) Call(ctx context.Context, runID, policyID, insta
 		}
 	}
 	return output, isError, err
+}
+
+// managerConnFactory resolves a *grpc.ClientConn for a named plugin instance by
+// looking it up in the host's process.Manager. It is the production ConnFactory
+// that replaces the old stubConnFactory.
+//
+// The argument is the human-readable instance_name (matching
+// dispatch.ConnFactory's contract and the plugin_instances.instance_name
+// column), NOT the ULID. We therefore call Manager.LookupByName, not Lookup.
+//
+// The manager is set via setManager after loader.StartManager succeeds. Until
+// then (or when plugins are disabled), Connect returns ErrManagerUnavailable.
+// The atomic.Pointer lets connFactory be wired into dispatch.New and
+// dispatch.NewDispatcher before StartManager runs; late-binding is safe because
+// no plugin subprocess is reachable until StartManager completes anyway.
+type managerConnFactory struct {
+	mgr atomic.Pointer[process.Manager]
+}
+
+func (f *managerConnFactory) setManager(m *process.Manager) { f.mgr.Store(m) }
+
+func (f *managerConnFactory) Connect(instanceName string) (*grpc.ClientConn, error) {
+	m := f.mgr.Load()
+	if m == nil {
+		return nil, fmt.Errorf("%w: %q", dispatch.ErrManagerUnavailable, instanceName)
+	}
+	inst := m.LookupByName(instanceName)
+	if inst == nil {
+		return nil, fmt.Errorf("%w: %q", dispatch.ErrInstanceNotRunning, instanceName)
+	}
+	conn := inst.Client().Conn()
+	if conn == nil {
+		// Defence in depth: Client.Conn() should always be non-nil for instances
+		// returned by the real process.Start path (hostwire.GRPCClient sets conn).
+		return nil, fmt.Errorf("%w: %q (nil conn)", dispatch.ErrInstanceNotRunning, instanceName)
+	}
+	return conn, nil
 }

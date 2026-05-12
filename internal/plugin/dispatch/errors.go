@@ -29,3 +29,14 @@ var ErrNoRequestCapableEntry = errors.New("plugin: no request-capable entry in a
 // not in the in-memory waiters map — either it was never issued by this
 // Dispatcher instance, or it has already been resolved or expired.
 var ErrUnknownRequestID = errors.New("plugin: unknown request ID")
+
+// ErrInstanceNotRunning is returned by a ConnFactory when no subprocess is
+// currently registered for the requested instance name. The host dispatcher
+// wraps this with the instance name before returning it to callers.
+var ErrInstanceNotRunning = errors.New("plugin: instance not running")
+
+// ErrManagerUnavailable is returned by a ConnFactory when the host plugin
+// subsystem is disabled or the process.Manager has not yet been constructed
+// (i.e. setManager has not been called). Callers can distinguish this from
+// ErrInstanceNotRunning to tell apart "subsystem off" from "instance crashed".
+var ErrManagerUnavailable = errors.New("plugin: process manager unavailable")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -17,13 +18,38 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
+	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	commonv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	sdkproto "github.com/felag-engineering/gleipnir/plugin-sdk/proto"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 )
 
 func TestMain(m *testing.M) {
+	// Intercept the re-exec pattern used by integration tests that need a real
+	// plugin subprocess. When this test binary is re-launched as a subprocess
+	// (by setting GLEIPNIR_TEST_FIXTURE), it acts as a plugin server rather than
+	// running the test suite.
+	if os.Getenv("GLEIPNIR_TEST_FIXTURE") == "dispatch-serve-via-sdk" {
+		serve.Serve(
+			serve.WithChannelService(func(_ hostv1.HostServiceClient) channelv1.ChannelServiceServer {
+				return &dispatchFixtureChannel{}
+			}),
+		)
+		os.Exit(0)
+	}
 	goleak.VerifyTestMain(m)
+}
+
+// dispatchFixtureChannel is a trivial ChannelService that returns Ok=true on
+// every Notify call. Used by TestDispatcher_Notify_ProductionWiring.
+type dispatchFixtureChannel struct {
+	channelv1.UnimplementedChannelServiceServer
+}
+
+func (s *dispatchFixtureChannel) Notify(_ context.Context, _ *channelv1.NotifyRequest) (*channelv1.NotifyResponse, error) {
+	return &channelv1.NotifyResponse{Ok: true}, nil
 }
 
 // fakeToolServer is a test double for toolv1.ToolServiceServer.

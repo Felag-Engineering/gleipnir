@@ -370,6 +370,28 @@ func (m *Manager) Lookup(instanceID string) *Instance {
 	return m.instances[instanceID]
 }
 
+// LookupByName returns the running Instance whose InstanceName matches name, or
+// nil if no such subprocess is running.
+//
+// Manager's primary index is by ULID (instance.ID); this helper supports the
+// dispatch layer, whose ConnFactory contract is keyed on the human-readable
+// instance_name (the same value persisted in plugin_instances.instance_name and
+// threaded through dispatch.Pool/dispatch.Dispatcher).
+//
+// Implementation is a linear scan under m.mu. The instances map is small (one
+// entry per running plugin instance) so this is fine; a second name→id index
+// would add lifecycle complexity for no measurable benefit.
+func (m *Manager) LookupByName(name string) *Instance {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, inst := range m.instances {
+		if inst.cfg.InstanceName == name {
+			return inst
+		}
+	}
+	return nil
+}
+
 // buildHealthSetter returns a HealthSetter closure that routes through
 // pluginstate.SetHealthState with the manager's DB querier and publisher.
 // ErrIllegalTransition is treated as warn-and-continue because the instance
