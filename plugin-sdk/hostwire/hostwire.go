@@ -69,7 +69,20 @@ type Client struct {
 	Channel   channelv1.ChannelServiceClient
 	Trigger   triggerv1.TriggerServiceClient
 	Bootstrap bootstrapv1.BootstrapServiceClient
+
+	// conn is the underlying gRPC connection backing the typed service clients.
+	// Retained here so Conn() can expose it to the host dispatcher layer.
+	conn *grpc.ClientConn
 }
+
+// Conn returns the underlying gRPC connection that backs the typed service
+// clients. The production host dispatcher uses this to satisfy
+// dispatch.ConnFactory: it constructs channelv1.NewChannelServiceClient(conn)
+// for each plugin instance rather than going through the typed Client fields
+// (which are equivalent but require the full Client to be available).
+//
+// This is an additive SDK change per ADR-042 SDK stability rules.
+func (c *Client) Conn() *grpc.ClientConn { return c.conn }
 
 // Options configures a Launch call.
 type Options struct {
@@ -189,6 +202,7 @@ func (p *gleipnirPlugin) GRPCClient(ctx context.Context, broker *plugin.GRPCBrok
 		Channel:   channelv1.NewChannelServiceClient(conn),
 		Trigger:   triggerv1.NewTriggerServiceClient(conn),
 		Bootstrap: bootstrapv1.NewBootstrapServiceClient(conn),
+		conn:      conn,
 	}, nil
 }
 
