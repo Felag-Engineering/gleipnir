@@ -79,6 +79,13 @@ export function yamlToFormState(yaml: string): FormState | null {
       type: 'scheduled',
       fireAt: fireAtRaw.filter((v: unknown) => typeof v === 'string') as string[],
     }
+  } else if (triggerType === 'subscribed') {
+    trigger = {
+      type: 'subscribed',
+      source: typeof triggerRaw.source === 'string' ? triggerRaw.source : '',
+      eventKind: typeof triggerRaw.event_kind === 'string' ? triggerRaw.event_kind : '',
+      binding: isRecord(triggerRaw.binding) ? triggerRaw.binding : {},
+    }
   } else if (triggerType === 'cron') {
     const cronExpr = typeof triggerRaw.cron_expr === 'string' ? triggerRaw.cron_expr : ''
     trigger = { type: 'cron', cronExpr }
@@ -258,6 +265,16 @@ export function formStateToYaml(state: FormState): string {
     triggerObj = { type: 'scheduled', fire_at: trigger.fireAt }
   } else if (trigger.type === 'cron') {
     triggerObj = { type: 'cron', cron_expr: trigger.cronExpr }
+  } else if (trigger.type === 'subscribed') {
+    const bindingObj = trigger.binding && Object.keys(trigger.binding).length > 0
+      ? { binding: trigger.binding }
+      : {};
+    triggerObj = {
+      type: 'subscribed',
+      source: trigger.source,
+      event_kind: trigger.eventKind,
+      ...bindingObj,
+    };
   } else if (trigger.type === 'poll') {
     const checks = trigger.checks.map(c => {
       const entry: Record<string, unknown> = { tool: c.tool }

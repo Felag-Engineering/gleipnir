@@ -102,6 +102,93 @@ type audienceReferencesDTO struct {
 	InFlightRuns []inFlightRunDTO `json:"in_flight_runs"`
 }
 
+// pluginEventKindDTO is a single event kind from an installed plugin instance's
+// manifest — used by the trigger picker to show plugin-sourced trigger options.
+type pluginEventKindDTO struct {
+	Kind        string `json:"kind"`
+	Description string `json:"description"`
+}
+
+// pluginInstanceForAudienceDTO describes one installed plugin instance for use
+// in the audience editor and trigger picker. Second consumer: the trigger
+// picker (#219) reads event_kinds to populate plugin-sourced entries.
+type pluginInstanceForAudienceDTO struct {
+	ID                string               `json:"id"`
+	PluginID          string               `json:"plugin_id"`
+	PluginName        string               `json:"plugin_name"`
+	InstanceName      string               `json:"instance_name"`
+	State             string               `json:"state"`
+	ImplementsNotify  bool                 `json:"implements_notify"`
+	ImplementsRequest bool                 `json:"implements_request"`
+	ConfigSchema      interface{}          `json:"config_schema"`
+	EventKinds        []pluginEventKindDTO `json:"event_kinds"`
+}
+
+// ListPluginInstances handles GET /api/v1/admin/plugin-instances.
+// Returns all installed plugin instances with their manifest-derived
+// capabilities for use in the audience editor and trigger picker.
+func (h *AudienceHandler) ListPluginInstances(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	instances, err := h.store.Queries().ListPluginInstances(ctx)
+	if err != nil {
+		slog.Error("list plugin instances: DB error", "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+
+	dtos := make([]pluginInstanceForAudienceDTO, 0, len(instances))
+	for _, inst := range instances {
+		manifest, err := h.snap.ForInstanceID(ctx, inst.ID)
+		if err != nil {
+			// Skip instances whose manifest cannot be parsed rather than failing
+			// the entire list — the operator can still use other instances.
+			slog.Warn("list plugin instances: parse manifest", "instance_id", inst.ID, "err", err)
+			continue
+		}
+
+		var implementsNotify, implementsRequest bool
+		var configSchema interface{}
+		if len(manifest.Channels) > 0 {
+			ch := manifest.Channels[0]
+			implementsNotify = ch.ImplementsNotify
+			implementsRequest = ch.ImplementsRequest
+			if ch.ConfigSchema != nil {
+				// Convert the YAML node to a plain map so it serializes as JSON.
+				var csMap interface{}
+				if err := ch.ConfigSchema.Decode(&csMap); err == nil {
+					configSchema = csMap
+				}
+			}
+		}
+
+		eventKinds := make([]pluginEventKindDTO, 0, len(manifest.EventKinds))
+		for _, ek := range manifest.EventKinds {
+			if ek.Kind == "" {
+				continue
+			}
+			eventKinds = append(eventKinds, pluginEventKindDTO{
+				Kind:        ek.Kind,
+				Description: ek.Description,
+			})
+		}
+
+		dtos = append(dtos, pluginInstanceForAudienceDTO{
+			ID:                inst.ID,
+			PluginID:          inst.PluginID,
+			PluginName:        manifest.Name,
+			InstanceName:      inst.InstanceName,
+			State:             inst.HealthState,
+			ImplementsNotify:  implementsNotify,
+			ImplementsRequest: implementsRequest,
+			ConfigSchema:      configSchema,
+			EventKinds:        eventKinds,
+		})
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, dtos)
+}
+
 // List handles GET /api/v1/admin/audiences.
 func (h *AudienceHandler) List(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

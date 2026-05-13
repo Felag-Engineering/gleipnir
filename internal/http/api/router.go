@@ -235,6 +235,13 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			})
 		})
 
+		// Plugin instances: trigger picker + audience editor both need this list.
+		// Gated by admin|operator|auditor (read-only; no mutations).
+		if cfg.Handlers.AudienceHandler != nil {
+			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor)).
+				Get("/api/v1/admin/plugin-instances", cfg.Handlers.AudienceHandler.ListPluginInstances)
+		}
+
 		// Audience management: admin/operator for mutations, auditor for reads.
 		// Registered outside the admin-only sub-router (which uses RequireRole(Admin)
 		// globally) so auditors can access GETs per spec §11.7.

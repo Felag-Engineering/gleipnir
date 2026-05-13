@@ -59,6 +59,19 @@ services:
   tool: v1
 `
 
+const triggerPluginManifestYAML = `
+id: test-trigger-plugin
+name: Slack
+version: 1.0.0
+services:
+  trigger: v1
+event_kinds:
+  - kind: channel_message
+    description: A message posted in a channel
+  - kind: direct_message
+    description: A direct message to the bot
+`
+
 // --- test fixture seeding helpers ---
 
 func seedPlugin(tb testing.TB, s *db.Store, id, manifestYAML string) string {
@@ -98,7 +111,6 @@ func seedPluginInstance(tb testing.TB, s *db.Store, instanceID, pluginID string)
 	}
 	return instanceID
 }
-
 
 // seedAudience creates an audience row directly via the store, returning the ID.
 func seedAudience(tb testing.TB, s *db.Store, name string, disableFallback bool) string {
@@ -411,7 +423,7 @@ func TestAudienceCreate_DisableFallbackWithNoRequestCapable(t *testing.T) {
 	instID := seedPluginInstance(t, store, "notify-only-inst", pluginID)
 
 	w := do(t, newAudienceRouter(store, snap), http.MethodPost, "/", map[string]any{
-		"name":                   "no-request-audience",
+		"name":                    "no-request-audience",
 		"disable_in_app_fallback": true,
 		"entries": []any{
 			map[string]any{
@@ -864,3 +876,132 @@ func TestAudienceCreate_HappyWithEntry(t *testing.T) {
 	}
 }
 
+// --- ListPluginInstances tests ---
+
+// newPluginInstancesRouter wires a chi router for the GET /plugin-instances endpoint.
+func newPluginInstancesRouter(store *db.Store, snap *configvalidate.Snapshotter) http.Handler {
+	h := api.NewAudienceHandler(store, snap, time.Now)
+	r := chi.NewRouter()
+	r.Get("/", h.ListPluginInstances)
+	return r
+}
+
+func TestListPluginInstances_Empty(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	snap := configvalidate.NewSnapshotter(store.Queries())
+	t.Cleanup(func() { snap.ResetCache(); configvalidate.ResetCache() })
+
+	w := do(t, newPluginInstancesRouter(store, snap), http.MethodGet, "/", nil, model.RoleOperator)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var items []map[string]any
+	parseData(t, w, &items)
+	if len(items) != 0 {
+		t.Errorf("got %d items, want 0", len(items))
+	}
+}
+
+func TestListPluginInstances_WithEventKinds(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	snap := configvalidate.NewSnapshotter(store.Queries())
+	t.Cleanup(func() { snap.ResetCache(); configvalidate.ResetCache() })
+
+	pluginID := seedPlugin(t, store, "trigger-plugin", triggerPluginManifestYAML)
+	instID := seedPluginInstance(t, store, "slack-prod", pluginID)
+
+	w := do(t, newPluginInstancesRouter(store, snap), http.MethodGet, "/", nil, model.RoleOperator)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\nbody: %s", w.Code, w.Body.String())
+	}
+
+	var items []struct {
+		ID           string `json:"id"`
+		PluginName   string `json:"plugin_name"`
+		InstanceName string `json:"instance_name"`
+		EventKinds   []struct {
+			Kind        string `json:"kind"`
+			Description string `json:"description"`
+		} `json:"event_kinds"`
+	}
+	parseData(t, w, &items)
+
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].ID != instID {
+		t.Errorf("id = %q, want %q", items[0].ID, instID)
+	}
+	if items[0].PluginName != "Slack" {
+		t.Errorf("plugin_name = %q, want Slack", items[0].PluginName)
+	}
+	if items[0].InstanceName != "slack-prod" {
+		t.Errorf("instance_name = %q, want slack-prod", items[0].InstanceName)
+	}
+	if len(items[0].EventKinds) != 2 {
+		t.Fatalf("got %d event_kinds, want 2", len(items[0].EventKinds))
+	}
+	if items[0].EventKinds[0].Kind != "channel_message" {
+		t.Errorf("event_kinds[0].kind = %q, want channel_message", items[0].EventKinds[0].Kind)
+	}
+	if items[0].EventKinds[1].Kind != "direct_message" {
+		t.Errorf("event_kinds[1].kind = %q, want direct_message", items[0].EventKinds[1].Kind)
+	}
+}
+
+func TestListPluginInstances_ChannelPluginHasNoEventKinds(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	snap := configvalidate.NewSnapshotter(store.Queries())
+	t.Cleanup(func() { snap.ResetCache(); configvalidate.ResetCache() })
+
+	pluginID := seedPlugin(t, store, "channel-plugin2", notifyOnlyManifestYAML)
+	seedPluginInstance(t, store, "notify-inst2", pluginID)
+
+	w := do(t, newPluginInstancesRouter(store, snap), http.MethodGet, "/", nil, model.RoleAuditor)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\nbody: %s", w.Code, w.Body.String())
+	}
+
+	var items []struct {
+		ImplementsNotify bool  `json:"implements_notify"`
+		EventKinds       []any `json:"event_kinds"`
+	}
+	parseData(t, w, &items)
+
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if !items[0].ImplementsNotify {
+		t.Error("expected implements_notify=true")
+	}
+	if len(items[0].EventKinds) != 0 {
+		t.Errorf("expected 0 event_kinds, got %d", len(items[0].EventKinds))
+	}
+}
+
+func TestListPluginInstances_RoleMatrix(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	snap := configvalidate.NewSnapshotter(store.Queries())
+	t.Cleanup(func() { snap.ResetCache(); configvalidate.ResetCache() })
+
+	r := chi.NewRouter()
+	h := api.NewAudienceHandler(store, snap, time.Now)
+	r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor)).
+		Get("/", h.ListPluginInstances)
+
+	tests := []struct {
+		role       model.Role
+		wantStatus int
+	}{
+		{model.RoleAdmin, http.StatusOK},
+		{model.RoleOperator, http.StatusOK},
+		{model.RoleAuditor, http.StatusOK},
+		{model.RoleApprover, http.StatusForbidden},
+	}
+	for _, tc := range tests {
+		w := do(t, r, http.MethodGet, "/", nil, tc.role)
+		if w.Code != tc.wantStatus {
+			t.Errorf("role=%s: status=%d, want %d", tc.role, w.Code, tc.wantStatus)
+		}
+	}
+}
