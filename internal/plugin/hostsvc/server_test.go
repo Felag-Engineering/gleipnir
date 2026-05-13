@@ -1276,6 +1276,166 @@ func TestEmitEvent_PublishesAndAcks(t *testing.T) {
 	}
 }
 
+// TestEmitEvent_NoCallID_Accepted verifies that EmitEvent succeeds without a
+// gleipnir-call-id in the context — regression guard against accidental
+// RejectIfDetached addition (spec §8.5).
+func TestEmitEvent_NoCallID_Accepted(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-noCallID", PluginID: "plug-ev"},
+	}
+	pub := &fakePublisher{}
+	srv := newTestServer(t, q, &fakeResolver{}, pub)
+
+	// Plain background context: no call_id, no metadata.
+	_, err := srv.EmitEvent(context.Background(), &hostv1.EmitEventRequest{
+		EventId:   "evt-nocallid",
+		EventKind: "message",
+	})
+	if err != nil {
+		t.Fatalf("EmitEvent without call_id must not return an error; got: %v", err)
+	}
+}
+
+// fakeTriggerSink is a hostsvc.TriggerSink that records Handle calls.
+type fakeTriggerSink struct {
+	mu     sync.Mutex
+	events []hostsvc.EmittedEvent
+	err    error
+}
+
+func (s *fakeTriggerSink) Handle(_ context.Context, evt hostsvc.EmittedEvent) error {
+	s.mu.Lock()
+	s.events = append(s.events, evt)
+	s.mu.Unlock()
+	return s.err
+}
+
+func (s *fakeTriggerSink) received() []hostsvc.EmittedEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]hostsvc.EmittedEvent, len(s.events))
+	copy(out, s.events)
+	return out
+}
+
+// TestEmitEvent_ForwardsToTriggerSink verifies that when a TriggerSink is wired
+// via SetTriggerSink, EmitEvent forwards the event to it with the correct fields.
+func TestEmitEvent_ForwardsToTriggerSink(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-sink", PluginID: "plug-sink"},
+	}
+	pub := &fakePublisher{}
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-sink", ok: true}, pub, nil)
+
+	sink := &fakeTriggerSink{}
+	srv.SetTriggerSink(sink)
+
+	_, err := srv.EmitEvent(context.Background(), &hostv1.EmitEventRequest{
+		EventId:     "evt-sink",
+		EventKind:   "channel_message",
+		PayloadJson: `{"text":"hello"}`,
+	})
+	if err != nil {
+		t.Fatalf("EmitEvent: %v", err)
+	}
+
+	got := sink.received()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 sink event, got %d", len(got))
+	}
+	ev := got[0]
+	if ev.EventID != "evt-sink" {
+		t.Errorf("EventID = %q, want %q", ev.EventID, "evt-sink")
+	}
+	if ev.EventKind != "channel_message" {
+		t.Errorf("EventKind = %q, want %q", ev.EventKind, "channel_message")
+	}
+	if ev.InstanceID != "iid-sink" {
+		t.Errorf("InstanceID = %q, want %q", ev.InstanceID, "iid-sink")
+	}
+	if string(ev.PayloadJSON) != `{"text":"hello"}` {
+		t.Errorf("PayloadJSON = %q, want %q", ev.PayloadJSON, `{"text":"hello"}`)
+	}
+}
+
+// TestEmitEvent_NilSink_FallsBackToPublisher verifies that without a
+// TriggerSink, EmitEvent still publishes plugin.event_emitted to the SSE bus.
+func TestEmitEvent_NilSink_FallsBackToPublisher(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-nosink", PluginID: "plug-nosink"},
+	}
+	pub := &fakePublisher{}
+	// No SetTriggerSink — sink remains nil.
+	srv := newTestServer(t, q, &fakeResolver{}, pub)
+
+	_, err := srv.EmitEvent(context.Background(), &hostv1.EmitEventRequest{
+		EventId:   "evt-nosink",
+		EventKind: "message",
+	})
+	if err != nil {
+		t.Fatalf("EmitEvent: %v", err)
+	}
+	events := pub.all()
+	if len(events) != 1 || events[0] != "plugin.event_emitted" {
+		t.Errorf("published events = %v, want [plugin.event_emitted]", events)
+	}
+}
+
+// TestServer_SetTriggerSink_LateBinding verifies that constructing a Server
+// with nil sink, then calling SetTriggerSink, routes subsequent EmitEvent calls
+// to the newly-wired sink without data races.
+func TestServer_SetTriggerSink_LateBinding(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-late", PluginID: "plug-late"},
+	}
+	pub := &fakePublisher{}
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-late", ok: true}, pub, nil)
+
+	// First call before SetTriggerSink: SSE-only.
+	_, err := srv.EmitEvent(context.Background(), &hostv1.EmitEventRequest{
+		EventId:   "evt-before",
+		EventKind: "message",
+	})
+	if err != nil {
+		t.Fatalf("EmitEvent before late-bind: %v", err)
+	}
+
+	// Late-bind the sink.
+	sink := &fakeTriggerSink{}
+	srv.SetTriggerSink(sink)
+
+	// Second call after SetTriggerSink: should reach the sink.
+	_, err = srv.EmitEvent(context.Background(), &hostv1.EmitEventRequest{
+		EventId:   "evt-after",
+		EventKind: "message",
+	})
+	if err != nil {
+		t.Fatalf("EmitEvent after late-bind: %v", err)
+	}
+
+	got := sink.received()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 sink event after late-bind, got %d", len(got))
+	}
+	if got[0].EventID != "evt-after" {
+		t.Errorf("EventID = %q, want evt-after", got[0].EventID)
+	}
+
+	// Publisher still received both events (SSE bus is unconditional).
+	allPublished := pub.all()
+	if len(allPublished) != 2 {
+		t.Errorf("expected 2 published events (both EmitEvent calls), got %d", len(allPublished))
+	}
+}
+
 // --- tests: Log ---
 
 func TestLog_RoutesWithCorrelation(t *testing.T) {

@@ -247,6 +247,10 @@ func (i *Instance) Stop(ctx context.Context) error {
 // InstanceID returns the stable instance ID this Instance was started with.
 func (i *Instance) InstanceID() string { return i.cfg.InstanceID }
 
+// PluginID returns the plugin ID that owns this instance. Used by the trigger
+// supervisor to populate the PluginID field on emitted events for SSE observability.
+func (i *Instance) PluginID() string { return i.cfg.PluginID }
+
 // Token returns the identity token issued at Start time. The token is delivered
 // to the plugin subprocess via the serve.InstanceTokenEnvVar env var at Start
 // time; plugins read it with serve.TokenInterceptorFromEnv().

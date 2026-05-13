@@ -7,6 +7,56 @@
 // serve.EmitManifest() is called when the binary is invoked with
 // --emit-manifest. It writes the plugin's manifest JSON to stdout so that
 // gleipnir-plugin gen-manifest can capture and canonicalise it.
+//
+// # Choosing an event_id for TriggerService plugins
+//
+// Every StartResponse message must carry a stable event_id that the host uses
+// for deduplication within a 1-hour rolling window (spec §4.3). Two patterns
+// are supported:
+//
+// ## Preferred: ULID-encoded substrate sequence number
+//
+// When the substrate provides a stable monotonic identifier — a Slack event_id,
+// a GitHub webhook delivery GUID, a Kafka offset — pass it through verbatim if
+// it is already ULID-shaped, or wrap it in a ULID using oklog/ulid/v2:
+//
+//	import "github.com/oklog/ulid/v2"
+//
+//	// Substrate provides a monotonic offset; encode as ULID with event time.
+//	id := ulid.MustNew(ulid.Timestamp(eventTime), ulid.DefaultEntropy())
+//	resp.EventId = id.String()
+//
+// ULIDs are lexicographically time-sortable, which allows the dedup store
+// (#215) to use primary-key range cleanup rather than full-table scans.
+// github.com/oklog/ulid/v2 is already in the main go.mod.
+//
+// ## Fallback: SHA-256 of canonical payload
+//
+// When the substrate provides no stable per-event identifier, compute a
+// SHA-256 over the canonicalised JSON payload:
+//
+//	import (
+//	    "crypto/sha256"
+//	    "encoding/hex"
+//	    "encoding/json"
+//	)
+//
+//	// Marshal the payload in a canonical (sorted-key) form first so the hash
+//	// is deterministic across equivalent payloads with different key orders.
+//	b, _ := json.Marshal(payload)
+//	sum := sha256.Sum256(b)
+//	resp.EventId = hex.EncodeToString(sum[:])
+//
+// With this approach, deduplication works within the 1-hour window; events
+// separated by more than the window may fire more than once (best-effort only,
+// per spec §4.3).
+//
+// ## Host contract
+//
+// The host treats event_id as an opaque string. Any stable, per-event string
+// works. ULID is the SDK-recommended default because the dedup store can use
+// its time-sortable property for efficient cleanup; SHA-256 is the correct
+// fallback when no substrate-provided stable ID exists.
 package serve
 
 import (

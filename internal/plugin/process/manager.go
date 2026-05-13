@@ -392,6 +392,18 @@ func (m *Manager) LookupByName(name string) *Instance {
 	return nil
 }
 
+// BuildHealthSetterForExternalUse returns the same HealthSetter closure that
+// Manager uses internally for crash callbacks, so callers outside the package
+// (e.g. the trigger supervisor) can participate in the same health-state
+// machine without importing internal/plugin/state directly.
+//
+// This is safe to call from main.go after NewManager; the returned function
+// captures the manager's querier and publisher by reference, so it reflects
+// any hot-reloaded querier.
+func (m *Manager) BuildHealthSetterForExternalUse() func(ctx context.Context, instanceID string, target model.PluginHealthState, detail string) {
+	return m.buildHealthSetter()
+}
+
 // buildHealthSetter returns a HealthSetter closure that routes through
 // pluginstate.SetHealthState with the manager's DB querier and publisher.
 // ErrIllegalTransition is treated as warn-and-continue because the instance

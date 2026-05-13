@@ -42,6 +42,9 @@ SELECT * FROM policies WHERE trigger_type = 'poll' AND paused_at IS NULL;
 -- name: GetCronActivePolicies :many
 SELECT * FROM policies WHERE trigger_type = 'cron' AND paused_at IS NULL;
 
+-- name: GetSubscribedActivePolicies :many
+SELECT * FROM policies WHERE trigger_type = 'subscribed' AND paused_at IS NULL;
+
 -- name: SetPolicyWebhookSecret :exec
 UPDATE policies SET webhook_secret_encrypted = :ciphertext, updated_at = :updated_at WHERE id = :id;
 
