@@ -41,6 +41,7 @@ type HandlerBundle struct {
 	OpenAICompatHandler  *admin.OpenAICompatHandler
 	PluginAdminHandler   *admin.PluginHandler
 	AudienceHandler      *AudienceHandler
+	BindingTestHandler   *BindingTestHandler
 	WebhookHandler       *trigger.WebhookHandler
 	SSEHandler           *sse.Handler
 	PolicyWebhookHandler *PolicyWebhookHandler
@@ -240,6 +241,16 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		if cfg.Handlers.AudienceHandler != nil {
 			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor)).
 				Get("/api/v1/admin/plugin-instances", cfg.Handlers.AudienceHandler.ListPluginInstances)
+		}
+
+		// Binding test endpoint: read-only, gated by admin|operator|auditor.
+		// Registered alongside the plugin-instances list so partial bundles in
+		// tests that omit BindingTestHandler still compile without a nil dereference.
+		if cfg.Handlers.BindingTestHandler != nil {
+			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor),
+				httputil.BodySizeLimit(httputil.MaxRequestBodySize)).
+				Post("/api/v1/admin/plugin-instances/{iid}/event-kinds/{kind}/test-binding",
+					cfg.Handlers.BindingTestHandler.Test)
 		}
 
 		// Audience management: admin/operator for mutations, auditor for reads.

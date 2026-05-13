@@ -438,6 +438,7 @@ func run(cfg config.Config) error {
 
 	snap := configvalidate.NewSnapshotter(store.Queries())
 	audienceH := api.NewAudienceHandler(store, snap, time.Now)
+	bindingTestH := api.NewBindingTestHandler(snap)
 
 	handlers := api.HandlerBundle{
 		AuthHandler:          authHandler,
@@ -446,6 +447,7 @@ func run(cfg config.Config) error {
 		OpenAICompatHandler:  openaiCompatHandler,
 		PluginAdminHandler:   admin.NewPluginHandler(store.Queries(), broadcaster, nil),
 		AudienceHandler:      audienceH,
+		BindingTestHandler:   bindingTestH,
 		WebhookHandler:       webhookHandler,
 		SSEHandler:           sseHandler,
 		PolicyWebhookHandler: policyWebhookHandler,

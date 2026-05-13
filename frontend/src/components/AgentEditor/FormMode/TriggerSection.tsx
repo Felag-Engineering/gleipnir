@@ -13,6 +13,7 @@ import { WebhookConfig } from './triggers/WebhookConfig';
 import { ScheduledConfig } from './triggers/ScheduledConfig';
 import { PollConfig } from './triggers/PollConfig';
 import { CronConfig } from './triggers/CronConfig';
+import { SubscribedBindingConfig } from './triggers/SubscribedBindingConfig';
 import { usePluginInstancesForAudience } from '@/hooks/queries/admin';
 
 export interface TriggerSectionProps {
@@ -100,11 +101,13 @@ export function TriggerSection({ value, onChange, policyId, errors = [] }: Trigg
         {value.type === 'cron' && <CronConfig value={value} onChange={onChange} errors={errors} />}
         {value.type === 'manual' && null}
         {value.type === 'subscribed' && (
-          // TODO(#218): binding form — shows the typed binding fields from the manifest's
-          // binding_schema. For now, display a placeholder so the section is not empty.
-          <div>
-            Binding configuration for <strong>{value.source}</strong>: {value.eventKind}
-          </div>
+          <SubscribedBindingConfig
+            source={value.source}
+            eventKind={value.eventKind}
+            binding={value.binding}
+            onChange={(next) => onChange({ ...value, binding: next })}
+            pluginInstances={pluginQuery.data}
+          />
         )}
       </div>
     </div>

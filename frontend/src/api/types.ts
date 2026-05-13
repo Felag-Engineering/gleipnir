@@ -476,6 +476,12 @@ export interface ApiAudienceReferences {
 export interface ApiPluginEventKind {
   kind: string
   description: string
+  // binding_schema is the JSON Schema for per-policy binding fields.
+  // Omitted when the plugin declares no binding constraints for this event kind.
+  binding_schema?: unknown
+  // examples are named sample payloads for "Test against sample" (spec §7.5).
+  // Omitted when the plugin declares no examples.
+  examples?: { name: string; payload: Record<string, unknown> }[]
 }
 
 // Matches internal/http/api/audience_handler.go (GET /api/v1/admin/plugin-instances).
@@ -518,4 +524,18 @@ export interface AudienceUpdateRequest {
   // json:"expected_version,omitempty" tag in audience_handler.go.
   expected_version: number
   entries: AudienceEntryInput[]
+}
+
+// Matches internal/http/api/binding_test_handler.go → bindingTestRequest.
+// POST /api/v1/admin/plugin-instances/{iid}/event-kinds/{kind}/test-binding.
+// The client sends payloads back (stateless; avoids hot-reload drift between
+// the list call and this test call).
+export interface ApiBindingTestRequest {
+  binding: Record<string, unknown>
+  payloads: Record<string, unknown>[]
+}
+
+// Matches internal/http/api/binding_test_handler.go → bindingTestResponse.
+export interface ApiBindingTestResponse {
+  results: { match: boolean; error?: string }[]
 }
