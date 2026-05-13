@@ -28,11 +28,13 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
+	"github.com/felag-engineering/gleipnir/internal/plugin/dedup"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostsvc"
 	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
 	"github.com/felag-engineering/gleipnir/internal/plugin/process"
+	plugintrigger "github.com/felag-engineering/gleipnir/internal/plugin/trigger"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
@@ -197,6 +199,11 @@ func run(cfg config.Config) error {
 	// reads the instance ID from the context populated by UnaryInstanceTokenInterceptor.
 	// UnaryCallIDInterceptor is last so it only attaches to authenticated,
 	// generation-tracked calls.
+	// hostSvc is declared outside the if block so the post-launcher wiring
+	// (SetTriggerSink, triggerSupervisor) can reach it without the variable
+	// going out of scope. Analogous to connFactory being declared at line ~155
+	// so setManager can be called at line 237.
+	var hostSvc *hostsvc.Server
 	if cfg.PluginsEnabled {
 		identityReg := identity.New()
 		genCtrl := generation.New()
@@ -206,7 +213,7 @@ func run(cfg config.Config) error {
 			Connect: connFactory.Connect,
 		})
 
-		hostSvc := hostsvc.NewServer(
+		hostSvc = hostsvc.NewServer(
 			store.Queries(),
 			encryptionKey,
 			pluginPool,
@@ -327,6 +334,40 @@ func run(cfg config.Config) error {
 		// the registrar hands off its first set of plugin tools.
 		PluginDispatcher: pluginDispatchAdapter,
 	})
+
+	// Wire the trigger dispatch pipeline now that RunLauncher is available.
+	// hostSvc.SetTriggerSink is the late-bind pattern (analogous to
+	// connFactory.setManager at line ~237): hostSvc was constructed before
+	// RunLauncher existed, so the trigger sink is attached here.
+	// Until SetTriggerSink fires, EmitEvent falls back to publisher-only —
+	// correct because no plugin subprocess has begun emitting events yet
+	// (StartManager runs at line ~224 but Supervisor.StartAll is called below,
+	// after this block).
+	var triggerSupervisor *plugintrigger.Supervisor
+	if cfg.PluginsEnabled && hostSvc != nil {
+		triggerDispatcher := plugintrigger.NewDispatcher(plugintrigger.DispatcherConfig{
+			Launcher:      launcher,
+			Querier:       store.Queries(),
+			Dedup:         dedup.Noop{}, // #215 will swap in a rolling-window store
+			Publisher:     broadcaster,
+			ModelResolver: systemSettings,
+			Logger:        slog.Default(),
+		})
+		hostSvc.SetTriggerSink(plugintrigger.NewSinkAdapter(triggerDispatcher))
+
+		triggerSupervisor = plugintrigger.NewSupervisor(plugintrigger.Config{
+			Manager:      loader.Manager(),
+			Querier:      store.Queries(),
+			Dispatcher:   triggerDispatcher,
+			HealthSetter: loader.Manager().BuildHealthSetterForExternalUse(),
+			Logger:       slog.Default(),
+		})
+		go func() {
+			if err := triggerSupervisor.StartAll(ctx); err != nil {
+				slog.Error("trigger supervisor StartAll failed", "err", err)
+			}
+		}()
+	}
 
 	webhookSecretLoader := trigger.NewSecretLoader(store.Queries(), encryptionKey)
 	webhookHandler := trigger.NewWebhookHandler(store, launcher, webhookSecretLoader, systemSettings)
@@ -474,6 +515,13 @@ func run(cfg config.Config) error {
 		slog.Info("all agent runs drained")
 	case <-time.After(cfg.DrainTimeout):
 		slog.Warn("agent run drain timed out, proceeding with server shutdown")
+	}
+
+	// Stop trigger stream goroutines before tearing down plugin subprocesses.
+	// The supervisor's goroutines already observe ctx cancellation; StopAll
+	// blocks until all goroutines have exited cleanly.
+	if triggerSupervisor != nil {
+		triggerSupervisor.StopAll()
 	}
 
 	// Stop all plugin subprocesses before closing the dispatch pool. This order

@@ -388,9 +388,16 @@ func (s *Server) EmitMetric(ctx context.Context, req *hostv1.EmitMetricRequest) 
 }
 
 // EmitEvent validates and publishes a plugin substrate event to the host's
-// internal pub/sub bus. The event surfaces on the SSE stream for downstream
-// consumers. Actual trigger-dispatch routing is deferred to the follow-up that
-// owns the trigger dispatcher (parent #158).
+// internal pub/sub bus and forwards it to the trigger dispatcher.
+//
+// Context handling note (spec §8.5): EmitEvent does NOT require a call_id.
+// Trigger streams are not scoped to a particular run; the interceptor chain
+// already accepts requests without gleipnir-call-id metadata, and only
+// WriteAuditStep calls RejectIfDetached. Host RPCs lacking a valid call_id
+// are accepted and logged with plugin/instance labels only.
+//
+// Identity is still enforced via UnaryInstanceTokenInterceptor and generation
+// drain semantics still apply via UnaryGenerationRefcountInterceptor.
 func (s *Server) EmitEvent(ctx context.Context, req *hostv1.EmitEventRequest) (*hostv1.EmitEventResponse, error) {
 	inst, err := s.resolveInstance(ctx)
 	if err != nil {
@@ -415,10 +422,33 @@ func (s *Server) EmitEvent(ctx context.Context, req *hostv1.EmitEventRequest) (*
 		return nil, status.Errorf(codes.Internal, "marshal event payload: %v", marshalErr)
 	}
 
-	// TODO (#158): route the event to the trigger dispatcher so plugin Trigger
-	// streams can fire policy runs. For now, publish on the SSE bus only so the
-	// event is observable and the wire format is exercised.
+	// Unconditionally publish to the SSE bus so real-time consumers always
+	// see plugin.event_emitted regardless of trigger-sink wiring.
 	s.publisher.Publish("plugin.event_emitted", payload)
+
+	// Forward to the trigger dispatcher when one has been wired via
+	// SetTriggerSink. When nil (the startup gap before RunLauncher is ready),
+	// fall through to publisher-only behavior.
+	if sink := s.getTriggerSink(); sink != nil {
+		evt := EmittedEvent{
+			InstanceID:  inst.ID,
+			PluginID:    inst.PluginID,
+			EventKind:   req.GetEventKind(),
+			EventID:     req.GetEventId(),
+			PayloadJSON: []byte(req.GetPayloadJson()),
+			ObservedAt:  timeNow(),
+		}
+		if handleErr := sink.Handle(ctx, evt); handleErr != nil {
+			// Log at Warn but do not fail the RPC — the plugin's emit should
+			// succeed even if one dispatch cycle errors (e.g. DB unavailable).
+			logctx.Logger(ctx).WarnContext(ctx, "EmitEvent: trigger sink Handle error",
+				"plugin", inst.PluginID,
+				"instance", inst.ID,
+				"event_id", req.GetEventId(),
+				"err", handleErr,
+			)
+		}
+	}
 
 	logctx.Logger(ctx).InfoContext(ctx, "plugin event emitted",
 		"plugin", inst.PluginID,
@@ -429,6 +459,9 @@ func (s *Server) EmitEvent(ctx context.Context, req *hostv1.EmitEventRequest) (*
 
 	return &hostv1.EmitEventResponse{Ok: true}, nil
 }
+
+// timeNow is a package-level variable so tests can substitute a fixed clock.
+var timeNow = func() time.Time { return time.Now() }
 
 // Log routes a structured log line through the host's slog pipeline. When the
 // request carries a resolvable call_id, the log record is enriched with
