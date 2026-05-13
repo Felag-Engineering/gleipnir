@@ -9,7 +9,7 @@ import (
 
 // eventKindFixture is a simple filter struct for AddEventKind tests.
 type eventKindFixture struct {
-	Channel manifest.EqualsField `json:"channel"`
+	Channel manifest.EqualsField   `json:"channel"`
 	Keyword manifest.ContainsField `json:"keyword,omitempty"`
 }
 

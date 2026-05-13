@@ -12,8 +12,8 @@ import (
 
 // jsonFilterFixture is the filter struct used across json_test.go tests.
 type jsonFilterFixture struct {
-	Pattern manifest.RegexField    `json:"pattern"`
-	Channel manifest.EqualsField   `json:"channel,omitempty"`
+	Pattern manifest.RegexField  `json:"pattern"`
+	Channel manifest.EqualsField `json:"channel,omitempty"`
 }
 
 // buildTestManifest builds a Manifest via MustAddEventKind with a typed-filter
