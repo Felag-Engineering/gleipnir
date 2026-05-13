@@ -350,6 +350,13 @@ func run(cfg config.Config) error {
 	if webhookEncrypter != nil {
 		policyService.WithWebhookSecretEncrypter(webhookEncrypter)
 	}
+	if cfg.PluginsEnabled {
+		snap := configvalidate.NewSnapshotter(store.Queries())
+		resolver := &pluginInstanceResolver{q: store.Queries()}
+		policyService.WithSubscribedBindingValidator(
+			policy.NewSubscribedBindingValidator(resolver, snap),
+		)
+	}
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
 
 	scheduler := trigger.NewScheduler(store, launcher, systemSettings)
@@ -691,6 +698,20 @@ func (a *pluginDispatchAdapter) Call(ctx context.Context, runID, policyID, insta
 		}
 	}
 	return output, isError, err
+}
+
+// pluginInstanceResolver adapts *db.Queries to satisfy policy.InstanceManifestResolver.
+// It looks up a plugin instance by its human-readable name across all plugins.
+type pluginInstanceResolver struct {
+	q *db.Queries
+}
+
+func (r *pluginInstanceResolver) ResolveInstanceByName(ctx context.Context, name string) (string, error) {
+	inst, err := r.q.GetPluginInstanceByGlobalName(ctx, name)
+	if err != nil {
+		return "", fmt.Errorf("resolve instance %q: %w", name, err)
+	}
+	return inst.ID, nil
 }
 
 // managerConnFactory resolves a *grpc.ClientConn for a named plugin instance by

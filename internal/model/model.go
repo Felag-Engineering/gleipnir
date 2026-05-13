@@ -33,11 +33,12 @@ const (
 type TriggerType string
 
 const (
-	TriggerTypeWebhook   TriggerType = "webhook"
-	TriggerTypeManual    TriggerType = "manual"
-	TriggerTypeScheduled TriggerType = "scheduled"
-	TriggerTypePoll      TriggerType = "poll"
-	TriggerTypeCron      TriggerType = "cron"
+	TriggerTypeWebhook    TriggerType = "webhook"
+	TriggerTypeManual     TriggerType = "manual"
+	TriggerTypeScheduled  TriggerType = "scheduled"
+	TriggerTypePoll       TriggerType = "poll"
+	TriggerTypeCron       TriggerType = "cron"
+	TriggerTypeSubscribed TriggerType = "subscribed"
 )
 
 // AllTriggerTypes lists every TriggerType constant. Update this slice when a
@@ -50,6 +51,7 @@ var AllTriggerTypes = []TriggerType{
 	TriggerTypeScheduled,
 	TriggerTypePoll,
 	TriggerTypeCron,
+	TriggerTypeSubscribed,
 }
 
 // StepType identifies the kind of event recorded in a run's reasoning trace.
@@ -335,6 +337,9 @@ type TriggerConfig struct {
 	Match       MatchMode       // poll and webhook filter; defaults to MatchAll
 	Checks      []PollCheck     // poll: MCP tool checks (at least one required); webhook: body filter checks (optional)
 	CronExpr    string          // cron only, 5-field POSIX expression
+	Source      string          // subscribed only: plugin instance name
+	EventKind   string          // subscribed only: event kind declared by the plugin
+	Binding     map[string]any  // subscribed only: per-event-kind binding config, validated against the manifest's binding_schema
 }
 
 // FeedbackConfig controls the native human-in-the-loop feedback channel.

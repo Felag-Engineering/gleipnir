@@ -68,7 +68,7 @@ See `frontend/CLAUDE.md` for detailed frontend architecture (routes, design syst
 
 **Agent** — a run scoped to a specific policy. Tools not granted to a run are never registered with the agent; they do not exist from the agent's perspective.
 
-**Policy** — YAML config defining trigger, agent task prompt, capability grants, and limits. Five trigger types: `webhook`, `manual`, `scheduled`, `poll`, `cron`.
+**Policy** — YAML config defining trigger, agent task prompt, capability grants, and limits. Six trigger types: `webhook`, `manual`, `scheduled`, `poll`, `cron`, `subscribed`.
 
 **Trigger types:**
 - `webhook` — HTTP POST to `/api/v1/webhooks/{policyID}` fires a run
@@ -76,6 +76,7 @@ See `frontend/CLAUDE.md` for detailed frontend architecture (routes, design syst
 - `scheduled` — one-shot runs at specific ISO-8601 timestamps (defined via `fire_at` list in policy YAML; auto-pauses when exhausted)
 - `poll` — recurring polling with MCP tool invocations and JSONPath condition checks
 - `cron` — recurring runs on a 5-field POSIX cron expression (`cron_expr`); runs indefinitely until paused
+- `subscribed` — plugin-sourced events. Policy binds to a `(source, event_kind)` pair declared by an installed plugin's manifest; binding filters use typed form fields (not JSONPath) derived from the manifest's `event_kinds[].binding_schema`. Internal-only type — UI never renders the word "subscribed" (per ADR-048). Runtime dispatch lands in #214.
 
 **Capabilities** — two categories, tracked in Gleipnir's own DB (not in MCP servers):
 - `tool` — MCP tools the agent can call, optionally approval-gated, optionally parameter-scoped (ADR-017)
