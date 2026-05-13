@@ -383,6 +383,60 @@ func TestValidateChannelCapabilities(t *testing.T) {
 	}
 }
 
+// TestForTriggerBinding_AcceptsReflectedSchema is the cross-library
+// compatibility test: it builds a binding_schema via manifest.ReflectSchema
+// (invopop/jsonschema) and feeds it through ForTriggerBinding
+// (santhosh-tekuri/v6). Both compilers must agree on the schema semantics.
+func TestForTriggerBinding_AcceptsReflectedSchema(t *testing.T) {
+	// reflectedFilterFixture is the filter struct for this test. It uses the
+	// typed filter primitives from the SDK to exercise the reflection path.
+	type reflectedFilterFixture struct {
+		Channel  sdkmanifest.EqualsField    `json:"channel"  jsonschema:"required"`
+		Keyword  sdkmanifest.ContainsField  `json:"keyword,omitempty"`
+		Pattern  sdkmanifest.RegexField     `json:"pattern,omitempty"`
+	}
+
+	bindingNode := sdkmanifest.MustReflectSchema(reflectedFilterFixture{})
+
+	m := &sdkmanifest.Manifest{
+		EventKinds: []sdkmanifest.EventKindDecl{
+			{Kind: "channel_event", BindingSchema: bindingNode},
+		},
+	}
+
+	v, err := configvalidate.ForTriggerBinding(m, "channel_event")
+	if err != nil {
+		t.Fatalf("ForTriggerBinding: %v", err)
+	}
+
+	// Valid input: required "channel" field present.
+	errs, err := v.Validate(map[string]any{"channel": "#general"})
+	if err != nil {
+		t.Fatalf("Validate (good input): %v", err)
+	}
+	if len(errs) != 0 {
+		t.Errorf("expected no errors for valid input, got %v", errs)
+	}
+
+	// Invalid input: "channel" missing → should produce a FieldError.
+	errs, err = v.Validate(map[string]any{"keyword": "hello"})
+	if err != nil {
+		t.Fatalf("Validate (bad input): %v", err)
+	}
+	if len(errs) == 0 {
+		t.Error("expected at least one error for missing required 'channel' field")
+	}
+	found := false
+	for _, e := range errs {
+		if e.Field == "channel" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected FieldError with Field='channel', got %v", errs)
+	}
+}
+
 // containsString reports whether s contains substr.
 func containsString(s, substr string) bool {
 	return strings.Contains(s, substr)
