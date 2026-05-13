@@ -1,0 +1,4 @@
+.decorator {
+  padding: var(--space-6);
+  max-width: 400px;
+}

@@ -18,12 +18,12 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	run "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/binding"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dedup"
 	"github.com/felag-engineering/gleipnir/internal/policy"
-	run "github.com/felag-engineering/gleipnir/internal/execution/run"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 

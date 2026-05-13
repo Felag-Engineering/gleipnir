@@ -127,7 +127,7 @@ func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, dir string, pu
 type StartManagerConfig struct {
 	Querier              *db.Queries
 	Publisher            event.Publisher
-	HostServer           hostwire.HostServer        // shared *hostsvc.Server
+	HostServer           hostwire.HostServer // shared *hostsvc.Server
 	IdentityRegistry     *identity.Registry
 	GenerationController *generation.Controller
 	ServerInterceptors   []grpc.UnaryServerInterceptor

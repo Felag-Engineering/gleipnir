@@ -19,8 +19,8 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
-	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	commonv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1"
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	sdkproto "github.com/felag-engineering/gleipnir/plugin-sdk/proto"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"

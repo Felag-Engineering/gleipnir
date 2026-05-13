@@ -111,7 +111,7 @@ type Supervisor struct {
 	lookup     InstanceLookup  // resolved from cfg.Manager in NewSupervisor
 	dispatcher EventDispatcher // resolved from cfg.Dispatcher in NewSupervisor
 
-	mu      sync.Mutex
+	mu sync.Mutex
 	// instances maps instanceID → cancel func for the stream goroutine context.
 	// The cancel func stops the goroutine when Stop or StopAll is called.
 	instances map[string]context.CancelFunc
@@ -292,7 +292,7 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 
 	log := s.cfg.Logger.With("instance_id", instanceID)
 
-	consecutive := 0     // consecutive reconnect failures without a successful Recv
+	consecutive := 0 // consecutive reconnect failures without a successful Recv
 	markedUnhealthy := false
 
 	for {

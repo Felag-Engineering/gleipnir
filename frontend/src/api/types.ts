@@ -470,16 +470,29 @@ export interface ApiAudienceReferences {
   in_flight_runs: ApiAudienceInFlightRun[]
 }
 
+// ApiPluginEventKind is a single event kind from a plugin's manifest, as returned
+// by GET /api/v1/admin/plugin-instances. Used by the trigger picker (#219) to
+// show plugin-sourced trigger options alongside built-in types.
+export interface ApiPluginEventKind {
+  kind: string
+  description: string
+}
+
 // Matches internal/http/api/audience_handler.go (GET /api/v1/admin/plugin-instances).
-// Pending in #290.
+// Consumers: audience editor (#290) and trigger picker (#219).
 export interface ApiPluginInstanceForAudience {
   id: string
   plugin_id: string
+  // plugin_name is the human-readable name from the plugin manifest (e.g. "Slack").
+  plugin_name?: string
   instance_name: string
   state: PluginHealthState
   implements_notify: boolean
   implements_request: boolean
   config_schema: Record<string, unknown> | null
+  // event_kinds is populated from the plugin's manifest EventKinds declarations.
+  // Empty array when the plugin does not declare a TriggerService.
+  event_kinds?: ApiPluginEventKind[]
 }
 
 // Request body interfaces for audience mutations.

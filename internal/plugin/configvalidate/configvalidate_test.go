@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
+	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -391,9 +391,9 @@ func TestForTriggerBinding_AcceptsReflectedSchema(t *testing.T) {
 	// reflectedFilterFixture is the filter struct for this test. It uses the
 	// typed filter primitives from the SDK to exercise the reflection path.
 	type reflectedFilterFixture struct {
-		Channel  sdkmanifest.EqualsField    `json:"channel"  jsonschema:"required"`
-		Keyword  sdkmanifest.ContainsField  `json:"keyword,omitempty"`
-		Pattern  sdkmanifest.RegexField     `json:"pattern,omitempty"`
+		Channel sdkmanifest.EqualsField   `json:"channel"  jsonschema:"required"`
+		Keyword sdkmanifest.ContainsField `json:"keyword,omitempty"`
+		Pattern sdkmanifest.RegexField    `json:"pattern,omitempty"`
 	}
 
 	bindingNode := sdkmanifest.MustReflectSchema(reflectedFilterFixture{})

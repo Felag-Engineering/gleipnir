@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sync"
 
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"github.com/felag-engineering/gleipnir/internal/db"
+	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 
 // Snapshotter parses and caches plugin manifests by content hash.

@@ -417,7 +417,7 @@ func TestUnregisterInstance_WakesBlockedAcquires(t *testing.T) {
 	// blocking, giving the Acquire goroutine below a chance to observe it.
 	drainRunning := make(chan struct{})
 	go func() {
-		close(drainRunning) // goroutine is scheduled
+		close(drainRunning)                         // goroutine is scheduled
 		c.BeginDrain(ctx, "inst-i", 10*time.Second) //nolint:errcheck
 	}()
 

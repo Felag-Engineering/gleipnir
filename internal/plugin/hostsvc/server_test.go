@@ -515,7 +515,7 @@ func TestWriteAuditStep_HappyPath(t *testing.T) {
 		updateFeedbackStatusRows: 1,
 		run:                      db.Run{ID: "run-ok", PolicyID: "pol-ok"},
 		policy:                   db.Policy{ID: "pol-ok", Yaml: policyYAMLWithTool("myplugin.do_thing")},
-		pluginPendingRequestErr:   sql.ErrNoRows, // native path
+		pluginPendingRequestErr:  sql.ErrNoRows, // native path
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
 
@@ -659,7 +659,7 @@ func TestWriteAuditStep_RequestIDInScope_Success(t *testing.T) {
 		updateFeedbackStatusRows: 1,
 		run:                      db.Run{ID: "run-inscope", PolicyID: "pol-inscope"},
 		policy:                   db.Policy{ID: "pol-inscope", Yaml: policyYAMLWithTool("myplugin.do_thing")},
-		pluginPendingRequestErr:   sql.ErrNoRows, // native path
+		pluginPendingRequestErr:  sql.ErrNoRows, // native path
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
 
@@ -715,7 +715,7 @@ func TestWriteAuditStep_RequestIDInScopeAcrossGenerations(t *testing.T) {
 		updateFeedbackStatusRows: 1,
 		run:                      db.Run{ID: "run-crossgen", PolicyID: "pol-crossgen"},
 		policy:                   db.Policy{ID: "pol-crossgen", Yaml: policyYAMLWithTool("crossgen.action")},
-		pluginPendingRequestErr:   sql.ErrNoRows, // native path
+		pluginPendingRequestErr:  sql.ErrNoRows, // native path
 	}
 
 	pub := &fakePublisher{}

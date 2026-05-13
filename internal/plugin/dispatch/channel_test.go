@@ -136,7 +136,7 @@ type capturedStep struct {
 
 func (ds *dispatcherSetup) newDispatcher(notifyTimeout, preAckTimeout time.Duration) *dispatch.Dispatcher {
 	return dispatch.NewDispatcher(dispatch.DispatcherConfig{
-		Queries:       ds.store.Queries(),
+		Queries: ds.store.Queries(),
 		// Connect is not called when NewChannelClient is set; nil is safe here.
 		NotifyTimeout: notifyTimeout,
 		PreAckTimeout: preAckTimeout,

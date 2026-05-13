@@ -1,11 +1,19 @@
 import shared from './FormSections.module.css';
-import styles from './TriggerSection.module.css';
-import type { TriggerFormState, ManualTriggerState, ScheduledTriggerState, PollTriggerState, CronTriggerState, SectionIssues } from './types';
-import { TriggerCard } from './triggers/TriggerCard';
+import type {
+  TriggerFormState,
+  ManualTriggerState,
+  ScheduledTriggerState,
+  PollTriggerState,
+  CronTriggerState,
+  SectionIssues,
+} from './types';
+import { TriggerPicker } from './triggers/TriggerPicker';
+import type { TriggerPickerValue } from './triggers/TriggerPicker';
 import { WebhookConfig } from './triggers/WebhookConfig';
 import { ScheduledConfig } from './triggers/ScheduledConfig';
 import { PollConfig } from './triggers/PollConfig';
 import { CronConfig } from './triggers/CronConfig';
+import { usePluginInstancesForAudience } from '@/hooks/queries/admin';
 
 export interface TriggerSectionProps {
   value: TriggerFormState;
@@ -24,33 +32,62 @@ const DEFAULT_POLL: PollTriggerState = {
 };
 const DEFAULT_CRON: CronTriggerState = { type: 'cron', cronExpr: '0 9 * * *' };
 
-export function TriggerSection({ value, onChange, policyId, errors = [] }: TriggerSectionProps) {
-  function handleTypeSelect(type: TriggerFormState['type']) {
-    if (type === 'webhook') onChange({ type: 'webhook', auth: 'hmac' });
-    else if (type === 'manual') onChange(DEFAULT_MANUAL);
-    else if (type === 'poll') onChange(DEFAULT_POLL);
-    else if (type === 'cron') onChange(DEFAULT_CRON);
-    else onChange(DEFAULT_SCHEDULED);
+// pickerValueToTriggerState converts a TriggerPickerValue to a full TriggerFormState,
+// initializing default sub-form values for built-in types.
+function pickerValueToTriggerState(v: TriggerPickerValue): TriggerFormState {
+  if (!v) return { type: 'webhook', auth: 'hmac' };
+  if (v.kind === 'builtin') {
+    switch (v.type) {
+      case 'webhook':   return { type: 'webhook', auth: 'hmac' };
+      case 'manual':    return DEFAULT_MANUAL;
+      case 'scheduled': return DEFAULT_SCHEDULED;
+      case 'poll':      return DEFAULT_POLL;
+      case 'cron':      return DEFAULT_CRON;
+    }
   }
+  return { type: 'subscribed', source: v.source, eventKind: v.eventKind, binding: {} };
+}
+
+// triggerStateToPickerValue converts the current TriggerFormState back to the
+// discriminated picker value so TriggerPicker can show the active selection.
+function triggerStateToPickerValue(trigger: TriggerFormState): TriggerPickerValue {
+  if (trigger.type === 'subscribed') {
+    return { kind: 'subscribed', source: trigger.source, eventKind: trigger.eventKind };
+  }
+  const builtinTypes = ['webhook', 'manual', 'scheduled', 'poll', 'cron'] as const;
+  if (builtinTypes.includes(trigger.type as typeof builtinTypes[number])) {
+    return { kind: 'builtin', type: trigger.type as typeof builtinTypes[number] };
+  }
+  return null;
+}
+
+export function TriggerSection({ value, onChange, policyId, errors = [] }: TriggerSectionProps) {
+  const pluginQuery = usePluginInstancesForAudience();
+
+  function handlePickerChange(next: TriggerPickerValue) {
+    if (!next) return;
+
+    // Preserve existing sub-form config when switching between trigger types of
+    // the same kind (e.g. webhook auth mode survives re-selecting webhook).
+    if (next.kind === 'builtin' && value.type === next.type) return;
+
+    onChange(pickerValueToTriggerState(next));
+  }
+
+  const pickerValue = triggerStateToPickerValue(value);
 
   return (
     <div className={shared.section}>
       <div className={shared.heading}>Trigger</div>
 
-      <div className={styles.cards}>
-        <TriggerCard type="webhook" selected={value.type} onSelect={handleTypeSelect}
-          title="Webhook" desc="Triggered by an incoming HTTP request" />
-        <TriggerCard type="manual" selected={value.type} onSelect={handleTypeSelect}
-          title="Manual" desc="Triggered on demand from the dashboard" />
-        <TriggerCard type="scheduled" selected={value.type} onSelect={handleTypeSelect}
-          title="Scheduled" desc="Fires once at each specified date and time, then pauses" />
-        <TriggerCard type="poll" selected={value.type} onSelect={handleTypeSelect}
-          title="Poll" desc="Periodically calls MCP tools and fires when conditions match" />
-        <TriggerCard type="cron" selected={value.type} onSelect={handleTypeSelect}
-          title="Cron" desc="Fires on a recurring schedule defined by a cron expression" />
-      </div>
+      <TriggerPicker
+        value={pickerValue}
+        onChange={handlePickerChange}
+        pluginInstances={pluginQuery.data}
+        loading={pluginQuery.isLoading}
+      />
 
-      <div className={styles.config}>
+      <div>
         {value.type === 'webhook' && (
           <WebhookConfig
             policyId={policyId}
@@ -62,6 +99,13 @@ export function TriggerSection({ value, onChange, policyId, errors = [] }: Trigg
         {value.type === 'poll' && <PollConfig value={value} onChange={onChange} errors={errors} />}
         {value.type === 'cron' && <CronConfig value={value} onChange={onChange} errors={errors} />}
         {value.type === 'manual' && null}
+        {value.type === 'subscribed' && (
+          // TODO(#218): binding form — shows the typed binding fields from the manifest's
+          // binding_schema. For now, display a placeholder so the section is not empty.
+          <div>
+            Binding configuration for <strong>{value.source}</strong>: {value.eventKind}
+          </div>
+        )}
       </div>
     </div>
   );
