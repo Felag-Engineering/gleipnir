@@ -17,9 +17,9 @@ import (
 	"fmt"
 	"strings"
 
+	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"gopkg.in/yaml.v3"
 )
 

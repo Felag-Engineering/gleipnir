@@ -248,8 +248,8 @@ func TestManager_ServerInterceptors_PropagateToConfig(t *testing.T) {
 
 	var capturedInterceptors []grpc.UnaryServerInterceptor
 	mgr := process.NewManager(process.ManagerConfig{
-		Querier:        &fakeQuerier{},
-		IdentityIssuer: reg,
+		Querier:            &fakeQuerier{},
+		IdentityIssuer:     reg,
 		ServerInterceptors: []grpc.UnaryServerInterceptor{fixtureInterceptor},
 		TestProcessStarter: func(_ context.Context, cfg process.Config) (*process.Instance, error) {
 			capturedInterceptors = cfg.ServerInterceptors

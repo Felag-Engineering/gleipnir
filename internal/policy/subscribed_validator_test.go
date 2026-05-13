@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
+	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"gopkg.in/yaml.v3"
 )
 

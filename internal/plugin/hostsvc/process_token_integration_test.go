@@ -22,12 +22,12 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	bootstrapv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/bootstrap/v1"
-	handshakev1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/handshake/v1"
+	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostsvc"
 	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
 	"github.com/felag-engineering/gleipnir/internal/plugin/process"
-	"github.com/felag-engineering/gleipnir/internal/model"
+	bootstrapv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/bootstrap/v1"
+	handshakev1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/handshake/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
 	sdkproto "github.com/felag-engineering/gleipnir/plugin-sdk/proto"
 )
@@ -257,7 +257,7 @@ func TestProcessTokenIntegration_OldTokenRejectedAfterReissue(t *testing.T) {
 		StartupTimeout: 30 * time.Second,
 		StopGrace:      10 * time.Second,
 		IdentityIssuer: reg,
-		HealthSetter: func(_ context.Context, _ string, _ model.PluginHealthState, _ string) {},
+		HealthSetter:   func(_ context.Context, _ string, _ model.PluginHealthState, _ string) {},
 		Launch: func(ctx context.Context, binaryPath string, host hostwire.HostServer, opts hostwire.Options) (*hostwire.Client, func(), error) {
 			os.Setenv("GLEIPNIR_TEST_FIXTURE", "serve-and-block")
 			client, teardown, err := hostwire.Launch(ctx, binaryPath, host, opts)

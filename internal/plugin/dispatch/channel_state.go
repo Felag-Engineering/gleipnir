@@ -39,9 +39,9 @@ var ErrTransitionConflict = errors.New("channel request: transition lost to conc
 type ChannelRequestStatus string
 
 const (
-	StatusPending   ChannelRequestStatus = "pending"
-	StatusResolved  ChannelRequestStatus = "resolved"
-	StatusTimedOut  ChannelRequestStatus = "timed_out"
+	StatusPending  ChannelRequestStatus = "pending"
+	StatusResolved ChannelRequestStatus = "resolved"
+	StatusTimedOut ChannelRequestStatus = "timed_out"
 )
 
 // legalTransitions enumerates valid status progressions for plugin pending
