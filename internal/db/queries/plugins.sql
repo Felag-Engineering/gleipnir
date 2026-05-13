@@ -44,6 +44,15 @@ SELECT * FROM plugin_instances WHERE id = :id;
 -- name: GetPluginInstanceByName :one
 SELECT * FROM plugin_instances WHERE plugin_id = :plugin_id AND instance_name = :instance_name;
 
+-- GetPluginInstanceByGlobalName finds the first instance with the given name
+-- across all plugins. Used by subscribed trigger binding to resolve the
+-- operator-readable source name to an instance ID.
+-- Note: plugin_instances UNIQUE is (plugin_id, instance_name), not global, so
+-- cross-plugin name collisions are silently first-wins here. Revisit when #213
+-- settles the instance-id pattern.
+-- name: GetPluginInstanceByGlobalName :one
+SELECT * FROM plugin_instances WHERE instance_name = :instance_name LIMIT 1;
+
 -- name: ListPluginInstances :many
 SELECT * FROM plugin_instances ORDER BY plugin_id, instance_name;
 

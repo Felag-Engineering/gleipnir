@@ -53,6 +53,8 @@ func (h *PolicyHandler) notifyTriggers(ctx context.Context, policyID string, tri
 		if h.cron != nil {
 			h.cron.Notify(ctx, policyID)
 		}
+	case model.TriggerTypeSubscribed:
+		// No daemon to notify. The TriggerService dispatcher is wired in #214.
 	}
 }
 

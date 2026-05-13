@@ -161,6 +161,37 @@ func (q *Queries) GetPluginByName(ctx context.Context, name string) (Plugin, err
 	return i, err
 }
 
+const getPluginInstanceByGlobalName = `-- name: GetPluginInstanceByGlobalName :one
+SELECT id, plugin_id, instance_name, config_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances WHERE instance_name = ?1 LIMIT 1
+`
+
+// GetPluginInstanceByGlobalName finds the first instance with the given name
+// across all plugins. Used by subscribed trigger binding to resolve the
+// operator-readable source name to an instance ID.
+// Note: plugin_instances UNIQUE is (plugin_id, instance_name), not global, so
+// cross-plugin name collisions are silently first-wins here. Revisit when #213
+// settles the instance-id pattern.
+func (q *Queries) GetPluginInstanceByGlobalName(ctx context.Context, instanceName string) (PluginInstance, error) {
+	row := q.db.QueryRowContext(ctx, getPluginInstanceByGlobalName, instanceName)
+	var i PluginInstance
+	err := row.Scan(
+		&i.ID,
+		&i.PluginID,
+		&i.InstanceName,
+		&i.ConfigJson,
+		&i.CredentialsEncrypted,
+		&i.CredentialsExpiresAt,
+		&i.HandshakeVersions,
+		&i.HealthState,
+		&i.HealthDetail,
+		&i.LastOauthCallbackUrl,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getPluginInstanceByID = `-- name: GetPluginInstanceByID :one
 SELECT id, plugin_id, instance_name, config_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances WHERE id = ?1
 `

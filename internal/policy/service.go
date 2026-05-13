@@ -73,12 +73,13 @@ type SaveResult struct {
 
 // Service orchestrates policy parse → validate → store operations.
 type Service struct {
-	store            *db.Store
-	lookup           ToolLookup        // nil if MCP registry is unavailable
-	modelValidator   ModelValidator    // nil skips model name validation
-	optionsValidator OptionsValidator  // nil skips provider options validation
-	settings         *settings.Service // nil falls back to compiled defaults
-	encrypter        SecretCipher      // nil means encryption not configured
+	store               *db.Store
+	lookup              ToolLookup                  // nil if MCP registry is unavailable
+	modelValidator      ModelValidator              // nil skips model name validation
+	optionsValidator    OptionsValidator            // nil skips provider options validation
+	settings            *settings.Service           // nil falls back to compiled defaults
+	encrypter           SecretCipher                // nil means encryption not configured
+	subscribedValidator *SubscribedBindingValidator // nil skips plugin binding validation
 }
 
 // NewService returns a policy Service. lookup may be nil if MCP registry
@@ -110,6 +111,9 @@ func (s *Service) Create(ctx context.Context, rawYAML string) (*SaveResult, erro
 	}
 	if err := Validate(parsed); err != nil {
 		return nil, err
+	}
+	if issues := s.runSubscribedValidator(ctx, parsed); len(issues) > 0 {
+		return nil, &ValidationError{Errors: issues}
 	}
 	if err := s.validateProviderOptions(parsed); err != nil {
 		return nil, &ValidationError{Errors: []Issue{{Field: "model", Message: err.Error()}}}
@@ -177,6 +181,9 @@ func (s *Service) Update(ctx context.Context, policyID string, rawYAML string) (
 	}
 	if err := Validate(parsed); err != nil {
 		return nil, err
+	}
+	if issues := s.runSubscribedValidator(ctx, parsed); len(issues) > 0 {
+		return nil, &ValidationError{Errors: issues}
 	}
 	if err := s.validateProviderOptions(parsed); err != nil {
 		return nil, &ValidationError{Errors: []Issue{{Field: "model", Message: err.Error()}}}
@@ -270,6 +277,13 @@ func generateWebhookSecret() (string, error) {
 // When nil (the default), those operations return ErrEncryptionUnavailable.
 func (s *Service) WithWebhookSecretEncrypter(e SecretCipher) {
 	s.encrypter = e
+}
+
+// WithSubscribedBindingValidator sets the validator used for subscribed-trigger
+// binding validation. When nil (the default), subscribed binding validation is
+// skipped — structural checks in Validate still run.
+func (s *Service) WithSubscribedBindingValidator(v *SubscribedBindingValidator) {
+	s.subscribedValidator = v
 }
 
 // RotateWebhookSecret generates a fresh 64-hex secret, encrypts it, and persists
@@ -414,6 +428,16 @@ func (s *Service) resolveDefaults(ctx context.Context) (string, string) {
 		return "", ""
 	}
 	return provider, modelName
+}
+
+// runSubscribedValidator runs the I/O-touching subscribed binding validator if
+// one is configured and the trigger type is subscribed. Returns nil (not empty
+// slice) when the validator is absent — structural checks already ran in Validate.
+func (s *Service) runSubscribedValidator(ctx context.Context, p *model.ParsedPolicy) []Issue {
+	if s.subscribedValidator == nil {
+		return nil
+	}
+	return s.subscribedValidator.Validate(ctx, p.Trigger)
 }
 
 // checkToolRefs issues non-blocking warnings for tool references that don't
