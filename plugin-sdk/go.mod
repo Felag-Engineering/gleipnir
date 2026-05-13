@@ -1,6 +1,6 @@
 module github.com/felag-engineering/gleipnir/plugin-sdk
 
-go 1.25.9
+go 1.25.10
 
 require (
 	github.com/hashicorp/go-hclog v0.14.1
