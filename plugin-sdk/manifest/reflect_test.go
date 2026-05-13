@@ -129,6 +129,7 @@ func TestReflectSchema_TypedFilters(t *testing.T) {
 		t.Fatal("properties has no 'contains' key")
 	}
 	assertNodeValue(t, containsProp, "type", "string")
+	assertNodeValue(t, containsProp, "format", "contains")
 }
 
 // TestReflectSchema_NoDollarSchema is a regression guard ensuring the

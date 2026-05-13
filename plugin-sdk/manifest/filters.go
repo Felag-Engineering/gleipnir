@@ -19,11 +19,19 @@ func (RegexField) JSONSchema() *jsonschema.Schema {
 
 // ContainsField is a typed string for "contains substring" filter semantics.
 // The host-side trigger engine interprets the value as a substring to match.
+//
+// The emitted JSON Schema carries format:"contains" so that the host-side
+// binding evaluator (internal/plugin/binding) can distinguish ContainsField
+// from EqualsField at runtime without any additional wrapper key. This is an
+// additive marker; JSON Schema validators treat unknown format values as
+// annotations and will not reject it.
 type ContainsField string
 
 // JSONSchema implements jsonschema.SchemaCustomizer for ContainsField.
+// Returns {type: string, format: contains} — the format marker is the
+// discriminator that lets the binding evaluator select OpContains.
 func (ContainsField) JSONSchema() *jsonschema.Schema {
-	return &jsonschema.Schema{Type: "string"}
+	return &jsonschema.Schema{Type: "string", Format: "contains"}
 }
 
 // EqualsField is a typed string for exact-match filter semantics.
