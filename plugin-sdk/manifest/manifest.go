@@ -6,7 +6,11 @@
 // event kinds, and JSON schemas for per-instance configuration.
 package manifest
 
-import "gopkg.in/yaml.v3"
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
 
 // Tier-2 capability identifiers declared in the manifest under
 // tier2_capabilities. Each identifier corresponds to a manifest-declared,
@@ -283,6 +287,40 @@ type ChannelDecl struct {
 	// ConfigSchema is a JSON Schema (as a raw YAML node) for the per-audience-
 	// entry config block validated when operators configure this channel.
 	ConfigSchema *yaml.Node `yaml:"config_schema,omitempty"`
+}
+
+// AddEventKind appends an EventKindDecl to m.EventKinds. When filterStruct is
+// nil, the declaration has no binding schema (valid for event kinds that carry
+// no operator-configurable binding). When filterStruct is non-nil, ReflectSchema
+// is called to derive the BindingSchema; any reflection error is returned
+// wrapped with the event kind name for context.
+//
+// payloadSchema and examples are optional (pass nil/zero values to omit).
+func (m *Manifest) AddEventKind(kind, description string, filterStruct any, payloadSchema *yaml.Node, examples ...*yaml.Node) error {
+	decl := EventKindDecl{
+		Kind:          kind,
+		Description:   description,
+		PayloadSchema: payloadSchema,
+		Examples:      examples,
+	}
+	if filterStruct != nil {
+		node, err := ReflectSchema(filterStruct)
+		if err != nil {
+			return fmt.Errorf("manifest: reflect binding_schema for event kind %q: %w", kind, err)
+		}
+		decl.BindingSchema = node
+	}
+	m.EventKinds = append(m.EventKinds, decl)
+	return nil
+}
+
+// MustAddEventKind is the panicking variant of AddEventKind. A nil filterStruct
+// is the documented no-binding form and does NOT cause a panic; only invopop
+// reflection failures panic.
+func (m *Manifest) MustAddEventKind(kind, description string, filterStruct any, payloadSchema *yaml.Node, examples ...*yaml.Node) {
+	if err := m.AddEventKind(kind, description, filterStruct, payloadSchema, examples...); err != nil {
+		panic(err)
+	}
 }
 
 // HasTier2 reports whether the manifest declares the given Tier-2 capability.
