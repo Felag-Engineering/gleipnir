@@ -107,12 +107,20 @@ func (p *fakePublisher) published() []string {
 	return out
 }
 
-// fakeLauncher satisfies plugintrigger.RunLauncher and counts Launch calls.
+// fakeLauncher satisfies plugintrigger.RunLauncher and counts Launch/Enqueue calls.
 type fakeLauncher struct {
 	mu         sync.Mutex
 	launches   []run.LaunchParams
 	launchErr  error
 	concurrErr error
+
+	enqueues   []enqueueCall
+	enqueueErr error
+}
+
+type enqueueCall struct {
+	params     run.LaunchParams
+	queueDepth int
 }
 
 var _ plugintrigger.RunLauncher = (*fakeLauncher)(nil)
@@ -128,14 +136,32 @@ func (l *fakeLauncher) Launch(_ context.Context, params run.LaunchParams) (run.L
 	return run.LaunchResult{}, l.launchErr
 }
 
-func (l *fakeLauncher) Enqueue(_ context.Context, _ run.LaunchParams, _ int) error {
-	return nil
+func (l *fakeLauncher) Enqueue(_ context.Context, params run.LaunchParams, queueDepth int) error {
+	l.mu.Lock()
+	l.enqueues = append(l.enqueues, enqueueCall{params: params, queueDepth: queueDepth})
+	l.mu.Unlock()
+	return l.enqueueErr
 }
 
 func (l *fakeLauncher) launchCount() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return len(l.launches)
+}
+
+func (l *fakeLauncher) enqueueCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.enqueues)
+}
+
+func (l *fakeLauncher) lastEnqueue() (enqueueCall, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.enqueues) == 0 {
+		return enqueueCall{}, false
+	}
+	return l.enqueues[len(l.enqueues)-1], true
 }
 
 // buildManifestYAML produces a minimal manifest YAML with one event kind and
@@ -526,7 +552,173 @@ func TestDispatcher_ManifestParsedAsYAML(t *testing.T) {
 	}
 }
 
+// TestDispatcher_ConcurrencyCap_SkipBlocksFire verifies that when
+// CheckConcurrency returns ErrConcurrencySkipActive, no Launch or Enqueue call
+// is made, Handle returns nil, and the plugin.event_matched event was still
+// published (binding evaluation precedes the concurrency check).
+func TestDispatcher_ConcurrencyCap_SkipBlocksFire(t *testing.T) {
+	t.Parallel()
+
+	q := newBasicQuerier(t, "my-instance", "message")
+	launcher := &fakeLauncher{concurrErr: run.ErrConcurrencySkipActive}
+	pub := &fakePublisher{}
+	d := newDispatcher(q, dedup.Noop{}, launcher, pub)
+
+	evt := plugintrigger.Event{
+		InstanceID:  "inst-1",
+		PluginID:    "plug-1",
+		EventKind:   "message",
+		EventID:     "event-skip",
+		PayloadJSON: []byte(`{}`),
+		ObservedAt:  time.Now(),
+	}
+	if err := d.Handle(context.Background(), evt); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if launcher.launchCount() != 0 {
+		t.Errorf("expected 0 launches on concurrency skip, got %d", launcher.launchCount())
+	}
+	if launcher.enqueueCount() != 0 {
+		t.Errorf("expected 0 enqueues on concurrency skip, got %d", launcher.enqueueCount())
+	}
+	// plugin.event_matched is published before the concurrency check.
+	if !contains(pub.published(), "plugin.event_matched") {
+		t.Errorf("expected plugin.event_matched in %v", pub.published())
+	}
+}
+
+// TestDispatcher_ConcurrencyCap_QueueFullDrops verifies that when
+// CheckConcurrency returns ErrConcurrencyQueueActive and Enqueue returns
+// ErrConcurrencyQueueFull, no Launch call is made, exactly one Enqueue call
+// is made with the correct QueueDepth, and Handle returns nil.
+func TestDispatcher_ConcurrencyCap_QueueFullDrops(t *testing.T) {
+	t.Parallel()
+
+	const wantQueueDepth = 3
+
+	// Inline a YAML with concurrency: queue and queue_depth: 3 under the agent block.
+	yaml := `
+name: test-policy
+trigger:
+  type: subscribed
+  source: my-instance
+  event_kind: message
+agent:
+  task: do stuff
+  model:
+    provider: anthropic
+    name: claude-3-5-haiku-latest
+  concurrency: queue
+  queue_depth: 3
+`
+	q := &fakeQuerier{
+		policies: []db.Policy{{
+			ID:        "pol-queue",
+			Yaml:      yaml,
+			UpdatedAt: "t1",
+		}},
+		instances: map[string]db.PluginInstance{
+			"inst-1": {ID: "inst-1", PluginID: "plug-1", InstanceName: "my-instance"},
+		},
+		plugins: map[string]db.Plugin{
+			"plug-1": {ID: "plug-1", ManifestSnapshot: buildManifestYAML(t, "message", nil)},
+		},
+	}
+	launcher := &fakeLauncher{
+		concurrErr: run.ErrConcurrencyQueueActive,
+		enqueueErr: run.ErrConcurrencyQueueFull,
+	}
+	pub := &fakePublisher{}
+	d := newDispatcher(q, dedup.Noop{}, launcher, pub)
+
+	evt := plugintrigger.Event{
+		InstanceID:  "inst-1",
+		PluginID:    "plug-1",
+		EventKind:   "message",
+		EventID:     "event-queuefull",
+		PayloadJSON: []byte(`{}`),
+		ObservedAt:  time.Now(),
+	}
+	if err := d.Handle(context.Background(), evt); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if launcher.launchCount() != 0 {
+		t.Errorf("expected 0 launches on queue full, got %d", launcher.launchCount())
+	}
+	if launcher.enqueueCount() != 1 {
+		t.Errorf("expected 1 enqueue call, got %d", launcher.enqueueCount())
+	}
+	call, ok := launcher.lastEnqueue()
+	if !ok {
+		t.Fatal("expected at least one enqueue call")
+	}
+	if call.queueDepth != wantQueueDepth {
+		t.Errorf("enqueue queueDepth = %d, want %d", call.queueDepth, wantQueueDepth)
+	}
+}
+
+// TestDispatcher_HappyPath_PayloadPropagation verifies that a matching event's
+// payload is propagated byte-identical as TriggerPayload in the LaunchParams,
+// and that other launch fields are set correctly.
+func TestDispatcher_HappyPath_PayloadPropagation(t *testing.T) {
+	t.Parallel()
+
+	q := newBasicQuerier(t, "my-instance", "message")
+	launcher := &fakeLauncher{}
+	pub := &fakePublisher{}
+	d := newDispatcher(q, dedup.Noop{}, launcher, pub)
+
+	payloadJSON := []byte(`{"channel":"#general","text":"hello"}`)
+	evt := plugintrigger.Event{
+		InstanceID:  "inst-1",
+		PluginID:    "plug-1",
+		EventKind:   "message",
+		EventID:     "event-payload",
+		PayloadJSON: payloadJSON,
+		ObservedAt:  time.Now(),
+	}
+	if err := d.Handle(context.Background(), evt); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if launcher.launchCount() != 1 {
+		t.Fatalf("expected 1 launch, got %d", launcher.launchCount())
+	}
+	lp := launcher.launches[0]
+	if lp.PolicyID != "pol-1" {
+		t.Errorf("PolicyID = %q, want %q", lp.PolicyID, "pol-1")
+	}
+	if lp.TriggerType != model.TriggerTypeSubscribed {
+		t.Errorf("TriggerType = %v, want %v", lp.TriggerType, model.TriggerTypeSubscribed)
+	}
+	if lp.TriggerPayload != string(payloadJSON) {
+		t.Errorf("TriggerPayload = %q, want %q", lp.TriggerPayload, string(payloadJSON))
+	}
+	if lp.ParsedPolicy == nil {
+		t.Error("ParsedPolicy is nil, want non-nil")
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+// newBasicQuerier returns a fakeQuerier wired with a single matching policy,
+// instance, and plugin for the given source (instance name) and event kind.
+// The policy ID is "pol-1".
+func newBasicQuerier(t *testing.T, source, eventKind string) *fakeQuerier {
+	t.Helper()
+	return &fakeQuerier{
+		policies: []db.Policy{{
+			ID:        "pol-1",
+			Yaml:      policyYAML(source, eventKind, nil),
+			UpdatedAt: "t1",
+		}},
+		instances: map[string]db.PluginInstance{
+			"inst-1": {ID: "inst-1", PluginID: "plug-1", InstanceName: source},
+		},
+		plugins: map[string]db.Plugin{
+			"plug-1": {ID: "plug-1", ManifestSnapshot: buildManifestYAML(t, eventKind, nil)},
+		},
+	}
+}
 
 // buildStringSchema creates a minimal YAML schema node for a single string
 // property named key with no format.
