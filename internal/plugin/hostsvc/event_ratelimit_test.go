@@ -18,8 +18,7 @@ func snapshotDropCounter(pluginID, instanceID string) float64 {
 // TestEventRateLimiter_WithinBurstAllows verifies that defaultEventsBurst
 // sequential calls all return allowed=true.
 func TestEventRateLimiter_WithinBurstAllows(t *testing.T) {
-	t.Parallel()
-
+	// Not parallel — sibling tests in this file mutate the shared timeNow clock.
 	rl := newEventRateLimiter()
 	const (
 		pluginID   = "plug-within"
@@ -47,17 +46,20 @@ func TestEventRateLimiter_WithinBurstAllows(t *testing.T) {
 // TestEventRateLimiter_AboveBurstDrops verifies that calls above defaultEventsBurst
 // are dropped and the Prometheus counter is incremented for each drop.
 //
-// We do not assert the exact split because the token bucket may refill slightly
-// between calls. The key invariant is: at least 50 of the 250 calls are dropped
-// and the counter matches the drop count returned by Allow.
+// Runs under a frozen clock so the limiter cannot refill mid-loop — the split
+// is therefore exactly burst-allowed and (total - burst)-dropped.
 func TestEventRateLimiter_AboveBurstDrops(t *testing.T) {
-	t.Parallel()
+	// Not parallel — mutates the package-level timeNow clock.
+	origTimeNow := timeNow
+	t.Cleanup(func() { timeNow = origTimeNow })
+	timeNow = func() time.Time { return time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC) }
 
 	rl := newEventRateLimiter()
 	const (
 		pluginID   = "plug-above"
 		instanceID = "iid-above"
 		total      = 250
+		wantDrops  = total - defaultEventsBurst
 	)
 	before := snapshotDropCounter(pluginID, instanceID)
 
@@ -70,9 +72,8 @@ func TestEventRateLimiter_AboveBurstDrops(t *testing.T) {
 		}
 	}
 
-	// At least 50 of 250 must have been dropped (burst is 200).
-	if drops < 50 {
-		t.Errorf("drops = %d, want >= 50", drops)
+	if drops != wantDrops {
+		t.Errorf("drops = %d, want %d", drops, wantDrops)
 	}
 
 	after := snapshotDropCounter(pluginID, instanceID)
@@ -84,8 +85,7 @@ func TestEventRateLimiter_AboveBurstDrops(t *testing.T) {
 // TestEventRateLimiter_PerInstanceIsolation verifies that exhausting instance A's
 // token bucket does not affect instance B.
 func TestEventRateLimiter_PerInstanceIsolation(t *testing.T) {
-	t.Parallel()
-
+	// Not parallel — sibling tests in this file mutate the shared timeNow clock.
 	rl := newEventRateLimiter()
 	const pluginID = "plug-iso"
 
@@ -140,55 +140,55 @@ func TestEventRateLimiter_AuditFlushCoalesces(t *testing.T) {
 		}
 	})
 
-	// Advance 30 seconds — still within the 60-second window.
+	// drainBurst empties the limiter's bucket at the current fake clock so the
+	// next Allow call is guaranteed to drop. This is necessary because advancing
+	// the fake clock refills the rate.Limiter just like it would in production —
+	// to test audit coalescing in isolation, we drain first then probe.
+	drainBurst := func() {
+		for range defaultEventsBurst {
+			rl.Allow(pluginID, instanceID)
+		}
+	}
+
+	// Advance 30 seconds — still within the 60-second audit window. The
+	// limiter also refilled to its full burst during this jump, so drain first.
 	fakeNow = fakeNow.Add(30 * time.Second)
+	drainBurst()
 
 	t.Run("WithinWindowNoFlush", func(t *testing.T) {
-		// Accumulate 300 drops; none should trigger a flush.
-		for i := range 300 {
-			allowed, flush := rl.Allow(pluginID, instanceID)
-			if allowed {
-				// Token bucket may have refilled; skip this call.
-				continue
-			}
-			if flush != 0 {
-				t.Errorf("drop %d within 30s window: expected flushCount=0, got %d", i, flush)
-			}
+		allowed, flush := rl.Allow(pluginID, instanceID)
+		if allowed {
+			t.Fatal("expected drop after drain, got allowed=true")
+		}
+		if flush != 0 {
+			t.Errorf("within 30s window: expected flushCount=0, got %d", flush)
 		}
 	})
 
 	// Advance past the full minute window from the first flush.
-	fakeNow = fakeNow.Add(31 * time.Second) // total: 61 seconds since first flush
+	// Total: 61s since first flush at 12:00:00.
+	fakeNow = fakeNow.Add(31 * time.Second)
+	drainBurst()
 
 	t.Run("AfterWindowFlushesAccumulated", func(t *testing.T) {
-		// The next drop after the window must return a non-zero flush count.
-		var gotFlush uint64
-		for range 50 {
-			allowed, flush := rl.Allow(pluginID, instanceID)
-			if allowed {
-				continue // refill; try again
-			}
-			if flush > 0 {
-				gotFlush = flush
-				break
-			}
+		allowed, flush := rl.Allow(pluginID, instanceID)
+		if allowed {
+			t.Fatal("expected drop after drain, got allowed=true")
 		}
-		if gotFlush == 0 {
+		if flush == 0 {
 			t.Error("expected a non-zero flushCount after the 60s window elapsed, got 0")
 		}
 	})
 
 	t.Run("SubsequentDropsSameWindowNoFlush", func(t *testing.T) {
-		// After the flush, further drops in the same new window must return 0.
-		for i := range 50 {
-			allowed, flush := rl.Allow(pluginID, instanceID)
-			if allowed {
-				continue
-			}
-			if flush != 0 {
-				t.Errorf("drop %d after flush: expected flushCount=0 in new window, got %d", i, flush)
-				break
-			}
+		// Bucket is already drained from the previous subtest's setup; the
+		// limiter has had no clock advance, so the next call still drops.
+		allowed, flush := rl.Allow(pluginID, instanceID)
+		if allowed {
+			t.Fatal("expected drop in same window, got allowed=true")
+		}
+		if flush != 0 {
+			t.Errorf("drop after flush: expected flushCount=0 in new window, got %d", flush)
 		}
 	})
 }

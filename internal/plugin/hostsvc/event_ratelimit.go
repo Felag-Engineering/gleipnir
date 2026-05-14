@@ -88,18 +88,22 @@ func (rl *eventRateLimiter) Allow(pluginID, instanceID string) (allowed bool, fl
 		rl.buckets[instanceID] = b
 	}
 
-	if b.limiter.Allow() {
+	// AllowN with an explicit timestamp (rather than Allow(), which calls
+	// time.Now() internally) so token refill follows the package's injectable
+	// timeNow clock. Tests freeze timeNow to get deterministic drop counts.
+	now := timeNow()
+	if b.limiter.AllowN(now, 1) {
 		return true, 0
 	}
 
 	// Event is over the limit — accumulate and check whether the flush window
 	// has elapsed. Because lastFlush is the zero time.Time on a new bucket,
-	// the very first drop satisfies this condition (time.Now() - zero >> 1 min).
+	// the very first drop satisfies this condition (now - zero >> 1 min).
 	b.dropped++
-	if timeNow().Sub(b.lastFlush) >= auditFlushInterval {
+	if now.Sub(b.lastFlush) >= auditFlushInterval {
 		count := b.dropped
 		b.dropped = 0
-		b.lastFlush = timeNow()
+		b.lastFlush = now
 		return false, count
 	}
 
