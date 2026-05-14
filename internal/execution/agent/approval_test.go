@@ -183,28 +183,31 @@ func TestApprovalHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 
 	h := NewApprovalHandler(w, sm, (<-chan bool)(approvalCh))
 
+	// Short handler timeout keeps the happy-path test fast. The behavior under
+	// test (scanner wins the UPDATE-CAS race) is independent of the value; the
+	// CI-tolerance comes from the generous deadline on the test-side <-done
+	// wait below, not from inflating the timer.
+	const handlerTimeout = 200 * time.Millisecond
+
 	done := make(chan error, 1)
 	go func() {
-		done <- h.Wait(context.Background(), "run1", approvalEntry(200*time.Millisecond), "my-server.do_thing", map[string]any{})
+		done <- h.Wait(context.Background(), "run1", approvalEntry(handlerTimeout), "my-server.do_thing", map[string]any{})
 	}()
 
-	// Poll until the approval row appears in the DB.
-	deadline := time.Now().Add(100 * time.Millisecond)
-	var approvalID string
-	for time.Now().Before(deadline) {
-		rows, err := s.GetPendingApprovalRequestsByRun(context.Background(), "run1")
-		if err != nil {
-			t.Fatalf("GetPendingApprovalRequestsByRun: %v", err)
-		}
-		if len(rows) > 0 {
-			approvalID = rows[0].ID
-			break
-		}
-		time.Sleep(time.Millisecond)
+	// Signal-don't-poll: wait for the state machine's approval.created event
+	// rather than polling the DB on a tight wall-clock budget. Once the event
+	// fires, the row is committed and observable. (See CLAUDE.md "Testing
+	// time-dependent code".)
+	pub.waitForEvent(t, "approval.created", 5*time.Second)
+
+	rows, err := s.GetPendingApprovalRequestsByRun(context.Background(), "run1")
+	if err != nil {
+		t.Fatalf("GetPendingApprovalRequestsByRun: %v", err)
 	}
-	if approvalID == "" {
-		t.Fatal("timed out waiting for approval row to appear in DB")
+	if len(rows) == 0 {
+		t.Fatal("approval.created fired but no pending row found")
 	}
+	approvalID := rows[0].ID
 
 	// Back-date the approval row so the scanner picks it up as expired.
 	past := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339Nano)
@@ -218,14 +221,15 @@ func TestApprovalHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 		t.Fatalf("scanner.Scan: %v", err)
 	}
 
-	// Wait for the handler's 200ms timer to fire.
+	// Wait for the handler's timer to fire and Wait() to return. The handler
+	// timeout is 2s; allow 5s here so CI scheduling jitter never preempts us.
 	select {
 	case err := <-done:
 		if err == nil {
 			t.Fatal("expected error from handler, got nil")
 		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("Wait did not return within 500ms")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait did not return within 5s")
 	}
 
 	if err := w.Close(); err != nil {

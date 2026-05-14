@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
+	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
@@ -409,6 +411,29 @@ func (s *Server) EmitEvent(ctx context.Context, req *hostv1.EmitEventRequest) (*
 	}
 	if req.GetEventKind() == "" {
 		return nil, status.Error(codes.InvalidArgument, "event_kind must not be empty")
+	}
+
+	// Rate-limit gate: drop excess events before running any per-policy match
+	// scan so a runaway plugin cannot exhaust host resources. Returns Ok=false
+	// (not a gRPC error) so the plugin does not retry-storm (spec §4.3).
+	allowed, flushCount := s.eventLimiter.Allow(inst.PluginID, inst.ID)
+	if !allowed {
+		eventDroppedCounter.WithLabelValues(inst.PluginID, inst.ID, metrics.ReasonRateLimit).Inc()
+		if flushCount > 0 {
+			// Coalesced audit row: at most one per minute per instance.
+			s.writeAuditEvent(ctx, inst.ID, EventTypeEventRateLimited, "warning", map[string]string{
+				"plugin_id":   inst.PluginID,
+				"reason":      metrics.ReasonRateLimit,
+				"drop_count":  strconv.FormatUint(flushCount, 10),
+				"window_secs": strconv.FormatFloat(auditFlushInterval.Seconds(), 'f', 0, 64),
+			})
+		}
+		logctx.Logger(ctx).WarnContext(ctx, "EmitEvent: dropped by rate limiter",
+			"plugin", inst.PluginID,
+			"instance", inst.ID,
+			"event_id", req.GetEventId(),
+		)
+		return &hostv1.EmitEventResponse{Ok: false}, nil
 	}
 
 	payload, marshalErr := json.Marshal(map[string]string{

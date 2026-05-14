@@ -82,6 +82,9 @@ const (
 	LabelTriggerType = "trigger_type"
 	LabelFrom        = "from"
 	LabelTo          = "to"
+	LabelPlugin      = "plugin"
+	LabelInstance    = "instance"
+	LabelReason      = "reason"
 )
 
 // error_type label values enumerate the categories of errors recorded in
@@ -94,6 +97,12 @@ const (
 	ErrorTypeAuth        = "auth"
 	ErrorTypeServerError = "server_error"
 	ErrorTypeProtocol    = "protocol"
+)
+
+// reason label values enumerate the categories of drop/reject reasons used
+// in plugin observability metrics (e.g. gleipnir_plugin_event_dropped_total).
+const (
+	ReasonRateLimit = "rate_limit"
 )
 
 // direction label values distinguish inbound from outbound token flows in LLM

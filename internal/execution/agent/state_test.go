@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/execution/runstate"
 	"github.com/felag-engineering/gleipnir/internal/model"
@@ -49,6 +50,23 @@ func (p *capturePublisher) countByType(eventType string) int {
 		}
 	}
 	return n
+}
+
+// waitForEvent polls until at least one event of the given type has been
+// captured, or t.Fatal if the deadline expires. Tests use this as a
+// deterministic synchronization point instead of polling for downstream
+// side effects (e.g. DB rows) on a tight wall-clock budget — see CLAUDE.md
+// "Testing time-dependent code" for the signal-don't-poll pattern.
+func (p *capturePublisher) waitForEvent(t *testing.T, eventType string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if p.countByType(eventType) > 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out after %s waiting for event %q", timeout, eventType)
 }
 
 // countByStatus returns the number of eventType events whose JSON payload has

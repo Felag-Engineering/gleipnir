@@ -55,7 +55,7 @@ func newPluginMetrics() *pluginMetrics {
 // reservedLabels are auto-injected by the host and must not appear in
 // user-supplied label maps (collision would produce duplicate label keys in the
 // GaugeVec, which Prometheus rejects at registration time).
-var reservedLabels = map[string]bool{"plugin": true, "instance": true}
+var reservedLabels = map[string]bool{metrics.LabelPlugin: true, metrics.LabelInstance: true}
 
 // set validates the metric name and labels, enforces cardinality, registers the
 // GaugeVec on first use, then calls GaugeVec.With(merged).Set(value).
@@ -114,7 +114,7 @@ func (m *pluginMetrics) set(name string, value float64, userLabels map[string]st
 		for k := range userLabels {
 			labelKeys = append(labelKeys, k)
 		}
-		labelKeys = append(labelKeys, "plugin", "instance")
+		labelKeys = append(labelKeys, metrics.LabelPlugin, metrics.LabelInstance)
 
 		opts := prometheus.GaugeOpts{
 			Name: fullName,
@@ -164,8 +164,8 @@ func (m *pluginMetrics) set(name string, value float64, userLabels map[string]st
 	for k, v := range userLabels {
 		merged[k] = v
 	}
-	merged["plugin"] = pluginID
-	merged["instance"] = instanceID
+	merged[metrics.LabelPlugin] = pluginID
+	merged[metrics.LabelInstance] = instanceID
 
 	// Record new label values in the cardinality tracker after the pre-flight
 	// passes and before setting the gauge (still under m.mu).

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	io_prometheus_client "github.com/prometheus/client_model/go"
 	"google.golang.org/grpc/codes"
@@ -2065,4 +2066,123 @@ func TestUserDirectoryRead_ManifestParseError(t *testing.T) {
 	if !ok || st.Code() != codes.Internal {
 		t.Errorf("expected Internal on manifest parse error, got %v", err)
 	}
+}
+
+// --- tests: EmitEvent rate limiting ---
+
+// TestEmitEvent_RateLimit_Integration fires 250 EmitEvent calls against a Server
+// with a wired TriggerSink under a frozen clock. It verifies:
+//
+//	(a) Exactly 50 events were dropped (total - burst, with zero refill thanks
+//	    to the frozen clock) and the gleipnir_plugin_event_dropped_total
+//	    counter advanced by the same amount.
+//	(b) Exactly one "event_rate_limited" audit row was written (first-drop
+//	    flush; the remaining drops coalesce because the clock never advances).
+//	(c) The trigger sink Handle was NOT called for any dropped event.
+//
+// Not parallel: swaps the package-level timeNow clock, and reads shared
+// Prometheus registry state.
+func TestEmitEvent_RateLimit_Integration(t *testing.T) {
+	const (
+		pluginID   = "plug-rl-e2e"
+		instanceID = "iid-rl-e2e"
+	)
+
+	// Freeze time. rate.Limiter is now fully deterministic because the host
+	// passes timeNow() through to AllowN. See CLAUDE.md "Testing rate-limited
+	// code" for the pattern.
+	fakeNow := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	t.Cleanup(hostsvc.SetTimeNowForTest(func() time.Time { return fakeNow }))
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: instanceID, PluginID: pluginID},
+	}
+	pub := &fakePublisher{}
+	sink := &fakeTriggerSink{}
+
+	binder := &fakeInstanceBinder{id: instanceID, ok: true}
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, pub, nil)
+	srv.SetTriggerSink(sink)
+
+	const (
+		total    = 250
+		burst    = 200 // matches defaultEventsBurst in event_ratelimit.go
+		wantDrop = total - burst
+	)
+	counterBefore := readDroppedCounter(t, pluginID, instanceID)
+
+	var allowed, dropped int
+	for i := range total {
+		resp, err := srv.EmitEvent(context.Background(), &hostv1.EmitEventRequest{
+			EventId:   fmt.Sprintf("evt-%d", i),
+			EventKind: "test.event",
+		})
+		if err != nil {
+			t.Fatalf("call %d: unexpected error: %v", i, err)
+		}
+		if resp.GetOk() {
+			allowed++
+		} else {
+			dropped++
+		}
+	}
+
+	// (a) Exact equality is safe under the frozen clock — no refill possible.
+	if dropped != wantDrop {
+		t.Errorf("dropped = %d, want %d", dropped, wantDrop)
+	}
+	if allowed != burst {
+		t.Errorf("allowed = %d, want %d", allowed, burst)
+	}
+
+	// Counter delta should exactly match the drop count under the frozen clock.
+	counterDelta := readDroppedCounter(t, pluginID, instanceID) - counterBefore
+	if counterDelta != float64(dropped) {
+		t.Errorf("counter delta = %.0f, want %d", counterDelta, dropped)
+	}
+
+	// (b) Exactly one "event_rate_limited" audit row (first-drop flush; all
+	// subsequent drops coalesce because time never advances).
+	auditRows := q.all()
+	var rateLimitedRows int
+	for _, row := range auditRows {
+		if row.EventType == hostsvc.EventTypeEventRateLimited {
+			rateLimitedRows++
+		}
+	}
+	if rateLimitedRows != 1 {
+		t.Errorf("audit event_rate_limited rows = %d, want 1 (coalesced)", rateLimitedRows)
+	}
+
+	// (c) Trigger sink must not have been called for dropped events.
+	sinkEvents := sink.received()
+	if len(sinkEvents) != allowed {
+		t.Errorf("sink received %d events, want %d (= allowed count)", len(sinkEvents), allowed)
+	}
+}
+
+// readDroppedCounter returns the current value of the
+// gleipnir_plugin_event_dropped_total counter for (plugin, instance, rate_limit),
+// or 0 if no sample has been recorded yet.
+func readDroppedCounter(t *testing.T, plugin, instance string) float64 {
+	t.Helper()
+	mfs, err := inframetrics.Registry().Gather()
+	if err != nil {
+		t.Fatalf("Registry().Gather(): %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "gleipnir_plugin_event_dropped_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			lbls := make(map[string]string)
+			for _, lp := range m.GetLabel() {
+				lbls[lp.GetName()] = lp.GetValue()
+			}
+			if lbls["plugin"] == plugin && lbls["instance"] == instance && lbls["reason"] == "rate_limit" {
+				return m.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
 }
