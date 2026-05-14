@@ -252,7 +252,13 @@ One trigger binding per policy. Multiple triggers per policy is deferred. The st
 
 Plugin manifests provide `examples` in each `event_kind` declaration. Policy editor offers a **Test binding against sample** button per saved binding. No paste-your-own-JSON in v1.
 
-**Known sharp edge:** operators bound to events whose canonical payload differs from the manifest's example must wait for v2 paste-your-own-JSON. v1 workaround: capture a real event with `gleipnir-plugin run --capture` against a dev instance, then iterate locally with `--replay <captured_event.json>`.
+**Declaring examples (SDK):** The canonical typed path is `Manifest.AddEventKindWithExamples`, which accepts `...manifest.Example{Name, Payload}` structs and round-trips the payload through `yaml.Marshal`. The raw-node path `AddEventKind(..., examples ...*yaml.Node)` remains supported for callers that construct nodes directly.
+
+**Server-side evaluation:** Clicking "Test against sample" in the policy editor sends the current binding + example payloads to `POST /api/v1/admin/plugin-instances/{iid}/event-kinds/{kind}/test-binding`. The server evaluates using `internal/plugin/binding.Compile` + `Evaluate` — the same code path as the runtime dispatcher — so Go RE2 semantics are used, not browser JavaScript regexes.
+
+**Client-side design:** The client sends payloads back in the request body (stateless endpoint). This avoids hot-reload drift between the list call that returned examples and the test call, and removes any server-side caching requirement.
+
+**Known sharp edge (v1):** Only manifest-declared examples are tested. Operators bound to events whose canonical payload differs from the manifest examples must wait for v2 paste-your-own-JSON. **v1 workaround:** capture a real event with `gleipnir-plugin run --capture` against a dev instance, then iterate locally with `--replay <captured_event.json>`.
 
 ## 8. Host API (plugin → host RPCs)
 

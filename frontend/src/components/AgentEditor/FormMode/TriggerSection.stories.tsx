@@ -29,6 +29,27 @@ const SLACK_INSTANCE: ApiPluginInstanceForAudience = {
   ],
 };
 
+const SLACK_WITH_EXAMPLES: ApiPluginInstanceForAudience = {
+  ...SLACK_INSTANCE,
+  event_kinds: [
+    {
+      kind: 'channel_message',
+      description: 'A message posted in a channel',
+      binding_schema: {
+        type: 'object',
+        properties: {
+          channel: { type: 'string' },
+        },
+      },
+      examples: [
+        { name: 'incident', payload: { channel: '#incidents', text: 'alert' } },
+        { name: 'general', payload: { channel: '#general', text: 'hello' } },
+      ],
+    },
+    { kind: 'direct_message', description: 'A direct message to the bot' },
+  ],
+};
+
 // Handlers shared across stories that need a config endpoint
 const CONFIG_HANDLER = http.get('/api/v1/config', () =>
   HttpResponse.json({ data: { public_url: '', default_model: null } }),
@@ -40,6 +61,10 @@ const NO_PLUGIN_INSTANCES = http.get('/api/v1/admin/plugin-instances', () =>
 
 const WITH_SLACK_HANDLER = http.get('/api/v1/admin/plugin-instances', () =>
   HttpResponse.json({ data: [SLACK_INSTANCE] }),
+);
+
+const WITH_SLACK_EXAMPLES_HANDLER = http.get('/api/v1/admin/plugin-instances', () =>
+  HttpResponse.json({ data: [SLACK_WITH_EXAMPLES] }),
 );
 
 // --- Meta ---
@@ -147,7 +172,7 @@ export const PollMultipleChecks: Story = {
   },
 };
 
-// SubscribedSelected — shows the binding placeholder body for a plugin event trigger.
+// SubscribedSelected — shows the binding form for a plugin event trigger (no examples).
 export const SubscribedSelected: Story = {
   parameters: {
     msw: { handlers: [CONFIG_HANDLER, WITH_SLACK_HANDLER] },
@@ -155,6 +180,31 @@ export const SubscribedSelected: Story = {
   args: {
     value: { type: 'subscribed', source: 'slack-prod', eventKind: 'channel_message', binding: {} },
     policyId: 'subscribed-policy',
+    onChange: fn(),
+  },
+};
+
+// SubscribedWithTestButton — plugin declares examples, test button is enabled.
+// MSW returns mixed match results when the button is clicked.
+export const SubscribedWithTestButton: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        CONFIG_HANDLER,
+        WITH_SLACK_EXAMPLES_HANDLER,
+        http.post(
+          '/api/v1/admin/plugin-instances/inst-1/event-kinds/channel_message/test-binding',
+          () =>
+            HttpResponse.json({
+              data: { results: [{ match: true }, { match: false }] },
+            }),
+        ),
+      ],
+    },
+  },
+  args: {
+    value: { type: 'subscribed', source: 'slack-prod', eventKind: 'channel_message', binding: { channel: '#incidents' } },
+    policyId: 'subscribed-examples-policy',
     onChange: fn(),
   },
 };

@@ -241,8 +241,19 @@ type EventKindDecl struct {
 	PayloadSchema *yaml.Node `yaml:"payload_schema,omitempty"`
 
 	// Examples provides sample payloads for the "Test binding against sample"
-	// feature in the policy editor. See spec §7.5.
+	// feature in the policy editor. Each node must conform to the canonical
+	// shape {name: string, payload: <typed struct>} so the host decoder can
+	// extract the display name and pass the payload to the binding evaluator.
+	// See spec §7.5. Use AddEventKindWithExamples for the typed helper.
 	Examples []*yaml.Node `yaml:"examples,omitempty"`
+}
+
+// Example is a named sample event payload for use with AddEventKindWithExamples.
+// Name is shown in the policy editor UI; Payload is a typed Go struct that
+// round-trips through yaml.Marshal so the host receives a structured map.
+type Example struct {
+	Name    string
+	Payload any
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for EventKindDecl.
@@ -319,6 +330,52 @@ func (m *Manifest) AddEventKind(kind, description string, filterStruct any, payl
 // reflection failures panic.
 func (m *Manifest) MustAddEventKind(kind, description string, filterStruct any, payloadSchema *yaml.Node, examples ...*yaml.Node) {
 	if err := m.AddEventKind(kind, description, filterStruct, payloadSchema, examples...); err != nil {
+		panic(err)
+	}
+}
+
+// AddEventKindWithExamples is the typed variant of AddEventKind. It accepts a
+// slice of Example values, marshals each one into a *yaml.Node of shape
+// {name: string, payload: <struct>}, then delegates to AddEventKind. This is
+// the canonical path for plugin authors who want compile-time safety on their
+// example payloads.
+//
+// The first marshal error short-circuits with the example name for context.
+// Zero examples is valid: the declaration is added with no sample payloads.
+func (m *Manifest) AddEventKindWithExamples(kind, description string, filterStruct any, payloadSchema *yaml.Node, examples ...Example) error {
+	if len(examples) == 0 {
+		return m.AddEventKind(kind, description, filterStruct, payloadSchema)
+	}
+	nodes := make([]*yaml.Node, 0, len(examples))
+	for _, ex := range examples {
+		raw, err := yaml.Marshal(map[string]any{
+			"name":    ex.Name,
+			"payload": ex.Payload,
+		})
+		if err != nil {
+			return fmt.Errorf("example %q: %w", ex.Name, err)
+		}
+		var node yaml.Node
+		if err := yaml.Unmarshal(raw, &node); err != nil {
+			return fmt.Errorf("example %q: unmarshal node: %w", ex.Name, err)
+		}
+		// yaml.Unmarshal wraps the root in a DocumentNode; unwrap to the
+		// inner MappingNode so callers get consistent node shapes.
+		if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
+			inner := node.Content[0]
+			nodes = append(nodes, inner)
+		} else {
+			nodes = append(nodes, &node)
+		}
+	}
+	return m.AddEventKind(kind, description, filterStruct, payloadSchema, nodes...)
+}
+
+// MustAddEventKindWithExamples is the panicking variant of
+// AddEventKindWithExamples. It panics on any marshal or reflection error so
+// plugin authors can call it at package init time without error propagation.
+func (m *Manifest) MustAddEventKindWithExamples(kind, description string, filterStruct any, payloadSchema *yaml.Node, examples ...Example) {
+	if err := m.AddEventKindWithExamples(kind, description, filterStruct, payloadSchema, examples...); err != nil {
 		panic(err)
 	}
 }

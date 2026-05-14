@@ -72,6 +72,34 @@ event_kinds:
     description: A direct message to the bot
 `
 
+// triggerPluginWithExamplesManifestYAML is a manifest with binding_schema and
+// examples, including one malformed example (missing payload) to verify skipping.
+const triggerPluginWithExamplesManifestYAML = `
+id: test-trigger-examples
+name: SlackWithExamples
+version: 1.0.0
+services:
+  trigger: v1
+event_kinds:
+  - kind: channel_message
+    description: A message posted in a channel
+    binding_schema:
+      type: object
+      properties:
+        channel:
+          type: string
+    examples:
+      - name: incident-channel
+        payload:
+          channel: "#incidents"
+          text: "alert fired"
+      - name: general-channel
+        payload:
+          channel: "#general"
+          text: "hello"
+      - name: malformed-missing-payload
+`
+
 // --- test fixture seeding helpers ---
 
 func seedPlugin(tb testing.TB, s *db.Store, id, manifestYAML string) string {
@@ -1003,5 +1031,71 @@ func TestListPluginInstances_RoleMatrix(t *testing.T) {
 		if w.Code != tc.wantStatus {
 			t.Errorf("role=%s: status=%d, want %d", tc.role, w.Code, tc.wantStatus)
 		}
+	}
+}
+
+// TestListPluginInstances_WithEventKindExamplesAndBindingSchema verifies that
+// binding_schema and examples are decoded and returned, and that malformed
+// examples (missing payload) are skipped without failing the request.
+func TestListPluginInstances_WithEventKindExamplesAndBindingSchema(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	snap := configvalidate.NewSnapshotter(store.Queries())
+	t.Cleanup(func() { snap.ResetCache(); configvalidate.ResetCache() })
+
+	pluginID := seedPlugin(t, store, "trigger-examples-plugin", triggerPluginWithExamplesManifestYAML)
+	instID := seedPluginInstance(t, store, "slack-examples", pluginID)
+
+	w := do(t, newPluginInstancesRouter(store, snap), http.MethodGet, "/", nil, model.RoleOperator)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\nbody: %s", w.Code, w.Body.String())
+	}
+
+	var items []struct {
+		ID         string `json:"id"`
+		PluginName string `json:"plugin_name"`
+		EventKinds []struct {
+			Kind          string         `json:"kind"`
+			BindingSchema map[string]any `json:"binding_schema"`
+			Examples      []struct {
+				Name    string         `json:"name"`
+				Payload map[string]any `json:"payload"`
+			} `json:"examples"`
+		} `json:"event_kinds"`
+	}
+	parseData(t, w, &items)
+
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].ID != instID {
+		t.Errorf("id = %q, want %q", items[0].ID, instID)
+	}
+	if items[0].PluginName != "SlackWithExamples" {
+		t.Errorf("plugin_name = %q, want SlackWithExamples", items[0].PluginName)
+	}
+	if len(items[0].EventKinds) != 1 {
+		t.Fatalf("got %d event_kinds, want 1", len(items[0].EventKinds))
+	}
+
+	ek := items[0].EventKinds[0]
+	if ek.Kind != "channel_message" {
+		t.Errorf("kind = %q, want channel_message", ek.Kind)
+	}
+	if ek.BindingSchema == nil {
+		t.Error("binding_schema is nil, want non-nil")
+	}
+
+	// Two valid examples; the malformed one (missing payload) is skipped.
+	if len(ek.Examples) != 2 {
+		t.Fatalf("got %d examples, want 2 (malformed one skipped)", len(ek.Examples))
+	}
+	if ek.Examples[0].Name != "incident-channel" {
+		t.Errorf("examples[0].name = %q, want incident-channel", ek.Examples[0].Name)
+	}
+	if ek.Examples[1].Name != "general-channel" {
+		t.Errorf("examples[1].name = %q, want general-channel", ek.Examples[1].Name)
+	}
+	if ek.Examples[0].Payload["channel"] != "#incidents" {
+		t.Errorf("examples[0].payload.channel = %v, want #incidents", ek.Examples[0].Payload["channel"])
 	}
 }

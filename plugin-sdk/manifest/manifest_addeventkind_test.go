@@ -75,6 +75,86 @@ func TestMustAddEventKind_NilFilterStruct_DoesNotPanic(t *testing.T) {
 	}
 }
 
+// TestAddEventKindWithExamples_TypedPayload verifies that a typed struct payload
+// round-trips through AddEventKindWithExamples: the decoded node must carry
+// the expected "name" and "payload" keys.
+func TestAddEventKindWithExamples_TypedPayload(t *testing.T) {
+	type msgPayload struct {
+		Channel string `yaml:"channel"`
+		Text    string `yaml:"text"`
+	}
+
+	m := baseManifest()
+	err := m.AddEventKindWithExamples("msg_received", "A message", eventKindFixture{}, nil,
+		manifest.Example{Name: "incident", Payload: msgPayload{Channel: "#incidents", Text: "alert"}},
+	)
+	if err != nil {
+		t.Fatalf("AddEventKindWithExamples: %v", err)
+	}
+
+	if len(m.EventKinds) != 1 {
+		t.Fatalf("len(EventKinds) = %d, want 1", len(m.EventKinds))
+	}
+	decl := m.EventKinds[0]
+	if len(decl.Examples) != 1 {
+		t.Fatalf("len(Examples) = %d, want 1", len(decl.Examples))
+	}
+
+	var decoded map[string]any
+	if err := decl.Examples[0].Decode(&decoded); err != nil {
+		t.Fatalf("Decode example node: %v", err)
+	}
+	if decoded["name"] != "incident" {
+		t.Errorf("name = %v, want %q", decoded["name"], "incident")
+	}
+	if _, ok := decoded["payload"]; !ok {
+		t.Error("payload key missing from decoded example")
+	}
+}
+
+// TestAddEventKindWithExamples_EmptyExamples verifies that zero examples produces
+// a declaration with nil Examples, matching AddEventKind behaviour.
+func TestAddEventKindWithExamples_EmptyExamples(t *testing.T) {
+	m := baseManifest()
+	if err := m.AddEventKindWithExamples("empty_kind", "no examples", nil, nil); err != nil {
+		t.Fatalf("AddEventKindWithExamples: %v", err)
+	}
+	if len(m.EventKinds) != 1 {
+		t.Fatalf("len(EventKinds) = %d, want 1", len(m.EventKinds))
+	}
+	if m.EventKinds[0].Examples != nil {
+		t.Errorf("Examples = %v, want nil for zero examples", m.EventKinds[0].Examples)
+	}
+}
+
+// TestAddEventKindWithExamples_OrderingPreserved verifies that three examples
+// retain their insertion order in the declaration.
+func TestAddEventKindWithExamples_OrderingPreserved(t *testing.T) {
+	m := baseManifest()
+	examples := []manifest.Example{
+		{Name: "first", Payload: map[string]string{"k": "a"}},
+		{Name: "second", Payload: map[string]string{"k": "b"}},
+		{Name: "third", Payload: map[string]string{"k": "c"}},
+	}
+	if err := m.AddEventKindWithExamples("ordered", "ordering test", nil, nil, examples...); err != nil {
+		t.Fatalf("AddEventKindWithExamples: %v", err)
+	}
+	decl := m.EventKinds[0]
+	if len(decl.Examples) != 3 {
+		t.Fatalf("len(Examples) = %d, want 3", len(decl.Examples))
+	}
+	names := []string{"first", "second", "third"}
+	for i, node := range decl.Examples {
+		var m map[string]any
+		if err := node.Decode(&m); err != nil {
+			t.Fatalf("Decode examples[%d]: %v", i, err)
+		}
+		if m["name"] != names[i] {
+			t.Errorf("examples[%d].name = %v, want %q", i, m["name"], names[i])
+		}
+	}
+}
+
 // TestAddEventKind_DeterministicAcrossMarshals builds two manifests with
 // identical AddEventKind calls and asserts that manifest.Marshal produces
 // byte-equal output for both.

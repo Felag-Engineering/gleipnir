@@ -102,11 +102,20 @@ type audienceReferencesDTO struct {
 	InFlightRuns []inFlightRunDTO `json:"in_flight_runs"`
 }
 
+// pluginEventExampleDTO is a single named example payload for a plugin event kind.
+// Used by the "Test against sample" feature in the policy editor (spec §7.5).
+type pluginEventExampleDTO struct {
+	Name    string      `json:"name"`
+	Payload interface{} `json:"payload"`
+}
+
 // pluginEventKindDTO is a single event kind from an installed plugin instance's
 // manifest — used by the trigger picker to show plugin-sourced trigger options.
 type pluginEventKindDTO struct {
-	Kind        string `json:"kind"`
-	Description string `json:"description"`
+	Kind          string                  `json:"kind"`
+	Description   string                  `json:"description"`
+	BindingSchema interface{}             `json:"binding_schema,omitempty"`
+	Examples      []pluginEventExampleDTO `json:"examples,omitempty"`
 }
 
 // pluginInstanceForAudienceDTO describes one installed plugin instance for use
@@ -167,10 +176,39 @@ func (h *AudienceHandler) ListPluginInstances(w http.ResponseWriter, r *http.Req
 			if ek.Kind == "" {
 				continue
 			}
-			eventKinds = append(eventKinds, pluginEventKindDTO{
+
+			dto := pluginEventKindDTO{
 				Kind:        ek.Kind,
 				Description: ek.Description,
-			})
+			}
+
+			// Decode binding_schema into a plain map so it serializes as JSON.
+			if ek.BindingSchema != nil {
+				var bsMap interface{}
+				if err := ek.BindingSchema.Decode(&bsMap); err == nil {
+					dto.BindingSchema = bsMap
+				} else {
+					slog.Warn("list plugin instances: decode binding_schema", "instance_id", inst.ID, "kind", ek.Kind, "err", err)
+				}
+			}
+
+			// Decode examples; skip malformed entries rather than failing the request.
+			for i, exNode := range ek.Examples {
+				var m map[string]any
+				if err := exNode.Decode(&m); err != nil {
+					slog.Warn("list plugin instances: decode example", "instance_id", inst.ID, "kind", ek.Kind, "index", i, "err", err)
+					continue
+				}
+				name, _ := m["name"].(string)
+				payload, payloadOK := m["payload"]
+				if name == "" || !payloadOK {
+					slog.Warn("list plugin instances: example missing name or payload", "instance_id", inst.ID, "kind", ek.Kind, "index", i)
+					continue
+				}
+				dto.Examples = append(dto.Examples, pluginEventExampleDTO{Name: name, Payload: payload})
+			}
+
+			eventKinds = append(eventKinds, dto)
 		}
 
 		dtos = append(dtos, pluginInstanceForAudienceDTO{
