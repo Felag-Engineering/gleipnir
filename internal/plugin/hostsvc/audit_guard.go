@@ -35,6 +35,13 @@ const EventTypeUnauthorizedRequestID = "unauthorized_request_id"
 // Severity is "warning". Run state is not mutated.
 const EventTypeFeedbackResponseLate = "feedback_response_late"
 
+// EventTypeEventRateLimited is the plugin_audit_events.event_type value
+// written (at most once per minute per instance) when the host-side EmitEvent
+// rate limiter drops excess events from a plugin instance. The payload carries
+// "drop_count" and "window_secs" so operators can assess misbehavior severity.
+// Severity is "warning".
+const EventTypeEventRateLimited = "event_rate_limited"
+
 // AuditQuerier is the narrow DB interface this package needs. A *db.Queries
 // value satisfies it; the narrow interface makes tests cheaper to write.
 type AuditQuerier interface {

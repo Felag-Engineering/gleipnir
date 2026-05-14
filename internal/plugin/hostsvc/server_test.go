@@ -2066,3 +2066,98 @@ func TestUserDirectoryRead_ManifestParseError(t *testing.T) {
 		t.Errorf("expected Internal on manifest parse error, got %v", err)
 	}
 }
+
+// --- tests: EmitEvent rate limiting ---
+
+// TestEmitEvent_RateLimit_Integration fires 250 EmitEvent calls against a Server
+// with a wired TriggerSink. It verifies:
+//
+//  (a) The Prometheus gleipnir_plugin_event_dropped_total counter increments
+//      for each drop (at least 50 of 250 must be dropped since burst is 200).
+//  (b) At most one "event_rate_limited" audit row was written (first-drop flush).
+//  (c) The trigger sink Handle was NOT called for any dropped event.
+//
+// Not parallel because it relies on Prometheus counter state in the shared
+// registry, and we need isolation from the unit tests in event_ratelimit_test.go.
+func TestEmitEvent_RateLimit_Integration(t *testing.T) {
+	const (
+		pluginID   = "plug-rl-e2e"
+		instanceID = "iid-rl-e2e"
+	)
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: instanceID, PluginID: pluginID},
+	}
+	pub := &fakePublisher{}
+	sink := &fakeTriggerSink{}
+
+	binder := &fakeInstanceBinder{id: instanceID, ok: true}
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, pub, nil)
+	srv.SetTriggerSink(sink)
+
+	const total = 250
+	var allowed, dropped int
+	for i := range total {
+		resp, err := srv.EmitEvent(context.Background(), &hostv1.EmitEventRequest{
+			EventId:   fmt.Sprintf("evt-%d", i),
+			EventKind: "test.event",
+		})
+		if err != nil {
+			t.Fatalf("call %d: unexpected error: %v", i, err)
+		}
+		if resp.GetOk() {
+			allowed++
+		} else {
+			dropped++
+		}
+	}
+
+	// (a) At least 50 events must have been dropped (burst cap is 200).
+	if dropped < 50 {
+		t.Errorf("dropped = %d, want >= 50", dropped)
+	}
+
+	// Check the Prometheus counter via the registry.
+	mfs, err := inframetrics.Registry().Gather()
+	if err != nil {
+		t.Fatalf("Registry().Gather(): %v", err)
+	}
+	const wantCounterName = "gleipnir_plugin_event_dropped_total"
+	var counterValue float64
+	for _, mf := range mfs {
+		if mf.GetName() != wantCounterName {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			lbls := make(map[string]string)
+			for _, lp := range m.GetLabel() {
+				lbls[lp.GetName()] = lp.GetValue()
+			}
+			if lbls["plugin"] == pluginID && lbls["instance"] == instanceID && lbls["reason"] == "rate_limit" {
+				counterValue = m.GetCounter().GetValue()
+			}
+		}
+	}
+	if counterValue < float64(dropped) {
+		// Counter is incremented inside the handler; value must be >= dropped.
+		t.Errorf("counter value = %.0f, want >= %d", counterValue, dropped)
+	}
+
+	// (b) At most one "event_rate_limited" audit row (coalesced on first drop).
+	auditRows := q.all()
+	var rateLimitedRows int
+	for _, row := range auditRows {
+		if row.EventType == hostsvc.EventTypeEventRateLimited {
+			rateLimitedRows++
+		}
+	}
+	if rateLimitedRows > 1 {
+		t.Errorf("audit event_rate_limited rows = %d, want <= 1 (coalesced)", rateLimitedRows)
+	}
+
+	// (c) Trigger sink must not have been called for dropped events.
+	sinkEvents := sink.received()
+	if len(sinkEvents) != allowed {
+		t.Errorf("sink received %d events, want %d (= allowed count)", len(sinkEvents), allowed)
+	}
+}

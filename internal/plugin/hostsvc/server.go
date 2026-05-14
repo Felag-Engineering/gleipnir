@@ -116,6 +116,10 @@ type Server struct {
 	// startup gap before Supervisor.StartAll fires).
 	triggerSinkMu sync.RWMutex
 	triggerSink   TriggerSink
+
+	// eventLimiter enforces the per-instance token-bucket rate limit on incoming
+	// plugin events and coalesces "event_rate_limited" audit rows.
+	eventLimiter *eventRateLimiter
 }
 
 // Register implements hostwire.HostServer by registering *Server as the
@@ -177,5 +181,6 @@ func NewServer(
 		publisher:     publisher,
 		metrics:       newPluginMetrics(),
 		channels:      channels,
+		eventLimiter:  newEventRateLimiter(),
 	}
 }
