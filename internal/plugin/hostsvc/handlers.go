@@ -612,16 +612,21 @@ func (s *Server) hasTier2Capability(ctx context.Context, inst db.PluginInstance,
 	return m.HasTier2(capability), nil
 }
 
-// scopeProbe is a minimal struct for scanning the capabilities.tools[].tool
-// field out of a policy YAML blob. We use only what is needed to determine
-// whether the policy references the calling instance via tool grants, avoiding
-// a dependency on internal/policy which would create an import cycle.
+// scopeProbe is a minimal struct for scanning the fields out of a policy YAML
+// blob that determine whether the policy references the calling instance.
+// We extract only what is needed to avoid a dependency on internal/policy,
+// which would create an import cycle.
 type scopeProbe struct {
 	Capabilities struct {
 		Tools []struct {
 			Tool string `yaml:"tool"`
 		} `yaml:"tools"`
 	} `yaml:"capabilities"`
+	Trigger struct {
+		Type      string `yaml:"type"`
+		Source    string `yaml:"source"`
+		EventKind string `yaml:"event_kind"`
+	} `yaml:"trigger"`
 }
 
 // policyGrantsInstance reports whether the policy YAML blob grants at least one
@@ -642,11 +647,11 @@ func policyGrantsInstance(policyYAML, instanceName string) bool {
 	return false
 }
 
-// policyIDsForInstance returns the IDs of policies that reference inst's
-// tools — i.e. policies whose capabilities.tools list contains at least one
-// entry with the prefix "<instanceName>.".
-//
-// Subscribed-trigger matching is deferred (TODO: parent #158).
+// policyIDsForInstance returns the IDs of policies that reference inst via
+// tool grants (capabilities.tools contains an entry with the prefix
+// "<instanceName>.") OR via a subscribed trigger (trigger.type == "subscribed"
+// and trigger.source == instanceName). A policy reachable through both paths
+// appears exactly once.
 func (s *Server) policyIDsForInstance(ctx context.Context, inst db.PluginInstance) ([]string, error) {
 	policies, err := s.q.ListPolicies(ctx)
 	if err != nil {
@@ -661,11 +666,21 @@ func (s *Server) policyIDsForInstance(ctx context.Context, inst db.PluginInstanc
 			// Corrupt policy YAML is not a reason to fail the RPC — skip it.
 			continue
 		}
+
+		matched := false
 		for _, t := range probe.Capabilities.Tools {
 			if strings.HasPrefix(t.Tool, prefix) {
-				ids = append(ids, pol.ID)
+				matched = true
 				break
 			}
+		}
+		if !matched &&
+			probe.Trigger.Type == string(model.TriggerTypeSubscribed) &&
+			probe.Trigger.Source == inst.InstanceName {
+			matched = true
+		}
+		if matched {
+			ids = append(ids, pol.ID)
 		}
 	}
 	return ids, nil

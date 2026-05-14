@@ -1727,6 +1727,18 @@ capabilities:
 `
 }
 
+// policyYAMLWithSubscribedSource returns a minimal policy YAML blob with a
+// subscribed trigger pointing at the given source instance and event kind, and
+// no capabilities.tools entries — used to test subscription-based scoping.
+func policyYAMLWithSubscribedSource(source, eventKind string) string {
+	return `task: do something
+trigger:
+  type: subscribed
+  source: ` + source + `
+  event_kind: ` + eventKind + `
+`
+}
+
 // ── tests: RunHistoryRead ─────────────────────────────────────────────────────
 
 func TestRunHistoryRead_CapabilityDenied(t *testing.T) {
@@ -1824,6 +1836,88 @@ func TestRunHistoryRead_ScopedPolicyMatch(t *testing.T) {
 	}
 	if r.GetFinishedAt() != completedAt {
 		t.Errorf("finished_at = %q, want %q", r.GetFinishedAt(), completedAt)
+	}
+}
+
+func TestRunHistoryRead_SubscribedScoping(t *testing.T) {
+	t.Parallel()
+
+	startedAt := "2024-06-01T10:00:00Z"
+	createdAt := "2024-06-01T09:55:00Z"
+
+	// makeRun produces a single ListRunsByPolicyRow for the given policy ID.
+	makeRun := func(runID, policyID string) db.ListRunsByPolicyRow {
+		return db.ListRunsByPolicyRow{
+			ID:        runID,
+			PolicyID:  policyID,
+			Status:    "complete",
+			StartedAt: startedAt,
+			CreatedAt: createdAt,
+		}
+	}
+
+	cases := []struct {
+		name       string
+		policyYAML string
+		wantRuns   int
+	}{
+		{
+			name:       "tool-grant only",
+			policyYAML: policyYAMLWithTool("myplugin.do_thing"),
+			wantRuns:   1,
+		},
+		{
+			name:       "subscription only",
+			policyYAML: policyYAMLWithSubscribedSource("myplugin", "something_happened"),
+			wantRuns:   1,
+		},
+		{
+			// Policy has both a tool grant and a subscribed trigger — the run
+			// must appear exactly once.
+			name: "both tool-grant and subscription",
+			policyYAML: `task: do something
+trigger:
+  type: subscribed
+  source: myplugin
+  event_kind: something_happened
+capabilities:
+  tools:
+    - tool: myplugin.do_thing
+`,
+			wantRuns: 1,
+		},
+		{
+			name:       "neither — different plugin",
+			policyYAML: policyYAMLWithTool("otherplugin.do_thing"),
+			wantRuns:   0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			policyID := "pol-1"
+			q := &fakeQuerier{
+				instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+				plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("run_history_read")},
+				policies: []db.Policy{
+					{ID: policyID, Yaml: tc.policyYAML},
+				},
+				runsByPolicy: map[string][]db.ListRunsByPolicyRow{
+					policyID: {makeRun("run-1", policyID)},
+				},
+			}
+			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+			resp, err := srv.RunHistoryRead(context.Background(), &hostv1.RunHistoryReadRequest{})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(resp.GetRuns()) != tc.wantRuns {
+				t.Errorf("runs = %d, want %d", len(resp.GetRuns()), tc.wantRuns)
+			}
+		})
 	}
 }
 
