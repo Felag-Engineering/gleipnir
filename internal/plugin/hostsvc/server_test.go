@@ -2072,10 +2072,12 @@ func TestUserDirectoryRead_ManifestParseError(t *testing.T) {
 // TestEmitEvent_RateLimit_Integration fires 250 EmitEvent calls against a Server
 // with a wired TriggerSink. It verifies:
 //
-//  (a) The Prometheus gleipnir_plugin_event_dropped_total counter increments
-//      for each drop (at least 50 of 250 must be dropped since burst is 200).
-//  (b) At most one "event_rate_limited" audit row was written (first-drop flush).
-//  (c) The trigger sink Handle was NOT called for any dropped event.
+//	(a) The Prometheus gleipnir_plugin_event_dropped_total counter increments
+//	    for each drop. With burst=200 and rate=100/sec, firing 500 calls in
+//	    a tight loop yields ~300 drops — well above the 200-drop floor that
+//	    accommodates token refill during the loop's wall-clock duration.
+//	(b) At most one "event_rate_limited" audit row was written (first-drop flush).
+//	(c) The trigger sink Handle was NOT called for any dropped event.
 //
 // Not parallel because it relies on Prometheus counter state in the shared
 // registry, and we need isolation from the unit tests in event_ratelimit_test.go.
@@ -2095,7 +2097,7 @@ func TestEmitEvent_RateLimit_Integration(t *testing.T) {
 	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, pub, nil)
 	srv.SetTriggerSink(sink)
 
-	const total = 250
+	const total = 500
 	var allowed, dropped int
 	for i := range total {
 		resp, err := srv.EmitEvent(context.Background(), &hostv1.EmitEventRequest{
@@ -2112,9 +2114,13 @@ func TestEmitEvent_RateLimit_Integration(t *testing.T) {
 		}
 	}
 
-	// (a) At least 50 events must have been dropped (burst cap is 200).
-	if dropped < 50 {
-		t.Errorf("dropped = %d, want >= 50", dropped)
+	// (a) At least 200 events must have been dropped. With burst=200 the
+	// strict floor would be total-burst=300, but rate.Limiter refills tokens
+	// against the real wall clock during the loop (at 100/sec, a 20ms loop
+	// adds ~2 tokens). 200 is well above that noise floor and still proves
+	// the limiter is actually dropping events.
+	if dropped < 200 {
+		t.Errorf("dropped = %d, want >= 200", dropped)
 	}
 
 	// Check the Prometheus counter via the registry.
