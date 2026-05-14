@@ -15,6 +15,7 @@ const SLACK_INSTANCE: ApiPluginInstanceForAudience = {
   implements_notify: true,
   implements_request: false,
   config_schema: null,
+  version: 0,
   event_kinds: [
     { kind: 'channel_message', description: 'A message posted in a channel' },
     { kind: 'direct_message', description: 'A direct message to the bot' },
@@ -30,6 +31,7 @@ const PAGERDUTY_INSTANCE: ApiPluginInstanceForAudience = {
   implements_notify: true,
   implements_request: true,
   config_schema: null,
+  version: 0,
   event_kinds: [
     { kind: 'incident_triggered', description: 'Incident triggered in PagerDuty' },
   ],

@@ -499,6 +499,14 @@ export interface ApiPluginInstanceForAudience {
   // event_kinds is populated from the plugin's manifest EventKinds declarations.
   // Empty array when the plugin does not declare a TriggerService.
   event_kinds?: ApiPluginEventKind[]
+  // subscription_schema is the manifest-level JSON Schema for the coarse
+  // subscription scope (spec §4.3). Absent when the plugin has no subscription_schema.
+  subscription_schema?: unknown
+  // subscription_scope is the current instance-level scope value.
+  subscription_scope?: Record<string, unknown>
+  // version is the CAS version of the instance row, used for optimistic
+  // concurrency control on subscription scope saves.
+  version: number
 }
 
 // Request body interfaces for audience mutations.

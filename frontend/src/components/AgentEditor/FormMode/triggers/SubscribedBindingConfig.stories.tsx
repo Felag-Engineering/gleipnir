@@ -21,6 +21,7 @@ const SLACK_INSTANCE: ApiPluginInstanceForAudience = {
   implements_notify: true,
   implements_request: false,
   config_schema: null,
+  version: 0,
   event_kinds: [
     {
       kind: 'channel_message',

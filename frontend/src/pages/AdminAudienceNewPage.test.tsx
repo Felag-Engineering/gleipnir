@@ -37,6 +37,7 @@ const PLUGINS: ApiPluginInstanceForAudience[] = [
     implements_notify: true,
     implements_request: false,
     config_schema: null,
+    version: 0,
   },
 ]
 

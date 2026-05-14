@@ -53,24 +53,25 @@ func (q *Queries) CreatePlugin(ctx context.Context, arg CreatePluginParams) (Plu
 }
 
 const createPluginInstance = `-- name: CreatePluginInstance :one
-INSERT INTO plugin_instances (id, plugin_id, instance_name, config_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12)
-RETURNING id, plugin_id, instance_name, config_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at
+INSERT INTO plugin_instances (id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?13)
+RETURNING id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at
 `
 
 type CreatePluginInstanceParams struct {
-	ID                   string  `json:"id"`
-	PluginID             string  `json:"plugin_id"`
-	InstanceName         string  `json:"instance_name"`
-	ConfigJson           string  `json:"config_json"`
-	CredentialsEncrypted *string `json:"credentials_encrypted"`
-	CredentialsExpiresAt *string `json:"credentials_expires_at"`
-	HandshakeVersions    string  `json:"handshake_versions"`
-	HealthState          string  `json:"health_state"`
-	HealthDetail         *string `json:"health_detail"`
-	LastOauthCallbackUrl *string `json:"last_oauth_callback_url"`
-	CreatedAt            string  `json:"created_at"`
-	UpdatedAt            string  `json:"updated_at"`
+	ID                    string  `json:"id"`
+	PluginID              string  `json:"plugin_id"`
+	InstanceName          string  `json:"instance_name"`
+	ConfigJson            string  `json:"config_json"`
+	SubscriptionScopeJson string  `json:"subscription_scope_json"`
+	CredentialsEncrypted  *string `json:"credentials_encrypted"`
+	CredentialsExpiresAt  *string `json:"credentials_expires_at"`
+	HandshakeVersions     string  `json:"handshake_versions"`
+	HealthState           string  `json:"health_state"`
+	HealthDetail          *string `json:"health_detail"`
+	LastOauthCallbackUrl  *string `json:"last_oauth_callback_url"`
+	CreatedAt             string  `json:"created_at"`
+	UpdatedAt             string  `json:"updated_at"`
 }
 
 func (q *Queries) CreatePluginInstance(ctx context.Context, arg CreatePluginInstanceParams) (PluginInstance, error) {
@@ -79,6 +80,7 @@ func (q *Queries) CreatePluginInstance(ctx context.Context, arg CreatePluginInst
 		arg.PluginID,
 		arg.InstanceName,
 		arg.ConfigJson,
+		arg.SubscriptionScopeJson,
 		arg.CredentialsEncrypted,
 		arg.CredentialsExpiresAt,
 		arg.HandshakeVersions,
@@ -94,6 +96,7 @@ func (q *Queries) CreatePluginInstance(ctx context.Context, arg CreatePluginInst
 		&i.PluginID,
 		&i.InstanceName,
 		&i.ConfigJson,
+		&i.SubscriptionScopeJson,
 		&i.CredentialsEncrypted,
 		&i.CredentialsExpiresAt,
 		&i.HandshakeVersions,
@@ -162,7 +165,7 @@ func (q *Queries) GetPluginByName(ctx context.Context, name string) (Plugin, err
 }
 
 const getPluginInstanceByGlobalName = `-- name: GetPluginInstanceByGlobalName :one
-SELECT id, plugin_id, instance_name, config_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances WHERE instance_name = ?1 LIMIT 1
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances WHERE instance_name = ?1 LIMIT 1
 `
 
 // GetPluginInstanceByGlobalName finds the first instance with the given name
@@ -179,6 +182,7 @@ func (q *Queries) GetPluginInstanceByGlobalName(ctx context.Context, instanceNam
 		&i.PluginID,
 		&i.InstanceName,
 		&i.ConfigJson,
+		&i.SubscriptionScopeJson,
 		&i.CredentialsEncrypted,
 		&i.CredentialsExpiresAt,
 		&i.HandshakeVersions,
@@ -193,7 +197,7 @@ func (q *Queries) GetPluginInstanceByGlobalName(ctx context.Context, instanceNam
 }
 
 const getPluginInstanceByID = `-- name: GetPluginInstanceByID :one
-SELECT id, plugin_id, instance_name, config_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances WHERE id = ?1
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances WHERE id = ?1
 `
 
 func (q *Queries) GetPluginInstanceByID(ctx context.Context, id string) (PluginInstance, error) {
@@ -204,6 +208,7 @@ func (q *Queries) GetPluginInstanceByID(ctx context.Context, id string) (PluginI
 		&i.PluginID,
 		&i.InstanceName,
 		&i.ConfigJson,
+		&i.SubscriptionScopeJson,
 		&i.CredentialsEncrypted,
 		&i.CredentialsExpiresAt,
 		&i.HandshakeVersions,
@@ -218,7 +223,7 @@ func (q *Queries) GetPluginInstanceByID(ctx context.Context, id string) (PluginI
 }
 
 const getPluginInstanceByName = `-- name: GetPluginInstanceByName :one
-SELECT id, plugin_id, instance_name, config_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances WHERE plugin_id = ?1 AND instance_name = ?2
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances WHERE plugin_id = ?1 AND instance_name = ?2
 `
 
 type GetPluginInstanceByNameParams struct {
@@ -234,6 +239,7 @@ func (q *Queries) GetPluginInstanceByName(ctx context.Context, arg GetPluginInst
 		&i.PluginID,
 		&i.InstanceName,
 		&i.ConfigJson,
+		&i.SubscriptionScopeJson,
 		&i.CredentialsEncrypted,
 		&i.CredentialsExpiresAt,
 		&i.HandshakeVersions,
@@ -248,7 +254,7 @@ func (q *Queries) GetPluginInstanceByName(ctx context.Context, arg GetPluginInst
 }
 
 const listPluginInstances = `-- name: ListPluginInstances :many
-SELECT id, plugin_id, instance_name, config_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances ORDER BY plugin_id, instance_name
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances ORDER BY plugin_id, instance_name
 `
 
 func (q *Queries) ListPluginInstances(ctx context.Context) ([]PluginInstance, error) {
@@ -265,6 +271,7 @@ func (q *Queries) ListPluginInstances(ctx context.Context) ([]PluginInstance, er
 			&i.PluginID,
 			&i.InstanceName,
 			&i.ConfigJson,
+			&i.SubscriptionScopeJson,
 			&i.CredentialsEncrypted,
 			&i.CredentialsExpiresAt,
 			&i.HandshakeVersions,
@@ -289,7 +296,7 @@ func (q *Queries) ListPluginInstances(ctx context.Context) ([]PluginInstance, er
 }
 
 const listPluginInstancesByHealth = `-- name: ListPluginInstancesByHealth :many
-SELECT id, plugin_id, instance_name, config_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances WHERE health_state = ?1 ORDER BY plugin_id, instance_name
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances WHERE health_state = ?1 ORDER BY plugin_id, instance_name
 `
 
 func (q *Queries) ListPluginInstancesByHealth(ctx context.Context, healthState string) ([]PluginInstance, error) {
@@ -306,6 +313,7 @@ func (q *Queries) ListPluginInstancesByHealth(ctx context.Context, healthState s
 			&i.PluginID,
 			&i.InstanceName,
 			&i.ConfigJson,
+			&i.SubscriptionScopeJson,
 			&i.CredentialsEncrypted,
 			&i.CredentialsExpiresAt,
 			&i.HandshakeVersions,
@@ -330,7 +338,7 @@ func (q *Queries) ListPluginInstancesByHealth(ctx context.Context, healthState s
 }
 
 const listPluginInstancesByPlugin = `-- name: ListPluginInstancesByPlugin :many
-SELECT id, plugin_id, instance_name, config_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances WHERE plugin_id = ?1 ORDER BY instance_name
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances WHERE plugin_id = ?1 ORDER BY instance_name
 `
 
 func (q *Queries) ListPluginInstancesByPlugin(ctx context.Context, pluginID string) ([]PluginInstance, error) {
@@ -347,6 +355,7 @@ func (q *Queries) ListPluginInstancesByPlugin(ctx context.Context, pluginID stri
 			&i.PluginID,
 			&i.InstanceName,
 			&i.ConfigJson,
+			&i.SubscriptionScopeJson,
 			&i.CredentialsEncrypted,
 			&i.CredentialsExpiresAt,
 			&i.HandshakeVersions,
@@ -568,6 +577,33 @@ type UpdatePluginInstanceOAuthCallbackParams struct {
 func (q *Queries) UpdatePluginInstanceOAuthCallback(ctx context.Context, arg UpdatePluginInstanceOAuthCallbackParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updatePluginInstanceOAuthCallback,
 		arg.LastOauthCallbackUrl,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updatePluginInstanceSubscriptionScope = `-- name: UpdatePluginInstanceSubscriptionScope :execrows
+UPDATE plugin_instances SET subscription_scope_json = ?1, version = version + 1, updated_at = ?2
+WHERE id = ?3 AND version = ?4
+`
+
+type UpdatePluginInstanceSubscriptionScopeParams struct {
+	SubscriptionScopeJson string `json:"subscription_scope_json"`
+	UpdatedAt             string `json:"updated_at"`
+	ID                    string `json:"id"`
+	ExpectedVersion       int64  `json:"expected_version"`
+}
+
+// UpdatePluginInstanceSubscriptionScope writes a new subscription_scope_json
+// and bumps the CAS version. Mirrors UpdatePluginInstanceConfig; ADR-038 CAS.
+func (q *Queries) UpdatePluginInstanceSubscriptionScope(ctx context.Context, arg UpdatePluginInstanceSubscriptionScopeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updatePluginInstanceSubscriptionScope,
+		arg.SubscriptionScopeJson,
 		arg.UpdatedAt,
 		arg.ID,
 		arg.ExpectedVersion,

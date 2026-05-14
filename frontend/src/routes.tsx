@@ -15,6 +15,7 @@ import AdminSystemPage from './pages/AdminSystemPage'
 import AdminAudiencesPage from './pages/AdminAudiencesPage'
 import AdminAudienceDetailPage from './pages/AdminAudienceDetailPage'
 import AdminAudienceNewPage from './pages/AdminAudienceNewPage'
+import AdminPluginInstancePage from './pages/AdminPluginInstancePage'
 import NotFoundPage from './pages/NotFoundPage'
 import { RouteErrorFallback } from './components/ErrorBoundary'
 
@@ -50,6 +51,11 @@ const router = createBrowserRouter([
       { path: 'admin/audiences', element: <AdminAudiencesPage />, errorElement: <RouteErrorFallback /> },
       { path: 'admin/audiences/new', element: <AdminAudienceNewPage />, errorElement: <RouteErrorFallback /> },
       { path: 'admin/audiences/:id', element: <AdminAudienceDetailPage />, errorElement: <RouteErrorFallback /> },
+      {
+        path: 'admin/plugins/:id/instances/:iid',
+        element: <AdminPluginInstancePage />,
+        errorElement: <RouteErrorFallback />,
+      },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

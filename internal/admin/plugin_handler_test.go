@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,8 +28,9 @@ type fakePluginQuerier struct {
 	auditEvents []db.PluginAuditEvent
 	// casFailOn is the plugin ID that should return 0 rows for UpdatePluginTrustedPubkey
 	// or UpdatePluginManifest to simulate a CAS conflict.
-	casFailOn    string
-	updatePubkey string // last value written by UpdatePluginTrustedPubkey
+	casFailOn        string
+	updatePubkey     string // last value written by UpdatePluginTrustedPubkey
+	scopeCASFailOnID string // instance ID that should return 0 rows for UpdatePluginInstanceSubscriptionScope
 }
 
 func newFakePluginQuerier() *fakePluginQuerier {
@@ -125,6 +127,21 @@ func (f *fakePluginQuerier) ListPluginAuditEventsByType(_ context.Context, arg d
 		}
 	}
 	return result, nil
+}
+
+func (f *fakePluginQuerier) UpdatePluginInstanceSubscriptionScope(_ context.Context, arg db.UpdatePluginInstanceSubscriptionScopeParams) (int64, error) {
+	if f.scopeCASFailOnID == arg.ID {
+		return 0, nil // simulate CAS conflict
+	}
+	inst, ok := f.instances[arg.ID]
+	if !ok || inst.Version != arg.ExpectedVersion {
+		return 0, nil
+	}
+	inst.SubscriptionScopeJson = arg.SubscriptionScopeJson
+	inst.UpdatedAt = arg.UpdatedAt
+	inst.Version++
+	f.instances[arg.ID] = inst
+	return 1, nil
 }
 
 func (f *fakePluginQuerier) UpdatePluginManifest(_ context.Context, arg db.UpdatePluginManifestParams) (int64, error) {
@@ -449,6 +466,11 @@ const (
 	v2ManifestYAML = "schema_version: v1\nname: test-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\n"
 	// v2 manifest with a newly required config field.
 	v2ManifestWithRequiredField = "schema_version: v1\nname: test-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\nconfig_schema:\n  type: object\n  properties:\n    api_key:\n      type: string\n  required:\n    - api_key\n"
+
+	// triggerManifestWithScope is a minimal TriggerService manifest with subscription_schema.
+	triggerManifestWithScope = "schema_version: v1\nname: trigger-plugin\nversion: 1.0.0\nservices:\n  trigger: v1\nauth:\n  mode: instance_credentials\n  strategy: none\nsubscription_schema:\n  type: object\n  additionalProperties: false\n  required:\n    - channels\n  properties:\n    channels:\n      type: array\n      items:\n        type: string\n"
+	// triggerManifestNoScope is a TriggerService manifest without subscription_schema.
+	triggerManifestNoScope = "schema_version: v1\nname: trigger-plugin\nversion: 1.0.0\nservices:\n  trigger: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n"
 )
 
 func TestPluginHandler_AcceptManifest(t *testing.T) {
@@ -647,6 +669,219 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 		wantActorID := "user-admin-1"
 		if found.ActorUserID == nil || *found.ActorUserID != wantActorID {
 			t.Errorf("actor_user_id = %v, want %q", found.ActorUserID, wantActorID)
+		}
+	})
+}
+
+// ── PutSubscriptionScope tests ────────────────────────────────────────────────
+
+// fakeTriggerRestarter records Restart calls for assertion in tests.
+type fakeTriggerRestarter struct {
+	mu         sync.Mutex
+	restartIDs []string
+}
+
+func (f *fakeTriggerRestarter) Restart(_ context.Context, instanceID string) {
+	f.mu.Lock()
+	f.restartIDs = append(f.restartIDs, instanceID)
+	f.mu.Unlock()
+}
+
+func (f *fakeTriggerRestarter) restarts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.restartIDs))
+	copy(out, f.restartIDs)
+	return out
+}
+
+func TestPluginHandler_PutSubscriptionScope(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+
+	t.Run("200 happy path: valid scope, correct version", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-1",
+			Name:             "trigger-plugin",
+			ManifestSnapshot: triggerManifestWithScope,
+			Version:          0,
+		})
+		q.seed(db.PluginInstance{
+			ID:                    "inst-1",
+			PluginID:              "plugin-1",
+			InstanceName:          "prod",
+			SubscriptionScopeJson: "{}",
+			HealthState:           "healthy",
+			Version:               2,
+			UpdatedAt:             "2026-05-01T00:00:00Z",
+		})
+
+		restarter := &fakeTriggerRestarter{}
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetTriggerRestarter(restarter)
+
+		body := `{"scope":{"channels":["#incidents","#ops"]},"expected_version":2}`
+		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+		req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+		rec := httptest.NewRecorder()
+		h.PutSubscriptionScope(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+		}
+
+		// Querier must have persisted the scope.
+		inst := q.instances["inst-1"]
+		if inst.SubscriptionScopeJson == "{}" {
+			t.Error("subscription_scope_json not updated in querier")
+		}
+
+		// Restarter must have been called.
+		if restarts := restarter.restarts(); len(restarts) != 1 || restarts[0] != "inst-1" {
+			t.Errorf("expected Restart(inst-1), got %v", restarts)
+		}
+	})
+
+	t.Run("400 missing expected_version", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		h := NewPluginHandler(q, nil, fixedClock)
+		restarter := &fakeTriggerRestarter{}
+		h.SetTriggerRestarter(restarter)
+
+		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(`{"scope":{}}`))
+		req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+		rec := httptest.NewRecorder()
+		h.PutSubscriptionScope(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", rec.Code)
+		}
+		if len(restarter.restarts()) != 0 {
+			t.Error("restarter must not be called when request is invalid")
+		}
+	})
+
+	t.Run("400 manifest has no subscription_schema", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-2",
+			Name:             "trigger-plugin",
+			ManifestSnapshot: triggerManifestNoScope,
+			Version:          0,
+		})
+		q.seed(db.PluginInstance{
+			ID:       "inst-2",
+			PluginID: "plugin-2",
+			HealthState: "healthy",
+			Version:  0,
+		})
+
+		restarter := &fakeTriggerRestarter{}
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetTriggerRestarter(restarter)
+
+		body := `{"scope":{"channels":["#a"]},"expected_version":0}`
+		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+		req = withChiParams(req, map[string]string{"id": "plugin-2", "iid": "inst-2"})
+		rec := httptest.NewRecorder()
+		h.PutSubscriptionScope(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", rec.Code)
+		}
+		if len(restarter.restarts()) != 0 {
+			t.Error("restarter must not be called when manifest has no subscription_schema")
+		}
+	})
+
+	t.Run("422 schema validation failure", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-3",
+			Name:             "trigger-plugin",
+			ManifestSnapshot: triggerManifestWithScope,
+			Version:          0,
+		})
+		q.seed(db.PluginInstance{
+			ID:          "inst-3",
+			PluginID:    "plugin-3",
+			HealthState: "healthy",
+			Version:     0,
+		})
+
+		restarter := &fakeTriggerRestarter{}
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetTriggerRestarter(restarter)
+
+		// "channels" is required but absent; additionalProperties:false means extra keys are rejected.
+		body := `{"scope":{"bad_field":"x"},"expected_version":0}`
+		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+		req = withChiParams(req, map[string]string{"id": "plugin-3", "iid": "inst-3"})
+		rec := httptest.NewRecorder()
+		h.PutSubscriptionScope(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("status = %d, want 422", rec.Code)
+		}
+		if len(restarter.restarts()) != 0 {
+			t.Error("restarter must not be called when validation fails")
+		}
+	})
+
+	t.Run("409 CAS conflict (rows == 0)", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-4",
+			Name:             "trigger-plugin",
+			ManifestSnapshot: triggerManifestWithScope,
+			Version:          0,
+		})
+		q.seed(db.PluginInstance{
+			ID:          "inst-4",
+			PluginID:    "plugin-4",
+			HealthState: "healthy",
+			Version:     5, // real version
+		})
+		q.scopeCASFailOnID = "inst-4"
+
+		restarter := &fakeTriggerRestarter{}
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetTriggerRestarter(restarter)
+
+		// Send expected_version=5 but scopeCASFailOnID will force 0 rows.
+		body := `{"scope":{"channels":["#x"]},"expected_version":5}`
+		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+		req = withChiParams(req, map[string]string{"id": "plugin-4", "iid": "inst-4"})
+		rec := httptest.NewRecorder()
+		h.PutSubscriptionScope(rec, req)
+
+		if rec.Code != http.StatusConflict {
+			t.Errorf("status = %d, want 409", rec.Code)
+		}
+		if len(restarter.restarts()) != 0 {
+			t.Error("restarter must not be called on CAS conflict")
+		}
+	})
+
+	t.Run("404 instance does not belong to plugin", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seed(db.PluginInstance{
+			ID:          "inst-5",
+			PluginID:    "plugin-other",
+			HealthState: "healthy",
+			Version:     0,
+		})
+
+		h := NewPluginHandler(q, nil, fixedClock)
+
+		body := `{"scope":{},"expected_version":0}`
+		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+		req = withChiParams(req, map[string]string{"id": "plugin-5", "iid": "inst-5"})
+		rec := httptest.NewRecorder()
+		h.PutSubscriptionScope(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 on mismatched plugin", rec.Code)
 		}
 	})
 }

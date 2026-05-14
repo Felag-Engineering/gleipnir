@@ -453,6 +453,12 @@ func run(cfg config.Config) error {
 		PolicyWebhookHandler: policyWebhookHandler,
 	}
 
+	// Wire the trigger supervisor into the plugin admin handler so that
+	// PutSubscriptionScope can restart the stream after a scope change.
+	if triggerSupervisor != nil && handlers.PluginAdminHandler != nil {
+		handlers.PluginAdminHandler.SetTriggerRestarter(triggerSupervisor)
+	}
+
 	// Phase 3: build the router.
 	r := api.BuildRouter(api.RouterConfig{
 		Handlers: handlers,

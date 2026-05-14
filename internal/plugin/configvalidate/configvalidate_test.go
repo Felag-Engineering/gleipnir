@@ -441,3 +441,105 @@ func TestForTriggerBinding_AcceptsReflectedSchema(t *testing.T) {
 func containsString(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
+
+// ── ForSubscriptionScope ──────────────────────────────────────────────────────
+
+const subscriptionSchemaYAML = `
+type: object
+additionalProperties: false
+required: [channels]
+properties:
+  channels:
+    type: array
+    items:
+      type: string
+`
+
+// subscriptionManifest builds a Manifest with a SubscriptionSchema populated
+// from raw YAML.
+func subscriptionManifest(t *testing.T, schemaYAML string) *sdkmanifest.Manifest {
+	t.Helper()
+	var node yaml.Node
+	if err := yaml.Unmarshal([]byte(schemaYAML), &node); err != nil {
+		t.Fatalf("parse subscription schema YAML: %v", err)
+	}
+	inner := &node
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		inner = node.Content[0]
+	}
+	return &sdkmanifest.Manifest{
+		SchemaVersion:      "v1",
+		Name:               "test-trigger-plugin",
+		Version:            "1.0.0",
+		Services:           sdkmanifest.Services{Trigger: "v1"},
+		Auth:               sdkmanifest.AuthDecl{Mode: "instance_credentials", Strategy: "none"},
+		SubscriptionSchema: inner,
+	}
+}
+
+func TestForSubscriptionScope_ValidInput(t *testing.T) {
+	m := subscriptionManifest(t, subscriptionSchemaYAML)
+	v, err := configvalidate.ForSubscriptionScope(m)
+	if err != nil {
+		t.Fatalf("ForSubscriptionScope: %v", err)
+	}
+
+	errs, err := v.Validate(map[string]any{
+		"channels": []any{"#incidents", "#ops"},
+	})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(errs) != 0 {
+		t.Errorf("expected no errors for valid scope, got %v", errs)
+	}
+}
+
+func TestForSubscriptionScope_MissingRequired(t *testing.T) {
+	m := subscriptionManifest(t, subscriptionSchemaYAML)
+	v, err := configvalidate.ForSubscriptionScope(m)
+	if err != nil {
+		t.Fatalf("ForSubscriptionScope: %v", err)
+	}
+
+	// Missing required "channels".
+	errs, err := v.Validate(map[string]any{})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(errs) == 0 {
+		t.Fatal("expected at least one error for missing required 'channels'")
+	}
+	found := false
+	for _, e := range errs {
+		if e.Field == "channels" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected FieldError with Field='channels', got %v", errs)
+	}
+}
+
+func TestForSubscriptionScope_NilSchema_AcceptsAnything(t *testing.T) {
+	// A manifest with no SubscriptionSchema produces an empty-schema validator
+	// that accepts any value (mirrors ForInstanceConfig with nil ConfigSchema).
+	m := &sdkmanifest.Manifest{
+		SchemaVersion: "v1",
+		Name:          "test",
+		Version:       "1.0.0",
+		Services:      sdkmanifest.Services{Trigger: "v1"},
+		Auth:          sdkmanifest.AuthDecl{Mode: "instance_credentials", Strategy: "none"},
+	}
+	v, err := configvalidate.ForSubscriptionScope(m)
+	if err != nil {
+		t.Fatalf("ForSubscriptionScope with nil schema: %v", err)
+	}
+	errs, err := v.Validate(map[string]any{"anything": "goes"})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(errs) != 0 {
+		t.Errorf("expected no errors with nil schema, got %v", errs)
+	}
+}

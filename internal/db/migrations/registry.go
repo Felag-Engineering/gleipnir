@@ -26,5 +26,6 @@ func All() []Migration {
 		&AddPluginAudiencesAndPendingRequests{},
 		&AddDisableInAppFallback{},
 		&AddSubscribedTriggerType{},
+		&AddSubscriptionScope{},
 	}
 }

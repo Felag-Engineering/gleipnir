@@ -122,15 +122,18 @@ type pluginEventKindDTO struct {
 // in the audience editor and trigger picker. Second consumer: the trigger
 // picker (#219) reads event_kinds to populate plugin-sourced entries.
 type pluginInstanceForAudienceDTO struct {
-	ID                string               `json:"id"`
-	PluginID          string               `json:"plugin_id"`
-	PluginName        string               `json:"plugin_name"`
-	InstanceName      string               `json:"instance_name"`
-	State             string               `json:"state"`
-	ImplementsNotify  bool                 `json:"implements_notify"`
-	ImplementsRequest bool                 `json:"implements_request"`
-	ConfigSchema      interface{}          `json:"config_schema"`
-	EventKinds        []pluginEventKindDTO `json:"event_kinds"`
+	ID                 string               `json:"id"`
+	PluginID           string               `json:"plugin_id"`
+	PluginName         string               `json:"plugin_name"`
+	InstanceName       string               `json:"instance_name"`
+	State              string               `json:"state"`
+	ImplementsNotify   bool                 `json:"implements_notify"`
+	ImplementsRequest  bool                 `json:"implements_request"`
+	ConfigSchema       interface{}          `json:"config_schema"`
+	EventKinds         []pluginEventKindDTO `json:"event_kinds"`
+	SubscriptionSchema interface{}          `json:"subscription_schema"`
+	SubscriptionScope  map[string]any       `json:"subscription_scope"`
+	Version            int64                `json:"version"`
 }
 
 // ListPluginInstances handles GET /api/v1/admin/plugin-instances.
@@ -211,16 +214,42 @@ func (h *AudienceHandler) ListPluginInstances(w http.ResponseWriter, r *http.Req
 			eventKinds = append(eventKinds, dto)
 		}
 
+		// Decode manifest-level subscription_schema (OUTSIDE the Channels guard —
+		// this is a manifest top-level field, not a per-channel field).
+		var subscriptionSchema interface{}
+		if manifest.SubscriptionSchema != nil {
+			var ssMap interface{}
+			if err := manifest.SubscriptionSchema.Decode(&ssMap); err == nil {
+				subscriptionSchema = ssMap
+			} else {
+				slog.Warn("list plugin instances: decode subscription_schema", "instance_id", inst.ID, "err", err)
+			}
+		}
+
+		// Decode current subscription scope from the raw DB row (no extra query).
+		var subscriptionScope map[string]any
+		if inst.SubscriptionScopeJson != "" && inst.SubscriptionScopeJson != "{}" {
+			if err := json.Unmarshal([]byte(inst.SubscriptionScopeJson), &subscriptionScope); err != nil {
+				slog.Warn("list plugin instances: decode subscription_scope_json", "instance_id", inst.ID, "err", err)
+				subscriptionScope = map[string]any{}
+			}
+		} else {
+			subscriptionScope = map[string]any{}
+		}
+
 		dtos = append(dtos, pluginInstanceForAudienceDTO{
-			ID:                inst.ID,
-			PluginID:          inst.PluginID,
-			PluginName:        manifest.Name,
-			InstanceName:      inst.InstanceName,
-			State:             inst.HealthState,
-			ImplementsNotify:  implementsNotify,
-			ImplementsRequest: implementsRequest,
-			ConfigSchema:      configSchema,
-			EventKinds:        eventKinds,
+			ID:                 inst.ID,
+			PluginID:           inst.PluginID,
+			PluginName:         manifest.Name,
+			InstanceName:       inst.InstanceName,
+			State:              inst.HealthState,
+			ImplementsNotify:   implementsNotify,
+			ImplementsRequest:  implementsRequest,
+			ConfigSchema:       configSchema,
+			EventKinds:         eventKinds,
+			SubscriptionSchema: subscriptionSchema,
+			SubscriptionScope:  subscriptionScope,
+			Version:            inst.Version,
 		})
 	}
 

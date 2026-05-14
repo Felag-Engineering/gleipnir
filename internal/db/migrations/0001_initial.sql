@@ -384,6 +384,7 @@ CREATE TABLE plugin_instances (
     plugin_id                TEXT    NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
     instance_name            TEXT    NOT NULL,
     config_json              TEXT    NOT NULL DEFAULT '{}',
+    subscription_scope_json  TEXT    NOT NULL DEFAULT '{}',
     credentials_encrypted    TEXT,
     credentials_expires_at   TEXT,
     handshake_versions       TEXT    NOT NULL DEFAULT '{}',
