@@ -40,6 +40,7 @@ type HandlerBundle struct {
 	AdminHandler         *admin.Handler
 	OpenAICompatHandler  *admin.OpenAICompatHandler
 	PluginAdminHandler   *admin.PluginHandler
+	PluginOAuthHandler   *admin.PluginOAuthHandler
 	AudienceHandler      *AudienceHandler
 	BindingTestHandler   *BindingTestHandler
 	WebhookHandler       *trigger.WebhookHandler
@@ -116,6 +117,14 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	// webhook_secret_encrypted DB column — not in YAML — per ADR-034.
 	r.With(middleware.Throttle(10), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).
 		Post("/api/v1/webhooks/{policyID}", cfg.Handlers.WebhookHandler.Handle)
+
+	// OAuth callback is unprotected at the session layer: the HMAC-signed state
+	// envelope (spec §9.2) provides CSRF + integrity. The browser arrives from
+	// the OAuth provider with no Gleipnir session cookie — requiring auth here
+	// would 401 every callback. Mirrors the ADR-034 webhook pattern.
+	if cfg.Handlers.PluginOAuthHandler != nil {
+		r.Get("/api/v1/admin/plugins/oauth/callback", cfg.Handlers.PluginOAuthHandler.Callback)
+	}
 
 	// Health check is intentionally public (no auth required).
 	// DO NOT move this route inside the authenticated sub-router — doing so
@@ -225,6 +234,9 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				r.Put("/plugins/{id}/instances/{iid}/subscription-scope", cfg.Handlers.PluginAdminHandler.PutSubscriptionScope)
 				r.Post("/plugins/{id}/accept-new-key", cfg.Handlers.PluginAdminHandler.AcceptNewKey)
 				r.Post("/plugins/{id}/accept-manifest", cfg.Handlers.PluginAdminHandler.AcceptManifest)
+			}
+			if cfg.Handlers.PluginOAuthHandler != nil {
+				r.Post("/plugins/{id}/instances/{iid}/oauth/begin", cfg.Handlers.PluginOAuthHandler.Begin)
 			}
 
 			r.Route("/openai-providers", func(r chi.Router) {

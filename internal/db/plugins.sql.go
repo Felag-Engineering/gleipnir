@@ -379,6 +379,57 @@ func (q *Queries) ListPluginInstancesByPlugin(ctx context.Context, pluginID stri
 	return items, nil
 }
 
+const listPluginInstancesWithExpiringCredentials = `-- name: ListPluginInstancesWithExpiringCredentials :many
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances
+WHERE credentials_expires_at IS NOT NULL
+  AND credentials_expires_at <= ?1
+  AND health_state IN ('healthy', 'unhealthy', 'unsigned_permissive')
+ORDER BY credentials_expires_at
+`
+
+// ListPluginInstancesWithExpiringCredentials returns all instances whose
+// credentials expire at or before the given cutoff timestamp. Only instances
+// in an operationally active health state are included; pending_* states
+// cannot accept a refresh dance anyway, and signature_invalid/crashed rows
+// should not trigger refresh work.
+func (q *Queries) ListPluginInstancesWithExpiringCredentials(ctx context.Context, cutoff *string) ([]PluginInstance, error) {
+	rows, err := q.db.QueryContext(ctx, listPluginInstancesWithExpiringCredentials, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PluginInstance
+	for rows.Next() {
+		var i PluginInstance
+		if err := rows.Scan(
+			&i.ID,
+			&i.PluginID,
+			&i.InstanceName,
+			&i.ConfigJson,
+			&i.SubscriptionScopeJson,
+			&i.CredentialsEncrypted,
+			&i.CredentialsExpiresAt,
+			&i.HandshakeVersions,
+			&i.HealthState,
+			&i.HealthDetail,
+			&i.LastOauthCallbackUrl,
+			&i.Version,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPlugins = `-- name: ListPlugins :many
 SELECT id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, version, created_at, updated_at FROM plugins ORDER BY name
 `

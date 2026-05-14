@@ -275,4 +275,3 @@ func TestBindingTest_ApproverForbidden(t *testing.T) {
 		t.Fatalf("approver: status = %d, want 403\nbody: %s", w.Code, w.Body.String())
 	}
 }
-

@@ -95,3 +95,15 @@ WHERE id = :id AND version = :expected_version;
 
 -- name: DeletePluginInstance :execrows
 DELETE FROM plugin_instances WHERE id = :id;
+
+-- ListPluginInstancesWithExpiringCredentials returns all instances whose
+-- credentials expire at or before the given cutoff timestamp. Only instances
+-- in an operationally active health state are included; pending_* states
+-- cannot accept a refresh dance anyway, and signature_invalid/crashed rows
+-- should not trigger refresh work.
+-- name: ListPluginInstancesWithExpiringCredentials :many
+SELECT * FROM plugin_instances
+WHERE credentials_expires_at IS NOT NULL
+  AND credentials_expires_at <= :cutoff
+  AND health_state IN ('healthy', 'unhealthy', 'unsigned_permissive')
+ORDER BY credentials_expires_at;
