@@ -4,6 +4,7 @@
 //   - audience entry config (#206 — this package)
 //   - trigger binding config (#216)
 //   - instance config forms (#241)
+//   - instance subscription scope config (#223)
 //
 // Strictness (additionalProperties: false, required arrays, etc.) is the schema
 // author's responsibility; the validator faithfully reports whatever the schema
@@ -68,6 +69,17 @@ func ForInstanceConfig(m *sdkmanifest.Manifest) (*Validator, error) {
 		return nil, fmt.Errorf("configvalidate: marshal instance config_schema: %w", err)
 	}
 	return cachedCompile("instance", jsonBytes)
+}
+
+// ForSubscriptionScope returns a Validator for the instance-level subscription
+// scope schema declared in m.SubscriptionSchema. A nil SubscriptionSchema
+// produces a validator that accepts any object (empty schema).
+func ForSubscriptionScope(m *sdkmanifest.Manifest) (*Validator, error) {
+	jsonBytes, err := nodeToJSON(m.SubscriptionSchema)
+	if err != nil {
+		return nil, fmt.Errorf("configvalidate: marshal subscription_schema: %w", err)
+	}
+	return cachedCompile("subscription", jsonBytes)
 }
 
 // ForTriggerBinding returns a Validator for the binding schema of the named

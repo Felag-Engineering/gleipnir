@@ -3,6 +3,15 @@ import { apiFetch } from '@/api/fetch'
 import type { ApiAcceptNewKeyResponse } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
+// SetInstanceSubscriptionScopeParams carries the payload for
+// PUT /api/v1/admin/plugins/{id}/instances/{iid}/subscription-scope.
+export interface SetInstanceSubscriptionScopeParams {
+  pluginId: string
+  instanceId: string
+  scope: Record<string, unknown>
+  expectedVersion: number
+}
+
 interface AcceptNewKeyParams {
   pluginId: string
   candidatePubkey: string
@@ -25,6 +34,30 @@ export function useAcceptPluginNewKey() {
       // the transition to healthy.
       void queryClient.invalidateQueries({
         queryKey: ['admin', 'plugins', pluginId],
+      })
+    },
+  })
+}
+
+// useSetInstanceSubscriptionScope submits a new subscription scope for a plugin
+// instance. On success it invalidates the plugin-instances list so the audience
+// editor and trigger picker reflect the updated scope.
+export function useSetInstanceSubscriptionScope() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ pluginId, instanceId, scope, expectedVersion }: SetInstanceSubscriptionScopeParams) =>
+      apiFetch<unknown>(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}/subscription-scope`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ scope, expected_version: expectedVersion }),
+        },
+      ),
+    onSuccess: () => {
+      // Invalidate the list so the Subscriptions tab re-fetches the new
+      // version + scope on next render.
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.admin.pluginInstances,
       })
     },
   })

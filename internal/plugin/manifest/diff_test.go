@@ -308,6 +308,64 @@ func TestDiff_ConfigSchemaNewlyRequiredFields_NilOld(t *testing.T) {
 	}
 }
 
+func TestDiff_MaterialSubscriptionSchemaShapeChanged(t *testing.T) {
+	schemaA := parseNode(t, `{"type":"object","properties":{"channels":{"type":"array","items":{"type":"string"}}}}`)
+	schemaB := parseNode(t, `{"type":"object","properties":{"channels":{"type":"array","items":{"type":"string"}},"topics":{"type":"array","items":{"type":"string"}}}}`)
+
+	old := baseManifest()
+	old.SubscriptionSchema = schemaA
+
+	new := baseManifest()
+	new.SubscriptionSchema = schemaB
+
+	changes := pluginmanifest.Diff(old, new)
+	if !pluginmanifest.HasMaterial(changes) {
+		t.Error("expected material change when subscription_schema gains a property")
+	}
+	for _, c := range changes {
+		if c.Field == "subscription_schema" && c.Material {
+			return
+		}
+	}
+	t.Errorf("expected change for subscription_schema, got %v", changes)
+}
+
+func TestDiff_SubscriptionSchemaIdentical_NoDiff(t *testing.T) {
+	schema := parseNode(t, `{"type":"object","properties":{"channels":{"type":"array"}}}`)
+
+	old := baseManifest()
+	old.SubscriptionSchema = schema
+
+	new := baseManifest()
+	new.SubscriptionSchema = parseNode(t, `{"type":"object","properties":{"channels":{"type":"array"}}}`)
+
+	changes := pluginmanifest.Diff(old, new)
+	for _, c := range changes {
+		if c.Field == "subscription_schema" {
+			t.Errorf("unexpected change for subscription_schema when schemas are identical: %+v", c)
+		}
+	}
+}
+
+func TestDiff_SubscriptionSchemaCosmeticOnly_NoMaterial(t *testing.T) {
+	// description/default changes are stripped → not material.
+	schemaA := parseNode(t, `{"type":"object","properties":{"channels":{"type":"array","description":"old"}}}`)
+	schemaB := parseNode(t, `{"type":"object","properties":{"channels":{"type":"array","description":"new"}}}`)
+
+	old := baseManifest()
+	old.SubscriptionSchema = schemaA
+
+	new := baseManifest()
+	new.SubscriptionSchema = schemaB
+
+	changes := pluginmanifest.Diff(old, new)
+	for _, c := range changes {
+		if c.Field == "subscription_schema" && c.Material {
+			t.Errorf("subscription_schema description-only change must not be material, got %+v", c)
+		}
+	}
+}
+
 func TestDiff_NoChange_Empty(t *testing.T) {
 	m := baseManifest()
 	changes := pluginmanifest.Diff(m, m)

@@ -465,6 +465,210 @@ func TestSupervisor_RecoveryAfterFailures(t *testing.T) {
 	}
 }
 
+// ── Restart tests ─────────────────────────────────────────────────────────────
+
+// captureStartServer records each StartRequest it receives and blocks until
+// its context is cancelled. Each call adds to calls and scopes slices.
+type captureStartServer struct {
+	triggerv1.UnimplementedTriggerServiceServer
+	mu     sync.Mutex
+	calls  int
+	scopes []string
+}
+
+func (s *captureStartServer) Start(req *triggerv1.StartRequest, stream grpc.ServerStreamingServer[triggerv1.StartResponse]) error {
+	s.mu.Lock()
+	s.calls++
+	s.scopes = append(s.scopes, req.WatchScopeJson)
+	s.mu.Unlock()
+	<-stream.Context().Done()
+	return stream.Context().Err()
+}
+
+func (s *captureStartServer) startCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *captureStartServer) capturedScopes() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.scopes))
+	copy(out, s.scopes)
+	return out
+}
+
+// seqQuerier is a Querier that returns successive instances from instSeq on
+// each call to GetPluginInstanceByID. Designed for Restart tests where the
+// second Start call should see an updated SubscriptionScopeJson.
+type seqQuerier struct {
+	mu      sync.Mutex
+	instSeq []db.PluginInstance
+	callIdx int
+}
+
+func (q *seqQuerier) GetSubscribedActivePolicies(_ context.Context) ([]db.Policy, error) {
+	return nil, nil
+}
+func (q *seqQuerier) GetPluginByID(_ context.Context, _ string) (db.Plugin, error) {
+	return db.Plugin{}, nil
+}
+func (q *seqQuerier) GetPluginInstanceByID(_ context.Context, id string) (db.PluginInstance, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.instSeq) == 0 {
+		return db.PluginInstance{ID: id}, nil
+	}
+	inst := q.instSeq[q.callIdx]
+	if q.callIdx < len(q.instSeq)-1 {
+		q.callIdx++
+	}
+	return inst, nil
+}
+func (q *seqQuerier) ListPluginsByStatus(_ context.Context, _ string) ([]db.Plugin, error) {
+	return nil, nil
+}
+func (q *seqQuerier) ListPluginInstancesByPlugin(_ context.Context, _ string) ([]db.PluginInstance, error) {
+	return nil, nil
+}
+
+// newSupervisorWithQuerier builds a Supervisor using the provided querier (allows
+// custom Querier for Restart tests that need updated scope data).
+func newSupervisorWithQuerier(querier plugintrigger.Querier, lookup plugintrigger.InstanceLookup, dispatcher plugintrigger.EventDispatcher) *plugintrigger.Supervisor {
+	return plugintrigger.NewSupervisor(plugintrigger.Config{
+		Querier:             querier,
+		BackoffInitial:      time.Microsecond,
+		BackoffMax:          time.Millisecond,
+		UnhealthyAfter:      3,
+		TestInstanceLookup:  lookup,
+		TestEventDispatcher: dispatcher,
+	})
+}
+
+// TestSupervisor_Restart_OpensNewStreamWithUpdatedScope verifies that Restart:
+//  1. Cancels the existing stream goroutine.
+//  2. Opens a new stream goroutine.
+//  3. The second StartRequest carries the updated SubscriptionScopeJson from
+//     the DB (not the original scope).
+func TestSupervisor_Restart_OpensNewStreamWithUpdatedScope(t *testing.T) {
+	// Not parallel: mutates a shared server's state per call ordering.
+	srv := &captureStartServer{}
+	client, stop := startFakeTriggerServer(t, srv)
+	defer stop()
+
+	const firstScope = `{"channels":["#general"]}`
+	const secondScope = `{"channels":["#incidents","#ops"]}`
+
+	querier := &seqQuerier{
+		instSeq: []db.PluginInstance{
+			{ID: "inst-1", SubscriptionScopeJson: firstScope},
+			{ID: "inst-1", SubscriptionScopeJson: secondScope},
+		},
+	}
+
+	lookup := &fakeInstanceLookup{client: client, pluginID: "test-plugin"}
+	dispatcher := &fakeEventDispatcher{}
+	sup := newSupervisorWithQuerier(querier, lookup, dispatcher)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sup.Start(ctx, "inst-1")
+
+	// Wait for first Start call.
+	waitFor(t, 5*time.Second, func() bool { return srv.startCount() >= 1 })
+
+	sup.Restart(ctx, "inst-1")
+
+	// Wait for second Start call.
+	waitFor(t, 5*time.Second, func() bool { return srv.startCount() >= 2 })
+
+	scopes := srv.capturedScopes()
+	if len(scopes) < 2 {
+		t.Fatalf("expected at least 2 Start calls, got %d", len(scopes))
+	}
+	if scopes[0] != firstScope {
+		t.Errorf("first StartRequest.WatchScopeJson = %q, want %q", scopes[0], firstScope)
+	}
+	if scopes[1] != secondScope {
+		t.Errorf("second StartRequest.WatchScopeJson = %q, want %q", scopes[1], secondScope)
+	}
+}
+
+// TestSupervisor_Restart_NotSupervised_IsNoOp verifies that Restart on an
+// instance that was never started is a no-op and does not panic.
+func TestSupervisor_Restart_NotSupervised_IsNoOp(t *testing.T) {
+	t.Parallel()
+	srv := &captureStartServer{}
+	client, stop := startFakeTriggerServer(t, srv)
+	defer stop()
+
+	lookup := &fakeInstanceLookup{client: client, pluginID: "test-plugin"}
+	sup := newSupervisor(lookup, &fakeEventDispatcher{}, nil)
+
+	ctx := context.Background()
+	// Should not panic and should not open a stream.
+	sup.Restart(ctx, "never-started")
+
+	if srv.startCount() != 0 {
+		t.Errorf("expected 0 Start calls after Restart of unsupervised instance, got %d", srv.startCount())
+	}
+}
+
+// TestSupervisor_StopRacesRestart_NoDeadlockNoDoubleStart verifies the
+// lock-discipline contract: a concurrent Stop arriving during Restart must not
+// cause a deadlock and must result in at most 1 new stream goroutine (Stop wins
+// the race so the new Start either doesn't happen or is immediately cancelled).
+func TestSupervisor_StopRacesRestart_NoDeadlockNoDoubleStart(t *testing.T) {
+	srv := &captureStartServer{}
+	client, stop := startFakeTriggerServer(t, srv)
+	defer stop()
+
+	lookup := &fakeInstanceLookup{client: client, pluginID: "test-plugin"}
+	sup := newSupervisor(lookup, &fakeEventDispatcher{}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Start the instance so there is something to race against.
+	sup.Start(ctx, "inst-race")
+	waitFor(t, 5*time.Second, func() bool { return srv.startCount() >= 1 })
+
+	// Fire Stop and Restart concurrently.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		sup.Stop("inst-race")
+	}()
+	go func() {
+		defer wg.Done()
+		sup.Restart(ctx, "inst-race")
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// No deadlock.
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock: Stop/Restart did not complete within 5s")
+	}
+
+	// After the race, the supervisor must not have > 2 Start calls total
+	// (original + at most 1 from Restart). The important assertion is no
+	// deadlock and no panic — exact call count depends on scheduler ordering.
+	count := srv.startCount()
+	if count > 2 {
+		t.Errorf("Start called %d times, want ≤ 2 (original + at most 1 from Restart)", count)
+	}
+}
+
 // TestSupervisor_StopAll verifies that StopAll waits for all goroutines to exit
 // without leaking any goroutines.
 func TestSupervisor_StopAll(t *testing.T) {

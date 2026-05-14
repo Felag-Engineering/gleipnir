@@ -253,6 +253,36 @@ func (s *Supervisor) Stop(instanceID string) {
 	<-doneCh
 }
 
+// Restart stops the existing stream goroutine for instanceID (if any) and
+// starts a fresh one. The new goroutine re-fetches SubscriptionScopeJson from
+// the DB, so scope changes take effect immediately.
+//
+// If instanceID is not currently supervised, Restart is a no-op.
+//
+// Lock discipline: the lookup-delete-cancel is done under a single s.mu
+// acquisition so a concurrent Stop arriving mid-Restart sees either the old
+// map entry (and wins the cancel race) or no entry at all (no-ops). In
+// either case at most one goroutine is alive for the instance after Restart
+// returns.
+func (s *Supervisor) Restart(ctx context.Context, instanceID string) {
+	s.mu.Lock()
+	oldCancel, ok := s.instances[instanceID]
+	oldDone := s.done[instanceID]
+	if ok {
+		delete(s.instances, instanceID)
+		delete(s.done, instanceID)
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		return // nothing to restart; not currently supervised
+	}
+	oldCancel()
+	<-oldDone // await OLD goroutine OUTSIDE the lock
+
+	s.Start(ctx, instanceID)
+}
+
 // StopAll cancels every running stream goroutine and waits for all of them to
 // exit. Intended to be called from the host shutdown path.
 func (s *Supervisor) StopAll() {
@@ -332,8 +362,10 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 
 		// Use a long-lived stream — no deadline. Health pings cover liveness
 		// (spec §13.6). The parent ctx cancellation propagates on shutdown.
+		// SubscriptionScopeJson (not ConfigJson) is the coarse scope — the two
+		// fields were conflated in the original stub (#223 fixes that).
 		stream, err := triggerClient.Start(ctx, &triggerv1.StartRequest{
-			WatchScopeJson: dbInst.ConfigJson,
+			WatchScopeJson: dbInst.SubscriptionScopeJson,
 		})
 		if err != nil {
 			log.WarnContext(ctx, "trigger supervisor: failed to open trigger stream; will retry",

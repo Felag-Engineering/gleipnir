@@ -18,6 +18,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
+	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
@@ -60,13 +61,24 @@ type PluginQuerier interface {
 	ListPluginAuditEventsByType(ctx context.Context, arg db.ListPluginAuditEventsByTypeParams) ([]db.PluginAuditEvent, error)
 	// Plugin manifest write (used by AcceptManifest to commit the candidate snapshot).
 	UpdatePluginManifest(ctx context.Context, arg db.UpdatePluginManifestParams) (int64, error)
+	// Instance subscription scope write (used by PutSubscriptionScope).
+	UpdatePluginInstanceSubscriptionScope(ctx context.Context, arg db.UpdatePluginInstanceSubscriptionScopeParams) (int64, error)
+}
+
+// TriggerRestarter is the narrow interface used to restart a plugin's trigger
+// stream after its subscription scope changes. Implemented by
+// *plugintrigger.Supervisor; kept narrow here so the admin package does not
+// import the trigger package directly.
+type TriggerRestarter interface {
+	Restart(ctx context.Context, instanceID string)
 }
 
 // PluginHandler handles plugin-related admin endpoints.
 type PluginHandler struct {
-	q         PluginQuerier
-	publisher event.Publisher
-	clock     func() time.Time
+	q                PluginQuerier
+	publisher        event.Publisher
+	clock            func() time.Time
+	triggerRestarter TriggerRestarter // may be nil if plugins are disabled
 }
 
 // NewPluginHandler returns a PluginHandler backed by the given querier, event
@@ -79,17 +91,25 @@ func NewPluginHandler(q PluginQuerier, publisher event.Publisher, clock func() t
 	return &PluginHandler{q: q, publisher: publisher, clock: clock}
 }
 
-// instanceResponse is the JSON shape returned by GetInstance.
+// SetTriggerRestarter wires the TriggerRestarter (typically *plugintrigger.Supervisor)
+// into the handler after it is constructed. Called from main.go after the supervisor
+// is created so construction order does not create an import cycle.
+func (h *PluginHandler) SetTriggerRestarter(r TriggerRestarter) {
+	h.triggerRestarter = r
+}
+
+// instanceResponse is the JSON shape returned by GetInstance and PutSubscriptionScope.
 // Credentials and other write-only fields are intentionally absent — mirrors
 // the ADR-039 read-restraint pattern for encrypted auth headers.
 type instanceResponse struct {
-	ID           string  `json:"id"`
-	PluginID     string  `json:"plugin_id"`
-	InstanceName string  `json:"instance_name"`
-	State        string  `json:"state"`
-	Detail       *string `json:"detail"`
-	Version      int64   `json:"version"`
-	UpdatedAt    string  `json:"updated_at"`
+	ID                   string  `json:"id"`
+	PluginID             string  `json:"plugin_id"`
+	InstanceName         string  `json:"instance_name"`
+	State                string  `json:"state"`
+	Detail               *string `json:"detail"`
+	Version              int64   `json:"version"`
+	UpdatedAt            string  `json:"updated_at"`
+	SubscriptionScopeJson string  `json:"subscription_scope_json"`
 }
 
 // GetInstance handles GET /api/v1/admin/plugins/{id}/instances/{iid}.
@@ -117,13 +137,14 @@ func (h *PluginHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
-		ID:           row.ID,
-		PluginID:     row.PluginID,
-		InstanceName: row.InstanceName,
-		State:        row.HealthState,
-		Detail:       row.HealthDetail,
-		Version:      row.Version,
-		UpdatedAt:    row.UpdatedAt,
+		ID:                   row.ID,
+		PluginID:             row.PluginID,
+		InstanceName:         row.InstanceName,
+		State:                row.HealthState,
+		Detail:               row.HealthDetail,
+		Version:              row.Version,
+		UpdatedAt:            row.UpdatedAt,
+		SubscriptionScopeJson: row.SubscriptionScopeJson,
 	})
 }
 
@@ -405,6 +426,148 @@ func decodeCandidateManifest(payload map[string]any) ([]byte, sdkmanifest.Manife
 		}
 	}
 	return candidateBytes, m, nil
+}
+
+// putSubscriptionScopeRequest is the JSON body for
+// PUT /api/v1/admin/plugins/{id}/instances/{iid}/subscription-scope.
+type putSubscriptionScopeRequest struct {
+	Scope           map[string]any `json:"scope"`
+	ExpectedVersion *int64         `json:"expected_version,omitempty"`
+}
+
+// PutSubscriptionScope handles PUT /api/v1/admin/plugins/{id}/instances/{iid}/subscription-scope.
+// Validates the scope against the manifest's subscription_schema (if declared),
+// persists the new scope (CAS-guarded via ADR-038), and restarts the trigger
+// stream so the plugin re-establishes substrate connections with the new scope.
+func (h *PluginHandler) PutSubscriptionScope(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+	instanceID := chi.URLParam(r, "iid")
+
+	var req putSubscriptionScopeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.ExpectedVersion == nil {
+		httputil.WriteError(w, http.StatusBadRequest, "expected_version is required", "")
+		return
+	}
+
+	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
+		return
+	}
+	// Return 404 (not 403) on a plugin/instance mismatch to avoid leaking
+	// instance existence across plugins.
+	if inst.PluginID != pluginID {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return
+	}
+
+	plugin, err := h.q.GetPluginByID(ctx, inst.PluginID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		return
+	}
+
+	var m sdkmanifest.Manifest
+	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
+		return
+	}
+	if m.SubscriptionSchema == nil {
+		httputil.WriteError(w, http.StatusBadRequest, "plugin declares no subscription_schema", "")
+		return
+	}
+
+	validator, err := configvalidate.ForSubscriptionScope(&m)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to build scope validator", err.Error())
+		return
+	}
+	scope := req.Scope
+	if scope == nil {
+		scope = map[string]any{}
+	}
+	fieldErrs, err := validator.Validate(scope)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "validation error", err.Error())
+		return
+	}
+	if len(fieldErrs) > 0 {
+		issues := make([]httputil.ErrorIssue, 0, len(fieldErrs))
+		for _, fe := range fieldErrs {
+			issues = append(issues, httputil.ErrorIssue{Field: fe.Field, Message: fe.Message})
+		}
+		httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", issues)
+		return
+	}
+
+	scopeBytes, err := json.Marshal(scope)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to marshal scope", err.Error())
+		return
+	}
+
+	nowStr := h.clock().UTC().Format(time.RFC3339)
+	rows, err := h.q.UpdatePluginInstanceSubscriptionScope(ctx, db.UpdatePluginInstanceSubscriptionScopeParams{
+		SubscriptionScopeJson: string(scopeBytes),
+		UpdatedAt:             nowStr,
+		ID:                    instanceID,
+		ExpectedVersion:       *req.ExpectedVersion,
+	})
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update subscription scope", "")
+		return
+	}
+	if rows == 0 {
+		httputil.WriteError(w, http.StatusConflict, "version conflict", "")
+		return
+	}
+
+	// Restart the trigger stream so the plugin picks up the new scope. This is
+	// fire-and-continue — the supervisor's Start call is fast; stream opening
+	// is asynchronous inside the goroutine.
+	if h.triggerRestarter != nil {
+		h.triggerRestarter.Restart(ctx, instanceID)
+	}
+
+	// Re-fetch to return the updated row.
+	updated, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if err != nil {
+		// The write succeeded; fall back to a synthesised response.
+		httputil.WriteJSON(w, http.StatusOK, instanceResponse{
+			ID:                   instanceID,
+			PluginID:             pluginID,
+			InstanceName:         inst.InstanceName,
+			State:                inst.HealthState,
+			Detail:               inst.HealthDetail,
+			Version:              inst.Version + 1,
+			UpdatedAt:            nowStr,
+			SubscriptionScopeJson: string(scopeBytes),
+		})
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
+		ID:                   updated.ID,
+		PluginID:             updated.PluginID,
+		InstanceName:         updated.InstanceName,
+		State:                updated.HealthState,
+		Detail:               updated.HealthDetail,
+		Version:              updated.Version,
+		UpdatedAt:            updated.UpdatedAt,
+		SubscriptionScopeJson: updated.SubscriptionScopeJson,
+	})
 }
 
 // unblockInstances transitions every instance of pluginID currently in fromState

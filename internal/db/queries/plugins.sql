@@ -34,8 +34,8 @@ UPDATE plugins SET status = :status, version = version + 1, updated_at = :update
 WHERE id = :id AND version = :expected_version;
 
 -- name: CreatePluginInstance :one
-INSERT INTO plugin_instances (id, plugin_id, instance_name, config_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at)
-VALUES (:id, :plugin_id, :instance_name, :config_json, :credentials_encrypted, :credentials_expires_at, :handshake_versions, :health_state, :health_detail, :last_oauth_callback_url, 0, :created_at, :updated_at)
+INSERT INTO plugin_instances (id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at)
+VALUES (:id, :plugin_id, :instance_name, :config_json, :subscription_scope_json, :credentials_encrypted, :credentials_expires_at, :handshake_versions, :health_state, :health_detail, :last_oauth_callback_url, 0, :created_at, :updated_at)
 RETURNING *;
 
 -- name: GetPluginInstanceByID :one
@@ -65,6 +65,12 @@ SELECT * FROM plugin_instances WHERE health_state = :health_state ORDER BY plugi
 -- UpdatePluginInstanceConfig writes a new config_json and bumps CAS version.
 -- name: UpdatePluginInstanceConfig :execrows
 UPDATE plugin_instances SET config_json = :config_json, version = version + 1, updated_at = :updated_at
+WHERE id = :id AND version = :expected_version;
+
+-- UpdatePluginInstanceSubscriptionScope writes a new subscription_scope_json
+-- and bumps the CAS version. Mirrors UpdatePluginInstanceConfig; ADR-038 CAS.
+-- name: UpdatePluginInstanceSubscriptionScope :execrows
+UPDATE plugin_instances SET subscription_scope_json = :subscription_scope_json, version = version + 1, updated_at = :updated_at
 WHERE id = :id AND version = :expected_version;
 
 -- UpdatePluginInstanceCredentials writes new encrypted credentials. Used by

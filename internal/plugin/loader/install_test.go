@@ -451,14 +451,15 @@ func seedPluginInstanceNamed(t *testing.T, q *db.Queries, pluginID, instanceID, 
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := q.CreatePluginInstance(context.Background(), db.CreatePluginInstanceParams{
-		ID:                instanceID,
-		PluginID:          pluginID,
-		InstanceName:      instanceName,
-		ConfigJson:        "{}",
-		HandshakeVersions: "{}",
-		HealthState:       string(state),
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		ID:                    instanceID,
+		PluginID:              pluginID,
+		InstanceName:          instanceName,
+		ConfigJson:            "{}",
+		SubscriptionScopeJson: "{}",
+		HandshakeVersions:     "{}",
+		HealthState:           string(state),
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	})
 	if err != nil {
 		t.Fatalf("CreatePluginInstance: %v", err)

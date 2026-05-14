@@ -28,6 +28,7 @@ const PLUGIN_NOTIFY_ONLY: ApiPluginInstanceForAudience = {
   implements_notify: true,
   implements_request: false,
   config_schema: null,
+  version: 0,
 }
 
 const PLUGIN_REQUEST_ONLY: ApiPluginInstanceForAudience = {
@@ -38,6 +39,7 @@ const PLUGIN_REQUEST_ONLY: ApiPluginInstanceForAudience = {
   implements_notify: false,
   implements_request: true,
   config_schema: null,
+  version: 0,
 }
 
 const ALL_PLUGINS = [PLUGIN_NOTIFY_ONLY, PLUGIN_REQUEST_ONLY]

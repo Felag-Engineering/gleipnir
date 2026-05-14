@@ -71,6 +71,13 @@ type Manifest struct {
 	// Must be an object schema. nil means no config needed.
 	ConfigSchema *yaml.Node `yaml:"config_schema,omitempty"`
 
+	// SubscriptionSchema is a JSON Schema (stored as a raw YAML node) for the
+	// instance-level coarse subscription scope sent in TriggerService.Start as
+	// watch_scope_json. Distinct from per-event-kind BindingSchema: scope is
+	// configured once on the instance to limit chattiness (spec §4.3, §11.3).
+	// nil means no scope config is needed; the plugin receives an empty scope.
+	SubscriptionSchema *yaml.Node `yaml:"subscription_schema,omitempty"`
+
 	// SBOM is an optional relative path to a CycloneDX SBOM JSON file bundled
 	// with the plugin tarball. Gleipnir surfaces it as a badge in the admin UI
 	// but does not parse it.
@@ -84,20 +91,21 @@ func (m *Manifest) UnmarshalYAML(value *yaml.Node) error {
 	// manifestAlias mirrors Manifest with *yaml.Node fields replaced by
 	// yaml.Node (value type) so yaml.v3 populates them correctly.
 	type manifestAlias struct {
-		SchemaVersion string          `yaml:"schema_version"`
-		Name          string          `yaml:"name"`
-		Version       string          `yaml:"version"`
-		Description   string          `yaml:"description,omitempty"`
-		Author        string          `yaml:"author,omitempty"`
-		License       string          `yaml:"license,omitempty"`
-		Services      Services        `yaml:"services"`
-		Auth          AuthDecl        `yaml:"auth"`
-		Tools         []ToolDecl      `yaml:"tools,omitempty"`
-		EventKinds    []EventKindDecl `yaml:"event_kinds,omitempty"`
-		Channels      []ChannelDecl   `yaml:"channels,omitempty"`
-		Tier2         []string        `yaml:"tier2_capabilities,omitempty"`
-		ConfigSchema  yaml.Node       `yaml:"config_schema,omitempty"`
-		SBOM          string          `yaml:"sbom,omitempty"`
+		SchemaVersion      string          `yaml:"schema_version"`
+		Name               string          `yaml:"name"`
+		Version            string          `yaml:"version"`
+		Description        string          `yaml:"description,omitempty"`
+		Author             string          `yaml:"author,omitempty"`
+		License            string          `yaml:"license,omitempty"`
+		Services           Services        `yaml:"services"`
+		Auth               AuthDecl        `yaml:"auth"`
+		Tools              []ToolDecl      `yaml:"tools,omitempty"`
+		EventKinds         []EventKindDecl `yaml:"event_kinds,omitempty"`
+		Channels           []ChannelDecl   `yaml:"channels,omitempty"`
+		Tier2              []string        `yaml:"tier2_capabilities,omitempty"`
+		ConfigSchema       yaml.Node       `yaml:"config_schema,omitempty"`
+		SubscriptionSchema yaml.Node       `yaml:"subscription_schema,omitempty"`
+		SBOM               string          `yaml:"sbom,omitempty"`
 	}
 	var alias manifestAlias
 	if err := value.Decode(&alias); err != nil {
@@ -119,6 +127,10 @@ func (m *Manifest) UnmarshalYAML(value *yaml.Node) error {
 	if alias.ConfigSchema.Kind != 0 {
 		node := alias.ConfigSchema
 		m.ConfigSchema = &node
+	}
+	if alias.SubscriptionSchema.Kind != 0 {
+		node := alias.SubscriptionSchema
+		m.SubscriptionSchema = &node
 	}
 	return nil
 }

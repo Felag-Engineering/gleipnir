@@ -27,6 +27,7 @@ const SLACK_INSTANCE: ApiPluginInstanceForAudience = {
     { kind: 'channel_message', description: 'A message posted in a channel' },
     { kind: 'direct_message', description: 'A direct message to the bot' },
   ],
+  version: 0,
 };
 
 const SLACK_WITH_EXAMPLES: ApiPluginInstanceForAudience = {

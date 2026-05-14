@@ -35,6 +35,7 @@ npm run build-storybook  # static Storybook build
 /admin/audiences    → audience list (admin|operator: + new; auditor: read-only)
 /admin/audiences/new → create audience (admin|operator)
 /admin/audiences/:id → audience detail/editor (admin|operator: edit; auditor: read-only)
+/admin/plugins/:id/instances/:iid → plugin instance editor (admin); Subscriptions tab edits coarse watch scope (#223), Config and Credentials tabs are placeholders for #241/#242
 *                   → 404 not found
 ```
 

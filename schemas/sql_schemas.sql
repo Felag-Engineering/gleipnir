@@ -411,6 +411,7 @@ CREATE TABLE plugin_instances (
     plugin_id                TEXT    NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
     instance_name            TEXT    NOT NULL,                                           -- e.g. "slack-prod"
     config_json              TEXT    NOT NULL DEFAULT '{}',                              -- per-instance config validated against plugin's config_schema
+    subscription_scope_json  TEXT    NOT NULL DEFAULT '{}',                              -- coarse subscription scope sent to plugin via TriggerService.Start (spec §4.3, #223)
     -- Encrypted credentials (AES-256-GCM, key from GLEIPNIR_ENCRYPTION_KEY).
     -- Reuses the existing crypto helpers; mirrors ADR-039 / ADR-034 write-only
     -- pattern: GET endpoints expose presence only, never decrypted values.

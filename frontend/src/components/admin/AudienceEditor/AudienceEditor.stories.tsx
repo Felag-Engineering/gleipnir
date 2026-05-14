@@ -19,6 +19,7 @@ const PLUGIN_SLACK: ApiPluginInstanceForAudience = {
   state: 'healthy',
   implements_notify: true,
   implements_request: false,
+  version: 0,
   config_schema: {
     type: 'object',
     properties: {
@@ -36,6 +37,7 @@ const PLUGIN_NTFY: ApiPluginInstanceForAudience = {
   state: 'unsigned_permissive',
   implements_notify: true,
   implements_request: false,
+  version: 0,
   config_schema: {
     type: 'object',
     properties: {
@@ -52,6 +54,7 @@ const PLUGIN_PAGERDUTY: ApiPluginInstanceForAudience = {
   state: 'healthy',
   implements_notify: false,
   implements_request: true,
+  version: 0,
   config_schema: null,
 }
 

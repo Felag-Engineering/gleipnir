@@ -36,6 +36,7 @@ func Diff(old, new *sdkmanifest.Manifest) []Change {
 	changes = append(changes, diffAuth(old, new)...)
 	changes = append(changes, diffTools(old, new)...)
 	changes = append(changes, diffConfigSchema(old, new)...)
+	changes = append(changes, diffSubscriptionSchema(old, new)...)
 	changes = append(changes, diffEventKinds(old, new)...)
 
 	// Cosmetic fields: description, version, author, license, sbom.
@@ -304,6 +305,19 @@ func diffConfigSchema(old, new *sdkmanifest.Manifest) []Change {
 		return nil
 	}
 	return []Change{{Field: "config_schema", Material: true, From: string(oldBytes), To: string(newBytes)}}
+}
+
+// diffSubscriptionSchema compares the manifest-level subscription_schema after
+// stripping cosmetic keys. Schema shape changes are material because stored
+// scope JSON might no longer validate against the new schema (same reasoning as
+// config_schema).
+func diffSubscriptionSchema(old, new *sdkmanifest.Manifest) []Change {
+	oldBytes := canonicalSchemaBytes(old.SubscriptionSchema)
+	newBytes := canonicalSchemaBytes(new.SubscriptionSchema)
+	if bytes.Equal(oldBytes, newBytes) {
+		return nil
+	}
+	return []Change{{Field: "subscription_schema", Material: true, From: string(oldBytes), To: string(newBytes)}}
 }
 
 // diffEventKinds compares event_kinds keyed by Kind. Added/removed kinds are
