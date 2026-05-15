@@ -96,8 +96,11 @@ func (s *Server) GetInstanceConfig(ctx context.Context, _ *hostv1.GetInstanceCon
 
 // GetCredentials returns decrypted credentials. No in-process cache — the DB
 // is hit on every call per spec §9.4 (pull-only). No audit event; credential
-// mutation events are written by the admin credential lifecycle code (out of
-// scope for this issue).
+// mutation events are written by the admin credential lifecycle code.
+//
+// Returns the encrypted-column plaintext as-is; plugins decode the JSON
+// against their declared Strategy (see plugin-sdk/credentials for typed
+// helpers — #226).
 func (s *Server) GetCredentials(ctx context.Context, _ *hostv1.GetCredentialsRequest) (*hostv1.GetCredentialsResponse, error) {
 	inst, err := s.resolveInstance(ctx)
 	if err != nil {

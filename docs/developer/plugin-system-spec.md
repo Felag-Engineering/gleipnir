@@ -306,12 +306,14 @@ Every host→plugin service RPC injects a host-generated `call_id` into gRPC met
 
 ### 9.1 Strategies in v1
 
-- `none`
-- `static_api_key`
-- `header_set` (generalized from ADR-039)
-- `basic_auth` (legacy enterprise stepping stone)
-- `oauth2_authcode`
-- `oauth2_clientcred`
+- `none` — no credentials required; `credentials_encrypted` may be absent.
+- `static_api_key` — one secret header. Storage shape: `{header_name, scheme?, api_key}` inside `credentials_encrypted`. See `internal/plugin/oauth.StaticAPIKeyCreds`.
+- `header_set` — one or more named HTTP headers (generalises ADR-039). Storage shape: `{headers: [{name, value}]}`. Reserved headers (`Mcp-Session-Id`, `Content-Type`, `Accept`, `Content-Length`, `Host`) are rejected at write time. See `internal/plugin/oauth.HeaderSetCreds`.
+- `basic_auth` — HTTP Basic Auth. Storage shape: `{username, password}`. See `internal/plugin/oauth.BasicAuthCreds`.
+- `oauth2_authcode` — host-side authorization code flow (see §9.2).
+- `oauth2_clientcred` — host-side client credentials flow (see §9.2).
+
+**`basic_auth` is a stepping stone.** It exists to integrate with legacy enterprise services that have not migrated to OAuth or API-key headers. New plugin authors should prefer `static_api_key` or `oauth2_authcode`. Gleipnir does not redact the basic-auth password from outbound HTTP request logs — operators are responsible for minimising log retention when basic_auth is in use.
 
 Out of v1: mTLS, SAML, Kerberos, custom strategies. Flagged as v2 candidates when concrete enterprise demand surfaces.
 
