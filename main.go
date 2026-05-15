@@ -449,7 +449,8 @@ func run(cfg config.Config) error {
 		enc := func(p string) (string, error) { return admin.Encrypt(encryptionKey, p) }
 		dec := func(c string) (string, error) { return admin.Decrypt(encryptionKey, c) }
 		oauthStore := pluginoauth.NewDBStore(store.Queries(), enc, dec, store.Queries(), time.Now)
-		oauthNonces := pluginoauth.NewMemoryNonceStore(time.Now)
+		oauthNonces := pluginoauth.NewDBNonceStore(store.Queries(), time.Now)
+		go oauthNonces.StartJanitor(ctx, time.Minute)
 		oauthHMACKey := pluginoauth.DeriveHMACKey(encryptionKey)
 		// getPublicURL is a zero-arg closure used by the manager and scanner so
 		// they do not need a context parameter. Context is elided because public_url

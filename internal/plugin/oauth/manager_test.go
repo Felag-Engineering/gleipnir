@@ -164,11 +164,15 @@ func TestHandleCallback_NonceSingleUse(t *testing.T) {
 	hmacKey := fixedKey()
 	mgr := NewManager(store, nonces, clock, hmacKey, func() string { return "https://gleipnir.example.com" })
 
+	ctx := context.Background()
+
 	env, nonce, err := NewStateEnvelope("inst-1", "https://app.example.com/settings", clock)
 	if err != nil {
 		t.Fatalf("NewStateEnvelope: %v", err)
 	}
-	nonces.Record(nonce)
+	if err := nonces.Record(ctx, nonce, "inst-1"); err != nil {
+		t.Fatalf("Record nonce: %v", err)
+	}
 
 	encoded, err := EncodeState(env, hmacKey)
 	if err != nil {
@@ -178,10 +182,14 @@ func TestHandleCallback_NonceSingleUse(t *testing.T) {
 	// Attempt HandleCallback — it will fail at code exchange (no real provider),
 	// but the nonce is consumed beforehand.
 	// We use a deliberate bad code; error from Exchange is expected.
-	_, _ = mgr.HandleCallback(context.Background(), encoded, "bad-code")
+	_, _ = mgr.HandleCallback(ctx, encoded, "bad-code")
 
 	// Nonce must be gone now.
-	if nonces.Consume(nonce) {
+	ok, err := nonces.Consume(ctx, nonce)
+	if err != nil {
+		t.Fatalf("second Consume: %v", err)
+	}
+	if ok {
 		t.Error("nonce was consumed by HandleCallback but second Consume returned true (nonce re-use)")
 	}
 }
@@ -200,7 +208,7 @@ func TestHandleCallback_ExpiredState_Error(t *testing.T) {
 	mgr := NewManager(store, nonces, func() time.Time { return baseTime }, hmacKey, func() string { return "https://gleipnir.example.com" })
 
 	env, nonce, _ := NewStateEnvelope("inst-1", "https://app.example.com", clock)
-	nonces.Record(nonce)
+	_ = nonces.Record(context.Background(), nonce, "inst-1")
 	encoded, _ := EncodeState(env, hmacKey)
 
 	// Now try to handle callback long after the envelope expired.
@@ -210,5 +218,50 @@ func TestHandleCallback_ExpiredState_Error(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "expired") {
 		t.Errorf("expected expiry error, got: %v", err)
+	}
+}
+
+func TestHandleCallback_NonceSingleUse_WithDBStore(t *testing.T) {
+	baseTime := time.Unix(1000000, 0)
+	clock := func() time.Time { return baseTime }
+
+	creds := testCreds("oauth2_authcode")
+	creds.AuthorizationURL = "https://provider.example.com/oauth/authorize"
+	q := buildInstanceWithCreds(t, creds)
+
+	oauthStore := NewDBStore(q, noopEncrypt, noopDecrypt, q, clock)
+	dbNonces := NewDBNonceStore(newFakeNonceQuerier(), clock)
+	hmacKey := fixedKey()
+	mgr := NewManager(oauthStore, dbNonces, clock, hmacKey, func() string { return "https://gleipnir.example.com" })
+
+	ctx := context.Background()
+
+	// Begin flow: nonce is recorded in the DB-backed store.
+	authorizeURL, err := mgr.BeginAuthcode(ctx, "inst-1", "https://app.example.com/settings")
+	if err != nil {
+		t.Fatalf("BeginAuthcode: %v", err)
+	}
+
+	// Extract the state parameter from the authorize URL.
+	u, err := url.Parse(authorizeURL)
+	if err != nil {
+		t.Fatalf("parse authorize URL: %v", err)
+	}
+	rawState := u.Query().Get("state")
+	if rawState == "" {
+		t.Fatal("expected non-empty state in authorize URL")
+	}
+
+	// First callback attempt: nonce consumed (exchange fails with bad code, but
+	// nonce consumption happens before the exchange).
+	_, _ = mgr.HandleCallback(ctx, rawState, "bad-code")
+
+	// Second callback with the same state must be rejected as a replay.
+	_, replayErr := mgr.HandleCallback(ctx, rawState, "bad-code")
+	if replayErr == nil {
+		t.Fatal("expected error on replay, got nil")
+	}
+	if replayErr != ErrNonceUsed {
+		t.Errorf("expected ErrNonceUsed on replay, got: %v", replayErr)
 	}
 }

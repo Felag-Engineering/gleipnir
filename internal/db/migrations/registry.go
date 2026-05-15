@@ -27,5 +27,6 @@ func All() []Migration {
 		&AddDisableInAppFallback{},
 		&AddSubscribedTriggerType{},
 		&AddSubscriptionScope{},
+		&AddPluginOAuthNonces{},
 	}
 }

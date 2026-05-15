@@ -1,9 +1,11 @@
 package oauth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +15,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/hkdf"
+
+	"github.com/felag-engineering/gleipnir/internal/db"
 )
 
 // ErrStateExpired is returned when an OAuth callback state envelope has passed
@@ -127,6 +131,89 @@ func generateNonce() (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
+// NonceStore is the single-use nonce registry used by the OAuth callback flow.
+// Record inserts a nonce; Consume atomically deletes it and returns whether it
+// was present and unexpired. Both MemoryNonceStore and DBNonceStore satisfy
+// this interface.
+type NonceStore interface {
+	Record(ctx context.Context, nonce, instanceID string) error
+	Consume(ctx context.Context, nonce string) (bool, error)
+}
+
+// NonceQuerier is the narrow DB interface required by DBNonceStore. It is
+// satisfied by *db.Queries (and *db.InstrumentedQueries via embedding).
+type NonceQuerier interface {
+	InsertPluginOAuthNonce(ctx context.Context, arg db.InsertPluginOAuthNonceParams) error
+	ConsumePluginOAuthNonce(ctx context.Context, nonce string) (db.ConsumePluginOAuthNonceRow, error)
+	PrunePluginOAuthNonces(ctx context.Context, cutoff string) error
+}
+
+// DBNonceStore persists nonces in the plugin_oauth_nonces table. Each nonce is
+// single-use: ConsumePluginOAuthNonce deletes the row atomically so replayed
+// callbacks are rejected. A StartJanitor goroutine prunes expired rows.
+type DBNonceStore struct {
+	q     NonceQuerier
+	clock func() time.Time
+}
+
+// NewDBNonceStore constructs a DBNonceStore. Pass time.Now as clock in
+// production; tests may substitute a fake clock.
+func NewDBNonceStore(q NonceQuerier, clock func() time.Time) *DBNonceStore {
+	return &DBNonceStore{q: q, clock: clock}
+}
+
+// Record inserts nonce into the DB with a 10-minute TTL.
+func (s *DBNonceStore) Record(ctx context.Context, nonce, instanceID string) error {
+	now := s.clock().UTC()
+	return s.q.InsertPluginOAuthNonce(ctx, db.InsertPluginOAuthNonceParams{
+		Nonce:      nonce,
+		InstanceID: instanceID,
+		ExpiresAt:  now.Add(stateHMACExpiry).Format(time.RFC3339Nano),
+		CreatedAt:  now.Format(time.RFC3339Nano),
+	})
+}
+
+// Consume atomically deletes the nonce and returns true when it was present
+// and not yet expired. Returns (false, nil) for an unknown or already-consumed
+// nonce.
+func (s *DBNonceStore) Consume(ctx context.Context, nonce string) (bool, error) {
+	row, err := s.q.ConsumePluginOAuthNonce(ctx, nonce)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("oauth nonce: consume: %w", err)
+	}
+	exp, parseErr := time.Parse(time.RFC3339Nano, row.ExpiresAt)
+	if parseErr != nil {
+		return false, fmt.Errorf("oauth nonce: parse expires_at: %w", parseErr)
+	}
+	// DecodeState fires ErrStateExpired before Consume is reached (manager.go),
+	// so an expired row here is a clock-skew safety net, not the primary path.
+	return s.clock().UTC().Before(exp), nil
+}
+
+// Prune deletes all nonces whose expiry is before now.
+func (s *DBNonceStore) Prune(ctx context.Context) error {
+	cutoff := s.clock().UTC().Format(time.RFC3339Nano)
+	return s.q.PrunePluginOAuthNonces(ctx, cutoff)
+}
+
+// StartJanitor runs Prune on the given interval until ctx is cancelled.
+// Call as a goroutine: go store.StartJanitor(ctx, time.Minute).
+func (s *DBNonceStore) StartJanitor(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = s.Prune(ctx)
+		}
+	}
+}
+
 // MemoryNonceStore is an in-memory nonce registry. Each nonce is single-use:
 // Consume removes it so replayed callbacks are rejected. A background janitor
 // prunes expired entries every minute so the map does not grow without bound
@@ -153,23 +240,24 @@ func NewMemoryNonceStore(clock func() time.Time) *MemoryNonceStore {
 }
 
 // Record registers nonce with a 10-minute TTL.
-func (s *MemoryNonceStore) Record(nonce string) {
+func (s *MemoryNonceStore) Record(_ context.Context, nonce, _ string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries[nonce] = s.clock().Add(stateHMACExpiry)
+	return nil
 }
 
 // Consume atomically checks and removes nonce. Returns true if the nonce was
 // present and not yet expired; false otherwise (expired or already consumed).
-func (s *MemoryNonceStore) Consume(nonce string) bool {
+func (s *MemoryNonceStore) Consume(_ context.Context, nonce string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	exp, ok := s.entries[nonce]
 	if !ok {
-		return false
+		return false, nil
 	}
 	delete(s.entries, nonce)
-	return s.clock().Before(exp)
+	return s.clock().Before(exp), nil
 }
 
 // janitor prunes expired entries every minute. Runs forever; expected to be
@@ -190,8 +278,8 @@ func (s *MemoryNonceStore) janitor() {
 }
 
 // NewStateEnvelope constructs a StateEnvelope with a fresh nonce and 10-minute
-// expiry. The returned nonce should be passed to MemoryNonceStore.Record before
-// the authorize URL is returned to the caller.
+// expiry. The returned nonce should be passed to NonceStore.Record before the
+// authorize URL is returned to the caller.
 func NewStateEnvelope(instanceID, returnURL string, clock func() time.Time) (StateEnvelope, string, error) {
 	nonce, err := generateNonce()
 	if err != nil {

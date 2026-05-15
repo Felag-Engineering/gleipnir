@@ -467,6 +467,14 @@ CREATE TABLE plugin_pending_requests (
 CREATE INDEX idx_plugin_pending_requests_run_status      ON plugin_pending_requests(run_id, status);
 CREATE INDEX idx_plugin_pending_requests_status_expires  ON plugin_pending_requests(status, expires_at);
 
+CREATE TABLE plugin_oauth_nonces (
+    nonce       TEXT PRIMARY KEY,           -- base64url-encoded 32B random
+    instance_id TEXT NOT NULL,              -- not FK-enforced: instance may have been uninstalled mid-flow
+    expires_at  TEXT NOT NULL,              -- RFC3339Nano UTC; pruned by janitor
+    created_at  TEXT NOT NULL
+) STRICT;
+CREATE INDEX plugin_oauth_nonces_expires_at_idx ON plugin_oauth_nonces (expires_at);
+
 -- ---------------------------------------------------------------------------
 -- Seed migration version
 -- ---------------------------------------------------------------------------

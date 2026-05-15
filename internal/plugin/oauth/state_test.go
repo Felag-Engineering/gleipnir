@@ -1,8 +1,13 @@
 package oauth
 
 import (
+	"context"
+	"database/sql"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/felag-engineering/gleipnir/internal/db"
 )
 
 // Tests that swap the clock variable must NOT run with t.Parallel().
@@ -125,12 +130,23 @@ func TestMemoryNonceStore_SingleUse(t *testing.T) {
 	// Do not use NewMemoryNonceStore here — it starts a goroutine that
 	// interferes with test cleanup.
 
-	store.Record("nonce-abc")
+	ctx := context.Background()
+	if err := store.Record(ctx, "nonce-abc", "inst-1"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
 
-	if !store.Consume("nonce-abc") {
+	ok, err := store.Consume(ctx, "nonce-abc")
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if !ok {
 		t.Fatal("expected first Consume to return true")
 	}
-	if store.Consume("nonce-abc") {
+	ok, err = store.Consume(ctx, "nonce-abc")
+	if err != nil {
+		t.Fatalf("second Consume: %v", err)
+	}
+	if ok {
 		t.Fatal("expected second Consume to return false (already consumed)")
 	}
 }
@@ -144,7 +160,11 @@ func TestMemoryNonceStore_UnknownNonce(t *testing.T) {
 		clock:   clock,
 	}
 
-	if store.Consume("unknown-nonce") {
+	ok, err := store.Consume(context.Background(), "unknown-nonce")
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if ok {
 		t.Fatal("expected Consume of unknown nonce to return false")
 	}
 }
@@ -157,12 +177,19 @@ func TestMemoryNonceStore_ExpiredNonce(t *testing.T) {
 		entries: make(map[string]time.Time),
 		clock:   clock,
 	}
-	store.Record("old-nonce")
+	ctx := context.Background()
+	if err := store.Record(ctx, "old-nonce", "inst-1"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
 
 	// Advance past expiry before consuming.
 	store.clock = func() time.Time { return baseTime.Add(stateHMACExpiry + time.Second) }
 
-	if store.Consume("old-nonce") {
+	ok, err := store.Consume(ctx, "old-nonce")
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if ok {
 		t.Fatal("expected expired nonce Consume to return false")
 	}
 }
@@ -194,5 +221,156 @@ func TestDeriveHMACKey_DifferentFromInput(t *testing.T) {
 	}
 	if allZero {
 		t.Error("derived key is all zeros; HKDF may not be working")
+	}
+}
+
+// --- fakeNonceQuerier ---
+
+// fakeNonceQuerier is a map-backed in-memory implementation of NonceQuerier
+// for use in DBNonceStore unit tests.
+type fakeNonceQuerier struct {
+	mu   sync.Mutex
+	rows map[string]db.ConsumePluginOAuthNonceRow // nonce → (instance_id, expires_at)
+}
+
+func newFakeNonceQuerier() *fakeNonceQuerier {
+	return &fakeNonceQuerier{rows: make(map[string]db.ConsumePluginOAuthNonceRow)}
+}
+
+func (f *fakeNonceQuerier) InsertPluginOAuthNonce(_ context.Context, arg db.InsertPluginOAuthNonceParams) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rows[arg.Nonce] = db.ConsumePluginOAuthNonceRow{InstanceID: arg.InstanceID, ExpiresAt: arg.ExpiresAt}
+	return nil
+}
+
+func (f *fakeNonceQuerier) ConsumePluginOAuthNonce(_ context.Context, nonce string) (db.ConsumePluginOAuthNonceRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	row, ok := f.rows[nonce]
+	if !ok {
+		return db.ConsumePluginOAuthNonceRow{}, sql.ErrNoRows
+	}
+	delete(f.rows, nonce)
+	return row, nil
+}
+
+func (f *fakeNonceQuerier) PrunePluginOAuthNonces(_ context.Context, cutoff string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for nonce, row := range f.rows {
+		if row.ExpiresAt < cutoff {
+			delete(f.rows, nonce)
+		}
+	}
+	return nil
+}
+
+// --- DBNonceStore tests ---
+
+func TestDBNonceStore_RecordAndConsume_Once(t *testing.T) {
+	baseTime := time.Unix(1000000, 0)
+	clock := func() time.Time { return baseTime }
+
+	store := NewDBNonceStore(newFakeNonceQuerier(), clock)
+	ctx := context.Background()
+
+	if err := store.Record(ctx, "nonce-1", "inst-1"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	ok, err := store.Consume(ctx, "nonce-1")
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected first Consume to return true")
+	}
+
+	// Second consume must return false (nonce already deleted).
+	ok, err = store.Consume(ctx, "nonce-1")
+	if err != nil {
+		t.Fatalf("second Consume: %v", err)
+	}
+	if ok {
+		t.Fatal("expected second Consume to return false (already consumed)")
+	}
+}
+
+func TestDBNonceStore_Consume_Unknown_ReturnsFalse(t *testing.T) {
+	baseTime := time.Unix(1000000, 0)
+	clock := func() time.Time { return baseTime }
+
+	store := NewDBNonceStore(newFakeNonceQuerier(), clock)
+	ctx := context.Background()
+
+	ok, err := store.Consume(ctx, "no-such-nonce")
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if ok {
+		t.Fatal("expected false for unknown nonce")
+	}
+}
+
+func TestDBNonceStore_Consume_Expired_ReturnsFalse(t *testing.T) {
+	baseTime := time.Unix(1000000, 0)
+	clock := func() time.Time { return baseTime }
+
+	store := NewDBNonceStore(newFakeNonceQuerier(), clock)
+	ctx := context.Background()
+
+	if err := store.Record(ctx, "old-nonce", "inst-1"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// Advance clock past expiry.
+	store.clock = func() time.Time { return baseTime.Add(stateHMACExpiry + time.Second) }
+
+	ok, err := store.Consume(ctx, "old-nonce")
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if ok {
+		t.Fatal("expected false for expired nonce")
+	}
+}
+
+func TestDBNonceStore_Prune_RemovesExpiredOnly(t *testing.T) {
+	baseTime := time.Unix(1000000, 0)
+
+	q := newFakeNonceQuerier()
+
+	// Insert one fresh and one already-expired nonce directly into the fake querier.
+	expiredAt := baseTime.Add(-time.Second).UTC().Format(time.RFC3339Nano)
+	freshAt := baseTime.Add(stateHMACExpiry).UTC().Format(time.RFC3339Nano)
+	_ = q.InsertPluginOAuthNonce(context.Background(), db.InsertPluginOAuthNonceParams{
+		Nonce: "expired-nonce", InstanceID: "inst-1", ExpiresAt: expiredAt, CreatedAt: expiredAt,
+	})
+	_ = q.InsertPluginOAuthNonce(context.Background(), db.InsertPluginOAuthNonceParams{
+		Nonce: "fresh-nonce", InstanceID: "inst-1", ExpiresAt: freshAt, CreatedAt: freshAt,
+	})
+
+	store := NewDBNonceStore(q, func() time.Time { return baseTime })
+	if err := store.Prune(context.Background()); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+
+	// Expired nonce must be gone.
+	ok, err := store.Consume(context.Background(), "expired-nonce")
+	if err != nil {
+		t.Fatalf("Consume expired: %v", err)
+	}
+	if ok {
+		t.Error("expected expired nonce to be pruned")
+	}
+
+	// Fresh nonce must still be present.
+	ok, err = store.Consume(context.Background(), "fresh-nonce")
+	if err != nil {
+		t.Fatalf("Consume fresh: %v", err)
+	}
+	if !ok {
+		t.Error("expected fresh nonce to survive prune")
 	}
 }

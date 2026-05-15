@@ -125,6 +125,13 @@ type PluginInstance struct {
 	UpdatedAt             string  `json:"updated_at"`
 }
 
+type PluginOauthNonce struct {
+	Nonce      string `json:"nonce"`
+	InstanceID string `json:"instance_id"`
+	ExpiresAt  string `json:"expires_at"`
+	CreatedAt  string `json:"created_at"`
+}
+
 type PluginPendingRequest struct {
 	ID               string  `json:"id"`
 	PluginInstanceID string  `json:"plugin_instance_id"`

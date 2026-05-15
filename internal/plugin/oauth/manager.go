@@ -17,7 +17,7 @@ import (
 //   - BeginClientcred: performs the client credentials exchange synchronously
 type Manager struct {
 	store        *DBStore
-	nonces       *MemoryNonceStore
+	nonces       NonceStore
 	clock        func() time.Time
 	hmacKey      []byte
 	getPublicURL func() string
@@ -25,7 +25,7 @@ type Manager struct {
 
 // NewManager constructs a Manager. getPublicURL is called at begin-time (not
 // construction time) so it can reflect late-bound system settings.
-func NewManager(store *DBStore, nonces *MemoryNonceStore, clock func() time.Time, hmacKey []byte, getPublicURL func() string) *Manager {
+func NewManager(store *DBStore, nonces NonceStore, clock func() time.Time, hmacKey []byte, getPublicURL func() string) *Manager {
 	if clock == nil {
 		clock = time.Now
 	}
@@ -83,7 +83,9 @@ func (m *Manager) BeginAuthcode(ctx context.Context, instanceID, returnURL strin
 		return "", fmt.Errorf("oauth begin: encode state: %w", err)
 	}
 
-	m.nonces.Record(nonce)
+	if err := m.nonces.Record(ctx, nonce, instanceID); err != nil {
+		return "", fmt.Errorf("oauth begin: record nonce: %w", err)
+	}
 
 	// Record the callback URL on the instance row so operators can detect when
 	// public_url changes mid-dance (provider would reject the mismatched redirect).
@@ -112,7 +114,11 @@ func (m *Manager) HandleCallback(ctx context.Context, rawState, code string) (st
 		return "", fmt.Errorf("oauth callback: %w", err)
 	}
 
-	if !m.nonces.Consume(env.Nonce) {
+	ok, err := m.nonces.Consume(ctx, env.Nonce)
+	if err != nil {
+		return "", fmt.Errorf("oauth callback: consume nonce: %w", err)
+	}
+	if !ok {
 		return "", ErrNonceUsed
 	}
 
