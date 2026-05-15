@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { Activity, Bot, ChevronUp, Cpu, History, Megaphone, Settings2, Users, Wrench } from 'lucide-react'
+import { Activity, Bot, ChevronUp, Cpu, History, Megaphone, Puzzle, Settings2, Users, Wrench } from 'lucide-react'
 import { Logo } from '@/components/Logo/Logo'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useSSE } from '@/hooks/useSSE'
@@ -20,6 +20,7 @@ const ADMIN_NAV_ITEMS = [
   { label: 'Users', to: '/admin/users', Icon: Users },
   { label: 'Models', to: '/admin/models', Icon: Cpu },
   { label: 'Audiences', to: '/admin/audiences', Icon: Megaphone },
+  { label: 'Plugins', to: '/admin/plugins', Icon: Puzzle },
   { label: 'System', to: '/admin/system', Icon: Settings2 },
 ]
 
@@ -41,6 +42,7 @@ export default function Layout() {
       : to === '/admin/users' ? location.pathname.startsWith('/admin/users')
       : to === '/admin/models' ? location.pathname.startsWith('/admin/models')
       : to === '/admin/audiences' ? location.pathname.startsWith('/admin/audiences')
+      : to === '/admin/plugins' ? location.pathname.startsWith('/admin/plugins')
       : to === '/admin/system' ? location.pathname.startsWith('/admin/system')
       : location.pathname === to
     const base = active ? `${styles.navLink} ${styles.navLinkActive}` : styles.navLink

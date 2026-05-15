@@ -110,6 +110,16 @@ func TestIsLegalTransition(t *testing.T) {
 		{model.PluginHealthStateCircuitBroken, model.PluginHealthStateCrashed},
 		{model.PluginHealthStateCrashed, model.PluginHealthStateHealthy},
 		{model.PluginHealthStateCrashed, model.PluginHealthStateUnhealthy},
+		// #230: pending_reauthorize is reachable from operationally active states.
+		{model.PluginHealthStateHealthy, model.PluginHealthStatePendingReauthorize},
+		{model.PluginHealthStateUnsignedPermissive, model.PluginHealthStatePendingReauthorize},
+		{model.PluginHealthStateCrashed, model.PluginHealthStatePendingReauthorize},
+		{model.PluginHealthStateCircuitBroken, model.PluginHealthStatePendingReauthorize},
+		// #230: pending_reauthorize exits toward healthy and real-failure states.
+		{model.PluginHealthStatePendingReauthorize, model.PluginHealthStateHealthy},
+		{model.PluginHealthStatePendingReauthorize, model.PluginHealthStateUnhealthy},
+		{model.PluginHealthStatePendingReauthorize, model.PluginHealthStateCrashed},
+		{model.PluginHealthStatePendingReauthorize, model.PluginHealthStateCircuitBroken},
 	}
 	for _, pair := range legal {
 		if !IsLegalTransition(pair[0], pair[1]) {
@@ -122,11 +132,27 @@ func TestIsLegalTransition(t *testing.T) {
 		{model.PluginHealthStateVerificationError, model.PluginHealthStateHealthy},
 		// signature_invalid and verification_error are terminal — no outgoing edges.
 		{model.PluginHealthStateCrashed, model.PluginHealthStateSignatureInvalid},
+		// #230: pending_reauthorize cannot jump to other pending_* states or
+		// to terminal states.
+		{model.PluginHealthStatePendingReauthorize, model.PluginHealthStateSignatureInvalid},
+		{model.PluginHealthStatePendingReauthorize, model.PluginHealthStateVerificationError},
+		{model.PluginHealthStatePendingReauthorize, model.PluginHealthStatePendingKeyApproval},
+		// pending_key_approval cannot jump to pending_reauthorize (#230).
+		{model.PluginHealthStatePendingKeyApproval, model.PluginHealthStatePendingReauthorize},
 	}
 	for _, pair := range illegal {
 		if IsLegalTransition(pair[0], pair[1]) {
 			t.Errorf("IsLegalTransition(%s, %s) = true, want false", pair[0], pair[1])
 		}
+	}
+}
+
+func TestPendingReauthorizeSeverity(t *testing.T) {
+	// pending_reauthorize must sit at rank 2 (operator-action-pending tier),
+	// matching the other pending_* states.
+	got := Severity(model.PluginHealthStatePendingReauthorize)
+	if got != 2 {
+		t.Errorf("Severity(pending_reauthorize) = %d, want 2", got)
 	}
 }
 

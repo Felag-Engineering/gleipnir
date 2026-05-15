@@ -107,3 +107,14 @@ WHERE credentials_expires_at IS NOT NULL
   AND credentials_expires_at <= :cutoff
   AND health_state IN ('healthy', 'unhealthy', 'unsigned_permissive')
 ORDER BY credentials_expires_at;
+
+-- ListPluginInstancesForCallbackRescan returns all instances that have a
+-- recorded last_oauth_callback_url and are in a health state eligible for
+-- the public_url-change rescan (#230). unhealthy is excluded so an active
+-- availability problem is not masked; crashed and circuit_broken are included
+-- because they may eventually re-authorize once the operator fixes the URL.
+-- name: ListPluginInstancesForCallbackRescan :many
+SELECT * FROM plugin_instances
+WHERE last_oauth_callback_url IS NOT NULL
+  AND health_state IN ('healthy', 'unsigned_permissive', 'crashed', 'circuit_broken')
+ORDER BY plugin_id, instance_name;

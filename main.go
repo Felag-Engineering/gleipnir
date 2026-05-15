@@ -470,6 +470,18 @@ func run(cfg config.Config) error {
 		oauthScanner.Start(ctx)
 		pluginOAuthHandler = admin.NewPluginOAuthHandler(store.Queries(), oauthMgr)
 		pluginCredHandler = admin.NewPluginCredentialsHandler(store.Queries(), oauthStore)
+
+		// Wire the callback-URL rescan so it fires whenever an admin changes
+		// public_url (#230). Constructed after adminHandler so we can set the hook
+		// directly without adminHandler importing internal/plugin/oauth.
+		callbackRescanner := pluginoauth.NewCallbackRescanner(
+			store.Queries(), store.Queries(), getPublicURL, time.Now,
+		)
+		adminHandler.OnPublicURLChanged = func(hookCtx context.Context, _, _ string) {
+			if _, err := callbackRescanner.Scan(hookCtx); err != nil {
+				slog.ErrorContext(hookCtx, "callback rescan failed after public_url change", "err", err)
+			}
+		}
 	}
 
 	handlers := api.HandlerBundle{

@@ -367,7 +367,7 @@ export interface ArcadeAuthorizeWaitRequest {
 }
 
 // Matches internal/model/plugin_health.go → PluginHealthState.
-// Ten states across three severity tiers:
+// Eleven states across three severity tiers:
 //   Green  — healthy
 //   Yellow — degraded but operational
 //   Red    — non-functional
@@ -377,6 +377,7 @@ export type PluginHealthState =
   | 'pending_key_approval'
   | 'pending_manifest_approval'
   | 'pending_config_migration'
+  | 'pending_reauthorize'
   | 'unhealthy'
   | 'circuit_broken'
   | 'verification_error'
@@ -516,6 +517,11 @@ export interface ApiPluginInstanceForAudience {
   // Absent when the instance has no detail. Used together with auth_strategy
   // and state to gate the Re-authorize banner (#228).
   health_detail?: string
+  // last_oauth_callback_url is the OAuth callback URL recorded the last time
+  // this instance completed an OAuth flow. Absent when never authorized. Used
+  // by the admin/plugins page to show which URL needs updating after a
+  // public_url change (#230).
+  last_oauth_callback_url?: string
 }
 
 // Request body interfaces for audience mutations.

@@ -774,6 +774,94 @@ func TestGetPublicConfig_DefaultModelDisabled(t *testing.T) {
 	}
 }
 
+// --- OnPublicURLChanged hook tests ---
+
+func TestUpdateSettings_OnPublicURLChanged_InvokedWhenChanged(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+	q.settings["public_url"] = db.SystemSetting{Key: "public_url", Value: "https://old.example.com"}
+
+	var gotOld, gotNew string
+	h.OnPublicURLChanged = func(_ context.Context, oldURL, newURL string) {
+		gotOld = oldURL
+		gotNew = newURL
+	}
+
+	body := `{"public_url": "https://new.example.com"}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if gotOld != "https://old.example.com" {
+		t.Errorf("oldURL = %q, want https://old.example.com", gotOld)
+	}
+	if gotNew != "https://new.example.com" {
+		t.Errorf("newURL = %q, want https://new.example.com", gotNew)
+	}
+}
+
+func TestUpdateSettings_OnPublicURLChanged_NotInvokedWhenUnchanged(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+	q.settings["public_url"] = db.SystemSetting{Key: "public_url", Value: "https://gleipnir.example.com"}
+
+	invoked := false
+	h.OnPublicURLChanged = func(_ context.Context, _, _ string) {
+		invoked = true
+	}
+
+	// Same value — hook must not fire.
+	body := `{"public_url": "https://gleipnir.example.com"}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if invoked {
+		t.Error("OnPublicURLChanged must not be invoked when the URL has not changed")
+	}
+}
+
+func TestUpdateSettings_OnPublicURLChanged_NotInvokedWhenAbsent(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	invoked := false
+	h.OnPublicURLChanged = func(_ context.Context, _, _ string) {
+		invoked = true
+	}
+
+	// Request does not include public_url — hook must not fire.
+	body := `{"some_other_setting": "value"}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req)
+
+	if invoked {
+		t.Error("OnPublicURLChanged must not be invoked when public_url is not in the request")
+	}
+}
+
+func TestUpdateSettings_OnPublicURLChanged_NilSafe(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q) // hook is nil by default
+
+	// Must not panic when hook is nil.
+	body := `{"public_url": "https://gleipnir.example.com"}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req) // must not panic
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
 func TestFormatUptime(t *testing.T) {
 	tests := []struct {
 		name     string

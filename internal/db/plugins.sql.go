@@ -379,6 +379,56 @@ func (q *Queries) ListPluginInstancesByPlugin(ctx context.Context, pluginID stri
 	return items, nil
 }
 
+const listPluginInstancesForCallbackRescan = `-- name: ListPluginInstancesForCallbackRescan :many
+SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances
+WHERE last_oauth_callback_url IS NOT NULL
+  AND health_state IN ('healthy', 'unsigned_permissive', 'crashed', 'circuit_broken')
+ORDER BY plugin_id, instance_name
+`
+
+// ListPluginInstancesForCallbackRescan returns all instances that have a
+// recorded last_oauth_callback_url and are in a health state eligible for
+// the public_url-change rescan (#230). unhealthy is excluded so an active
+// availability problem is not masked; crashed and circuit_broken are included
+// because they may eventually re-authorize once the operator fixes the URL.
+func (q *Queries) ListPluginInstancesForCallbackRescan(ctx context.Context) ([]PluginInstance, error) {
+	rows, err := q.db.QueryContext(ctx, listPluginInstancesForCallbackRescan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PluginInstance
+	for rows.Next() {
+		var i PluginInstance
+		if err := rows.Scan(
+			&i.ID,
+			&i.PluginID,
+			&i.InstanceName,
+			&i.ConfigJson,
+			&i.SubscriptionScopeJson,
+			&i.CredentialsEncrypted,
+			&i.CredentialsExpiresAt,
+			&i.HandshakeVersions,
+			&i.HealthState,
+			&i.HealthDetail,
+			&i.LastOauthCallbackUrl,
+			&i.Version,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPluginInstancesWithExpiringCredentials = `-- name: ListPluginInstancesWithExpiringCredentials :many
 SELECT id, plugin_id, instance_name, config_json, subscription_scope_json, credentials_encrypted, credentials_expires_at, handshake_versions, health_state, health_detail, last_oauth_callback_url, version, created_at, updated_at FROM plugin_instances
 WHERE credentials_expires_at IS NOT NULL

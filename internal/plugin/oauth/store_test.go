@@ -21,12 +21,13 @@ import (
 // --- fake querier ---
 
 type fakeOAuthQuerier struct {
-	instance      db.PluginInstance
-	updateCalls   int
-	casFailTimes  int // fail the first N UpdatePluginInstanceCredentials calls
-	healthUpdates []db.UpdatePluginInstanceHealthParams
-	auditEvents   []db.InsertPluginAuditEventParams
-	expiringRows  []db.PluginInstance
+	instance        db.PluginInstance
+	updateCalls     int
+	casFailTimes    int // fail the first N UpdatePluginInstanceCredentials calls
+	healthUpdates   []db.UpdatePluginInstanceHealthParams
+	auditEvents     []db.InsertPluginAuditEventParams
+	expiringRows    []db.PluginInstance
+	callbackUpdates int
 }
 
 func (f *fakeOAuthQuerier) GetPluginInstanceByID(_ context.Context, id string) (db.PluginInstance, error) {
@@ -64,7 +65,10 @@ func (f *fakeOAuthQuerier) ListPluginInstancesWithExpiringCredentials(_ context.
 	return f.expiringRows, nil
 }
 
-func (f *fakeOAuthQuerier) UpdatePluginInstanceOAuthCallback(_ context.Context, _ db.UpdatePluginInstanceOAuthCallbackParams) (int64, error) {
+func (f *fakeOAuthQuerier) UpdatePluginInstanceOAuthCallback(_ context.Context, arg db.UpdatePluginInstanceOAuthCallbackParams) (int64, error) {
+	f.callbackUpdates++
+	f.instance.LastOauthCallbackUrl = arg.LastOauthCallbackUrl
+	f.instance.Version++
 	return 1, nil
 }
 

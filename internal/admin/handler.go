@@ -50,6 +50,11 @@ type Handler struct {
 	configureProvider ProviderConfigurator
 	removeProvider    ProviderRemover
 	lister            llm.ModelLister
+	// OnPublicURLChanged is called synchronously after a successful UpdateSettings
+	// write when the public_url value changes. Set by main.go after construction
+	// so internal/admin does not import internal/plugin/oauth (preserving the
+	// package boundary). Nil-safe: the hook is only invoked when non-nil.
+	OnPublicURLChanged func(ctx context.Context, oldURL, newURL string)
 }
 
 func NewHandler(q AdminQuerier, s *settings.Service, encryptionKey []byte, knownProviders []string, configure ProviderConfigurator, remove ProviderRemover, lister llm.ModelLister) *Handler {
@@ -251,6 +256,8 @@ func validateSettings(body map[string]string) (httpStatus int, errMsg string) {
 
 // UpdateSettings upserts system settings, rejecting any _api_key keys.
 func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
 	var body map[string]string
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid JSON body", "")
@@ -269,6 +276,17 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read the previous public_url before writing so we can detect changes and
+	// fire OnPublicURLChanged after a successful write.
+	var prevPublicURL string
+	if _, bodyHasPublicURL := body["public_url"]; bodyHasPublicURL && h.OnPublicURLChanged != nil {
+		row, err := h.q.GetSystemSetting(ctx, "public_url")
+		if err == nil {
+			prevPublicURL = row.Value
+		}
+		// sql.ErrNoRows means no prior value — prevPublicURL stays "".
+	}
+
 	// Settings are written one-at-a-time. For the small number of settings in
 	// practice (2-3 keys), the risk of partial failure is negligible. A future
 	// enhancement could wrap this in a transaction.
@@ -278,17 +296,26 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		// We delete rather than upsert because value TEXT NOT NULL accepts empty
 		// strings — storing "" would be indistinguishable from "not set".
 		if key == "public_url" && value == "" {
-			if err := h.q.DeleteSystemSetting(r.Context(), key); err != nil {
+			if err := h.q.DeleteSystemSetting(ctx, key); err != nil {
 				httputil.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to clear setting %q", key), "")
 				return
 			}
 			continue // deletion handled above — skip the upsert below
 		}
 
-		if err := h.q.UpsertSystemSetting(r.Context(), key, value, now); err != nil {
+		if err := h.q.UpsertSystemSetting(ctx, key, value, now); err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save setting %q", key), "")
 			return
 		}
+	}
+
+	// Fire the hook synchronously so a subsequent GET already sees rescan results.
+	// Only fires when public_url was in the request body, the value changed, and
+	// a hook was registered by main.go.
+	if newPublicURL, bodyHasPublicURL := body["public_url"]; bodyHasPublicURL &&
+		h.OnPublicURLChanged != nil &&
+		newPublicURL != prevPublicURL {
+		h.OnPublicURLChanged(ctx, prevPublicURL, newPublicURL)
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
