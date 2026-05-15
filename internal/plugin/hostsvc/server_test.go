@@ -337,6 +337,52 @@ func TestGetCredentials_NoCaching(t *testing.T) {
 	}
 }
 
+// TestGetCredentials_NoAuditEventOnRead asserts that GetCredentials never
+// inserts a row into plugin_audit_events — reads are logged via slog only
+// (spec §9.4, AC4). The test covers both the configured-credentials branch
+// and the nil-credentials branch.
+func TestGetCredentials_NoAuditEventOnRead(t *testing.T) {
+	t.Parallel()
+
+	t.Run("configured credentials", func(t *testing.T) {
+		t.Parallel()
+		creds := `{"strategy":"static_api_key"}`
+		encrypted, err := admin.Encrypt(testEncryptionKey, creds)
+		if err != nil {
+			t.Fatalf("encrypt: %v", err)
+		}
+		q := &fakeQuerier{
+			instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", CredentialsEncrypted: &encrypted},
+		}
+		srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+		if _, err := srv.GetCredentials(context.Background(), &hostv1.GetCredentialsRequest{}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if rows := q.all(); len(rows) != 0 {
+			t.Errorf("GetCredentials wrote %d audit event(s); want 0", len(rows))
+		}
+	})
+
+	t.Run("nil credentials", func(t *testing.T) {
+		t.Parallel()
+		// CredentialsEncrypted is nil — instance has no credentials configured yet.
+		q := &fakeQuerier{
+			instance: db.PluginInstance{ID: "iid-2", PluginID: "plug-2", CredentialsEncrypted: nil},
+		}
+		srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+		if _, err := srv.GetCredentials(context.Background(), &hostv1.GetCredentialsRequest{}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if rows := q.all(); len(rows) != 0 {
+			t.Errorf("GetCredentials wrote %d audit event(s); want 0", len(rows))
+		}
+	})
+}
+
 // --- tests: GetRunContext ---
 
 func TestGetRunContext_RequiresCallID(t *testing.T) {

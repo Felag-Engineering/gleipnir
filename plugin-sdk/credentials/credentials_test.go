@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,10 +11,10 @@ import (
 // TestApply_StaticAPIKey verifies that Apply sets the correct header value.
 func TestApply_StaticAPIKey(t *testing.T) {
 	tests := []struct {
-		name        string
-		creds       Credentials
-		wantHeader  string
-		wantValue   string
+		name       string
+		creds      Credentials
+		wantHeader string
+		wantValue  string
 	}{
 		{
 			name: "with scheme",
@@ -133,6 +134,36 @@ func TestApply_OAuth2_NoOp(t *testing.T) {
 			creds.Apply(req) // must not panic or set headers
 		})
 	}
+}
+
+// ExampleUnmarshal shows the correct per-request usage pattern: GetCredentials
+// is called inside the request loop, not hoisted out. This ensures the plugin
+// always holds a fresh token after an OAuth2 rotation (spec §9.4).
+func ExampleUnmarshal() {
+	// credentialJSONFromHost simulates the bytes returned by host.GetCredentials.
+	credentialJSONFromHost := func() []byte {
+		b, _ := json.Marshal(Credentials{
+			Strategy:     StrategyStaticAPIKey,
+			StaticAPIKey: &StaticAPIKey{HeaderName: "X-API-Key", APIKey: "tok-abc"},
+		})
+		return b
+	}
+
+	requests := []string{"/endpoint/1", "/endpoint/2"}
+	for _, path := range requests {
+		// Call GetCredentials here — inside the loop — not before it.
+		creds, err := Unmarshal(credentialJSONFromHost())
+		if err != nil {
+			fmt.Printf("credential error: %v\n", err)
+			return
+		}
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		creds.Apply(req)
+		fmt.Printf("%s %s\n", req.Method, req.URL.Path)
+	}
+	// Output:
+	// GET /endpoint/1
+	// GET /endpoint/2
 }
 
 // TestUnmarshal_RoundTrip verifies Marshal → Unmarshal for each strategy.
