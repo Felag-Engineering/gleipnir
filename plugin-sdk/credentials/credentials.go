@@ -5,6 +5,14 @@
 // Strategy constants are defined in plugin-sdk/manifest (e.g.
 // manifest.AuthStrategyStaticAPIKey). This package is stdlib-only so it can be
 // embedded in any plugin binary without dragging in host-side dependencies.
+//
+// # No plugin-side caching (spec §9.4)
+//
+// Plugins MUST call GetCredentials on every outbound substrate request and MUST
+// NOT cache the returned Credentials across calls. The host rotates OAuth2
+// tokens transparently; a cached token will be stale after the first rotation.
+// The host itself performs no in-process caching beyond the request scope, so
+// the round-trip cost is bounded by a single DB read per call.
 package credentials
 
 import (
@@ -16,11 +24,11 @@ import (
 // Strategy constants mirror the AuthStrategy* constants in plugin-sdk/manifest
 // so this package does not import manifest (keeping it stdlib-only).
 const (
-	StrategyNone          = "none"
-	StrategyStaticAPIKey  = "static_api_key"
-	StrategyHeaderSet     = "header_set"
-	StrategyBasicAuth     = "basic_auth"
-	StrategyOAuth2Authcode  = "oauth2_authcode"
+	StrategyNone             = "none"
+	StrategyStaticAPIKey     = "static_api_key"
+	StrategyHeaderSet        = "header_set"
+	StrategyBasicAuth        = "basic_auth"
+	StrategyOAuth2Authcode   = "oauth2_authcode"
 	StrategyOAuth2Clientcred = "oauth2_clientcred"
 )
 
@@ -79,6 +87,9 @@ type BasicAuth struct {
 
 // Unmarshal decodes the JSON blob returned by the GetCredentials RPC into a
 // Credentials value. Returns an error if the input is not valid JSON.
+//
+// Do not cache the returned Credentials; call host.GetCredentials on every
+// outbound substrate request so OAuth2 token rotations are picked up (spec §9.4).
 func Unmarshal(data []byte) (Credentials, error) {
 	var c Credentials
 	if err := json.Unmarshal(data, &c); err != nil {
@@ -124,6 +135,6 @@ func (c Credentials) Apply(req *http.Request) {
 		}
 		req.SetBasicAuth(c.BasicAuth.Username, c.BasicAuth.Password)
 
-	// none and oauth2_* are intentional no-ops.
+		// none and oauth2_* are intentional no-ops.
 	}
 }
