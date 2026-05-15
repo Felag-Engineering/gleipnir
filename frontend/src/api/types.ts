@@ -507,6 +507,15 @@ export interface ApiPluginInstanceForAudience {
   // version is the CAS version of the instance row, used for optimistic
   // concurrency control on subscription scope saves.
   version: number
+  // auth_strategy is the manifest-declared credential strategy
+  // (e.g. "oauth2_authcode", "oauth2_clientcred", "static_api_key").
+  // Empty string when the manifest has no auth section. Used by the
+  // Re-authorize banner to determine which OAuth flow to restart (#228).
+  auth_strategy?: string
+  // health_detail is the detail string from the most recent health transition.
+  // Absent when the instance has no detail. Used together with auth_strategy
+  // and state to gate the Re-authorize banner (#228).
+  health_detail?: string
 }
 
 // Request body interfaces for audience mutations.

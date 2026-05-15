@@ -30,6 +30,12 @@ const (
 	auditCredentialCleared = "plugin_credentials_cleared"
 )
 
+// RefreshFailureDetailPrefix is the stable prefix used in the health-state
+// detail field when MarkRefreshFailed drives an instance to unhealthy.
+// The admin UI matches on this prefix to decide whether to show the
+// "Re-authorize" button — pinning it as a constant makes the contract explicit.
+const RefreshFailureDetailPrefix = "oauth refresh failed"
+
 // ErrWrongStrategy is returned by Set* methods when the stored credential
 // strategy does not match the operation — e.g. calling SetStaticAPIKey on an
 // instance whose manifest declares header_set.
@@ -186,12 +192,12 @@ func (s *DBStore) SaveToken(ctx context.Context, instanceID string, tok *oauth2.
 // drives the instance to PluginHealthStateUnhealthy so the admin "Re-authorize"
 // UI surface (#228) can pick it up.
 func (s *DBStore) MarkRefreshFailed(ctx context.Context, instanceID string, cause error) error {
-	detail := "oauth refresh failed"
+	detail := RefreshFailureDetailPrefix
 	if cause != nil {
-		detail = fmt.Sprintf("oauth refresh failed: %s", cause)
+		detail = fmt.Sprintf("%s: %s", RefreshFailureDetailPrefix, cause)
 	}
 
-	s.emitAudit(ctx, auditOAuthRefreshFailed, instanceID, map[string]any{
+	s.emitAudit(ctx, auditOAuthRefreshFailed, "warning", instanceID, map[string]any{
 		"error": detail,
 	})
 
@@ -212,7 +218,7 @@ func (s *DBStore) MarkRefreshFailed(ctx context.Context, instanceID string, caus
 // EmitIssued writes a plugin_oauth_issued audit event. Called by Manager after
 // a successful token exchange (authcode) or initial clientcred grant.
 func (s *DBStore) EmitIssued(ctx context.Context, instanceID string) {
-	s.emitAudit(ctx, auditOAuthIssued, instanceID, nil)
+	s.emitAudit(ctx, auditOAuthIssued, "info", instanceID, nil)
 }
 
 // EmitRefreshed writes a plugin_oauth_refreshed audit event. Called by
@@ -220,13 +226,13 @@ func (s *DBStore) EmitIssued(ctx context.Context, instanceID string) {
 // SaveToken. The initial token exchange (authcode/clientcred) uses EmitIssued
 // instead so the audit log distinguishes "first grant" from "later refresh".
 func (s *DBStore) EmitRefreshed(ctx context.Context, instanceID string) {
-	s.emitAudit(ctx, auditOAuthRefreshed, instanceID, nil)
+	s.emitAudit(ctx, auditOAuthRefreshed, "info", instanceID, nil)
 }
 
 // EmitRevoked writes a plugin_oauth_revoked audit event. Intended for future
 // revocation flows; not yet called from any production path in #224.
 func (s *DBStore) EmitRevoked(ctx context.Context, instanceID string) {
-	s.emitAudit(ctx, auditOAuthRevoked, instanceID, nil)
+	s.emitAudit(ctx, auditOAuthRevoked, "info", instanceID, nil)
 }
 
 // credentialsExpiresAt extracts the token expiry from StoredCredentials and
@@ -265,7 +271,7 @@ func (s *DBStore) SetStaticAPIKey(ctx context.Context, instanceID, headerName, s
 		}
 		err = s.SaveCredentials(ctx, instanceID, creds, ver)
 		if err == nil {
-			s.emitAudit(ctx, auditCredentialSet, instanceID, map[string]any{
+			s.emitAudit(ctx, auditCredentialSet, "info", instanceID, map[string]any{
 				"strategy": creds.Strategy,
 				"action":   "set_static_api_key",
 				"key":      headerName,
@@ -319,7 +325,7 @@ func (s *DBStore) SetHeaderSetEntry(ctx context.Context, instanceID string, head
 		}
 		err = s.SaveCredentials(ctx, instanceID, creds, ver)
 		if err == nil {
-			s.emitAudit(ctx, auditCredentialSet, instanceID, map[string]any{
+			s.emitAudit(ctx, auditCredentialSet, "info", instanceID, map[string]any{
 				"strategy": creds.Strategy,
 				"action":   "set_header",
 				"key":      header.Name,
@@ -366,7 +372,7 @@ func (s *DBStore) DeleteHeaderSetEntry(ctx context.Context, instanceID, headerNa
 		creds.HeaderSet.Headers = kept
 		err = s.SaveCredentials(ctx, instanceID, creds, ver)
 		if err == nil {
-			s.emitAudit(ctx, auditCredentialDeleted, instanceID, map[string]any{
+			s.emitAudit(ctx, auditCredentialDeleted, "info", instanceID, map[string]any{
 				"strategy": creds.Strategy,
 				"key":      headerName,
 			})
@@ -399,7 +405,7 @@ func (s *DBStore) SetBasicAuth(ctx context.Context, instanceID, username, passwo
 		creds.BasicAuth = &BasicAuthCreds{Username: username, Password: password}
 		err = s.SaveCredentials(ctx, instanceID, creds, ver)
 		if err == nil {
-			s.emitAudit(ctx, auditCredentialSet, instanceID, map[string]any{
+			s.emitAudit(ctx, auditCredentialSet, "info", instanceID, map[string]any{
 				"strategy": creds.Strategy,
 				"action":   "set_basic_auth",
 			})
@@ -430,7 +436,7 @@ func (s *DBStore) ClearCredentials(ctx context.Context, instanceID string) error
 		cleared := StoredCredentials{Strategy: strategy}
 		err = s.SaveCredentials(ctx, instanceID, cleared, ver)
 		if err == nil {
-			s.emitAudit(ctx, auditCredentialCleared, instanceID, map[string]any{
+			s.emitAudit(ctx, auditCredentialCleared, "info", instanceID, map[string]any{
 				"strategy": strategy,
 			})
 			return nil
@@ -445,7 +451,8 @@ func (s *DBStore) ClearCredentials(ctx context.Context, instanceID string) error
 // emitAudit inserts a plugin audit event row. Failures are logged but not
 // surfaced to the caller — the upstream operation (token save, health set) has
 // already committed and the audit event is informational.
-func (s *DBStore) emitAudit(ctx context.Context, eventType, instanceID string, extra map[string]any) {
+// severity must be one of "info", "warning", or "error".
+func (s *DBStore) emitAudit(ctx context.Context, eventType, severity, instanceID string, extra map[string]any) {
 	payload := map[string]any{"instance_id": instanceID}
 	for k, v := range extra {
 		payload[k] = v
@@ -455,7 +462,7 @@ func (s *DBStore) emitAudit(ctx context.Context, eventType, instanceID string, e
 	_, err := s.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
 		PluginInstanceID: &instanceID,
 		EventType:        eventType,
-		Severity:         "info",
+		Severity:         severity,
 		ActorUserID:      nil,
 		PayloadJson:      string(body),
 		CreatedAt:        now,

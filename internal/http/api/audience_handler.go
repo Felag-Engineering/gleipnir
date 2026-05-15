@@ -134,6 +134,15 @@ type pluginInstanceForAudienceDTO struct {
 	SubscriptionSchema interface{}          `json:"subscription_schema"`
 	SubscriptionScope  map[string]any       `json:"subscription_scope"`
 	Version            int64                `json:"version"`
+	// AuthStrategy is the auth strategy declared in the manifest (e.g.
+	// "oauth2_authcode", "oauth2_clientcred", "static_api_key"). Used by the
+	// admin UI to decide whether to show the Re-authorize button (#228).
+	AuthStrategy string `json:"auth_strategy"`
+	// HealthDetail is the detail string from the most recent health transition.
+	// Omitted when empty. Used together with AuthStrategy to gate the
+	// Re-authorize banner: detail prefix "oauth refresh failed" + oauth strategy
+	// → show the button.
+	HealthDetail string `json:"health_detail,omitempty"`
 }
 
 // ListPluginInstances handles GET /api/v1/admin/plugin-instances.
@@ -237,6 +246,11 @@ func (h *AudienceHandler) ListPluginInstances(w http.ResponseWriter, r *http.Req
 			subscriptionScope = map[string]any{}
 		}
 
+		healthDetail := ""
+		if inst.HealthDetail != nil {
+			healthDetail = *inst.HealthDetail
+		}
+
 		dtos = append(dtos, pluginInstanceForAudienceDTO{
 			ID:                 inst.ID,
 			PluginID:           inst.PluginID,
@@ -250,6 +264,8 @@ func (h *AudienceHandler) ListPluginInstances(w http.ResponseWriter, r *http.Req
 			SubscriptionSchema: subscriptionSchema,
 			SubscriptionScope:  subscriptionScope,
 			Version:            inst.Version,
+			AuthStrategy:       string(manifest.Auth.Strategy),
+			HealthDetail:       healthDetail,
 		})
 	}
 

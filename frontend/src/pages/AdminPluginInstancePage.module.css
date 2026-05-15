@@ -19,6 +19,21 @@
   color: var(--text-primary);
 }
 
+/* Re-authorize banner — shown when health_state is unhealthy due to OAuth
+   refresh failure. Amber tint matches the approval-pending color convention. */
+
+.reauthBanner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: rgba(240, 200, 48, 0.12); /* amber tint — --color-amber at 12% opacity */
+  border: 1px solid rgba(240, 200, 48, 0.3);
+  border-radius: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
 /* Tabs */
 
 .tabs {

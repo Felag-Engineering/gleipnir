@@ -5,6 +5,7 @@ import '@/tokens.css'
 import AdminPluginInstancePage from './AdminPluginInstancePage'
 import { queryKeys } from '@/hooks/queryKeys'
 import type { ApiPluginInstanceForAudience } from '@/api/types'
+import { RefreshFailureDetailPrefix } from '@/utils/pluginHealth'
 
 const PLUGIN_ID = 'plugin-slack-01'
 const INSTANCE_ID = 'inst-slack-prod'
@@ -15,6 +16,7 @@ const FIXTURE_WITH_SCHEMA: ApiPluginInstanceForAudience = {
   plugin_name: 'Slack',
   instance_name: 'slack-prod',
   state: 'healthy',
+  auth_strategy: 'oauth2_authcode',
   implements_notify: true,
   implements_request: true,
   config_schema: null,
@@ -50,6 +52,44 @@ const FIXTURE_NO_SCHEMA: ApiPluginInstanceForAudience = {
   implements_request: false,
   config_schema: null,
   version: 0,
+  event_kinds: [],
+  auth_strategy: 'none',
+}
+
+const FIXTURE_OAUTH_REFRESH_FAILED_AUTHCODE: ApiPluginInstanceForAudience = {
+  id: INSTANCE_ID,
+  plugin_id: PLUGIN_ID,
+  plugin_name: 'Slack',
+  instance_name: 'slack-prod',
+  state: 'unhealthy',
+  health_detail: `${RefreshFailureDetailPrefix}: token expired`,
+  auth_strategy: 'oauth2_authcode',
+  implements_notify: true,
+  implements_request: true,
+  config_schema: null,
+  version: 3,
+  event_kinds: [],
+  subscription_schema: {
+    type: 'object',
+    properties: {
+      channels: { type: 'array', items: { type: 'string' } },
+    },
+  },
+  subscription_scope: { channels: ['#incidents'] },
+}
+
+const FIXTURE_OAUTH_REFRESH_FAILED_CLIENTCRED: ApiPluginInstanceForAudience = {
+  id: INSTANCE_ID,
+  plugin_id: PLUGIN_ID,
+  plugin_name: 'Jira',
+  instance_name: 'jira-prod',
+  state: 'unhealthy',
+  health_detail: `${RefreshFailureDetailPrefix}: server returned 401`,
+  auth_strategy: 'oauth2_clientcred',
+  implements_notify: false,
+  implements_request: true,
+  config_schema: null,
+  version: 5,
   event_kinds: [],
 }
 
@@ -110,4 +150,17 @@ export const Loading: Story = {
       </MemoryRouter>
     </QueryClientProvider>
   ),
+}
+
+// OAuth refresh failed (authcode) — shows the Re-authorize banner with an
+// oauth2_authcode strategy instance. Clicking Re-authorize would navigate
+// to the provider's authorization page.
+export const OAuthRefreshFailedAuthcode: Story = {
+  render: () => <Wrapper instances={[FIXTURE_OAUTH_REFRESH_FAILED_AUTHCODE]} />,
+}
+
+// OAuth refresh failed (clientcred) — same banner, but Re-authorize performs
+// the client credentials exchange synchronously (no browser redirect).
+export const OAuthRefreshFailedClientcred: Story = {
+  render: () => <Wrapper instances={[FIXTURE_OAUTH_REFRESH_FAILED_CLIENTCRED]} />,
 }

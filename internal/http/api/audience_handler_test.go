@@ -1099,3 +1099,60 @@ func TestListPluginInstances_WithEventKindExamplesAndBindingSchema(t *testing.T)
 		t.Errorf("examples[0].payload.channel = %v, want #incidents", ek.Examples[0].Payload["channel"])
 	}
 }
+
+// oauthManifestYAML declares an oauth2_authcode strategy so we can test
+// that auth_strategy is populated from the manifest Auth field.
+const oauthManifestYAML = `
+id: test-oauth-plugin
+name: OAuth Plugin
+version: 1.0.0
+auth:
+  strategy: oauth2_authcode
+`
+
+// TestListPluginInstances_AuthStrategyAndHealthDetail verifies that the
+// auth_strategy and health_detail fields are populated in the DTO (#228).
+func TestListPluginInstances_AuthStrategyAndHealthDetail(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	snap := configvalidate.NewSnapshotter(store.Queries())
+	t.Cleanup(func() { snap.ResetCache(); configvalidate.ResetCache() })
+
+	pluginID := seedPlugin(t, store, "oauth-plugin", oauthManifestYAML)
+	instID := seedPluginInstance(t, store, "oauth-inst", pluginID)
+
+	// Drive the instance to unhealthy with a detail string.
+	detail := "oauth refresh failed: token expired"
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := store.Queries().UpdatePluginInstanceHealth(context.Background(), db.UpdatePluginInstanceHealthParams{
+		HealthState:     "unhealthy",
+		HealthDetail:    &detail,
+		UpdatedAt:       now,
+		ID:              instID,
+		ExpectedVersion: 0,
+	})
+	if err != nil {
+		t.Fatalf("UpdatePluginInstanceHealth: %v", err)
+	}
+
+	w := do(t, newPluginInstancesRouter(store, snap), http.MethodGet, "/", nil, model.RoleOperator)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\nbody: %s", w.Code, w.Body.String())
+	}
+
+	var items []struct {
+		ID           string `json:"id"`
+		AuthStrategy string `json:"auth_strategy"`
+		HealthDetail string `json:"health_detail"`
+	}
+	parseData(t, w, &items)
+
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].AuthStrategy != "oauth2_authcode" {
+		t.Errorf("auth_strategy = %q, want %q", items[0].AuthStrategy, "oauth2_authcode")
+	}
+	if items[0].HealthDetail != detail {
+		t.Errorf("health_detail = %q, want %q", items[0].HealthDetail, detail)
+	}
+}
