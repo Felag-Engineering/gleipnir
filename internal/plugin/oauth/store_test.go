@@ -244,20 +244,44 @@ func TestDBStore_MarkRefreshFailed_WritesAuditAndUnhealthy(t *testing.T) {
 		t.Fatalf("MarkRefreshFailed: %v", err)
 	}
 
-	// Should have emitted a refresh_failed audit event.
-	foundAudit := false
-	for _, ev := range q.auditEvents {
+	// Should have emitted a refresh_failed audit event with severity "warning" (AC #2).
+	var foundAuditEvent *db.InsertPluginAuditEventParams
+	for i, ev := range q.auditEvents {
 		if ev.EventType == auditOAuthRefreshFailed {
-			foundAudit = true
+			foundAuditEvent = &q.auditEvents[i]
 		}
 	}
-	if !foundAudit {
+	if foundAuditEvent == nil {
 		t.Errorf("expected %q audit event, none found in %v", auditOAuthRefreshFailed, q.auditEvents)
+	} else if foundAuditEvent.Severity != "warning" {
+		t.Errorf("expected refresh_failed audit severity %q, got %q", "warning", foundAuditEvent.Severity)
 	}
 
 	// Should have driven the instance to unhealthy.
 	if q.instance.HealthState != string(model.PluginHealthStateUnhealthy) {
 		t.Errorf("expected instance health_state=unhealthy, got %q", q.instance.HealthState)
+	}
+}
+
+func TestDBStore_EmitIssued_SeverityInfo(t *testing.T) {
+	q := &fakeOAuthQuerier{
+		instance: db.PluginInstance{ID: "inst-1", HealthState: "healthy", Version: 0},
+	}
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, func() time.Time { return time.Unix(1000000, 0) })
+
+	store.EmitIssued(context.Background(), "inst-1")
+
+	var found *db.InsertPluginAuditEventParams
+	for i, ev := range q.auditEvents {
+		if ev.EventType == auditOAuthIssued {
+			found = &q.auditEvents[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected %q audit event", auditOAuthIssued)
+	}
+	if found.Severity != "info" {
+		t.Errorf("expected severity %q, got %q", "info", found.Severity)
 	}
 }
 

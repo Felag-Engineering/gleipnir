@@ -6,14 +6,20 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 import AdminPluginInstancePage from './AdminPluginInstancePage'
 import type { ApiPluginInstanceForAudience } from '@/api/types'
+import { RefreshFailureDetailPrefix } from '@/utils/pluginHealth'
 
 // --- Module mocks ---
 
 vi.mock('@/hooks/queries/admin')
 vi.mock('@/hooks/mutations/plugins')
+vi.mock('@/components/admin/ReauthorizeButton/ReauthorizeButton', () => ({
+  ReauthorizeButton: ({ strategy }: { strategy: string }) => (
+    <button data-testid="reauth-btn" data-strategy={strategy}>Re-authorize</button>
+  ),
+}))
 
 import { usePluginInstancesForAudience } from '@/hooks/queries/admin'
-import { useSetInstanceSubscriptionScope } from '@/hooks/mutations/plugins'
+import { useSetInstanceSubscriptionScope, useBeginPluginOAuth } from '@/hooks/mutations/plugins'
 
 // --- Fixtures ---
 
@@ -26,6 +32,7 @@ const INSTANCE_WITH_SCHEMA: ApiPluginInstanceForAudience = {
   plugin_name: 'Slack',
   instance_name: 'slack-prod',
   state: 'healthy',
+  auth_strategy: 'oauth2_authcode',
   implements_notify: true,
   implements_request: true,
   config_schema: null,
@@ -49,11 +56,27 @@ const INSTANCE_NO_SCHEMA: ApiPluginInstanceForAudience = {
   plugin_name: 'Webhook',
   instance_name: 'webhook-prod',
   state: 'healthy',
+  auth_strategy: 'none',
   implements_notify: false,
   implements_request: false,
   config_schema: null,
   event_kinds: [],
   version: 0,
+}
+
+const INSTANCE_OAUTH_REFRESH_FAILED: ApiPluginInstanceForAudience = {
+  id: INSTANCE_ID,
+  plugin_id: PLUGIN_ID,
+  plugin_name: 'Slack',
+  instance_name: 'slack-prod',
+  state: 'unhealthy',
+  health_detail: `${RefreshFailureDetailPrefix}: token expired`,
+  auth_strategy: 'oauth2_authcode',
+  implements_notify: true,
+  implements_request: true,
+  config_schema: null,
+  event_kinds: [],
+  version: 2,
 }
 
 // --- Helpers ---
@@ -62,10 +85,11 @@ function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function renderPage() {
+function renderPage(search = '') {
+  const path = `/admin/plugins/${PLUGIN_ID}/instances/${INSTANCE_ID}${search}`
   return render(
     <QueryClientProvider client={makeQueryClient()}>
-      <MemoryRouter initialEntries={[`/admin/plugins/${PLUGIN_ID}/instances/${INSTANCE_ID}`]}>
+      <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/admin/plugins/:id/instances/:iid" element={<AdminPluginInstancePage />} />
         </Routes>
@@ -93,6 +117,10 @@ function mockMutationNoop() {
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof useSetInstanceSubscriptionScope>)
+  vi.mocked(useBeginPluginOAuth).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as unknown as ReturnType<typeof useBeginPluginOAuth>)
 }
 
 function mockMutationSuccess(onSuccessCapture?: (fn: () => void) => void) {
@@ -180,5 +208,90 @@ describe('AdminPluginInstancePage — without subscription_schema', () => {
     renderPage()
     expect(screen.getByRole('button', { name: /config/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /credentials/i })).toBeInTheDocument()
+  })
+})
+
+describe('AdminPluginInstancePage — Re-authorize banner visibility', () => {
+  beforeEach(() => {
+    mockMutationNoop()
+  })
+
+  it('shows the Re-authorize banner when instance is unhealthy with refresh-failure detail', () => {
+    mockInstancesLoaded([INSTANCE_OAUTH_REFRESH_FAILED])
+    renderPage()
+    expect(screen.getByText(/oauth credentials need re-authorization/i)).toBeInTheDocument()
+    expect(screen.getByTestId('reauth-btn')).toBeInTheDocument()
+  })
+
+  it('does NOT show the banner for a healthy instance', () => {
+    mockInstancesLoaded([INSTANCE_WITH_SCHEMA])
+    renderPage()
+    expect(screen.queryByText(/oauth credentials need re-authorization/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('reauth-btn')).not.toBeInTheDocument()
+  })
+
+  it('does NOT show the banner for an unhealthy instance without refresh-failure detail', () => {
+    const unhealthyOther: ApiPluginInstanceForAudience = {
+      ...INSTANCE_OAUTH_REFRESH_FAILED,
+      health_detail: 'something else went wrong',
+    }
+    mockInstancesLoaded([unhealthyOther])
+    renderPage()
+    expect(screen.queryByTestId('reauth-btn')).not.toBeInTheDocument()
+  })
+
+  it('passes auth_strategy to ReauthorizeButton', () => {
+    mockInstancesLoaded([INSTANCE_OAUTH_REFRESH_FAILED])
+    renderPage()
+    expect(screen.getByTestId('reauth-btn')).toHaveAttribute('data-strategy', 'oauth2_authcode')
+  })
+})
+
+describe('AdminPluginInstancePage — oauth_ok query param', () => {
+  // The page reads window.location.search directly (not from React Router) so
+  // the jsdom window.location must match. Replace it with a stub for these tests.
+
+  function withLocationSearch(search: string, fn: () => void) {
+    const originalLocation = window.location
+    Object.defineProperty(window, 'location', {
+      writable: true,
+      value: { ...originalLocation, search },
+    })
+    fn()
+    Object.defineProperty(window, 'location', { writable: true, value: originalLocation })
+  }
+
+  it('invalidates plugin-instances query on mount when ?oauth_ok=1 is present', async () => {
+    mockInstancesLoaded([INSTANCE_WITH_SCHEMA])
+    mockMutationNoop()
+
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, 'invalidateQueries').mockResolvedValue()
+
+    withLocationSearch('?oauth_ok=1', () => {
+      renderPage()
+    })
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalled()
+    })
+
+    invalidateSpy.mockRestore()
+  })
+
+  it('does NOT invalidate when ?oauth_ok is absent', async () => {
+    mockInstancesLoaded([INSTANCE_WITH_SCHEMA])
+    mockMutationNoop()
+
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, 'invalidateQueries').mockResolvedValue()
+
+    withLocationSearch('', () => {
+      renderPage()
+    })
+
+    // Allow effects to flush.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(invalidateSpy).not.toHaveBeenCalled()
+
+    invalidateSpy.mockRestore()
   })
 })

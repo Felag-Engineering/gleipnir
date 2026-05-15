@@ -199,5 +199,16 @@ func (m *Manager) BeginClientcred(ctx context.Context, instanceID string) error 
 	}
 
 	m.store.EmitIssued(ctx, instanceID)
+
+	// Transition the instance to healthy if it was waiting for re-authorization.
+	// Mirrors HandleCallback: both ErrIllegalTransition (already healthy) and
+	// ErrTransitionConflict (concurrent writer) are benign outcomes here.
+	_ = pluginstate.SetHealthState(
+		ctx, m.store.health, nil, instanceID,
+		pluginstate.OriginHost,
+		model.PluginHealthStateHealthy,
+		"oauth client credentials issued",
+	)
+
 	return nil
 }

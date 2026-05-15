@@ -1,11 +1,15 @@
 import { useState, useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
 import { FieldError } from '@/components/form/FieldError/FieldError'
+import { ReauthorizeButton } from '@/components/admin/ReauthorizeButton/ReauthorizeButton'
 import { usePluginInstancesForAudience } from '@/hooks/queries/admin'
 import { useSetInstanceSubscriptionScope } from '@/hooks/mutations/plugins'
+import { isOAuthRefreshFailure } from '@/utils/pluginHealth'
+import { queryKeys } from '@/hooks/queryKeys'
 import type { ApiError } from '@/api/fetch'
 import styles from './AdminPluginInstancePage.module.css'
 
@@ -246,6 +250,7 @@ function SubscriptionsTab({
 export default function AdminPluginInstancePage() {
   const { id: pluginId, iid: instanceId } = useParams<{ id: string; iid: string }>()
   const [activeTab, setActiveTab] = useState<Tab>('subscriptions')
+  const queryClient = useQueryClient()
 
   const { data: allInstances, status } = usePluginInstancesForAudience()
 
@@ -260,6 +265,18 @@ export default function AdminPluginInstancePage() {
       setActiveTab('config')
     }
   }, [status, hasSubscriptionSchema, activeTab])
+
+  // After a successful OAuth authcode round-trip the callback handler redirects
+  // the browser back here with ?oauth_ok=1. Invalidate the instance list so the
+  // Re-authorize banner clears without requiring a manual refresh.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('oauth_ok') === '1') {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.admin.pluginInstances })
+    }
+  // Run once on mount; queryClient reference is stable.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   function renderTabContent() {
     if (status === 'pending') {
@@ -313,6 +330,17 @@ export default function AdminPluginInstancePage() {
       </Link>
 
       <PageHeader title={`${pluginName} / ${instanceName}`} />
+
+      {instance && isOAuthRefreshFailure(instance.state, instance.health_detail) && (
+        <div className={styles.reauthBanner}>
+          <span>OAuth credentials need re-authorization.</span>
+          <ReauthorizeButton
+            pluginId={pluginId!}
+            instanceId={instanceId!}
+            strategy={instance.auth_strategy ?? ''}
+          />
+        </div>
+      )}
 
       <nav className={styles.tabs} aria-label="Instance settings">
         {hasSubscriptionSchema && (

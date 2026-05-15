@@ -2,12 +2,16 @@ package oauth
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // Tests do NOT call t.Parallel — they share the package clock.
@@ -218,6 +222,53 @@ func TestHandleCallback_ExpiredState_Error(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "expired") {
 		t.Errorf("expected expiry error, got: %v", err)
+	}
+}
+
+func TestBeginClientcred_SuccessTransitionsToHealthy(t *testing.T) {
+	// Spin up a minimal fake token endpoint so the clientcredentials exchange succeeds.
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok-abc",
+			"token_type":   "bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer tokenServer.Close()
+
+	// Seed an instance in unhealthy state (simulating a prior refresh failure).
+	creds := testCreds("oauth2_clientcred")
+	creds.TokenURL = tokenServer.URL + "/token"
+	plain, err := creds.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	enc, err := noopEncrypt(plain)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	q := &fakeOAuthQuerier{
+		instance: db.PluginInstance{
+			ID:                   "inst-1",
+			HealthState:          string(model.PluginHealthStateUnhealthy),
+			Version:              1,
+			CredentialsEncrypted: &enc,
+		},
+	}
+
+	mgr, _ := newTestManager(q, "https://gleipnir.example.com")
+	if err := mgr.BeginClientcred(context.Background(), "inst-1"); err != nil {
+		t.Fatalf("BeginClientcred: %v", err)
+	}
+
+	// The health transition to healthy must have been recorded.
+	if len(q.healthUpdates) == 0 {
+		t.Fatal("expected at least one UpdatePluginInstanceHealth call, got none")
+	}
+	last := q.healthUpdates[len(q.healthUpdates)-1]
+	if last.HealthState != string(model.PluginHealthStateHealthy) {
+		t.Errorf("expected health_state=%q, got %q", model.PluginHealthStateHealthy, last.HealthState)
 	}
 }
 

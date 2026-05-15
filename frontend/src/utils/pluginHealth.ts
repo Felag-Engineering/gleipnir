@@ -28,6 +28,17 @@ export function worstHealth(states: PluginHealthState[]): PluginHealthState {
   return worst
 }
 
+// RefreshFailureDetailPrefix is the stable prefix written by the backend's
+// MarkRefreshFailed into the instance health_detail field. Matching on this
+// prefix is the contract for showing the Re-authorize button (#228).
+export const RefreshFailureDetailPrefix = 'oauth refresh failed'
+
+// isOAuthRefreshFailure returns true when the instance is unhealthy specifically
+// because an OAuth token refresh failed. This gates the Re-authorize banner.
+export function isOAuthRefreshFailure(state: string, detail?: string): boolean {
+  return state === 'unhealthy' && (detail?.startsWith(RefreshFailureDetailPrefix) ?? false)
+}
+
 // pluginHealthLabel returns the human-readable display label for a health state.
 export function pluginHealthLabel(state: PluginHealthState): string {
   switch (state) {
