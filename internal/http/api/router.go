@@ -39,9 +39,10 @@ type HandlerBundle struct {
 	SettingsHandler      *auth.SettingsHandler
 	AdminHandler         *admin.Handler
 	OpenAICompatHandler  *admin.OpenAICompatHandler
-	PluginAdminHandler   *admin.PluginHandler
-	PluginOAuthHandler   *admin.PluginOAuthHandler
-	AudienceHandler      *AudienceHandler
+	PluginAdminHandler        *admin.PluginHandler
+	PluginOAuthHandler        *admin.PluginOAuthHandler
+	PluginCredentialsHandler  *admin.PluginCredentialsHandler
+	AudienceHandler           *AudienceHandler
 	BindingTestHandler   *BindingTestHandler
 	WebhookHandler       *trigger.WebhookHandler
 	SSEHandler           *sse.Handler
@@ -237,6 +238,14 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			}
 			if cfg.Handlers.PluginOAuthHandler != nil {
 				r.Post("/plugins/{id}/instances/{iid}/oauth/begin", cfg.Handlers.PluginOAuthHandler.Begin)
+			}
+			if h := cfg.Handlers.PluginCredentialsHandler; h != nil {
+				r.Get("/plugins/{id}/instances/{iid}/credentials", h.Get)
+				r.Delete("/plugins/{id}/instances/{iid}/credentials", h.Delete)
+				r.Put("/plugins/{id}/instances/{iid}/credentials/static-api-key", h.SetStaticAPIKey)
+				r.Put("/plugins/{id}/instances/{iid}/credentials/headers/{name}", h.SetHeader)
+				r.Delete("/plugins/{id}/instances/{iid}/credentials/headers/{name}", h.DeleteHeader)
+				r.Put("/plugins/{id}/instances/{iid}/credentials/basic-auth", h.SetBasicAuth)
 			}
 
 			r.Route("/openai-providers", func(r chi.Router) {

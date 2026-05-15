@@ -445,6 +445,7 @@ func run(cfg config.Config) error {
 	// systemSettings) so getPublicURL can be bound at call time. The scanner
 	// starts only when plugins are enabled and an encryption key is set.
 	var pluginOAuthHandler *admin.PluginOAuthHandler
+	var pluginCredHandler *admin.PluginCredentialsHandler
 	if cfg.PluginsEnabled && encryptionKey != nil {
 		enc := func(p string) (string, error) { return admin.Encrypt(encryptionKey, p) }
 		dec := func(c string) (string, error) { return admin.Decrypt(encryptionKey, c) }
@@ -468,20 +469,22 @@ func run(cfg config.Config) error {
 		)
 		oauthScanner.Start(ctx)
 		pluginOAuthHandler = admin.NewPluginOAuthHandler(store.Queries(), oauthMgr)
+		pluginCredHandler = admin.NewPluginCredentialsHandler(store.Queries(), oauthStore)
 	}
 
 	handlers := api.HandlerBundle{
-		AuthHandler:          authHandler,
-		SettingsHandler:      settingsHandler,
-		AdminHandler:         adminHandler,
-		OpenAICompatHandler:  openaiCompatHandler,
-		PluginAdminHandler:   admin.NewPluginHandler(store.Queries(), broadcaster, nil),
-		PluginOAuthHandler:   pluginOAuthHandler,
-		AudienceHandler:      audienceH,
-		BindingTestHandler:   bindingTestH,
-		WebhookHandler:       webhookHandler,
-		SSEHandler:           sseHandler,
-		PolicyWebhookHandler: policyWebhookHandler,
+		AuthHandler:             authHandler,
+		SettingsHandler:         settingsHandler,
+		AdminHandler:            adminHandler,
+		OpenAICompatHandler:     openaiCompatHandler,
+		PluginAdminHandler:      admin.NewPluginHandler(store.Queries(), broadcaster, nil),
+		PluginOAuthHandler:      pluginOAuthHandler,
+		PluginCredentialsHandler: pluginCredHandler,
+		AudienceHandler:         audienceH,
+		BindingTestHandler:      bindingTestH,
+		WebhookHandler:          webhookHandler,
+		SSEHandler:              sseHandler,
+		PolicyWebhookHandler:    policyWebhookHandler,
 	}
 
 	// Wire the trigger supervisor into the plugin admin handler so that
