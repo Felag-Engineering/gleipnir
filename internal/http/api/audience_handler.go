@@ -143,6 +143,11 @@ type pluginInstanceForAudienceDTO struct {
 	// Re-authorize banner: detail prefix "oauth refresh failed" + oauth strategy
 	// → show the button.
 	HealthDetail string `json:"health_detail,omitempty"`
+	// LastOauthCallbackUrl is the OAuth callback URL recorded the last time this
+	// instance completed an OAuth flow. Omitted when nil (never authorized). Used
+	// by the admin/plugins page to help operators understand which URL needs to be
+	// updated in the provider after a public_url change (#230).
+	LastOauthCallbackUrl string `json:"last_oauth_callback_url,omitempty"`
 }
 
 // ListPluginInstances handles GET /api/v1/admin/plugin-instances.
@@ -251,21 +256,27 @@ func (h *AudienceHandler) ListPluginInstances(w http.ResponseWriter, r *http.Req
 			healthDetail = *inst.HealthDetail
 		}
 
+		lastCallbackURL := ""
+		if inst.LastOauthCallbackUrl != nil {
+			lastCallbackURL = *inst.LastOauthCallbackUrl
+		}
+
 		dtos = append(dtos, pluginInstanceForAudienceDTO{
-			ID:                 inst.ID,
-			PluginID:           inst.PluginID,
-			PluginName:         manifest.Name,
-			InstanceName:       inst.InstanceName,
-			State:              inst.HealthState,
-			ImplementsNotify:   implementsNotify,
-			ImplementsRequest:  implementsRequest,
-			ConfigSchema:       configSchema,
-			EventKinds:         eventKinds,
-			SubscriptionSchema: subscriptionSchema,
-			SubscriptionScope:  subscriptionScope,
-			Version:            inst.Version,
-			AuthStrategy:       string(manifest.Auth.Strategy),
-			HealthDetail:       healthDetail,
+			ID:                   inst.ID,
+			PluginID:             inst.PluginID,
+			PluginName:           manifest.Name,
+			InstanceName:         inst.InstanceName,
+			State:                inst.HealthState,
+			ImplementsNotify:     implementsNotify,
+			ImplementsRequest:    implementsRequest,
+			ConfigSchema:         configSchema,
+			EventKinds:           eventKinds,
+			SubscriptionSchema:   subscriptionSchema,
+			SubscriptionScope:    subscriptionScope,
+			Version:              inst.Version,
+			AuthStrategy:         string(manifest.Auth.Strategy),
+			HealthDetail:         healthDetail,
+			LastOauthCallbackUrl: lastCallbackURL,
 		})
 	}
 

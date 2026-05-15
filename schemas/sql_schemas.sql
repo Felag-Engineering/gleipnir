@@ -429,8 +429,9 @@ CREATE TABLE plugin_instances (
                                          'unsigned_permissive',
                                          'unhealthy',
                                          'crashed',
-                                         'circuit_broken'
-                                     )),                                                  -- ADR-038, ADR-045 §7, issue #191
+                                         'circuit_broken',
+                                         'pending_reauthorize'
+                                     )),                                                  -- ADR-038, ADR-045 §7, issue #191, #230
     health_detail            TEXT,                                                        -- nullable; operator-facing reason for non-healthy state
     last_oauth_callback_url  TEXT,                                                        -- nullable; OAuth-flow plumbing (#230)
     version                  INTEGER NOT NULL DEFAULT 0,                                  -- ADR-038 CAS counter

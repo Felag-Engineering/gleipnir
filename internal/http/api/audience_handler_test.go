@@ -1110,6 +1110,77 @@ auth:
   strategy: oauth2_authcode
 `
 
+// TestListPluginInstances_LastOAuthCallbackURL verifies that last_oauth_callback_url
+// is included in the DTO when set on the instance row, and omitted when nil (#230).
+func TestListPluginInstances_LastOAuthCallbackURL(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	snap := configvalidate.NewSnapshotter(store.Queries())
+	t.Cleanup(func() { snap.ResetCache(); configvalidate.ResetCache() })
+
+	pluginID := seedPlugin(t, store, "oauth-plugin-cb", oauthManifestYAML)
+	instID := seedPluginInstance(t, store, "oauth-inst-cb", pluginID)
+
+	const wantURL = "https://gleipnir.example.com/api/v1/admin/plugins/oauth/callback"
+
+	// Write a last_oauth_callback_url via the sqlc query.
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := store.Queries().UpdatePluginInstanceOAuthCallback(context.Background(), db.UpdatePluginInstanceOAuthCallbackParams{
+		LastOauthCallbackUrl: func() *string { s := wantURL; return &s }(),
+		UpdatedAt:            now,
+		ID:                   instID,
+		ExpectedVersion:      0,
+	})
+	if err != nil {
+		t.Fatalf("UpdatePluginInstanceOAuthCallback: %v", err)
+	}
+
+	w := do(t, newPluginInstancesRouter(store, snap), http.MethodGet, "/", nil, model.RoleOperator)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\nbody: %s", w.Code, w.Body.String())
+	}
+
+	var items []struct {
+		ID                   string `json:"id"`
+		LastOauthCallbackUrl string `json:"last_oauth_callback_url"`
+	}
+	parseData(t, w, &items)
+
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].LastOauthCallbackUrl != wantURL {
+		t.Errorf("last_oauth_callback_url = %q, want %q", items[0].LastOauthCallbackUrl, wantURL)
+	}
+}
+
+// TestListPluginInstances_LastOAuthCallbackURL_OmittedWhenNil verifies that the
+// last_oauth_callback_url field is omitted (not marshalled as "") when nil (#230).
+func TestListPluginInstances_LastOAuthCallbackURL_OmittedWhenNil(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	snap := configvalidate.NewSnapshotter(store.Queries())
+	t.Cleanup(func() { snap.ResetCache(); configvalidate.ResetCache() })
+
+	pluginID := seedPlugin(t, store, "oauth-plugin-nil", oauthManifestYAML)
+	seedPluginInstance(t, store, "oauth-inst-nil", pluginID)
+
+	// No UpdatePluginInstanceOAuthCallback call — last_oauth_callback_url stays NULL.
+	w := do(t, newPluginInstancesRouter(store, snap), http.MethodGet, "/", nil, model.RoleOperator)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\nbody: %s", w.Code, w.Body.String())
+	}
+
+	// Decode into a raw map so we can distinguish omitted from "".
+	var raw []map[string]json.RawMessage
+	parseData(t, w, &raw)
+
+	if len(raw) != 1 {
+		t.Fatalf("got %d items, want 1", len(raw))
+	}
+	if _, present := raw[0]["last_oauth_callback_url"]; present {
+		t.Error("last_oauth_callback_url should be omitted from JSON when nil, but was present")
+	}
+}
+
 // TestListPluginInstances_AuthStrategyAndHealthDetail verifies that the
 // auth_strategy and health_detail fields are populated in the DTO (#228).
 func TestListPluginInstances_AuthStrategyAndHealthDetail(t *testing.T) {

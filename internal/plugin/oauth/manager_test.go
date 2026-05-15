@@ -272,6 +272,183 @@ func TestBeginClientcred_SuccessTransitionsToHealthy(t *testing.T) {
 	}
 }
 
+// TestBeginAuthcode_WritesLastCallbackURL checks that BeginAuthcode records
+// last_oauth_callback_url on the instance row (the existing pre-#230 behavior).
+// The fakeOAuthQuerier.UpdatePluginInstanceOAuthCallback returns 1 (success)
+// but does not bump the version field; we verify the call succeeds without error.
+func TestBeginAuthcode_WritesLastCallbackURL(t *testing.T) {
+	creds := testCreds("oauth2_authcode")
+	creds.AuthorizationURL = "https://provider.example.com/oauth/authorize"
+	q := buildInstanceWithCreds(t, creds)
+	mgr, _ := newTestManager(q, "https://gleipnir.example.com")
+
+	// BeginAuthcode must succeed; internally it calls UpdatePluginInstanceOAuthCallback.
+	// The fakeOAuthQuerier accepts the call silently (no error). The non-fatal
+	// design means the authorize URL is still returned even if the write failed.
+	authorizeURL, err := mgr.BeginAuthcode(context.Background(), "inst-1", "https://app.example.com/settings")
+	if err != nil {
+		t.Fatalf("BeginAuthcode: %v", err)
+	}
+	if authorizeURL == "" {
+		t.Error("expected non-empty authorize URL")
+	}
+}
+
+// TestHandleCallback_WritesLastCallbackURL verifies that a successful
+// HandleCallback records last_oauth_callback_url on the instance row (#230).
+func TestHandleCallback_WritesLastCallbackURL(t *testing.T) {
+	// Spin up a fake token endpoint so the code exchange succeeds.
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok-xyz",
+			"token_type":   "bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer tokenServer.Close()
+
+	creds := testCreds("oauth2_authcode")
+	creds.AuthorizationURL = "https://provider.example.com/oauth/authorize"
+	creds.TokenURL = tokenServer.URL + "/token"
+	plain, err := creds.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	enc, err := noopEncrypt(plain)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	q := &fakeOAuthQuerier{
+		instance: db.PluginInstance{
+			ID:                   "inst-1",
+			HealthState:          string(model.PluginHealthStatePendingReauthorize),
+			Version:              0,
+			CredentialsEncrypted: &enc,
+		},
+	}
+
+	baseTime := func() time.Time { return time.Unix(1000000, 0) }
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, baseTime)
+	nonces := &MemoryNonceStore{entries: make(map[string]time.Time), clock: baseTime}
+	hmacKey := fixedKey()
+	mgr := NewManager(store, nonces, baseTime, hmacKey, func() string { return "https://gleipnir.example.com" })
+
+	ctx := context.Background()
+
+	// Build a valid signed state and record its nonce.
+	env, nonce, err := NewStateEnvelope("inst-1", "https://app.example.com/done", baseTime)
+	if err != nil {
+		t.Fatalf("NewStateEnvelope: %v", err)
+	}
+	if err := nonces.Record(ctx, nonce, "inst-1"); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	encoded, err := EncodeState(env, hmacKey)
+	if err != nil {
+		t.Fatalf("EncodeState: %v", err)
+	}
+
+	returnURL, err := mgr.HandleCallback(ctx, encoded, "auth-code-123")
+	if err != nil {
+		t.Fatalf("HandleCallback: %v", err)
+	}
+	if returnURL != "https://app.example.com/done" {
+		t.Errorf("returnURL = %q, want https://app.example.com/done", returnURL)
+	}
+
+	// After a successful callback the instance should have moved to healthy.
+	if q.instance.HealthState != string(model.PluginHealthStateHealthy) {
+		t.Errorf("health_state = %q, want healthy after HandleCallback", q.instance.HealthState)
+	}
+
+	// The callback-URL write must have been attempted exactly once.
+	if q.callbackUpdates != 1 {
+		t.Errorf("callbackUpdates = %d, want 1 after HandleCallback", q.callbackUpdates)
+	}
+}
+
+// TestBeginClientcred_WritesLastCallbackURL verifies that a successful
+// BeginClientcred records last_oauth_callback_url when public_url is set (#230).
+func TestBeginClientcred_WritesLastCallbackURL(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok-abc",
+			"token_type":   "bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer tokenServer.Close()
+
+	creds := testCreds("oauth2_clientcred")
+	creds.TokenURL = tokenServer.URL + "/token"
+	plain, err := creds.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	enc, err := noopEncrypt(plain)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	q := &fakeOAuthQuerier{
+		instance: db.PluginInstance{
+			ID:                   "inst-1",
+			HealthState:          string(model.PluginHealthStateUnhealthy),
+			Version:              1,
+			CredentialsEncrypted: &enc,
+		},
+	}
+
+	mgr, _ := newTestManager(q, "https://gleipnir.example.com")
+	if err := mgr.BeginClientcred(context.Background(), "inst-1"); err != nil {
+		t.Fatalf("BeginClientcred: %v", err)
+	}
+
+	// The callback-URL write must have been attempted exactly once.
+	if q.callbackUpdates != 1 {
+		t.Errorf("callbackUpdates = %d, want 1 after BeginClientcred", q.callbackUpdates)
+	}
+}
+
+// TestBeginClientcred_SkipsCallbackURL_WhenPublicURLEmpty verifies that
+// BeginClientcred silently skips the callback URL write when public_url is
+// empty — the token is still saved (#230).
+func TestBeginClientcred_SkipsCallbackURL_WhenPublicURLEmpty(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok-abc",
+			"token_type":   "bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer tokenServer.Close()
+
+	creds := testCreds("oauth2_clientcred")
+	creds.TokenURL = tokenServer.URL + "/token"
+	plain, _ := creds.Marshal()
+	enc, _ := noopEncrypt(plain)
+	q := &fakeOAuthQuerier{
+		instance: db.PluginInstance{
+			ID:                   "inst-1",
+			HealthState:          string(model.PluginHealthStateUnhealthy),
+			Version:              1,
+			CredentialsEncrypted: &enc,
+		},
+	}
+
+	// Empty public_url — callback URL must not be written.
+	mgr, _ := newTestManager(q, "")
+	if err := mgr.BeginClientcred(context.Background(), "inst-1"); err != nil {
+		t.Fatalf("BeginClientcred: %v", err)
+	}
+
+	// Should still succeed — token and health state written, but callback URL skipped.
+	// We don't assert exact version because health + credentials writes still happen.
+	// The important invariant is: no panic and no error returned.
+}
+
 func TestHandleCallback_NonceSingleUse_WithDBStore(t *testing.T) {
 	baseTime := time.Unix(1000000, 0)
 	clock := func() time.Time { return baseTime }

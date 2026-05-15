@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
@@ -147,6 +148,22 @@ func (m *Manager) HandleCallback(ctx context.Context, rawState, code string) (st
 		return "", fmt.Errorf("oauth callback: save token: %w", saveErr)
 	}
 
+	// Record last_oauth_callback_url on successful token exchange so future
+	// public_url change rescans (#230) know which URL this instance last used.
+	// We re-read the instance to get the current version for the CAS guard;
+	// a conflict or missing row is non-fatal — the token has already been saved.
+	if freshRow, getErr := m.store.q.GetPluginInstanceByID(ctx, env.InstanceID); getErr == nil {
+		nowStr := m.clock().UTC().Format(time.RFC3339Nano)
+		if n, writeErr := m.store.q.UpdatePluginInstanceOAuthCallback(ctx, db.UpdatePluginInstanceOAuthCallbackParams{
+			LastOauthCallbackUrl: &callbackURL,
+			UpdatedAt:            nowStr,
+			ID:                   env.InstanceID,
+			ExpectedVersion:      freshRow.Version,
+		}); writeErr != nil || n == 0 {
+			slog.WarnContext(ctx, "oauth: record callback url", "instance_id", env.InstanceID, "written", n, "err", writeErr)
+		}
+	}
+
 	m.store.EmitIssued(ctx, env.InstanceID)
 
 	// Transition the instance to healthy if it was waiting for authorization.
@@ -196,6 +213,25 @@ func (m *Manager) BeginClientcred(ctx context.Context, instanceID string) error 
 
 	if saveErr := m.store.SaveToken(ctx, instanceID, tok); saveErr != nil {
 		return fmt.Errorf("oauth clientcred: save token: %w", saveErr)
+	}
+
+	// Record last_oauth_callback_url so public_url change rescans (#230) can
+	// track this instance. Client credentials do not use a browser redirect, but
+	// we store the value consistently so the rescan logic works uniformly across
+	// both OAuth strategies. Skip silently when public_url is not yet configured.
+	if publicURL := m.getPublicURL(); publicURL != "" {
+		callbackURL := publicURL + callbackPath
+		if freshRow, getErr := m.store.q.GetPluginInstanceByID(ctx, instanceID); getErr == nil {
+			nowStr := m.clock().UTC().Format(time.RFC3339Nano)
+			if n, writeErr := m.store.q.UpdatePluginInstanceOAuthCallback(ctx, db.UpdatePluginInstanceOAuthCallbackParams{
+				LastOauthCallbackUrl: &callbackURL,
+				UpdatedAt:            nowStr,
+				ID:                   instanceID,
+				ExpectedVersion:      freshRow.Version,
+			}); writeErr != nil || n == 0 {
+				slog.WarnContext(ctx, "oauth: record callback url", "instance_id", instanceID, "written", n, "err", writeErr)
+			}
+		}
 	}
 
 	m.store.EmitIssued(ctx, instanceID)

@@ -28,5 +28,6 @@ func All() []Migration {
 		&AddSubscribedTriggerType{},
 		&AddSubscriptionScope{},
 		&AddPluginOAuthNonces{},
+		&AddPendingReauthorizeHealthState{},
 	}
 }

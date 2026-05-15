@@ -399,7 +399,8 @@ CREATE TABLE plugin_instances (
                                          'unsigned_permissive',
                                          'unhealthy',
                                          'crashed',
-                                         'circuit_broken'
+                                         'circuit_broken',
+                                         'pending_reauthorize'
                                      )),
     health_detail            TEXT,
     last_oauth_callback_url  TEXT,

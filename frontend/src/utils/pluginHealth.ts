@@ -9,6 +9,7 @@ const SEVERITY: Record<PluginHealthState, number> = {
   pending_key_approval:       2,
   pending_manifest_approval:  2,
   pending_config_migration:   2,
+  pending_reauthorize:        2,
   unhealthy:                  3,
   circuit_broken:             4,
   verification_error:         5,
@@ -47,6 +48,7 @@ export function pluginHealthLabel(state: PluginHealthState): string {
     case 'pending_key_approval':      return 'Pending key approval'
     case 'pending_manifest_approval': return 'Pending manifest approval'
     case 'pending_config_migration':  return 'Pending config migration'
+    case 'pending_reauthorize':       return 'Pending re-authorize'
     case 'unhealthy':                 return 'Unhealthy'
     case 'circuit_broken':            return 'Circuit broken'
     case 'verification_error':        return 'Verification error'

@@ -32,15 +32,22 @@ describe('worstHealth', () => {
   })
 
   it('all pending states have equal severity (returns first encountered)', () => {
-    // All three pending states share severity 2 — worstHealth picks whichever
+    // All four pending states share severity 2 — worstHealth picks whichever
     // appears last when tied (iterates in order, replaces on strictly-greater).
     const states: PluginHealthState[] = [
       'pending_key_approval',
       'pending_manifest_approval',
       'pending_config_migration',
+      'pending_reauthorize',
     ]
     // None is strictly worse than another; first one stays as worst.
     expect(worstHealth(states)).toBe('pending_key_approval')
+  })
+
+  it('pending_reauthorize has severity 2 (operator-action-pending tier)', () => {
+    // pending_reauthorize must not dominate over genuinely worse states.
+    const states: PluginHealthState[] = ['pending_reauthorize', 'unhealthy']
+    expect(worstHealth(states)).toBe('unhealthy')
   })
 })
 
@@ -51,6 +58,7 @@ describe('pluginHealthLabel', () => {
     ['pending_key_approval',      'Pending key approval'],
     ['pending_manifest_approval', 'Pending manifest approval'],
     ['pending_config_migration',  'Pending config migration'],
+    ['pending_reauthorize',       'Pending re-authorize'],
     ['unhealthy',                 'Unhealthy'],
     ['circuit_broken',            'Circuit broken'],
     ['verification_error',        'Verification error'],

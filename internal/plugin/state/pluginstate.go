@@ -69,6 +69,7 @@ var severity = map[model.PluginHealthState]int{
 	model.PluginHealthStatePendingKeyApproval:      2,
 	model.PluginHealthStatePendingManifestApproval: 2,
 	model.PluginHealthStatePendingConfigMigration:  2,
+	model.PluginHealthStatePendingReauthorize:      2,
 	model.PluginHealthStateUnhealthy:               3,
 	model.PluginHealthStateCircuitBroken:           4,
 	model.PluginHealthStateVerificationError:       5,
@@ -126,13 +127,24 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		model.PluginHealthStateCircuitBroken,
 		model.PluginHealthStatePendingManifestApproval, // hot-reload detects manifest change
 		model.PluginHealthStatePendingKeyApproval,      // new signed update with mismatched key (#188)
+		model.PluginHealthStatePendingReauthorize,      // public_url changed; callback URL stale (#230)
 	},
 	model.PluginHealthStateUnsignedPermissive: {
 		model.PluginHealthStateUnhealthy,
 		model.PluginHealthStateCrashed,
 		model.PluginHealthStateCircuitBroken,
 		model.PluginHealthStatePendingManifestApproval,
-		model.PluginHealthStatePendingKeyApproval, // signed update arrives for previously-unsigned plugin (#188)
+		model.PluginHealthStatePendingKeyApproval,  // signed update arrives for previously-unsigned plugin (#188)
+		model.PluginHealthStatePendingReauthorize,  // public_url changed (#230)
+	},
+	// #194 rationale: real availability problems must be visible regardless of
+	// pending_reauthorize. Exit edges include unhealthy/crashed/circuit_broken
+	// so those states can surface during an otherwise-stale re-auth wait.
+	model.PluginHealthStatePendingReauthorize: {
+		model.PluginHealthStateHealthy,
+		model.PluginHealthStateUnhealthy,
+		model.PluginHealthStateCrashed,
+		model.PluginHealthStateCircuitBroken,
 	},
 	model.PluginHealthStateUnhealthy: {
 		model.PluginHealthStateHealthy,
@@ -144,12 +156,14 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		model.PluginHealthStateHealthy,
 		model.PluginHealthStateUnhealthy,
 		model.PluginHealthStateCrashed,
-		model.PluginHealthStatePendingKeyApproval, // key mismatch detected during circuit-broken state (#188)
+		model.PluginHealthStatePendingKeyApproval,  // key mismatch detected during circuit-broken state (#188)
+		model.PluginHealthStatePendingReauthorize,  // public_url changed (#230)
 	},
 	model.PluginHealthStateCrashed: {
 		model.PluginHealthStateHealthy,
 		model.PluginHealthStateUnhealthy,
 		model.PluginHealthStatePendingKeyApproval, // key mismatch detected after crash (#188)
+		model.PluginHealthStatePendingReauthorize, // public_url changed (#230)
 	},
 	// signature_invalid and verification_error are terminal — no outgoing edges.
 	// A re-install or admin key-rotation creates a fresh instance row.

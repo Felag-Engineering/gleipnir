@@ -74,7 +74,8 @@ export function useAudienceReferences(id: string | undefined) {
   })
 }
 
-// Pending in #290 — GET /api/v1/admin/plugin-instances.
+// GET /api/v1/admin/plugin-instances — consumed by the audience editor (#290)
+// and the admin/plugins page (#230).
 export function usePluginInstancesForAudience() {
   return useQuery({
     queryKey: queryKeys.admin.pluginInstances,

@@ -18,6 +18,7 @@ const VARIANT: Record<PluginHealthState, string> = {
   pending_key_approval:       styles.yellow,
   pending_manifest_approval:  styles.yellow,
   pending_config_migration:   styles.yellow,
+  pending_reauthorize:        styles.yellow,
   unhealthy:                  styles.yellow,
   circuit_broken:             styles.red,
   verification_error:         styles.red,
