@@ -20,6 +20,38 @@ const (
 	Tier2UserDirectoryRead = "user_directory_read"
 )
 
+// Auth strategy constants for AuthDecl.Strategy. The canonical values are
+// enumerated here so both the host and plugin authors share one source of truth
+// (spec §9.1). Use these constants rather than string literals.
+const (
+	// AuthStrategyNone means the plugin requires no credentials.
+	AuthStrategyNone = "none"
+
+	// AuthStrategyStaticAPIKey means the plugin expects a static API key
+	// stored in credentials_encrypted.
+	AuthStrategyStaticAPIKey = "static_api_key"
+
+	// AuthStrategyHeaderSet means the plugin expects one or more static HTTP
+	// headers stored in credentials_encrypted.
+	AuthStrategyHeaderSet = "header_set"
+
+	// AuthStrategyBasicAuth means the plugin expects HTTP Basic Auth credentials
+	// stored in credentials_encrypted.
+	AuthStrategyBasicAuth = "basic_auth"
+
+	// AuthStrategyOAuth2Authcode means the host runs the OAuth2 authorization
+	// code flow on behalf of the plugin. The host stores the resulting access +
+	// refresh token pair in credentials_encrypted and provides automatic renewal
+	// via golang.org/x/oauth2 (spec §9.2).
+	AuthStrategyOAuth2Authcode = "oauth2_authcode"
+
+	// AuthStrategyOAuth2Clientcred means the host runs the OAuth2 client
+	// credentials flow on behalf of the plugin. No user interaction is required;
+	// the host exchanges client_id/client_secret for an access token directly and
+	// refreshes it automatically (spec §9.2).
+	AuthStrategyOAuth2Clientcred = "oauth2_clientcred"
+)
+
 // Manifest is the top-level structure for a Gleipnir plugin manifest file
 // (manifest.yaml). It is the install-time authority for UX, gating, and
 // consent screens. See docs/developer/plugin-system-spec.md §5.
@@ -157,12 +189,16 @@ type AuthDecl struct {
 	// one credential set serves all calls. "user_credentials" is v2-only.
 	Mode string `yaml:"mode"`
 
-	// Strategy is the auth strategy type: "static_key", "header_set",
-	// "oauth_authcode", or "none".
+	// Strategy is the auth strategy type. Valid v1 values (use the
+	// AuthStrategy* constants): "none", "static_api_key", "header_set",
+	// "basic_auth", "oauth2_authcode", "oauth2_clientcred".
 	Strategy string `yaml:"strategy"`
 
-	// OAuthDefaults carries default OAuth parameters baked into the manifest by
-	// the plugin author. Only set when Strategy is "oauth_authcode".
+	// OAuthDefaults carries default OAuth2 parameters baked into the manifest
+	// by the plugin author. Applies to both "oauth2_authcode" and
+	// "oauth2_clientcred" strategies. AuthorizationURL is only meaningful for
+	// "oauth2_authcode". Instance config may override these defaults for power
+	// users with private apps (client_id/client_secret/scopes/token_url).
 	OAuthDefaults *OAuthDefaultsDecl `yaml:"oauth_defaults,omitempty"`
 }
 

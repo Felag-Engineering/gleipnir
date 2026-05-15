@@ -430,6 +430,11 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 	}); err != nil {
 		return fmt.Errorf("record plugin_installed audit: %w", err)
 	}
+	// TODO(plugin-instance-provision): when CreatePluginInstance is wired into
+	// the install flow (#159 follow-up), call internal/plugin/oauth.BuildSeedCredentials
+	// here for manifests with Auth.Strategy in {oauth2_authcode, oauth2_clientcred}
+	// and write the encrypted seed into the new instance row so the OAuth dance
+	// has client_id/client_secret/endpoints available to start from.
 	return nil
 }
 

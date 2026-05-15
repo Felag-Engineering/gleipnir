@@ -17,8 +17,8 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
-	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
+	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
@@ -102,13 +102,13 @@ func (h *PluginHandler) SetTriggerRestarter(r TriggerRestarter) {
 // Credentials and other write-only fields are intentionally absent — mirrors
 // the ADR-039 read-restraint pattern for encrypted auth headers.
 type instanceResponse struct {
-	ID                   string  `json:"id"`
-	PluginID             string  `json:"plugin_id"`
-	InstanceName         string  `json:"instance_name"`
-	State                string  `json:"state"`
-	Detail               *string `json:"detail"`
-	Version              int64   `json:"version"`
-	UpdatedAt            string  `json:"updated_at"`
+	ID                    string  `json:"id"`
+	PluginID              string  `json:"plugin_id"`
+	InstanceName          string  `json:"instance_name"`
+	State                 string  `json:"state"`
+	Detail                *string `json:"detail"`
+	Version               int64   `json:"version"`
+	UpdatedAt             string  `json:"updated_at"`
 	SubscriptionScopeJson string  `json:"subscription_scope_json"`
 }
 
@@ -137,13 +137,13 @@ func (h *PluginHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
-		ID:                   row.ID,
-		PluginID:             row.PluginID,
-		InstanceName:         row.InstanceName,
-		State:                row.HealthState,
-		Detail:               row.HealthDetail,
-		Version:              row.Version,
-		UpdatedAt:            row.UpdatedAt,
+		ID:                    row.ID,
+		PluginID:              row.PluginID,
+		InstanceName:          row.InstanceName,
+		State:                 row.HealthState,
+		Detail:                row.HealthDetail,
+		Version:               row.Version,
+		UpdatedAt:             row.UpdatedAt,
 		SubscriptionScopeJson: row.SubscriptionScopeJson,
 	})
 }
@@ -547,25 +547,25 @@ func (h *PluginHandler) PutSubscriptionScope(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		// The write succeeded; fall back to a synthesised response.
 		httputil.WriteJSON(w, http.StatusOK, instanceResponse{
-			ID:                   instanceID,
-			PluginID:             pluginID,
-			InstanceName:         inst.InstanceName,
-			State:                inst.HealthState,
-			Detail:               inst.HealthDetail,
-			Version:              inst.Version + 1,
-			UpdatedAt:            nowStr,
+			ID:                    instanceID,
+			PluginID:              pluginID,
+			InstanceName:          inst.InstanceName,
+			State:                 inst.HealthState,
+			Detail:                inst.HealthDetail,
+			Version:               inst.Version + 1,
+			UpdatedAt:             nowStr,
 			SubscriptionScopeJson: string(scopeBytes),
 		})
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
-		ID:                   updated.ID,
-		PluginID:             updated.PluginID,
-		InstanceName:         updated.InstanceName,
-		State:                updated.HealthState,
-		Detail:               updated.HealthDetail,
-		Version:              updated.Version,
-		UpdatedAt:            updated.UpdatedAt,
+		ID:                    updated.ID,
+		PluginID:              updated.PluginID,
+		InstanceName:          updated.InstanceName,
+		State:                 updated.HealthState,
+		Detail:                updated.HealthDetail,
+		Version:               updated.Version,
+		UpdatedAt:             updated.UpdatedAt,
 		SubscriptionScopeJson: updated.SubscriptionScopeJson,
 	})
 }

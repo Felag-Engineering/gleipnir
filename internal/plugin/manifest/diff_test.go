@@ -66,7 +66,7 @@ func TestDiff_MaterialTier2Added(t *testing.T) {
 
 func TestDiff_MaterialOAuthScopesChanged(t *testing.T) {
 	old := baseManifest()
-	old.Auth.Strategy = "oauth_authcode"
+	old.Auth.Strategy = sdkmanifest.AuthStrategyOAuth2Authcode
 	old.Auth.OAuthDefaults = &sdkmanifest.OAuthDefaultsDecl{
 		AuthorizationURL: "https://example.com/auth",
 		TokenURL:         "https://example.com/token",
@@ -74,7 +74,7 @@ func TestDiff_MaterialOAuthScopesChanged(t *testing.T) {
 	}
 
 	new := baseManifest()
-	new.Auth.Strategy = "oauth_authcode"
+	new.Auth.Strategy = sdkmanifest.AuthStrategyOAuth2Authcode
 	new.Auth.OAuthDefaults = &sdkmanifest.OAuthDefaultsDecl{
 		AuthorizationURL: "https://example.com/auth",
 		TokenURL:         "https://example.com/token",
@@ -102,7 +102,7 @@ func TestDiff_MaterialOAuthStrategyChanged(t *testing.T) {
 	old.Auth.Strategy = "static_key"
 
 	new := baseManifest()
-	new.Auth.Strategy = "oauth_authcode"
+	new.Auth.Strategy = sdkmanifest.AuthStrategyOAuth2Authcode
 
 	changes := pluginmanifest.Diff(old, new)
 	if !pluginmanifest.HasMaterial(changes) {

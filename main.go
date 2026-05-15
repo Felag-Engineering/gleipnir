@@ -33,6 +33,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostsvc"
 	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
+	pluginoauth "github.com/felag-engineering/gleipnir/internal/plugin/oauth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/process"
 	plugintrigger "github.com/felag-engineering/gleipnir/internal/plugin/trigger"
 	"github.com/felag-engineering/gleipnir/internal/policy"
@@ -440,12 +441,41 @@ func run(cfg config.Config) error {
 	audienceH := api.NewAudienceHandler(store, snap, time.Now)
 	bindingTestH := api.NewBindingTestHandler(snap)
 
+	// OAuth2 token management for plugin instances. Constructed here (after
+	// systemSettings) so getPublicURL can be bound at call time. The scanner
+	// starts only when plugins are enabled and an encryption key is set.
+	var pluginOAuthHandler *admin.PluginOAuthHandler
+	if cfg.PluginsEnabled && encryptionKey != nil {
+		enc := func(p string) (string, error) { return admin.Encrypt(encryptionKey, p) }
+		dec := func(c string) (string, error) { return admin.Decrypt(encryptionKey, c) }
+		oauthStore := pluginoauth.NewDBStore(store.Queries(), enc, dec, store.Queries(), time.Now)
+		oauthNonces := pluginoauth.NewMemoryNonceStore(time.Now)
+		oauthHMACKey := pluginoauth.DeriveHMACKey(encryptionKey)
+		// getPublicURL is a zero-arg closure used by the manager and scanner so
+		// they do not need a context parameter. Context is elided because public_url
+		// is a static admin setting; a background context is adequate here.
+		getPublicURL := func() string {
+			u, _ := systemSettings.GetPublicURL(context.Background())
+			return u
+		}
+		oauthMgr := pluginoauth.NewManager(oauthStore, oauthNonces, time.Now, oauthHMACKey, getPublicURL)
+		oauthScanner := pluginoauth.NewRefreshScanner(
+			oauthStore, store.Queries(),
+			getPublicURL,
+			cfg.OAuthRefreshInterval,
+			cfg.OAuthRefreshLead,
+		)
+		oauthScanner.Start(ctx)
+		pluginOAuthHandler = admin.NewPluginOAuthHandler(store.Queries(), oauthMgr)
+	}
+
 	handlers := api.HandlerBundle{
 		AuthHandler:          authHandler,
 		SettingsHandler:      settingsHandler,
 		AdminHandler:         adminHandler,
 		OpenAICompatHandler:  openaiCompatHandler,
 		PluginAdminHandler:   admin.NewPluginHandler(store.Queries(), broadcaster, nil),
+		PluginOAuthHandler:   pluginOAuthHandler,
 		AudienceHandler:      audienceH,
 		BindingTestHandler:   bindingTestH,
 		WebhookHandler:       webhookHandler,

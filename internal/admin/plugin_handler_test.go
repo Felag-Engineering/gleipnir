@@ -770,10 +770,10 @@ func TestPluginHandler_PutSubscriptionScope(t *testing.T) {
 			Version:          0,
 		})
 		q.seed(db.PluginInstance{
-			ID:       "inst-2",
-			PluginID: "plugin-2",
+			ID:          "inst-2",
+			PluginID:    "plugin-2",
 			HealthState: "healthy",
-			Version:  0,
+			Version:     0,
 		})
 
 		restarter := &fakeTriggerRestarter{}

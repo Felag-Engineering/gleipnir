@@ -65,6 +65,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-048 | Subscribed trigger type — internal-only name, flat picker, no JSONPath for plugin bindings, single-trigger-per-policy v1 | 🟢 Decided | v2.0 (plugins) | internal/model (TriggerType), internal/policy (parser/validator), internal/trigger (new subscribed handler), policy editor trigger picker, spec §7 |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
 | #199    | call_id propagation through gRPC metadata (spec §8.5)  | 🟢 Decided | v2.0 (plugins) | plugin-sdk/serve/callcontext.go, internal/plugin/hostsvc (new package), no new ADR — implements existing spec §8.5 contract |
+| #224    | OAuth2 authcode + clientcred host-side orchestration (spec §9.1/§9.2) | 🟢 Decided | v2.0 (plugins) | internal/plugin/oauth (new package, x/oauth2 + clientcredentials), internal/admin/plugin_oauth_handler.go, plugin_instances.credentials_encrypted, HMAC state envelope with HKDF subkey off GLEIPNIR_ENCRYPTION_KEY; no new ADR — implements existing spec §9 contract. Encryption helpers reused from internal/admin via function injection to avoid an import cycle; planned to move to internal/infra/crypto when #141 lands. |
 
 ---
 
