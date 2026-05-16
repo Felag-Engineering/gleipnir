@@ -562,3 +562,44 @@ export interface ApiBindingTestRequest {
 export interface ApiBindingTestResponse {
   results: { match: boolean; error?: string }[]
 }
+
+// PluginAuthStrategy mirrors the AuthStrategy* constants in plugin-sdk/manifest.
+// Used to type-narrow credential form rendering in CredentialsTab.
+export type PluginAuthStrategy =
+  | 'none'
+  | 'static_api_key'
+  | 'header_set'
+  | 'basic_auth'
+  | 'oauth2_authcode'
+  | 'oauth2_clientcred'
+
+// ApiRedactedCredentials mirrors internal/plugin/oauth.RedactedCredentials
+// (internal/plugin/oauth/credentials.go). Secret values are NEVER present —
+// only presence flags (has_api_key, has_password, has_client_secret, has_token)
+// and non-secret metadata.
+export interface ApiRedactedCredentials {
+  strategy: string
+
+  // static_api_key fields
+  header_name?: string
+  scheme?: string
+  has_api_key?: boolean
+
+  // header_set fields
+  header_names?: string[]
+
+  // basic_auth fields
+  username?: string
+  has_password?: boolean
+
+  // oauth2_* fields
+  client_id?: string
+  has_client_secret?: boolean
+  authorization_url?: string
+  token_url?: string
+  scopes?: string[]
+  has_token?: boolean
+  // token_expires_at is an RFC3339Nano UTC timestamp. Absent when the token is
+  // missing or has a zero expiry.
+  token_expires_at?: string
+}

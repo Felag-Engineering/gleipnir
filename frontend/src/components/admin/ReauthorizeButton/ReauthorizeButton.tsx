@@ -5,6 +5,11 @@ interface ReauthorizeButtonProps {
   pluginId: string
   instanceId: string
   strategy: string
+  // label and pendingLabel allow callers to customise the button text.
+  // Defaults preserve the original "Re-authorize" / "Starting…" strings so
+  // the existing page-level banner is unaffected.
+  label?: string
+  pendingLabel?: string
 }
 
 const OAUTH_STRATEGIES = ['oauth2_authcode', 'oauth2_clientcred']
@@ -13,7 +18,16 @@ const OAUTH_STRATEGIES = ['oauth2_authcode', 'oauth2_clientcred']
 // an instance whose token refresh has failed (#228). It only renders for OAuth
 // strategies; calling it on a non-OAuth instance is a no-op by design so it
 // can safely be dropped into surfaces that may not gate strategy up-front.
-export function ReauthorizeButton({ pluginId, instanceId, strategy }: ReauthorizeButtonProps) {
+//
+// The optional `label` and `pendingLabel` props allow CredentialsTab to reuse
+// this button for the initial "Authorize" CTA without a separate component.
+export function ReauthorizeButton({
+  pluginId,
+  instanceId,
+  strategy,
+  label = 'Re-authorize',
+  pendingLabel = 'Starting…',
+}: ReauthorizeButtonProps) {
   const mutation = useBeginPluginOAuth()
 
   // Defense-in-depth: only OAuth strategies need re-authorization. The page
@@ -47,7 +61,7 @@ export function ReauthorizeButton({ pluginId, instanceId, strategy }: Reauthoriz
       onClick={handleClick}
       disabled={mutation.isPending}
     >
-      {mutation.isPending ? 'Starting…' : 'Re-authorize'}
+      {mutation.isPending ? pendingLabel : label}
     </Button>
   )
 }

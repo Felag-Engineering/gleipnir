@@ -6,10 +6,13 @@ import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
 import { FieldError } from '@/components/form/FieldError/FieldError'
 import { ReauthorizeButton } from '@/components/admin/ReauthorizeButton/ReauthorizeButton'
+import { CredentialsTab } from '@/components/admin/CredentialsTab/CredentialsTab'
 import { usePluginInstancesForAudience } from '@/hooks/queries/admin'
+import { useCurrentUser } from '@/hooks/queries/users'
 import { useSetInstanceSubscriptionScope } from '@/hooks/mutations/plugins'
 import { isOAuthRefreshFailure } from '@/utils/pluginHealth'
 import { queryKeys } from '@/hooks/queryKeys'
+import type { PluginAuthStrategy } from '@/api/types'
 import type { ApiError } from '@/api/fetch'
 import styles from './AdminPluginInstancePage.module.css'
 
@@ -253,6 +256,11 @@ export default function AdminPluginInstancePage() {
   const queryClient = useQueryClient()
 
   const { data: allInstances, status } = usePluginInstancesForAudience()
+  const { data: currentUser } = useCurrentUser()
+
+  // The backend gates all credentials endpoints with RequireRole(admin).
+  // canManage matches that exactly so write controls are only shown to admins.
+  const canManage = currentUser?.roles.includes('admin') ?? false
 
   const instance = allInstances?.find((inst) => inst.id === instanceId && inst.plugin_id === pluginId)
 
@@ -267,12 +275,18 @@ export default function AdminPluginInstancePage() {
   }, [status, hasSubscriptionSchema, activeTab])
 
   // After a successful OAuth authcode round-trip the callback handler redirects
-  // the browser back here with ?oauth_ok=1. Invalidate the instance list so the
-  // Re-authorize banner clears without requiring a manual refresh.
+  // the browser back here with ?oauth_ok=1. Invalidate the instance list and
+  // credentials cache so the Re-authorize banner clears and has_token flips
+  // without requiring a manual refresh.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     if (params.get('oauth_ok') === '1') {
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.pluginInstances })
+      if (pluginId && instanceId) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.plugins.credentials(pluginId, instanceId),
+        })
+      }
     }
   // Run once on mount; queryClient reference is stable.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -310,8 +324,14 @@ export default function AdminPluginInstancePage() {
     if (activeTab === 'credentials') {
       return (
         <div className={styles.tabContent}>
-          {/* TODO #242: render credentials form */}
-          <p className={styles.placeholder}>Credentials management — coming in #242.</p>
+          <CredentialsTab
+            pluginId={pluginId!}
+            instanceId={instanceId!}
+            strategy={(instance.auth_strategy ?? 'none') as PluginAuthStrategy}
+            canManage={canManage}
+            healthState={instance.state}
+            healthDetail={instance.health_detail}
+          />
         </div>
       )
     }

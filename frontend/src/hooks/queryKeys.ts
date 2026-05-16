@@ -60,5 +60,7 @@ export const queryKeys = {
   plugins: {
     instance: (pluginId: string, instanceId: string) =>
       ['admin', 'plugins', pluginId, 'instances', instanceId] as const,
+    credentials: (pluginId: string, instanceId: string) =>
+      ['admin', 'plugins', pluginId, 'instances', instanceId, 'credentials'] as const,
   },
 } as const
