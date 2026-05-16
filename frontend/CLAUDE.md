@@ -36,7 +36,7 @@ npm run build-storybook  # static Storybook build
 /admin/audiences/new → create audience (admin|operator)
 /admin/audiences/:id → audience detail/editor (admin|operator: edit; auditor: read-only)
 /admin/plugins      → plugin instance list (admin); groups instances pending re-authorization at top after a public_url change (#230)
-/admin/plugins/:id/instances/:iid → plugin instance editor (admin); Subscriptions tab edits coarse watch scope (#223), Config and Credentials tabs are placeholders for #241/#242
+/admin/plugins/:id/instances/:iid → plugin instance editor (admin); Subscriptions tab edits coarse watch scope (#223), Credentials tab renders per the manifest's auth strategy (write-only static API key / header set / basic auth; Authorize / Re-authorize for OAuth — #231), Config tab is a placeholder for #241
 *                   → 404 not found
 ```
 

@@ -1,10 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { http, HttpResponse } from 'msw'
 import '@/tokens.css'
 import AdminPluginInstancePage from './AdminPluginInstancePage'
 import { queryKeys } from '@/hooks/queryKeys'
-import type { ApiPluginInstanceForAudience } from '@/api/types'
+import type { ApiPluginInstanceForAudience, ApiRedactedCredentials } from '@/api/types'
 import { RefreshFailureDetailPrefix } from '@/utils/pluginHealth'
 
 const PLUGIN_ID = 'plugin-slack-01'
@@ -93,6 +94,43 @@ const FIXTURE_OAUTH_REFRESH_FAILED_CLIENTCRED: ApiPluginInstanceForAudience = {
   event_kinds: [],
 }
 
+// Default redacted credentials fixture — used by MSW to respond to GET /credentials.
+// Seeded so the CredentialsTab shows meaningful content in stories.
+const FIXTURE_CREDENTIALS_OAUTH: ApiRedactedCredentials = {
+  strategy: 'oauth2_authcode',
+  client_id: 'story-client-id',
+  has_client_secret: true,
+  authorization_url: 'https://provider.example.com/authorize',
+  token_url: 'https://provider.example.com/token',
+  scopes: ['read', 'write'],
+  has_token: true,
+  token_expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
+}
+
+const FIXTURE_CREDENTIALS_NONE: ApiRedactedCredentials = { strategy: 'none' }
+
+// MSW handlers for the credentials endpoint so the CredentialsTab renders in
+// all existing stories without needing a running backend.
+const CREDENTIALS_HANDLERS = [
+  http.get(
+    `/api/v1/admin/plugins/${PLUGIN_ID}/instances/${INSTANCE_ID}/credentials`,
+    () => HttpResponse.json({ data: FIXTURE_CREDENTIALS_OAUTH }),
+  ),
+]
+
+const CREDENTIALS_HANDLERS_NONE = [
+  http.get(
+    `/api/v1/admin/plugins/${PLUGIN_ID}/instances/${INSTANCE_ID}/credentials`,
+    () => HttpResponse.json({ data: FIXTURE_CREDENTIALS_NONE }),
+  ),
+]
+
+// currentUser stub — stories render as admin so write controls are shown.
+const CURRENT_USER_HANDLER = http.get(
+  '/api/v1/auth/me',
+  () => HttpResponse.json({ data: { id: 'u1', username: 'admin', roles: ['admin'] } }),
+)
+
 function makeQueryClient(instances: ApiPluginInstanceForAudience[]): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   qc.setQueryData(queryKeys.admin.pluginInstances, instances)
@@ -126,11 +164,17 @@ type Story = StoryObj<typeof AdminPluginInstancePage>
 
 // Renders the Subscriptions tab because the fixture has subscription_schema.
 export const WithSubscriptionSchema: Story = {
+  parameters: {
+    msw: { handlers: [...CREDENTIALS_HANDLERS, CURRENT_USER_HANDLER] },
+  },
   render: () => <Wrapper instances={[FIXTURE_WITH_SCHEMA]} />,
 }
 
 // No subscription_schema → Subscriptions tab is hidden; defaults to Config tab.
 export const NoSubscriptionSchema: Story = {
+  parameters: {
+    msw: { handlers: [...CREDENTIALS_HANDLERS_NONE, CURRENT_USER_HANDLER] },
+  },
   render: () => <Wrapper instances={[FIXTURE_NO_SCHEMA]} />,
 }
 
@@ -156,11 +200,17 @@ export const Loading: Story = {
 // oauth2_authcode strategy instance. Clicking Re-authorize would navigate
 // to the provider's authorization page.
 export const OAuthRefreshFailedAuthcode: Story = {
+  parameters: {
+    msw: { handlers: [...CREDENTIALS_HANDLERS, CURRENT_USER_HANDLER] },
+  },
   render: () => <Wrapper instances={[FIXTURE_OAUTH_REFRESH_FAILED_AUTHCODE]} />,
 }
 
 // OAuth refresh failed (clientcred) — same banner, but Re-authorize performs
 // the client credentials exchange synchronously (no browser redirect).
 export const OAuthRefreshFailedClientcred: Story = {
+  parameters: {
+    msw: { handlers: [...CREDENTIALS_HANDLERS, CURRENT_USER_HANDLER] },
+  },
   render: () => <Wrapper instances={[FIXTURE_OAUTH_REFRESH_FAILED_CLIENTCRED]} />,
 }

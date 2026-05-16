@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiFetch } from '@/api/fetch'
+import { apiFetch, apiFetchVoid } from '@/api/fetch'
 import type { ApiAcceptNewKeyResponse } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
@@ -80,6 +80,138 @@ export function useAcceptPluginNewKey() {
     },
   })
 }
+
+// ── Credential mutations ──────────────────────────────────────────────────────
+//
+// All five mutations invalidate queryKeys.plugins.credentials(...) so the
+// CredentialsTab re-fetches the updated redacted view. They do NOT invalidate
+// admin.pluginInstances — credentials do not change instance health state.
+
+interface PluginInstanceRef {
+  pluginId: string
+  instanceId: string
+}
+
+// useSetPluginStaticAPIKey writes the static_api_key credential blob.
+// PUT /api/v1/admin/plugins/{id}/instances/{iid}/credentials/static-api-key
+export function useSetPluginStaticAPIKey() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      pluginId,
+      instanceId,
+      header_name,
+      scheme,
+      api_key,
+    }: PluginInstanceRef & { header_name: string; scheme?: string; api_key: string }) =>
+      apiFetchVoid(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}/credentials/static-api-key`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ header_name, scheme, api_key }),
+        },
+      ),
+    onSuccess: (_data, { pluginId, instanceId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.plugins.credentials(pluginId, instanceId),
+      })
+    },
+  })
+}
+
+// useSetPluginHeader writes a single named header for the header_set strategy.
+// PUT /api/v1/admin/plugins/{id}/instances/{iid}/credentials/headers/{name}
+export function useSetPluginHeader() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      pluginId,
+      instanceId,
+      name,
+      value,
+    }: PluginInstanceRef & { name: string; value: string }) =>
+      apiFetchVoid(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}/credentials/headers/${encodeURIComponent(name)}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ value }),
+        },
+      ),
+    onSuccess: (_data, { pluginId, instanceId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.plugins.credentials(pluginId, instanceId),
+      })
+    },
+  })
+}
+
+// useDeletePluginHeader removes a single named header from the header_set credential blob.
+// DELETE /api/v1/admin/plugins/{id}/instances/{iid}/credentials/headers/{name}
+export function useDeletePluginHeader() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      pluginId,
+      instanceId,
+      name,
+    }: PluginInstanceRef & { name: string }) =>
+      apiFetchVoid(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}/credentials/headers/${encodeURIComponent(name)}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: (_data, { pluginId, instanceId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.plugins.credentials(pluginId, instanceId),
+      })
+    },
+  })
+}
+
+// useSetPluginBasicAuth writes the basic_auth credential blob.
+// PUT /api/v1/admin/plugins/{id}/instances/{iid}/credentials/basic-auth
+export function useSetPluginBasicAuth() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      pluginId,
+      instanceId,
+      username,
+      password,
+    }: PluginInstanceRef & { username: string; password: string }) =>
+      apiFetchVoid(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}/credentials/basic-auth`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ username, password }),
+        },
+      ),
+    onSuccess: (_data, { pluginId, instanceId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.plugins.credentials(pluginId, instanceId),
+      })
+    },
+  })
+}
+
+// useClearPluginCredentials wipes the credential blob while preserving Strategy.
+// DELETE /api/v1/admin/plugins/{id}/instances/{iid}/credentials
+export function useClearPluginCredentials() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ pluginId, instanceId }: PluginInstanceRef) =>
+      apiFetchVoid(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}/credentials`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: (_data, { pluginId, instanceId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.plugins.credentials(pluginId, instanceId),
+      })
+    },
+  })
+}
+
+// ── Subscription scope ────────────────────────────────────────────────────────
 
 // useSetInstanceSubscriptionScope submits a new subscription scope for a plugin
 // instance. On success it invalidates the plugin-instances list so the audience
