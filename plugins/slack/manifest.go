@@ -34,14 +34,17 @@ var pluginManifest = manifest.Manifest{
 		OAuthDefaults: &manifest.OAuthDefaultsDecl{
 			AuthorizationURL: "https://slack.com/oauth/v2/authorize",
 			TokenURL:         "https://slack.com/api/oauth.v2.access",
-			Scopes:           []string{"channels:read", "chat:write", "im:write", "users:read"},
-			HasClientID:      true,
-			HasClientSecret:  true,
+			// search:read is required by search_messages. Bot-only installs that
+			// are not granted this scope will see a runtime PERMISSION error
+			// (missing_scope → ERROR_CODE_PERMISSION + SetHealthState UNHEALTHY
+			// "auth_expired") visible in the operator UI. Operators must grant
+			// the scope in the Slack app settings and re-authorize.
+			Scopes:          []string{"channels:read", "chat:write", "im:write", "users:read", "search:read"},
+			HasClientID:     true,
+			HasClientSecret: true,
 		},
 	},
-	// Tools is empty for this scaffold; #233 will populate it with
-	// send_message, list_channels, and related tool declarations.
-	Tools: nil,
+	Tools: buildToolDecls(),
 	// ConfigSchema is omitted for this scaffold. Instance-level config
 	// (workspace ID, default channel, etc.) lands in #236 with OAuth wiring.
 	Channels: []manifest.ChannelDecl{
@@ -64,6 +67,42 @@ properties:
 `),
 		},
 	},
+}
+
+// buildToolDecls returns the five Slack tool declarations for the manifest.
+// InputSchema is a *yaml.Node (manifest.ToolDecl.InputSchema, manifest.go:237)
+// produced by manifest.MustReflectSchema — distinct from the JSON-string form
+// used by ToolService.ListTools on the wire (see tools.go:reflectInputSchemaJSON).
+// Tool names are unqualified; the host prepends the instance name at runtime
+// (internal/plugin/tools/registrar.go:72).
+func buildToolDecls() []manifest.ToolDecl {
+	return []manifest.ToolDecl{
+		{
+			Name:        "post_message",
+			Description: "Post a plain-text message to a Slack channel or DM.",
+			InputSchema: manifest.MustReflectSchema(PostMessageParams{}),
+		},
+		{
+			Name:        "list_channels",
+			Description: "List Slack channels visible to the bot user.",
+			InputSchema: manifest.MustReflectSchema(ListChannelsParams{}),
+		},
+		{
+			Name:        "search_messages",
+			Description: "Search messages across the workspace using Slack's search.",
+			InputSchema: manifest.MustReflectSchema(SearchMessagesParams{}),
+		},
+		{
+			Name:        "react",
+			Description: "Add an emoji reaction to a Slack message.",
+			InputSchema: manifest.MustReflectSchema(ReactParams{}),
+		},
+		{
+			Name:        "set_topic",
+			Description: "Set the topic of a Slack channel.",
+			InputSchema: manifest.MustReflectSchema(SetTopicParams{}),
+		},
+	}
 }
 
 // SlackChannelMessageBinding is the per-policy binding struct for the
