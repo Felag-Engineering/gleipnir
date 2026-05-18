@@ -1,0 +1,52 @@
+auth:
+  mode: instance_credentials
+  oauth_defaults:
+    authorization_url: https://slack.com/oauth/v2/authorize
+    has_client_id: true
+    has_client_secret: true
+    scopes:
+      - channels:read
+      - chat:write
+      - im:write
+      - users:read
+    token_url: https://slack.com/api/oauth.v2.access
+  strategy: oauth2_authcode
+channels:
+  - config_schema:
+      properties:
+        channel:
+          description: 'Slack channel or user DM target (e.g. #general or @username)'
+          type: string
+        mention:
+          description: Slack user or group to mention in the message (e.g. @oncall)
+          type: string
+      required:
+        - channel
+      type: object
+    implements_notify: true
+    implements_request: true
+description: 'Slack integration: tools (send/list channels), triggers (channel messages), and channels (notify/request via Slack DMs and posts).'
+event_kinds:
+  - binding_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: 'Glob pattern matched against the Slack channel name (e.g. #incidents-*)'
+          format: glob
+          title: Channel
+          type: string
+        text:
+          description: Substring matched against the message text
+          format: contains
+          title: Text contains
+          type: string
+      type: object
+    description: A message was posted to a Slack channel
+    kind: channel_message
+name: slack
+schema_version: v1
+services:
+  channel: v1
+  tool: v1
+  trigger: v1
+version: 0.1.0
