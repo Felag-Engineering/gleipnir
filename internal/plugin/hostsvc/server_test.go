@@ -1486,7 +1486,10 @@ func TestServer_SetTriggerSink_LateBinding(t *testing.T) {
 // --- tests: Log ---
 
 func TestLog_RoutesWithCorrelation(t *testing.T) {
-	t.Parallel()
+	// Not t.Parallel: this test swaps slog.SetDefault, which is process-global.
+	// Running in parallel with TestLog_PluginOnlyWhenNoCallID (or any other
+	// parallel test that touches the default logger) races: one test's deferred
+	// restore can land before the other's emit, producing "no records captured".
 
 	q := &fakeQuerier{
 		instance:   db.PluginInstance{ID: "iid-log", PluginID: "plug-log"},
@@ -1541,7 +1544,8 @@ func TestLog_RoutesWithCorrelation(t *testing.T) {
 }
 
 func TestLog_PluginOnlyWhenNoCallID(t *testing.T) {
-	t.Parallel()
+	// Not t.Parallel: see TestLog_RoutesWithCorrelation — slog.SetDefault is
+	// process-global and parallel test stomps cause "no records captured".
 
 	q := &fakeQuerier{
 		instance: db.PluginInstance{ID: "iid-log2", PluginID: "plug-log2"},

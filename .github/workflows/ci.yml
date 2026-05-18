@@ -191,6 +191,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: go test ./plugin-sdk/examples/minimal-tool/...
 
+      # First-party plugins each live in their own module under ./plugins/,
+      # so `go test ./plugins/...` from the workspace root matches no packages
+      # (the root module owns nothing there). Iterate over each module instead
+      # so future plugins (#233+) are automatically picked up without editing CI.
+      - name: Test plugins (workspace)
+        working-directory: ${{ github.workspace }}
+        run: |
+          for dir in plugins/*/; do
+            (cd "$dir" && go test ./...)
+          done
+
   storybook-build:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
