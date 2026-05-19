@@ -1,9 +1,9 @@
 # slack
 
-**Status: scaffold only.** This plugin compiles and passes `gleipnir-plugin validate`, but all service methods return "not implemented" errors. Subsequent issues fill in real Slack API behavior:
+**Status: TriggerService implemented (#234).** ToolService is implemented (#233). ChannelService is still a stub.
 
-- [#233](https://github.com/felag-engineering/gleipnir/issues/233) — ToolService: `send_message`, `list_channels`
-- [#234](https://github.com/felag-engineering/gleipnir/issues/234) — TriggerService: `channel_message` event stream (Slack Events API)
+Remaining issues:
+
 - [#235](https://github.com/felag-engineering/gleipnir/issues/235) — ChannelService: `Notify` and `Request` via Slack DMs / posts
 - [#236](https://github.com/felag-engineering/gleipnir/issues/236) — Instance config schema, OAuth wiring
 - [#237](https://github.com/felag-engineering/gleipnir/issues/237) — End-to-end test, packaging, signing
@@ -13,7 +13,7 @@ Parent tracking issue: [#162](https://github.com/felag-engineering/gleipnir/issu
 ## What this plugin declares
 
 - **ToolService v1** — `post_message`, `list_channels`, `search_messages`, `react`, `set_topic` (implemented by #233)
-- **TriggerService v1** — `channel_message` event kind (stub; populated by #234)
+- **TriggerService v1** — `channel_message` event kind via Slack Socket Mode (#234). Note: subscription-scope channel filtering matches by **channel ID** only (e.g. `C012ABCDEF`); name-based filtering (e.g. `#incidents`) silently does not match because Socket Mode events carry only IDs. Resolving names is future work.
 - **ChannelService v1** — `Notify` and `Request` (stubs; populated by #235)
 - **Auth strategy** — `oauth2_authcode` with Slack's authorization and token endpoints
 
@@ -22,11 +22,16 @@ Parent tracking issue: [#162](https://github.com/felag-engineering/gleipnir/issu
 ```
 slack/
   main.go            — calls serve.Serve() with all three service factories
-  service.go         — stub implementations of ToolService, TriggerService, ChannelService
+  service.go         — ToolService (#233) + TriggerService (#234) implementations; ChannelService still stub
+  tools.go           — typed tool params + handlers (#233)
+  translator.go      — pure functions translating Socket Mode events to channel_message payloads (#234)
+  scope.go           — SlackSubscriptionScope decode + matches helpers (#234)
   manifest.go        — pluginManifest variable (source of truth for metadata + event kinds)
   manifest.yaml      — canonical YAML projection of manifest.go (generated)
   manifest_test.go   — TestManifestYAMLIsCanonical: round-trip + Go-source equality
-  service_test.go    — stub behavior assertions (not-implemented errors, ListTools empty, etc.)
+  service_test.go    — service-level behavior assertions (tool calls, trigger lifecycle)
+  translator_test.go — pure translator unit tests (#234)
+  scope_test.go      — subscription-scope matching unit tests (#234)
   Makefile           — build / test / manifest / validate / clean targets
   .gitignore         — excludes the compiled binary and signing artifacts
   go.mod             — per-plugin module; resolved by the repo-root go.work
@@ -50,6 +55,31 @@ Default OAuth endpoints baked into the manifest:
 - Authorization URL: `https://slack.com/oauth/v2/authorize`
 - Token URL: `https://slack.com/api/oauth.v2.access`
 - Default scopes: `channels:read`, `chat:write`, `im:write`, `users:read`
+
+### App-level token (xapp-)
+
+TriggerService uses Slack's Socket Mode transport, which requires an additional
+**app-level token** (prefix `xapp-`) separate from the OAuth bot token. Socket
+Mode is homelab-friendly because it does not require a public webhook endpoint.
+
+To generate the token:
+
+1. Open your Slack app settings at [api.slack.com/apps](https://api.slack.com/apps).
+2. Select your app → **Settings → Socket Mode**.
+3. Enable Socket Mode if not already enabled.
+4. Under **App-Level Tokens**, click **Generate Token and Scopes**.
+5. Give the token a name (e.g. `gleipnir-socket-mode`) and add the scope `connections:write`.
+6. Click **Generate** and copy the token (it starts with `xapp-`).
+7. In the Gleipnir admin UI, navigate to the Slack plugin instance config and
+   paste the token into the `app_level_token` field.
+
+The full end-to-end setup (including connecting the Slack app to your workspace
+and wiring the Gleipnir trigger) is documented in [#237](https://github.com/felag-engineering/gleipnir/issues/237).
+
+> **Note:** The `app_level_token` field is stored as plain text in instance
+> config in this release. A follow-up issue will add `gleipnir-secret` format
+> annotation so the admin GET endpoint redacts the value to `"***"` (mirroring
+> the ADR-039 pattern for auth headers).
 
 ## Build
 
@@ -81,7 +111,16 @@ The broader `go test ./plugins/...` does not work, because each first-party plug
 |------|-----------------|
 | `TestManifestYAMLIsCanonical` | `manifest.yaml` round-trips and matches `manifest.go` |
 | `TestStubsReturnNotImplemented` | `Channel.Notify`, `Channel.Request` return `ERROR_CODE_INTERNAL` in-band |
-| `TestTriggerStartReturnsUnimplemented` | `TriggerService.Start` returns `codes.Unimplemented` on first `Recv` |
+| `TestTriggerStartFailedPreconditionWithoutToken` | Missing `app_level_token` → `FailedPrecondition` + UNHEALTHY/config_missing |
+| `TestTriggerStartEmitsEventOnFakeSocketModeMessage` | Fake runner delivers event → `EmitEvent` called with correct kind/id/payload, Ack called once |
+| `TestTriggerStartHonorsSubscriptionScopeChannels` | Excluded channel → zero `EmitEvent`, Ack still called |
+| `TestTriggerStartHealthUnhealthyOnInvalidAuth` | Runner returns `invalid_auth` → `Unauthenticated` + UNHEALTHY/auth_expired |
+| `TestTranslate` | Table-driven: MessageEvent, AppMentionEvent, subtypes, nil data, malformed ts |
+| `TestDeriveEventIDIsDeterministic` | Same (channelID, ts) → same ULID across two calls |
+| `TestDeriveEventIDDiffersForDifferentInputs` | Different inputs → different ULIDs |
+| `TestParseSlackTS` | Valid ts parses correctly; malformed ts falls back to now |
+| `TestSlackSubscriptionScopeMatches` | Table-driven scope matching: by-id, by-name, mention-only, composed |
+| `TestDecodeSubscriptionScope` | Empty/`{}` → zero value; malformed → error |
 | `TestToolListToolsAdvertisesAll` | `ListTools` returns exactly 5 tools with valid JSON-Schema InputSchema |
 | `TestToolCancelIsNoOp` | `Cancel` returns an empty response with no error |
 | `TestToolCalls` | Table-driven: happy path × 5 tools, error cases, auth failures, unknown tool |

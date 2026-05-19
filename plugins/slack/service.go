@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -13,6 +16,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/slack-go/slack"
+	"github.com/slack-go/slack/slackevents"
+	"github.com/slack-go/slack/socketmode"
 
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	commonv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1"
@@ -236,24 +241,276 @@ func errorResponse(code commonv1.ErrorCode, message string) *toolv1.CallResponse
 
 // ── TriggerService ────────────────────────────────────────────────────────────
 
-// TriggerService implements triggerv1.TriggerServiceServer with a stub Start.
-// #234 will implement Start to subscribe to the Slack Events API and emit
-// channel_message events matching the policy's binding config.
+// socketModeRunner abstracts socketmode.Client for testability.
+//
+// Concurrency contract: implementors MUST consume events from a SINGLE goroutine
+// and call onEvent sequentially. Per-stream ordering is part of the trigger
+// contract (issue #234 AC); concurrent dispatch is forbidden.
+type socketModeRunner interface {
+	// Run opens the Socket Mode WebSocket connection, calls onEvent for each
+	// incoming event, and blocks until ctx is cancelled or a fatal error occurs.
+	// Returns context.Canceled on clean shutdown, or an error string containing
+	// "invalid_auth" / "account_inactive" / "not_authed" / "token_revoked" on
+	// auth failure (per socket_mode_managed_conn.go:188-249).
+	Run(ctx context.Context, onEvent func(socketmode.Event)) error
+
+	// Ack acknowledges a Slack EventsAPI envelope. Must be called within 3 seconds
+	// of receiving the event or Slack will redeliver it.
+	Ack(req socketmode.Request)
+}
+
+// socketModeFactory creates a socketModeRunner from an app-level (xapp-) token.
+type socketModeFactory func(xappToken string) (socketModeRunner, error)
+
+// productionSocketModeRunner wraps socketmode.Client to satisfy the socketModeRunner
+// interface with a single-goroutine fanout — events are delivered sequentially
+// to preserve per-stream ordering.
+type productionSocketModeRunner struct {
+	client *socketmode.Client
+}
+
+// Run opens the Socket Mode connection. A single goroutine ranges over
+// client.Events and calls onEvent sequentially (preserving ordering). Run then
+// calls client.RunContext(ctx) and waits for the fanout goroutine to drain
+// before returning, so the caller never observes partial shutdown.
+func (r *productionSocketModeRunner) Run(ctx context.Context, onEvent func(socketmode.Event)) error {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for ev := range r.client.Events {
+			onEvent(ev)
+		}
+	}()
+
+	err := r.client.RunContext(ctx)
+	// Wait for the fanout goroutine to finish draining the Events channel.
+	// RunContext closes client.Events on return, so the goroutine exits promptly.
+	wg.Wait()
+	return err
+}
+
+// Ack delegates to the underlying socketmode.Client.
+func (r *productionSocketModeRunner) Ack(req socketmode.Request) {
+	r.client.Ack(req)
+}
+
+// defaultSocketModeFactory constructs a productionSocketModeRunner using the
+// provided xapp- token. The bot token slot is left empty ("") because Socket
+// Mode only requires the app-level token; the bot token is used only for API
+// calls (which go through ToolService, not TriggerService).
+func defaultSocketModeFactory(xappToken string) (socketModeRunner, error) {
+	api := slack.New("", slack.OptionAppLevelToken(xappToken))
+	client := socketmode.New(api)
+	return &productionSocketModeRunner{client: client}, nil
+}
+
+// TriggerService implements triggerv1.TriggerServiceServer. It opens a Slack
+// Socket Mode WebSocket connection, receives message and app_mention events,
+// translates them to SlackChannelMessagePayload JSON, applies the instance-level
+// subscription scope, and emits matching events to the host via EmitEvent.
 type TriggerService struct {
 	triggerv1.UnimplementedTriggerServiceServer
-	host hostv1.HostServiceClient
+	host              hostv1.HostServiceClient
+	socketModeFactory socketModeFactory
 }
 
 // NewTriggerService creates a TriggerService that uses hostClient for host RPCs.
+// The production socketmode.Client factory is used for the real Slack connection.
+// Signature is intentionally stable — mirrors how NewToolService stayed stable
+// across #366.
 func NewTriggerService(hostClient hostv1.HostServiceClient) *TriggerService {
-	return &TriggerService{host: hostClient}
+	return &TriggerService{
+		host:              hostClient,
+		socketModeFactory: defaultSocketModeFactory,
+	}
 }
 
-// Start is a server-streaming RPC. There is no response slot before the first
-// event, so a top-level gRPC error is the only way to signal failure here.
-// #234 replaces this with the Slack Events API subscription loop.
-func (s *TriggerService) Start(_ *triggerv1.StartRequest, _ grpc.ServerStreamingServer[triggerv1.StartResponse]) error {
-	return status.Error(codes.Unimplemented, "slack TriggerService.Start: not implemented")
+// newTriggerServiceWithFactory is an internal constructor for tests that need
+// to inject a fake socketModeRunner instead of a real Slack connection.
+func newTriggerServiceWithFactory(hostClient hostv1.HostServiceClient, factory socketModeFactory) *TriggerService {
+	return &TriggerService{
+		host:              hostClient,
+		socketModeFactory: factory,
+	}
+}
+
+// Start is a server-streaming RPC that opens a Slack Socket Mode connection and
+// emits channel_message events to the host. It blocks until the stream context
+// is cancelled (clean shutdown) or a fatal Slack error occurs (auth failure,
+// misconfiguration). The stream itself carries no StartResponse messages —
+// canonical event delivery goes through HostService.EmitEvent (spec §4.3).
+func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerStreamingServer[triggerv1.StartResponse]) error {
+	// Propagate the host-injected call ID so SetHealthState and EmitEvent can
+	// be correlated back to this trigger stream by the host.
+	hostCtx := serve.WithCallContext(stream.Context())
+
+	// Fetch the app-level (xapp-) token from instance config. This token is
+	// separate from the OAuth bot token — it is required for Socket Mode.
+	cfgResp, err := s.host.GetInstanceConfig(hostCtx, &hostv1.GetInstanceConfigRequest{})
+	if err != nil {
+		return status.Errorf(codes.Internal, "GetInstanceConfig: %v", err)
+	}
+	token, err := extractAppLevelToken(cfgResp.GetConfigJson())
+	if err != nil || token == "" {
+		s.setTriggerHealth(hostCtx, healthConfigMissing)
+		return status.Error(codes.FailedPrecondition, "app_level_token is required in instance config but was not set; configure it in the admin UI")
+	}
+
+	// Parse the instance-level coarse subscription scope from the request.
+	// An empty or missing scope matches all channels.
+	scope, err := decodeSubscriptionScope(req.GetWatchScopeJson())
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "invalid watch_scope_json: %v", err)
+	}
+
+	// Build the Socket Mode runner using the factory (real or fake in tests).
+	runner, err := s.socketModeFactory(token)
+	if err != nil {
+		return status.Errorf(codes.Internal, "create socket mode runner: %v", err)
+	}
+
+	// onEvent is called sequentially by the runner's single fanout goroutine.
+	// Per the socketModeRunner contract, this function is never called concurrently.
+	onEvent := func(evt socketmode.Event) {
+		if evt.Type != socketmode.EventTypeEventsAPI {
+			s.handleNonEventsAPI(hostCtx, evt)
+			return
+		}
+
+		// Ack FIRST, synchronously, unconditionally — beats Slack's 3-second
+		// redelivery window even if translate or EmitEvent stalls later.
+		// A deferred Ack would run AFTER EmitEvent and could miss the window
+		// under host backpressure (blocking #3 from plan review).
+		if evt.Request != nil {
+			runner.Ack(*evt.Request)
+		}
+
+		eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
+		if !ok {
+			return
+		}
+
+		kind, eventID, payload, emit, err := translate(eventsAPIEvent.InnerEvent, eventsAPIEvent.TeamID)
+		if err != nil {
+			log.Printf("slack: translate error: %v", err)
+			return
+		}
+		if !emit {
+			return
+		}
+
+		// Extract channelID and mentioned from the decoded payload to evaluate
+		// the subscription scope. We unmarshal into SlackChannelMessagePayload
+		// because translate already serialized all the fields there.
+		var p SlackChannelMessagePayload
+		if jsonErr := json.Unmarshal(payload, &p); jsonErr != nil {
+			log.Printf("slack: scope check unmarshal: %v", jsonErr)
+			return
+		}
+		// p.ChannelID is the real Slack channel ID (e.g. C012ABCDEF). p.Channel
+		// currently also holds the ID — Socket Mode message events don't include
+		// resolved channel names. As a result, operator subscription scopes
+		// containing entries like "#incidents" won't match; only ID-form entries
+		// like "C012ABCDEF" do. Future work: cache an ID→name map via
+		// conversations.info so name-form scopes work.
+		if !scope.matches(p.ChannelID, p.Channel, p.Mentioned) {
+			return
+		}
+
+		if _, err := s.host.EmitEvent(hostCtx, &hostv1.EmitEventRequest{
+			EventKind: kind,
+			EventId:   eventID,
+			// PayloadJson carries the JSON bytes as a string on the wire.
+			PayloadJson: string(payload),
+		}); err != nil {
+			// EmitEvent failure is non-fatal — don't tear down the stream.
+			log.Printf("slack: EmitEvent failed: %v", err)
+		}
+	}
+
+	// Run blocks until ctx is cancelled or a fatal Slack error occurs.
+	runErr := runner.Run(stream.Context(), onEvent)
+
+	// Clean shutdown: context was cancelled by the host (supervisor restart, etc.)
+	// or the stream context expired. Return nil so the supervisor can re-call Start.
+	if errors.Is(runErr, context.Canceled) || stream.Context().Err() != nil {
+		return nil
+	}
+
+	// Auth failure: the 4 named Slack auth-fatal strings surface via RunContext's
+	// return value (not via EventTypeInvalidAuth — that fires only on HTTP 404
+	// from connect(), per socket_mode_managed_conn.go:235-249).
+	if runErr != nil {
+		errStr := runErr.Error()
+		for _, fatal := range []string{"invalid_auth", "account_inactive", "not_authed", "token_revoked"} {
+			if strings.Contains(errStr, fatal) {
+				s.setTriggerHealth(hostCtx, healthAuthExpired)
+				return status.Error(codes.Unauthenticated, errStr)
+			}
+		}
+		log.Printf("slack: socket mode exited with unexpected error: %v", runErr)
+		return status.Error(codes.Unavailable, runErr.Error())
+	}
+
+	return nil
+}
+
+// handleNonEventsAPI logs diagnostic information for non-message socketmode events
+// and updates health state when Slack signals an auth problem at the connection
+// level (EventTypeInvalidAuth fires only on HTTP 404 from connect()).
+func (s *TriggerService) handleNonEventsAPI(ctx context.Context, evt socketmode.Event) {
+	switch evt.Type {
+	case socketmode.EventTypeConnected:
+		log.Printf("slack: socket mode connected")
+	case socketmode.EventTypeHello:
+		log.Printf("slack: socket mode hello received")
+	case socketmode.EventTypeDisconnect:
+		// socketmode auto-reconnects; log informational only.
+		log.Printf("slack: socket mode disconnected (will reconnect)")
+	case socketmode.EventTypeConnectionError:
+		log.Printf("slack: socket mode connection error (will reconnect): %v", evt.Data)
+	case socketmode.EventTypeInvalidAuth:
+		// Fires ONLY on HTTP 404 from connect() — not the common auth-failure path.
+		// The 4 named auth strings (invalid_auth etc.) come back via RunContext's
+		// return value. Log + mark unhealthy but do NOT return from Start: RunContext
+		// will surface its own error which the post-Run classifier handles.
+		log.Printf("slack: socket mode invalid_auth event (HTTP 404 from connect)")
+		s.setTriggerHealth(ctx, healthAuthExpired)
+	}
+}
+
+// setTriggerHealth updates the plugin health state. It is called for persistent
+// failures that require operator intervention (missing config, auth expiry).
+func (s *TriggerService) setTriggerHealth(ctx context.Context, h healthHint) {
+	var detail string
+	switch h {
+	case healthAuthExpired:
+		detail = "auth_expired"
+	case healthConfigMissing:
+		detail = "config_missing"
+	default:
+		return
+	}
+	_, _ = s.host.SetHealthState(ctx, &hostv1.SetHealthStateRequest{
+		State:  hostv1.PluginHealthState_PLUGIN_HEALTH_STATE_UNHEALTHY,
+		Detail: detail,
+	})
+}
+
+// extractAppLevelToken parses the instance config JSON and returns the
+// app_level_token value. Returns ("", nil) when the field is absent or empty.
+func extractAppLevelToken(configJSON string) (string, error) {
+	if configJSON == "" || configJSON == "{}" {
+		return "", nil
+	}
+	var cfg struct {
+		AppLevelToken string `json:"app_level_token"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+		return "", fmt.Errorf("parse instance config: %w", err)
+	}
+	return cfg.AppLevelToken, nil
 }
 
 // ── ChannelService ────────────────────────────────────────────────────────────
