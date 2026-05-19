@@ -11,6 +11,10 @@ import (
 )
 
 func main() {
+	// One hub registry per process: TriggerService and ChannelService share the
+	// same Socket Mode WebSocket connection for the same xapp-token.
+	registry := newHubRegistry(defaultSocketModeFactory)
+
 	serve.Serve(
 		serve.WithManifest(pluginManifest),
 		serve.WithToolService(func(host hostv1.HostServiceClient) toolv1.ToolServiceServer {
@@ -18,10 +22,10 @@ func main() {
 			return NewToolService(host, http.DefaultClient, "")
 		}),
 		serve.WithTriggerService(func(host hostv1.HostServiceClient) triggerv1.TriggerServiceServer {
-			return NewTriggerService(host)
+			return NewTriggerService(host, registry)
 		}),
 		serve.WithChannelService(func(host hostv1.HostServiceClient) channelv1.ChannelServiceServer {
-			return NewChannelService(host)
+			return NewChannelService(host, registry, http.DefaultClient)
 		}),
 	)
 }

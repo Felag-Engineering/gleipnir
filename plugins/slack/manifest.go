@@ -76,6 +76,32 @@ properties:
   mention:
     type: string
     description: Slack user or group to mention in the message (e.g. @oncall)
+  response_buttons:
+    type: array
+    description: Custom response buttons for Request messages. Defaults to Approve/Reject if omitted.
+    items:
+      type: object
+      required:
+        - option_id
+        - label
+        - value
+      properties:
+        option_id:
+          type: string
+          description: Unique identifier for this button option (echoed in feedback_response payload)
+        label:
+          type: string
+          description: Button label text displayed to the operator
+        value:
+          type: string
+          description: Value echoed in feedback_response payload
+        style:
+          type: string
+          enum:
+            - default
+            - primary
+            - danger
+          description: 'Button colour: primary (green), danger (red), or default (no colour)'
 `),
 		},
 	},
@@ -182,10 +208,10 @@ type SlackChannelMessagePayload struct {
 // SlackChannelEntryConfig documents the Go-side shape of the per-audience-entry
 // config validated against the ConfigSchema above. The actual schema is parsed
 // from the YAML literal; this struct exists for code readability only.
-// #235 will use this type when implementing ChannelService.Request.
 type SlackChannelEntryConfig struct {
-	Channel string `json:"channel"` // required
-	Mention string `json:"mention"` // optional
+	Channel         string           `json:"channel"`                    // required
+	Mention         string           `json:"mention,omitempty"`          // optional
+	ResponseButtons []responseButton `json:"response_buttons,omitempty"` // optional; defaults applied in Go
 }
 
 func init() {

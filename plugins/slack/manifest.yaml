@@ -21,6 +21,32 @@ channels:
         mention:
           description: Slack user or group to mention in the message (e.g. @oncall)
           type: string
+        response_buttons:
+          description: Custom response buttons for Request messages. Defaults to Approve/Reject if omitted.
+          items:
+            properties:
+              label:
+                description: Button label text displayed to the operator
+                type: string
+              option_id:
+                description: Unique identifier for this button option (echoed in feedback_response payload)
+                type: string
+              style:
+                description: 'Button colour: primary (green), danger (red), or default (no colour)'
+                enum:
+                  - default
+                  - primary
+                  - danger
+                type: string
+              value:
+                description: Value echoed in feedback_response payload
+                type: string
+            required:
+              - option_id
+              - label
+              - value
+            type: object
+          type: array
       required:
         - channel
       type: object
