@@ -168,10 +168,12 @@ func (s *Server) GetRunContext(ctx context.Context, _ *hostv1.GetRunContextReque
 	}, nil
 }
 
-// WriteAuditStep writes a feedback_response step for the active run. All other
-// step types are rejected (unauthorized_step_type, spec §8.1). The
-// detached-context check (RejectIfDetached) runs first because it is the more
-// fundamental guard.
+// WriteAuditStep accepts only `feedback_response`. It MUST carry a request_id.
+// Authorization is by request-ownership (spec §8.5 exemption): the request_id
+// row's plugin_instance_id (plugin substrate path) or the policy's tool grants
+// matching `<instance_name>.` (native path) must match the calling instance.
+// The detached-context check does not apply — request-ownership is the §8.5
+// alternative auth primitive.
 func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepRequest) (*hostv1.WriteAuditStepResponse, error) {
 	inst, err := s.resolveInstance(ctx)
 	if err != nil {
@@ -179,10 +181,6 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 	}
 
 	const rpcMethod = "/gleipnir.plugin.host.v1.HostService/WriteAuditStep"
-
-	if err := RejectIfDetached(ctx, s.q, inst.ID, rpcMethod); err != nil {
-		return nil, err
-	}
 
 	if req.GetStepType() != "feedback_response" {
 		s.writeAuditEvent(ctx, inst.ID, "unauthorized_step_type", "high", map[string]string{

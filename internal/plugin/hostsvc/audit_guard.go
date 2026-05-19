@@ -63,7 +63,12 @@ type AuditQuerier interface {
 //
 // instanceID and rpcMethod are used to populate the audit row. They should be
 // the plugin instance's database ID and the gRPC method name (e.g.
-// "/gleipnir.plugin.host.v1.HostService/WriteAuditStep").
+// "/gleipnir.plugin.host.v1.HostService/SomeRPC").
+//
+// Note: WriteAuditStep authenticates via request-ownership instead (spec §8.5
+// exemption); this helper is reserved for future RPCs that require call-scope
+// binding. As of this PR it has zero callers in the codebase but is
+// intentionally preserved.
 //
 // Spec reference: plugin-system-spec.md §8.5.
 func RejectIfDetached(ctx context.Context, q AuditQuerier, instanceID, rpcMethod string) error {
