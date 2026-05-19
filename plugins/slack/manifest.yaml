@@ -9,6 +9,7 @@ auth:
       - chat:write
       - im:write
       - users:read
+      - search:read
     token_url: https://slack.com/api/oauth.v2.access
   strategy: oauth2_authcode
 channels:
@@ -49,4 +50,103 @@ services:
   channel: v1
   tool: v1
   trigger: v1
+tools:
+  - description: Post a plain-text message to a Slack channel or DM.
+    input_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: Channel ID (C…) or name (#general)
+          title: Channel
+          type: string
+        text:
+          description: Plain-text message body. Block Kit not supported in v0.1.
+          title: Text
+          type: string
+        thread_ts:
+          description: Optional parent thread timestamp to reply in-thread
+          title: Thread TS
+          type: string
+      required:
+        - channel
+        - text
+      type: object
+    name: post_message
+  - description: List Slack channels visible to the bot user.
+    input_schema:
+      additionalProperties: false
+      properties:
+        exclude_archived:
+          default: true
+          title: Exclude archived
+          type: boolean
+        limit:
+          description: Max channels to return (1-1000). Defaults to 200
+          maximum: 1000
+          minimum: 1
+          title: Limit
+          type: integer
+        types:
+          description: Comma-separated channel types (public_channel,private_channel,mpim,im). Defaults to public_channel.
+          title: Types
+          type: string
+      type: object
+    name: list_channels
+  - description: Search messages across the workspace using Slack's search.
+    input_schema:
+      additionalProperties: false
+      properties:
+        count:
+          description: Results per page (1-100)
+          maximum: 100
+          minimum: 1
+          title: Count
+          type: integer
+        query:
+          description: Slack search query (search.messages syntax)
+          title: Query
+          type: string
+      required:
+        - query
+      type: object
+    name: search_messages
+  - description: Add an emoji reaction to a Slack message.
+    input_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: Channel ID containing the message
+          title: Channel
+          type: string
+        name:
+          description: Reaction name without colons (e.g. thumbsup)
+          title: Emoji name
+          type: string
+        timestamp:
+          description: Message ts (e.g. 1700000000.123456)
+          title: Timestamp
+          type: string
+      required:
+        - channel
+        - timestamp
+        - name
+      type: object
+    name: react
+  - description: Set the topic of a Slack channel.
+    input_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: Channel ID
+          title: Channel
+          type: string
+        topic:
+          description: New channel topic (max 250 chars)
+          title: Topic
+          type: string
+      required:
+        - channel
+        - topic
+      type: object
+    name: set_topic
 version: 0.1.0

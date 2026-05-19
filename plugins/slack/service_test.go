@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -28,8 +31,11 @@ type services struct {
 }
 
 // setupAll starts in-process gRPC servers for the fake host and all three
-// Slack service stubs. Returns a services bundle and a cleanup function.
-func setupAll(t *testing.T, hostOpts ...plugintest.Option) (*services, func()) {
+// Slack service implementations. slackBackend is an optional httptest.Server
+// used as the fake Slack API endpoint; when non-nil, its client and URL are
+// passed to NewToolService so requests go to the test server instead of
+// the real Slack API. Pass nil to use http.DefaultClient with no override.
+func setupAll(t *testing.T, slackBackend *httptest.Server, hostOpts ...plugintest.Option) (*services, func()) {
 	t.Helper()
 
 	host := plugintest.NewFakeHost(hostOpts...)
@@ -43,7 +49,7 @@ func setupAll(t *testing.T, hostOpts ...plugintest.Option) (*services, func()) {
 	host.Register(hostSrv)
 	go func() { _ = hostSrv.Serve(hostLis) }()
 
-	// Dial the host and build the typed client used by the service stubs.
+	// Dial the host and build the typed client used by the service implementations.
 	hostConn, err := grpc.NewClient(hostLis.Addr().String(),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -52,12 +58,24 @@ func setupAll(t *testing.T, hostOpts ...plugintest.Option) (*services, func()) {
 	hostClient := hostv1.NewHostServiceClient(hostConn)
 
 	// --- ToolService ---
+	//
+	// When a slackBackend is provided, use its HTTP client and URL so test
+	// requests go to the httptest.Server instead of the real Slack API.
+	// The trailing slash in slackBackend.URL + "/" is required because
+	// slack-go builds URLs as apiURL + methodName (slack.go:168).
+	var toolSvc *ToolService
+	if slackBackend != nil {
+		toolSvc = NewToolService(hostClient, slackBackend.Client(), slackBackend.URL+"/")
+	} else {
+		toolSvc = NewToolService(hostClient, nil, "")
+	}
+
 	toolLis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for tool: %v", err)
 	}
 	toolSrv := grpc.NewServer()
-	toolv1.RegisterToolServiceServer(toolSrv, NewToolService(hostClient))
+	toolv1.RegisterToolServiceServer(toolSrv, toolSvc)
 	go func() { _ = toolSrv.Serve(toolLis) }()
 	toolConn, err := grpc.NewClient(toolLis.Addr().String(),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -112,29 +130,20 @@ func setupAll(t *testing.T, hostOpts ...plugintest.Option) (*services, func()) {
 	return svcs, cleanup
 }
 
-// TestStubsReturnNotImplemented is a table-driven test asserting that each
-// unary stub returns an in-band ErrorEnvelope with ERROR_CODE_INTERNAL and a
-// non-empty message containing "not implemented". The gRPC call itself must
-// succeed (nil transport error) — the error is communicated in-band.
+// TestStubsReturnNotImplemented asserts that Channel.Notify and Channel.Request
+// return an in-band ErrorEnvelope with ERROR_CODE_INTERNAL and a non-empty
+// message containing "not implemented". The gRPC call itself must succeed (nil
+// transport error) — the error is communicated in-band.
+//
+// Tool.Call is no longer a stub (#233 implements it), so it is not included here.
 func TestStubsReturnNotImplemented(t *testing.T) {
-	svcs, cleanup := setupAll(t)
+	svcs, cleanup := setupAll(t, nil)
 	defer cleanup()
 
 	cases := []struct {
 		name string
 		run  func(t *testing.T) *commonv1.ErrorEnvelope
 	}{
-		{
-			name: "Tool.Call",
-			run: func(t *testing.T) *commonv1.ErrorEnvelope {
-				t.Helper()
-				resp, err := svcs.tool.Call(context.Background(), &toolv1.CallRequest{ToolName: "send_message"})
-				if err != nil {
-					t.Fatalf("Call RPC error: %v", err)
-				}
-				return resp.GetError()
-			},
-		},
 		{
 			name: "Channel.Notify",
 			run: func(t *testing.T) *commonv1.ErrorEnvelope {
@@ -183,7 +192,7 @@ func TestStubsReturnNotImplemented(t *testing.T) {
 // server-streaming RPC, so the only way to surface an error before emitting
 // any events is via a top-level gRPC status. #234 replaces this stub.
 func TestTriggerStartReturnsUnimplemented(t *testing.T) {
-	svcs, cleanup := setupAll(t)
+	svcs, cleanup := setupAll(t, nil)
 	defer cleanup()
 
 	stream, err := svcs.trigger.Start(context.Background(), &triggerv1.StartRequest{})
@@ -203,26 +212,46 @@ func TestTriggerStartReturnsUnimplemented(t *testing.T) {
 	}
 }
 
-// TestToolListToolsEmpty asserts that ListTools returns zero tools for the
-// scaffold. This is consistent with the empty Tools slice in the manifest;
-// #233 populates both.
-func TestToolListToolsEmpty(t *testing.T) {
-	svcs, cleanup := setupAll(t)
+// TestToolListToolsAdvertisesAll asserts that ListTools returns exactly the five
+// Slack tools by name and that each InputSchema parses as a JSON object.
+// This replaces TestToolListToolsEmpty from the scaffold.
+func TestToolListToolsAdvertisesAll(t *testing.T) {
+	svcs, cleanup := setupAll(t, nil)
 	defer cleanup()
 
 	resp, err := svcs.tool.ListTools(context.Background(), &toolv1.ListToolsRequest{})
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(resp.GetTools()) != 0 {
-		t.Errorf("want 0 tools, got %d", len(resp.GetTools()))
+
+	wantNames := []string{"post_message", "list_channels", "search_messages", "react", "set_topic"}
+	tools := resp.GetTools()
+	if len(tools) != len(wantNames) {
+		t.Fatalf("want %d tools, got %d", len(wantNames), len(tools))
+	}
+
+	for i, want := range wantNames {
+		got := tools[i]
+		if got.GetName() != want {
+			t.Errorf("tool[%d]: want name %q, got %q", i, want, got.GetName())
+		}
+		// Each InputSchema must parse as a JSON object with type=object at root.
+		var schema map[string]any
+		if err := json.Unmarshal([]byte(got.GetInputSchema()), &schema); err != nil {
+			t.Errorf("tool[%d] %s: InputSchema is not valid JSON: %v", i, want, err)
+			continue
+		}
+		if typ, _ := schema["type"].(string); typ != "object" {
+			t.Errorf("tool[%d] %s: InputSchema root type: want \"object\", got %q", i, want, typ)
+		}
 	}
 }
 
 // TestToolCancelIsNoOp asserts that Cancel returns an empty response with no
-// error. There are no in-flight calls to abort in the scaffold.
+// error. Cancellation for the Slack ToolService is context-driven; there is no
+// in-process goroutine state to abort.
 func TestToolCancelIsNoOp(t *testing.T) {
-	svcs, cleanup := setupAll(t)
+	svcs, cleanup := setupAll(t, nil)
 	defer cleanup()
 
 	resp, err := svcs.tool.Cancel(context.Background(), &toolv1.CancelRequest{})
@@ -231,5 +260,34 @@ func TestToolCancelIsNoOp(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("expected non-nil CancelResponse, got nil")
+	}
+}
+
+// TestToolCallMissingCredentials asserts that a Call with no credentials
+// configured returns PERMISSION and sets health to UNHEALTHY/auth_missing.
+func TestToolCallMissingCredentials(t *testing.T) {
+	// Empty string credentials — no token configured.
+	svcs, cleanup := setupAll(t, nil,
+		plugintest.WithCredentialsJSON(`{}`),
+	)
+	defer cleanup()
+
+	resp, err := svcs.tool.Call(context.Background(), &toolv1.CallRequest{
+		ToolName:  "post_message",
+		InputJson: `{"channel":"C123","text":"hello"}`,
+	})
+	if err != nil {
+		t.Fatalf("Call RPC error: %v", err)
+	}
+
+	env := resp.GetError()
+	if env == nil {
+		t.Fatal("expected non-nil ErrorEnvelope")
+	}
+	if env.GetCode() != commonv1.ErrorCode_ERROR_CODE_PERMISSION {
+		t.Errorf("code: want PERMISSION, got %v", env.GetCode())
+	}
+	if !strings.Contains(env.GetMessage(), "credentials") && !strings.Contains(env.GetMessage(), "auth") {
+		t.Errorf("message should mention credentials or auth, got: %q", env.GetMessage())
 	}
 }

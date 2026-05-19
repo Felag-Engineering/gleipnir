@@ -12,7 +12,7 @@ Parent tracking issue: [#162](https://github.com/felag-engineering/gleipnir/issu
 
 ## What this plugin declares
 
-- **ToolService v1** — `send_message`, `list_channels` (stubs; populated by #233)
+- **ToolService v1** — `post_message`, `list_channels`, `search_messages`, `react`, `set_topic` (implemented by #233)
 - **TriggerService v1** — `channel_message` event kind (stub; populated by #234)
 - **ChannelService v1** — `Notify` and `Request` (stubs; populated by #235)
 - **Auth strategy** — `oauth2_authcode` with Slack's authorization and token endpoints
@@ -80,10 +80,14 @@ The broader `go test ./plugins/...` does not work, because each first-party plug
 | Test | What it asserts |
 |------|-----------------|
 | `TestManifestYAMLIsCanonical` | `manifest.yaml` round-trips and matches `manifest.go` |
-| `TestStubsReturnNotImplemented` | `Tool.Call`, `Channel.Notify`, `Channel.Request` return `ERROR_CODE_INTERNAL` in-band |
+| `TestStubsReturnNotImplemented` | `Channel.Notify`, `Channel.Request` return `ERROR_CODE_INTERNAL` in-band |
 | `TestTriggerStartReturnsUnimplemented` | `TriggerService.Start` returns `codes.Unimplemented` on first `Recv` |
-| `TestToolListToolsEmpty` | `ListTools` returns zero tools (consistent with empty manifest `Tools`) |
+| `TestToolListToolsAdvertisesAll` | `ListTools` returns exactly 5 tools with valid JSON-Schema InputSchema |
 | `TestToolCancelIsNoOp` | `Cancel` returns an empty response with no error |
+| `TestToolCalls` | Table-driven: happy path × 5 tools, error cases, auth failures, unknown tool |
+| `TestToolCallMetricOutcomeLabel` | Metric `outcome` label is `"ok"` on success and `"error"` on error |
+| `TestToolCallCtxCancel` | Cancelled context surfaces as `UNAVAILABLE` |
+| `TestMapErr` | Slack error-code strings map to the correct `ErrorCode` + health hint |
 
 ## Manifest
 
@@ -144,3 +148,140 @@ Outside the monorepo, add a `replace` directive:
 ```
 replace github.com/felag-engineering/gleipnir/plugin-sdk => ../path/to/plugin-sdk
 ```
+
+## Tools
+
+The Slack plugin exposes five tools through the `ToolService`. At runtime the host
+prefixes each name with the instance name, so they appear as
+`<instance>.post_message`, `<instance>.list_channels`, etc. (e.g.
+`slack-prod.post_message`).
+
+### `post_message`
+
+Post a plain-text message to a Slack channel or DM.
+
+**Input:**
+```json
+{
+  "channel": "C1234567890",
+  "text": "Hello from Gleipnir!",
+  "thread_ts": "1700000000.123456"
+}
+```
+
+`thread_ts` is optional — omit it to post to the channel root.
+
+**Output:**
+```json
+{"channel": "C1234567890", "ts": "1700000001.000000"}
+```
+
+### `list_channels`
+
+List Slack channels visible to the bot user.
+
+**Input:**
+```json
+{
+  "exclude_archived": true,
+  "limit": 200,
+  "types": "public_channel,private_channel"
+}
+```
+
+All fields are optional. `limit` defaults to 200 (max 1000). `types` defaults
+to `public_channel`.
+
+**Output:**
+```json
+{
+  "channels": [
+    {"id": "C001", "name": "general", "is_private": false, "is_archived": false, "num_members": 42}
+  ],
+  "next_cursor": ""
+}
+```
+
+### `search_messages`
+
+Search messages across the workspace using Slack's full-text search
+(`search.messages` API).
+
+**Input:**
+```json
+{"query": "deployment failed", "count": 20}
+```
+
+`count` is optional (1–100, defaults to 20).
+
+**Output:**
+```json
+{
+  "matches": [
+    {
+      "channel": "C001",
+      "user": "U001",
+      "text": "deployment failed at 03:00 UTC",
+      "ts": "1700000001.000000",
+      "permalink": "https://myworkspace.slack.com/archives/C001/p1700000001000000"
+    }
+  ],
+  "total": 1
+}
+```
+
+### `react`
+
+Add an emoji reaction to a Slack message.
+
+**Input:**
+```json
+{
+  "channel": "C1234567890",
+  "timestamp": "1700000001.000000",
+  "name": "thumbsup"
+}
+```
+
+`name` is the reaction emoji name without colons.
+
+**Output:**
+```json
+{"ok": true}
+```
+
+### `set_topic`
+
+Set the topic of a Slack channel.
+
+**Input:**
+```json
+{"channel": "C1234567890", "topic": "Deployment in progress — do not merge"}
+```
+
+**Output:**
+```json
+{"ok": true, "topic": "Deployment in progress — do not merge"}
+```
+
+## Required Slack scopes
+
+The following OAuth 2.0 bot token scopes must be granted when installing the
+Slack app. These are declared in `manifest.go`'s `OAuthDefaults.Scopes` list
+and shown in the admin UI during install.
+
+| Scope | Used by |
+|-------|---------|
+| `channels:read` | `list_channels` (public channels) |
+| `chat:write` | `post_message` |
+| `im:write` | `post_message` to DMs |
+| `users:read` | user lookup in various responses |
+| `search:read` | `search_messages` |
+
+**Note on `search:read`:** This scope is available for bot tokens but may not
+be granted during OAuth if the Slack app was configured before `search:read`
+was added. Bot-only installs that are missing this scope will see a runtime
+`PERMISSION` error (`missing_scope`) for `search_messages` calls, and the
+plugin will be set to `UNHEALTHY` with detail `auth_expired` in the operator
+UI. To resolve: grant `search:read` in the Slack app settings and re-authorize
+the plugin instance.
