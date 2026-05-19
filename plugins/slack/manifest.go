@@ -45,8 +45,20 @@ var pluginManifest = manifest.Manifest{
 		},
 	},
 	Tools: buildToolDecls(),
-	// ConfigSchema is omitted for this scaffold. Instance-level config
-	// (workspace ID, default channel, etc.) lands in #236 with OAuth wiring.
+	// ConfigSchema declares required instance-level config. The app_level_token
+	// (xapp- prefix) is the Socket Mode token used by TriggerService; it is
+	// separate from the OAuth bot token stored in credentials_encrypted.
+	// Phase-7 follow-up (#xxx): mark this field as gleipnir-secret so GET
+	// /api/v1/admin/plugin-instances/{iid} redacts it to "***".
+	ConfigSchema: mustParseYAML(`
+type: object
+required:
+  - app_level_token
+properties:
+  app_level_token:
+    type: string
+    description: 'Slack app-level token (xapp- prefix) for Socket Mode. Generate in Slack admin: Settings → Socket Mode → Generate token with scope connections:write.'
+`),
 	Channels: []manifest.ChannelDecl{
 		{
 			ImplementsNotify:  true,
@@ -105,16 +117,66 @@ func buildToolDecls() []manifest.ToolDecl {
 	}
 }
 
+// SlackSubscriptionScope is the instance-level coarse subscription filter sent
+// in TriggerService.Start as watch_scope_json. It limits which channels the
+// plugin watches across ALL policies on this instance, reducing noise from
+// high-traffic channels like #general.
+//
+// Distinct from SlackChannelMessageBinding (per-policy event filter): scope is
+// configured once on the instance; binding is configured per-policy.
+type SlackSubscriptionScope struct {
+	// Channels is a list of channel names or IDs to watch (e.g. "#incidents",
+	// "C01ABC"). Empty means watch all channels the bot is a member of.
+	Channels []string `json:"channels,omitempty" jsonschema:"title=Channels,description=Channel names or IDs (e.g. #incidents\\, C01ABC). Empty = watch all."`
+	// MentionOnly limits delivery to messages where the bot is mentioned.
+	MentionOnly bool `json:"mention_only,omitempty" jsonschema:"title=Mention-only,description=Only emit when bot is mentioned."`
+}
+
 // SlackChannelMessageBinding is the per-policy binding struct for the
 // channel_message event kind. Fields drive the binding_schema shown in the
-// policy trigger editor. #234 fills in the matching TriggerService.Start logic.
+// policy trigger editor.
 type SlackChannelMessageBinding struct {
-	// Channel is a glob pattern matched against the Slack channel name. Use
-	// GlobField so the binding evaluator selects OpGlob at runtime.
-	Channel manifest.GlobField `json:"channel,omitempty" jsonschema:"title=Channel,description=Glob pattern matched against the Slack channel name (e.g. #incidents-*)"`
-	// Text is a substring matched against the message text. Use ContainsField so
-	// the binding evaluator selects OpContains at runtime.
+	// Channel is a substring matched against the Slack channel name or ID.
+	// ContainsField is used here rather than GlobField: the host binding evaluator
+	// rejects format:glob (binding.go:230), but accepts format:contains.
+	Channel manifest.ContainsField `json:"channel,omitempty" jsonschema:"title=Channel,description=Substring matched against the Slack channel name or ID (e.g. #incidents)"`
+	// Text is a substring matched against the message text.
 	Text manifest.ContainsField `json:"text,omitempty" jsonschema:"title=Text contains,description=Substring matched against the message text"`
+	// MentionOnly restricts the policy to events where the bot was mentioned.
+	MentionOnly bool `json:"mention_only,omitempty" jsonschema:"title=Mention-only,description=Only trigger when the bot is mentioned in the message"`
+	// User restricts the policy to messages from a specific Slack user ID.
+	User manifest.EqualsField `json:"user,omitempty" jsonschema:"title=User,description=Slack user ID to match (e.g. U012AB3CD). Leave empty to match all users."`
+}
+
+// SlackChannelMessagePayload is the JSON payload emitted for each channel_message
+// event. The host binding evaluator matches policy bindings against these fields.
+// Fields marked omitempty are absent when the Slack event does not include them.
+//
+// yaml tags mirror the json tags so that yaml.Marshal (used for manifest examples)
+// produces underscore-separated keys matching the JSON wire format. Without explicit
+// yaml tags, yaml.v3 would use all-lowercase camelCase (e.g. "channelid" instead
+// of "channel_id"), making examples misleading in the admin UI.
+type SlackChannelMessagePayload struct {
+	// Channel is the display name (best-effort) or channel ID when the name is unknown.
+	Channel string `json:"channel" yaml:"channel" jsonschema:"title=Channel,description=Channel display name (e.g. #incidents) or channel ID when the name is unknown"`
+	// ChannelID is the stable Slack channel identifier (always present).
+	ChannelID string `json:"channel_id" yaml:"channel_id" jsonschema:"title=Channel ID,description=Stable Slack channel identifier (e.g. C01ABC)"`
+	// Text is the plain-text message body.
+	Text string `json:"text" yaml:"text" jsonschema:"title=Text,description=Plain-text message body"`
+	// User is the Slack user ID of the sender (empty for bot/system messages).
+	User string `json:"user,omitempty" yaml:"user,omitempty" jsonschema:"title=User,description=Slack user ID of the sender (empty for bot/system messages)"`
+	// Ts is the Slack message timestamp (uniquely identifies the message within a channel).
+	Ts string `json:"ts" yaml:"ts" jsonschema:"title=Timestamp,description=Slack message timestamp (uniquely identifies the message within a channel)"`
+	// ThreadTs is the parent thread timestamp (present only for threaded replies).
+	ThreadTs string `json:"thread_ts,omitempty" yaml:"thread_ts,omitempty" jsonschema:"title=Thread timestamp,description=Parent thread timestamp (present only for threaded replies)"`
+	// EventTs is the timestamp of the event itself.
+	EventTs string `json:"event_ts" yaml:"event_ts" jsonschema:"title=Event timestamp,description=Timestamp of the event itself"`
+	// TeamID is the Slack workspace (team) ID (best-effort; may be empty for some event shapes).
+	TeamID string `json:"team_id,omitempty" yaml:"team_id,omitempty" jsonschema:"title=Team ID,description=Slack workspace ID (best-effort; may be empty for some event shapes)"`
+	// ChannelType indicates the channel kind (channel, group, im, mim).
+	ChannelType string `json:"channel_type" yaml:"channel_type" jsonschema:"title=Channel type,description=Slack channel kind: channel (public)\\, group (private)\\, im (DM)\\, mim (multi-DM)"`
+	// Mentioned is true when the bot was mentioned in the message (app_mention event).
+	Mentioned bool `json:"mentioned" yaml:"mentioned" jsonschema:"title=Mentioned,description=True when the bot was explicitly mentioned in the message"`
 }
 
 // SlackChannelEntryConfig documents the Go-side shape of the per-audience-entry
@@ -127,15 +189,63 @@ type SlackChannelEntryConfig struct {
 }
 
 func init() {
+	// SubscriptionSchema defines the instance-level coarse filter passed in
+	// TriggerService.Start as watch_scope_json. Operators configure this once
+	// per plugin instance to limit which channels are watched.
+	pluginManifest.SubscriptionSchema = manifest.MustReflectSchema(SlackSubscriptionScope{})
+
 	// channel_message is the event kind emitted whenever a message is posted to
-	// a watched Slack channel. The binding_schema is derived by reflection from
-	// SlackChannelMessageBinding so the policy editor renders the GlobField and
-	// ContainsField correctly. #234 implements the matching TriggerService.Start.
-	pluginManifest.MustAddEventKind(
+	// a watched Slack channel. The binding_schema and payload_schema are derived
+	// by reflection so the policy editor renders the fields correctly.
+	// Three example payloads are provided for the "Test against sample" UI (spec §7.5).
+	pluginManifest.MustAddEventKindWithExamples(
 		"channel_message",
 		"A message was posted to a Slack channel",
 		SlackChannelMessageBinding{},
-		nil, // payloadSchema: #234 will add a typed payload schema
+		manifest.MustReflectSchema(SlackChannelMessagePayload{}),
+		manifest.Example{
+			Name: "Plain channel message",
+			Payload: SlackChannelMessagePayload{
+				Channel:     "#general",
+				ChannelID:   "C012ABCDEF",
+				Text:        "Lunch order is in.",
+				User:        "U01USER001",
+				Ts:          "1700000001.000100",
+				EventTs:     "1700000001.000100",
+				TeamID:      "T03TEAM001",
+				ChannelType: "channel",
+				Mentioned:   false,
+			},
+		},
+		manifest.Example{
+			Name: "Bot mention in incidents channel",
+			Payload: SlackChannelMessagePayload{
+				Channel:     "#incidents",
+				ChannelID:   "C09INCIDENT",
+				Text:        "<@U07BOTUSER> the database is degraded",
+				User:        "U01USER002",
+				Ts:          "1700001000.000200",
+				EventTs:     "1700001000.000200",
+				TeamID:      "T03TEAM001",
+				ChannelType: "channel",
+				Mentioned:   true,
+			},
+		},
+		manifest.Example{
+			Name: "Threaded reply",
+			Payload: SlackChannelMessagePayload{
+				Channel:     "#ops",
+				ChannelID:   "C09OPSCHAN",
+				Text:        "Rolled back the deployment, monitoring now.",
+				User:        "U01USER003",
+				Ts:          "1700002000.000300",
+				ThreadTs:    "1700002000.000100",
+				EventTs:     "1700002000.000300",
+				TeamID:      "T03TEAM001",
+				ChannelType: "channel",
+				Mentioned:   false,
+			},
+		},
 	)
 }
 

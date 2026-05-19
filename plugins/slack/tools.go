@@ -93,9 +93,10 @@ type slackCreds struct {
 type healthHint int
 
 const (
-	healthNone        healthHint = iota // transient or caller error — no health update
-	healthAuthExpired                   // persistent auth failure — set UNHEALTHY
-	healthAuthMissing                   // no credentials configured — set UNHEALTHY
+	healthNone          healthHint = iota // transient or caller error — no health update
+	healthAuthExpired                     // persistent auth failure — set UNHEALTHY
+	healthAuthMissing                     // no credentials configured — set UNHEALTHY
+	healthConfigMissing                   // required instance config field missing — set UNHEALTHY
 )
 
 // mapErr maps a Slack API error to an ErrorCode and optional health hint.
