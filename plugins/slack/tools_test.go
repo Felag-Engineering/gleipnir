@@ -286,11 +286,12 @@ func toolCases(t *testing.T) []toolCallCase {
 
 // TestPostMessageRateLimit verifies that callWithRetry retries once on a 429
 // with Retry-After: 0 and that the tool ultimately succeeds. Exactly 2 requests
-// must hit the fake Slack backend.
+// must hit the fake Slack backend for /chat.postMessage (auth.test is excluded).
 func TestPostMessageRateLimit(t *testing.T) {
-	var calls int32
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
+	var postCalls int32
+	mux := newSlackMux(true)
+	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&postCalls, 1)
 		if n == 1 {
 			// First request: 429 with Retry-After: 0 so RetryAfter == 0 and fits any budget.
 			w.Header().Set("Retry-After", "0")
@@ -300,7 +301,8 @@ func TestPostMessageRateLimit(t *testing.T) {
 		// Second request: success.
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintln(w, `{"ok":true,"channel":"C123","ts":"1.234"}`)
-	}))
+	})
+	backend := httptest.NewServer(mux)
 	defer backend.Close()
 
 	host := plugintest.NewFakeHost(plugintest.WithCredentialsJSON(credsJSON))
@@ -330,9 +332,10 @@ func TestPostMessageRateLimit(t *testing.T) {
 		t.Errorf("output JSON missing key %q; got: %s", "ts", resp.GetOutputJson())
 	}
 
-	// Exactly 2 requests must have hit the backend (initial + 1 retry).
-	if n := atomic.LoadInt32(&calls); n != 2 {
-		t.Errorf("expected exactly 2 requests to fake backend, got %d", n)
+	// Exactly 2 /chat.postMessage requests: initial 429 + 1 retry. auth.test
+	// is not counted because it hits a separate mux entry.
+	if n := atomic.LoadInt32(&postCalls); n != 2 {
+		t.Errorf("expected exactly 2 /chat.postMessage requests to fake backend, got %d", n)
 	}
 }
 
@@ -346,12 +349,16 @@ func TestToolCalls(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Optionally start a fake Slack API server.
+			// Optionally start a fake Slack API server. Use newSlackMux so the
+			// auth.test gate introduced in Call() always has a valid /auth.test
+			// route; the per-case handler is registered at "/" (catch-all).
 			var backend *httptest.Server
 			if tc.handler != nil {
-				backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mux := newSlackMux(true)
+				mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					tc.handler(t, w, r)
 				}))
+				backend = httptest.NewServer(mux)
 				defer backend.Close()
 			}
 
@@ -452,10 +459,12 @@ func TestToolCalls(t *testing.T) {
 // success and "error" on failure, using post_message as the representative tool.
 func TestToolCallMetricOutcomeLabel(t *testing.T) {
 	t.Run("success_outcome_ok", func(t *testing.T) {
-		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux := newSlackMux(true)
+		mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(slackOKResponse(map[string]any{"channel": "C1", "ts": "1.0"}))
-		}))
+		})
+		backend := httptest.NewServer(mux)
 		defer backend.Close()
 
 		host := plugintest.NewFakeHost(plugintest.WithCredentialsJSON(credsJSON))
@@ -477,10 +486,12 @@ func TestToolCallMetricOutcomeLabel(t *testing.T) {
 	})
 
 	t.Run("error_outcome_error", func(t *testing.T) {
-		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux := newSlackMux(true)
+		mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(slackErrResponse("channel_not_found"))
-		}))
+		})
+		backend := httptest.NewServer(mux)
 		defer backend.Close()
 
 		host := plugintest.NewFakeHost(plugintest.WithCredentialsJSON(credsJSON))
@@ -506,12 +517,17 @@ func TestToolCallMetricOutcomeLabel(t *testing.T) {
 // from the tool call. We cancel immediately before the Call to ensure the Slack
 // HTTP client sees a canceled context.
 func TestToolCallCtxCancel(t *testing.T) {
-	// Backend that blocks until the request context is done.
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Backend that blocks until the request context is done. /auth.test gets
+	// its own route via newSlackMux so the gate isn't what blocks; the
+	// cancellation surfaces either at the gRPC layer or from the context-
+	// aware HTTP call in auth.test or in the tool dispatch's PostMessage.
+	mux := newSlackMux(true)
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(slackErrResponse("context_canceled"))
 	}))
+	backend := httptest.NewServer(mux)
 	defer backend.Close()
 
 	host := plugintest.NewFakeHost(plugintest.WithCredentialsJSON(credsJSON))

@@ -359,6 +359,28 @@ func setupChannelServiceWithRunner(
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
+// authTestHandler returns an http.HandlerFunc that responds to Slack's auth.test
+// endpoint. When ok is true it returns a successful auth.test response; when ok
+// is false it returns an invalid_auth error.
+func authTestHandler(ok bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if ok {
+			_, _ = w.Write([]byte(`{"ok":true,"url":"https://example.slack.com/","team":"T","user":"U","team_id":"T","user_id":"U"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":false,"error":"invalid_auth"}`))
+	}
+}
+
+// newSlackMux returns an *http.ServeMux with /auth.test pre-registered.
+// Callers register per-path handlers on the returned mux.
+func newSlackMux(authTestOK bool) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth.test", authTestHandler(authTestOK))
+	return mux
+}
+
 // eventsAPISocketEvent builds a socketmode.Event of type EventTypeEventsAPI.
 func eventsAPISocketEvent(channelID, channelType, user, text, ts, teamID string) socketmode.Event {
 	inner := slackevents.EventsAPIInnerEvent{
@@ -1390,3 +1412,244 @@ func (h *lateAuditHost) WriteAuditStep(_ context.Context, req *hostv1.WriteAudit
 	return &hostv1.WriteAuditStepResponse{Ok: true}, nil
 }
 
+// ── credentialRotatingHost ────────────────────────────────────────────────────
+
+// credentialRotatingHost is an inline hostv1.HostServiceServer that returns
+// tokenA on the first GetCredentials call and tokenB on all subsequent calls.
+// It mirrors the lateAuditHost pattern so tests can exercise the verifiedToken
+// short-circuit by swapping the token between two Call() invocations without
+// needing a FakeHost credential mutation API (which doesn't exist).
+type credentialRotatingHost struct {
+	hostv1.UnimplementedHostServiceServer
+	callCount      atomic.Int32
+	tokenA, tokenB string
+	setHealthCalls atomic.Int32
+}
+
+func (h *credentialRotatingHost) GetCredentials(_ context.Context, _ *hostv1.GetCredentialsRequest) (*hostv1.GetCredentialsResponse, error) {
+	n := h.callCount.Add(1)
+	tok := h.tokenA
+	if n > 1 {
+		tok = h.tokenB
+	}
+	return &hostv1.GetCredentialsResponse{
+		CredentialsJson: fmt.Sprintf(`{"strategy":"oauth2_authcode","token":{"access_token":%q}}`, tok),
+	}, nil
+}
+
+func (h *credentialRotatingHost) GetInstanceConfig(_ context.Context, _ *hostv1.GetInstanceConfigRequest) (*hostv1.GetInstanceConfigResponse, error) {
+	return &hostv1.GetInstanceConfigResponse{ConfigJson: "{}"}, nil
+}
+
+func (h *credentialRotatingHost) SetHealthState(_ context.Context, _ *hostv1.SetHealthStateRequest) (*hostv1.SetHealthStateResponse, error) {
+	h.setHealthCalls.Add(1)
+	return &hostv1.SetHealthStateResponse{}, nil
+}
+
+func (h *credentialRotatingHost) EmitMetric(_ context.Context, _ *hostv1.EmitMetricRequest) (*hostv1.EmitMetricResponse, error) {
+	return &hostv1.EmitMetricResponse{}, nil
+}
+
+// ── Auth.test verification tests ─────────────────────────────────────────────
+
+// TestToolService_Call_AuthTestFails_SetsUnhealthy asserts that when auth.test
+// returns invalid_auth, Call returns a PERMISSION error envelope, the plugin
+// transitions to UNHEALTHY/auth_expired, and the tool handler is never called.
+func TestToolService_Call_AuthTestFails_SetsUnhealthy(t *testing.T) {
+	var toolCallCount atomic.Int32
+	mux := newSlackMux(false) // auth.test returns invalid_auth
+	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
+		toolCallCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"channel":"C123","ts":"1.0"}`))
+	})
+
+	backend := httptest.NewServer(mux)
+	defer backend.Close()
+
+	host := plugintest.NewFakeHost(
+		plugintest.WithCredentialsJSON(`{"strategy":"oauth2_authcode","token":{"access_token":"xoxb-test"}}`),
+	)
+	svcs, cleanup := setupAllWithHost(t, host, backend)
+	defer cleanup()
+
+	resp, err := svcs.tool.Call(context.Background(), &toolv1.CallRequest{
+		ToolName:  "post_message",
+		InputJson: `{"channel":"C123","text":"hello"}`,
+	})
+	if err != nil {
+		t.Fatalf("Call RPC error: %v", err)
+	}
+
+	env := resp.GetError()
+	if env == nil {
+		t.Fatal("expected error envelope, got success")
+	}
+	if env.GetCode() != commonv1.ErrorCode_ERROR_CODE_PERMISSION {
+		t.Errorf("error code: want PERMISSION, got %v", env.GetCode())
+	}
+	if !strings.Contains(env.GetMessage(), "auth.test failed") {
+		t.Errorf("message should mention auth.test failed, got: %q", env.GetMessage())
+	}
+
+	state, detail, ok := host.Health()
+	if !ok {
+		t.Fatal("expected SetHealthState to be called, but no health state recorded")
+	}
+	if state != plugintest.HealthStateUnhealthy {
+		t.Errorf("health state: want Unhealthy, got %v", state)
+	}
+	if detail != "auth_expired" {
+		t.Errorf("health detail: want auth_expired, got %q", detail)
+	}
+
+	if n := toolCallCount.Load(); n != 0 {
+		t.Errorf("/chat.postMessage hit count: want 0 (tool not called on auth failure), got %d", n)
+	}
+}
+
+// TestToolService_Call_AuthTestOnce_SkippedOnSubsequentCalls asserts that
+// auth.test is called exactly once when the same token is used for two
+// consecutive Call() invocations. The verifiedToken short-circuit prevents the
+// second auth.test round-trip.
+func TestToolService_Call_AuthTestOnce_SkippedOnSubsequentCalls(t *testing.T) {
+	var authTestCount atomic.Int32
+	// Build the mux manually (not via newSlackMux) so we can wrap /auth.test
+	// with a counter without registering the pattern twice (Go 1.22+ panics
+	// on duplicate registrations in the same mux).
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, r *http.Request) {
+		authTestCount.Add(1)
+		authTestHandler(true)(w, r)
+	})
+	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"channel":"C123","ts":"1.0"}`))
+	})
+
+	backend := httptest.NewServer(mux)
+	defer backend.Close()
+
+	host := plugintest.NewFakeHost(
+		plugintest.WithCredentialsJSON(`{"strategy":"oauth2_authcode","token":{"access_token":"xoxb-same-token"}}`),
+	)
+	svcs, cleanup := setupAllWithHost(t, host, backend)
+	defer cleanup()
+
+	callReq := &toolv1.CallRequest{
+		ToolName:  "post_message",
+		InputJson: `{"channel":"C123","text":"hello"}`,
+	}
+
+	resp, err := svcs.tool.Call(context.Background(), callReq)
+	if err != nil {
+		t.Fatalf("first Call RPC error: %v", err)
+	}
+	if resp.GetError() != nil {
+		t.Fatalf("first Call: expected success, got error: %v", resp.GetError().GetMessage())
+	}
+
+	resp, err = svcs.tool.Call(context.Background(), callReq)
+	if err != nil {
+		t.Fatalf("second Call RPC error: %v", err)
+	}
+	if resp.GetError() != nil {
+		t.Fatalf("second Call: expected success, got error: %v", resp.GetError().GetMessage())
+	}
+
+	if n := authTestCount.Load(); n != 1 {
+		t.Errorf("auth.test hit count: want 1 (short-circuit on second call), got %d", n)
+	}
+}
+
+// TestToolService_Call_AuthTestReruns_OnTokenRotation asserts that auth.test
+// runs again when the access token changes between Call() invocations. A custom
+// credentialRotatingHost is used because FakeHost's WithCredentialsJSON is
+// constructor-only (no setter to mutate between calls).
+func TestToolService_Call_AuthTestReruns_OnTokenRotation(t *testing.T) {
+	var authTestCount atomic.Int32
+	// Build the mux manually (not via newSlackMux) so we can wrap /auth.test
+	// with a counter without registering the pattern twice (Go 1.22+ panics
+	// on duplicate registrations in the same mux).
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, r *http.Request) {
+		authTestCount.Add(1)
+		authTestHandler(true)(w, r)
+	})
+	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"channel":"C123","ts":"1.0"}`))
+	})
+
+	backend := httptest.NewServer(mux)
+	defer backend.Close()
+
+	rotatingHost := &credentialRotatingHost{
+		tokenA: "xoxb-token-a",
+		tokenB: "xoxb-token-b",
+	}
+
+	hostLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen host: %v", err)
+	}
+	hostSrv := grpc.NewServer()
+	hostv1.RegisterHostServiceServer(hostSrv, rotatingHost)
+	go func() { _ = hostSrv.Serve(hostLis) }()
+	defer hostSrv.Stop()
+
+	hostConn, err := grpc.NewClient(hostLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial host: %v", err)
+	}
+	defer hostConn.Close()
+	hostClient := hostv1.NewHostServiceClient(hostConn)
+
+	toolSvc := NewToolService(hostClient, backend.Client(), backend.URL+"/")
+
+	toolLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tool: %v", err)
+	}
+	toolSrv := grpc.NewServer()
+	toolv1.RegisterToolServiceServer(toolSrv, toolSvc)
+	go func() { _ = toolSrv.Serve(toolLis) }()
+	defer toolSrv.Stop()
+
+	toolConn, err := grpc.NewClient(toolLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial tool: %v", err)
+	}
+	defer toolConn.Close()
+	toolClient := toolv1.NewToolServiceClient(toolConn)
+
+	callReq := &toolv1.CallRequest{
+		ToolName:  "post_message",
+		InputJson: `{"channel":"C123","text":"hello"}`,
+	}
+
+	// First call: uses tokenA → auth.test fires (count becomes 1).
+	resp, err := toolClient.Call(context.Background(), callReq)
+	if err != nil {
+		t.Fatalf("first Call RPC error: %v", err)
+	}
+	if resp.GetError() != nil {
+		t.Fatalf("first Call: expected success, got error: %v", resp.GetError().GetMessage())
+	}
+
+	// Second call: credentialRotatingHost returns tokenB → verifiedToken mismatch
+	// → auth.test fires again (count becomes 2).
+	resp, err = toolClient.Call(context.Background(), callReq)
+	if err != nil {
+		t.Fatalf("second Call RPC error: %v", err)
+	}
+	if resp.GetError() != nil {
+		t.Fatalf("second Call: expected success, got error: %v", resp.GetError().GetMessage())
+	}
+
+	if n := authTestCount.Load(); n != 2 {
+		t.Errorf("auth.test hit count: want 2 (one per distinct token), got %d", n)
+	}
+}

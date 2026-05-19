@@ -2,14 +2,16 @@ auth:
   mode: instance_credentials
   oauth_defaults:
     authorization_url: https://slack.com/oauth/v2/authorize
-    has_client_id: true
-    has_client_secret: true
     scopes:
+      - channels:history
       - channels:read
       - chat:write
+      - groups:history
+      - im:history
       - im:write
-      - users:read
+      - mpim:history
       - search:read
+      - users:read
     token_url: https://slack.com/api/oauth.v2.access
   strategy: oauth2_authcode
 channels:

@@ -22,26 +22,45 @@ var pluginManifest = manifest.Manifest{
 	// oauth2_authcode strategy: the host runs the OAuth2 authorization code flow
 	// on behalf of the plugin and stores the resulting access + refresh token pair
 	// in credentials_encrypted (spec §9.2).
-	//
-	// HasClientID and HasClientSecret are presence booleans, not values — setting
-	// either to true makes the key appear in the YAML (omitempty suppresses false).
-	// Setting both true advertises that this strategy requires a client_id and
-	// client_secret to be populated at install time by an admin. The actual
-	// credentials live in encrypted storage, never in the manifest file.
 	Auth: manifest.AuthDecl{
 		Mode:     "instance_credentials",
 		Strategy: manifest.AuthStrategyOAuth2Authcode,
 		OAuthDefaults: &manifest.OAuthDefaultsDecl{
 			AuthorizationURL: "https://slack.com/oauth/v2/authorize",
 			TokenURL:         "https://slack.com/api/oauth.v2.access",
-			// search:read is required by search_messages. Bot-only installs that
-			// are not granted this scope will see a runtime PERMISSION error
-			// (missing_scope → ERROR_CODE_PERMISSION + SetHealthState UNHEALTHY
-			// "auth_expired") visible in the operator UI. Operators must grant
-			// the scope in the Slack app settings and re-authorize.
-			Scopes:          []string{"channels:read", "chat:write", "im:write", "users:read", "search:read"},
-			HasClientID:     true,
-			HasClientSecret: true,
+			// Sequences are NOT sorted by manifest.Marshal (yaml.go:85-89);
+			// declare in alphabetical order to keep manifest.yaml byte-stable for
+			// TestManifestYAMLIsCanonical.
+			//
+			// The four *:history scopes (channels:history, groups:history,
+			// im:history, mpim:history) are reserved for future history-reading
+			// tools (e.g. conversations.history). The current plugin code does NOT
+			// call these endpoints. Socket Mode delivery (TriggerService) uses the
+			// app-level xapp- token and does NOT require these bot-token scopes.
+			// They are requested up-front so the same OAuth grant covers planned
+			// tools without a re-authorize round trip.
+			Scopes: []string{
+				"channels:history",
+				"channels:read",
+				"chat:write",
+				"groups:history",
+				"im:history",
+				"im:write",
+				"mpim:history",
+				"search:read",
+				"users:read",
+			},
+			// HasClientID and HasClientSecret describe whether the manifest carries
+			// default values. OAuthDefaultsDecl has no string fields for those
+			// (plugin-sdk/manifest/manifest.go:208-224). Per PR #236 (user
+			// Option A), we intentionally ship no defaults — operators register
+			// their own Slack app and supply client_id/client_secret per-instance
+			// via the admin UI (consumed by oauth.Resolve via InstanceConfigOverride
+			// at internal/plugin/oauth/credentials.go:201-238). Setting these
+			// honestly to false reflects the SDK's documented semantic; no host
+			// behavior depends on the values.
+			HasClientID:     false,
+			HasClientSecret: false,
 		},
 	},
 	Tools: buildToolDecls(),

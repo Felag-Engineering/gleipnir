@@ -188,3 +188,117 @@ agent:
 6. **Full reasoning trace** — for any completed run, open the run detail in the UI. **Pass:** the trace shows all step types — agent thinking steps, tool call inputs, tool call results, and (where applicable) approval events. All are visible in the correct order.
 
 7. **Re-discovery** — tag a Todoist tool that was previously untagged, then click Discover again on the Todoist server. **Pass:** tool count and tag assignments are updated in the UI without needing to re-register the server.
+
+## Slack plugin (OAuth authcode)
+
+End-to-end manual QA for the Slack plugin OAuth authorization code flow. This
+section is not part of the automated test suite — it requires a real Slack
+workspace, a publicly-reachable Gleipnir instance, and a Slack app registered
+at [api.slack.com/apps](https://api.slack.com/apps).
+
+### Prerequisites
+
+- A Slack workspace where you have permission to install custom apps.
+- A Gleipnir instance reachable from the public internet (or at least from
+  Slack's servers for OAuth redirect). `localhost` will not work because Slack's
+  OAuth callback cannot reach it.
+- `public_url` configured in **Admin → System** before starting the OAuth flow.
+  `BeginAuthcode` returns an error if `public_url` is empty (see
+  `internal/plugin/oauth/manager.go`). Set it to e.g.
+  `https://gleipnir.example.com`.
+
+### Step 1 — Create the Slack app
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) and click
+   **Create New App → From a manifest**.
+2. Paste the YAML from `plugins/slack/README.md §"Slack app manifest (one-click)"`,
+   replacing `<your-public-url>` with your Gleipnir public URL.
+3. Click **Create**.
+4. Confirm the redirect URL under **OAuth & Permissions → Redirect URLs** shows:
+   ```
+   https://<your-public-url>/api/v1/admin/plugins/oauth/callback
+   ```
+
+### Step 2 — Build and install the plugin
+
+Follow the steps in `plugins/slack/README.md §"Install and audience setup flow"`:
+
+```sh
+# From the repo root
+cd plugins/slack
+make build
+gleipnir-plugin keygen --out slack.key
+gleipnir-plugin sign    --binary ./slack --manifest manifest.yaml --key slack.key
+gleipnir-plugin package --binary ./slack --manifest manifest.yaml --sig slack.sig --out slack.tar.gz
+```
+
+Then upload `slack.tar.gz` via **Admin → Plugins → Install plugin**.
+
+### Step 3 — Configure credentials and app-level token
+
+1. In Slack app settings → **Basic Information → App Credentials**, copy the
+   **Client ID** and **Client Secret**.
+2. In Gleipnir **Admin → Plugins → Slack → your instance → Credentials**, paste
+   both values and save.
+3. In Slack app settings → **Settings → Socket Mode → App-Level Tokens**, generate
+   a token with scope `connections:write`. Copy the `xapp-` token.
+4. In Gleipnir **Admin → Plugins → Slack → your instance → Instance Config**,
+   set `app_level_token` to the `xapp-` token and save.
+
+### Step 4 — Authorize with Slack
+
+1. Click **Authorize with Slack** in the Gleipnir admin UI.
+2. Your browser redirects to Slack's OAuth consent screen. Click **Allow**.
+3. Slack redirects back to Gleipnir's callback URL.
+4. The admin UI reloads with `?oauth_ok=1`. **Pass:** the plugin instance health
+   is now **Healthy**.
+
+### Step 5 — Smoke test: post a message
+
+Create a policy with a `manual` trigger and a single capability:
+
+```yaml
+name: slack-smoke
+trigger:
+  type: manual
+capabilities:
+  tools:
+    - tool: <instance-name>.post_message
+agent:
+  task: "Post 'Hello from Gleipnir smoke test' to the #test channel."
+  limits:
+    max_tokens_per_run: 5000
+    max_tool_calls_per_run: 5
+  concurrency: skip
+```
+
+Fire the policy via **Admin → Policies → slack-smoke → Trigger**.
+
+**Pass criteria:**
+- (a) The message appears in the `#test` Slack channel.
+- (b) The plugin instance remains **Healthy** after the run.
+- (c) Fire the policy a second time. On the second invocation, `auth.test` is
+  NOT called again (the `verifiedToken` short-circuit skips it). Confirm by
+  checking Slack's API call log or by counting the requests hitting your test
+  backend — the `POST /auth.test` count stays at 1.
+
+### Step 6 — Negative path: revoked token
+
+1. In the Slack workspace admin panel, go to **Installed Apps → Gleipnir →
+   Remove app** (or revoke the bot token directly).
+2. Fire the `slack-smoke` policy again.
+
+**Pass criteria:**
+- The run returns a `PERMISSION` error with a message containing `auth.test failed`.
+- The plugin instance transitions to **UNHEALTHY** with detail `auth_expired`.
+- The operator UI shows the unhealthy state in the Plugins dashboard.
+
+### Step 7 — Re-authorize
+
+1. Re-install the Slack app in the workspace (or generate a new bot token and
+   update it via the admin UI).
+2. Click **Authorize with Slack** again.
+3. Fire the smoke-test policy.
+
+**Pass:** Run completes successfully; instance health returns to **Healthy**;
+message appears in Slack.
