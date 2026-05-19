@@ -489,7 +489,7 @@ func TestWriteAuditStep_RejectsNonFeedbackResponse(t *testing.T) {
 	}
 }
 
-func TestWriteAuditStep_DetachedContext(t *testing.T) {
+func TestWriteAuditStep_RejectsMissingRequestID(t *testing.T) {
 	t.Parallel()
 
 	q := &fakeQuerier{
@@ -497,16 +497,153 @@ func TestWriteAuditStep_DetachedContext(t *testing.T) {
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
 
-	// No call_id in context — RejectIfDetached fires first.
+	// feedback_response with empty request_id must be rejected with InvalidArgument.
 	_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
-		StepType: "feedback_response",
+		StepType:  "feedback_response",
+		RequestId: "",
+	})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument {
+		t.Errorf("expected InvalidArgument for missing request_id, got %v", err)
+	}
+	if !strings.Contains(st.Message(), "request_id must be set") {
+		t.Errorf("message = %q, want to contain \"request_id must be set\"", st.Message())
+	}
+}
+
+// TestWriteAuditStep_NoCallID_SubstratePath verifies that a substrate-initiated
+// feedback_response (no call_id in context) is accepted when the plugin instance
+// owns the plugin_pending_requests row. Exercises the §8.5 exemption directly.
+func TestWriteAuditStep_NoCallID_SubstratePath(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance:             db.PluginInstance{ID: "iid-caller", PluginID: "plug-caller"},
+		pluginPendingRequest: pendingRequest("iid-caller", "pending"),
+	}
+	ch := &fakeChannelResolver{resolved: true}
+	binder := &fakeInstanceBinder{id: "iid-caller", ok: true}
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
+
+	// context.Background() — no call_id. Must succeed via request-ownership.
+	resp, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
+		StepType:    "feedback_response",
+		RequestId:   "req-plugin-1",
+		PayloadJson: `{"answer":"yes"}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected gRPC error: %v", err)
+	}
+	if !resp.GetOk() {
+		t.Error("ok = false, want true on substrate path without call_id")
+	}
+
+	// No unauthorized_call_context event should have been emitted.
+	for _, e := range q.all() {
+		if e.EventType == hostsvc.EventTypeUnauthorizedCallContext {
+			t.Errorf("unexpected %s audit event written", hostsvc.EventTypeUnauthorizedCallContext)
+		}
+	}
+}
+
+// TestWriteAuditStep_NoCallID_NativePath verifies that a substrate-initiated
+// feedback_response (no call_id) succeeds via the native feedback_requests path
+// when the policy's tool grants reference the calling instance.
+func TestWriteAuditStep_NoCallID_NativePath(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance:                 db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		pluginPendingRequestErr:  sql.ErrNoRows, // substrate path misses; fall through to native
+		feedbackRequest:          db.FeedbackRequest{ID: "fr-ok", RunID: "run-ok", Status: "pending"},
+		feedbackErr:              nil,
+		run:                      db.Run{ID: "run-ok", PolicyID: "pol-ok"},
+		policy:                   db.Policy{ID: "pol-ok", Yaml: policyYAMLWithTool("myplugin.do_thing")},
+		latestStep:               db.RunStep{StepNumber: 2},
+		updateFeedbackStatusRows: 1,
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	// context.Background() — no call_id. Native path authorizes by policy YAML.
+	resp, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
+		StepType:    "feedback_response",
+		RequestId:   "fr-ok",
+		PayloadJson: `{"body":"yes please"}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetOk() {
+		t.Error("ok = false, want true on native path without call_id")
+	}
+}
+
+// TestWriteAuditStep_NoCallID_CrossInstanceEscalation is the load-bearing
+// security test for the §8.5 cross-instance escalation attack. A plugin calling
+// WriteAuditStep (no call_id) for a request_id owned by a different instance
+// must be rejected with PermissionDenied + an unauthorized_request_id audit
+// event (severity high).
+func TestWriteAuditStep_NoCallID_CrossInstanceEscalation(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-caller", PluginID: "plug-caller"},
+		// Row belongs to a different instance — escalation attempt.
+		pluginPendingRequest: pendingRequest("iid-other", "pending"),
+	}
+	binder := &fakeInstanceBinder{id: "iid-caller", ok: true}
+	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
+
+	_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
+		StepType:  "feedback_response",
+		RequestId: "req-plugin-1",
 	})
 	st, ok := status.FromError(err)
 	if !ok || st.Code() != codes.PermissionDenied {
-		t.Errorf("expected PermissionDenied from detached check, got %v", err)
+		t.Fatalf("expected PermissionDenied on cross-instance escalation, got %v", err)
 	}
-	if st.Message() != "unauthorized_call_context" {
-		t.Errorf("message = %q, want unauthorized_call_context", st.Message())
+	if st.Message() != "unauthorized_request_id" {
+		t.Errorf("message = %q, want unauthorized_request_id", st.Message())
+	}
+
+	events := q.all()
+	var found bool
+	for _, e := range events {
+		if e.EventType == hostsvc.EventTypeUnauthorizedRequestID {
+			found = true
+			if e.Severity != "high" {
+				t.Errorf("severity = %q, want high", e.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected %s audit event (severity high), got: %v", hostsvc.EventTypeUnauthorizedRequestID, events)
+	}
+}
+
+// TestWriteAuditStep_NoCallID_UnknownRequestID_NativeMiss verifies that when
+// neither the substrate (plugin_pending_requests) nor the native (feedback_requests)
+// row exists, the handler returns codes.Internal.
+//
+// TODO: spec §4.2 hints this should return feedback_response_late for a better
+// UX. Out of scope for this PR.
+func TestWriteAuditStep_NoCallID_UnknownRequestID_NativeMiss(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance:                db.PluginInstance{ID: "iid-1", PluginID: "plug-1"},
+		pluginPendingRequestErr: sql.ErrNoRows,
+		feedbackErr:             sql.ErrNoRows,
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
+		StepType:  "feedback_response",
+		RequestId: "req-unknown",
+	})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Internal {
+		t.Errorf("expected codes.Internal for unknown request_id, got %v", err)
 	}
 }
 

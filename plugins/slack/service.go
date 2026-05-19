@@ -15,10 +15,8 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/oklog/ulid/v2"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
@@ -843,18 +841,9 @@ func (s *ChannelService) handleInteractive(evt socketmode.Event, cb slack.Intera
 			return
 		}
 
-		// Detached path (R2+R3 investigation confirmed): per-RPC client-side
-		// TokenInterceptor (serve/server.go:126) attaches the instance token to
-		// ANY ctx, so identity propagation works with a fresh background context.
-		// RejectIfDetached (audit_guard.go:69-72) is presence-only on call_id —
-		// synthesize a UUID to satisfy it.
-		// KNOWN GAP: spec §8.5 promises a request_id exemption not yet implemented
-		// host-side. File Phase-8 follow-up.
-		callID := ulid.Make().String()
-		md := metadata.Pairs("gleipnir-call-id", callID)
-		auditCtx := metadata.NewOutgoingContext(context.Background(), md)
-
-		resp, err := s.host.WriteAuditStep(auditCtx, &hostv1.WriteAuditStepRequest{
+		// No call_id needed: spec §8.5 request_id exemption — the host authorizes
+		// via plugin_pending_requests ownership.
+		resp, err := s.host.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
 			StepType:    "feedback_response",
 			RequestId:   requestID,
 			PayloadJson: string(payloadJSON),
