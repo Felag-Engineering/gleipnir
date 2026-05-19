@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +20,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 
@@ -46,7 +51,6 @@ func setupAll(t *testing.T, slackBackend *httptest.Server, hostOpts ...plugintes
 
 	host := plugintest.NewFakeHost(hostOpts...)
 
-	// Start the host gRPC server.
 	hostLis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for host: %v", err)
@@ -55,7 +59,6 @@ func setupAll(t *testing.T, slackBackend *httptest.Server, hostOpts ...plugintes
 	host.Register(hostSrv)
 	go func() { _ = hostSrv.Serve(hostLis) }()
 
-	// Dial the host and build the typed client used by the service implementations.
 	hostConn, err := grpc.NewClient(hostLis.Addr().String(),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -63,12 +66,6 @@ func setupAll(t *testing.T, slackBackend *httptest.Server, hostOpts ...plugintes
 	}
 	hostClient := hostv1.NewHostServiceClient(hostConn)
 
-	// --- ToolService ---
-	//
-	// When a slackBackend is provided, use its HTTP client and URL so test
-	// requests go to the httptest.Server instead of the real Slack API.
-	// The trailing slash in slackBackend.URL + "/" is required because
-	// slack-go builds URLs as apiURL + methodName (slack.go:168).
 	var toolSvc *ToolService
 	if slackBackend != nil {
 		toolSvc = NewToolService(hostClient, slackBackend.Client(), slackBackend.URL+"/")
@@ -89,13 +86,15 @@ func setupAll(t *testing.T, slackBackend *httptest.Server, hostOpts ...plugintes
 		t.Fatalf("dial tool: %v", err)
 	}
 
-	// --- TriggerService ---
+	// Shared hub registry — no real Slack connection (no token in default host config).
+	registry := newHubRegistry(defaultSocketModeFactory)
+
 	triggerLis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for trigger: %v", err)
 	}
 	triggerSrv := grpc.NewServer()
-	triggerv1.RegisterTriggerServiceServer(triggerSrv, NewTriggerService(hostClient))
+	triggerv1.RegisterTriggerServiceServer(triggerSrv, NewTriggerService(hostClient, registry))
 	go func() { _ = triggerSrv.Serve(triggerLis) }()
 	triggerConn, err := grpc.NewClient(triggerLis.Addr().String(),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -103,13 +102,16 @@ func setupAll(t *testing.T, slackBackend *httptest.Server, hostOpts ...plugintes
 		t.Fatalf("dial trigger: %v", err)
 	}
 
-	// --- ChannelService ---
 	chanLis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for channel: %v", err)
 	}
 	chanSrv := grpc.NewServer()
-	channelv1.RegisterChannelServiceServer(chanSrv, NewChannelService(hostClient))
+	chanSvc := newChannelServiceForTest(hostClient, registry,
+		func(_ string) slackWebAPI { return nil },
+		nil,
+	)
+	channelv1.RegisterChannelServiceServer(chanSrv, chanSvc)
 	go func() { _ = chanSrv.Serve(chanLis) }()
 	chanConn, err := grpc.NewClient(chanLis.Addr().String(),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -132,6 +134,7 @@ func setupAll(t *testing.T, slackBackend *httptest.Server, hostOpts ...plugintes
 		chanSrv.Stop()
 		hostConn.Close()
 		hostSrv.Stop()
+		chanSvc.correlations.Stop()
 	}
 	return svcs, cleanup
 }
@@ -152,8 +155,6 @@ type fakeSocketModeRunner struct {
 	acks []socketmode.Request
 }
 
-// Run plays back configured events sequentially, then blocks until ctx is done.
-// If runErr is set, it returns runErr immediately (no events played).
 func (f *fakeSocketModeRunner) Run(ctx context.Context, onEvent func(socketmode.Event)) error {
 	if f.runErr != nil {
 		return f.runErr
@@ -165,27 +166,61 @@ func (f *fakeSocketModeRunner) Run(ctx context.Context, onEvent func(socketmode.
 	return ctx.Err()
 }
 
-// Ack records the acknowledged request for later assertion.
 func (f *fakeSocketModeRunner) Ack(req socketmode.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.acks = append(f.acks, req)
 }
 
-// AckCount returns the number of times Ack was called.
 func (f *fakeSocketModeRunner) AckCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.acks)
 }
 
+// channelFakeRunner supports injecting events after Run has started via a channel.
+type channelFakeRunner struct {
+	events chan socketmode.Event
+	mu     sync.Mutex
+	acks   []socketmode.Request
+}
+
+func newChannelFakeRunner() *channelFakeRunner {
+	return &channelFakeRunner{events: make(chan socketmode.Event, 10)}
+}
+
+func (f *channelFakeRunner) Run(ctx context.Context, onEvent func(socketmode.Event)) error {
+	for {
+		select {
+		case evt := <-f.events:
+			onEvent(evt)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (f *channelFakeRunner) Ack(req socketmode.Request) {
+	f.mu.Lock()
+	f.acks = append(f.acks, req)
+	f.mu.Unlock()
+}
+
+func (f *channelFakeRunner) AckCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.acks)
+}
+
+func (f *channelFakeRunner) Send(evt socketmode.Event) {
+	f.events <- evt
+}
+
 // ── setupAllWithFactory ──────────────────────────────────────────────────────
 
 // setupAllWithFactory starts a TriggerService gRPC server using an injected
-// socketModeFactory (for testing without a real Slack connection) backed by a
-// FakeHost configured to return cfgJSON from GetInstanceConfig.
-// It returns the services client, the FakeHost for health/event assertions,
-// and a cleanup function.
+// socketModeFactory backed by a FakeHost configured to return cfgJSON from
+// GetInstanceConfig. Returns the services client, FakeHost, and cleanup.
 func setupAllWithFactory(t *testing.T, factory socketModeFactory, cfgJSON string) (*services, *plugintest.FakeHost, func()) {
 	t.Helper()
 
@@ -208,12 +243,14 @@ func setupAllWithFactory(t *testing.T, factory socketModeFactory, cfgJSON string
 	}
 	hostClient := hostv1.NewHostServiceClient(hostConn)
 
+	registry := newHubRegistry(factory)
+
 	triggerLis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for trigger: %v", err)
 	}
 	triggerSrv := grpc.NewServer()
-	triggerSvc := newTriggerServiceWithFactory(hostClient, factory)
+	triggerSvc := newTriggerServiceWithRegistry(hostClient, registry)
 	triggerv1.RegisterTriggerServiceServer(triggerSrv, triggerSvc)
 	go func() { _ = triggerSrv.Serve(triggerLis) }()
 
@@ -235,11 +272,94 @@ func setupAllWithFactory(t *testing.T, factory socketModeFactory, cfgJSON string
 	return svcs, host, cleanup
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// setupChannelServiceWithRunner creates a ChannelService in-process test harness
+// using an injected socketModeRunner. Returns the gRPC client, the concrete
+// service (for direct method calls in same-package tests), the FakeHost, and cleanup.
+func setupChannelServiceWithRunner(
+	t *testing.T,
+	cred, cfg string,
+	runner socketModeRunner,
+	slackHandler http.Handler,
+	hostOpts ...plugintest.Option,
+) (channelv1.ChannelServiceClient, *ChannelService, *plugintest.FakeHost, func()) {
+	t.Helper()
 
-// eventsAPISocketEvent builds a socketmode.Event of type EventTypeEventsAPI
-// wrapping a slackevents.EventsAPIEvent whose InnerEvent.Data is a pointer
-// (mirroring what slackevents.ParseEvent produces via reflect.New).
+	allOpts := []plugintest.Option{
+		plugintest.WithCredentialsJSON(cred),
+		plugintest.WithInstanceConfigJSON(cfg),
+	}
+	allOpts = append(allOpts, hostOpts...)
+	host := plugintest.NewFakeHost(allOpts...)
+
+	hostLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen host: %v", err)
+	}
+	hostSrv := grpc.NewServer()
+	host.Register(hostSrv)
+	go func() { _ = hostSrv.Serve(hostLis) }()
+
+	hostConn, err := grpc.NewClient(hostLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial host: %v", err)
+	}
+	hostClient := hostv1.NewHostServiceClient(hostConn)
+
+	slackSrv := httptest.NewServer(slackHandler)
+	slackAPIURL := slackSrv.URL + "/"
+
+	registry := newHubRegistry(func(_ string) (socketModeRunner, error) {
+		return runner, nil
+	})
+	hub, _, err := registry.Acquire("xapp-test-token")
+	if err != nil {
+		t.Fatalf("acquire hub: %v", err)
+	}
+
+	chanSvc := newChannelServiceForTest(
+		hostClient,
+		registry,
+		func(tok string) slackWebAPI {
+			return slack.New(tok,
+				slack.OptionHTTPClient(slackSrv.Client()),
+				slack.OptionAPIURL(slackAPIURL),
+			)
+		},
+		slackSrv.Client(),
+	)
+	hub.RegisterInteractiveHandler(chanSvc.handleInteractive)
+
+	chanLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen channel: %v", err)
+	}
+	chanSrv := grpc.NewServer()
+	channelv1.RegisterChannelServiceServer(chanSrv, chanSvc)
+	go func() { _ = chanSrv.Serve(chanLis) }()
+
+	chanConn, err := grpc.NewClient(chanLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial channel: %v", err)
+	}
+
+	client := channelv1.NewChannelServiceClient(chanConn)
+
+	cleanup := func() {
+		chanConn.Close()
+		chanSrv.Stop()
+		hostConn.Close()
+		hostSrv.Stop()
+		slackSrv.Close()
+		chanSvc.correlations.Stop()
+	}
+	return client, chanSvc, host, cleanup
+}
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+// eventsAPISocketEvent builds a socketmode.Event of type EventTypeEventsAPI.
 func eventsAPISocketEvent(channelID, channelType, user, text, ts, teamID string) socketmode.Event {
 	inner := slackevents.EventsAPIInnerEvent{
 		Type: "message",
@@ -263,9 +383,28 @@ func eventsAPISocketEvent(channelID, channelType, user, text, ts, teamID string)
 	}
 }
 
+// interactiveSocketEvent builds a socketmode.Event of type EventTypeInteractive
+// wrapping a slack.InteractionCallback with a single BlockAction.
+func interactiveSocketEvent(requestID, optionID, value, responseURL string) socketmode.Event {
+	cb := slack.InteractionCallback{
+		Type:        slack.InteractionTypeBlockActions,
+		ResponseURL: responseURL,
+		User:        slack.User{ID: "U01TESTUSER"},
+		ActionCallback: slack.ActionCallbacks{
+			BlockActions: []*slack.BlockAction{
+				{ActionID: actionIDFor(requestID, optionID), Value: value},
+			},
+		},
+	}
+	return socketmode.Event{
+		Type:    socketmode.EventTypeInteractive,
+		Data:    cb,
+		Request: &socketmode.Request{EnvelopeID: "env-interactive-" + requestID},
+	}
+}
+
 // startTriggerInBackground calls svcs.trigger.Start in a goroutine and
 // returns a channel that receives the first Recv error (or nil on clean EOF).
-// The cancel function should be called to shut down the trigger stream.
 func startTriggerInBackground(t *testing.T, svcs *services, scopeJSON string) (cancel func(), done <-chan error) {
 	t.Helper()
 	ctx, cancelFn := context.WithCancel(context.Background())
@@ -284,18 +423,61 @@ func startTriggerInBackground(t *testing.T, svcs *services, scopeJSON string) (c
 	return cancelFn, ch
 }
 
-// ── New trigger tests ─────────────────────────────────────────────────────────
+// slackPostMessageOK returns an http.Handler that responds with a successful
+// chat.postMessage JSON response.
+func slackPostMessageOK(channel, ts string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      true,
+			"channel": channel,
+			"ts":      ts,
+		})
+	})
+}
+
+// credJSON builds a credentials JSON string for a given bot token.
+func credJSON(token string) string {
+	return fmt.Sprintf(`{"token":{"access_token":%q}}`, token)
+}
+
+// cfgWithToken builds a GetInstanceConfig JSON string with an xapp-token.
+func cfgWithToken(token string) string {
+	return fmt.Sprintf(`{"app_level_token":%q}`, token)
+}
+
+// channelCfgJSON builds a channel_config_json string for tests.
+func channelCfgJSON(channel, mention string) string {
+	if mention == "" {
+		return fmt.Sprintf(`{"channel":%q}`, channel)
+	}
+	return fmt.Sprintf(`{"channel":%q,"mention":%q}`, channel, mention)
+}
+
+// pollUntil polls fn every 5ms until it returns true or deadline passes.
+func pollUntil(t *testing.T, deadline time.Duration, fn func() bool) bool {
+	t.Helper()
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		if fn() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// ── Trigger tests ─────────────────────────────────────────────────────────────
 
 // TestTriggerStartFailedPreconditionWithoutToken asserts that Start returns
-// codes.FailedPrecondition when the instance config carries no app_level_token,
-// and that the FakeHost records UNHEALTHY/config_missing.
+// codes.FailedPrecondition when the instance config carries no app_level_token.
 func TestTriggerStartFailedPreconditionWithoutToken(t *testing.T) {
 	svcs, host, cleanup := setupAllWithFactory(t,
 		func(_ string) (socketModeRunner, error) {
 			t.Fatal("socketModeFactory should not be called when token is missing")
 			return nil, nil
 		},
-		`{}`, // no app_level_token
+		`{}`,
 	)
 	defer cleanup()
 
@@ -330,8 +512,8 @@ func TestTriggerStartFailedPreconditionWithoutToken(t *testing.T) {
 
 // TestTriggerStartEmitsEventOnFakeSocketModeMessage asserts that a fake
 // socketmode.Event of type EventTypeEventsAPI causes Start to call
-// host.EmitEvent with kind=channel_message, a non-empty deterministic event_id,
-// the correct payload, and that Ack is called exactly once for that event.
+// host.EmitEvent with kind=channel_message, deterministic event_id, and correct
+// payload. Ack is called exactly once.
 func TestTriggerStartEmitsEventOnFakeSocketModeMessage(t *testing.T) {
 	const (
 		channelID = "C01TESTEMIT"
@@ -347,8 +529,6 @@ func TestTriggerStartEmitsEventOnFakeSocketModeMessage(t *testing.T) {
 		},
 	}
 
-	// emitCh receives the event the moment EmitEvent completes on the host.
-	// Buffer size 1 so the callback never blocks even if the consumer is slow.
 	emitCh := make(chan plugintest.Event, 1)
 
 	host := plugintest.NewFakeHost(
@@ -378,15 +558,17 @@ func TestTriggerStartEmitsEventOnFakeSocketModeMessage(t *testing.T) {
 	t.Cleanup(func() { hostConn.Close() })
 	hostClient := hostv1.NewHostServiceClient(hostConn)
 
+	registry := newHubRegistry(func(_ string) (socketModeRunner, error) {
+		return fake, nil
+	})
+
 	triggerLis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for trigger: %v", err)
 	}
 	triggerSrv := grpc.NewServer()
 	triggerv1.RegisterTriggerServiceServer(triggerSrv,
-		newTriggerServiceWithFactory(hostClient, func(_ string) (socketModeRunner, error) {
-			return fake, nil
-		}))
+		newTriggerServiceWithRegistry(hostClient, registry))
 	go func() { _ = triggerSrv.Serve(triggerLis) }()
 	t.Cleanup(triggerSrv.Stop)
 
@@ -400,26 +582,20 @@ func TestTriggerStartEmitsEventOnFakeSocketModeMessage(t *testing.T) {
 	svcs := &services{trigger: triggerv1.NewTriggerServiceClient(triggerConn)}
 	cancel, done := startTriggerInBackground(t, svcs, `{}`)
 
-	// Wait for EmitEvent to complete on the host side before cancelling the
-	// context. hostCtx is derived from stream.Context(), so cancelling before
-	// EmitEvent finishes would cause the RPC to fail with codes.Canceled.
 	var ev plugintest.Event
 	select {
 	case ev = <-emitCh:
-		// EmitEvent returned successfully.
 	case <-time.After(3 * time.Second):
 		cancel()
 		<-done
 		t.Fatal("timed out waiting for EmitEvent")
 	}
 	cancel()
-	<-done // wait for Start to return
+	<-done
 
-	// Ack must have been called exactly once (fires before EmitEvent in onEvent).
 	if n := fake.AckCount(); n != 1 {
 		t.Errorf("Ack call count: want 1, got %d", n)
 	}
-
 	if ev.EventKind != "channel_message" {
 		t.Errorf("event kind: want channel_message, got %q", ev.EventKind)
 	}
@@ -427,13 +603,11 @@ func TestTriggerStartEmitsEventOnFakeSocketModeMessage(t *testing.T) {
 		t.Error("event_id: want non-empty ULID string, got empty")
 	}
 
-	// Verify the event_id is deterministic: same inputs produce the same ULID.
 	wantID := deriveEventID(channelID, ts)
 	if ev.EventID != wantID {
 		t.Errorf("event_id: want %q (deterministic), got %q", wantID, ev.EventID)
 	}
 
-	// Verify key payload fields.
 	var p SlackChannelMessagePayload
 	if err := json.Unmarshal([]byte(ev.PayloadJSON), &p); err != nil {
 		t.Fatalf("payload unmarshal: %v", err)
@@ -455,10 +629,8 @@ func TestTriggerStartEmitsEventOnFakeSocketModeMessage(t *testing.T) {
 	}
 }
 
-// TestTriggerStartHonorsSubscriptionScopeChannels asserts that when the
-// subscription scope restricts channels to a list that excludes the incoming
-// event's channel, no EmitEvent is recorded — but Ack is still called (because
-// Ack happens before the scope filter, per the synchronous-Ack requirement).
+// TestTriggerStartHonorsSubscriptionScopeChannels asserts that when the scope
+// excludes the event's channel, no EmitEvent is recorded — but Ack is still called.
 func TestTriggerStartHonorsSubscriptionScopeChannels(t *testing.T) {
 	const (
 		channelID = "C99EXCLUDED"
@@ -471,51 +643,33 @@ func TestTriggerStartHonorsSubscriptionScopeChannels(t *testing.T) {
 		},
 	}
 
-	cfgJSON := `{"app_level_token":"xapp-test-token"}`
-	// Scope only allows "#incidents", which excludes C99EXCLUDED.
-	scopeJSON := `{"channels":["#incidents"]}`
-
 	svcs, host, cleanup := setupAllWithFactory(t,
 		func(_ string) (socketModeRunner, error) { return fake, nil },
-		cfgJSON,
+		`{"app_level_token":"xapp-test-token"}`,
 	)
 	defer cleanup()
 
-	cancel, done := startTriggerInBackground(t, svcs, scopeJSON)
+	cancel, done := startTriggerInBackground(t, svcs, `{"channels":["#incidents"]}`)
 
-	// Poll until Ack is recorded (Ack fires before scope check).
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && fake.AckCount() < 1 {
-		time.Sleep(5 * time.Millisecond)
-	}
+	pollUntil(t, 3*time.Second, func() bool { return fake.AckCount() >= 1 })
 	cancel()
 	<-done
 
-	// Ack still fires even though the event is scope-filtered.
 	if n := fake.AckCount(); n != 1 {
 		t.Errorf("Ack call count: want 1 (ack precedes scope filter), got %d", n)
 	}
-
-	// No EmitEvent should have been recorded.
-	events := host.Events()
-	if len(events) != 0 {
+	if events := host.Events(); len(events) != 0 {
 		t.Errorf("EmitEvent call count: want 0 (scope filtered), got %d", len(events))
 	}
 }
 
-// TestTriggerStartHealthUnhealthyOnInvalidAuth drives the RunContext-return
-// auth-failure path: the fake runner's Run returns errors.New("invalid_auth")
-// immediately (no events played). The test asserts codes.Unauthenticated and
-// that the FakeHost records UNHEALTHY/auth_expired.
+// TestTriggerStartHealthUnhealthyOnInvalidAuth drives the auth-failure path.
 func TestTriggerStartHealthUnhealthyOnInvalidAuth(t *testing.T) {
-	fake := &fakeSocketModeRunner{
-		runErr: errors.New("invalid_auth"),
-	}
+	fake := &fakeSocketModeRunner{runErr: errors.New("invalid_auth")}
 
-	cfgJSON := `{"app_level_token":"xapp-test-token"}`
 	svcs, host, cleanup := setupAllWithFactory(t,
 		func(_ string) (socketModeRunner, error) { return fake, nil },
-		cfgJSON,
+		`{"app_level_token":"xapp-test-token"}`,
 	)
 	defer cleanup()
 
@@ -548,68 +702,10 @@ func TestTriggerStartHealthUnhealthyOnInvalidAuth(t *testing.T) {
 	}
 }
 
-// ── Existing tests ────────────────────────────────────────────────────────────
-
-// TestStubsReturnNotImplemented asserts that Channel.Notify and Channel.Request
-// return an in-band ErrorEnvelope with ERROR_CODE_INTERNAL and a non-empty
-// message containing "not implemented". The gRPC call itself must succeed (nil
-// transport error) — the error is communicated in-band.
-//
-// Tool.Call is no longer a stub (#233 implements it), so it is not included here.
-func TestStubsReturnNotImplemented(t *testing.T) {
-	svcs, cleanup := setupAll(t, nil)
-	defer cleanup()
-
-	cases := []struct {
-		name string
-		run  func(t *testing.T) *commonv1.ErrorEnvelope
-	}{
-		{
-			name: "Channel.Notify",
-			run: func(t *testing.T) *commonv1.ErrorEnvelope {
-				t.Helper()
-				resp, err := svcs.channel.Notify(context.Background(), &channelv1.NotifyRequest{})
-				if err != nil {
-					t.Fatalf("Notify RPC error: %v", err)
-				}
-				if resp.GetOk() {
-					t.Fatal("expected ok=false for stub, got ok=true")
-				}
-				return resp.GetError()
-			},
-		},
-		{
-			name: "Channel.Request",
-			run: func(t *testing.T) *commonv1.ErrorEnvelope {
-				t.Helper()
-				resp, err := svcs.channel.Request(context.Background(), &channelv1.RequestRequest{})
-				if err != nil {
-					t.Fatalf("Request RPC error: %v", err)
-				}
-				return resp.GetError()
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			env := tc.run(t)
-			if env == nil {
-				t.Fatal("expected non-nil ErrorEnvelope, got nil")
-			}
-			if env.GetCode() != commonv1.ErrorCode_ERROR_CODE_INTERNAL {
-				t.Errorf("code: want ERROR_CODE_INTERNAL, got %v", env.GetCode())
-			}
-			if env.GetMessage() == "" {
-				t.Error("expected non-empty error message")
-			}
-		})
-	}
-}
+// ── Tool tests ────────────────────────────────────────────────────────────────
 
 // TestToolListToolsAdvertisesAll asserts that ListTools returns exactly the five
 // Slack tools by name and that each InputSchema parses as a JSON object.
-// This replaces TestToolListToolsEmpty from the scaffold.
 func TestToolListToolsAdvertisesAll(t *testing.T) {
 	svcs, cleanup := setupAll(t, nil)
 	defer cleanup()
@@ -630,7 +726,6 @@ func TestToolListToolsAdvertisesAll(t *testing.T) {
 		if got.GetName() != want {
 			t.Errorf("tool[%d]: want name %q, got %q", i, want, got.GetName())
 		}
-		// Each InputSchema must parse as a JSON object with type=object at root.
 		var schema map[string]any
 		if err := json.Unmarshal([]byte(got.GetInputSchema()), &schema); err != nil {
 			t.Errorf("tool[%d] %s: InputSchema is not valid JSON: %v", i, want, err)
@@ -642,9 +737,7 @@ func TestToolListToolsAdvertisesAll(t *testing.T) {
 	}
 }
 
-// TestToolCancelIsNoOp asserts that Cancel returns an empty response with no
-// error. Cancellation for the Slack ToolService is context-driven; there is no
-// in-process goroutine state to abort.
+// TestToolCancelIsNoOp asserts that Cancel returns an empty response.
 func TestToolCancelIsNoOp(t *testing.T) {
 	svcs, cleanup := setupAll(t, nil)
 	defer cleanup()
@@ -659,9 +752,8 @@ func TestToolCancelIsNoOp(t *testing.T) {
 }
 
 // TestToolCallMissingCredentials asserts that a Call with no credentials
-// configured returns PERMISSION and sets health to UNHEALTHY/auth_missing.
+// returns PERMISSION and sets health to UNHEALTHY/auth_missing.
 func TestToolCallMissingCredentials(t *testing.T) {
-	// Empty string credentials — no token configured.
 	svcs, cleanup := setupAll(t, nil,
 		plugintest.WithCredentialsJSON(`{}`),
 	)
@@ -686,3 +778,615 @@ func TestToolCallMissingCredentials(t *testing.T) {
 		t.Errorf("message should mention credentials or auth, got: %q", env.GetMessage())
 	}
 }
+
+// ── Channel tests ─────────────────────────────────────────────────────────────
+
+// TestChannelNotifyHappyPath asserts that Notify posts a message and returns ok=true.
+func TestChannelNotifyHappyPath(t *testing.T) {
+	const (
+		channel = "C01CHANNEL"
+		ts      = "1700030000.000300"
+		token   = "xoxb-test-notify"
+	)
+
+	runner := newChannelFakeRunner()
+	client, _, _, cleanup := setupChannelServiceWithRunner(t,
+		credJSON(token),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		slackPostMessageOK(channel, ts),
+	)
+	defer cleanup()
+
+	resp, err := client.Notify(context.Background(), &channelv1.NotifyRequest{
+		ChannelConfigJson: channelCfgJSON(channel, ""),
+		PayloadJson:       `{"text":"incident resolved"}`,
+		EventType:         "run_complete",
+	})
+	if err != nil {
+		t.Fatalf("Notify RPC: %v", err)
+	}
+	if !resp.GetOk() {
+		t.Errorf("Notify: want ok=true, got ok=false (error: %v)", resp.GetError().GetMessage())
+	}
+}
+
+// TestChannelNotifyWithMention asserts that when a mention is configured,
+// Notify prepends it to the message text posted to Slack.
+func TestChannelNotifyWithMention(t *testing.T) {
+	const (
+		channel = "C01CHANNEL"
+		ts      = "1700030000.000301"
+		token   = "xoxb-test-notify-mention"
+		mention = "<@U07ONCALL>"
+	)
+
+	var observedText string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// slack-go encodes chat.postMessage as application/x-www-form-urlencoded.
+		_ = r.ParseForm()
+		observedText = r.FormValue("text")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"ok":true,"channel":%q,"ts":%q}`, channel, ts)
+	})
+
+	runner := newChannelFakeRunner()
+	client, _, _, cleanup := setupChannelServiceWithRunner(t,
+		credJSON(token),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		handler,
+	)
+	defer cleanup()
+
+	resp, err := client.Notify(context.Background(), &channelv1.NotifyRequest{
+		ChannelConfigJson: channelCfgJSON(channel, mention),
+		PayloadJson:       `{"text":"incident resolved"}`,
+		EventType:         "run_complete",
+	})
+	if err != nil {
+		t.Fatalf("Notify RPC: %v", err)
+	}
+	if !resp.GetOk() {
+		t.Errorf("Notify: want ok=true, got ok=false (error: %v)", resp.GetError().GetMessage())
+	}
+	if !strings.HasPrefix(observedText, mention+" ") {
+		t.Errorf("expected mention prefix %q in posted text, got %q", mention, observedText)
+	}
+	if !strings.Contains(observedText, "incident resolved") {
+		t.Errorf("expected message body in posted text, got %q", observedText)
+	}
+}
+
+// TestChannelNotifyMissingCredentials asserts that Notify with no credentials
+// returns PERMISSION and sets health to UNHEALTHY/auth_missing.
+func TestChannelNotifyMissingCredentials(t *testing.T) {
+	runner := newChannelFakeRunner()
+	client, _, host, cleanup := setupChannelServiceWithRunner(t,
+		`{}`,
+		cfgWithToken("xapp-test-token"),
+		runner,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Error("Slack API should not be called when no credentials")
+		}),
+	)
+	defer cleanup()
+
+	resp, err := client.Notify(context.Background(), &channelv1.NotifyRequest{
+		ChannelConfigJson: channelCfgJSON("C01CHANNEL", ""),
+		EventType:         "run_complete",
+	})
+	if err != nil {
+		t.Fatalf("Notify RPC: %v", err)
+	}
+	if resp.GetOk() {
+		t.Error("want ok=false for missing credentials, got ok=true")
+	}
+	if resp.GetError().GetCode() != commonv1.ErrorCode_ERROR_CODE_PERMISSION {
+		t.Errorf("code: want PERMISSION, got %v", resp.GetError().GetCode())
+	}
+
+	state, detail, ok := host.Health()
+	if !ok {
+		t.Fatal("expected health state to be set")
+	}
+	if state != plugintest.HealthStateUnhealthy {
+		t.Errorf("health state: want Unhealthy, got %v", state)
+	}
+	if detail != "auth_missing" {
+		t.Errorf("health detail: want auth_missing, got %q", detail)
+	}
+}
+
+// TestChannelNotifyMissingChannel asserts that Notify without a channel returns INVALID_ARG.
+func TestChannelNotifyMissingChannel(t *testing.T) {
+	runner := newChannelFakeRunner()
+	client, _, _, cleanup := setupChannelServiceWithRunner(t,
+		credJSON("xoxb-test"),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Error("Slack API should not be called for missing channel")
+		}),
+	)
+	defer cleanup()
+
+	resp, err := client.Notify(context.Background(), &channelv1.NotifyRequest{
+		ChannelConfigJson: `{}`,
+		EventType:         "run_complete",
+	})
+	if err != nil {
+		t.Fatalf("Notify RPC: %v", err)
+	}
+	if resp.GetOk() {
+		t.Error("want ok=false for missing channel, got ok=true")
+	}
+	if resp.GetError().GetCode() != commonv1.ErrorCode_ERROR_CODE_INVALID_ARG {
+		t.Errorf("code: want INVALID_ARG, got %v", resp.GetError().GetCode())
+	}
+}
+
+// TestChannelNotifyAuthExpired asserts that a Slack invalid_auth error sets health
+// to UNHEALTHY/auth_expired.
+func TestChannelNotifyAuthExpired(t *testing.T) {
+	runner := newChannelFakeRunner()
+	client, _, host, cleanup := setupChannelServiceWithRunner(t,
+		credJSON("xoxb-revoked"),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid_auth"})
+		}),
+	)
+	defer cleanup()
+
+	resp, err := client.Notify(context.Background(), &channelv1.NotifyRequest{
+		ChannelConfigJson: channelCfgJSON("C01CHANNEL", ""),
+		EventType:         "run_complete",
+	})
+	if err != nil {
+		t.Fatalf("Notify RPC: %v", err)
+	}
+	if resp.GetOk() {
+		t.Error("want ok=false for expired auth, got ok=true")
+	}
+
+	state, detail, ok := host.Health()
+	if !ok {
+		t.Fatal("expected health state to be set")
+	}
+	if state != plugintest.HealthStateUnhealthy {
+		t.Errorf("health state: want Unhealthy, got %v", state)
+	}
+	if detail != "auth_expired" {
+		t.Errorf("health detail: want auth_expired, got %q", detail)
+	}
+}
+
+// TestChannelRequestHappyPath asserts that Request posts the Block Kit message
+// and returns acked=true.
+func TestChannelRequestHappyPath(t *testing.T) {
+	const (
+		channel   = "C01CHANNEL"
+		ts        = "1700040000.000400"
+		requestID = "req-happy-path"
+		token     = "xoxb-test-request"
+	)
+
+	runner := newChannelFakeRunner()
+	client, _, _, cleanup := setupChannelServiceWithRunner(t,
+		credJSON(token),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		slackPostMessageOK(channel, ts),
+	)
+	defer cleanup()
+
+	resp, err := client.Request(context.Background(), &channelv1.RequestRequest{
+		RequestId:         requestID,
+		Prompt:            "Approve the deployment?",
+		ChannelConfigJson: channelCfgJSON(channel, ""),
+	})
+	if err != nil {
+		t.Fatalf("Request RPC: %v", err)
+	}
+	if !resp.GetAcked() {
+		t.Errorf("Request: want acked=true, got acked=false (error: %v)", resp.GetError().GetMessage())
+	}
+}
+
+// TestChannelRequestPreAckFailure asserts that when the Slack API returns a 500,
+// Request returns acked=false with an error envelope.
+func TestChannelRequestPreAckFailure(t *testing.T) {
+	runner := newChannelFakeRunner()
+	client, _, _, cleanup := setupChannelServiceWithRunner(t,
+		credJSON("xoxb-test"),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}),
+	)
+	defer cleanup()
+
+	resp, err := client.Request(context.Background(), &channelv1.RequestRequest{
+		RequestId:         "req-fail",
+		Prompt:            "Approve?",
+		ChannelConfigJson: channelCfgJSON("C01CHANNEL", ""),
+	})
+	if err != nil {
+		t.Fatalf("Request RPC: %v", err)
+	}
+	if resp.GetAcked() {
+		t.Error("want acked=false on Slack 500, got acked=true")
+	}
+	if resp.GetError() == nil {
+		t.Error("expected non-nil ErrorEnvelope, got nil")
+	}
+}
+
+// TestChannelRequestRateLimitExceedsBudget asserts that when Slack returns
+// 429 + Retry-After=10s and the ctx has a 5s deadline, callWithRetry
+// short-circuits to RATE_LIMITED without waiting 10s.
+func TestChannelRequestRateLimitExceedsBudget(t *testing.T) {
+	var callCount atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		w.Header().Set("Retry-After", "10")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "ratelimited"})
+	})
+
+	runner := newChannelFakeRunner()
+	client, _, _, cleanup := setupChannelServiceWithRunner(t,
+		credJSON("xoxb-test"),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		handler,
+	)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	resp, err := client.Request(ctx, &channelv1.RequestRequest{
+		RequestId:         "req-ratelimit",
+		Prompt:            "Approve?",
+		ChannelConfigJson: channelCfgJSON("C01CHANNEL", ""),
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Request RPC: %v", err)
+	}
+
+	if elapsed > 8*time.Second {
+		t.Errorf("callWithRetry took too long (%v); expected short-circuit on rate limit", elapsed)
+	}
+	if resp.GetAcked() {
+		t.Error("want acked=false on rate limit, got acked=true")
+	}
+	if resp.GetError().GetCode() != commonv1.ErrorCode_ERROR_CODE_RATE_LIMITED {
+		t.Errorf("code: want RATE_LIMITED, got %v", resp.GetError().GetCode())
+	}
+	if n := callCount.Load(); n != 1 {
+		t.Errorf("Slack API call count: want 1 (no retry), got %d", n)
+	}
+}
+
+// TestChannelRequestInteractiveCallback tests the full interactive round-trip:
+// Request → operator clicks button → WriteAuditStep(feedback_response) →
+// response_url POST with "Response recorded: approve".
+func TestChannelRequestInteractiveCallback(t *testing.T) {
+	const (
+		channel   = "C01CHANNEL"
+		ts        = "1700060000.000600"
+		requestID = "req-interactive"
+		token     = "xoxb-interactive"
+	)
+
+	var respURLBody atomic.Value
+	responseURLSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		respURLBody.Store(string(body))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer responseURLSrv.Close()
+
+	runner := newChannelFakeRunner()
+	client, chanSvc, host, cleanup := setupChannelServiceWithRunner(t,
+		credJSON(token),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		slackPostMessageOK(channel, ts),
+	)
+	defer cleanup()
+
+	// Point httpClient at the responseURLSrv for postResponseURL.
+	chanSvc.httpClient = responseURLSrv.Client()
+
+	// Step 1: Request.
+	resp, err := client.Request(context.Background(), &channelv1.RequestRequest{
+		RequestId:         requestID,
+		Prompt:            "Approve the deployment?",
+		ChannelConfigJson: channelCfgJSON(channel, ""),
+	})
+	if err != nil {
+		t.Fatalf("Request RPC: %v", err)
+	}
+	if !resp.GetAcked() {
+		t.Fatalf("Request: want acked=true, got false: %v", resp.GetError().GetMessage())
+	}
+
+	// Step 2: Inject interactive event.
+	responseURL := responseURLSrv.URL + "/response"
+	runner.Send(interactiveSocketEvent(requestID, "approve", "approve", responseURL))
+
+	// Step 3: Wait for WriteAuditStep.
+	if !pollUntil(t, 3*time.Second, func() bool { return len(host.AuditSteps()) > 0 }) {
+		t.Fatal("timed out waiting for WriteAuditStep")
+	}
+
+	steps := host.AuditSteps()
+	if len(steps) != 1 {
+		t.Fatalf("want 1 audit step, got %d", len(steps))
+	}
+	step := steps[0]
+	if step.StepType != "feedback_response" {
+		t.Errorf("step_type: want feedback_response, got %q", step.StepType)
+	}
+	if step.RequestID != requestID {
+		t.Errorf("request_id: want %q, got %q", requestID, step.RequestID)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(step.PayloadJSON), &payload); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if payload["option_id"] != "approve" {
+		t.Errorf("option_id: want approve, got %q", payload["option_id"])
+	}
+
+	// Step 4: Wait for response_url POST.
+	if !pollUntil(t, 3*time.Second, func() bool {
+		v := respURLBody.Load()
+		return v != nil && v.(string) != ""
+	}) {
+		t.Fatal("timed out waiting for response_url POST")
+	}
+
+	body := respURLBody.Load().(string)
+	if !strings.Contains(body, "Response recorded") {
+		t.Errorf("response_url body: want 'Response recorded', got %q", body)
+	}
+}
+
+// TestChannelRequestInteractiveCallbackLateRequest asserts that when the
+// interactive callback arrives for an unknown request_id, the response_url
+// receives "expired" and no audit step is written.
+func TestChannelRequestInteractiveCallbackLateRequest(t *testing.T) {
+	const token = "xoxb-late"
+
+	var respURLBody atomic.Value
+	responseURLSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		respURLBody.Store(string(body))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer responseURLSrv.Close()
+
+	runner := newChannelFakeRunner()
+	_, chanSvc, host, cleanup := setupChannelServiceWithRunner(t,
+		credJSON(token),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// No Slack API calls expected.
+		}),
+	)
+	defer cleanup()
+
+	chanSvc.httpClient = responseURLSrv.Client()
+
+	// No prior Request call — correlation won't be found.
+	responseURL := responseURLSrv.URL + "/response"
+	runner.Send(interactiveSocketEvent("unknown-req-id", "approve", "approve", responseURL))
+
+	if !pollUntil(t, 3*time.Second, func() bool {
+		v := respURLBody.Load()
+		return v != nil && v.(string) != ""
+	}) {
+		t.Fatal("timed out waiting for response_url POST")
+	}
+
+	body := respURLBody.Load().(string)
+	if !strings.Contains(body, "expired") {
+		t.Errorf("response_url body: want 'expired', got %q", body)
+	}
+	if n := len(host.AuditSteps()); n != 0 {
+		t.Errorf("want 0 audit steps, got %d", n)
+	}
+}
+
+// TestChannelRequestInteractiveCallbackHostReportsLate tests that when
+// WriteAuditStep returns Ok=false + "feedback_response_late", the response_url
+// receives "already been resolved".
+func TestChannelRequestInteractiveCallbackHostReportsLate(t *testing.T) {
+	const (
+		channel   = "C01CHANNEL"
+		ts        = "1700070000.000700"
+		requestID = "req-host-late"
+		token     = "xoxb-late-host"
+	)
+
+	var respURLBody atomic.Value
+	responseURLSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		respURLBody.Store(string(body))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer responseURLSrv.Close()
+
+	runner := newChannelFakeRunner()
+
+	// Inline custom host that returns feedback_response_late for our request_id.
+	lateHost := &lateAuditHost{
+		requestID: requestID,
+		credJSON:  credJSON(token),
+	}
+
+	hostLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen host: %v", err)
+	}
+	hostSrv := grpc.NewServer()
+	hostv1.RegisterHostServiceServer(hostSrv, lateHost)
+	go func() { _ = hostSrv.Serve(hostLis) }()
+	defer hostSrv.Stop()
+
+	hostConn, err := grpc.NewClient(hostLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial host: %v", err)
+	}
+	defer hostConn.Close()
+	hostClient := hostv1.NewHostServiceClient(hostConn)
+
+	slackSrv := httptest.NewServer(slackPostMessageOK(channel, ts))
+	defer slackSrv.Close()
+
+	registry := newHubRegistry(func(_ string) (socketModeRunner, error) { return runner, nil })
+	hub, _, err := registry.Acquire("xapp-test-token")
+	if err != nil {
+		t.Fatalf("acquire hub: %v", err)
+	}
+
+	chanSvc := newChannelServiceForTest(
+		hostClient,
+		registry,
+		func(tok string) slackWebAPI {
+			return slack.New(tok,
+				slack.OptionHTTPClient(slackSrv.Client()),
+				slack.OptionAPIURL(slackSrv.URL+"/"),
+			)
+		},
+		responseURLSrv.Client(),
+	)
+	hub.RegisterInteractiveHandler(chanSvc.handleInteractive)
+	defer chanSvc.correlations.Stop()
+
+	// Step 1: Request — stores correlation.
+	reqResp, err := chanSvc.Request(context.Background(), &channelv1.RequestRequest{
+		RequestId:         requestID,
+		Prompt:            "Approve?",
+		ChannelConfigJson: channelCfgJSON(channel, ""),
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if !reqResp.GetAcked() {
+		t.Fatalf("Request: want acked=true, got false: %v", reqResp.GetError())
+	}
+
+	// Step 2: Inject interactive event; host returns late.
+	responseURL := responseURLSrv.URL + "/response"
+	runner.Send(interactiveSocketEvent(requestID, "approve", "approve", responseURL))
+
+	if !pollUntil(t, 3*time.Second, func() bool {
+		v := respURLBody.Load()
+		return v != nil && v.(string) != ""
+	}) {
+		t.Fatal("timed out waiting for response_url POST")
+	}
+
+	body := respURLBody.Load().(string)
+	if !strings.Contains(body, "already been resolved") {
+		t.Errorf("response_url body: want 'already been resolved', got %q", body)
+	}
+}
+
+// TestChannelInteractiveAckedSynchronously asserts that when an interactive
+// event arrives, the hub calls Ack BEFORE dispatching the handler. It does
+// this by overriding the hub's interactive handler with a probe that captures
+// runner.AckCount() at the instant the handler starts. If Ack ran first, the
+// captured count must be 1; if the hub called the handler first it would be 0.
+func TestChannelInteractiveAckedSynchronously(t *testing.T) {
+	const requestID = "req-ack-sync"
+
+	runner := newChannelFakeRunner()
+	_, chanSvc, _, cleanup := setupChannelServiceWithRunner(t,
+		credJSON("xoxb-ack-sync"),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		slackPostMessageOK("C01CHANNEL", "1700080000.000800"),
+	)
+	defer cleanup()
+
+	// Acquire the same hub that setupChannelServiceWithRunner wired up so we
+	// can install our probe handler. RegisterInteractiveHandler uses
+	// atomic.Pointer.Store, so a second call overwrites the first — the probe
+	// replaces chanSvc.handleInteractive for the duration of this test.
+	hub, _, err := chanSvc.hubRegistry.Acquire("xapp-test-token")
+	if err != nil {
+		t.Fatalf("Acquire hub: %v", err)
+	}
+
+	var ackCountAtHandlerEntry int32
+	handlerDone := make(chan struct{})
+	hub.RegisterInteractiveHandler(func(_ socketmode.Event, _ slack.InteractionCallback) {
+		// Capture AckCount at the instant we enter the handler. If Ack ran
+		// before this handler was called (as sockethub.go guarantees), the
+		// count will be 1. If the hub dispatched the handler first, it would be 0.
+		atomic.StoreInt32(&ackCountAtHandlerEntry, int32(runner.AckCount()))
+		close(handlerDone)
+	})
+
+	runner.Send(interactiveSocketEvent(requestID, "approve", "approve", ""))
+
+	select {
+	case <-handlerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not run within 3s")
+	}
+	if got := atomic.LoadInt32(&ackCountAtHandlerEntry); got != 1 {
+		t.Fatalf("expected AckCount==1 at handler entry (Ack before handler), got %d", got)
+	}
+}
+
+// ── lateAuditHost ─────────────────────────────────────────────────────────────
+
+// lateAuditHost is an inline hostv1.HostServiceServer that returns
+// Ok=false + Error.Message="feedback_response_late" for WriteAuditStep with a
+// specific requestID. All other RPCs use minimal stubs.
+type lateAuditHost struct {
+	hostv1.UnimplementedHostServiceServer
+	requestID string
+	credJSON  string
+}
+
+func (h *lateAuditHost) GetCredentials(_ context.Context, _ *hostv1.GetCredentialsRequest) (*hostv1.GetCredentialsResponse, error) {
+	return &hostv1.GetCredentialsResponse{CredentialsJson: h.credJSON}, nil
+}
+
+func (h *lateAuditHost) GetInstanceConfig(_ context.Context, _ *hostv1.GetInstanceConfigRequest) (*hostv1.GetInstanceConfigResponse, error) {
+	return &hostv1.GetInstanceConfigResponse{ConfigJson: `{"app_level_token":"xapp-test"}`}, nil
+}
+
+func (h *lateAuditHost) SetHealthState(_ context.Context, _ *hostv1.SetHealthStateRequest) (*hostv1.SetHealthStateResponse, error) {
+	return &hostv1.SetHealthStateResponse{Ok: true}, nil
+}
+
+func (h *lateAuditHost) WriteAuditStep(_ context.Context, req *hostv1.WriteAuditStepRequest) (*hostv1.WriteAuditStepResponse, error) {
+	if req.GetRequestId() == h.requestID {
+		return &hostv1.WriteAuditStepResponse{
+			Ok: false,
+			Error: &commonv1.ErrorEnvelope{
+				Code:    commonv1.ErrorCode_ERROR_CODE_INTERNAL,
+				Message: "feedback_response_late",
+			},
+		}, nil
+	}
+	return &hostv1.WriteAuditStepResponse{Ok: true}, nil
+}
+

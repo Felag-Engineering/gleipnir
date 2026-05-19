@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,8 +14,10 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/oklog/ulid/v2"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
@@ -264,7 +267,8 @@ type socketModeFactory func(xappToken string) (socketModeRunner, error)
 
 // productionSocketModeRunner wraps socketmode.Client to satisfy the socketModeRunner
 // interface with a single-goroutine fanout — events are delivered sequentially
-// to preserve per-stream ordering.
+// to preserve per-stream ordering. Lives here for fakeSocketModeRunner compatibility
+// in service_test.go; sockethub.go calls the interface, not the concrete type.
 type productionSocketModeRunner struct {
 	client *socketmode.Client
 }
@@ -311,28 +315,32 @@ func defaultSocketModeFactory(xappToken string) (socketModeRunner, error) {
 // subscription scope, and emits matching events to the host via EmitEvent.
 type TriggerService struct {
 	triggerv1.UnimplementedTriggerServiceServer
-	host              hostv1.HostServiceClient
-	socketModeFactory socketModeFactory
+	host        hostv1.HostServiceClient
+	hubRegistry *hubRegistry
 }
 
-// NewTriggerService creates a TriggerService that uses hostClient for host RPCs.
-// The production socketmode.Client factory is used for the real Slack connection.
-// Signature is intentionally stable — mirrors how NewToolService stayed stable
-// across #366.
-func NewTriggerService(hostClient hostv1.HostServiceClient) *TriggerService {
+// NewTriggerService creates a TriggerService that uses hostClient for host RPCs
+// and the shared hubRegistry for the Socket Mode connection.
+func NewTriggerService(hostClient hostv1.HostServiceClient, registry *hubRegistry) *TriggerService {
 	return &TriggerService{
-		host:              hostClient,
-		socketModeFactory: defaultSocketModeFactory,
+		host:        hostClient,
+		hubRegistry: registry,
 	}
 }
 
-// newTriggerServiceWithFactory is an internal constructor for tests that need
-// to inject a fake socketModeRunner instead of a real Slack connection.
+// newTriggerServiceWithRegistry is an internal constructor for tests that use
+// a hub registry (backed by a fake socketModeFactory).
+func newTriggerServiceWithRegistry(hostClient hostv1.HostServiceClient, registry *hubRegistry) *TriggerService {
+	return &TriggerService{
+		host:        hostClient,
+		hubRegistry: registry,
+	}
+}
+
+// newTriggerServiceWithFactory is kept for the in-test setup path that creates
+// a registry on the fly. Tests that only care about TriggerService use this.
 func newTriggerServiceWithFactory(hostClient hostv1.HostServiceClient, factory socketModeFactory) *TriggerService {
-	return &TriggerService{
-		host:              hostClient,
-		socketModeFactory: factory,
-	}
+	return newTriggerServiceWithRegistry(hostClient, newHubRegistry(factory))
 }
 
 // Start is a server-streaming RPC that opens a Slack Socket Mode connection and
@@ -364,13 +372,17 @@ func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerSt
 		return status.Errorf(codes.InvalidArgument, "invalid watch_scope_json: %v", err)
 	}
 
-	// Build the Socket Mode runner using the factory (real or fake in tests).
-	runner, err := s.socketModeFactory(token)
+	// Acquire the shared socketHub for this xapp-token. The hub is created on
+	// first use and shared with ChannelService's interactive handler.
+	hub, release, err := s.hubRegistry.Acquire(token)
 	if err != nil {
 		return status.Errorf(codes.Internal, "create socket mode runner: %v", err)
 	}
+	// Release our reference when Start returns so the hub can be torn down if
+	// no other caller holds a reference.
+	defer release()
 
-	// onEvent is called sequentially by the runner's single fanout goroutine.
+	// onEvent is called sequentially by the hub's single fanout goroutine.
 	// Per the socketModeRunner contract, this function is never called concurrently.
 	onEvent := func(evt socketmode.Event) {
 		if evt.Type != socketmode.EventTypeEventsAPI {
@@ -383,7 +395,7 @@ func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerSt
 		// A deferred Ack would run AFTER EmitEvent and could miss the window
 		// under host backpressure (blocking #3 from plan review).
 		if evt.Request != nil {
-			runner.Ack(*evt.Request)
+			hub.Ack(*evt.Request)
 		}
 
 		eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
@@ -429,8 +441,19 @@ func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerSt
 		}
 	}
 
-	// Run blocks until ctx is cancelled or a fatal Slack error occurs.
-	runErr := runner.Run(stream.Context(), onEvent)
+	hub.RegisterEventsHandler(onEvent)
+
+	// Block until the stream context is cancelled by the host (clean shutdown)
+	// or the hub's Run goroutine exits (auth failure, connection error).
+	var runErr error
+	select {
+	case <-stream.Context().Done():
+		// Host cancelled the stream. Treat as clean shutdown.
+		runErr = context.Canceled
+	case <-hub.Done():
+		// Hub exited — inspect doneErr for auth failure or other causes.
+		runErr = hub.DoneErr()
+	}
 
 	// Clean shutdown: context was cancelled by the host (supervisor restart, etc.)
 	// or the stream context expired. Return nil so the supervisor can re-call Start.
@@ -515,29 +538,372 @@ func extractAppLevelToken(configJSON string) (string, error) {
 
 // ── ChannelService ────────────────────────────────────────────────────────────
 
-// ChannelService implements channelv1.ChannelServiceServer with stub methods.
-// #235 will implement Notify (post a message to a Slack channel/DM) and
-// Request (post a message and wait for an operator reaction/reply).
+// slackWebAPI is the Web API interface used by ChannelService. It is satisfied
+// by *slack.Client in production and by a fake in tests.
+type slackWebAPI interface {
+	PostMessageContext(ctx context.Context, channelID string, opts ...slack.MsgOption) (string, string, error)
+}
+
+// ChannelService implements channelv1.ChannelServiceServer. It posts Slack
+// messages (Notify) and interactive Block Kit messages with response buttons
+// (Request), then handles button-click callbacks via Socket Mode and calls
+// WriteAuditStep(feedback_response) back to the host.
 type ChannelService struct {
 	channelv1.UnimplementedChannelServiceServer
-	host hostv1.HostServiceClient
+	host          hostv1.HostServiceClient
+	hubRegistry   *hubRegistry
+	webAPIFactory func(token string) slackWebAPI // injectable for tests
+	httpClient    *http.Client                   // for response_url POSTs
+	correlations  *correlationMap
 }
 
-// NewChannelService creates a ChannelService that uses hostClient for host RPCs.
-func NewChannelService(hostClient hostv1.HostServiceClient) *ChannelService {
-	return &ChannelService{host: hostClient}
+// NewChannelService creates a production ChannelService. It acquires the shared
+// socketHub for the instance's xapp-token and registers the interactive handler.
+// If GetInstanceConfig fails or the token is absent, interactive callbacks are
+// silently dropped until the next restart (Notify/Request still report the error
+// inline via setChannelHealth).
+func NewChannelService(host hostv1.HostServiceClient, registry *hubRegistry, httpClient *http.Client) *ChannelService {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	s := &ChannelService{
+		host:        host,
+		hubRegistry: registry,
+		webAPIFactory: func(token string) slackWebAPI {
+			return slack.New(token)
+		},
+		httpClient:   httpClient,
+		correlations: newCorrelationMap(5*time.Minute, 24*time.Hour),
+	}
+
+	// Register the interactive handler at construction so it is in place before
+	// any Request call arrives. We fetch the token synchronously here; if it
+	// fails we skip registration and interactive callbacks won't fire, but
+	// Notify/Request will surface the error inline.
+	cfgResp, err := host.GetInstanceConfig(context.Background(), &hostv1.GetInstanceConfigRequest{})
+	if err != nil {
+		log.Printf("slack: ChannelService: GetInstanceConfig at startup: %v", err)
+		return s
+	}
+	token, err := extractAppLevelToken(cfgResp.GetConfigJson())
+	if err != nil || token == "" {
+		// Token not yet configured — skip registration. Interactive callbacks
+		// won't fire until the plugin restarts with a token in config.
+		return s
+	}
+
+	hub, _, err := registry.Acquire(token)
+	if err != nil {
+		log.Printf("slack: ChannelService: Acquire hub for interactive handler: %v", err)
+		return s
+	}
+	// We intentionally do not call the releaseFn — this hub reference persists
+	// for the plugin process lifetime so the interactive handler always fires.
+	hub.RegisterInteractiveHandler(s.handleInteractive)
+
+	return s
 }
 
-// Notify returns a not-implemented error envelope. #235 implements the real
-// Slack chat.postMessage call using the channel config's target and mention.
-func (s *ChannelService) Notify(_ context.Context, _ *channelv1.NotifyRequest) (*channelv1.NotifyResponse, error) {
-	return &channelv1.NotifyResponse{Ok: false, Error: notImplemented("Notify", "")}, nil
+// newChannelServiceForTest creates a ChannelService for testing with an injected
+// webAPIFactory and pre-built correlationMap (no sweep goroutine management).
+func newChannelServiceForTest(host hostv1.HostServiceClient, registry *hubRegistry, webAPIFactory func(string) slackWebAPI, httpClient *http.Client) *ChannelService {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	return &ChannelService{
+		host:          host,
+		hubRegistry:   registry,
+		webAPIFactory: webAPIFactory,
+		httpClient:    httpClient,
+		correlations:  newCorrelationMap(5*time.Minute, 24*time.Hour),
+	}
 }
 
-// Request returns a not-implemented error envelope. #235 implements posting
-// a message to Slack and waiting for an operator reply or reaction.
-func (s *ChannelService) Request(_ context.Context, _ *channelv1.RequestRequest) (*channelv1.RequestResponse, error) {
-	return &channelv1.RequestResponse{Error: notImplemented("Request", "")}, nil
+// Notify posts a notification message to the configured Slack channel.
+// The 10-second deadline is enforced by the host per spec §13.6.
+// Failures are returned in-band (ok=false) but do not fail the run.
+func (s *ChannelService) Notify(ctx context.Context, req *channelv1.NotifyRequest) (*channelv1.NotifyResponse, error) {
+	hostCtx := serve.WithCallContext(ctx)
+
+	credResp, err := s.host.GetCredentials(hostCtx, &hostv1.GetCredentialsRequest{})
+	if err != nil {
+		return &channelv1.NotifyResponse{
+			Ok:    false,
+			Error: channelErrorResponse(commonv1.ErrorCode_ERROR_CODE_INTERNAL, fmt.Sprintf("GetCredentials: %v", err)),
+		}, nil
+	}
+	raw := credResp.GetCredentialsJson()
+	if raw == "" || raw == "{}" {
+		s.setChannelHealth(hostCtx, healthAuthMissing)
+		return &channelv1.NotifyResponse{
+			Ok:    false,
+			Error: channelErrorResponse(commonv1.ErrorCode_ERROR_CODE_PERMISSION, "no Slack credentials configured; authorize the plugin in the admin UI"),
+		}, nil
+	}
+	var creds slackCreds
+	if err := json.Unmarshal([]byte(raw), &creds); err != nil {
+		return &channelv1.NotifyResponse{
+			Ok:    false,
+			Error: channelErrorResponse(commonv1.ErrorCode_ERROR_CODE_INTERNAL, fmt.Sprintf("parse credentials: %v", err)),
+		}, nil
+	}
+	if creds.Token.AccessToken == "" {
+		s.setChannelHealth(hostCtx, healthAuthMissing)
+		return &channelv1.NotifyResponse{
+			Ok:    false,
+			Error: channelErrorResponse(commonv1.ErrorCode_ERROR_CODE_PERMISSION, "Slack access_token is empty; re-authorize the plugin in the admin UI"),
+		}, nil
+	}
+
+	var cfg SlackChannelEntryConfig
+	if err := json.Unmarshal([]byte(req.GetChannelConfigJson()), &cfg); err != nil || cfg.Channel == "" {
+		return &channelv1.NotifyResponse{
+			Ok:    false,
+			Error: channelErrorResponse(commonv1.ErrorCode_ERROR_CODE_INVALID_ARG, "channel_config_json must include a non-empty 'channel' field"),
+		}, nil
+	}
+
+	// Extract text body from the notification payload (tolerant of unknown fields).
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if jsonErr := json.Unmarshal([]byte(req.GetPayloadJson()), &payload); jsonErr != nil {
+		// Non-fatal: fall back to the event type as the message.
+		payload.Text = req.GetEventType()
+	}
+	text := payload.Text
+	if text == "" {
+		text = req.GetEventType()
+	}
+	if cfg.Mention != "" {
+		text = cfg.Mention + " " + text
+	}
+
+	sc := s.webAPIFactory(creds.Token.AccessToken)
+
+	type postResult struct{ channel, ts string }
+	_, postErr := callWithRetry(ctx, func(ctx context.Context) (postResult, error) {
+		ch, ts, err := sc.PostMessageContext(ctx, cfg.Channel, slack.MsgOptionText(text, false))
+		return postResult{ch, ts}, err
+	})
+	if postErr != nil {
+		code, hint := mapErr(postErr)
+		if hint != healthNone {
+			s.setChannelHealth(hostCtx, hint)
+		}
+		return &channelv1.NotifyResponse{
+			Ok:    false,
+			Error: channelErrorResponse(code, postErr.Error()),
+		}, nil
+	}
+
+	return &channelv1.NotifyResponse{Ok: true}, nil
+}
+
+// Request posts a Block Kit message with response buttons to the configured
+// Slack channel. It synchronously acknowledges within the host-enforced 5-second
+// pre-ack deadline, then stores the request_id ↔ Slack message correlation.
+// When the operator clicks a button, handleInteractive calls WriteAuditStep.
+func (s *ChannelService) Request(ctx context.Context, req *channelv1.RequestRequest) (*channelv1.RequestResponse, error) {
+	hostCtx := serve.WithCallContext(ctx)
+
+	var cfg SlackChannelEntryConfig
+	if err := json.Unmarshal([]byte(req.GetChannelConfigJson()), &cfg); err != nil || cfg.Channel == "" {
+		return &channelv1.RequestResponse{
+			Error: channelErrorResponse(commonv1.ErrorCode_ERROR_CODE_INVALID_ARG, "channel_config_json must include a non-empty 'channel' field"),
+		}, nil
+	}
+
+	credResp, err := s.host.GetCredentials(hostCtx, &hostv1.GetCredentialsRequest{})
+	if err != nil {
+		return &channelv1.RequestResponse{
+			Error: channelErrorResponse(commonv1.ErrorCode_ERROR_CODE_INTERNAL, fmt.Sprintf("GetCredentials: %v", err)),
+		}, nil
+	}
+	raw := credResp.GetCredentialsJson()
+	if raw == "" || raw == "{}" {
+		s.setChannelHealth(hostCtx, healthAuthMissing)
+		return &channelv1.RequestResponse{
+			Error: channelErrorResponse(commonv1.ErrorCode_ERROR_CODE_PERMISSION, "no Slack credentials configured; authorize the plugin in the admin UI"),
+		}, nil
+	}
+	var creds slackCreds
+	if err := json.Unmarshal([]byte(raw), &creds); err != nil {
+		return &channelv1.RequestResponse{
+			Error: channelErrorResponse(commonv1.ErrorCode_ERROR_CODE_INTERNAL, fmt.Sprintf("parse credentials: %v", err)),
+		}, nil
+	}
+	if creds.Token.AccessToken == "" {
+		s.setChannelHealth(hostCtx, healthAuthMissing)
+		return &channelv1.RequestResponse{
+			Error: channelErrorResponse(commonv1.ErrorCode_ERROR_CODE_PERMISSION, "Slack access_token is empty; re-authorize the plugin in the admin UI"),
+		}, nil
+	}
+
+	buttons := cfg.ResponseButtons
+	if len(buttons) == 0 {
+		buttons = defaultResponseButtons()
+	}
+
+	sc := s.webAPIFactory(creds.Token.AccessToken)
+
+	// Synchronously post the Block Kit message within the host-enforced 5s
+	// pre-ack deadline carried in ctx. callWithRetry honors the deadline; if
+	// Slack's RetryAfter exceeds remaining budget it returns RateLimitedError
+	// which mapErr converts to RATE_LIMITED — the host then writes
+	// feedback_dispatch_error (dispatch/channel.go:347-355).
+	type postResult struct{ channel, ts string }
+	res, postErr := callWithRetry(ctx, func(ctx context.Context) (postResult, error) {
+		blocks := buildRequestBlocks(req.GetRequestId(), req.GetPrompt(), buttons, cfg.Mention)
+		ch, ts, err := sc.PostMessageContext(ctx, cfg.Channel, slack.MsgOptionBlocks(blocks...))
+		return postResult{ch, ts}, err
+	})
+	if postErr != nil {
+		code, hint := mapErr(postErr)
+		if hint != healthNone {
+			s.setChannelHealth(hostCtx, hint)
+		}
+		return &channelv1.RequestResponse{
+			Error: channelErrorResponse(code, postErr.Error()),
+		}, nil
+	}
+
+	runID := req.GetContext().GetRunId()
+	s.correlations.put(req.GetRequestId(), correlation{
+		channel: res.channel,
+		ts:      res.ts,
+		buttons: buttons,
+		runID:   runID,
+		addedAt: time.Now(),
+	})
+
+	return &channelv1.RequestResponse{Acked: true}, nil
+}
+
+// handleInteractive is called by the socketHub when an interactive (button-click)
+// event arrives from Slack. It looks up the correlation for the request_id,
+// calls WriteAuditStep(feedback_response), and POSTs to response_url to give
+// the operator visual confirmation.
+func (s *ChannelService) handleInteractive(evt socketmode.Event, cb slack.InteractionCallback) {
+	if cb.Type != slack.InteractionTypeBlockActions {
+		return
+	}
+
+	for _, action := range cb.ActionCallback.BlockActions {
+		requestID, optionID, ok := parseActionID(action.ActionID)
+		if !ok {
+			continue
+		}
+
+		_, found := s.correlations.take(requestID)
+		if !found {
+			// Either the plugin restarted (correlation lost) or the request
+			// already expired via the host's feedback-timeout path.
+			s.postResponseURL(cb.ResponseURL, "This request has expired.")
+			return
+		}
+
+		payloadJSON, err := json.Marshal(map[string]string{
+			"request_id": requestID,
+			"option_id":  optionID,
+			"value":      action.Value,
+			"user":       cb.User.ID,
+		})
+		if err != nil {
+			log.Printf("slack: handleInteractive: marshal payload: %v", err)
+			return
+		}
+
+		// Detached path (R2+R3 investigation confirmed): per-RPC client-side
+		// TokenInterceptor (serve/server.go:126) attaches the instance token to
+		// ANY ctx, so identity propagation works with a fresh background context.
+		// RejectIfDetached (audit_guard.go:69-72) is presence-only on call_id —
+		// synthesize a UUID to satisfy it.
+		// KNOWN GAP: spec §8.5 promises a request_id exemption not yet implemented
+		// host-side. File Phase-8 follow-up.
+		callID := ulid.Make().String()
+		md := metadata.Pairs("gleipnir-call-id", callID)
+		auditCtx := metadata.NewOutgoingContext(context.Background(), md)
+
+		resp, err := s.host.WriteAuditStep(auditCtx, &hostv1.WriteAuditStepRequest{
+			StepType:    "feedback_response",
+			RequestId:   requestID,
+			PayloadJson: string(payloadJSON),
+		})
+		if err != nil {
+			log.Printf("slack: handleInteractive: WriteAuditStep: %v", err)
+			return
+		}
+
+		if resp.GetOk() {
+			s.postResponseURL(cb.ResponseURL, "Response recorded: "+optionID)
+			return
+		}
+
+		errMsg := ""
+		if resp.GetError() != nil {
+			errMsg = resp.GetError().GetMessage()
+		}
+		if errMsg == "feedback_response_late" {
+			s.postResponseURL(cb.ResponseURL, "This request has already been resolved.")
+			return
+		}
+		log.Printf("slack: handleInteractive: WriteAuditStep returned ok=false: %s", errMsg)
+	}
+}
+
+// postResponseURL sends a POST to Slack's response_url with replace_original:true,
+// replacing the entire original message (including buttons) with the given text.
+// This provides visual confirmation that the button click was processed (R6).
+func (s *ChannelService) postResponseURL(responseURL, text string) {
+	if responseURL == "" {
+		return
+	}
+	body, err := json.Marshal(map[string]any{
+		"replace_original": true,
+		"text":             text,
+	})
+	if err != nil {
+		log.Printf("slack: postResponseURL: marshal: %v", err)
+		return
+	}
+	// Use a short timeout for the response_url POST — it's best-effort UX.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	reqHTTP, err := http.NewRequestWithContext(ctx, http.MethodPost, responseURL, bytes.NewReader(body))
+	if err != nil {
+		log.Printf("slack: postResponseURL: build request: %v", err)
+		return
+	}
+	reqHTTP.Header.Set("Content-Type", "application/json")
+	resp, err := s.httpClient.Do(reqHTTP)
+	if err != nil {
+		log.Printf("slack: postResponseURL: POST: %v", err)
+		return
+	}
+	resp.Body.Close()
+}
+
+// setChannelHealth updates the plugin health state for channel-level failures.
+func (s *ChannelService) setChannelHealth(ctx context.Context, h healthHint) {
+	var detail string
+	switch h {
+	case healthAuthExpired:
+		detail = "auth_expired"
+	case healthAuthMissing:
+		detail = "auth_missing"
+	default:
+		return
+	}
+	_, _ = s.host.SetHealthState(ctx, &hostv1.SetHealthStateRequest{
+		State:  hostv1.PluginHealthState_PLUGIN_HEALTH_STATE_UNHEALTHY,
+		Detail: detail,
+	})
+}
+
+// channelErrorResponse constructs an ErrorEnvelope for ChannelService responses.
+func channelErrorResponse(code commonv1.ErrorCode, message string) *commonv1.ErrorEnvelope {
+	return &commonv1.ErrorEnvelope{Code: code, Message: message}
 }
 
 // notImplemented returns an ErrorEnvelope with ERROR_CODE_INTERNAL and a
