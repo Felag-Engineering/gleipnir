@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -38,6 +39,13 @@ type ToolService struct {
 	host       hostv1.HostServiceClient
 	httpClient *http.Client
 	apiURL     string // empty = Slack production default; tests pass httptest.Server URL + "/"
+
+	// verifiedToken holds the last access_token that passed auth.test.
+	// Concurrent first-calls may race: both may observe nil and both run
+	// auth.test against Slack. Acceptable: correctness preserved (second
+	// Store wins; both runs see a verified token). atomic.Pointer gives
+	// a lock-free fast path on Call() after the first verification.
+	verifiedToken atomic.Pointer[string]
 }
 
 // NewToolService creates a ToolService using hostClient for host RPCs,
@@ -137,8 +145,8 @@ func (s *ToolService) Call(ctx context.Context, req *toolv1.CallRequest) (*toolv
 	toolName := req.GetToolName()
 
 	// Guard against unknown tool names before touching the Slack API.
-	// Unknown tools return INVALID_ARG without emitting a metric or hitting
-	// the Slack API, matching the minimal-tool dispatch pattern
+	// Unknown tools return INVALID_ARG without emitting a metric or running
+	// auth.test, matching the minimal-tool dispatch pattern
 	// (plugin-sdk/examples/minimal-tool/service.go:62-69).
 	switch toolName {
 	case "post_message", "list_channels", "search_messages", "react", "set_topic":
@@ -146,6 +154,27 @@ func (s *ToolService) Call(ctx context.Context, req *toolv1.CallRequest) (*toolv
 	default:
 		return errorResponse(commonv1.ErrorCode_ERROR_CODE_INVALID_ARG,
 			fmt.Sprintf("unknown tool: %q", toolName)), nil
+	}
+
+	// Verify the token against Slack's auth.test endpoint on first use and
+	// whenever the token changes (e.g. after re-authorization). This is a
+	// lazy security gate: it catches revoked tokens before the tool call
+	// executes and transitions the plugin to UNHEALTHY so the operator sees
+	// a clear signal in the admin UI.
+	if prior := s.verifiedToken.Load(); prior == nil || *prior != creds.Token.AccessToken {
+		if _, authErr := sc.AuthTestContext(ctx); authErr != nil {
+			code, hint := mapErr(authErr)
+			if hint != healthNone {
+				s.setHealth(hostCtx, hint)
+			}
+			return errorResponse(code, "auth.test failed: "+authErr.Error()), nil
+		}
+		// Store address of a fresh local copy. Storing &creds.Token.AccessToken
+		// would persist a pointer into the just-fetched StoredCredentials
+		// value, which is harmless today (string compare by value) but
+		// fragile and non-obvious.
+		tok := creds.Token.AccessToken
+		s.verifiedToken.Store(&tok)
 	}
 
 	// Dispatch and measure.
