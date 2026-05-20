@@ -210,6 +210,10 @@ The broader `go test ./plugins/...` does not work, because each first-party plug
 | `TestToolService_Call_AuthTestFails_SetsUnhealthy` | auth.test → invalid_auth → PERMISSION + UNHEALTHY/auth_expired, tool not called |
 | `TestToolService_Call_AuthTestOnce_SkippedOnSubsequentCalls` | Same token → auth.test called once; verifiedToken short-circuit skips second |
 | `TestToolService_Call_AuthTestReruns_OnTokenRotation` | Token changes between calls → auth.test called twice (one per distinct token) |
+| `TestChannelNotifyWithMention` | Non-empty cfg.Mention → posted text is prefixed with `<mention> <body>` |
+| `TestChannelNotifyMissingCredentials` | Empty credentials JSON → ok=false, ErrorCode PERMISSION, SetHealthState called with detail=auth_missing |
+| `TestChannelService_Notify_DoesNotPerformAuthTest` | ChannelService.Notify never calls auth.test (direct contract; counter stays at 0 after two Notify calls) |
+| `TestChannelService_Request_HandleInteractiveTakesCorrelation` | handleInteractive consumes the correlation entry via take(); after WriteAuditStep fires, take() returns found=false |
 
 ## Manifest
 

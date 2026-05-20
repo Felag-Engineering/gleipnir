@@ -1,0 +1,151 @@
+name: Nightly Slack E2E
+
+on:
+  schedule:
+    - cron: '17 4 * * *'   # 04:17 UTC nightly, off-peak
+  workflow_dispatch:
+
+jobs:
+  slack-e2e:
+    runs-on: ubuntu-latest
+    # Only run on the upstream repo. The string comparison is case-sensitive;
+    # canonical owner casing is Felag-Engineering (verified via git remote).
+    if: github.repository == 'Felag-Engineering/gleipnir' && github.event_name != 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required secrets
+        id: secrets-check
+        run: |
+          missing=""
+          for v in SLACK_TEST_CLIENT_ID SLACK_TEST_CLIENT_SECRET SLACK_TEST_BOT_TOKEN SLACK_TEST_APP_TOKEN SLACK_TEST_CHANNEL_ID SLACK_TEST_ADMIN_PASSWORD SLACK_TEST_ANTHROPIC_API_KEY; do
+            if [ -z "${!v}" ]; then missing="$missing $v"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::warning::Skipping nightly slack-e2e: missing secrets:$missing"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          SLACK_TEST_CLIENT_ID: ${{ secrets.SLACK_TEST_CLIENT_ID }}
+          SLACK_TEST_CLIENT_SECRET: ${{ secrets.SLACK_TEST_CLIENT_SECRET }}
+          SLACK_TEST_BOT_TOKEN: ${{ secrets.SLACK_TEST_BOT_TOKEN }}
+          SLACK_TEST_APP_TOKEN: ${{ secrets.SLACK_TEST_APP_TOKEN }}
+          SLACK_TEST_CHANNEL_ID: ${{ secrets.SLACK_TEST_CHANNEL_ID }}
+          SLACK_TEST_ADMIN_PASSWORD: ${{ secrets.SLACK_TEST_ADMIN_PASSWORD }}
+          SLACK_TEST_ANTHROPIC_API_KEY: ${{ secrets.SLACK_TEST_ANTHROPIC_API_KEY }}
+
+      - uses: actions/setup-go@v5
+        if: steps.secrets-check.outputs.skip != 'true'
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: actions/setup-node@v4
+        if: steps.secrets-check.outputs.skip != 'true'
+        with:
+          node-version: '20'
+
+      - name: Build Gleipnir image
+        if: steps.secrets-check.outputs.skip != 'true'
+        run: docker build -t gleipnir:e2e .
+
+      - name: Build Slack plugin bundle
+        if: steps.secrets-check.outputs.skip != 'true'
+        working-directory: plugins/slack
+        run: |
+          go build -o slack-plugin .
+          mkdir -p bundle
+          cp slack-plugin bundle/slack
+          cp manifest.yaml bundle/
+          tar -czf slack.tar.gz -C bundle .
+
+      - name: Boot Gleipnir
+        id: boot
+        if: steps.secrets-check.outputs.skip != 'true'
+        run: |
+          export GLEIPNIR_ENCRYPTION_KEY=$(openssl rand -hex 32)
+          export GLEIPNIR_PLUGINS_ENABLED=true
+          export GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true
+          docker run -d --name gleipnir \
+            -p 8080:8080 \
+            -e GLEIPNIR_ENCRYPTION_KEY \
+            -e GLEIPNIR_PLUGINS_ENABLED \
+            -e GLEIPNIR_ALLOW_UNSIGNED_PLUGINS \
+            gleipnir:e2e
+          # Wait for /api/v1/health to return 200 (timeout 60s).
+          for i in $(seq 60); do curl -sf http://localhost:8080/api/v1/health && break; sleep 1; done
+
+      - name: Seed admin user, models, and plugin instance
+        if: steps.secrets-check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          COOKIE_JAR=/tmp/e2e-cookies.txt
+
+          # (a) Run the setup wizard to create the admin user.
+          curl -sf -X POST http://localhost:8080/api/v1/auth/setup \
+            -H 'Content-Type: application/json' \
+            -d "{\"username\":\"e2e-admin\",\"password\":\"$SLACK_TEST_ADMIN_PASSWORD\"}"
+
+          # Obtain a session cookie jar for subsequent admin API calls.
+          curl -sf -c "$COOKIE_JAR" -X POST http://localhost:8080/api/v1/auth/login \
+            -H 'Content-Type: application/json' \
+            -d "{\"username\":\"e2e-admin\",\"password\":\"$SLACK_TEST_ADMIN_PASSWORD\"}" \
+            > /dev/null
+
+          # (b) Configure the Anthropic API key.
+          curl -sf -b "$COOKIE_JAR" -X PUT http://localhost:8080/api/v1/admin/models/anthropic \
+            -H 'Content-Type: application/json' \
+            -d "{\"api_key\":\"$SLACK_TEST_ANTHROPIC_API_KEY\"}"
+
+          # (c) Install the unsigned Slack plugin bundle.
+          PLUGIN_ID=$(curl -sf -b "$COOKIE_JAR" -X POST http://localhost:8080/api/v1/admin/plugins \
+            -H 'Content-Type: application/octet-stream' \
+            --data-binary @plugins/slack/slack.tar.gz \
+            | jq -r '.data.id')
+
+          # (d) Create a plugin instance named "slack-e2e".
+          curl -sf -b "$COOKIE_JAR" -X POST "http://localhost:8080/api/v1/admin/plugins/$PLUGIN_ID/instances" \
+            -H 'Content-Type: application/json' \
+            -d '{"instance_name":"slack-e2e"}'
+        env:
+          SLACK_TEST_ADMIN_PASSWORD: ${{ secrets.SLACK_TEST_ADMIN_PASSWORD }}
+          SLACK_TEST_ANTHROPIC_API_KEY: ${{ secrets.SLACK_TEST_ANTHROPIC_API_KEY }}
+
+      - name: Run Playwright spec
+        if: steps.secrets-check.outputs.skip != 'true'
+        working-directory: tests/playwright
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+          npm test
+        env:
+          GLEIPNIR_E2E_BASE_URL: http://localhost:8080
+          GLEIPNIR_E2E_ADMIN_USER: e2e-admin
+          GLEIPNIR_E2E_ADMIN_PASSWORD: ${{ secrets.SLACK_TEST_ADMIN_PASSWORD }}
+          GLEIPNIR_E2E_ANTHROPIC_API_KEY: ${{ secrets.SLACK_TEST_ANTHROPIC_API_KEY }}
+          SLACK_TEST_CLIENT_ID: ${{ secrets.SLACK_TEST_CLIENT_ID }}
+          SLACK_TEST_CLIENT_SECRET: ${{ secrets.SLACK_TEST_CLIENT_SECRET }}
+          SLACK_TEST_BOT_TOKEN: ${{ secrets.SLACK_TEST_BOT_TOKEN }}
+          SLACK_TEST_APP_TOKEN: ${{ secrets.SLACK_TEST_APP_TOKEN }}
+          SLACK_TEST_CHANNEL_ID: ${{ secrets.SLACK_TEST_CHANNEL_ID }}
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: tests/playwright/playwright-report
+          retention-days: 14
+
+      - name: Capture container logs on failure
+        if: failure() && steps.secrets-check.outputs.skip != 'true' && steps.boot.outcome != 'skipped'
+        run: docker logs gleipnir > gleipnir.log 2>&1
+
+      - name: Upload container logs
+        if: failure() && steps.secrets-check.outputs.skip != 'true' && steps.boot.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gleipnir-logs
+          path: gleipnir.log
+          retention-days: 14

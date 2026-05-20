@@ -302,3 +302,29 @@ Fire the policy via **Admin → Policies → slack-smoke → Trigger**.
 
 **Pass:** Run completes successfully; instance health returns to **Healthy**;
 message appears in Slack.
+
+### Step 8 — Kitchen-sink (canonical procedure)
+
+The canonical procedure for end-to-end validation is the Playwright spec at
+`tests/playwright/slack-kitchen-sink.spec.ts`. Run it locally after setting
+the env vars listed in `tests/playwright/README.md`.
+
+**What it validates** (mirrors what is run nightly in CI):
+
+1. **TriggerService** receives a `channel_message` via Socket Mode and the
+   policy fires.
+2. The agent calls `<instance>.post_message` (**ToolService**).
+3. The policy's audience delivers a `Notify` back to Slack via **ChannelService**.
+
+The Playwright spec is gated on the five `SLACK_TEST_*` secrets plus a working
+LLM provider; without them, the spec self-skips.
+
+**Run locally:**
+
+```bash
+cd tests/playwright && npm install && npx playwright install --with-deps chromium && npm test
+```
+
+**Pre-requisite:** the Slack plugin must already be installed (Step 2 above)
+and named `slack-e2e`. The spec does not install or OAuth-authorize the plugin
+— those are one-time setup steps.

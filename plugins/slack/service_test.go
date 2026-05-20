@@ -1653,3 +1653,128 @@ func TestToolService_Call_AuthTestReruns_OnTokenRotation(t *testing.T) {
 		t.Errorf("auth.test hit count: want 2 (one per distinct token), got %d", n)
 	}
 }
+
+// ── ChannelService contract tests ─────────────────────────────────────────────
+
+// TestChannelService_Notify_DoesNotPerformAuthTest locks the contract that
+// ChannelService.Notify never calls auth.test. The contract is direct:
+// auth.test is a ToolService-internal concern (service.go:162); ChannelService
+// fetches credentials and posts the message without a token verification step.
+// If a future regression added auth.test to ChannelService, the counter would
+// rise from 0 to non-zero and this test would fail.
+func TestChannelService_Notify_DoesNotPerformAuthTest(t *testing.T) {
+	const (
+		channel = "C01CONTRACT"
+		ts      = "1700060000.000600"
+		token   = "xoxb-channel-contract"
+	)
+
+	var authTestCount atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, r *http.Request) {
+		authTestCount.Add(1)
+		authTestHandler(true)(w, r)
+	})
+	mux.Handle("/chat.postMessage", slackPostMessageOK(channel, ts))
+
+	backend := httptest.NewServer(mux)
+	defer backend.Close()
+
+	runner := newChannelFakeRunner()
+	client, _, _, cleanup := setupChannelServiceWithRunner(t,
+		credJSON(token),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		mux,
+	)
+	defer cleanup()
+
+	for range 2 {
+		resp, err := client.Notify(context.Background(), &channelv1.NotifyRequest{
+			ChannelConfigJson: channelCfgJSON(channel, ""),
+			PayloadJson:       `{"text":"contract check"}`,
+			EventType:         "run_complete",
+		})
+		if err != nil {
+			t.Fatalf("Notify RPC: %v", err)
+		}
+		if !resp.GetOk() {
+			t.Fatalf("Notify: want ok=true, got ok=false (error: %v)", resp.GetError().GetMessage())
+		}
+	}
+
+	if n := authTestCount.Load(); n != 0 {
+		t.Errorf("auth.test hit count: want 0 (ChannelService never calls auth.test), got %d", n)
+	}
+}
+
+// TestChannelService_Request_HandleInteractiveTakesCorrelation verifies that
+// handleInteractive consumes the correlation entry created by Request. After
+// Request returns Acked=true, the entry must exist; once handleInteractive runs
+// (evidenced by a WriteAuditStep call), the entry must be gone — proving that
+// handleInteractive, not the test, consumed it via c.correlations.take.
+func TestChannelService_Request_HandleInteractiveTakesCorrelation(t *testing.T) {
+	const (
+		channel   = "C01CORRELATION"
+		ts        = "1700062000.000602"
+		requestID = "req-correlation-test"
+		token     = "xoxb-correlation-test"
+	)
+
+	// Serve both the Slack API and the response_url endpoint on one mux so
+	// handleInteractive can post its acknowledgment after consuming the entry.
+	responseURLSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer responseURLSrv.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"ok":true,"channel":%q,"ts":%q}`, channel, ts)
+	})
+
+	runner := newChannelFakeRunner()
+	client, svc, host, cleanup := setupChannelServiceWithRunner(t,
+		credJSON(token),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		mux,
+	)
+	defer cleanup()
+
+	// Allow handleInteractive to post the response_url acknowledgment.
+	svc.httpClient = responseURLSrv.Client()
+
+	resp, err := client.Request(context.Background(), &channelv1.RequestRequest{
+		RequestId:         requestID,
+		ChannelConfigJson: channelCfgJSON(channel, ""),
+		Prompt:            "Should we proceed?",
+	})
+	if err != nil {
+		t.Fatalf("Request RPC: %v", err)
+	}
+	if !resp.GetAcked() {
+		t.Fatalf("Request: want acked=true, got acked=false (error: %v)", resp.GetError().GetMessage())
+	}
+
+	// Inject the interactive event — handleInteractive will call take() and
+	// WriteAuditStep. Do NOT call take() here; we want handleInteractive to
+	// be the one that consumes the entry.
+	responseURL := responseURLSrv.URL + "/response"
+	runner.Send(interactiveSocketEvent(requestID, "approve", "approve", responseURL))
+
+	// Wait for handleInteractive to call WriteAuditStep (proof it ran and
+	// therefore called take() already).
+	if !pollUntil(t, 3*time.Second, func() bool { return len(host.AuditSteps()) > 0 }) {
+		t.Fatal("timed out waiting for WriteAuditStep — handleInteractive may not have run")
+	}
+
+	// Now take() must return found=false: handleInteractive already consumed
+	// the entry. If this returns true, handleInteractive didn't call take().
+	_, stillPresent := svc.correlations.take(requestID)
+	if stillPresent {
+		t.Error("correlation entry still present after handleInteractive ran; handleInteractive must call take()")
+	}
+}
+
