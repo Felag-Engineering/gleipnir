@@ -524,6 +524,31 @@ export interface ApiPluginInstanceForAudience {
   last_oauth_callback_url?: string
 }
 
+// ApiInstalledPlugin matches the installResponse struct returned by
+// POST /api/v1/admin/plugins (internal/admin/plugin_handler.go:installResponse).
+export interface ApiInstalledPlugin {
+  id: string
+  name: string
+  version: string
+  status: string
+}
+
+// ApiCreatedPluginInstance matches the createInstanceResponse struct returned by
+// POST /api/v1/admin/plugins/{id}/instances (internal/admin/plugin_handler.go:createInstanceResponse).
+// health_detail is typed as string | null | undefined to cover both the "field
+// omitted" (undefined) and "field present but null" wire shapes from the server.
+// Always guard reads with: if (inst.health_detail) { ... }
+export interface ApiCreatedPluginInstance {
+  id: string
+  plugin_id: string
+  instance_name: string
+  health_state: string
+  health_detail?: string | null
+  version: number
+  created_at: string
+  updated_at: string
+}
+
 // Request body interfaces for audience mutations.
 // Matches internal/http/api/audience_handler.go.
 

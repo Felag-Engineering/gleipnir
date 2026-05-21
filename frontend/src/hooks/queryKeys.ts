@@ -58,6 +58,12 @@ export const queryKeys = {
     all: ['config'] as const,
   },
   plugins: {
+    // list() is invalidated after a successful install so that any future
+    // read-side hook that consumes it picks up the new plugin immediately.
+    list: () => ['admin', 'plugins'] as const,
+    // instances(pluginId) is invalidated after a successful create-instance.
+    instances: (pluginId: string) =>
+      ['admin', 'plugins', pluginId, 'instances'] as const,
     instance: (pluginId: string, instanceId: string) =>
       ['admin', 'plugins', pluginId, 'instances', instanceId] as const,
     credentials: (pluginId: string, instanceId: string) =>

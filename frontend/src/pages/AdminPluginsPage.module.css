@@ -109,6 +109,48 @@
   color: var(--text-muted);
 }
 
+/* Plugin group layout for the "All instances" section */
+
+.pluginGroupList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.pluginGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.pluginGroupHeader {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: var(--space-2);
+}
+
+.pluginGroupTitle {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.pluginGroupId {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-top: var(--space-1);
+}
+
+.pluginGroupActions {
+  display: flex;
+  gap: var(--space-2);
+}
+
 /* Empty state */
 
 .emptyState {
