@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -63,6 +66,17 @@ type PluginQuerier interface {
 	UpdatePluginManifest(ctx context.Context, arg db.UpdatePluginManifestParams) (int64, error)
 	// Instance subscription scope write (used by PutSubscriptionScope).
 	UpdatePluginInstanceSubscriptionScope(ctx context.Context, arg db.UpdatePluginInstanceSubscriptionScopeParams) (int64, error)
+	// Instance create (used by CreateInstance).
+	CreatePluginInstance(ctx context.Context, arg db.CreatePluginInstanceParams) (db.PluginInstance, error)
+	// Instance lookup by (plugin_id, instance_name) uniqueness check (used by CreateInstance).
+	GetPluginInstanceByName(ctx context.Context, arg db.GetPluginInstanceByNameParams) (db.PluginInstance, error)
+}
+
+// PluginInstaller is the narrow interface used by the Install handler.
+// Implemented by *loader.Installer; kept narrow here so the admin package
+// does not import internal/plugin/loader directly and tests can inject a stub.
+type PluginInstaller interface {
+	Install(ctx context.Context, tarPath string) (string, error)
 }
 
 // TriggerRestarter is the narrow interface used to restart a plugin's trigger
@@ -79,6 +93,7 @@ type PluginHandler struct {
 	publisher        event.Publisher
 	clock            func() time.Time
 	triggerRestarter TriggerRestarter // may be nil if plugins are disabled
+	installer        PluginInstaller  // may be nil if GLEIPNIR_PLUGINS_ENABLED=false
 }
 
 // NewPluginHandler returns a PluginHandler backed by the given querier, event
@@ -96,6 +111,13 @@ func NewPluginHandler(q PluginQuerier, publisher event.Publisher, clock func() t
 // is created so construction order does not create an import cycle.
 func (h *PluginHandler) SetTriggerRestarter(r TriggerRestarter) {
 	h.triggerRestarter = r
+}
+
+// SetInstaller wires the PluginInstaller into the handler. A nil installer
+// disables the Install endpoint (returns 503). Called from main.go after
+// loader.StartWatcher runs so plugins disabled mode is handled cleanly.
+func (h *PluginHandler) SetInstaller(inst PluginInstaller) {
+	h.installer = inst
 }
 
 // instanceResponse is the JSON shape returned by GetInstance and PutSubscriptionScope.
@@ -625,6 +647,208 @@ func (h *PluginHandler) writeAuditEvent(ctx context.Context, eventType, severity
 	if err != nil {
 		slog.ErrorContext(ctx, "audit event failed", "event_type", eventType, "err", err)
 	}
+}
+
+// installResponse is the JSON shape returned by Install on success.
+type installResponse struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Status  string `json:"status"`
+}
+
+// Install handles POST /api/v1/admin/plugins.
+// Accepts an application/octet-stream tarball body, passes it through the
+// existing Installer pipeline, and returns the plugin row ID + metadata.
+//
+// The route is registered outside the /api/v1/admin group so it can carry a
+// 100 MiB body-size limit independent of the group's 1 MiB cap. See router.go.
+//
+// Status map:
+//   - 201  — install accepted (may still be pending_review or pending_key_approval)
+//   - 400  — empty body, or tarball is malformed / manifest invalid
+//   - 409  — CAS conflict (concurrent update to same plugin)
+//   - 413  — body exceeds 100 MiB cap
+//   - 422  — bundle signature rejected; see audit log
+//   - 503  — plugin subsystem disabled (installer == nil)
+//   - 500  — DB error or unexpected installer failure
+func (h *PluginHandler) Install(w http.ResponseWriter, r *http.Request) {
+	if h.installer == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "plugin install endpoint disabled", "")
+		return
+	}
+
+	// Cap body at 100 MiB, matching loader.maxTarballBytes.
+	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
+
+	tmpFile, err := os.CreateTemp("", "gleipnir-plugin-upload-*.tar.gz")
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create temp file", "")
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	defer tmpFile.Close()
+
+	n, err := io.Copy(tmpFile, r.Body)
+	if err != nil {
+		// http.MaxBytesReader wraps the underlying error with "request body too large"
+		// when the limit is hit. Map that to 413; anything else is an I/O error.
+		if strings.Contains(err.Error(), "request body too large") {
+			httputil.WriteError(w, http.StatusRequestEntityTooLarge, "tarball too large", "")
+		} else {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to read request body", "")
+		}
+		return
+	}
+	if n == 0 {
+		httputil.WriteError(w, http.StatusBadRequest, "empty tarball body", "")
+		return
+	}
+	if err := tmpFile.Close(); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to flush temp file", "")
+		return
+	}
+
+	pluginID, err := h.installer.Install(r.Context(), tmpPath)
+	if err != nil {
+		msg := err.Error()
+		switch {
+		case strings.Contains(msg, "extract tarball"),
+			strings.Contains(msg, "read manifest"),
+			strings.Contains(msg, "parse manifest"),
+			strings.Contains(msg, "manifest.name"):
+			httputil.WriteError(w, http.StatusBadRequest, "malformed tarball", msg)
+		case strings.Contains(msg, "CAS conflict"):
+			httputil.WriteError(w, http.StatusConflict, "concurrent plugin update; retry", "")
+		default:
+			httputil.WriteError(w, http.StatusInternalServerError, "install failed", msg)
+		}
+		return
+	}
+	if pluginID == "" {
+		// Signature verification failed; audit event was recorded.
+		httputil.WriteError(w, http.StatusUnprocessableEntity, "plugin signature invalid; see audit log", "")
+		return
+	}
+
+	plugin, err := h.q.GetPluginByID(r.Context(), pluginID)
+	if err != nil {
+		// Orphaned write: installer succeeded but the row isn't readable. Internal error.
+		httputil.WriteError(w, http.StatusInternalServerError, "install succeeded but plugin not found", "")
+		return
+	}
+
+	httputil.WriteCreated(w, "/api/v1/admin/plugins/"+pluginID, installResponse{
+		ID:      plugin.ID,
+		Name:    plugin.Name,
+		Version: plugin.PluginVersion,
+		Status:  plugin.Status,
+	})
+}
+
+// createInstanceRequest is the JSON body for POST /api/v1/admin/plugins/{id}/instances.
+type createInstanceRequest struct {
+	InstanceName string `json:"instance_name"`
+}
+
+// createInstanceResponse is the JSON shape returned by CreateInstance on success.
+// config_json is intentionally absent — it is always '{}' on create.
+type createInstanceResponse struct {
+	ID           string  `json:"id"`
+	PluginID     string  `json:"plugin_id"`
+	InstanceName string  `json:"instance_name"`
+	HealthState  string  `json:"health_state"`
+	HealthDetail *string `json:"health_detail"`
+	Version      int64   `json:"version"`
+	CreatedAt    string  `json:"created_at"`
+	UpdatedAt    string  `json:"updated_at"`
+}
+
+// CreateInstance handles POST /api/v1/admin/plugins/{id}/instances.
+// Creates a plugin_instances row with safe defaults and returns its ID.
+//
+// Status map:
+//   - 201  — instance created
+//   - 400  — malformed body, or instance_name empty / whitespace-only
+//   - 404  — plugin ID not found
+//   - 409  — instance_name already exists for this plugin
+//   - 500  — DB error
+func (h *PluginHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+
+	var req createInstanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+
+	instanceName := strings.TrimSpace(req.InstanceName)
+	if instanceName == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "instance_name is required", "")
+		return
+	}
+
+	if _, err := h.q.GetPluginByID(ctx, pluginID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		} else {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		}
+		return
+	}
+
+	// Pre-check uniqueness for a clean 409 before hitting the UNIQUE constraint.
+	if _, err := h.q.GetPluginInstanceByName(ctx, db.GetPluginInstanceByNameParams{
+		PluginID:     pluginID,
+		InstanceName: instanceName,
+	}); err == nil {
+		httputil.WriteError(w, http.StatusConflict, "instance_name already exists for this plugin", "")
+		return
+	}
+
+	instanceID := model.NewULID()
+	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
+	healthDetail := "config_missing"
+
+	inst, err := h.q.CreatePluginInstance(ctx, db.CreatePluginInstanceParams{
+		ID:                    instanceID,
+		PluginID:              pluginID,
+		InstanceName:          instanceName,
+		ConfigJson:            "{}",
+		SubscriptionScopeJson: "{}",
+		CredentialsEncrypted:  nil,
+		CredentialsExpiresAt:  nil,
+		HandshakeVersions:     "{}",
+		HealthState:           "unhealthy",
+		HealthDetail:          &healthDetail,
+		LastOauthCallbackUrl:  nil,
+		CreatedAt:             nowStr,
+		UpdatedAt:             nowStr,
+	})
+	if err != nil {
+		// Race after pre-check: UNIQUE constraint triggered by concurrent insert.
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			httputil.WriteError(w, http.StatusConflict, "instance_name already exists for this plugin", "")
+		} else {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to create instance", "")
+		}
+		return
+	}
+
+	httputil.WriteCreated(w,
+		"/api/v1/admin/plugins/"+pluginID+"/instances/"+instanceID,
+		createInstanceResponse{
+			ID:           inst.ID,
+			PluginID:     inst.PluginID,
+			InstanceName: inst.InstanceName,
+			HealthState:  inst.HealthState,
+			HealthDetail: inst.HealthDetail,
+			Version:      inst.Version,
+			CreatedAt:    inst.CreatedAt,
+			UpdatedAt:    inst.UpdatedAt,
+		})
 }
 
 // deriveFingerprint extracts the 8-byte key ID from a Minisign public key blob.

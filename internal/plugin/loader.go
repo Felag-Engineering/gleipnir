@@ -37,9 +37,10 @@ import (
 // to anything plugin-related; everything else in this package is reached
 // through it (or through types it constructs).
 type Loader struct {
-	verifier *Verifier
-	watcher  *loader.Watcher
-	manager  *process.Manager
+	verifier  *Verifier
+	installer *loader.Installer
+	watcher   *loader.Watcher
+	manager   *process.Manager
 }
 
 func NewLoader() *Loader { return &Loader{} }
@@ -52,6 +53,11 @@ func (l *Loader) Manager() *process.Manager { return l.manager }
 // subsystem is disabled. Callers downstream of Init (the fsnotify watcher,
 // the install handler) read it to verify bundles.
 func (l *Loader) Verifier() *Verifier { return l.verifier }
+
+// Installer returns the shared Installer created by StartWatcher. Returns nil
+// when the plugin subsystem is disabled (Init was not called or StartWatcher
+// has not run). Mirrors the Verifier() nil-return pattern.
+func (l *Loader) Installer() *loader.Installer { return l.installer }
 
 // Init wires up the plugin subsystem. When cfg.PluginsEnabled is false it
 // returns nil immediately and leaves Verifier() nil. When true it builds the
@@ -104,8 +110,14 @@ func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, dir string, pu
 		return nil
 	}
 
-	inst := loader.NewInstaller(&verifierAdapter{v: l.verifier}, q, publisher)
-	l.watcher = loader.NewWatcher(dir, inst.Install)
+	l.installer = loader.NewInstaller(&verifierAdapter{v: l.verifier}, q, publisher)
+	// The watcher's callback type is func(context.Context, string) error, but
+	// Install now returns (string, error). The adapter discards the plugin ID —
+	// the watcher only needs to know whether install succeeded.
+	l.watcher = loader.NewWatcher(dir, func(ctx context.Context, p string) error {
+		_, err := l.installer.Install(ctx, p)
+		return err
+	})
 
 	fw, err := l.watcher.Setup()
 	if err != nil {
