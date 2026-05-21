@@ -289,6 +289,54 @@ func (h *PluginCredentialsHandler) requireOneOfStrategies(w http.ResponseWriter,
 	return "", false
 }
 
+// setOAuthClientRequest is the JSON body for PUT .../credentials/oauth-client.
+type setOAuthClientRequest struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+}
+
+// SetOAuthClient handles PUT .../credentials/oauth-client.
+// Stores the OAuth2 client_id and client_secret an operator has copied from
+// the provider's app config (e.g. Slack app Basic Information). This is the
+// prerequisite for clicking "Authorize" — BeginAuthcode requires both values
+// to be present in StoredCredentials.
+func (h *PluginCredentialsHandler) SetOAuthClient(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID, instanceID, ok := h.resolveInstance(w, r)
+	if !ok {
+		return
+	}
+
+	var req setOAuthClientRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return
+	}
+	if req.ClientID == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "client_id must not be empty", "")
+		return
+	}
+	if req.ClientSecret == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "client_secret must not be empty", "")
+		return
+	}
+
+	strategy, ok := h.requireOneOfStrategies(w, r, pluginID,
+		sdkmanifest.AuthStrategyOAuth2Authcode,
+		sdkmanifest.AuthStrategyOAuth2Clientcred,
+	)
+	if !ok {
+		return
+	}
+
+	if err := h.store.SetOAuthClient(ctx, instanceID, strategy, req.ClientID, req.ClientSecret); err != nil {
+		h.handleStoreError(w, r, err, instanceID, "set oauth client")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // setOAuthTokenRequest is the JSON body for PUT .../credentials/oauth-token.
 type setOAuthTokenRequest struct {
 	AccessToken  string `json:"access_token"`

@@ -7,6 +7,7 @@ import {
   useSetPluginHeader,
   useDeletePluginHeader,
   useSetPluginBasicAuth,
+  useSetPluginOAuthClient,
   useClearPluginCredentials,
 } from '@/hooks/mutations/plugins'
 import { isOAuthRefreshFailure } from '@/utils/pluginHealth'
@@ -393,6 +394,7 @@ interface OAuthSectionProps {
   instanceId: string
   strategy: string
   clientId?: string
+  hasClientSecret: boolean
   authorizationUrl?: string
   tokenUrl?: string
   scopes?: string[]
@@ -403,11 +405,84 @@ interface OAuthSectionProps {
   canManage: boolean
 }
 
+function OAuthClientForm({
+  pluginId,
+  instanceId,
+  initialClientId,
+  canManage,
+}: {
+  pluginId: string
+  instanceId: string
+  initialClientId: string
+  canManage: boolean
+}) {
+  const [clientId, setClientId] = useState(initialClientId)
+  const [clientSecret, setClientSecret] = useState('')
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const mutation = useSetPluginOAuthClient()
+
+  function handleSave(e: React.FormEvent) {
+    e.preventDefault()
+    setSaveError(null)
+    mutation.mutate(
+      { pluginId, instanceId, client_id: clientId.trim(), client_secret: clientSecret },
+      {
+        onSuccess: () => setClientSecret(''),
+        onError: (err) => setSaveError(errMessage(err, 'Save failed.')),
+      },
+    )
+  }
+
+  const canSubmit =
+    canManage && !mutation.isPending && clientId.trim() !== '' && clientSecret !== ''
+
+  return (
+    <form className={styles.form} onSubmit={handleSave}>
+      <p className={styles.emptyMsg}>
+        Paste the Client ID and Client Secret from the provider (e.g. Slack app
+        Basic Information). Both values are required before you can authorize.
+      </p>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Client ID</span>
+        <input
+          type="text"
+          value={clientId}
+          onChange={(e) => setClientId(e.target.value)}
+          disabled={!canManage}
+          autoComplete="off"
+        />
+      </label>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Client Secret</span>
+        <input
+          type="password"
+          value={clientSecret}
+          onChange={(e) => setClientSecret(e.target.value)}
+          disabled={!canManage}
+          autoComplete="off"
+          placeholder={initialClientId ? 'enter to rotate' : ''}
+        />
+      </label>
+      <div className={styles.actionRow}>
+        <Button type="submit" disabled={!canSubmit}>
+          {mutation.isPending ? 'Saving…' : 'Save client credentials'}
+        </Button>
+      </div>
+      {saveError && (
+        <p className={styles.errorMsg} role="alert">
+          {saveError}
+        </p>
+      )}
+    </form>
+  )
+}
+
 function OAuthSection({
   pluginId,
   instanceId,
   strategy,
   clientId,
+  hasClientSecret,
   authorizationUrl,
   tokenUrl,
   scopes,
@@ -418,9 +493,20 @@ function OAuthSection({
   canManage,
 }: OAuthSectionProps) {
   const isRefreshFailed = isOAuthRefreshFailure(healthState ?? '', healthDetail)
+  // BeginAuthcode requires both client_id and client_secret in StoredCredentials.
+  // Until both are present the Authorize button would 4xx; surface a form first.
+  const clientReady = !!clientId && hasClientSecret
 
   return (
     <div className={styles.form}>
+      {!clientReady && (
+        <OAuthClientForm
+          pluginId={pluginId}
+          instanceId={instanceId}
+          initialClientId={clientId ?? ''}
+          canManage={canManage}
+        />
+      )}
       <dl className={styles.metaGrid}>
         {clientId && (
           <>
@@ -458,8 +544,10 @@ function OAuthSection({
 
       {canManage && (
         <div className={styles.actionRow}>
-          {!hasToken && (
-            // No token yet — show the initial "Authorize" CTA.
+          {!hasToken && clientReady && (
+            // No token yet, but client credentials are stored — show the initial
+            // "Authorize" CTA. We hide it before client_id/client_secret are
+            // saved because BeginAuthcode would 4xx without them.
             <ReauthorizeButton
               pluginId={pluginId}
               instanceId={instanceId}
@@ -594,6 +682,7 @@ export function CredentialsTab({
           instanceId={instanceId}
           strategy={strategy}
           clientId={creds?.client_id}
+          hasClientSecret={creds?.has_client_secret ?? false}
           authorizationUrl={creds?.authorization_url}
           tokenUrl={creds?.token_url}
           scopes={creds?.scopes}
