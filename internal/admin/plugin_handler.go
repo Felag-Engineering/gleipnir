@@ -70,6 +70,8 @@ type PluginQuerier interface {
 	CreatePluginInstance(ctx context.Context, arg db.CreatePluginInstanceParams) (db.PluginInstance, error)
 	// Instance lookup by (plugin_id, instance_name) uniqueness check (used by CreateInstance).
 	GetPluginInstanceByName(ctx context.Context, arg db.GetPluginInstanceByNameParams) (db.PluginInstance, error)
+	// Instance config write (used by PutInstanceConfig).
+	UpdatePluginInstanceConfig(ctx context.Context, arg db.UpdatePluginInstanceConfigParams) (int64, error)
 }
 
 // PluginInstaller is the narrow interface used by the Install handler.
@@ -120,9 +122,9 @@ func (h *PluginHandler) SetInstaller(inst PluginInstaller) {
 	h.installer = inst
 }
 
-// instanceResponse is the JSON shape returned by GetInstance and PutSubscriptionScope.
-// Credentials and other write-only fields are intentionally absent — mirrors
-// the ADR-039 read-restraint pattern for encrypted auth headers.
+// instanceResponse is the JSON shape returned by GetInstance, PutSubscriptionScope,
+// and PutInstanceConfig. Credentials and other write-only fields are intentionally
+// absent — mirrors the ADR-039 read-restraint pattern for encrypted auth headers.
 type instanceResponse struct {
 	ID                    string  `json:"id"`
 	PluginID              string  `json:"plugin_id"`
@@ -132,6 +134,7 @@ type instanceResponse struct {
 	Version               int64   `json:"version"`
 	UpdatedAt             string  `json:"updated_at"`
 	SubscriptionScopeJson string  `json:"subscription_scope_json"`
+	ConfigJson            string  `json:"config_json"`
 }
 
 // GetInstance handles GET /api/v1/admin/plugins/{id}/instances/{iid}.
@@ -167,6 +170,7 @@ func (h *PluginHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 		Version:               row.Version,
 		UpdatedAt:             row.UpdatedAt,
 		SubscriptionScopeJson: row.SubscriptionScopeJson,
+		ConfigJson:            row.ConfigJson,
 	})
 }
 
@@ -577,6 +581,7 @@ func (h *PluginHandler) PutSubscriptionScope(w http.ResponseWriter, r *http.Requ
 			Version:               inst.Version + 1,
 			UpdatedAt:             nowStr,
 			SubscriptionScopeJson: string(scopeBytes),
+			ConfigJson:            inst.ConfigJson,
 		})
 		return
 	}
@@ -589,6 +594,143 @@ func (h *PluginHandler) PutSubscriptionScope(w http.ResponseWriter, r *http.Requ
 		Version:               updated.Version,
 		UpdatedAt:             updated.UpdatedAt,
 		SubscriptionScopeJson: updated.SubscriptionScopeJson,
+		ConfigJson:            updated.ConfigJson,
+	})
+}
+
+// putInstanceConfigRequest is the JSON body for
+// PUT /api/v1/admin/plugins/{id}/instances/{iid}/config.
+type putInstanceConfigRequest struct {
+	Config          map[string]any `json:"config"`
+	ExpectedVersion *int64         `json:"expected_version,omitempty"`
+}
+
+// PutInstanceConfig handles PUT /api/v1/admin/plugins/{id}/instances/{iid}/config.
+// Validates the config against the manifest's config_schema if present, persists
+// the new config (CAS-guarded via ADR-038), and returns the updated instance row.
+// Unlike PutSubscriptionScope, this does NOT restart the trigger stream — config
+// changes do not invalidate the trigger subscription.
+func (h *PluginHandler) PutInstanceConfig(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+	instanceID := chi.URLParam(r, "iid")
+
+	var req putInstanceConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.ExpectedVersion == nil {
+		httputil.WriteError(w, http.StatusBadRequest, "expected_version is required", "")
+		return
+	}
+
+	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
+		return
+	}
+	// Return 404 (not 403) on a plugin/instance mismatch to avoid leaking
+	// instance existence across plugins.
+	if inst.PluginID != pluginID {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return
+	}
+
+	plugin, err := h.q.GetPluginByID(ctx, inst.PluginID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		return
+	}
+
+	var m sdkmanifest.Manifest
+	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
+		return
+	}
+
+	// ForInstanceConfig returns a validator that accepts anything when ConfigSchema is nil
+	// (per Q7 in the plan). Do NOT early-return on nil schema — it is valid.
+	validator, err := configvalidate.ForInstanceConfig(&m)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to build config validator", err.Error())
+		return
+	}
+	cfg := req.Config
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	fieldErrs, err := validator.Validate(cfg)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "validation error", err.Error())
+		return
+	}
+	if len(fieldErrs) > 0 {
+		issues := make([]httputil.ErrorIssue, 0, len(fieldErrs))
+		for _, fe := range fieldErrs {
+			issues = append(issues, httputil.ErrorIssue{Field: fe.Field, Message: fe.Message})
+		}
+		httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", issues)
+		return
+	}
+
+	configBytes, err := json.Marshal(cfg)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to marshal config", err.Error())
+		return
+	}
+
+	nowStr := h.clock().UTC().Format(time.RFC3339)
+	rows, err := h.q.UpdatePluginInstanceConfig(ctx, db.UpdatePluginInstanceConfigParams{
+		ConfigJson:      string(configBytes),
+		UpdatedAt:       nowStr,
+		ID:              instanceID,
+		ExpectedVersion: *req.ExpectedVersion,
+	})
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update instance config", "")
+		return
+	}
+	if rows == 0 {
+		httputil.WriteError(w, http.StatusConflict, "version conflict", "")
+		return
+	}
+
+	// Re-fetch to return the updated row.
+	updated, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if err != nil {
+		// The write succeeded; fall back to a synthesised response.
+		httputil.WriteJSON(w, http.StatusOK, instanceResponse{
+			ID:                    instanceID,
+			PluginID:              pluginID,
+			InstanceName:          inst.InstanceName,
+			State:                 inst.HealthState,
+			Detail:                inst.HealthDetail,
+			Version:               inst.Version + 1,
+			UpdatedAt:             nowStr,
+			SubscriptionScopeJson: inst.SubscriptionScopeJson,
+			ConfigJson:            string(configBytes),
+		})
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
+		ID:                    updated.ID,
+		PluginID:              updated.PluginID,
+		InstanceName:          updated.InstanceName,
+		State:                 updated.HealthState,
+		Detail:                updated.HealthDetail,
+		Version:               updated.Version,
+		UpdatedAt:             updated.UpdatedAt,
+		SubscriptionScopeJson: updated.SubscriptionScopeJson,
+		ConfigJson:            updated.ConfigJson,
 	})
 }
 

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/oauth2"
 
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/infra/headervalidate"
@@ -114,7 +116,7 @@ func (h *PluginCredentialsHandler) SetStaticAPIKey(w http.ResponseWriter, r *htt
 		return
 	}
 
-	if ok := h.requireStrategy(w, r, pluginID, sdkmanifest.AuthStrategyStaticAPIKey); !ok {
+	if _, ok := h.requireOneOfStrategies(w, r, pluginID, sdkmanifest.AuthStrategyStaticAPIKey); !ok {
 		return
 	}
 
@@ -153,7 +155,7 @@ func (h *PluginCredentialsHandler) SetHeader(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if ok := h.requireStrategy(w, r, pluginID, sdkmanifest.AuthStrategyHeaderSet); !ok {
+	if _, ok := h.requireOneOfStrategies(w, r, pluginID, sdkmanifest.AuthStrategyHeaderSet); !ok {
 		return
 	}
 
@@ -177,7 +179,7 @@ func (h *PluginCredentialsHandler) DeleteHeader(w http.ResponseWriter, r *http.R
 
 	name := chi.URLParam(r, "name")
 
-	if ok := h.requireStrategy(w, r, pluginID, sdkmanifest.AuthStrategyHeaderSet); !ok {
+	if _, ok := h.requireOneOfStrategies(w, r, pluginID, sdkmanifest.AuthStrategyHeaderSet); !ok {
 		return
 	}
 
@@ -220,7 +222,7 @@ func (h *PluginCredentialsHandler) SetBasicAuth(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if ok := h.requireStrategy(w, r, pluginID, sdkmanifest.AuthStrategyBasicAuth); !ok {
+	if _, ok := h.requireOneOfStrategies(w, r, pluginID, sdkmanifest.AuthStrategyBasicAuth); !ok {
 		return
 	}
 
@@ -256,32 +258,98 @@ func (h *PluginCredentialsHandler) resolveInstance(w http.ResponseWriter, r *htt
 	return pluginID, instanceID, true
 }
 
-// requireStrategy loads the plugin manifest and returns true when the
-// manifest's auth strategy matches want. Writes a 400 response and returns
-// false when the strategy does not match or the manifest cannot be parsed.
-func (h *PluginCredentialsHandler) requireStrategy(w http.ResponseWriter, r *http.Request, pluginID, want string) bool {
+// requireOneOfStrategies loads the plugin manifest and checks whether the
+// manifest's auth strategy is one of the allowed values. It returns (matched,
+// true) on success, writes a 400 and returns ("", false) when the strategy
+// does not match or the manifest cannot be parsed.
+func (h *PluginCredentialsHandler) requireOneOfStrategies(w http.ResponseWriter, r *http.Request, pluginID string, strategies ...string) (string, bool) {
 	plugin, err := h.q.GetPluginByID(r.Context(), pluginID)
 	if errors.Is(err, ErrNotFound) {
 		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
-		return false
+		return "", false
 	}
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
-		return false
+		return "", false
 	}
 
 	var m sdkmanifest.Manifest
 	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
-		return false
+		return "", false
 	}
 
-	if m.Auth.Strategy != want {
-		httputil.WriteError(w, http.StatusBadRequest,
-			fmt.Sprintf("instance auth strategy is %q, this endpoint requires %q", m.Auth.Strategy, want), "")
-		return false
+	for _, s := range strategies {
+		if m.Auth.Strategy == s {
+			return s, true
+		}
 	}
-	return true
+	httputil.WriteError(w, http.StatusBadRequest,
+		fmt.Sprintf("instance auth strategy is %q, this endpoint requires one of: %v", m.Auth.Strategy, strategies), "")
+	return "", false
+}
+
+// setOAuthTokenRequest is the JSON body for PUT .../credentials/oauth-token.
+type setOAuthTokenRequest struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresAt    string `json:"expires_at,omitempty"` // RFC3339
+}
+
+// SetOAuthToken handles PUT .../credentials/oauth-token.
+// Directly seeds an OAuth access/refresh token for instances whose manifest
+// declares oauth2_authcode or oauth2_clientcred strategy. This is the admin
+// escape hatch for E2E tests and manual recovery; the canonical happy path
+// remains the authcode UI flow.
+func (h *PluginCredentialsHandler) SetOAuthToken(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID, instanceID, ok := h.resolveInstance(w, r)
+	if !ok {
+		return
+	}
+
+	var req setOAuthTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return
+	}
+	if req.AccessToken == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "access_token must not be empty", "")
+		return
+	}
+
+	var expiresAt time.Time
+	if req.ExpiresAt != "" {
+		var parseErr error
+		expiresAt, parseErr = time.Parse(time.RFC3339, req.ExpiresAt)
+		if parseErr != nil {
+			httputil.WriteError(w, http.StatusBadRequest, "expires_at must be RFC3339", "")
+			return
+		}
+	}
+
+	strategy, ok := h.requireOneOfStrategies(w, r, pluginID,
+		sdkmanifest.AuthStrategyOAuth2Authcode,
+		sdkmanifest.AuthStrategyOAuth2Clientcred,
+	)
+	if !ok {
+		return
+	}
+
+	tok := &oauth2.Token{
+		AccessToken:  req.AccessToken,
+		RefreshToken: req.RefreshToken,
+	}
+	if !expiresAt.IsZero() {
+		tok.Expiry = expiresAt
+	}
+
+	if err := h.store.SeedOAuthToken(ctx, instanceID, strategy, tok); err != nil {
+		h.handleStoreError(w, r, err, instanceID, "set oauth token")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleStoreError maps store errors to appropriate HTTP responses.

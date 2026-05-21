@@ -16,6 +16,23 @@ import (
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 
+// Ensure buildCredHandler exposes store for LoadCredentials in tests.
+// The field is private; we access via the DBStore in the test by reconstructing it.
+// Actually we need to expose the store — let's use a helper that returns the store too.
+func buildCredHandlerWithStore(t *testing.T, q OAuthPluginQuerier, fakeStore *fakeCredQuerier) (*PluginCredentialsHandler, *oauth.DBStore) {
+	t.Helper()
+	clock := func() time.Time { return time.Unix(1000000, 0) }
+	enc := func(p string) (string, error) { return "enc:" + p, nil }
+	dec := func(c string) (string, error) {
+		if strings.HasPrefix(c, "enc:") {
+			return c[4:], nil
+		}
+		return "", nil
+	}
+	store := oauth.NewDBStore(fakeStore, enc, dec, fakeStore, clock)
+	return NewPluginCredentialsHandler(q, store), store
+}
+
 // buildCredHandler builds a PluginCredentialsHandler backed by the given fake
 // querier and an in-memory DBStore. enc/dec use the noopEncrypt/noopDecrypt
 // helpers defined in plugin_oauth_handler_test.go (same package).
@@ -444,6 +461,160 @@ func TestPluginCredentialsHandler_SetBasicAuth_MissingFields_400(t *testing.T) {
 				t.Errorf("expected 400, got %d", w.Code)
 			}
 		})
+	}
+}
+
+// --- SetOAuthToken tests ---
+
+func TestPluginCredentialsHandler_SetOAuthToken_HappyPath_Authcode(t *testing.T) {
+	pq := buildQuerierWithManifest(t, sdkmanifest.AuthStrategyOAuth2Authcode)
+	sq := &fakeCredQuerier{
+		instance: db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", HealthState: "healthy"},
+	}
+
+	h, store := buildCredHandlerWithStore(t, pq, sq)
+	body := map[string]any{
+		"access_token":  "xoxb-access",
+		"refresh_token": "xoxb-refresh",
+		"expires_at":    "2030-01-01T00:00:00Z",
+	}
+	r := newCredRequest(http.MethodPut, "/credentials/oauth-token", body, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+	h.SetOAuthToken(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify credentials were stored.
+	loaded, _, err := store.LoadCredentials(context.Background(), "inst-1")
+	if err != nil {
+		t.Fatalf("LoadCredentials: %v", err)
+	}
+	if loaded.Strategy != sdkmanifest.AuthStrategyOAuth2Authcode {
+		t.Errorf("Strategy = %q, want %q", loaded.Strategy, sdkmanifest.AuthStrategyOAuth2Authcode)
+	}
+	if loaded.Token == nil || loaded.Token.AccessToken != "xoxb-access" {
+		t.Errorf("Token.AccessToken = %v, want xoxb-access", loaded.Token)
+	}
+}
+
+func TestPluginCredentialsHandler_SetOAuthToken_HappyPath_Clientcred(t *testing.T) {
+	pq := buildQuerierWithManifest(t, sdkmanifest.AuthStrategyOAuth2Clientcred)
+	sq := &fakeCredQuerier{
+		instance: db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", HealthState: "healthy"},
+	}
+
+	h := buildCredHandler(t, pq, sq)
+	body := map[string]any{
+		"access_token": "cc-token",
+	}
+	r := newCredRequest(http.MethodPut, "/credentials/oauth-token", body, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+	h.SetOAuthToken(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPluginCredentialsHandler_SetOAuthToken_WrongStrategy_400(t *testing.T) {
+	// Manifest declares static_api_key — not an OAuth strategy.
+	pq := buildQuerierWithManifest(t, sdkmanifest.AuthStrategyStaticAPIKey)
+	sq := &fakeCredQuerier{
+		instance: db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", HealthState: "healthy"},
+	}
+
+	h := buildCredHandler(t, pq, sq)
+	body := map[string]any{"access_token": "tok"}
+	r := newCredRequest(http.MethodPut, "/credentials/oauth-token", body, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+	h.SetOAuthToken(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for wrong strategy, got %d: %s", w.Code, w.Body.String())
+	}
+	// Verify the error mentions both permitted OAuth strategies.
+	respBody := w.Body.String()
+	if !strings.Contains(respBody, "requires one of") {
+		t.Errorf("error message should mention 'requires one of': %s", respBody)
+	}
+}
+
+func TestPluginCredentialsHandler_SetOAuthToken_EmptyAccessToken_400(t *testing.T) {
+	pq := buildQuerierWithManifest(t, sdkmanifest.AuthStrategyOAuth2Authcode)
+	sq := &fakeCredQuerier{
+		instance: db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", HealthState: "healthy"},
+	}
+
+	h := buildCredHandler(t, pq, sq)
+	body := map[string]any{"access_token": ""}
+	r := newCredRequest(http.MethodPut, "/credentials/oauth-token", body, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+	h.SetOAuthToken(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty access_token, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPluginCredentialsHandler_SetOAuthToken_BadExpiresAt_400(t *testing.T) {
+	pq := buildQuerierWithManifest(t, sdkmanifest.AuthStrategyOAuth2Authcode)
+	sq := &fakeCredQuerier{
+		instance: db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", HealthState: "healthy"},
+	}
+
+	h := buildCredHandler(t, pq, sq)
+	body := map[string]any{"access_token": "tok", "expires_at": "not-a-date"}
+	r := newCredRequest(http.MethodPut, "/credentials/oauth-token", body, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+	h.SetOAuthToken(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad expires_at, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPluginCredentialsHandler_SetOAuthToken_InstanceNotFound_404(t *testing.T) {
+	pq := newFakeOAuthPluginQuerier()
+	sq := &fakeCredQuerier{
+		instance: db.PluginInstance{ID: "inst-1"},
+	}
+
+	h := buildCredHandler(t, pq, sq)
+	body := map[string]any{"access_token": "tok"}
+	r := newCredRequest(http.MethodPut, "/credentials/oauth-token", body, map[string]string{"id": "plugin-1", "iid": "inst-missing"})
+	w := httptest.NewRecorder()
+	h.SetOAuthToken(w, r)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing instance, got %d", w.Code)
+	}
+}
+
+func TestPluginCredentialsHandler_SetOAuthToken_PluginIDMismatch_404(t *testing.T) {
+	pq := newFakeOAuthPluginQuerier()
+	pq.instances["inst-1"] = db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-other",
+		HealthState: "healthy",
+	}
+	pq.plugins["plugin-1"] = db.Plugin{
+		ID:               "plugin-1",
+		ManifestSnapshot: buildTestManifest(t, sdkmanifest.AuthStrategyOAuth2Authcode),
+	}
+	sq := &fakeCredQuerier{
+		instance: db.PluginInstance{ID: "inst-1", PluginID: "plugin-other"},
+	}
+
+	h := buildCredHandler(t, pq, sq)
+	body := map[string]any{"access_token": "tok"}
+	r := newCredRequest(http.MethodPut, "/credentials/oauth-token", body, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+	h.SetOAuthToken(w, r)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for plugin ID mismatch, got %d", w.Code)
 	}
 }
 

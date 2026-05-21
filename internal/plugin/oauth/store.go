@@ -246,6 +246,56 @@ func credentialsExpiresAt(creds StoredCredentials) *string {
 	return &s
 }
 
+// SeedOAuthToken seeds an OAuth access/refresh token directly into the stored
+// credentials, initialising the Strategy from the manifest when the row is
+// brand-new (credentials_encrypted is NULL). It is the escape hatch for admin
+// seeding and E2E tests; the canonical happy path remains the authcode UI flow.
+//
+// Behaviour:
+//   - If the stored credentials have no Strategy yet, Strategy is set to the
+//     supplied value before writing the token.
+//   - If a Strategy is already stored and it does not match, ErrWrongStrategy
+//     is returned immediately.
+//   - If a Strategy is already stored and matches, the Token is overwritten
+//     (operator intent overrides any stale token — unlike SaveToken's
+//     "skip if fresher" optimisation).
+//
+// The per-instance mutex is held for the duration of the CAS loop so this
+// write is serialised against the OAuth refresh scanner.
+func (s *DBStore) SeedOAuthToken(ctx context.Context, instanceID, strategy string, tok *oauth2.Token) error {
+	mu := s.locks.Get(instanceID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	const maxAttempts = 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		creds, ver, err := s.LoadCredentials(ctx, instanceID)
+		if err != nil {
+			return fmt.Errorf("seed oauth token (attempt %d): %w", attempt+1, err)
+		}
+		if creds.Strategy == "" {
+			// Fresh row — initialise strategy from the manifest.
+			creds.Strategy = strategy
+		} else if creds.Strategy != strategy {
+			return ErrWrongStrategy
+		}
+		creds.Token = tok
+		err = s.SaveCredentials(ctx, instanceID, creds, ver)
+		if err == nil {
+			s.emitAudit(ctx, auditCredentialSet, "info", instanceID, map[string]any{
+				"strategy": strategy,
+				"action":   "set_oauth_token",
+			})
+			return nil
+		}
+		if !errors.Is(err, ErrCASConflict) {
+			return fmt.Errorf("seed oauth token: %w", err)
+		}
+		// CAS conflict — reload and retry.
+	}
+	return fmt.Errorf("seed oauth token: failed after %d CAS conflicts", maxAttempts)
+}
+
 // SetStaticAPIKey overwrites the static_api_key credentials for instanceID.
 // It rejects the call when the stored strategy is not AuthStrategyStaticAPIKey.
 // The per-instance mutex is held for the duration of the CAS loop so this

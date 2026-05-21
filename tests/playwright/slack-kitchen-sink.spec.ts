@@ -52,10 +52,17 @@ test('kitchen sink: slack → trigger → run → slack reply', async ({ request
   expect(loginResp.ok(), `login failed: ${await loginResp.text()}`).toBe(true);
 
   // ── Step 2: Configure the system default LLM model ─────────────────────────
-  const modelResp = await ctx.put('/api/v1/admin/models/anthropic', {
-    data: { api_key: process.env.GLEIPNIR_E2E_ANTHROPIC_API_KEY },
+  // Gap 1: correct URL and body format for setting the Anthropic provider key.
+  const keyResp = await ctx.put('/api/v1/admin/providers/anthropic/key', {
+    data: { key: process.env.GLEIPNIR_E2E_ANTHROPIC_API_KEY },
   });
-  expect(modelResp.ok(), `model config failed: ${await modelResp.text()}`).toBe(true);
+  expect(keyResp.ok(), `provider key config failed: ${await keyResp.text()}`).toBe(true);
+
+  // Gap 2: explicitly set the default model (setting the key does NOT auto-populate it).
+  const defaultModelResp = await ctx.put('/api/v1/admin/settings/default-model', {
+    data: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
+  });
+  expect(defaultModelResp.ok(), `set default model failed: ${await defaultModelResp.text()}`).toBe(true);
 
   const configResp = await ctx.get('/api/v1/config');
   expect(configResp.ok()).toBe(true);
@@ -63,40 +70,35 @@ test('kitchen sink: slack → trigger → run → slack reply', async ({ request
   expect(config.data?.default_model, 'default_model must be set').toBeTruthy();
 
   // ── Step 3: Locate the slack-e2e plugin instance ───────────────────────────
-  const pluginsResp = await ctx.get('/api/v1/admin/plugins');
-  expect(pluginsResp.ok(), `list plugins failed: ${await pluginsResp.text()}`).toBe(true);
-  const plugins = await pluginsResp.json();
+  // Gap 3: correct endpoint for listing plugin instances (flat array).
+  const pluginsResp = await ctx.get('/api/v1/admin/plugin-instances');
+  expect(pluginsResp.ok(), `list plugin instances failed: ${await pluginsResp.text()}`).toBe(true);
 
-  // The nightly workflow pre-installs the plugin as "slack-e2e".
-  let instanceID: string | undefined;
-  let pluginID: string | undefined;
-  for (const plugin of plugins.data ?? []) {
-    for (const inst of plugin.instances ?? []) {
-      if (inst.instance_name === 'slack-e2e') {
-        instanceID = inst.id;
-        pluginID = plugin.id;
-        break;
-      }
-    }
-    if (instanceID) break;
-  }
-  expect(instanceID, 'slack-e2e plugin instance must exist (pre-installed by workflow)').toBeTruthy();
+  // Gap 4: flat array — each entry carries id, plugin_id, instance_name, etc.
+  const instances = (await pluginsResp.json()).data ?? [];
+  const slackInstance = instances.find(
+    (i: { instance_name: string }) => i.instance_name === 'slack-e2e',
+  );
+  expect(slackInstance, 'slack-e2e plugin instance must exist (pre-installed by workflow)').toBeTruthy();
+  const instanceID = slackInstance.id;
+  const pluginID = slackInstance.plugin_id;
 
   // ── Step 4: Seed instance credentials ──────────────────────────────────────
+  // Gap 5: use the new oauth-token endpoint with the correct body shape.
   const credResp = await ctx.put(
-    `/api/v1/admin/plugins/${pluginID}/instances/${instanceID}/credentials`,
-    {
-      data: {
-        token: { access_token: process.env.SLACK_TEST_BOT_TOKEN },
-      },
-    },
+    `/api/v1/admin/plugins/${pluginID}/instances/${instanceID}/credentials/oauth-token`,
+    { data: { access_token: process.env.SLACK_TEST_BOT_TOKEN } },
   );
-  expect(credResp.ok(), `set credentials failed: ${await credResp.text()}`).toBe(true);
+  expect(credResp.ok(), `set oauth token failed: ${await credResp.text()}`).toBe(true);
 
+  // Gap 6: use the new instance-config endpoint; wrap payload in {config, expected_version}.
   const cfgResp = await ctx.put(
     `/api/v1/admin/plugins/${pluginID}/instances/${instanceID}/config`,
     {
-      data: { app_level_token: process.env.SLACK_TEST_APP_TOKEN },
+      data: {
+        config: { app_level_token: process.env.SLACK_TEST_APP_TOKEN },
+        expected_version: 0,
+      },
     },
   );
   expect(cfgResp.ok(), `set config failed: ${await cfgResp.text()}`).toBe(true);
@@ -108,14 +110,15 @@ test('kitchen sink: slack → trigger → run → slack reply', async ({ request
     const hResp = await ctx.get(`/api/v1/admin/plugins/${pluginID}/instances/${instanceID}`);
     if (hResp.ok()) {
       const body = await hResp.json();
-      if (body.data?.health_state === 'healthy') {
+      // Gap 7: the field is `state`, not `health_state`.
+      if (body.data?.state === 'healthy') {
         healthy = true;
         break;
       }
     }
     await new Promise((r) => setTimeout(r, 2_000));
   }
-  expect(healthy, 'plugin instance must reach health_state=healthy within 30s').toBe(true);
+  expect(healthy, 'instance never reached state=healthy within 30s').toBe(true);
 
   // ── Step 5: Create the kitchen-sink policy ─────────────────────────────────
   const channelID = process.env.SLACK_TEST_CHANNEL_ID!;
