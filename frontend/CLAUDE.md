@@ -132,6 +132,9 @@ queryKeys.users.all             // ['users']
 queryKeys.currentUser.all       // ['currentUser']
 queryKeys.models.all            // ['models']
 queryKeys.config.all            // ['config']
+queryKeys.plugins.list          // ['plugins', 'list']               — installed plugins (invalidated on plugin install)
+queryKeys.plugins.instances(id) // ['plugins', id, 'instances']      — instances of one plugin (invalidated on instance create)
+queryKeys.plugins.credentials(p, i) // ['plugins', p, 'instances', i, 'credentials'] — redacted credentials view
 ```
 
 ### Data fetching
@@ -210,6 +213,12 @@ Triggers + Events:
 POST   /api/v1/webhooks/:policyID      (trigger endpoint)
 GET    /api/v1/events                   (SSE stream)
 GET    /api/v1/health
+
+Admin / Plugins:
+GET    /api/v1/admin/plugin-instances           (admin|operator|auditor; list with channel + event_kinds enrichment)
+POST   /api/v1/admin/plugins                    (admin; install tarball as application/octet-stream, max 100 MiB)
+POST   /api/v1/admin/plugins/:id/instances      (admin; create instance with {instance_name})
+GET    /api/v1/admin/plugins/:id/instances/:iid (admin; per-instance health detail)
 ```
 
 Response envelope: `{ data: T }` for success, `{ error: string, detail?: string }` for failure.
@@ -230,7 +239,7 @@ Organized by feature area:
 - **AgentList/** — agent list with folder grouping
 - **RunDetail/** — RunHeader, StepTimeline, FilterBar, MetadataGrid, CapabilitySnapshotCard, ThoughtBlock, ThinkingBlock, ToolBlock, CompleteBlock, ErrorBlock, FeedbackBlock, ApprovalActions, FeedbackActions
 - **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal, ServerDetailModal (per-header auth editor: existing name fields are read-only, value field is empty with placeholder; save fans out via `useSetMcpServerHeader`/`useDeleteMcpServerHeader`; no sentinel; see ADR-039), ArcadeAuthSection (toolkit-level OAuth pre-authorization for Arcade gateways; renders only when `server.is_arcade_gateway && canManage`; see ADR-040)
-- **admin/** — EncryptionKeyNotice (persistent warning banner on the Models page about encryption key backup requirements), PluginHealthChip (colored chip — green/yellow/red — for the 10 plugin-instance health states; pairs with `utils/pluginHealth.ts` for the worst-across-instances aggregate)
+- **admin/** — EncryptionKeyNotice (persistent warning banner on the Models page about encryption key backup requirements), PluginHealthChip (colored chip — green/yellow/red — for the 10 plugin-instance health states; pairs with `utils/pluginHealth.ts` for the worst-across-instances aggregate), InstallPluginButton (file-picker upload of a plugin tarball; persistent success card with "Add instance" CTA until refetch confirms the new plugin has an instance), AddInstanceModal (form to instantiate an installed plugin by name; reused as a standalone modal on the plugins page AND inline from the install-success card; client-side validation + per-status error mapping)
 - **form/** — FieldError (inline message under a field), ErrorBanner (top-of-form bulleted summary with scroll-to-field). Shared primitives for surfacing validation/save errors.
 - **Shared** — Button, Modal, ModalFooter, EmptyState, ErrorBoundary, QueryBoundary, CopyBlock, CollapsibleJSON, SkeletonBlock, PageHeader, ApprovalBanner, ConnectionBanner, TriggerRunModal
 
@@ -242,7 +251,7 @@ Organized by feature area:
 
 ### Storybook
 
-46 story files covering components, dashboard widgets, form sections, and hook demonstrations. Stories use MSW for API mocking and have their own `.stories.module.css` for layout scaffolding where needed.
+48 story files covering components, dashboard widgets, form sections, and hook demonstrations. Stories use MSW for API mocking and have their own `.stories.module.css` for layout scaffolding where needed. Stories that need to demonstrate non-idle states (uploading, success, error) use Storybook `play` functions with `userEvent` to drive the component through real interactions rather than seeding cache state.
 
 ## Key architectural decisions
 

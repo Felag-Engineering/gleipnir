@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { http, HttpResponse } from 'msw'
 import '@/tokens.css'
 import AdminPluginsPage from './AdminPluginsPage'
 import { queryKeys } from '@/hooks/queryKeys'
@@ -54,15 +55,30 @@ const INSTANCE_UNHEALTHY: ApiPluginInstanceForAudience = {
   event_kinds: [],
 }
 
-function makeQueryClient(instances: ApiPluginInstanceForAudience[]): QueryClient {
+function makeQueryClient(
+  instances: ApiPluginInstanceForAudience[],
+  currentUser?: { id: string; username: string; roles: string[] },
+): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   qc.setQueryData(queryKeys.admin.pluginInstances, instances)
+  if (currentUser) {
+    qc.setQueryData(queryKeys.currentUser.all, currentUser)
+  }
   return qc
 }
 
-function Wrapper({ instances }: { instances: ApiPluginInstanceForAudience[] }) {
+const ADMIN_USER = { id: 'user-01', username: 'admin', roles: ['admin'] }
+const AUDITOR_USER = { id: 'user-02', username: 'auditor', roles: ['auditor'] }
+
+function Wrapper({
+  instances,
+  currentUser,
+}: {
+  instances: ApiPluginInstanceForAudience[]
+  currentUser?: { id: string; username: string; roles: string[] }
+}) {
   return (
-    <QueryClientProvider client={makeQueryClient(instances)}>
+    <QueryClientProvider client={makeQueryClient(instances, currentUser)}>
       <MemoryRouter initialEntries={['/admin/plugins']}>
         <Routes>
           <Route path="/admin/plugins" element={<AdminPluginsPage />} />
@@ -84,20 +100,88 @@ const meta: Meta<typeof AdminPluginsPage> = {
 export default meta
 type Story = StoryObj<typeof AdminPluginsPage>
 
-// All instances healthy — no "Needs re-authorization" section.
+// All instances healthy — no "Needs re-authorization" section (non-admin user).
 export const AllHealthy: Story = {
   render: () => <Wrapper instances={[INSTANCE_HEALTHY]} />,
+}
+
+// Admin view — Install plugin button and "Add instance" buttons are visible.
+export const Admin: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.post('/api/v1/admin/plugins', () =>
+          HttpResponse.json({
+            data: { id: 'plugin-new', name: 'NewPlugin', version: '1.0.0', status: 'active' },
+          }),
+        ),
+        http.post('/api/v1/admin/plugins/:id/instances', () =>
+          HttpResponse.json({
+            data: {
+              id: 'inst-new',
+              plugin_id: 'plugin-new',
+              instance_name: 'production',
+              health_state: 'healthy',
+              version: 1,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+          }),
+        ),
+      ],
+    },
+  },
+  render: () => (
+    <Wrapper instances={[INSTANCE_HEALTHY, INSTANCE_UNHEALTHY]} currentUser={ADMIN_USER} />
+  ),
+}
+
+// Auditor view — Install plugin button is hidden; read-only view.
+export const Auditor: Story = {
+  render: () => (
+    <Wrapper instances={[INSTANCE_HEALTHY, INSTANCE_UNHEALTHY]} currentUser={AUDITOR_USER} />
+  ),
+}
+
+// AdminEmpty — admin with zero instances; Install button still visible above the empty state.
+export const AdminEmpty: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.post('/api/v1/admin/plugins', () =>
+          HttpResponse.json({
+            data: { id: 'plugin-new', name: 'NewPlugin', version: '1.0.0', status: 'active' },
+          }),
+        ),
+      ],
+    },
+  },
+  render: () => <Wrapper instances={[]} currentUser={ADMIN_USER} />,
 }
 
 // One instance pending re-authorization — shows the "Needs re-authorization"
 // section at the top, grouped separately from the "All instances" list.
 export const WithPendingReauth: Story = {
   render: () => (
-    <Wrapper instances={[INSTANCE_PENDING_REAUTH, INSTANCE_HEALTHY, INSTANCE_UNHEALTHY]} />
+    <Wrapper instances={[INSTANCE_PENDING_REAUTH, INSTANCE_HEALTHY, INSTANCE_UNHEALTHY]} currentUser={ADMIN_USER} />
   ),
 }
 
-// Empty — no plugin instances installed.
+// InstallDisabled503 — clicking Install shows the 503 amber disabled notice.
+export const InstallDisabled503: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.post('/api/v1/admin/plugins', () =>
+          HttpResponse.json({ error: 'plugin system disabled' }, { status: 503 }),
+        ),
+      ],
+    },
+  },
+  render: () => <Wrapper instances={[]} currentUser={ADMIN_USER} />,
+}
+
+// Empty — no plugin instances installed (non-admin).
 export const Empty: Story = {
   render: () => <Wrapper instances={[]} />,
 }

@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiFetch, apiFetchVoid } from '@/api/fetch'
-import type { ApiAcceptNewKeyResponse } from '@/api/types'
+import { apiFetch, apiFetchVoid, ApiError } from '@/api/fetch'
+import type { ApiAcceptNewKeyResponse, ApiInstalledPlugin, ApiCreatedPluginInstance } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
 // BeginPluginOAuthParams carries the inputs for POST .../oauth/begin.
@@ -207,6 +207,62 @@ export function useClearPluginCredentials() {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.plugins.credentials(pluginId, instanceId),
       })
+    },
+  })
+}
+
+// ── Subscription scope ────────────────────────────────────────────────────────
+
+// ── Install + create-instance ─────────────────────────────────────────────────
+
+// InstallPluginParams carries the tarball File to POST as application/octet-stream.
+export interface InstallPluginParams {
+  file: File
+}
+
+// useInstallPlugin POSTs a .tar.gz plugin tarball to POST /api/v1/admin/plugins.
+// The caller-provided Content-Type overrides apiFetch's default application/json
+// because fetch accepts a File body natively. On success, the plugin list and
+// all plugin-instance caches are invalidated so any new instance rows appear.
+export function useInstallPlugin() {
+  const qc = useQueryClient()
+  return useMutation<ApiInstalledPlugin, ApiError, InstallPluginParams>({
+    mutationFn: ({ file }) =>
+      apiFetch<ApiInstalledPlugin>('/admin/plugins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.plugins.list() })
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.pluginInstances })
+    },
+  })
+}
+
+// CreatePluginInstanceParams carries the plugin ID and desired instance name.
+export interface CreatePluginInstanceParams {
+  pluginId: string
+  instanceName: string
+}
+
+// useCreatePluginInstance POSTs {instance_name} to
+// POST /api/v1/admin/plugins/{id}/instances. On success, the per-plugin
+// instance list and the flat admin plugin-instances list are both invalidated.
+export function useCreatePluginInstance() {
+  const qc = useQueryClient()
+  return useMutation<ApiCreatedPluginInstance, ApiError, CreatePluginInstanceParams>({
+    mutationFn: ({ pluginId, instanceName }) =>
+      apiFetch<ApiCreatedPluginInstance>(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ instance_name: instanceName }),
+        },
+      ),
+    onSuccess: (_data, { pluginId }) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.plugins.instances(pluginId) })
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.pluginInstances })
     },
   })
 }
