@@ -222,6 +222,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			r.Delete("/providers/{name}/key", cfg.Handlers.AdminHandler.DeleteProviderKey)
 			r.Get("/settings", cfg.Handlers.AdminHandler.GetSettings)
 			r.Put("/settings", cfg.Handlers.AdminHandler.UpdateSettings)
+			r.Put("/settings/default-model", cfg.Handlers.AdminHandler.SetDefaultModel)
 			r.Get("/models", cfg.Handlers.AdminHandler.ListModelsAdmin)
 			r.Get("/models/all", cfg.Handlers.AdminHandler.ListAllModels(cfg.Services.ModelLister))
 			r.Put("/models/{id}/enabled", cfg.Handlers.AdminHandler.SetModelEnabled)
@@ -246,6 +247,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			if cfg.Handlers.PluginAdminHandler != nil {
 				r.Get("/plugins/{id}/instances/{iid}", cfg.Handlers.PluginAdminHandler.GetInstance)
 				r.Put("/plugins/{id}/instances/{iid}/subscription-scope", cfg.Handlers.PluginAdminHandler.PutSubscriptionScope)
+				r.Put("/plugins/{id}/instances/{iid}/config", cfg.Handlers.PluginAdminHandler.PutInstanceConfig)
 				r.Post("/plugins/{id}/accept-new-key", cfg.Handlers.PluginAdminHandler.AcceptNewKey)
 				r.Post("/plugins/{id}/accept-manifest", cfg.Handlers.PluginAdminHandler.AcceptManifest)
 			}
@@ -259,6 +261,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				r.Put("/plugins/{id}/instances/{iid}/credentials/headers/{name}", h.SetHeader)
 				r.Delete("/plugins/{id}/instances/{iid}/credentials/headers/{name}", h.DeleteHeader)
 				r.Put("/plugins/{id}/instances/{iid}/credentials/basic-auth", h.SetBasicAuth)
+				r.Put("/plugins/{id}/instances/{iid}/credentials/oauth-token", h.SetOAuthToken)
 			}
 
 			r.Route("/openai-providers", func(r chi.Router) {

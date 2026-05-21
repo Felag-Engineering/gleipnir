@@ -94,9 +94,14 @@ jobs:
             > /dev/null
 
           # (b) Configure the Anthropic API key.
-          curl -sf -b "$COOKIE_JAR" -X PUT http://localhost:8080/api/v1/admin/models/anthropic \
+          curl -sf -b "$COOKIE_JAR" -X PUT http://localhost:8080/api/v1/admin/providers/anthropic/key \
             -H 'Content-Type: application/json' \
-            -d "{\"api_key\":\"$SLACK_TEST_ANTHROPIC_API_KEY\"}"
+            -d "{\"key\":\"$SLACK_TEST_ANTHROPIC_API_KEY\"}"
+
+          # (b2) Set the default model so the run loop has a model to use.
+          curl -sf -b "$COOKIE_JAR" -X PUT http://localhost:8080/api/v1/admin/settings/default-model \
+            -H 'Content-Type: application/json' \
+            -d '{"provider":"anthropic","name":"claude-sonnet-4-6"}'
 
           # (c) Install the unsigned Slack plugin bundle.
           PLUGIN_ID=$(curl -sf -b "$COOKIE_JAR" -X POST http://localhost:8080/api/v1/admin/plugins \

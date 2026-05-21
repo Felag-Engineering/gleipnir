@@ -862,6 +862,144 @@ func TestUpdateSettings_OnPublicURLChanged_NilSafe(t *testing.T) {
 	}
 }
 
+// --- SetDefaultModel tests ---
+
+func TestSetDefaultModel(t *testing.T) {
+	tests := []struct {
+		name       string
+		setupQ     func(q *mockQuerier)
+		body       string
+		wantStatus int
+		wantErr    string
+		checkQ     func(t *testing.T, q *mockQuerier)
+	}{
+		{
+			name: "happy_path_known_provider",
+			setupQ: func(q *mockQuerier) {
+				// Anthropic is a known provider — needs a key row.
+				q.settings["anthropic_api_key"] = db.SystemSetting{Key: "anthropic_api_key", Value: "encrypted-key"}
+				// And the model must be enabled.
+				q.models["anthropic:claude-sonnet-4-6"] = db.ModelSetting{
+					Provider: "anthropic", ModelName: "claude-sonnet-4-6", Enabled: 1,
+				}
+			},
+			body:       `{"provider":"anthropic","name":"claude-sonnet-4-6"}`,
+			wantStatus: http.StatusOK,
+			checkQ: func(t *testing.T, q *mockQuerier) {
+				t.Helper()
+				row, ok := q.settings["default_model"]
+				if !ok {
+					t.Fatal("default_model not written to settings")
+				}
+				if row.Value != "anthropic:claude-sonnet-4-6" {
+					t.Errorf("default_model value = %q, want anthropic:claude-sonnet-4-6", row.Value)
+				}
+			},
+		},
+		{
+			name: "happy_path_openai_compat",
+			setupQ: func(q *mockQuerier) {
+				// "my-compat" is NOT a known provider — no API key check.
+				// Only need an enabled model entry.
+				q.models["my-compat:some-model"] = db.ModelSetting{
+					Provider: "my-compat", ModelName: "some-model", Enabled: 1,
+				}
+			},
+			body:       `{"provider":"my-compat","name":"some-model"}`,
+			wantStatus: http.StatusOK,
+			checkQ: func(t *testing.T, q *mockQuerier) {
+				t.Helper()
+				row, ok := q.settings["default_model"]
+				if !ok {
+					t.Fatal("default_model not written to settings")
+				}
+				if row.Value != "my-compat:some-model" {
+					t.Errorf("default_model value = %q, want my-compat:some-model", row.Value)
+				}
+			},
+		},
+		{
+			name: "missing_provider_key_known_provider",
+			setupQ: func(q *mockQuerier) {
+				// Anthropic is known, but no API key row seeded.
+				q.models["anthropic:claude-sonnet-4-6"] = db.ModelSetting{
+					Provider: "anthropic", ModelName: "claude-sonnet-4-6", Enabled: 1,
+				}
+			},
+			body:       `{"provider":"anthropic","name":"claude-sonnet-4-6"}`,
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "provider has no API key configured",
+		},
+		{
+			name: "unknown_model_known_provider",
+			setupQ: func(q *mockQuerier) {
+				q.settings["anthropic_api_key"] = db.SystemSetting{Key: "anthropic_api_key", Value: "encrypted"}
+				// No enabled model entry for claude-sonnet-4-6.
+			},
+			body:       `{"provider":"anthropic","name":"claude-sonnet-4-6"}`,
+			wantStatus: http.StatusUnprocessableEntity,
+			wantErr:    "model is not enabled for this provider",
+		},
+		{
+			name: "unknown_model_openai_compat",
+			setupQ: func(q *mockQuerier) {
+				// Unknown provider AND no enabled model row.
+			},
+			body:       `{"provider":"my-compat","name":"nonexistent-model"}`,
+			wantStatus: http.StatusUnprocessableEntity,
+			wantErr:    "model is not enabled for this provider",
+		},
+		{
+			name:       "empty_provider",
+			setupQ:     func(_ *mockQuerier) {},
+			body:       `{"provider":"","name":"claude-sonnet-4-6"}`,
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "provider is required",
+		},
+		{
+			name:       "empty_name",
+			setupQ:     func(_ *mockQuerier) {},
+			body:       `{"provider":"anthropic","name":""}`,
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "name is required",
+		},
+		{
+			name:       "invalid_json",
+			setupQ:     func(_ *mockQuerier) {},
+			body:       `not json`,
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "invalid JSON body",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := newMockQuerier()
+			tt.setupQ(q)
+			h := newTestHandler(q)
+
+			req := httptest.NewRequest(http.MethodPut, "/admin/settings/default-model", strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+			h.SetDefaultModel(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+
+			if tt.wantErr != "" {
+				errMsg := parseErrorResponse(t, rec)
+				if !strings.Contains(errMsg, tt.wantErr) {
+					t.Errorf("error = %q, want to contain %q", errMsg, tt.wantErr)
+				}
+			}
+
+			if tt.checkQ != nil {
+				tt.checkQ(t, q)
+			}
+		})
+	}
+}
+
 func TestFormatUptime(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -619,6 +619,126 @@ func TestDBStore_SetStaticAPIKey_CASRetrySuccess(t *testing.T) {
 	}
 }
 
+// --- SeedOAuthToken tests ---
+
+func TestDBStore_SeedOAuthToken_HappyPath(t *testing.T) {
+	baseTime := time.Unix(1000000, 0)
+	q := &fakeOAuthQuerier{
+		instance: db.PluginInstance{ID: "inst-1", HealthState: "healthy", Version: 0},
+	}
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, func() time.Time { return baseTime })
+
+	tok := &oauth2.Token{
+		AccessToken:  "xoxb-access",
+		RefreshToken: "xoxb-refresh",
+		Expiry:       baseTime.Add(time.Hour),
+	}
+
+	if err := store.SeedOAuthToken(context.Background(), "inst-1", sdkmanifest.AuthStrategyOAuth2Authcode, tok); err != nil {
+		t.Fatalf("SeedOAuthToken: %v", err)
+	}
+
+	loaded, _, err := store.LoadCredentials(context.Background(), "inst-1")
+	if err != nil {
+		t.Fatalf("LoadCredentials: %v", err)
+	}
+	if loaded.Strategy != sdkmanifest.AuthStrategyOAuth2Authcode {
+		t.Errorf("Strategy = %q, want %q", loaded.Strategy, sdkmanifest.AuthStrategyOAuth2Authcode)
+	}
+	if loaded.Token == nil {
+		t.Fatal("expected Token to be set")
+	}
+	if loaded.Token.AccessToken != "xoxb-access" {
+		t.Errorf("AccessToken = %q, want xoxb-access", loaded.Token.AccessToken)
+	}
+	if loaded.Token.RefreshToken != "xoxb-refresh" {
+		t.Errorf("RefreshToken = %q, want xoxb-refresh", loaded.Token.RefreshToken)
+	}
+
+	// Verify audit event was emitted.
+	found := false
+	for _, ev := range q.auditEvents {
+		if ev.EventType == auditCredentialSet {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected %q audit event", auditCredentialSet)
+	}
+}
+
+func TestDBStore_SeedOAuthToken_StrategyMismatch(t *testing.T) {
+	baseTime := time.Unix(1000000, 0)
+	seed := StoredCredentials{Strategy: sdkmanifest.AuthStrategyOAuth2Clientcred}
+	plain, _ := seed.Marshal()
+	enc, _ := noopEncrypt(plain)
+	q := &fakeOAuthQuerier{
+		instance: db.PluginInstance{
+			ID:                   "inst-1",
+			HealthState:          "healthy",
+			Version:              0,
+			CredentialsEncrypted: &enc,
+		},
+	}
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, func() time.Time { return baseTime })
+
+	tok := &oauth2.Token{AccessToken: "tok"}
+	err := store.SeedOAuthToken(context.Background(), "inst-1", sdkmanifest.AuthStrategyOAuth2Authcode, tok)
+	if !errors.Is(err, ErrWrongStrategy) {
+		t.Errorf("expected ErrWrongStrategy, got %v", err)
+	}
+}
+
+func TestDBStore_SeedOAuthToken_OverwritesExistingToken(t *testing.T) {
+	baseTime := time.Unix(1000000, 0)
+	oldTok := &oauth2.Token{AccessToken: "old-token", Expiry: baseTime.Add(time.Hour)}
+	seed := StoredCredentials{Strategy: sdkmanifest.AuthStrategyOAuth2Authcode, Token: oldTok}
+	plain, _ := seed.Marshal()
+	enc, _ := noopEncrypt(plain)
+	q := &fakeOAuthQuerier{
+		instance: db.PluginInstance{
+			ID:                   "inst-1",
+			HealthState:          "healthy",
+			Version:              0,
+			CredentialsEncrypted: &enc,
+		},
+	}
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, func() time.Time { return baseTime })
+
+	newTok := &oauth2.Token{AccessToken: "new-token", Expiry: baseTime.Add(2 * time.Hour)}
+	if err := store.SeedOAuthToken(context.Background(), "inst-1", sdkmanifest.AuthStrategyOAuth2Authcode, newTok); err != nil {
+		t.Fatalf("SeedOAuthToken: %v", err)
+	}
+
+	loaded, _, err := store.LoadCredentials(context.Background(), "inst-1")
+	if err != nil {
+		t.Fatalf("LoadCredentials: %v", err)
+	}
+	if loaded.Token == nil || loaded.Token.AccessToken != "new-token" {
+		t.Errorf("AccessToken = %v, want new-token", loaded.Token)
+	}
+	if loaded.Strategy != sdkmanifest.AuthStrategyOAuth2Authcode {
+		t.Errorf("Strategy changed after overwrite: %q", loaded.Strategy)
+	}
+}
+
+func TestDBStore_SeedOAuthToken_CASRetry(t *testing.T) {
+	baseTime := time.Unix(1000000, 0)
+	q := &fakeOAuthQuerier{
+		instance:     db.PluginInstance{ID: "inst-1", HealthState: "healthy", Version: 0},
+		casFailTimes: 2, // fail twice, then succeed
+	}
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, func() time.Time { return baseTime })
+
+	tok := &oauth2.Token{AccessToken: "tok"}
+	if err := store.SeedOAuthToken(context.Background(), "inst-1", sdkmanifest.AuthStrategyOAuth2Authcode, tok); err != nil {
+		t.Fatalf("SeedOAuthToken after 2 CAS retries: %v", err)
+	}
+	if q.updateCalls != 1 {
+		t.Errorf("expected 1 successful update, got %d", q.updateCalls)
+	}
+}
+
 // --- Mutex serialisation test ---
 
 // TestDBStore_MutexSerialisation_SetAPIKeyAndSaveTokenConcurrent fires

@@ -30,7 +30,8 @@ type fakePluginQuerier struct {
 	// or UpdatePluginManifest to simulate a CAS conflict.
 	casFailOn        string
 	updatePubkey     string // last value written by UpdatePluginTrustedPubkey
-	scopeCASFailOnID string // instance ID that should return 0 rows for UpdatePluginInstanceSubscriptionScope
+	scopeCASFailOnID  string // instance ID that should return 0 rows for UpdatePluginInstanceSubscriptionScope
+	configCASFailOnID string // instance ID that should return 0 rows for UpdatePluginInstanceConfig
 	createInstanceErr error  // if non-nil, CreatePluginInstance returns this error
 }
 
@@ -192,6 +193,21 @@ func (f *fakePluginQuerier) GetPluginInstanceByName(_ context.Context, arg db.Ge
 		}
 	}
 	return db.PluginInstance{}, ErrNotFound
+}
+
+func (f *fakePluginQuerier) UpdatePluginInstanceConfig(_ context.Context, arg db.UpdatePluginInstanceConfigParams) (int64, error) {
+	if f.configCASFailOnID == arg.ID {
+		return 0, nil // simulate CAS conflict
+	}
+	inst, ok := f.instances[arg.ID]
+	if !ok || inst.Version != arg.ExpectedVersion {
+		return 0, nil
+	}
+	inst.ConfigJson = arg.ConfigJson
+	inst.UpdatedAt = arg.UpdatedAt
+	inst.Version++
+	f.instances[arg.ID] = inst
+	return 1, nil
 }
 
 func TestPluginHandler_GetInstance(t *testing.T) {
@@ -918,4 +934,230 @@ func TestPluginHandler_PutSubscriptionScope(t *testing.T) {
 			t.Errorf("status = %d, want 404 on mismatched plugin", rec.Code)
 		}
 	})
+}
+
+// ── PutInstanceConfig tests ───────────────────────────────────────────────────
+
+// Manifest with a config_schema requiring app_level_token: string.
+const instanceConfigManifestYAML = "schema_version: v1\nname: test-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\nconfig_schema:\n  type: object\n  properties:\n    app_level_token:\n      type: string\n  required:\n    - app_level_token\n"
+
+// Manifest with no config_schema (accepts any object).
+const instanceConfigManifestNoSchema = "schema_version: v1\nname: test-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n"
+
+func TestPluginHandler_PutInstanceConfig_HappyPath(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestYAML,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		InstanceName: "prod",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     0,
+		UpdatedAt:   "2026-01-01T00:00:00Z",
+	})
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	body := `{"config":{"app_level_token":"xapp-1-test"},"expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var resp instanceResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.ConfigJson == "" {
+		t.Error("expected config_json to be set in response")
+	}
+
+	// Verify the stored config.
+	inst := q.instances["inst-1"]
+	if inst.ConfigJson != `{"app_level_token":"xapp-1-test"}` {
+		t.Errorf("stored config_json = %q, want {\"app_level_token\":\"xapp-1-test\"}", inst.ConfigJson)
+	}
+}
+
+func TestPluginHandler_PutInstanceConfig_ValidationFailure_422(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestYAML,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     0,
+	})
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	// Missing required app_level_token.
+	body := `{"config":{},"expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfig(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want 422", rec.Code)
+	}
+}
+
+func TestPluginHandler_PutInstanceConfig_NoSchema_AcceptsAnyObject(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestNoSchema,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     0,
+	})
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	body := `{"config":{"any":"value","nested":{"x":1}},"expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 for no-schema manifest; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPluginHandler_PutInstanceConfig_MissingExpectedVersion_400(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	h := NewPluginHandler(q, nil, fixedClock)
+
+	body := `{"config":{"app_level_token":"tok"}}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfig(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for missing expected_version", rec.Code)
+	}
+}
+
+func TestPluginHandler_PutInstanceConfig_CASConflict_409(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestNoSchema,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     5,
+	})
+	q.configCASFailOnID = "inst-1"
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	body := `{"config":{},"expected_version":5}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfig(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409 for CAS conflict", rec.Code)
+	}
+}
+
+func TestPluginHandler_PutInstanceConfig_InstanceNotFound_404(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	body := `{"config":{},"expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-missing"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfig(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for missing instance", rec.Code)
+	}
+}
+
+func TestPluginHandler_PutInstanceConfig_PluginIDMismatch_404(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-other",
+		HealthState: "healthy",
+		Version:     0,
+	})
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	body := `{"config":{},"expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfig(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 on plugin ID mismatch", rec.Code)
+	}
+}
+
+func TestPluginHandler_PutInstanceConfig_MalformedManifest_500(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: "not yaml: ::::", // deliberately malformed
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     0,
+	})
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	body := `{"config":{},"expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfig(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 for malformed manifest", rec.Code)
+	}
 }

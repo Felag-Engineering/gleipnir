@@ -311,6 +311,9 @@ func TestPluginEndpointsRoleGating(t *testing.T) {
 	}{
 		{"install", http.MethodPost, "/api/v1/admin/plugins"},
 		{"create-instance", http.MethodPost, "/api/v1/admin/plugins/some-id/instances"},
+		{"settings-default-model", http.MethodPut, "/api/v1/admin/settings/default-model"},
+		{"instance-config", http.MethodPut, "/api/v1/admin/plugins/some-id/instances/some-iid/config"},
+		{"oauth-token", http.MethodPut, "/api/v1/admin/plugins/some-id/instances/some-iid/credentials/oauth-token"},
 	}
 
 	for _, ep := range endpoints {
