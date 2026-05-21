@@ -248,7 +248,7 @@ func TestInstall_NewSignedPlugin_PendingReview(t *testing.T) {
 
 	tarPath, _ := signedPluginTarball(t, "test-plugin", "1.0.0")
 
-	if err := inst.Install(context.Background(), tarPath); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -274,7 +274,7 @@ func TestInstall_BadSignature_AuditOnly(t *testing.T) {
 
 	tarPath := badSignatureTarball(t, "bad-plugin", "1.0.0")
 
-	if err := inst.Install(context.Background(), tarPath); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
 		t.Fatalf("Install with bad sig returned unexpected error: %v", err)
 	}
 
@@ -345,13 +345,13 @@ func TestInstall_VersionBump_PendingReview(t *testing.T) {
 
 	// First install — v1.0.0.
 	tarPath1 := buildVersionedTarball(t, "1.0.0")
-	if err := inst.Install(context.Background(), tarPath1); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
 		t.Fatalf("initial Install: %v", err)
 	}
 
 	// Second install — v1.1.0 (version bump, same key).
 	tarPath2 := buildVersionedTarball(t, "1.1.0")
-	if err := inst.Install(context.Background(), tarPath2); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
 		t.Fatalf("version-bump Install: %v", err)
 	}
 
@@ -388,10 +388,10 @@ func TestInstall_SameVersion_NoOp(t *testing.T) {
 	tarPath, _ := signedPluginTarball(t, "stable-plugin", "2.0.0")
 
 	// Install twice with the same version.
-	if err := inst.Install(context.Background(), tarPath); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
 		t.Fatalf("first Install: %v", err)
 	}
-	if err := inst.Install(context.Background(), tarPath); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
 		t.Fatalf("second Install (same version): %v", err)
 	}
 
@@ -411,7 +411,7 @@ func TestInstall_TarballTooLarge(t *testing.T) {
 
 	tarPath := oversizedTarball(t, "huge-plugin")
 
-	err := inst.Install(context.Background(), tarPath)
+	_, err := inst.Install(context.Background(), tarPath)
 	if err == nil {
 		t.Fatal("expected error for oversized tarball, got nil")
 	}
@@ -424,7 +424,7 @@ func TestInstall_UnsignedPermissive_PendingReview(t *testing.T) {
 
 	tarPath := unsignedPluginTarball(t, "unsigned-plugin", "1.0.0")
 
-	if err := inst.Install(context.Background(), tarPath); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
 		t.Fatalf("Install (unsigned permissive): %v", err)
 	}
 
@@ -471,7 +471,7 @@ func TestInstall_TOFUFirstInstall_CapturesPubkey(t *testing.T) {
 	inst := newTestInstaller(t, q, false)
 
 	tarPath, _ := signedPluginTarball(t, "tofu-plugin", "1.0.0")
-	if err := inst.Install(context.Background(), tarPath); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -517,10 +517,10 @@ func TestInstall_SamePubkeyUpdate_PassesThrough(t *testing.T) {
 		return tarPath
 	}
 
-	if err := inst.Install(context.Background(), buildTar(t, "1.0.0")); err != nil {
+	if _, err := inst.Install(context.Background(), buildTar(t, "1.0.0")); err != nil {
 		t.Fatalf("Install v1: %v", err)
 	}
-	if err := inst.Install(context.Background(), buildTar(t, "1.1.0")); err != nil {
+	if _, err := inst.Install(context.Background(), buildTar(t, "1.1.0")); err != nil {
 		t.Fatalf("Install v1.1.0 (same key): %v", err)
 	}
 
@@ -555,7 +555,7 @@ func TestInstall_DifferentPubkeyUpdate_BlocksAndAudits(t *testing.T) {
 
 	// First install with key A.
 	tarPath1, _ := signedPluginTarball(t, "mismatch-plugin", "1.0.0")
-	if err := inst.Install(context.Background(), tarPath1); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
 		t.Fatalf("Install v1: %v", err)
 	}
 
@@ -569,7 +569,7 @@ func TestInstall_DifferentPubkeyUpdate_BlocksAndAudits(t *testing.T) {
 
 	// Second tarball signed by a different key (signedPluginTarball generates a fresh keypair).
 	tarPath2, _ := signedPluginTarball(t, "mismatch-plugin", "2.0.0")
-	if err := inst.Install(context.Background(), tarPath2); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
 		t.Fatalf("Install v2 (different key): %v", err)
 	}
 
@@ -625,7 +625,7 @@ func TestInstall_DelayedTOFU_CapturesSilently(t *testing.T) {
 	inst := newTestInstaller(t, q, true) // allowUnsigned to accept the first install
 
 	tarPath1 := unsignedPluginTarball(t, "delayed-tofu", "1.0.0")
-	if err := inst.Install(context.Background(), tarPath1); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
 		t.Fatalf("Install v1 (unsigned): %v", err)
 	}
 
@@ -639,7 +639,7 @@ func TestInstall_DelayedTOFU_CapturesSilently(t *testing.T) {
 
 	// Install signed v2 — should capture pubkey, not mismatch.
 	tarPath2, _ := signedPluginTarball(t, "delayed-tofu", "2.0.0")
-	if err := inst.Install(context.Background(), tarPath2); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
 		t.Fatalf("Install v2 (signed): %v", err)
 	}
 
@@ -694,7 +694,7 @@ func TestInstall_ManifestNamePathTraversal_Rejected(t *testing.T) {
 
 	tarPath := traversalTarball(t, "../escape")
 
-	err := inst.Install(context.Background(), tarPath)
+	_, err := inst.Install(context.Background(), tarPath)
 	if err == nil {
 		t.Fatal("Install: expected error for path-traversal manifest name, got nil")
 	}
@@ -725,7 +725,7 @@ func TestInstall_RejectedWithNilErr_NoPanic(t *testing.T) {
 	inst := &Installer{verifier: nilErrVerifier{}, q: q, publisher: nil, clock: time.Now}
 
 	// Must not panic; Install should record an audit event and return nil.
-	if err := inst.Install(context.Background(), tarPath); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
 		t.Fatalf("Install returned unexpected error: %v", err)
 	}
 
@@ -831,7 +831,7 @@ func TestInstall_HotReload_MaterialChange_DoesNotUpdateSnapshot(t *testing.T) {
 
 	v1Manifest := []byte("schema_version: v1\nname: mat-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath1 := buildSignedTarWithContent(t, "mat-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if err := inst.Install(context.Background(), tarPath1); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
 		t.Fatalf("Install v1: %v", err)
 	}
 
@@ -843,7 +843,7 @@ func TestInstall_HotReload_MaterialChange_DoesNotUpdateSnapshot(t *testing.T) {
 	// v2 adds a new tool — material change.
 	v2Manifest := []byte("schema_version: v1\nname: mat-plugin\nversion: 2.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\ntools:\n- name: my_tool\n  description: a tool\n")
 	tarPath2 := buildSignedTarWithContent(t, "mat-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if err := inst.Install(context.Background(), tarPath2); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
 		t.Fatalf("Install v2 (material change): %v", err)
 	}
 
@@ -875,7 +875,7 @@ func TestInstall_HotReload_MaterialChange_TransitionsInstancesToPendingManifestA
 
 	v1Manifest := []byte("schema_version: v1\nname: trans-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath1 := buildSignedTarWithContent(t, "trans-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if err := inst.Install(context.Background(), tarPath1); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
 		t.Fatalf("Install v1: %v", err)
 	}
 
@@ -890,7 +890,7 @@ func TestInstall_HotReload_MaterialChange_TransitionsInstancesToPendingManifestA
 
 	v2Manifest := []byte("schema_version: v1\nname: trans-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath2 := buildSignedTarWithContent(t, "trans-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if err := inst.Install(context.Background(), tarPath2); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
 		t.Fatalf("Install v2 (material change): %v", err)
 	}
 
@@ -925,13 +925,13 @@ func TestInstall_HotReload_MaterialChange_EmitsHighSeverityAuditEvent(t *testing
 
 	v1Manifest := []byte("schema_version: v1\nname: audit-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath1 := buildSignedTarWithContent(t, "audit-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if err := inst.Install(context.Background(), tarPath1); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
 		t.Fatalf("Install v1: %v", err)
 	}
 
 	v2Manifest := []byte("schema_version: v1\nname: audit-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath2 := buildSignedTarWithContent(t, "audit-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if err := inst.Install(context.Background(), tarPath2); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
 		t.Fatalf("Install v2 (material change): %v", err)
 	}
 
@@ -979,14 +979,14 @@ func TestInstall_HotReload_MaterialChange_NewlyRequiredConfigField_PayloadInclud
 	// v1 has no config_schema.
 	v1Manifest := []byte("schema_version: v1\nname: config-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath1 := buildSignedTarWithContent(t, "config-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if err := inst.Install(context.Background(), tarPath1); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
 		t.Fatalf("Install v1: %v", err)
 	}
 
 	// v2 adds a required config field AND changes services (to ensure it's material).
 	v2Manifest := []byte("schema_version: v1\nname: config-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\nconfig_schema:\n  type: object\n  properties:\n    api_key:\n      type: string\n  required:\n    - api_key\n")
 	tarPath2 := buildSignedTarWithContent(t, "config-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if err := inst.Install(context.Background(), tarPath2); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
 		t.Fatalf("Install v2 (with newly required config field): %v", err)
 	}
 
@@ -1031,14 +1031,14 @@ func TestInstall_HotReload_CosmeticChange_UpdatesSnapshot_EmitsInfoAuditEvent(t 
 
 	v1Manifest := []byte("schema_version: v1\nname: cosm-plugin\nversion: 1.0.0\ndescription: old description\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath1 := buildSignedTarWithContent(t, "cosm-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if err := inst.Install(context.Background(), tarPath1); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
 		t.Fatalf("Install v1: %v", err)
 	}
 
 	// v2 changes only the description and version — both cosmetic.
 	v2Manifest := []byte("schema_version: v1\nname: cosm-plugin\nversion: 1.0.1\ndescription: new description\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath2 := buildSignedTarWithContent(t, "cosm-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if err := inst.Install(context.Background(), tarPath2); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
 		t.Fatalf("Install v2 (cosmetic change): %v", err)
 	}
 
@@ -1084,14 +1084,14 @@ func TestInstall_HotReload_NoChange_NoOp(t *testing.T) {
 
 	v1Manifest := []byte("schema_version: v1\nname: noop-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath1 := buildSignedTarWithContent(t, "noop-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if err := inst.Install(context.Background(), tarPath1); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
 		t.Fatalf("Install v1: %v", err)
 	}
 
 	// v2 only bumps the version — cosmetic, no structural change.
 	v2Manifest := []byte("schema_version: v1\nname: noop-plugin\nversion: 2.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath2 := buildSignedTarWithContent(t, "noop-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if err := inst.Install(context.Background(), tarPath2); err != nil {
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
 		t.Fatalf("Install v2 (version-only bump): %v", err)
 	}
 

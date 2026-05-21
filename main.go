@@ -505,6 +505,14 @@ func run(cfg config.Config) error {
 		handlers.PluginAdminHandler.SetTriggerRestarter(triggerSupervisor)
 	}
 
+	// Wire the shared Installer into the plugin admin handler so both the
+	// fsnotify watcher and the Install endpoint use the same pipeline instance.
+	// loader.Installer() returns nil when GLEIPNIR_PLUGINS_ENABLED=false, which
+	// disables the install endpoint cleanly (returns 503).
+	if loader.Installer() != nil && handlers.PluginAdminHandler != nil {
+		handlers.PluginAdminHandler.SetInstaller(loader.Installer())
+	}
+
 	// Phase 3: build the router.
 	r := api.BuildRouter(api.RouterConfig{
 		Handlers: handlers,

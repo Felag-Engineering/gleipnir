@@ -86,6 +86,39 @@ func TestLoader_StartWatcher_DisabledIsNoOp(t *testing.T) {
 	l.StartWatcher(context.Background(), nil, t.TempDir(), nil)
 }
 
+// TestLoader_Installer_NilBeforeStartWatcher verifies that Installer() returns
+// nil before StartWatcher is called (i.e. when plugins are disabled).
+func TestLoader_Installer_NilBeforeStartWatcher(t *testing.T) {
+	l := NewLoader()
+	if err := l.Init(context.Background(), config.Config{PluginsEnabled: false}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if l.Installer() != nil {
+		t.Errorf("Installer() = %v; want nil before StartWatcher", l.Installer())
+	}
+}
+
+// TestLoader_Installer_NonNilAfterStartWatcher verifies that Installer() returns
+// a non-nil *loader.Installer after StartWatcher succeeds with plugins enabled.
+func TestLoader_Installer_NonNilAfterStartWatcher(t *testing.T) {
+	l := NewLoader()
+	if err := l.Init(context.Background(), config.Config{PluginsEnabled: true}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// StartWatcher requires a real directory to watch.
+	dir := t.TempDir()
+	if err := l.StartWatcher(ctx, nil, dir, nil); err != nil {
+		t.Fatalf("StartWatcher: %v", err)
+	}
+	if l.Installer() == nil {
+		t.Error("Installer() = nil; want non-nil after StartWatcher")
+	}
+}
+
 // captureLogs swaps slog.Default with a buffer-backed handler for the
 // duration of the test and returns the buffer.
 func captureLogs(t *testing.T) *bytes.Buffer {

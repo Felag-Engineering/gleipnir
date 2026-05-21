@@ -31,6 +31,7 @@ type fakePluginQuerier struct {
 	casFailOn        string
 	updatePubkey     string // last value written by UpdatePluginTrustedPubkey
 	scopeCASFailOnID string // instance ID that should return 0 rows for UpdatePluginInstanceSubscriptionScope
+	createInstanceErr error  // if non-nil, CreatePluginInstance returns this error
 }
 
 func newFakePluginQuerier() *fakePluginQuerier {
@@ -158,6 +159,39 @@ func (f *fakePluginQuerier) UpdatePluginManifest(_ context.Context, arg db.Updat
 	p.Version++
 	f.plugins[arg.ID] = p
 	return 1, nil
+}
+
+func (f *fakePluginQuerier) CreatePluginInstance(_ context.Context, arg db.CreatePluginInstanceParams) (db.PluginInstance, error) {
+	if f.createInstanceErr != nil {
+		return db.PluginInstance{}, f.createInstanceErr
+	}
+	inst := db.PluginInstance{
+		ID:                    arg.ID,
+		PluginID:              arg.PluginID,
+		InstanceName:          arg.InstanceName,
+		ConfigJson:            arg.ConfigJson,
+		SubscriptionScopeJson: arg.SubscriptionScopeJson,
+		CredentialsEncrypted:  arg.CredentialsEncrypted,
+		CredentialsExpiresAt:  arg.CredentialsExpiresAt,
+		HandshakeVersions:     arg.HandshakeVersions,
+		HealthState:           arg.HealthState,
+		HealthDetail:          arg.HealthDetail,
+		LastOauthCallbackUrl:  arg.LastOauthCallbackUrl,
+		Version:               0,
+		CreatedAt:             arg.CreatedAt,
+		UpdatedAt:             arg.UpdatedAt,
+	}
+	f.instances[inst.ID] = inst
+	return inst, nil
+}
+
+func (f *fakePluginQuerier) GetPluginInstanceByName(_ context.Context, arg db.GetPluginInstanceByNameParams) (db.PluginInstance, error) {
+	for _, inst := range f.instances {
+		if inst.PluginID == arg.PluginID && inst.InstanceName == arg.InstanceName {
+			return inst, nil
+		}
+	}
+	return db.PluginInstance{}, ErrNotFound
 }
 
 func TestPluginHandler_GetInstance(t *testing.T) {

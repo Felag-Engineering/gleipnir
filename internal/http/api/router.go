@@ -200,6 +200,19 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 		policySvc := policy.NewService(cfg.Services.Store, nil, cfg.Services.ProviderRegistry, cfg.Services.ProviderRegistry, cfg.Services.Settings)
 		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, policySvc, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey, cfg.Services.Arbiter))
 
+		// Plugin install and create-instance endpoints are registered outside the
+		// /api/v1/admin route group so each can carry its own body-size limit.
+		// The /api/v1/admin group applies a 1 MiB cap globally; the install endpoint
+		// needs 100 MiB, and nesting it inside the group would silently cap uploads.
+		if cfg.Handlers.PluginAdminHandler != nil {
+			r.With(auth.RequireRole(model.RoleAdmin),
+				httputil.BodySizeLimit(100<<20)).
+				Post("/api/v1/admin/plugins", cfg.Handlers.PluginAdminHandler.Install)
+			r.With(auth.RequireRole(model.RoleAdmin),
+				httputil.BodySizeLimit(httputil.MaxRequestBodySize)).
+				Post("/api/v1/admin/plugins/{id}/instances", cfg.Handlers.PluginAdminHandler.CreateInstance)
+		}
+
 		// Admin: provider key management, settings, and model configuration.
 		r.Route("/api/v1/admin", func(r chi.Router) {
 			r.Use(auth.RequireRole(model.RoleAdmin))

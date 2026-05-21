@@ -110,32 +110,32 @@ func NewInstaller(v BundleVerifier, q *db.Queries, publisher event.Publisher) *I
 //  4. Snapshot into the plugins table with status=pending_review (new plugin),
 //     or update the manifest (version bump), or skip (same version).
 //
-// Failed verification is recorded in plugin_audit_events and Install returns
-// nil — the event is the operator-visible signal (ADR-046). The caller
-// (Watcher) continues after a failed install; nothing is started.
+// Returns the plugin row ID on success. Returns ("", nil) when verification
+// fails — the audit event (not an error) is the operator-visible signal
+// (ADR-046). The caller (Watcher) continues after a failed install; nothing is started.
 //
 // NOTE: The schema CHECK constraint on plugins.status only allows
 // pending_review|active|removed. A "signature_invalid" status is not stored
 // on the plugin row — #191 owns the per-instance health state machine.
-func (in *Installer) Install(ctx context.Context, tarPath string) error {
+func (in *Installer) Install(ctx context.Context, tarPath string) (string, error) {
 	tmpDir, err := os.MkdirTemp("", "gleipnir-plugin-*")
 	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
+		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
 	if err := ExtractTarball(tarPath, tmpDir, maxTarballBytes); err != nil {
-		return fmt.Errorf("extract tarball %q: %w", tarPath, err)
+		return "", fmt.Errorf("extract tarball %q: %w", tarPath, err)
 	}
 
 	m, manifestBytes, err := readManifest(tmpDir)
 	if err != nil {
-		return fmt.Errorf("read manifest from %q: %w", tarPath, err)
+		return "", fmt.Errorf("read manifest from %q: %w", tarPath, err)
 	}
 
 	binaryPath := filepath.Join(tmpDir, m.Name)
 	if rel, err := filepath.Rel(tmpDir, binaryPath); err != nil || strings.HasPrefix(rel, "..") {
-		return fmt.Errorf("manifest.name %q escapes bundle directory", m.Name)
+		return "", fmt.Errorf("manifest.name %q escapes bundle directory", m.Name)
 	}
 	result := in.verifier.VerifyBundle(tmpDir, binaryPath)
 
@@ -174,8 +174,9 @@ func readManifest(bundleDir string) (*manifest.Manifest, []byte, error) {
 }
 
 // recordSignatureInvalid inserts a plugin_audit_events row for a failed
-// signature check and returns nil (the event is the operator signal).
-func (in *Installer) recordSignatureInvalid(ctx context.Context, tarPath, pluginName string, verifyErr error) error {
+// signature check and returns ("", nil) — the event is the operator signal.
+// An empty plugin ID is returned because no plugin row exists for a rejected bundle.
+func (in *Installer) recordSignatureInvalid(ctx context.Context, tarPath, pluginName string, verifyErr error) (string, error) {
 	// Guard against a BundleVerifier that returns OutcomeRejected with Err==nil,
 	// which would panic on verifyErr.Error(). The interface contract requires
 	// Err to be non-nil, but we defend here regardless.
@@ -188,16 +189,17 @@ func (in *Installer) recordSignatureInvalid(ctx context.Context, tarPath, plugin
 		"manifest_name": pluginName,
 		"error":         errMsg,
 	}); err != nil {
-		return fmt.Errorf("record signature_invalid audit: %w", err)
+		return "", fmt.Errorf("record signature_invalid audit: %w", err)
 	}
-	return nil
+	return "", nil
 }
 
 // upsertPlugin creates or updates the plugin row and emits an audit event.
-func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, manifestBytes []byte, result VerifyResult) error {
+// Returns the plugin row ID so the install handler can surface it to the caller.
+func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, manifestBytes []byte, result VerifyResult) (string, error) {
 	existing, err := in.q.GetPluginByName(ctx, m.Name)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("get plugin %q: %w", m.Name, err)
+		return "", fmt.Errorf("get plugin %q: %w", m.Name, err)
 	}
 
 	nowStr := in.nowStr()
@@ -208,7 +210,7 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 
 	if existing.PluginVersion == m.Version {
 		// Same version already recorded — idempotent no-op (debounce safety net).
-		return nil
+		return existing.ID, nil
 	}
 
 	// TOFU pubkey trust check: only applies to verified (signed) bundles.
@@ -223,15 +225,15 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 				ExpectedVersion: existing.Version,
 			})
 			if updateErr != nil {
-				return fmt.Errorf("capture trusted pubkey for %q (delayed TOFU): %w", m.Name, updateErr)
+				return "", fmt.Errorf("capture trusted pubkey for %q (delayed TOFU): %w", m.Name, updateErr)
 			}
 			if rows == 0 {
-				return fmt.Errorf("capture trusted pubkey for %q: CAS conflict (version mismatch)", m.Name)
+				return "", fmt.Errorf("capture trusted pubkey for %q: CAS conflict (version mismatch)", m.Name)
 			}
 			// Re-read so updatePlugin sees the bumped version.
 			existing, err = in.q.GetPluginByName(ctx, m.Name)
 			if err != nil {
-				return fmt.Errorf("re-read plugin %q after TOFU capture: %w", m.Name, err)
+				return "", fmt.Errorf("re-read plugin %q after TOFU capture: %w", m.Name, err)
 			}
 		} else if !bytes.Equal(result.Pubkey, []byte(existing.TrustedPubkey)) {
 			// Key mismatch: a different signing key was used for this update.
@@ -246,7 +248,7 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 	// Cosmetic-only changes update the snapshot silently.
 	var oldManifest manifest.Manifest
 	if parseErr := manifest.Unmarshal([]byte(existing.ManifestSnapshot), &oldManifest); parseErr != nil {
-		return fmt.Errorf("parse stored manifest snapshot for %q: %w", m.Name, parseErr)
+		return "", fmt.Errorf("parse stored manifest snapshot for %q: %w", m.Name, parseErr)
 	}
 	changes := pluginmanifest.Diff(&oldManifest, m)
 	if pluginmanifest.HasMaterial(changes) {
@@ -261,8 +263,8 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 
 // handlePubkeyMismatch transitions all instances of the plugin to
 // pending_key_approval and emits a plugin_pubkey_mismatch audit event.
-// It returns nil so the watcher continues — the audit event is the operator signal.
-func (in *Installer) handlePubkeyMismatch(ctx context.Context, existing db.Plugin, result VerifyResult, newVersion, nowStr string) error {
+// Returns the existing plugin ID — the update is blocked but the row still exists.
+func (in *Installer) handlePubkeyMismatch(ctx context.Context, existing db.Plugin, result VerifyResult, newVersion, nowStr string) (string, error) {
 	in.transitionAllInstances(
 		ctx, existing,
 		model.PluginHealthStatePendingKeyApproval,
@@ -278,9 +280,9 @@ func (in *Installer) handlePubkeyMismatch(ctx context.Context, existing db.Plugi
 		"new_pubkey_b64":         base64.StdEncoding.EncodeToString(result.Pubkey),
 		"version":                newVersion,
 	}); err != nil {
-		return fmt.Errorf("record pubkey_mismatch audit for %q: %w", existing.Name, err)
+		return "", fmt.Errorf("record pubkey_mismatch audit for %q: %w", existing.Name, err)
 	}
-	return nil
+	return existing.ID, nil
 }
 
 // handleManifestMaterialChange blocks the manifest update and transitions all
@@ -291,7 +293,8 @@ func (in *Installer) handlePubkeyMismatch(ctx context.Context, existing db.Plugi
 //
 // oldManifest is the already-parsed existing snapshot — passed in to avoid a
 // second parse of the same bytes that upsertPlugin already completed.
-func (in *Installer) handleManifestMaterialChange(ctx context.Context, existing db.Plugin, oldManifest *manifest.Manifest, m *manifest.Manifest, candidateBytes []byte, changes []pluginmanifest.Change, nowStr string) error {
+// Returns the existing plugin ID — the update is blocked but the row still exists.
+func (in *Installer) handleManifestMaterialChange(ctx context.Context, existing db.Plugin, oldManifest *manifest.Manifest, m *manifest.Manifest, candidateBytes []byte, changes []pluginmanifest.Change, nowStr string) (string, error) {
 	in.transitionAllInstances(
 		ctx, existing,
 		model.PluginHealthStatePendingManifestApproval,
@@ -309,9 +312,9 @@ func (in *Installer) handleManifestMaterialChange(ctx context.Context, existing 
 		"candidate_manifest_b64":       base64.StdEncoding.EncodeToString(candidateBytes),
 		"newly_required_config_fields": pluginmanifest.ConfigSchemaNewlyRequiredFields(oldManifest, m),
 	}); err != nil {
-		return fmt.Errorf("record manifest_material_change audit for %q: %w", existing.Name, err)
+		return "", fmt.Errorf("record manifest_material_change audit for %q: %w", existing.Name, err)
 	}
-	return nil
+	return existing.ID, nil
 }
 
 // transitionAllInstances moves every instance of the plugin to target if the
@@ -359,7 +362,7 @@ func (in *Installer) recordAuditEvent(ctx context.Context, eventType, severity, 
 // updatePluginCosmetic updates the manifest snapshot for a cosmetic-only change,
 // preserving the current plugin status so an already-active plugin is not
 // regressed to pending_review for a description tweak.
-func (in *Installer) updatePluginCosmetic(ctx context.Context, existing db.Plugin, m *manifest.Manifest, manifestBytes []byte, changes []pluginmanifest.Change, nowStr string) error {
+func (in *Installer) updatePluginCosmetic(ctx context.Context, existing db.Plugin, m *manifest.Manifest, manifestBytes []byte, changes []pluginmanifest.Change, nowStr string) (string, error) {
 	rows, err := in.q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
 		ManifestSnapshot: string(manifestBytes),
 		PluginVersion:    m.Version,
@@ -369,10 +372,10 @@ func (in *Installer) updatePluginCosmetic(ctx context.Context, existing db.Plugi
 		ExpectedVersion:  existing.Version,
 	})
 	if err != nil {
-		return fmt.Errorf("update plugin %q manifest (cosmetic): %w", m.Name, err)
+		return "", fmt.Errorf("update plugin %q manifest (cosmetic): %w", m.Name, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("update plugin %q manifest (cosmetic): CAS conflict (version mismatch)", m.Name)
+		return "", fmt.Errorf("update plugin %q manifest (cosmetic): CAS conflict (version mismatch)", m.Name)
 	}
 
 	if err := in.recordAuditEvent(ctx, auditManifestCosmeticChange, severityInfo, nowStr, map[string]any{
@@ -382,9 +385,9 @@ func (in *Installer) updatePluginCosmetic(ctx context.Context, existing db.Plugi
 		"new_version":     m.Version,
 		"cosmetic_fields": pluginmanifest.CosmeticFields(changes),
 	}); err != nil {
-		return fmt.Errorf("record manifest_cosmetic_change audit for %q: %w", existing.Name, err)
+		return "", fmt.Errorf("record manifest_cosmetic_change audit for %q: %w", existing.Name, err)
 	}
-	return nil
+	return existing.ID, nil
 }
 
 // pubkeyFingerprint derives a short human-readable fingerprint from the
@@ -408,9 +411,10 @@ func pubkeyFingerprint(pubkeyBytes []byte) string {
 // TODO(plugin): wrap createPlugin + audit insert in a single transaction once
 // Installer takes *sql.DB instead of *db.Queries. Today an audit-insert failure
 // leaves an orphan plugins row; same-version idempotency masks the retry.
-func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, manifestBytes []byte, result VerifyResult, nowStr string) error {
+func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, manifestBytes []byte, result VerifyResult, nowStr string) (string, error) {
+	pluginID := model.NewULID()
 	_, err := in.q.CreatePlugin(ctx, db.CreatePluginParams{
-		ID:               model.NewULID(),
+		ID:               pluginID,
 		Name:             m.Name,
 		PluginVersion:    m.Version,
 		ManifestSnapshot: string(manifestBytes),
@@ -420,7 +424,7 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 		UpdatedAt:        nowStr,
 	})
 	if err != nil {
-		return fmt.Errorf("create plugin %q: %w", m.Name, err)
+		return "", fmt.Errorf("create plugin %q: %w", m.Name, err)
 	}
 
 	if err := in.recordAuditEvent(ctx, auditPluginInstalled, severityInfo, nowStr, map[string]any{
@@ -428,14 +432,9 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 		"version": m.Version,
 		"outcome": result.Outcome.String(),
 	}); err != nil {
-		return fmt.Errorf("record plugin_installed audit: %w", err)
+		return "", fmt.Errorf("record plugin_installed audit: %w", err)
 	}
-	// TODO(plugin-instance-provision): when CreatePluginInstance is wired into
-	// the install flow (#159 follow-up), call internal/plugin/oauth.BuildSeedCredentials
-	// here for manifests with Auth.Strategy in {oauth2_authcode, oauth2_clientcred}
-	// and write the encrypted seed into the new instance row so the OAuth dance
-	// has client_id/client_secret/endpoints available to start from.
-	return nil
+	return pluginID, nil
 }
 
 // updatePlugin updates the manifest snapshot on an existing plugin row when the
@@ -445,7 +444,7 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 // Installer takes *sql.DB instead of *db.Queries. Today an audit-insert failure
 // leaves the plugins row updated but the event unrecorded; same-version
 // idempotency masks the retry.
-func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *manifest.Manifest, manifestBytes []byte, nowStr string) error {
+func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *manifest.Manifest, manifestBytes []byte, nowStr string) (string, error) {
 	rows, err := in.q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
 		ManifestSnapshot: string(manifestBytes),
 		PluginVersion:    m.Version,
@@ -455,12 +454,12 @@ func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *ma
 		ExpectedVersion:  existing.Version,
 	})
 	if err != nil {
-		return fmt.Errorf("update plugin %q manifest: %w", m.Name, err)
+		return "", fmt.Errorf("update plugin %q manifest: %w", m.Name, err)
 	}
 	if rows == 0 {
 		// CAS miss: a concurrent writer already advanced the version. This is
 		// unlikely in the sequential dispatch model but safe to surface as an error.
-		return fmt.Errorf("update plugin %q: CAS conflict (version mismatch)", m.Name)
+		return "", fmt.Errorf("update plugin %q: CAS conflict (version mismatch)", m.Name)
 	}
 
 	if err := in.recordAuditEvent(ctx, auditUpdatePending, severityInfo, nowStr, map[string]any{
@@ -468,9 +467,9 @@ func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *ma
 		"old_version": existing.PluginVersion,
 		"new_version": m.Version,
 	}); err != nil {
-		return fmt.Errorf("record plugin_update_pending audit: %w", err)
+		return "", fmt.Errorf("record plugin_update_pending audit: %w", err)
 	}
-	return nil
+	return existing.ID, nil
 }
 
 // nowStr returns the current time as an RFC3339Nano string via the injectable clock.
