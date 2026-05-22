@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -98,6 +99,41 @@ func TestBeginAuthcode_EmptyPublicURL_Error(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "public_url") {
 		t.Errorf("error should mention public_url, got: %v", err)
+	}
+	if !errors.Is(err, ErrConfigInvalid) {
+		t.Errorf("expected ErrConfigInvalid, got: %v", err)
+	}
+}
+
+func TestBeginAuthcode_MissingClientID_ReturnsConfigInvalid(t *testing.T) {
+	creds := testCreds("oauth2_authcode")
+	creds.ClientID = "" // clear the client ID set by testCreds
+
+	q := buildInstanceWithCreds(t, creds)
+	mgr, _ := newTestManager(q, "https://gleipnir.example.com")
+
+	_, err := mgr.BeginAuthcode(context.Background(), "inst-1", "https://app.example.com/settings")
+	if err == nil {
+		t.Fatal("expected error when client_id is empty")
+	}
+	if !errors.Is(err, ErrConfigInvalid) {
+		t.Errorf("expected ErrConfigInvalid for missing client_id, got: %v", err)
+	}
+}
+
+func TestBeginAuthcode_MissingTokenURL_ReturnsConfigInvalid(t *testing.T) {
+	creds := testCreds("oauth2_authcode")
+	creds.TokenURL = "" // clear the token URL
+
+	q := buildInstanceWithCreds(t, creds)
+	mgr, _ := newTestManager(q, "https://gleipnir.example.com")
+
+	_, err := mgr.BeginAuthcode(context.Background(), "inst-1", "https://app.example.com/settings")
+	if err == nil {
+		t.Fatal("expected error when token_url is empty")
+	}
+	if !errors.Is(err, ErrConfigInvalid) {
+		t.Errorf("expected ErrConfigInvalid for missing token_url, got: %v", err)
 	}
 }
 
