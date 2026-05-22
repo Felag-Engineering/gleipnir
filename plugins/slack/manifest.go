@@ -12,7 +12,7 @@ import (
 var pluginManifest = manifest.Manifest{
 	SchemaVersion: "v1",
 	Name:          "slack",
-	Version:       "0.1.0",
+	Version:       "0.1.1",
 	Description:   "Slack integration: tools (send/list channels), triggers (channel messages), and channels (notify/request via Slack DMs and posts).",
 	Services: manifest.Services{
 		Tool:    "v1",
@@ -47,7 +47,6 @@ var pluginManifest = manifest.Manifest{
 				"im:history",
 				"im:write",
 				"mpim:history",
-				"search:read",
 				"users:read",
 			},
 			// HasClientID and HasClientSecret describe whether the manifest carries
@@ -127,7 +126,7 @@ properties:
 	},
 }
 
-// buildToolDecls returns the five Slack tool declarations for the manifest.
+// buildToolDecls returns the four Slack tool declarations for the manifest.
 // InputSchema is a *yaml.Node (manifest.ToolDecl.InputSchema, manifest.go:237)
 // produced by manifest.MustReflectSchema — distinct from the JSON-string form
 // used by ToolService.ListTools on the wire (see tools.go:reflectInputSchemaJSON).
@@ -144,11 +143,6 @@ func buildToolDecls() []manifest.ToolDecl {
 			Name:        "list_channels",
 			Description: "List Slack channels visible to the bot user.",
 			InputSchema: manifest.MustReflectSchema(ListChannelsParams{}),
-		},
-		{
-			Name:        "search_messages",
-			Description: "Search messages across the workspace using Slack's search.",
-			InputSchema: manifest.MustReflectSchema(SearchMessagesParams{}),
 		},
 		{
 			Name:        "react",

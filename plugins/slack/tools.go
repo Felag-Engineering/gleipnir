@@ -32,11 +32,6 @@ type ListChannelsParams struct {
 	Types           string `json:"types,omitempty"            jsonschema:"title=Types,description=Comma-separated channel types (public_channel\\,private_channel\\,mpim\\,im). Defaults to public_channel."`
 }
 
-type SearchMessagesParams struct {
-	Query string `json:"query"         jsonschema:"required,title=Query,description=Slack search query (search.messages syntax)"`
-	Count int    `json:"count,omitempty" jsonschema:"title=Count,description=Results per page (1-100),minimum=1,maximum=100"`
-}
-
 type ReactParams struct {
 	Channel   string `json:"channel"   jsonschema:"required,title=Channel,description=Channel ID containing the message"`
 	Timestamp string `json:"timestamp" jsonschema:"required,title=Timestamp,description=Message ts (e.g. 1700000000.123456)"`
@@ -154,8 +149,6 @@ func classifySlackErrCode(code string) (commonv1.ErrorCode, healthHint) {
 	case "invalid_auth", "account_inactive", "token_revoked", "missing_scope", "not_authed":
 		// Persistent auth failures. The operator UI shows UNHEALTHY + "auth_expired"
 		// so operators know they need to reauthorize or grant missing scopes.
-		// Note: missing_scope is especially likely for search_messages on bot-only
-		// installs that were not granted the search:read scope.
 		return commonv1.ErrorCode_ERROR_CODE_PERMISSION, healthAuthExpired
 
 	case "ratelimited":
@@ -283,48 +276,6 @@ func handleListChannels(ctx context.Context, sc *slack.Client, inputJSON string)
 	return json.Marshal(map[string]any{
 		"channels":    items,
 		"next_cursor": nextCursor,
-	})
-}
-
-func handleSearchMessages(ctx context.Context, sc *slack.Client, inputJSON string) ([]byte, error) {
-	var p SearchMessagesParams
-	if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
-		return nil, slack.SlackErrorResponse{Err: "invalid_arguments"}
-	}
-
-	params := slack.NewSearchParameters()
-	if p.Count > 0 {
-		params.Count = p.Count
-	}
-
-	result, err := callWithRetry(ctx, func(ctx context.Context) (*slack.SearchMessages, error) {
-		return sc.SearchMessagesContext(ctx, p.Query, params)
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	type matchItem struct {
-		Channel   string `json:"channel"`
-		User      string `json:"user"`
-		Text      string `json:"text"`
-		TS        string `json:"ts"`
-		Permalink string `json:"permalink"`
-	}
-	matches := make([]matchItem, len(result.Matches))
-	for i, m := range result.Matches {
-		matches[i] = matchItem{
-			Channel:   m.Channel.ID,
-			User:      m.User,
-			Text:      m.Text,
-			TS:        m.Timestamp,
-			Permalink: m.Permalink,
-		}
-	}
-
-	return json.Marshal(map[string]any{
-		"matches": matches,
-		"total":   result.Total,
 	})
 }
 

@@ -29,8 +29,8 @@ import (
 	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 )
 
-// ToolService implements toolv1.ToolServiceServer with five Slack Web API tools:
-// post_message, list_channels, search_messages, react, and set_topic.
+// ToolService implements toolv1.ToolServiceServer with four Slack Web API tools:
+// post_message, list_channels, react, and set_topic.
 // It fetches credentials on every Call (no in-process caching, per spec §9.4).
 type ToolService struct {
 	toolv1.UnimplementedToolServiceServer
@@ -60,7 +60,7 @@ func NewToolService(host hostv1.HostServiceClient, httpClient *http.Client, apiU
 	return &ToolService{host: host, httpClient: httpClient, apiURL: apiURL}
 }
 
-// ListTools advertises the five Slack tools. InputSchema is a JSON string
+// ListTools advertises the four Slack tools. InputSchema is a JSON string
 // because toolv1.ToolSchema.InputSchema is a string on the wire
 // (plugin-sdk/gen/.../tool.pb.go:39); reflectInputSchemaJSON produces it.
 func (s *ToolService) ListTools(_ context.Context, _ *toolv1.ListToolsRequest) (*toolv1.ListToolsResponse, error) {
@@ -75,11 +75,6 @@ func (s *ToolService) ListTools(_ context.Context, _ *toolv1.ListToolsRequest) (
 				Name:        "list_channels",
 				Description: "List Slack channels visible to the bot user.",
 				InputSchema: reflectInputSchemaJSON(ListChannelsParams{}),
-			},
-			{
-				Name:        "search_messages",
-				Description: "Search messages across the workspace using Slack's search. Requires the search:read scope; bot-only installs that were not granted this scope will receive a PERMISSION error at runtime.",
-				InputSchema: reflectInputSchemaJSON(SearchMessagesParams{}),
 			},
 			{
 				Name:        "react",
@@ -102,7 +97,7 @@ func (s *ToolService) Cancel(_ context.Context, _ *toolv1.CancelRequest) (*toolv
 	return &toolv1.CancelResponse{}, nil
 }
 
-// Call dispatches to one of the five Slack tool handlers. It fetches
+// Call dispatches to one of the four Slack tool handlers. It fetches
 // credentials on every invocation (no caching), builds a per-call slack.Client,
 // dispatches by tool name, emits one metric sample, and updates plugin health
 // on persistent auth failures.
@@ -147,7 +142,7 @@ func (s *ToolService) Call(ctx context.Context, req *toolv1.CallRequest) (*toolv
 	// auth.test, matching the minimal-tool dispatch pattern
 	// (plugin-sdk/examples/minimal-tool/service.go:62-69).
 	switch toolName {
-	case "post_message", "list_channels", "search_messages", "react", "set_topic":
+	case "post_message", "list_channels", "react", "set_topic":
 		// valid — continue
 	default:
 		return errorResponse(commonv1.ErrorCode_ERROR_CODE_INVALID_ARG,
@@ -210,8 +205,6 @@ func (s *ToolService) dispatch(ctx context.Context, sc *slack.Client, toolName, 
 		return handlePostMessage(ctx, sc, inputJSON)
 	case "list_channels":
 		return handleListChannels(ctx, sc, inputJSON)
-	case "search_messages":
-		return handleSearchMessages(ctx, sc, inputJSON)
 	case "react":
 		return handleReact(ctx, sc, inputJSON)
 	case "set_topic":
