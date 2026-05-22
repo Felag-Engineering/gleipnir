@@ -110,6 +110,10 @@ func (h *PluginOAuthHandler) Begin(w http.ResponseWriter, r *http.Request) {
 		authorizeURL, err := h.mgr.BeginAuthcode(ctx, instanceID, req.ReturnURL)
 		if err != nil {
 			slog.ErrorContext(ctx, "oauth begin authcode failed", "instance_id", instanceID, "err", err)
+			if errors.Is(err, oauth.ErrConfigInvalid) {
+				httputil.WriteError(w, http.StatusBadRequest, "oauth configuration invalid", err.Error())
+				return
+			}
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to begin OAuth flow", err.Error())
 			return
 		}
@@ -118,6 +122,10 @@ func (h *PluginOAuthHandler) Begin(w http.ResponseWriter, r *http.Request) {
 	case sdkmanifest.AuthStrategyOAuth2Clientcred:
 		if err := h.mgr.BeginClientcred(ctx, instanceID); err != nil {
 			slog.ErrorContext(ctx, "oauth begin clientcred failed", "instance_id", instanceID, "err", err)
+			if errors.Is(err, oauth.ErrConfigInvalid) {
+				httputil.WriteError(w, http.StatusBadRequest, "oauth configuration invalid", err.Error())
+				return
+			}
 			httputil.WriteError(w, http.StatusInternalServerError, "client credentials exchange failed", err.Error())
 			return
 		}
