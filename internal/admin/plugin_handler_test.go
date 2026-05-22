@@ -232,6 +232,7 @@ func TestPluginHandler_GetInstance(t *testing.T) {
 				InstanceName: "prod",
 				HealthState:  "healthy",
 				HealthDetail: &detail,
+				ConfigJson:   "{}",
 				Version:      3,
 				UpdatedAt:    "2024-01-01T00:00:00Z",
 			},
@@ -255,6 +256,7 @@ func TestPluginHandler_GetInstance(t *testing.T) {
 				PluginID:     "plugin-1", // belongs to a different plugin
 				InstanceName: "prod",
 				HealthState:  "healthy",
+				ConfigJson:   "{}",
 				Version:      0,
 				UpdatedAt:    "2024-01-01T00:00:00Z",
 			},
@@ -267,6 +269,12 @@ func TestPluginHandler_GetInstance(t *testing.T) {
 			q := newFakePluginQuerier()
 			if tt.seed != nil {
 				q.seed(*tt.seed)
+				// Seed a matching plugin so GetPluginByID succeeds.
+				q.seedPlugin(db.Plugin{
+					ID:               tt.pluginID,
+					Name:             "test-plugin",
+					ManifestSnapshot: instanceConfigManifestNoSchema,
+				})
 			}
 			h := NewPluginHandler(q, nil, nil)
 
@@ -298,6 +306,450 @@ func TestPluginHandler_GetInstance(t *testing.T) {
 				t.Errorf("id = %q, want %q", resp.ID, tt.instanceID)
 			}
 		})
+	}
+}
+
+// instanceConfigManifestWithSecret is a manifest whose config_schema marks
+// app_level_token as x-gleipnir-secret: true. Used by GET and PUT secret tests.
+const instanceConfigManifestWithSecret = "schema_version: v1\nname: test-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\nconfig_schema:\n  type: object\n  properties:\n    app_level_token:\n      type: string\n      x-gleipnir-secret: true\n  required:\n    - app_level_token\n"
+
+func TestGetInstance_RedactsSecretConfigField(t *testing.T) {
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestWithSecret,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:           "inst-1",
+		PluginID:     "plugin-1",
+		InstanceName: "prod",
+		ConfigJson:   `{"app_level_token":"xapp-real-token","other":"value"}`,
+		HealthState:  "healthy",
+		Version:      1,
+		UpdatedAt:    "2026-01-01T00:00:00Z",
+	})
+
+	h := NewPluginHandler(q, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.GetInstance(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var resp instanceResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	// Secret field must be redacted.
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(resp.ConfigJson), &cfg); err != nil {
+		t.Fatalf("unmarshal config_json: %v", err)
+	}
+	if cfg["app_level_token"] != "***" {
+		t.Errorf("app_level_token = %v, want %q (redacted)", cfg["app_level_token"], "***")
+	}
+	// Non-secret field must be preserved.
+	if cfg["other"] != "value" {
+		t.Errorf("other = %v, want %q (preserved)", cfg["other"], "value")
+	}
+}
+
+func TestGetInstance_ManifestParseFails_500(t *testing.T) {
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: "not yaml: ::::", // deliberately malformed
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  `{"app_level_token":"xapp-real-token"}`,
+		HealthState: "healthy",
+		Version:     0,
+		UpdatedAt:   "2026-01-01T00:00:00Z",
+	})
+
+	h := NewPluginHandler(q, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.GetInstance(rec, req)
+
+	// Fail-closed: must return 500, never the unredacted config (ADR-049 §6).
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 on malformed manifest", rec.Code)
+	}
+}
+
+func TestPutInstanceConfig_RejectsSentinelInSecretField(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestWithSecret,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  `{"app_level_token":"xapp-real"}`,
+		HealthState: "healthy",
+		Version:     0,
+	})
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	// Submitting "***" for a secret field must be rejected.
+	body := `{"config":{"app_level_token":"***"},"expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfig(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for sentinel in secret field; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPutInstanceConfig_AllowsSentinelInNonSecretField(t *testing.T) {
+	// "***" is a valid value for non-secret fields (it is just a string).
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	// Use a manifest with no secret fields.
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestNoSchema,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     0,
+	})
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	body := `{"config":{"any_field":"***"},"expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200; sentinel is allowed in non-secret fields; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPutInstanceConfig_ResponseRedactsWrittenSecret(t *testing.T) {
+	// Re-fetch branch: secret must be redacted in the response after a
+	// successful write when the post-write GetPluginInstanceByID succeeds.
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestWithSecret,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     0,
+		UpdatedAt:   "2026-01-01T00:00:00Z",
+	})
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	body := `{"config":{"app_level_token":"xapp-real-secret"},"expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var resp instanceResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(resp.ConfigJson), &cfg); err != nil {
+		t.Fatalf("unmarshal config_json: %v", err)
+	}
+	if cfg["app_level_token"] != "***" {
+		t.Errorf("re-fetch branch: app_level_token = %v, want %q (redacted)", cfg["app_level_token"], "***")
+	}
+}
+
+// failOnSecondGetInstance wraps fakePluginQuerier and fails the second
+// GetPluginInstanceByID call for the given instance ID to force the fallback
+// synthesized-response branch.
+type failOnSecondGetInstance struct {
+	*fakePluginQuerier
+	targetID string
+	callCount int
+}
+
+func (f *failOnSecondGetInstance) GetPluginInstanceByID(ctx context.Context, id string) (db.PluginInstance, error) {
+	if id == f.targetID {
+		f.callCount++
+		if f.callCount >= 2 {
+			return db.PluginInstance{}, fmt.Errorf("simulated re-fetch failure")
+		}
+	}
+	return f.fakePluginQuerier.GetPluginInstanceByID(ctx, id)
+}
+
+func TestPutInstanceConfig_FallbackResponseRedactsWrittenSecret(t *testing.T) {
+	// Fallback branch: when the post-write re-fetch fails, the synthesized
+	// response must still redact secret fields (ADR-049 §7).
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	base := newFakePluginQuerier()
+	base.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestWithSecret,
+		Version:          0,
+	})
+	base.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     0,
+		UpdatedAt:   "2026-01-01T00:00:00Z",
+	})
+
+	q := &failOnSecondGetInstance{fakePluginQuerier: base, targetID: "inst-1"}
+	h := NewPluginHandler(q, nil, fixedClock)
+
+	body := `{"config":{"app_level_token":"xapp-real-secret"},"expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (fallback path); body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var resp instanceResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(resp.ConfigJson), &cfg); err != nil {
+		t.Fatalf("unmarshal config_json: %v", err)
+	}
+	if cfg["app_level_token"] != "***" {
+		t.Errorf("fallback branch: app_level_token = %v, want %q (redacted)", cfg["app_level_token"], "***")
+	}
+}
+
+// ── PutInstanceConfigProperty tests ──────────────────────────────────────────
+
+func TestPutInstanceConfigProperty_HappyPath(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestWithSecret,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     0,
+		UpdatedAt:   "2026-01-01T00:00:00Z",
+	})
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	body := `{"value":"xapp-new-real-token","expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1", "property": "app_level_token"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfigProperty(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// The stored config must have the real token.
+	inst := q.instances["inst-1"]
+	var stored map[string]any
+	if err := json.Unmarshal([]byte(inst.ConfigJson), &stored); err != nil {
+		t.Fatalf("unmarshal stored config: %v", err)
+	}
+	if stored["app_level_token"] != "xapp-new-real-token" {
+		t.Errorf("stored app_level_token = %v, want %q", stored["app_level_token"], "xapp-new-real-token")
+	}
+
+	// The response must redact the secret.
+	data := parseDataResponse(t, rec)
+	var resp instanceResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(resp.ConfigJson), &cfg); err != nil {
+		t.Fatalf("unmarshal response config_json: %v", err)
+	}
+	if cfg["app_level_token"] != "***" {
+		t.Errorf("response app_level_token = %v, want %q (redacted)", cfg["app_level_token"], "***")
+	}
+}
+
+func TestPutInstanceConfigProperty_UnknownProperty(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestWithSecret,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     0,
+	})
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	body := `{"value":"whatever","expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1", "property": "nonexistent_field"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfigProperty(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for unknown property; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPutInstanceConfigProperty_RejectsSentinelValue(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestWithSecret,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  `{"app_level_token":"xapp-real"}`,
+		HealthState: "healthy",
+		Version:     0,
+	})
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	body := `{"value":"***","expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1", "property": "app_level_token"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfigProperty(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for sentinel value; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPutInstanceConfigProperty_VersionConflict(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestWithSecret,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     5, // real version
+	})
+	q.configCASFailOnID = "inst-1"
+
+	h := NewPluginHandler(q, nil, fixedClock)
+	body := `{"value":"xapp-new","expected_version":5}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1", "property": "app_level_token"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfigProperty(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409 for CAS conflict; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPutInstanceConfigProperty_FallbackResponseRedactsWrittenSecret(t *testing.T) {
+	// Fallback branch: when the post-write re-fetch fails, the synthesized
+	// response must still redact secret fields (ADR-049 §7).
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	base := newFakePluginQuerier()
+	base.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestWithSecret,
+		Version:          0,
+	})
+	base.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     0,
+		UpdatedAt:   "2026-01-01T00:00:00Z",
+	})
+
+	q := &failOnSecondGetInstance{fakePluginQuerier: base, targetID: "inst-1"}
+	h := NewPluginHandler(q, nil, fixedClock)
+
+	body := `{"value":"xapp-real-secret","expected_version":0}`
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1", "property": "app_level_token"})
+	rec := httptest.NewRecorder()
+	h.PutInstanceConfigProperty(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (fallback path); body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var resp instanceResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(resp.ConfigJson), &cfg); err != nil {
+		t.Fatalf("unmarshal config_json: %v", err)
+	}
+	if cfg["app_level_token"] != "***" {
+		t.Errorf("fallback branch: app_level_token = %v, want %q (redacted)", cfg["app_level_token"], "***")
 	}
 }
 
