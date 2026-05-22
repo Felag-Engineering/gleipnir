@@ -42,6 +42,15 @@ func (q *fakeQuerier) ListPluginInstancesByPlugin(_ context.Context, pluginID st
 	return q.instances[pluginID], nil
 }
 
+func (q *fakeQuerier) GetPluginByID(_ context.Context, id string) (db.Plugin, error) {
+	for _, p := range q.plugins {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+	return db.Plugin{}, errors.New("not found")
+}
+
 func (q *fakeQuerier) GetPluginInstanceByID(_ context.Context, id string) (db.PluginInstance, error) {
 	for _, instances := range q.instances {
 		for _, inst := range instances {
@@ -207,28 +216,171 @@ func TestManager_StopMissingID(t *testing.T) {
 	}
 }
 
-// TestManager_StartAllActive_ContinuesPastErrors verifies that StartAllActive
-// returns nil even when all instances have no binary path available (which is
-// the current state for #291 — binary path is not yet DB-persisted).
-func TestManager_StartAllActive_ContinuesPastErrors(t *testing.T) {
+// TestManager_StartAllActive verifies two cases:
+//  1. BinaryPath == nil → log-and-skip; processStarter is never called.
+//  2. BinaryPath is set → processStarter is invoked once with the correct path.
+func TestManager_StartAllActive(t *testing.T) {
+	binaryPath := "/x/y/binary"
+
+	cases := []struct {
+		name          string
+		binaryPath    *string
+		wantStarted   bool
+		wantStartPath string
+	}{
+		{
+			name:        "nil binary_path skips spawn",
+			binaryPath:  nil,
+			wantStarted: false,
+		},
+		{
+			name:          "populated binary_path spawns instance",
+			binaryPath:    &binaryPath,
+			wantStarted:   true,
+			wantStartPath: binaryPath,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &fakeQuerier{
+				plugins: []db.Plugin{
+					{ID: "p1", Status: "active", BinaryPath: tc.binaryPath},
+				},
+				instances: map[string][]db.PluginInstance{
+					"p1": {{ID: "i1", PluginID: "p1", InstanceName: "i1", HealthState: "healthy"}},
+				},
+			}
+			reg := identity.New()
+
+			var startedPath string
+			var startCalled bool
+			mgr := process.NewManager(process.ManagerConfig{
+				Querier:        q,
+				IdentityIssuer: reg,
+				TestProcessStarter: func(_ context.Context, cfg process.Config) (*process.Instance, error) {
+					startCalled = true
+					startedPath = cfg.BinaryPath
+					// Return an error so we don't need a real subprocess.
+					return nil, errors.New("stub: no subprocess needed")
+				},
+			})
+
+			if err := mgr.StartAllActive(context.Background()); err != nil {
+				t.Fatalf("StartAllActive: %v", err)
+			}
+
+			if startCalled != tc.wantStarted {
+				t.Errorf("processStarter called = %v, want %v", startCalled, tc.wantStarted)
+			}
+			if tc.wantStarted && startedPath != tc.wantStartPath {
+				t.Errorf("BinaryPath passed to starter = %q, want %q", startedPath, tc.wantStartPath)
+			}
+		})
+	}
+}
+
+// TestManager_StartByPluginID_SpawnsOnlyTargetPlugin verifies that StartByPluginID
+// spawns only the instances belonging to the given plugin, not instances of other
+// plugins.
+func TestManager_StartByPluginID_SpawnsOnlyTargetPlugin(t *testing.T) {
+	binaryPath := "/x/y/binary"
 	q := &fakeQuerier{
 		plugins: []db.Plugin{
-			{ID: "p1", Status: "active"},
+			{ID: "p1", Status: "active", BinaryPath: &binaryPath},
+			{ID: "p2", Status: "active", BinaryPath: &binaryPath},
 		},
 		instances: map[string][]db.PluginInstance{
-			"p1": {{ID: "i1", PluginID: "p1", InstanceName: "i1", HealthState: "healthy"}},
+			"p1": {{ID: "i1", PluginID: "p1", InstanceName: "inst-1", HealthState: "healthy"}},
+			"p2": {{ID: "i2", PluginID: "p2", InstanceName: "inst-2", HealthState: "healthy"}},
 		},
 	}
 	reg := identity.New()
+
+	var startedIDs []string
 	mgr := process.NewManager(process.ManagerConfig{
 		Querier:        q,
 		IdentityIssuer: reg,
+		TestProcessStarter: func(_ context.Context, cfg process.Config) (*process.Instance, error) {
+			startedIDs = append(startedIDs, cfg.InstanceID)
+			return nil, errors.New("stub: no subprocess needed")
+		},
 	})
 
-	// StartAllActive should return nil even though it cannot spawn the instance
-	// (binary path not available in DB for #291).
-	if err := mgr.StartAllActive(context.Background()); err != nil {
-		t.Fatalf("StartAllActive: %v", err)
+	if err := mgr.StartByPluginID(context.Background(), "p1"); err != nil {
+		t.Fatalf("StartByPluginID: %v", err)
+	}
+
+	if len(startedIDs) != 1 || startedIDs[0] != "i1" {
+		t.Errorf("started instance IDs = %v, want [i1]", startedIDs)
+	}
+}
+
+// TestManager_StartByPluginID_HonorsBlockedHealthStates verifies that
+// StartByPluginID does not invoke the starter for instances in blocked states.
+func TestManager_StartByPluginID_HonorsBlockedHealthStates(t *testing.T) {
+	binaryPath := "/x/y/binary"
+	q := &fakeQuerier{
+		plugins: []db.Plugin{
+			{ID: "p1", Status: "active", BinaryPath: &binaryPath},
+		},
+		instances: map[string][]db.PluginInstance{
+			"p1": {
+				{ID: "i-healthy", PluginID: "p1", InstanceName: "healthy-inst", HealthState: "healthy"},
+				{ID: "i-crashed", PluginID: "p1", InstanceName: "crashed-inst", HealthState: "crashed"},
+			},
+		},
+	}
+	reg := identity.New()
+
+	var startedIDs []string
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        q,
+		IdentityIssuer: reg,
+		TestProcessStarter: func(_ context.Context, cfg process.Config) (*process.Instance, error) {
+			startedIDs = append(startedIDs, cfg.InstanceID)
+			return nil, errors.New("stub: no subprocess needed")
+		},
+	})
+
+	if err := mgr.StartByPluginID(context.Background(), "p1"); err != nil {
+		t.Fatalf("StartByPluginID: %v", err)
+	}
+
+	// Only the healthy instance should have triggered a start attempt.
+	if len(startedIDs) != 1 || startedIDs[0] != "i-healthy" {
+		t.Errorf("started instance IDs = %v, want [i-healthy]", startedIDs)
+	}
+}
+
+// TestManager_StartByPluginID_NilBinaryPath verifies that StartByPluginID logs
+// and returns nil (not an error) when the plugin row has no binary_path set.
+func TestManager_StartByPluginID_NilBinaryPath(t *testing.T) {
+	q := &fakeQuerier{
+		plugins: []db.Plugin{
+			{ID: "p1", Status: "active", BinaryPath: nil},
+		},
+		instances: map[string][]db.PluginInstance{
+			"p1": {{ID: "i1", PluginID: "p1", InstanceName: "inst-1", HealthState: "healthy"}},
+		},
+	}
+	reg := identity.New()
+
+	var startCalled bool
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        q,
+		IdentityIssuer: reg,
+		TestProcessStarter: func(_ context.Context, _ process.Config) (*process.Instance, error) {
+			startCalled = true
+			return nil, errors.New("should not be called")
+		},
+	})
+
+	if err := mgr.StartByPluginID(context.Background(), "p1"); err != nil {
+		t.Fatalf("StartByPluginID: unexpected error: %v", err)
+	}
+	if startCalled {
+		t.Error("processStarter was called for nil binary_path")
 	}
 }
 

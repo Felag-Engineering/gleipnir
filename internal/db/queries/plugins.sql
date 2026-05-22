@@ -1,6 +1,6 @@
 -- name: CreatePlugin :one
-INSERT INTO plugins (id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, version, created_at, updated_at)
-VALUES (:id, :name, :plugin_version, :manifest_snapshot, :trusted_pubkey, :status, 0, :created_at, :updated_at)
+INSERT INTO plugins (id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, binary_path, version, created_at, updated_at)
+VALUES (:id, :name, :plugin_version, :manifest_snapshot, :trusted_pubkey, :status, :binary_path, 0, :created_at, :updated_at)
 RETURNING *;
 
 -- name: GetPluginByID :one
@@ -31,6 +31,13 @@ WHERE id = :id AND version = :expected_version;
 
 -- name: UpdatePluginStatus :execrows
 UPDATE plugins SET status = :status, version = version + 1, updated_at = :updated_at
+WHERE id = :id AND version = :expected_version;
+
+-- UpdatePluginBinaryPath persists the absolute path of the extracted plugin
+-- binary after a successful install. Called after UpdatePluginManifest so the
+-- CAS version passed here is the post-manifest-update version (#386).
+-- name: UpdatePluginBinaryPath :execrows
+UPDATE plugins SET binary_path = :binary_path, version = version + 1, updated_at = :updated_at
 WHERE id = :id AND version = :expected_version;
 
 -- name: CreatePluginInstance :one

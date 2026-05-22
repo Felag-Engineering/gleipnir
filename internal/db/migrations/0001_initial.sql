@@ -372,6 +372,7 @@ CREATE TABLE plugins (
     manifest_snapshot  TEXT    NOT NULL,
     trusted_pubkey     TEXT    NOT NULL,
     status             TEXT    NOT NULL CHECK(status IN ('pending_review','active','removed')),
+    binary_path        TEXT,                   -- absolute path to extracted plugin executable (#386); NULL on legacy rows
     version            INTEGER NOT NULL DEFAULT 0,
     created_at         TEXT    NOT NULL,
     updated_at         TEXT    NOT NULL
