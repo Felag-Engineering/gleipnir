@@ -10,20 +10,21 @@ import (
 )
 
 const createPlugin = `-- name: CreatePlugin :one
-INSERT INTO plugins (id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, version, created_at, updated_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)
-RETURNING id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, version, created_at, updated_at
+INSERT INTO plugins (id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, binary_path, version, created_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9)
+RETURNING id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, binary_path, version, created_at, updated_at
 `
 
 type CreatePluginParams struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	PluginVersion    string `json:"plugin_version"`
-	ManifestSnapshot string `json:"manifest_snapshot"`
-	TrustedPubkey    string `json:"trusted_pubkey"`
-	Status           string `json:"status"`
-	CreatedAt        string `json:"created_at"`
-	UpdatedAt        string `json:"updated_at"`
+	ID               string  `json:"id"`
+	Name             string  `json:"name"`
+	PluginVersion    string  `json:"plugin_version"`
+	ManifestSnapshot string  `json:"manifest_snapshot"`
+	TrustedPubkey    string  `json:"trusted_pubkey"`
+	Status           string  `json:"status"`
+	BinaryPath       *string `json:"binary_path"`
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
 }
 
 func (q *Queries) CreatePlugin(ctx context.Context, arg CreatePluginParams) (Plugin, error) {
@@ -34,6 +35,7 @@ func (q *Queries) CreatePlugin(ctx context.Context, arg CreatePluginParams) (Plu
 		arg.ManifestSnapshot,
 		arg.TrustedPubkey,
 		arg.Status,
+		arg.BinaryPath,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -45,6 +47,7 @@ func (q *Queries) CreatePlugin(ctx context.Context, arg CreatePluginParams) (Plu
 		&i.ManifestSnapshot,
 		&i.TrustedPubkey,
 		&i.Status,
+		&i.BinaryPath,
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -123,7 +126,7 @@ func (q *Queries) DeletePluginInstance(ctx context.Context, id string) (int64, e
 }
 
 const getPluginByID = `-- name: GetPluginByID :one
-SELECT id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, version, created_at, updated_at FROM plugins WHERE id = ?1
+SELECT id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, binary_path, version, created_at, updated_at FROM plugins WHERE id = ?1
 `
 
 func (q *Queries) GetPluginByID(ctx context.Context, id string) (Plugin, error) {
@@ -136,6 +139,7 @@ func (q *Queries) GetPluginByID(ctx context.Context, id string) (Plugin, error) 
 		&i.ManifestSnapshot,
 		&i.TrustedPubkey,
 		&i.Status,
+		&i.BinaryPath,
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -144,7 +148,7 @@ func (q *Queries) GetPluginByID(ctx context.Context, id string) (Plugin, error) 
 }
 
 const getPluginByName = `-- name: GetPluginByName :one
-SELECT id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, version, created_at, updated_at FROM plugins WHERE name = ?1
+SELECT id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, binary_path, version, created_at, updated_at FROM plugins WHERE name = ?1
 `
 
 func (q *Queries) GetPluginByName(ctx context.Context, name string) (Plugin, error) {
@@ -157,6 +161,7 @@ func (q *Queries) GetPluginByName(ctx context.Context, name string) (Plugin, err
 		&i.ManifestSnapshot,
 		&i.TrustedPubkey,
 		&i.Status,
+		&i.BinaryPath,
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -481,7 +486,7 @@ func (q *Queries) ListPluginInstancesWithExpiringCredentials(ctx context.Context
 }
 
 const listPlugins = `-- name: ListPlugins :many
-SELECT id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, version, created_at, updated_at FROM plugins ORDER BY name
+SELECT id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, binary_path, version, created_at, updated_at FROM plugins ORDER BY name
 `
 
 func (q *Queries) ListPlugins(ctx context.Context) ([]Plugin, error) {
@@ -500,6 +505,7 @@ func (q *Queries) ListPlugins(ctx context.Context) ([]Plugin, error) {
 			&i.ManifestSnapshot,
 			&i.TrustedPubkey,
 			&i.Status,
+			&i.BinaryPath,
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -518,7 +524,7 @@ func (q *Queries) ListPlugins(ctx context.Context) ([]Plugin, error) {
 }
 
 const listPluginsByStatus = `-- name: ListPluginsByStatus :many
-SELECT id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, version, created_at, updated_at FROM plugins WHERE status = ?1 ORDER BY name
+SELECT id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, binary_path, version, created_at, updated_at FROM plugins WHERE status = ?1 ORDER BY name
 `
 
 func (q *Queries) ListPluginsByStatus(ctx context.Context, status string) ([]Plugin, error) {
@@ -537,6 +543,7 @@ func (q *Queries) ListPluginsByStatus(ctx context.Context, status string) ([]Plu
 			&i.ManifestSnapshot,
 			&i.TrustedPubkey,
 			&i.Status,
+			&i.BinaryPath,
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -552,6 +559,34 @@ func (q *Queries) ListPluginsByStatus(ctx context.Context, status string) ([]Plu
 		return nil, err
 	}
 	return items, nil
+}
+
+const updatePluginBinaryPath = `-- name: UpdatePluginBinaryPath :execrows
+UPDATE plugins SET binary_path = ?1, version = version + 1, updated_at = ?2
+WHERE id = ?3 AND version = ?4
+`
+
+type UpdatePluginBinaryPathParams struct {
+	BinaryPath      *string `json:"binary_path"`
+	UpdatedAt       string  `json:"updated_at"`
+	ID              string  `json:"id"`
+	ExpectedVersion int64   `json:"expected_version"`
+}
+
+// UpdatePluginBinaryPath persists the absolute path of the extracted plugin
+// binary after a successful install. Called after UpdatePluginManifest so the
+// CAS version passed here is the post-manifest-update version (#386).
+func (q *Queries) UpdatePluginBinaryPath(ctx context.Context, arg UpdatePluginBinaryPathParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updatePluginBinaryPath,
+		arg.BinaryPath,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updatePluginInstanceConfig = `-- name: UpdatePluginInstanceConfig :execrows

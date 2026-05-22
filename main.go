@@ -513,6 +513,18 @@ func run(cfg config.Config) error {
 		handlers.PluginAdminHandler.SetInstaller(loader.Installer())
 	}
 
+	// Register the post-install spawn hook so that a fresh install (via the
+	// admin endpoint or the fsnotify watcher) immediately spawns the plugin
+	// subprocess — no server restart required (#386). The same Installer instance
+	// is used by both paths so this registration covers both.
+	if mgr := loader.Manager(); mgr != nil && loader.Installer() != nil {
+		loader.Installer().OnInstalled(func(ctx context.Context, pluginID string) {
+			if err := mgr.StartByPluginID(ctx, pluginID); err != nil {
+				slog.Warn("post-install spawn failed", "plugin_id", pluginID, "err", err)
+			}
+		})
+	}
+
 	// Phase 3: build the router.
 	r := api.BuildRouter(api.RouterConfig{
 		Handlers: handlers,

@@ -42,6 +42,7 @@ var blockedHealthStates = map[model.PluginHealthState]bool{
 type querier interface {
 	ListPluginsByStatus(ctx context.Context, status string) ([]db.Plugin, error)
 	ListPluginInstancesByPlugin(ctx context.Context, pluginID string) ([]db.PluginInstance, error)
+	GetPluginByID(ctx context.Context, id string) (db.Plugin, error)
 	GetPluginInstanceByID(ctx context.Context, id string) (db.PluginInstance, error)
 	UpdatePluginInstanceHealth(ctx context.Context, arg db.UpdatePluginInstanceHealthParams) (int64, error)
 }
@@ -342,23 +343,78 @@ func (m *Manager) StartAllActive(ctx context.Context) error {
 			continue
 		}
 
+		if p.BinaryPath == nil || *p.BinaryPath == "" {
+			m.logger().Warn("plugin row has no binary_path; skipping spawn (likely a legacy row — redeploy the tarball to repair)",
+				"plugin_id", p.ID)
+			continue
+		}
+
 		for _, inst := range instances {
-			// BinaryPath is not stored in the DB; the loader writes the extracted
-			// binary to a well-known path under PluginsDir. Manager expects that
-			// path to be resolved by the caller. For StartAllActive the binary path
-			// is not yet available (#291 scope: the watcher and installer resolve
-			// it; we log and skip for now).
-			//
-			// TODO #291 follow-up: pass binaryPath through Start when the installer
-			// exposes a DB-persisted binary path column.
-			_ = inst
-			m.logger().Warn("StartAllActive: subprocess spawn not yet wired for persisted instances",
-				"plugin_id", p.ID, "instance_id", inst.ID,
-				"note", "binary path column pending installer work")
+			if err := m.Start(ctx, p, inst, *p.BinaryPath); err != nil {
+				m.logger().Warn("StartAllActive: failed to start instance",
+					"plugin_id", p.ID, "instance_id", inst.ID, "err", err)
+			}
 		}
 	}
 
 	return nil
+}
+
+// StartByPluginID reads the plugin row for pluginID, lists its instances, and
+// calls Start for each instance that is not already running and not in a blocked
+// health state. Per-instance failures are logged at Warn and do not abort the
+// loop — one bad instance must not block others.
+//
+// Returns an error only when the DB lookup fails. Per-instance start errors are
+// considered transient and are not surfaced to the caller.
+func (m *Manager) StartByPluginID(ctx context.Context, pluginID string) error {
+	p, err := m.cfg.Querier.GetPluginByID(ctx, pluginID)
+	if err != nil {
+		return fmt.Errorf("manager: get plugin %s: %w", pluginID, err)
+	}
+
+	if p.BinaryPath == nil || *p.BinaryPath == "" {
+		m.logger().Warn("StartByPluginID: plugin row has no binary_path; cannot spawn",
+			"plugin_id", pluginID)
+		return nil
+	}
+
+	instances, err := m.cfg.Querier.ListPluginInstancesByPlugin(ctx, pluginID)
+	if err != nil {
+		return fmt.Errorf("manager: list instances for plugin %s: %w", pluginID, err)
+	}
+
+	for _, inst := range instances {
+		if err := m.Start(ctx, p, inst, *p.BinaryPath); err != nil {
+			m.logger().Warn("StartByPluginID: failed to start instance",
+				"plugin_id", pluginID, "instance_id", inst.ID, "err", err)
+		}
+	}
+	return nil
+}
+
+// StopByPluginID stops all running instances that belong to pluginID. It takes
+// a snapshot of the running instances under the mutex so the loop does not hold
+// the lock while calling Stop (which blocks on subprocess teardown). Per-instance
+// stop errors are logged and joined; a partial failure does not prevent remaining
+// instances from being stopped.
+func (m *Manager) StopByPluginID(ctx context.Context, pluginID string) error {
+	m.mu.Lock()
+	var toStop []*Instance
+	for _, inst := range m.instances {
+		if inst.PluginID() == pluginID {
+			toStop = append(toStop, inst)
+		}
+	}
+	m.mu.Unlock()
+
+	var errs []error
+	for _, inst := range toStop {
+		if err := m.Stop(ctx, inst.InstanceID()); err != nil {
+			errs = append(errs, fmt.Errorf("instance %s: %w", inst.InstanceID(), err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Lookup returns the running Instance for instanceID, or nil if no subprocess

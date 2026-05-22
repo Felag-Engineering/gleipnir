@@ -77,15 +77,16 @@ type OpenaiCompatProvider struct {
 }
 
 type Plugin struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	PluginVersion    string `json:"plugin_version"`
-	ManifestSnapshot string `json:"manifest_snapshot"`
-	TrustedPubkey    string `json:"trusted_pubkey"`
-	Status           string `json:"status"`
-	Version          int64  `json:"version"`
-	CreatedAt        string `json:"created_at"`
-	UpdatedAt        string `json:"updated_at"`
+	ID               string  `json:"id"`
+	Name             string  `json:"name"`
+	PluginVersion    string  `json:"plugin_version"`
+	ManifestSnapshot string  `json:"manifest_snapshot"`
+	TrustedPubkey    string  `json:"trusted_pubkey"`
+	Status           string  `json:"status"`
+	BinaryPath       *string `json:"binary_path"`
+	Version          int64   `json:"version"`
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
 }
 
 type PluginAudience struct {

@@ -29,5 +29,6 @@ func All() []Migration {
 		&AddSubscriptionScope{},
 		&AddPluginOAuthNonces{},
 		&AddPendingReauthorizeHealthState{},
+		&AddPluginBinaryPath{},
 	}
 }
