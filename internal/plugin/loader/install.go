@@ -166,16 +166,24 @@ func (in *Installer) Install(ctx context.Context, tarPath string) (string, error
 		return "", fmt.Errorf("extract tarball %q: %w", tarPath, err)
 	}
 
-	m, manifestBytes, err := readManifest(tmpDir)
+	// Resolve the bundle root: some packagers (e.g. gleipnir-plugin package) wrap
+	// everything under a single top-level directory (e.g. slack-0.1.1/). Walk
+	// into that directory when present so the rest of the pipeline sees a flat root.
+	bundleDir, err := resolveBundleRoot(tmpDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve bundle root in %q: %w", tarPath, err)
+	}
+
+	m, manifestBytes, err := readManifest(bundleDir)
 	if err != nil {
 		return "", fmt.Errorf("read manifest from %q: %w", tarPath, err)
 	}
 
-	binaryPath := filepath.Join(tmpDir, m.Name)
-	if rel, err := filepath.Rel(tmpDir, binaryPath); err != nil || strings.HasPrefix(rel, "..") {
+	binaryPath := filepath.Join(bundleDir, m.Name)
+	if rel, err := filepath.Rel(bundleDir, binaryPath); err != nil || strings.HasPrefix(rel, "..") {
 		return "", fmt.Errorf("manifest.name %q escapes bundle directory", m.Name)
 	}
-	result := in.verifier.VerifyBundle(tmpDir, binaryPath)
+	result := in.verifier.VerifyBundle(bundleDir, binaryPath)
 
 	if result.Outcome == OutcomeRejected {
 		return in.recordSignatureInvalid(ctx, tarPath, m.Name, result.Err)
@@ -185,7 +193,7 @@ func (in *Installer) Install(ctx context.Context, tarPath string) (string, error
 	// (createPlugin, updatePlugin, updatePluginCosmetic) publish the bundle and
 	// invoke onInstalled. Rejection branches (pubkey-mismatch, material-change)
 	// return committed=false so the disk and hook remain untouched.
-	pluginID, committed, err := in.upsertPlugin(ctx, m, manifestBytes, result, tmpDir)
+	pluginID, committed, err := in.upsertPlugin(ctx, m, manifestBytes, result, bundleDir)
 	if err != nil {
 		return "", err
 	}
@@ -265,6 +273,38 @@ func (in *Installer) publishBundle(ctx context.Context, tmpDir, name string) (st
 	return filepath.Join(dest, name), nil
 }
 
+// resolveBundleRoot determines which directory within the extracted tmpDir
+// contains manifest.yaml. Two layouts are supported:
+//
+//   - Flat: manifest.yaml sits directly in tmpDir (legacy / manually-packaged tarballs).
+//   - Nested: tmpDir contains exactly one subdirectory, and manifest.yaml lives
+//     inside that subdirectory (layout produced by "gleipnir-plugin package").
+//
+// Standard packaging tools (npm, helm, cargo, git-archive) all wrap their
+// payload under a single top-level directory; this mirrors that convention.
+// Any other layout returns an error so operators get a clear message instead
+// of a confusing "no such file" failure.
+func resolveBundleRoot(tmpDir string) (string, error) {
+	// Fast path: flat layout.
+	if _, err := os.Stat(filepath.Join(tmpDir, "manifest.yaml")); err == nil {
+		return tmpDir, nil
+	}
+
+	// Check for the single-directory nested layout.
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return "", fmt.Errorf("read extracted dir: %w", err)
+	}
+	if len(entries) == 1 && entries[0].IsDir() {
+		nested := filepath.Join(tmpDir, entries[0].Name())
+		if _, err := os.Stat(filepath.Join(nested, "manifest.yaml")); err == nil {
+			return nested, nil
+		}
+	}
+
+	return "", fmt.Errorf("manifest.yaml not found at bundle root or under a single top-level directory")
+}
+
 // readManifest parses the manifest.yaml inside the extracted bundle directory.
 // Returns the parsed manifest, the raw YAML bytes, and any error.
 func readManifest(bundleDir string) (*manifest.Manifest, []byte, error) {
@@ -314,10 +354,13 @@ func (in *Installer) recordSignatureInvalid(ctx context.Context, tarPath, plugin
 }
 
 // upsertPlugin creates or updates the plugin row and emits an audit event.
-// tmpDir is the directory where the verified bundle was extracted; commit
-// branches (createPlugin, updatePlugin, updatePluginCosmetic) call publishBundle
-// to move it to its permanent location and record the path in the DB so
-// Manager.StartAllActive can re-spawn the subprocess on server restart.
+// tmpDir is the resolved bundle root containing manifest.yaml — for flat
+// tarballs this is the extraction directory itself, for nested tarballs it
+// is the single top-level subdirectory inside the extraction directory (see
+// resolveBundleRoot). Commit branches (createPlugin, updatePlugin,
+// updatePluginCosmetic) call publishBundle to move it to its permanent
+// location and record the path in the DB so Manager.StartAllActive can
+// re-spawn the subprocess on server restart.
 // Rejection branches (pubkey-mismatch, material-change) never publish and
 // return committed=false.
 // Returns (pluginID, committed, error).

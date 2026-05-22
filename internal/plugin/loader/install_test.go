@@ -1468,6 +1468,124 @@ func TestInstall_OnInstalled_NotCalledForPubkeyMismatch(t *testing.T) {
 	}
 }
 
+// nestedSignedPluginTarball builds a fully signed tarball in the nested layout
+// that "gleipnir-plugin package" produces: every file lives under a single
+// top-level directory named "<name>-<version>/".
+func nestedSignedPluginTarball(t *testing.T, name, version string) string {
+	t.Helper()
+
+	prefix := name + "-" + version + "/"
+	manifestBytes := []byte("schema_version: v1\nname: " + name + "\nversion: " + version + "\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	binaryBytes := []byte("fake binary content for " + name)
+
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	payload := signing.PluginPayload(binaryBytes, manifestBytes)
+	sig, err := signing.Sign(sk.SecretKey, sk.KeyID, payload, "trusted comment")
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+	sigBytes := signing.MarshalSignature(sig, "test sig")
+
+	tarPath := filepath.Join(t.TempDir(), name+".tar.gz")
+	writeTarball(t, tarPath, []tarEntry{
+		{name: prefix, typeflag: tar.TypeDir, mode: 0o755},
+		{name: prefix + "manifest.yaml", content: manifestBytes, mode: 0o644},
+		{name: prefix + name, content: binaryBytes, mode: 0o755},
+		{name: prefix + "signing.pub", content: pubkeyBytes, mode: 0o644},
+		{name: prefix + name + ".minisig", content: sigBytes, mode: 0o644},
+	})
+	return tarPath
+}
+
+// TestInstall_NestedLayout_Installs verifies that a tarball where every file
+// lives under a single top-level "<name>-<version>/" directory (the layout
+// produced by "gleipnir-plugin package") installs successfully. This is the
+// primary regression test for issue #387.
+func TestInstall_NestedLayout_Installs(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	tarPath := nestedSignedPluginTarball(t, "nested-plugin", "1.0.0")
+
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
+		t.Fatalf("Install (nested layout): %v", err)
+	}
+
+	row, err := q.GetPluginByName(context.Background(), "nested-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+	if row.Status != "pending_review" {
+		t.Errorf("status = %q, want pending_review", row.Status)
+	}
+	if row.PluginVersion != "1.0.0" {
+		t.Errorf("plugin_version = %q, want 1.0.0", row.PluginVersion)
+	}
+	if row.BinaryPath == nil || *row.BinaryPath == "" {
+		t.Error("binary_path: want non-empty after nested-layout install")
+	}
+	// The published binary must be accessible at the persisted path.
+	if _, err := os.Stat(*row.BinaryPath); err != nil {
+		t.Errorf("binary at persisted path not accessible: %v", err)
+	}
+}
+
+// TestInstall_FlatLayout_BackwardCompat verifies that a tarball with a flat
+// layout (manifest.yaml at the tarball root) continues to install successfully.
+// This is an explicit contract test so any future change that breaks flat
+// tarballs is caught immediately.
+func TestInstall_FlatLayout_BackwardCompat(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	tarPath, _ := signedPluginTarball(t, "flat-plugin", "1.0.0")
+
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
+		t.Fatalf("Install (flat layout): %v", err)
+	}
+
+	row, err := q.GetPluginByName(context.Background(), "flat-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+	if row.Status != "pending_review" {
+		t.Errorf("status = %q, want pending_review", row.Status)
+	}
+	if row.BinaryPath == nil || *row.BinaryPath == "" {
+		t.Error("binary_path: want non-empty after flat-layout install")
+	}
+}
+
+// TestInstall_InvalidLayout_ReturnsError verifies that a tarball with neither a
+// flat nor a single-nested-directory layout returns a clear error mentioning the
+// bundle layout, rather than a confusing "no such file" error.
+func TestInstall_InvalidLayout_ReturnsError(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, true) // allowUnsigned so verifier is not the rejection path
+
+	// Build a tarball with two top-level directories — neither flat nor single-nested.
+	manifestBytes := []byte("schema_version: v1\nname: broken-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath := filepath.Join(t.TempDir(), "broken.tar.gz")
+	writeTarball(t, tarPath, []tarEntry{
+		{name: "dir-a/", typeflag: tar.TypeDir, mode: 0o755},
+		{name: "dir-a/manifest.yaml", content: manifestBytes, mode: 0o644},
+		{name: "dir-b/", typeflag: tar.TypeDir, mode: 0o755},
+		{name: "dir-b/other.txt", content: []byte("irrelevant"), mode: 0o644},
+	})
+
+	_, err := inst.Install(context.Background(), tarPath)
+	if err == nil {
+		t.Fatal("Install: expected error for invalid layout, got nil")
+	}
+	if !strings.Contains(err.Error(), "bundle root") {
+		t.Errorf("Install error = %q; want it to mention bundle layout (\"bundle root\")", err.Error())
+	}
+}
+
 // TestInstall_TmpDirUnderPluginsDir verifies that the extraction temp directory is
 // created inside pluginsDir (not os.TempDir()), ensuring the rename to the staging
 // path stays on the same filesystem and avoids EXDEV on Docker where /tmp and
