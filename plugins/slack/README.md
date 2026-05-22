@@ -157,10 +157,12 @@ To generate the token:
 7. In the Gleipnir admin UI, navigate to the Slack plugin instance config and
    paste the token into the `app_level_token` field.
 
-> **Note:** The `app_level_token` field is stored as plain text in instance
-> config in this release. A follow-up issue will add `gleipnir-secret` format
-> annotation so the admin GET endpoint redacts the value to `"***"` (mirroring
-> the ADR-039 pattern for auth headers).
+> **Security note:** The `app_level_token` field is marked `x-gleipnir-secret: true`
+> in the manifest. The admin GET endpoint redacts it to `"***"` — the raw token is
+> never returned after it is written. Use the per-field PUT endpoint
+> (`PUT /api/v1/admin/plugins/{id}/instances/{iid}/config/app_level_token`) to
+> update the token without transmitting all other config values (mirrors the
+> ADR-039 pattern for MCP server auth headers).
 
 ## Build
 

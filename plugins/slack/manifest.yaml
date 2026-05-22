@@ -59,6 +59,7 @@ config_schema:
     app_level_token:
       description: 'Slack app-level token (xapp- prefix) for Socket Mode. Generate in Slack admin: Settings → Socket Mode → Generate token with scope connections:write.'
       type: string
+      x-gleipnir-secret: true
   required:
     - app_level_token
   type: object

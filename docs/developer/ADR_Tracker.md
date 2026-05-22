@@ -63,10 +63,64 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-046 | Audit-table split — run_steps (LLM-visible) vs plugin_audit_events (operator-only) | 🟢 Decided | v2.0 (plugins) | plugin_audit_events table, WriteAuditStep RPC authorization, spec §12.3 |
 | ADR-047 | Plugin observability surface — metrics prefix, cardinality cap, Log RPC instead of stdout, OTEL deferred | 🟢 Decided | v2.0 (plugins) | internal/plugin/hostsvc/metrics.go, internal/plugin/hostsvc/handlers.go (Log/EmitMetric), internal/plugin/process/logpipe.go, internal/plugin/state/metrics.go, spec §12 |
 | ADR-048 | Subscribed trigger type — internal-only name, flat picker, no JSONPath for plugin bindings, single-trigger-per-policy v1 | 🟢 Decided | v2.0 (plugins) | internal/model (TriggerType), internal/policy (parser/validator), internal/trigger (new subscribed handler), policy editor trigger picker, spec §7 |
+| ADR-049 | Redact-on-read for plugin instance config secret fields (x-gleipnir-secret) | 🟢 Decided | plugins | internal/plugin/configvalidate, internal/admin/plugin_handler, plugin-sdk/manifest, plugins/slack |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
 | #199    | call_id propagation through gRPC metadata (spec §8.5)  | 🟢 Decided | v2.0 (plugins) | plugin-sdk/serve/callcontext.go, internal/plugin/hostsvc (new package), no new ADR — implements existing spec §8.5 contract |
 | #224    | OAuth2 authcode + clientcred host-side orchestration (spec §9.1/§9.2) | 🟢 Decided | v2.0 (plugins) | internal/plugin/oauth (new package, x/oauth2 + clientcredentials), internal/admin/plugin_oauth_handler.go, plugin_instances.credentials_encrypted, HMAC state envelope with HKDF subkey off GLEIPNIR_ENCRYPTION_KEY; no new ADR — implements existing spec §9 contract. Encryption helpers reused from internal/admin via function injection to avoid an import cycle; planned to move to internal/infra/crypto when #141 lands. |
 | #226    | Non-OAuth credential strategies: static_api_key, header_set, basic_auth, none (spec §9.1) | 🟢 Decided | v2.0 (plugins) | internal/plugin/oauth.StoredCredentials widened to discriminated union; internal/admin/plugin_credentials_handler.go (write-only API, mirrors ADR-039/034); internal/infra/headervalidate (extracted from internal/mcp to avoid import cycle); plugin-sdk/credentials (typed Apply helper for plugins); no new ADR — implements settled spec §9.1 contract. |
+
+---
+
+## ADR-049: Redact-on-read for plugin instance config secret fields
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+Per-instance plugin config (`config_json`, validated against the manifest's `ConfigSchema`) is encrypted at rest, but the admin GET endpoint (`GET /api/v1/admin/plugins/{id}/instances/{iid}`) previously returned the decrypted JSON verbatim. Any admin with access to that endpoint could read secrets stored in config fields.
+
+This generalizes the write-only patterns established by ADR-034 (webhook secrets) and ADR-039 (MCP server auth headers) to the per-instance plugin config blob. The immediate trigger is the Slack plugin's `app_level_token` (xapp- prefix) added in PR #367, which would otherwise be readable on GET.
+
+### Decision
+
+#### 1. Annotation: `x-gleipnir-secret: true`
+
+Properties holding secrets are annotated with the JSON Schema extension key `x-gleipnir-secret: true`. This was chosen over `format: gleipnir-secret` for three reasons:
+- JSON Schema `format` semantics imply validation; secret is metadata, not a validator.
+- `x-` extension keys are the canonical JSON Schema extension mechanism.
+- It composes cleanly with type-specific `format` values (e.g. `"uri"`).
+
+#### 2. SDK marker: `SecretString` typed string
+
+Go plugin authors declare secrets by typing config struct fields as `manifest.SecretString`. The `JSONSchema()` method returns `{type: string, extras: {"x-gleipnir-secret": true}}`, following the same pattern as `RegexField`, `ContainsField`, and `GlobField` in `plugin-sdk/manifest/filters.go`. Hand-authored YAML manifests add `x-gleipnir-secret: true` directly.
+
+#### 3. Redaction is read-time only
+
+Storage shape is unchanged; the `config_json` column continues to hold the raw plaintext (which is already encrypted at rest by the column-level protections). Redaction happens in the Go handler before serializing the HTTP response. The redaction sentinel is the string `"***"`.
+
+#### 4. Per-field write-only PUT endpoint
+
+A new `PUT /api/v1/admin/plugins/{id}/instances/{iid}/config/{property}` endpoint mirrors the ADR-039 `PUT /mcp/servers/:id/headers/:name` pattern: one property at a time, CAS-guarded by `expected_version`. This lets the UI update a single secret field without transmitting all config properties in the request body.
+
+#### 5. Bulk PUT rejects the redaction sentinel
+
+The existing `PUT /api/v1/admin/plugins/{id}/instances/{iid}/config` continues to work but rejects requests that include `"***"` as the value for any secret field. This prevents the round-trip clobber: UI reads `"***"`, user hits Save, real secret is overwritten with the sentinel.
+
+#### 6. GET returns 500 on manifest-parse failure (fail-closed)
+
+If the manifest cannot be parsed when serving a GET, the handler returns 500 ("corrupt manifest snapshot") rather than falling through to an unredacted response. This matches the ADR-001 posture: fail closed, never silently omit a security control.
+
+#### 7. Fallback synthesized responses also redact
+
+Both write handlers (`PutInstanceConfig` and `PutInstanceConfigProperty`) synthesize a fallback response when the post-write re-fetch fails. The fallback path applies the same redaction so neither code path can emit raw secret JSON.
+
+### Deferred
+
+- Per-user / per-policy config scoping (v2 `user_credentials` mode, spec §17).
+- Migrating `StoredCredentials.Token` to this mechanism (it is already write-only via the OAuth callback).
+- Nested object secrets (v1 redacts only top-level `properties`).
+- Frontend UI surface (tracked as follow-up after this API change).
 
 ---
 

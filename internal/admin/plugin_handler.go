@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"gopkg.in/yaml.v3"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
@@ -140,6 +141,11 @@ type instanceResponse struct {
 // GetInstance handles GET /api/v1/admin/plugins/{id}/instances/{iid}.
 // Returns the health state and detail for a single plugin instance. 404 is
 // returned when the instance does not exist or belongs to a different plugin.
+//
+// Config properties marked x-gleipnir-secret: true in the manifest's
+// ConfigSchema are redacted to "***" before the response is written.
+// If the manifest cannot be parsed, the request fails with 500 (fail-closed
+// per ADR-049 and the ADR-001 posture — never silently omit a security control).
 func (h *PluginHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 	pluginID := chi.URLParam(r, "id")
 	instanceID := chi.URLParam(r, "iid")
@@ -161,6 +167,39 @@ func (h *PluginHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Load the manifest to derive the set of secret properties for redaction.
+	// A second DB round-trip is consistent with PutInstanceConfig and
+	// PutSubscriptionScope, which both load the manifest on every request.
+	plugin, err := h.q.GetPluginByID(r.Context(), pluginID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		return
+	}
+
+	var m sdkmanifest.Manifest
+	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
+		// Fail-closed: we must not return unredacted config when we cannot
+		// determine which fields are secret (ADR-049 §6, ADR-001 posture).
+		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
+		return
+	}
+
+	secretNames, err := configvalidate.SecretPropertyNames(m.ConfigSchema)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse config schema", err.Error())
+		return
+	}
+
+	redactedConfig, err := configvalidate.RedactSecrets(row.ConfigJson, secretNames)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to redact config", err.Error())
+		return
+	}
+
 	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
 		ID:                    row.ID,
 		PluginID:              row.PluginID,
@@ -170,7 +209,7 @@ func (h *PluginHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 		Version:               row.Version,
 		UpdatedAt:             row.UpdatedAt,
 		SubscriptionScopeJson: row.SubscriptionScopeJson,
-		ConfigJson:            row.ConfigJson,
+		ConfigJson:            redactedConfig,
 	})
 }
 
@@ -657,6 +696,14 @@ func (h *PluginHandler) PutInstanceConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Derive the set of secret property names for sentinel rejection and
+	// response redaction (ADR-049).
+	secretNames, err := configvalidate.SecretPropertyNames(m.ConfigSchema)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse config schema", err.Error())
+		return
+	}
+
 	// ForInstanceConfig returns a validator that accepts anything when ConfigSchema is nil
 	// (per Q7 in the plan). Do NOT early-return on nil schema — it is valid.
 	validator, err := configvalidate.ForInstanceConfig(&m)
@@ -667,6 +714,211 @@ func (h *PluginHandler) PutInstanceConfig(w http.ResponseWriter, r *http.Request
 	cfg := req.Config
 	if cfg == nil {
 		cfg = map[string]any{}
+	}
+	fieldErrs, err := validator.Validate(cfg)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "validation error", err.Error())
+		return
+	}
+	if len(fieldErrs) > 0 {
+		issues := make([]httputil.ErrorIssue, 0, len(fieldErrs))
+		for _, fe := range fieldErrs {
+			issues = append(issues, httputil.ErrorIssue{Field: fe.Field, Message: fe.Message})
+		}
+		httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", issues)
+		return
+	}
+
+	// Reject any secret field whose submitted value is the redaction sentinel.
+	// This prevents the round-trip clobber: UI reads "***", user hits Save,
+	// real secret would be overwritten with the sentinel (ADR-049 §5).
+	if offenders := configvalidate.ContainsRedactionSentinel(cfg, secretNames); len(offenders) > 0 {
+		issues := make([]httputil.ErrorIssue, 0, len(offenders))
+		for _, field := range offenders {
+			issues = append(issues, httputil.ErrorIssue{
+				Field:   field,
+				Message: "value '***' is the redaction sentinel; submit the real secret or omit the field to leave it unchanged",
+			})
+		}
+		httputil.WriteValidationError(w, http.StatusBadRequest, "sentinel value rejected", "", issues)
+		return
+	}
+
+	configBytes, err := json.Marshal(cfg)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to marshal config", err.Error())
+		return
+	}
+
+	nowStr := h.clock().UTC().Format(time.RFC3339)
+	rows, err := h.q.UpdatePluginInstanceConfig(ctx, db.UpdatePluginInstanceConfigParams{
+		ConfigJson:      string(configBytes),
+		UpdatedAt:       nowStr,
+		ID:              instanceID,
+		ExpectedVersion: *req.ExpectedVersion,
+	})
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update instance config", "")
+		return
+	}
+	if rows == 0 {
+		httputil.WriteError(w, http.StatusConflict, "version conflict", "")
+		return
+	}
+
+	// Compute the redacted form of the written config once. Both the re-fetch
+	// success branch and the fallback synthesized branch use this value so
+	// neither path can emit raw secret JSON (ADR-049 §7, §6).
+	redactedWrittenConfig, err := configvalidate.RedactSecrets(string(configBytes), secretNames)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to redact config", err.Error())
+		return
+	}
+
+	// Re-fetch to return the updated row.
+	updated, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if err != nil {
+		// The write succeeded; fall back to a synthesised response.
+		// Use the pre-computed redacted config — never the raw written bytes.
+		httputil.WriteJSON(w, http.StatusOK, instanceResponse{
+			ID:                    instanceID,
+			PluginID:              pluginID,
+			InstanceName:          inst.InstanceName,
+			State:                 inst.HealthState,
+			Detail:                inst.HealthDetail,
+			Version:               inst.Version + 1,
+			UpdatedAt:             nowStr,
+			SubscriptionScopeJson: inst.SubscriptionScopeJson,
+			ConfigJson:            redactedWrittenConfig,
+		})
+		return
+	}
+
+	// Redact the re-fetched config before returning.
+	redactedFetchedConfig, err := configvalidate.RedactSecrets(updated.ConfigJson, secretNames)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to redact config", err.Error())
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
+		ID:                    updated.ID,
+		PluginID:              updated.PluginID,
+		InstanceName:          updated.InstanceName,
+		State:                 updated.HealthState,
+		Detail:                updated.HealthDetail,
+		Version:               updated.Version,
+		UpdatedAt:             updated.UpdatedAt,
+		SubscriptionScopeJson: updated.SubscriptionScopeJson,
+		ConfigJson:            redactedFetchedConfig,
+	})
+}
+
+// putInstanceConfigPropertyRequest is the JSON body for
+// PUT /api/v1/admin/plugins/{id}/instances/{iid}/config/{property}.
+type putInstanceConfigPropertyRequest struct {
+	Value           any    `json:"value"`
+	ExpectedVersion *int64 `json:"expected_version,omitempty"`
+}
+
+// PutInstanceConfigProperty handles PUT /api/v1/admin/plugins/{id}/instances/{iid}/config/{property}.
+// Updates a single property in the instance's config_json, CAS-guarded via ADR-038.
+//
+// This mirrors the ADR-039 PUT /mcp/servers/:id/headers/:name pattern (ADR-049):
+// one secret property at a time so the caller never needs to transmit all config
+// values (including other secrets) to update a single field.
+//
+// The full config (with the new value merged in) is validated against the
+// manifest's config_schema before writing. The response redacts all secret
+// properties — including the just-written one — to "***" (ADR-049).
+func (h *PluginHandler) PutInstanceConfigProperty(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+	instanceID := chi.URLParam(r, "iid")
+	property := chi.URLParam(r, "property")
+
+	var req putInstanceConfigPropertyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.ExpectedVersion == nil {
+		httputil.WriteError(w, http.StatusBadRequest, "expected_version is required", "")
+		return
+	}
+
+	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
+		return
+	}
+	// Return 404 (not 403) on a plugin/instance mismatch to avoid leaking
+	// instance existence across plugins.
+	if inst.PluginID != pluginID {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return
+	}
+
+	plugin, err := h.q.GetPluginByID(ctx, inst.PluginID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		return
+	}
+
+	var m sdkmanifest.Manifest
+	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
+		return
+	}
+
+	// Validate that the property name exists in the manifest's ConfigSchema.
+	// A property not in the schema cannot be set via this endpoint; use the
+	// bulk PUT for schema-less plugins.
+	if !propertyExistsInSchema(m.ConfigSchema, property) {
+		httputil.WriteError(w, http.StatusNotFound, "property not found in config_schema", "")
+		return
+	}
+
+	// Derive secret names for sentinel rejection and redaction (ADR-049).
+	secretNames, err := configvalidate.SecretPropertyNames(m.ConfigSchema)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse config schema", err.Error())
+		return
+	}
+
+	// Reject the redaction sentinel — the caller must supply the real value.
+	if strVal, isStr := req.Value.(string); isStr && strVal == configvalidate.RedactionSentinel {
+		httputil.WriteError(w, http.StatusBadRequest,
+			"value '***' is the redaction sentinel; submit the real secret",
+			"")
+		return
+	}
+
+	// Merge the new value into the existing config.
+	var cfg map[string]any
+	if inst.ConfigJson != "" && inst.ConfigJson != "{}" {
+		if err := json.Unmarshal([]byte(inst.ConfigJson), &cfg); err != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to parse existing config", err.Error())
+			return
+		}
+	}
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	cfg[property] = req.Value
+
+	// Validate the full merged config against the schema.
+	validator, err := configvalidate.ForInstanceConfig(&m)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to build config validator", err.Error())
+		return
 	}
 	fieldErrs, err := validator.Validate(cfg)
 	if err != nil {
@@ -704,10 +956,20 @@ func (h *PluginHandler) PutInstanceConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Pre-compute the redacted form of the written config. Both the re-fetch
+	// success branch and the fallback synthesized branch use this value so
+	// neither path can emit raw secret JSON (ADR-049 §7).
+	redactedWrittenConfig, err := configvalidate.RedactSecrets(string(configBytes), secretNames)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to redact config", err.Error())
+		return
+	}
+
 	// Re-fetch to return the updated row.
 	updated, err := h.q.GetPluginInstanceByID(ctx, instanceID)
 	if err != nil {
 		// The write succeeded; fall back to a synthesised response.
+		// Use the pre-computed redacted config — never the raw written bytes.
 		httputil.WriteJSON(w, http.StatusOK, instanceResponse{
 			ID:                    instanceID,
 			PluginID:              pluginID,
@@ -717,8 +979,15 @@ func (h *PluginHandler) PutInstanceConfig(w http.ResponseWriter, r *http.Request
 			Version:               inst.Version + 1,
 			UpdatedAt:             nowStr,
 			SubscriptionScopeJson: inst.SubscriptionScopeJson,
-			ConfigJson:            string(configBytes),
+			ConfigJson:            redactedWrittenConfig,
 		})
+		return
+	}
+
+	// Redact the re-fetched config before returning.
+	redactedFetchedConfig, err := configvalidate.RedactSecrets(updated.ConfigJson, secretNames)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to redact config", err.Error())
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
@@ -730,8 +999,31 @@ func (h *PluginHandler) PutInstanceConfig(w http.ResponseWriter, r *http.Request
 		Version:               updated.Version,
 		UpdatedAt:             updated.UpdatedAt,
 		SubscriptionScopeJson: updated.SubscriptionScopeJson,
-		ConfigJson:            updated.ConfigJson,
+		ConfigJson:            redactedFetchedConfig,
 	})
+}
+
+// propertyExistsInSchema returns true when the named property appears in the
+// root-level properties map of schemaNode. Returns false when schemaNode is nil
+// or has no properties key (including schema-less plugins).
+func propertyExistsInSchema(schemaNode *yaml.Node, property string) bool {
+	if schemaNode == nil {
+		return false
+	}
+	var schema map[string]any
+	if err := schemaNode.Decode(&schema); err != nil {
+		return false
+	}
+	propertiesRaw, ok := schema["properties"]
+	if !ok {
+		return false
+	}
+	propertiesMap, ok := propertiesRaw.(map[string]any)
+	if !ok {
+		return false
+	}
+	_, exists := propertiesMap[property]
+	return exists
 }
 
 // unblockInstances transitions every instance of pluginID currently in fromState

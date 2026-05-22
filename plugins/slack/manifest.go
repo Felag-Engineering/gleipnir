@@ -67,8 +67,8 @@ var pluginManifest = manifest.Manifest{
 	// ConfigSchema declares required instance-level config. The app_level_token
 	// (xapp- prefix) is the Socket Mode token used by TriggerService; it is
 	// separate from the OAuth bot token stored in credentials_encrypted.
-	// Phase-7 follow-up (#xxx): mark this field as gleipnir-secret so GET
-	// /api/v1/admin/plugin-instances/{iid} redacts it to "***".
+	// x-gleipnir-secret: true causes the host to redact this field to "***"
+	// on every GET response (ADR-049).
 	ConfigSchema: mustParseYAML(`
 type: object
 required:
@@ -76,6 +76,7 @@ required:
 properties:
   app_level_token:
     type: string
+    x-gleipnir-secret: true
     description: 'Slack app-level token (xapp- prefix) for Socket Mode. Generate in Slack admin: Settings → Socket Mode → Generate token with scope connections:write.'
 `),
 	Channels: []manifest.ChannelDecl{
