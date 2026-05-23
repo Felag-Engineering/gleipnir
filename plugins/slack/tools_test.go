@@ -545,10 +545,14 @@ func TestMapErr(t *testing.T) {
 			wantHealth: healthAuthExpired,
 		},
 		{
+			// missing_scope is split out of the auth-expired bucket because
+			// re-authorizing the plugin with the same Slack app cannot fix it —
+			// the operator must add the missing scope in the Slack app's OAuth
+			// & Permissions page first.
 			name:       "missing_scope",
 			err:        slackAPIError("missing_scope"),
 			wantCode:   commonv1.ErrorCode_ERROR_CODE_PERMISSION,
-			wantHealth: healthAuthExpired,
+			wantHealth: healthMissingScope,
 		},
 		{
 			name:       "token_revoked",

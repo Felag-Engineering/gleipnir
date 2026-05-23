@@ -160,7 +160,7 @@ func (s *ToolService) Call(ctx context.Context, req *toolv1.CallRequest) (*toolv
 			if hint != healthNone {
 				s.setHealth(hostCtx, hint)
 			}
-			return errorResponse(code, "auth.test failed: "+authErr.Error()), nil
+			return errorResponse(code, "auth.test failed: "+humanizeSlackErr(authErr)), nil
 		}
 		// Store address of a fresh local copy. Storing &creds.Token.AccessToken
 		// would persist a pointer into the just-fetched StoredCredentials
@@ -191,7 +191,7 @@ func (s *ToolService) Call(ctx context.Context, req *toolv1.CallRequest) (*toolv
 		if hint != healthNone {
 			s.setHealth(hostCtx, hint)
 		}
-		return errorResponse(code, callErr.Error()), nil
+		return errorResponse(code, humanizeSlackErr(callErr)), nil
 	}
 
 	return &toolv1.CallResponse{OutputJson: string(outputJSON)}, nil
@@ -242,6 +242,8 @@ func (s *ToolService) setHealth(ctx context.Context, h healthHint) {
 		detail = "auth_expired"
 	case healthAuthMissing:
 		detail = "auth_missing"
+	case healthMissingScope:
+		detail = "missing_scope"
 	default:
 		return
 	}
@@ -532,6 +534,8 @@ func (s *TriggerService) setTriggerHealth(ctx context.Context, h healthHint) {
 		detail = "auth_expired"
 	case healthConfigMissing:
 		detail = "config_missing"
+	case healthMissingScope:
+		detail = "missing_scope"
 	default:
 		return
 	}
@@ -577,16 +581,29 @@ type ChannelService struct {
 	correlations  *correlationMap
 }
 
-// NewChannelService creates a production ChannelService. It acquires the shared
-// socketHub for the instance's xapp-token and registers the interactive handler.
-// If GetInstanceConfig fails or the token is absent, interactive callbacks are
-// silently dropped until the next restart (Notify/Request still report the error
-// inline via setChannelHealth).
+// channelHubConfigRetry is the delay between attempts when the app-level
+// token has not yet been written to instance config. Held as a package
+// variable so tests can shorten it without exporting an API.
+var channelHubConfigRetry = 10 * time.Second
+
+// channelHubReacquireDelay is the delay before re-acquiring after a hub
+// death. A small non-zero delay avoids a tight spin against a backend that
+// is failing fast.
+var channelHubReacquireDelay = time.Second
+
+// NewChannelService creates a production ChannelService. Call Start to launch
+// the background goroutine that maintains the interactive-handler registration
+// against the shared socketHub.
+//
+// Notify and Request work as soon as credentials and channel config are
+// configured (they do not depend on the maintainer goroutine). Interactive
+// callbacks (button clicks) require the maintainer to have successfully
+// registered the handler at least once.
 func NewChannelService(host hostv1.HostServiceClient, registry *hubRegistry, httpClient *http.Client) *ChannelService {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	s := &ChannelService{
+	return &ChannelService{
 		host:        host,
 		hubRegistry: registry,
 		webAPIFactory: func(token string) slackWebAPI {
@@ -595,33 +612,95 @@ func NewChannelService(host hostv1.HostServiceClient, registry *hubRegistry, htt
 		httpClient:   httpClient,
 		correlations: newCorrelationMap(5*time.Minute, 24*time.Hour),
 	}
+}
 
-	// Register the interactive handler at construction so it is in place before
-	// any Request call arrives. We fetch the token synchronously here; if it
-	// fails we skip registration and interactive callbacks won't fire, but
-	// Notify/Request will surface the error inline.
-	cfgResp, err := host.GetInstanceConfig(context.Background(), &hostv1.GetInstanceConfigRequest{})
+// Start launches the maintainer goroutine that keeps the interactive-handler
+// registered on the shared socketHub. The goroutine runs until ctx is done.
+//
+// The maintainer handles two failure modes that the one-shot constructor used
+// to drop on the floor:
+//
+//   - Late config: if the instance config does not yet contain
+//     app_level_token (the state immediately after install but before the
+//     operator fills the config form), the maintainer waits and retries
+//     instead of silently dropping interactive callbacks forever.
+//
+//   - Dead hub: if the underlying Socket Mode connection fails (network
+//     blip, token revoked), hub.Done() fires; the maintainer re-acquires,
+//     which produces a fresh hub thanks to hubRegistry's dead-entry
+//     detection, and re-registers the handler. Without this, the first
+//     transient failure would permanently silence Approve/Reject buttons.
+func (s *ChannelService) Start(ctx context.Context) {
+	go s.maintainInteractiveHandler(ctx)
+}
+
+func (s *ChannelService) maintainInteractiveHandler(ctx context.Context) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		token := s.fetchAppLevelToken(ctx)
+		if token == "" {
+			if !sleepCtx(ctx, channelHubConfigRetry) {
+				return
+			}
+			continue
+		}
+
+		hub, release, err := s.hubRegistry.Acquire(token)
+		if err != nil {
+			log.Printf("slack: ChannelService: Acquire hub for interactive handler: %v", err)
+			if !sleepCtx(ctx, channelHubReacquireDelay) {
+				return
+			}
+			continue
+		}
+
+		hub.RegisterInteractiveHandler(s.handleInteractive)
+
+		select {
+		case <-ctx.Done():
+			release()
+			return
+		case <-hub.Done():
+			log.Printf("slack: ChannelService: socket hub died (%v); reacquiring", hub.DoneErr())
+			release()
+			if !sleepCtx(ctx, channelHubReacquireDelay) {
+				return
+			}
+		}
+	}
+}
+
+// fetchAppLevelToken returns the configured app_level_token, or "" if config is
+// missing, malformed, or unreadable. Errors are logged but not propagated so
+// the maintainer loop can keep retrying.
+func (s *ChannelService) fetchAppLevelToken(ctx context.Context) string {
+	cfgResp, err := s.host.GetInstanceConfig(ctx, &hostv1.GetInstanceConfigRequest{})
 	if err != nil {
-		log.Printf("slack: ChannelService: GetInstanceConfig at startup: %v", err)
-		return s
+		log.Printf("slack: ChannelService: GetInstanceConfig: %v", err)
+		return ""
 	}
 	token, err := extractAppLevelToken(cfgResp.GetConfigJson())
-	if err != nil || token == "" {
-		// Token not yet configured — skip registration. Interactive callbacks
-		// won't fire until the plugin restarts with a token in config.
-		return s
-	}
-
-	hub, _, err := registry.Acquire(token)
 	if err != nil {
-		log.Printf("slack: ChannelService: Acquire hub for interactive handler: %v", err)
-		return s
+		log.Printf("slack: ChannelService: extract app_level_token: %v", err)
+		return ""
 	}
-	// We intentionally do not call the releaseFn — this hub reference persists
-	// for the plugin process lifetime so the interactive handler always fires.
-	hub.RegisterInteractiveHandler(s.handleInteractive)
+	return token
+}
 
-	return s
+// sleepCtx returns true if d elapsed, false if ctx was cancelled first.
+// Uses a timer with explicit Stop so a cancelled context does not leak it.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // newChannelServiceForTest creates a ChannelService for testing with an injected
@@ -713,7 +792,7 @@ func (s *ChannelService) Notify(ctx context.Context, req *channelv1.NotifyReques
 		}
 		return &channelv1.NotifyResponse{
 			Ok:    false,
-			Error: channelErrorResponse(code, postErr.Error()),
+			Error: channelErrorResponse(code, humanizeSlackErr(postErr)),
 		}, nil
 	}
 
@@ -784,7 +863,7 @@ func (s *ChannelService) Request(ctx context.Context, req *channelv1.RequestRequ
 			s.setChannelHealth(hostCtx, hint)
 		}
 		return &channelv1.RequestResponse{
-			Error: channelErrorResponse(code, postErr.Error()),
+			Error: channelErrorResponse(code, humanizeSlackErr(postErr)),
 		}, nil
 	}
 
@@ -903,6 +982,8 @@ func (s *ChannelService) setChannelHealth(ctx context.Context, h healthHint) {
 		detail = "auth_expired"
 	case healthAuthMissing:
 		detail = "auth_missing"
+	case healthMissingScope:
+		detail = "missing_scope"
 	default:
 		return
 	}

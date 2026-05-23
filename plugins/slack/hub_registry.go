@@ -17,20 +17,35 @@ type hubEntry struct {
 	refCount  int // 1 per caller of Acquire
 }
 
+// dead reports whether the underlying hub's Run goroutine has exited. A dead
+// entry must not be returned from Acquire — its Done channel is already
+// closed, so any caller that selects on hub.Done() would receive immediately.
+func (e *hubEntry) dead() bool {
+	select {
+	case <-e.hub.Done():
+		return true
+	default:
+		return false
+	}
+}
+
 // hubRegistry is a process-global registry that creates at most one *socketHub
 // per xapp-token. The same Socket Mode WebSocket is shared by TriggerService
 // (EventsAPI events) and ChannelService (interactive callbacks).
+//
+// Dead hubs are detected on each Acquire and replaced with a fresh entry: when
+// Slack's connection fails (network blip, auth revoked, etc.) the supervisor
+// re-Acquires and gets a working hub rather than a corpse. The release closure
+// only removes its entry from the map if the entry is still the current one,
+// so a late release from a replaced hub does not evict its successor.
 //
 // STALE-HUB ON TOKEN ROTATION (v1 limitation): when an instance config update
 // rotates the xapp-token, TriggerService.Restart Acquires a new hub for the
 // new token while ChannelService continues holding the OLD hub until that
 // token's Socket Mode connection fails. The old connection will fail next time
-// Slack rejects the revoked token; the hub will tear down via ctx cancel from
-// its internal error path, ChannelService's interactive handler will stop
-// receiving callbacks, and any in-flight Request will time out via the host's
-// feedback-timeout path (matching the documented 'in-memory correlation loss on
-// restart' behavior in spec §4.2). Cross-service token-rotation coordination is
-// OUT OF SCOPE — file Phase-8 follow-up if needed.
+// Slack rejects the revoked token; ChannelService's maintainer goroutine
+// observes hub.Done() and re-acquires under the new token. Cross-service
+// token-rotation coordination is OUT OF SCOPE — file Phase-8 follow-up if needed.
 type hubRegistry struct {
 	mu      sync.Mutex
 	factory socketModeFactory
@@ -49,11 +64,24 @@ func newHubRegistry(factory socketModeFactory) *hubRegistry {
 // starting its Run goroutine on first use. Subsequent calls with the same token
 // return the SAME hub. The returned releaseFn must be called when the caller no
 // longer needs the hub; when the ref count reaches zero, the hub is torn down.
+//
+// If a previously-created hub has died (Run goroutine exited), Acquire treats
+// the map entry as absent and creates a fresh hub. Callers that block on
+// hub.Done() will see the new hub's Done channel, not the dead one.
 func (r *hubRegistry) Acquire(xappToken string) (*socketHub, releaseFn, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	entry, ok := r.hubs[xappToken]
+	if ok && entry.dead() {
+		// Replace the dead entry. Outstanding refs from the previous
+		// generation can still call their release closures — those will
+		// observe that the map slot no longer contains their entry and
+		// simply decrement without deleting (the swap below is the
+		// authoritative eviction).
+		delete(r.hubs, xappToken)
+		ok = false
+	}
 	if !ok {
 		hub, err := newSocketHub(r.factory, xappToken)
 		if err != nil {
@@ -82,7 +110,12 @@ func (r *hubRegistry) Acquire(xappToken string) (*socketHub, releaseFn, error) {
 		entry.refCount--
 		if entry.refCount <= 0 {
 			entry.runCancel()
-			delete(r.hubs, xappToken)
+			// Only evict from the map if our entry is still the current one.
+			// A previously-replaced entry (after dead-detection) must not
+			// delete its successor.
+			if current, ok := r.hubs[xappToken]; ok && current == entry {
+				delete(r.hubs, xappToken)
+			}
 		}
 	}
 
