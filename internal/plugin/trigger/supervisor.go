@@ -309,6 +309,12 @@ func (s *Supervisor) StopAll() {
 	}
 }
 
+// isEmptyScope returns true when scope is empty or the zero-object "{}",
+// meaning the operator has not yet configured what the instance should watch.
+func isEmptyScope(scope string) bool {
+	return scope == "" || scope == "{}"
+}
+
 // streamLoop is the goroutine body for a single instance trigger stream. It
 // opens TriggerService.Start on the plugin, drains events synchronously into
 // Dispatcher.Handle to preserve per-stream ordering, and reconnects on failure.
@@ -317,6 +323,13 @@ func (s *Supervisor) StopAll() {
 // After UnhealthyAfter consecutive failures, HealthSetter is called with
 // Unhealthy. On the first successful Recv post-recovery the instance is reset
 // to Healthy.
+//
+// Scope gate: if the instance's subscription_scope_json is empty or "{}" the
+// stream is not opened. The goroutine sleeps for BackoffMax and re-checks.
+// It is NOT counted as a failure — this is a normal "not yet configured"
+// state, not a connectivity problem. When the operator saves a non-empty scope
+// and the admin handler calls Restart, this goroutine is cancelled and a fresh
+// one starts with the new scope.
 func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh chan struct{}) {
 	defer close(doneCh)
 
@@ -324,6 +337,7 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 
 	consecutive := 0 // consecutive reconnect failures without a successful Recv
 	markedUnhealthy := false
+	loggedEmptyScope := false // rate-limit the "scope not configured" log line
 
 	for {
 		if ctx.Err() != nil {
@@ -359,6 +373,29 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 			s.maybeMarkUnhealthy(ctx, instanceID, consecutive, &markedUnhealthy)
 			continue
 		}
+
+		// Scope gate: skip opening a stream when the operator hasn't configured
+		// what the instance should watch yet. This is not a failure — do not
+		// increment consecutive or mark Unhealthy. Log once at INFO (not on
+		// every retry tick) and sleep for BackoffMax before re-checking.
+		//
+		// When the operator saves a non-empty scope via
+		// PUT .../subscription-scope, the admin handler calls Restart which
+		// cancels this goroutine and starts a fresh one that will pass the gate.
+		if isEmptyScope(dbInst.SubscriptionScopeJson) {
+			if !loggedEmptyScope {
+				log.InfoContext(ctx, "trigger supervisor: subscription scope not configured; skipping stream until scope is set",
+					"instance_id", instanceID)
+				loggedEmptyScope = true
+			}
+			if !s.sleep(ctx, s.cfg.BackoffMax) {
+				return
+			}
+			continue
+		}
+		// Scope is now non-empty — reset the log-once gate so a future empty →
+		// non-empty → empty cycle (edge case) logs again.
+		loggedEmptyScope = false
 
 		// Use a long-lived stream — no deadline. Health pings cover liveness
 		// (spec §13.6). The parent ctx cancellation propagates on shutdown.

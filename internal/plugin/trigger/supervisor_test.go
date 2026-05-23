@@ -178,7 +178,9 @@ func (q *supQuerier) GetPluginInstanceByID(_ context.Context, id string) (db.Plu
 	if inst, ok := q.instByID[id]; ok {
 		return inst, nil
 	}
-	return db.PluginInstance{ID: id}, nil
+	// Return a non-empty scope by default so existing tests that do not care
+	// about scope gating continue to reach the stream-open path.
+	return db.PluginInstance{ID: id, SubscriptionScopeJson: `{"_default":true}`}, nil
 }
 func (q *supQuerier) ListPluginsByStatus(_ context.Context, _ string) ([]db.Plugin, error) {
 	return nil, nil
@@ -704,5 +706,184 @@ func TestSupervisor_StopAll(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("StopAll did not complete within 5s")
+	}
+}
+
+// ── Scope gate tests ──────────────────────────────────────────────────────────
+
+// scopeQuerier returns instances whose SubscriptionScopeJson can be changed
+// between calls via the mu-protected scope field, simulating an operator saving
+// a new scope between the first and second stream attempts.
+type scopeQuerier struct {
+	mu    sync.Mutex
+	scope string
+}
+
+func (q *scopeQuerier) setScope(s string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.scope = s
+}
+
+func (q *scopeQuerier) GetSubscribedActivePolicies(_ context.Context) ([]db.Policy, error) {
+	return nil, nil
+}
+func (q *scopeQuerier) GetPluginByID(_ context.Context, _ string) (db.Plugin, error) {
+	return db.Plugin{}, nil
+}
+func (q *scopeQuerier) GetPluginInstanceByID(_ context.Context, id string) (db.PluginInstance, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return db.PluginInstance{ID: id, SubscriptionScopeJson: q.scope}, nil
+}
+func (q *scopeQuerier) ListPluginsByStatus(_ context.Context, _ string) ([]db.Plugin, error) {
+	return nil, nil
+}
+func (q *scopeQuerier) ListPluginInstancesByPlugin(_ context.Context, _ string) ([]db.PluginInstance, error) {
+	return nil, nil
+}
+
+// TestSupervisor_EmptyScope_SkipsStart verifies that when subscription_scope_json
+// is empty ("") or the zero-object "{}", the supervisor does NOT call
+// TriggerService.Start — it silently waits and retries.
+func TestSupervisor_EmptyScope_SkipsStart(t *testing.T) {
+	t.Parallel()
+
+	srv := &alwaysEOFServer{} // would count calls if Start were ever reached
+	client, stop := startFakeTriggerServer(t, srv)
+	defer stop()
+
+	lookup := &fakeInstanceLookup{client: client, pluginID: "test-plugin"}
+	dispatcher := &fakeEventDispatcher{}
+
+	for _, emptyScope := range []string{"", "{}"} {
+		emptyScope := emptyScope
+		t.Run("scope="+emptyScope, func(t *testing.T) {
+			t.Parallel()
+
+			q := &scopeQuerier{scope: emptyScope}
+			sup := plugintrigger.NewSupervisor(plugintrigger.Config{
+				Querier:             q,
+				BackoffInitial:      time.Microsecond,
+				BackoffMax:          5 * time.Millisecond, // short so the gate ticks quickly in tests
+				UnhealthyAfter:      3,
+				TestInstanceLookup:  lookup,
+				TestEventDispatcher: dispatcher,
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+
+			sup.Start(ctx, "inst-empty-scope")
+
+			// Wait for the context to expire — the scope gate should have prevented
+			// any Start call reaching the plugin.
+			<-ctx.Done()
+			sup.StopAll()
+
+			if n := srv.startCount(); n > 0 {
+				t.Errorf("TriggerService.Start called %d time(s) with empty scope %q; expected 0", n, emptyScope)
+			}
+		})
+	}
+}
+
+// TestSupervisor_NonEmptyScope_OpensStream verifies that a non-empty scope
+// results in TriggerService.Start being called.
+func TestSupervisor_NonEmptyScope_OpensStream(t *testing.T) {
+	t.Parallel()
+
+	evCh := make(chan *triggerv1.StartResponse, 1)
+	evCh <- &triggerv1.StartResponse{EventId: "e1", EventKind: "msg", PayloadJson: "{}"}
+	close(evCh)
+
+	srv := &sequentialTriggerServer{eventsCh: evCh}
+	client, stop := startFakeTriggerServer(t, srv)
+	defer stop()
+
+	lookup := &fakeInstanceLookup{client: client, pluginID: "test-plugin"}
+	dispatcher := &fakeEventDispatcher{}
+
+	q := &scopeQuerier{scope: `{"channels":["#general"]}`}
+	sup := plugintrigger.NewSupervisor(plugintrigger.Config{
+		Querier:             q,
+		BackoffInitial:      time.Microsecond,
+		BackoffMax:          5 * time.Millisecond,
+		UnhealthyAfter:      3,
+		TestInstanceLookup:  lookup,
+		TestEventDispatcher: dispatcher,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sup.Start(ctx, "inst-with-scope")
+
+	// The event should arrive at the dispatcher because the scope gate passes.
+	waitFor(t, 3*time.Second, func() bool {
+		return len(dispatcher.received()) >= 1
+	})
+
+	if len(dispatcher.received()) == 0 {
+		t.Error("no events dispatched; expected at least 1 (scope gate should have passed)")
+	}
+}
+
+// TestSupervisor_Restart_EmptyToNonEmpty_TriggersStream verifies the
+// Restart path: when scope transitions from empty → non-empty via Restart,
+// the new goroutine picks up the updated scope and opens a stream.
+//
+// This is the correct handling of the subscription-scope PUT → Restart flow:
+// the admin handler calls Restart after persisting the new scope, and the
+// supervisor's Restart cancels the waiting goroutine and starts a fresh one
+// that re-fetches the DB row.
+func TestSupervisor_Restart_EmptyToNonEmpty_TriggersStream(t *testing.T) {
+	// Not parallel: uses a shared alwaysEOFServer call count that Restart races.
+	evCh := make(chan *triggerv1.StartResponse, 1)
+	evCh <- &triggerv1.StartResponse{EventId: "after-scope-set", EventKind: "msg"}
+	close(evCh)
+
+	srv := &sequentialTriggerServer{eventsCh: evCh}
+	client, stop := startFakeTriggerServer(t, srv)
+	defer stop()
+
+	lookup := &fakeInstanceLookup{client: client, pluginID: "test-plugin"}
+	dispatcher := &fakeEventDispatcher{}
+
+	q := &scopeQuerier{scope: ""} // start with empty scope
+
+	sup := plugintrigger.NewSupervisor(plugintrigger.Config{
+		Querier:             q,
+		BackoffInitial:      time.Microsecond,
+		BackoffMax:          10 * time.Millisecond,
+		UnhealthyAfter:      3,
+		TestInstanceLookup:  lookup,
+		TestEventDispatcher: dispatcher,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sup.Start(ctx, "inst-scope-change")
+
+	// Give the goroutine time to see the empty scope and enter the waiting loop.
+	time.Sleep(30 * time.Millisecond)
+
+	// Now simulate the operator saving a scope: update the querier and Restart.
+	q.setScope(`{"channels":["#general"]}`)
+	sup.Restart(ctx, "inst-scope-change")
+
+	// The new goroutine should see the non-empty scope and open a stream,
+	// delivering the event.
+	waitFor(t, 5*time.Second, func() bool {
+		return len(dispatcher.received()) >= 1
+	})
+
+	got := dispatcher.received()
+	if len(got) == 0 {
+		t.Fatal("no events dispatched after scope update and Restart")
+	}
+	if got[0].EventID != "after-scope-set" {
+		t.Errorf("first event ID = %q, want %q", got[0].EventID, "after-scope-set")
 	}
 }

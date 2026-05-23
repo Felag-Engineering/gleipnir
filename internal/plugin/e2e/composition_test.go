@@ -20,8 +20,8 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dedup"
 	plugintrigger "github.com/felag-engineering/gleipnir/internal/plugin/trigger"
-	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
+	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 
 // stubInstanceID is used as both the plugin_instances.id column value in
@@ -155,11 +155,14 @@ func seedSubstrateData(t *testing.T) (matchPolicyID, noMatchPolicyID string, q *
 	}
 
 	if _, err := q.CreatePluginInstance(ctx, db.CreatePluginInstanceParams{
-		ID:                    stubInstanceID,
-		PluginID:              pluginID,
-		InstanceName:          "stub-instance",
-		ConfigJson:            "{}",
-		SubscriptionScopeJson: "{}",
+		ID:           stubInstanceID,
+		PluginID:     pluginID,
+		InstanceName: "stub-instance",
+		ConfigJson:   "{}",
+		// Non-empty scope satisfies the supervisor's scope gate (skips streams
+		// for unconfigured instances). The composition test's point is to drive
+		// a stream end-to-end, so we explicitly opt in.
+		SubscriptionScopeJson: `{"watch":"all"}`,
 		HandshakeVersions:     "{}",
 		HealthState:           "healthy",
 		CreatedAt:             now,
