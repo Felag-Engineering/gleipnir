@@ -1,6 +1,7 @@
 package process
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -17,6 +18,34 @@ import (
 	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 )
+
+// launchStderrCapSize caps how many bytes of stderr output we retain for
+// error reporting when a subprocess fails during the launch/handshake phase.
+// Enough for a meaningful panic traceback without unbounded memory growth.
+const launchStderrCapSize = 4 * 1024 // 4 KiB
+
+// LaunchError is returned by Start when the subprocess fails during the
+// hostwire launch/handshake phase. It carries the underlying error and a
+// (size-capped) excerpt of the subprocess's stderr output so callers can
+// surface both in audit events and health details without grepping logs.
+type LaunchError struct {
+	// InstanceID is the plugin instance the launch was attempted for.
+	InstanceID string
+	// Cause is the underlying error from hostwire/go-plugin.
+	Cause error
+	// Stderr holds up to launchStderrCapSize bytes of stderr output captured
+	// during the launch attempt. May be empty if the subprocess wrote nothing.
+	Stderr []byte
+}
+
+func (e *LaunchError) Error() string {
+	if len(e.Stderr) > 0 {
+		return fmt.Sprintf("plugin %s: launch subprocess: %v; stderr: %s", e.InstanceID, e.Cause, e.Stderr)
+	}
+	return fmt.Sprintf("plugin %s: launch subprocess: %v", e.InstanceID, e.Cause)
+}
+
+func (e *LaunchError) Unwrap() error { return e.Cause }
 
 // defaultStartupTimeout is how long we wait for the go-plugin handshake to
 // complete before giving up. Operators can override this via Config.StartupTimeout.
@@ -145,7 +174,19 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	// go-plugin reserves stdout for the handshake magic-cookie line; piping or
 	// reading stdout here would corrupt the protocol. We only pipe stderr, which
 	// is the agreed log channel per spec §13.
-	stderrW, stderrDone := PipeLines(logger, slog.LevelWarn, "stderr")
+	//
+	// We also tee stderr bytes into a capped capture buffer so that, if the
+	// subprocess fails during launch/handshake, we can include the excerpt in
+	// the returned LaunchError and in the audit event. The buffer is discarded
+	// after a successful launch.
+	var stderrCapMu sync.Mutex
+	var stderrCap bytes.Buffer
+	stderrCapWriter := &cappedWriter{mu: &stderrCapMu, buf: &stderrCap, cap: launchStderrCapSize}
+	logPipeW, stderrDone := PipeLines(logger, slog.LevelWarn, "stderr")
+	stderrW := &multiWriteCloser{
+		writers: []io.Writer{logPipeW, stderrCapWriter},
+		closer:  logPipeW,
+	}
 
 	host := cfg.HostServer
 	if host == nil {
@@ -184,7 +225,16 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		// Revoke the token because no subprocess is running to use it.
 		cfg.IdentityIssuer.Revoke(token)
 		closeWriterSilently(stderrW)
-		return nil, fmt.Errorf("plugin %s: launch subprocess: %w", cfg.InstanceID, err)
+		// Wait briefly for the log pipe drain goroutine to flush any stderr bytes
+		// the subprocess wrote before exiting. PipeLines closes the done channel
+		// when the reader goroutine finishes. We bound the wait so a hung pipe
+		// does not stall the error path indefinitely.
+		waitForDone(stderrDone, 500*time.Millisecond)
+		stderrCapMu.Lock()
+		captured := make([]byte, stderrCap.Len())
+		copy(captured, stderrCap.Bytes())
+		stderrCapMu.Unlock()
+		return nil, &LaunchError{InstanceID: cfg.InstanceID, Cause: err, Stderr: captured}
 	}
 
 	inst := &Instance{
@@ -319,3 +369,54 @@ func validateBinary(binaryPath string) error {
 func closeWriterSilently(w io.WriteCloser) {
 	_ = w.Close()
 }
+
+// waitForDone blocks until ch is closed or the deadline elapses.
+func waitForDone(ch <-chan struct{}, timeout time.Duration) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ch:
+	case <-timer.C:
+	}
+}
+
+// cappedWriter writes bytes into buf up to cap bytes total, discarding any
+// overflow. Concurrent writes are serialised via mu.
+type cappedWriter struct {
+	mu  *sync.Mutex
+	buf *bytes.Buffer
+	cap int
+}
+
+func (c *cappedWriter) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	remaining := c.cap - c.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil // discard overflow; pretend success to unblock writers
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	_, _ = c.buf.Write(p)
+	return len(p), nil // always report full write to callers
+}
+
+// multiWriteCloser fans writes out to all writers and delegates Close to
+// the single closer (the log pipe). This avoids closing the capture buffer
+// (which has no Close method) while still closing the pipe on shutdown.
+type multiWriteCloser struct {
+	writers []io.Writer
+	closer  io.WriteCloser
+}
+
+func (m *multiWriteCloser) Write(p []byte) (int, error) {
+	for _, w := range m.writers {
+		if _, err := w.Write(p); err != nil {
+			return 0, err
+		}
+	}
+	return len(p), nil
+}
+
+func (m *multiWriteCloser) Close() error { return m.closer.Close() }

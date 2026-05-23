@@ -158,3 +158,6 @@ func (q *dispatchIntegFakeQuerier) GetPluginInstanceByID(_ context.Context, _ st
 func (q *dispatchIntegFakeQuerier) UpdatePluginInstanceHealth(_ context.Context, _ db.UpdatePluginInstanceHealthParams) (int64, error) {
 	return 1, nil
 }
+func (q *dispatchIntegFakeQuerier) InsertPluginAuditEvent(_ context.Context, _ db.InsertPluginAuditEventParams) (db.PluginAuditEvent, error) {
+	return db.PluginAuditEvent{}, nil
+}
