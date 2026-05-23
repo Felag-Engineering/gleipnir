@@ -726,7 +726,7 @@ func TestTriggerStartHealthUnhealthyOnInvalidAuth(t *testing.T) {
 
 // ── Tool tests ────────────────────────────────────────────────────────────────
 
-// TestToolListToolsAdvertisesAll asserts that ListTools returns exactly the five
+// TestToolListToolsAdvertisesAll asserts that ListTools returns exactly the four
 // Slack tools by name and that each InputSchema parses as a JSON object.
 func TestToolListToolsAdvertisesAll(t *testing.T) {
 	svcs, cleanup := setupAll(t, nil)
@@ -737,7 +737,7 @@ func TestToolListToolsAdvertisesAll(t *testing.T) {
 		t.Fatalf("ListTools: %v", err)
 	}
 
-	wantNames := []string{"post_message", "list_channels", "search_messages", "react", "set_topic"}
+	wantNames := []string{"post_message", "list_channels", "react", "set_topic"}
 	tools := resp.GetTools()
 	if len(tools) != len(wantNames) {
 		t.Fatalf("want %d tools, got %d", len(wantNames), len(tools))

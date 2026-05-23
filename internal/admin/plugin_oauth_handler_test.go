@@ -229,6 +229,36 @@ func TestPluginOAuthHandler_Callback_TamperedState_400(t *testing.T) {
 	}
 }
 
+func TestPluginOAuthHandler_Begin_EmptyPublicURL_400(t *testing.T) {
+	q := newFakeOAuthPluginQuerier()
+	q.instances["inst-1"] = db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		HealthState: "healthy",
+	}
+	q.plugins["plugin-1"] = db.Plugin{
+		ID:               "plugin-1",
+		ManifestSnapshot: buildTestManifest(t, sdkmanifest.AuthStrategyOAuth2Authcode),
+	}
+
+	// Build the handler with an empty public_url — BeginAuthcode will return ErrConfigInvalid.
+	h := buildOAuthHandler(t, q, "")
+
+	body, _ := json.Marshal(map[string]string{"return_url": "https://app.example.com/settings"})
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-1/instances/inst-1/oauth/begin", bytes.NewReader(body))
+	r = withChiParams(r, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+
+	h.Begin(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty public_url, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "public_url") {
+		t.Errorf("expected response body to mention public_url, got: %s", w.Body.String())
+	}
+}
+
 func TestPluginOAuthHandler_Callback_ProviderError_RedirectsWithError(t *testing.T) {
 	// When the provider sends ?error=access_denied, the callback handler should
 	// redirect to ReturnURL?oauth_error=access_denied. Since the state is

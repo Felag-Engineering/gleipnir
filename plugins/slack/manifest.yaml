@@ -10,7 +10,6 @@ auth:
       - im:history
       - im:write
       - mpim:history
-      - search:read
       - users:read
     token_url: https://slack.com/api/oauth.v2.access
   strategy: oauth2_authcode
@@ -59,6 +58,7 @@ config_schema:
     app_level_token:
       description: 'Slack app-level token (xapp- prefix) for Socket Mode. Generate in Slack admin: Settings → Socket Mode → Generate token with scope connections:write.'
       type: string
+      x-gleipnir-secret: true
   required:
     - app_level_token
   type: object
@@ -237,24 +237,6 @@ tools:
           type: string
       type: object
     name: list_channels
-  - description: Search messages across the workspace using Slack's search.
-    input_schema:
-      additionalProperties: false
-      properties:
-        count:
-          description: Results per page (1-100)
-          maximum: 100
-          minimum: 1
-          title: Count
-          type: integer
-        query:
-          description: Slack search query (search.messages syntax)
-          title: Query
-          type: string
-      required:
-        - query
-      type: object
-    name: search_messages
   - description: Add an emoji reaction to a Slack message.
     input_schema:
       additionalProperties: false
@@ -294,4 +276,4 @@ tools:
         - topic
       type: object
     name: set_topic
-version: 0.1.0
+version: 0.1.1

@@ -152,6 +152,9 @@ func (q *connFactoryFakeQuerier) ListPluginsByStatus(_ context.Context, _ string
 func (q *connFactoryFakeQuerier) ListPluginInstancesByPlugin(_ context.Context, _ string) ([]db.PluginInstance, error) {
 	return nil, nil
 }
+func (q *connFactoryFakeQuerier) GetPluginByID(_ context.Context, _ string) (db.Plugin, error) {
+	return db.Plugin{}, errors.New("not found")
+}
 func (q *connFactoryFakeQuerier) GetPluginInstanceByID(_ context.Context, _ string) (db.PluginInstance, error) {
 	return db.PluginInstance{}, errors.New("not found")
 }

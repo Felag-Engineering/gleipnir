@@ -5,17 +5,21 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { ReauthorizeButton } from './ReauthorizeButton'
 import type { BeginPluginOAuthResponse } from '@/hooks/mutations/plugins'
+import type { ApiError } from '@/api/fetch'
 
 vi.mock('@/hooks/mutations/plugins')
 import { useBeginPluginOAuth } from '@/hooks/mutations/plugins'
 
 // Helpers
 
-function renderButton(strategy: string) {
+function renderButton(
+  strategy: string,
+  props?: Partial<React.ComponentProps<typeof ReauthorizeButton>>,
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <ReauthorizeButton pluginId="plugin-1" instanceId="inst-1" strategy={strategy} />
+      <ReauthorizeButton pluginId="plugin-1" instanceId="inst-1" strategy={strategy} {...props} />
     </QueryClientProvider>,
   )
 }
@@ -142,5 +146,71 @@ describe('ReauthorizeButton — error path', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Re-authorize' }))
 
     expect(mutateFn).toHaveBeenCalledTimes(2)
+  })
+})
+
+// --- onError callback ---
+
+describe('ReauthorizeButton — onError callback', () => {
+  it('calls onError(null) before mutating, then onError(message) on failure', () => {
+    const onErrorCalls: (string | null)[] = []
+    const onError = vi.fn((msg: string | null) => { onErrorCalls.push(msg) })
+
+    // Simulate a mutation that fails with a server error carrying a detail field.
+    const serverError: Partial<ApiError> = { detail: 'oauth begin: public_url is not configured; set it in admin settings before starting an OAuth flow', message: 'oauth configuration invalid' }
+    const mutateFn = vi.fn((_params, opts) => {
+      opts?.onError?.(serverError as ApiError)
+    })
+    mockMutation({ mutate: mutateFn })
+
+    renderButton('oauth2_authcode', { onError })
+    fireEvent.click(screen.getByRole('button', { name: 'Re-authorize' }))
+
+    // First call must be null (reset), second call must be the server detail.
+    expect(onErrorCalls).toEqual([
+      null,
+      'oauth begin: public_url is not configured; set it in admin settings before starting an OAuth flow',
+    ])
+  })
+
+  it('falls back to message when detail is absent', () => {
+    const onError = vi.fn()
+    const serverError: Partial<ApiError> = { message: 'oauth configuration invalid' }
+    const mutateFn = vi.fn((_params, opts) => {
+      opts?.onError?.(serverError as ApiError)
+    })
+    mockMutation({ mutate: mutateFn })
+
+    renderButton('oauth2_authcode', { onError })
+    fireEvent.click(screen.getByRole('button', { name: 'Re-authorize' }))
+
+    expect(onError).toHaveBeenLastCalledWith('oauth configuration invalid')
+  })
+
+  it('uses fallback message when error has neither detail nor message', () => {
+    const onError = vi.fn()
+    const mutateFn = vi.fn((_params, opts) => {
+      opts?.onError?.({} as ApiError)
+    })
+    mockMutation({ mutate: mutateFn })
+
+    renderButton('oauth2_authcode', { onError })
+    fireEvent.click(screen.getByRole('button', { name: 'Re-authorize' }))
+
+    expect(onError).toHaveBeenLastCalledWith('OAuth authorization failed.')
+  })
+
+  it('does not error when onError prop is not provided', () => {
+    // Simulate a mutation failure; should not throw even without onError.
+    const mutateFn = vi.fn((_params, opts) => {
+      opts?.onError?.({ message: 'some error' } as ApiError)
+    })
+    mockMutation({ mutate: mutateFn })
+
+    // No onError prop — should render and click without throwing.
+    expect(() => {
+      renderButton('oauth2_authcode')
+      fireEvent.click(screen.getByRole('button', { name: 'Re-authorize' }))
+    }).not.toThrow()
   })
 })

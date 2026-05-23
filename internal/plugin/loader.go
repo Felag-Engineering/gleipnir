@@ -110,7 +110,7 @@ func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, dir string, pu
 		return nil
 	}
 
-	l.installer = loader.NewInstaller(&verifierAdapter{v: l.verifier}, q, publisher)
+	l.installer = loader.NewInstaller(&verifierAdapter{v: l.verifier}, q, publisher, dir)
 	// The watcher's callback type is func(context.Context, string) error, but
 	// Install now returns (string, error). The adapter discards the plugin ID —
 	// the watcher only needs to know whether install succeeded.

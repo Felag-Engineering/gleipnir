@@ -474,6 +474,39 @@ describe('authorize button calls oauth/begin', () => {
     await userEvent.click(screen.getByRole('button', { name: /^authorize$/i }))
     await waitFor(() => expect(called).toBe(true))
   })
+
+  it('shows inline error banner when oauth/begin returns 400', async () => {
+    server.use(
+      http.post(
+        `/api/v1/admin/plugins/${PLUGIN_ID}/instances/${INSTANCE_ID}/oauth/begin`,
+        () =>
+          HttpResponse.json(
+            {
+              error: 'oauth configuration invalid',
+              detail:
+                'oauth begin: public_url is not configured; set it in admin settings before starting an OAuth flow',
+            },
+            { status: 400 },
+          ),
+      ),
+    )
+    renderTab({
+      creds: {
+        strategy: 'oauth2_authcode',
+        has_token: false,
+        client_id: 'c',
+        has_client_secret: true,
+        token_url: 't',
+      },
+      strategy: 'oauth2_authcode',
+    })
+    await userEvent.click(screen.getByRole('button', { name: /^authorize$/i }))
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        /public_url is not configured/i,
+      )
+    })
+  })
 })
 
 // Note: tests that assert window.location.href (e.g. authorize button test) do

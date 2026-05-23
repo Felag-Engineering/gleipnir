@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -11,6 +12,12 @@ import (
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
+
+// ErrConfigInvalid is returned by BeginAuthcode when operator configuration is
+// incomplete (e.g. public_url not set, client_id or token_url missing). The
+// admin handler maps this sentinel to HTTP 400 so the UI can surface the
+// message directly without the operator needing to tail server logs.
+var ErrConfigInvalid = errors.New("oauth: operator configuration invalid")
 
 // Manager orchestrates the host-side OAuth2 flows. It handles:
 //   - BeginAuthcode: builds the authorization URL and encodes a signed state
@@ -51,12 +58,13 @@ const callbackPath = "/api/v1/admin/plugins/oauth/callback"
 // signed state envelope so the callback handler can redirect without trusting
 // the URL from the browser.
 //
-// Returns an error when public_url is not configured (operators must set it
-// before starting any OAuth flow) or when the instance has no OAuth credentials.
+// Returns ErrConfigInvalid when public_url is not configured (operators must
+// set it in admin settings before starting any OAuth flow) or when required
+// OAuth fields (client_id, token_url) are missing from the stored credentials.
 func (m *Manager) BeginAuthcode(ctx context.Context, instanceID, returnURL string) (string, error) {
 	publicURL := m.getPublicURL()
 	if publicURL == "" {
-		return "", fmt.Errorf("oauth begin: public_url is not configured; set it in admin settings before starting an OAuth flow")
+		return "", fmt.Errorf("%w: oauth begin: public_url is not configured; set it in admin settings before starting an OAuth flow", ErrConfigInvalid)
 	}
 
 	creds, ver, err := m.store.LoadCredentials(ctx, instanceID)
@@ -71,7 +79,9 @@ func (m *Manager) BeginAuthcode(ctx context.Context, instanceID, returnURL strin
 
 	cfg, err := OAuthConfig(creds, callbackURL)
 	if err != nil {
-		return "", fmt.Errorf("oauth begin: %w", err)
+		// OAuthConfig returns an error when client_id or token_url is missing —
+		// both are operator config mistakes, not server faults.
+		return "", fmt.Errorf("%w: oauth begin: %w", ErrConfigInvalid, err)
 	}
 
 	env, nonce, err := NewStateEnvelope(instanceID, returnURL, m.clock)

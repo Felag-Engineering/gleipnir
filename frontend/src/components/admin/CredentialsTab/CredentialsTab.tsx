@@ -496,6 +496,7 @@ function OAuthSection({
   // BeginAuthcode requires both client_id and client_secret in StoredCredentials.
   // Until both are present the Authorize button would 4xx; surface a form first.
   const clientReady = !!clientId && hasClientSecret
+  const [oauthError, setOauthError] = useState<string | null>(null)
 
   return (
     <div className={styles.form}>
@@ -543,34 +544,41 @@ function OAuthSection({
       </dl>
 
       {canManage && (
-        <div className={styles.actionRow}>
-          {!hasToken && clientReady && (
-            // No token yet, but client credentials are stored — show the initial
-            // "Authorize" CTA. We hide it before client_id/client_secret are
-            // saved because BeginAuthcode would 4xx without them.
-            <ReauthorizeButton
-              pluginId={pluginId}
-              instanceId={instanceId}
-              strategy={strategy}
-              label="Authorize"
-              pendingLabel="Authorizing…"
-            />
+        <>
+          <div className={styles.actionRow}>
+            {!hasToken && clientReady && (
+              // No token yet, but client credentials are stored — show the initial
+              // "Authorize" CTA. We hide it before client_id/client_secret are
+              // saved because BeginAuthcode would 4xx without them.
+              <ReauthorizeButton
+                pluginId={pluginId}
+                instanceId={instanceId}
+                strategy={strategy}
+                label="Authorize"
+                pendingLabel="Authorizing…"
+                onError={setOauthError}
+              />
+            )}
+            {hasToken && isRefreshFailed && (
+              // Token present but refresh failed — Re-authorize is the primary CTA.
+              // The page-level banner already shows this; we surface it here too so
+              // the operator can act from the Credentials tab without scrolling up.
+              <ReauthorizeButton
+                pluginId={pluginId}
+                instanceId={instanceId}
+                strategy={strategy}
+                label="Re-authorize"
+                pendingLabel="Starting…"
+                onError={setOauthError}
+              />
+            )}
+            {/* When has_token && !isRefreshFailed: no button — avoid duplicating
+                the page-level banner CTA. Operator can clear + re-authorize if needed. */}
+          </div>
+          {oauthError && (
+            <p className={styles.errorMsg} role="alert">{oauthError}</p>
           )}
-          {hasToken && isRefreshFailed && (
-            // Token present but refresh failed — Re-authorize is the primary CTA.
-            // The page-level banner already shows this; we surface it here too so
-            // the operator can act from the Credentials tab without scrolling up.
-            <ReauthorizeButton
-              pluginId={pluginId}
-              instanceId={instanceId}
-              strategy={strategy}
-              label="Re-authorize"
-              pendingLabel="Starting…"
-            />
-          )}
-          {/* When has_token && !isRefreshFailed: no button — avoid duplicating
-              the page-level banner CTA. Operator can clear + re-authorize if needed. */}
-        </div>
+        </>
       )}
     </div>
   )

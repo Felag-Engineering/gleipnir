@@ -10,7 +10,7 @@ Parent tracking issue: [#162](https://github.com/felag-engineering/gleipnir/issu
 
 ## What this plugin declares
 
-- **ToolService v1** — `post_message`, `list_channels`, `search_messages`, `react`, `set_topic` (implemented by #233)
+- **ToolService v1** — `post_message`, `list_channels`, `react`, `set_topic` (implemented by #233)
 - **TriggerService v1** — `channel_message` event kind via Slack Socket Mode (#234). Note: subscription-scope channel filtering matches by **channel ID** only (e.g. `C012ABCDEF`); name-based filtering (e.g. `#incidents`) silently does not match because Socket Mode events carry only IDs. Resolving names is future work.
 - **ChannelService v1** — `Notify` and `Request` via Slack DMs and posts (#235)
 - **Auth strategy** — `oauth2_authcode` with Slack's authorization and token endpoints
@@ -123,7 +123,6 @@ oauth_config:
       - im:history
       - im:write
       - mpim:history
-      - search:read
       - users:read
 settings:
   event_subscriptions:
@@ -157,10 +156,12 @@ To generate the token:
 7. In the Gleipnir admin UI, navigate to the Slack plugin instance config and
    paste the token into the `app_level_token` field.
 
-> **Note:** The `app_level_token` field is stored as plain text in instance
-> config in this release. A follow-up issue will add `gleipnir-secret` format
-> annotation so the admin GET endpoint redacts the value to `"***"` (mirroring
-> the ADR-039 pattern for auth headers).
+> **Security note:** The `app_level_token` field is marked `x-gleipnir-secret: true`
+> in the manifest. The admin GET endpoint redacts it to `"***"` — the raw token is
+> never returned after it is written. Use the per-field PUT endpoint
+> (`PUT /api/v1/admin/plugins/{id}/instances/{iid}/config/app_level_token`) to
+> update the token without transmitting all other config values (mirrors the
+> ADR-039 pattern for MCP server auth headers).
 
 ## Build
 
@@ -275,7 +276,7 @@ replace github.com/felag-engineering/gleipnir/plugin-sdk => ../path/to/plugin-sd
 
 ## Tools
 
-The Slack plugin exposes five tools through the `ToolService`. At runtime the host
+The Slack plugin exposes four tools through the `ToolService`. At runtime the host
 prefixes each name with the instance name, so they appear as
 `<instance>.post_message`, `<instance>.list_channels`, etc. (e.g.
 `slack-prod.post_message`).
@@ -323,34 +324,6 @@ to `public_channel`.
     {"id": "C001", "name": "general", "is_private": false, "is_archived": false, "num_members": 42}
   ],
   "next_cursor": ""
-}
-```
-
-### `search_messages`
-
-Search messages across the workspace using Slack's full-text search
-(`search.messages` API).
-
-**Input:**
-```json
-{"query": "deployment failed", "count": 20}
-```
-
-`count` is optional (1–100, defaults to 20).
-
-**Output:**
-```json
-{
-  "matches": [
-    {
-      "channel": "C001",
-      "user": "U001",
-      "text": "deployment failed at 03:00 UTC",
-      "ts": "1700000001.000000",
-      "permalink": "https://myworkspace.slack.com/archives/C001/p1700000001000000"
-    }
-  ],
-  "total": 1
 }
 ```
 
@@ -403,7 +376,6 @@ and shown in the admin UI during install.
 | `im:history`      | **Reserved; no current tool uses it** |
 | `im:write`        | `post_message` to DMs |
 | `mpim:history`    | **Reserved; no current tool uses it** |
-| `search:read`     | `search_messages` |
 | `users:read`      | user lookup in various responses |
 
 > **Note on `*:history` scopes:** The four `*:history` scopes (`channels:history`,
@@ -414,17 +386,9 @@ and shown in the admin UI during install.
 > app-level `xapp-` token and does **not** require these bot-token scopes.
 > Operators who decline these scopes at OAuth time will still get a working
 > installation for the currently-implemented tools (`post_message`,
-> `list_channels`, `search_messages`, `react`, `set_topic`) and the
+> `list_channels`, `react`, `set_topic`) and the
 > `channel_message` trigger; they are requested up-front per the issue AC so the
 > same OAuth grant covers planned tools without a re-authorize round trip.
-
-**Note on `search:read`:** This scope is available for bot tokens but may not
-be granted during OAuth if the Slack app was configured before `search:read`
-was added. Bot-only installs that are missing this scope will see a runtime
-`PERMISSION` error (`missing_scope`) for `search_messages` calls, and the
-plugin will be set to `UNHEALTHY` with detail `auth_expired` in the operator
-UI. To resolve: grant `search:read` in the Slack app settings and re-authorize
-the plugin instance.
 
 ## Token refresh
 

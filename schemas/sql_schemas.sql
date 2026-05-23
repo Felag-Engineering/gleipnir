@@ -399,6 +399,7 @@ CREATE TABLE plugins (
     manifest_snapshot  TEXT    NOT NULL,                                                 -- canonical manifest JSON (signed payload component)
     trusted_pubkey     TEXT    NOT NULL,                                                 -- Minisign Ed25519 pubkey, TOFU-captured (ADR-045)
     status             TEXT    NOT NULL CHECK(status IN ('pending_review','active','removed')),
+    binary_path        TEXT,                                                             -- absolute path to extracted plugin executable (#386); NULL on legacy rows
     version            INTEGER NOT NULL DEFAULT 0,                                       -- ADR-038 CAS counter
     created_at         TEXT    NOT NULL,                                                 -- ISO 8601 UTC
     updated_at         TEXT    NOT NULL                                                  -- ISO 8601 UTC

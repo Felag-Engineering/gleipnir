@@ -136,47 +136,6 @@ func toolCases(t *testing.T) []toolCallCase {
 			wantOutputKey: "channels",
 			wantMetric:    true,
 		},
-		// ── search_messages happy path ───────────────────────────────────────
-		{
-			name: "search_messages_happy",
-			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
-				t.Helper()
-				if !strings.HasSuffix(r.URL.Path, "search.messages") {
-					t.Errorf("unexpected path: %s", r.URL.Path)
-				}
-				form := readForm(r)
-				if form.Get("query") != "foo bar" {
-					t.Errorf("query: want %q, got %q", "foo bar", form.Get("query"))
-				}
-				w.Header().Set("Content-Type", "application/json")
-				w.Write(slackOKResponse(map[string]any{
-					"messages": map[string]any{
-						"matches": []map[string]any{
-							{
-								"channel":   map[string]any{"id": "C001"},
-								"user":      "U001",
-								"text":      "foo bar baz",
-								"ts":        "1700000001.000000",
-								"permalink": "https://example.slack.com/archives/C001/p1700000001",
-							},
-						},
-						"total": 1,
-						"paging": map[string]any{
-							"count": 20,
-							"total": 1,
-							"page":  1,
-							"pages": 1,
-						},
-						"pagination": map[string]any{},
-					},
-				}))
-			},
-			hostOpts:      []plugintest.Option{plugintest.WithCredentialsJSON(credsJSON)},
-			toolName:      "search_messages",
-			inputJSON:     `{"query":"foo bar"}`,
-			wantOutputKey: "matches",
-			wantMetric:    true,
-		},
 		// ── react happy path ─────────────────────────────────────────────────
 		{
 			name: "react_happy",

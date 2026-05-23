@@ -149,6 +149,9 @@ func (q *dispatchIntegFakeQuerier) ListPluginsByStatus(_ context.Context, _ stri
 func (q *dispatchIntegFakeQuerier) ListPluginInstancesByPlugin(_ context.Context, _ string) ([]db.PluginInstance, error) {
 	return nil, nil
 }
+func (q *dispatchIntegFakeQuerier) GetPluginByID(_ context.Context, _ string) (db.Plugin, error) {
+	return db.Plugin{}, nil
+}
 func (q *dispatchIntegFakeQuerier) GetPluginInstanceByID(_ context.Context, _ string) (db.PluginInstance, error) {
 	return db.PluginInstance{}, nil
 }

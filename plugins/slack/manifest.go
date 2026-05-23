@@ -12,7 +12,7 @@ import (
 var pluginManifest = manifest.Manifest{
 	SchemaVersion: "v1",
 	Name:          "slack",
-	Version:       "0.1.0",
+	Version:       "0.1.1",
 	Description:   "Slack integration: tools (send/list channels), triggers (channel messages), and channels (notify/request via Slack DMs and posts).",
 	Services: manifest.Services{
 		Tool:    "v1",
@@ -47,7 +47,6 @@ var pluginManifest = manifest.Manifest{
 				"im:history",
 				"im:write",
 				"mpim:history",
-				"search:read",
 				"users:read",
 			},
 			// HasClientID and HasClientSecret describe whether the manifest carries
@@ -67,8 +66,8 @@ var pluginManifest = manifest.Manifest{
 	// ConfigSchema declares required instance-level config. The app_level_token
 	// (xapp- prefix) is the Socket Mode token used by TriggerService; it is
 	// separate from the OAuth bot token stored in credentials_encrypted.
-	// Phase-7 follow-up (#xxx): mark this field as gleipnir-secret so GET
-	// /api/v1/admin/plugin-instances/{iid} redacts it to "***".
+	// x-gleipnir-secret: true causes the host to redact this field to "***"
+	// on every GET response (ADR-049).
 	ConfigSchema: mustParseYAML(`
 type: object
 required:
@@ -76,6 +75,7 @@ required:
 properties:
   app_level_token:
     type: string
+    x-gleipnir-secret: true
     description: 'Slack app-level token (xapp- prefix) for Socket Mode. Generate in Slack admin: Settings → Socket Mode → Generate token with scope connections:write.'
 `),
 	Channels: []manifest.ChannelDecl{
@@ -126,7 +126,7 @@ properties:
 	},
 }
 
-// buildToolDecls returns the five Slack tool declarations for the manifest.
+// buildToolDecls returns the four Slack tool declarations for the manifest.
 // InputSchema is a *yaml.Node (manifest.ToolDecl.InputSchema, manifest.go:237)
 // produced by manifest.MustReflectSchema — distinct from the JSON-string form
 // used by ToolService.ListTools on the wire (see tools.go:reflectInputSchemaJSON).
@@ -143,11 +143,6 @@ func buildToolDecls() []manifest.ToolDecl {
 			Name:        "list_channels",
 			Description: "List Slack channels visible to the bot user.",
 			InputSchema: manifest.MustReflectSchema(ListChannelsParams{}),
-		},
-		{
-			Name:        "search_messages",
-			Description: "Search messages across the workspace using Slack's search.",
-			InputSchema: manifest.MustReflectSchema(SearchMessagesParams{}),
 		},
 		{
 			Name:        "react",

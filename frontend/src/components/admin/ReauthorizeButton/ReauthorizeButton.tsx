@@ -1,5 +1,6 @@
 import { Button } from '@/components/Button'
 import { useBeginPluginOAuth } from '@/hooks/mutations/plugins'
+import type { ApiError } from '@/api/fetch'
 
 interface ReauthorizeButtonProps {
   pluginId: string
@@ -10,6 +11,10 @@ interface ReauthorizeButtonProps {
   // the existing page-level banner is unaffected.
   label?: string
   pendingLabel?: string
+  // onError is called with null before each mutation attempt (to clear any
+  // prior error banner) and with the server error message if the mutation
+  // fails. The parent component owns error display; the button owns lifecycle.
+  onError?: (message: string | null) => void
 }
 
 const OAUTH_STRATEGIES = ['oauth2_authcode', 'oauth2_clientcred']
@@ -21,12 +26,17 @@ const OAUTH_STRATEGIES = ['oauth2_authcode', 'oauth2_clientcred']
 //
 // The optional `label` and `pendingLabel` props allow CredentialsTab to reuse
 // this button for the initial "Authorize" CTA without a separate component.
+//
+// Pass `onError` to receive mutation errors as a string so the parent can
+// render a visible error banner. The callback is always called with null first
+// (to reset any previous error) before each attempt.
 export function ReauthorizeButton({
   pluginId,
   instanceId,
   strategy,
   label = 'Re-authorize',
   pendingLabel = 'Starting…',
+  onError,
 }: ReauthorizeButtonProps) {
   const mutation = useBeginPluginOAuth()
 
@@ -38,6 +48,9 @@ export function ReauthorizeButton({
   }
 
   function handleClick() {
+    // Clear any prior error before starting a new attempt.
+    onError?.(null)
+
     const returnUrl = window.location.pathname + window.location.search
     mutation.mutate(
       { pluginId, instanceId, returnUrl },
@@ -49,6 +62,11 @@ export function ReauthorizeButton({
           }
           // clientcred: exchange is synchronous; query invalidation in the
           // mutation's onSuccess already refreshes instance state.
+        },
+        onError(err) {
+          const apiErr = err as ApiError
+          const message = apiErr?.detail ?? apiErr?.message ?? 'OAuth authorization failed.'
+          onError?.(message)
         },
       },
     )
