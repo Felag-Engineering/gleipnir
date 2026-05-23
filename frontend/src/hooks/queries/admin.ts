@@ -10,6 +10,7 @@ import type {
   ApiAudience,
   ApiAudienceReferences,
   ApiPluginInstanceForAudience,
+  ApiPluginInstanceDetail,
 } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
@@ -80,5 +81,18 @@ export function usePluginInstancesForAudience() {
   return useQuery({
     queryKey: queryKeys.admin.pluginInstances,
     queryFn: () => apiFetch<ApiPluginInstanceForAudience[]>('/admin/plugin-instances'),
+  })
+}
+
+// GET /api/v1/admin/plugins/{id}/instances/{iid} — per-instance health + config.
+// config_json is returned redacted (ADR-049) and parsed by the Config tab.
+export function usePluginInstanceDetail(pluginId: string | undefined, instanceId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.plugins.instance(pluginId ?? '', instanceId ?? ''),
+    queryFn: () =>
+      apiFetch<ApiPluginInstanceDetail>(
+        `/admin/plugins/${encodeURIComponent(pluginId!)}/instances/${encodeURIComponent(instanceId!)}`,
+      ),
+    enabled: !!pluginId && !!instanceId,
   })
 }

@@ -524,6 +524,22 @@ export interface ApiPluginInstanceForAudience {
   last_oauth_callback_url?: string
 }
 
+// ApiPluginInstanceDetail matches internal/admin/plugin_handler.go → instanceResponse.
+// Returned by GET /api/v1/admin/plugins/{id}/instances/{iid}.
+// config_json is a JSON-encoded map — the client parses it for display.
+// Secret fields in config_json are redacted to "***" (ADR-049).
+export interface ApiPluginInstanceDetail {
+  id: string
+  plugin_id: string
+  instance_name: string
+  state: string
+  detail: string | null
+  version: number
+  updated_at: string
+  subscription_scope_json: string
+  config_json: string
+}
+
 // ApiInstalledPlugin matches the installResponse struct returned by
 // POST /api/v1/admin/plugins (internal/admin/plugin_handler.go:installResponse).
 export interface ApiInstalledPlugin {
