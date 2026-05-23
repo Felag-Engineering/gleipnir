@@ -136,7 +136,7 @@ func buildOAuthHandler(t *testing.T, q OAuthPluginQuerier, publicURL string) *Pl
 	nonces := oauth.NewMemoryNonceStore(clock)
 	hmacKey := oauth.DeriveHMACKey(make([]byte, 32))
 	mgr := oauth.NewManager(store, nonces, clock, hmacKey, func() string { return publicURL })
-	return NewPluginOAuthHandler(q, mgr)
+	return NewPluginOAuthHandler(q, mgr, func() string { return publicURL })
 }
 
 func TestPluginOAuthHandler_Begin_NonOAuthStrategy_400(t *testing.T) {
@@ -179,7 +179,8 @@ func TestPluginOAuthHandler_Begin_AuthcodeReturnsAuthorizeURL(t *testing.T) {
 
 	h := buildOAuthHandler(t, q, "https://gleipnir.example.com")
 
-	body, _ := json.Marshal(map[string]string{"return_url": "https://app.example.com/settings"})
+	// Use a same-origin return_url so the new open-redirect validation passes.
+	body, _ := json.Marshal(map[string]string{"return_url": "https://gleipnir.example.com/admin/plugins/inst-1"})
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-1/instances/inst-1/oauth/begin", bytes.NewReader(body))
 	r = withChiParams(r, map[string]string{"id": "plugin-1", "iid": "inst-1"})
 	w := httptest.NewRecorder()
@@ -296,3 +297,113 @@ func TestPluginOAuthHandler_Callback_ProviderError_RedirectsWithError(t *testing
 	}
 }
 
+// --- validateReturnURL tests (Fix 2: open-redirect hardening) ---
+
+// TestValidateReturnURL covers the full acceptance/rejection matrix for
+// return_url validation. Rows with wantErr=false must be accepted; those with
+// wantErr=true must be rejected with a non-nil error.
+func TestValidateReturnURL(t *testing.T) {
+	const publicURL = "https://gleipnir.example.com"
+
+	cases := []struct {
+		name      string
+		returnURL string
+		publicURL string
+		wantErr   bool
+	}{
+		// Relative paths are always accepted.
+		{name: "relative path", returnURL: "/admin/plugins/inst-1", wantErr: false, publicURL: publicURL},
+		{name: "relative path with query", returnURL: "/admin?tab=oauth", wantErr: false, publicURL: publicURL},
+		// Same-origin absolute URLs are accepted.
+		{name: "same-origin absolute", returnURL: "https://gleipnir.example.com/admin/plugins", wantErr: false, publicURL: publicURL},
+		{name: "same-origin root", returnURL: "https://gleipnir.example.com/", wantErr: false, publicURL: publicURL},
+		// Different-origin absolute URLs are rejected.
+		{name: "different-origin absolute", returnURL: "https://evil.com/steal", wantErr: true, publicURL: publicURL},
+		{name: "different-scheme", returnURL: "http://gleipnir.example.com/admin", wantErr: true, publicURL: publicURL},
+		{name: "different host port", returnURL: "https://gleipnir.example.com:9999/admin", wantErr: true, publicURL: publicURL},
+		// Protocol-relative URLs must be rejected (browsers treat // as absolute).
+		{name: "protocol-relative", returnURL: "//evil.com/steal", wantErr: true, publicURL: publicURL},
+		// Malformed / non-URL strings are rejected.
+		{name: "bare word", returnURL: "evil.com", wantErr: true, publicURL: publicURL},
+		{name: "javascript scheme", returnURL: "javascript:alert(1)", wantErr: true, publicURL: publicURL},
+		// When publicURL is empty, only relative paths are accepted.
+		{name: "relative path no publicURL", returnURL: "/admin", wantErr: false, publicURL: ""},
+		{name: "absolute no publicURL", returnURL: "https://gleipnir.example.com/admin", wantErr: true, publicURL: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateReturnURL(tc.returnURL, tc.publicURL)
+			if tc.wantErr && err == nil {
+				t.Errorf("validateReturnURL(%q, %q): expected error, got nil", tc.returnURL, tc.publicURL)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("validateReturnURL(%q, %q): unexpected error: %v", tc.returnURL, tc.publicURL, err)
+			}
+		})
+	}
+}
+
+// TestPluginOAuthHandler_Begin_InvalidReturnURL_400 exercises the HTTP handler's
+// open-redirect guard. Sends a return_url pointing at a different origin and
+// expects a 400 response.
+func TestPluginOAuthHandler_Begin_InvalidReturnURL_400(t *testing.T) {
+	q := newFakeOAuthPluginQuerier()
+	q.instances["inst-1"] = db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		HealthState: "healthy",
+	}
+	q.plugins["plugin-1"] = db.Plugin{
+		ID:               "plugin-1",
+		ManifestSnapshot: buildTestManifest(t, sdkmanifest.AuthStrategyOAuth2Authcode),
+	}
+	h := buildOAuthHandler(t, q, "https://gleipnir.example.com")
+
+	for _, returnURL := range []string{
+		"https://evil.com/steal",
+		"//evil.com",
+		"javascript:alert(1)",
+	} {
+		body, _ := json.Marshal(map[string]string{"return_url": returnURL})
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-1/instances/inst-1/oauth/begin", bytes.NewReader(body))
+		r = withChiParams(r, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+		w := httptest.NewRecorder()
+
+		h.Begin(w, r)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("return_url=%q: expected 400, got %d: %s", returnURL, w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "invalid return_url") {
+			t.Errorf("return_url=%q: expected body to mention 'invalid return_url', got: %s", returnURL, w.Body.String())
+		}
+	}
+}
+
+// TestPluginOAuthHandler_Begin_RelativeReturnURL_Accepted verifies that a
+// relative path return_url passes validation and the flow proceeds normally.
+func TestPluginOAuthHandler_Begin_RelativeReturnURL_Accepted(t *testing.T) {
+	q := newFakeOAuthPluginQuerier()
+	q.instances["inst-1"] = db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		HealthState: "healthy",
+	}
+	q.plugins["plugin-1"] = db.Plugin{
+		ID:               "plugin-1",
+		ManifestSnapshot: buildTestManifest(t, sdkmanifest.AuthStrategyOAuth2Authcode),
+	}
+	h := buildOAuthHandler(t, q, "https://gleipnir.example.com")
+
+	body, _ := json.Marshal(map[string]string{"return_url": "/admin/plugins/inst-1"})
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-1/instances/inst-1/oauth/begin", bytes.NewReader(body))
+	r = withChiParams(r, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+
+	h.Begin(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for relative return_url, got %d: %s", w.Code, w.Body.String())
+	}
+}

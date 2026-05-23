@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -30,13 +31,16 @@ type OAuthPluginQuerier interface {
 //	POST /api/v1/admin/plugins/{id}/instances/{iid}/oauth/begin
 //	GET  /api/v1/admin/plugins/oauth/callback  (unprotected)
 type PluginOAuthHandler struct {
-	mgr *oauth.Manager
-	q   OAuthPluginQuerier
+	mgr          *oauth.Manager
+	q            OAuthPluginQuerier
+	getPublicURL func() string
 }
 
-// NewPluginOAuthHandler constructs a PluginOAuthHandler.
-func NewPluginOAuthHandler(q OAuthPluginQuerier, mgr *oauth.Manager) *PluginOAuthHandler {
-	return &PluginOAuthHandler{mgr: mgr, q: q}
+// NewPluginOAuthHandler constructs a PluginOAuthHandler. getPublicURL is called
+// at request time to validate return_url against the host's configured origin;
+// it mirrors the same closure passed to oauth.NewManager in main.go.
+func NewPluginOAuthHandler(q OAuthPluginQuerier, mgr *oauth.Manager, getPublicURL func() string) *PluginOAuthHandler {
+	return &PluginOAuthHandler{mgr: mgr, q: q, getPublicURL: getPublicURL}
 }
 
 // beginRequest is the JSON body for POST .../oauth/begin.
@@ -105,6 +109,15 @@ func (h *PluginOAuthHandler) Begin(w http.ResponseWriter, r *http.Request) {
 	case sdkmanifest.AuthStrategyOAuth2Authcode:
 		if req.ReturnURL == "" {
 			httputil.WriteError(w, http.StatusBadRequest, "return_url is required for oauth2_authcode", "")
+			return
+		}
+		// Validate return_url before embedding it in the signed HMAC envelope.
+		// The callback endpoint is unauthenticated (browser arrives from the OAuth
+		// provider), so an unvalidated return_url would be an open redirect that
+		// any attacker could weaponise via a CSRF-crafted /oauth/begin POST.
+		if err := validateReturnURL(req.ReturnURL, h.getPublicURL()); err != nil {
+			httputil.WriteError(w, http.StatusBadRequest, "invalid return_url",
+				"must be same-origin as public_url or a relative path")
 			return
 		}
 		authorizeURL, err := h.mgr.BeginAuthcode(ctx, instanceID, req.ReturnURL)
@@ -178,14 +191,29 @@ func (h *PluginOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	returnURL, err := h.mgr.HandleCallback(ctx, rawState, code)
 	if err != nil {
-		slog.ErrorContext(ctx, "oauth callback: handle failed", "err", err)
+		// Build a user-facing error message. For ProviderExchangeError we surface
+		// Code (and Description when present) so operators see "invalid_code" rather
+		// than the opaque golang.org/x/oauth2 blob. The raw error is always logged.
+		var pee *oauth.ProviderExchangeError
+		userMsg := err.Error()
+		if errors.As(err, &pee) {
+			slog.ErrorContext(ctx, "oauth callback: provider exchange error",
+				"code", pee.Code, "description", pee.Description, "raw", pee.Raw)
+			if pee.Description != "" {
+				userMsg = pee.Code + ": " + pee.Description
+			} else {
+				userMsg = pee.Code
+			}
+		} else {
+			slog.ErrorContext(ctx, "oauth callback: handle failed", "err", err)
+		}
 		// Try to extract ReturnURL from state for best-effort redirect.
 		env, decodeErr := h.mgr.DecodeStateForRedirect(rawState)
 		if decodeErr != nil || env.ReturnURL == "" {
-			httputil.WriteError(w, http.StatusBadRequest, "oauth callback failed", err.Error())
+			httputil.WriteError(w, http.StatusBadRequest, "oauth callback failed", userMsg)
 			return
 		}
-		redirectWithError(w, r, env.ReturnURL, err.Error())
+		redirectWithError(w, r, env.ReturnURL, userMsg)
 		return
 	}
 
@@ -202,6 +230,53 @@ func (h *PluginOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	params.Set("oauth_ok", "1")
 	u.RawQuery = params.Encode()
 	http.Redirect(w, r, u.String(), http.StatusFound)
+}
+
+// validateReturnURL checks that returnURL is safe to redirect to after OAuth.
+// We accept:
+//   - A relative path (starts with "/" but not "//", which would be protocol-relative).
+//   - An absolute URL whose origin matches the host's configured publicURL.
+//
+// Anything else (different origin, protocol-relative, unparseable) is rejected
+// to prevent an open-redirect vulnerability: the callback endpoint is
+// intentionally unauthenticated, so an attacker who can craft a /oauth/begin
+// POST (e.g. via CSRF against a logged-in admin) would otherwise control the
+// final redirect destination.
+//
+// Returns ("", nil) when the input is valid. Returns an error when it is not.
+func validateReturnURL(returnURL, publicURL string) error {
+	// Relative paths are safe — the browser resolves them against the current
+	// host, so there is no risk of redirecting to an attacker-controlled origin.
+	// However "//evil.com" (protocol-relative) must be rejected because browsers
+	// treat it as an absolute URL with the current protocol.
+	if strings.HasPrefix(returnURL, "/") && !strings.HasPrefix(returnURL, "//") {
+		return nil
+	}
+
+	// For absolute URLs we require same-origin as publicURL.
+	// Parse both and compare scheme + host (port is included in host when
+	// non-standard, so net/url handles it correctly).
+	parsed, err := url.Parse(returnURL)
+	if err != nil || parsed.Host == "" {
+		// Unparseable or not an absolute URL — reject.
+		return fmt.Errorf("not a valid absolute URL or relative path")
+	}
+
+	if publicURL == "" {
+		// No public URL configured: we cannot verify same-origin, so we must
+		// reject any absolute URL to stay fail-closed.
+		return fmt.Errorf("public_url is not configured; only relative paths are accepted")
+	}
+
+	pub, err := url.Parse(publicURL)
+	if err != nil || pub.Host == "" {
+		return fmt.Errorf("configured public_url is not a valid URL")
+	}
+
+	if parsed.Scheme != pub.Scheme || parsed.Host != pub.Host {
+		return fmt.Errorf("must be same-origin as public_url (%s)", pub.Scheme+"://"+pub.Host)
+	}
+	return nil
 }
 
 // redirectWithError redirects the browser to returnURL with an oauth_error

@@ -485,6 +485,167 @@ func TestBeginClientcred_SkipsCallbackURL_WhenPublicURLEmpty(t *testing.T) {
 	// The important invariant is: no panic and no error returned.
 }
 
+// providerErrorBody builds a minimal Slack-shaped OAuth error JSON body.
+// code is the machine-readable error code (e.g. "invalid_code");
+// description is the human-readable error_description (may be empty).
+func providerErrorBody(code, description string) string {
+	if description == "" {
+		return `{"error":"` + code + `"}`
+	}
+	return `{"error":"` + code + `","error_description":"` + description + `"}`
+}
+
+// buildCallbackState builds a valid signed state envelope seeded with inst-1
+// and records its nonce in the given store. Returns the base64-encoded state string.
+func buildCallbackState(t *testing.T, nonces NonceStore, hmacKey []byte, clock func() time.Time) string {
+	t.Helper()
+	env, nonce, err := NewStateEnvelope("inst-1", "/admin/plugins/inst-1", clock)
+	if err != nil {
+		t.Fatalf("NewStateEnvelope: %v", err)
+	}
+	if err := nonces.Record(context.Background(), nonce, "inst-1"); err != nil {
+		t.Fatalf("Record nonce: %v", err)
+	}
+	encoded, err := EncodeState(env, hmacKey)
+	if err != nil {
+		t.Fatalf("EncodeState: %v", err)
+	}
+	return encoded
+}
+
+// buildTokenServerWithError returns an httptest.Server that responds to the
+// token endpoint with the given HTTP status code and JSON body.
+func buildTokenServerWithError(t *testing.T, statusCode int, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestHandleCallback_ProviderError_InvalidCode checks that a Slack-shaped
+// "invalid_code" response from the token endpoint surfaces as a
+// *ProviderExchangeError with Code="invalid_code".
+func TestHandleCallback_ProviderError_InvalidCode(t *testing.T) {
+	srv := buildTokenServerWithError(t, http.StatusBadRequest,
+		providerErrorBody("invalid_code", "The code has already been redeemed."))
+
+	creds := testCreds("oauth2_authcode")
+	creds.TokenURL = srv.URL + "/token"
+	q := buildInstanceWithCreds(t, creds)
+
+	baseTime := time.Unix(1000000, 0)
+	clock := func() time.Time { return baseTime }
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, clock)
+	nonces := &MemoryNonceStore{entries: make(map[string]time.Time), clock: clock}
+	hmacKey := fixedKey()
+	mgr := NewManager(store, nonces, clock, hmacKey, func() string { return "https://gleipnir.example.com" })
+
+	encoded := buildCallbackState(t, nonces, hmacKey, clock)
+
+	_, err := mgr.HandleCallback(context.Background(), encoded, "used-code")
+	if err == nil {
+		t.Fatal("expected error from HandleCallback, got nil")
+	}
+
+	var pee *ProviderExchangeError
+	if !errors.As(err, &pee) {
+		t.Fatalf("expected *ProviderExchangeError, got %T: %v", err, err)
+	}
+	if pee.Code != "invalid_code" {
+		t.Errorf("Code = %q, want %q", pee.Code, "invalid_code")
+	}
+	if pee.Description == "" {
+		t.Error("expected non-empty Description for invalid_code")
+	}
+	if pee.Raw == "" {
+		t.Error("expected non-empty Raw error string")
+	}
+}
+
+// TestHandleCallback_ProviderError_RedirectURIMismatch checks that
+// "redirect_uri_mismatch" surfaces as a *ProviderExchangeError.
+func TestHandleCallback_ProviderError_RedirectURIMismatch(t *testing.T) {
+	srv := buildTokenServerWithError(t, http.StatusBadRequest,
+		providerErrorBody("redirect_uri_mismatch", "redirect_uri did not match"))
+
+	creds := testCreds("oauth2_authcode")
+	creds.TokenURL = srv.URL + "/token"
+	q := buildInstanceWithCreds(t, creds)
+
+	baseTime := time.Unix(1000000, 0)
+	clock := func() time.Time { return baseTime }
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, clock)
+	nonces := &MemoryNonceStore{entries: make(map[string]time.Time), clock: clock}
+	hmacKey := fixedKey()
+	mgr := NewManager(store, nonces, clock, hmacKey, func() string { return "https://gleipnir.example.com" })
+
+	encoded := buildCallbackState(t, nonces, hmacKey, clock)
+
+	_, err := mgr.HandleCallback(context.Background(), encoded, "code-xyz")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var pee *ProviderExchangeError
+	if !errors.As(err, &pee) {
+		t.Fatalf("expected *ProviderExchangeError, got %T: %v", err, err)
+	}
+	if pee.Code != "redirect_uri_mismatch" {
+		t.Errorf("Code = %q, want %q", pee.Code, "redirect_uri_mismatch")
+	}
+}
+
+// TestHandleCallback_ProviderError_InvalidClient checks that "invalid_client"
+// (missing/wrong client credentials) surfaces as a *ProviderExchangeError.
+func TestHandleCallback_ProviderError_InvalidClient(t *testing.T) {
+	srv := buildTokenServerWithError(t, http.StatusUnauthorized,
+		providerErrorBody("invalid_client", ""))
+
+	creds := testCreds("oauth2_authcode")
+	creds.TokenURL = srv.URL + "/token"
+	q := buildInstanceWithCreds(t, creds)
+
+	baseTime := time.Unix(1000000, 0)
+	clock := func() time.Time { return baseTime }
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, clock)
+	nonces := &MemoryNonceStore{entries: make(map[string]time.Time), clock: clock}
+	hmacKey := fixedKey()
+	mgr := NewManager(store, nonces, clock, hmacKey, func() string { return "https://gleipnir.example.com" })
+
+	encoded := buildCallbackState(t, nonces, hmacKey, clock)
+
+	_, err := mgr.HandleCallback(context.Background(), encoded, "code-abc")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var pee *ProviderExchangeError
+	if !errors.As(err, &pee) {
+		t.Fatalf("expected *ProviderExchangeError, got %T: %v", err, err)
+	}
+	if pee.Code != "invalid_client" {
+		t.Errorf("Code = %q, want %q", pee.Code, "invalid_client")
+	}
+	// Description may be empty when the provider omits the field — that is fine.
+}
+
+// TestProviderExchangeError_ErrorMethod checks the Error() string formatting.
+func TestProviderExchangeError_ErrorMethod(t *testing.T) {
+	withDesc := &ProviderExchangeError{Code: "invalid_code", Description: "already used", Raw: "raw blob"}
+	if withDesc.Error() != "oauth provider error: invalid_code: already used" {
+		t.Errorf("unexpected Error(): %q", withDesc.Error())
+	}
+
+	noDesc := &ProviderExchangeError{Code: "invalid_client", Raw: "raw blob"}
+	if noDesc.Error() != "oauth provider error: invalid_client" {
+		t.Errorf("unexpected Error() with no description: %q", noDesc.Error())
+	}
+}
+
 func TestHandleCallback_NonceSingleUse_WithDBStore(t *testing.T) {
 	baseTime := time.Unix(1000000, 0)
 	clock := func() time.Time { return baseTime }

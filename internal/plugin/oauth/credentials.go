@@ -64,7 +64,7 @@ type StoredCredentials struct {
 // The plugin receives one header whose value is Scheme + " " + APIKey (or
 // just APIKey when Scheme is empty).
 type StaticAPIKeyCreds struct {
-	HeaderName string `json:"header_name"` // e.g. "X-API-Key"
+	HeaderName string `json:"header_name"`      // e.g. "X-API-Key"
 	Scheme     string `json:"scheme,omitempty"` // optional prefix, e.g. "Bearer"
 	APIKey     string `json:"api_key"`
 }
