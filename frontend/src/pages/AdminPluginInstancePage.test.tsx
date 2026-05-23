@@ -1,6 +1,7 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
@@ -12,6 +13,7 @@ import { RefreshFailureDetailPrefix } from '@/utils/pluginHealth'
 
 vi.mock('@/hooks/queries/admin')
 vi.mock('@/hooks/mutations/plugins')
+vi.mock('@/hooks/queries/users')
 vi.mock('@/components/admin/ReauthorizeButton/ReauthorizeButton', () => ({
   ReauthorizeButton: ({ strategy }: { strategy: string }) => (
     <button data-testid="reauth-btn" data-strategy={strategy}>Re-authorize</button>
@@ -19,7 +21,9 @@ vi.mock('@/components/admin/ReauthorizeButton/ReauthorizeButton', () => ({
 }))
 
 import { usePluginInstancesForAudience } from '@/hooks/queries/admin'
-import { useSetInstanceSubscriptionScope, useBeginPluginOAuth } from '@/hooks/mutations/plugins'
+import { useSetInstanceSubscriptionScope, useBeginPluginOAuth, useDeletePluginInstance } from '@/hooks/mutations/plugins'
+import { useCurrentUser } from '@/hooks/queries/users'
+import { ApiError } from '@/api/fetch'
 
 // --- Fixtures ---
 
@@ -92,6 +96,7 @@ function renderPage(search = '') {
       <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/admin/plugins/:id/instances/:iid" element={<AdminPluginInstancePage />} />
+          <Route path="/admin/plugins" element={<div>Plugins list</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -112,6 +117,15 @@ function mockInstancesPending() {
   } as unknown as ReturnType<typeof usePluginInstancesForAudience>)
 }
 
+function mockCurrentUser(roles: string[] = ['admin']) {
+  vi.mocked(useCurrentUser).mockReturnValue({
+    data: { id: 'user-01', username: 'admin', roles },
+    status: 'success',
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useCurrentUser>)
+}
+
 function mockMutationNoop() {
   vi.mocked(useSetInstanceSubscriptionScope).mockReturnValue({
     mutate: vi.fn(),
@@ -121,6 +135,10 @@ function mockMutationNoop() {
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof useBeginPluginOAuth>)
+  vi.mocked(useDeletePluginInstance).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as unknown as ReturnType<typeof useDeletePluginInstance>)
 }
 
 function mockMutationSuccess(onSuccessCapture?: (fn: () => void) => void) {
@@ -141,6 +159,7 @@ function mockMutationSuccess(onSuccessCapture?: (fn: () => void) => void) {
 
 describe('AdminPluginInstancePage — loading state', () => {
   beforeEach(() => {
+    mockCurrentUser(['admin'])
     mockInstancesPending()
     mockMutationNoop()
   })
@@ -153,6 +172,7 @@ describe('AdminPluginInstancePage — loading state', () => {
 
 describe('AdminPluginInstancePage — with subscription_schema', () => {
   beforeEach(() => {
+    mockCurrentUser(['admin'])
     mockInstancesLoaded([INSTANCE_WITH_SCHEMA])
     mockMutationNoop()
   })
@@ -195,6 +215,7 @@ describe('AdminPluginInstancePage — with subscription_schema', () => {
 
 describe('AdminPluginInstancePage — without subscription_schema', () => {
   beforeEach(() => {
+    mockCurrentUser(['admin'])
     mockInstancesLoaded([INSTANCE_NO_SCHEMA])
     mockMutationNoop()
   })
@@ -213,6 +234,7 @@ describe('AdminPluginInstancePage — without subscription_schema', () => {
 
 describe('AdminPluginInstancePage — Re-authorize banner visibility', () => {
   beforeEach(() => {
+    mockCurrentUser(['admin'])
     mockMutationNoop()
   })
 
@@ -247,6 +269,74 @@ describe('AdminPluginInstancePage — Re-authorize banner visibility', () => {
   })
 })
 
+describe('AdminPluginInstancePage — delete instance', () => {
+  beforeEach(() => {
+    mockCurrentUser(['admin'])
+    mockInstancesLoaded([INSTANCE_WITH_SCHEMA])
+    mockMutationNoop()
+  })
+
+  it('renders Delete instance button for admin role', () => {
+    renderPage()
+    expect(screen.getByRole('button', { name: /delete instance/i })).toBeInTheDocument()
+  })
+
+  it('does NOT render Delete instance button for auditor role', () => {
+    mockCurrentUser(['auditor'])
+    renderPage()
+    expect(screen.queryByRole('button', { name: /delete instance/i })).not.toBeInTheDocument()
+  })
+
+  it('opens the DeletePluginInstanceModal when Delete instance is clicked', async () => {
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /delete instance/i }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    // Modal should display the instance name.
+    expect(screen.getByText('slack-prod')).toBeInTheDocument()
+  })
+
+  it('calls mutation and navigates to /admin/plugins on success', async () => {
+    const mutateFn = vi.fn((_params: unknown, opts: { onSuccess?: () => void }) => {
+      opts.onSuccess?.()
+    })
+    vi.mocked(useDeletePluginInstance).mockReturnValue({
+      mutate: mutateFn,
+      isPending: false,
+    } as unknown as ReturnType<typeof useDeletePluginInstance>)
+
+    renderPage()
+    // Open modal via the "Delete instance" button in the page header.
+    await userEvent.click(screen.getByRole('button', { name: /delete instance/i }))
+    // Confirm inside the dialog — avoids ambiguity if button text matches multiple elements.
+    const dialog = screen.getByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: /delete instance/i }))
+
+    expect(mutateFn).toHaveBeenCalledWith(
+      { pluginId: PLUGIN_ID, instanceId: INSTANCE_ID },
+      expect.any(Object),
+    )
+  })
+
+  it('shows 409 error detail in the modal when deletion is blocked', async () => {
+    const apiErr = new ApiError(409, 'conflict', 'Policy "Nightly" still references this instance.')
+    const mutateFn = vi.fn((_params: unknown, opts: { onError?: (err: unknown) => void }) => {
+      opts.onError?.(apiErr)
+    })
+    vi.mocked(useDeletePluginInstance).mockReturnValue({
+      mutate: mutateFn,
+      isPending: false,
+    } as unknown as ReturnType<typeof useDeletePluginInstance>)
+
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /delete instance/i }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: /delete instance/i }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    expect(screen.getByRole('alert')).toHaveTextContent('Policy "Nightly"')
+  })
+})
+
 describe('AdminPluginInstancePage — oauth_ok query param', () => {
   // The page reads window.location.search directly (not from React Router) so
   // the jsdom window.location must match. Replace it with a stub for these tests.
@@ -262,6 +352,7 @@ describe('AdminPluginInstancePage — oauth_ok query param', () => {
   }
 
   it('invalidates plugin-instances query on mount when ?oauth_ok=1 is present', async () => {
+    mockCurrentUser(['admin'])
     mockInstancesLoaded([INSTANCE_WITH_SCHEMA])
     mockMutationNoop()
 
@@ -279,6 +370,7 @@ describe('AdminPluginInstancePage — oauth_ok query param', () => {
   })
 
   it('does NOT invalidate when ?oauth_ok is absent', async () => {
+    mockCurrentUser(['admin'])
     mockInstancesLoaded([INSTANCE_WITH_SCHEMA])
     mockMutationNoop()
 

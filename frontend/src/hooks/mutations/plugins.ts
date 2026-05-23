@@ -295,6 +295,55 @@ export function useCreatePluginInstance() {
 
 // ── Subscription scope ────────────────────────────────────────────────────────
 
+// ── Delete instance / Uninstall plugin ───────────────────────────────────────
+
+interface DeletePluginInstanceParams {
+  pluginId: string
+  instanceId: string
+}
+
+// useDeletePluginInstance fires DELETE /api/v1/admin/plugins/{id}/instances/{iid}.
+// On success, both the per-plugin instances list and the flat admin plugin-instances
+// list are invalidated so the instance row disappears from all views.
+// 409 responses surface in ApiError.detail (policy / audience references that
+// must be resolved before deletion is allowed).
+export function useDeletePluginInstance() {
+  const qc = useQueryClient()
+  return useMutation<void, ApiError, DeletePluginInstanceParams>({
+    mutationFn: ({ pluginId, instanceId }) =>
+      apiFetchVoid(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: (_data, { pluginId }) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.plugins.instances(pluginId) })
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.pluginInstances })
+    },
+  })
+}
+
+interface UninstallPluginParams {
+  pluginId: string
+}
+
+// useUninstallPlugin fires DELETE /api/v1/admin/plugins/{id}.
+// On success, the plugin list and the flat admin plugin-instances list are
+// invalidated so the plugin group disappears from all views.
+// 409 responses surface in ApiError.detail (policy / audience references).
+export function useUninstallPlugin() {
+  const qc = useQueryClient()
+  return useMutation<void, ApiError, UninstallPluginParams>({
+    mutationFn: ({ pluginId }) =>
+      apiFetchVoid(`/admin/plugins/${encodeURIComponent(pluginId)}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.plugins.list() })
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.pluginInstances })
+    },
+  })
+}
+
+// ── Subscription scope ────────────────────────────────────────────────────────
+
 // useSetInstanceSubscriptionScope submits a new subscription scope for a plugin
 // instance. On success it invalidates the plugin-instances list so the audience
 // editor and trigger picker reflect the updated scope.

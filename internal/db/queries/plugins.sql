@@ -100,6 +100,14 @@ WHERE id = :id AND version = :expected_version;
 UPDATE plugin_instances SET last_oauth_callback_url = :last_oauth_callback_url, version = version + 1, updated_at = :updated_at
 WHERE id = :id AND version = :expected_version;
 
+-- DeletePlugin removes a plugin row by ID. The plugin_instances table has
+-- ON DELETE CASCADE so all instances are removed automatically. This avoids
+-- needing individual instance deletes here; callers must still manually clear
+-- plugin_pending_requests (RESTRICT FK) and plugin_oauth_nonces before
+-- calling DeletePlugin.
+-- name: DeletePlugin :execrows
+DELETE FROM plugins WHERE id = :id;
+
 -- name: DeletePluginInstance :execrows
 DELETE FROM plugin_instances WHERE id = :id;
 

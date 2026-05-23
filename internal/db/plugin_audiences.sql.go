@@ -310,6 +310,53 @@ func (q *Queries) ListAudienceEntries(ctx context.Context, audienceID string) ([
 	return items, nil
 }
 
+const listAudienceEntriesByInstance = `-- name: ListAudienceEntriesByInstance :many
+SELECT ae.id, ae.audience_id, ae.plugin_instance_id, pa.name AS audience_name
+FROM audience_entries ae
+JOIN plugin_audiences pa ON pa.id = ae.audience_id
+WHERE ae.plugin_instance_id = ?
+ORDER BY pa.name
+`
+
+type ListAudienceEntriesByInstanceRow struct {
+	ID               string `json:"id"`
+	AudienceID       string `json:"audience_id"`
+	PluginInstanceID string `json:"plugin_instance_id"`
+	AudienceName     string `json:"audience_name"`
+}
+
+// ListAudienceEntriesByInstance returns the audience_id and audience name for
+// every audience_entries row that references the given plugin instance. Used by
+// the DeleteInstance and Uninstall handlers to surface the audience names that
+// must be cleaned up before deletion can proceed.
+func (q *Queries) ListAudienceEntriesByInstance(ctx context.Context, pluginInstanceID string) ([]ListAudienceEntriesByInstanceRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAudienceEntriesByInstance, pluginInstanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAudienceEntriesByInstanceRow
+	for rows.Next() {
+		var i ListAudienceEntriesByInstanceRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AudienceID,
+			&i.PluginInstanceID,
+			&i.AudienceName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPluginAudiences = `-- name: ListPluginAudiences :many
 SELECT id, name, created_by_user_id, version, created_at, updated_at, disable_in_app_fallback
 FROM plugin_audiences ORDER BY name

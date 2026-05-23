@@ -218,6 +218,8 @@ Admin / Plugins:
 GET    /api/v1/admin/plugin-instances                                         (admin|operator|auditor; list with channel + event_kinds enrichment)
 POST   /api/v1/admin/plugins                                                   (admin; install tarball as application/octet-stream, max 100 MiB)
 POST   /api/v1/admin/plugins/:id/instances                                     (admin; create instance with {instance_name})
+DELETE /api/v1/admin/plugins/:id                                               (admin; uninstall plugin — 409 on policy/audience references, removes bundle dir)
+DELETE /api/v1/admin/plugins/:id/instances/:iid                                (admin; delete a single instance — same 409 guards, scoped to one)
 GET    /api/v1/admin/plugins/:id/instances/:iid                                (admin; per-instance health detail)
 PUT    /api/v1/admin/plugins/:id/instances/:iid/config                         (admin; CAS-guarded instance config blob; validates against manifest config_schema when declared)
 PUT    /api/v1/admin/plugins/:id/instances/:iid/credentials/oauth-token        (admin; advanced seed for oauth2_* strategies — escape hatch for E2E/manual recovery)

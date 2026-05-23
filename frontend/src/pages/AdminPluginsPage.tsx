@@ -1,14 +1,17 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { PageHeader } from '@/components/PageHeader'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { PluginHealthChip } from '@/components/admin/PluginHealthChip/PluginHealthChip'
 import { InstallPluginButton } from '@/components/admin/InstallPluginButton'
 import { AddInstanceModal } from '@/components/admin/AddInstanceModal'
+import { UninstallPluginModal } from '@/components/admin/UninstallPluginModal'
 import { Button } from '@/components/Button'
 import { usePluginInstancesForAudience } from '@/hooks/queries/admin'
 import { useCurrentUser } from '@/hooks/queries/users'
+import { useUninstallPlugin } from '@/hooks/mutations/plugins'
 import { usePageTitle } from '@/hooks/usePageTitle'
+import { ApiError } from '@/api/fetch'
 import type { ApiInstalledPlugin, ApiPluginInstanceForAudience } from '@/api/types'
 import styles from './AdminPluginsPage.module.css'
 
@@ -34,6 +37,46 @@ export default function AdminPluginsPage() {
     pluginId: string
     pluginName: string
   } | null>(null)
+
+  // Tracks which plugin's "Uninstall" modal is currently open.
+  const [openUninstall, setOpenUninstall] = useState<{
+    pluginId: string
+    pluginName: string
+    instanceNames: string[]
+  } | null>(null)
+  const [uninstallError, setUninstallError] = useState<string | null>(null)
+
+  // One ref per plugin group's <details> kebab element, keyed by pluginId.
+  // Used to close the disclosure when a menu item is activated.
+  const kebabRefs = useRef<Map<string, HTMLDetailsElement>>(new Map())
+
+  function closeKebab(pluginId: string) {
+    kebabRefs.current.get(pluginId)?.removeAttribute('open')
+  }
+
+  const uninstallMutation = useUninstallPlugin()
+
+  function handleUninstall() {
+    if (!openUninstall) return
+    setUninstallError(null)
+    uninstallMutation.mutate(
+      { pluginId: openUninstall.pluginId },
+      {
+        onSuccess: () => {
+          setOpenUninstall(null)
+        },
+        onError: (err: unknown) => {
+          if (err instanceof ApiError) {
+            setUninstallError(err.detail ?? err.message)
+          } else if (err instanceof Error) {
+            setUninstallError(err.message)
+          } else {
+            setUninstallError('Unexpected error — please try again.')
+          }
+        },
+      },
+    )
+  }
 
   // lastInstalledPluginId drives the scroll-into-view effect after an install.
   const [lastInstalledPluginId, setLastInstalledPluginId] = useState<string | null>(null)
@@ -162,6 +205,34 @@ export default function AdminPluginsPage() {
                       >
                         Add instance
                       </Button>
+                      <details
+                        className={styles.kebab}
+                        ref={(el) => {
+                          if (el) kebabRefs.current.set(pluginId, el)
+                          else kebabRefs.current.delete(pluginId)
+                        }}
+                      >
+                        <summary className={styles.kebabToggle} aria-label="Plugin actions">
+                          &#8942;
+                        </summary>
+                        <div className={styles.kebabMenu}>
+                          <button
+                            type="button"
+                            className={styles.menuItemDanger}
+                            onClick={() => {
+                              closeKebab(pluginId)
+                              setUninstallError(null)
+                              setOpenUninstall({
+                                pluginId,
+                                pluginName,
+                                instanceNames: groupInstances.map((i) => i.instance_name),
+                              })
+                            }}
+                          >
+                            Uninstall plugin
+                          </button>
+                        </div>
+                      </details>
                     </div>
                   )}
                 </div>
@@ -208,6 +279,20 @@ export default function AdminPluginsPage() {
               .map((inst) => inst.instance_name)
           }
           onClose={() => setOpenAddInstance(null)}
+        />
+      )}
+
+      {openUninstall && (
+        <UninstallPluginModal
+          pluginName={openUninstall.pluginName}
+          instanceNames={openUninstall.instanceNames}
+          onClose={() => {
+            setOpenUninstall(null)
+            setUninstallError(null)
+          }}
+          onConfirm={handleUninstall}
+          isPending={uninstallMutation.isPending}
+          error={uninstallError}
         />
       )}
     </div>

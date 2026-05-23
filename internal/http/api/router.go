@@ -249,8 +249,10 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				r.Put("/plugins/{id}/instances/{iid}/subscription-scope", cfg.Handlers.PluginAdminHandler.PutSubscriptionScope)
 				r.Put("/plugins/{id}/instances/{iid}/config", cfg.Handlers.PluginAdminHandler.PutInstanceConfig)
 				r.Put("/plugins/{id}/instances/{iid}/config/{property}", cfg.Handlers.PluginAdminHandler.PutInstanceConfigProperty)
+				r.Delete("/plugins/{id}/instances/{iid}", cfg.Handlers.PluginAdminHandler.DeleteInstance)
 				r.Post("/plugins/{id}/accept-new-key", cfg.Handlers.PluginAdminHandler.AcceptNewKey)
 				r.Post("/plugins/{id}/accept-manifest", cfg.Handlers.PluginAdminHandler.AcceptManifest)
+				r.Delete("/plugins/{id}", cfg.Handlers.PluginAdminHandler.Uninstall)
 			}
 			if cfg.Handlers.PluginOAuthHandler != nil {
 				r.Post("/plugins/{id}/instances/{iid}/oauth/begin", cfg.Handlers.PluginOAuthHandler.Begin)
