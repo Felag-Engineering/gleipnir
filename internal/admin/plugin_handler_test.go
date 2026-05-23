@@ -36,8 +36,8 @@ type fakePluginQuerier struct {
 	audienceEntries map[string][]db.ListAudienceEntriesByInstanceRow
 	// casFailOn is the plugin ID that should return 0 rows for UpdatePluginTrustedPubkey
 	// or UpdatePluginManifest to simulate a CAS conflict.
-	casFailOn        string
-	updatePubkey     string // last value written by UpdatePluginTrustedPubkey
+	casFailOn         string
+	updatePubkey      string // last value written by UpdatePluginTrustedPubkey
 	scopeCASFailOnID  string // instance ID that should return 0 rows for UpdatePluginInstanceSubscriptionScope
 	configCASFailOnID string // instance ID that should return 0 rows for UpdatePluginInstanceConfig
 	createInstanceErr error  // if non-nil, CreatePluginInstance returns this error
@@ -565,7 +565,7 @@ func TestPutInstanceConfig_ResponseRedactsWrittenSecret(t *testing.T) {
 // synthesized-response branch.
 type failOnSecondGetInstance struct {
 	*fakePluginQuerier
-	targetID string
+	targetID  string
 	callCount int
 }
 
@@ -1470,13 +1470,13 @@ func TestPluginHandler_PutInstanceConfig_HappyPath(t *testing.T) {
 		Version:          0,
 	})
 	q.seed(db.PluginInstance{
-		ID:          "inst-1",
-		PluginID:    "plugin-1",
+		ID:           "inst-1",
+		PluginID:     "plugin-1",
 		InstanceName: "prod",
-		ConfigJson:  "{}",
-		HealthState: "healthy",
-		Version:     0,
-		UpdatedAt:   "2026-01-01T00:00:00Z",
+		ConfigJson:   "{}",
+		HealthState:  "healthy",
+		Version:      0,
+		UpdatedAt:    "2026-01-01T00:00:00Z",
 	})
 
 	h := NewPluginHandler(q, nil, fixedClock)
@@ -1682,9 +1682,9 @@ func TestPluginHandler_PutInstanceConfig_MalformedManifest_500(t *testing.T) {
 
 // fakeProcessManager is a PluginProcessManager stub that records Stop calls.
 type fakeProcessManager struct {
-	mu            sync.Mutex
-	stoppedIDs    []string
-	stopErr       error
+	mu              sync.Mutex
+	stoppedIDs      []string
+	stopErr         error
 	stoppedByPlugin []string
 }
 

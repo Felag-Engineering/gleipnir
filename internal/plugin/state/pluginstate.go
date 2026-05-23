@@ -134,8 +134,8 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		model.PluginHealthStateCrashed,
 		model.PluginHealthStateCircuitBroken,
 		model.PluginHealthStatePendingManifestApproval,
-		model.PluginHealthStatePendingKeyApproval,  // signed update arrives for previously-unsigned plugin (#188)
-		model.PluginHealthStatePendingReauthorize,  // public_url changed (#230)
+		model.PluginHealthStatePendingKeyApproval, // signed update arrives for previously-unsigned plugin (#188)
+		model.PluginHealthStatePendingReauthorize, // public_url changed (#230)
 	},
 	// #194 rationale: real availability problems must be visible regardless of
 	// pending_reauthorize. Exit edges include unhealthy/crashed/circuit_broken
@@ -148,6 +148,7 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 	},
 	model.PluginHealthStateUnhealthy: {
 		model.PluginHealthStateHealthy,
+		model.PluginHealthStateUnhealthy, // self-loop: host may advance the detail string (config_missing → credentials_missing → …) without leaving unhealthy
 		model.PluginHealthStateCrashed,
 		model.PluginHealthStateCircuitBroken,
 		model.PluginHealthStatePendingKeyApproval, // key mismatch detected during unhealthy state (#188)
@@ -156,8 +157,8 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		model.PluginHealthStateHealthy,
 		model.PluginHealthStateUnhealthy,
 		model.PluginHealthStateCrashed,
-		model.PluginHealthStatePendingKeyApproval,  // key mismatch detected during circuit-broken state (#188)
-		model.PluginHealthStatePendingReauthorize,  // public_url changed (#230)
+		model.PluginHealthStatePendingKeyApproval, // key mismatch detected during circuit-broken state (#188)
+		model.PluginHealthStatePendingReauthorize, // public_url changed (#230)
 	},
 	model.PluginHealthStateCrashed: {
 		model.PluginHealthStateHealthy,

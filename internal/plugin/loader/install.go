@@ -71,6 +71,7 @@ const (
 
 	// Plugin status values that mirror the DB CHECK constraint.
 	statusPendingReview = "pending_review"
+	statusActive        = "active"
 
 	// Audit event types (ADR-046).
 	auditSignatureInvalid       = "plugin_signature_invalid"
@@ -443,7 +444,7 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 		return id, cosErr == nil && id != "", cosErr
 	}
 
-	id, upErr := in.updatePlugin(ctx, existing, m, manifestBytes, tmpDir, nowStr)
+	id, upErr := in.updatePlugin(ctx, existing, m, manifestBytes, result, tmpDir, nowStr)
 	return id, upErr == nil && id != "", upErr
 }
 
@@ -616,7 +617,24 @@ func pubkeyFingerprint(pubkeyBytes []byte) string {
 	return fmt.Sprintf("%x", pk.KeyID)
 }
 
-// createPlugin inserts a new plugin row with status=pending_review.
+// installStatusFor returns the status value to write for a newly-installed or
+// version-bumped plugin row. Verified bundles (and unsigned bundles when the
+// operator has explicitly opted in via GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true)
+// are promoted to "active" so the subprocess manager and trigger supervisor
+// will pick them up. The "pending_review" status is reserved for paths that
+// require explicit operator approval — currently none in this codepath, but
+// future review-gated flows can reuse the constant.
+func installStatusFor(outcome VerifyOutcome) string {
+	switch outcome {
+	case OutcomeVerified, OutcomeUnsignedPermissive:
+		return statusActive
+	default:
+		return statusPendingReview
+	}
+}
+
+// createPlugin inserts a new plugin row with the status returned by
+// installStatusFor (typically "active" for verified or unsigned-permissive bundles).
 // Publishes the verified bundle to disk first, then stores the binary_path
 // in the DB so Manager.StartAllActive can re-spawn the subprocess on server
 // restart without re-extracting the tarball.
@@ -641,7 +659,7 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 		PluginVersion:    m.Version,
 		ManifestSnapshot: string(manifestBytes),
 		TrustedPubkey:    string(result.Pubkey),
-		Status:           statusPendingReview,
+		Status:           installStatusFor(result.Outcome),
 		BinaryPath:       binaryPathPtr,
 		CreatedAt:        nowStr,
 		UpdatedAt:        nowStr,
@@ -668,7 +686,7 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 // Installer takes *sql.DB instead of *db.Queries. Today an audit-insert failure
 // leaves the plugins row updated but the event unrecorded; same-version
 // idempotency masks the retry.
-func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *manifest.Manifest, manifestBytes []byte, tmpDir string, nowStr string) (string, error) {
+func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *manifest.Manifest, manifestBytes []byte, result VerifyResult, tmpDir string, nowStr string) (string, error) {
 	// Publish the verified bundle before touching the DB so the subprocess can
 	// be re-spawned with the correct binary on the next restart.
 	var binaryPathPtr *string
@@ -683,7 +701,7 @@ func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *ma
 	rows, err := in.q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
 		ManifestSnapshot: string(manifestBytes),
 		PluginVersion:    m.Version,
-		Status:           statusPendingReview,
+		Status:           installStatusFor(result.Outcome),
 		UpdatedAt:        nowStr,
 		ID:               existing.ID,
 		ExpectedVersion:  existing.Version,

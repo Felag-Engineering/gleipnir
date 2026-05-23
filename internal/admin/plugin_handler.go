@@ -138,12 +138,12 @@ type PluginHandler struct {
 	q                PluginQuerier
 	publisher        event.Publisher
 	clock            func() time.Time
-	triggerRestarter TriggerRestarter   // may be nil if plugins are disabled
-	installer        PluginInstaller    // may be nil if GLEIPNIR_PLUGINS_ENABLED=false
-	store            *db.Store          // nil disables DeleteInstance and Uninstall (503)
-	pluginsDir       string             // empty disables FS cleanup in Uninstall
+	triggerRestarter TriggerRestarter     // may be nil if plugins are disabled
+	installer        PluginInstaller      // may be nil if GLEIPNIR_PLUGINS_ENABLED=false
+	store            *db.Store            // nil disables DeleteInstance and Uninstall (503)
+	pluginsDir       string               // empty disables FS cleanup in Uninstall
 	processManager   PluginProcessManager // nil means skip subprocess Stop
-	toolUnregistrar  ToolUnregistrar    // nil until #194 wires tools.Registrar
+	toolUnregistrar  ToolUnregistrar      // nil until #194 wires tools.Registrar
 }
 
 // NewPluginHandler returns a PluginHandler backed by the given querier, event
@@ -435,10 +435,13 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
 
 	// CAS-guarded manifest commit (ADR-038). Verify rows-affected before touching instances.
+	// Status returns to "active" because the admin has explicitly accepted the candidate
+	// manifest — leaving it pending_review would re-orphan the plugin (subprocess manager
+	// and trigger supervisor both filter to status='active').
 	rows, err := h.q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
 		ManifestSnapshot: string(candidateBytes),
 		PluginVersion:    newManifest.Version,
-		Status:           "pending_review",
+		Status:           "active",
 		UpdatedAt:        nowStr,
 		ID:               pluginID,
 		ExpectedVersion:  plugin.Version,
@@ -872,6 +875,15 @@ func (h *PluginHandler) PutInstanceConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Advance the readiness detail (config_missing → credentials_missing → "")
+	// so the admin UI tells the operator what's still missing. Best-effort —
+	// the config write has already committed; advanceInstanceReadiness logs
+	// failures internally.
+	h.advanceInstanceReadiness(ctx, updated, &m)
+	if refreshed, refetchErr := h.q.GetPluginInstanceByID(ctx, instanceID); refetchErr == nil {
+		updated = refreshed
+	}
+
 	// Redact the re-fetched config before returning.
 	redactedFetchedConfig, err := configvalidate.RedactSecrets(updated.ConfigJson, secretNames)
 	if err != nil {
@@ -1138,6 +1150,60 @@ func (h *PluginHandler) unblockInstances(
 	return count
 }
 
+// computeInstanceReadinessDetail returns the appropriate health_detail string
+// for an instance that is sitting in PluginHealthStateUnhealthy, based on what
+// the operator still needs to configure. This is used after the operator saves
+// instance config or credentials so the admin UI tells them what's still
+// missing — without it, the detail stayed at "config_missing" forever even
+// after config was set, giving operators no signal what to do next.
+//
+// The returned string is empty when the instance has everything it needs and
+// is just waiting for the subprocess to come up healthy.
+func computeInstanceReadinessDetail(m *sdkmanifest.Manifest, configJSON string, credentialsPresent bool) string {
+	if configJSON == "" || configJSON == "{}" {
+		return "config_missing"
+	}
+	// Credentials are only required for auth strategies that consume them.
+	// "none" plugins (and unset strategy, which defaults to "none" in the parser)
+	// are config-only.
+	switch m.Auth.Strategy {
+	case "", sdkmanifest.AuthStrategyNone:
+		return "" // ready — subprocess will mark healthy on handshake
+	default:
+		if !credentialsPresent {
+			return "credentials_missing"
+		}
+		return "" // ready
+	}
+}
+
+// advanceInstanceReadiness re-evaluates the instance's readiness detail and
+// writes it back through SetHealthState if it has changed. Best-effort — any
+// failure is logged but not returned to the caller because the underlying
+// config/credentials write has already succeeded. Bypasses the update entirely
+// when the instance is not currently in unhealthy (e.g. already healthy, or
+// pending some other admin action).
+func (h *PluginHandler) advanceInstanceReadiness(ctx context.Context, inst db.PluginInstance, m *sdkmanifest.Manifest) {
+	if model.PluginHealthState(inst.HealthState) != model.PluginHealthStateUnhealthy {
+		return
+	}
+	credentialsPresent := inst.CredentialsEncrypted != nil && *inst.CredentialsEncrypted != ""
+	wanted := computeInstanceReadinessDetail(m, inst.ConfigJson, credentialsPresent)
+	var currentDetail string
+	if inst.HealthDetail != nil {
+		currentDetail = *inst.HealthDetail
+	}
+	if wanted == currentDetail {
+		return
+	}
+	err := pluginstate.SetHealthState(ctx, h.q, h.publisher, inst.ID, pluginstate.OriginHost,
+		model.PluginHealthStateUnhealthy, wanted)
+	if err != nil && !errors.Is(err, pluginstate.ErrTransitionConflict) {
+		slog.WarnContext(ctx, "advanceInstanceReadiness: set health detail failed",
+			"instance_id", inst.ID, "from", currentDetail, "to", wanted, "err", err)
+	}
+}
+
 // writeAuditEvent inserts a plugin-level audit row (PluginInstanceID = nil) with
 // the calling user as actor when one is on the request context. Failures are
 // logged but not surfaced — the upstream DB change has already committed.
@@ -1226,11 +1292,25 @@ func (h *PluginHandler) Install(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		msg := err.Error()
 		switch {
-		case strings.Contains(msg, "extract tarball"),
-			strings.Contains(msg, "read manifest"),
-			strings.Contains(msg, "parse manifest"),
-			strings.Contains(msg, "manifest.name"):
-			httputil.WriteError(w, http.StatusBadRequest, "malformed tarball", msg)
+		case strings.Contains(msg, "extract tarball"):
+			// Tarball-format failures: bad gzip header, file-count limit,
+			// disallowed symlinks, unsupported entry types, uncompressed size cap.
+			httputil.WriteError(w, http.StatusBadRequest, "tarball extraction failed", msg)
+		case strings.Contains(msg, "resolve bundle root"):
+			// Layout failure: manifest.yaml missing both at the tarball root
+			// and under a single top-level directory.
+			httputil.WriteError(w, http.StatusBadRequest, "invalid bundle layout", msg)
+		case strings.Contains(msg, "parse manifest"):
+			// Order matters: "parse manifest" is wrapped inside "read manifest
+			// from %q: %w" so this case must come first.
+			httputil.WriteError(w, http.StatusBadRequest, "manifest.yaml is not valid YAML", msg)
+		case strings.Contains(msg, "read manifest"):
+			httputil.WriteError(w, http.StatusBadRequest, "manifest.yaml missing or unreadable", msg)
+		case strings.Contains(msg, "manifest.name"):
+			// manifest.name missing, empty, or carries path separators (security guard).
+			httputil.WriteError(w, http.StatusBadRequest, "invalid manifest.name", msg)
+		case strings.Contains(msg, "manifest.version"):
+			httputil.WriteError(w, http.StatusBadRequest, "invalid manifest.version", msg)
 		case strings.Contains(msg, "CAS conflict"):
 			httputil.WriteError(w, http.StatusConflict, "concurrent plugin update; retry", "")
 		default:
@@ -1696,10 +1776,10 @@ func (h *PluginHandler) Uninstall(w http.ResponseWriter, r *http.Request) {
 
 	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
 	h.writeAuditEvent(ctx, auditPluginUninstalled, "info", nowStr, map[string]any{
-		"plugin_id":            pluginID,
-		"plugin_name":          plugin.Name,
-		"plugin_version":       plugin.PluginVersion,
-		"instance_count":       len(instances),
+		"plugin_id":           pluginID,
+		"plugin_name":         plugin.Name,
+		"plugin_version":      plugin.PluginVersion,
+		"instance_count":      len(instances),
 		"binary_path_removed": binaryPathRemoved,
 	})
 
