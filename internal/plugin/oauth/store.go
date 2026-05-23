@@ -296,6 +296,61 @@ func (s *DBStore) SeedOAuthToken(ctx context.Context, instanceID, strategy strin
 	return fmt.Errorf("seed oauth token: failed after %d CAS conflicts", maxAttempts)
 }
 
+// SetOAuthClient stores the OAuth2 client_id and client_secret for instanceID,
+// initialising the Strategy from the manifest when the row is brand-new
+// (credentials_encrypted is NULL). It is the entry point for the admin UI's
+// OAuth setup form — the operator pastes the values copied from the provider
+// (Slack app, etc.) before clicking "Authorize".
+//
+// Behaviour:
+//   - If the stored credentials have no Strategy yet, Strategy is set to the
+//     supplied value before writing the client credentials.
+//   - If a Strategy is already stored and it does not match, ErrWrongStrategy
+//     is returned immediately.
+//   - Existing Token, AuthorizationURL, TokenURL, and Scopes are preserved.
+//
+// The per-instance mutex is held for the duration of the CAS loop so this
+// write is serialised against the OAuth refresh scanner.
+func (s *DBStore) SetOAuthClient(ctx context.Context, instanceID, strategy, clientID, clientSecret string) error {
+	if clientID == "" {
+		return fmt.Errorf("set oauth client: client_id must not be empty")
+	}
+	if clientSecret == "" {
+		return fmt.Errorf("set oauth client: client_secret must not be empty")
+	}
+
+	mu := s.locks.Get(instanceID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	const maxAttempts = 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		creds, ver, err := s.LoadCredentials(ctx, instanceID)
+		if err != nil {
+			return fmt.Errorf("set oauth client (attempt %d): %w", attempt+1, err)
+		}
+		if creds.Strategy == "" {
+			creds.Strategy = strategy
+		} else if creds.Strategy != strategy {
+			return ErrWrongStrategy
+		}
+		creds.ClientID = clientID
+		creds.ClientSecret = clientSecret
+		err = s.SaveCredentials(ctx, instanceID, creds, ver)
+		if err == nil {
+			s.emitAudit(ctx, auditCredentialSet, "info", instanceID, map[string]any{
+				"strategy": strategy,
+				"action":   "set_oauth_client",
+			})
+			return nil
+		}
+		if !errors.Is(err, ErrCASConflict) {
+			return fmt.Errorf("set oauth client: %w", err)
+		}
+	}
+	return fmt.Errorf("set oauth client: failed after %d CAS conflicts", maxAttempts)
+}
+
 // SetStaticAPIKey overwrites the static_api_key credentials for instanceID.
 // It rejects the call when the stored strategy is not AuthStrategyStaticAPIKey.
 // The per-instance mutex is held for the duration of the CAS loop so this

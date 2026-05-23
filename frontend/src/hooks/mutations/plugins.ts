@@ -167,6 +167,32 @@ export function useDeletePluginHeader() {
   })
 }
 
+// useSetPluginOAuthClient stores client_id + client_secret for an oauth2_*
+// instance. PUT /api/v1/admin/plugins/{id}/instances/{iid}/credentials/oauth-client
+export function useSetPluginOAuthClient() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      pluginId,
+      instanceId,
+      client_id,
+      client_secret,
+    }: PluginInstanceRef & { client_id: string; client_secret: string }) =>
+      apiFetchVoid(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}/credentials/oauth-client`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ client_id, client_secret }),
+        },
+      ),
+    onSuccess: (_data, { pluginId, instanceId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.plugins.credentials(pluginId, instanceId),
+      })
+    },
+  })
+}
+
 // useSetPluginBasicAuth writes the basic_auth credential blob.
 // PUT /api/v1/admin/plugins/{id}/instances/{iid}/credentials/basic-auth
 export function useSetPluginBasicAuth() {

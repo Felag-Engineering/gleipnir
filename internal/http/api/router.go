@@ -35,18 +35,18 @@ type PolicyNotifier interface {
 // HandlerBundle groups all pre-constructed HTTP handler structs. Every field is
 // a concrete handler type — BuildRouter never constructs handlers itself.
 type HandlerBundle struct {
-	AuthHandler          *auth.Handler
-	SettingsHandler      *auth.SettingsHandler
-	AdminHandler         *admin.Handler
-	OpenAICompatHandler  *admin.OpenAICompatHandler
-	PluginAdminHandler        *admin.PluginHandler
-	PluginOAuthHandler        *admin.PluginOAuthHandler
-	PluginCredentialsHandler  *admin.PluginCredentialsHandler
-	AudienceHandler           *AudienceHandler
-	BindingTestHandler   *BindingTestHandler
-	WebhookHandler       *trigger.WebhookHandler
-	SSEHandler           *sse.Handler
-	PolicyWebhookHandler *PolicyWebhookHandler
+	AuthHandler              *auth.Handler
+	SettingsHandler          *auth.SettingsHandler
+	AdminHandler             *admin.Handler
+	OpenAICompatHandler      *admin.OpenAICompatHandler
+	PluginAdminHandler       *admin.PluginHandler
+	PluginOAuthHandler       *admin.PluginOAuthHandler
+	PluginCredentialsHandler *admin.PluginCredentialsHandler
+	AudienceHandler          *AudienceHandler
+	BindingTestHandler       *BindingTestHandler
+	WebhookHandler           *trigger.WebhookHandler
+	SSEHandler               *sse.Handler
+	PolicyWebhookHandler     *PolicyWebhookHandler
 }
 
 // BackgroundServices groups shared infrastructure and long-lived dependencies.
@@ -262,6 +262,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				r.Put("/plugins/{id}/instances/{iid}/credentials/headers/{name}", h.SetHeader)
 				r.Delete("/plugins/{id}/instances/{iid}/credentials/headers/{name}", h.DeleteHeader)
 				r.Put("/plugins/{id}/instances/{iid}/credentials/basic-auth", h.SetBasicAuth)
+				r.Put("/plugins/{id}/instances/{iid}/credentials/oauth-client", h.SetOAuthClient)
 				r.Put("/plugins/{id}/instances/{iid}/credentials/oauth-token", h.SetOAuthToken)
 			}
 

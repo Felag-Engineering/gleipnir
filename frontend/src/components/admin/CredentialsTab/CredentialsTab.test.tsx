@@ -462,7 +462,13 @@ describe('authorize button calls oauth/begin', () => {
     )
     // Also need pluginInstances invalidation path — set a no-op handler
     renderTab({
-      creds: { strategy: 'oauth2_authcode', has_token: false, client_id: 'c', token_url: 't' },
+      creds: {
+        strategy: 'oauth2_authcode',
+        has_token: false,
+        client_id: 'c',
+        has_client_secret: true,
+        token_url: 't',
+      },
       strategy: 'oauth2_authcode',
     })
     await userEvent.click(screen.getByRole('button', { name: /^authorize$/i }))
@@ -485,7 +491,13 @@ describe('authorize button calls oauth/begin', () => {
       ),
     )
     renderTab({
-      creds: { strategy: 'oauth2_authcode', has_token: false, client_id: 'c', token_url: 't' },
+      creds: {
+        strategy: 'oauth2_authcode',
+        has_token: false,
+        client_id: 'c',
+        has_client_secret: true,
+        token_url: 't',
+      },
       strategy: 'oauth2_authcode',
     })
     await userEvent.click(screen.getByRole('button', { name: /^authorize$/i }))
