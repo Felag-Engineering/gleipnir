@@ -51,6 +51,18 @@ func (q *Queries) CreatePluginPendingRequest(ctx context.Context, arg CreatePlug
 	return i, err
 }
 
+const deletePluginPendingRequestsByInstance = `-- name: DeletePluginPendingRequestsByInstance :exec
+DELETE FROM plugin_pending_requests WHERE plugin_instance_id = ?
+`
+
+// DeletePluginPendingRequestsByInstance removes all pending_requests rows that
+// reference the given plugin instance. The FK on plugin_pending_requests is
+// RESTRICT, so callers must clear these rows before deleting the instance row.
+func (q *Queries) DeletePluginPendingRequestsByInstance(ctx context.Context, pluginInstanceID string) error {
+	_, err := q.db.ExecContext(ctx, deletePluginPendingRequestsByInstance, pluginInstanceID)
+	return err
+}
+
 const getPendingPluginRequestsByRun = `-- name: GetPendingPluginRequestsByRun :many
 SELECT id, plugin_instance_id, run_id, audience_entry_id, tool_name, status, response, expires_at, resolved_at, created_at FROM plugin_pending_requests WHERE run_id = ?1 AND status = 'pending'
 `

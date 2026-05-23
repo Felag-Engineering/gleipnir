@@ -42,3 +42,9 @@ SELECT DISTINCT ae.audience_id
 FROM plugin_pending_requests p
 JOIN audience_entries ae ON ae.id = p.audience_entry_id
 WHERE p.status = 'pending';
+
+-- DeletePluginPendingRequestsByInstance removes all pending_requests rows that
+-- reference the given plugin instance. The FK on plugin_pending_requests is
+-- RESTRICT, so callers must clear these rows before deleting the instance row.
+-- name: DeletePluginPendingRequestsByInstance :exec
+DELETE FROM plugin_pending_requests WHERE plugin_instance_id = ?;

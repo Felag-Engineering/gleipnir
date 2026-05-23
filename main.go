@@ -505,12 +505,27 @@ func run(cfg config.Config) error {
 		handlers.PluginAdminHandler.SetTriggerRestarter(triggerSupervisor)
 	}
 
+	// Wire the *db.Store unconditionally so DeleteInstance and Uninstall can
+	// open transactions via store.DB().BeginTx. This is always needed — the
+	// transactional delete path works even when the plugin subsystem is
+	// disabled (DB-only cleanup for the kitchen-sink recovery use case).
+	if handlers.PluginAdminHandler != nil {
+		handlers.PluginAdminHandler.SetStore(store)
+	}
+
 	// Wire the shared Installer into the plugin admin handler so both the
 	// fsnotify watcher and the Install endpoint use the same pipeline instance.
 	// loader.Installer() returns nil when GLEIPNIR_PLUGINS_ENABLED=false, which
 	// disables the install endpoint cleanly (returns 503).
 	if loader.Installer() != nil && handlers.PluginAdminHandler != nil {
 		handlers.PluginAdminHandler.SetInstaller(loader.Installer())
+		// Wire the process manager and plugins dir for subprocess stop + FS
+		// cleanup during Uninstall. Only available when plugins are enabled and
+		// the manager was successfully started.
+		if mgr := loader.Manager(); mgr != nil {
+			handlers.PluginAdminHandler.SetProcessManager(mgr)
+			handlers.PluginAdminHandler.SetPluginsDir(cfg.PluginsDir)
+		}
 	}
 
 	// Register the post-install spawn hook so that a fresh install (via the

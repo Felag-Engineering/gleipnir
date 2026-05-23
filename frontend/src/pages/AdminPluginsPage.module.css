@@ -149,6 +149,70 @@
 .pluginGroupActions {
   display: flex;
   gap: var(--space-2);
+  align-items: center;
+}
+
+/* Kebab disclosure menu for per-plugin destructive actions */
+
+.kebab {
+  position: relative;
+}
+
+/* Remove default disclosure triangle */
+.kebab > summary {
+  list-style: none;
+}
+
+.kebab > summary::-webkit-details-marker {
+  display: none;
+}
+
+.kebabToggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-second);
+  font-size: var(--text-lg);
+  line-height: 1;
+  user-select: none;
+}
+
+.kebabToggle:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.kebabMenu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--space-1));
+  z-index: 10;
+  min-width: 160px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-section);
+  padding: var(--space-1) 0;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.menuItemDanger {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--color-red);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.menuItemDanger:hover {
+  background: rgba(240, 85, 69, 0.08);
 }
 
 /* Empty state */

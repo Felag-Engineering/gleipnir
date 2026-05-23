@@ -1,0 +1,6 @@
+.body {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  line-height: 1.6;
+  margin: 0 0 var(--space-4);
+}

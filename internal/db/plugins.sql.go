@@ -113,6 +113,23 @@ func (q *Queries) CreatePluginInstance(ctx context.Context, arg CreatePluginInst
 	return i, err
 }
 
+const deletePlugin = `-- name: DeletePlugin :execrows
+DELETE FROM plugins WHERE id = ?1
+`
+
+// DeletePlugin removes a plugin row by ID. The plugin_instances table has
+// ON DELETE CASCADE so all instances are removed automatically. This avoids
+// needing individual instance deletes here; callers must still manually clear
+// plugin_pending_requests (RESTRICT FK) and plugin_oauth_nonces before
+// calling DeletePlugin.
+func (q *Queries) DeletePlugin(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deletePlugin, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deletePluginInstance = `-- name: DeletePluginInstance :execrows
 DELETE FROM plugin_instances WHERE id = ?1
 `

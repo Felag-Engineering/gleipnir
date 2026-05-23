@@ -1,6 +1,6 @@
 import React from 'react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
@@ -163,7 +163,8 @@ describe('AdminPluginsPage', () => {
     mockCurrentUser(['admin'])
     renderPage()
 
-    expect(screen.getByRole('button', { name: /install plugin/i })).toBeInTheDocument()
+    // Use exact name to distinguish from "Uninstall plugin" in the kebab menu.
+    expect(screen.getByRole('button', { name: 'Install plugin' })).toBeInTheDocument()
   })
 
   it('does NOT render Install plugin button for auditor role', () => {
@@ -171,7 +172,7 @@ describe('AdminPluginsPage', () => {
     mockCurrentUser(['auditor'])
     renderPage()
 
-    expect(screen.queryByRole('button', { name: /install plugin/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Install plugin' })).not.toBeInTheDocument()
   })
 
   it('does NOT render Install plugin button for operator role', () => {
@@ -179,7 +180,7 @@ describe('AdminPluginsPage', () => {
     mockCurrentUser(['operator'])
     renderPage()
 
-    expect(screen.queryByRole('button', { name: /install plugin/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Install plugin' })).not.toBeInTheDocument()
   })
 
   it('Install plugin button is visible even when the instances list is empty (outside QueryBoundary)', () => {
@@ -188,7 +189,7 @@ describe('AdminPluginsPage', () => {
     renderPage()
 
     // The button must be visible alongside the empty state — not nested inside it.
-    expect(screen.getByRole('button', { name: /install plugin/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Install plugin' })).toBeInTheDocument()
     expect(screen.getByText('No plugin instances')).toBeInTheDocument()
   })
 
@@ -486,5 +487,105 @@ describe('AdminPluginsPage', () => {
       const alerts = screen.getAllByRole('alert')
       expect(alerts.some((a) => a.textContent?.includes('Failed to create instance:'))).toBe(true)
     })
+  })
+
+  // --- Uninstall plugin (kebab menu) ---
+
+  it('opens UninstallPluginModal when Uninstall plugin is clicked in kebab menu', async () => {
+    mockInstances([INSTANCE_HEALTHY])
+    mockCurrentUser(['admin'])
+    renderPage()
+
+    await userEvent.click(screen.getByRole('button', { name: /uninstall plugin/i }))
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    // Instance name from the group should appear in the modal's instance list.
+    expect(screen.getAllByText('slack-prod').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('fires DELETE and closes modal on successful uninstall', async () => {
+    mockInstances([INSTANCE_HEALTHY])
+    mockCurrentUser(['admin'])
+    server.use(
+      http.delete(`/api/v1/admin/plugins/${PLUGIN_ID}`, () => new HttpResponse(null, { status: 204 })),
+    )
+
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /uninstall plugin/i }))
+
+    // Click the confirm button inside the dialog (not the kebab trigger outside it).
+    const dialog = screen.getByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: /uninstall plugin/i }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('shows 409 detail in UninstallPluginModal when references exist', async () => {
+    mockInstances([INSTANCE_HEALTHY])
+    mockCurrentUser(['admin'])
+    server.use(
+      http.delete(`/api/v1/admin/plugins/${PLUGIN_ID}`, () =>
+        HttpResponse.json(
+          { error: 'plugin has references', detail: 'Policy "Nightly Sync" references this plugin.' },
+          { status: 409 },
+        ),
+      ),
+    )
+
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /uninstall plugin/i }))
+
+    const dialog = screen.getByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: /uninstall plugin/i }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    expect(screen.getByRole('alert')).toHaveTextContent('Policy "Nightly Sync"')
+  })
+
+  it('does NOT render Uninstall plugin button for auditor role', () => {
+    mockInstances([INSTANCE_HEALTHY])
+    mockCurrentUser(['auditor'])
+    renderPage()
+
+    expect(screen.queryByRole('button', { name: /uninstall plugin/i })).not.toBeInTheDocument()
+  })
+
+  it('closes the kebab disclosure when Uninstall plugin is clicked', async () => {
+    mockInstances([INSTANCE_HEALTHY])
+    mockCurrentUser(['admin'])
+    renderPage()
+
+    // Simulate the disclosure being open (jsdom does not toggle open on summary click).
+    const disclosure = document.querySelector('details')!
+    disclosure.setAttribute('open', '')
+    expect(disclosure).toHaveAttribute('open')
+
+    await userEvent.click(screen.getByRole('button', { name: /uninstall plugin/i }))
+
+    // The disclosure must be closed once the menu item is activated.
+    expect(disclosure).not.toHaveAttribute('open')
+    // And the modal should now be visible.
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('closes the kebab disclosure when the modal is cancelled', async () => {
+    mockInstances([INSTANCE_HEALTHY])
+    mockCurrentUser(['admin'])
+    renderPage()
+
+    const disclosure = document.querySelector('details')!
+    disclosure.setAttribute('open', '')
+
+    // Open the modal by clicking the menu item (which also closes the disclosure).
+    await userEvent.click(screen.getByRole('button', { name: /uninstall plugin/i }))
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    // Disclosure is already closed at this point (closed when menu item is clicked).
+    expect(disclosure).not.toHaveAttribute('open')
+
+    // Cancel the modal — disclosure must remain closed.
+    await userEvent.click(screen.getByRole('button', { name: /cancel/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(disclosure).not.toHaveAttribute('open')
   })
 })

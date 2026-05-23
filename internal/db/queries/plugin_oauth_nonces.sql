@@ -10,3 +10,9 @@ DELETE FROM plugin_oauth_nonces WHERE nonce = :nonce RETURNING instance_id, expi
 
 -- name: PrunePluginOAuthNonces :exec
 DELETE FROM plugin_oauth_nonces WHERE expires_at < :cutoff;
+
+-- DeletePluginOAuthNoncesByInstance removes all OAuth nonce rows for a given
+-- instance. Called before deleting the instance row so there are no dangling
+-- references.
+-- name: DeletePluginOAuthNoncesByInstance :exec
+DELETE FROM plugin_oauth_nonces WHERE instance_id = ?;

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
@@ -7,13 +7,14 @@ import { Button } from '@/components/Button'
 import { FieldError } from '@/components/form/FieldError/FieldError'
 import { ReauthorizeButton } from '@/components/admin/ReauthorizeButton/ReauthorizeButton'
 import { CredentialsTab } from '@/components/admin/CredentialsTab/CredentialsTab'
+import { DeletePluginInstanceModal } from '@/components/admin/DeletePluginInstanceModal'
 import { usePluginInstancesForAudience } from '@/hooks/queries/admin'
 import { useCurrentUser } from '@/hooks/queries/users'
-import { useSetInstanceSubscriptionScope } from '@/hooks/mutations/plugins'
+import { useSetInstanceSubscriptionScope, useDeletePluginInstance } from '@/hooks/mutations/plugins'
 import { isOAuthRefreshFailure } from '@/utils/pluginHealth'
 import { queryKeys } from '@/hooks/queryKeys'
+import { ApiError } from '@/api/fetch'
 import type { PluginAuthStrategy } from '@/api/types'
-import type { ApiError } from '@/api/fetch'
 import styles from './AdminPluginInstancePage.module.css'
 
 // ── tab type ─────────────────────────────────────────────────────────────────
@@ -252,6 +253,7 @@ function SubscriptionsTab({
 
 export default function AdminPluginInstancePage() {
   const { id: pluginId, iid: instanceId } = useParams<{ id: string; iid: string }>()
+  const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<Tab>('subscriptions')
   const queryClient = useQueryClient()
 
@@ -263,6 +265,33 @@ export default function AdminPluginInstancePage() {
   const canManage = currentUser?.roles.includes('admin') ?? false
 
   const instance = allInstances?.find((inst) => inst.id === instanceId && inst.plugin_id === pluginId)
+
+  // Delete instance state
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const deleteMutation = useDeletePluginInstance()
+
+  function handleDeleteConfirm() {
+    if (!pluginId || !instanceId) return
+    setDeleteError(null)
+    deleteMutation.mutate(
+      { pluginId, instanceId },
+      {
+        onSuccess: () => {
+          navigate('/admin/plugins')
+        },
+        onError: (err: unknown) => {
+          if (err instanceof ApiError) {
+            setDeleteError(err.detail ?? err.message)
+          } else if (err instanceof Error) {
+            setDeleteError(err.message)
+          } else {
+            setDeleteError('Unexpected error — please try again.')
+          }
+        },
+      },
+    )
+  }
 
   const hasSubscriptionSchema = !!instance?.subscription_schema
 
@@ -349,7 +378,20 @@ export default function AdminPluginInstancePage() {
         Audiences
       </Link>
 
-      <PageHeader title={`${pluginName} / ${instanceName}`} />
+      <PageHeader title={`${pluginName} / ${instanceName}`}>
+        {canManage && (
+          <Button
+            variant="danger"
+            size="small"
+            onClick={() => {
+              setDeleteError(null)
+              setShowDeleteModal(true)
+            }}
+          >
+            Delete instance
+          </Button>
+        )}
+      </PageHeader>
 
       {instance && isOAuthRefreshFailure(instance.state, instance.health_detail) && (
         <div className={styles.reauthBanner}>
@@ -389,6 +431,20 @@ export default function AdminPluginInstancePage() {
       </nav>
 
       {renderTabContent()}
+
+      {showDeleteModal && (
+        <DeletePluginInstanceModal
+          pluginName={pluginName ?? ''}
+          instanceName={instanceName ?? ''}
+          onClose={() => {
+            setShowDeleteModal(false)
+            setDeleteError(null)
+          }}
+          onConfirm={handleDeleteConfirm}
+          isPending={deleteMutation.isPending}
+          error={deleteError}
+        />
+      )}
     </div>
   )
 }

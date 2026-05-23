@@ -28,6 +28,18 @@ func (q *Queries) ConsumePluginOAuthNonce(ctx context.Context, nonce string) (Co
 	return i, err
 }
 
+const deletePluginOAuthNoncesByInstance = `-- name: DeletePluginOAuthNoncesByInstance :exec
+DELETE FROM plugin_oauth_nonces WHERE instance_id = ?
+`
+
+// DeletePluginOAuthNoncesByInstance removes all OAuth nonce rows for a given
+// instance. Called before deleting the instance row so there are no dangling
+// references.
+func (q *Queries) DeletePluginOAuthNoncesByInstance(ctx context.Context, instanceID string) error {
+	_, err := q.db.ExecContext(ctx, deletePluginOAuthNoncesByInstance, instanceID)
+	return err
+}
+
 const insertPluginOAuthNonce = `-- name: InsertPluginOAuthNonce :exec
 INSERT INTO plugin_oauth_nonces (nonce, instance_id, expires_at, created_at)
 VALUES (?1, ?2, ?3, ?4)

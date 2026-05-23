@@ -87,3 +87,14 @@ DELETE FROM audience_entries WHERE audience_id = :audience_id;
 SELECT audience_id, COUNT(*) AS entry_count
 FROM audience_entries
 GROUP BY audience_id;
+
+-- ListAudienceEntriesByInstance returns the audience_id and audience name for
+-- every audience_entries row that references the given plugin instance. Used by
+-- the DeleteInstance and Uninstall handlers to surface the audience names that
+-- must be cleaned up before deletion can proceed.
+-- name: ListAudienceEntriesByInstance :many
+SELECT ae.id, ae.audience_id, ae.plugin_instance_id, pa.name AS audience_name
+FROM audience_entries ae
+JOIN plugin_audiences pa ON pa.id = ae.audience_id
+WHERE ae.plugin_instance_id = ?
+ORDER BY pa.name;

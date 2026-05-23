@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
+	"github.com/felag-engineering/gleipnir/internal/policy"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 )
@@ -41,6 +44,12 @@ const (
 	// when a hot-reload introduces a material manifest change. AcceptManifest
 	// scans these to find the candidate awaiting admin approval.
 	auditManifestMaterialChange = "plugin_manifest_material_change"
+
+	// auditInstanceDeleted is emitted by DeleteInstance on success.
+	auditInstanceDeleted = "plugin_instance_deleted"
+
+	// auditPluginUninstalled is emitted by Uninstall on success.
+	auditPluginUninstalled = "plugin_uninstalled"
 )
 
 // PluginQuerier is the narrow DB interface required by PluginHandler.
@@ -73,6 +82,40 @@ type PluginQuerier interface {
 	GetPluginInstanceByName(ctx context.Context, arg db.GetPluginInstanceByNameParams) (db.PluginInstance, error)
 	// Instance config write (used by PutInstanceConfig).
 	UpdatePluginInstanceConfig(ctx context.Context, arg db.UpdatePluginInstanceConfigParams) (int64, error)
+	// Audience entries referencing an instance (used by DeleteInstance and Uninstall reference guards).
+	ListAudienceEntriesByInstance(ctx context.Context, pluginInstanceID string) ([]db.ListAudienceEntriesByInstanceRow, error)
+	// Pending request cleanup (RESTRICT FK; must clear before deleting the instance).
+	DeletePluginPendingRequestsByInstance(ctx context.Context, pluginInstanceID string) error
+	// OAuth nonce cleanup before deleting an instance.
+	DeletePluginOAuthNoncesByInstance(ctx context.Context, instanceID string) error
+	// Plugin delete (cascades to plugin_instances via ON DELETE CASCADE).
+	DeletePlugin(ctx context.Context, id string) (int64, error)
+	// Instance delete by primary key.
+	DeletePluginInstance(ctx context.Context, id string) (int64, error)
+	// Policy list (used by reference guard in DeleteInstance and Uninstall).
+	ListPolicies(ctx context.Context) ([]db.Policy, error)
+}
+
+// PluginProcessManager is the narrow interface for stopping plugin subprocesses.
+// Implemented by *process.Manager; kept as an interface in the admin package so
+// internal/admin does not import internal/plugin/process (package boundary).
+// Both methods are best-effort — a subprocess Stop failure must not block DB
+// cleanup.
+type PluginProcessManager interface {
+	// Stop terminates the subprocess for a single instance.
+	Stop(ctx context.Context, instanceID string) error
+	// StopByPluginID terminates all running instances belonging to pluginID.
+	StopByPluginID(ctx context.Context, pluginID string) error
+}
+
+// ToolUnregistrar is the narrow interface for releasing tool-namespace
+// reservations when an instance is deleted. Implemented by *tools.Registrar;
+// kept as an interface here so the admin package does not import
+// internal/plugin/tools. The field is wired but SetToolUnregistrar is NOT
+// called in main.go for this PR — tools.Registrar is not yet in the live
+// process path (TODO at main.go). A nil unregistrar is a safe no-op.
+type ToolUnregistrar interface {
+	UnregisterInstance(ctx context.Context, instanceName string)
 }
 
 // PluginInstaller is the narrow interface used by the Install handler.
@@ -95,8 +138,12 @@ type PluginHandler struct {
 	q                PluginQuerier
 	publisher        event.Publisher
 	clock            func() time.Time
-	triggerRestarter TriggerRestarter // may be nil if plugins are disabled
-	installer        PluginInstaller  // may be nil if GLEIPNIR_PLUGINS_ENABLED=false
+	triggerRestarter TriggerRestarter   // may be nil if plugins are disabled
+	installer        PluginInstaller    // may be nil if GLEIPNIR_PLUGINS_ENABLED=false
+	store            *db.Store          // nil disables DeleteInstance and Uninstall (503)
+	pluginsDir       string             // empty disables FS cleanup in Uninstall
+	processManager   PluginProcessManager // nil means skip subprocess Stop
+	toolUnregistrar  ToolUnregistrar    // nil until #194 wires tools.Registrar
 }
 
 // NewPluginHandler returns a PluginHandler backed by the given querier, event
@@ -121,6 +168,37 @@ func (h *PluginHandler) SetTriggerRestarter(r TriggerRestarter) {
 // loader.StartWatcher runs so plugins disabled mode is handled cleanly.
 func (h *PluginHandler) SetInstaller(inst PluginInstaller) {
 	h.installer = inst
+}
+
+// SetStore wires the *db.Store into the handler so DeleteInstance and Uninstall
+// can open transactions via store.DB().BeginTx. A nil store disables both
+// endpoints (returns 503). Called from main.go unconditionally because *db.Store
+// is always available — the transactional delete path needs it regardless of
+// whether the plugin subsystem is enabled.
+func (h *PluginHandler) SetStore(s *db.Store) {
+	h.store = s
+}
+
+// SetPluginsDir sets the plugins directory used for FS cleanup during Uninstall.
+// An empty string disables binary removal (DB rows are still deleted). Called
+// from main.go inside the plugins-enabled block.
+func (h *PluginHandler) SetPluginsDir(dir string) {
+	h.pluginsDir = dir
+}
+
+// SetProcessManager wires the PluginProcessManager so DeleteInstance and
+// Uninstall can stop subprocesses before clearing DB rows. A nil manager skips
+// subprocess stop (DB-only cleanup, matching the kitchen-sink recovery path).
+func (h *PluginHandler) SetProcessManager(pm PluginProcessManager) {
+	h.processManager = pm
+}
+
+// SetToolUnregistrar wires the ToolUnregistrar for post-delete tool-namespace
+// cleanup. Currently not called from main.go — tools.Registrar is not yet in
+// the live process path (see TODO at main.go). A nil unregistrar is a no-op.
+// When #194 wires tools.New(arbiter, ...), add the one-line wire-up there.
+func (h *PluginHandler) SetToolUnregistrar(u ToolUnregistrar) {
+	h.toolUnregistrar = u
 }
 
 // instanceResponse is the JSON shape returned by GetInstance, PutSubscriptionScope,
@@ -1283,6 +1361,349 @@ func (h *PluginHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:    inst.CreatedAt,
 			UpdatedAt:    inst.UpdatedAt,
 		})
+}
+
+// DeleteInstance handles DELETE /api/v1/admin/plugins/{id}/instances/{iid}.
+//
+// Validates that neither policies nor audience entries reference the instance,
+// stops the subprocess (best-effort), then removes pending requests, OAuth
+// nonces, and the instance row in a single transaction. Emits an audit event
+// on success.
+//
+// Status codes:
+//   - 204 — deleted
+//   - 404 — plugin or instance not found (also returned on plugin/instance mismatch)
+//   - 409 — audience or policy references still exist
+//   - 503 — plugin store not configured (SetStore not called)
+//   - 500 — DB or unexpected error
+func (h *PluginHandler) DeleteInstance(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "plugin management not configured", "")
+		return
+	}
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+	instanceID := chi.URLParam(r, "iid")
+
+	// Verify the instance exists and belongs to the given plugin.
+	if _, err := h.q.GetPluginByID(ctx, pluginID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		} else {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		}
+		return
+	}
+	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
+		return
+	}
+	// Return 404 (not 403) on a plugin/instance mismatch to avoid leaking
+	// instance existence across plugins.
+	if inst.PluginID != pluginID {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return
+	}
+
+	// Policy reference guard: refuse deletion if any policy still references
+	// this instance's tools or subscribed trigger. TOCTOU with concurrent policy
+	// create is acceptable — mirrors the audience-delete precedent.
+	policyRefs, err := policy.ScanPolicyToolRefsForInstance(ctx, h.q, inst.InstanceName)
+	if err != nil {
+		slog.ErrorContext(ctx, "delete instance: scan policy refs", "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+	if len(policyRefs) > 0 {
+		names := make([]string, len(policyRefs))
+		for i, ref := range policyRefs {
+			names[i] = ref.Name
+		}
+		httputil.WriteError(w, http.StatusConflict, "instance is referenced by policies",
+			strings.Join(names, ", "))
+		return
+	}
+
+	// Audience reference guard: refuse deletion if any audience entry references
+	// this instance (the operator must update audiences first).
+	audienceEntries, err := h.q.ListAudienceEntriesByInstance(ctx, instanceID)
+	if err != nil {
+		slog.ErrorContext(ctx, "delete instance: list audience entries", "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+	if len(audienceEntries) > 0 {
+		// Deduplicate audience names — one instance can appear in multiple entries
+		// of the same audience.
+		seen := make(map[string]bool)
+		var audienceNames []string
+		for _, ae := range audienceEntries {
+			if !seen[ae.AudienceName] {
+				seen[ae.AudienceName] = true
+				audienceNames = append(audienceNames, ae.AudienceName)
+			}
+		}
+		httputil.WriteError(w, http.StatusConflict,
+			"instance is referenced by audiences", strings.Join(audienceNames, ", "))
+		return
+	}
+
+	// Best-effort subprocess stop before DB cleanup so in-flight RPCs don't hit
+	// a half-deleted instance. A wedged subprocess must not block DB cleanup.
+	if h.processManager != nil {
+		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := h.processManager.Stop(stopCtx, instanceID); err != nil {
+			slog.WarnContext(ctx, "delete instance: subprocess stop failed",
+				"instance_id", instanceID, "err", err)
+		}
+		cancel()
+	}
+
+	// Transactional delete in FK-safe order:
+	//   1. plugin_pending_requests (RESTRICT FK — must clear first)
+	//   2. plugin_oauth_nonces (instance_id FK)
+	//   3. plugin_instances row (audit events use SET NULL so history survives)
+	tx, err := h.store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		slog.ErrorContext(ctx, "delete instance: begin tx", "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.ErrorContext(ctx, "delete instance: rollback failed", "err", rbErr)
+		}
+	}()
+
+	q := db.New(tx)
+	if err := q.DeletePluginPendingRequestsByInstance(ctx, instanceID); err != nil {
+		slog.ErrorContext(ctx, "delete instance: clear pending requests", "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+	if err := q.DeletePluginOAuthNoncesByInstance(ctx, instanceID); err != nil {
+		slog.ErrorContext(ctx, "delete instance: clear oauth nonces", "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+	if _, err := q.DeletePluginInstance(ctx, instanceID); err != nil {
+		slog.ErrorContext(ctx, "delete instance: delete row", "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		slog.ErrorContext(ctx, "delete instance: commit", "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+
+	// Best-effort tool-namespace release. Nil-safe: not yet wired in main.go
+	// (see SetToolUnregistrar godoc and TODO at main.go). #194 follow-up will
+	// add the one-line wire-up.
+	if h.toolUnregistrar != nil {
+		h.toolUnregistrar.UnregisterInstance(ctx, inst.InstanceName)
+	}
+
+	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
+	h.writeAuditEvent(ctx, auditInstanceDeleted, "info", nowStr, map[string]any{
+		"plugin_id":     pluginID,
+		"instance_id":   instanceID,
+		"instance_name": inst.InstanceName,
+	})
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Uninstall handles DELETE /api/v1/admin/plugins/{id}.
+//
+// Validates that no policies or audience entries reference any of the plugin's
+// instances, stops all subprocesses (best-effort), removes pending requests and
+// OAuth nonces for every instance in a transaction, then removes the plugin row
+// (which cascades to plugin_instances). After the commit, removes the plugin
+// binary directory from disk (best-effort, containment-checked). Emits an audit
+// event on success.
+//
+// Status codes:
+//   - 204 — uninstalled
+//   - 404 — plugin not found
+//   - 409 — audience or policy references still exist
+//   - 503 — plugin store not configured (SetStore not called)
+//   - 500 — DB or unexpected error
+func (h *PluginHandler) Uninstall(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "plugin management not configured", "")
+		return
+	}
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+
+	plugin, err := h.q.GetPluginByID(ctx, pluginID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		return
+	}
+
+	// Collect all instances so we can run per-instance reference checks.
+	instances, err := h.q.ListPluginInstancesByPlugin(ctx, pluginID)
+	if err != nil {
+		slog.ErrorContext(ctx, "uninstall: list instances", "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+
+	// Policy reference guard: build one prefix per instance and scan all policies
+	// in a single pass.
+	if len(instances) > 0 {
+		prefixes := make([]string, len(instances))
+		for i, inst := range instances {
+			prefixes[i] = inst.InstanceName + "."
+		}
+		policyRefs, err := policy.ScanPolicyToolRefs(ctx, h.q, prefixes)
+		if err != nil {
+			slog.ErrorContext(ctx, "uninstall: scan policy refs", "err", err)
+			httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+			return
+		}
+		if len(policyRefs) > 0 {
+			names := make([]string, len(policyRefs))
+			for i, ref := range policyRefs {
+				names[i] = ref.Name
+			}
+			httputil.WriteError(w, http.StatusConflict,
+				"plugin instances are referenced by policies", strings.Join(names, ", "))
+			return
+		}
+	}
+
+	// Audience reference guard: check every instance and aggregate names.
+	if len(instances) > 0 {
+		seen := make(map[string]bool)
+		var audienceNames []string
+		for _, inst := range instances {
+			entries, err := h.q.ListAudienceEntriesByInstance(ctx, inst.ID)
+			if err != nil {
+				slog.ErrorContext(ctx, "uninstall: list audience entries",
+					"instance_id", inst.ID, "err", err)
+				httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+				return
+			}
+			for _, ae := range entries {
+				if !seen[ae.AudienceName] {
+					seen[ae.AudienceName] = true
+					audienceNames = append(audienceNames, ae.AudienceName)
+				}
+			}
+		}
+		if len(audienceNames) > 0 {
+			httputil.WriteError(w, http.StatusConflict,
+				"plugin instances are referenced by audiences", strings.Join(audienceNames, ", "))
+			return
+		}
+	}
+
+	// Best-effort: stop all running subprocesses before clearing rows.
+	if h.processManager != nil {
+		stopCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := h.processManager.StopByPluginID(stopCtx, pluginID); err != nil {
+			slog.WarnContext(ctx, "uninstall: stop subprocesses failed",
+				"plugin_id", pluginID, "err", err)
+		}
+		cancel()
+	}
+
+	// Transactional delete:
+	//   1. For each instance: clear pending requests + OAuth nonces (RESTRICT FKs).
+	//   2. DeletePlugin — cascades to plugin_instances via ON DELETE CASCADE.
+	tx, err := h.store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		slog.ErrorContext(ctx, "uninstall: begin tx", "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.ErrorContext(ctx, "uninstall: rollback failed", "err", rbErr)
+		}
+	}()
+
+	q := db.New(tx)
+	for _, inst := range instances {
+		if err := q.DeletePluginPendingRequestsByInstance(ctx, inst.ID); err != nil {
+			slog.ErrorContext(ctx, "uninstall: clear pending requests",
+				"instance_id", inst.ID, "err", err)
+			httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+			return
+		}
+		if err := q.DeletePluginOAuthNoncesByInstance(ctx, inst.ID); err != nil {
+			slog.ErrorContext(ctx, "uninstall: clear oauth nonces",
+				"instance_id", inst.ID, "err", err)
+			httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+			return
+		}
+	}
+	if _, err := q.DeletePlugin(ctx, pluginID); err != nil {
+		slog.ErrorContext(ctx, "uninstall: delete plugin", "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		slog.ErrorContext(ctx, "uninstall: commit", "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+
+	// Best-effort tool-namespace release for each instance. Nil-safe.
+	if h.toolUnregistrar != nil {
+		for _, inst := range instances {
+			h.toolUnregistrar.UnregisterInstance(ctx, inst.InstanceName)
+		}
+	}
+
+	// Post-commit: remove the binary directory from disk.
+	// Containment check (fail-closed per ADR-001): only remove paths that are
+	// strictly within pluginsDir. A path that starts with ".." after filepath.Rel
+	// is a traversal attempt — we refuse and log a warning.
+	//
+	// Note: if the fsnotify watcher is mid-publishBundle at the moment of
+	// RemoveAll, the newly extracted bundle may land with a nil binary_path.
+	// In that case the operator may need to re-install via the upload endpoint.
+	binaryPathRemoved := false
+	if plugin.BinaryPath != nil && h.pluginsDir != "" {
+		dir := filepath.Dir(*plugin.BinaryPath)
+		rel, relErr := filepath.Rel(h.pluginsDir, dir)
+		if relErr != nil || strings.HasPrefix(rel, "..") {
+			slog.WarnContext(ctx, "uninstall: binary path escapes plugins dir — skipping removal",
+				"binary_path", *plugin.BinaryPath,
+				"plugins_dir", h.pluginsDir)
+		} else {
+			if err := os.RemoveAll(dir); err != nil {
+				slog.WarnContext(ctx, "uninstall: remove binary dir failed",
+					"dir", dir, "err", err)
+			} else {
+				binaryPathRemoved = true
+			}
+		}
+	}
+
+	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
+	h.writeAuditEvent(ctx, auditPluginUninstalled, "info", nowStr, map[string]any{
+		"plugin_id":            pluginID,
+		"plugin_name":          plugin.Name,
+		"plugin_version":       plugin.PluginVersion,
+		"instance_count":       len(instances),
+		"binary_path_removed": binaryPathRemoved,
+	})
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // deriveFingerprint extracts the 8-byte key ID from a Minisign public key blob.
