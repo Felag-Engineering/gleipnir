@@ -86,6 +86,22 @@ type Config struct {
 	// processManager.HealthSetter() in main.go.
 	HealthSetter func(ctx context.Context, instanceID string, target model.PluginHealthState, detail string)
 
+	// RootCtx is the long-lived parent context for all stream goroutines spawned
+	// by Start. It should be the server's lifetime context — the same one passed
+	// to loader.StartManager and triggerSupervisor.StartAll in main.go.
+	//
+	// If nil, context.Background() is used so tests that omit this field
+	// continue to compile and run. Production callers MUST set this to ensure
+	// that goroutine lifetimes are bounded by the server, not by the process.
+	//
+	// The distinction matters because Restart is called from the admin HTTP
+	// handler with r.Context() as its per-call ctx. That ctx is cancelled as
+	// soon as the HTTP response flushes, which would kill the freshly-started
+	// stream goroutine before it can connect (#401). Parenting off RootCtx
+	// instead ensures per-request callers of Restart cannot silently cancel the
+	// new stream.
+	RootCtx context.Context
+
 	// Logger is the base logger. If nil, slog.Default() is used.
 	Logger *slog.Logger
 
@@ -108,6 +124,7 @@ type Config struct {
 // All public methods are safe for concurrent use.
 type Supervisor struct {
 	cfg        Config
+	rootCtx    context.Context // long-lived parent for all stream goroutines; set by NewSupervisor
 	lookup     InstanceLookup  // resolved from cfg.Manager in NewSupervisor
 	dispatcher EventDispatcher // resolved from cfg.Dispatcher in NewSupervisor
 
@@ -135,6 +152,14 @@ func NewSupervisor(cfg Config) *Supervisor {
 		cfg.Logger = slog.Default()
 	}
 
+	// Use the caller-supplied root context when provided; fall back to
+	// Background so existing tests that omit RootCtx continue to compile.
+	// Production callers in main.go MUST supply RootCtx — see Config.RootCtx.
+	rootCtx := cfg.RootCtx
+	if rootCtx == nil {
+		rootCtx = context.Background()
+	}
+
 	var lookup InstanceLookup
 	if cfg.TestInstanceLookup != nil {
 		lookup = cfg.TestInstanceLookup
@@ -151,6 +176,7 @@ func NewSupervisor(cfg Config) *Supervisor {
 
 	return &Supervisor{
 		cfg:        cfg,
+		rootCtx:    rootCtx,
 		lookup:     lookup,
 		dispatcher: dispatcher,
 		instances:  make(map[string]context.CancelFunc),
@@ -216,16 +242,25 @@ func (s *Supervisor) StartAll(ctx context.Context) error {
 // The goroutine calls TriggerService.Start on the plugin, drains events into
 // Dispatcher.Handle, and auto-restarts on failure with exponential backoff.
 //
-// The goroutine exits when ctx is cancelled (host shutdown) or Stop/StopAll is
-// called. Callers may observe goroutine exit via the done channel returned by
-// startedDone; for external callers the done channel is internal.
-func (s *Supervisor) Start(ctx context.Context, instanceID string) {
+// The goroutine exits when the supervisor's rootCtx is cancelled (host
+// shutdown) or Stop/StopAll is called.
+//
+// The ctx parameter is accepted for interface compatibility but is intentionally
+// NOT used to parent the new stream goroutine. Stream goroutines must outlive
+// any individual caller's ctx — for example, the HTTP request ctx that
+// initiated a Restart is cancelled as soon as the response flushes, which
+// would silently kill the freshly-started stream. Parenting off s.rootCtx
+// instead ensures that only host shutdown or an explicit Stop can terminate
+// the goroutine (#401).
+func (s *Supervisor) Start(_ context.Context, instanceID string) {
 	s.mu.Lock()
 	if _, alreadyRunning := s.instances[instanceID]; alreadyRunning {
 		s.mu.Unlock()
 		return
 	}
-	streamCtx, cancel := context.WithCancel(ctx)
+	// Parent off the supervisor's long-lived rootCtx, not the caller's ctx.
+	// See the function doc above for why this matters (#401).
+	streamCtx, cancel := context.WithCancel(s.rootCtx)
 	doneCh := make(chan struct{})
 	s.instances[instanceID] = cancel
 	s.done[instanceID] = doneCh
@@ -258,6 +293,12 @@ func (s *Supervisor) Stop(instanceID string) {
 // the DB, so scope changes take effect immediately.
 //
 // If instanceID is not currently supervised, Restart is a no-op.
+//
+// The ctx parameter is currently unused — the new stream is parented off the
+// supervisor's long-lived rootCtx (#401). The parameter is retained so the
+// TriggerRestarter interface (internal/admin/plugin_handler.go) and existing
+// call sites continue to compile without change. Adding caller-side
+// cancellation of the <-oldDone wait would be a separate piece of work.
 //
 // Lock discipline: the lookup-delete-cancel is done under a single s.mu
 // acquisition so a concurrent Stop arriving mid-Restart sees either the old
