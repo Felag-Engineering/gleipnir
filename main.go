@@ -359,7 +359,7 @@ func run(cfg config.Config) error {
 			Manager:      loader.Manager(),
 			Querier:      store.Queries(),
 			Dispatcher:   triggerDispatcher,
-			HealthSetter: loader.Manager().BuildHealthSetterForExternalUse(),
+			HealthSetter: loader.Manager().HealthSetter(),
 			Logger:       slog.Default(),
 		})
 		go func() {

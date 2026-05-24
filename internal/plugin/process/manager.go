@@ -177,7 +177,7 @@ func (m *Manager) Start(ctx context.Context, plugin db.Plugin, instance db.Plugi
 		StartupTimeout:     m.cfg.DefaultStartupTimeout,
 		StopGrace:          m.cfg.DefaultStopGrace,
 		IdentityIssuer:     m.cfg.IdentityIssuer,
-		HealthSetter:       m.buildHealthSetter(),
+		HealthSetter:       m.HealthSetter(),
 		HostServer:         host,
 		Logger:             m.cfg.Logger,
 		ServerInterceptors: m.cfg.ServerInterceptors,
@@ -451,23 +451,17 @@ func (m *Manager) LookupByName(name string) *Instance {
 	return nil
 }
 
-// BuildHealthSetterForExternalUse returns the same HealthSetter closure that
-// Manager uses internally for crash callbacks, so callers outside the package
-// (e.g. the trigger supervisor) can participate in the same health-state
-// machine without importing internal/plugin/state directly.
+// HealthSetter returns a closure that routes plugin-instance health-state
+// transitions through pluginstate.SetHealthState with the manager's DB
+// querier and publisher. Internal callbacks (crash handlers) and external
+// callers (e.g. the trigger supervisor) share the same closure so they
+// participate in the same state machine without importing internal/plugin/state
+// directly. ErrIllegalTransition is treated as warn-and-continue because the
+// instance may already be in a terminal state from a concurrent writer.
 //
-// This is safe to call from main.go after NewManager; the returned function
-// captures the manager's querier and publisher by reference, so it reflects
-// any hot-reloaded querier.
-func (m *Manager) BuildHealthSetterForExternalUse() func(ctx context.Context, instanceID string, target model.PluginHealthState, detail string) {
-	return m.buildHealthSetter()
-}
-
-// buildHealthSetter returns a HealthSetter closure that routes through
-// pluginstate.SetHealthState with the manager's DB querier and publisher.
-// ErrIllegalTransition is treated as warn-and-continue because the instance
-// may already be in a terminal state from a concurrent writer.
-func (m *Manager) buildHealthSetter() func(ctx context.Context, instanceID string, target model.PluginHealthState, detail string) {
+// Safe to call after NewManager; the returned function captures the manager's
+// querier and publisher by reference so it reflects any hot-reloaded querier.
+func (m *Manager) HealthSetter() func(ctx context.Context, instanceID string, target model.PluginHealthState, detail string) {
 	return func(ctx context.Context, instanceID string, target model.PluginHealthState, detail string) {
 		err := pluginstate.SetHealthState(
 			ctx,
@@ -527,7 +521,7 @@ func (m *Manager) handleLaunchFailure(ctx context.Context, plugin db.Plugin, ins
 	// Update health state to unhealthy with the actionable detail. We call the
 	// HealthSetter directly (same path the crash watchdog uses) so the state
 	// machine is the single source of truth.
-	if healthSetter := m.buildHealthSetter(); healthSetter != nil {
+	if healthSetter := m.HealthSetter(); healthSetter != nil {
 		healthSetter(ctx, instance.ID, model.PluginHealthStateUnhealthy, healthDetail)
 	}
 

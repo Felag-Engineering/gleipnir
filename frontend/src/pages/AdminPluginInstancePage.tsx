@@ -20,7 +20,7 @@ import {
 } from '@/hooks/mutations/plugins'
 import { isOAuthRefreshFailure } from '@/utils/pluginHealth'
 import { queryKeys } from '@/hooks/queryKeys'
-import { ApiError } from '@/api/fetch'
+import { ApiError, extractErrorMessage } from '@/api/fetch'
 import type { PluginAuthStrategy } from '@/api/types'
 import styles from './AdminPluginInstancePage.module.css'
 
@@ -352,13 +352,7 @@ export default function AdminPluginInstancePage() {
           setShowAcceptManifestModal(false)
         },
         onError: (err: unknown) => {
-          if (err instanceof ApiError) {
-            setAcceptManifestError(err.detail ?? err.message)
-          } else if (err instanceof Error) {
-            setAcceptManifestError(err.message)
-          } else {
-            setAcceptManifestError('Unexpected error — please try again.')
-          }
+          setAcceptManifestError(extractErrorMessage(err))
         },
       },
     )
@@ -374,13 +368,7 @@ export default function AdminPluginInstancePage() {
           navigate('/admin/plugins')
         },
         onError: (err: unknown) => {
-          if (err instanceof ApiError) {
-            setDeleteError(err.detail ?? err.message)
-          } else if (err instanceof Error) {
-            setDeleteError(err.message)
-          } else {
-            setDeleteError('Unexpected error — please try again.')
-          }
+          setDeleteError(extractErrorMessage(err))
         },
       },
     )

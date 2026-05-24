@@ -11,7 +11,7 @@ import { usePluginInstancesForAudience } from '@/hooks/queries/admin'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { useUninstallPlugin } from '@/hooks/mutations/plugins'
 import { usePageTitle } from '@/hooks/usePageTitle'
-import { ApiError } from '@/api/fetch'
+import { extractErrorMessage } from '@/api/fetch'
 import type { ApiInstalledPlugin, ApiPluginInstanceForAudience } from '@/api/types'
 import styles from './AdminPluginsPage.module.css'
 
@@ -66,13 +66,7 @@ export default function AdminPluginsPage() {
           setOpenUninstall(null)
         },
         onError: (err: unknown) => {
-          if (err instanceof ApiError) {
-            setUninstallError(err.detail ?? err.message)
-          } else if (err instanceof Error) {
-            setUninstallError(err.message)
-          } else {
-            setUninstallError('Unexpected error — please try again.')
-          }
+          setUninstallError(extractErrorMessage(err))
         },
       },
     )
