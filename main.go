@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/execution/agent"
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/http/api"
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
@@ -25,6 +27,7 @@ import (
 	llmfactory "github.com/felag-engineering/gleipnir/internal/llm/factory"
 	openaicompatllm "github.com/felag-engineering/gleipnir/internal/llm/openaicompat"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/model"
 	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dedup"
@@ -41,6 +44,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/timeout"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 	"github.com/felag-engineering/gleipnir/internal/trigger"
+	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"google.golang.org/grpc"
 )
 
@@ -193,6 +197,12 @@ func run(cfg config.Config) error {
 	// it is only injected into StartManagerConfig inside the if-block below.
 	pluginToolRegistrar := plugintools.New(arbiter, store.Queries(), broadcaster)
 
+	// Plugin manifest snapshotter: parses and caches plugin manifests by content
+	// hash. Hoisted here (before the launcher) so pluginToolResolverAdapter can
+	// use it. The same instance is reused at line ~442 where the audience handler
+	// and binding test handler are constructed — shared cache hits benefit both.
+	pluginManifestSnap := configvalidate.NewSnapshotter(store.Queries())
+
 	// Activate the hostsvc.Server and start the process.Manager when plugins are
 	// enabled. This block runs after pluginPool (needed as CallContextResolver),
 	// encryptionKey (needed for GetCredentials), and arbiter are all in scope.
@@ -323,6 +333,19 @@ func run(cfg config.Config) error {
 		slog.Warn("could not ensure default model is enabled", "err", err)
 	}
 
+	// Build the plugin tool resolver and classifier only when plugins are enabled.
+	// When nil, every tool grant goes to the MCP path, preserving pre-plugin behaviour.
+	var pluginResolver runpkg.PluginToolResolver
+	var toolClassifier runpkg.ToolSourceClassifier
+	if cfg.PluginsEnabled {
+		pluginResolver = &pluginToolResolverAdapter{
+			snap:      pluginManifestSnap,
+			registrar: pluginToolRegistrar,
+			q:         store.Queries(),
+		}
+		toolClassifier = &arbiterClassifier{arbiter: arbiter}
+	}
+
 	launcher := runpkg.NewRunLauncher(runpkg.RunLauncherConfig{
 		Store:                  store,
 		Registry:               registry,
@@ -331,11 +354,10 @@ func run(cfg config.Config) error {
 		Publisher:              broadcaster,
 		DefaultFeedbackTimeout: cfg.DefaultFeedbackTimeout,
 		ModelResolver:          systemSettings,
-		// PluginTools and PluginRegistrar are intentionally nil here; they will be
-		// populated in the follow-up that wires subprocess lifecycle and tool
-		// registration.  PluginDispatcher is pre-wired so the pool is ready when
-		// the registrar hands off its first set of plugin tools.
-		PluginDispatcher: pluginDispatchAdapter,
+		PluginResolver:         pluginResolver,
+		ToolClassifier:         toolClassifier,
+		PluginRegistrar:        pluginToolRegistrar,
+		PluginDispatcher:       pluginDispatchAdapter,
 	})
 
 	// Wire the trigger dispatch pipeline now that RunLauncher is available.
@@ -398,10 +420,9 @@ func run(cfg config.Config) error {
 		policyService.WithWebhookSecretEncrypter(webhookEncrypter)
 	}
 	if cfg.PluginsEnabled {
-		snap := configvalidate.NewSnapshotter(store.Queries())
 		resolver := &pluginInstanceResolver{q: store.Queries()}
 		policyService.WithSubscribedBindingValidator(
-			policy.NewSubscribedBindingValidator(resolver, snap),
+			policy.NewSubscribedBindingValidator(resolver, pluginManifestSnap),
 		)
 	}
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
@@ -442,7 +463,9 @@ func run(cfg config.Config) error {
 	authHandler := auth.NewHandler(store.Queries(), store.DB())
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
 
-	snap := configvalidate.NewSnapshotter(store.Queries())
+	// Reuse pluginManifestSnap (constructed before the launcher) so the audience
+	// handler and binding test handler benefit from the same cache as the resolver.
+	snap := pluginManifestSnap
 	audienceH := api.NewAudienceHandler(store, snap, time.Now)
 	bindingTestH := api.NewBindingTestHandler(snap)
 
@@ -832,6 +855,132 @@ type pluginDispatchAdapter struct {
 
 func (a *pluginDispatchAdapter) Call(ctx context.Context, runID, policyID, instanceName, toolName, inputJSON string) (string, bool, error) {
 	return a.pool.Call(ctx, runID, policyID, instanceName, toolName, inputJSON)
+}
+
+// arbiterClassifier uses the shared tool namespace arbiter to determine whether
+// a dot-name tool grant belongs to a plugin instance. This is the production
+// implementation of runpkg.ToolSourceClassifier.
+type arbiterClassifier struct {
+	arbiter *toolregistry.Registry
+}
+
+func (c *arbiterClassifier) IsPluginTool(dotName string) bool {
+	src, ok := c.arbiter.Lookup(dotName)
+	return ok && src.Kind == toolregistry.KindPlugin
+}
+
+// pluginToolGenerationLookup is the narrow interface that pluginToolResolverAdapter
+// needs from *plugintools.Registrar. Only the Generation method is required —
+// narrowing to an interface avoids importing the tools package in tests that
+// use stub implementations.
+type pluginToolGenerationLookup interface {
+	Generation(instanceName string) (int64, bool)
+}
+
+// pluginInstanceLookup is the narrow DB interface that pluginToolResolverAdapter
+// needs. Only GetPluginInstanceByGlobalName is required.
+type pluginInstanceLookup interface {
+	GetPluginInstanceByGlobalName(ctx context.Context, instanceName string) (db.PluginInstance, error)
+}
+
+// pluginToolResolverAdapter implements runpkg.PluginToolResolver by looking up
+// each plugin tool grant in the manifest and the registrar. It is constructed in
+// main.go (not in a separate package) because it wires together multiple internal
+// packages that must not import each other — the same pattern as pluginDispatchAdapter.
+type pluginToolResolverAdapter struct {
+	snap      *configvalidate.Snapshotter
+	registrar pluginToolGenerationLookup
+	q         pluginInstanceLookup
+}
+
+// ResolvePluginTools resolves a list of plugin tool grants into agent-ready
+// PluginToolEntry values. For each grant it:
+//  1. Splits the "instance.tool" dot-name.
+//  2. Looks up the plugin instance in the DB to get its plugin_id.
+//  3. Fetches the manifest snapshot for that plugin to read the tool's
+//     description and JSON schema.
+//  4. Reads the current generation from the registrar so the agent can detect
+//     stale calls after a generation rotation.
+func (r *pluginToolResolverAdapter) ResolvePluginTools(ctx context.Context, grants []model.ToolCapability) ([]agent.PluginToolEntry, error) {
+	result := make([]agent.PluginToolEntry, 0, len(grants))
+	for _, g := range grants {
+		instanceName, toolName, err := splitDotName(g.Tool)
+		if err != nil {
+			return nil, fmt.Errorf("resolve plugin tool %q: %w", g.Tool, err)
+		}
+
+		inst, err := r.q.GetPluginInstanceByGlobalName(ctx, instanceName)
+		if err != nil {
+			return nil, fmt.Errorf("plugin tool %q: instance %q not found: %w", g.Tool, instanceName, err)
+		}
+
+		manifest, err := r.snap.ForPluginID(ctx, inst.PluginID)
+		if err != nil {
+			return nil, fmt.Errorf("plugin tool %q: manifest lookup: %w", g.Tool, err)
+		}
+
+		var toolDecl *sdkmanifest.ToolDecl
+		for i := range manifest.Tools {
+			if manifest.Tools[i].Name == toolName {
+				toolDecl = &manifest.Tools[i]
+				break
+			}
+		}
+		if toolDecl == nil {
+			return nil, fmt.Errorf("plugin tool %q: tool %q not declared in manifest", g.Tool, toolName)
+		}
+
+		var schema map[string]any
+		if toolDecl.InputSchema != nil {
+			if err := toolDecl.InputSchema.Decode(&schema); err != nil {
+				return nil, fmt.Errorf("plugin tool %q: decode input schema: %w", g.Tool, err)
+			}
+		}
+
+		gen, registered := r.registrar.Generation(instanceName)
+		if !registered {
+			// The DB lookup above confirmed the instance exists in the DB; the
+			// registrar not knowing about it means its subprocess is not running.
+			return nil, fmt.Errorf("plugin tool %q: instance %q subprocess is not running", g.Tool, instanceName)
+		}
+
+		// Approval mode passes through from the policy grant unchanged. The parser
+		// normalizes empty approval to "none" (parser.go:209-211), so g.Approval is
+		// always "none" or "required" by this point. The manifest's ApprovalRequired
+		// is advisory metadata for the policy author; the policy controls at runtime.
+		approval := g.Approval
+
+		var timeout time.Duration
+		if g.Timeout != "" {
+			timeout, err = time.ParseDuration(g.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("plugin tool %q: parse timeout: %w", g.Tool, err)
+			}
+		}
+
+		result = append(result, agent.PluginToolEntry{
+			InstanceName: instanceName,
+			ToolName:     toolName,
+			Generation:   gen,
+			Description:  toolDecl.Description,
+			Schema:       schema,
+			Approval:     approval,
+			Timeout:      timeout,
+			Params:       g.Params,
+		})
+	}
+	return result, nil
+}
+
+// splitDotName splits a "source.tool" dot-name into its two parts. Returns an
+// error when the name is missing the dot or has empty parts on either side.
+// Same 3-line logic as internal/mcp's unexported splitToolName.
+func splitDotName(dotName string) (source, tool string, err error) {
+	parts := strings.SplitN(dotName, ".", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("tool name %q must be in source.tool dot-notation", dotName)
+	}
+	return parts[0], parts[1], nil
 }
 
 // pluginInstanceResolver adapts *db.Queries to satisfy policy.InstanceManifestResolver.
