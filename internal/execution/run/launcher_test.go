@@ -865,6 +865,345 @@ agent:
 	}
 }
 
+// stubToolClassifier classifies tools as plugin-sourced when their dot-name is
+// in the pluginTools set. Satisfies run.ToolSourceClassifier.
+type stubToolClassifier struct {
+	pluginTools map[string]bool
+}
+
+func (s *stubToolClassifier) IsPluginTool(dotName string) bool {
+	return s.pluginTools[dotName]
+}
+
+// stubPluginToolResolver returns pre-canned PluginToolEntry values or a canned
+// error. Satisfies run.PluginToolResolver.
+type stubPluginToolResolver struct {
+	entries []agent.PluginToolEntry
+	err     error
+}
+
+func (s *stubPluginToolResolver) ResolvePluginTools(_ context.Context, _ []model.ToolCapability) ([]agent.PluginToolEntry, error) {
+	return s.entries, s.err
+}
+
+// stubPluginGenerationLookup satisfies agent.PluginGenerationLookup.
+type stubPluginGenerationLookup struct {
+	generation int64
+	registered bool
+}
+
+func (s *stubPluginGenerationLookup) Generation(_ string) (int64, bool) {
+	return s.generation, s.registered
+}
+
+// stubPluginDispatcher satisfies agent.PluginToolDispatcher. In launcher tests
+// the agent should not actually call any tools (the mock LLM returns end_turn
+// immediately), so this stub panics to catch unexpected invocations.
+type stubPluginDispatcher struct{}
+
+func (s *stubPluginDispatcher) Call(_ context.Context, _, _, _, _, _ string) (string, bool, error) {
+	panic("stubPluginDispatcher.Call invoked unexpectedly in launcher test")
+}
+
+func TestLaunch_PluginToolResolution_Successful(t *testing.T) {
+	// Policy grants a single plugin tool. stubToolClassifier marks it as
+	// plugin-sourced; stubPluginToolResolver returns a single PluginToolEntry.
+	// Launch should succeed and create a run record.
+	store := testutil.NewTestStore(t)
+	registry := mcp.NewRegistry(store.Queries())
+	manager := run.NewRunManager()
+
+	const policyYAML = `
+name: plugin-tool-success-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: test-plugin.do-thing
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: parallel
+`
+	testutil.InsertPolicy(t, store, "p-plugin-ok", "policy-p-plugin-ok", "webhook", policyYAML)
+	parsed, err := policy.Parse(policyYAML, "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("policy.Parse: %v", err)
+	}
+
+	pluginEntry := agent.PluginToolEntry{
+		InstanceName: "test-plugin",
+		ToolName:     "do-thing",
+		Generation:   1,
+		Description:  "does a thing",
+		Schema:       map[string]any{"type": "object"},
+	}
+
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:    store,
+		Registry: registry,
+		Manager:  manager,
+		AgentFactory: func(cfg agent.Config) (*agent.BoundAgent, error) {
+			cfg.LLMClient = testutil.NewMockLLMClient(
+				testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
+			)
+			return agent.New(cfg)
+		},
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          nil,
+		ToolClassifier: &stubToolClassifier{
+			pluginTools: map[string]bool{"test-plugin.do-thing": true},
+		},
+		PluginResolver: &stubPluginToolResolver{
+			entries: []agent.PluginToolEntry{pluginEntry},
+		},
+		PluginRegistrar:  &stubPluginGenerationLookup{generation: 1, registered: true},
+		PluginDispatcher: &stubPluginDispatcher{},
+	})
+
+	result, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
+		PolicyID:       "p-plugin-ok",
+		TriggerType:    model.TriggerTypeWebhook,
+		TriggerPayload: `{}`,
+		ParsedPolicy:   parsed,
+	})
+	if launchErr != nil {
+		t.Fatalf("Launch() unexpected error: %v", launchErr)
+	}
+	if result.RunID == "" {
+		t.Fatal("Launch() returned empty RunID")
+	}
+
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "p-plugin-ok", Limit: 100})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) == 0 {
+		t.Fatal("expected run in DB after successful Launch, got 0")
+	}
+	if runs[0].ID != result.RunID {
+		t.Errorf("run.ID = %q, want %q", runs[0].ID, result.RunID)
+	}
+
+	// Wait for the background goroutine to finish before returning.
+	manager.Wait()
+}
+
+func TestLaunch_PluginToolResolution_Failure(t *testing.T) {
+	// stubPluginToolResolver returns an error. Launch should mark the run failed
+	// and return an error — same pattern as TestLaunch_ToolResolutionFailure.
+	store := testutil.NewTestStore(t)
+	registry := mcp.NewRegistry(store.Queries())
+	manager := run.NewRunManager()
+
+	const policyYAML = `
+name: plugin-tool-fail-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: test-plugin.do-thing
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: parallel
+`
+	testutil.InsertPolicy(t, store, "p-plugin-fail", "policy-p-plugin-fail", "webhook", policyYAML)
+	parsed, err := policy.Parse(policyYAML, "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("policy.Parse: %v", err)
+	}
+
+	resolverErr := errors.New("instance subprocess is not running")
+
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           nil,
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          nil,
+		ToolClassifier: &stubToolClassifier{
+			pluginTools: map[string]bool{"test-plugin.do-thing": true},
+		},
+		PluginResolver: &stubPluginToolResolver{err: resolverErr},
+	})
+
+	result, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
+		PolicyID:       "p-plugin-fail",
+		TriggerType:    model.TriggerTypeWebhook,
+		TriggerPayload: `{}`,
+		ParsedPolicy:   parsed,
+	})
+	if launchErr == nil {
+		t.Fatal("Launch() expected error on plugin tool resolution failure, got nil")
+	}
+
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "p-plugin-fail", Limit: 100})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) == 0 {
+		t.Fatal("expected run to be created before failure, got 0 runs")
+	}
+	if runs[0].Status != string(model.RunStatusFailed) {
+		t.Errorf("run.Status = %q, want %q", runs[0].Status, model.RunStatusFailed)
+	}
+	if result.RunID == "" {
+		t.Error("Launch() returned empty RunID on plugin tool resolution failure")
+	}
+	if result.RunID != runs[0].ID {
+		t.Errorf("Launch() returned RunID %q, want %q (the failed run's ID)", result.RunID, runs[0].ID)
+	}
+}
+
+func TestLaunch_MixedMCPAndPluginTools(t *testing.T) {
+	// Policy grants both an MCP tool (stub-server.read_data) and a plugin tool
+	// (test-plugin.do-thing). The MCP side uses a real stub registry;
+	// the plugin side uses stub classifier and resolver. Both must resolve for
+	// Launch to succeed.
+	store, registry := setupIntegrationFixture(t)
+	manager := run.NewRunManager()
+
+	const policyYAML = `
+name: mixed-tools-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: stub-server.read_data
+    - tool: test-plugin.do-thing
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: parallel
+`
+	testutil.InsertPolicy(t, store, "p-mixed", "policy-p-mixed", "webhook", policyYAML)
+	parsed, err := policy.Parse(policyYAML, "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("policy.Parse: %v", err)
+	}
+
+	pluginEntry := agent.PluginToolEntry{
+		InstanceName: "test-plugin",
+		ToolName:     "do-thing",
+		Generation:   1,
+		Description:  "does a thing",
+		Schema:       map[string]any{"type": "object"},
+	}
+
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:    store,
+		Registry: registry,
+		Manager:  manager,
+		AgentFactory: func(cfg agent.Config) (*agent.BoundAgent, error) {
+			cfg.LLMClient = testutil.NewMockLLMClient(
+				testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
+			)
+			return agent.New(cfg)
+		},
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          nil,
+		// Only the plugin tool is classified as plugin-sourced; stub-server.read_data
+		// falls through to the MCP path.
+		ToolClassifier: &stubToolClassifier{
+			pluginTools: map[string]bool{"test-plugin.do-thing": true},
+		},
+		PluginResolver: &stubPluginToolResolver{
+			entries: []agent.PluginToolEntry{pluginEntry},
+		},
+		PluginRegistrar:  &stubPluginGenerationLookup{generation: 1, registered: true},
+		PluginDispatcher: &stubPluginDispatcher{},
+	})
+
+	result, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
+		PolicyID:       "p-mixed",
+		TriggerType:    model.TriggerTypeWebhook,
+		TriggerPayload: `{}`,
+		ParsedPolicy:   parsed,
+	})
+	if launchErr != nil {
+		t.Fatalf("Launch() unexpected error: %v", launchErr)
+	}
+	if result.RunID == "" {
+		t.Fatal("Launch() returned empty RunID")
+	}
+
+	manager.Wait()
+}
+
+func TestLaunch_PluginToolGranted_NoResolver(t *testing.T) {
+	// A plugin tool is granted and classified, but PluginResolver is nil (plugins
+	// disabled at runtime). Launch must fail with a clear error message rather
+	// than silently dropping the grant or panicking.
+	store := testutil.NewTestStore(t)
+	registry := mcp.NewRegistry(store.Queries())
+	manager := run.NewRunManager()
+
+	const policyYAML = `
+name: plugin-no-resolver-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: test-plugin.do-thing
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: parallel
+`
+	testutil.InsertPolicy(t, store, "p-no-resolver", "policy-p-no-resolver", "webhook", policyYAML)
+	parsed, err := policy.Parse(policyYAML, "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("policy.Parse: %v", err)
+	}
+
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           nil,
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          nil,
+		// Classifier marks the tool as plugin-sourced, but PluginResolver is nil.
+		ToolClassifier: &stubToolClassifier{
+			pluginTools: map[string]bool{"test-plugin.do-thing": true},
+		},
+		PluginResolver: nil, // belt-and-braces failure path
+	})
+
+	result, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
+		PolicyID:       "p-no-resolver",
+		TriggerType:    model.TriggerTypeWebhook,
+		TriggerPayload: `{}`,
+		ParsedPolicy:   parsed,
+	})
+	if launchErr == nil {
+		t.Fatal("Launch() expected error when plugin resolver is nil, got nil")
+	}
+	if !strings.Contains(launchErr.Error(), "plugin subsystem is not enabled") {
+		t.Errorf("error %q should contain %q", launchErr.Error(), "plugin subsystem is not enabled")
+	}
+
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "p-no-resolver", Limit: 100})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) == 0 {
+		t.Fatal("expected run to be created before failure, got 0 runs")
+	}
+	if runs[0].Status != string(model.RunStatusFailed) {
+		t.Errorf("run.Status = %q, want %q", runs[0].Status, model.RunStatusFailed)
+	}
+	if result.RunID == "" {
+		t.Error("Launch() returned empty RunID when plugin resolver is nil")
+	}
+}
+
 // TestNewAgentFactory_ProviderLookup verifies that NewAgentFactory resolves the
 // correct LLMClient from the registry using the policy's Agent.Provider field,
 // and returns a descriptive error for unknown providers.
