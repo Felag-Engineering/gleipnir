@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
@@ -25,7 +26,13 @@ func main() {
 			return NewTriggerService(host, registry)
 		}),
 		serve.WithChannelService(func(host hostv1.HostServiceClient) channelv1.ChannelServiceServer {
-			return NewChannelService(host, registry, http.DefaultClient)
+			cs := NewChannelService(host, registry, http.DefaultClient)
+			// Maintainer goroutine keeps the interactive handler registered
+			// across late-config and hub-death. Bound to context.Background
+			// because the plugin process has no explicit shutdown hook —
+			// goroutine ends when the process exits.
+			cs.Start(context.Background())
+			return cs
 		}),
 	)
 }

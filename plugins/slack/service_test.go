@@ -1777,4 +1777,3 @@ func TestChannelService_Request_HandleInteractiveTakesCorrelation(t *testing.T) 
 		t.Error("correlation entry still present after handleInteractive ran; handleInteractive must call take()")
 	}
 }
-

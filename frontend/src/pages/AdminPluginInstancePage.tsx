@@ -8,9 +8,9 @@ import { FieldError } from '@/components/form/FieldError/FieldError'
 import { ReauthorizeButton } from '@/components/admin/ReauthorizeButton/ReauthorizeButton'
 import { CredentialsTab } from '@/components/admin/CredentialsTab/CredentialsTab'
 import { DeletePluginInstanceModal } from '@/components/admin/DeletePluginInstanceModal'
-import { usePluginInstancesForAudience } from '@/hooks/queries/admin'
+import { usePluginInstancesForAudience, usePluginInstanceDetail } from '@/hooks/queries/admin'
 import { useCurrentUser } from '@/hooks/queries/users'
-import { useSetInstanceSubscriptionScope, useDeletePluginInstance } from '@/hooks/mutations/plugins'
+import { useSetInstanceSubscriptionScope, useDeletePluginInstance, useSetInstanceConfig } from '@/hooks/mutations/plugins'
 import { isOAuthRefreshFailure } from '@/utils/pluginHealth'
 import { queryKeys } from '@/hooks/queryKeys'
 import { ApiError } from '@/api/fetch'
@@ -31,6 +31,9 @@ interface SchemaProperty {
   type?: string
   items?: { type?: string }
   description?: string
+  // ADR-049: fields annotated with x-gleipnir-secret: true are redacted on read
+  // and must be submitted via a separate write (never round-tripped as "***").
+  'x-gleipnir-secret'?: boolean
 }
 
 interface SchemaShape {
@@ -41,14 +44,20 @@ function isStringArrayProp(prop: SchemaProperty): boolean {
   return prop.type === 'array' && prop.items?.type === 'string'
 }
 
+// REDACTION_SENTINEL is the value the backend substitutes for secret fields on
+// GET. The bulk PUT rejects it — we strip such fields before sending (ADR-049).
+const REDACTION_SENTINEL = '***'
+
 interface SchemaFormProps {
   schema: SchemaShape
   value: Record<string, unknown>
   onChange: (next: Record<string, unknown>) => void
   fieldErrors: Record<string, string>
+  // idPrefix scopes generated DOM ids so subscription and config forms don't collide.
+  idPrefix?: string
 }
 
-function SchemaForm({ schema, value, onChange, fieldErrors }: SchemaFormProps) {
+function SchemaForm({ schema, value, onChange, fieldErrors, idPrefix = 'field' }: SchemaFormProps) {
   const properties = schema.properties ?? {}
   const fields = Object.keys(properties)
 
@@ -64,9 +73,10 @@ function SchemaForm({ schema, value, onChange, fieldErrors }: SchemaFormProps) {
     <div className={styles.schemaFields}>
       {fields.map((name) => {
         const prop = properties[name]
-        const fieldId = `scope-field-${name}`
-        const fieldErrId = `scope-err-${name}`
+        const fieldId = `${idPrefix}-${name}`
+        const fieldErrId = `${idPrefix}-err-${name}`
         const err = fieldErrors[name]
+        const isSecret = !!prop['x-gleipnir-secret']
 
         if (prop.type === 'boolean') {
           return (
@@ -130,6 +140,36 @@ function SchemaForm({ schema, value, onChange, fieldErrors }: SchemaFormProps) {
                       .filter((s) => s.length > 0),
                   )
                 }
+                aria-describedby={err ? fieldErrId : undefined}
+              />
+              <FieldError id={fieldErrId} messages={err} />
+            </div>
+          )
+        }
+
+        // Secret string: password input. The server returns "***" for existing
+        // values — show as placeholder rather than pre-filling so the operator
+        // must explicitly type to change it (prevents sentinel round-trip).
+        if (isSecret) {
+          const currentVal = typeof value[name] === 'string' ? (value[name] as string) : ''
+          const isSentinel = currentVal === REDACTION_SENTINEL
+          return (
+            <div key={name} className={styles.fieldRow}>
+              <label htmlFor={fieldId} className={styles.fieldLabel}>
+                {name}
+                <span className={styles.fieldHint}> (secret)</span>
+              </label>
+              {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
+              <input
+                id={fieldId}
+                type="password"
+                className={styles.input}
+                // Show empty when the sentinel arrives — the placeholder communicates
+                // that a value is already set without echoing "***" into the field.
+                value={isSentinel ? '' : currentVal}
+                placeholder={isSentinel ? '(already set — leave blank to keep)' : ''}
+                autoComplete="new-password"
+                onChange={(e) => handleChange(name, e.target.value)}
                 aria-describedby={err ? fieldErrId : undefined}
               />
               <FieldError id={fieldErrId} messages={err} />
@@ -249,6 +289,200 @@ function SubscriptionsTab({
   )
 }
 
+// ── ConfigTab ─────────────────────────────────────────────────────────────────
+
+interface ConfigTabProps {
+  pluginId: string
+  instanceId: string
+  configSchema: Record<string, unknown> | null
+}
+
+function ConfigTab({ pluginId, instanceId, configSchema }: ConfigTabProps) {
+  const queryClient = useQueryClient()
+
+  // Fetch the per-instance detail to get the current (redacted) config values.
+  // The listing endpoint (usePluginInstancesForAudience) includes config_schema
+  // but omits config_json — we need GetInstance for actual values.
+  const { data: detail, status: detailStatus } = usePluginInstanceDetail(pluginId, instanceId)
+
+  // Parse the config_json string from the backend into a plain object.
+  const serverConfig: Record<string, unknown> = (() => {
+    if (!detail?.config_json) return {}
+    try {
+      return JSON.parse(detail.config_json) as Record<string, unknown>
+    } catch {
+      return {}
+    }
+  })()
+
+  const [config, setConfig] = useState<Record<string, unknown>>(serverConfig)
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+  const [globalError, setGlobalError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+  const [casConflict, setCasConflict] = useState(false)
+
+  const mutation = useSetInstanceConfig()
+
+  // Sync local config whenever the server data refreshes (e.g. after a save
+  // that invalidates the query, or after navigating between instances).
+  useEffect(() => {
+    if (detail?.config_json) {
+      try {
+        setConfig(JSON.parse(detail.config_json) as Record<string, unknown>)
+      } catch {
+        setConfig({})
+      }
+    } else {
+      setConfig({})
+    }
+    setCasConflict(false)
+    setSaved(false)
+    setFieldErrors({})
+    setGlobalError(null)
+  }, [detail?.config_json, instanceId])
+
+  const schema = (configSchema ?? {}) as SchemaShape
+
+  function buildPayloadConfig(): Record<string, unknown> {
+    // Strip fields that still hold the redaction sentinel — the bulk PUT rejects
+    // them (ADR-049 §5). An empty value on a secret field where the server
+    // returned "***" means the operator left it blank (keep existing), so we
+    // also omit those to avoid sending an empty string as the new secret value.
+    const properties = (schema.properties ?? {}) as Record<string, SchemaProperty>
+    const out: Record<string, unknown> = {}
+    for (const [key, val] of Object.entries(config)) {
+      const prop = properties[key]
+      if (prop?.['x-gleipnir-secret']) {
+        // Skip sentinel (backend would reject it anyway).
+        if (val === REDACTION_SENTINEL) continue
+        // Skip empty value when the original was a sentinel (operator left blank
+        // = keep current secret).
+        if (val === '' && serverConfig[key] === REDACTION_SENTINEL) continue
+      }
+      out[key] = val
+    }
+    return out
+  }
+
+  function handleSave() {
+    setSaved(false)
+    setFieldErrors({})
+    setGlobalError(null)
+    setCasConflict(false)
+
+    if (!detail) return
+
+    mutation.mutate(
+      {
+        pluginId,
+        instanceId,
+        config: buildPayloadConfig(),
+        expectedVersion: detail.version,
+      },
+      {
+        onSuccess: () => {
+          setSaved(true)
+          // Refresh to pick up the updated version number and any redacted values.
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.plugins.instance(pluginId, instanceId),
+          })
+        },
+        onError: (err) => {
+          const apiErr = err as ApiError
+          if (apiErr.status === 409) {
+            setCasConflict(true)
+          } else if ((apiErr.status === 422 || apiErr.status === 400) && apiErr.issues) {
+            const errs: Record<string, string> = {}
+            for (const issue of apiErr.issues) {
+              const key = issue.field ?? ''
+              errs[key] = issue.message
+            }
+            setFieldErrors(errs)
+          } else {
+            setGlobalError(apiErr.message ?? 'Save failed')
+          }
+        },
+      },
+    )
+  }
+
+  function handleRefresh() {
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.plugins.instance(pluginId, instanceId),
+    })
+    setCasConflict(false)
+  }
+
+  if (detailStatus === 'pending') {
+    return (
+      <div className={styles.tabContent}>
+        <p className={styles.loading}>Loading…</p>
+      </div>
+    )
+  }
+
+  if (detailStatus === 'error') {
+    return (
+      <div className={styles.tabContent}>
+        <p className={styles.errorMsg}>Could not load instance config.</p>
+      </div>
+    )
+  }
+
+  const hasSchema =
+    configSchema !== null &&
+    typeof configSchema === 'object' &&
+    Object.keys(configSchema).length > 0
+
+  return (
+    <div className={styles.tabContent}>
+      <p className={styles.tabIntro}>
+        Configure this plugin instance. Fields marked as secrets are write-only — a
+        placeholder is shown when a value is already set. Leave a secret field blank to
+        keep the current value.
+      </p>
+
+      {hasSchema ? (
+        <SchemaForm
+          schema={schema}
+          value={config}
+          onChange={setConfig}
+          fieldErrors={fieldErrors}
+          idPrefix="config-field"
+        />
+      ) : (
+        <p className={styles.noFields}>No config fields declared in manifest.</p>
+      )}
+
+      {casConflict && (
+        <div className={styles.casConflict}>
+          <span>Configuration was modified elsewhere — refresh to see latest.</span>
+          <Button type="button" variant="secondary" size="small" onClick={handleRefresh}>
+            Refresh
+          </Button>
+        </div>
+      )}
+
+      {globalError && <p className={styles.globalError}>{globalError}</p>}
+
+      <div className={styles.saveRow}>
+        <Button
+          type="button"
+          variant="primary"
+          size="small"
+          onClick={handleSave}
+          disabled={mutation.isPending || !detail}
+        >
+          {mutation.isPending ? 'Saving…' : 'Save config'}
+        </Button>
+        {saved && !mutation.isPending && (
+          <span className={styles.savedConfirm}>Saved.</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function AdminPluginInstancePage() {
@@ -343,10 +577,11 @@ export default function AdminPluginInstancePage() {
 
     if (activeTab === 'config') {
       return (
-        <div className={styles.tabContent}>
-          {/* TODO #241: render instance config form */}
-          <p className={styles.placeholder}>Instance configuration — coming in #241.</p>
-        </div>
+        <ConfigTab
+          pluginId={pluginId!}
+          instanceId={instanceId!}
+          configSchema={instance.config_schema}
+        />
       )
     }
 
@@ -373,9 +608,9 @@ export default function AdminPluginInstancePage() {
 
   return (
     <div className={styles.page}>
-      <Link to="/admin/audiences" className={styles.backLink}>
+      <Link to="/admin/plugins" className={styles.backLink}>
         <ArrowLeft size={14} strokeWidth={1.5} aria-hidden />
-        Audiences
+        Plugins
       </Link>
 
       <PageHeader title={`${pluginName} / ${instanceName}`}>

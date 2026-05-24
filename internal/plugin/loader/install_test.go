@@ -244,7 +244,12 @@ func newTestInstaller(t *testing.T, q *db.Queries, allowUnsigned bool) *Installe
 	return inst
 }
 
-func TestInstall_NewSignedPlugin_PendingReview(t *testing.T) {
+// TestInstall_NewSignedPlugin_Active verifies that a verified install promotes
+// the plugin row to status=active so the subprocess manager and trigger
+// supervisor (both of which filter by status='active') will pick it up. Before
+// this change a fresh install sat in pending_review forever with no automated
+// path to advance it (no UpdatePluginStatus caller existed).
+func TestInstall_NewSignedPlugin_Active(t *testing.T) {
 	q := openTestDB(t)
 	inst := newTestInstaller(t, q, false)
 
@@ -259,8 +264,8 @@ func TestInstall_NewSignedPlugin_PendingReview(t *testing.T) {
 		t.Fatalf("GetPluginByName: %v", err)
 	}
 
-	if row.Status != "pending_review" {
-		t.Errorf("status = %q, want %q", row.Status, "pending_review")
+	if row.Status != "active" {
+		t.Errorf("status = %q, want %q", row.Status, "active")
 	}
 	if row.PluginVersion != "1.0.0" {
 		t.Errorf("plugin_version = %q, want %q", row.PluginVersion, "1.0.0")
@@ -313,7 +318,7 @@ func TestInstall_BadSignature_AuditOnly(t *testing.T) {
 	}
 }
 
-func TestInstall_VersionBump_PendingReview(t *testing.T) {
+func TestInstall_VersionBump_Active(t *testing.T) {
 	q := openTestDB(t)
 	inst := newTestInstaller(t, q, false)
 
@@ -364,8 +369,8 @@ func TestInstall_VersionBump_PendingReview(t *testing.T) {
 	if row.PluginVersion != "1.1.0" {
 		t.Errorf("plugin_version = %q, want %q", row.PluginVersion, "1.1.0")
 	}
-	if row.Status != "pending_review" {
-		t.Errorf("status = %q, want %q", row.Status, "pending_review")
+	if row.Status != "active" {
+		t.Errorf("status = %q, want %q", row.Status, "active")
 	}
 
 	// A version-string-only bump produces a cosmetic diff (version is a cosmetic field),
@@ -419,7 +424,11 @@ func TestInstall_TarballTooLarge(t *testing.T) {
 	}
 }
 
-func TestInstall_UnsignedPermissive_PendingReview(t *testing.T) {
+// TestInstall_UnsignedPermissive_Active verifies that an unsigned-permissive
+// install also promotes to status=active. The operator's explicit opt-in via
+// GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true is the trust signal — staying in
+// pending_review would defeat the opt-in (instances would never spawn).
+func TestInstall_UnsignedPermissive_Active(t *testing.T) {
 	q := openTestDB(t)
 	// AllowUnsigned=true so unsigned bundles are accepted.
 	inst := newTestInstaller(t, q, true)
@@ -434,8 +443,8 @@ func TestInstall_UnsignedPermissive_PendingReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPluginByName: %v", err)
 	}
-	if row.Status != "pending_review" {
-		t.Errorf("status = %q, want pending_review", row.Status)
+	if row.Status != "active" {
+		t.Errorf("status = %q, want active", row.Status)
 	}
 }
 
@@ -1519,8 +1528,8 @@ func TestInstall_NestedLayout_Installs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPluginByName: %v", err)
 	}
-	if row.Status != "pending_review" {
-		t.Errorf("status = %q, want pending_review", row.Status)
+	if row.Status != "active" {
+		t.Errorf("status = %q, want active", row.Status)
 	}
 	if row.PluginVersion != "1.0.0" {
 		t.Errorf("plugin_version = %q, want 1.0.0", row.PluginVersion)
@@ -1552,8 +1561,8 @@ func TestInstall_FlatLayout_BackwardCompat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPluginByName: %v", err)
 	}
-	if row.Status != "pending_review" {
-		t.Errorf("status = %q, want pending_review", row.Status)
+	if row.Status != "active" {
+		t.Errorf("status = %q, want active", row.Status)
 	}
 	if row.BinaryPath == nil || *row.BinaryPath == "" {
 		t.Error("binary_path: want non-empty after flat-layout install")

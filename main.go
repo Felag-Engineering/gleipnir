@@ -468,7 +468,7 @@ func run(cfg config.Config) error {
 			cfg.OAuthRefreshLead,
 		)
 		oauthScanner.Start(ctx)
-		pluginOAuthHandler = admin.NewPluginOAuthHandler(store.Queries(), oauthMgr)
+		pluginOAuthHandler = admin.NewPluginOAuthHandler(store.Queries(), oauthMgr, getPublicURL)
 		pluginCredHandler = admin.NewPluginCredentialsHandler(store.Queries(), oauthStore)
 
 		// Wire the callback-URL rescan so it fires whenever an admin changes
@@ -485,18 +485,18 @@ func run(cfg config.Config) error {
 	}
 
 	handlers := api.HandlerBundle{
-		AuthHandler:             authHandler,
-		SettingsHandler:         settingsHandler,
-		AdminHandler:            adminHandler,
-		OpenAICompatHandler:     openaiCompatHandler,
-		PluginAdminHandler:      admin.NewPluginHandler(store.Queries(), broadcaster, nil),
-		PluginOAuthHandler:      pluginOAuthHandler,
+		AuthHandler:              authHandler,
+		SettingsHandler:          settingsHandler,
+		AdminHandler:             adminHandler,
+		OpenAICompatHandler:      openaiCompatHandler,
+		PluginAdminHandler:       admin.NewPluginHandler(store.Queries(), broadcaster, nil),
+		PluginOAuthHandler:       pluginOAuthHandler,
 		PluginCredentialsHandler: pluginCredHandler,
-		AudienceHandler:         audienceH,
-		BindingTestHandler:      bindingTestH,
-		WebhookHandler:          webhookHandler,
-		SSEHandler:              sseHandler,
-		PolicyWebhookHandler:    policyWebhookHandler,
+		AudienceHandler:          audienceH,
+		BindingTestHandler:       bindingTestH,
+		WebhookHandler:           webhookHandler,
+		SSEHandler:               sseHandler,
+		PolicyWebhookHandler:     policyWebhookHandler,
 	}
 
 	// Wire the trigger supervisor into the plugin admin handler so that

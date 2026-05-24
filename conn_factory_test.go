@@ -161,3 +161,6 @@ func (q *connFactoryFakeQuerier) GetPluginInstanceByID(_ context.Context, _ stri
 func (q *connFactoryFakeQuerier) UpdatePluginInstanceHealth(_ context.Context, _ db.UpdatePluginInstanceHealthParams) (int64, error) {
 	return 1, nil
 }
+func (q *connFactoryFakeQuerier) InsertPluginAuditEvent(_ context.Context, _ db.InsertPluginAuditEventParams) (db.PluginAuditEvent, error) {
+	return db.PluginAuditEvent{}, nil
+}

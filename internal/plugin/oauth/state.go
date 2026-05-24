@@ -293,4 +293,3 @@ func NewStateEnvelope(instanceID, returnURL string, clock func() time.Time) (Sta
 	}
 	return env, nonce, nil
 }
-

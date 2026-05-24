@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -45,6 +46,7 @@ type querier interface {
 	GetPluginByID(ctx context.Context, id string) (db.Plugin, error)
 	GetPluginInstanceByID(ctx context.Context, id string) (db.PluginInstance, error)
 	UpdatePluginInstanceHealth(ctx context.Context, arg db.UpdatePluginInstanceHealthParams) (int64, error)
+	InsertPluginAuditEvent(ctx context.Context, arg db.InsertPluginAuditEventParams) (db.PluginAuditEvent, error)
 }
 
 // processStarter is the function signature for starting a subprocess. The
@@ -183,6 +185,7 @@ func (m *Manager) Start(ctx context.Context, plugin db.Plugin, instance db.Plugi
 
 	inst, err := m.starter(ctx, cfg)
 	if err != nil {
+		m.handleLaunchFailure(ctx, plugin, instance, err)
 		return fmt.Errorf("manager: start instance %s: %w", instance.ID, err)
 	}
 
@@ -491,6 +494,65 @@ func (m *Manager) buildHealthSetter() func(ctx context.Context, instanceID strin
 			"target", string(target),
 			"err", err,
 		)
+	}
+}
+
+// handleLaunchFailure is called when process.Start (or the TestProcessStarter)
+// returns an error. It:
+//  1. Emits a plugin_crashed audit event with the error and stderr excerpt.
+//  2. Calls HealthSetter with a human-readable handshake-failure detail so the
+//     admin UI shows something more actionable than a raw gRPC error string.
+//
+// Both steps are best-effort: failures are logged but do not propagate.
+func (m *Manager) handleLaunchFailure(ctx context.Context, plugin db.Plugin, instance db.PluginInstance, launchErr error) {
+	// Extract stderr from LaunchError when available.
+	var stderrExcerpt string
+	var le *LaunchError
+	if errors.As(launchErr, &le) && len(le.Stderr) > 0 {
+		stderrExcerpt = string(le.Stderr)
+	}
+
+	// Build a concise reason for the health detail. Use the first 120 chars of
+	// the cause so the admin UI card is readable without wrapping.
+	reason := launchErr.Error()
+	if le != nil {
+		reason = le.Cause.Error()
+	}
+	const maxReasonLen = 120
+	if len(reason) > maxReasonLen {
+		reason = reason[:maxReasonLen] + "..."
+	}
+	healthDetail := "subprocess_handshake_failed: " + reason
+
+	// Update health state to unhealthy with the actionable detail. We call the
+	// HealthSetter directly (same path the crash watchdog uses) so the state
+	// machine is the single source of truth.
+	if healthSetter := m.buildHealthSetter(); healthSetter != nil {
+		healthSetter(ctx, instance.ID, model.PluginHealthStateUnhealthy, healthDetail)
+	}
+
+	// Write the audit event. Best-effort: log and continue on DB failure.
+	instanceID := instance.ID
+	payload := map[string]any{
+		"plugin_id":   plugin.ID,
+		"instance_id": instanceID,
+		"error":       launchErr.Error(),
+	}
+	if stderrExcerpt != "" {
+		payload["stderr_excerpt"] = stderrExcerpt
+	}
+	body, _ := json.Marshal(payload)
+	_, auditErr := m.cfg.Querier.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
+		PluginInstanceID: &instanceID,
+		EventType:        "plugin_crashed",
+		Severity:         "high",
+		ActorUserID:      nil,
+		PayloadJson:      string(body),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+	})
+	if auditErr != nil {
+		m.logger().Warn("handleLaunchFailure: could not write plugin_crashed audit event",
+			"instance_id", instanceID, "err", auditErr)
 	}
 }
 

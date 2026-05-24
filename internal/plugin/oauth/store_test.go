@@ -562,7 +562,7 @@ func TestDBStore_ClearCredentials_WipesSecretsPreservesStrategy(t *testing.T) {
 	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, func() time.Time { return baseTime })
 
 	seed := StoredCredentials{
-		Strategy:  sdkmanifest.AuthStrategyStaticAPIKey,
+		Strategy:     sdkmanifest.AuthStrategyStaticAPIKey,
 		StaticAPIKey: &StaticAPIKeyCreds{HeaderName: "X-Key", APIKey: "secret"},
 	}
 	if err := store.SaveCredentials(context.Background(), "inst-1", seed, 0); err != nil {
@@ -751,7 +751,7 @@ func TestDBStore_MutexSerialisation_SetAPIKeyAndSaveTokenConcurrent(t *testing.T
 
 	baseTime := time.Unix(1000000, 0)
 	seed := StoredCredentials{
-		Strategy: sdkmanifest.AuthStrategyStaticAPIKey,
+		Strategy:     sdkmanifest.AuthStrategyStaticAPIKey,
 		StaticAPIKey: &StaticAPIKeyCreds{HeaderName: "X-Key", APIKey: "old"},
 	}
 	plain, _ := seed.Marshal()

@@ -344,6 +344,37 @@ export function useUninstallPlugin() {
 
 // ── Subscription scope ────────────────────────────────────────────────────────
 
+// SetInstanceConfigParams carries the payload for
+// PUT /api/v1/admin/plugins/{id}/instances/{iid}/config.
+export interface SetInstanceConfigParams {
+  pluginId: string
+  instanceId: string
+  config: Record<string, unknown>
+  expectedVersion: number
+}
+
+// useSetInstanceConfig submits a new instance config blob for a plugin instance.
+// On success it invalidates the plugin-instances list so the Config tab re-fetches
+// the new version number and redacted values on next render.
+export function useSetInstanceConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ pluginId, instanceId, config, expectedVersion }: SetInstanceConfigParams) =>
+      apiFetch<unknown>(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}/config`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ config, expected_version: expectedVersion }),
+        },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.admin.pluginInstances,
+      })
+    },
+  })
+}
+
 // useSetInstanceSubscriptionScope submits a new subscription scope for a plugin
 // instance. On success it invalidates the plugin-instances list so the audience
 // editor and trigger picker reflect the updated scope.

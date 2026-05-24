@@ -59,17 +59,17 @@ func TestPluginHandler_Install(t *testing.T) {
 	tinyTar := []byte("not a real tarball")
 
 	tests := []struct {
-		name           string
-		body           []byte
-		installer      *fakeInstaller
-		seedPlugin     *db.Plugin
-		wantStatus     int
-		wantErrSubstr  string
-		wantDataID     string
+		name          string
+		body          []byte
+		installer     *fakeInstaller
+		seedPlugin    *db.Plugin
+		wantStatus    int
+		wantErrSubstr string
+		wantDataID    string
 	}{
 		{
-			name:  "happy_path: 201 with plugin ID in body",
-			body:  tinyTar,
+			name:      "happy_path: 201 with plugin ID in body",
+			body:      tinyTar,
 			installer: &fakeInstaller{returnID: "plg_123"},
 			seedPlugin: &db.Plugin{
 				ID:            "plg_123",
@@ -88,13 +88,13 @@ func TestPluginHandler_Install(t *testing.T) {
 			wantErrSubstr: "empty tarball body",
 		},
 		{
-			name: "installer_malformed: 400",
+			name: "installer_tarball_extract_failed: 400",
 			body: tinyTar,
 			installer: &fakeInstaller{
 				returnErr: errors.New(`extract tarball "/tmp/x": unexpected EOF`),
 			},
 			wantStatus:    http.StatusBadRequest,
-			wantErrSubstr: "malformed tarball",
+			wantErrSubstr: "tarball extraction failed",
 		},
 		{
 			name: "installer_cas_conflict: 409",
@@ -143,7 +143,7 @@ func TestPluginHandler_Install(t *testing.T) {
 				returnErr: errors.New("read manifest from \"/tmp/x\": stat manifest.yaml: no such file"),
 			},
 			wantStatus:    http.StatusBadRequest,
-			wantErrSubstr: "malformed tarball",
+			wantErrSubstr: "manifest.yaml missing",
 		},
 		{
 			name: "manifest_name_path_traversal: 400",
@@ -152,7 +152,25 @@ func TestPluginHandler_Install(t *testing.T) {
 				returnErr: errors.New(`manifest.name "../escape" escapes bundle directory`),
 			},
 			wantStatus:    http.StatusBadRequest,
-			wantErrSubstr: "malformed tarball",
+			wantErrSubstr: "invalid manifest.name",
+		},
+		{
+			name: "invalid_bundle_layout: 400",
+			body: tinyTar,
+			installer: &fakeInstaller{
+				returnErr: errors.New(`resolve bundle root in "/tmp/x": manifest.yaml not found at bundle root or under a single top-level directory`),
+			},
+			wantStatus:    http.StatusBadRequest,
+			wantErrSubstr: "invalid bundle layout",
+		},
+		{
+			name: "parse_manifest_error: 400",
+			body: tinyTar,
+			installer: &fakeInstaller{
+				returnErr: errors.New(`read manifest from "/tmp/x": parse manifest.yaml: yaml: line 3: did not find expected key`),
+			},
+			wantStatus:    http.StatusBadRequest,
+			wantErrSubstr: "not valid YAML",
 		},
 	}
 

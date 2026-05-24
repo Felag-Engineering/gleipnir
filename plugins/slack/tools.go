@@ -92,6 +92,7 @@ const (
 	healthAuthExpired                     // persistent auth failure — set UNHEALTHY
 	healthAuthMissing                     // no credentials configured — set UNHEALTHY
 	healthConfigMissing                   // required instance config field missing — set UNHEALTHY
+	healthMissingScope                    // bot OAuth scope grant insufficient — set UNHEALTHY
 )
 
 // mapErr maps a Slack API error to an ErrorCode and optional health hint.
@@ -136,8 +137,9 @@ func mapErr(err error) (commonv1.ErrorCode, healthHint) {
 }
 
 // classifySlackErrCode maps a Slack API error-code string to an ErrorCode and
-// health hint. All Slack error strings that indicate a persistent auth problem
-// return healthAuthExpired so the host can surface them in the operator UI.
+// health hint. Auth-class errors are split so the operator sees an actionable
+// distinction in the admin UI: "auth_expired" (re-authorize) vs "missing_scope"
+// (fix the Slack app scope grants).
 func classifySlackErrCode(code string) (commonv1.ErrorCode, healthHint) {
 	switch code {
 	case "channel_not_found", "not_in_channel", "user_not_found", "message_not_found":
@@ -146,9 +148,17 @@ func classifySlackErrCode(code string) (commonv1.ErrorCode, healthHint) {
 	case "invalid_arguments", "msg_too_long", "message_text_required", "bad_query", "invalid_name":
 		return commonv1.ErrorCode_ERROR_CODE_INVALID_ARG, healthNone
 
-	case "invalid_auth", "account_inactive", "token_revoked", "missing_scope", "not_authed":
+	case "missing_scope":
+		// Distinct from the auth_expired bucket: re-authorizing with the same
+		// Slack app will NOT help — the operator must add the missing scope in
+		// the Slack app's OAuth & Permissions page, reinstall the app, then
+		// re-authorize. Surfacing this as "auth_expired" misled operators into
+		// clicking Re-authorize forever.
+		return commonv1.ErrorCode_ERROR_CODE_PERMISSION, healthMissingScope
+
+	case "invalid_auth", "account_inactive", "token_revoked", "not_authed":
 		// Persistent auth failures. The operator UI shows UNHEALTHY + "auth_expired"
-		// so operators know they need to reauthorize or grant missing scopes.
+		// so operators know they need to reauthorize.
 		return commonv1.ErrorCode_ERROR_CODE_PERMISSION, healthAuthExpired
 
 	case "ratelimited":
@@ -159,6 +169,27 @@ func classifySlackErrCode(code string) (commonv1.ErrorCode, healthHint) {
 	}
 
 	return commonv1.ErrorCode_ERROR_CODE_INTERNAL, healthNone
+}
+
+// humanizeSlackErr wraps a Slack error with an actionable hint for the most
+// common first-time setup failures. The raw Slack error code is preserved as
+// a prefix so operators can still grep logs for "not_in_channel" etc.
+func humanizeSlackErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	raw := err.Error()
+	switch {
+	case strings.Contains(raw, "not_in_channel"):
+		return raw + " — the Slack bot is not a member of this channel; invite it with /invite @<bot> in the target channel and retry"
+	case strings.Contains(raw, "channel_not_found"):
+		return raw + " — Slack reports this channel does not exist or the bot cannot see it (private channels require the bot to be invited)"
+	case strings.Contains(raw, "missing_scope"):
+		return raw + " — the bot's OAuth scopes do not include a scope required for this call; add the missing scope in the Slack app's OAuth & Permissions page, reinstall the app, and re-authorize"
+	case strings.Contains(raw, "token_revoked"), strings.Contains(raw, "invalid_auth"), strings.Contains(raw, "not_authed"), strings.Contains(raw, "account_inactive"):
+		return raw + " — the Slack token is no longer valid; re-authorize the plugin in the admin UI"
+	}
+	return raw
 }
 
 // ── Rate-limit retry helper ───────────────────────────────────────────────────

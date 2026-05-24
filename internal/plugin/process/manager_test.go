@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -64,6 +66,10 @@ func (q *fakeQuerier) GetPluginInstanceByID(_ context.Context, id string) (db.Pl
 
 func (q *fakeQuerier) UpdatePluginInstanceHealth(_ context.Context, _ db.UpdatePluginInstanceHealthParams) (int64, error) {
 	return 1, nil
+}
+
+func (q *fakeQuerier) InsertPluginAuditEvent(_ context.Context, _ db.InsertPluginAuditEventParams) (db.PluginAuditEvent, error) {
+	return db.PluginAuditEvent{}, nil
 }
 
 // ── Manager unit tests (blocked states, skip logic, StopAll) ─────────────────
@@ -601,5 +607,143 @@ func TestReloadInstance_WithoutControllerReturnsError(t *testing.T) {
 	err := mgr.ReloadInstance(context.Background(), plugin, instance, "/bin/true", time.Second)
 	if err == nil {
 		t.Fatal("expected error when GenerationController is nil, got nil")
+	}
+}
+
+// ── auditCapturingQuerier ─────────────────────────────────────────────────────
+
+// auditCapturingQuerier extends fakeQuerier with audit-event capture so tests
+// can assert on the plugin_crashed event written by handleLaunchFailure.
+type auditCapturingQuerier struct {
+	fakeQuerier
+	mu     sync.Mutex
+	events []db.InsertPluginAuditEventParams
+	// healthDetails captures the detail string from UpdatePluginInstanceHealth.
+	// The DB column is *string; we store the dereferenced value (empty string
+	// when nil) for simpler test assertions.
+	healthDetails []string
+}
+
+func (q *auditCapturingQuerier) InsertPluginAuditEvent(_ context.Context, arg db.InsertPluginAuditEventParams) (db.PluginAuditEvent, error) {
+	q.mu.Lock()
+	q.events = append(q.events, arg)
+	q.mu.Unlock()
+	return db.PluginAuditEvent{}, nil
+}
+
+func (q *auditCapturingQuerier) UpdatePluginInstanceHealth(_ context.Context, arg db.UpdatePluginInstanceHealthParams) (int64, error) {
+	detail := ""
+	if arg.HealthDetail != nil {
+		detail = *arg.HealthDetail
+	}
+	q.mu.Lock()
+	q.healthDetails = append(q.healthDetails, detail)
+	q.mu.Unlock()
+	return 1, nil
+}
+
+func (q *auditCapturingQuerier) auditEvents() []db.InsertPluginAuditEventParams {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make([]db.InsertPluginAuditEventParams, len(q.events))
+	copy(out, q.events)
+	return out
+}
+
+// ── Launch-failure tests ──────────────────────────────────────────────────────
+
+// TestManager_LaunchFailure_EmitsAuditEventAndHealthDetail verifies the three
+// assertions from the task spec when a subprocess fails during launch:
+//  1. The error returned from Manager.Start wraps a process.LaunchError.
+//  2. A plugin_crashed audit event is written with plugin_id/instance_id/error
+//     in the payload and severity "high".
+//  3. The instance health detail set on the DB row starts with
+//     "subprocess_handshake_failed:" — not a raw gRPC error string.
+//
+// We use the real "exit-no-handshake" fixture which exits before the go-plugin
+// handshake completes.
+func TestManager_LaunchFailure_EmitsAuditEventAndHealthDetail(t *testing.T) {
+	reg := identity.New()
+	q := &auditCapturingQuerier{
+		fakeQuerier: fakeQuerier{
+			plugins: []db.Plugin{{ID: "p-launch-fail", Status: "active"}},
+			instances: map[string][]db.PluginInstance{
+				"p-launch-fail": {{
+					ID:           "i-launch-fail",
+					PluginID:     "p-launch-fail",
+					InstanceName: "launch-fail-inst",
+					HealthState:  "healthy",
+					Version:      1,
+				}},
+			},
+		},
+	}
+
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        q,
+		IdentityIssuer: reg,
+		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+			fc := fixtureConfig(t, "exit-no-handshake", reg, nil)
+			fc.InstanceID = cfg.InstanceID
+			fc.PluginID = cfg.PluginID
+			return process.Start(ctx, fc)
+		},
+	})
+
+	plugin := db.Plugin{ID: "p-launch-fail", Status: "active"}
+	instance := db.PluginInstance{ID: "i-launch-fail", PluginID: "p-launch-fail", InstanceName: "launch-fail-inst", HealthState: "healthy"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := mgr.Start(ctx, plugin, instance, os.Args[0])
+	if err == nil {
+		t.Fatal("expected error from Manager.Start when handshake fails, got nil")
+	}
+
+	// 1. Error chain must include *process.LaunchError.
+	var le *process.LaunchError
+	if !errors.As(err, &le) {
+		t.Errorf("error chain does not contain *process.LaunchError; got: %v", err)
+	}
+
+	// 2. plugin_crashed audit event must be written with required fields.
+	events := q.auditEvents()
+	var crashed *db.InsertPluginAuditEventParams
+	for i := range events {
+		if events[i].EventType == "plugin_crashed" {
+			crashed = &events[i]
+			break
+		}
+	}
+	if crashed == nil {
+		t.Fatalf("no plugin_crashed audit event found; events: %+v", events)
+	}
+	if crashed.Severity != "high" {
+		t.Errorf("plugin_crashed severity = %q, want %q", crashed.Severity, "high")
+	}
+	if crashed.PluginInstanceID == nil || *crashed.PluginInstanceID != instance.ID {
+		t.Errorf("plugin_crashed PluginInstanceID = %v, want %q", crashed.PluginInstanceID, instance.ID)
+	}
+	if !strings.Contains(crashed.PayloadJson, `"plugin_id"`) {
+		t.Errorf("plugin_crashed payload missing plugin_id field: %s", crashed.PayloadJson)
+	}
+	if !strings.Contains(crashed.PayloadJson, `"instance_id"`) {
+		t.Errorf("plugin_crashed payload missing instance_id field: %s", crashed.PayloadJson)
+	}
+	if !strings.Contains(crashed.PayloadJson, `"error"`) {
+		t.Errorf("plugin_crashed payload missing error field: %s", crashed.PayloadJson)
+	}
+
+	// 3. Health detail recorded in the DB must be actionable (not a raw gRPC string).
+	var sawHandshakeFailed bool
+	for _, detail := range q.healthDetails {
+		if strings.HasPrefix(detail, "subprocess_handshake_failed:") {
+			sawHandshakeFailed = true
+			break
+		}
+	}
+	if !sawHandshakeFailed {
+		t.Errorf("health detail did not start with 'subprocess_handshake_failed:'; recorded details: %v", q.healthDetails)
 	}
 }

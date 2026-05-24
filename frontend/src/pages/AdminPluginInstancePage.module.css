@@ -173,6 +173,20 @@
   color: var(--color-red);
 }
 
+/* CAS conflict notice — shown when the backend returns 409 on config save */
+
+.casConflict {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: rgba(212, 145, 90, 0.10); /* accent-muted tint */
+  border: 1px solid rgba(212, 145, 90, 0.3);
+  border-radius: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
 /* Misc */
 
 .placeholder {

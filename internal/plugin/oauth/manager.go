@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
@@ -18,6 +20,33 @@ import (
 // admin handler maps this sentinel to HTTP 400 so the UI can surface the
 // message directly without the operator needing to tail server logs.
 var ErrConfigInvalid = errors.New("oauth: operator configuration invalid")
+
+// ProviderExchangeError is returned by HandleCallback when the OAuth2 provider
+// rejects the token exchange with a structured error response. It carries the
+// provider's machine-readable error code (e.g. "invalid_code",
+// "redirect_uri_mismatch", "invalid_client") separately from the human-readable
+// description so callers can surface actionable messages without parsing blobs.
+//
+// The Raw field contains the full error string from golang.org/x/oauth2 for
+// logging; it is not shown in UI redirects to avoid leaking internal details.
+type ProviderExchangeError struct {
+	// Code is the OAuth2 error code from the provider's JSON response
+	// (e.g. "invalid_code", "redirect_uri_mismatch", "invalid_client").
+	Code string
+	// Description is the human-readable error_description from the provider.
+	// May be empty when the provider omits the field.
+	Description string
+	// Raw is the full error string from golang.org/x/oauth2.RetrieveError.
+	// Logged at error level; never included in redirect URLs.
+	Raw string
+}
+
+func (e *ProviderExchangeError) Error() string {
+	if e.Description != "" {
+		return fmt.Sprintf("oauth provider error: %s: %s", e.Code, e.Description)
+	}
+	return fmt.Sprintf("oauth provider error: %s", e.Code)
+}
 
 // Manager orchestrates the host-side OAuth2 flows. It handles:
 //   - BeginAuthcode: builds the authorization URL and encodes a signed state
@@ -151,6 +180,19 @@ func (m *Manager) HandleCallback(ctx context.Context, rawState, code string) (st
 
 	tok, err := cfg.Exchange(ctx, code)
 	if err != nil {
+		// Type-assert *oauth2.RetrieveError so we can surface the structured
+		// error_code and error_description fields from the provider's JSON response
+		// separately from the opaque blob produced by err.Error(). This lets the
+		// HTTP handler redirect operators with a readable "invalid_code" rather than
+		// a long "oauth2: cannot fetch token: 200 OK / Response: {...}" blob.
+		var re *oauth2.RetrieveError
+		if errors.As(err, &re) {
+			return "", &ProviderExchangeError{
+				Code:        re.ErrorCode,
+				Description: re.ErrorDescription,
+				Raw:         err.Error(),
+			}
+		}
 		return "", fmt.Errorf("oauth callback: exchange code: %w", err)
 	}
 
