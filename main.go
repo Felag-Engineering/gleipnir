@@ -15,7 +15,6 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
-	agentpkg "github.com/felag-engineering/gleipnir/internal/execution/agent"
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/http/api"
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
@@ -120,7 +119,7 @@ func run(cfg config.Config) error {
 	// transitions can emit plugin.health_changed SSE events. Schema is already
 	// migrated at this point. No-op when GLEIPNIR_PLUGINS_ENABLED=false.
 	if cfg.PluginsEnabled {
-		if err := loader.StartWatcher(ctx, store.Queries(), cfg.PluginsDir, broadcaster); err != nil {
+		if err := loader.StartWatcher(ctx, store.Queries(), store.DB(), cfg.PluginsDir, broadcaster); err != nil {
 			return fmt.Errorf("start plugin watcher: %w", err)
 		}
 		// StartManager is called below, after pluginPool and encryptionKey are
@@ -817,24 +816,16 @@ func countEncryptedWebhookSecrets(ctx context.Context, store *db.Store) (int, er
 }
 
 // pluginDispatchAdapter wraps *dispatch.Pool to satisfy agent.PluginToolDispatcher.
-// It translates dispatch-package sentinel errors (dispatch.ErrCallTimeout,
-// dispatch.ErrQueueFull) to the agent-package sentinels so the agent package
-// does not need to import internal/plugin/dispatch (package boundary).
+// dispatch.ErrCallTimeout and dispatch.ErrQueueFull are the same sentinel values
+// as agent.ErrPluginCallTimeout and agent.ErrPluginQueueFull (both alias
+// internal/plugin/pluginerr), so the adapter is now a pure interface bridge —
+// no error translation needed.
 type pluginDispatchAdapter struct {
 	pool *dispatch.Pool
 }
 
 func (a *pluginDispatchAdapter) Call(ctx context.Context, runID, policyID, instanceName, toolName, inputJSON string) (string, bool, error) {
-	output, isError, err := a.pool.Call(ctx, runID, policyID, instanceName, toolName, inputJSON)
-	if err != nil {
-		if errors.Is(err, dispatch.ErrCallTimeout) {
-			return "", false, fmt.Errorf("%w", agentpkg.ErrPluginCallTimeout)
-		}
-		if errors.Is(err, dispatch.ErrQueueFull) {
-			return "", false, fmt.Errorf("%w", agentpkg.ErrPluginQueueFull)
-		}
-	}
-	return output, isError, err
+	return a.pool.Call(ctx, runID, policyID, instanceName, toolName, inputJSON)
 }
 
 // pluginInstanceResolver adapts *db.Queries to satisfy policy.InstanceManifestResolver.
