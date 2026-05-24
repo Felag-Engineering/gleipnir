@@ -2,17 +2,23 @@
 // It owns per-call deadlines, cancellation propagation, and concurrency limits.
 package dispatch
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/felag-engineering/gleipnir/internal/plugin/pluginerr"
+)
 
 // ErrCallTimeout is returned by Pool.Call when the per-call deadline fires
 // and the parent run context is still healthy (i.e. the timeout originated
-// here, not from the run being cancelled).
-var ErrCallTimeout = errors.New("plugin: call exceeded deadline")
+// here, not from the run being cancelled). Aliased from pluginerr so the
+// agent runtime can errors.Is against the same sentinel without importing
+// internal/plugin/dispatch (see internal/plugin/pluginerr/errors.go).
+var ErrCallTimeout = pluginerr.ErrCallTimeout
 
 // ErrQueueFull is returned by Pool.Call when all concurrency slots are taken
 // and the bounded queue is also at capacity — the call is rejected immediately
-// rather than blocking indefinitely.
-var ErrQueueFull = errors.New("plugin: queue full")
+// rather than blocking indefinitely. Aliased from pluginerr (see above).
+var ErrQueueFull = pluginerr.ErrQueueFull
 
 // ErrPreAckFailed is returned by Dispatcher.Request when the plugin does not
 // acknowledge the request within the pre-ack deadline, or returns acked: false,

@@ -9,18 +9,19 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/pluginerr"
 )
 
-// ErrPluginCallTimeout is returned by the PluginToolDispatcher adapter when the
-// per-call deadline fires and the parent run context is still healthy. The adapter
-// in main.go maps dispatch.ErrCallTimeout to this sentinel so the agent package
-// does not need to import internal/plugin/dispatch.
-var ErrPluginCallTimeout = errors.New("plugin: call timed out")
+// ErrPluginCallTimeout is the sentinel for "plugin call exceeded its
+// per-call deadline." It is the same value as pluginerr.ErrCallTimeout and
+// internal/plugin/dispatch.ErrCallTimeout — errors.Is across all three
+// returns true. The leaf pluginerr package keeps agent and dispatch from
+// importing each other.
+var ErrPluginCallTimeout = pluginerr.ErrCallTimeout
 
-// ErrPluginQueueFull is returned by the PluginToolDispatcher adapter when the
-// plugin instance's concurrency queue is at capacity and the call is rejected
-// immediately. The adapter in main.go maps dispatch.ErrQueueFull to this.
-var ErrPluginQueueFull = errors.New("plugin: queue full")
+// ErrPluginQueueFull is the sentinel for "plugin instance is at capacity."
+// Same identity as pluginerr.ErrQueueFull / dispatch.ErrQueueFull (see above).
+var ErrPluginQueueFull = pluginerr.ErrQueueFull
 
 // failRun transitions the run to failed status and returns the original error.
 // If the context is already cancelled, a background context is used so the DB
