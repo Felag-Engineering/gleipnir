@@ -51,7 +51,7 @@ const INSTANCE_WITH_SCHEMA: ApiPluginInstanceForAudience = {
       },
     },
   },
-  subscription_scope: { channels: ['#incidents'] },
+  subscription_scope: { channels: ['C012ABCDEF'] },
   version: 1,
 }
 

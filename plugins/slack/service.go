@@ -442,13 +442,10 @@ func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerSt
 			log.Printf("slack: scope check unmarshal: %v", jsonErr)
 			return
 		}
-		// p.ChannelID is the real Slack channel ID (e.g. C012ABCDEF). p.Channel
-		// currently also holds the ID — Socket Mode message events don't include
-		// resolved channel names. As a result, operator subscription scopes
-		// containing entries like "#incidents" won't match; only ID-form entries
-		// like "C012ABCDEF" do. Future work: cache an ID→name map via
-		// conversations.info so name-form scopes work.
-		if !scope.matches(p.ChannelID, p.Channel, p.Mentioned) {
+		// p.ChannelID is the real Slack channel ID (e.g. C012ABCDEF). The
+		// subscription_schema rejects non-ID values at save time (SlackChannelID
+		// in manifest.go), so this scope check is ID-only.
+		if !scope.matches(p.ChannelID, p.Mentioned) {
 			return
 		}
 

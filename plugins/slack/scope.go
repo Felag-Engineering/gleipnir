@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"strings"
 )
 
 // decodeSubscriptionScope parses watch_scope_json into a SlackSubscriptionScope.
@@ -19,29 +18,25 @@ func decodeSubscriptionScope(jsonStr string) (SlackSubscriptionScope, error) {
 	return s, nil
 }
 
-// matches reports whether an event for the given channel should be delivered
+// matches reports whether an event for the given channelID should be delivered
 // to a subscriber with this scope.
 //
 // Rules:
-//   - If Channels is non-empty, the event's channelID or channelName must
-//     appear in the list. Channel names may be specified with or without the
-//     leading "#" — both forms are accepted.
+//   - If Channels is non-empty, channelID must appear in the list. Channel
+//     names are not accepted — the subscription_schema pattern rejects them
+//     at save time (see SlackChannelID in manifest.go) so this check is
+//     ID-only.
 //   - If MentionOnly is true, isMention must be true for the event to match.
 //   - An empty scope (zero value) matches all events.
-func (s SlackSubscriptionScope) matches(channelID, channelName string, isMention bool) bool {
+func (s SlackSubscriptionScope) matches(channelID string, isMention bool) bool {
 	if s.MentionOnly && !isMention {
 		return false
 	}
 	if len(s.Channels) == 0 {
 		return true
 	}
-	// Normalize the channel name by stripping a leading "#" so operators can
-	// write either "incidents" or "#incidents" in the scope config.
-	normalizedName := strings.TrimPrefix(channelName, "#")
-
 	for _, allowed := range s.Channels {
-		normalized := strings.TrimPrefix(allowed, "#")
-		if normalized == channelID || normalized == normalizedName {
+		if string(allowed) == channelID {
 			return true
 		}
 	}
