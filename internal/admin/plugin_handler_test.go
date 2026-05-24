@@ -1680,12 +1680,14 @@ func TestPluginHandler_PutInstanceConfig_MalformedManifest_500(t *testing.T) {
 
 // ── DeleteInstance tests ──────────────────────────────────────────────────────
 
-// fakeProcessManager is a PluginProcessManager stub that records Stop calls.
+// fakeProcessManager is a PluginProcessManager stub that records Start and Stop calls.
 type fakeProcessManager struct {
 	mu              sync.Mutex
 	stoppedIDs      []string
 	stopErr         error
 	stoppedByPlugin []string
+	startedByPlugin []string
+	startErr        error
 }
 
 func (f *fakeProcessManager) Stop(_ context.Context, instanceID string) error {
@@ -1700,6 +1702,13 @@ func (f *fakeProcessManager) StopByPluginID(_ context.Context, pluginID string) 
 	f.stoppedByPlugin = append(f.stoppedByPlugin, pluginID)
 	f.mu.Unlock()
 	return f.stopErr
+}
+
+func (f *fakeProcessManager) StartByPluginID(_ context.Context, pluginID string) error {
+	f.mu.Lock()
+	f.startedByPlugin = append(f.startedByPlugin, pluginID)
+	f.mu.Unlock()
+	return f.startErr
 }
 
 // serveDeleteInstance wires the DeleteInstance handler into a chi router.

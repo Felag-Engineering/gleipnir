@@ -363,4 +363,95 @@ func TestPluginHandler_CreateInstance(t *testing.T) {
 			}
 		})
 	}
+
+	// Sub-tests that verify the spawn-on-create behaviour introduced by #402.
+	// These use fakeProcessManager and run outside the table loop so they can
+	// assert on the process manager's recorded calls.
+
+	t.Run("spawn_on_create: StartByPluginID called after 201", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:            pluginID,
+			Name:          "slack",
+			PluginVersion: "0.1.0",
+			Status:        "active",
+		})
+		pm := &fakeProcessManager{}
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetProcessManager(pm)
+
+		rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"spawn-test"}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+		}
+
+		pm.mu.Lock()
+		started := pm.startedByPlugin
+		pm.mu.Unlock()
+		if len(started) != 1 || started[0] != pluginID {
+			t.Errorf("startedByPlugin = %v, want [%s]", started, pluginID)
+		}
+	})
+
+	t.Run("spawn_on_create: spawn failure does not change 201 response", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:            pluginID,
+			Name:          "slack",
+			PluginVersion: "0.1.0",
+			Status:        "active",
+		})
+		pm := &fakeProcessManager{startErr: errors.New("binary not found")}
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetProcessManager(pm)
+
+		rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"spawn-fail-test"}`))
+		// The row was created; spawn failure must not retroactively change the status.
+		if rec.Code != http.StatusCreated {
+			t.Errorf("status = %d, want 201 even when spawn fails", rec.Code)
+		}
+	})
+
+	t.Run("spawn_on_create: nil processManager does not panic", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:            pluginID,
+			Name:          "slack",
+			PluginVersion: "0.1.0",
+			Status:        "active",
+		})
+		h := NewPluginHandler(q, nil, fixedClock)
+		// No SetProcessManager — simulates GLEIPNIR_PLUGINS_ENABLED=false path.
+
+		rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"no-pm-test"}`))
+		if rec.Code != http.StatusCreated {
+			t.Errorf("status = %d, want 201 with nil processManager", rec.Code)
+		}
+	})
+
+	t.Run("spawn_on_create: no spawn attempted on validation failure", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:            pluginID,
+			Name:          "slack",
+			PluginVersion: "0.1.0",
+			Status:        "active",
+		})
+		pm := &fakeProcessManager{}
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetProcessManager(pm)
+
+		// Empty instance_name triggers a 400 before the DB insert.
+		rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":""}`))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400 for empty instance_name", rec.Code)
+		}
+
+		pm.mu.Lock()
+		started := pm.startedByPlugin
+		pm.mu.Unlock()
+		if len(started) != 0 {
+			t.Errorf("startedByPlugin = %v, want empty (no spawn on validation failure)", started)
+		}
+	})
 }

@@ -96,16 +96,19 @@ type PluginQuerier interface {
 	ListPolicies(ctx context.Context) ([]db.Policy, error)
 }
 
-// PluginProcessManager is the narrow interface for stopping plugin subprocesses.
-// Implemented by *process.Manager; kept as an interface in the admin package so
-// internal/admin does not import internal/plugin/process (package boundary).
-// Both methods are best-effort — a subprocess Stop failure must not block DB
-// cleanup.
+// PluginProcessManager is the narrow interface for starting and stopping plugin
+// subprocesses. Implemented by *process.Manager; kept as an interface in the
+// admin package so internal/admin does not import internal/plugin/process
+// (package boundary). All methods are best-effort — a subprocess failure must
+// not block DB operations.
 type PluginProcessManager interface {
 	// Stop terminates the subprocess for a single instance.
 	Stop(ctx context.Context, instanceID string) error
 	// StopByPluginID terminates all running instances belonging to pluginID.
 	StopByPluginID(ctx context.Context, pluginID string) error
+	// StartByPluginID spawns subprocesses for all instances of pluginID that
+	// are not already running. Mirrors the OnInstalled hook in main.go.
+	StartByPluginID(ctx context.Context, pluginID string) error
 }
 
 // ToolUnregistrar is the narrow interface for releasing tool-namespace
@@ -1441,6 +1444,19 @@ func (h *PluginHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:    inst.CreatedAt,
 			UpdatedAt:    inst.UpdatedAt,
 		})
+
+	// Spawn the subprocess immediately after the response is committed.
+	// Using context.Background() rather than r.Context() because the HTTP
+	// WriteTimeout and client-disconnect cancellation apply to r.Context() —
+	// a cancelled context would silently prevent the instance from starting.
+	// This matches the OnInstalled hook in main.go, which also uses a
+	// detached context. Failures are logged and surfaced via the health-state
+	// path; a spawn failure does not need to change what the caller already received.
+	if h.processManager != nil {
+		if err := h.processManager.StartByPluginID(context.Background(), pluginID); err != nil {
+			slog.WarnContext(context.Background(), "post-create spawn failed", "plugin_id", pluginID, "err", err)
+		}
+	}
 }
 
 // DeleteInstance handles DELETE /api/v1/admin/plugins/{id}/instances/{iid}.

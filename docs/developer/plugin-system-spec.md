@@ -616,6 +616,8 @@ Single global env var `GLEIPNIR_PLUGINS_ENABLED=false` default. Loader/manager d
 
 The step-2 in-app feedback refactor lands independently of the flag (behavior-neutral). The flag only gates external plugins, not the internal `inAppChannel`.
 
+**Subprocess spawn on instance creation.** When an admin creates a plugin instance via the API, the handler immediately calls `StartByPluginID` to spawn the subprocess — no server restart required (same fire-and-forget pattern as the post-install hook).
+
 ### 15.3 Default-on success criteria
 
 Zero P0 issues from opt-in users for a full minor cycle, both first-party plugins (Slack + ntfy) running stably in homelab.
