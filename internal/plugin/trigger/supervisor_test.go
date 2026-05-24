@@ -901,6 +901,77 @@ func TestSupervisor_NonEmptyScope_OpensStream(t *testing.T) {
 	}
 }
 
+// TestSupervisor_HealthyOnFirstRecv_NoPreFailure verifies that the supervisor
+// calls HealthSetter(Healthy) on the first successful Recv even when the
+// instance was never previously marked Unhealthy (clean first start with valid
+// credentials). This covers the gap where the DB default is
+// unhealthy/config_missing and the plugin itself only emits SetHealthState on
+// failure paths — without this fix the instance would never transition to
+// Healthy.
+func TestSupervisor_HealthyOnFirstRecv_NoPreFailure(t *testing.T) {
+	t.Parallel()
+
+	evCh := make(chan *triggerv1.StartResponse, 1)
+	evCh <- &triggerv1.StartResponse{EventId: "first-event", EventKind: "message", PayloadJson: "{}"}
+	close(evCh)
+
+	client, stop := startFakeTriggerServer(t, &sequentialTriggerServer{eventsCh: evCh})
+	defer stop()
+
+	type healthEvent struct {
+		state  model.PluginHealthState
+		detail string
+	}
+	var mu sync.Mutex
+	var healthEvents []healthEvent
+
+	// Cancel the supervisor as soon as the first Healthy event is seen. This
+	// stops the reconnect loop before it accumulates enough consecutive failures
+	// to trigger an Unhealthy call, keeping the test deterministic.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	healthSetter := func(_ context.Context, _ string, state model.PluginHealthState, detail string) {
+		mu.Lock()
+		healthEvents = append(healthEvents, healthEvent{state, detail})
+		mu.Unlock()
+		if state == model.PluginHealthStateHealthy {
+			cancel() // stop the supervisor immediately on first Healthy
+		}
+	}
+
+	lookup := &fakeInstanceLookup{client: client, pluginID: "test-plugin"}
+	dispatcher := &fakeEventDispatcher{}
+	sup := newSupervisor(lookup, dispatcher, healthSetter)
+
+	sup.Start(ctx, "inst-fresh")
+
+	// Wait until at least one health event is recorded, then let Stop drain the
+	// goroutine. The cancel in the healthSetter above fires on the first Healthy
+	// call, so the goroutine exits shortly after we see the event.
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(healthEvents) > 0
+	})
+
+	// Stop blocks until the goroutine exits (drains doneCh), ensuring no more
+	// health events are appended after we read the slice below.
+	sup.Stop("inst-fresh")
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// The Healthy event must have appeared, and it must be the first health event
+	// recorded (no Unhealthy should precede it on a clean first start).
+	if len(healthEvents) == 0 {
+		t.Fatal("HealthSetter never called on clean first start")
+	}
+	if healthEvents[0].state != model.PluginHealthStateHealthy {
+		t.Errorf("first HealthSetter call = %v, want Healthy", healthEvents[0].state)
+	}
+}
+
 // TestSupervisor_Restart_EmptyToNonEmpty_TriggersStream verifies the
 // Restart path: when scope transitions from empty → non-empty via Restart,
 // the new goroutine picks up the updated scope and opens a stream.
