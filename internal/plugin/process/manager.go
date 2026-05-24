@@ -18,6 +18,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
+	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 
 // blockedHealthStates is the set of health states that should not have a
@@ -53,6 +54,14 @@ type querier interface {
 // default is process.Start; tests inject a stub to avoid real subprocess
 // spawning.
 type processStarter func(ctx context.Context, cfg Config) (*Instance, error)
+
+// ToolRegistrar registers and unregisters plugin tool names in the cross-source
+// namespace arbiter. The production implementation is *tools.Registrar from
+// internal/plugin/tools.
+type ToolRegistrar interface {
+	RegisterInstanceTools(ctx context.Context, instanceID, instanceName string, toolNames []string, generation int64) error
+	UnregisterInstance(ctx context.Context, instanceName string)
+}
 
 // ManagerConfig holds all constructor parameters for a Manager.
 type ManagerConfig struct {
@@ -99,6 +108,11 @@ type ManagerConfig struct {
 	// controller and returns an error when one is not configured.
 	GenerationController *generation.Controller
 
+	// ToolRegistrar claims and releases plugin tool dot-names in the shared
+	// namespace arbiter. When nil (tests, GLEIPNIR_PLUGINS_ENABLED=false),
+	// tool registration is skipped. Production callers must set this.
+	ToolRegistrar ToolRegistrar
+
 	// TestProcessStarter overrides process.Start. Intended for unit tests only;
 	// production callers must leave this nil. When set, Manager.Start calls
 	// this function instead of the real process.Start, which avoids spawning
@@ -114,6 +128,16 @@ type Manager struct {
 	mu        sync.Mutex
 	instances map[string]*Instance
 	starter   processStarter
+
+	// toolGenMu guards toolGenerations.
+	toolGenMu sync.Mutex
+	// toolGenerations tracks the tool-registrar generation per instance ID.
+	// This counter is independent of the host-RPC generation in
+	// generation.Controller (see generation/controller.go). The tool generation
+	// is int64 and tracks stale capability snapshots; the host-RPC generation
+	// is uint64 and tracks in-flight RPC refcounts. They live in different
+	// epochs — do not attempt to correlate them.
+	toolGenerations map[string]int64
 }
 
 // NewManager constructs a Manager from cfg. The returned manager has no running
@@ -125,9 +149,10 @@ func NewManager(cfg ManagerConfig) *Manager {
 	}
 
 	return &Manager{
-		cfg:       cfg,
-		instances: make(map[string]*Instance),
-		starter:   starter,
+		cfg:             cfg,
+		instances:       make(map[string]*Instance),
+		starter:         starter,
+		toolGenerations: make(map[string]int64),
 	}
 }
 
@@ -200,18 +225,63 @@ func (m *Manager) Start(ctx context.Context, plugin db.Plugin, instance db.Plugi
 	m.instances[instance.ID] = inst
 	m.mu.Unlock()
 
+	// Register the plugin's manifest-declared tools in the shared namespace
+	// arbiter. Parsing the manifest here (rather than in the caller) keeps
+	// tool registration tightly coupled to the spawn lifecycle. On conflict,
+	// the Registrar already drives the instance to unhealthy and writes an audit
+	// event (#194); we surface the error to the caller so the subsystem can
+	// decide how to handle it.
+	if m.cfg.ToolRegistrar != nil {
+		var mfst sdkmanifest.Manifest
+		if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &mfst); parseErr != nil {
+			m.logger().Warn("could not parse manifest for tool registration",
+				"instance_id", instance.ID,
+				"err", parseErr,
+			)
+		} else if len(mfst.Tools) > 0 {
+			toolNames := make([]string, len(mfst.Tools))
+			for i, td := range mfst.Tools {
+				toolNames[i] = td.Name
+			}
+			gen := m.nextToolGeneration(instance.ID)
+			if regErr := m.cfg.ToolRegistrar.RegisterInstanceTools(
+				ctx, instance.ID, instance.InstanceName, toolNames, gen,
+			); regErr != nil {
+				m.logger().Warn("plugin tool registration failed",
+					"instance_id", instance.ID,
+					"instance_name", instance.InstanceName,
+					"err", regErr,
+				)
+				return fmt.Errorf("manager: register tools for instance %s: %w", instance.ID, regErr)
+			}
+		}
+	}
+
 	return nil
 }
 
 // Stop terminates the subprocess for instanceID and removes it from the
 // running-instances map. Returns nil if instanceID is not found (idempotent).
 func (m *Manager) Stop(ctx context.Context, instanceID string) error {
+	// Capture the instance name before stopWithoutUnregister deletes it from
+	// the map — tool unregistration is keyed by name, not ULID.
+	var instanceName string
+	m.mu.Lock()
+	if inst, ok := m.instances[instanceID]; ok {
+		instanceName = inst.cfg.InstanceName
+	}
+	m.mu.Unlock()
+
 	if err := m.stopWithoutUnregister(ctx, instanceID); err != nil {
 		return err
 	}
 	if m.cfg.GenerationController != nil {
 		m.cfg.GenerationController.UnregisterInstance(instanceID)
 	}
+	if m.cfg.ToolRegistrar != nil && instanceName != "" {
+		m.cfg.ToolRegistrar.UnregisterInstance(ctx, instanceName)
+	}
+	m.removeToolGeneration(instanceID)
 	return nil
 }
 
@@ -283,6 +353,15 @@ func (m *Manager) ReloadInstance(ctx context.Context, plugin db.Plugin, instance
 		return fmt.Errorf("manager: stop instance %s for reload: %w", instance.ID, err)
 	}
 
+	// Release old tool reservations before starting the new generation. If the
+	// manifest changed during hot-reload (different tool set), stale reservations
+	// would block the new generation from registering cleanly. We do NOT call
+	// removeToolGeneration here — nextToolGeneration increments from the previous
+	// value when Start registers the new tool set, preserving monotonicity.
+	if m.cfg.ToolRegistrar != nil {
+		m.cfg.ToolRegistrar.UnregisterInstance(ctx, instance.InstanceName)
+	}
+
 	if err := m.Start(ctx, plugin, instance, binaryPath); err != nil {
 		return fmt.Errorf("manager: restart instance %s after reload: %w", instance.ID, err)
 	}
@@ -317,6 +396,17 @@ func (m *Manager) StopAll(ctx context.Context) error {
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("instance %s: %w", id, err))
 				mu.Unlock()
+			}
+			// Best-effort tool unregistration. Not strictly necessary during
+			// shutdown (the arbiter and toolGenerations are in-memory and die
+			// with the process), but keeps the invariant that Stop always
+			// releases tool names.
+			//
+			// GenerationController.UnregisterInstance is intentionally NOT called
+			// here (pre-existing gap; StopAll deletes the map in bulk). Both
+			// omissions are harmless: the in-memory state dies with the process.
+			if m.cfg.ToolRegistrar != nil {
+				m.cfg.ToolRegistrar.UnregisterInstance(ctx, inst.cfg.InstanceName)
 			}
 		}(id, inst)
 	}
@@ -548,6 +638,28 @@ func (m *Manager) handleLaunchFailure(ctx context.Context, plugin db.Plugin, ins
 		m.logger().Warn("handleLaunchFailure: could not write plugin_crashed audit event",
 			"instance_id", instanceID, "err", auditErr)
 	}
+}
+
+// nextToolGeneration returns the next tool-registrar generation for instanceID.
+// On cold start (no previous entry) it returns 1. On reload it increments the
+// previous value, preserving monotonicity. This counter is independent of the
+// host-RPC generation.Controller (generation/controller.go).
+func (m *Manager) nextToolGeneration(instanceID string) int64 {
+	m.toolGenMu.Lock()
+	defer m.toolGenMu.Unlock()
+	prev := m.toolGenerations[instanceID]
+	next := prev + 1
+	m.toolGenerations[instanceID] = next
+	return next
+}
+
+// removeToolGeneration removes the tool-generation entry for instanceID. Called
+// on Stop (full teardown). Not called on ReloadInstance — the reload path uses
+// nextToolGeneration to increment instead, preserving the monotonic counter.
+func (m *Manager) removeToolGeneration(instanceID string) {
+	m.toolGenMu.Lock()
+	defer m.toolGenMu.Unlock()
+	delete(m.toolGenerations, instanceID)
 }
 
 // logger returns the configured logger, falling back to slog.Default().

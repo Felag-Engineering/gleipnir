@@ -148,6 +148,13 @@ type StartManagerConfig struct {
 	IdentityRegistry     *identity.Registry
 	GenerationController *generation.Controller
 	ServerInterceptors   []grpc.UnaryServerInterceptor
+	// ToolRegistrar claims and releases plugin tool dot-names in the shared
+	// namespace arbiter when instances start/stop. Required — a nil registrar
+	// means tools would be silently invisible to agents (StartManager enforces
+	// non-nil). ManagerConfig.ToolRegistrar accepts nil for tests and the
+	// GLEIPNIR_PLUGINS_ENABLED=false path; this field is the stricter production
+	// entry point.
+	ToolRegistrar process.ToolRegistrar
 }
 
 // StartManager constructs a process.Manager wired to the host-side substrate
@@ -179,12 +186,16 @@ func (l *Loader) StartManager(ctx context.Context, cfg StartManagerConfig) error
 	if cfg.ServerInterceptors == nil {
 		return fmt.Errorf("StartManager: ServerInterceptors must not be nil")
 	}
+	if cfg.ToolRegistrar == nil {
+		return fmt.Errorf("StartManager: ToolRegistrar must not be nil")
+	}
 
 	l.manager = process.NewManager(process.ManagerConfig{
 		Querier:              cfg.Querier,
 		Publisher:            cfg.Publisher,
 		IdentityIssuer:       cfg.IdentityRegistry,
 		GenerationController: cfg.GenerationController,
+		ToolRegistrar:        cfg.ToolRegistrar,
 		// One shared server per host; per-instance routing via token interceptor.
 		HostServerFor:      func(_ string) hostwire.HostServer { return cfg.HostServer },
 		ServerInterceptors: cfg.ServerInterceptors,

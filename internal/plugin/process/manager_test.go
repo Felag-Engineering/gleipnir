@@ -19,6 +19,9 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
 	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
 	"github.com/felag-engineering/gleipnir/internal/plugin/process"
+	"github.com/felag-engineering/gleipnir/internal/plugin/tools"
+	"github.com/felag-engineering/gleipnir/internal/testutil"
+	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
 
 // ── fakeQuerier ──────────────────────────────────────────────────────────────
@@ -746,4 +749,332 @@ func TestManager_LaunchFailure_EmitsAuditEventAndHealthDetail(t *testing.T) {
 	if !sawHandshakeFailed {
 		t.Errorf("health detail did not start with 'subprocess_handshake_failed:'; recorded details: %v", q.healthDetails)
 	}
+}
+
+// ── Tool registration tests ───────────────────────────────────────────────────
+
+// fakeToolRegistrar records RegisterInstanceTools and UnregisterInstance calls
+// for assertion in unit tests. Thread-safe.
+type fakeToolRegistrar struct {
+	mu              sync.Mutex
+	registerCalls   []registerCall
+	unregisterCalls []string
+	registerErr     error // if set, RegisterInstanceTools returns this
+}
+
+type registerCall struct {
+	instanceID   string
+	instanceName string
+	toolNames    []string
+	generation   int64
+}
+
+func (f *fakeToolRegistrar) RegisterInstanceTools(_ context.Context, instanceID, instanceName string, toolNames []string, generation int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.registerCalls = append(f.registerCalls, registerCall{instanceID, instanceName, toolNames, generation})
+	return f.registerErr
+}
+
+func (f *fakeToolRegistrar) UnregisterInstance(_ context.Context, instanceName string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unregisterCalls = append(f.unregisterCalls, instanceName)
+}
+
+// manifestWithTools returns a minimal manifest YAML string declaring the given
+// tool names. Includes schema_version, name, and version so Unmarshal produces
+// a well-formed Manifest.
+func manifestWithTools(toolNames ...string) string {
+	var sb strings.Builder
+	sb.WriteString("schema_version: \"1\"\nname: test-plugin\nversion: \"1.0.0\"\ntools:\n")
+	for _, t := range toolNames {
+		sb.WriteString("  - name: " + t + "\n")
+	}
+	return sb.String()
+}
+
+// TestManager_Start_RegistersTools verifies that Manager.Start calls
+// RegisterInstanceTools with the correct tool names, instance ID, instance
+// name, and generation (1 on cold start) extracted from the manifest snapshot.
+func TestManager_Start_RegistersTools(t *testing.T) {
+	reg := identity.New()
+	registrar := &fakeToolRegistrar{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        &fakeQuerier{},
+		IdentityIssuer: reg,
+		ToolRegistrar:  registrar,
+		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+			fc := fixtureConfig(t, "serve-and-block", reg, nil)
+			// Copy InstanceID and InstanceName so the stored instance reflects
+			// the real identifiers; RegisterInstanceTools reads InstanceName via
+			// instance.InstanceName from the db row (not from proc.Config), so
+			// this does not affect what Manager passes to RegisterInstanceTools,
+			// but it ensures Stop's unregistration call uses the right name.
+			fc.InstanceID = cfg.InstanceID
+			fc.InstanceName = cfg.InstanceName
+			return process.Start(ctx, fc)
+		},
+	})
+
+	plugin := db.Plugin{
+		ID:               "p-tools",
+		Status:           "active",
+		ManifestSnapshot: manifestWithTools("send", "read"),
+	}
+	instance := db.PluginInstance{
+		ID:           "i-tools",
+		PluginID:     "p-tools",
+		InstanceName: "my-plugin",
+		HealthState:  "healthy",
+	}
+
+	if err := mgr.Start(ctx, plugin, instance, os.Args[0]); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { mgr.Stop(ctx, instance.ID) }) //nolint:errcheck
+
+	registrar.mu.Lock()
+	calls := registrar.registerCalls
+	registrar.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("RegisterInstanceTools called %d times, want 1", len(calls))
+	}
+	call := calls[0]
+	if call.instanceID != instance.ID {
+		t.Errorf("instanceID = %q, want %q", call.instanceID, instance.ID)
+	}
+	if call.instanceName != instance.InstanceName {
+		t.Errorf("instanceName = %q, want %q", call.instanceName, instance.InstanceName)
+	}
+	if len(call.toolNames) != 2 || call.toolNames[0] != "send" || call.toolNames[1] != "read" {
+		t.Errorf("toolNames = %v, want [send read]", call.toolNames)
+	}
+	if call.generation != 1 {
+		t.Errorf("generation = %d, want 1 (cold start)", call.generation)
+	}
+}
+
+// TestManager_Stop_UnregistersTools verifies that Manager.Stop calls
+// UnregisterInstance with the correct instance name.
+func TestManager_Stop_UnregistersTools(t *testing.T) {
+	reg := identity.New()
+	registrar := &fakeToolRegistrar{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        &fakeQuerier{},
+		IdentityIssuer: reg,
+		ToolRegistrar:  registrar,
+		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+			fc := fixtureConfig(t, "serve-and-block", reg, nil)
+			// Copy both InstanceID and InstanceName from the manager-supplied cfg
+			// so inst.cfg.InstanceName reflects the real instance name when Stop
+			// reads it for tool unregistration.
+			fc.InstanceID = cfg.InstanceID
+			fc.InstanceName = cfg.InstanceName
+			return process.Start(ctx, fc)
+		},
+	})
+
+	plugin := db.Plugin{
+		ID:               "p-stop",
+		Status:           "active",
+		ManifestSnapshot: manifestWithTools("tool-x"),
+	}
+	instance := db.PluginInstance{
+		ID:           "i-stop",
+		PluginID:     "p-stop",
+		InstanceName: "stop-plugin",
+		HealthState:  "healthy",
+	}
+
+	if err := mgr.Start(ctx, plugin, instance, os.Args[0]); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := mgr.Stop(ctx, instance.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	registrar.mu.Lock()
+	unregCalls := registrar.unregisterCalls
+	registrar.mu.Unlock()
+
+	if len(unregCalls) == 0 {
+		t.Fatal("UnregisterInstance was not called after Stop")
+	}
+	// Assert at least one call with the correct instance name.
+	found := false
+	for _, name := range unregCalls {
+		if name == instance.InstanceName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("UnregisterInstance not called with %q; calls: %v", instance.InstanceName, unregCalls)
+	}
+}
+
+// TestManager_Start_ToolConflict_DrivesUnhealthy verifies that when a plugin
+// instance's manifest declares a tool name that conflicts with an existing
+// reservation in the arbiter, the instance is driven to unhealthy and a
+// plugin_tool_namespace_conflict audit event is written.
+//
+// This is the acceptance-criteria integration test from issue #400: it uses a
+// real testutil.NewTestStore + tools.Registrar + pre-populated arbiter.
+func TestManager_Start_ToolConflict_DrivesUnhealthy(t *testing.T) {
+	reg := identity.New()
+	store := testutil.NewTestStore(t)
+
+	// Seed a plugin and instance row in the real DB so the state machine can
+	// update health_state and insert audit events.
+	ctx := context.Background()
+	now := "2024-01-01T00:00:00Z"
+	if _, err := store.Queries().CreatePlugin(ctx, db.CreatePluginParams{
+		ID:               "p-conflict",
+		Name:             "conflict-plugin",
+		PluginVersion:    "1.0.0",
+		ManifestSnapshot: "{}",
+		TrustedPubkey:    "pubkey",
+		Status:           "active",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("CreatePlugin: %v", err)
+	}
+	if _, err := store.Queries().CreatePluginInstance(ctx, db.CreatePluginInstanceParams{
+		ID:                "i-conflict",
+		PluginID:          "p-conflict",
+		InstanceName:      "inst-a",
+		ConfigJson:        "{}",
+		HandshakeVersions: "{}",
+		HealthState:       string(model.PluginHealthStateHealthy),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("CreatePluginInstance: %v", err)
+	}
+
+	// Pre-populate the arbiter with a reservation for "inst-a.send" owned by
+	// an MCP source so the plugin's start will conflict.
+	arbiter := toolregistry.New()
+	mcpSrc := toolregistry.Source{Kind: toolregistry.KindMCP, Name: "inst-a"}
+	if err := arbiter.Reserve(toolregistry.DotName("inst-a", "send"), mcpSrc); err != nil {
+		t.Fatalf("pre-reserve: %v", err)
+	}
+
+	toolRegistrar := tools.New(arbiter, store.Queries(), nil)
+
+	// Use the dbQuerierAdapter so Manager reads from the real test store while
+	// the tools.Registrar writes health state and audit events into it.
+	realQ := &dbQuerierAdapter{q: store.Queries()}
+
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        realQ,
+		IdentityIssuer: reg,
+		ToolRegistrar:  toolRegistrar,
+		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+			fc := fixtureConfig(t, "serve-and-block", reg, nil)
+			fc.InstanceID = cfg.InstanceID
+			return process.Start(ctx, fc)
+		},
+	})
+
+	plugin := db.Plugin{
+		ID:               "p-conflict",
+		Status:           "active",
+		ManifestSnapshot: manifestWithTools("send"),
+	}
+	instance := db.PluginInstance{
+		ID:           "i-conflict",
+		PluginID:     "p-conflict",
+		InstanceName: "inst-a",
+		HealthState:  string(model.PluginHealthStateHealthy),
+	}
+
+	startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Start returns an error because RegisterInstanceTools encounters a conflict.
+	err := mgr.Start(startCtx, plugin, instance, os.Args[0])
+	if err == nil {
+		// Subprocess started — clean up before failing.
+		mgr.Stop(startCtx, instance.ID) //nolint:errcheck
+		t.Fatal("expected error from Manager.Start on tool conflict, got nil")
+	}
+
+	// The subprocess was stored in the map before registration ran, so Stop
+	// is safe to call to clean up the spawned goroutine.
+	mgr.Stop(startCtx, instance.ID) //nolint:errcheck
+
+	// Assert health_state in DB is unhealthy.
+	row, fetchErr := store.Queries().GetPluginInstanceByID(ctx, "i-conflict")
+	if fetchErr != nil {
+		t.Fatalf("GetPluginInstanceByID: %v", fetchErr)
+	}
+	if row.HealthState != string(model.PluginHealthStateUnhealthy) {
+		t.Errorf("health_state = %q after conflict, want %q", row.HealthState, model.PluginHealthStateUnhealthy)
+	}
+
+	// Assert a plugin_tool_namespace_conflict audit event exists.
+	iid := "i-conflict"
+	events, listErr := store.Queries().ListPluginAuditEventsByInstance(ctx, db.ListPluginAuditEventsByInstanceParams{
+		PluginInstanceID: &iid,
+		Offset:           0,
+		Limit:            20,
+	})
+	if listErr != nil {
+		t.Fatalf("ListPluginAuditEventsByInstance: %v", listErr)
+	}
+	found := false
+	for _, e := range events {
+		if e.EventType == "plugin_tool_namespace_conflict" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no plugin_tool_namespace_conflict audit event found; events: %+v", events)
+	}
+}
+
+// dbQuerierAdapter adapts *db.Queries to satisfy the process.Manager's querier
+// interface (a subset of db.Queries). Used in the conflict integration test so
+// the Manager reads from the real test store while the tools.Registrar also
+// writes health state and audit events into the same store.
+type dbQuerierAdapter struct {
+	q *db.Queries
+}
+
+func (a *dbQuerierAdapter) ListPluginsByStatus(ctx context.Context, status string) ([]db.Plugin, error) {
+	return a.q.ListPluginsByStatus(ctx, status)
+}
+
+func (a *dbQuerierAdapter) ListPluginInstancesByPlugin(ctx context.Context, pluginID string) ([]db.PluginInstance, error) {
+	return a.q.ListPluginInstancesByPlugin(ctx, pluginID)
+}
+
+func (a *dbQuerierAdapter) GetPluginByID(ctx context.Context, id string) (db.Plugin, error) {
+	return a.q.GetPluginByID(ctx, id)
+}
+
+func (a *dbQuerierAdapter) GetPluginInstanceByID(ctx context.Context, id string) (db.PluginInstance, error) {
+	return a.q.GetPluginInstanceByID(ctx, id)
+}
+
+func (a *dbQuerierAdapter) UpdatePluginInstanceHealth(ctx context.Context, arg db.UpdatePluginInstanceHealthParams) (int64, error) {
+	return a.q.UpdatePluginInstanceHealth(ctx, arg)
+}
+
+func (a *dbQuerierAdapter) InsertPluginAuditEvent(ctx context.Context, arg db.InsertPluginAuditEventParams) (db.PluginAuditEvent, error) {
+	return a.q.InsertPluginAuditEvent(ctx, arg)
 }
