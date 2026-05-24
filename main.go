@@ -35,6 +35,7 @@ import (
 	pluginoauth "github.com/felag-engineering/gleipnir/internal/plugin/oauth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/process"
 	plugintrigger "github.com/felag-engineering/gleipnir/internal/plugin/trigger"
+	plugintools "github.com/felag-engineering/gleipnir/internal/plugin/tools"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
@@ -186,10 +187,11 @@ func run(cfg config.Config) error {
 	// tool registrar. Constructed once here so both sides see the same state.
 	arbiter := toolregistry.New()
 
-	// TODO #194 follow-up: inject arbiter into plugin tools.Registrar when
-	// plugin start lands. The Registrar constructor is:
-	//   tools.New(arbiter, store.Queries(), broadcaster)
-	// Wire it wherever the plugin instance start sequence calls RegisterInstanceTools.
+	// Plugin tool registrar: claims <instance>.<tool> dot-names in the shared
+	// arbiter when a plugin instance starts, and releases them on stop. Constructed
+	// unconditionally so the reference is available regardless of PluginsEnabled;
+	// it is only injected into StartManagerConfig inside the if-block below.
+	pluginToolRegistrar := plugintools.New(arbiter, store.Queries(), broadcaster)
 
 	// Activate the hostsvc.Server and start the process.Manager when plugins are
 	// enabled. This block runs after pluginPool (needed as CallContextResolver),
@@ -235,6 +237,7 @@ func run(cfg config.Config) error {
 			IdentityRegistry:     identityReg,
 			GenerationController: genCtrl,
 			ServerInterceptors:   interceptors,
+			ToolRegistrar:        pluginToolRegistrar,
 		}); err != nil {
 			return fmt.Errorf("start plugin manager: %w", err)
 		}
