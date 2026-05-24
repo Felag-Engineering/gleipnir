@@ -128,11 +128,12 @@ type PluginInstaller interface {
 	Install(ctx context.Context, tarPath string) (string, error)
 }
 
-// TriggerRestarter is the narrow interface used to restart a plugin's trigger
-// stream after its subscription scope changes. Implemented by
+// TriggerRestarter is the narrow interface used to start or restart a plugin's
+// trigger stream after its subscription scope changes. Implemented by
 // *plugintrigger.Supervisor; kept narrow here so the admin package does not
 // import the trigger package directly.
 type TriggerRestarter interface {
+	Start(ctx context.Context, instanceID string)
 	Restart(ctx context.Context, instanceID string)
 }
 
@@ -684,10 +685,12 @@ func (h *PluginHandler) PutSubscriptionScope(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Restart the trigger stream so the plugin picks up the new scope. This is
-	// fire-and-continue — the supervisor's Start call is fast; stream opening
-	// is asynchronous inside the goroutine.
+	// Ensure the trigger stream is running with the latest scope. Start is
+	// a no-op if already supervised; Restart cancels and re-opens so the
+	// plugin picks up the new scope. Both are needed because instances
+	// created after boot were never supervised by StartAll.
 	if h.triggerRestarter != nil {
+		h.triggerRestarter.Start(ctx, instanceID)
 		h.triggerRestarter.Restart(ctx, instanceID)
 	}
 

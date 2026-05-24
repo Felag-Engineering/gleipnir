@@ -461,29 +461,41 @@ func TestSupervisor_RecoveryAfterFailures(t *testing.T) {
 	recoveryCh <- &triggerv1.StartResponse{EventId: "recovery", EventKind: "message"}
 	close(recoveryCh)
 
-	// Wait for Healthy to be reported.
+	// Wait for a recovery Healthy (one that comes after an Unhealthy event).
 	waitFor(t, 8*time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
+		var sawU bool
 		for _, e := range healthEvents {
-			if e.state == model.PluginHealthStateHealthy {
+			if e.state == model.PluginHealthStateUnhealthy {
+				sawU = true
+			}
+			if e.state == model.PluginHealthStateHealthy && sawU {
 				return true
 			}
 		}
 		return false
 	})
 
-	// Verify ordering: Unhealthy must appear before Healthy.
+	// Verify the recovery sequence: there must be an Unhealthy event
+	// followed by a Healthy event. The initial stream-open Healthy (before
+	// any failures) is expected and does not violate the ordering.
 	mu.Lock()
 	defer mu.Unlock()
-	var sawUnhealthy bool
+	var sawUnhealthy, sawRecovery bool
 	for _, e := range healthEvents {
 		if e.state == model.PluginHealthStateUnhealthy {
 			sawUnhealthy = true
 		}
-		if e.state == model.PluginHealthStateHealthy && !sawUnhealthy {
-			t.Error("saw Healthy before Unhealthy — wrong order")
+		if e.state == model.PluginHealthStateHealthy && sawUnhealthy {
+			sawRecovery = true
 		}
+	}
+	if !sawUnhealthy {
+		t.Error("expected at least one Unhealthy event from consecutive failures")
+	}
+	if !sawRecovery {
+		t.Error("expected a Healthy event after the Unhealthy event (recovery)")
 	}
 }
 

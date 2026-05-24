@@ -379,6 +379,7 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 	consecutive := 0 // consecutive reconnect failures without a successful Recv
 	markedUnhealthy := false
 	loggedEmptyScope := false // rate-limit the "scope not configured" log line
+	initialHealthSet := false // fires once on first successful stream open
 
 	for {
 		if ctx.Err() != nil {
@@ -456,6 +457,17 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 			continue
 		}
 
+		// On the very first successful stream open, mark Healthy so the admin
+		// UI can see the instance is connected before any events arrive.
+		// Subsequent reconnects skip this — the recovery path in recvLoop
+		// handles marking Healthy after failures resolve.
+		if !initialHealthSet {
+			initialHealthSet = true
+			if s.cfg.HealthSetter != nil {
+				s.cfg.HealthSetter(ctx, instanceID, model.PluginHealthStateHealthy, "")
+			}
+		}
+
 		// Recv loop — single goroutine to preserve per-stream event ordering.
 		recvErr := s.recvLoop(ctx, instanceID, stream, log, &markedUnhealthy, &consecutive)
 		if recvErr == nil || ctx.Err() != nil {
@@ -474,8 +486,8 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 }
 
 // recvLoop drains messages from stream until EOF, an error, or ctx cancellation.
-// It resets the consecutive-failure counter and heals the health state on the
-// first successful Recv. Returns nil on clean context cancellation.
+// On the first successful Recv it resets the consecutive-failure counter and
+// clears the markedUnhealthy flag. Returns nil on clean context cancellation.
 func (s *Supervisor) recvLoop(
 	ctx context.Context,
 	instanceID string,
@@ -498,24 +510,15 @@ func (s *Supervisor) recvLoop(
 			return err
 		}
 
-		// First successful Recv: mark the instance Healthy and reset the failure
-		// counter regardless of whether we were previously marked Unhealthy.
-		// A fresh stream that never failed still needs an explicit Healthy
-		// transition — the DB default is unhealthy/config_missing, and the plugin
-		// itself only emits SetHealthState on failure paths (e.g. auth expired,
-		// missing scope).
-		//
-		// Note: when reconnecting from an already-healthy state, this call
-		// triggers a warn-level ErrIllegalTransition in Manager.HealthSetter
-		// (process/manager.go). That is expected and handled gracefully
-		// (warn-and-continue) — it is not actionable and not a sign of breakage.
 		if firstEvent {
 			firstEvent = false
-			*consecutive = 0
-			if s.cfg.HealthSetter != nil {
-				s.cfg.HealthSetter(ctx, instanceID, model.PluginHealthStateHealthy, "")
+			if *markedUnhealthy {
+				if s.cfg.HealthSetter != nil {
+					s.cfg.HealthSetter(ctx, instanceID, model.PluginHealthStateHealthy, "")
+				}
+				*markedUnhealthy = false
 			}
-			*markedUnhealthy = false
+			*consecutive = 0
 		}
 
 		evt := Event{

@@ -1247,6 +1247,8 @@ type fakeTriggerRestarter struct {
 	restartIDs []string
 }
 
+func (f *fakeTriggerRestarter) Start(_ context.Context, _ string) {}
+
 func (f *fakeTriggerRestarter) Restart(_ context.Context, instanceID string) {
 	f.mu.Lock()
 	f.restartIDs = append(f.restartIDs, instanceID)
