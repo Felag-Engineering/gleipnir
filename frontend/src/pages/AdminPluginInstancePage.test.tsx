@@ -21,7 +21,7 @@ vi.mock('@/components/admin/ReauthorizeButton/ReauthorizeButton', () => ({
 }))
 
 import { usePluginInstancesForAudience, usePluginInstanceDetail } from '@/hooks/queries/admin'
-import { useSetInstanceSubscriptionScope, useBeginPluginOAuth, useDeletePluginInstance, useSetInstanceConfig } from '@/hooks/mutations/plugins'
+import { useSetInstanceSubscriptionScope, useBeginPluginOAuth, useDeletePluginInstance, useSetInstanceConfig, useAcceptPluginManifest } from '@/hooks/mutations/plugins'
 import type { ApiPluginInstanceDetail } from '@/api/types'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { ApiError } from '@/api/fetch'
@@ -195,6 +195,10 @@ function mockMutationNoop() {
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof useSetInstanceConfig>)
+  vi.mocked(useAcceptPluginManifest).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as unknown as ReturnType<typeof useAcceptPluginManifest>)
 }
 
 function mockMutationSuccess(onSuccessCapture?: (fn: () => void) => void) {
@@ -327,6 +331,65 @@ describe('AdminPluginInstancePage — Re-authorize banner visibility', () => {
     mockInstancesLoaded([INSTANCE_OAUTH_REFRESH_FAILED])
     renderPage()
     expect(screen.getByTestId('reauth-btn')).toHaveAttribute('data-strategy', 'oauth2_authcode')
+  })
+})
+
+describe('AdminPluginInstancePage — Accept manifest modal', () => {
+  const PENDING_MANIFEST_INSTANCE: ApiPluginInstanceForAudience = {
+    ...INSTANCE_WITH_SCHEMA,
+    state: 'pending_manifest_approval',
+    health_detail: 'manifest changed materially; admin re-approval required',
+  }
+
+  beforeEach(() => {
+    mockInstanceDetailLoaded()
+    mockMutationNoop()
+  })
+
+  it('shows the banner with Review change button when instance is pending_manifest_approval', () => {
+    mockCurrentUser(['admin'])
+    mockInstancesLoaded([PENDING_MANIFEST_INSTANCE])
+    renderPage()
+    expect(screen.getByText(/new manifest version is waiting for approval/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /review change/i })).toBeInTheDocument()
+  })
+
+  it('hides the banner for non-admin users', () => {
+    mockCurrentUser(['operator'])
+    mockInstancesLoaded([PENDING_MANIFEST_INSTANCE])
+    renderPage()
+    expect(screen.queryByText(/new manifest version is waiting for approval/i)).not.toBeInTheDocument()
+  })
+
+  it('hides the banner for healthy instances', () => {
+    mockCurrentUser(['admin'])
+    mockInstancesLoaded([INSTANCE_WITH_SCHEMA])
+    renderPage()
+    expect(screen.queryByText(/new manifest version is waiting for approval/i)).not.toBeInTheDocument()
+  })
+
+  it('opens the modal and fires the accept-manifest mutation on confirm', async () => {
+    mockCurrentUser(['admin'])
+    mockInstancesLoaded([PENDING_MANIFEST_INSTANCE])
+    const mutateFn = vi.fn()
+    vi.mocked(useAcceptPluginManifest).mockReturnValue({
+      mutate: mutateFn,
+      isPending: false,
+    } as unknown as ReturnType<typeof useAcceptPluginManifest>)
+
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /review change/i }))
+
+    // Modal renders the plugin name in the body copy.
+    expect(screen.getByRole('heading', { name: /accept pending manifest change/i })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /accept manifest change/i }))
+
+    expect(mutateFn).toHaveBeenCalledTimes(1)
+    expect(mutateFn).toHaveBeenCalledWith(
+      expect.objectContaining({ pluginId: PLUGIN_ID }),
+      expect.any(Object),
+    )
   })
 })
 

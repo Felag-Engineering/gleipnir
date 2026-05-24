@@ -766,11 +766,41 @@ func TestInstall_RejectedWithNilErr_NoPanic(t *testing.T) {
 	}
 }
 
+// TestInstall_TransactionalRollback drops the plugin_audit_events table after
+// schema migration so the audit insert inside createPlugin's transaction
+// fails. The tx must roll back so neither the plugins row nor any audit row
+// is visible afterwards. Install must return an error rather than swallow it.
+func TestInstall_TransactionalRollback(t *testing.T) {
+	store := openTestStore(t)
+	q := store.Queries()
+
+	// Sabotage the audit table so InsertPluginAuditEvent fails inside the tx.
+	if _, err := store.DB().Exec("DROP TABLE plugin_audit_events"); err != nil {
+		t.Fatalf("drop audit table: %v", err)
+	}
+
+	v := &realVerifier{allowUnsigned: false}
+	inst := NewInstaller(v, q, store.DB(), nil, t.TempDir())
+	inst.clock = func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+
+	tarPath, _ := signedPluginTarball(t, "rollback-plugin", "1.0.0")
+	id, err := inst.Install(context.Background(), tarPath)
+	if err == nil {
+		t.Fatalf("expected install to fail when audit insert errors; got id=%q nil err", id)
+	}
+	if id != "" {
+		t.Errorf("expected empty id on rollback; got %q", id)
+	}
+
+	// The plugins row must not be visible — the tx rolled back.
+	if _, getErr := q.GetPluginByName(context.Background(), "rollback-plugin"); getErr == nil {
+		t.Error("plugins row visible after tx rollback; expected sql.ErrNoRows")
+	}
+}
+
 // TestInstall_TransactionalCreate confirms that when an Installer is wired
 // with a *sql.DB, createPlugin's row insert and audit insert land in the same
-// transaction — i.e. both rows are visible after a successful install. The
-// rollback case is harder to provoke without injecting a faulty audit writer
-// and is left for a focused unit test on inTx.
+// transaction — i.e. both rows are visible after a successful install.
 func TestInstall_TransactionalCreate(t *testing.T) {
 	store := openTestStore(t)
 	q := store.Queries()
