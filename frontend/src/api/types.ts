@@ -413,6 +413,13 @@ export interface ApiAcceptNewKeyResponse {
   instances_unblocked: number
 }
 
+// Matches internal/admin/plugin_handler.go → acceptManifestResponse.
+export interface ApiAcceptManifestResponse {
+  accepted_manifest_version: string
+  instances_unblocked: number
+  instances_pending_config: number
+}
+
 // --- Audiences ---
 
 // Matches internal/http/api/audience_handler.go → audienceListItemDTO (GET /api/v1/admin/audiences).

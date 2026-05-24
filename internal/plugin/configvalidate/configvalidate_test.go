@@ -521,6 +521,71 @@ func TestForSubscriptionScope_MissingRequired(t *testing.T) {
 	}
 }
 
+// TestForSubscriptionScope_ItemsPatternRejectsNonIDs exercises the Slack-style
+// items-level pattern constraint that this branch added (SlackChannelID emits
+// {type: string, pattern: ^C[A-Z0-9]+$}). Without it, channel names like
+// "#incidents" were accepted at save time but silently never matched at
+// runtime because Socket Mode events carry only IDs.
+func TestForSubscriptionScope_ItemsPatternRejectsNonIDs(t *testing.T) {
+	const slackLikeSchema = `
+type: object
+additionalProperties: false
+required: [channels]
+properties:
+  channels:
+    type: array
+    items:
+      type: string
+      pattern: ^C[A-Z0-9]+$
+`
+	m := subscriptionManifest(t, slackLikeSchema)
+	v, err := configvalidate.ForSubscriptionScope(m)
+	if err != nil {
+		t.Fatalf("ForSubscriptionScope: %v", err)
+	}
+
+	t.Run("rejects channel name with hash", func(t *testing.T) {
+		errs, err := v.Validate(map[string]any{"channels": []any{"#incidents"}})
+		if err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+		if len(errs) == 0 {
+			t.Fatal("expected pattern-mismatch error for '#incidents'; got none")
+		}
+		// The field path is per-item; ensure something under "channels" complains.
+		found := false
+		for _, e := range errs {
+			if strings.Contains(e.Field, "channels") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected error under 'channels'; got %v", errs)
+		}
+	})
+
+	t.Run("rejects bare channel name", func(t *testing.T) {
+		errs, err := v.Validate(map[string]any{"channels": []any{"incidents"}})
+		if err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+		if len(errs) == 0 {
+			t.Fatal("expected pattern-mismatch error for 'incidents'; got none")
+		}
+	})
+
+	t.Run("accepts well-formed channel IDs", func(t *testing.T) {
+		errs, err := v.Validate(map[string]any{"channels": []any{"C012ABCDEF", "C09INC"}})
+		if err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+		if len(errs) != 0 {
+			t.Errorf("expected no errors for valid IDs, got %v", errs)
+		}
+	})
+}
+
 func TestForSubscriptionScope_NilSchema_AcceptsAnything(t *testing.T) {
 	// A manifest with no SubscriptionSchema produces an empty-schema validator
 	// that accepts any value (mirrors ForInstanceConfig with nil ConfigSchema).

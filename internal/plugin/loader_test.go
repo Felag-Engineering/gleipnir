@@ -83,7 +83,7 @@ func TestLoader_StartWatcher_DisabledIsNoOp(t *testing.T) {
 	}
 	// StartWatcher must return without panicking or starting anything.
 	// Pass nil for q — the code must not reach any q calls when disabled.
-	l.StartWatcher(context.Background(), nil, t.TempDir(), nil)
+	l.StartWatcher(context.Background(), nil, nil, t.TempDir(), nil)
 }
 
 // TestLoader_Installer_NilBeforeStartWatcher verifies that Installer() returns
@@ -111,7 +111,7 @@ func TestLoader_Installer_NonNilAfterStartWatcher(t *testing.T) {
 
 	// StartWatcher requires a real directory to watch.
 	dir := t.TempDir()
-	if err := l.StartWatcher(ctx, nil, dir, nil); err != nil {
+	if err := l.StartWatcher(ctx, nil, nil, dir, nil); err != nil {
 		t.Fatalf("StartWatcher: %v", err)
 	}
 	if l.Installer() == nil {

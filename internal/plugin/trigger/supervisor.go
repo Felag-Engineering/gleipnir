@@ -83,7 +83,7 @@ type Config struct {
 	// HealthSetter is called by the supervisor when a stream's consecutive
 	// failure count crosses UnhealthyAfter (marks instance Unhealthy) or
 	// recovers (marks instance Healthy). Wire to
-	// processManager.buildHealthSetter() in main.go.
+	// processManager.HealthSetter() in main.go.
 	HealthSetter func(ctx context.Context, instanceID string, target model.PluginHealthState, detail string)
 
 	// Logger is the base logger. If nil, slog.Default() is used.

@@ -12,17 +12,11 @@ import {
 } from '@/hooks/mutations/plugins'
 import { isOAuthRefreshFailure } from '@/utils/pluginHealth'
 import { formatTimestamp } from '@/utils/format'
+import { errMessage } from '@/api/fetch'
 import type { ApiError } from '@/api/fetch'
 import type { PluginAuthStrategy } from '@/api/types'
 import styles from './CredentialsTab.module.css'
 
-// errMessage extracts a human-readable error message from a TanStack Query
-// onError callback value. TanStack Query types error as `unknown`; ApiError
-// carries `.message` and `.detail`; fall back to a generic string.
-function errMessage(err: unknown, fallback: string): string {
-  const apiErr = err as ApiError
-  return apiErr?.detail ?? apiErr?.message ?? fallback
-}
 
 // Reserved header names mirroring internal/infra/headervalidate.go.
 // Rejecting these client-side gives immediate feedback; the server also rejects them.

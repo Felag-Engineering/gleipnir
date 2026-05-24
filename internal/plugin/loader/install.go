@@ -93,6 +93,7 @@ const (
 type Installer struct {
 	verifier   BundleVerifier
 	q          *db.Queries
+	sqlDB      *sql.DB
 	publisher  event.Publisher
 	pluginsDir string
 	// onInstalled is called after every successful install with the plugin ID.
@@ -108,8 +109,14 @@ type Installer struct {
 // binaries are published to <pluginsDir>/installed/<plugin-name>/; pass an
 // empty string to disable binary publishing (useful for tests that don't need
 // real binaries on disk).
-func NewInstaller(v BundleVerifier, q *db.Queries, publisher event.Publisher, pluginsDir string) *Installer {
-	return &Installer{verifier: v, q: q, publisher: publisher, pluginsDir: pluginsDir, clock: time.Now}
+//
+// sqlDB is the raw database handle used to wrap createPlugin / updatePlugin row
+// inserts and their audit events in a single transaction so a mid-install
+// failure cannot leave an orphan plugins row with no install audit. When nil,
+// the installer falls back to non-transactional writes — accepted only for
+// tests that don't care about atomicity.
+func NewInstaller(v BundleVerifier, q *db.Queries, sqlDB *sql.DB, publisher event.Publisher, pluginsDir string) *Installer {
+	return &Installer{verifier: v, q: q, sqlDB: sqlDB, publisher: publisher, pluginsDir: pluginsDir, clock: time.Now}
 }
 
 // OnInstalled registers a callback that fires after every successful Install.
@@ -533,9 +540,20 @@ func (in *Installer) transitionAllInstances(ctx context.Context, existing db.Plu
 // recordAuditEvent writes a plugin-level audit row (PluginInstanceID = nil,
 // ActorUserID = nil — the install pipeline runs without an operator). Returns
 // the InsertPluginAuditEvent error so callers can wrap it with their own context.
+//
+// Used by the non-transactional paths (recordSignatureInvalid, handlePubkeyMismatch,
+// handleManifestMaterialChange, updatePluginCosmetic). Transactional paths
+// (createPlugin, updatePlugin) call insertAuditRow directly with a tx-bound *db.Queries.
 func (in *Installer) recordAuditEvent(ctx context.Context, eventType, severity, nowStr string, payload map[string]any) error {
+	return insertAuditRow(ctx, in.q, eventType, severity, nowStr, payload)
+}
+
+// insertAuditRow writes a plugin-level audit row using the supplied query set.
+// Callers pass the tx-bound *db.Queries when running inside a transaction; the
+// non-transactional path is reached via Installer.recordAuditEvent.
+func insertAuditRow(ctx context.Context, q *db.Queries, eventType, severity, nowStr string, payload map[string]any) error {
 	body, _ := json.Marshal(payload)
-	_, err := in.q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
+	_, err := q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
 		PluginInstanceID: nil,
 		EventType:        eventType,
 		Severity:         severity,
@@ -544,6 +562,50 @@ func (in *Installer) recordAuditEvent(ctx context.Context, eventType, severity, 
 		CreatedAt:        nowStr,
 	})
 	return err
+}
+
+// inTx runs fn inside a transaction when in.sqlDB is non-nil. The fn receives
+// a tx-bound *db.Queries; if it returns an error the tx is rolled back.
+// When in.sqlDB is nil (test-only path) it falls back to running fn against
+// the Installer's *db.Queries directly — no atomicity guarantee, but the same
+// shape so call sites stay clean.
+func (in *Installer) inTx(ctx context.Context, fn func(q *db.Queries) error) error {
+	if in.sqlDB == nil {
+		return fn(in.q)
+	}
+	tx, err := in.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin install tx: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.WarnContext(ctx, "install tx rollback", "err", rbErr)
+		}
+	}()
+	if err := fn(in.q.WithTx(tx)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// updateBinaryPathTx is the tx-aware counterpart of Installer.updateBinaryPath.
+// CAS miss is treated as a non-fatal warning (mirrors the original behavior)
+// so the install transaction still commits.
+func updateBinaryPathTx(ctx context.Context, q *db.Queries, pluginID string, version int64, binaryPathPtr *string, nowStr string) error {
+	rows, err := q.UpdatePluginBinaryPath(ctx, db.UpdatePluginBinaryPathParams{
+		BinaryPath:      binaryPathPtr,
+		UpdatedAt:       nowStr,
+		ID:              pluginID,
+		ExpectedVersion: version,
+	})
+	if err != nil {
+		return fmt.Errorf("db update binary_path: %w", err)
+	}
+	if rows == 0 {
+		slog.WarnContext(ctx, "updateBinaryPathTx: CAS conflict; binary_path will be set on next install",
+			"plugin_id", pluginID)
+	}
+	return nil
 }
 
 // updatePluginCosmetic updates the manifest snapshot for a cosmetic-only change,
@@ -639,9 +701,9 @@ func installStatusFor(outcome VerifyOutcome) string {
 // in the DB so Manager.StartAllActive can re-spawn the subprocess on server
 // restart without re-extracting the tarball.
 //
-// TODO(plugin): wrap createPlugin + audit insert in a single transaction once
-// Installer takes *sql.DB instead of *db.Queries. Today an audit-insert failure
-// leaves an orphan plugins row; same-version idempotency masks the retry.
+// The plugins row insert and the plugin_installed audit event are committed
+// atomically — an audit-insert failure rolls back the row so the same-version
+// idempotency check on the next retry sees no prior row.
 func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, manifestBytes []byte, result VerifyResult, tmpDir string, nowStr string) (string, error) {
 	var binaryPathPtr *string
 	if in.pluginsDir != "" {
@@ -653,27 +715,31 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 	}
 
 	pluginID := model.NewULID()
-	_, err := in.q.CreatePlugin(ctx, db.CreatePluginParams{
-		ID:               pluginID,
-		Name:             m.Name,
-		PluginVersion:    m.Version,
-		ManifestSnapshot: string(manifestBytes),
-		TrustedPubkey:    string(result.Pubkey),
-		Status:           installStatusFor(result.Outcome),
-		BinaryPath:       binaryPathPtr,
-		CreatedAt:        nowStr,
-		UpdatedAt:        nowStr,
+	err := in.inTx(ctx, func(q *db.Queries) error {
+		if _, qErr := q.CreatePlugin(ctx, db.CreatePluginParams{
+			ID:               pluginID,
+			Name:             m.Name,
+			PluginVersion:    m.Version,
+			ManifestSnapshot: string(manifestBytes),
+			TrustedPubkey:    string(result.Pubkey),
+			Status:           installStatusFor(result.Outcome),
+			BinaryPath:       binaryPathPtr,
+			CreatedAt:        nowStr,
+			UpdatedAt:        nowStr,
+		}); qErr != nil {
+			return fmt.Errorf("create plugin %q: %w", m.Name, qErr)
+		}
+		if auditErr := insertAuditRow(ctx, q, auditPluginInstalled, severityInfo, nowStr, map[string]any{
+			"name":    m.Name,
+			"version": m.Version,
+			"outcome": result.Outcome.String(),
+		}); auditErr != nil {
+			return fmt.Errorf("record plugin_installed audit: %w", auditErr)
+		}
+		return nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("create plugin %q: %w", m.Name, err)
-	}
-
-	if err := in.recordAuditEvent(ctx, auditPluginInstalled, severityInfo, nowStr, map[string]any{
-		"name":    m.Name,
-		"version": m.Version,
-		"outcome": result.Outcome.String(),
-	}); err != nil {
-		return "", fmt.Errorf("record plugin_installed audit: %w", err)
+		return "", err
 	}
 	return pluginID, nil
 }
@@ -682,10 +748,9 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 // version has changed. Publishes the verified bundle to disk first, then updates
 // binary_path after the manifest CAS succeeds. Uses the CAS guard (ADR-038).
 //
-// TODO(plugin): wrap updatePlugin + audit insert in a single transaction once
-// Installer takes *sql.DB instead of *db.Queries. Today an audit-insert failure
-// leaves the plugins row updated but the event unrecorded; same-version
-// idempotency masks the retry.
+// The manifest CAS update and the plugin_update_pending audit event are
+// committed atomically. The binary_path CAS update runs inside the same tx
+// after a re-read of the bumped version.
 func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *manifest.Manifest, manifestBytes []byte, result VerifyResult, tmpDir string, nowStr string) (string, error) {
 	// Publish the verified bundle before touching the DB so the subprocess can
 	// be re-spawned with the correct binary on the next restart.
@@ -698,41 +763,47 @@ func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *ma
 		binaryPathPtr = &publishedPath
 	}
 
-	rows, err := in.q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
-		ManifestSnapshot: string(manifestBytes),
-		PluginVersion:    m.Version,
-		Status:           installStatusFor(result.Outcome),
-		UpdatedAt:        nowStr,
-		ID:               existing.ID,
-		ExpectedVersion:  existing.Version,
+	err := in.inTx(ctx, func(q *db.Queries) error {
+		rows, mErr := q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
+			ManifestSnapshot: string(manifestBytes),
+			PluginVersion:    m.Version,
+			Status:           installStatusFor(result.Outcome),
+			UpdatedAt:        nowStr,
+			ID:               existing.ID,
+			ExpectedVersion:  existing.Version,
+		})
+		if mErr != nil {
+			return fmt.Errorf("update plugin %q manifest: %w", m.Name, mErr)
+		}
+		if rows == 0 {
+			// CAS miss: a concurrent writer already advanced the version. This is
+			// unlikely in the sequential dispatch model but safe to surface as an error.
+			return fmt.Errorf("update plugin %q: CAS conflict (version mismatch)", m.Name)
+		}
+
+		// The manifest CAS bumped the version; re-read inside the same tx to get
+		// the new version for the binary_path CAS that follows.
+		if binaryPathPtr != nil {
+			updated, rereadErr := q.GetPluginByName(ctx, m.Name)
+			if rereadErr != nil {
+				return fmt.Errorf("re-read plugin %q after manifest update: %w", m.Name, rereadErr)
+			}
+			if pathErr := updateBinaryPathTx(ctx, q, existing.ID, updated.Version, binaryPathPtr, nowStr); pathErr != nil {
+				return fmt.Errorf("update binary_path for %q: %w", m.Name, pathErr)
+			}
+		}
+
+		if auditErr := insertAuditRow(ctx, q, auditUpdatePending, severityInfo, nowStr, map[string]any{
+			"name":        m.Name,
+			"old_version": existing.PluginVersion,
+			"new_version": m.Version,
+		}); auditErr != nil {
+			return fmt.Errorf("record plugin_update_pending audit: %w", auditErr)
+		}
+		return nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("update plugin %q manifest: %w", m.Name, err)
-	}
-	if rows == 0 {
-		// CAS miss: a concurrent writer already advanced the version. This is
-		// unlikely in the sequential dispatch model but safe to surface as an error.
-		return "", fmt.Errorf("update plugin %q: CAS conflict (version mismatch)", m.Name)
-	}
-
-	// The manifest CAS bumped the version; re-read to get the new version for
-	// the binary_path CAS that follows.
-	if binaryPathPtr != nil {
-		updated, rereadErr := in.q.GetPluginByName(ctx, m.Name)
-		if rereadErr != nil {
-			return "", fmt.Errorf("re-read plugin %q after manifest update: %w", m.Name, rereadErr)
-		}
-		if err := in.updateBinaryPath(ctx, existing.ID, updated.Version, binaryPathPtr, nowStr); err != nil {
-			return "", fmt.Errorf("update binary_path for %q: %w", m.Name, err)
-		}
-	}
-
-	if err := in.recordAuditEvent(ctx, auditUpdatePending, severityInfo, nowStr, map[string]any{
-		"name":        m.Name,
-		"old_version": existing.PluginVersion,
-		"new_version": m.Version,
-	}); err != nil {
-		return "", fmt.Errorf("record plugin_update_pending audit: %w", err)
+		return "", err
 	}
 	return existing.ID, nil
 }

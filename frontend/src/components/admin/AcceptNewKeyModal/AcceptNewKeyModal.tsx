@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Modal } from '@/components/Modal'
 import { ModalFooter } from '@/components/ModalFooter'
 import { useAcceptPluginNewKey } from '@/hooks/mutations/plugins'
-import { ApiError } from '@/api/fetch'
+import { extractErrorMessage } from '@/api/fetch'
 import styles from './AcceptNewKeyModal.module.css'
 
 interface AcceptNewKeyModalProps {
@@ -39,13 +39,7 @@ export function AcceptNewKeyModal({
       {
         onSuccess: onClose,
         onError: (err) => {
-          if (err instanceof ApiError) {
-            setError(err.detail ?? err.message)
-          } else if (err instanceof Error) {
-            setError(err.message)
-          } else {
-            setError('Unexpected error — please try again.')
-          }
+          setError(extractErrorMessage(err))
         },
       },
     )

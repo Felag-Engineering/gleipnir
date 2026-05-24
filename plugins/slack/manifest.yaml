@@ -185,8 +185,9 @@ subscription_schema:
   additionalProperties: false
   properties:
     channels:
-      description: 'Channel names or IDs (e.g. #incidents, C01ABC). Empty = watch all.'
+      description: Slack channel IDs (e.g. C012ABCDEF). Empty = watch all. Find IDs in channel settings → About → Channel ID.
       items:
+        pattern: ^C[A-Z0-9]+$
         type: string
       title: Channels
       type: array

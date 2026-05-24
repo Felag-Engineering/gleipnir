@@ -1,6 +1,6 @@
 import { Button } from '@/components/Button'
 import { useBeginPluginOAuth } from '@/hooks/mutations/plugins'
-import type { ApiError } from '@/api/fetch'
+import { errMessage } from '@/api/fetch'
 
 interface ReauthorizeButtonProps {
   pluginId: string
@@ -64,9 +64,7 @@ export function ReauthorizeButton({
           // mutation's onSuccess already refreshes instance state.
         },
         onError(err) {
-          const apiErr = err as ApiError
-          const message = apiErr?.detail ?? apiErr?.message ?? 'OAuth authorization failed.'
-          onError?.(message)
+          onError?.(errMessage(err, 'OAuth authorization failed.'))
         },
       },
     )

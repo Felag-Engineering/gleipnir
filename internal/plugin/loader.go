@@ -18,6 +18,7 @@ package plugin
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 
@@ -105,12 +106,16 @@ func (l *Loader) Init(_ context.Context, cfg config.Config) error {
 // publisher is used to emit plugin.health_changed events when a pubkey mismatch
 // transitions instances to pending_key_approval. It may be nil — events are
 // skipped when nil.
-func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, dir string, publisher event.Publisher) error {
+//
+// sqlDB is the raw handle the Installer uses to wrap row inserts and audit
+// events in a single transaction (see internal/plugin/loader.NewInstaller).
+// Required when plugins are enabled.
+func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, sqlDB *sql.DB, dir string, publisher event.Publisher) error {
 	if l.verifier == nil {
 		return nil
 	}
 
-	l.installer = loader.NewInstaller(&verifierAdapter{v: l.verifier}, q, publisher, dir)
+	l.installer = loader.NewInstaller(&verifierAdapter{v: l.verifier}, q, sqlDB, publisher, dir)
 	// The watcher's callback type is func(context.Context, string) error, but
 	// Install now returns (string, error). The adapter discards the plugin ID —
 	// the watcher only needs to know whether install succeeded.

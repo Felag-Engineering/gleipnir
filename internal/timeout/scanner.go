@@ -63,6 +63,14 @@ type Config struct {
 	// SSEPayload builds the event payload published under SSEEventName. The
 	// key names differ between domains ("approval_id" vs "feedback_id").
 	SSEPayload func(id string, runID string) map[string]string
+
+	// OnClaimed is an optional hook invoked once per successfully-claimed
+	// timeout, after the conditional UPDATE wins and before downstream run
+	// side-effects (which may be skipped if the run already left the waiting
+	// state). The approval scanner uses this to increment its prometheus
+	// counter so the metric reflects approvals that genuinely timed out,
+	// independent of the run's eventual disposition.
+	OnClaimed func()
 }
 
 // NewApprovalScanner creates a Scanner that checks for expired approval requests
@@ -102,6 +110,7 @@ func NewApprovalScanner(store *db.Store, interval time.Duration, opts ...Scanner
 				"status":      string(model.ApprovalStatusTimeout),
 			}
 		},
+		OnClaimed: approvalTimeoutsTotal.Inc,
 	}
 	return NewScanner(store, interval, cfg, opts...)
 }
@@ -296,16 +305,11 @@ func (s *Scanner) resolveTimeout(ctx context.Context, item ExpiredItem) error {
 		return nil
 	}
 
-	if s.cfg.Name == "approval" {
-		// Increment the approval timeout counter here — right after we
-		// successfully claimed the timeout — even if the run was already
-		// moved out of waiting_for_approval (e.g. interrupted by
-		// ScanOrphanedRuns on restart). The approval itself timed out;
-		// the run's subsequent state is irrelevant to this counter. The
-		// downstream `run.Status != WaitingRunStatus` branch below may
-		// skip the run-side side effects, but the approval-timed-out
-		// fact remains true.
-		approvalTimeoutsTotal.Inc()
+	// Invoke the post-claim hook (e.g. the approval scanner increments its
+	// prometheus counter here) even if the run was already moved out of the
+	// waiting status — the request itself genuinely timed out.
+	if s.cfg.OnClaimed != nil {
+		s.cfg.OnClaimed()
 	}
 
 	// Check whether the run is still waiting. ScanOrphanedRuns may have already

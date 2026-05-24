@@ -741,8 +741,9 @@ func (a *BoundAgent) handleToolCall(ctx context.Context, runID, toolName string,
 
 // classifyPluginError produces a sanitized, agent-facing error message from a
 // dispatcher error. Raw errors are only logged, not surfaced to the agent.
-// The caller maps dispatch-package sentinels to ErrPluginCallTimeout /
-// ErrPluginQueueFull before calling here (via the adapter in main.go).
+// ErrPluginCallTimeout and ErrPluginQueueFull are aliases of the dispatch-side
+// sentinels (both via internal/plugin/pluginerr), so errors.Is works directly
+// on the error returned by the adapter.
 func classifyPluginError(instanceName string, err error) string {
 	if errors.Is(err, ErrPluginCallTimeout) {
 		return fmt.Sprintf("plugin %q timed out", instanceName)

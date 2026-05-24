@@ -35,12 +35,12 @@ const FIXTURE_WITH_SCHEMA: ApiPluginInstanceForAudience = {
     properties: {
       channels: {
         type: 'array',
-        items: { type: 'string' },
-        description: 'Slack channel names to watch (e.g. #incidents)',
+        items: { type: 'string', pattern: '^C[A-Z0-9]+$' },
+        description: 'Slack channel IDs to watch (e.g. C012ABCDEF)',
       },
     },
   },
-  subscription_scope: { channels: ['#incidents', '#ops'] },
+  subscription_scope: { channels: ['C012ABCDEF', 'C09OPSCH'] },
 }
 
 const FIXTURE_NO_SCHEMA: ApiPluginInstanceForAudience = {
@@ -76,7 +76,7 @@ const FIXTURE_OAUTH_REFRESH_FAILED_AUTHCODE: ApiPluginInstanceForAudience = {
       channels: { type: 'array', items: { type: 'string' } },
     },
   },
-  subscription_scope: { channels: ['#incidents'] },
+  subscription_scope: { channels: ['C012ABCDEF'] },
 }
 
 const FIXTURE_OAUTH_REFRESH_FAILED_CLIENTCRED: ApiPluginInstanceForAudience = {

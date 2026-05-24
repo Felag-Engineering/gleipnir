@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/invopop/jsonschema"
 	"gopkg.in/yaml.v3"
 
 	"github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
@@ -157,6 +158,20 @@ func buildToolDecls() []manifest.ToolDecl {
 	}
 }
 
+// SlackChannelID is a typed Slack channel identifier (e.g. "C012ABCDEF").
+// Names are not accepted: Socket Mode message events only carry the channel
+// ID, so a name-based scope would silently never match (see scope_test.go).
+// The emitted JSON Schema carries a pattern that rejects non-ID strings at
+// save time via the host's configvalidate pipeline.
+type SlackChannelID string
+
+// JSONSchema implements the invopop/jsonschema.SchemaCustomizer interface so
+// that ReflectSchema emits {type: string, pattern: "^C[A-Z0-9]+$"} — Slack
+// channel IDs start with a capital C followed by alphanumerics.
+func (SlackChannelID) JSONSchema() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "string", Pattern: "^C[A-Z0-9]+$"}
+}
+
 // SlackSubscriptionScope is the instance-level coarse subscription filter sent
 // in TriggerService.Start as watch_scope_json. It limits which channels the
 // plugin watches across ALL policies on this instance, reducing noise from
@@ -165,9 +180,12 @@ func buildToolDecls() []manifest.ToolDecl {
 // Distinct from SlackChannelMessageBinding (per-policy event filter): scope is
 // configured once on the instance; binding is configured per-policy.
 type SlackSubscriptionScope struct {
-	// Channels is a list of channel names or IDs to watch (e.g. "#incidents",
-	// "C01ABC"). Empty means watch all channels the bot is a member of.
-	Channels []string `json:"channels,omitempty" jsonschema:"title=Channels,description=Channel names or IDs (e.g. #incidents\\, C01ABC). Empty = watch all."`
+	// Channels is a list of Slack channel IDs to watch (e.g. "C012ABCDEF").
+	// Empty means watch all channels the bot is a member of. Channel names
+	// (e.g. "#incidents") are rejected — Socket Mode events carry only IDs,
+	// so a name-based scope never matches. Find a channel's ID in Slack via
+	// channel settings → About → Channel ID.
+	Channels []SlackChannelID `json:"channels,omitempty" jsonschema:"title=Channels,description=Slack channel IDs (e.g. C012ABCDEF). Empty = watch all. Find IDs in channel settings → About → Channel ID."`
 	// MentionOnly limits delivery to messages where the bot is mentioned.
 	MentionOnly bool `json:"mention_only,omitempty" jsonschema:"title=Mention-only,description=Only emit when bot is mentioned."`
 }
