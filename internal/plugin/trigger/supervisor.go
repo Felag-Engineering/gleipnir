@@ -498,16 +498,24 @@ func (s *Supervisor) recvLoop(
 			return err
 		}
 
-		// First successful Recv after failures: reset health and counter.
+		// First successful Recv: mark the instance Healthy and reset the failure
+		// counter regardless of whether we were previously marked Unhealthy.
+		// A fresh stream that never failed still needs an explicit Healthy
+		// transition — the DB default is unhealthy/config_missing, and the plugin
+		// itself only emits SetHealthState on failure paths (e.g. auth expired,
+		// missing scope).
+		//
+		// Note: when reconnecting from an already-healthy state, this call
+		// triggers a warn-level ErrIllegalTransition in Manager.HealthSetter
+		// (process/manager.go). That is expected and handled gracefully
+		// (warn-and-continue) — it is not actionable and not a sign of breakage.
 		if firstEvent {
 			firstEvent = false
-			if *markedUnhealthy {
-				if s.cfg.HealthSetter != nil {
-					s.cfg.HealthSetter(ctx, instanceID, model.PluginHealthStateHealthy, "")
-				}
-				*markedUnhealthy = false
-			}
 			*consecutive = 0
+			if s.cfg.HealthSetter != nil {
+				s.cfg.HealthSetter(ctx, instanceID, model.PluginHealthStateHealthy, "")
+			}
+			*markedUnhealthy = false
 		}
 
 		evt := Event{

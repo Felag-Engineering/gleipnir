@@ -92,16 +92,47 @@ test('kitchen sink: slack → trigger → run → slack reply', async ({ request
   expect(credResp.ok(), `set oauth token failed: ${await credResp.text()}`).toBe(true);
 
   // Gap 6: use the new instance-config endpoint; wrap payload in {config, expected_version}.
+  // expected_version is 1 (not 0) because the oauth-token PUT above already bumped
+  // the row's version from 0 → 1. The oauth-token PUT returns 204 No Content so
+  // we cannot extract the version from its response body — hardcoded 1 is correct
+  // for this controlled E2E setup where no concurrent writers exist.
   const cfgResp = await ctx.put(
     `/api/v1/admin/plugins/${pluginID}/instances/${instanceID}/config`,
     {
       data: {
         config: { app_level_token: process.env.SLACK_TEST_APP_TOKEN },
-        expected_version: 0,
+        expected_version: 1,
       },
     },
   );
   expect(cfgResp.ok(), `set config failed: ${await cfgResp.text()}`).toBe(true);
+
+  // Re-fetch the instance to get the latest version before writing subscription
+  // scope. Between the config PUT response and now, the plugin subprocess may
+  // have called SetHealthState via hostsvc (bumping the version). Using the
+  // config PUT response version directly would risk a 409 on a stale version.
+  const freshInstResp = await ctx.get(
+    `/api/v1/admin/plugins/${pluginID}/instances/${instanceID}`,
+  );
+  expect(freshInstResp.ok(), `re-fetch instance failed: ${await freshInstResp.text()}`).toBe(true);
+  const freshInst = await freshInstResp.json();
+  const scopeVersion: number = freshInst.data?.version;
+
+  // The supervisor gates on isEmptyScope: when subscription_scope_json is "{}"
+  // (the CreatePluginInstance default) it skips opening the TriggerService stream
+  // entirely. Without a non-empty scope, no Socket Mode connection opens and no
+  // Slack events reach the dispatcher.
+  const channelID = process.env.SLACK_TEST_CHANNEL_ID!;
+  const scopeResp = await ctx.put(
+    `/api/v1/admin/plugins/${pluginID}/instances/${instanceID}/subscription-scope`,
+    {
+      data: {
+        scope: { channels: [channelID] },
+        expected_version: scopeVersion,
+      },
+    },
+  );
+  expect(scopeResp.ok(), `set subscription scope failed: ${await scopeResp.text()}`).toBe(true);
 
   // Poll until the instance becomes healthy (deadline: 30s).
   const healthDeadline = Date.now() + 30_000;
@@ -121,7 +152,6 @@ test('kitchen sink: slack → trigger → run → slack reply', async ({ request
   expect(healthy, 'instance never reached state=healthy within 30s').toBe(true);
 
   // ── Step 5: Create the kitchen-sink policy ─────────────────────────────────
-  const channelID = process.env.SLACK_TEST_CHANNEL_ID!;
   const policyYAML = `\
 name: slack-e2e-kitchen-sink
 trigger:
