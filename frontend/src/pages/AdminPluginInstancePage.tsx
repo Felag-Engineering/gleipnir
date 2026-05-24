@@ -4,13 +4,20 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/Button'
-import { FieldError } from '@/components/form/FieldError/FieldError'
+import { SchemaForm, REDACTION_SENTINEL } from '@/components/form/SchemaForm'
+import type { SchemaShape, SchemaProperty } from '@/components/form/SchemaForm'
 import { ReauthorizeButton } from '@/components/admin/ReauthorizeButton/ReauthorizeButton'
 import { CredentialsTab } from '@/components/admin/CredentialsTab/CredentialsTab'
 import { DeletePluginInstanceModal } from '@/components/admin/DeletePluginInstanceModal'
+import { AcceptManifestModal } from '@/components/admin/AcceptManifestModal'
 import { usePluginInstancesForAudience, usePluginInstanceDetail } from '@/hooks/queries/admin'
 import { useCurrentUser } from '@/hooks/queries/users'
-import { useSetInstanceSubscriptionScope, useDeletePluginInstance, useSetInstanceConfig } from '@/hooks/mutations/plugins'
+import {
+  useSetInstanceSubscriptionScope,
+  useDeletePluginInstance,
+  useSetInstanceConfig,
+  useAcceptPluginManifest,
+} from '@/hooks/mutations/plugins'
 import { isOAuthRefreshFailure } from '@/utils/pluginHealth'
 import { queryKeys } from '@/hooks/queryKeys'
 import { ApiError } from '@/api/fetch'
@@ -20,185 +27,6 @@ import styles from './AdminPluginInstancePage.module.css'
 // ── tab type ─────────────────────────────────────────────────────────────────
 
 type Tab = 'subscriptions' | 'config' | 'credentials'
-
-// ── SchemaForm ────────────────────────────────────────────────────────────────
-
-// SchemaForm renders a dynamic form driven by a JSON Schema's `properties` map.
-// Only string, string[] (array of strings), boolean, and number leaf types are
-// supported — the common shape for Slack-style subscription scopes.
-
-interface SchemaProperty {
-  type?: string
-  items?: { type?: string }
-  description?: string
-  // ADR-049: fields annotated with x-gleipnir-secret: true are redacted on read
-  // and must be submitted via a separate write (never round-tripped as "***").
-  'x-gleipnir-secret'?: boolean
-}
-
-interface SchemaShape {
-  properties?: Record<string, SchemaProperty>
-}
-
-function isStringArrayProp(prop: SchemaProperty): boolean {
-  return prop.type === 'array' && prop.items?.type === 'string'
-}
-
-// REDACTION_SENTINEL is the value the backend substitutes for secret fields on
-// GET. The bulk PUT rejects it — we strip such fields before sending (ADR-049).
-const REDACTION_SENTINEL = '***'
-
-interface SchemaFormProps {
-  schema: SchemaShape
-  value: Record<string, unknown>
-  onChange: (next: Record<string, unknown>) => void
-  fieldErrors: Record<string, string>
-  // idPrefix scopes generated DOM ids so subscription and config forms don't collide.
-  idPrefix?: string
-}
-
-function SchemaForm({ schema, value, onChange, fieldErrors, idPrefix = 'field' }: SchemaFormProps) {
-  const properties = schema.properties ?? {}
-  const fields = Object.keys(properties)
-
-  if (fields.length === 0) {
-    return <p className={styles.noFields}>No fields declared in subscription_schema.</p>
-  }
-
-  function handleChange(name: string, newVal: unknown) {
-    onChange({ ...value, [name]: newVal })
-  }
-
-  return (
-    <div className={styles.schemaFields}>
-      {fields.map((name) => {
-        const prop = properties[name]
-        const fieldId = `${idPrefix}-${name}`
-        const fieldErrId = `${idPrefix}-err-${name}`
-        const err = fieldErrors[name]
-        const isSecret = !!prop['x-gleipnir-secret']
-
-        if (prop.type === 'boolean') {
-          return (
-            <div key={name} className={styles.fieldRow}>
-              <label className={styles.checkboxLabel}>
-                <input
-                  type="checkbox"
-                  checked={!!value[name]}
-                  onChange={(e) => handleChange(name, e.target.checked)}
-                />
-                <span className={styles.fieldName}>{name}</span>
-              </label>
-              {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
-              <FieldError id={fieldErrId} messages={err} />
-            </div>
-          )
-        }
-
-        if (prop.type === 'number' || prop.type === 'integer') {
-          return (
-            <div key={name} className={styles.fieldRow}>
-              <label htmlFor={fieldId} className={styles.fieldLabel}>
-                {name}
-              </label>
-              {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
-              <input
-                id={fieldId}
-                type="number"
-                className={styles.input}
-                value={typeof value[name] === 'number' ? (value[name] as number) : ''}
-                onChange={(e) => handleChange(name, e.target.valueAsNumber)}
-                aria-describedby={err ? fieldErrId : undefined}
-              />
-              <FieldError id={fieldErrId} messages={err} />
-            </div>
-          )
-        }
-
-        if (isStringArrayProp(prop)) {
-          // Render string[] as a textarea with one entry per line.
-          const rawArr = value[name]
-          const displayVal = Array.isArray(rawArr) ? (rawArr as string[]).join('\n') : ''
-          return (
-            <div key={name} className={styles.fieldRow}>
-              <label htmlFor={fieldId} className={styles.fieldLabel}>
-                {name}
-                <span className={styles.fieldHint}> (one per line)</span>
-              </label>
-              {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
-              <textarea
-                id={fieldId}
-                className={styles.textarea}
-                rows={4}
-                value={displayVal}
-                onChange={(e) =>
-                  handleChange(
-                    name,
-                    e.target.value
-                      .split('\n')
-                      .map((s) => s.trim())
-                      .filter((s) => s.length > 0),
-                  )
-                }
-                aria-describedby={err ? fieldErrId : undefined}
-              />
-              <FieldError id={fieldErrId} messages={err} />
-            </div>
-          )
-        }
-
-        // Secret string: password input. The server returns "***" for existing
-        // values — show as placeholder rather than pre-filling so the operator
-        // must explicitly type to change it (prevents sentinel round-trip).
-        if (isSecret) {
-          const currentVal = typeof value[name] === 'string' ? (value[name] as string) : ''
-          const isSentinel = currentVal === REDACTION_SENTINEL
-          return (
-            <div key={name} className={styles.fieldRow}>
-              <label htmlFor={fieldId} className={styles.fieldLabel}>
-                {name}
-                <span className={styles.fieldHint}> (secret)</span>
-              </label>
-              {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
-              <input
-                id={fieldId}
-                type="password"
-                className={styles.input}
-                // Show empty when the sentinel arrives — the placeholder communicates
-                // that a value is already set without echoing "***" into the field.
-                value={isSentinel ? '' : currentVal}
-                placeholder={isSentinel ? '(already set — leave blank to keep)' : ''}
-                autoComplete="new-password"
-                onChange={(e) => handleChange(name, e.target.value)}
-                aria-describedby={err ? fieldErrId : undefined}
-              />
-              <FieldError id={fieldErrId} messages={err} />
-            </div>
-          )
-        }
-
-        // Default: plain string input.
-        return (
-          <div key={name} className={styles.fieldRow}>
-            <label htmlFor={fieldId} className={styles.fieldLabel}>
-              {name}
-            </label>
-            {prop.description && <p className={styles.fieldDesc}>{prop.description}</p>}
-            <input
-              id={fieldId}
-              type="text"
-              className={styles.input}
-              value={typeof value[name] === 'string' ? (value[name] as string) : ''}
-              onChange={(e) => handleChange(name, e.target.value)}
-              aria-describedby={err ? fieldErrId : undefined}
-            />
-            <FieldError id={fieldErrId} messages={err} />
-          </div>
-        )
-      })}
-    </div>
-  )
-}
 
 // ── SubscriptionsTab ──────────────────────────────────────────────────────────
 
@@ -505,6 +333,37 @@ export default function AdminPluginInstancePage() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const deleteMutation = useDeletePluginInstance()
 
+  // Accept-manifest state — committing the candidate manifest affects ALL
+  // instances of this plugin, so the count is computed across the full list.
+  const [showAcceptManifestModal, setShowAcceptManifestModal] = useState(false)
+  const [acceptManifestError, setAcceptManifestError] = useState<string | null>(null)
+  const acceptManifestMutation = useAcceptPluginManifest()
+  const pendingManifestInstanceCount = (allInstances ?? []).filter(
+    (i) => i.plugin_id === pluginId && i.state === 'pending_manifest_approval',
+  ).length
+
+  function handleAcceptManifestConfirm() {
+    if (!pluginId) return
+    setAcceptManifestError(null)
+    acceptManifestMutation.mutate(
+      { pluginId },
+      {
+        onSuccess: () => {
+          setShowAcceptManifestModal(false)
+        },
+        onError: (err: unknown) => {
+          if (err instanceof ApiError) {
+            setAcceptManifestError(err.detail ?? err.message)
+          } else if (err instanceof Error) {
+            setAcceptManifestError(err.message)
+          } else {
+            setAcceptManifestError('Unexpected error — please try again.')
+          }
+        },
+      },
+    )
+  }
+
   function handleDeleteConfirm() {
     if (!pluginId || !instanceId) return
     setDeleteError(null)
@@ -639,6 +498,26 @@ export default function AdminPluginInstancePage() {
         </div>
       )}
 
+      {instance?.state === 'pending_manifest_approval' && canManage && (
+        <div className={styles.reauthBanner}>
+          <span>
+            A new manifest version is waiting for approval. This instance is
+            blocked until you accept it.
+          </span>
+          <Button
+            type="button"
+            variant="primary"
+            size="small"
+            onClick={() => {
+              setAcceptManifestError(null)
+              setShowAcceptManifestModal(true)
+            }}
+          >
+            Review change
+          </Button>
+        </div>
+      )}
+
       <nav className={styles.tabs} aria-label="Instance settings">
         {hasSubscriptionSchema && (
           <button
@@ -678,6 +557,20 @@ export default function AdminPluginInstancePage() {
           onConfirm={handleDeleteConfirm}
           isPending={deleteMutation.isPending}
           error={deleteError}
+        />
+      )}
+
+      {showAcceptManifestModal && (
+        <AcceptManifestModal
+          pluginName={pluginName ?? ''}
+          pendingInstanceCount={pendingManifestInstanceCount}
+          onClose={() => {
+            setShowAcceptManifestModal(false)
+            setAcceptManifestError(null)
+          }}
+          onConfirm={handleAcceptManifestConfirm}
+          isPending={acceptManifestMutation.isPending}
+          error={acceptManifestError}
         />
       )}
     </div>
