@@ -236,17 +236,19 @@ func (d *Dispatcher) notifyOne(ctx context.Context, rc RouteContext, instanceNam
 }
 
 // Request dispatches a channel request to the first audience entry with
-// request: true (in position order).  It applies a 5s pre-ack deadline; on
-// pre-ack success it inserts a plugin_pending_requests row and returns the
-// requestID and RouteToPlugin so the caller can block on Wait.
+// request: true (in position order).  It inserts a plugin_pending_requests row
+// BEFORE making the gRPC call so that a fast plugin callback (WriteAuditStep)
+// always finds a row to match against.  It applies a 5s pre-ack deadline; on
+// pre-ack success it returns the requestID and RouteToPlugin so the caller can
+// block on Wait.
 //
 // When the first Request-capable entry is the synthetic gleipnir.in-app entry,
 // it returns ("", RouteToInApp, nil) without making any gRPC call or inserting
 // a DB row — the feedback_requests substrate handles in-app Requests.
 //
-// On pre-ack failure, it calls WriteRunStep with a "feedback_dispatch_error"
-// step and returns ErrPreAckFailed.  The caller should map this to
-// runstate.TransitionRunFailed.
+// On pre-ack failure, it transitions the already-inserted row to timed_out and
+// calls WriteRunStep with a "feedback_dispatch_error" step, then returns
+// ErrPreAckFailed.  The caller should map this to runstate.TransitionRunFailed.
 //
 // ErrNoRequestCapableEntry is returned only when disable_in_app_fallback=true
 // and the audience has no persisted Request-capable entries (a state the
@@ -306,6 +308,34 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 	d.waiters[reqID] = waiter
 	d.waitersMu.Unlock()
 
+	// Insert the DB row BEFORE the gRPC call so that a fast plugin callback
+	// (WriteAuditStep with feedback_response) always finds an existing row.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	var expiresAtStr *string
+	if expiresAt != nil {
+		s := expiresAt.UTC().Format(time.RFC3339Nano)
+		expiresAtStr = &s
+	}
+	var entryID *string
+	if firstRequest.EntryID != "" {
+		entryID = &firstRequest.EntryID
+	}
+	if _, dbErr := d.cfg.Queries.CreatePluginPendingRequest(ctx, db.CreatePluginPendingRequestParams{
+		ID:               reqID,
+		PluginInstanceID: targetInstance.ID,
+		RunID:            rc.RunID,
+		AudienceEntryID:  entryID,
+		ToolName:         rc.ToolName,
+		ExpiresAt:        expiresAtStr,
+		CreatedAt:        now,
+	}); dbErr != nil {
+		// Row insert failed; clean up the waiter to avoid leaking the channel.
+		d.waitersMu.Lock()
+		delete(d.waiters, reqID)
+		d.waitersMu.Unlock()
+		return "", 0, fmt.Errorf("persist plugin pending request: %w", dbErr)
+	}
+
 	preCtx, cancelPre := context.WithTimeout(ctx, d.cfg.PreAckTimeout)
 	defer cancelPre()
 
@@ -337,13 +367,24 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 	}
 
 	if preAckFailMsg != "" {
-		// Deregister the waiter — no row will be inserted, so no one will ever
-		// send on this channel.
+		// Deregister the waiter — no one will send on this channel now.
 		d.waitersMu.Lock()
 		delete(d.waiters, reqID)
 		d.waitersMu.Unlock()
 
 		incRPCError("Request", targetInstance.PluginID, targetInstance.ID)
+
+		// The row was inserted before the gRPC call; transition it to timed_out
+		// so it does not leak as a dangling pending row.  Swallow
+		// ErrTransitionConflict: the scanner may have beaten us to it.
+		if transErr := TransitionTimedOut(ctx, d.cfg.Queries, reqID); transErr != nil {
+			if !errors.Is(transErr, ErrTransitionConflict) {
+				slog.Warn("pre-ack failure: could not transition row to timed_out",
+					"request_id", reqID,
+					"err", transErr,
+				)
+			}
+		}
 
 		if d.cfg.WriteRunStep != nil {
 			_ = d.cfg.WriteRunStep(ctx, rc.RunID, "feedback_dispatch_error", map[string]interface{}{
@@ -354,33 +395,6 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 			})
 		}
 		return "", 0, fmt.Errorf("%w: %s", ErrPreAckFailed, preAckFailMsg)
-	}
-
-	// Pre-ack succeeded: persist the pending request row.
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	var expiresAtStr *string
-	if expiresAt != nil {
-		s := expiresAt.UTC().Format(time.RFC3339Nano)
-		expiresAtStr = &s
-	}
-	var entryID *string
-	if firstRequest.EntryID != "" {
-		entryID = &firstRequest.EntryID
-	}
-	if _, dbErr := d.cfg.Queries.CreatePluginPendingRequest(ctx, db.CreatePluginPendingRequestParams{
-		ID:               reqID,
-		PluginInstanceID: targetInstance.ID,
-		RunID:            rc.RunID,
-		AudienceEntryID:  entryID,
-		ToolName:         rc.ToolName,
-		ExpiresAt:        expiresAtStr,
-		CreatedAt:        now,
-	}); dbErr != nil {
-		// Row insert failed; clean up the waiter to avoid leaking the channel.
-		d.waitersMu.Lock()
-		delete(d.waiters, reqID)
-		d.waitersMu.Unlock()
-		return "", 0, fmt.Errorf("persist plugin pending request: %w", dbErr)
 	}
 
 	return reqID, RouteToPlugin, nil

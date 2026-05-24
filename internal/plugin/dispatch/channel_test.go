@@ -463,8 +463,8 @@ func TestRequest_PreAckSuccess_RowInserted_ResolveFlipsStatus(t *testing.T) {
 }
 
 // TestRequest_PreAckAckedFalse verifies that acked=false causes a
-// feedback_dispatch_error step, returns ErrPreAckFailed, and does not insert a
-// pending row.
+// feedback_dispatch_error step, returns ErrPreAckFailed, and transitions the
+// already-inserted pending row to timed_out.
 func TestRequest_PreAckAckedFalse(t *testing.T) {
 	ds := newSetup(t)
 
@@ -494,13 +494,14 @@ func TestRequest_PreAckAckedFalse(t *testing.T) {
 		t.Errorf("feedback_dispatch_error steps = %d, want 1", len(steps))
 	}
 
-	// No row should be in plugin_pending_requests.
-	var count int
-	if err := ds.store.DB().QueryRow(`SELECT COUNT(*) FROM plugin_pending_requests WHERE run_id = 'run1'`).Scan(&count); err != nil {
-		t.Fatalf("count pending requests: %v", err)
+	// Row must exist with status='timed_out' (inserted before gRPC call, then
+	// transitioned on pre-ack failure).
+	var status string
+	if err := ds.store.DB().QueryRow(`SELECT status FROM plugin_pending_requests WHERE run_id = 'run1'`).Scan(&status); err != nil {
+		t.Fatalf("query pending request: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("pending requests count = %d, want 0", count)
+	if status != "timed_out" {
+		t.Errorf("status = %q, want timed_out", status)
 	}
 }
 
@@ -535,6 +536,15 @@ func TestRequest_PreAckTimeout(t *testing.T) {
 	if len(steps) != 1 {
 		t.Errorf("feedback_dispatch_error steps = %d, want 1", len(steps))
 	}
+
+	// Row must exist with status='timed_out'.
+	var status string
+	if err := ds.store.DB().QueryRow(`SELECT status FROM plugin_pending_requests WHERE run_id = 'run1'`).Scan(&status); err != nil {
+		t.Fatalf("query pending request: %v", err)
+	}
+	if status != "timed_out" {
+		t.Errorf("status = %q, want timed_out", status)
+	}
 }
 
 // TestRequest_PreAckRespError verifies that resp.Error != nil is treated as a
@@ -563,6 +573,15 @@ func TestRequest_PreAckRespError(t *testing.T) {
 	_, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
 	if !errors.Is(err, dispatch.ErrPreAckFailed) {
 		t.Errorf("expected ErrPreAckFailed, got %v", err)
+	}
+
+	// Row must exist with status='timed_out'.
+	var status string
+	if err := ds.store.DB().QueryRow(`SELECT status FROM plugin_pending_requests WHERE run_id = 'run1'`).Scan(&status); err != nil {
+		t.Fatalf("query pending request: %v", err)
+	}
+	if status != "timed_out" {
+		t.Errorf("status = %q, want timed_out", status)
 	}
 }
 
@@ -956,5 +975,88 @@ func TestNotify_SyntheticSkipped(t *testing.T) {
 	// Exactly one invocation — the synthetic entry must be skipped.
 	if invokeCount.Load() != 1 {
 		t.Errorf("notify invocations = %d, want 1 (synthetic should be skipped)", invokeCount.Load())
+	}
+}
+
+// TestRequest_RowInsertedBeforeGRPCCall verifies that the plugin_pending_requests
+// row exists with status='pending' at the moment the plugin's Request RPC is
+// invoked.  This is the ordering guarantee: a fast callback (WriteAuditStep)
+// from the plugin can match against the row even on the same round trip.
+func TestRequest_RowInsertedBeforeGRPCCall(t *testing.T) {
+	ds := newSetup(t)
+
+	pluginID := insertPlugin(t, ds.store, "p1", "plug")
+	instID := insertPluginInstance(t, ds.store, "i1", pluginID, "inst-order")
+	audID := insertAudience(t, ds.store, "aud1", "aud")
+	insertAudienceEntry(t, ds.store, "ae1", audID, instID, 0, false, true)
+
+	testutil.InsertPolicy(t, ds.store, "pol1", "policy-pol1", "webhook", "{}")
+	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
+
+	ds.clientMap["inst-order"] = &fakeChannelClient{
+		requestHook: func(_ context.Context, req *channelv1.RequestRequest) (*channelv1.RequestResponse, error) {
+			// At this point the row must already exist in the DB.
+			var status string
+			if err := ds.store.DB().QueryRow(
+				`SELECT status FROM plugin_pending_requests WHERE id = ?`,
+				req.GetRequestId(),
+			).Scan(&status); err != nil {
+				t.Errorf("row not found at gRPC call time: %v", err)
+			} else if status != "pending" {
+				t.Errorf("status at gRPC call time = %q, want pending", status)
+			}
+			return &channelv1.RequestResponse{Acked: true}, nil
+		},
+	}
+
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+	_, outcome, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if outcome != dispatch.RouteToPlugin {
+		t.Errorf("outcome = %v, want RouteToPlugin", outcome)
+	}
+}
+
+// TestRequest_PreAckFailure_RowTransitionedToTimedOut verifies the cleanup path:
+// when the plugin returns acked=false, the already-inserted row is transitioned
+// to timed_out rather than left as a dangling pending entry.
+func TestRequest_PreAckFailure_RowTransitionedToTimedOut(t *testing.T) {
+	ds := newSetup(t)
+
+	pluginID := insertPlugin(t, ds.store, "p1", "plug")
+	instID := insertPluginInstance(t, ds.store, "i1", pluginID, "inst-nack2")
+	audID := insertAudience(t, ds.store, "aud1", "aud")
+	insertAudienceEntry(t, ds.store, "ae1", audID, instID, 0, false, true)
+
+	ds.clientMap["inst-nack2"] = &fakeChannelClient{
+		requestHook: func(_ context.Context, _ *channelv1.RequestRequest) (*channelv1.RequestResponse, error) {
+			return &channelv1.RequestResponse{Acked: false}, nil
+		},
+	}
+
+	testutil.InsertPolicy(t, ds.store, "pol1", "policy-pol1", "webhook", "{}")
+	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
+
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+	_, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	if !errors.Is(err, dispatch.ErrPreAckFailed) {
+		t.Fatalf("expected ErrPreAckFailed, got %v", err)
+	}
+
+	// Row must exist and be timed_out — not pending and not absent.
+	var status string
+	if err := ds.store.DB().QueryRow(`SELECT status FROM plugin_pending_requests WHERE run_id = 'run1'`).Scan(&status); err != nil {
+		t.Fatalf("query pending request: %v", err)
+	}
+	if status != "timed_out" {
+		t.Errorf("status = %q, want timed_out", status)
+	}
+
+	// Exactly one feedback_dispatch_error step must have been recorded.
+	steps := ds.stepsByType("feedback_dispatch_error")
+	if len(steps) != 1 {
+		t.Errorf("feedback_dispatch_error steps = %d, want 1", len(steps))
 	}
 }
