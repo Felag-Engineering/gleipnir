@@ -321,8 +321,11 @@ func TestSupervisor_ReconnectsOnEOF(t *testing.T) {
 	}
 }
 
-// TestSupervisor_ContextCancel verifies that cancelling the outer context
-// causes the stream goroutine to exit, observable via StopAll returning.
+// TestSupervisor_ContextCancel verifies that cancelling the supervisor's root
+// context (not the per-call Start ctx) causes the stream goroutine to exit,
+// observable via StopAll returning. This exercises the real contract post-#401:
+// the goroutine is parented off rootCtx, so only rootCtx cancellation (or an
+// explicit Stop/StopAll) can drive exit (#401).
 func TestSupervisor_ContextCancel(t *testing.T) {
 	t.Parallel()
 
@@ -332,14 +335,31 @@ func TestSupervisor_ContextCancel(t *testing.T) {
 
 	lookup := &fakeInstanceLookup{client: client, pluginID: "test-plugin"}
 	dispatcher := &fakeEventDispatcher{}
+	q := &supQuerier{}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	sup := newSupervisor(lookup, dispatcher, nil)
-	sup.Start(ctx, "inst-1")
+	// Build the supervisor with an explicit, cancellable RootCtx so we can
+	// verify that it is the rootCtx — not the per-call Start arg — that drives
+	// goroutine exit (#401).
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	sup := plugintrigger.NewSupervisor(plugintrigger.Config{
+		Querier:             q,
+		BackoffInitial:      time.Microsecond,
+		BackoffMax:          time.Millisecond,
+		UnhealthyAfter:      3,
+		TestInstanceLookup:  lookup,
+		TestEventDispatcher: dispatcher,
+		RootCtx:             rootCtx,
+	})
+
+	// Pass a separate, independent ctx to Start — it must not affect the
+	// goroutine's lifetime under the new contract.
+	sup.Start(context.Background(), "inst-1")
 
 	// Give the goroutine time to reach stream.Recv before cancelling.
 	time.Sleep(30 * time.Millisecond)
-	cancel()
+
+	// Cancel the root context, which is the actual parent of the stream goroutine.
+	rootCancel()
 
 	done := make(chan struct{})
 	go func() {
@@ -349,9 +369,9 @@ func TestSupervisor_ContextCancel(t *testing.T) {
 
 	select {
 	case <-done:
-		// Clean exit — goroutine exited after ctx cancel.
+		// Clean exit — goroutine exited after rootCtx cancel.
 	case <-time.After(5 * time.Second):
-		t.Fatal("supervisor goroutine did not exit within 5s after ctx cancel")
+		t.Fatal("supervisor goroutine did not exit within 5s after rootCtx cancel")
 	}
 }
 
@@ -616,6 +636,58 @@ func TestSupervisor_Restart_NotSupervised_IsNoOp(t *testing.T) {
 	if srv.startCount() != 0 {
 		t.Errorf("expected 0 Start calls after Restart of unsupervised instance, got %d", srv.startCount())
 	}
+}
+
+// TestSupervisor_Restart_PerCallCtxCancel_DoesNotKillNewStream is the
+// regression test for #401. It verifies that cancelling the per-call ctx
+// passed to Restart does NOT kill the freshly-started stream goroutine.
+//
+// Pre-patch: Start(shortCtx, id) parented streamCtx off the dead shortCtx;
+// the goroutine exited at the first ctx-check in streamLoop and srv.startCount
+// never reached 2. Post-patch: Start ignores shortCtx and parents off rootCtx;
+// the goroutine survives and the second Start call is observed.
+//
+// Not parallel — it observes goroutine survival across a tight time window.
+func TestSupervisor_Restart_PerCallCtxCancel_DoesNotKillNewStream(t *testing.T) {
+	srv := &captureStartServer{}
+	client, stop := startFakeTriggerServer(t, srv)
+	defer stop()
+
+	lookup := &fakeInstanceLookup{client: client, pluginID: "test-plugin"}
+	dispatcher := &fakeEventDispatcher{}
+
+	// Non-empty scope so the scope gate passes and the stream actually opens.
+	q := &scopeQuerier{scope: `{"channel":"#dev"}`}
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+
+	sup := plugintrigger.NewSupervisor(plugintrigger.Config{
+		Querier:             q,
+		BackoffInitial:      time.Microsecond,
+		BackoffMax:          time.Millisecond,
+		UnhealthyAfter:      3,
+		TestInstanceLookup:  lookup,
+		TestEventDispatcher: dispatcher,
+		RootCtx:             rootCtx,
+	})
+	t.Cleanup(sup.StopAll)
+
+	// Seed the first stream.
+	sup.Start(context.Background(), "inst-1")
+	waitFor(t, 2*time.Second, func() bool { return srv.startCount() >= 1 })
+
+	// Cancel the per-call ctx BEFORE calling Restart so that the old Start
+	// implementation (which derived streamCtx from the caller's ctx) would
+	// immediately kill the new goroutine at the first ctx.Err() check (#401).
+	shortCtx, shortCancel := context.WithCancel(context.Background())
+	shortCancel() // dead ctx passed to Restart
+
+	sup.Restart(shortCtx, "inst-1")
+
+	// The new stream goroutine must survive despite shortCtx being cancelled.
+	// If it does, srv.startCount() reaches 2.
+	waitFor(t, 5*time.Second, func() bool { return srv.startCount() >= 2 })
 }
 
 // TestSupervisor_StopRacesRestart_NoDeadlockNoDoubleStart verifies the

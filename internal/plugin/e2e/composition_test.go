@@ -378,6 +378,11 @@ func TestSubstrate_HappyPath_FiresMatchingPolicyOnly(t *testing.T) {
 		UnhealthyAfter:      3,
 		Querier:             q,
 	})
+	// StopAll prevents the stream goroutine from leaking past the test. Pre-patch
+	// these goroutines were terminated by the deadline ctx expiring; post-patch
+	// they are parented off context.Background() (the RootCtx default), so an
+	// explicit cleanup is required (#401).
+	t.Cleanup(sup.StopAll)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -454,6 +459,11 @@ func TestSubstrate_DedupShortCircuits_NoLaunch(t *testing.T) {
 		UnhealthyAfter:      3,
 		Querier:             q,
 	})
+	// StopAll prevents the stream goroutine from leaking past the test. Pre-patch
+	// these goroutines were terminated by the deadline ctx expiring; post-patch
+	// they are parented off context.Background() (the RootCtx default), so an
+	// explicit cleanup is required (#401).
+	t.Cleanup(sup.StopAll)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

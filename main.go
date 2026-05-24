@@ -386,6 +386,9 @@ func run(cfg config.Config) error {
 			Dispatcher:   triggerDispatcher,
 			HealthSetter: loader.Manager().HealthSetter(),
 			Logger:       slog.Default(),
+			// long-lived server ctx; parents stream goroutines so per-request
+			// callers of Restart cannot cancel them (#401).
+			RootCtx: ctx,
 		})
 		go func() {
 			if err := triggerSupervisor.StartAll(ctx); err != nil {
