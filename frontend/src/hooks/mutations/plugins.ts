@@ -1,6 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, apiFetchVoid, ApiError } from '@/api/fetch'
-import type { ApiAcceptNewKeyResponse, ApiInstalledPlugin, ApiCreatedPluginInstance } from '@/api/types'
+import type {
+  ApiAcceptNewKeyResponse,
+  ApiAcceptManifestResponse,
+  ApiInstalledPlugin,
+  ApiCreatedPluginInstance,
+} from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
 // BeginPluginOAuthParams carries the inputs for POST .../oauth/begin.
@@ -76,6 +81,32 @@ export function useAcceptPluginNewKey() {
       // the transition to healthy.
       void queryClient.invalidateQueries({
         queryKey: ['admin', 'plugins', pluginId],
+      })
+    },
+  })
+}
+
+// useAcceptPluginManifest commits the candidate manifest currently blocked on
+// pending_manifest_approval (sourced server-side from the latest
+// plugin_manifest_material_change audit event) and unblocks instances. The
+// endpoint takes no body — the candidate is found by plugin ID.
+//
+// On success, all instance queries for this plugin are invalidated so health
+// chips reflect the transition to healthy or pending_config_migration.
+export function useAcceptPluginManifest() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ pluginId }: { pluginId: string }) =>
+      apiFetch<ApiAcceptManifestResponse>(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/accept-manifest`,
+        { method: 'POST' },
+      ),
+    onSuccess: (_data, { pluginId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: ['admin', 'plugins', pluginId],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.admin.pluginInstances,
       })
     },
   })
