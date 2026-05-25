@@ -6,6 +6,8 @@ package agent
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -297,6 +299,47 @@ func TestApprovalHandler_Wait_PluginApproved(t *testing.T) {
 		t.Errorf("run status = %s, want running", sm.Current())
 	}
 
+	// approval_requests row must be updated synchronously by resolveApprovalRecord
+	// before Wait returns — no async wait needed.
+	var status string
+	var decidedAt sql.NullString
+	if err := s.DB().QueryRow(
+		`SELECT status, decided_at FROM approval_requests WHERE run_id = ?`, "run1",
+	).Scan(&status, &decidedAt); err != nil {
+		t.Fatalf("querying approval_requests: %v", err)
+	}
+	if status != "approved" {
+		t.Errorf("approval_requests.status = %q, want %q", status, "approved")
+	}
+	if !decidedAt.Valid {
+		t.Error("approval_requests.decided_at is NULL, want non-null")
+	}
+
+	// Exactly one approval.resolved SSE event must be emitted.
+	if n := pub.countByType("approval.resolved"); n != 1 {
+		t.Errorf("approval.resolved events = %d, want 1", n)
+	}
+
+	// SSE payload must carry the correct fields.
+	for _, ev := range pub.all() {
+		if ev.eventType != "approval.resolved" {
+			continue
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(ev.data, &payload); err != nil {
+			t.Fatalf("unmarshal approval.resolved payload: %v", err)
+		}
+		if payload["approval_id"] == "" {
+			t.Error("approval.resolved payload: approval_id is empty")
+		}
+		if payload["run_id"] != "run1" {
+			t.Errorf("approval.resolved payload: run_id = %q, want %q", payload["run_id"], "run1")
+		}
+		if payload["status"] != "approved" {
+			t.Errorf("approval.resolved payload: status = %q, want %q", payload["status"], "approved")
+		}
+	}
+
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -325,7 +368,8 @@ func TestApprovalHandler_Wait_PluginDenied(t *testing.T) {
 
 	approvalCh := make(chan bool, 1) // not pre-loaded
 
-	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
@@ -340,6 +384,47 @@ func TestApprovalHandler_Wait_PluginDenied(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "rejected") {
 		t.Errorf("error = %q, want to contain 'rejected'", err.Error())
+	}
+
+	// approval_requests row must be updated to "rejected" by resolveApprovalRecord
+	// before Wait returns — no async wait needed.
+	var status string
+	var decidedAt sql.NullString
+	if err := s.DB().QueryRow(
+		`SELECT status, decided_at FROM approval_requests WHERE run_id = ?`, "run1",
+	).Scan(&status, &decidedAt); err != nil {
+		t.Fatalf("querying approval_requests: %v", err)
+	}
+	if status != "rejected" {
+		t.Errorf("approval_requests.status = %q, want %q", status, "rejected")
+	}
+	if !decidedAt.Valid {
+		t.Error("approval_requests.decided_at is NULL, want non-null")
+	}
+
+	// Exactly one approval.resolved SSE event must be emitted.
+	if n := pub.countByType("approval.resolved"); n != 1 {
+		t.Errorf("approval.resolved events = %d, want 1", n)
+	}
+
+	// SSE payload must carry the correct fields.
+	for _, ev := range pub.all() {
+		if ev.eventType != "approval.resolved" {
+			continue
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(ev.data, &payload); err != nil {
+			t.Fatalf("unmarshal approval.resolved payload: %v", err)
+		}
+		if payload["approval_id"] == "" {
+			t.Error("approval.resolved payload: approval_id is empty")
+		}
+		if payload["run_id"] != "run1" {
+			t.Errorf("approval.resolved payload: run_id = %q, want %q", payload["run_id"], "run1")
+		}
+		if payload["status"] != "rejected" {
+			t.Errorf("approval.resolved payload: status = %q, want %q", payload["status"], "rejected")
+		}
 	}
 
 	if err := w.Close(); err != nil {

@@ -62,6 +62,47 @@ func NewApprovalHandler(audit *AuditWriter, sm *RunStateMachine, approvalCh <-ch
 	return h
 }
 
+// resolveApprovalRecord updates the approval_requests DB row to the terminal
+// status and emits the approval.resolved SSE event. Both operations are
+// best-effort: the agent goroutine must resume regardless of DB or marshal
+// errors. SSE is gated on the CAS winning (rows > 0) — if the scanner already
+// timed out the row, the SSE must not be emitted for a stale decision.
+func (h *ApprovalHandler) resolveApprovalRecord(ctx context.Context, runID, approvalID string, approved bool) {
+	dbStatus := string(model.ApprovalStatusApproved)
+	if !approved {
+		dbStatus = string(model.ApprovalStatusRejected)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rows, err := h.sm.Queries().UpdateApprovalRequestStatus(ctx, db.UpdateApprovalRequestStatusParams{
+		Status:    dbStatus,
+		DecidedAt: &now,
+		Note:      nil,
+		ID:        approvalID,
+	})
+	if err != nil {
+		logctx.Logger(ctx).WarnContext(ctx, "plugin approval: UpdateApprovalRequestStatus failed",
+			"approval_id", approvalID, "run_id", runID, "err", err)
+		return
+	}
+	if rows == 0 {
+		// Scanner already resolved this row (e.g. timeout beat the callback).
+		logctx.Logger(ctx).DebugContext(ctx, "plugin approval: already resolved by scanner",
+			"approval_id", approvalID, "run_id", runID)
+		return
+	}
+
+	if pub := h.sm.Publisher(); pub != nil {
+		payload := map[string]string{
+			"approval_id": approvalID,
+			"run_id":      runID,
+			"status":      dbStatus,
+		}
+		if data, marshalErr := json.Marshal(payload); marshalErr == nil {
+			pub.Publish("approval.resolved", data)
+		}
+	}
+}
+
 // formatApprovalPrompt builds a human-readable description of the pending
 // approval gate.  The prompt is sent to the plugin channel (e.g. Slack) so the
 // operator understands what they are approving without needing to open the UI.
@@ -133,15 +174,18 @@ func (h *ApprovalHandler) Wait(ctx context.Context, runID string, entry resolved
 			// Audience resolved to in-app; fall through to the approvalCh select.
 		} else if dispatchErr != nil {
 			return fmt.Errorf("plugin approval dispatch for tool %s: %w", internalName, dispatchErr)
-		} else if !approved {
-			err := fmt.Errorf("tool call %s rejected by operator", internalName)
-			logAuditError(ctx, h.audit, Step{
-				RunID:   runID,
-				Type:    model.StepTypeError,
-				Content: model.ErrorStepContent{Message: err.Error(), Code: model.ErrorCodeApprovalRejected},
-			})
-			return err
 		} else {
+			// Plugin resolved — update approval_requests + emit SSE before branching.
+			h.resolveApprovalRecord(ctx, runID, approvalID, approved)
+			if !approved {
+				err := fmt.Errorf("tool call %s rejected by operator", internalName)
+				logAuditError(ctx, h.audit, Step{
+					RunID:   runID,
+					Type:    model.StepTypeError,
+					Content: model.ErrorStepContent{Message: err.Error(), Code: model.ErrorCodeApprovalRejected},
+				})
+				return err
+			}
 			if err := h.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
 				return fmt.Errorf("transitioning run back to running after approval: %w", err)
 			}
