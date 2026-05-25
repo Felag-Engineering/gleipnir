@@ -55,7 +55,9 @@ func Parse(raw string, defaultProvider, defaultModel string) (*model.ParsedPolic
 	p.Capabilities = convertCapabilities(r.Capabilities)
 	mc := resolveModelConfig(r.Model, defaultProvider, defaultModel)
 	p.Agent = convertAgent(r.Agent, mc)
-	p.Audience = strings.TrimSpace(r.Audience)
+	if s, ok := r.Audience.(string); ok {
+		p.Audience = strings.TrimSpace(s)
+	}
 
 	return p, nil
 }
@@ -323,7 +325,7 @@ type rawPolicy struct {
 	Trigger      rawTrigger      `yaml:"trigger"`
 	Capabilities rawCapabilities `yaml:"capabilities"`
 	Agent        rawAgent        `yaml:"agent"`
-	Audience     string          `yaml:"audience"`
+	Audience     any             `yaml:"audience"`
 }
 
 // rawModel holds the top-level `model:` section introduced in issue #344.

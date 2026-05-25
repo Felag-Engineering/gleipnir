@@ -180,7 +180,8 @@ agent:
 `;
 
   const createPolicyResp = await ctx.post('/api/v1/policies', {
-    data: { yaml: policyYAML },
+    data: policyYAML,
+    headers: { 'Content-Type': 'text/yaml' },
   });
   expect(createPolicyResp.ok(), `create policy failed: ${await createPolicyResp.text()}`).toBe(true);
   const createdPolicy = await createPolicyResp.json();
@@ -211,7 +212,7 @@ agent:
     const runsResp = await ctx.get(`/api/v1/runs?policy_id=${policyID}&limit=1`);
     if (runsResp.ok()) {
       const runsBody = await runsResp.json();
-      const runs: Array<{ id: string; status: string }> = runsBody.data ?? [];
+      const runs: Array<{ id: string; status: string }> = runsBody.data?.runs ?? [];
       const done = runs.find((r) => r.status === 'complete');
       if (done) {
         completedRunID = done.id;
@@ -240,7 +241,7 @@ agent:
   expect(toolCallStep, 'a tool_call step for post_message must exist').toBeTruthy();
 
   const toolResultStep = steps.find(
-    (s) => s.type === 'tool_result' && s.content.includes('"ok"'),
+    (s) => s.type === 'tool_result' && s.content.includes('"is_error":false'),
   );
   expect(toolResultStep, 'a successful tool_result step must follow the post_message call').toBeTruthy();
 
