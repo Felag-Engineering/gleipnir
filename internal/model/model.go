@@ -321,6 +321,12 @@ type ParsedPolicy struct {
 	Trigger      TriggerConfig
 	Capabilities CapabilitiesConfig
 	Agent        AgentConfig
+	// Audience names the plugin audience used for approval routing.
+	// Unlike folder (ADR-020, cosmetic/UI-only), audience is consumed at
+	// runtime — the launcher resolves it to an audience DB row ID and passes
+	// it to the agent so Wait can route approvals through a plugin channel.
+	// Empty string means no audience is configured; fall back to in-app.
+	Audience string
 }
 
 // TriggerConfig holds trigger-type-specific fields. Only fields relevant to

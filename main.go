@@ -211,11 +211,13 @@ func run(cfg config.Config) error {
 	// reads the instance ID from the context populated by UnaryInstanceTokenInterceptor.
 	// UnaryCallIDInterceptor is last so it only attaches to authenticated,
 	// generation-tracked calls.
-	// hostSvc is declared outside the if block so the post-launcher wiring
-	// (SetTriggerSink, triggerSupervisor) can reach it without the variable
-	// going out of scope. Analogous to connFactory being declared at line ~155
-	// so setManager can be called at line 237.
+	// hostSvc and approvalAdapter are declared outside the if block so that
+	// post-launcher wiring (SetTriggerSink, triggerSupervisor) can reach hostSvc,
+	// and the RunLauncherConfig can reference approvalAdapter, without either
+	// variable going out of scope.  Analogous to connFactory being declared at
+	// line ~155 so setManager can be called at line 237.
 	var hostSvc *hostsvc.Server
+	var approvalAdapter agent.ApprovalChannelDispatcher
 	if cfg.PluginsEnabled {
 		identityReg := identity.New()
 		genCtrl := generation.New()
@@ -223,7 +225,15 @@ func run(cfg config.Config) error {
 		pluginDispatcher := dispatch.NewDispatcher(dispatch.DispatcherConfig{
 			Queries: store.Queries(),
 			Connect: connFactory.Connect,
+			// TODO(#NNN): Wire WriteRunStep here for audit trail completeness.
+			// Requires constructing an AuditWriter outside the agent package,
+			// which is deferred to a follow-up issue.
 		})
+
+		// approvalAdapter is constructed here where pluginDispatcher is in scope.
+		// The outer-scoped variable is assigned so RunLauncherConfig below can
+		// reference it without the dispatcher escaping the if block.
+		approvalAdapter = runpkg.NewApprovalChannelAdapter(pluginDispatcher)
 
 		hostSvc = hostsvc.NewServer(
 			store.Queries(),
@@ -358,6 +368,7 @@ func run(cfg config.Config) error {
 		ToolClassifier:         toolClassifier,
 		PluginRegistrar:        pluginToolRegistrar,
 		PluginDispatcher:       pluginDispatchAdapter,
+		ApprovalDispatcher:     approvalAdapter,
 	})
 
 	// Wire the trigger dispatch pipeline now that RunLauncher is available.

@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -22,16 +23,54 @@ type ApprovalHandler struct {
 	audit      *AuditWriter
 	sm         *RunStateMachine
 	approvalCh <-chan bool // receive-only: handler never closes the channel
+
+	// Plugin channel routing — populated by WithApprovalChannelDispatch.
+	// When non-nil the handler dispatches through the plugin channel instead
+	// of blocking on approvalCh.  Falls back to in-app on ErrApprovalRouteToInApp.
+	channelDispatcher ApprovalChannelDispatcher
+	policyID          string
+	audienceID        string
+}
+
+// ApprovalHandlerOption is a functional option for NewApprovalHandler.
+type ApprovalHandlerOption func(*ApprovalHandler)
+
+// WithApprovalChannelDispatch attaches a plugin channel dispatcher to the
+// handler.  When d is non-nil and audienceID is non-empty, Wait routes the
+// approval through the plugin channel instead of blocking on approvalCh.
+func WithApprovalChannelDispatch(d ApprovalChannelDispatcher, audienceID, policyID string) ApprovalHandlerOption {
+	return func(h *ApprovalHandler) {
+		h.channelDispatcher = d
+		h.audienceID = audienceID
+		h.policyID = policyID
+	}
 }
 
 // NewApprovalHandler constructs an ApprovalHandler. approvalCh must be
 // receive-only (compile-time guarantee the handler does not close it).
-func NewApprovalHandler(audit *AuditWriter, sm *RunStateMachine, approvalCh <-chan bool) *ApprovalHandler {
-	return &ApprovalHandler{
+// Optional functional opts (e.g. WithApprovalChannelDispatch) are applied
+// after initialization; existing callers that pass zero opts are unaffected.
+func NewApprovalHandler(audit *AuditWriter, sm *RunStateMachine, approvalCh <-chan bool, opts ...ApprovalHandlerOption) *ApprovalHandler {
+	h := &ApprovalHandler{
 		audit:      audit,
 		sm:         sm,
 		approvalCh: approvalCh,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+// formatApprovalPrompt builds a human-readable description of the pending
+// approval gate.  The prompt is sent to the plugin channel (e.g. Slack) so the
+// operator understands what they are approving without needing to open the UI.
+func formatApprovalPrompt(toolName string, input map[string]any) string {
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return fmt.Sprintf("Approval required for tool `%s`", toolName)
+	}
+	return fmt.Sprintf("Approval required for tool `%s` with input: %s", toolName, string(inputJSON))
 }
 
 // Wait suspends the run at an approval gate for the given tool entry.
@@ -71,6 +110,46 @@ func (h *ApprovalHandler) Wait(ctx context.Context, runID string, entry resolved
 		return fmt.Errorf("transitioning run to waiting_for_approval: %w", err)
 	}
 
+	// Plugin channel routing: when a dispatcher and audience are configured,
+	// route the approval through the plugin (e.g. Slack approve/deny buttons).
+	// ErrApprovalRouteToInApp falls through to the existing approvalCh select
+	// below; all other results (approved, denied, error) are terminal.
+	if h.channelDispatcher != nil && h.audienceID != "" {
+		var expiresAtTime *time.Time
+		if entry.tool.Timeout > 0 {
+			t := time.Now().UTC().Add(entry.tool.Timeout)
+			expiresAtTime = &t
+		}
+		prompt := formatApprovalPrompt(internalName, input)
+		approved, dispatchErr := h.channelDispatcher.DispatchApproval(ctx, ApprovalDispatchRequest{
+			AudienceID: h.audienceID,
+			RunID:      runID,
+			PolicyID:   h.policyID,
+			ToolName:   internalName,
+			Prompt:     prompt,
+			ExpiresAt:  expiresAtTime,
+		})
+		if errors.Is(dispatchErr, ErrApprovalRouteToInApp) {
+			// Audience resolved to in-app; fall through to the approvalCh select.
+		} else if dispatchErr != nil {
+			return fmt.Errorf("plugin approval dispatch for tool %s: %w", internalName, dispatchErr)
+		} else if !approved {
+			err := fmt.Errorf("tool call %s rejected by operator", internalName)
+			logAuditError(ctx, h.audit, Step{
+				RunID:   runID,
+				Type:    model.StepTypeError,
+				Content: model.ErrorStepContent{Message: err.Error(), Code: model.ErrorCodeApprovalRejected},
+			})
+			return err
+		} else {
+			if err := h.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
+				return fmt.Errorf("transitioning run back to running after approval: %w", err)
+			}
+			return nil
+		}
+	}
+
+	// --- In-app approval path (unchanged) ---
 	// nil timeoutCh (when Timeout == 0) blocks forever in the select,
 	// meaning no timeout is applied. Use NewTimer so we can Stop it
 	// on early approval — time.After leaks until the duration fires.
