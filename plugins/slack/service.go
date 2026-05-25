@@ -655,6 +655,7 @@ func (s *ChannelService) maintainInteractiveHandler(ctx context.Context) {
 		}
 
 		hub.RegisterInteractiveHandler(s.handleInteractive)
+		hub.RegisterMessageHandler(s.handleThreadReply)
 
 		select {
 		case <-ctx.Done():
@@ -836,19 +837,53 @@ func (s *ChannelService) Request(ctx context.Context, req *channelv1.RequestRequ
 		}, nil
 	}
 
+	sc := s.webAPIFactory(creds.Token.AccessToken)
+
+	runID := req.GetContext().GetRunId()
+	type postResult struct{ channel, ts string }
+
+	if cfg.Mode == "feedback" {
+		// Feedback mode: post a plain text message (no buttons) and watch for
+		// threaded replies.  The operator responds by replying in the thread;
+		// handleThreadReply picks up the reply and calls WriteAuditStep.
+		prompt := req.GetPrompt()
+		if cfg.Mention != "" {
+			prompt = cfg.Mention + " " + prompt
+		}
+		res, postErr := callWithRetry(ctx, func(ctx context.Context) (postResult, error) {
+			ch, ts, err := sc.PostMessageContext(ctx, cfg.Channel, slack.MsgOptionText(prompt, false))
+			return postResult{ch, ts}, err
+		})
+		if postErr != nil {
+			code, hint := mapErr(postErr)
+			if hint != healthNone {
+				s.setChannelHealth(hostCtx, hint)
+			}
+			return &channelv1.RequestResponse{
+				Error: channelErrorResponse(code, humanizeSlackErr(postErr)),
+			}, nil
+		}
+		s.correlations.put(req.GetRequestId(), correlation{
+			channel: res.channel,
+			ts:      res.ts,
+			runID:   runID,
+			addedAt: time.Now(),
+			mode:    "feedback",
+		})
+		return &channelv1.RequestResponse{Acked: true}, nil
+	}
+
+	// Default (approval / button) mode: post a Block Kit message with response buttons.
 	buttons := cfg.ResponseButtons
 	if len(buttons) == 0 {
 		buttons = defaultResponseButtons()
 	}
-
-	sc := s.webAPIFactory(creds.Token.AccessToken)
 
 	// Synchronously post the Block Kit message within the host-enforced 5s
 	// pre-ack deadline carried in ctx. callWithRetry honors the deadline; if
 	// Slack's RetryAfter exceeds remaining budget it returns RateLimitedError
 	// which mapErr converts to RATE_LIMITED — the host then writes
 	// feedback_dispatch_error (dispatch/channel.go:347-355).
-	type postResult struct{ channel, ts string }
 	res, postErr := callWithRetry(ctx, func(ctx context.Context) (postResult, error) {
 		blocks := buildRequestBlocks(req.GetRequestId(), req.GetPrompt(), buttons, cfg.Mention)
 		ch, ts, err := sc.PostMessageContext(ctx, cfg.Channel, slack.MsgOptionBlocks(blocks...))
@@ -864,7 +899,6 @@ func (s *ChannelService) Request(ctx context.Context, req *channelv1.RequestRequ
 		}, nil
 	}
 
-	runID := req.GetContext().GetRunId()
 	s.correlations.put(req.GetRequestId(), correlation{
 		channel: res.channel,
 		ts:      res.ts,
@@ -937,6 +971,71 @@ func (s *ChannelService) handleInteractive(evt socketmode.Event, cb slack.Intera
 		}
 		log.Printf("slack: handleInteractive: WriteAuditStep returned ok=false: %s", errMsg)
 	}
+}
+
+// handleThreadReply is called by the socketHub for every EventsAPI event so
+// that ChannelService can watch for threaded replies to feedback messages.
+// Only plain human messages that are threaded replies (SubType == "" and
+// ThreadTimeStamp != "") and whose parent ts matches a known correlation are
+// processed; everything else is ignored silently.
+func (s *ChannelService) handleThreadReply(evt socketmode.Event) {
+	if evt.Type != socketmode.EventTypeEventsAPI {
+		return
+	}
+	eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
+	if !ok {
+		return
+	}
+	msg, ok := eventsAPIEvent.InnerEvent.Data.(*slackevents.MessageEvent)
+	if !ok {
+		return
+	}
+
+	// Only plain human messages that are replies in a thread.
+	// SubType != "" covers bot_message, message_changed, etc.
+	if msg.SubType != "" || msg.ThreadTimeStamp == "" {
+		return
+	}
+	// The parent message itself has ts == thread_ts; skip it so posting the
+	// feedback prompt message does not accidentally resolve itself.
+	if msg.ThreadTimeStamp == msg.TimeStamp {
+		return
+	}
+
+	requestID, corr, ok := s.correlations.takeByThreadTS(msg.Channel, msg.ThreadTimeStamp)
+	if !ok {
+		// Not a thread we are tracking — ignore.
+		return
+	}
+	if corr.mode != "feedback" {
+		// Thread on an approval (button) message — put the correlation back and
+		// ignore the reply so the button-click path continues to work.
+		s.correlations.put(requestID, corr)
+		return
+	}
+
+	payloadJSON, err := json.Marshal(map[string]string{
+		"text":       msg.Text,
+		"user":       msg.User,
+		"request_id": requestID,
+	})
+	if err != nil {
+		log.Printf("slack: handleThreadReply: marshal payload: %v", err)
+		return
+	}
+
+	// No call_id needed: spec §8.5 request_id exemption — the host authorizes
+	// via plugin_pending_requests ownership (same pattern as handleInteractive).
+	_, err = s.host.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
+		StepType:    "feedback_response",
+		RequestId:   requestID,
+		PayloadJson: string(payloadJSON),
+	})
+	if err != nil {
+		log.Printf("slack: handleThreadReply: WriteAuditStep: %v", err)
+	}
+	// No response_url to update — the feedback message is a plain text message,
+	// not a Block Kit message with buttons.
 }
 
 // postResponseURL sends a POST to Slack's response_url with replace_original:true,

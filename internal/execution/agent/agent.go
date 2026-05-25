@@ -75,6 +75,9 @@ type Config struct {
 	// ApprovalDispatcher routes approvals through a plugin channel (e.g. Slack).
 	// Nil when plugins are disabled or the policy has no audience configured.
 	ApprovalDispatcher ApprovalChannelDispatcher
+	// FeedbackDispatcher routes feedback requests through a plugin channel (e.g.
+	// Slack threaded reply).  Nil when plugins are disabled or no audience is configured.
+	FeedbackDispatcher FeedbackChannelDispatcher
 	// AudienceID is the DB row ID of the policy's audience, resolved by the
 	// launcher.  Empty string means no audience — fall back to in-app.
 	AudienceID string
@@ -156,6 +159,13 @@ func New(cfg Config) (*BoundAgent, error) {
 		))
 	}
 
+	var feedbackOpts []FeedbackHandlerOption
+	if cfg.FeedbackDispatcher != nil && cfg.AudienceID != "" {
+		feedbackOpts = append(feedbackOpts, WithFeedbackChannelDispatch(
+			cfg.FeedbackDispatcher, cfg.AudienceID, cfg.PolicyID,
+		))
+	}
+
 	return &BoundAgent{
 		policy:             cfg.Policy,
 		policyID:           cfg.PolicyID,
@@ -168,7 +178,7 @@ func New(cfg Config) (*BoundAgent, error) {
 		audit:              cfg.Audit,
 		sm:                 cfg.StateMachine,
 		approvals:          NewApprovalHandler(cfg.Audit, cfg.StateMachine, cfg.ApprovalCh, approvalOpts...),
-		feedback:           NewFeedbackHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout),
+		feedback:           NewFeedbackHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout, feedbackOpts...),
 	}, nil
 }
 

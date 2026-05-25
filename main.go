@@ -218,6 +218,7 @@ func run(cfg config.Config) error {
 	// line ~155 so setManager can be called at line 237.
 	var hostSvc *hostsvc.Server
 	var approvalAdapter agent.ApprovalChannelDispatcher
+	var feedbackAdapter agent.FeedbackChannelDispatcher
 	if cfg.PluginsEnabled {
 		identityReg := identity.New()
 		genCtrl := generation.New()
@@ -230,10 +231,12 @@ func run(cfg config.Config) error {
 			// which is deferred to a follow-up issue.
 		})
 
-		// approvalAdapter is constructed here where pluginDispatcher is in scope.
-		// The outer-scoped variable is assigned so RunLauncherConfig below can
-		// reference it without the dispatcher escaping the if block.
+		// approvalAdapter and feedbackAdapter are constructed here where
+		// pluginDispatcher is in scope.  The outer-scoped variables are assigned so
+		// RunLauncherConfig below can reference them without the dispatcher escaping
+		// the if block.
 		approvalAdapter = runpkg.NewApprovalChannelAdapter(pluginDispatcher)
+		feedbackAdapter = runpkg.NewFeedbackChannelAdapter(pluginDispatcher)
 
 		hostSvc = hostsvc.NewServer(
 			store.Queries(),
@@ -369,6 +372,7 @@ func run(cfg config.Config) error {
 		PluginRegistrar:        pluginToolRegistrar,
 		PluginDispatcher:       pluginDispatchAdapter,
 		ApprovalDispatcher:     approvalAdapter,
+		FeedbackDispatcher:     feedbackAdapter,
 	})
 
 	// Wire the trigger dispatch pipeline now that RunLauncher is available.

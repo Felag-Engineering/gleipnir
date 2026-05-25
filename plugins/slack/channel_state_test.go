@@ -78,6 +78,71 @@ func TestCorrelationMap_Sweep(t *testing.T) {
 	}
 }
 
+// TestCorrelationMap_TakeByThreadTS verifies that takeByThreadTS finds a
+// correlation by channel+ts, atomically deletes it, and returns ok=false on the
+// second call or when channel/ts do not match.
+func TestCorrelationMap_TakeByThreadTS(t *testing.T) {
+	m := &correlationMap{
+		data:   make(map[string]correlation),
+		stopCh: make(chan struct{}),
+	}
+
+	// Put two entries with different channels/ts/modes.
+	m.put("req-feedback", correlation{
+		channel: "C01CHAN",
+		ts:      "1700000001.000001",
+		mode:    "feedback",
+		runID:   "run-feedback",
+		addedAt: time.Now(),
+	})
+	m.put("req-approval", correlation{
+		channel: "C01CHAN",
+		ts:      "1700000002.000001",
+		mode:    "",
+		runID:   "run-approval",
+		addedAt: time.Now(),
+	})
+
+	// Should find the feedback entry by channel+ts.
+	reqID, corr, ok := m.takeByThreadTS("C01CHAN", "1700000001.000001")
+	if !ok {
+		t.Fatal("takeByThreadTS: expected ok=true, got false")
+	}
+	if reqID != "req-feedback" {
+		t.Errorf("requestID: want %q, got %q", "req-feedback", reqID)
+	}
+	if corr.mode != "feedback" {
+		t.Errorf("mode: want %q, got %q", "feedback", corr.mode)
+	}
+
+	// Second call with same args must return ok=false (atomically deleted).
+	_, _, ok = m.takeByThreadTS("C01CHAN", "1700000001.000001")
+	if ok {
+		t.Error("second takeByThreadTS: expected ok=false (already deleted), got true")
+	}
+
+	// Non-matching channel returns false.
+	_, _, ok = m.takeByThreadTS("C99OTHER", "1700000002.000001")
+	if ok {
+		t.Error("non-matching channel: expected ok=false, got true")
+	}
+
+	// Non-matching ts returns false.
+	_, _, ok = m.takeByThreadTS("C01CHAN", "9999999999.999999")
+	if ok {
+		t.Error("non-matching ts: expected ok=false, got true")
+	}
+
+	// The approval entry is still present.
+	_, corr2, ok := m.takeByThreadTS("C01CHAN", "1700000002.000001")
+	if !ok {
+		t.Fatal("approval entry: expected ok=true, got false")
+	}
+	if corr2.runID != "run-approval" {
+		t.Errorf("runID: want %q, got %q", "run-approval", corr2.runID)
+	}
+}
+
 // TestCorrelationMap_Concurrent exercises put/take from 1000 goroutines to
 // detect data races under -race.
 func TestCorrelationMap_Concurrent(t *testing.T) {
