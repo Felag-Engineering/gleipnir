@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +255,194 @@ func TestApprovalHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 	// Exactly one run.status_changed(failed) event from the scanner.
 	if n := pub.countByStatus("run.status_changed", "failed"); n != 1 {
 		t.Errorf("run.status_changed(failed) events = %d, want 1", n)
+	}
+}
+
+// mockApprovalDispatcher implements ApprovalChannelDispatcher for tests.
+type mockApprovalDispatcher struct {
+	approved bool
+	err      error
+}
+
+func (m *mockApprovalDispatcher) DispatchApproval(_ context.Context, _ ApprovalDispatchRequest) (bool, error) {
+	return m.approved, m.err
+}
+
+// TestApprovalHandler_Wait_PluginApproved verifies the happy path when a plugin
+// channel dispatcher returns (true, nil): Wait returns nil and the run transitions
+// back to running.
+func TestApprovalHandler_Wait_PluginApproved(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	approvalCh := make(chan bool, 1) // not pre-loaded — plugin path must not read it
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	mock := &mockApprovalDispatcher{approved: true, err: nil}
+	h := NewApprovalHandler(w, sm, (<-chan bool)(approvalCh),
+		WithApprovalChannelDispatch(mock, "audience-1", "p1"),
+	)
+
+	err := h.Wait(context.Background(), "run1", approvalEntry(0), "my-server.do_thing", map[string]any{})
+	if err != nil {
+		t.Fatalf("Wait: unexpected error: %v", err)
+	}
+
+	if sm.Current() != model.RunStatusRunning {
+		t.Errorf("run status = %s, want running", sm.Current())
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	var hasApprovalRequest bool
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeApprovalRequest) {
+			hasApprovalRequest = true
+		}
+	}
+	if !hasApprovalRequest {
+		t.Error("expected approval_request step in audit trail")
+	}
+}
+
+// TestApprovalHandler_Wait_PluginDenied verifies that when the plugin dispatcher
+// returns (false, nil), Wait returns an error containing "rejected" and writes an
+// error step.
+func TestApprovalHandler_Wait_PluginDenied(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	approvalCh := make(chan bool, 1) // not pre-loaded
+
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	mock := &mockApprovalDispatcher{approved: false, err: nil}
+	h := NewApprovalHandler(w, sm, (<-chan bool)(approvalCh),
+		WithApprovalChannelDispatch(mock, "audience-1", "p1"),
+	)
+
+	err := h.Wait(context.Background(), "run1", approvalEntry(0), "my-server.do_thing", map[string]any{})
+	if err == nil {
+		t.Fatal("expected error on plugin denial, got nil")
+	}
+	if !strings.Contains(err.Error(), "rejected") {
+		t.Errorf("error = %q, want to contain 'rejected'", err.Error())
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	var hasError bool
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeError) {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Error("expected error step written on plugin denial")
+	}
+}
+
+// TestApprovalHandler_Wait_PluginFallbackToInApp verifies that when the dispatcher
+// returns ErrApprovalRouteToInApp, the handler falls through to the in-app approvalCh
+// path and approves when the channel is pre-loaded with true.
+func TestApprovalHandler_Wait_PluginFallbackToInApp(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	// Pre-load the in-app approval channel so the fallback path approves immediately.
+	approvalCh := make(chan bool, 1)
+	approvalCh <- true
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	mock := &mockApprovalDispatcher{approved: false, err: ErrApprovalRouteToInApp}
+	h := NewApprovalHandler(w, sm, (<-chan bool)(approvalCh),
+		WithApprovalChannelDispatch(mock, "audience-1", "p1"),
+	)
+
+	err := h.Wait(context.Background(), "run1", approvalEntry(0), "my-server.do_thing", map[string]any{})
+	if err != nil {
+		t.Fatalf("Wait: unexpected error after in-app fallback: %v", err)
+	}
+
+	if sm.Current() != model.RunStatusRunning {
+		t.Errorf("run status = %s, want running after in-app approval", sm.Current())
+	}
+}
+
+// TestApprovalHandler_Wait_PluginDispatchError verifies that a non-sentinel
+// dispatcher error is propagated with context wrapping "plugin approval dispatch".
+func TestApprovalHandler_Wait_PluginDispatchError(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	approvalCh := make(chan bool, 1)
+
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	mock := &mockApprovalDispatcher{approved: false, err: fmt.Errorf("connection refused")}
+	h := NewApprovalHandler(w, sm, (<-chan bool)(approvalCh),
+		WithApprovalChannelDispatch(mock, "audience-1", "p1"),
+	)
+
+	err := h.Wait(context.Background(), "run1", approvalEntry(0), "my-server.do_thing", map[string]any{})
+	if err == nil {
+		t.Fatal("expected error from dispatcher, got nil")
+	}
+	if !strings.Contains(err.Error(), "plugin approval dispatch") {
+		t.Errorf("error = %q, want to contain 'plugin approval dispatch'", err.Error())
+	}
+}
+
+// TestApprovalHandler_Wait_NoDispatcherConfigured verifies that when no channel
+// dispatcher is configured, the handler falls through to the existing in-app
+// approvalCh path unchanged.
+func TestApprovalHandler_Wait_NoDispatcherConfigured(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	approvalCh := make(chan bool, 1)
+	approvalCh <- true
+
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	// No options — dispatcher is nil, in-app path is used unchanged.
+	h := NewApprovalHandler(w, sm, (<-chan bool)(approvalCh))
+
+	err := h.Wait(context.Background(), "run1", approvalEntry(0), "my-server.do_thing", map[string]any{})
+	if err != nil {
+		t.Fatalf("Wait: unexpected error: %v", err)
+	}
+	if sm.Current() != model.RunStatusRunning {
+		t.Errorf("run status = %s, want running", sm.Current())
 	}
 }
 

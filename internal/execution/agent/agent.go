@@ -72,6 +72,12 @@ type Config struct {
 	ApprovalCh             <-chan bool
 	StateMachine           *RunStateMachine
 	DefaultFeedbackTimeout time.Duration
+	// ApprovalDispatcher routes approvals through a plugin channel (e.g. Slack).
+	// Nil when plugins are disabled or the policy has no audience configured.
+	ApprovalDispatcher ApprovalChannelDispatcher
+	// AudienceID is the DB row ID of the policy's audience, resolved by the
+	// launcher.  Empty string means no audience — fall back to in-app.
+	AudienceID string
 }
 
 // New returns a BoundAgent ready to run, or an error if schema narrowing fails
@@ -143,6 +149,13 @@ func New(cfg Config) (*BoundAgent, error) {
 		})
 	}
 
+	var approvalOpts []ApprovalHandlerOption
+	if cfg.ApprovalDispatcher != nil && cfg.AudienceID != "" {
+		approvalOpts = append(approvalOpts, WithApprovalChannelDispatch(
+			cfg.ApprovalDispatcher, cfg.AudienceID, cfg.PolicyID,
+		))
+	}
+
 	return &BoundAgent{
 		policy:             cfg.Policy,
 		policyID:           cfg.PolicyID,
@@ -154,7 +167,7 @@ func New(cfg Config) (*BoundAgent, error) {
 		llmClient:          cfg.LLMClient,
 		audit:              cfg.Audit,
 		sm:                 cfg.StateMachine,
-		approvals:          NewApprovalHandler(cfg.Audit, cfg.StateMachine, cfg.ApprovalCh),
+		approvals:          NewApprovalHandler(cfg.Audit, cfg.StateMachine, cfg.ApprovalCh, approvalOpts...),
 		feedback:           NewFeedbackHandler(cfg.Audit, cfg.StateMachine, cfg.DefaultFeedbackTimeout),
 	}, nil
 }

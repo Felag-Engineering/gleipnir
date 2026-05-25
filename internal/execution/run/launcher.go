@@ -86,6 +86,7 @@ type RunLauncher struct {
 	toolClassifier         ToolSourceClassifier
 	pluginRegistrar        agent.PluginGenerationLookup
 	pluginDispatcher       agent.PluginToolDispatcher
+	approvalDispatcher     agent.ApprovalChannelDispatcher
 }
 
 // registryResolver is the subset of mcp.Registry used by RunLauncher, defined
@@ -121,6 +122,9 @@ type RunLauncherConfig struct {
 	ToolClassifier         ToolSourceClassifier         // nil when plugins are disabled; all grants go to MCP path
 	PluginRegistrar        agent.PluginGenerationLookup // nil when plugins are disabled
 	PluginDispatcher       agent.PluginToolDispatcher   // nil when plugins are disabled
+	// ApprovalDispatcher routes approvals through a plugin channel when the
+	// policy has an audience configured.  Nil when plugins are disabled.
+	ApprovalDispatcher agent.ApprovalChannelDispatcher
 }
 
 // NewRunLauncher returns a RunLauncher ready to use.
@@ -142,6 +146,7 @@ func NewRunLauncher(cfg RunLauncherConfig) *RunLauncher {
 		toolClassifier:         cfg.ToolClassifier,
 		pluginRegistrar:        cfg.PluginRegistrar,
 		pluginDispatcher:       cfg.PluginDispatcher,
+		approvalDispatcher:     cfg.ApprovalDispatcher,
 	}
 }
 
@@ -311,6 +316,24 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 
 	audit := agent.NewAuditWriter(l.store.Queries(), agent.WithPublisher(l.publisher))
 
+	// Resolve the audience DB row ID when a plugin channel dispatcher is available
+	// and the policy names an audience.  A misspelled or missing audience name logs
+	// a warning and falls back to in-app rather than failing the run — the warning
+	// makes the misconfiguration visible without hard-blocking the operator.
+	var audienceID string
+	if params.ParsedPolicy.Audience != "" && l.approvalDispatcher != nil {
+		aud, audErr := l.store.Queries().GetPluginAudienceByName(ctx, params.ParsedPolicy.Audience)
+		if audErr != nil {
+			slog.Warn("audience lookup failed, falling back to in-app approval",
+				"audience_name", params.ParsedPolicy.Audience,
+				"policy_id", params.PolicyID,
+				"err", audErr,
+			)
+		} else {
+			audienceID = aud.ID
+		}
+	}
+
 	// Cap 1 so SendApproval (non-blocking select) can deliver a decision that
 	// arrives in the narrow window between the agent unparking and reading the
 	// channel.
@@ -326,6 +349,8 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		PluginTools:            pluginToolEntries,
 		PluginRegistrar:        l.pluginRegistrar,
 		PluginDispatcher:       l.pluginDispatcher,
+		ApprovalDispatcher:     l.approvalDispatcher,
+		AudienceID:             audienceID,
 	})
 	if err != nil {
 		// context.Background(): the HTTP request context that produced ctx may
