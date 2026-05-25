@@ -212,6 +212,29 @@ func (c *inAppChannel) Request(ctx context.Context, req feedbackRequest) (string
 	}
 }
 
+// RegisterWaiter allocates a buffered channel (cap 1) for feedbackID, stores it
+// in the waiters map, and returns the receive-only end.  The caller must call
+// UnregisterWaiter when done — successful response, timeout, or ctx cancel.
+//
+// The registration-before-transition invariant is preserved by the caller (see
+// inAppChannel.Request for the pattern): register first, transition second, so
+// a fast Resolve cannot miss the channel.
+func (c *inAppChannel) RegisterWaiter(feedbackID string) <-chan inAppResponse {
+	ch := make(chan inAppResponse, 1)
+	c.mu.Lock()
+	c.waiters[feedbackID] = ch
+	c.mu.Unlock()
+	return ch
+}
+
+// UnregisterWaiter removes the waiter entry for feedbackID.  Safe to call when
+// no entry exists (e.g. after a successful Resolve already deleted it).
+func (c *inAppChannel) UnregisterWaiter(feedbackID string) {
+	c.mu.Lock()
+	delete(c.waiters, feedbackID)
+	c.mu.Unlock()
+}
+
 // Resolve delivers a response to the waiter registered for requestID.
 //
 // The ch <- send is intentionally OUTSIDE the lock. ch is buffered (cap 1) and

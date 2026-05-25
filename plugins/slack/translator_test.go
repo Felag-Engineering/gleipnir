@@ -92,7 +92,10 @@ func TestTranslate(t *testing.T) {
 			},
 		},
 		{
-			name: "threaded reply includes thread_ts",
+			// Threaded replies are suppressed to prevent feedback replies from
+			// firing trigger events (BLOCKING #2).  The filter is intentionally broad;
+			// a future "thread_reply" event kind could re-enable threaded triggers.
+			name: "threaded reply is dropped (feedback reply filter)",
 			inner: slackevents.EventsAPIInnerEvent{
 				Type: "message",
 				Data: &slackevents.MessageEvent{
@@ -106,18 +109,7 @@ func TestTranslate(t *testing.T) {
 				},
 			},
 			teamID:   "T01TEAM",
-			wantEmit: true,
-			wantKind: "channel_message",
-			checkPayload: func(t *testing.T, payload []byte) {
-				t.Helper()
-				var p SlackChannelMessagePayload
-				if err := json.Unmarshal(payload, &p); err != nil {
-					t.Fatalf("unmarshal payload: %v", err)
-				}
-				if p.ThreadTs != "1700002000.000100" {
-					t.Errorf("thread_ts: want 1700002000.000100, got %q", p.ThreadTs)
-				}
-			},
+			wantEmit: false,
 		},
 		{
 			name: "SubType bot_message is dropped",
@@ -315,6 +307,53 @@ func TestTranslateEventIDMatchesDeriveEventID(t *testing.T) {
 	want := deriveEventID(channelID, ts)
 	if eventID != want {
 		t.Errorf("event_id mismatch: translate produced %q, deriveEventID produced %q", eventID, want)
+	}
+}
+
+// TestTranslate_SkipsThreadedReplies pins BLOCKING #2: a MessageEvent with a
+// non-empty ThreadTimeStamp must not produce a trigger event regardless of SubType.
+func TestTranslate_SkipsThreadedReplies(t *testing.T) {
+	inner := slackevents.EventsAPIInnerEvent{
+		Type: "message",
+		Data: &slackevents.MessageEvent{
+			Channel:         "C01CHAN",
+			ChannelType:     "channel",
+			User:            "U01USER",
+			Text:            "I confirm the rollback",
+			TimeStamp:       "1700010000.000200",
+			ThreadTimeStamp: "1700010000.000100", // non-empty → threaded reply
+			EventTimeStamp:  "1700010000.000200",
+		},
+	}
+	_, _, _, emit, err := translate(inner, "T01TEAM")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if emit {
+		t.Error("threaded MessageEvent must not emit a trigger event (feedback reply filter)")
+	}
+}
+
+// TestTranslate_SkipsThreadedMentions pins BLOCKING #2 for AppMentionEvent:
+// a threaded @-mention must not produce a trigger event.
+func TestTranslate_SkipsThreadedMentions(t *testing.T) {
+	inner := slackevents.EventsAPIInnerEvent{
+		Type: "app_mention",
+		Data: &slackevents.AppMentionEvent{
+			Channel:         "C01CHAN",
+			User:            "U01USER",
+			Text:            "<@UBOT> help in thread",
+			TimeStamp:       "1700011000.000200",
+			ThreadTimeStamp: "1700011000.000100", // non-empty → threaded mention
+			EventTimeStamp:  "1700011000.000200",
+		},
+	}
+	_, _, _, emit, err := translate(inner, "T01TEAM")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if emit {
+		t.Error("threaded AppMentionEvent must not emit a trigger event (feedback reply filter)")
 	}
 }
 

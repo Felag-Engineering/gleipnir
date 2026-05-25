@@ -240,10 +240,16 @@ type SlackChannelMessagePayload struct {
 // SlackChannelEntryConfig documents the Go-side shape of the per-audience-entry
 // config validated against the ConfigSchema above. The actual schema is parsed
 // from the YAML literal; this struct exists for code readability only.
+//
+// Mode is NOT declared in the manifest's channel ConfigSchema — it is injected
+// transiently at dispatch time by the host (via dispatch.RouteContext.Metadata →
+// channel_config_json merge).  json.Unmarshal tolerates extra fields because the
+// schema does not set additionalProperties: false.
 type SlackChannelEntryConfig struct {
 	Channel         string           `json:"channel"`                    // required
 	Mention         string           `json:"mention,omitempty"`          // optional
 	ResponseButtons []responseButton `json:"response_buttons,omitempty"` // optional; defaults applied in Go
+	Mode            string           `json:"mode,omitempty"`             // transient; injected by host at dispatch time
 }
 
 func init() {

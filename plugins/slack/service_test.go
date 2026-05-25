@@ -1376,6 +1376,288 @@ func TestChannelInteractiveAckedSynchronously(t *testing.T) {
 	}
 }
 
+// threadedMessageSocketEvent builds a socketmode.Event of type EventTypeEventsAPI
+// with a MessageEvent whose ThreadTimeStamp is set (a threaded reply).
+func threadedMessageSocketEvent(channelID, user, text, ts, threadTS, teamID string) socketmode.Event {
+	inner := slackevents.EventsAPIInnerEvent{
+		Type: "message",
+		Data: &slackevents.MessageEvent{
+			Channel:         channelID,
+			ChannelType:     "channel",
+			User:            user,
+			Text:            text,
+			TimeStamp:       ts,
+			ThreadTimeStamp: threadTS,
+			EventTimeStamp:  ts,
+		},
+	}
+	outerEvt := slackevents.EventsAPIEvent{
+		TeamID:     teamID,
+		InnerEvent: inner,
+	}
+	return socketmode.Event{
+		Type:    socketmode.EventTypeEventsAPI,
+		Data:    outerEvt,
+		Request: &socketmode.Request{EnvelopeID: "env-thread-" + ts},
+	}
+}
+
+// feedbackCfgJSON builds a channel_config_json string for feedback mode.
+func feedbackCfgJSON(channel string) string {
+	return fmt.Sprintf(`{"channel":%q,"mode":"feedback"}`, channel)
+}
+
+// ── Feedback mode channel tests ───────────────────────────────────────────────
+
+// TestChannelRequestFeedbackMode asserts that Request in feedback mode posts a
+// plain text message (no buttons), stores a correlation with mode="feedback", and
+// returns acked=true.
+func TestChannelRequestFeedbackMode(t *testing.T) {
+	const (
+		channel   = "C01FEEDBACK"
+		ts        = "1700090000.000900"
+		requestID = "req-feedback-mode"
+		token     = "xoxb-feedback-mode"
+	)
+
+	var postBody atomic.Value
+	slackMux := newSlackMux(true)
+	slackMux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		postBody.Store(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      true,
+			"channel": channel,
+			"ts":      ts,
+		})
+	})
+
+	runner := newChannelFakeRunner()
+	client, chanSvc, _, cleanup := setupChannelServiceWithRunner(t,
+		credJSON(token),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		slackMux,
+	)
+	defer cleanup()
+
+	resp, err := client.Request(context.Background(), &channelv1.RequestRequest{
+		RequestId:         requestID,
+		Prompt:            "What should I do next?",
+		ChannelConfigJson: feedbackCfgJSON(channel),
+		Context: &commonv1.RequestContext{
+			RunId:    "run-feedback-1",
+			PolicyId: "pol-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Request RPC: %v", err)
+	}
+	if !resp.GetAcked() {
+		t.Fatalf("Request: want acked=true, got false: %v", resp.GetError().GetMessage())
+	}
+
+	// Verify that the POST body does not contain Block Kit blocks (no buttons).
+	rawBody := postBody.Load()
+	if rawBody == nil {
+		t.Fatal("Slack API was not called")
+	}
+	bodyStr := rawBody.(string)
+	if strings.Contains(bodyStr, "blocks") {
+		t.Error("feedback mode must post plain text, not Block Kit blocks")
+	}
+
+	// Verify correlation is stored with mode="feedback".
+	corr, ok := chanSvc.correlations.take(requestID)
+	if !ok {
+		t.Fatal("correlation not stored for requestID")
+	}
+	if corr.mode != "feedback" {
+		t.Errorf("correlation.mode: want %q, got %q", "feedback", corr.mode)
+	}
+	if corr.ts != ts {
+		t.Errorf("correlation.ts: want %q, got %q", ts, corr.ts)
+	}
+}
+
+// TestChannelRequestFeedbackThreadReply tests the full feedback round-trip:
+// Request (feedback mode) → operator sends threaded reply → handleThreadReply
+// calls WriteAuditStep(feedback_response).
+func TestChannelRequestFeedbackThreadReply(t *testing.T) {
+	const (
+		channel   = "C01FBTHREAD"
+		ts        = "1700091000.000100" // parent message ts = thread_ts we watch
+		replyTS   = "1700091000.000200"
+		requestID = "req-fb-thread"
+		token     = "xoxb-fb-thread"
+		replyText = "Please proceed with caution."
+	)
+
+	runner := newChannelFakeRunner()
+	_, chanSvc, host, cleanup := setupChannelServiceWithRunner(t,
+		credJSON(token),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		slackPostMessageOK(channel, ts),
+	)
+	defer cleanup()
+
+	// Register the thread-reply handler on the hub.
+	hub, _, err := chanSvc.hubRegistry.Acquire("xapp-test-token")
+	if err != nil {
+		t.Fatalf("Acquire hub: %v", err)
+	}
+	hub.RegisterMessageHandler(chanSvc.handleThreadReply)
+
+	// Step 1: Request in feedback mode — posts plain text, stores correlation.
+	reqResp, err := chanSvc.Request(context.Background(), &channelv1.RequestRequest{
+		RequestId:         requestID,
+		Prompt:            "Which deployment strategy should I use?",
+		ChannelConfigJson: feedbackCfgJSON(channel),
+		Context: &commonv1.RequestContext{RunId: "run-thread-1", PolicyId: "pol-1"},
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if !reqResp.GetAcked() {
+		t.Fatalf("Request: want acked=true, got false: %v", reqResp.GetError())
+	}
+
+	// Step 2: Inject a threaded reply from an operator.
+	// The thread_ts of the reply must match the parent message ts stored in the correlation.
+	runner.Send(threadedMessageSocketEvent(channel, "U01OPERATOR", replyText, replyTS, ts, "T01TEAM"))
+
+	// Step 3: Wait for WriteAuditStep.
+	if !pollUntil(t, 3*time.Second, func() bool { return len(host.AuditSteps()) > 0 }) {
+		t.Fatal("timed out waiting for WriteAuditStep from thread reply")
+	}
+
+	steps := host.AuditSteps()
+	if len(steps) != 1 {
+		t.Fatalf("want 1 audit step, got %d", len(steps))
+	}
+	step := steps[0]
+	if step.StepType != "feedback_response" {
+		t.Errorf("step_type: want feedback_response, got %q", step.StepType)
+	}
+	if step.RequestID != requestID {
+		t.Errorf("request_id: want %q, got %q", requestID, step.RequestID)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(step.PayloadJSON), &payload); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if payload["text"] != replyText {
+		t.Errorf("text: want %q, got %q", replyText, payload["text"])
+	}
+}
+
+// TestChannelRequestFeedbackThreadReply_IgnoresNonThread asserts that a plain
+// (non-threaded) message event does not trigger WriteAuditStep.
+func TestChannelRequestFeedbackThreadReply_IgnoresNonThread(t *testing.T) {
+	const (
+		channel   = "C01FBNOTHREAD"
+		ts        = "1700092000.000100"
+		requestID = "req-fb-nothread"
+		token     = "xoxb-fb-nothread"
+	)
+
+	runner := newChannelFakeRunner()
+	_, chanSvc, host, cleanup := setupChannelServiceWithRunner(t,
+		credJSON(token),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		slackPostMessageOK(channel, ts),
+	)
+	defer cleanup()
+
+	hub, _, err := chanSvc.hubRegistry.Acquire("xapp-test-token")
+	if err != nil {
+		t.Fatalf("Acquire hub: %v", err)
+	}
+	hub.RegisterMessageHandler(chanSvc.handleThreadReply)
+
+	// Request in feedback mode.
+	reqResp, err := chanSvc.Request(context.Background(), &channelv1.RequestRequest{
+		RequestId:         requestID,
+		Prompt:            "Please advise.",
+		ChannelConfigJson: feedbackCfgJSON(channel),
+		Context:           &commonv1.RequestContext{RunId: "run-nothread-1"},
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if !reqResp.GetAcked() {
+		t.Fatalf("Request: want acked=true, got false")
+	}
+
+	// Send a plain (non-threaded) message — no ThreadTimeStamp.
+	runner.Send(eventsAPISocketEvent(channel, "channel", "U01USER", "just a comment", "1700092000.000200", "T01TEAM"))
+
+	// Give a short window; no audit step should appear.
+	time.Sleep(100 * time.Millisecond)
+	if n := len(host.AuditSteps()); n != 0 {
+		t.Errorf("want 0 audit steps for non-threaded message, got %d", n)
+	}
+}
+
+// TestChannelRequestFeedbackThreadReply_IgnoresApprovalThread asserts that a
+// threaded reply on an approval (button mode) message does not trigger
+// WriteAuditStep and does not consume the correlation.
+func TestChannelRequestFeedbackThreadReply_IgnoresApprovalThread(t *testing.T) {
+	const (
+		channel   = "C01APPROVAL"
+		ts        = "1700093000.000100"
+		replyTS   = "1700093000.000200"
+		requestID = "req-approval-thread"
+		token     = "xoxb-approval-thread"
+	)
+
+	runner := newChannelFakeRunner()
+	_, chanSvc, host, cleanup := setupChannelServiceWithRunner(t,
+		credJSON(token),
+		cfgWithToken("xapp-test-token"),
+		runner,
+		slackPostMessageOK(channel, ts),
+	)
+	defer cleanup()
+
+	hub, _, err := chanSvc.hubRegistry.Acquire("xapp-test-token")
+	if err != nil {
+		t.Fatalf("Acquire hub: %v", err)
+	}
+	hub.RegisterMessageHandler(chanSvc.handleThreadReply)
+
+	// Request in approval (button) mode — no "mode":"feedback" in config.
+	reqResp, err := chanSvc.Request(context.Background(), &channelv1.RequestRequest{
+		RequestId:         requestID,
+		Prompt:            "Approve?",
+		ChannelConfigJson: channelCfgJSON(channel, ""),
+		Context:           &commonv1.RequestContext{RunId: "run-approval-1"},
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if !reqResp.GetAcked() {
+		t.Fatalf("Request: want acked=true, got false")
+	}
+
+	// Send a threaded reply to the approval message.
+	runner.Send(threadedMessageSocketEvent(channel, "U01OPERATOR", "FYI, I'm approving via buttons", replyTS, ts, "T01TEAM"))
+
+	// Short window — no audit step should appear (approval replies come via buttons).
+	time.Sleep(100 * time.Millisecond)
+	if n := len(host.AuditSteps()); n != 0 {
+		t.Errorf("want 0 audit steps for thread reply on approval message, got %d", n)
+	}
+
+	// The correlation must still be present (not consumed by handleThreadReply).
+	if _, ok := chanSvc.correlations.take(requestID); !ok {
+		t.Error("approval correlation was incorrectly consumed by handleThreadReply")
+	}
+}
+
 // ── lateAuditHost ─────────────────────────────────────────────────────────────
 
 // lateAuditHost is an inline hostv1.HostServiceServer that returns

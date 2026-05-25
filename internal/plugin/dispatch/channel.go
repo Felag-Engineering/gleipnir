@@ -24,6 +24,13 @@ type RouteContext struct {
 	RunID    string
 	PolicyID string
 	ToolName string
+	// Metadata is an optional bag of key-value pairs merged into
+	// channel_config_json before the gRPC Request call. nil means no extra data.
+	// Used to inject transient dispatch-time fields (e.g. "mode":"feedback")
+	// without modifying the manifest ConfigSchema — the schema does not set
+	// additionalProperties: false so the plugin tolerates extra fields via
+	// json.Unmarshal into its typed config struct.
+	Metadata map[string]string
 }
 
 // DispatcherConfig holds all tunable parameters for a Dispatcher.
@@ -339,6 +346,31 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 	preCtx, cancelPre := context.WithTimeout(ctx, d.cfg.PreAckTimeout)
 	defer cancelPre()
 
+	// Merge rc.Metadata into the channel config JSON so the plugin receives
+	// transient dispatch-time fields (e.g. "mode":"feedback") without those
+	// fields being persisted in the audience entry or declared in the manifest
+	// ConfigSchema.  Extra fields are tolerated by the plugin's json.Unmarshal
+	// because the schema does not set additionalProperties: false.
+	configJSON := firstRequest.ConfigJSON
+	if len(rc.Metadata) > 0 {
+		var cfgMap map[string]any
+		if configJSON == "" || configJSON == "{}" {
+			cfgMap = make(map[string]any)
+		} else if parseErr := json.Unmarshal([]byte(configJSON), &cfgMap); parseErr != nil {
+			slog.Warn("dispatch: could not parse channel config for metadata merge",
+				"err", parseErr, "request_id", reqID)
+			// cfgMap remains nil — skip the merge and use the original configJSON.
+		}
+		if cfgMap != nil {
+			for k, v := range rc.Metadata {
+				cfgMap[k] = v
+			}
+			if merged, mergeErr := json.Marshal(cfgMap); mergeErr == nil {
+				configJSON = string(merged)
+			}
+		}
+	}
+
 	start := time.Now()
 	resp, rpcErr := client.Request(preCtx, &channelv1.RequestRequest{
 		Context: &commonv1.RequestContext{
@@ -348,7 +380,7 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 		},
 		RequestId:         reqID,
 		Prompt:            prompt,
-		ChannelConfigJson: firstRequest.ConfigJSON,
+		ChannelConfigJson: configJSON,
 	})
 	observeRPC("Request", targetInstance.PluginID, targetInstance.ID, start)
 

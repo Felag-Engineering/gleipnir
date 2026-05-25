@@ -87,6 +87,7 @@ type RunLauncher struct {
 	pluginRegistrar        agent.PluginGenerationLookup
 	pluginDispatcher       agent.PluginToolDispatcher
 	approvalDispatcher     agent.ApprovalChannelDispatcher
+	feedbackDispatcher     agent.FeedbackChannelDispatcher
 }
 
 // registryResolver is the subset of mcp.Registry used by RunLauncher, defined
@@ -125,6 +126,9 @@ type RunLauncherConfig struct {
 	// ApprovalDispatcher routes approvals through a plugin channel when the
 	// policy has an audience configured.  Nil when plugins are disabled.
 	ApprovalDispatcher agent.ApprovalChannelDispatcher
+	// FeedbackDispatcher routes feedback requests through a plugin channel when
+	// the policy has an audience configured.  Nil when plugins are disabled.
+	FeedbackDispatcher agent.FeedbackChannelDispatcher
 }
 
 // NewRunLauncher returns a RunLauncher ready to use.
@@ -147,6 +151,7 @@ func NewRunLauncher(cfg RunLauncherConfig) *RunLauncher {
 		pluginRegistrar:        cfg.PluginRegistrar,
 		pluginDispatcher:       cfg.PluginDispatcher,
 		approvalDispatcher:     cfg.ApprovalDispatcher,
+		feedbackDispatcher:     cfg.FeedbackDispatcher,
 	}
 }
 
@@ -350,6 +355,7 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		PluginRegistrar:        l.pluginRegistrar,
 		PluginDispatcher:       l.pluginDispatcher,
 		ApprovalDispatcher:     l.approvalDispatcher,
+		FeedbackDispatcher:     l.feedbackDispatcher,
 		AudienceID:             audienceID,
 	})
 	if err != nil {

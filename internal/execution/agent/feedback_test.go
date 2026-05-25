@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,16 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
 )
+
+// mockFeedbackDispatcher is a simple mock for FeedbackChannelDispatcher.
+type mockFeedbackDispatcher struct {
+	response string
+	err      error
+}
+
+func (m *mockFeedbackDispatcher) DispatchFeedback(_ context.Context, _ FeedbackDispatchRequest) (string, error) {
+	return m.response, m.err
+}
 
 // TestFeedbackHandler_Wait_ResponseReceived verifies the happy path: operator
 // responds via h.Resolve before timeout; feedback_request and feedback_response
@@ -433,5 +444,175 @@ func TestFeedbackHandler_HandleAskOperator_TimeoutResolution(t *testing.T) {
 				t.Errorf("elapsed %v >= %v, timeout should have fired sooner", elapsed, tc.wantFasterThan)
 			}
 		})
+	}
+}
+
+// TestFeedbackHandler_Wait_PluginResponse verifies the plugin dispatch path:
+// mock returns a JSON-encoded response; Wait extracts the text, does NOT write a
+// feedback_response audit step (hostsvc writes it), resolves the DB row, and
+// transitions back to running.
+func TestFeedbackHandler_Wait_PluginResponse(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	mock := &mockFeedbackDispatcher{
+		response: `{"text":"operator reply","user":"U123","request_id":"req-1"}`,
+	}
+	h := NewFeedbackHandler(w, sm, time.Minute, WithFeedbackChannelDispatch(mock, "aud-1", "pol-1"))
+
+	responseText, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", time.Minute)
+	if err != nil {
+		t.Fatalf("Wait: unexpected error: %v", err)
+	}
+	if responseText != "operator reply" {
+		t.Errorf("response = %q, want %q", responseText, "operator reply")
+	}
+
+	// Run must be back to running.
+	if sm.Current() != model.RunStatusRunning {
+		t.Errorf("run status = %s, want running", sm.Current())
+	}
+
+	// Flush writer and check audit steps.
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	var hasFeedbackRequest, hasFeedbackResponse bool
+	for _, step := range steps {
+		switch step.Type {
+		case string(model.StepTypeFeedbackRequest):
+			hasFeedbackRequest = true
+		case string(model.StepTypeFeedbackResponse):
+			hasFeedbackResponse = true
+		}
+	}
+	if !hasFeedbackRequest {
+		t.Error("expected feedback_request step in audit trail")
+	}
+	// Plugin path: feedback_response is written by hostsvc, NOT by FeedbackHandler.
+	if hasFeedbackResponse {
+		t.Error("feedback_response step must NOT be written by FeedbackHandler on plugin path (hostsvc writes it)")
+	}
+
+	// The feedback_requests DB row must be resolved.
+	rows, dbErr := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+	if dbErr != nil {
+		t.Fatalf("GetPendingFeedbackRequestsByRun: %v", dbErr)
+	}
+	if len(rows) > 0 {
+		t.Error("feedback_requests row should be resolved (no pending rows)")
+	}
+}
+
+// TestFeedbackHandler_Wait_PluginFallbackToInApp verifies that when the plugin
+// dispatcher returns ErrFeedbackRouteToInApp, Wait falls through to the in-app
+// path and writes a feedback_response audit step.
+func TestFeedbackHandler_Wait_PluginFallbackToInApp(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	mock := &mockFeedbackDispatcher{err: ErrFeedbackRouteToInApp}
+	h := NewFeedbackHandler(w, sm, time.Minute, WithFeedbackChannelDispatch(mock, "aud-1", "pol-1"))
+
+	done := make(chan struct{ body string; err error }, 1)
+	go func() {
+		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 500*time.Millisecond)
+		done <- struct{ body string; err error }{body, err}
+	}()
+
+	// Poll until the feedback row appears in the DB.
+	deadline := time.Now().Add(300 * time.Millisecond)
+	var feedbackID string
+	for time.Now().Before(deadline) {
+		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+		if err != nil {
+			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+		}
+		if len(rows) > 0 {
+			feedbackID = rows[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if feedbackID == "" {
+		t.Fatal("timed out waiting for feedback row to appear in DB")
+	}
+
+	// Deliver the response via the in-app Resolve path.
+	if err := h.Resolve(feedbackID, "in-app reply"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("Wait: unexpected error: %v", res.err)
+		}
+		if res.body != "in-app reply" {
+			t.Errorf("response = %q, want %q", res.body, "in-app reply")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not return within deadline")
+	}
+
+	// In-app path: feedback_response step MUST be written.
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	var hasFeedbackResponse bool
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeFeedbackResponse) {
+			hasFeedbackResponse = true
+		}
+	}
+	if !hasFeedbackResponse {
+		t.Error("in-app fallback path: expected feedback_response step in audit trail")
+	}
+}
+
+// TestFeedbackHandler_Wait_PluginDispatchError verifies that a non-sentinel error
+// from the plugin dispatcher is propagated wrapped with "plugin feedback dispatch".
+func TestFeedbackHandler_Wait_PluginDispatchError(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	dispatchErr := errors.New("gRPC unavailable")
+	mock := &mockFeedbackDispatcher{err: dispatchErr}
+	h := NewFeedbackHandler(w, sm, time.Minute, WithFeedbackChannelDispatch(mock, "aud-1", "pol-1"))
+
+	_, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", time.Minute)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "plugin feedback dispatch") {
+		t.Errorf("error = %q, want to contain 'plugin feedback dispatch'", err.Error())
+	}
+	if !errors.Is(err, dispatchErr) {
+		t.Errorf("error chain should contain original dispatchErr")
 	}
 }

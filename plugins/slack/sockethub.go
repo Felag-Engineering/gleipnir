@@ -20,6 +20,13 @@ type interactiveHandlerSlot struct {
 	fn func(socketmode.Event, slack.InteractionCallback)
 }
 
+// messageHandlerSlot wraps the message handler function for atomic.Pointer storage.
+// Used by ChannelService to observe EventsAPI events for thread-reply watching without
+// interferring with TriggerService's eventsHandler (which owns Ack).
+type messageHandlerSlot struct {
+	fn func(socketmode.Event)
+}
+
 // socketHub multiplexes a single socketModeRunner between an EventsAPI handler
 // (used by TriggerService) and an interactive handler (used by ChannelService).
 // One hub per xapp-token; created and managed by hubRegistry.
@@ -34,6 +41,7 @@ type socketHub struct {
 	xappToken          string
 	eventsHandler      atomic.Pointer[eventsHandlerSlot]
 	interactiveHandler atomic.Pointer[interactiveHandlerSlot]
+	messageHandler     atomic.Pointer[messageHandlerSlot]
 
 	// done is closed (and doneErr written) when the hub's Run goroutine exits.
 	// Multiple goroutines may read from Done(); the channel is never sent to
@@ -78,6 +86,15 @@ func (h *socketHub) RegisterInteractiveHandler(fn func(socketmode.Event, slack.I
 	h.interactiveHandler.Store(&interactiveHandlerSlot{fn: fn})
 }
 
+// RegisterMessageHandler registers a secondary handler that receives EventsAPI
+// events.  Unlike eventsHandler, this handler must NOT call Ack — Ack is owned
+// by TriggerService's eventsHandler.  Used by ChannelService to watch for
+// threaded replies without creating a second Socket Mode connection.
+// Replaces any previously registered handler atomically.
+func (h *socketHub) RegisterMessageHandler(fn func(socketmode.Event)) {
+	h.messageHandler.Store(&messageHandlerSlot{fn: fn})
+}
+
 // Ack acknowledges a Slack Socket Mode request.
 func (h *socketHub) Ack(req socketmode.Request) {
 	h.runner.Ack(req)
@@ -97,6 +114,12 @@ func (h *socketHub) Run(ctx context.Context) error {
 		case socketmode.EventTypeEventsAPI:
 			if slot := h.eventsHandler.Load(); slot != nil {
 				slot.fn(evt)
+			}
+			// Dispatch to the secondary message handler AFTER eventsHandler so Ack
+			// (owned by eventsHandler/TriggerService) fires first.  messageHandler
+			// must not call Ack.
+			if mslot := h.messageHandler.Load(); mslot != nil {
+				mslot.fn(evt)
 			}
 
 		case socketmode.EventTypeInteractive:

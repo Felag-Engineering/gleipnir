@@ -62,6 +62,15 @@ func translate(inner slackevents.EventsAPIInnerEvent, teamID string) (kind, even
 		if ev.SubType != "" {
 			return "", "", nil, false, nil
 		}
+		// Skip threaded replies — they must not fire trigger events.
+		// Feedback thread replies are handled by ChannelService's handleThreadReply,
+		// not the trigger pipeline.
+		// Known limitation: all threaded replies are suppressed here.  If threaded
+		// trigger events are needed in the future, a separate event kind (e.g.
+		// "thread_reply") should be added rather than removing this filter.
+		if ev.ThreadTimeStamp != "" {
+			return "", "", nil, false, nil
+		}
 		p := SlackChannelMessagePayload{
 			Channel:     ev.Channel,
 			ChannelID:   ev.Channel, // MessageEvent has no separate channel_id field
@@ -81,6 +90,11 @@ func translate(inner slackevents.EventsAPIInnerEvent, teamID string) (kind, even
 		return "channel_message", deriveEventID(ev.Channel, ev.TimeStamp), b, true, nil
 
 	case *slackevents.AppMentionEvent:
+		// Skip threaded mentions for the same reason as MessageEvent above.
+		// If thread-scoped mention triggers are needed later, add a separate event kind.
+		if ev.ThreadTimeStamp != "" {
+			return "", "", nil, false, nil
+		}
 		p := SlackChannelMessagePayload{
 			Channel:     ev.Channel,
 			ChannelID:   ev.Channel, // AppMentionEvent has no separate channel_id field

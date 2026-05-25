@@ -17,6 +17,9 @@ type correlation struct {
 	buttons []responseButton
 	runID   string
 	addedAt time.Time
+	// mode distinguishes the request UX.  "feedback" means the operator replies
+	// in a thread; "" (or any other value) means the button-click path.
+	mode string
 }
 
 // correlationMap stores in-flight Request correlations. Safe for concurrent use.
@@ -55,6 +58,24 @@ func (m *correlationMap) take(requestID string) (correlation, bool) {
 	}
 	m.mu.Unlock()
 	return c, ok
+}
+
+// takeByThreadTS scans the map for an entry whose channel and ts fields match
+// the given channel and threadTS, atomically deletes it, and returns it.
+// Returns ("", zero, false) when no match is found.
+//
+// O(n) on map size — acceptable since the map is bounded by concurrent
+// in-flight requests (typically < 10).
+func (m *correlationMap) takeByThreadTS(channel, threadTS string) (requestID string, c correlation, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, corr := range m.data {
+		if corr.channel == channel && corr.ts == threadTS {
+			delete(m.data, id)
+			return id, corr, true
+		}
+	}
+	return "", correlation{}, false
 }
 
 // sweep evicts all entries older than ttl as of now.
