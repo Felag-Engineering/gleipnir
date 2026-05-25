@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **`GLEIPNIR_PLUGINS_ENABLED` now defaults to `true`.** The plugin loader is enabled out of the box. Operators who need to opt out can still set `GLEIPNIR_PLUGINS_ENABLED=false`; the flag will be removed entirely in the next release (spec §15.2).
+
 ### Fixed
 
 ### Security
