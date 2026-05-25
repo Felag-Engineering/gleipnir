@@ -103,7 +103,6 @@ func (h *ApprovalHandler) resolveApprovalRecord(ctx context.Context, runID, appr
 	}
 }
 
-
 // formatApprovalPrompt builds a human-readable description of the pending
 // approval gate.  The prompt is sent to the plugin channel (e.g. Slack) so the
 // operator understands what they are approving without needing to open the UI.

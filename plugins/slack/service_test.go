@@ -1515,7 +1515,7 @@ func TestChannelRequestFeedbackThreadReply(t *testing.T) {
 		RequestId:         requestID,
 		Prompt:            "Which deployment strategy should I use?",
 		ChannelConfigJson: feedbackCfgJSON(channel),
-		Context: &commonv1.RequestContext{RunId: "run-thread-1", PolicyId: "pol-1"},
+		Context:           &commonv1.RequestContext{RunId: "run-thread-1", PolicyId: "pol-1"},
 	})
 	if err != nil {
 		t.Fatalf("Request: %v", err)
