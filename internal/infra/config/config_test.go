@@ -79,8 +79,8 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.EncryptionKey != validKey {
 		t.Errorf("EncryptionKey: got %q, want %q", cfg.EncryptionKey, validKey)
 	}
-	if cfg.PluginsEnabled != false {
-		t.Errorf("PluginsEnabled: got %v, want false", cfg.PluginsEnabled)
+	if cfg.PluginsEnabled != true {
+		t.Errorf("PluginsEnabled: got %v, want true", cfg.PluginsEnabled)
 	}
 	if cfg.AllowUnsignedPlugins != false {
 		t.Errorf("AllowUnsignedPlugins: got %v, want false", cfg.AllowUnsignedPlugins)
@@ -341,12 +341,12 @@ func TestLoad_PluginsEnabled(t *testing.T) {
 		envValue string
 		want     bool
 	}{
-		{"unset falls back to false", "", false},
+		{"unset falls back to true", "", true},
 		{"true enables", "true", true},
 		{"false disables", "false", false},
 		{"1 enables", "1", true},
 		{"0 disables", "0", false},
-		{"bogus falls back to false", "bogus", false},
+		{"bogus falls back to true", "bogus", true},
 	}
 
 	for _, tc := range tests {

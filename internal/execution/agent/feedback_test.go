@@ -530,10 +530,16 @@ func TestFeedbackHandler_Wait_PluginFallbackToInApp(t *testing.T) {
 	mock := &mockFeedbackDispatcher{err: ErrFeedbackRouteToInApp}
 	h := NewFeedbackHandler(w, sm, time.Minute, WithFeedbackChannelDispatch(mock, "aud-1", "pol-1"))
 
-	done := make(chan struct{ body string; err error }, 1)
+	done := make(chan struct {
+		body string
+		err  error
+	}, 1)
 	go func() {
 		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 500*time.Millisecond)
-		done <- struct{ body string; err error }{body, err}
+		done <- struct {
+			body string
+			err  error
+		}{body, err}
 	}()
 
 	// Poll until the feedback row appears in the DB.

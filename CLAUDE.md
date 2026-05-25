@@ -36,7 +36,7 @@ npm run storybook        # Storybook on port 6006
 | `GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT` | `30m` | Default timeout for feedback requests |
 | `GLEIPNIR_FEEDBACK_SCAN_INTERVAL` | `30s` | How often to check for timed-out feedback |
 | `GLEIPNIR_DEFAULT_PROVIDER` | `anthropic` | Default LLM provider |
-| `GLEIPNIR_PLUGINS_ENABLED` | `false` | Enable the host-side plugin loader (off by default this release; see docs/developer/plugin-system-spec.md §15.2). |
+| `GLEIPNIR_PLUGINS_ENABLED` | `true` | Enable the host-side plugin loader (on by default; set to `false` to opt out for one more release before flag removal; see docs/developer/plugin-system-spec.md §15.2). |
 | `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` | `false` | When `true`, the loader accepts plugins lacking a Minisign `.minisig`/`signing.pub` pair (instance health = `unsigned_permissive`). Every load emits a high-severity audit event; admin UI shows a non-dismissible red banner; `/api/v1/health` reports `signature_verification: disabled`. **Signed plugins are still fully verified even in permissive mode.** Scope is global, not per-plugin. Read once at startup. See ADR-045 §6. |
 | `GLEIPNIR_PLUGINS_DIR` | `/plugins` | Directory watched by the fsnotify watcher for plugin tarballs (`.tar.gz`/`.tgz`). Only consulted when `GLEIPNIR_PLUGINS_ENABLED=true`. |
 | `GLEIPNIR_OAUTH_REFRESH_INTERVAL` | `5m` | How often the OAuth refresh scanner runs to proactively refresh plugin OAuth2 tokens approaching expiry (#224). Only consulted when `GLEIPNIR_PLUGINS_ENABLED=true`. |
