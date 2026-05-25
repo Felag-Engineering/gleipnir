@@ -83,12 +83,19 @@ func (a *ApprovalChannelAdapter) DispatchApproval(ctx context.Context, req agent
 }
 
 // approvalDecisionBody is the wire format for plugin-channel approval responses.
+// Slack plugin sends: {"option_id":"approve","value":"approve","request_id":"...","user":"U..."}.
+// The decision field is a fallback for plugins that use a simpler format.
 type approvalDecisionBody struct {
+	OptionID string `json:"option_id"`
+	Value    string `json:"value"`
 	Decision string `json:"decision"`
 }
 
 // ParseApprovalDecision interprets the JSON response from a plugin channel
-// approval callback.  Expected format: {"decision":"approved"|"denied"}.
+// approval callback. Accepts two formats:
+//   - Slack-style: {"option_id":"approve"|"reject", ...}
+//   - Simple: {"decision":"approved"|"denied"}
+//
 // Exported so the table-driven test in the external test package can target it
 // directly without going through DispatchApproval.
 func ParseApprovalDecision(responseJSON string) (bool, error) {
@@ -96,15 +103,30 @@ func ParseApprovalDecision(responseJSON string) (bool, error) {
 	if err := json.Unmarshal([]byte(responseJSON), &body); err != nil {
 		return false, fmt.Errorf("invalid approval response JSON: %w", err)
 	}
-	if body.Decision == "" {
-		return false, fmt.Errorf("approval response missing decision field (empty)")
+
+	// Slack-style: option_id is "approve" or "reject"
+	if body.OptionID != "" {
+		switch body.OptionID {
+		case "approve":
+			return true, nil
+		case "reject":
+			return false, nil
+		default:
+			return false, fmt.Errorf("unknown approval option_id %q: want approve or reject", body.OptionID)
+		}
 	}
-	switch body.Decision {
-	case "approved":
-		return true, nil
-	case "denied":
-		return false, nil
-	default:
-		return false, fmt.Errorf("unknown approval decision %q: want approved or denied", body.Decision)
+
+	// Fallback: decision field
+	if body.Decision != "" {
+		switch body.Decision {
+		case "approved":
+			return true, nil
+		case "denied":
+			return false, nil
+		default:
+			return false, fmt.Errorf("unknown approval decision %q: want approved or denied", body.Decision)
+		}
 	}
+
+	return false, fmt.Errorf("approval response missing both option_id and decision fields")
 }

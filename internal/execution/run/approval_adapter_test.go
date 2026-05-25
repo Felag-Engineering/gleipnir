@@ -24,14 +24,29 @@ func TestParseApprovalDecision(t *testing.T) {
 		wantErrText  string // non-empty means we expect an error containing this string
 	}{
 		{
-			name:         "approved",
+			name:         "decision approved",
 			input:        `{"decision":"approved"}`,
 			wantApproved: true,
 		},
 		{
-			name:         "denied",
+			name:         "decision denied",
 			input:        `{"decision":"denied"}`,
 			wantApproved: false,
+		},
+		{
+			name:         "slack option_id approve",
+			input:        `{"option_id":"approve","value":"approve","request_id":"req-1","user":"U123"}`,
+			wantApproved: true,
+		},
+		{
+			name:         "slack option_id reject",
+			input:        `{"option_id":"reject","value":"reject","request_id":"req-1","user":"U123"}`,
+			wantApproved: false,
+		},
+		{
+			name:        "unknown option_id",
+			input:       `{"option_id":"maybe"}`,
+			wantErrText: "unknown",
 		},
 		{
 			name:        "unknown decision",
@@ -39,9 +54,9 @@ func TestParseApprovalDecision(t *testing.T) {
 			wantErrText: "unknown",
 		},
 		{
-			name:        "empty decision field",
+			name:        "empty body",
 			input:       `{}`,
-			wantErrText: "empty",
+			wantErrText: "missing both",
 		},
 		{
 			name:        "invalid json",
@@ -189,4 +204,3 @@ func TestApprovalChannelAdapter_DispatchApproval(t *testing.T) {
 		}
 	})
 }
-
