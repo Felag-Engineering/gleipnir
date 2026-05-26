@@ -165,6 +165,28 @@ type InflightCounter interface {
 	InflightCountByInstance(instanceName string) int
 }
 
+// RSSSample holds one RSS reading for a single plugin instance. Defined with
+// primitive types only so the admin package does not import
+// internal/plugin/process — the adapter in main.go converts between the two.
+type RSSSample struct {
+	InstanceID   string
+	InstanceName string
+	PluginID     string
+	Bytes        uint64
+	SampledAt    time.Time
+}
+
+// RSSAggregator returns the aggregate and per-instance RSS across all running
+// plugin subprocesses. Implemented by an adapter in main.go that wraps
+// *process.RSSSampler — the interface lives here so the admin package does not
+// import internal/plugin/process (package boundary).
+//
+// When plugins are disabled, the field on PluginHandler is nil and GetPluginRSS
+// returns 503.
+type RSSAggregator interface {
+	Aggregate() (totalBytes uint64, count int, perInstance []RSSSample)
+}
+
 // PluginHandler handles plugin-related admin endpoints.
 type PluginHandler struct {
 	q                PluginQuerier
@@ -177,6 +199,7 @@ type PluginHandler struct {
 	processManager   PluginProcessManager // nil means skip subprocess Stop
 	toolUnregistrar  ToolUnregistrar      // nil until #194 wires tools.Registrar
 	inflightCounter  InflightCounter      // may be nil; gates deactivate/delete on zero in-flight calls
+	rssAggregator    RSSAggregator        // nil when plugins are disabled; GetPluginRSS returns 503
 }
 
 // NewPluginHandler returns a PluginHandler backed by the given querier, event
@@ -240,6 +263,64 @@ func (h *PluginHandler) SetToolUnregistrar(u ToolUnregistrar) {
 // path). Called from main.go inside the plugins-enabled block.
 func (h *PluginHandler) SetInflightCounter(ic InflightCounter) {
 	h.inflightCounter = ic
+}
+
+// SetRSSAggregator wires the RSSAggregator (a main.go adapter wrapping
+// *process.RSSSampler) into the handler. A nil aggregator disables
+// GetPluginRSS (returns 503). Called from main.go inside the plugins-enabled
+// block after the RSSSampler is constructed.
+func (h *PluginHandler) SetRSSAggregator(a RSSAggregator) {
+	h.rssAggregator = a
+}
+
+// pluginRSSResponse is the JSON shape returned by GetPluginRSS.
+type pluginRSSResponse struct {
+	TotalBytes    uint64              `json:"total_bytes"`
+	InstanceCount int                 `json:"instance_count"`
+	Instances     []pluginRSSInstance `json:"instances"`
+}
+
+// pluginRSSInstance is one entry in the per-instance breakdown.
+type pluginRSSInstance struct {
+	InstanceID   string    `json:"instance_id"`
+	InstanceName string    `json:"instance_name"`
+	PluginID     string    `json:"plugin_id"`
+	RSSBytes     uint64    `json:"rss_bytes"`
+	SampledAt    time.Time `json:"sampled_at"`
+}
+
+// GetPluginRSS handles GET /api/v1/admin/plugins/rss.
+//
+// Returns the aggregate resident set size across all running plugin
+// subprocesses plus a per-instance breakdown sorted by RSS descending.
+// Samples are produced by the RSSSampler every 30s; the response reflects
+// the most recent snapshot.
+//
+// Returns 503 when the plugin subsystem is disabled (GLEIPNIR_PLUGINS_ENABLED=false).
+func (h *PluginHandler) GetPluginRSS(w http.ResponseWriter, r *http.Request) {
+	if h.rssAggregator == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "plugin system is disabled", "")
+		return
+	}
+
+	totalBytes, count, samples := h.rssAggregator.Aggregate()
+
+	instances := make([]pluginRSSInstance, len(samples))
+	for i, s := range samples {
+		instances[i] = pluginRSSInstance{
+			InstanceID:   s.InstanceID,
+			InstanceName: s.InstanceName,
+			PluginID:     s.PluginID,
+			RSSBytes:     s.Bytes,
+			SampledAt:    s.SampledAt,
+		}
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, pluginRSSResponse{
+		TotalBytes:    totalBytes,
+		InstanceCount: count,
+		Instances:     instances,
+	})
 }
 
 // instanceResponse is the JSON shape returned by GetInstance, PutSubscriptionScope,

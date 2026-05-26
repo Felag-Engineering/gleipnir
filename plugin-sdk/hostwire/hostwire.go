@@ -73,6 +73,11 @@ type Client struct {
 	// conn is the underlying gRPC connection backing the typed service clients.
 	// Retained here so Conn() can expose it to the host dispatcher layer.
 	conn *grpc.ClientConn
+
+	// Pid is the OS process ID of the plugin subprocess. Set by Launch after
+	// the handshake completes. Zero when not available (e.g. in tests that
+	// inject a stub LaunchFunc returning a manually constructed Client).
+	Pid int
 }
 
 // Conn returns the underlying gRPC connection that backs the typed service
@@ -321,6 +326,13 @@ func Launch(ctx context.Context, binaryPath string, host HostServer, opts Option
 				}
 			}
 		}()
+	}
+
+	// Extract the subprocess PID from go-plugin's reattach config so the host
+	// can sample /proc/<pid>/statm for memory accounting. ReattachConfig() is
+	// the only stable API on go-plugin's *plugin.Client that exposes the PID.
+	if rc := c.ReattachConfig(); rc != nil {
+		pluginClient.Pid = rc.Pid
 	}
 
 	teardown := func() { c.Kill() }

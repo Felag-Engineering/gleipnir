@@ -463,8 +463,7 @@ Plugin-author intent determines surfacing:
 ### 13.1 Memory
 
 - **GOMEMLIMIT advisory** set on plugin process start (manifest-declared or 256MB default). Soft, plugin-side.
-- **`gleipnir_plugin_process_rss_bytes`** sampled every 30s and surfaced in admin UI alongside health chip.
-- **Aggregate plugin RSS** displayed in `/admin/plugins` header (`Plugin memory: 412 MB across 3 instances`). Operators sizing the API container should reserve `host_baseline + sum(plugin_GOMEMLIMIT) × 1.2` to absorb burst above the soft limit.
+- **Container sizing:** operators should reserve `host_baseline + sum(plugin_GOMEMLIMIT) × 1.2` for the API container. The `/admin/plugins` page header shows aggregate plugin RSS in real time (`Plugin memory: 412 MB across 3 instances`, sampled every 30s via `gleipnir_plugin_process_rss_bytes{plugin, instance}`). Per-instance breakdown is available by clicking the summary. The gauge is also available for external Prometheus alerting.
 - **Circuit-break-on-OOM**: SIGKILL'd plugin processes count toward the failure-mode circuit breaker (§13.7).
 - Hard cgroup-per-subprocess deferred to v2. Implementing it inside the already-containerized API container is non-trivial Linux plumbing; first-party + admin-installed v1 plugins do not justify the complexity.
 

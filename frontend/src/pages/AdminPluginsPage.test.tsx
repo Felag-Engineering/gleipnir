@@ -19,7 +19,7 @@ vi.mock('@/hooks/queries/users')
 import { useCurrentUser } from '@/hooks/queries/users'
 
 vi.mock('@/hooks/queries/plugins')
-import { usePlugins } from '@/hooks/queries/plugins'
+import { usePlugins, usePluginRSS } from '@/hooks/queries/plugins'
 
 // --- Fixtures ---
 
@@ -139,8 +139,17 @@ afterEach(() => {
 describe('AdminPluginsPage', () => {
   // Default: no pending-review plugins. Tests that need pending plugins
   // call mockPluginList([...]) explicitly inside the test.
+  //
+  // usePluginRSS is mocked with zero instances so PluginMemoryBar renders
+  // nothing, keeping the existing tests unaffected by the new component.
   beforeEach(() => {
     mockPluginList([])
+    vi.mocked(usePluginRSS).mockReturnValue({
+      data: { total_bytes: 0, instance_count: 0, instances: [] },
+      isLoading: false,
+      isError: false,
+      status: 'success',
+    } as unknown as ReturnType<typeof usePluginRSS>)
   })
 
   it('shows "Needs re-authorization" section when at least one instance is pending_reauthorize', () => {
@@ -721,6 +730,33 @@ describe('AdminPluginsPage', () => {
     // Slack's instance should appear in the right pane without any click.
     const slackLinks = screen.getAllByRole('link', { name: 'slack-prod' })
     expect(slackLinks.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('shows memory bar summary when RSS data has running instances', () => {
+    mockInstances([INSTANCE_HEALTHY])
+    mockCurrentUser(['admin'])
+    vi.mocked(usePluginRSS).mockReturnValue({
+      data: {
+        total_bytes: 209715200, // 200 MB
+        instance_count: 1,
+        instances: [
+          {
+            instance_id: INSTANCE_ID_SLACK,
+            instance_name: 'slack-prod',
+            plugin_id: PLUGIN_ID,
+            rss_bytes: 209715200,
+            sampled_at: new Date().toISOString(),
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      status: 'success',
+    } as ReturnType<typeof usePluginRSS>)
+
+    renderPage()
+
+    expect(screen.getByText(/Plugin memory:/)).toBeInTheDocument()
   })
 
   // --- Pending review section ---

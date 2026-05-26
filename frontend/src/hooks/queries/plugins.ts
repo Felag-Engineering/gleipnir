@@ -3,6 +3,7 @@ import { apiFetch } from '@/api/fetch'
 import type {
   ApiPluginListItem,
   ApiPluginDetail,
+  ApiPluginRSS,
   ApiRedactedCredentials,
 } from '@/api/types'
 import { queryKeys } from '../queryKeys'
@@ -26,6 +27,19 @@ export function usePluginDetail(pluginId: string | undefined) {
         `/admin/plugins/${encodeURIComponent(pluginId!)}`,
       ),
     enabled: !!pluginId,
+  })
+}
+
+// usePluginRSS fetches the aggregate and per-instance resident set size across
+// all running plugin subprocesses. Refetches every 30s to match the backend
+// sampling interval — polling faster than the source data changes is wasteful.
+//
+// Returns 503 when the plugin subsystem is disabled (GLEIPNIR_PLUGINS_ENABLED=false).
+export function usePluginRSS() {
+  return useQuery({
+    queryKey: queryKeys.plugins.rss(),
+    queryFn: () => apiFetch<ApiPluginRSS>('/admin/plugins/rss'),
+    refetchInterval: 30_000,
   })
 }
 

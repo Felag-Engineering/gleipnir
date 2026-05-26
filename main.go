@@ -572,6 +572,14 @@ func run(cfg config.Config) error {
 		}
 	}
 
+	// Wire the RSS sampler inside the plugins-enabled block. When plugins are
+	// disabled, rssAggregator is never set and GetPluginRSS returns 503.
+	if mgr := loader.Manager(); mgr != nil && handlers.PluginAdminHandler != nil {
+		rssSampler := process.NewRSSSampler(mgr.Snapshot)
+		rssSampler.Start(ctx, 30*time.Second)
+		handlers.PluginAdminHandler.SetRSSAggregator(rssAggregatorAdapter{sampler: rssSampler})
+	}
+
 	// Register the post-install spawn hook so that a fresh install (via the
 	// admin endpoint or the fsnotify watcher) immediately spawns the plugin
 	// subprocess — no server restart required (#386). The same Installer instance
@@ -997,6 +1005,31 @@ func splitDotName(dotName string) (source, tool string, err error) {
 		return "", "", fmt.Errorf("tool name %q must be in source.tool dot-notation", dotName)
 	}
 	return parts[0], parts[1], nil
+}
+
+// rssAggregatorAdapter bridges *process.RSSSampler to admin.RSSAggregator.
+//
+// The admin package defines its own RSSSample type with primitive fields only
+// so it does not need to import internal/plugin/process. This adapter converts
+// between the two types at wiring time (main.go), keeping the package boundary
+// clean. The pattern mirrors managerConnFactory and PluginProcessManager.
+type rssAggregatorAdapter struct {
+	sampler *process.RSSSampler
+}
+
+func (a rssAggregatorAdapter) Aggregate() (uint64, int, []admin.RSSSample) {
+	total, count, samples := a.sampler.Aggregate()
+	out := make([]admin.RSSSample, len(samples))
+	for i, s := range samples {
+		out[i] = admin.RSSSample{
+			InstanceID:   s.InstanceID,
+			InstanceName: s.InstanceName,
+			PluginID:     s.PluginID,
+			Bytes:        s.Bytes,
+			SampledAt:    s.SampledAt,
+		}
+	}
+	return total, count, out
 }
 
 // pluginInstanceResolver adapts *db.Queries to satisfy policy.InstanceManifestResolver.

@@ -707,3 +707,19 @@ export interface ApiRedactedCredentials {
   // missing or has a zero expiry.
   token_expires_at?: string
 }
+
+// Matches admin.pluginRSSInstance → GetPluginRSS handler.
+export interface ApiPluginRSSInstance {
+  instance_id: string
+  instance_name: string
+  plugin_id: string
+  rss_bytes: number
+  sampled_at: string
+}
+
+// Matches admin.pluginRSSResponse → GetPluginRSS handler.
+export interface ApiPluginRSS {
+  total_bytes: number
+  instance_count: number
+  instances: ApiPluginRSSInstance[]
+}

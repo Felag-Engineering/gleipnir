@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { formatDuration, formatDurationMs, formatTokens, formatTimestamp, formatTimeAgo, formatCountdown, computeRunDuration, formatDate, getPreferredTimezone, formatProviderName } from '@/utils/format'
+import { formatDuration, formatDurationMs, formatTokens, formatTimestamp, formatTimeAgo, formatCountdown, computeRunDuration, formatDate, getPreferredTimezone, formatProviderName, formatBytes } from '@/utils/format'
 
 describe('formatDuration', () => {
   it('returns — for null', () => {
@@ -279,5 +279,43 @@ describe('computeRunDuration', () => {
   it('returns NaN for invalid timestamps', () => {
     const run = { started_at: 'bad', completed_at: 'also-bad' }
     expect(computeRunDuration(run)).toBeNaN()
+  })
+})
+
+describe('formatBytes', () => {
+  it('returns "0 B" for zero', () => {
+    expect(formatBytes(0)).toBe('0 B')
+  })
+
+  it('returns bytes for values under 1 KB', () => {
+    expect(formatBytes(1)).toBe('1 B')
+    expect(formatBytes(1023)).toBe('1023 B')
+  })
+
+  it('returns KB for values in the 1 KB–1 MB range', () => {
+    expect(formatBytes(1024)).toBe('1 KB')
+    // 1536 bytes = 1.5 KB
+    expect(formatBytes(1536)).toBe('1.5 KB')
+    // 1048575 = 1023.999... KB ≈ 1024 KB; toFixed(1) rounds to 1024.0 → "1024 KB"
+    expect(formatBytes(1048575)).toBe('1024 KB')
+  })
+
+  it('returns MB for values in the 1 MB–1 GB range', () => {
+    expect(formatBytes(1048576)).toBe('1 MB')
+    // 123456789 bytes ≈ 117.7 MB
+    expect(formatBytes(123456789)).toBe('117.7 MB')
+    // 431915008 / 1024 / 1024 ≈ 411.9 MB (the spec says "412 MB" as a rounded example)
+    expect(formatBytes(431915008)).toBe('411.9 MB')
+  })
+
+  it('returns GB for values of 1 GB or more', () => {
+    expect(formatBytes(1073741824)).toBe('1 GB')
+    // 1.5 GB
+    expect(formatBytes(1610612736)).toBe('1.5 GB')
+  })
+
+  it('drops trailing ".0" from decimal', () => {
+    // 2 MB exactly: toFixed(1) gives "2.0", unary + parses to 2, toString gives "2"
+    expect(formatBytes(2 * 1024 * 1024)).toBe('2 MB')
   })
 })

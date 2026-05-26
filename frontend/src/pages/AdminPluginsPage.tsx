@@ -5,6 +5,7 @@ import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { PluginHealthChip } from '@/components/admin/PluginHealthChip/PluginHealthChip'
 import { PluginCard } from '@/components/admin/PluginCard'
 import { InstallPluginButton } from '@/components/admin/InstallPluginButton'
+import { PluginMemoryBar } from '@/components/admin/PluginMemoryBar/PluginMemoryBar'
 import { AddInstanceModal } from '@/components/admin/AddInstanceModal'
 import { UninstallPluginModal } from '@/components/admin/UninstallPluginModal'
 import { Button } from '@/components/Button'
@@ -119,7 +120,7 @@ export default function AdminPluginsPage() {
       {/* InstallPluginButton lives outside the QueryBoundary so it stays
           visible during loading, error, and empty states. */}
       <PageHeader title="Plugins">
-        {/* Aggregate plugin RSS — separate issue */}
+        <PluginMemoryBar />
         {canManage && (
           <InstallPluginButton
             onInstalled={handleInstalled}
