@@ -109,44 +109,45 @@
   color: var(--text-muted);
 }
 
-/* Plugin group layout for the "All instances" section */
+/* Two-pane layout for the plugin list + detail view */
 
-.pluginGroupList {
+.twoPaneLayout {
   display: flex;
-  flex-direction: column;
   gap: var(--space-6);
+  min-height: 400px;
 }
 
-.pluginGroup {
+.leftPane {
+  flex: 0 0 340px;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  overflow-y: auto;
+  max-height: 70vh;
 }
 
-.pluginGroupHeader {
+.rightPane {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Detail pane header: plugin name + action buttons side by side */
+
+.detailHeader {
   display: flex;
-  flex-direction: row;
   justify-content: space-between;
   align-items: center;
-  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
-.pluginGroupTitle {
-  display: block;
-  font-size: var(--text-sm);
+.detailTitle {
+  font-size: var(--text-lg);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
+  margin: 0;
 }
 
-.pluginGroupId {
-  display: block;
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  margin-top: var(--space-1);
-}
-
-.pluginGroupActions {
+.detailActions {
   display: flex;
   gap: var(--space-2);
   align-items: center;
@@ -237,4 +238,12 @@
   font-size: var(--text-sm);
   color: var(--text-faint);
   margin: 0;
+}
+
+.emptyCode {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--bg-code);
+  border-radius: 3px;
+  padding: 1px var(--space-1);
 }

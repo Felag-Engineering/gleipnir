@@ -23,6 +23,25 @@ const INSTANCE_HEALTHY: ApiPluginInstanceForAudience = {
   version: 2,
   event_kinds: [],
   last_oauth_callback_url: CALLBACK_URL,
+  plugin_version: '1.2.0',
+  services: ['channel', 'trigger'],
+}
+
+// Second Slack instance on the same plugin — demonstrates instance-count > 1 on the card.
+const INSTANCE_HEALTHY_SLACK_STAGING: ApiPluginInstanceForAudience = {
+  id: 'inst-slack-staging',
+  plugin_id: 'plugin-slack-01',
+  plugin_name: 'Slack',
+  instance_name: 'slack-staging',
+  state: 'healthy',
+  auth_strategy: 'oauth2_authcode',
+  implements_notify: true,
+  implements_request: true,
+  config_schema: null,
+  version: 1,
+  event_kinds: [],
+  plugin_version: '1.2.0',
+  services: ['channel', 'trigger'],
 }
 
 const INSTANCE_PENDING_REAUTH: ApiPluginInstanceForAudience = {
@@ -39,6 +58,8 @@ const INSTANCE_PENDING_REAUTH: ApiPluginInstanceForAudience = {
   event_kinds: [],
   last_oauth_callback_url: OLD_CALLBACK_URL,
   health_detail: `public_url changed: recorded callback "${OLD_CALLBACK_URL}" no longer matches current "${CALLBACK_URL}"; re-authorize to update`,
+  plugin_version: '2.0.1',
+  services: ['tool'],
 }
 
 const INSTANCE_UNHEALTHY: ApiPluginInstanceForAudience = {
@@ -53,6 +74,8 @@ const INSTANCE_UNHEALTHY: ApiPluginInstanceForAudience = {
   config_schema: null,
   version: 1,
   event_kinds: [],
+  plugin_version: '0.9.0',
+  services: ['tool', 'channel'],
 }
 
 function makeQueryClient(
@@ -105,7 +128,9 @@ export const AllHealthy: Story = {
   render: () => <Wrapper instances={[INSTANCE_HEALTHY]} />,
 }
 
-// Admin view — Install plugin button and "Add instance" buttons are visible.
+// Admin view with two plugins and two Slack instances — shows the two-pane layout
+// with the left pane having cards (Slack with 2 instances, GitHub with 1), and the
+// right pane showing the auto-selected first plugin's instance table.
 export const Admin: Story = {
   parameters: {
     msw: {
@@ -132,7 +157,21 @@ export const Admin: Story = {
     },
   },
   render: () => (
-    <Wrapper instances={[INSTANCE_HEALTHY, INSTANCE_UNHEALTHY]} currentUser={ADMIN_USER} />
+    <Wrapper
+      instances={[INSTANCE_HEALTHY, INSTANCE_HEALTHY_SLACK_STAGING, INSTANCE_UNHEALTHY]}
+      currentUser={ADMIN_USER}
+    />
+  ),
+}
+
+// TwoPluginsSelected — two plugins visible, demonstrating how clicking between
+// cards updates the right-pane detail view.
+export const TwoPluginsSelected: Story = {
+  render: () => (
+    <Wrapper
+      instances={[INSTANCE_HEALTHY, INSTANCE_UNHEALTHY]}
+      currentUser={ADMIN_USER}
+    />
   ),
 }
 
@@ -160,7 +199,7 @@ export const AdminEmpty: Story = {
 }
 
 // One instance pending re-authorization — shows the "Needs re-authorization"
-// section at the top, grouped separately from the "All instances" list.
+// section at the top above the two-pane layout.
 export const WithPendingReauth: Story = {
   render: () => (
     <Wrapper instances={[INSTANCE_PENDING_REAUTH, INSTANCE_HEALTHY, INSTANCE_UNHEALTHY]} currentUser={ADMIN_USER} />

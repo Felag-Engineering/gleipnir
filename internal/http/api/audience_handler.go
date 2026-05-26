@@ -148,6 +148,13 @@ type pluginInstanceForAudienceDTO struct {
 	// by the admin/plugins page to help operators understand which URL needs to be
 	// updated in the provider after a public_url change (#230).
 	LastOauthCallbackUrl string `json:"last_oauth_callback_url,omitempty"`
+	// PluginVersion is the SemVer version string from the manifest (e.g. "1.0.0").
+	// Used by the admin/plugins page to display the version on each plugin card.
+	PluginVersion string `json:"plugin_version"`
+	// Services lists the gRPC services declared by the plugin manifest.
+	// Possible values: "tool", "trigger", "channel". Omitted when empty.
+	// Used by the admin/plugins page to render service badges on plugin cards.
+	Services []string `json:"services,omitempty"`
 }
 
 // ListPluginInstances handles GET /api/v1/admin/plugin-instances.
@@ -261,6 +268,20 @@ func (h *AudienceHandler) ListPluginInstances(w http.ResponseWriter, r *http.Req
 			lastCallbackURL = *inst.LastOauthCallbackUrl
 		}
 
+		// Derive the declared service list from the manifest Services field.
+		// All instances of the same plugin share the same manifest, so this
+		// value is identical across instances.
+		var services []string
+		if manifest.Services.Tool != "" {
+			services = append(services, "tool")
+		}
+		if manifest.Services.Trigger != "" {
+			services = append(services, "trigger")
+		}
+		if manifest.Services.Channel != "" {
+			services = append(services, "channel")
+		}
+
 		dtos = append(dtos, pluginInstanceForAudienceDTO{
 			ID:                   inst.ID,
 			PluginID:             inst.PluginID,
@@ -277,6 +298,8 @@ func (h *AudienceHandler) ListPluginInstances(w http.ResponseWriter, r *http.Req
 			AuthStrategy:         string(manifest.Auth.Strategy),
 			HealthDetail:         healthDetail,
 			LastOauthCallbackUrl: lastCallbackURL,
+			PluginVersion:        manifest.Version,
+			Services:             services,
 		})
 	}
 
