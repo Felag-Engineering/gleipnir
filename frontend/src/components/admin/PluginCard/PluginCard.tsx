@@ -5,9 +5,11 @@ import styles from './PluginCard.module.css'
 interface PluginCardProps {
   pluginName: string
   pluginVersion: string
+  pluginId: string
   services: string[]
   instanceCount: number
   aggregateHealth: PluginHealthState
+  hasSbom: boolean
   isSelected: boolean
   onClick: () => void
 }
@@ -30,9 +32,11 @@ const SERVICE_BADGE_CLASS: Record<string, string> = {
 export function PluginCard({
   pluginName,
   pluginVersion,
+  pluginId: _pluginId,
   services,
   instanceCount,
   aggregateHealth,
+  hasSbom,
   isSelected,
   onClick,
 }: PluginCardProps) {
@@ -60,13 +64,19 @@ export function PluginCard({
         )}
       </div>
 
-      {services.length > 0 && (
+      {(services.length > 0 || hasSbom) && (
         <div className={styles.serviceBadges}>
           {services.map((svc) => (
             <span key={svc} className={SERVICE_BADGE_CLASS[svc] ?? styles.serviceTool}>
               {SERVICE_LABEL[svc] ?? svc}
             </span>
           ))}
+          {/* Non-interactive badge: the card has role="button", so an <a> inside
+              would be an ARIA nesting violation. The clickable download link lives
+              in the right-pane detail panel instead. */}
+          {hasSbom && (
+            <span className={styles.sbomBadge}>SBOM</span>
+          )}
         </div>
       )}
 

@@ -79,3 +79,8 @@
   composes: badgeRect from '../../../styles/badges.module.css';
   composes: colorPurple from '../../../styles/badges.module.css';
 }
+
+.sbomBadge {
+  composes: badgeRect from '../../../styles/badges.module.css';
+  composes: colorGreen from '../../../styles/badges.module.css';
+}

@@ -44,7 +44,7 @@ export default function AdminPluginsPage() {
 
   // Derive one card per unique plugin_id. Insertion order is stable across
   // refetches (same ordering as the old groupByPluginId function).
-  const pluginCards = derivePluginCards(allInstances)
+  const pluginCards = derivePluginCards(allInstances, pluginList ?? [])
 
   // Which plugin's detail pane is currently shown on the right.
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null)
@@ -220,9 +220,11 @@ export default function AdminPluginsPage() {
                 key={card.pluginId}
                 pluginName={card.pluginName}
                 pluginVersion={card.pluginVersion}
+                pluginId={card.pluginId}
                 services={card.services}
                 instanceCount={card.instances.length}
                 aggregateHealth={card.aggregateHealth}
+                hasSbom={card.hasSbom}
                 isSelected={card.pluginId === selectedPluginId}
                 onClick={() => setSelectedPluginId(card.pluginId)}
               />
@@ -279,6 +281,19 @@ export default function AdminPluginsPage() {
                   </div>
                 )}
               </div>
+
+              {selectedCard.hasSbom && (
+                <div className={styles.detailMeta}>
+                  <a
+                    href={`/api/v1/admin/plugins/${encodeURIComponent(selectedCard.pluginId)}/sbom`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={styles.sbomLink}
+                  >
+                    Download SBOM
+                  </a>
+                </div>
+              )}
 
               <div className={styles.tableWrapper}>
                 <table className={styles.table}>
@@ -368,12 +383,24 @@ interface PluginCardData {
   services: string[]
   instances: ApiPluginInstanceForAudience[]
   aggregateHealth: PluginHealthState
+  hasSbom: boolean
 }
 
 // derivePluginCards groups instances by plugin_id (preserving insertion order
 // so the list is stable across refetches) and computes the aggregate health
 // state (worst across all instances) for each plugin card.
-function derivePluginCards(instances: ApiPluginInstanceForAudience[]): PluginCardData[] {
+//
+// pluginList is used to look up has_sbom by plugin UUID (inst.plugin_id). The
+// map is keyed by p.id because that is what inst.plugin_id carries.
+function derivePluginCards(
+  instances: ApiPluginInstanceForAudience[],
+  pluginList: ApiPluginListItem[],
+): PluginCardData[] {
+  const pluginMap = new Map<string, ApiPluginListItem>()
+  for (const p of pluginList) {
+    pluginMap.set(p.id, p)
+  }
+
   const order: string[] = []
   const map = new Map<string, PluginCardData>()
 
@@ -390,6 +417,7 @@ function derivePluginCards(instances: ApiPluginInstanceForAudience[]): PluginCar
         services: inst.services ?? [],
         instances: [],
         aggregateHealth: 'healthy',
+        hasSbom: pluginMap.get(inst.plugin_id)?.has_sbom ?? false,
       })
     }
     map.get(inst.plugin_id)!.instances.push(inst)

@@ -302,3 +302,21 @@
   border-radius: 3px;
   padding: 1px var(--space-1);
 }
+
+/* SBOM download row between the detail header and the instance table */
+
+.detailMeta {
+  display: flex;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.sbomLink {
+  font-size: var(--text-sm);
+  color: var(--color-green);
+  text-decoration: none;
+}
+
+.sbomLink:hover {
+  text-decoration: underline;
+}

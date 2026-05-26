@@ -2975,3 +2975,206 @@ func TestPluginHandler_GetPluginRSS_ZeroInstances(t *testing.T) {
 		t.Errorf("instances len = %d, want 0", len(resp.Instances))
 	}
 }
+
+// sbomManifest is a manifest that declares an SBOM file.
+const sbomManifest = `schema_version: v1
+name: sbom-plugin
+version: 1.0.0
+services:
+  tool: v1
+auth:
+  mode: instance_credentials
+  strategy: none
+sbom: sbom.cyclonedx.json
+`
+
+// sbomManifestSpdx declares an SBOM with an SPDX text extension (not JSON).
+const sbomManifestSpdx = `schema_version: v1
+name: sbom-plugin
+version: 1.0.0
+services:
+  tool: v1
+auth:
+  mode: instance_credentials
+  strategy: none
+sbom: sbom.spdx.txt
+`
+
+// sbomManifestTraversal declares an SBOM path that tries to escape the bundle dir.
+const sbomManifestTraversal = `schema_version: v1
+name: sbom-plugin
+version: 1.0.0
+services:
+  tool: v1
+auth:
+  mode: instance_credentials
+  strategy: none
+sbom: ../../etc/passwd
+`
+
+// noSbomManifest is a manifest with no sbom field.
+const noSbomManifest = `schema_version: v1
+name: sbom-plugin
+version: 1.0.0
+services:
+  tool: v1
+auth:
+  mode: instance_credentials
+  strategy: none
+`
+
+// serveGetSBOM sets up a chi router with GetPluginSBOM registered and issues
+// a GET request for the given pluginID.
+func serveGetSBOM(h *PluginHandler, pluginID string) *httptest.ResponseRecorder {
+	router := chi.NewRouter()
+	router.Get("/plugins/{id}/sbom", h.GetPluginSBOM)
+	req := httptest.NewRequest(http.MethodGet, "/plugins/"+pluginID+"/sbom", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestGetPluginSBOM_Success(t *testing.T) {
+	// Write an SBOM file in a temp bundle directory.
+	bundleDir := t.TempDir()
+	binaryPath := filepath.Join(bundleDir, "plugin-binary")
+	sbomContent := []byte(`{"bomFormat":"CycloneDX","specVersion":"1.4"}`)
+	if err := os.WriteFile(filepath.Join(bundleDir, "sbom.cyclonedx.json"), sbomContent, 0o644); err != nil {
+		t.Fatalf("write sbom: %v", err)
+	}
+
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-sbom",
+		Name:             "sbom-plugin",
+		ManifestSnapshot: sbomManifest,
+		BinaryPath:       &binaryPath,
+	})
+
+	h := NewPluginHandler(q, nil, nil)
+	rec := serveGetSBOM(h, "plugin-sbom")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/vnd.cyclonedx+json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/vnd.cyclonedx+json")
+	}
+	if body := rec.Body.Bytes(); string(body) != string(sbomContent) {
+		t.Errorf("body = %q, want %q", body, sbomContent)
+	}
+}
+
+func TestGetPluginSBOM_NotFound_NoPlugin(t *testing.T) {
+	h := NewPluginHandler(newFakePluginQuerier(), nil, nil)
+	rec := serveGetSBOM(h, "plugin-missing")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestGetPluginSBOM_NotFound_NoBinaryPath(t *testing.T) {
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-nobinary",
+		Name:             "sbom-plugin",
+		ManifestSnapshot: sbomManifest,
+		BinaryPath:       nil, // no bundle on disk
+	})
+
+	h := NewPluginHandler(q, nil, nil)
+	rec := serveGetSBOM(h, "plugin-nobinary")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestGetPluginSBOM_NotFound_NoSBOMField(t *testing.T) {
+	bundleDir := t.TempDir()
+	binaryPath := filepath.Join(bundleDir, "plugin-binary")
+
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-nosbom",
+		Name:             "sbom-plugin",
+		ManifestSnapshot: noSbomManifest,
+		BinaryPath:       &binaryPath,
+	})
+
+	h := NewPluginHandler(q, nil, nil)
+	rec := serveGetSBOM(h, "plugin-nosbom")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestGetPluginSBOM_NotFound_FileMissing(t *testing.T) {
+	bundleDir := t.TempDir()
+	binaryPath := filepath.Join(bundleDir, "plugin-binary")
+	// Manifest says sbom.cyclonedx.json but we don't write it.
+
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-filemissing",
+		Name:             "sbom-plugin",
+		ManifestSnapshot: sbomManifest,
+		BinaryPath:       &binaryPath,
+	})
+
+	h := NewPluginHandler(q, nil, nil)
+	rec := serveGetSBOM(h, "plugin-filemissing")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestGetPluginSBOM_PathTraversal(t *testing.T) {
+	bundleDir := t.TempDir()
+	binaryPath := filepath.Join(bundleDir, "plugin-binary")
+
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-traversal",
+		Name:             "sbom-plugin",
+		ManifestSnapshot: sbomManifestTraversal,
+		BinaryPath:       &binaryPath,
+	})
+
+	h := NewPluginHandler(q, nil, nil)
+	rec := serveGetSBOM(h, "plugin-traversal")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (traversal rejected)", rec.Code)
+	}
+}
+
+func TestGetPluginSBOM_FallbackContentType(t *testing.T) {
+	bundleDir := t.TempDir()
+	binaryPath := filepath.Join(bundleDir, "plugin-binary")
+	sbomContent := []byte("SPDXVersion: SPDX-2.3\n")
+	if err := os.WriteFile(filepath.Join(bundleDir, "sbom.spdx.txt"), sbomContent, 0o644); err != nil {
+		t.Fatalf("write sbom: %v", err)
+	}
+
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-spdx",
+		Name:             "sbom-plugin",
+		ManifestSnapshot: sbomManifestSpdx,
+		BinaryPath:       &binaryPath,
+	})
+
+	h := NewPluginHandler(q, nil, nil)
+	rec := serveGetSBOM(h, "plugin-spdx")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want %q", ct, "text/plain; charset=utf-8")
+	}
+}

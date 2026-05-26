@@ -2150,6 +2150,84 @@ func (h *PluginHandler) Uninstall(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// GetPluginSBOM handles GET /api/v1/admin/plugins/{id}/sbom.
+//
+// Serves the raw SBOM file declared in the plugin's manifest. The SBOM path is
+// resolved relative to the installed bundle directory (filepath.Dir of
+// binary_path). Returns 404 when:
+//   - the plugin does not exist
+//   - binary_path is nil (bundle not on disk)
+//   - the manifest declares no sbom field
+//   - the resolved path escapes the bundle directory
+//   - the file does not exist on disk
+//
+// Content-Type is application/vnd.cyclonedx+json for .json/.cdx.json files;
+// text/plain for everything else (acceptance criteria fallback).
+func (h *PluginHandler) GetPluginSBOM(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+
+	plugin, err := h.q.GetPluginByID(ctx, pluginID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		return
+	}
+
+	if plugin.BinaryPath == nil {
+		httputil.WriteError(w, http.StatusNotFound, "SBOM not available: plugin bundle not on disk", "")
+		return
+	}
+
+	var m sdkmanifest.Manifest
+	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
+		return
+	}
+
+	if m.SBOM == "" {
+		httputil.WriteError(w, http.StatusNotFound, "plugin has no SBOM declared", "")
+		return
+	}
+
+	bundleDir := filepath.Dir(*plugin.BinaryPath)
+	sbomPath := filepath.Join(bundleDir, m.SBOM)
+
+	// Containment check: reject paths that escape the bundle directory
+	// (fail-closed per ADR-001, mirrors the Uninstall handler).
+	rel, relErr := filepath.Rel(bundleDir, sbomPath)
+	if relErr != nil || strings.HasPrefix(rel, "..") {
+		httputil.WriteError(w, http.StatusNotFound, "invalid SBOM path", "")
+		return
+	}
+
+	file, err := os.Open(sbomPath)
+	if os.IsNotExist(err) {
+		httputil.WriteError(w, http.StatusNotFound, "SBOM file not found on disk", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to open SBOM file", "")
+		return
+	}
+	defer file.Close()
+
+	name := filepath.Base(sbomPath)
+	if strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".cdx.json") {
+		w.Header().Set("Content-Type", "application/vnd.cyclonedx+json")
+	} else {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	}
+	w.Header().Set("Content-Disposition", "inline")
+
+	if _, copyErr := io.Copy(w, file); copyErr != nil {
+		slog.WarnContext(ctx, "GetPluginSBOM: write failed mid-stream", "err", copyErr)
+	}
+}
+
 // deriveFingerprint extracts the 8-byte key ID from a Minisign public key blob.
 // Returns a zero array if the blob is empty or unparseable (e.g. unsigned plugins
 // have an empty trusted_pubkey).
