@@ -10,9 +10,22 @@ const meta: Meta<typeof UninstallPluginModal> = {
 export default meta
 type Story = StoryObj<typeof UninstallPluginModal>
 
-// Default — idle state. Admin sees the plugin name, the instance list, and a
-// description of what will be removed.
+// Default (Ready) — no instances remain, plugin can be uninstalled immediately.
+// Admin sees a confirmation and the enabled "Uninstall plugin" button.
 export const Default: Story = {
+  args: {
+    pluginName: 'my-slack-plugin',
+    instanceNames: [],
+    onClose: () => {},
+    onConfirm: () => {},
+    isPending: false,
+    error: null,
+  },
+}
+
+// Blocked — instances must be deleted before the plugin can be uninstalled.
+// Submit is disabled and remaining instance names are listed.
+export const Blocked: Story = {
   args: {
     pluginName: 'my-slack-plugin',
     instanceNames: ['prod', 'staging'],
@@ -23,11 +36,11 @@ export const Default: Story = {
   },
 }
 
-// Pending — uninstall request is in flight; button is disabled.
+// Pending — uninstall request is in flight (zero instances); button is disabled.
 export const Pending: Story = {
   args: {
     pluginName: 'my-slack-plugin',
-    instanceNames: ['prod'],
+    instanceNames: [],
     onClose: () => {},
     onConfirm: () => {},
     isPending: true,
@@ -35,27 +48,14 @@ export const Pending: Story = {
   },
 }
 
-// ErrorReferenced — the backend returned 409 because a policy or audience
-// still references one of the plugin's instances.
+// ErrorReferenced — the backend returned an unexpected error.
 export const ErrorReferenced: Story = {
   args: {
     pluginName: 'my-slack-plugin',
-    instanceNames: ['prod', 'staging'],
-    onClose: () => {},
-    onConfirm: () => {},
-    isPending: false,
-    error: 'Policy "Nightly Sync" references instance prod. Remove all policy tool references before uninstalling.',
-  },
-}
-
-// NoInstances — plugin was installed but no instances were created yet.
-export const NoInstances: Story = {
-  args: {
-    pluginName: 'orphan-plugin',
     instanceNames: [],
     onClose: () => {},
     onConfirm: () => {},
     isPending: false,
-    error: null,
+    error: 'Server error — please try again.',
   },
 }

@@ -13,9 +13,12 @@ export interface UninstallPluginModalProps {
   error: string | null
 }
 
-// UninstallPluginModal confirms permanent removal of a plugin and all its
-// instances. The instance list is shown so the operator can verify scope before
-// committing. Subprocesses will be stopped and the binary directory removed.
+// UninstallPluginModal confirms permanent removal of a plugin.
+//
+// Since issue #243, the backend requires all instances to be removed first —
+// the plugin-level Remove is gated on zero instances. When instanceNames is
+// non-empty the modal is in a blocked state: it explains which instances must
+// be deleted first and disables the submit button.
 //
 // The caller owns mutation state (isPending, error) so this component is
 // purely presentational and easy to test.
@@ -27,14 +30,16 @@ export function UninstallPluginModal({
   isPending,
   error,
 }: UninstallPluginModalProps) {
+  const isBlocked = instanceNames.length > 0
+
   const footer = (
     <ModalFooter
       onCancel={onClose}
       onSubmit={onConfirm}
       isLoading={isPending}
-      submitLabel="Uninstall plugin"
+      submitLabel={isBlocked ? 'Cannot uninstall' : 'Uninstall plugin'}
       loadingLabel="Uninstalling…"
-      submitDisabled={isPending}
+      submitDisabled={isPending || isBlocked}
       variant="danger"
     />
   )
@@ -45,22 +50,30 @@ export function UninstallPluginModal({
         Permanently uninstall <strong>{pluginName}</strong>? This action cannot
         be undone.
       </p>
-      <p className={styles.body}>
-        All subprocesses will be stopped, pending requests cancelled, OAuth
-        tokens revoked, and the plugin binary directory removed.
-      </p>
 
-      {instanceNames.length > 0 && (
-        <div className={styles.instanceList}>
-          <p className={styles.instanceListLabel}>Instances that will be removed:</p>
-          <ul className={styles.instances}>
-            {instanceNames.map((name) => (
-              <li key={name} className={styles.instance}>
-                {name}
-              </li>
-            ))}
-          </ul>
-        </div>
+      {isBlocked ? (
+        <>
+          <p className={styles.body}>
+            All instances must be deleted before the plugin can be uninstalled.
+            Delete each instance below first, then return here to complete the
+            uninstall.
+          </p>
+          <div className={styles.instanceList}>
+            <p className={styles.instanceListLabel}>Remaining instances:</p>
+            <ul className={styles.instances}>
+              {instanceNames.map((name) => (
+                <li key={name} className={styles.instance}>
+                  {name}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </>
+      ) : (
+        <p className={styles.body}>
+          The plugin binary directory will be removed. There are no remaining
+          instances.
+        </p>
       )}
 
       {error != null && (

@@ -723,3 +723,89 @@ func TestPool_LookupCall_ReverseIndex(t *testing.T) {
 		t.Errorf("LookupCall(%q) = true after call completed, want false", callID)
 	}
 }
+
+// TestPool_InflightCountByInstance verifies that InflightCountByInstance returns
+// the correct count of in-flight calls per instance name, and that the count
+// drops to zero after the calls complete.
+func TestPool_InflightCountByInstance(t *testing.T) {
+	// callIDSeen receives a signal each time the server starts handling a call.
+	callIDSeen := make(chan struct{}, 10)
+	// unblock releases all blocked calls at once.
+	unblock := make(chan struct{})
+	var closeOnce sync.Once
+	doUnblock := func() { closeOnce.Do(func() { close(unblock) }) }
+
+	srv := &fakeToolServer{
+		callHook: func(ctx context.Context, _ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			callIDSeen <- struct{}{}
+			select {
+			case <-unblock:
+				return &toolv1.CallResponse{OutputJson: `"ok"`}, nil
+			case <-ctx.Done():
+				return nil, status.Error(codes.Canceled, "cancelled")
+			}
+		},
+	}
+
+	pool, cleanup := newTestPool(t, srv, func(cfg *dispatch.Config) {
+		cfg.CallTimeout = 5 * time.Second
+	})
+	defer func() {
+		doUnblock()
+		cleanup()
+	}()
+
+	var wg sync.WaitGroup
+
+	// Start two calls for "inst" and one call for "other".
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pool.Call(context.Background(), "run-a", "pol-a", "inst", "tool", `{}`) //nolint:errcheck
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		pool.Call(context.Background(), "run-b", "pol-b", "other", "tool", `{}`) //nolint:errcheck
+	}()
+
+	// Wait until all three calls are active inside the server hook.
+	for i := 0; i < 3; i++ {
+		select {
+		case <-callIDSeen:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for call %d to start", i+1)
+		}
+	}
+
+	// Assert per-instance counts while all calls are in-flight.
+	if got := pool.InflightCountByInstance("inst"); got != 2 {
+		t.Errorf("InflightCountByInstance(inst) = %d while in-flight, want 2", got)
+	}
+	if got := pool.InflightCountByInstance("other"); got != 1 {
+		t.Errorf("InflightCountByInstance(other) = %d while in-flight, want 1", got)
+	}
+	if got := pool.InflightCountByInstance("absent"); got != 0 {
+		t.Errorf("InflightCountByInstance(absent) = %d, want 0", got)
+	}
+
+	// Release all calls and wait for the goroutines to finish.
+	doUnblock()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("call goroutines did not return after unblock")
+	}
+
+	// Counts must drop to zero after completion.
+	if got := pool.InflightCountByInstance("inst"); got != 0 {
+		t.Errorf("InflightCountByInstance(inst) = %d after completion, want 0", got)
+	}
+	if got := pool.InflightCountByInstance("other"); got != 0 {
+		t.Errorf("InflightCountByInstance(other) = %d after completion, want 0", got)
+	}
+}

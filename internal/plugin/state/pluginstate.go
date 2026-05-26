@@ -52,7 +52,7 @@ type Querier interface {
 // rule ("plugin-self can only worsen; worst across plugin-self and host wins").
 //
 // This ordering is a design decision introduced in issue #191: the spec §8.1
-// specifies the merge rule but not the full total ordering across all 10 states.
+// specifies the merge rule but not the full total ordering across all 11 states.
 // The ranking here reflects the operational impact of each state:
 //
 //	0 = fully operational
@@ -63,6 +63,7 @@ type Querier interface {
 //	5 = cryptographic verification failed
 //	6 = manifest signature rejected
 //	7 = process crash
+//	8 = deliberately deactivated by admin (inactive) — deliberate total disable
 var severity = map[model.PluginHealthState]int{
 	model.PluginHealthStateHealthy:                 0,
 	model.PluginHealthStateUnsignedPermissive:      1,
@@ -75,6 +76,7 @@ var severity = map[model.PluginHealthState]int{
 	model.PluginHealthStateVerificationError:       5,
 	model.PluginHealthStateSignatureInvalid:        6,
 	model.PluginHealthStateCrashed:                 7,
+	model.PluginHealthStateInactive:                8,
 }
 
 // Severity returns the numeric severity rank for a state. Lower is better.
@@ -107,6 +109,7 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		// that must be visible regardless of operator-action-pending state.
 		// §8.1 severity ordering places unhealthy (3) strictly above any pending_* (2).
 		model.PluginHealthStateUnhealthy,
+		model.PluginHealthStateInactive, // #243: admin deactivates while pending
 	},
 	model.PluginHealthStatePendingManifestApproval: {
 		model.PluginHealthStateHealthy,
@@ -114,12 +117,14 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		model.PluginHealthStatePendingConfigMigration,
 		// #194: same rationale as pending_key_approval above.
 		model.PluginHealthStateUnhealthy,
+		model.PluginHealthStateInactive, // #243: admin deactivates while pending
 	},
 	model.PluginHealthStatePendingConfigMigration: {
 		model.PluginHealthStateHealthy,
 		model.PluginHealthStateVerificationError,
 		// #194: same rationale as pending_key_approval above.
 		model.PluginHealthStateUnhealthy,
+		model.PluginHealthStateInactive, // #243: admin deactivates while pending
 	},
 	model.PluginHealthStateHealthy: {
 		model.PluginHealthStateUnhealthy,
@@ -128,6 +133,7 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		model.PluginHealthStatePendingManifestApproval, // hot-reload detects manifest change
 		model.PluginHealthStatePendingKeyApproval,      // new signed update with mismatched key (#188)
 		model.PluginHealthStatePendingReauthorize,      // public_url changed; callback URL stale (#230)
+		model.PluginHealthStateInactive,                // #243: admin deactivates
 	},
 	model.PluginHealthStateUnsignedPermissive: {
 		model.PluginHealthStateUnhealthy,
@@ -136,6 +142,7 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		model.PluginHealthStatePendingManifestApproval,
 		model.PluginHealthStatePendingKeyApproval, // signed update arrives for previously-unsigned plugin (#188)
 		model.PluginHealthStatePendingReauthorize, // public_url changed (#230)
+		model.PluginHealthStateInactive,           // #243: admin deactivates
 	},
 	// #194 rationale: real availability problems must be visible regardless of
 	// pending_reauthorize. Exit edges include unhealthy/crashed/circuit_broken
@@ -145,6 +152,7 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		model.PluginHealthStateUnhealthy,
 		model.PluginHealthStateCrashed,
 		model.PluginHealthStateCircuitBroken,
+		model.PluginHealthStateInactive, // #243: admin deactivates while re-auth pending
 	},
 	model.PluginHealthStateUnhealthy: {
 		model.PluginHealthStateHealthy,
@@ -152,6 +160,7 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		model.PluginHealthStateCrashed,
 		model.PluginHealthStateCircuitBroken,
 		model.PluginHealthStatePendingKeyApproval, // key mismatch detected during unhealthy state (#188)
+		model.PluginHealthStateInactive,           // #243: admin deactivates
 	},
 	model.PluginHealthStateCircuitBroken: {
 		model.PluginHealthStateHealthy,
@@ -159,12 +168,22 @@ var legalTransitions = map[model.PluginHealthState][]model.PluginHealthState{
 		model.PluginHealthStateCrashed,
 		model.PluginHealthStatePendingKeyApproval, // key mismatch detected during circuit-broken state (#188)
 		model.PluginHealthStatePendingReauthorize, // public_url changed (#230)
+		model.PluginHealthStateInactive,           // #243: admin deactivates
 	},
 	model.PluginHealthStateCrashed: {
 		model.PluginHealthStateHealthy,
 		model.PluginHealthStateUnhealthy,
 		model.PluginHealthStatePendingKeyApproval, // key mismatch detected after crash (#188)
 		model.PluginHealthStatePendingReauthorize, // public_url changed (#230)
+		model.PluginHealthStateInactive,           // #243: admin deactivates after crash
+	},
+	// inactive is reachable from any non-terminal state (above) and exits to
+	// healthy or unhealthy when the admin re-activates the instance (#243).
+	// unhealthy is the initial target because the subprocess must re-handshake
+	// before the instance can be considered healthy.
+	model.PluginHealthStateInactive: {
+		model.PluginHealthStateHealthy,   // re-activated and subprocess comes up clean
+		model.PluginHealthStateUnhealthy, // re-activated; subprocess not yet healthy
 	},
 	// signature_invalid and verification_error are terminal — no outgoing edges.
 	// A re-install or admin key-rotation creates a fresh instance row.

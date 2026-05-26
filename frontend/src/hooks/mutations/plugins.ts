@@ -394,6 +394,45 @@ export function useDeletePluginInstance() {
   })
 }
 
+// useDeactivatePluginInstance sends POST .../deactivate to soft-stop an instance.
+// The subprocess is stopped and new tool calls are refused, but the DB row is
+// preserved so the instance can be reactivated. On success both the per-plugin
+// and flat instance lists are invalidated so health chips update immediately.
+// 409 if the instance already has in-flight calls or is in a terminal state.
+export function useDeactivatePluginInstance() {
+  const qc = useQueryClient()
+  return useMutation<void, ApiError, DeletePluginInstanceParams>({
+    mutationFn: ({ pluginId, instanceId }) =>
+      apiFetchVoid(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}/deactivate`,
+        { method: 'POST' },
+      ),
+    onSuccess: (_data, { pluginId }) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.plugins.instances(pluginId) })
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.pluginInstances })
+    },
+  })
+}
+
+// useActivatePluginInstance sends POST .../activate to re-enable a deactivated instance.
+// The subprocess is restarted and health transitions from inactive → unhealthy while
+// the plugin boots. On success both instance lists are invalidated.
+// 409 if the instance is not currently inactive.
+export function useActivatePluginInstance() {
+  const qc = useQueryClient()
+  return useMutation<void, ApiError, DeletePluginInstanceParams>({
+    mutationFn: ({ pluginId, instanceId }) =>
+      apiFetchVoid(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/instances/${encodeURIComponent(instanceId)}/activate`,
+        { method: 'POST' },
+      ),
+    onSuccess: (_data, { pluginId }) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.plugins.instances(pluginId) })
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.pluginInstances })
+    },
+  })
+}
+
 interface UninstallPluginParams {
   pluginId: string
 }

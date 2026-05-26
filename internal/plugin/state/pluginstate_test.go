@@ -120,6 +120,19 @@ func TestIsLegalTransition(t *testing.T) {
 		{model.PluginHealthStatePendingReauthorize, model.PluginHealthStateUnhealthy},
 		{model.PluginHealthStatePendingReauthorize, model.PluginHealthStateCrashed},
 		{model.PluginHealthStatePendingReauthorize, model.PluginHealthStateCircuitBroken},
+		// #243: inactive is reachable from every non-terminal state.
+		{model.PluginHealthStatePendingKeyApproval, model.PluginHealthStateInactive},
+		{model.PluginHealthStatePendingManifestApproval, model.PluginHealthStateInactive},
+		{model.PluginHealthStatePendingConfigMigration, model.PluginHealthStateInactive},
+		{model.PluginHealthStateHealthy, model.PluginHealthStateInactive},
+		{model.PluginHealthStateUnsignedPermissive, model.PluginHealthStateInactive},
+		{model.PluginHealthStatePendingReauthorize, model.PluginHealthStateInactive},
+		{model.PluginHealthStateUnhealthy, model.PluginHealthStateInactive},
+		{model.PluginHealthStateCircuitBroken, model.PluginHealthStateInactive},
+		{model.PluginHealthStateCrashed, model.PluginHealthStateInactive},
+		// #243: inactive exits to healthy or unhealthy on re-activation.
+		{model.PluginHealthStateInactive, model.PluginHealthStateHealthy},
+		{model.PluginHealthStateInactive, model.PluginHealthStateUnhealthy},
 	}
 	for _, pair := range legal {
 		if !IsLegalTransition(pair[0], pair[1]) {
@@ -139,6 +152,9 @@ func TestIsLegalTransition(t *testing.T) {
 		{model.PluginHealthStatePendingReauthorize, model.PluginHealthStatePendingKeyApproval},
 		// pending_key_approval cannot jump to pending_reauthorize (#230).
 		{model.PluginHealthStatePendingKeyApproval, model.PluginHealthStatePendingReauthorize},
+		// #243: terminal states cannot transition to inactive.
+		{model.PluginHealthStateSignatureInvalid, model.PluginHealthStateInactive},
+		{model.PluginHealthStateVerificationError, model.PluginHealthStateInactive},
 	}
 	for _, pair := range illegal {
 		if IsLegalTransition(pair[0], pair[1]) {
@@ -153,6 +169,20 @@ func TestPendingReauthorizeSeverity(t *testing.T) {
 	got := Severity(model.PluginHealthStatePendingReauthorize)
 	if got != 2 {
 		t.Errorf("Severity(pending_reauthorize) = %d, want 2", got)
+	}
+}
+
+func TestInactiveSeverity(t *testing.T) {
+	// inactive must sit at rank 8, above crashed (7), because it is a deliberate
+	// and total disable — worse than any runtime failure from an availability standpoint.
+	got := Severity(model.PluginHealthStateInactive)
+	if got != 8 {
+		t.Errorf("Severity(inactive) = %d, want 8", got)
+	}
+	// inactive must dominate crashed in WorstHealth.
+	worst := WorstHealth([]model.PluginHealthState{model.PluginHealthStateCrashed, model.PluginHealthStateInactive})
+	if worst != model.PluginHealthStateInactive {
+		t.Errorf("WorstHealth([crashed, inactive]) = %q, want inactive", worst)
 	}
 }
 
@@ -396,13 +426,22 @@ func TestWorstHealth(t *testing.T) {
 			want: model.PluginHealthStateUnhealthy,
 		},
 		{
-			name: "signature_invalid is worst",
+			name: "crashed dominates signature_invalid and verification_error",
 			states: []model.PluginHealthState{
 				model.PluginHealthStateCrashed,
 				model.PluginHealthStateSignatureInvalid,
 				model.PluginHealthStateVerificationError,
 			},
 			want: model.PluginHealthStateCrashed, // severity 7 > 6 > 5
+		},
+		{
+			name: "inactive dominates all other states",
+			states: []model.PluginHealthState{
+				model.PluginHealthStateCrashed,
+				model.PluginHealthStateInactive,
+				model.PluginHealthStateSignatureInvalid,
+			},
+			want: model.PluginHealthStateInactive, // severity 8 > 7 > 6
 		},
 	}
 

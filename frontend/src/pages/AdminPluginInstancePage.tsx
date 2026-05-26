@@ -15,6 +15,8 @@ import { useCurrentUser } from '@/hooks/queries/users'
 import {
   useSetInstanceSubscriptionScope,
   useDeletePluginInstance,
+  useDeactivatePluginInstance,
+  useActivatePluginInstance,
   useSetInstanceConfig,
   useAcceptPluginManifest,
 } from '@/hooks/mutations/plugins'
@@ -22,6 +24,7 @@ import { isOAuthRefreshFailure } from '@/utils/pluginHealth'
 import { queryKeys } from '@/hooks/queryKeys'
 import { ApiError, extractErrorMessage } from '@/api/fetch'
 import type { PluginAuthStrategy } from '@/api/types'
+import alertStyles from '@/styles/alerts.module.css'
 import styles from './AdminPluginInstancePage.module.css'
 
 // ── tab type ─────────────────────────────────────────────────────────────────
@@ -333,6 +336,12 @@ export default function AdminPluginInstancePage() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const deleteMutation = useDeletePluginInstance()
 
+  // Deactivate / Activate state
+  const [deactivateError, setDeactivateError] = useState<string | null>(null)
+  const [activateError, setActivateError] = useState<string | null>(null)
+  const deactivateMutation = useDeactivatePluginInstance()
+  const activateMutation = useActivatePluginInstance()
+
   // Accept-manifest state — committing the candidate manifest affects ALL
   // instances of this plugin, so the count is computed across the full list.
   const [showAcceptManifestModal, setShowAcceptManifestModal] = useState(false)
@@ -369,6 +378,32 @@ export default function AdminPluginInstancePage() {
         },
         onError: (err: unknown) => {
           setDeleteError(extractErrorMessage(err))
+        },
+      },
+    )
+  }
+
+  function handleDeactivate() {
+    if (!pluginId || !instanceId) return
+    setDeactivateError(null)
+    deactivateMutation.mutate(
+      { pluginId, instanceId },
+      {
+        onError: (err: unknown) => {
+          setDeactivateError(extractErrorMessage(err))
+        },
+      },
+    )
+  }
+
+  function handleActivate() {
+    if (!pluginId || !instanceId) return
+    setActivateError(null)
+    activateMutation.mutate(
+      { pluginId, instanceId },
+      {
+        onError: (err: unknown) => {
+          setActivateError(extractErrorMessage(err))
         },
       },
     )
@@ -461,6 +496,29 @@ export default function AdminPluginInstancePage() {
       </Link>
 
       <PageHeader title={`${pluginName} / ${instanceName}`}>
+        {canManage && instance?.state === 'inactive' && (
+          <Button
+            variant="secondary"
+            size="small"
+            disabled={activateMutation.isPending}
+            onClick={handleActivate}
+          >
+            {activateMutation.isPending ? 'Activating…' : 'Activate'}
+          </Button>
+        )}
+        {canManage &&
+          instance?.state !== 'inactive' &&
+          instance?.state !== 'signature_invalid' &&
+          instance?.state !== 'verification_error' && (
+            <Button
+              variant="secondary"
+              size="small"
+              disabled={deactivateMutation.isPending}
+              onClick={handleDeactivate}
+            >
+              {deactivateMutation.isPending ? 'Deactivating…' : 'Deactivate'}
+            </Button>
+          )}
         {canManage && (
           <Button
             variant="danger"
@@ -504,6 +562,21 @@ export default function AdminPluginInstancePage() {
             Review change
           </Button>
         </div>
+      )}
+
+      {instance?.state === 'inactive' && (
+        <div className={styles.inactiveBanner}>
+          This instance has been deactivated by an admin. The subprocess is stopped and tool
+          calls are refused. Click <strong>Activate</strong> to re-enable it.
+        </div>
+      )}
+
+      {deactivateError && (
+        <div className={alertStyles.alertError} role="alert">{deactivateError}</div>
+      )}
+
+      {activateError && (
+        <div className={alertStyles.alertError} role="alert">{activateError}</div>
       )}
 
       <nav className={styles.tabs} aria-label="Instance settings">

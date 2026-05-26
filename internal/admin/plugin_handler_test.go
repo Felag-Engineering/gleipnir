@@ -1278,6 +1278,8 @@ func (f *fakeTriggerRestarter) Restart(_ context.Context, instanceID string) {
 	f.mu.Unlock()
 }
 
+func (f *fakeTriggerRestarter) Stop(_ string) {}
+
 func (f *fakeTriggerRestarter) restarts() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1703,6 +1705,253 @@ func TestPluginHandler_PutInstanceConfig_MalformedManifest_500(t *testing.T) {
 	}
 }
 
+// ── Deactivate / Activate tests ──────────────────────────────────────────────
+
+// fakeInflightCounter satisfies InflightCounter for testing in-flight gate logic.
+type fakeInflightCounter struct {
+	counts map[string]int
+}
+
+func (f *fakeInflightCounter) InflightCountByInstance(name string) int {
+	if f.counts == nil {
+		return 0
+	}
+	return f.counts[name]
+}
+
+// serveDeactivateInstance wires the DeactivateInstance handler into a chi router.
+func serveDeactivateInstance(h *PluginHandler, pluginID, instanceID string) *httptest.ResponseRecorder {
+	r := chi.NewRouter()
+	r.Post("/admin/plugins/{id}/instances/{iid}/deactivate", h.DeactivateInstance)
+	req := httptest.NewRequest(http.MethodPost,
+		"/admin/plugins/"+pluginID+"/instances/"+instanceID+"/deactivate", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
+// serveActivateInstance wires the ActivateInstance handler into a chi router.
+func serveActivateInstance(h *PluginHandler, pluginID, instanceID string) *httptest.ResponseRecorder {
+	r := chi.NewRouter()
+	r.Post("/admin/plugins/{id}/instances/{iid}/activate", h.ActivateInstance)
+	req := httptest.NewRequest(http.MethodPost,
+		"/admin/plugins/"+pluginID+"/instances/"+instanceID+"/activate", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestPluginHandler_DeactivateInstance(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC) }
+
+	t.Run("404 unknown plugin", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		h := NewPluginHandler(q, nil, fixedClock)
+		rec := serveDeactivateInstance(h, "nonexistent-plugin", "inst-1")
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 for unknown plugin", rec.Code)
+		}
+	})
+
+	t.Run("404 unknown instance", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+		h := NewPluginHandler(q, nil, fixedClock)
+		rec := serveDeactivateInstance(h, "plugin-1", "nonexistent-inst")
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 for unknown instance", rec.Code)
+		}
+	})
+
+	t.Run("404 instance belongs to different plugin", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-other", InstanceName: "prod", HealthState: "healthy"})
+		h := NewPluginHandler(q, nil, fixedClock)
+		rec := serveDeactivateInstance(h, "plugin-1", "inst-1")
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 on plugin/instance mismatch", rec.Code)
+		}
+	})
+
+	t.Run("409 already inactive", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "inactive"})
+		h := NewPluginHandler(q, nil, fixedClock)
+		rec := serveDeactivateInstance(h, "plugin-1", "inst-1")
+		if rec.Code != http.StatusConflict {
+			t.Errorf("status = %d, want 409 when already inactive", rec.Code)
+		}
+	})
+
+	t.Run("409 terminal state signature_invalid", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "signature_invalid"})
+		h := NewPluginHandler(q, nil, fixedClock)
+		rec := serveDeactivateInstance(h, "plugin-1", "inst-1")
+		if rec.Code != http.StatusConflict {
+			t.Errorf("status = %d, want 409 for terminal state", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "terminal") {
+			t.Errorf("detail should mention terminal state, got: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("409 in-flight calls", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy"})
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetInflightCounter(&fakeInflightCounter{counts: map[string]int{"prod": 3}})
+		rec := serveDeactivateInstance(h, "plugin-1", "inst-1")
+		if rec.Code != http.StatusConflict {
+			t.Errorf("status = %d, want 409 for in-flight calls", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "3 in-flight") {
+			t.Errorf("detail should mention in-flight count, got: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("200 happy path: transitions to inactive, audit event emitted", func(t *testing.T) {
+		store := newPluginTestStore(t)
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy", Version: 0})
+		// Seed real store so SetHealthState (via GetPluginInstanceByID + UpdatePluginInstanceHealth)
+		// uses the fakeQuerier path — state machine operates on the fake querier.
+		_ = store
+
+		pm := &fakeProcessManager{}
+		restarter := &fakeTriggerRestarter{}
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetProcessManager(pm)
+		h.SetTriggerRestarter(restarter)
+		h.SetInflightCounter(&fakeInflightCounter{counts: map[string]int{"prod": 0}})
+
+		rec := serveDeactivateInstance(h, "plugin-1", "inst-1")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+		}
+
+		// Response must reflect inactive state.
+		if !strings.Contains(rec.Body.String(), `"inactive"`) {
+			t.Errorf("response should contain inactive state, got: %s", rec.Body.String())
+		}
+
+		// Audit event must be emitted.
+		var found bool
+		for _, ev := range q.auditEvents {
+			if ev.EventType == auditInstanceDeactivated {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected plugin_instance_deactivated audit event, got none")
+		}
+
+		// Subprocess must have been stopped.
+		pm.mu.Lock()
+		stoppedIDs := pm.stoppedIDs
+		pm.mu.Unlock()
+		if len(stoppedIDs) != 1 || stoppedIDs[0] != "inst-1" {
+			t.Errorf("expected Stop(inst-1), got %v", stoppedIDs)
+		}
+	})
+}
+
+func TestPluginHandler_ActivateInstance(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC) }
+
+	t.Run("404 unknown plugin", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		h := NewPluginHandler(q, nil, fixedClock)
+		rec := serveActivateInstance(h, "nonexistent-plugin", "inst-1")
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 for unknown plugin", rec.Code)
+		}
+	})
+
+	t.Run("404 unknown instance", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+		h := NewPluginHandler(q, nil, fixedClock)
+		rec := serveActivateInstance(h, "plugin-1", "nonexistent-inst")
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 for unknown instance", rec.Code)
+		}
+	})
+
+	t.Run("404 instance belongs to different plugin", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-other", InstanceName: "prod", HealthState: "inactive"})
+		h := NewPluginHandler(q, nil, fixedClock)
+		rec := serveActivateInstance(h, "plugin-1", "inst-1")
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 on plugin/instance mismatch", rec.Code)
+		}
+	})
+
+	t.Run("409 not inactive (healthy)", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy"})
+		h := NewPluginHandler(q, nil, fixedClock)
+		rec := serveActivateInstance(h, "plugin-1", "inst-1")
+		if rec.Code != http.StatusConflict {
+			t.Errorf("status = %d, want 409 when not inactive", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "healthy") {
+			t.Errorf("detail should mention current state, got: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("200 happy path: transitions to unhealthy, audit event emitted", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "inactive", Version: 0})
+
+		pm := &fakeProcessManager{}
+		restarter := &fakeTriggerRestarter{}
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetProcessManager(pm)
+		h.SetTriggerRestarter(restarter)
+
+		rec := serveActivateInstance(h, "plugin-1", "inst-1")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+		}
+
+		// Response must reflect unhealthy (subprocess not yet up).
+		if !strings.Contains(rec.Body.String(), `"unhealthy"`) {
+			t.Errorf("response should contain unhealthy state, got: %s", rec.Body.String())
+		}
+
+		// Audit event must be emitted.
+		var found bool
+		for _, ev := range q.auditEvents {
+			if ev.EventType == auditInstanceActivated {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected plugin_instance_activated audit event, got none")
+		}
+
+		// StartByPluginID must have been called.
+		pm.mu.Lock()
+		startedByPlugin := pm.startedByPlugin
+		pm.mu.Unlock()
+		if len(startedByPlugin) == 0 {
+			t.Error("expected StartByPluginID to be called")
+		}
+	})
+}
+
 // ── DeleteInstance tests ──────────────────────────────────────────────────────
 
 // fakeProcessManager is a PluginProcessManager stub that records Start and Stop calls.
@@ -1803,6 +2052,23 @@ func TestPluginHandler_DeleteInstance(t *testing.T) {
 		rec := serveDeleteInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 on plugin/instance mismatch", rec.Code)
+		}
+	})
+
+	t.Run("409 in-flight calls", func(t *testing.T) {
+		store := newPluginTestStore(t)
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy"})
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetStore(store)
+		h.SetInflightCounter(&fakeInflightCounter{counts: map[string]int{"prod": 3}})
+		rec := serveDeleteInstance(h, "plugin-1", "inst-1")
+		if rec.Code != http.StatusConflict {
+			t.Errorf("status = %d, want 409 for in-flight calls", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "3 in-flight") {
+			t.Errorf("detail should mention in-flight count, got: %s", rec.Body.String())
 		}
 	})
 
@@ -1963,53 +2229,38 @@ func TestPluginHandler_Uninstall(t *testing.T) {
 		}
 	})
 
-	t.Run("409 policy refs aggregated across instances", func(t *testing.T) {
+	t.Run("409 instances still exist", func(t *testing.T) {
+		// Per #243: uninstalling the plugin requires all instances to be removed
+		// first. The per-instance DeleteInstance handler enforces policy/audience
+		// and in-flight gates; Uninstall only checks that zero instances remain.
 		store := newPluginTestStore(t)
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "my-plugin", ManifestSnapshot: instanceConfigManifestNoSchema})
 		q.seed(db.PluginInstance{ID: "inst-a", PluginID: "plugin-1", InstanceName: "slack-prod", HealthState: "healthy"})
 		q.seed(db.PluginInstance{ID: "inst-b", PluginID: "plugin-1", InstanceName: "slack-staging", HealthState: "healthy"})
-		q.seedPolicy(db.Policy{
-			ID:   "pol-1",
-			Name: "Prod Policy",
-			Yaml: "trigger:\n  type: webhook\ncapabilities:\n  tools:\n    - tool: slack-prod.send\n",
-		})
 		h := NewPluginHandler(q, nil, fixedClock)
 		h.SetStore(store)
 
 		rec := serveUninstall(h, "plugin-1")
 		if rec.Code != http.StatusConflict {
-			t.Errorf("status = %d, want 409 for policy refs", rec.Code)
+			t.Errorf("status = %d, want 409 when instances still exist", rec.Code)
 		}
-		if !strings.Contains(rec.Body.String(), "Prod Policy") {
-			t.Errorf("detail must mention policy name, got: %s", rec.Body.String())
+		body := rec.Body.String()
+		if !strings.Contains(body, "all instances must be removed") {
+			t.Errorf("error must mention 'all instances must be removed', got: %s", body)
 		}
-	})
-
-	t.Run("409 audience refs aggregated across instances", func(t *testing.T) {
-		store := newPluginTestStore(t)
-		q := newFakePluginQuerier()
-		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "my-plugin", ManifestSnapshot: instanceConfigManifestNoSchema})
-		q.seed(db.PluginInstance{ID: "inst-a", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy"})
-		q.seedAudienceEntries("inst-a", []db.ListAudienceEntriesByInstanceRow{
-			{AudienceName: "ops-audience"},
-		})
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
-
-		rec := serveUninstall(h, "plugin-1")
-		if rec.Code != http.StatusConflict {
-			t.Errorf("status = %d, want 409 for audience refs", rec.Code)
+		if !strings.Contains(body, "slack-prod") {
+			t.Errorf("detail must list instance names, got: %s", body)
 		}
-		if !strings.Contains(rec.Body.String(), "ops-audience") {
-			t.Errorf("detail must mention audience name, got: %s", rec.Body.String())
+		if !strings.Contains(body, "slack-staging") {
+			t.Errorf("detail must list instance names, got: %s", body)
 		}
 	})
 
-	t.Run("204 happy path: instances and plugin removed, binary dir removed", func(t *testing.T) {
+	t.Run("204 happy path with zero instances: plugin removed, binary dir removed", func(t *testing.T) {
+		// When zero instances remain, uninstall proceeds immediately.
 		store := newPluginTestStore(t)
 		pluginsDir := t.TempDir()
-		// Create a fake binary directory to verify FS cleanup.
 		binaryDir := filepath.Join(pluginsDir, "installed", "my-plugin")
 		if err := os.MkdirAll(binaryDir, 0o755); err != nil {
 			t.Fatalf("create binary dir: %v", err)
@@ -2022,17 +2273,13 @@ func TestPluginHandler_Uninstall(t *testing.T) {
 		bp := binaryPath
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{
-			ID:               "plugin-1",
+			ID:               "plugin-2",
 			Name:             "my-plugin",
 			ManifestSnapshot: instanceConfigManifestNoSchema,
 			BinaryPath:       &bp,
 		})
-		q.seed(db.PluginInstance{ID: "inst-a", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy"})
-		q.seed(db.PluginInstance{ID: "inst-b", PluginID: "plugin-1", InstanceName: "staging", HealthState: "healthy"})
-		// Seed real store so DELETE finds actual rows (CASCADE removes instances).
-		seedStorePlugin(t, store, "plugin-1", "my-plugin", &bp)
-		seedStoreInstance(t, store, "inst-a", "plugin-1", "prod")
-		seedStoreInstance(t, store, "inst-b", "plugin-1", "staging")
+		// No instances seeded — zero instances triggers the happy path.
+		seedStorePlugin(t, store, "plugin-2", "my-plugin", &bp)
 
 		pm := &fakeProcessManager{}
 		h := NewPluginHandler(q, nil, fixedClock)
@@ -2040,28 +2287,14 @@ func TestPluginHandler_Uninstall(t *testing.T) {
 		h.SetProcessManager(pm)
 		h.SetPluginsDir(pluginsDir)
 
-		rec := serveUninstall(h, "plugin-1")
+		rec := serveUninstall(h, "plugin-2")
 		if rec.Code != http.StatusNoContent {
 			t.Fatalf("status = %d, want 204; body: %s", rec.Code, rec.Body.String())
 		}
 
-		// Plugin row and both instances must be gone from the real store.
-		if storeHasPlugin(t, store, "plugin-1") {
+		// Plugin row must be gone.
+		if storeHasPlugin(t, store, "plugin-2") {
 			t.Error("plugin should be deleted from real store")
-		}
-		if storeHasInstance(t, store, "inst-a") {
-			t.Error("instance inst-a should be deleted (CASCADE)")
-		}
-		if storeHasInstance(t, store, "inst-b") {
-			t.Error("instance inst-b should be deleted (CASCADE)")
-		}
-
-		// StopByPluginID must have been called.
-		pm.mu.Lock()
-		stoppedByPlugin := pm.stoppedByPlugin
-		pm.mu.Unlock()
-		if len(stoppedByPlugin) == 0 {
-			t.Error("expected StopByPluginID to be called")
 		}
 
 		// Audit event must be emitted.
@@ -2081,6 +2314,10 @@ func TestPluginHandler_Uninstall(t *testing.T) {
 			t.Errorf("expected binary dir to be removed, stat err: %v", err)
 		}
 	})
+
+	// NOTE: The old "204 happy path with instances" test was removed in #243.
+	// Uninstall now gates on zero instances; the new "204 happy path with zero
+	// instances" subtest (added above in this PR) covers the success path.
 
 	t.Run("204 binary_path nil: no FS op, plugin still removed", func(t *testing.T) {
 		store := newPluginTestStore(t)

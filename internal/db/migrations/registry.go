@@ -30,5 +30,6 @@ func All() []Migration {
 		&AddPluginOAuthNonces{},
 		&AddPendingReauthorizeHealthState{},
 		&AddPluginBinaryPath{},
+		&AddInactiveHealthState{},
 	}
 }

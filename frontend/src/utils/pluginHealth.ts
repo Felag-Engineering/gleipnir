@@ -15,6 +15,9 @@ const SEVERITY: Record<PluginHealthState, number> = {
   verification_error:         5,
   signature_invalid:          6,
   crashed:                    7,
+  // inactive is a deliberate admin disable — severity 8 so worstHealth correctly
+  // reflects that a deactivated instance is not operational (issue #243).
+  inactive:                   8,
 }
 
 // worstHealth returns the most severe state from the given array.
@@ -54,5 +57,6 @@ export function pluginHealthLabel(state: PluginHealthState): string {
     case 'verification_error':        return 'Verification error'
     case 'signature_invalid':         return 'Signature invalid'
     case 'crashed':                   return 'Crashed'
+    case 'inactive':                  return 'Inactive'
   }
 }

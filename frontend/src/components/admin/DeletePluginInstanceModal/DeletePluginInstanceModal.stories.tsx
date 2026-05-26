@@ -47,3 +47,17 @@ export const ErrorReferenced: Story = {
     error: 'Policy "Nightly Sync" still references this instance. Remove the policy tool reference first.',
   },
 }
+
+// Blocked — deletion cannot proceed because in-flight tool calls are active.
+// Submit is disabled and blockers are listed inside the alert.
+export const Blocked: Story = {
+  args: {
+    pluginName: 'my-slack-plugin',
+    instanceName: 'prod',
+    onClose: () => {},
+    onConfirm: () => {},
+    isPending: false,
+    error: null,
+    blockers: ['3 in-flight calls — wait for them to complete or time out'],
+  },
+}

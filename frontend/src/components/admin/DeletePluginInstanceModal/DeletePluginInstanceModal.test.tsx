@@ -51,4 +51,21 @@ describe('DeletePluginInstanceModal', () => {
     renderModal({ error: null })
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
+
+  it('shows "Cannot delete" label and disables submit when blockers are provided', () => {
+    renderModal({ blockers: ['3 in-flight calls'] })
+    const btn = screen.getByRole('button', { name: /cannot delete/i })
+    expect(btn).toBeDisabled()
+  })
+
+  it('lists each blocker inside the alert when blockers are provided', () => {
+    renderModal({ blockers: ['3 in-flight calls', 'policy: nightly-sync'] })
+    expect(screen.getByRole('alert')).toHaveTextContent('3 in-flight calls')
+    expect(screen.getByRole('alert')).toHaveTextContent('policy: nightly-sync')
+  })
+
+  it('shows normal "Delete instance" label when blockers is empty', () => {
+    renderModal({ blockers: [] })
+    expect(screen.getByRole('button', { name: /delete instance/i })).not.toBeDisabled()
+  })
 })

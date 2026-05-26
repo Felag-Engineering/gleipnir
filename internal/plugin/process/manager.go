@@ -36,6 +36,9 @@ var blockedHealthStates = map[model.PluginHealthState]bool{
 	model.PluginHealthStatePendingConfigMigration:  true,
 	model.PluginHealthStatePendingManifestApproval: true,
 	model.PluginHealthStateCrashed:                 true,
+	// inactive means deliberately deactivated by an admin (#243). StartAllActive
+	// must not re-spawn deactivated instances on server restart.
+	model.PluginHealthStateInactive: true,
 }
 
 // querier is the narrow database interface required by Manager. Using an

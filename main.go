@@ -568,6 +568,7 @@ func run(cfg config.Config) error {
 		if mgr := loader.Manager(); mgr != nil {
 			handlers.PluginAdminHandler.SetProcessManager(mgr)
 			handlers.PluginAdminHandler.SetPluginsDir(cfg.PluginsDir)
+			handlers.PluginAdminHandler.SetInflightCounter(pluginPool)
 		}
 	}
 

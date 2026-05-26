@@ -189,6 +189,25 @@ func (p *Pool) deregisterInflight(runID, callID string) {
 	delete(p.inflightByCallID, callID)
 }
 
+// InflightCountByInstance returns the number of in-flight tool calls currently
+// dispatched to the named plugin instance. This is used by the admin deactivate
+// and delete-instance handlers to gate actions that must not disrupt active work.
+//
+// The scan is O(n) over total in-flight calls, but n is bounded by
+// DefaultMaxConcurrent × instanceCount (~50×N) so it is acceptable for
+// infrequent admin actions.
+func (p *Pool) InflightCountByInstance(instanceName string) int {
+	p.inflightMu.RLock()
+	defer p.inflightMu.RUnlock()
+	count := 0
+	for _, b := range p.inflightByCallID {
+		if b.instanceName == instanceName {
+			count++
+		}
+	}
+	return count
+}
+
 // LookupCall returns context information for the in-flight call identified by callID.
 // Returns (CallInfo{}, false) when no call with that ID is currently in-flight.
 // Safe for concurrent use; reads under inflightMu.RLock so concurrent lookups
