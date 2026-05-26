@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { PageHeader } from '@/components/PageHeader'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { PluginHealthChip } from '@/components/admin/PluginHealthChip/PluginHealthChip'
+import { PluginCard } from '@/components/admin/PluginCard'
 import { InstallPluginButton } from '@/components/admin/InstallPluginButton'
 import { AddInstanceModal } from '@/components/admin/AddInstanceModal'
 import { UninstallPluginModal } from '@/components/admin/UninstallPluginModal'
@@ -12,7 +13,12 @@ import { useCurrentUser } from '@/hooks/queries/users'
 import { useUninstallPlugin } from '@/hooks/mutations/plugins'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import { extractErrorMessage } from '@/api/fetch'
-import type { ApiInstalledPlugin, ApiPluginInstanceForAudience } from '@/api/types'
+import { worstHealth } from '@/utils/pluginHealth'
+import type {
+  ApiInstalledPlugin,
+  ApiPluginInstanceForAudience,
+  PluginHealthState,
+} from '@/api/types'
 import styles from './AdminPluginsPage.module.css'
 
 export default function AdminPluginsPage() {
@@ -28,9 +34,21 @@ export default function AdminPluginsPage() {
 
   const needsReauth = allInstances.filter((inst) => inst.state === 'pending_reauthorize')
 
-  // Group the full list by plugin_id for the "All instances" section so we can
-  // render a per-plugin "Add instance" button in each group header.
-  const pluginGroups = groupByPluginId(allInstances)
+  // Derive one card per unique plugin_id. Insertion order is stable across
+  // refetches (same ordering as the old groupByPluginId function).
+  const pluginCards = derivePluginCards(allInstances)
+
+  // Which plugin's detail pane is currently shown on the right.
+  const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null)
+
+  // Auto-select the first plugin when data arrives and nothing is selected yet.
+  useEffect(() => {
+    if (selectedPluginId === null && pluginCards.length > 0) {
+      setSelectedPluginId(pluginCards[0].pluginId)
+    }
+  }, [selectedPluginId, pluginCards])
+
+  const selectedCard = pluginCards.find((c) => c.pluginId === selectedPluginId) ?? null
 
   // Tracks which plugin's "Add instance" modal is currently open.
   const [openAddInstance, setOpenAddInstance] = useState<{
@@ -46,7 +64,7 @@ export default function AdminPluginsPage() {
   } | null>(null)
   const [uninstallError, setUninstallError] = useState<string | null>(null)
 
-  // One ref per plugin group's <details> kebab element, keyed by pluginId.
+  // One ref per plugin's <details> kebab element, keyed by pluginId.
   // Used to close the disclosure when a menu item is activated.
   const kebabRefs = useRef<Map<string, HTMLDetailsElement>>(new Map())
 
@@ -64,6 +82,11 @@ export default function AdminPluginsPage() {
       {
         onSuccess: () => {
           setOpenUninstall(null)
+          // Select the first remaining plugin after this one is uninstalled.
+          const remaining = pluginCards
+            .map((c) => c.pluginId)
+            .filter((id) => id !== openUninstall.pluginId)
+          setSelectedPluginId(remaining[0] ?? null)
         },
         onError: (err: unknown) => {
           setUninstallError(extractErrorMessage(err))
@@ -72,22 +95,10 @@ export default function AdminPluginsPage() {
     )
   }
 
-  // lastInstalledPluginId drives the scroll-into-view effect after an install.
-  const [lastInstalledPluginId, setLastInstalledPluginId] = useState<string | null>(null)
-
-  // Scroll the newly installed plugin's section into view once it appears in
-  // the instance list (it only appears after the first instance is created).
-  useEffect(() => {
-    if (!lastInstalledPluginId) return
-    const el = document.getElementById(`plugin-group-${lastInstalledPluginId}`)
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      setLastInstalledPluginId(null)
-    }
-  }, [lastInstalledPluginId, allInstances])
-
   function handleInstalled(plugin: ApiInstalledPlugin) {
-    setLastInstalledPluginId(plugin.id)
+    // Select the newly installed plugin directly; the card list will include it
+    // once the query refetches (driven by InstallPluginButton's own invalidation).
+    setSelectedPluginId(plugin.id)
   }
 
   // Passed to InstallPluginButton so it can auto-clear the success card once
@@ -101,6 +112,7 @@ export default function AdminPluginsPage() {
       {/* InstallPluginButton lives outside the QueryBoundary so it stays
           visible during loading, error, and empty states. */}
       <PageHeader title="Plugins">
+        {/* Aggregate plugin RSS — separate issue */}
         {canManage && (
           <InstallPluginButton
             onInstalled={handleInstalled}
@@ -110,7 +122,7 @@ export default function AdminPluginsPage() {
       </PageHeader>
 
       <p className={styles.intro}>
-        All installed plugin instances and their current health state.
+        All installed plugins and their instances.
       </p>
 
       <QueryBoundary
@@ -121,11 +133,11 @@ export default function AdminPluginsPage() {
         skeleton={<SkeletonList count={3} height={48} gap={12} borderRadius={8} />}
         emptyState={
           <div className={styles.emptyState}>
-            <p className={styles.emptyHeadline}>No plugin instances</p>
+            <p className={styles.emptyHeadline}>No plugins installed yet</p>
             <p className={styles.emptySubtext}>
               {canManage
-                ? 'Use the Install plugin button above to add one.'
-                : 'Install a plugin to see instances here.'}
+                ? <>Drop a signed bundle into <code className={styles.emptyCode}>/plugins</code> to begin.</>
+                : 'No plugins are installed.'}
             </p>
           </div>
         }
@@ -174,93 +186,104 @@ export default function AdminPluginsPage() {
           </section>
         )}
 
-        <section className={styles.section}>
-          <h2 className={styles.sectionTitle}>All instances</h2>
-          <div className={styles.pluginGroupList}>
-            {pluginGroups.map(({ pluginId, pluginName, instances: groupInstances }) => (
-              <div
-                key={pluginId}
-                id={`plugin-group-${pluginId}`}
-                className={styles.pluginGroup}
-              >
-                <div className={styles.pluginGroupHeader}>
-                  <div>
-                    <span className={styles.pluginGroupTitle}>{pluginName}</span>
-                    <span className={styles.pluginGroupId}>{pluginId}</span>
-                  </div>
-                  {canManage && (
-                    <div className={styles.pluginGroupActions}>
-                      <Button
-                        variant="secondary"
-                        size="small"
-                        onClick={() =>
-                          setOpenAddInstance({ pluginId, pluginName })
-                        }
-                      >
-                        Add instance
-                      </Button>
-                      <details
-                        className={styles.kebab}
-                        ref={(el) => {
-                          if (el) kebabRefs.current.set(pluginId, el)
-                          else kebabRefs.current.delete(pluginId)
-                        }}
-                      >
-                        <summary className={styles.kebabToggle} aria-label="Plugin actions">
-                          &#8942;
-                        </summary>
-                        <div className={styles.kebabMenu}>
-                          <button
-                            type="button"
-                            className={styles.menuItemDanger}
-                            onClick={() => {
-                              closeKebab(pluginId)
-                              setUninstallError(null)
-                              setOpenUninstall({
-                                pluginId,
-                                pluginName,
-                                instanceNames: groupInstances.map((i) => i.instance_name),
-                              })
-                            }}
-                          >
-                            Uninstall plugin
-                          </button>
-                        </div>
-                      </details>
-                    </div>
-                  )}
-                </div>
-                <div className={styles.tableWrapper}>
-                  <table className={styles.table}>
-                    <thead>
-                      <tr>
-                        <th>Instance</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {groupInstances.map((inst) => (
-                        <tr key={inst.id}>
-                          <td>
-                            <Link
-                              to={`/admin/plugins/${encodeURIComponent(inst.plugin_id)}/instances/${encodeURIComponent(inst.id)}`}
-                              className={styles.nameLink}
-                            >
-                              {inst.instance_name}
-                            </Link>
-                          </td>
-                          <td>
-                            <PluginHealthChip state={inst.state} detail={inst.health_detail} />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+        <div className={styles.twoPaneLayout}>
+          {/* Left pane: one PluginCard per plugin */}
+          <div className={styles.leftPane}>
+            {pluginCards.map((card) => (
+              <PluginCard
+                key={card.pluginId}
+                pluginName={card.pluginName}
+                pluginVersion={card.pluginVersion}
+                services={card.services}
+                instanceCount={card.instances.length}
+                aggregateHealth={card.aggregateHealth}
+                isSelected={card.pluginId === selectedPluginId}
+                onClick={() => setSelectedPluginId(card.pluginId)}
+              />
             ))}
           </div>
-        </section>
+
+          {/* Right pane: instance list for the selected plugin */}
+          {selectedCard && (
+            <div className={styles.rightPane}>
+              <div className={styles.detailHeader}>
+                <h2 className={styles.detailTitle}>{selectedCard.pluginName}</h2>
+                {canManage && (
+                  <div className={styles.detailActions}>
+                    <Button
+                      variant="secondary"
+                      size="small"
+                      onClick={() =>
+                        setOpenAddInstance({
+                          pluginId: selectedCard.pluginId,
+                          pluginName: selectedCard.pluginName,
+                        })
+                      }
+                    >
+                      Add instance
+                    </Button>
+                    <details
+                      className={styles.kebab}
+                      ref={(el) => {
+                        if (el) kebabRefs.current.set(selectedCard.pluginId, el)
+                        else kebabRefs.current.delete(selectedCard.pluginId)
+                      }}
+                    >
+                      <summary className={styles.kebabToggle} aria-label="Plugin actions">
+                        &#8942;
+                      </summary>
+                      <div className={styles.kebabMenu}>
+                        <button
+                          type="button"
+                          className={styles.menuItemDanger}
+                          onClick={() => {
+                            closeKebab(selectedCard.pluginId)
+                            setUninstallError(null)
+                            setOpenUninstall({
+                              pluginId: selectedCard.pluginId,
+                              pluginName: selectedCard.pluginName,
+                              instanceNames: selectedCard.instances.map((i) => i.instance_name),
+                            })
+                          }}
+                        >
+                          Uninstall plugin
+                        </button>
+                      </div>
+                    </details>
+                  </div>
+                )}
+              </div>
+
+              <div className={styles.tableWrapper}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>Instance</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedCard.instances.map((inst) => (
+                      <tr key={inst.id}>
+                        <td>
+                          <Link
+                            to={`/admin/plugins/${encodeURIComponent(inst.plugin_id)}/instances/${encodeURIComponent(inst.id)}`}
+                            className={styles.nameLink}
+                          >
+                            {inst.instance_name}
+                          </Link>
+                        </td>
+                        <td>
+                          <PluginHealthChip state={inst.state} detail={inst.health_detail} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
       </QueryBoundary>
 
       {openAddInstance && (
@@ -293,28 +316,43 @@ export default function AdminPluginsPage() {
   )
 }
 
-interface PluginGroup {
+interface PluginCardData {
   pluginId: string
   pluginName: string
+  pluginVersion: string
+  services: string[]
   instances: ApiPluginInstanceForAudience[]
+  aggregateHealth: PluginHealthState
 }
 
-// groupByPluginId preserves insertion order (first-seen plugin id wins) so the
-// list order is stable across refetches.
-function groupByPluginId(instances: ApiPluginInstanceForAudience[]): PluginGroup[] {
+// derivePluginCards groups instances by plugin_id (preserving insertion order
+// so the list is stable across refetches) and computes the aggregate health
+// state (worst across all instances) for each plugin card.
+function derivePluginCards(instances: ApiPluginInstanceForAudience[]): PluginCardData[] {
   const order: string[] = []
-  const map = new Map<string, PluginGroup>()
+  const map = new Map<string, PluginCardData>()
 
   for (const inst of instances) {
     if (!map.has(inst.plugin_id)) {
       order.push(inst.plugin_id)
       map.set(inst.plugin_id, {
         pluginId: inst.plugin_id,
+        // plugin_name and services/version come from the manifest and are
+        // identical across all instances of the same plugin, so taking from
+        // the first instance is correct.
         pluginName: inst.plugin_name ?? inst.plugin_id,
+        pluginVersion: inst.plugin_version ?? '',
+        services: inst.services ?? [],
         instances: [],
+        aggregateHealth: 'healthy',
       })
     }
     map.get(inst.plugin_id)!.instances.push(inst)
+  }
+
+  // Compute aggregate health after all instances are collected.
+  for (const card of map.values()) {
+    card.aggregateHealth = worstHealth(card.instances.map((i) => i.state))
   }
 
   return order.map((id) => map.get(id)!)

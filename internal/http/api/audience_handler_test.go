@@ -1227,3 +1227,71 @@ func TestListPluginInstances_AuthStrategyAndHealthDetail(t *testing.T) {
 		t.Errorf("health_detail = %q, want %q", items[0].HealthDetail, detail)
 	}
 }
+
+// TestListPluginInstances_PluginVersionAndServices verifies that plugin_version
+// and services are populated from the manifest for tool-only, trigger-only, and
+// channel-only plugins.
+func TestListPluginInstances_PluginVersionAndServices(t *testing.T) {
+	tests := []struct {
+		name         string
+		manifestYAML string
+		wantVersion  string
+		wantServices []string
+	}{
+		{
+			name:         "trigger plugin",
+			manifestYAML: triggerPluginManifestYAML,
+			wantVersion:  "1.0.0",
+			wantServices: []string{"trigger"},
+		},
+		{
+			name:         "channel plugin (both caps)",
+			manifestYAML: bothCapManifestYAML,
+			wantVersion:  "1.0.0",
+			wantServices: []string{"channel"},
+		},
+		{
+			name:         "tool-only plugin",
+			manifestYAML: nonChannelManifestYAML,
+			wantVersion:  "1.0.0",
+			wantServices: []string{"tool"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testutil.NewTestStore(t)
+			snap := configvalidate.NewSnapshotter(store.Queries())
+			t.Cleanup(func() { snap.ResetCache(); configvalidate.ResetCache() })
+
+			pluginID := seedPlugin(t, store, "test-plugin-"+tc.name, tc.manifestYAML)
+			seedPluginInstance(t, store, "test-inst-"+tc.name, pluginID)
+
+			w := do(t, newPluginInstancesRouter(store, snap), http.MethodGet, "/", nil, model.RoleOperator)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200\nbody: %s", w.Code, w.Body.String())
+			}
+
+			var items []struct {
+				PluginVersion string   `json:"plugin_version"`
+				Services      []string `json:"services"`
+			}
+			parseData(t, w, &items)
+
+			if len(items) != 1 {
+				t.Fatalf("got %d items, want 1", len(items))
+			}
+			if items[0].PluginVersion != tc.wantVersion {
+				t.Errorf("plugin_version = %q, want %q", items[0].PluginVersion, tc.wantVersion)
+			}
+			if len(items[0].Services) != len(tc.wantServices) {
+				t.Fatalf("services = %v, want %v", items[0].Services, tc.wantServices)
+			}
+			for i, svc := range tc.wantServices {
+				if items[0].Services[i] != svc {
+					t.Errorf("services[%d] = %q, want %q", i, items[0].Services[i], svc)
+				}
+			}
+		})
+	}
+}

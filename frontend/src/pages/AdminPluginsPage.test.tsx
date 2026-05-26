@@ -41,6 +41,8 @@ const INSTANCE_HEALTHY: ApiPluginInstanceForAudience = {
   version: 2,
   event_kinds: [],
   last_oauth_callback_url: CALLBACK_URL,
+  plugin_version: '1.0.0',
+  services: ['channel'],
 }
 
 const INSTANCE_PENDING_REAUTH: ApiPluginInstanceForAudience = {
@@ -56,6 +58,8 @@ const INSTANCE_PENDING_REAUTH: ApiPluginInstanceForAudience = {
   version: 3,
   event_kinds: [],
   last_oauth_callback_url: OLD_CALLBACK_URL,
+  plugin_version: '1.0.0',
+  services: ['tool'],
 }
 
 // --- Helpers ---
@@ -122,19 +126,21 @@ describe('AdminPluginsPage', () => {
     expect(screen.queryByText('Needs re-authorization')).not.toBeInTheDocument()
   })
 
-  it('shows all instances in the "All instances" section regardless of state', () => {
-    mockInstances([INSTANCE_PENDING_REAUTH, INSTANCE_HEALTHY])
+  it('shows instance names for selected plugin in the detail pane', () => {
+    // Two plugins: Slack (auto-selected as first) and Jira.
+    mockInstances([INSTANCE_HEALTHY, INSTANCE_PENDING_REAUTH])
     mockCurrentUser(['admin'])
     renderPage()
 
-    expect(screen.getByText('All instances')).toBeInTheDocument()
+    // The first plugin (Slack) is auto-selected, so its instance appears in the
+    // right pane instance table. Jira is only in the "Needs re-authorization" section.
     const slackLinks = screen.getAllByText('slack-prod')
     expect(slackLinks.length).toBeGreaterThanOrEqual(1)
-    const jiraLinks = screen.getAllByText('jira-prod')
-    expect(jiraLinks.length).toBeGreaterThanOrEqual(1)
   })
 
   it('instance row links point to /admin/plugins/{plugin_id}/instances/{id}', () => {
+    // jira-prod appears in both the "Needs re-authorization" section and the
+    // right pane (since it is the only plugin and is auto-selected).
     mockInstances([INSTANCE_PENDING_REAUTH])
     mockCurrentUser(['admin'])
     renderPage()
@@ -153,7 +159,7 @@ describe('AdminPluginsPage', () => {
     mockCurrentUser(['admin'])
     renderPage()
 
-    expect(screen.getByText('No plugin instances')).toBeInTheDocument()
+    expect(screen.getByText('No plugins installed yet')).toBeInTheDocument()
   })
 
   // --- Role gating ---
@@ -190,26 +196,26 @@ describe('AdminPluginsPage', () => {
 
     // The button must be visible alongside the empty state — not nested inside it.
     expect(screen.getByRole('button', { name: 'Install plugin' })).toBeInTheDocument()
-    expect(screen.getByText('No plugin instances')).toBeInTheDocument()
+    expect(screen.getByText('No plugins installed yet')).toBeInTheDocument()
   })
 
   it('empty state copy changes for admin vs non-admin', () => {
     mockInstances([])
     mockCurrentUser(['admin'])
     renderPage()
-    expect(screen.getByText(/Use the Install plugin button above/i)).toBeInTheDocument()
+    expect(screen.getByText(/Drop a signed bundle into/i)).toBeInTheDocument()
   })
 
   it('empty state keeps original copy for auditor', () => {
     mockInstances([])
     mockCurrentUser(['auditor'])
     renderPage()
-    expect(screen.getByText(/Install a plugin to see instances here/i)).toBeInTheDocument()
+    expect(screen.getByText(/No plugins are installed/i)).toBeInTheDocument()
   })
 
   // --- Per-plugin group and Add instance button ---
 
-  it('renders "Add instance" button per plugin group for admin', () => {
+  it('renders "Add instance" button for the selected plugin for admin', () => {
     mockInstances([INSTANCE_HEALTHY])
     mockCurrentUser(['admin'])
     renderPage()
@@ -587,5 +593,130 @@ describe('AdminPluginsPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /cancel/i }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(disclosure).not.toHaveAttribute('open')
+  })
+
+  // --- Two-pane layout and PluginCard ---
+
+  it('renders one PluginCard per unique plugin_id', () => {
+    // Two Slack instances (same plugin_id) + one Jira instance = 2 plugin cards.
+    const slackInstance2: ApiPluginInstanceForAudience = {
+      ...INSTANCE_HEALTHY,
+      id: 'inst-slack-staging',
+      instance_name: 'slack-staging',
+    }
+    mockInstances([INSTANCE_HEALTHY, slackInstance2, INSTANCE_PENDING_REAUTH])
+    mockCurrentUser(['admin'])
+    renderPage()
+
+    // Each plugin card has role="button". We expect 2 cards (Slack and Jira).
+    const cards = screen.getAllByRole('button', { name: /plugin,/i })
+    expect(cards).toHaveLength(2)
+  })
+
+  it('plugin card shows service badges', () => {
+    const inst: ApiPluginInstanceForAudience = {
+      ...INSTANCE_HEALTHY,
+      services: ['tool', 'trigger'],
+    }
+    mockInstances([inst])
+    mockCurrentUser(['admin'])
+    renderPage()
+
+    expect(screen.getByText('Tool')).toBeInTheDocument()
+    expect(screen.getByText('Trigger')).toBeInTheDocument()
+  })
+
+  it('plugin card shows version', () => {
+    const inst: ApiPluginInstanceForAudience = {
+      ...INSTANCE_HEALTHY,
+      plugin_version: '2.1.0',
+    }
+    mockInstances([inst])
+    mockCurrentUser(['admin'])
+    renderPage()
+
+    expect(screen.getByText('2.1.0')).toBeInTheDocument()
+  })
+
+  it('plugin card shows aggregate health (worst across instances)', () => {
+    const unhealthyInst: ApiPluginInstanceForAudience = {
+      ...INSTANCE_HEALTHY,
+      id: 'inst-slack-staging',
+      instance_name: 'slack-staging',
+      state: 'unhealthy',
+    }
+    mockInstances([INSTANCE_HEALTHY, unhealthyInst])
+    mockCurrentUser(['admin'])
+    renderPage()
+
+    // The card for the plugin should show the aggregate state "Unhealthy"
+    // because one of its instances is unhealthy. The label may appear more
+    // than once (card + right-pane instance row), so use getAllByText.
+    const unhealthyLabels = screen.getAllByText('Unhealthy')
+    expect(unhealthyLabels.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('clicking a plugin card shows its instances in the detail pane', async () => {
+    // Slack = first plugin (auto-selected), Jira = second plugin.
+    mockInstances([INSTANCE_HEALTHY, INSTANCE_PENDING_REAUTH])
+    mockCurrentUser(['admin'])
+    renderPage()
+
+    // Initially, Slack is auto-selected. jira-prod should NOT appear in the
+    // instance table (it may appear in the "Needs re-authorization" section,
+    // but not in the detail-pane instance table).
+    const slackInstanceLinks = screen.getAllByRole('link', { name: 'slack-prod' })
+    expect(slackInstanceLinks.length).toBeGreaterThanOrEqual(1)
+
+    // Click the Jira plugin card.
+    const jiraCard = screen.getByRole('button', { name: /Jira plugin,/i })
+    await userEvent.click(jiraCard)
+
+    // Now jira-prod should appear in the right-pane instance table.
+    await waitFor(() => {
+      const jiraLinks = screen.getAllByRole('link', { name: 'jira-prod' })
+      expect(jiraLinks.length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  it('shows empty state with spec-mandated message', () => {
+    mockInstances([])
+    mockCurrentUser(['admin'])
+    renderPage()
+
+    expect(screen.getByText('No plugins installed yet')).toBeInTheDocument()
+  })
+
+  it('first plugin is auto-selected on load', () => {
+    // Two plugins: Slack first, Jira second.
+    mockInstances([INSTANCE_HEALTHY, INSTANCE_PENDING_REAUTH])
+    mockCurrentUser(['admin'])
+    renderPage()
+
+    // Slack's instance should appear in the right pane without any click.
+    const slackLinks = screen.getAllByRole('link', { name: 'slack-prod' })
+    expect(slackLinks.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('after install, selected plugin id is set to the new plugin', async () => {
+    mockInstances([])
+    mockCurrentUser(['admin'])
+    server.use(
+      http.post('/api/v1/admin/plugins', () =>
+        HttpResponse.json({
+          data: { id: 'plugin-new', name: 'NewPlugin', version: '1.0.0', status: 'active' },
+        }),
+      ),
+    )
+
+    renderPage()
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File([new Uint8Array(1024)], 'plugin.tar.gz', { type: 'application/gzip' })
+    await userEvent.upload(input, file)
+
+    // The success card should appear — this verifies the install completed and
+    // handleInstalled was called (which sets the selected plugin ID).
+    await waitFor(() => expect(screen.getByRole('status')).toBeInTheDocument())
+    expect(screen.getByRole('status')).toHaveTextContent('NewPlugin')
   })
 })

@@ -529,6 +529,13 @@ export interface ApiPluginInstanceForAudience {
   // by the admin/plugins page to show which URL needs updating after a
   // public_url change (#230).
   last_oauth_callback_url?: string
+  // plugin_version is the plugin's SemVer from the manifest (e.g. "1.0.0").
+  // Used by the admin/plugins page to display the version on each plugin card.
+  plugin_version?: string
+  // services lists the gRPC services declared by the plugin manifest
+  // (e.g. ["tool", "trigger", "channel"]). Used by the admin/plugins page
+  // to render service badges on each plugin card.
+  services?: string[]
 }
 
 // ApiPluginInstanceDetail matches internal/admin/plugin_handler.go → instanceResponse.
