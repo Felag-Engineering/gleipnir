@@ -252,6 +252,44 @@ describe('InstallPluginButton', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Install failed: Signature verification failed')
   })
 
+  it('shows "Review & approve" link (not "Add instance") when status is pending_review', async () => {
+    server.use(
+      http.post('/api/v1/admin/plugins', () =>
+        HttpResponse.json({
+          data: { id: 'plugin-new-01', name: 'NewPlugin', version: '0.1.0', status: 'pending_review' },
+        }),
+      ),
+    )
+
+    renderButton()
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await userEvent.upload(input, makeFile(1024))
+
+    await waitFor(() => expect(screen.getByRole('status')).toBeInTheDocument())
+
+    // "Review & approve" link must be present; "Add instance" must NOT be present.
+    expect(screen.getByRole('link', { name: /review.*approve/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /add instance/i })).not.toBeInTheDocument()
+  })
+
+  it('shows "Add instance" button (not review link) when status is active', async () => {
+    server.use(
+      http.post('/api/v1/admin/plugins', () =>
+        HttpResponse.json({ data: PLUGIN_RESPONSE }), // status: 'active'
+      ),
+    )
+
+    renderButton()
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await userEvent.upload(input, makeFile(1024))
+
+    await waitFor(() => expect(screen.getByRole('status')).toBeInTheDocument())
+
+    // "Add instance" button must be present; review link must NOT be present.
+    expect(screen.getByRole('button', { name: /add instance/i })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /review.*approve/i })).not.toBeInTheDocument()
+  })
+
   it('shows dedicated amber notice for 503 (plugins disabled)', async () => {
     server.use(
       http.post('/api/v1/admin/plugins', () =>

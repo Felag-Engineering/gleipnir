@@ -9,6 +9,7 @@ import { AddInstanceModal } from '@/components/admin/AddInstanceModal'
 import { UninstallPluginModal } from '@/components/admin/UninstallPluginModal'
 import { Button } from '@/components/Button'
 import { usePluginInstancesForAudience } from '@/hooks/queries/admin'
+import { usePlugins } from '@/hooks/queries/plugins'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { useUninstallPlugin } from '@/hooks/mutations/plugins'
 import { usePageTitle } from '@/hooks/usePageTitle'
@@ -17,6 +18,7 @@ import { worstHealth } from '@/utils/pluginHealth'
 import type {
   ApiInstalledPlugin,
   ApiPluginInstanceForAudience,
+  ApiPluginListItem,
   PluginHealthState,
 } from '@/api/types'
 import styles from './AdminPluginsPage.module.css'
@@ -25,12 +27,17 @@ export default function AdminPluginsPage() {
   usePageTitle('Plugins')
 
   const { data: instances, status, refetch } = usePluginInstancesForAudience()
+  const { data: pluginList } = usePlugins()
   const { data: currentUser } = useCurrentUser()
 
   // Admin-only: the install and create-instance API endpoints require admin role.
   const canManage = currentUser?.roles.includes('admin') ?? false
 
   const allInstances = instances ?? []
+
+  // Pending-review plugins have no instances yet, so they don't appear in
+  // the instance list. Surface them as a separate action-required section.
+  const pendingReview = (pluginList ?? []).filter((p) => p.status === 'pending_review')
 
   const needsReauth = allInstances.filter((inst) => inst.state === 'pending_reauthorize')
 
@@ -124,6 +131,24 @@ export default function AdminPluginsPage() {
       <p className={styles.intro}>
         All installed plugins and their instances.
       </p>
+
+      {/* Pending-review plugins have no instances yet and must appear regardless
+          of the active-instance list state (outside QueryBoundary). */}
+      {pendingReview.length > 0 && (
+        <section className={styles.section}>
+          <h2 className={styles.sectionTitle}>Pending review</h2>
+          <p className={styles.sectionDesc}>
+            These plugins were installed but require admin approval before any
+            instances can be created. Review each plugin&apos;s manifest to
+            decide whether to allow it to run on this instance.
+          </p>
+          <div className={styles.pendingGrid}>
+            {pendingReview.map((plugin) => (
+              <PendingReviewRow key={plugin.id} plugin={plugin} />
+            ))}
+          </div>
+        </section>
+      )}
 
       <QueryBoundary
         status={status}
@@ -312,6 +337,25 @@ export default function AdminPluginsPage() {
           error={uninstallError}
         />
       )}
+    </div>
+  )
+}
+
+// PendingReviewRow renders a single row in the pending-review section.
+// It shows the plugin name + version and a "Review" link to the review page.
+function PendingReviewRow({ plugin }: { plugin: ApiPluginListItem }) {
+  return (
+    <div className={styles.pendingRow}>
+      <div className={styles.pendingMeta}>
+        <span className={styles.pendingName}>{plugin.name}</span>
+        <span className={styles.pendingVersion}>{plugin.version}</span>
+      </div>
+      <Link
+        to={`/admin/plugins/${encodeURIComponent(plugin.id)}/review`}
+        className={styles.reviewLink}
+      >
+        Review &amp; approve
+      </Link>
     </div>
   )
 }

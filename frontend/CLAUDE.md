@@ -35,7 +35,8 @@ npm run build-storybook  # static Storybook build
 /admin/audiences    → audience list (admin|operator: + new; auditor: read-only)
 /admin/audiences/new → create audience (admin|operator)
 /admin/audiences/:id → audience detail/editor (admin|operator: edit; auditor: read-only)
-/admin/plugins      → plugin instance list (admin); groups instances pending re-authorization at top after a public_url change (#230)
+/admin/plugins      → plugin instance list (admin); shows pending-review section at top (fresh installs require approval before any instances can be created — #242); groups instances pending re-authorization below (#230)
+/admin/plugins/:id/review → plugin review consent surface (admin); shows full manifest metadata (services, auth strategy, pubkey fingerprint, SBOM) with Approve/Reject actions (#242)
 /admin/plugins/:id/instances/:iid → plugin instance editor (admin); Subscriptions tab edits coarse watch scope (#223), Credentials tab renders per the manifest's auth strategy (write-only static API key / header set / basic auth; Authorize / Re-authorize for OAuth — #231), Config tab is a placeholder for #241
 *                   → 404 not found
 ```
@@ -132,7 +133,8 @@ queryKeys.users.all             // ['users']
 queryKeys.currentUser.all       // ['currentUser']
 queryKeys.models.all            // ['models']
 queryKeys.config.all            // ['config']
-queryKeys.plugins.list          // ['plugins', 'list']               — installed plugins (invalidated on plugin install)
+queryKeys.plugins.list          // ['plugins', 'list']               — installed plugins (invalidated on plugin install, approve, reject)
+queryKeys.plugins.detail(id)    // ['plugins', id, 'detail']          — plugin detail with parsed manifest for review consent surface
 queryKeys.plugins.instances(id) // ['plugins', id, 'instances']      — instances of one plugin (invalidated on instance create)
 queryKeys.plugins.credentials(p, i) // ['plugins', p, 'instances', i, 'credentials'] — redacted credentials view
 ```
@@ -244,7 +246,7 @@ Organized by feature area:
 - **AgentList/** — agent list with folder grouping
 - **RunDetail/** — RunHeader, StepTimeline, FilterBar, MetadataGrid, CapabilitySnapshotCard, ThoughtBlock, ThinkingBlock, ToolBlock, CompleteBlock, ErrorBlock, FeedbackBlock, ApprovalActions, FeedbackActions
 - **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal, ServerDetailModal (per-header auth editor: existing name fields are read-only, value field is empty with placeholder; save fans out via `useSetMcpServerHeader`/`useDeleteMcpServerHeader`; no sentinel; see ADR-039), ArcadeAuthSection (toolkit-level OAuth pre-authorization for Arcade gateways; renders only when `server.is_arcade_gateway && canManage`; see ADR-040)
-- **admin/** — EncryptionKeyNotice (persistent warning banner on the Models page about encryption key backup requirements), PluginHealthChip (colored chip — green/yellow/red — for the 10 plugin-instance health states; pairs with `utils/pluginHealth.ts` for the worst-across-instances aggregate), PluginCard (clickable card for the `/admin/plugins` two-pane list: name, version, service badges Tool/Trigger/Channel, instance count, aggregate health chip; `isSelected` prop for visual selection state), InstallPluginButton (file-picker upload of a plugin tarball; persistent success card with "Add instance" CTA until refetch confirms the new plugin has an instance), AddInstanceModal (form to instantiate an installed plugin by name; reused as a standalone modal on the plugins page AND inline from the install-success card; client-side validation + per-status error mapping)
+- **admin/** — EncryptionKeyNotice (persistent warning banner on the Models page about encryption key backup requirements), PluginHealthChip (colored chip — green/yellow/red — for the 10 plugin-instance health states; pairs with `utils/pluginHealth.ts` for the worst-across-instances aggregate), PluginCard (clickable card for the `/admin/plugins` two-pane list: name, version, service badges Tool/Trigger/Channel, instance count, aggregate health chip; `isSelected` prop for visual selection state), PluginReviewCard (consent surface for pending-review plugins: services, tier-2 capabilities, auth strategy, pubkey fingerprint, SBOM badge, author/license; Approve/Reject buttons), RejectPluginModal (confirmation modal before rejecting a pending-review plugin; follows UninstallPluginModal pattern), InstallPluginButton (file-picker upload of a plugin tarball; persistent success card with "Review & approve" link for `pending_review` status or "Add instance" CTA for `active` status), AddInstanceModal (form to instantiate an installed plugin by name; reused as a standalone modal on the plugins page AND inline from the install-success card; client-side validation + per-status error mapping)
 - **form/** — FieldError (inline message under a field), ErrorBanner (top-of-form bulleted summary with scroll-to-field). Shared primitives for surfacing validation/save errors.
 - **Shared** — Button, Modal, ModalFooter, EmptyState, ErrorBoundary, QueryBoundary, CopyBlock, CollapsibleJSON, SkeletonBlock, PageHeader, ApprovalBanner, ConnectionBanner, TriggerRunModal
 

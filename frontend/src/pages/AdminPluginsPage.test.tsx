@@ -1,5 +1,5 @@
 import React from 'react'
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, waitFor, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -8,7 +8,7 @@ import { http, HttpResponse } from 'msw'
 import { server } from '@/test/server'
 
 import AdminPluginsPage from './AdminPluginsPage'
-import type { ApiPluginInstanceForAudience } from '@/api/types'
+import type { ApiPluginInstanceForAudience, ApiPluginListItem } from '@/api/types'
 
 // --- Module mocks ---
 
@@ -18,10 +18,24 @@ import { usePluginInstancesForAudience } from '@/hooks/queries/admin'
 vi.mock('@/hooks/queries/users')
 import { useCurrentUser } from '@/hooks/queries/users'
 
+vi.mock('@/hooks/queries/plugins')
+import { usePlugins } from '@/hooks/queries/plugins'
+
 // --- Fixtures ---
 
 const CALLBACK_URL = 'https://gleipnir.example.com/api/v1/admin/plugins/oauth/callback'
 const OLD_CALLBACK_URL = 'https://old.example.com/api/v1/admin/plugins/oauth/callback'
+
+const PENDING_PLUGIN: ApiPluginListItem = {
+  id: 'plugin-pending-01',
+  name: 'PendingPlugin',
+  version: '0.1.0',
+  status: 'pending_review',
+  services: ['tool'],
+  has_sbom: false,
+  instance_count: 0,
+  created_at: new Date().toISOString(),
+}
 
 const PLUGIN_ID = 'plugin-slack-01'
 const PLUGIN_ID_JIRA = 'plugin-jira-01'
@@ -83,6 +97,17 @@ function mockCurrentUser(roles: string[]) {
   } as unknown as ReturnType<typeof useCurrentUser>)
 }
 
+// By default most tests have no pending-review plugins. Tests that need
+// pending plugins call this explicitly with a non-empty list.
+function mockPluginList(plugins: ApiPluginListItem[] = []) {
+  vi.mocked(usePlugins).mockReturnValue({
+    data: plugins,
+    status: 'success',
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof usePlugins>)
+}
+
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(
@@ -90,6 +115,10 @@ function renderPage() {
       <MemoryRouter initialEntries={['/admin/plugins']}>
         <Routes>
           <Route path="/admin/plugins" element={<AdminPluginsPage />} />
+          <Route
+            path="/admin/plugins/:id/review"
+            element={<div>Review plugin</div>}
+          />
           <Route
             path="/admin/plugins/:id/instances/:iid"
             element={<div>Instance detail</div>}
@@ -108,6 +137,12 @@ afterEach(() => {
 // --- Tests ---
 
 describe('AdminPluginsPage', () => {
+  // Default: no pending-review plugins. Tests that need pending plugins
+  // call mockPluginList([...]) explicitly inside the test.
+  beforeEach(() => {
+    mockPluginList([])
+  })
+
   it('shows "Needs re-authorization" section when at least one instance is pending_reauthorize', () => {
     mockInstances([INSTANCE_PENDING_REAUTH, INSTANCE_HEALTHY])
     mockCurrentUser(['admin'])
@@ -696,6 +731,40 @@ describe('AdminPluginsPage', () => {
     // Slack's instance should appear in the right pane without any click.
     const slackLinks = screen.getAllByRole('link', { name: 'slack-prod' })
     expect(slackLinks.length).toBeGreaterThanOrEqual(1)
+  })
+
+  // --- Pending review section ---
+
+  it('shows "Pending review" section when there are pending plugins', () => {
+    mockInstances([])
+    mockCurrentUser(['admin'])
+    mockPluginList([PENDING_PLUGIN])
+    renderPage()
+
+    expect(screen.getByText('Pending review')).toBeInTheDocument()
+    expect(screen.getByText('PendingPlugin')).toBeInTheDocument()
+  })
+
+  it('does NOT show "Pending review" section when there are no pending plugins', () => {
+    mockInstances([INSTANCE_HEALTHY])
+    mockCurrentUser(['admin'])
+    // mockPluginList([]) is already set by beforeEach
+    renderPage()
+
+    expect(screen.queryByText('Pending review')).not.toBeInTheDocument()
+  })
+
+  it('pending review row has a "Review & approve" link pointing to the review page', () => {
+    mockInstances([])
+    mockCurrentUser(['admin'])
+    mockPluginList([PENDING_PLUGIN])
+    renderPage()
+
+    const reviewLink = screen.getByRole('link', { name: /review.*approve/i })
+    expect(reviewLink).toHaveAttribute(
+      'href',
+      `/admin/plugins/${encodeURIComponent(PENDING_PLUGIN.id)}/review`,
+    )
   })
 
   it('after install, selected plugin id is set to the new plugin', async () => {
