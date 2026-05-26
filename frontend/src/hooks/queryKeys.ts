@@ -70,5 +70,7 @@ export const queryKeys = {
       ['admin', 'plugins', pluginId, 'instances', instanceId] as const,
     credentials: (pluginId: string, instanceId: string) =>
       ['admin', 'plugins', pluginId, 'instances', instanceId, 'credentials'] as const,
+    // rss() is the aggregate memory usage across all running plugin subprocesses.
+    rss: () => ['admin', 'plugins', 'rss'] as const,
   },
 } as const

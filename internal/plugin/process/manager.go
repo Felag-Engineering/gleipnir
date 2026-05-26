@@ -513,6 +513,35 @@ func (m *Manager) StopByPluginID(ctx context.Context, pluginID string) error {
 	return errors.Join(errs...)
 }
 
+// InstanceInfo holds a snapshot of the fields needed for RSS sampling. Using
+// this struct instead of exposing *Instance directly keeps the sampler
+// decoupled from Instance internals and makes Snapshot() safe for concurrent
+// callers (the sampler holds a copy, not a live pointer).
+type InstanceInfo struct {
+	Pid          int
+	InstanceName string
+	PluginID     string
+}
+
+// Snapshot returns a point-in-time copy of the running-instances map as
+// InstanceInfo values keyed by instance ID. The sampler calls this on every
+// tick to discover which PIDs to read RSS for; a copy (not a live reference)
+// avoids holding the mutex across the /proc read loop.
+func (m *Manager) Snapshot() map[string]InstanceInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make(map[string]InstanceInfo, len(m.instances))
+	for id, inst := range m.instances {
+		out[id] = InstanceInfo{
+			Pid:          inst.Pid(),
+			InstanceName: inst.cfg.InstanceName,
+			PluginID:     inst.cfg.PluginID,
+		}
+	}
+	return out
+}
+
 // Lookup returns the running Instance for instanceID, or nil if no subprocess
 // is running for that instance. #292 uses this to obtain the Client for
 // dispatching tool calls.

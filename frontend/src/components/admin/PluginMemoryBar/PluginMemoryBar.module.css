@@ -1,0 +1,86 @@
+/* Container is position:relative so the dropdown can be absolutely positioned
+   below it without escaping the flex row in the PageHeader. */
+.container {
+  position: relative;
+}
+
+/* The summary line is styled as a small muted text button — it visually
+   belongs in the header's action area without overwhelming the main actions. */
+.summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--text-second);
+  font-family: var(--font-body);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.summary:hover {
+  color: var(--text-primary);
+}
+
+.toggle {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Dropdown panel positioned absolutely below the summary so it overlaps other
+   content rather than pushing the layout. Mirrors the kebab-menu pattern in
+   AdminPluginsPage (border, shadow, border-radius). */
+.dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--space-2));
+  z-index: 100;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-section);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  min-width: 320px;
+  overflow: hidden;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.th {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-second);
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.thRight {
+  composes: th;
+  text-align: right;
+}
+
+.td {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.tdRight {
+  composes: td;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Remove bottom border from the last row. */
+.table tbody tr:last-child .td,
+.table tbody tr:last-child .tdRight {
+  border-bottom: none;
+}

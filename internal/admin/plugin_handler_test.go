@@ -2858,3 +2858,120 @@ func TestListPlugins_MixedStatuses(t *testing.T) {
 		t.Errorf("items[1].instance_count = %d, want 1", items[1].InstanceCount)
 	}
 }
+
+// --- GetPluginRSS tests ---
+
+// stubRSSAggregator implements RSSAggregator for tests without importing the
+// process package.
+type stubRSSAggregator struct {
+	total   uint64
+	count   int
+	samples []RSSSample
+}
+
+func (s *stubRSSAggregator) Aggregate() (uint64, int, []RSSSample) {
+	return s.total, s.count, s.samples
+}
+
+func TestPluginHandler_GetPluginRSS_NilAggregator(t *testing.T) {
+	h := NewPluginHandler(newFakePluginQuerier(), nil, nil)
+	// No aggregator wired — plugins are disabled.
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins/rss", nil)
+	rec := httptest.NewRecorder()
+	h.GetPluginRSS(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestPluginHandler_GetPluginRSS_WithData(t *testing.T) {
+	fixedAt := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	agg := &stubRSSAggregator{
+		total: 300 * 1024 * 1024,
+		count: 2,
+		samples: []RSSSample{
+			{
+				InstanceID:   "inst-aaa",
+				InstanceName: "alpha",
+				PluginID:     "plugin-x",
+				Bytes:        200 * 1024 * 1024,
+				SampledAt:    fixedAt,
+			},
+			{
+				InstanceID:   "inst-bbb",
+				InstanceName: "beta",
+				PluginID:     "plugin-y",
+				Bytes:        100 * 1024 * 1024,
+				SampledAt:    fixedAt,
+			},
+		},
+	}
+
+	h := NewPluginHandler(newFakePluginQuerier(), nil, nil)
+	h.SetRSSAggregator(agg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins/rss", nil)
+	rec := httptest.NewRecorder()
+	h.GetPluginRSS(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var resp pluginRSSResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.TotalBytes != 300*1024*1024 {
+		t.Errorf("total_bytes = %d, want %d", resp.TotalBytes, 300*1024*1024)
+	}
+	if resp.InstanceCount != 2 {
+		t.Errorf("instance_count = %d, want 2", resp.InstanceCount)
+	}
+	if len(resp.Instances) != 2 {
+		t.Fatalf("instances len = %d, want 2", len(resp.Instances))
+	}
+	if resp.Instances[0].InstanceName != "alpha" {
+		t.Errorf("instances[0].instance_name = %q, want %q", resp.Instances[0].InstanceName, "alpha")
+	}
+	if resp.Instances[0].RSSBytes != 200*1024*1024 {
+		t.Errorf("instances[0].rss_bytes = %d, want %d", resp.Instances[0].RSSBytes, 200*1024*1024)
+	}
+}
+
+func TestPluginHandler_GetPluginRSS_ZeroInstances(t *testing.T) {
+	agg := &stubRSSAggregator{total: 0, count: 0, samples: nil}
+
+	h := NewPluginHandler(newFakePluginQuerier(), nil, nil)
+	h.SetRSSAggregator(agg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins/rss", nil)
+	rec := httptest.NewRecorder()
+	h.GetPluginRSS(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var resp pluginRSSResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.TotalBytes != 0 {
+		t.Errorf("total_bytes = %d, want 0", resp.TotalBytes)
+	}
+	if resp.InstanceCount != 0 {
+		t.Errorf("instance_count = %d, want 0", resp.InstanceCount)
+	}
+	// instances must be an empty array, not null, so it marshals to [].
+	if resp.Instances == nil {
+		t.Error("instances is nil; want empty array []")
+	}
+	if len(resp.Instances) != 0 {
+		t.Errorf("instances len = %d, want 0", len(resp.Instances))
+	}
+}

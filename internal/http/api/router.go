@@ -245,6 +245,11 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			}))
 
 			if cfg.Handlers.PluginAdminHandler != nil {
+				// GET /plugins/rss must be registered BEFORE /plugins/{id} so chi
+				// matches the literal path before the parameterized catch-all. chi
+				// routes are matched in registration order when a path segment could
+				// be either a literal or a parameter.
+				r.Get("/plugins/rss", cfg.Handlers.PluginAdminHandler.GetPluginRSS)
 				r.Get("/plugins/{id}/instances/{iid}", cfg.Handlers.PluginAdminHandler.GetInstance)
 				r.Put("/plugins/{id}/instances/{iid}/subscription-scope", cfg.Handlers.PluginAdminHandler.PutSubscriptionScope)
 				r.Put("/plugins/{id}/instances/{iid}/config", cfg.Handlers.PluginAdminHandler.PutInstanceConfig)

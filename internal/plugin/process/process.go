@@ -134,6 +134,7 @@ type Instance struct {
 	stopRequested atomic.Bool
 	stopOnce      sync.Once
 	logger        *slog.Logger
+	pid           int // OS process ID of the subprocess; 0 when not available
 }
 
 // Start validates cfg, issues an identity token, launches the plugin subprocess
@@ -245,6 +246,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		stderrW:  stderrW,
 		doneCh:   make(chan struct{}),
 		logger:   logger,
+		pid:      client.Pid,
 	}
 
 	// waitForExit monitors stderr EOF as the crash-detection signal (best-effort).
@@ -296,6 +298,10 @@ func (i *Instance) Stop(ctx context.Context) error {
 
 // InstanceID returns the stable instance ID this Instance was started with.
 func (i *Instance) InstanceID() string { return i.cfg.InstanceID }
+
+// Pid returns the OS process ID of the plugin subprocess. Returns 0 when the
+// PID is not available (e.g. in tests that inject a stub LaunchFunc).
+func (i *Instance) Pid() int { return i.pid }
 
 // PluginID returns the plugin ID that owns this instance. Used by the trigger
 // supervisor to populate the PluginID field on emitted events for SSE observability.

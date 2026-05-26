@@ -5,7 +5,42 @@ import { http, HttpResponse } from 'msw'
 import '@/tokens.css'
 import AdminPluginsPage from './AdminPluginsPage'
 import { queryKeys } from '@/hooks/queryKeys'
-import type { ApiPluginInstanceForAudience } from '@/api/types'
+import type { ApiPluginInstanceForAudience, ApiPluginRSS } from '@/api/types'
+
+// Fixture RSS data for stories that want to demonstrate the memory bar.
+const RSS_WITH_INSTANCES: ApiPluginRSS = {
+  total_bytes: 431915008, // ≈ 412 MB
+  instance_count: 3,
+  instances: [
+    {
+      instance_id: 'inst-slack-prod',
+      instance_name: 'slack-prod',
+      plugin_id: 'plugin-slack-01',
+      rss_bytes: 209715200, // 200 MB
+      sampled_at: new Date().toISOString(),
+    },
+    {
+      instance_id: 'inst-slack-staging',
+      instance_name: 'slack-staging',
+      plugin_id: 'plugin-slack-01',
+      rss_bytes: 157286400, // 150 MB
+      sampled_at: new Date().toISOString(),
+    },
+    {
+      instance_id: 'inst-github-prod',
+      instance_name: 'github-prod',
+      plugin_id: 'plugin-github-01',
+      rss_bytes: 64913408, // ≈ 61.9 MB
+      sampled_at: new Date().toISOString(),
+    },
+  ],
+}
+
+const RSS_EMPTY: ApiPluginRSS = {
+  total_bytes: 0,
+  instance_count: 0,
+  instances: [],
+}
 
 const CALLBACK_URL = 'https://gleipnir.example.com/api/v1/admin/plugins/oauth/callback'
 const OLD_CALLBACK_URL = 'https://old.example.com/api/v1/admin/plugins/oauth/callback'
@@ -81,11 +116,15 @@ const INSTANCE_UNHEALTHY: ApiPluginInstanceForAudience = {
 function makeQueryClient(
   instances: ApiPluginInstanceForAudience[],
   currentUser?: { id: string; username: string; roles: string[] },
+  rss?: ApiPluginRSS,
 ): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   qc.setQueryData(queryKeys.admin.pluginInstances, instances)
   if (currentUser) {
     qc.setQueryData(queryKeys.currentUser.all, currentUser)
+  }
+  if (rss !== undefined) {
+    qc.setQueryData(queryKeys.plugins.rss(), rss)
   }
   return qc
 }
@@ -96,12 +135,14 @@ const AUDITOR_USER = { id: 'user-02', username: 'auditor', roles: ['auditor'] }
 function Wrapper({
   instances,
   currentUser,
+  rss,
 }: {
   instances: ApiPluginInstanceForAudience[]
   currentUser?: { id: string; username: string; roles: string[] }
+  rss?: ApiPluginRSS
 }) {
   return (
-    <QueryClientProvider client={makeQueryClient(instances, currentUser)}>
+    <QueryClientProvider client={makeQueryClient(instances, currentUser, rss)}>
       <MemoryRouter initialEntries={['/admin/plugins']}>
         <Routes>
           <Route path="/admin/plugins" element={<AdminPluginsPage />} />
@@ -130,11 +171,15 @@ export const AllHealthy: Story = {
 
 // Admin view with two plugins and two Slack instances — shows the two-pane layout
 // with the left pane having cards (Slack with 2 instances, GitHub with 1), and the
-// right pane showing the auto-selected first plugin's instance table.
+// right pane showing the auto-selected first plugin's instance table. The memory
+// bar shows "≈ 412 MB across 3 instances" in the page header.
 export const Admin: Story = {
   parameters: {
     msw: {
       handlers: [
+        http.get('/api/v1/admin/plugins/rss', () =>
+          HttpResponse.json({ data: RSS_WITH_INSTANCES }),
+        ),
         http.post('/api/v1/admin/plugins', () =>
           HttpResponse.json({
             data: { id: 'plugin-new', name: 'NewPlugin', version: '1.0.0', status: 'active' },
@@ -160,6 +205,7 @@ export const Admin: Story = {
     <Wrapper
       instances={[INSTANCE_HEALTHY, INSTANCE_HEALTHY_SLACK_STAGING, INSTANCE_UNHEALTHY]}
       currentUser={ADMIN_USER}
+      rss={RSS_WITH_INSTANCES}
     />
   ),
 }
@@ -235,5 +281,27 @@ export const Loading: Story = {
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>
+  ),
+}
+
+// NoRunningInstances — RSS response returns 0 instances; memory bar is hidden.
+// Demonstrates that the memory bar does not appear when no plugin subprocesses
+// are running (e.g. plugins are installed but all stopped or crashed).
+export const NoRunningInstances: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get('/api/v1/admin/plugins/rss', () =>
+          HttpResponse.json({ data: RSS_EMPTY }),
+        ),
+      ],
+    },
+  },
+  render: () => (
+    <Wrapper
+      instances={[INSTANCE_HEALTHY]}
+      currentUser={ADMIN_USER}
+      rss={RSS_EMPTY}
+    />
   ),
 }
