@@ -5,6 +5,8 @@ import type {
   ApiAcceptManifestResponse,
   ApiInstalledPlugin,
   ApiCreatedPluginInstance,
+  ApiApprovePluginResponse,
+  ApiRejectPluginResponse,
 } from '@/api/types'
 import { queryKeys } from '../queryKeys'
 
@@ -108,6 +110,45 @@ export function useAcceptPluginManifest() {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.admin.pluginInstances,
       })
+    },
+  })
+}
+
+// ── Review mutations ──────────────────────────────────────────────────────────
+
+// useApprovePlugin approves a pending_review plugin, transitioning it to active.
+// On success it invalidates the plugin list and the specific plugin's detail
+// cache so any polling consumers see the new status immediately.
+export function useApprovePlugin() {
+  const qc = useQueryClient()
+  return useMutation<ApiApprovePluginResponse, ApiError, { pluginId: string }>({
+    mutationFn: ({ pluginId }) =>
+      apiFetch<ApiApprovePluginResponse>(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/approve`,
+        { method: 'POST' },
+      ),
+    onSuccess: (_data, { pluginId }) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.plugins.list() })
+      void qc.invalidateQueries({ queryKey: queryKeys.plugins.detail(pluginId) })
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.pluginInstances })
+    },
+  })
+}
+
+// useRejectPlugin rejects and deletes a pending_review plugin.
+// On success it invalidates the plugin list; the plugin detail entry will
+// 404 on re-fetch which TanStack Query handles gracefully.
+export function useRejectPlugin() {
+  const qc = useQueryClient()
+  return useMutation<ApiRejectPluginResponse, ApiError, { pluginId: string }>({
+    mutationFn: ({ pluginId }) =>
+      apiFetch<ApiRejectPluginResponse>(
+        `/admin/plugins/${encodeURIComponent(pluginId)}/reject`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.plugins.list() })
+      void qc.invalidateQueries({ queryKey: queryKeys.admin.pluginInstances })
     },
   })
 }

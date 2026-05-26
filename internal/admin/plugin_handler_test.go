@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -261,6 +262,28 @@ func (f *fakePluginQuerier) DeletePluginInstance(_ context.Context, id string) (
 
 func (f *fakePluginQuerier) ListPolicies(_ context.Context) ([]db.Policy, error) {
 	return f.policies, nil
+}
+
+func (f *fakePluginQuerier) ListPlugins(_ context.Context) ([]db.Plugin, error) {
+	result := make([]db.Plugin, 0, len(f.plugins))
+	for _, p := range f.plugins {
+		result = append(result, p)
+	}
+	// Sort by name for deterministic ordering (mirrors the SQL ORDER BY name).
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	return result, nil
+}
+
+func (f *fakePluginQuerier) UpdatePluginStatus(_ context.Context, arg db.UpdatePluginStatusParams) (int64, error) {
+	p, ok := f.plugins[arg.ID]
+	if !ok || p.Version != arg.ExpectedVersion {
+		return 0, nil // CAS miss or not found
+	}
+	p.Status = arg.Status
+	p.UpdatedAt = arg.UpdatedAt
+	p.Version++
+	f.plugins[arg.ID] = p
+	return 1, nil
 }
 
 // seedAudienceEntries registers audience entry rows for an instance, used in
@@ -2224,4 +2247,377 @@ func storeHasInstance(tb testing.TB, store *db.Store, instanceID string) bool {
 		tb.Fatalf("storeHasInstance: %v", err)
 	}
 	return true
+}
+
+// ─── ApprovePlugin ─────────────────────────────────────────────────────────
+
+func TestApprovePlugin_HappyPath(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		PluginVersion:    "1.0.0",
+		ManifestSnapshot: instanceConfigManifestNoSchema,
+		Status:           "pending_review",
+		Version:          0,
+	})
+	h := NewPluginHandler(q, nil, fixedClock)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-1/approve", nil)
+	req = withChiParams(req, map[string]string{"id": "plugin-1"})
+	rec := httptest.NewRecorder()
+	h.ApprovePlugin(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var resp approvePluginResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Status != "active" {
+		t.Errorf("status = %q, want %q", resp.Status, "active")
+	}
+	if resp.ID != "plugin-1" {
+		t.Errorf("id = %q, want %q", resp.ID, "plugin-1")
+	}
+
+	// Plugin row must now be active.
+	updated := q.plugins["plugin-1"]
+	if updated.Status != "active" {
+		t.Errorf("plugin.Status = %q, want %q", updated.Status, "active")
+	}
+
+	// Audit event must have been recorded.
+	found := false
+	for _, ev := range q.auditEvents {
+		if ev.EventType == auditReviewApproved {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected plugin_review_approved audit event, got none")
+	}
+}
+
+func TestApprovePlugin_NotFound(t *testing.T) {
+	q := newFakePluginQuerier()
+	h := NewPluginHandler(q, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req = withChiParams(req, map[string]string{"id": "missing-plugin"})
+	rec := httptest.NewRecorder()
+	h.ApprovePlugin(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestApprovePlugin_AlreadyActive(t *testing.T) {
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		PluginVersion:    "1.0.0",
+		ManifestSnapshot: instanceConfigManifestNoSchema,
+		Status:           "active",
+		Version:          0,
+	})
+	h := NewPluginHandler(q, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req = withChiParams(req, map[string]string{"id": "plugin-1"})
+	rec := httptest.NewRecorder()
+	h.ApprovePlugin(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409 for already-active plugin", rec.Code)
+	}
+}
+
+// ─── RejectPlugin ──────────────────────────────────────────────────────────
+
+func TestRejectPlugin_HappyPath(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		PluginVersion:    "1.0.0",
+		ManifestSnapshot: instanceConfigManifestNoSchema,
+		Status:           "pending_review",
+		Version:          0,
+	})
+	h := NewPluginHandler(q, nil, fixedClock)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req = withChiParams(req, map[string]string{"id": "plugin-1"})
+	rec := httptest.NewRecorder()
+	h.RejectPlugin(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var resp rejectPluginResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Status != "rejected" {
+		t.Errorf("status = %q, want %q", resp.Status, "rejected")
+	}
+
+	// Plugin row must be gone.
+	if _, ok := q.plugins["plugin-1"]; ok {
+		t.Error("plugin row still exists after reject; want it deleted")
+	}
+
+	// Audit event must have been recorded.
+	found := false
+	for _, ev := range q.auditEvents {
+		if ev.EventType == auditReviewRejected {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected plugin_review_rejected audit event, got none")
+	}
+}
+
+func TestRejectPlugin_NotFound(t *testing.T) {
+	q := newFakePluginQuerier()
+	h := NewPluginHandler(q, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req = withChiParams(req, map[string]string{"id": "missing-plugin"})
+	rec := httptest.NewRecorder()
+	h.RejectPlugin(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestRejectPlugin_AlreadyActive(t *testing.T) {
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		PluginVersion:    "1.0.0",
+		ManifestSnapshot: instanceConfigManifestNoSchema,
+		Status:           "active",
+		Version:          0,
+	})
+	h := NewPluginHandler(q, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req = withChiParams(req, map[string]string{"id": "plugin-1"})
+	rec := httptest.NewRecorder()
+	h.RejectPlugin(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409 for active plugin reject", rec.Code)
+	}
+}
+
+// ─── GetPluginDetail ───────────────────────────────────────────────────────
+
+// fullDetailManifest is a manifest with all the fields surfaced by GetPluginDetail.
+const fullDetailManifest = `schema_version: v1
+name: full-plugin
+version: 2.3.1
+description: "A complete plugin"
+author: "Test Author"
+license: "MIT"
+services:
+  tool: v1
+  trigger: v1
+auth:
+  mode: instance_credentials
+  strategy: oauth2_authcode
+  oauth_defaults:
+    client_id: "test-client"
+tier2_capabilities:
+  - run_history_read
+`
+
+func TestGetPluginDetail_HappyPath(t *testing.T) {
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "full-plugin",
+		PluginVersion:    "2.3.1",
+		ManifestSnapshot: fullDetailManifest,
+		TrustedPubkey:    "", // unsigned for simplicity — fingerprint omitted
+		Status:           "pending_review",
+		Version:          0,
+		CreatedAt:        "2026-01-01T00:00:00Z",
+	})
+	h := NewPluginHandler(q, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins/plugin-1", nil)
+	req = withChiParams(req, map[string]string{"id": "plugin-1"})
+	rec := httptest.NewRecorder()
+	h.GetPluginDetail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var resp pluginDetailResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if resp.Name != "full-plugin" {
+		t.Errorf("name = %q, want %q", resp.Name, "full-plugin")
+	}
+	if resp.Version != "2.3.1" {
+		t.Errorf("version = %q, want %q", resp.Version, "2.3.1")
+	}
+	if resp.Description != "A complete plugin" {
+		t.Errorf("description = %q, want %q", resp.Description, "A complete plugin")
+	}
+	if resp.Author != "Test Author" {
+		t.Errorf("author = %q, want %q", resp.Author, "Test Author")
+	}
+	if resp.License != "MIT" {
+		t.Errorf("license = %q, want %q", resp.License, "MIT")
+	}
+	if resp.AuthStrategy != "oauth2_authcode" {
+		t.Errorf("auth_strategy = %q, want %q", resp.AuthStrategy, "oauth2_authcode")
+	}
+	if !resp.HasOAuthDefaults {
+		t.Error("has_oauth_defaults: want true")
+	}
+	if resp.PubkeyFingerprint != "" {
+		t.Errorf("pubkey_fingerprint = %q, want empty for unsigned plugin", resp.PubkeyFingerprint)
+	}
+	if resp.HasSBOM {
+		t.Error("has_sbom: want false (no sbom field in manifest)")
+	}
+
+	wantServices := []string{"tool", "trigger"}
+	if len(resp.Services) != len(wantServices) {
+		t.Errorf("services = %v, want %v", resp.Services, wantServices)
+	}
+
+	if len(resp.Tier2Capabilities) != 1 || resp.Tier2Capabilities[0] != "run_history_read" {
+		t.Errorf("tier2_capabilities = %v, want [run_history_read]", resp.Tier2Capabilities)
+	}
+}
+
+func TestGetPluginDetail_NotFound(t *testing.T) {
+	q := newFakePluginQuerier()
+	h := NewPluginHandler(q, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = withChiParams(req, map[string]string{"id": "missing"})
+	rec := httptest.NewRecorder()
+	h.GetPluginDetail(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+// ─── ListPlugins ───────────────────────────────────────────────────────────
+
+func TestListPlugins_Empty(t *testing.T) {
+	q := newFakePluginQuerier()
+	h := NewPluginHandler(q, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins", nil)
+	rec := httptest.NewRecorder()
+	h.ListPlugins(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var items []pluginListItemResponse
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("got %d items, want 0", len(items))
+	}
+}
+
+func TestListPlugins_MixedStatuses(t *testing.T) {
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-pending",
+		Name:             "alpha-plugin",
+		PluginVersion:    "1.0.0",
+		ManifestSnapshot: instanceConfigManifestNoSchema,
+		Status:           "pending_review",
+		Version:          0,
+		CreatedAt:        "2026-01-01T00:00:00Z",
+	})
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-active",
+		Name:             "beta-plugin",
+		PluginVersion:    "2.0.0",
+		ManifestSnapshot: instanceConfigManifestNoSchema,
+		Status:           "active",
+		Version:          0,
+		CreatedAt:        "2026-01-02T00:00:00Z",
+	})
+	// Seed an instance for the active plugin so instance_count is non-zero.
+	q.seed(db.PluginInstance{
+		ID:           "inst-1",
+		PluginID:     "plugin-active",
+		InstanceName: "prod",
+		HealthState:  "healthy",
+		Version:      0,
+	})
+	h := NewPluginHandler(q, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins", nil)
+	rec := httptest.NewRecorder()
+	h.ListPlugins(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var items []pluginListItemResponse
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+
+	// Items are sorted by name: alpha-plugin first, beta-plugin second.
+	if items[0].Name != "alpha-plugin" {
+		t.Errorf("items[0].name = %q, want %q", items[0].Name, "alpha-plugin")
+	}
+	if items[0].Status != "pending_review" {
+		t.Errorf("items[0].status = %q, want %q", items[0].Status, "pending_review")
+	}
+	if items[0].InstanceCount != 0 {
+		t.Errorf("items[0].instance_count = %d, want 0", items[0].InstanceCount)
+	}
+
+	if items[1].Name != "beta-plugin" {
+		t.Errorf("items[1].name = %q, want %q", items[1].Name, "beta-plugin")
+	}
+	if items[1].Status != "active" {
+		t.Errorf("items[1].status = %q, want %q", items[1].Status, "active")
+	}
+	if items[1].InstanceCount != 1 {
+		t.Errorf("items[1].instance_count = %d, want 1", items[1].InstanceCount)
+	}
 }

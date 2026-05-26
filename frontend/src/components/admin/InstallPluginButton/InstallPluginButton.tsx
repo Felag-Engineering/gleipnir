@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Button } from '@/components/Button'
 import { AddInstanceModal } from '@/components/admin/AddInstanceModal'
 import { ApiError } from '@/api/fetch'
@@ -142,17 +143,25 @@ export function InstallPluginButton({ onInstalled, hasInstancesForPlugin }: Inst
       {state.type === 'success' && (
         <div className={styles.successCard} role="status">
           <p className={styles.successMessage}>
-            Installed <strong>{state.plugin.name}</strong> v{state.plugin.version}{' '}
-            (status: {state.plugin.status}).
+            Installed <strong>{state.plugin.name}</strong> v{state.plugin.version}.
           </p>
           <div className={styles.successActions}>
-            <Button
-              variant="secondary"
-              size="small"
-              onClick={() => setAddInstancePlugin(state.plugin)}
-            >
-              Add instance
-            </Button>
+            {state.plugin.status === 'pending_review' ? (
+              <Link
+                to={`/admin/plugins/${encodeURIComponent(state.plugin.id)}/review`}
+                className={styles.reviewLink}
+              >
+                Review &amp; approve
+              </Link>
+            ) : (
+              <Button
+                variant="secondary"
+                size="small"
+                onClick={() => setAddInstancePlugin(state.plugin)}
+              >
+                Add instance
+              </Button>
+            )}
             <Button variant="ghost" size="small" onClick={dismissState}>
               Dismiss
             </Button>

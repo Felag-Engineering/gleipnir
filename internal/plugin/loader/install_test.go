@@ -251,12 +251,11 @@ func newTestInstaller(t *testing.T, q *db.Queries, allowUnsigned bool) *Installe
 	return inst
 }
 
-// TestInstall_NewSignedPlugin_Active verifies that a verified install promotes
-// the plugin row to status=active so the subprocess manager and trigger
-// supervisor (both of which filter by status='active') will pick it up. Before
-// this change a fresh install sat in pending_review forever with no automated
-// path to advance it (no UpdatePluginStatus caller existed).
-func TestInstall_NewSignedPlugin_Active(t *testing.T) {
+// TestInstall_NewSignedPlugin_PendingReview verifies that a fresh signed install
+// lands in status=pending_review. Admins must approve the plugin via
+// POST /admin/plugins/{id}/approve before instances can be created and the
+// subprocess can start. This implements spec §5.1.
+func TestInstall_NewSignedPlugin_PendingReview(t *testing.T) {
 	q := openTestDB(t)
 	inst := newTestInstaller(t, q, false)
 
@@ -271,14 +270,36 @@ func TestInstall_NewSignedPlugin_Active(t *testing.T) {
 		t.Fatalf("GetPluginByName: %v", err)
 	}
 
-	if row.Status != "active" {
-		t.Errorf("status = %q, want %q", row.Status, "active")
+	if row.Status != "pending_review" {
+		t.Errorf("status = %q, want %q", row.Status, "pending_review")
 	}
 	if row.PluginVersion != "1.0.0" {
 		t.Errorf("plugin_version = %q, want %q", row.PluginVersion, "1.0.0")
 	}
 	if row.TrustedPubkey == "" {
 		t.Error("trusted_pubkey: want non-empty (TOFU-captured pubkey)")
+	}
+}
+
+// TestInstall_NewSignedPlugin_OnInstalledNotCalled verifies that the onInstalled
+// callback is NOT fired for a fresh install because the plugin lands in
+// pending_review. The subprocess must not start until the admin approves.
+func TestInstall_NewSignedPlugin_OnInstalledNotCalled(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	called := false
+	inst.OnInstalled(func(_ context.Context, _ string) {
+		called = true
+	})
+
+	tarPath, _ := signedPluginTarball(t, "callback-test-plugin", "1.0.0")
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	if called {
+		t.Error("onInstalled callback was called for a pending_review install; want it suppressed")
 	}
 }
 
@@ -325,7 +346,10 @@ func TestInstall_BadSignature_AuditOnly(t *testing.T) {
 	}
 }
 
-func TestInstall_VersionBump_Active(t *testing.T) {
+// TestInstall_VersionBump_PendingReviewPreserved verifies that a version bump of
+// a pending_review plugin preserves the pending_review status. The plugin must
+// not flip to active just because a newer tarball was dropped in.
+func TestInstall_VersionBump_PendingReviewPreserved(t *testing.T) {
 	q := openTestDB(t)
 	inst := newTestInstaller(t, q, false)
 
@@ -357,13 +381,13 @@ func TestInstall_VersionBump_Active(t *testing.T) {
 		return tarPath
 	}
 
-	// First install — v1.0.0.
+	// First install — v1.0.0. Lands in pending_review.
 	tarPath1 := buildVersionedTarball(t, "1.0.0")
 	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
 		t.Fatalf("initial Install: %v", err)
 	}
 
-	// Second install — v1.1.0 (version bump, same key).
+	// Second install — v1.1.0 (version bump, same key). Status should be preserved.
 	tarPath2 := buildVersionedTarball(t, "1.1.0")
 	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
 		t.Fatalf("version-bump Install: %v", err)
@@ -376,8 +400,8 @@ func TestInstall_VersionBump_Active(t *testing.T) {
 	if row.PluginVersion != "1.1.0" {
 		t.Errorf("plugin_version = %q, want %q", row.PluginVersion, "1.1.0")
 	}
-	if row.Status != "active" {
-		t.Errorf("status = %q, want %q", row.Status, "active")
+	if row.Status != "pending_review" {
+		t.Errorf("status = %q, want %q", row.Status, "pending_review")
 	}
 
 	// A version-string-only bump produces a cosmetic diff (version is a cosmetic field),
@@ -392,6 +416,86 @@ func TestInstall_VersionBump_Active(t *testing.T) {
 	}
 	if len(events) == 0 {
 		t.Error("expected plugin_manifest_cosmetic_change audit event after version-only bump")
+	}
+}
+
+// TestInstall_VersionBump_ActivePreserved_OnInstalledCalled verifies that a
+// version bump of an already-active plugin preserves the active status and fires
+// the onInstalled callback. This is the upgrade path for operators who drop a
+// new tarball into /plugins after their plugin has been approved and running.
+func TestInstall_VersionBump_ActivePreserved_OnInstalledCalled(t *testing.T) {
+	q := openTestDB(t)
+
+	// Generate a single keypair for both installs.
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	buildVersionedTarball := func(t *testing.T, version string) string {
+		t.Helper()
+		manifestBytes := []byte("schema_version: v1\nname: active-bump-plugin\nversion: " + version + "\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+		binaryBytes := []byte("binary for active-bump-plugin " + version)
+		payload := signing.PluginPayload(binaryBytes, manifestBytes)
+		sig, err := signing.Sign(sk.SecretKey, sk.KeyID, payload, "trusted comment")
+		if err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		sigBytes := signing.MarshalSignature(sig, "test sig")
+		tarPath := filepath.Join(t.TempDir(), "active-bump-plugin-"+version+".tar.gz")
+		writeTarball(t, tarPath, []tarEntry{
+			{name: "manifest.yaml", content: manifestBytes, mode: 0o644},
+			{name: "active-bump-plugin", content: binaryBytes, mode: 0o755},
+			{name: "signing.pub", content: pubkeyBytes, mode: 0o644},
+			{name: "active-bump-plugin.minisig", content: sigBytes, mode: 0o644},
+		})
+		return tarPath
+	}
+
+	// Seed the v1.0.0 install and manually promote it to active (simulating admin approval).
+	inst := newTestInstaller(t, q, false)
+	tarPath1 := buildVersionedTarball(t, "1.0.0")
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("initial Install: %v", err)
+	}
+	existing, err := q.GetPluginByName(context.Background(), "active-bump-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after initial install: %v", err)
+	}
+	// Simulate admin approval by advancing the status to active.
+	if _, err := q.UpdatePluginStatus(context.Background(), db.UpdatePluginStatusParams{
+		Status:          "active",
+		UpdatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		ID:              existing.ID,
+		ExpectedVersion: existing.Version,
+	}); err != nil {
+		t.Fatalf("UpdatePluginStatus: %v", err)
+	}
+
+	// Register the callback and install the bumped version.
+	callbackPluginID := ""
+	inst.OnInstalled(func(_ context.Context, pluginID string) {
+		callbackPluginID = pluginID
+	})
+
+	tarPath2 := buildVersionedTarball(t, "1.1.0")
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("version-bump Install: %v", err)
+	}
+
+	row, err := q.GetPluginByName(context.Background(), "active-bump-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+	if row.PluginVersion != "1.1.0" {
+		t.Errorf("plugin_version = %q, want %q", row.PluginVersion, "1.1.0")
+	}
+	if row.Status != "active" {
+		t.Errorf("status = %q, want %q", row.Status, "active")
+	}
+	if callbackPluginID == "" {
+		t.Error("onInstalled callback was not called for a version bump of an active plugin")
 	}
 }
 
@@ -1357,10 +1461,39 @@ func TestInstall_LegacyRowBackfill(t *testing.T) {
 }
 
 // TestInstall_OnInstalled_CalledAfterSuccessfulInstall verifies that the
-// OnInstalled callback fires with the correct plugin ID after a successful install
+// OnInstalled callback does NOT fire for fresh signed installs (which land in
+// pending_review), fires after the plugin is promoted to active via version bump,
 // and does not fire for rejected bundles.
 func TestInstall_OnInstalled_CalledAfterSuccessfulInstall(t *testing.T) {
 	q := openTestDB(t)
+
+	// Use a single keypair so v1→v2 is a valid version bump, not a pubkey mismatch.
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	buildTarball := func(t *testing.T, version string) string {
+		t.Helper()
+		manifestBytes := []byte("schema_version: v1\nname: hook-plugin\nversion: " + version + "\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+		binaryBytes := []byte("binary for hook-plugin " + version)
+		payload := signing.PluginPayload(binaryBytes, manifestBytes)
+		sig, signErr := signing.Sign(sk.SecretKey, sk.KeyID, payload, "trusted comment")
+		if signErr != nil {
+			t.Fatalf("sign %s: %v", version, signErr)
+		}
+		sigBytes := signing.MarshalSignature(sig, "test sig")
+		tarPath := filepath.Join(t.TempDir(), "hook-plugin-"+version+".tar.gz")
+		writeTarball(t, tarPath, []tarEntry{
+			{name: "manifest.yaml", content: manifestBytes, mode: 0o644},
+			{name: "hook-plugin", content: binaryBytes, mode: 0o755},
+			{name: "signing.pub", content: pubkeyBytes, mode: 0o644},
+			{name: "hook-plugin.minisig", content: sigBytes, mode: 0o644},
+		})
+		return tarPath
+	}
+
 	inst := newTestInstaller(t, q, false)
 
 	var calledWith []string
@@ -1368,22 +1501,46 @@ func TestInstall_OnInstalled_CalledAfterSuccessfulInstall(t *testing.T) {
 		calledWith = append(calledWith, pluginID)
 	})
 
-	tarPath, _ := signedPluginTarball(t, "hook-plugin", "1.0.0")
-
-	pluginID, err := inst.Install(context.Background(), tarPath)
+	// Fresh signed install → pending_review; callback must NOT fire.
+	pluginID, err := inst.Install(context.Background(), buildTarball(t, "1.0.0"))
 	if err != nil {
-		t.Fatalf("Install: %v", err)
+		t.Fatalf("Install v1: %v", err)
+	}
+	if len(calledWith) != 0 {
+		t.Fatalf("OnInstalled called %d times after fresh install (pending_review), want 0", len(calledWith))
 	}
 
+	// Promote to active so version bump will fire the callback.
+	row, err := q.GetPluginByName(context.Background(), "hook-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+	if _, promoteErr := q.UpdatePluginStatus(context.Background(), db.UpdatePluginStatusParams{
+		Status:          "active",
+		UpdatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		ID:              pluginID,
+		ExpectedVersion: row.Version,
+	}); promoteErr != nil {
+		t.Fatalf("promote to active: %v", promoteErr)
+	}
+
+	// Install a new version of an already-active plugin → callback fires.
+	pluginID2, err := inst.Install(context.Background(), buildTarball(t, "2.0.0"))
+	if err != nil {
+		t.Fatalf("Install v2: %v", err)
+	}
+	if pluginID2 != pluginID {
+		t.Errorf("Install v2 returned different plugin ID: got %q, want %q", pluginID2, pluginID)
+	}
 	if len(calledWith) != 1 {
-		t.Fatalf("OnInstalled called %d times, want 1", len(calledWith))
+		t.Fatalf("OnInstalled called %d times after v2 install (active), want 1", len(calledWith))
 	}
 	if calledWith[0] != pluginID {
 		t.Errorf("OnInstalled plugin ID = %q, want %q", calledWith[0], pluginID)
 	}
 
 	// Rejected install must not fire the callback.
-	badTarPath := badSignatureTarball(t, "hook-plugin", "2.0.0")
+	badTarPath := badSignatureTarball(t, "hook-plugin", "3.0.0")
 	if _, err := inst.Install(context.Background(), badTarPath); err != nil {
 		t.Fatalf("Install (bad sig): %v", err)
 	}
@@ -1526,6 +1683,10 @@ func TestInstall_MaterialChange_DoesNotOverwriteBinary(t *testing.T) {
 // TestInstall_OnInstalled_NotCalledForPubkeyMismatch verifies that the OnInstalled
 // callback does not fire when an install is blocked by a pubkey mismatch.
 // This is the hook counterpart of TestInstall_PubkeyMismatch_DoesNotOverwriteBinary.
+//
+// Fresh installs land in pending_review so the callback is never fired for them
+// either. To test the pubkey-mismatch-specific suppression we promote v1 to
+// active (simulating admin approval) before installing v2 with a different key.
 func TestInstall_OnInstalled_NotCalledForPubkeyMismatch(t *testing.T) {
 	q := openTestDB(t)
 	inst := newTestInstaller(t, q, false)
@@ -1533,13 +1694,27 @@ func TestInstall_OnInstalled_NotCalledForPubkeyMismatch(t *testing.T) {
 	callCount := 0
 	inst.OnInstalled(func(_ context.Context, _ string) { callCount++ })
 
-	// Install v1 — callback fires once.
+	// Install v1 — fresh install lands in pending_review; callback must NOT fire.
 	tarPath1, _ := signedPluginTarball(t, "hook-mismatch-plugin", "1.0.0")
 	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
 		t.Fatalf("Install v1: %v", err)
 	}
-	if callCount != 1 {
-		t.Fatalf("after v1 install: callback count = %d, want 1", callCount)
+	if callCount != 0 {
+		t.Fatalf("after v1 install (pending_review): callback count = %d, want 0", callCount)
+	}
+
+	// Simulate admin approval by promoting the plugin to active.
+	existing, err := q.GetPluginByName(context.Background(), "hook-mismatch-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+	if _, err := q.UpdatePluginStatus(context.Background(), db.UpdatePluginStatusParams{
+		Status:          "active",
+		UpdatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		ID:              existing.ID,
+		ExpectedVersion: existing.Version,
+	}); err != nil {
+		t.Fatalf("UpdatePluginStatus: %v", err)
 	}
 
 	// Install v2 with a different key — pubkey mismatch, callback must NOT fire.
@@ -1547,8 +1722,8 @@ func TestInstall_OnInstalled_NotCalledForPubkeyMismatch(t *testing.T) {
 	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
 		t.Fatalf("Install v2 (different key): %v", err)
 	}
-	if callCount != 1 {
-		t.Errorf("after pubkey-mismatch install: callback count = %d, want 1 (no new call)", callCount)
+	if callCount != 0 {
+		t.Errorf("after pubkey-mismatch install: callback count = %d, want 0 (no new call)", callCount)
 	}
 }
 
@@ -1603,8 +1778,8 @@ func TestInstall_NestedLayout_Installs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPluginByName: %v", err)
 	}
-	if row.Status != "active" {
-		t.Errorf("status = %q, want active", row.Status)
+	if row.Status != "pending_review" {
+		t.Errorf("status = %q, want pending_review", row.Status)
 	}
 	if row.PluginVersion != "1.0.0" {
 		t.Errorf("plugin_version = %q, want 1.0.0", row.PluginVersion)
@@ -1636,8 +1811,8 @@ func TestInstall_FlatLayout_BackwardCompat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPluginByName: %v", err)
 	}
-	if row.Status != "active" {
-		t.Errorf("status = %q, want active", row.Status)
+	if row.Status != "pending_review" {
+		t.Errorf("status = %q, want pending_review", row.Status)
 	}
 	if row.BinaryPath == nil || *row.BinaryPath == "" {
 		t.Error("binary_path: want non-empty after flat-layout install")

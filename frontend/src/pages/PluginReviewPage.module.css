@@ -1,0 +1,52 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.intro {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-second);
+}
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-second);
+  text-decoration: none;
+}
+
+.backLink:hover {
+  color: var(--text-primary);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Non-dismissible banner shown when the plugin is no longer pending review. */
+.notPendingBanner {
+  background: color-mix(in srgb, var(--color-amber) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-amber) 30%, transparent);
+  border-radius: var(--radius-section);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--color-amber);
+}
+
+/* Error banner shown when approve/reject fails. */
+.errorBanner {
+  background: color-mix(in srgb, var(--color-red) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-red) 30%, transparent);
+  border-radius: var(--radius-section);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--color-red);
+}

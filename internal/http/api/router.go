@@ -253,6 +253,14 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				r.Post("/plugins/{id}/accept-new-key", cfg.Handlers.PluginAdminHandler.AcceptNewKey)
 				r.Post("/plugins/{id}/accept-manifest", cfg.Handlers.PluginAdminHandler.AcceptManifest)
 				r.Delete("/plugins/{id}", cfg.Handlers.PluginAdminHandler.Uninstall)
+				// Approve/reject routes must come after more-specific /{id}/* paths
+				// to avoid chi capturing "approve" or "reject" as the {id} parameter.
+				r.Post("/plugins/{id}/approve", cfg.Handlers.PluginAdminHandler.ApprovePlugin)
+				r.Post("/plugins/{id}/reject", cfg.Handlers.PluginAdminHandler.RejectPlugin)
+				// GET /{id} must come after all /{id}/{sub} routes so chi does not
+				// shadow the sub-paths with the catch-all id parameter.
+				r.Get("/plugins/{id}", cfg.Handlers.PluginAdminHandler.GetPluginDetail)
+				r.Get("/plugins", cfg.Handlers.PluginAdminHandler.ListPlugins)
 			}
 			if cfg.Handlers.PluginOAuthHandler != nil {
 				r.Post("/plugins/{id}/instances/{iid}/oauth/begin", cfg.Handlers.PluginOAuthHandler.Begin)

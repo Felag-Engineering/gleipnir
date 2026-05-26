@@ -50,6 +50,12 @@ const (
 
 	// auditPluginUninstalled is emitted by Uninstall on success.
 	auditPluginUninstalled = "plugin_uninstalled"
+
+	// auditReviewApproved is emitted when an admin approves a pending-review plugin.
+	auditReviewApproved = "plugin_review_approved"
+
+	// auditReviewRejected is emitted when an admin rejects a pending-review plugin.
+	auditReviewRejected = "plugin_review_rejected"
 )
 
 // PluginQuerier is the narrow DB interface required by PluginHandler.
@@ -94,6 +100,10 @@ type PluginQuerier interface {
 	DeletePluginInstance(ctx context.Context, id string) (int64, error)
 	// Policy list (used by reference guard in DeleteInstance and Uninstall).
 	ListPolicies(ctx context.Context) ([]db.Policy, error)
+	// Plugin list (used by ListPlugins handler).
+	ListPlugins(ctx context.Context) ([]db.Plugin, error)
+	// Plugin status write (used by ApprovePlugin CAS transition).
+	UpdatePluginStatus(ctx context.Context, arg db.UpdatePluginStatusParams) (int64, error)
 }
 
 // PluginProcessManager is the narrow interface for starting and stopping plugin
@@ -1817,4 +1827,309 @@ func deriveFingerprint(pubkeyBytes []byte) [8]byte {
 		return [8]byte{}
 	}
 	return pk.KeyID
+}
+
+// pluginDetailResponse is the JSON shape returned by GetPluginDetail.
+// It includes all information an admin needs to make an approval decision.
+type pluginDetailResponse struct {
+	ID                string   `json:"id"`
+	Name              string   `json:"name"`
+	Version           string   `json:"version"`
+	Description       string   `json:"description,omitempty"`
+	Author            string   `json:"author,omitempty"`
+	License           string   `json:"license,omitempty"`
+	Status            string   `json:"status"`
+	Services          []string `json:"services"`
+	Tier2Capabilities []string `json:"tier2_capabilities,omitempty"`
+	AuthStrategy      string   `json:"auth_strategy"`
+	HasOAuthDefaults  bool     `json:"has_oauth_defaults"`
+	PubkeyFingerprint string   `json:"pubkey_fingerprint,omitempty"`
+	HasSBOM           bool     `json:"has_sbom"`
+	CreatedAt         string   `json:"created_at"`
+}
+
+// pluginListItemResponse is the JSON shape for a single entry in the ListPlugins response.
+type pluginListItemResponse struct {
+	ID                string   `json:"id"`
+	Name              string   `json:"name"`
+	Version           string   `json:"version"`
+	Status            string   `json:"status"`
+	Services          []string `json:"services"`
+	PubkeyFingerprint string   `json:"pubkey_fingerprint,omitempty"`
+	HasSBOM           bool     `json:"has_sbom"`
+	InstanceCount     int      `json:"instance_count"`
+	CreatedAt         string   `json:"created_at"`
+}
+
+// manifestServices derives the list of declared service names from a manifest.
+// A service is present when its version string is non-empty (e.g. m.Services.Tool != "").
+func manifestServices(m *sdkmanifest.Manifest) []string {
+	var svcs []string
+	if m.Services.Tool != "" {
+		svcs = append(svcs, "tool")
+	}
+	if m.Services.Trigger != "" {
+		svcs = append(svcs, "trigger")
+	}
+	if m.Services.Channel != "" {
+		svcs = append(svcs, "channel")
+	}
+	return svcs
+}
+
+// GetPluginDetail handles GET /api/v1/admin/plugins/{id}.
+// Returns the full plugin detail needed for the review screen (spec §11.4).
+func (h *PluginHandler) GetPluginDetail(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+
+	plugin, err := h.q.GetPluginByID(ctx, pluginID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		return
+	}
+
+	var m sdkmanifest.Manifest
+	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
+		return
+	}
+
+	// A service is present when its version string is non-empty.
+	services := manifestServices(&m)
+
+	// Derive the pubkey fingerprint for visual comparison. Empty string when
+	// the plugin is unsigned (empty trusted_pubkey column).
+	fingerprint := ""
+	if plugin.TrustedPubkey != "" {
+		fingerprint = fmt.Sprintf("%x", deriveFingerprint([]byte(plugin.TrustedPubkey)))
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, pluginDetailResponse{
+		ID:                plugin.ID,
+		Name:              plugin.Name,
+		Version:           plugin.PluginVersion,
+		Description:       m.Description,
+		Author:            m.Author,
+		License:           m.License,
+		Status:            plugin.Status,
+		Services:          services,
+		Tier2Capabilities: m.Tier2,
+		AuthStrategy:      m.Auth.Strategy,
+		HasOAuthDefaults:  m.Auth.OAuthDefaults != nil,
+		PubkeyFingerprint: fingerprint,
+		HasSBOM:           m.SBOM != "",
+		CreatedAt:         plugin.CreatedAt,
+	})
+}
+
+// ListPlugins handles GET /api/v1/admin/plugins.
+// Returns all installed plugins with metadata derived from each manifest.
+// A service is present when its version string is non-empty.
+func (h *PluginHandler) ListPlugins(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	plugins, err := h.q.ListPlugins(ctx)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list plugins", "")
+		return
+	}
+
+	items := make([]pluginListItemResponse, 0, len(plugins))
+	for _, p := range plugins {
+		var m sdkmanifest.Manifest
+		if parseErr := sdkmanifest.Unmarshal([]byte(p.ManifestSnapshot), &m); parseErr != nil {
+			// Skip unparseable manifests rather than failing the whole list.
+			slog.WarnContext(ctx, "list plugins: skipping plugin with corrupt manifest",
+				"plugin_id", p.ID, "err", parseErr)
+			continue
+		}
+
+		services := manifestServices(&m)
+
+		fingerprint := ""
+		if p.TrustedPubkey != "" {
+			fingerprint = fmt.Sprintf("%x", deriveFingerprint([]byte(p.TrustedPubkey)))
+		}
+
+		// Count instances for this plugin. Small N — admin page, homelab-scale.
+		instanceList, listErr := h.q.ListPluginInstancesByPlugin(ctx, p.ID)
+		instanceCount := 0
+		if listErr != nil {
+			slog.WarnContext(ctx, "list plugins: failed to count instances",
+				"plugin_id", p.ID, "err", listErr)
+		} else {
+			instanceCount = len(instanceList)
+		}
+
+		items = append(items, pluginListItemResponse{
+			ID:                p.ID,
+			Name:              p.Name,
+			Version:           p.PluginVersion,
+			Status:            p.Status,
+			Services:          services,
+			PubkeyFingerprint: fingerprint,
+			HasSBOM:           m.SBOM != "",
+			InstanceCount:     instanceCount,
+			CreatedAt:         p.CreatedAt,
+		})
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, items)
+}
+
+// approvePluginResponse is the JSON shape returned by ApprovePlugin on success.
+type approvePluginResponse struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Status  string `json:"status"`
+}
+
+// ApprovePlugin handles POST /api/v1/admin/plugins/{id}/approve.
+// Transitions the plugin from pending_review to active (CAS-guarded) and emits
+// a plugin_review_approved audit event.
+func (h *PluginHandler) ApprovePlugin(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+
+	plugin, err := h.q.GetPluginByID(ctx, pluginID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		return
+	}
+
+	if plugin.Status != "pending_review" {
+		httputil.WriteError(w, http.StatusConflict, "plugin is not in pending_review status", plugin.Status)
+		return
+	}
+
+	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
+	rows, err := h.q.UpdatePluginStatus(ctx, db.UpdatePluginStatusParams{
+		Status:          "active",
+		UpdatedAt:       nowStr,
+		ID:              pluginID,
+		ExpectedVersion: plugin.Version,
+	})
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update plugin status", "")
+		return
+	}
+	if rows == 0 {
+		httputil.WriteError(w, http.StatusConflict, "concurrent modification detected; retry", "")
+		return
+	}
+
+	caller, _ := auth.UserFromContext(ctx)
+	actorID := ""
+	if caller != nil {
+		actorID = caller.ID
+	}
+	h.writeAuditEvent(ctx, auditReviewApproved, "info", nowStr, map[string]any{
+		"plugin_id": pluginID,
+		"name":      plugin.Name,
+		"version":   plugin.PluginVersion,
+		"actor":     actorID,
+	})
+
+	// StartByPluginID is a no-op at this point — no instances exist yet. The
+	// first instance's subprocess starts when the admin creates it via
+	// POST /admin/plugins/{id}/instances.
+	if h.processManager != nil {
+		if startErr := h.processManager.StartByPluginID(ctx, pluginID); startErr != nil {
+			slog.WarnContext(ctx, "approve plugin: StartByPluginID failed (no-op expected)",
+				"plugin_id", pluginID, "err", startErr)
+		}
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, approvePluginResponse{
+		ID:      plugin.ID,
+		Name:    plugin.Name,
+		Version: plugin.PluginVersion,
+		Status:  "active",
+	})
+}
+
+// rejectPluginResponse is the JSON shape returned by RejectPlugin on success.
+type rejectPluginResponse struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// RejectPlugin handles POST /api/v1/admin/plugins/{id}/reject.
+// Emits a plugin_review_rejected audit event, then deletes the plugin row
+// (and its binary directory if present). Only pending_review plugins can be
+// rejected — already-active plugins must be uninstalled instead.
+func (h *PluginHandler) RejectPlugin(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+
+	plugin, err := h.q.GetPluginByID(ctx, pluginID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		return
+	}
+
+	if plugin.Status != "pending_review" {
+		httputil.WriteError(w, http.StatusConflict, "plugin is not in pending_review status", plugin.Status)
+		return
+	}
+
+	// Emit the audit event BEFORE deletion so the plugin_id is still valid
+	// in the plugins table when the event is recorded.
+	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
+	caller, _ := auth.UserFromContext(ctx)
+	actorID := ""
+	if caller != nil {
+		actorID = caller.ID
+	}
+	h.writeAuditEvent(ctx, auditReviewRejected, "info", nowStr, map[string]any{
+		"plugin_id": pluginID,
+		"name":      plugin.Name,
+		"version":   plugin.PluginVersion,
+		"actor":     actorID,
+	})
+
+	// No transaction needed: pending_review plugins have no instances, so there
+	// are no RESTRICT FK rows to clear before deletion. The cascade covers any
+	// edge-case orphan rows.
+	if _, err := h.q.DeletePlugin(ctx, pluginID); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete plugin", "")
+		return
+	}
+
+	// Best-effort: remove the installed binary directory. Containment-checked
+	// (fail-closed per ADR-001): only remove paths strictly within pluginsDir.
+	if plugin.BinaryPath != nil && h.pluginsDir != "" {
+		dir := filepath.Dir(*plugin.BinaryPath)
+		rel, relErr := filepath.Rel(h.pluginsDir, dir)
+		if relErr != nil || strings.HasPrefix(rel, "..") {
+			slog.WarnContext(ctx, "reject: binary path escapes plugins dir — skipping removal",
+				"binary_path", *plugin.BinaryPath,
+				"plugins_dir", h.pluginsDir)
+		} else {
+			if err := os.RemoveAll(dir); err != nil {
+				slog.WarnContext(ctx, "reject: remove binary dir failed", "dir", dir, "err", err)
+			}
+		}
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, rejectPluginResponse{
+		ID:     plugin.ID,
+		Name:   plugin.Name,
+		Status: "rejected",
+	})
 }

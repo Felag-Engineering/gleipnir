@@ -199,17 +199,19 @@ func (in *Installer) Install(ctx context.Context, tarPath string) (string, error
 
 	// upsertPlugin handles commit vs. rejection branching. Only commit branches
 	// (createPlugin, updatePlugin, updatePluginCosmetic) publish the bundle and
-	// invoke onInstalled. Rejection branches (pubkey-mismatch, material-change)
-	// return committed=false so the disk and hook remain untouched.
-	pluginID, committed, err := in.upsertPlugin(ctx, m, manifestBytes, result, bundleDir)
+	// potentially invoke onInstalled. Rejection branches (pubkey-mismatch,
+	// material-change) return committed=false so the disk and hook remain untouched.
+	pluginID, committed, status, err := in.upsertPlugin(ctx, m, manifestBytes, result, bundleDir)
 	if err != nil {
 		return "", err
 	}
 
 	// Notify the post-install hook (e.g. to spawn the subprocess) only when the
-	// install actually committed a new DB row or manifest update. Rejection paths
-	// (pubkey-mismatch, material-change) must not trigger a spawn.
-	if committed && pluginID != "" && in.onInstalled != nil {
+	// install committed AND the plugin is already active (i.e. a version bump of
+	// an already-active plugin). Fresh installs land in pending_review and must
+	// not fire the hook — the subprocess starts when the admin creates the first
+	// instance after approving the plugin via POST /admin/plugins/{id}/approve.
+	if committed && pluginID != "" && in.onInstalled != nil && status == statusActive {
 		in.onInstalled(ctx, pluginID)
 	}
 	return pluginID, nil
@@ -371,18 +373,28 @@ func (in *Installer) recordSignatureInvalid(ctx context.Context, tarPath, plugin
 // re-spawn the subprocess on server restart.
 // Rejection branches (pubkey-mismatch, material-change) never publish and
 // return committed=false.
-// Returns (pluginID, committed, error).
-func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, manifestBytes []byte, result VerifyResult, tmpDir string) (string, bool, error) {
+// Returns (pluginID, committed, status, error). Status is the final plugin
+// status string written to the DB so the Install method can gate the
+// onInstalled callback on status == statusActive.
+func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, manifestBytes []byte, result VerifyResult, tmpDir string) (string, bool, string, error) {
 	existing, err := in.q.GetPluginByName(ctx, m.Name)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", false, fmt.Errorf("get plugin %q: %w", m.Name, err)
+		return "", false, "", fmt.Errorf("get plugin %q: %w", m.Name, err)
 	}
 
 	nowStr := in.nowStr()
 
 	if errors.Is(err, sql.ErrNoRows) {
-		id, commitErr := in.createPlugin(ctx, m, manifestBytes, result, tmpDir, nowStr)
-		return id, commitErr == nil && id != "", commitErr
+		// Unsigned-permissive installs are auto-approved: the operator's global
+		// opt-in (GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true) is the trust signal —
+		// landing in pending_review would prevent instances from ever spawning.
+		// Signed installs require an explicit admin review via POST /approve.
+		initialStatus := statusPendingReview
+		if result.Outcome == OutcomeUnsignedPermissive {
+			initialStatus = statusActive
+		}
+		id, commitErr := in.createPlugin(ctx, m, manifestBytes, result, tmpDir, nowStr, initialStatus)
+		return id, commitErr == nil && id != "", initialStatus, commitErr
 	}
 
 	if existing.PluginVersion == m.Version {
@@ -392,13 +404,13 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 		if in.pluginsDir != "" && (existing.BinaryPath == nil || *existing.BinaryPath == "") {
 			publishedPath, pubErr := in.publishBundle(ctx, tmpDir, m.Name)
 			if pubErr != nil {
-				return "", false, fmt.Errorf("publish bundle for %q (backfill): %w", m.Name, pubErr)
+				return "", false, "", fmt.Errorf("publish bundle for %q (backfill): %w", m.Name, pubErr)
 			}
 			if err := in.updateBinaryPath(ctx, existing.ID, existing.Version, &publishedPath, nowStr); err != nil {
-				return "", false, fmt.Errorf("backfill binary_path for %q: %w", m.Name, err)
+				return "", false, "", fmt.Errorf("backfill binary_path for %q: %w", m.Name, err)
 			}
 		}
-		return existing.ID, false, nil
+		return existing.ID, false, existing.Status, nil
 	}
 
 	// TOFU pubkey trust check: only applies to verified (signed) bundles.
@@ -413,22 +425,22 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 				ExpectedVersion: existing.Version,
 			})
 			if updateErr != nil {
-				return "", false, fmt.Errorf("capture trusted pubkey for %q (delayed TOFU): %w", m.Name, updateErr)
+				return "", false, "", fmt.Errorf("capture trusted pubkey for %q (delayed TOFU): %w", m.Name, updateErr)
 			}
 			if rows == 0 {
-				return "", false, fmt.Errorf("capture trusted pubkey for %q: CAS conflict (version mismatch)", m.Name)
+				return "", false, "", fmt.Errorf("capture trusted pubkey for %q: CAS conflict (version mismatch)", m.Name)
 			}
 			// Re-read so updatePlugin sees the bumped version.
 			existing, err = in.q.GetPluginByName(ctx, m.Name)
 			if err != nil {
-				return "", false, fmt.Errorf("re-read plugin %q after TOFU capture: %w", m.Name, err)
+				return "", false, "", fmt.Errorf("re-read plugin %q after TOFU capture: %w", m.Name, err)
 			}
 		} else if !bytes.Equal(result.Pubkey, []byte(existing.TrustedPubkey)) {
 			// Key mismatch: a different signing key was used for this update.
 			// Block the update and transition all instances to pending_key_approval
 			// so admins are alerted. Do not publish the bundle.
 			id, mismatchErr := in.handlePubkeyMismatch(ctx, existing, result, m.Version, nowStr)
-			return id, false, mismatchErr
+			return id, false, existing.Status, mismatchErr
 		}
 	}
 
@@ -437,22 +449,22 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 	// Cosmetic-only changes update the snapshot silently.
 	var oldManifest manifest.Manifest
 	if parseErr := manifest.Unmarshal([]byte(existing.ManifestSnapshot), &oldManifest); parseErr != nil {
-		return "", false, fmt.Errorf("parse stored manifest snapshot for %q: %w", m.Name, parseErr)
+		return "", false, "", fmt.Errorf("parse stored manifest snapshot for %q: %w", m.Name, parseErr)
 	}
 	changes := pluginmanifest.Diff(&oldManifest, m)
 	if pluginmanifest.HasMaterial(changes) {
 		// Rejected path: do not publish the bundle or update binary_path.
 		// The running generation continues using the previously-verified binary.
 		id, matErr := in.handleManifestMaterialChange(ctx, existing, &oldManifest, m, manifestBytes, changes, nowStr)
-		return id, false, matErr
+		return id, false, existing.Status, matErr
 	}
 	if len(changes) > 0 {
 		id, cosErr := in.updatePluginCosmetic(ctx, existing, m, manifestBytes, changes, tmpDir, nowStr)
-		return id, cosErr == nil && id != "", cosErr
+		return id, cosErr == nil && id != "", existing.Status, cosErr
 	}
 
 	id, upErr := in.updatePlugin(ctx, existing, m, manifestBytes, result, tmpDir, nowStr)
-	return id, upErr == nil && id != "", upErr
+	return id, upErr == nil && id != "", existing.Status, upErr
 }
 
 // handlePubkeyMismatch transitions all instances of the plugin to
@@ -679,24 +691,13 @@ func pubkeyFingerprint(pubkeyBytes []byte) string {
 	return fmt.Sprintf("%x", pk.KeyID)
 }
 
-// installStatusFor returns the status value to write for a newly-installed or
-// version-bumped plugin row. Verified bundles (and unsigned bundles when the
-// operator has explicitly opted in via GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true)
-// are promoted to "active" so the subprocess manager and trigger supervisor
-// will pick them up. The "pending_review" status is reserved for paths that
-// require explicit operator approval — currently none in this codepath, but
-// future review-gated flows can reuse the constant.
-func installStatusFor(outcome VerifyOutcome) string {
-	switch outcome {
-	case OutcomeVerified, OutcomeUnsignedPermissive:
-		return statusActive
-	default:
-		return statusPendingReview
-	}
-}
-
-// createPlugin inserts a new plugin row with the status returned by
-// installStatusFor (typically "active" for verified or unsigned-permissive bundles).
+// createPlugin inserts a new plugin row with the given initialStatus. Signed
+// fresh installs use status="pending_review" (admin must approve via
+// POST /admin/plugins/{id}/approve); unsigned-permissive installs use
+// status="active" because the operator's global GLEIPNIR_ALLOW_UNSIGNED_PLUGINS
+// opt-in is itself the trust signal (see upsertPlugin). This fulfills spec §5.1:
+// signed new manifests require explicit admin review.
+//
 // Publishes the verified bundle to disk first, then stores the binary_path
 // in the DB so Manager.StartAllActive can re-spawn the subprocess on server
 // restart without re-extracting the tarball.
@@ -704,7 +705,7 @@ func installStatusFor(outcome VerifyOutcome) string {
 // The plugins row insert and the plugin_installed audit event are committed
 // atomically — an audit-insert failure rolls back the row so the same-version
 // idempotency check on the next retry sees no prior row.
-func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, manifestBytes []byte, result VerifyResult, tmpDir string, nowStr string) (string, error) {
+func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, manifestBytes []byte, result VerifyResult, tmpDir string, nowStr string, initialStatus string) (string, error) {
 	var binaryPathPtr *string
 	if in.pluginsDir != "" {
 		publishedPath, pubErr := in.publishBundle(ctx, tmpDir, m.Name)
@@ -722,7 +723,7 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 			PluginVersion:    m.Version,
 			ManifestSnapshot: string(manifestBytes),
 			TrustedPubkey:    string(result.Pubkey),
-			Status:           installStatusFor(result.Outcome),
+			Status:           initialStatus,
 			BinaryPath:       binaryPathPtr,
 			CreatedAt:        nowStr,
 			UpdatedAt:        nowStr,
@@ -745,8 +746,10 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 }
 
 // updatePlugin updates the manifest snapshot on an existing plugin row when the
-// version has changed. Publishes the verified bundle to disk first, then updates
-// binary_path after the manifest CAS succeeds. Uses the CAS guard (ADR-038).
+// version has changed. Preserves the existing plugin status so an already-active
+// plugin is not regressed to pending_review on a version bump. Publishes the
+// verified bundle to disk first, then updates binary_path after the manifest CAS
+// succeeds. Uses the CAS guard (ADR-038).
 //
 // The manifest CAS update and the plugin_update_pending audit event are
 // committed atomically. The binary_path CAS update runs inside the same tx
@@ -767,7 +770,7 @@ func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *ma
 		rows, mErr := q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
 			ManifestSnapshot: string(manifestBytes),
 			PluginVersion:    m.Version,
-			Status:           installStatusFor(result.Outcome),
+			Status:           existing.Status, // preserve existing status so an active plugin is not regressed
 			UpdatedAt:        nowStr,
 			ID:               existing.ID,
 			ExpectedVersion:  existing.Version,

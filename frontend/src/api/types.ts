@@ -628,6 +628,54 @@ export type PluginAuthStrategy =
   | 'oauth2_authcode'
   | 'oauth2_clientcred'
 
+// Matches internal/admin/plugin_handler.go → pluginListItemResponse (GET /api/v1/admin/plugins).
+export interface ApiPluginListItem {
+  id: string
+  name: string
+  version: string
+  status: string // 'pending_review' | 'active' | 'removed'
+  services: string[] // e.g. ['tool', 'trigger']
+  pubkey_fingerprint?: string
+  has_sbom: boolean
+  instance_count: number
+  created_at: string
+}
+
+// Matches internal/admin/plugin_handler.go → pluginDetailResponse (GET /api/v1/admin/plugins/:id).
+export interface ApiPluginDetail {
+  id: string
+  name: string
+  version: string
+  description?: string
+  author?: string
+  license?: string
+  status: string
+  services: string[]
+  tier2_capabilities?: string[]
+  auth_strategy: string
+  has_oauth_defaults: boolean
+  pubkey_fingerprint?: string
+  has_sbom: boolean
+  created_at: string
+}
+
+// Matches internal/admin/plugin_handler.go → approvePluginResponse
+// (POST /api/v1/admin/plugins/:id/approve).
+export interface ApiApprovePluginResponse {
+  id: string
+  name: string
+  version: string
+  status: string
+}
+
+// Matches internal/admin/plugin_handler.go → rejectPluginResponse
+// (POST /api/v1/admin/plugins/:id/reject).
+export interface ApiRejectPluginResponse {
+  id: string
+  name: string
+  status: string
+}
+
 // ApiRedactedCredentials mirrors internal/plugin/oauth.RedactedCredentials
 // (internal/plugin/oauth/credentials.go). Secret values are NEVER present —
 // only presence flags (has_api_key, has_password, has_client_secret, has_token)
