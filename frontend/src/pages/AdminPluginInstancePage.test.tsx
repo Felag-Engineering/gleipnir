@@ -21,7 +21,7 @@ vi.mock('@/components/admin/ReauthorizeButton/ReauthorizeButton', () => ({
 }))
 
 import { usePluginInstancesForAudience, usePluginInstanceDetail } from '@/hooks/queries/admin'
-import { useSetInstanceSubscriptionScope, useBeginPluginOAuth, useDeletePluginInstance, useSetInstanceConfig, useAcceptPluginManifest } from '@/hooks/mutations/plugins'
+import { useSetInstanceSubscriptionScope, useBeginPluginOAuth, useDeletePluginInstance, useDeactivatePluginInstance, useActivatePluginInstance, useSetInstanceConfig, useAcceptPluginManifest } from '@/hooks/mutations/plugins'
 import type { ApiPluginInstanceDetail } from '@/api/types'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { ApiError } from '@/api/fetch'
@@ -199,6 +199,14 @@ function mockMutationNoop() {
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof useAcceptPluginManifest>)
+  vi.mocked(useDeactivatePluginInstance).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as unknown as ReturnType<typeof useDeactivatePluginInstance>)
+  vi.mocked(useActivatePluginInstance).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as unknown as ReturnType<typeof useActivatePluginInstance>)
 }
 
 function mockMutationSuccess(onSuccessCapture?: (fn: () => void) => void) {

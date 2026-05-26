@@ -34,6 +34,19 @@
   color: var(--text-primary);
 }
 
+/* Inactive banner — shown when health_state is inactive (deliberately deactivated).
+   Muted gray tint to signal "off" rather than "broken". */
+
+.inactiveBanner {
+  padding: var(--space-3) var(--space-4);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
+  border-radius: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
 /* Tabs */
 
 .tabs {

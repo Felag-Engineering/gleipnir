@@ -12,6 +12,7 @@ interface PluginHealthChipProps {
 //   green  — healthy
 //   yellow — degraded but operational (unsigned_permissive, pending_*, unhealthy)
 //   red    — non-functional (verification_error, signature_invalid, circuit_broken, crashed)
+//   gray   — deliberately deactivated by an admin (inactive, #243)
 const VARIANT: Record<PluginHealthState, string> = {
   healthy:                    styles.green,
   unsigned_permissive:        styles.yellow,
@@ -24,6 +25,7 @@ const VARIANT: Record<PluginHealthState, string> = {
   verification_error:         styles.red,
   signature_invalid:          styles.red,
   crashed:                    styles.red,
+  inactive:                   styles.gray,
 }
 
 export function PluginHealthChip({ state, detail, onClick }: PluginHealthChipProps) {

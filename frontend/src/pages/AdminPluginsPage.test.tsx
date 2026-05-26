@@ -544,43 +544,33 @@ describe('AdminPluginsPage', () => {
     expect(screen.getAllByText('slack-prod').length).toBeGreaterThanOrEqual(1)
   })
 
-  it('fires DELETE and closes modal on successful uninstall', async () => {
+  it('opens blocked modal (cannot uninstall) when instances still exist', async () => {
+    // Issue #243: backend gates uninstall on zero instances. The modal shows
+    // "Cannot uninstall" and disables the submit button when instances remain.
     mockInstances([INSTANCE_HEALTHY])
     mockCurrentUser(['admin'])
-    server.use(
-      http.delete(`/api/v1/admin/plugins/${PLUGIN_ID}`, () => new HttpResponse(null, { status: 204 })),
-    )
 
     renderPage()
     await userEvent.click(screen.getByRole('button', { name: /uninstall plugin/i }))
 
-    // Click the confirm button inside the dialog (not the kebab trigger outside it).
     const dialog = screen.getByRole('dialog')
-    await userEvent.click(within(dialog).getByRole('button', { name: /uninstall plugin/i }))
-
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // Submit is disabled in blocked state.
+    expect(within(dialog).getByRole('button', { name: /cannot uninstall/i })).toBeDisabled()
+    // Remaining instance names are listed.
+    expect(within(dialog).getByText('slack-prod')).toBeInTheDocument()
   })
 
-  it('shows 409 detail in UninstallPluginModal when references exist', async () => {
+  it('closes uninstall modal when Cancel is clicked (blocked or not)', async () => {
     mockInstances([INSTANCE_HEALTHY])
     mockCurrentUser(['admin'])
-    server.use(
-      http.delete(`/api/v1/admin/plugins/${PLUGIN_ID}`, () =>
-        HttpResponse.json(
-          { error: 'plugin has references', detail: 'Policy "Nightly Sync" references this plugin.' },
-          { status: 409 },
-        ),
-      ),
-    )
 
     renderPage()
     await userEvent.click(screen.getByRole('button', { name: /uninstall plugin/i }))
 
     const dialog = screen.getByRole('dialog')
-    await userEvent.click(within(dialog).getByRole('button', { name: /uninstall plugin/i }))
+    await userEvent.click(within(dialog).getByRole('button', { name: /cancel/i }))
 
-    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
-    expect(screen.getByRole('alert')).toHaveTextContent('Policy "Nightly Sync"')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
   it('does NOT render Uninstall plugin button for auditor role', () => {

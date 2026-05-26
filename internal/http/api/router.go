@@ -250,6 +250,8 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				r.Put("/plugins/{id}/instances/{iid}/config", cfg.Handlers.PluginAdminHandler.PutInstanceConfig)
 				r.Put("/plugins/{id}/instances/{iid}/config/{property}", cfg.Handlers.PluginAdminHandler.PutInstanceConfigProperty)
 				r.Delete("/plugins/{id}/instances/{iid}", cfg.Handlers.PluginAdminHandler.DeleteInstance)
+				r.Post("/plugins/{id}/instances/{iid}/deactivate", cfg.Handlers.PluginAdminHandler.DeactivateInstance)
+				r.Post("/plugins/{id}/instances/{iid}/activate", cfg.Handlers.PluginAdminHandler.ActivateInstance)
 				r.Post("/plugins/{id}/accept-new-key", cfg.Handlers.PluginAdminHandler.AcceptNewKey)
 				r.Post("/plugins/{id}/accept-manifest", cfg.Handlers.PluginAdminHandler.AcceptManifest)
 				r.Delete("/plugins/{id}", cfg.Handlers.PluginAdminHandler.Uninstall)

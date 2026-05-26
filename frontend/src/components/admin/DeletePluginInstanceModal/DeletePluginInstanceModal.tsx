@@ -10,6 +10,13 @@ export interface DeletePluginInstanceModalProps {
   onConfirm: () => void
   isPending: boolean
   error: string | null
+  /**
+   * When provided, deletion is blocked. Each string names a blocker
+   * (e.g. "3 in-flight calls", "policy: foo"). The submit button is
+   * disabled and a "Cannot delete" message is shown in place of the
+   * confirm button label.
+   */
+  blockers?: string[]
 }
 
 // DeletePluginInstanceModal asks the admin to confirm permanent deletion of a
@@ -18,6 +25,9 @@ export interface DeletePluginInstanceModalProps {
 //
 // The caller owns the mutation state and passes isPending + error so the
 // modal can remain a presentational component that is straightforward to test.
+//
+// Pass blockers when deletion cannot proceed (e.g. in-flight calls) to show
+// a non-dismissible explanation and disable the submit button.
 export function DeletePluginInstanceModal({
   pluginName,
   instanceName,
@@ -25,15 +35,18 @@ export function DeletePluginInstanceModal({
   onConfirm,
   isPending,
   error,
+  blockers = [],
 }: DeletePluginInstanceModalProps) {
+  const isBlocked = blockers.length > 0
+
   const footer = (
     <ModalFooter
       onCancel={onClose}
       onSubmit={onConfirm}
       isLoading={isPending}
-      submitLabel="Delete instance"
+      submitLabel={isBlocked ? 'Cannot delete' : 'Delete instance'}
       loadingLabel="Deleting…"
-      submitDisabled={isPending}
+      submitDisabled={isPending || isBlocked}
       variant="danger"
     />
   )
@@ -49,6 +62,17 @@ export function DeletePluginInstanceModal({
         cancelled, and OAuth tokens will be revoked. The plugin itself is not
         removed — other instances are unaffected.
       </p>
+
+      {isBlocked && (
+        <div className={alertStyles.alertError} role="alert">
+          <p className={styles.body}>Cannot delete — resolve the following first:</p>
+          <ul>
+            {blockers.map((b) => (
+              <li key={b}>{b}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {error != null && (
         <div className={alertStyles.alertError} role="alert">

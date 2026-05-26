@@ -56,6 +56,12 @@ const (
 
 	// auditReviewRejected is emitted when an admin rejects a pending-review plugin.
 	auditReviewRejected = "plugin_review_rejected"
+
+	// auditInstanceDeactivated is emitted when an admin deactivates an instance (#243).
+	auditInstanceDeactivated = "plugin_instance_deactivated"
+
+	// auditInstanceActivated is emitted when an admin re-activates an instance (#243).
+	auditInstanceActivated = "plugin_instance_activated"
 )
 
 // PluginQuerier is the narrow DB interface required by PluginHandler.
@@ -138,13 +144,25 @@ type PluginInstaller interface {
 	Install(ctx context.Context, tarPath string) (string, error)
 }
 
-// TriggerRestarter is the narrow interface used to start or restart a plugin's
-// trigger stream after its subscription scope changes. Implemented by
-// *plugintrigger.Supervisor; kept narrow here so the admin package does not
-// import the trigger package directly.
+// TriggerRestarter is the narrow interface used to start, restart, or stop a
+// plugin's trigger stream. Implemented by *plugintrigger.Supervisor; kept
+// narrow here so the admin package does not import the trigger package directly.
 type TriggerRestarter interface {
 	Start(ctx context.Context, instanceID string)
 	Restart(ctx context.Context, instanceID string)
+	// Stop cancels the supervised trigger stream for instanceID. Called by
+	// DeactivateInstance to ensure the plugin stops receiving trigger events
+	// after its subprocess is stopped (#243).
+	Stop(instanceID string)
+}
+
+// InflightCounter reports the number of tool calls currently dispatched to a
+// named plugin instance. Implemented by *dispatch.Pool; kept as an interface
+// here so the admin package does not import internal/plugin/dispatch (package
+// boundary mirrors PluginProcessManager). Used by DeactivateInstance and
+// DeleteInstance to gate actions that must not disrupt active work (#243).
+type InflightCounter interface {
+	InflightCountByInstance(instanceName string) int
 }
 
 // PluginHandler handles plugin-related admin endpoints.
@@ -158,6 +176,7 @@ type PluginHandler struct {
 	pluginsDir       string               // empty disables FS cleanup in Uninstall
 	processManager   PluginProcessManager // nil means skip subprocess Stop
 	toolUnregistrar  ToolUnregistrar      // nil until #194 wires tools.Registrar
+	inflightCounter  InflightCounter      // may be nil; gates deactivate/delete on zero in-flight calls
 }
 
 // NewPluginHandler returns a PluginHandler backed by the given querier, event
@@ -213,6 +232,14 @@ func (h *PluginHandler) SetProcessManager(pm PluginProcessManager) {
 // When #194 wires tools.New(arbiter, ...), add the one-line wire-up there.
 func (h *PluginHandler) SetToolUnregistrar(u ToolUnregistrar) {
 	h.toolUnregistrar = u
+}
+
+// SetInflightCounter wires the InflightCounter (typically *dispatch.Pool) for
+// the in-flight gate in DeactivateInstance and DeleteInstance. A nil counter
+// skips the gate (safe default for tests and the GLEIPNIR_PLUGINS_ENABLED=false
+// path). Called from main.go inside the plugins-enabled block.
+func (h *PluginHandler) SetInflightCounter(ic InflightCounter) {
+	h.inflightCounter = ic
 }
 
 // instanceResponse is the JSON shape returned by GetInstance, PutSubscriptionScope,
@@ -1243,6 +1270,257 @@ func (h *PluginHandler) writeAuditEvent(ctx context.Context, eventType, severity
 	}
 }
 
+// writeInstanceResponseWithRedaction loads the manifest for pluginID, derives
+// secret property names, redacts configJSON, and writes a 200 instanceResponse
+// to w. On manifest parse or redaction failure it writes a 500 and returns false.
+// Callers should return immediately when this returns false.
+func (h *PluginHandler) writeInstanceResponseWithRedaction(
+	ctx context.Context,
+	w http.ResponseWriter,
+	pluginID string,
+	inst db.PluginInstance,
+) bool {
+	plugin, err := h.q.GetPluginByID(ctx, pluginID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		return false
+	}
+
+	var m sdkmanifest.Manifest
+	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
+		// Fail-closed: we must not return unredacted config (ADR-049, ADR-001).
+		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
+		return false
+	}
+
+	secretNames, err := configvalidate.SecretPropertyNames(m.ConfigSchema)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse config schema", err.Error())
+		return false
+	}
+
+	redactedConfig, err := configvalidate.RedactSecrets(inst.ConfigJson, secretNames)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to redact config", err.Error())
+		return false
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
+		ID:                    inst.ID,
+		PluginID:              inst.PluginID,
+		InstanceName:          inst.InstanceName,
+		State:                 inst.HealthState,
+		Detail:                inst.HealthDetail,
+		Version:               inst.Version,
+		UpdatedAt:             inst.UpdatedAt,
+		SubscriptionScopeJson: inst.SubscriptionScopeJson,
+		ConfigJson:            redactedConfig,
+	})
+	return true
+}
+
+// DeactivateInstance handles POST /api/v1/admin/plugins/{id}/instances/{iid}/deactivate.
+//
+// Soft deactivation: stops the subprocess and trigger stream, transitions the
+// health state to inactive, and refuses new tool calls. The DB row is preserved
+// so the instance can be reactivated. In-flight runs at the time of the call
+// continue to completion under their existing generation.
+//
+// Status codes:
+//   - 200 — deactivated; body is the updated instanceResponse
+//   - 404 — plugin or instance not found (also returned on plugin/instance mismatch)
+//   - 409 — already inactive, terminal state, or in-flight calls present
+//   - 500 — DB or subprocess error
+func (h *PluginHandler) DeactivateInstance(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+	instanceID := chi.URLParam(r, "iid")
+
+	if _, err := h.q.GetPluginByID(ctx, pluginID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		} else {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		}
+		return
+	}
+
+	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
+		return
+	}
+	if inst.PluginID != pluginID {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return
+	}
+
+	current := model.PluginHealthState(inst.HealthState)
+
+	if current == model.PluginHealthStateInactive {
+		httputil.WriteError(w, http.StatusConflict, "instance is already deactivated", "")
+		return
+	}
+
+	// Terminal states cannot transition to inactive (state machine enforces this,
+	// but we surface a clear error here before hitting ErrIllegalTransition).
+	if current == model.PluginHealthStateSignatureInvalid || current == model.PluginHealthStateVerificationError {
+		httputil.WriteError(w, http.StatusConflict,
+			"cannot deactivate instance in terminal state",
+			fmt.Sprintf("current state: %s", current))
+		return
+	}
+
+	// Gate on zero in-flight tool calls. TOCTOU is acceptable here: a new call
+	// arriving after this check will fail at the dispatch layer once the subprocess
+	// is stopped. The gate prevents disrupting calls that are actively running.
+	if h.inflightCounter != nil {
+		count := h.inflightCounter.InflightCountByInstance(inst.InstanceName)
+		if count > 0 {
+			httputil.WriteError(w, http.StatusConflict,
+				"cannot deactivate while tool calls are in progress",
+				fmt.Sprintf("%d in-flight calls", count))
+			return
+		}
+	}
+
+	if err := pluginstate.SetHealthState(ctx, h.q, h.publisher, instanceID, pluginstate.OriginHost,
+		model.PluginHealthStateInactive, "deactivated by admin"); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to set health state", err.Error())
+		return
+	}
+
+	// Best-effort subprocess stop (5s deadline — same pattern as DeleteInstance).
+	if h.processManager != nil {
+		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := h.processManager.Stop(stopCtx, instanceID); err != nil {
+			slog.WarnContext(ctx, "deactivate instance: subprocess stop failed",
+				"instance_id", instanceID, "err", err)
+		}
+		cancel()
+	}
+
+	// Best-effort trigger stream stop.
+	if h.triggerRestarter != nil {
+		h.triggerRestarter.Stop(instanceID)
+	}
+
+	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
+	h.writeAuditEvent(ctx, auditInstanceDeactivated, "info", nowStr, map[string]any{
+		"plugin_id":     pluginID,
+		"instance_id":   instanceID,
+		"instance_name": inst.InstanceName,
+	})
+
+	// Re-fetch to return the current row after the state transition.
+	updated, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if err != nil {
+		// State write succeeded but the re-fetch failed. Return 500 — the client
+		// can re-fetch via GET. We must not synthesize a response here because
+		// config_json may contain unredacted secrets (ADR-049).
+		slog.WarnContext(ctx, "deactivate instance: re-fetch after transition failed",
+			"instance_id", instanceID, "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "state transition succeeded but re-fetch failed", "")
+		return
+	}
+
+	h.writeInstanceResponseWithRedaction(ctx, w, pluginID, updated)
+}
+
+// ActivateInstance handles POST /api/v1/admin/plugins/{id}/instances/{iid}/activate.
+//
+// Re-activates a previously deactivated instance: transitions the health state
+// to unhealthy (subprocess not yet running) and spawns the subprocess. Once the
+// subprocess completes the handshake, the process health callback transitions
+// the state to healthy.
+//
+// Status codes:
+//   - 200 — activation initiated; body is the updated instanceResponse
+//   - 404 — plugin or instance not found (also returned on plugin/instance mismatch)
+//   - 409 — instance is not currently inactive
+//   - 500 — DB or subprocess error
+func (h *PluginHandler) ActivateInstance(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+	instanceID := chi.URLParam(r, "iid")
+
+	if _, err := h.q.GetPluginByID(ctx, pluginID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		} else {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		}
+		return
+	}
+
+	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
+		return
+	}
+	if inst.PluginID != pluginID {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return
+	}
+
+	if model.PluginHealthState(inst.HealthState) != model.PluginHealthStateInactive {
+		httputil.WriteError(w, http.StatusConflict,
+			"instance is not deactivated",
+			fmt.Sprintf("current state: %s", inst.HealthState))
+		return
+	}
+
+	// Transition to unhealthy first. The subprocess handshake will drive the
+	// state to healthy once the process comes up.
+	if err := pluginstate.SetHealthState(ctx, h.q, h.publisher, instanceID, pluginstate.OriginHost,
+		model.PluginHealthStateUnhealthy, "reactivated by admin"); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to set health state", err.Error())
+		return
+	}
+
+	// Best-effort subprocess spawn. StartByPluginID spawns all instances for the
+	// plugin; siblings already running return "already running" (swallowed internally).
+	if h.processManager != nil {
+		if err := h.processManager.StartByPluginID(context.Background(), pluginID); err != nil {
+			slog.WarnContext(ctx, "activate instance: spawn failed", "plugin_id", pluginID, "err", err)
+		}
+	}
+
+	// Best-effort trigger stream start.
+	if h.triggerRestarter != nil {
+		h.triggerRestarter.Start(ctx, instanceID)
+	}
+
+	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
+	h.writeAuditEvent(ctx, auditInstanceActivated, "info", nowStr, map[string]any{
+		"plugin_id":     pluginID,
+		"instance_id":   instanceID,
+		"instance_name": inst.InstanceName,
+	})
+
+	// Re-fetch to return the current row after the state transition.
+	updated, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if err != nil {
+		// State write succeeded but the re-fetch failed. Return 500 — the client
+		// can re-fetch via GET. We must not synthesize a response here because
+		// config_json may contain unredacted secrets (ADR-049).
+		slog.WarnContext(ctx, "activate instance: re-fetch after transition failed",
+			"instance_id", instanceID, "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "state transition succeeded but re-fetch failed", "")
+		return
+	}
+
+	h.writeInstanceResponseWithRedaction(ctx, w, pluginID, updated)
+}
+
 // installResponse is the JSON shape returned by Install on success.
 type installResponse struct {
 	ID      string `json:"id"`
@@ -1562,6 +1840,18 @@ func (h *PluginHandler) DeleteInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// In-flight gate: refuse deletion if tool calls are actively dispatched to
+	// this instance. TOCTOU is acceptable — mirrors the policy/audience guards.
+	if h.inflightCounter != nil {
+		count := h.inflightCounter.InflightCountByInstance(inst.InstanceName)
+		if count > 0 {
+			httputil.WriteError(w, http.StatusConflict,
+				"instance has in-flight tool calls",
+				fmt.Sprintf("%d in-flight calls", count))
+			return
+		}
+	}
+
 	// Best-effort subprocess stop before DB cleanup so in-flight RPCs don't hit
 	// a half-deleted instance. A wedged subprocess must not block DB cleanup.
 	if h.processManager != nil {
@@ -1661,7 +1951,10 @@ func (h *PluginHandler) Uninstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Collect all instances so we can run per-instance reference checks.
+	// Collect all instances. Per the issue (#243): removing the plugin (binary +
+	// manifest) requires all instances to be removed first — per-instance
+	// DeleteInstance enforces the policy/audience/in-flight gates individually.
+	// This simpler gate avoids duplicating those checks here.
 	instances, err := h.q.ListPluginInstancesByPlugin(ctx, pluginID)
 	if err != nil {
 		slog.ErrorContext(ctx, "uninstall: list instances", "err", err)
@@ -1669,54 +1962,15 @@ func (h *PluginHandler) Uninstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Policy reference guard: build one prefix per instance and scan all policies
-	// in a single pass.
 	if len(instances) > 0 {
-		prefixes := make([]string, len(instances))
+		names := make([]string, len(instances))
 		for i, inst := range instances {
-			prefixes[i] = inst.InstanceName + "."
+			names[i] = inst.InstanceName
 		}
-		policyRefs, err := policy.ScanPolicyToolRefs(ctx, h.q, prefixes)
-		if err != nil {
-			slog.ErrorContext(ctx, "uninstall: scan policy refs", "err", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-			return
-		}
-		if len(policyRefs) > 0 {
-			names := make([]string, len(policyRefs))
-			for i, ref := range policyRefs {
-				names[i] = ref.Name
-			}
-			httputil.WriteError(w, http.StatusConflict,
-				"plugin instances are referenced by policies", strings.Join(names, ", "))
-			return
-		}
-	}
-
-	// Audience reference guard: check every instance and aggregate names.
-	if len(instances) > 0 {
-		seen := make(map[string]bool)
-		var audienceNames []string
-		for _, inst := range instances {
-			entries, err := h.q.ListAudienceEntriesByInstance(ctx, inst.ID)
-			if err != nil {
-				slog.ErrorContext(ctx, "uninstall: list audience entries",
-					"instance_id", inst.ID, "err", err)
-				httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-				return
-			}
-			for _, ae := range entries {
-				if !seen[ae.AudienceName] {
-					seen[ae.AudienceName] = true
-					audienceNames = append(audienceNames, ae.AudienceName)
-				}
-			}
-		}
-		if len(audienceNames) > 0 {
-			httputil.WriteError(w, http.StatusConflict,
-				"plugin instances are referenced by audiences", strings.Join(audienceNames, ", "))
-			return
-		}
+		httputil.WriteError(w, http.StatusConflict,
+			"all instances must be removed before uninstalling the plugin",
+			strings.Join(names, ", "))
+		return
 	}
 
 	// Best-effort: stop all running subprocesses before clearing rows.

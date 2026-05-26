@@ -26,6 +26,17 @@ describe('worstHealth', () => {
     expect(worstHealth(states)).toBe('crashed')
   })
 
+  it('treats inactive as worse than crashed', () => {
+    // inactive = severity 8, crashed = 7
+    const states: PluginHealthState[] = ['crashed', 'inactive']
+    expect(worstHealth(states)).toBe('inactive')
+  })
+
+  it('inactive severity is 8 (above all runtime failure states)', () => {
+    const states: PluginHealthState[] = ['healthy', 'unhealthy', 'circuit_broken', 'crashed', 'inactive']
+    expect(worstHealth(states)).toBe('inactive')
+  })
+
   it('treats signature_invalid as worse than verification_error', () => {
     const states: PluginHealthState[] = ['verification_error', 'signature_invalid']
     expect(worstHealth(states)).toBe('signature_invalid')
@@ -64,6 +75,7 @@ describe('pluginHealthLabel', () => {
     ['verification_error',        'Verification error'],
     ['signature_invalid',         'Signature invalid'],
     ['crashed',                   'Crashed'],
+    ['inactive',                  'Inactive'],
   ]
 
   for (const [state, label] of cases) {

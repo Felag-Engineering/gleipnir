@@ -383,6 +383,7 @@ export type PluginHealthState =
   | 'verification_error'
   | 'signature_invalid'
   | 'crashed'
+  | 'inactive'
 
 // Matches internal/admin/plugin_handler.go → instanceResponse.
 export interface ApiPluginInstance {
