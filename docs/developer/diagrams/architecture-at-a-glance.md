@@ -4,7 +4,7 @@ A single starting page for orienting yourself: which subsystems exist, who creat
 
 ## Subsystem map
 
-The codebase divides into six subsystems. Each box is one job stated in plain English.
+The codebase divides into seven subsystems. Each box is one job stated in plain English.
 
 ```mermaid
 graph TB
@@ -32,14 +32,22 @@ graph TB
         PERL["sqlc-generated queries · timeout scanners · run-state CAS table · config / logctx / metrics / event · encrypted secrets"]
     end
 
+    subgraph PLG["<b>Plugin subsystem</b> · internal/plugin/*"]
+        PLGL["loader · process manager · hostsvc · dispatch · trigger supervisor · OAuth · signing"]
+    end
+
     FE --> HTTP
     HTTP --> TRIG
     HTTP --> EXE
+    HTTP --> PLG
     TRIG --> EXE
     EXE --> INT
     EXE --> PER
+    EXE --> PLG
     INT --> PER
     HTTP --> PER
+    PLG --> EXE
+    PLG --> PER
 ```
 
 The single rule worth remembering: **dependencies always point downward**. The HTTP layer talks to triggers and execution; execution talks to integrations and persistence; persistence and `internal/infra/*` talk to nothing internal. `internal/mcp` is also forbidden from importing the agent package — see [package-dependencies.md](package-dependencies.md).
@@ -64,6 +72,15 @@ graph TD
     MAIN --> PROVREG["<b>llm.ProviderRegistry</b><br/>provider name → LLMClient"]
     MAIN --> ADMIN["<b>admin.Handler</b><br/>API key encryption,<br/>OpenAI-compat config"]
     MAIN --> MCPREG["<b>mcp.Registry</b><br/>MCP servers + tool catalog"]
+
+    %% Plugin subsystem
+    MAIN --> PLUGMGR["<b>plugin.Manager</b><br/>loader, watcher, installer"]
+    PLUGMGR --> PROCMGR["<b>process.Manager</b><br/>subprocess lifecycle"]
+    PLUGMGR --> HOSTSVC2["<b>hostsvc.Server</b><br/>plugin→host RPCs"]
+    PLUGMGR --> TRIGSUP["<b>trigger.Supervisor</b><br/>per-instance trigger streams"]
+    PLUGMGR --> OAUTHSCAN["<b>oauth.RefreshScanner</b><br/>proactive token refresh"]
+    PROCMGR --> DISPPOOL["<b>dispatch.Pool</b><br/>per-instance gRPC dispatch"]
+    TRIGSUP -. calls .-> RL
 
     %% Run plumbing
     MAIN --> RM["<b>RunManager</b><br/>tracks live agent goroutines"]
@@ -102,6 +119,7 @@ graph TD
         BA --> SM["<b>RunStateMachine</b><br/>status transitions w/ CAS"]
         BA -. calls .-> LLMC["<b>LLMClient</b><br/>(borrowed from ProviderRegistry)"]
         BA -. calls tools via .-> MCPC["<b>MCP client</b><br/>(borrowed from mcp.Registry)"]
+        BA -. calls tools via .-> PDISPATCH["<b>plugin dispatch</b><br/>(borrowed from dispatch.Pool)"]
     end
     AW -. publishes .-> BCAST
     SM -. publishes .-> BCAST
@@ -112,13 +130,13 @@ Solid arrows = creates/owns. Dotted arrows = uses (borrowed reference, no owners
 A few things worth calling out:
 
 - **`main.go` owns everything long-lived.** The order in `run()` matters: persistence → broadcaster → registries → launcher → trigger handlers → router. Shutdown reverses this.
-- **Trigger handlers are sinks for a single dependency: `RunLauncher`.** All five trigger types end at the same call site. Adding a sixth means another handler that calls `launcher.Launch(...)` — see [adding-a-trigger-type.md](../adding-a-trigger-type.md).
+- **Trigger handlers are sinks for a single dependency: `RunLauncher`.** All six trigger types end at the same call site. Adding a seventh means another handler that calls `launcher.Launch(...)` — see [adding-a-trigger-type.md](../adding-a-trigger-type.md).
 - **`BoundAgent` borrows, never owns, the LLM client and MCP clients.** Those live in registries with process-wide lifetime; the agent goroutine just holds a reference for the duration of one run.
 - **`AuditWriter` is per-run by design.** Every step insert flows through one goroutine to avoid SQLite write contention (see invariants in [architecture.md](../architecture.md)).
 
 ## Trigger fan-in
 
-Five trigger types, one launcher. This is the architectural keystone: regardless of how a run is initiated, the rest of the system sees it identically.
+Six trigger types, one launcher. This is the architectural keystone: regardless of how a run is initiated, the rest of the system sees it identically.
 
 ```mermaid
 graph LR
@@ -127,12 +145,14 @@ graph LR
     TIMER1[("<b>Internal timer</b><br/>fire_at list")] --> SCHED["Scheduler<br/>one-shot, auto-pauses"]
     TIMER2[("<b>Internal timer</b><br/>cron expression")] --> CRON["CronRunner<br/>recurring, no catch-up"]
     POLLINT[("<b>Internal timer</b><br/>poll interval")] --> POLLER["Poller<br/>MCP call + JSONPath check"]
+    PLUGEVT[("<b>Plugin event</b><br/>TriggerService stream")] --> PDISP["trigger.Dispatcher<br/>binding eval + dedup"]
 
     WH --> RL["<b>RunLauncher.Launch</b>"]
     MAN --> RL
     SCHED --> RL
     CRON --> RL
     POLLER --> RL
+    PDISP --> RL
 
     RL --> CHECK{"Concurrency<br/>policy"}
     CHECK -->|allow| CREATE["INSERT runs<br/>(status=pending)"]
@@ -155,3 +175,4 @@ The funnel point — `RunLauncher.Launch` — is where the concurrency policy is
 | How requests flow through middleware | [auth-request-flow.md](auth-request-flow.md) |
 | How shutdown is sequenced | [graceful-shutdown.md](graceful-shutdown.md) |
 | Internal package boundaries and forbidden imports | [package-dependencies.md](package-dependencies.md) |
+| How plugins are launched and managed | [plugin-process-model.md](plugin-process-model.md) |

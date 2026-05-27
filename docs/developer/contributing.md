@@ -22,6 +22,7 @@
 Package boundaries are intentional. `internal/mcp` must have no import dependencies on `internal/agent`. The poll trigger engine reuses the MCP client directly — a tight coupling here would require refactoring later.
 
 See [`architecture.md`](architecture.md) for the full package layout.
+For plugin work, see [`plugin-system-spec.md`](plugin-system-spec.md) for the full design specification (process model, services, credentials, trust, observability).
 
 ## Plugin import boundary
 
