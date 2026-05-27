@@ -291,7 +291,14 @@ func (c *Controller) BeginDrain(ctx context.Context, instanceID string, grace ti
 	}
 	s.draining = true
 	s.paused = true
-	s.pausedCh = make(chan struct{}) // fresh channel; will be closed on rotation
+	// Create the fresh channel that Acquire callers will block on during the
+	// drain, and capture it in a local variable. We must close this channel in
+	// step 4 to wake those callers. We cannot re-read s.pausedCh in step 4
+	// because the lock is released between steps — UnregisterInstance can close
+	// s.pausedCh in that window, making the re-read a double-close panic. See
+	// issue #345.
+	drainPausedCh := make(chan struct{}) // fresh channel; will be closed on rotation
+	s.pausedCh = drainPausedCh
 
 	oldGen := s.current
 
@@ -363,16 +370,24 @@ func (c *Controller) BeginDrain(ctx context.Context, instanceID string, grace ti
 	newGen := oldGen + 1
 	s.current = newGen
 	s.refs[newGen] = 0
-	oldPausedCh := s.pausedCh
 	s.paused = false
+	// If UnregisterInstance ran while we were between step 1 and here, it saw
+	// s.paused == true and already closed drainPausedCh. We must not close it
+	// again. Checking s.unregistered under the same lock guarantees we observe
+	// the correct state — both paths hold s.mu when they touch pausedCh. See
+	// issue #345.
+	needsCloseDrainCh := !s.unregistered
 	s.pausedCh = make(chan struct{})
 	close(s.pausedCh) // immediately unblocked for subsequent Acquire callers
 	s.draining = false
 	s.mu.Unlock()
 
-	// Close the old pausedCh to wake any goroutines that were blocked in
-	// Acquire before the rotation. They will loop back and pick up newGen.
-	close(oldPausedCh)
+	// Close drainPausedCh to wake goroutines that were blocked in Acquire during
+	// the drain. They loop back and pick up newGen. Only close if UnregisterInstance
+	// has not already done so (see needsCloseDrainCh above).
+	if needsCloseDrainCh {
+		close(drainPausedCh)
+	}
 
 	return newGen, drainedNaturally, nil
 }

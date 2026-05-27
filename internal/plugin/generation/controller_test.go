@@ -387,6 +387,70 @@ func TestConcurrentAcquireAtGenerationSwitch(t *testing.T) {
 	}
 }
 
+// TestBeginDrain_ConcurrentUnregister_NoPanic verifies that calling
+// UnregisterInstance while BeginDrain is between step 1 (lock released, fresh
+// pausedCh set) and step 4 (rotation) does not cause a double-close panic.
+//
+// Before issue #345 was fixed, BeginDrain re-read s.pausedCh inside step 4 after
+// releasing the lock. UnregisterInstance could close s.pausedCh in that window,
+// causing BeginDrain's subsequent close() to panic. The fix captures the channel
+// in step 1 before releasing the lock.
+//
+// Run with -race to catch any data-race regressions.
+func TestBeginDrain_ConcurrentUnregister_NoPanic(t *testing.T) {
+	// Run many iterations to increase the chance of hitting the race window.
+	for i := range 200 {
+		c := generation.New()
+		id := "inst-race-unregister"
+		c.RegisterInstance(id)
+
+		ctx := context.Background()
+
+		// Hold a refcount slot so BeginDrain blocks in the drain-wait phase
+		// (between step 1 and step 4), giving UnregisterInstance time to run.
+		_, held, _, err := c.Acquire(ctx, id)
+		if err != nil {
+			t.Fatalf("iter %d: Acquire: %v", i, err)
+		}
+
+		// Barrier: ensure the BeginDrain goroutine has entered its wait before we
+		// unregister. We do this by having it signal after setting paused=true but
+		// while it is still blocked on the drain channel (held keeps refs > 0).
+		pauseSet := make(chan struct{})
+
+		drainDone := make(chan struct{})
+		go func() {
+			defer close(drainDone)
+			// Signal that we are about to block on the drain channel. At this point
+			// the lock has been released and s.paused == true.
+			close(pauseSet)
+			c.BeginDrain(ctx, id, 5*time.Second) //nolint:errcheck
+		}()
+
+		// Wait until BeginDrain has released its lock (pauseSet closed), then
+		// unregister — this closes s.pausedCh from under BeginDrain.
+		select {
+		case <-pauseSet:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iter %d: BeginDrain goroutine did not start", i)
+		}
+
+		// UnregisterInstance closes s.pausedCh while BeginDrain is between
+		// step 1 and step 4. This is the race window that caused the panic.
+		c.UnregisterInstance(id)
+
+		// Release the held slot so BeginDrain's drain channel fires (refs → 0)
+		// and BeginDrain can proceed to step 4 and attempt to close prevPausedCh.
+		held()
+
+		select {
+		case <-drainDone:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("iter %d: BeginDrain did not return", i)
+		}
+	}
+}
+
 // TestUnregisterInstance_WakesBlockedAcquires verifies that UnregisterInstance
 // causes any goroutine blocked in Acquire to return an error without leaking,
 // and that subsequent Acquire calls also return an error immediately.
