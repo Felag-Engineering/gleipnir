@@ -69,6 +69,11 @@ const (
 	// tarball. Defends against gzip-bomb payloads (spec §5.1 size guidance).
 	maxTarballBytes = 100 << 20 // 100 MiB
 
+	// maxTarballFiles caps the number of entries (files + directories) extracted
+	// from a plugin tarball. Defends against inode-exhaustion DoS where a small
+	// tarball can encode millions of zero-byte entries that pass the byte cap.
+	maxTarballFiles = 10_000
+
 	// Plugin status values that mirror the DB CHECK constraint.
 	statusPendingReview = "pending_review"
 	statusActive        = "active"
@@ -170,7 +175,7 @@ func (in *Installer) Install(ctx context.Context, tarPath string) (string, error
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := ExtractTarball(tarPath, tmpDir, maxTarballBytes); err != nil {
+	if err := ExtractTarball(tarPath, tmpDir, maxTarballBytes, maxTarballFiles); err != nil {
 		return "", fmt.Errorf("extract tarball %q: %w", tarPath, err)
 	}
 
