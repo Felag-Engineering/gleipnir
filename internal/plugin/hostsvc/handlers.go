@@ -343,40 +343,12 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 		return nil, status.Error(codes.PermissionDenied, "unauthorized_request_id")
 	}
 
-	// Determine the next step number.
-	latestStep, err := s.latestStepNumber(ctx, fr.RunID)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "resolve step index: %v", err)
-	}
-	nextStep := latestStep + 1
-
-	// Insert the run step and resolve the feedback request. A race with the
-	// agent loop is acceptable under ADR-003 audit-write serialization — the
-	// feedback resolution path in the main loop also writes a step and resolves
-	// the request; whichever writer lands first wins (UpdateFeedbackRequestStatus
-	// is guarded by AND status='pending').
-	_, err = s.q.CreateRunStep(ctx, db.CreateRunStepParams{
-		ID:         model.NewULID(),
-		RunID:      fr.RunID,
-		StepNumber: nextStep,
-		Type:       "feedback_response",
-		Content:    payloadJSON,
-		TokenCost:  0,
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
-	})
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "create run step: %v", err)
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = s.q.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
-		Status:     "resolved",
-		Response:   &payloadJSON,
-		ResolvedAt: &now,
-		ID:         requestID,
-	})
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "update feedback request status: %v", err)
+	// Insert the run step and resolve the feedback request atomically.
+	// Without a transaction, two concurrent writers can observe the same
+	// MAX(step_number) and attempt to insert with the same (run_id, step_number),
+	// violating the unique constraint (fixes #348, ADR-038 discipline).
+	if err := s.writeFeedbackResponseStep(ctx, fr.RunID, requestID, payloadJSON); err != nil {
+		return nil, err
 	}
 
 	// Publish so SSE subscribers and tests can observe the step.
@@ -390,6 +362,97 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 	}
 
 	return &hostv1.WriteAuditStepResponse{Ok: true}, nil
+}
+
+// writeFeedbackResponseStep inserts a feedback_response run_step and resolves
+// the feedback_request atomically inside a single transaction. This prevents
+// the TOCTOU race where two concurrent writers observe the same MAX(step_number)
+// and attempt to insert with the same (run_id, step_number) value (fixes #348).
+//
+// When s.sqlDB is nil (unit tests using a fake Querier), the operations run
+// without a transaction — acceptable because fake Queriers are single-threaded
+// and the race only manifests against a real SQLite connection pool.
+func (s *Server) writeFeedbackResponseStep(ctx context.Context, runID, requestID, payloadJSON string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	stepID := model.NewULID()
+
+	if s.sqlDB == nil {
+		// Test path: no real DB, run without transaction.
+		latestStep, err := s.latestStepNumber(ctx, runID)
+		if err != nil {
+			return status.Errorf(codes.Internal, "resolve step index: %v", err)
+		}
+		_, err = s.q.CreateRunStep(ctx, db.CreateRunStepParams{
+			ID:         stepID,
+			RunID:      runID,
+			StepNumber: latestStep + 1,
+			Type:       "feedback_response",
+			Content:    payloadJSON,
+			TokenCost:  0,
+			CreatedAt:  now,
+		})
+		if err != nil {
+			return status.Errorf(codes.Internal, "create run step: %v", err)
+		}
+		_, err = s.q.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
+			Status:     "resolved",
+			Response:   &payloadJSON,
+			ResolvedAt: &now,
+			ID:         requestID,
+		})
+		if err != nil {
+			return status.Errorf(codes.Internal, "update feedback request status: %v", err)
+		}
+		return nil
+	}
+
+	tx, err := s.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return status.Errorf(codes.Internal, "begin feedback response tx: %v", err)
+	}
+	defer tx.Rollback() //nolint:errcheck — Rollback is a no-op after Commit
+
+	qtx := db.New(tx)
+
+	latestStep, err := qtx.GetLatestRunStep(ctx, runID)
+	var nextStep int64
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return status.Errorf(codes.Internal, "resolve step index in tx: %v", err)
+		}
+		// No steps yet — first step is 0.
+		nextStep = 0
+	} else {
+		nextStep = latestStep.StepNumber + 1
+	}
+
+	_, err = qtx.CreateRunStep(ctx, db.CreateRunStepParams{
+		ID:         stepID,
+		RunID:      runID,
+		StepNumber: nextStep,
+		Type:       "feedback_response",
+		Content:    payloadJSON,
+		TokenCost:  0,
+		CreatedAt:  now,
+	})
+	if err != nil {
+		return status.Errorf(codes.Internal, "create run step in tx: %v", err)
+	}
+
+	_, err = qtx.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
+		Status:     "resolved",
+		Response:   &payloadJSON,
+		ResolvedAt: &now,
+		ID:         requestID,
+	})
+	if err != nil {
+		return status.Errorf(codes.Internal, "update feedback request status in tx: %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return status.Errorf(codes.Internal, "commit feedback response tx: %v", err)
+	}
+	return nil
 }
 
 // EmitMetric records a plugin-emitted metric in Prometheus. The host

@@ -246,7 +246,7 @@ func (h *testSlogHandler) all() []slog.Record {
 func newTestServer(t *testing.T, q *fakeQuerier, resolver hostsvc.CallContextResolver, pub *fakePublisher) *hostsvc.Server {
 	t.Helper()
 	binder := &fakeInstanceBinder{id: "iid-test", ok: true}
-	return hostsvc.NewServer(q, testEncryptionKey, resolver, binder, pub, nil)
+	return hostsvc.NewServer(q, nil, testEncryptionKey, resolver, binder, pub, nil)
 }
 
 func ctxWithCallID(callID string) context.Context {
@@ -523,7 +523,7 @@ func TestWriteAuditStep_NoCallID_SubstratePath(t *testing.T) {
 	}
 	ch := &fakeChannelResolver{resolved: true}
 	binder := &fakeInstanceBinder{id: "iid-caller", ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
 
 	// context.Background() — no call_id. Must succeed via request-ownership.
 	resp, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
@@ -592,7 +592,7 @@ func TestWriteAuditStep_NoCallID_CrossInstanceEscalation(t *testing.T) {
 		pluginPendingRequest: pendingRequest("iid-other", "pending"),
 	}
 	binder := &fakeInstanceBinder{id: "iid-caller", ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
 
 	_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
 		StepType:  "feedback_response",
@@ -750,7 +750,7 @@ func newTestServerWithContextBinder(
 	pub *fakePublisher,
 ) *hostsvc.Server {
 	t.Helper()
-	return hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, nil)
+	return hostsvc.NewServer(q, nil, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, nil)
 }
 
 // callWriteAuditStep runs UnaryInstanceTokenInterceptor then calls
@@ -946,7 +946,7 @@ func TestPluginSubstrate_HappyPath(t *testing.T) {
 	ch := &fakeChannelResolver{resolved: true, err: nil}
 	pub := &fakePublisher{}
 	binder := &fakeInstanceBinder{id: "iid-ps", ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, pub, ch)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, pub, ch)
 
 	ctx := ctxWithCallID("call-ps-happy")
 	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
@@ -991,7 +991,7 @@ func TestPluginSubstrate_LateAlreadyResolved(t *testing.T) {
 	}
 	ch := &fakeChannelResolver{resolved: false, err: nil}
 	binder := &fakeInstanceBinder{id: "iid-late", ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
 
 	ctx := ctxWithCallID("call-ps-late")
 	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
@@ -1040,7 +1040,7 @@ func TestPluginSubstrate_LateAlreadyTimedOut(t *testing.T) {
 	}
 	ch := &fakeChannelResolver{resolved: false, err: nil}
 	binder := &fakeInstanceBinder{id: "iid-to", ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
 
 	ctx := ctxWithCallID("call-ps-timedout")
 	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
@@ -1080,7 +1080,7 @@ func TestPluginSubstrate_EvictedWaiter(t *testing.T) {
 	}
 	ch := &fakeChannelResolver{resolved: false, err: dispatch.ErrUnknownRequestID}
 	binder := &fakeInstanceBinder{id: "iid-ev", ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, ch)
 
 	ctx := ctxWithCallID("call-ps-evicted")
 	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
@@ -1123,7 +1123,7 @@ func TestPluginSubstrate_NilResolver(t *testing.T) {
 	}
 	// channels=nil
 	binder := &fakeInstanceBinder{id: "iid-nil", ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
 
 	ctx := ctxWithCallID("call-ps-nil")
 	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
@@ -1166,7 +1166,7 @@ func TestPluginSubstrate_UnauthorizedInstance(t *testing.T) {
 		pluginPendingRequest: pendingRequest("iid-other", "pending"),
 	}
 	binder := &fakeInstanceBinder{id: "iid-caller", ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
 
 	ctx := ctxWithCallID("call-ps-unauth")
 	_, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
@@ -1213,7 +1213,7 @@ func TestPluginSubstrate_FallThroughToFeedbackRequests(t *testing.T) {
 	}
 	pub := &fakePublisher{}
 	binder := &fakeInstanceBinder{id: "iid-ft", ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, pub, nil)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, pub, nil)
 
 	ctx := ctxWithCallID("call-ft")
 	resp, err := srv.WriteAuditStep(ctx, &hostv1.WriteAuditStepRequest{
@@ -1236,7 +1236,7 @@ func TestEmitMetric_ForcePrefix(t *testing.T) {
 	q := &fakeQuerier{
 		instance: db.PluginInstance{ID: "iid-prefix", PluginID: "plug-prefix"},
 	}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-prefix", ok: true}, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-prefix", ok: true}, &fakePublisher{}, nil)
 
 	_, err := srv.EmitMetric(context.Background(), &hostv1.EmitMetricRequest{
 		Name:  "prefix_test_metric",
@@ -1251,7 +1251,7 @@ func TestEmitMetric_AutoInjectLabels(t *testing.T) {
 	q := &fakeQuerier{
 		instance: db.PluginInstance{ID: "inst-auto-label", PluginID: "plug-auto-label"},
 	}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "inst-auto-label", ok: true}, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "inst-auto-label", ok: true}, &fakePublisher{}, nil)
 
 	_, err := srv.EmitMetric(context.Background(), &hostv1.EmitMetricRequest{
 		Name:  "auto_label_verify_metric",
@@ -1301,7 +1301,7 @@ func TestEmitMetric_RejectsInconsistentLabelKeys(t *testing.T) {
 		instance: db.PluginInstance{ID: "iid-incons", PluginID: "plug-incons"},
 	}
 	binder := &fakeInstanceBinder{id: "iid-incons", ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
 
 	// First emission: registers the metric with label key "a".
 	_, err := srv.EmitMetric(context.Background(), &hostv1.EmitMetricRequest{
@@ -1356,7 +1356,7 @@ func TestEmitMetric_CardinalityCap(t *testing.T) {
 		instance: db.PluginInstance{ID: "iid-cap", PluginID: "plug-cap"},
 	}
 	binder := &fakeInstanceBinder{id: "iid-cap", ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
 
 	// Emit 100 distinct values for label "env" — all must succeed.
 	for i := 0; i < 100; i++ {
@@ -1390,7 +1390,7 @@ func TestEmitMetric_CardinalityCap_Concurrent(t *testing.T) {
 		instance: db.PluginInstance{ID: "iid-conc", PluginID: "plug-conc"},
 	}
 	binder := &fakeInstanceBinder{id: "iid-conc", ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
 
 	const total = 200
 	var successes, exhausted atomic.Int64
@@ -1513,7 +1513,7 @@ func TestEmitEvent_ForwardsToTriggerSink(t *testing.T) {
 		instance: db.PluginInstance{ID: "iid-sink", PluginID: "plug-sink"},
 	}
 	pub := &fakePublisher{}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-sink", ok: true}, pub, nil)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-sink", ok: true}, pub, nil)
 
 	sink := &fakeTriggerSink{}
 	srv.SetTriggerSink(sink)
@@ -1581,7 +1581,7 @@ func TestServer_SetTriggerSink_LateBinding(t *testing.T) {
 		instance: db.PluginInstance{ID: "iid-late", PluginID: "plug-late"},
 	}
 	pub := &fakePublisher{}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-late", ok: true}, pub, nil)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, &fakeInstanceBinder{id: "iid-late", ok: true}, pub, nil)
 
 	// First call before SetTriggerSink: SSE-only.
 	_, err := srv.EmitEvent(context.Background(), &hostv1.EmitEventRequest{
@@ -1870,7 +1870,7 @@ func TestNewServer_NilBinderPanics(t *testing.T) {
 	}()
 
 	q := &fakeQuerier{}
-	hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, nil, &fakePublisher{}, nil)
+	hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, nil, &fakePublisher{}, nil)
 }
 
 // ── test helpers: Tier-2 manifest snapshots ───────────────────────────────────
@@ -2382,7 +2382,7 @@ func TestEmitEvent_RateLimit_Integration(t *testing.T) {
 	sink := &fakeTriggerSink{}
 
 	binder := &fakeInstanceBinder{id: instanceID, ok: true}
-	srv := hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, pub, nil)
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, pub, nil)
 	srv.SetTriggerSink(sink)
 
 	const (
