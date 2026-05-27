@@ -13,3 +13,11 @@ func SetTimeNowForTest(fn func() time.Time) (restore func()) {
 	timeNow = fn
 	return func() { timeNow = orig }
 }
+
+// Exported caps for use in external test package assertions.
+const (
+	MetricNameCap      = metricNameCap
+	MaxMetricNameBytes = maxMetricNameBytes
+	MaxLabelKeyBytes   = maxLabelKeyBytes
+	MaxLabelValueBytes = maxLabelValueBytes
+)

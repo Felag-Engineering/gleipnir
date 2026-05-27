@@ -2,6 +2,7 @@ package hostsvc
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -14,6 +15,22 @@ import (
 // per metric. Exceeding this limit on any label causes the emission to be
 // rejected with codes.ResourceExhausted (loud failure, per spec §8.1).
 const cardinalityCap = 100
+
+// metricNameCap is the maximum number of distinct metric names a single plugin
+// instance may register. A misbehaving plugin emitting unbounded distinct names
+// would grow the Prometheus registry without bound; this cap prevents that.
+const metricNameCap = 100
+
+// maxMetricNameBytes is the maximum byte length of a user-supplied metric name
+// (before the gleipnir_plugin_ prefix is added). Prometheus itself enforces a
+// similar constraint; we reject early with a clear error.
+const maxMetricNameBytes = 128
+
+// maxLabelKeyBytes is the maximum byte length of a user-supplied label key.
+const maxLabelKeyBytes = 64
+
+// maxLabelValueBytes is the maximum byte length of a user-supplied label value.
+const maxLabelValueBytes = 256
 
 // gaugeEntry pairs a registered GaugeVec with the sorted set of user-supplied
 // label keys it was registered with. This lets us detect inconsistent label
@@ -71,10 +88,19 @@ func (m *pluginMetrics) set(name string, value float64, userLabels map[string]st
 	if name == "" {
 		return "invalid_metric_name", fmt.Errorf("metric name must not be empty")
 	}
+	if len(name) > maxMetricNameBytes {
+		return "invalid_metric_name", fmt.Errorf("metric name exceeds maximum length of %d bytes", maxMetricNameBytes)
+	}
 
-	for k := range userLabels {
+	for k, v := range userLabels {
 		if reservedLabels[k] {
 			return "reserved_label", fmt.Errorf("label key %q is reserved by the host (auto-injected)", k)
+		}
+		if len(k) > maxLabelKeyBytes {
+			return "invalid_label", fmt.Errorf("label key %q exceeds maximum length of %d bytes", k, maxLabelKeyBytes)
+		}
+		if len(v) > maxLabelValueBytes {
+			return "invalid_label", fmt.Errorf("label value for key %q exceeds maximum length of %d bytes", k, maxLabelValueBytes)
 		}
 	}
 
@@ -103,17 +129,33 @@ func (m *pluginMetrics) set(name string, value float64, userLabels map[string]st
 
 	entry, exists := m.gauges[fullName]
 	if !exists {
+		// Enforce the per-plugin metric name cap before registering a new GaugeVec.
+		// This prevents a misbehaving plugin from growing the registry without bound.
+		if len(m.gauges) >= metricNameCap {
+			return "metric_name_cap_exceeded", fmt.Errorf(
+				"plugin has reached the %d distinct metric name cap; metric %q rejected",
+				metricNameCap, fullName,
+			)
+		}
+
 		// Build the user-key set for future consistency checks.
 		userKeySet := make(map[string]struct{}, len(userLabels))
 		for k := range userLabels {
 			userKeySet[k] = struct{}{}
 		}
 
-		// Build the full label key list: user keys + auto-injected plugin + instance.
-		labelKeys := make([]string, 0, len(userLabels)+2)
+		// Build the full label key list: user keys (sorted) + auto-injected plugin + instance.
+		// Sorting is required for deterministic GaugeVec registration: ranging over
+		// a map has non-deterministic order in Go, and two calls with the same metric
+		// name but different map-iteration order would produce AlreadyRegisteredError.
+		userKeys := make([]string, 0, len(userLabels))
 		for k := range userLabels {
-			labelKeys = append(labelKeys, k)
+			userKeys = append(userKeys, k)
 		}
+		sort.Strings(userKeys)
+
+		labelKeys := make([]string, 0, len(userLabels)+2)
+		labelKeys = append(labelKeys, userKeys...)
 		labelKeys = append(labelKeys, metrics.LabelPlugin, metrics.LabelInstance)
 
 		opts := prometheus.GaugeOpts{

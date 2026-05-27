@@ -405,7 +405,7 @@ func (s *Server) EmitMetric(ctx context.Context, req *hostv1.EmitMetricRequest) 
 	errCode, metricErr := s.metrics.set(req.GetName(), req.GetValue(), req.GetLabels(), inst.PluginID, inst.ID)
 	if metricErr != nil {
 		grpcCode := codes.InvalidArgument
-		if errCode == "cardinality_cap_exceeded" {
+		if errCode == "cardinality_cap_exceeded" || errCode == "metric_name_cap_exceeded" {
 			grpcCode = codes.ResourceExhausted
 		}
 		return nil, status.Errorf(grpcCode, "%s: %v", errCode, metricErr)
