@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/felag-engineering/gleipnir/internal/plugin/loader"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 )
 
@@ -62,8 +63,8 @@ func TestVerifier_Signed_Verifies(t *testing.T) {
 	v := &Verifier{}
 
 	got := v.VerifyBundle(bundleDir, binaryPath)
-	if got.Outcome != OutcomeVerified {
-		t.Fatalf("Outcome = %v (err=%v), want %v", got.Outcome, got.Err, OutcomeVerified)
+	if got.Outcome != loader.OutcomeVerified {
+		t.Fatalf("Outcome = %v (err=%v), want %v", got.Outcome, got.Err, loader.OutcomeVerified)
 	}
 	if len(got.Pubkey) == 0 {
 		t.Errorf("Pubkey: got empty, want signing.pub bytes")
@@ -79,8 +80,8 @@ func TestVerifier_MutatedBinary_Rejected(t *testing.T) {
 
 	v := &Verifier{}
 	got := v.VerifyBundle(bundleDir, binaryPath)
-	if got.Outcome != OutcomeRejected {
-		t.Fatalf("Outcome = %v, want %v", got.Outcome, OutcomeRejected)
+	if got.Outcome != loader.OutcomeRejected {
+		t.Fatalf("Outcome = %v, want %v", got.Outcome, loader.OutcomeRejected)
 	}
 	if got.Err == nil {
 		t.Errorf("Err: got nil, want explanation")
@@ -96,8 +97,8 @@ func TestVerifier_MutatedManifest_Rejected(t *testing.T) {
 
 	v := &Verifier{}
 	got := v.VerifyBundle(bundleDir, binaryPath)
-	if got.Outcome != OutcomeRejected {
-		t.Fatalf("Outcome = %v, want %v", got.Outcome, OutcomeRejected)
+	if got.Outcome != loader.OutcomeRejected {
+		t.Fatalf("Outcome = %v, want %v", got.Outcome, loader.OutcomeRejected)
 	}
 }
 
@@ -115,8 +116,8 @@ func TestVerifier_Unsigned_RejectedByDefault(t *testing.T) {
 
 	v := &Verifier{}
 	got := v.VerifyBundle(bundleDir, binaryPath)
-	if got.Outcome != OutcomeRejected {
-		t.Fatalf("Outcome = %v, want %v", got.Outcome, OutcomeRejected)
+	if got.Outcome != loader.OutcomeRejected {
+		t.Fatalf("Outcome = %v, want %v", got.Outcome, loader.OutcomeRejected)
 	}
 }
 
@@ -133,8 +134,8 @@ func TestVerifier_Unsigned_AllowedInPermissiveMode(t *testing.T) {
 
 	v := &Verifier{AllowUnsigned: true}
 	got := v.VerifyBundle(bundleDir, binaryPath)
-	if got.Outcome != OutcomeUnsignedPermissive {
-		t.Fatalf("Outcome = %v (err=%v), want %v", got.Outcome, got.Err, OutcomeUnsignedPermissive)
+	if got.Outcome != loader.OutcomeUnsignedPermissive {
+		t.Fatalf("Outcome = %v (err=%v), want %v", got.Outcome, got.Err, loader.OutcomeUnsignedPermissive)
 	}
 }
 
@@ -149,8 +150,8 @@ func TestVerifier_Permissive_DoesNotSkipVerificationOfSigned(t *testing.T) {
 
 	v := &Verifier{AllowUnsigned: true}
 	got := v.VerifyBundle(bundleDir, binaryPath)
-	if got.Outcome != OutcomeRejected {
-		t.Fatalf("Outcome = %v, want %v (signed bundles must verify even in permissive mode)", got.Outcome, OutcomeRejected)
+	if got.Outcome != loader.OutcomeRejected {
+		t.Fatalf("Outcome = %v, want %v (signed bundles must verify even in permissive mode)", got.Outcome, loader.OutcomeRejected)
 	}
 }
 
@@ -164,8 +165,8 @@ func TestVerifier_HalfSigned_OnlyPubkey_Rejected(t *testing.T) {
 
 	v := &Verifier{AllowUnsigned: true} // even permissive: half-signed is malformed
 	got := v.VerifyBundle(bundleDir, binaryPath)
-	if got.Outcome != OutcomeRejected {
-		t.Fatalf("Outcome = %v, want %v", got.Outcome, OutcomeRejected)
+	if got.Outcome != loader.OutcomeRejected {
+		t.Fatalf("Outcome = %v, want %v", got.Outcome, loader.OutcomeRejected)
 	}
 }
 
@@ -178,8 +179,8 @@ func TestVerifier_HalfSigned_OnlyMinisig_Rejected(t *testing.T) {
 
 	v := &Verifier{AllowUnsigned: true}
 	got := v.VerifyBundle(bundleDir, binaryPath)
-	if got.Outcome != OutcomeRejected {
-		t.Fatalf("Outcome = %v, want %v", got.Outcome, OutcomeRejected)
+	if got.Outcome != loader.OutcomeRejected {
+		t.Fatalf("Outcome = %v, want %v", got.Outcome, loader.OutcomeRejected)
 	}
 }
 
@@ -192,8 +193,8 @@ func TestVerifier_MissingManifest_Rejected(t *testing.T) {
 
 	v := &Verifier{}
 	got := v.VerifyBundle(bundleDir, binaryPath)
-	if got.Outcome != OutcomeRejected {
-		t.Fatalf("Outcome = %v, want %v", got.Outcome, OutcomeRejected)
+	if got.Outcome != loader.OutcomeRejected {
+		t.Fatalf("Outcome = %v, want %v", got.Outcome, loader.OutcomeRejected)
 	}
 }
 
@@ -207,8 +208,8 @@ func TestVerifier_TwoMinisigFiles_Rejected(t *testing.T) {
 
 	v := &Verifier{}
 	got := v.VerifyBundle(bundleDir, binaryPath)
-	if got.Outcome != OutcomeRejected {
-		t.Fatalf("Outcome = %v, want %v", got.Outcome, OutcomeRejected)
+	if got.Outcome != loader.OutcomeRejected {
+		t.Fatalf("Outcome = %v, want %v", got.Outcome, loader.OutcomeRejected)
 	}
 }
 
@@ -225,7 +226,7 @@ func TestVerifier_SmokeAgainstSigningPackage(t *testing.T) {
 
 	v := &Verifier{}
 	got := v.VerifyBundle(bundleDir, binaryPath)
-	if got.Outcome != OutcomeVerified {
+	if got.Outcome != loader.OutcomeVerified {
 		t.Fatalf("verifier rejected fresh bundle: %v", got.Err)
 	}
 
@@ -266,8 +267,8 @@ func TestVerifier_MissingBinary_Rejected(t *testing.T) {
 
 	v := &Verifier{}
 	got := v.VerifyBundle(bundleDir, filepath.Join(bundleDir, "does-not-exist"))
-	if got.Outcome != OutcomeRejected {
-		t.Fatalf("Outcome = %v, want %v", got.Outcome, OutcomeRejected)
+	if got.Outcome != loader.OutcomeRejected {
+		t.Fatalf("Outcome = %v, want %v", got.Outcome, loader.OutcomeRejected)
 	}
 	if !errors.Is(got.Err, os.ErrNotExist) {
 		t.Errorf("Err = %v; want errors.Is(.., os.ErrNotExist) true", got.Err)

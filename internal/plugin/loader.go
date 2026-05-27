@@ -115,7 +115,7 @@ func (l *Loader) StartWatcher(ctx context.Context, q *db.Queries, sqlDB *sql.DB,
 		return nil
 	}
 
-	l.installer = loader.NewInstaller(&verifierAdapter{v: l.verifier}, q, sqlDB, publisher, dir)
+	l.installer = loader.NewInstaller(l.verifier, q, sqlDB, publisher, dir)
 	// The watcher's callback type is func(context.Context, string) error, but
 	// Install now returns (string, error). The adapter discards the plugin ID —
 	// the watcher only needs to know whether install succeeded.
@@ -204,27 +204,3 @@ func (l *Loader) StartManager(ctx context.Context, cfg StartManagerConfig) error
 	return l.manager.StartAllActive(ctx)
 }
 
-// verifierAdapter bridges *Verifier (returns plugin.VerifyResult) to
-// loader.BundleVerifier (returns loader.VerifyResult). The explicit switch
-// insulates callers from any future iota reordering in either type.
-type verifierAdapter struct{ v *Verifier }
-
-func (a *verifierAdapter) VerifyBundle(bundleDir, binaryPath string) loader.VerifyResult {
-	r := a.v.VerifyBundle(bundleDir, binaryPath)
-
-	var outcome loader.VerifyOutcome
-	switch r.Outcome {
-	case OutcomeVerified:
-		outcome = loader.OutcomeVerified
-	case OutcomeUnsignedPermissive:
-		outcome = loader.OutcomeUnsignedPermissive
-	default: // OutcomeRejected or any future value
-		outcome = loader.OutcomeRejected
-	}
-
-	return loader.VerifyResult{
-		Outcome: outcome,
-		Pubkey:  r.Pubkey,
-		Err:     r.Err,
-	}
-}

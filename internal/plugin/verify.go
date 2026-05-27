@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/felag-engineering/gleipnir/internal/plugin/loader"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 )
 
@@ -18,50 +19,6 @@ import (
 // admin install and admin run* — a meaningful security property, but a
 // narrower one than a curated registry with an identity layer would
 // provide.
-
-// VerifyOutcome is the high-level result of verifying a plugin bundle.
-type VerifyOutcome int
-
-const (
-	// OutcomeVerified means the bundle was signed and the signature
-	// cryptographically validates against the embedded pubkey.
-	OutcomeVerified VerifyOutcome = iota
-
-	// OutcomeUnsignedPermissive means the bundle is missing a .minisig (or
-	// signing.pub) and the host is running with GLEIPNIR_ALLOW_UNSIGNED_PLUGINS
-	// set. The bundle is allowed to load, but every load emits a high-severity
-	// audit event and the instance health state is set to unsigned_permissive.
-	OutcomeUnsignedPermissive
-
-	// OutcomeRejected means verification failed. The caller MUST NOT load the
-	// bundle. The accompanying error explains why (bad signature, missing
-	// file in non-permissive mode, malformed key, etc.).
-	OutcomeRejected
-)
-
-func (o VerifyOutcome) String() string {
-	switch o {
-	case OutcomeVerified:
-		return "verified"
-	case OutcomeUnsignedPermissive:
-		return "unsigned_permissive"
-	case OutcomeRejected:
-		return "rejected"
-	default:
-		return fmt.Sprintf("unknown(%d)", int(o))
-	}
-}
-
-// VerifyResult is the structured outcome of a verification attempt.
-type VerifyResult struct {
-	Outcome VerifyOutcome
-	// Pubkey is the embedded signing.pub bytes (raw, parseable via
-	// signing.ParsePublicKey). Populated on Verified outcomes; empty on
-	// UnsignedPermissive (no key was supplied) and Rejected.
-	Pubkey []byte
-	// Err is non-nil on Rejected outcomes and explains the failure mode.
-	Err error
-}
 
 // Bundle layout convention (spec §5.1, §14.5):
 //
@@ -87,13 +44,15 @@ const (
 // Verifier verifies plugin bundles against their embedded Minisign signature.
 //
 // AllowUnsigned controls behaviour when a bundle has no .minisig or signing.pub:
-// when true, the verifier returns OutcomeUnsignedPermissive (caller is expected
-// to honour the warning surface in ADR-045 §6); when false, the verifier
-// returns OutcomeRejected.
+// when true, the verifier returns loader.OutcomeUnsignedPermissive (caller is
+// expected to honour the warning surface in ADR-045 §6); when false, the
+// verifier returns loader.OutcomeRejected.
 //
 // Bundles that DO carry a signature are verified strictly regardless of
 // AllowUnsigned — permissive mode never relaxes verification of signed
 // bundles. (ADR-045 §6, last bullet.)
+//
+// Verifier implements loader.BundleVerifier directly — no adapter required.
 type Verifier struct {
 	AllowUnsigned bool
 }
@@ -103,8 +62,8 @@ type Verifier struct {
 // path — both are supported), and returns the verification outcome.
 //
 // VerifyBundle never panics. Filesystem errors and parse errors all surface
-// as OutcomeRejected with a wrapped error.
-func (v *Verifier) VerifyBundle(bundleDir, binaryPath string) VerifyResult {
+// as loader.OutcomeRejected with a wrapped error.
+func (v *Verifier) VerifyBundle(bundleDir, binaryPath string) loader.VerifyResult {
 	manifestPath := filepath.Join(bundleDir, manifestFilename)
 	pubkeyPath := filepath.Join(bundleDir, pubkeyFilename)
 	sigPath, sigErr := findMinisig(bundleDir)
@@ -127,7 +86,7 @@ func (v *Verifier) VerifyBundle(bundleDir, binaryPath string) VerifyResult {
 	case missingPubkey && missingSig:
 		// Unsigned. Decide based on AllowUnsigned.
 		if v.AllowUnsigned {
-			return VerifyResult{Outcome: OutcomeUnsignedPermissive}
+			return loader.VerifyResult{Outcome: loader.OutcomeUnsignedPermissive}
 		}
 		return reject(errors.New("bundle is unsigned (no signing.pub or .minisig); set GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true to allow"))
 
@@ -163,7 +122,7 @@ func (v *Verifier) VerifyBundle(bundleDir, binaryPath string) VerifyResult {
 		return reject(fmt.Errorf("signature verification failed: %w", err))
 	}
 
-	return VerifyResult{Outcome: OutcomeVerified, Pubkey: pubkeyBytes}
+	return loader.VerifyResult{Outcome: loader.OutcomeVerified, Pubkey: pubkeyBytes}
 }
 
 // findMinisig looks for a single *.minisig file inside bundleDir. The plugin
@@ -184,6 +143,6 @@ func findMinisig(bundleDir string) (string, error) {
 	}
 }
 
-func reject(err error) VerifyResult {
-	return VerifyResult{Outcome: OutcomeRejected, Err: err}
+func reject(err error) loader.VerifyResult {
+	return loader.VerifyResult{Outcome: loader.OutcomeRejected, Err: err}
 }
