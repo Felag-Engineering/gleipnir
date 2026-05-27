@@ -173,6 +173,85 @@ func TestManager_IdempotentStart(t *testing.T) {
 	}
 }
 
+// TestManager_ConcurrentStart_SingleSubprocess verifies that when two goroutines
+// call Start for the same instance ID concurrently, exactly one subprocess is
+// spawned. Before the fix a double-spawn race allowed both callers to pass the
+// guard check before either had written to m.instances, resulting in two
+// subprocesses being started. The sentinel-under-lock approach closes this
+// window: the second caller observes the in-progress spawn and returns an error.
+//
+// This test is designed to be run with -race to catch the data race on the
+// spawn counter. The starter intentionally sleeps to widen the race window
+// so it is reliably reproducible even without -race.
+func TestManager_ConcurrentStart_SingleSubprocess(t *testing.T) {
+	reg := identity.New()
+
+	var spawnCount atomic.Int32
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:        &fakeQuerier{},
+		IdentityIssuer: reg,
+		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+			// Sleep long enough to ensure the second goroutine reaches the guard
+			// check before the first goroutine inserts into m.instances. Without
+			// the sentinel fix both goroutines would pass the guard and both would
+			// increment spawnCount.
+			time.Sleep(50 * time.Millisecond)
+			spawnCount.Add(1)
+			fc := fixtureConfig(t, "serve-and-block", reg, nil)
+			fc.InstanceID = cfg.InstanceID
+			return process.Start(ctx, fc)
+		},
+	})
+
+	plugin := db.Plugin{ID: "p-concurrent", Status: "active"}
+	instance := db.PluginInstance{
+		ID:           "i-concurrent",
+		PluginID:     "p-concurrent",
+		InstanceName: "concurrent-inst",
+		HealthState:  "healthy",
+	}
+
+	var (
+		wg      sync.WaitGroup
+		errCh   = make(chan error, 2)
+	)
+
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errCh <- mgr.Start(ctx, plugin, instance, os.Args[0])
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+
+	var successes, failures int
+	for err := range errCh {
+		if err == nil {
+			successes++
+		} else {
+			failures++
+		}
+	}
+
+	t.Cleanup(func() { mgr.Stop(ctx, instance.ID) }) //nolint:errcheck
+
+	if successes != 1 {
+		t.Errorf("concurrent Start successes = %d, want exactly 1", successes)
+	}
+	if failures != 1 {
+		t.Errorf("concurrent Start failures = %d, want exactly 1", failures)
+	}
+	if n := spawnCount.Load(); n != 1 {
+		t.Errorf("subprocess spawn count = %d, want 1 (double-spawn race detected)", n)
+	}
+}
+
 // TestManager_StopAll verifies that StopAll terminates all running instances
 // and Lookup returns nil for each afterward.
 func TestManager_StopAll(t *testing.T) {
