@@ -117,3 +117,37 @@ func TestRegistry_TokensAreUnpredictable(t *testing.T) {
 		}
 	}
 }
+
+// TestRegistry_LookupRejectsWrongLength verifies that tokens whose decoded byte
+// length differs from the expected 32 bytes are rejected without a successful
+// lookup. This is a functional correctness check for the length guard that
+// prevents wrong-length inputs from reaching the constant-time comparison.
+func TestRegistry_LookupRejectsWrongLength(t *testing.T) {
+	t.Parallel()
+
+	r := identity.New()
+	_, err := r.Issue("instance-len")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		token string
+	}{
+		{"empty", ""},
+		{"too_short_16_bytes", "AAAAAAAAAAAAAAAAAAAAAA"},  // 16 bytes base64url
+		{"too_long_48_bytes", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}, // 48 bytes base64url
+		{"not_base64", "!!!not-valid-base64!!!"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, ok := r.Lookup(tc.token)
+			if ok {
+				t.Errorf("Lookup(%q) returned ok=true, want false for wrong-length/invalid token", tc.name)
+			}
+		})
+	}
+}
