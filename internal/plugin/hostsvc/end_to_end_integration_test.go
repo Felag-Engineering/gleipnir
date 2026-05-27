@@ -438,7 +438,7 @@ func TestHostsvcE2E_WriteAuditStep_HappyPath(t *testing.T) {
 		countingInterceptor(hostsvc.UnaryCallIDInterceptor(), &callIDCount),
 	}
 
-	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, nil)
+	hostSvc := hostsvc.NewServer(q, store.DB(), testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, nil)
 
 	resultPath := t.TempDir() + "/result.json"
 	env := []string{
@@ -548,7 +548,7 @@ func TestHostsvcE2E_WriteAuditStep_WrongStepType(t *testing.T) {
 		countingInterceptor(hostsvc.UnaryCallIDInterceptor(), &callIDCount),
 	}
 
-	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, nil)
+	hostSvc := hostsvc.NewServer(q, store.DB(), testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, nil)
 
 	resultPath := t.TempDir() + "/result.json"
 	env := []string{
@@ -641,7 +641,7 @@ func TestHostsvcE2E_WriteAuditStep_MissingToken(t *testing.T) {
 		countingInterceptor(hostsvc.UnaryCallIDInterceptor(), &callIDCount),
 	}
 
-	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, nil)
+	hostSvc := hostsvc.NewServer(q, store.DB(), testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, nil)
 
 	resultPath := t.TempDir() + "/result.json"
 	env := []string{
@@ -746,7 +746,7 @@ func TestHostsvcE2E_WriteAuditStep_PluginSubstrate_Late(t *testing.T) {
 	// fakeChannelResolver returns (false, nil) simulating a scanner-conflict
 	// (row resolved, waiter gone).
 	ch := &fakeChannelResolver{resolved: false, err: nil}
-	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, ch)
+	hostSvc := hostsvc.NewServer(q, store.DB(), testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, ch)
 
 	resultPath := t.TempDir() + "/result.json"
 	env := []string{
@@ -842,7 +842,7 @@ func TestHostsvcE2E_WriteAuditStep_PluginSubstrate_Happy(t *testing.T) {
 
 	// Fake resolver simulates CAS win.
 	ch := &fakeChannelResolver{resolved: true, err: nil}
-	hostSvc := hostsvc.NewServer(q, testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, ch)
+	hostSvc := hostsvc.NewServer(q, store.DB(), testEncryptionKey, resolver, hostsvc.NewContextBinder(), pub, ch)
 
 	resultPath := t.TempDir() + "/result.json"
 	env := []string{

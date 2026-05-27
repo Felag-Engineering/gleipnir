@@ -2,6 +2,7 @@ package hostsvc
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"time"
 
@@ -100,6 +101,7 @@ type Server struct {
 	hostv1.UnimplementedHostServiceServer
 
 	q             Querier
+	sqlDB         *sql.DB // used to open transactions in WriteAuditStep (native path)
 	encryptionKey []byte
 	resolver      CallContextResolver
 	binder        InstanceBinder
@@ -157,6 +159,11 @@ func (s *Server) getTriggerSink() TriggerSink {
 // caller's plugin instance ID from the request context (production wiring uses
 // NewContextBinder paired with UnaryInstanceTokenInterceptor — see issue #202).
 //
+// sqlDB is the underlying *sql.DB used to open transactions in the native
+// feedback path of WriteAuditStep (fixes #348). Pass nil only in unit tests
+// that use a fake Querier and do not exercise concurrent writes — the
+// transactional path is skipped when sqlDB is nil.
+//
 // channels may be nil (e.g. in tests that only exercise the native
 // feedback_requests path). When nil and a plugin_pending_requests row is found
 // for a WriteAuditStep request_id, the call is treated as a late callback with
@@ -164,6 +171,7 @@ func (s *Server) getTriggerSink() TriggerSink {
 // the *dispatch.Dispatcher.
 func NewServer(
 	q Querier,
+	sqlDB *sql.DB,
 	encryptionKey []byte,
 	resolver CallContextResolver,
 	binder InstanceBinder,
@@ -175,6 +183,7 @@ func NewServer(
 	}
 	return &Server{
 		q:             q,
+		sqlDB:         sqlDB,
 		encryptionKey: encryptionKey,
 		resolver:      resolver,
 		binder:        binder,

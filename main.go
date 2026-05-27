@@ -240,6 +240,7 @@ func run(cfg config.Config) error {
 
 		hostSvc = hostsvc.NewServer(
 			store.Queries(),
+			store.DB(),
 			encryptionKey,
 			pluginPool,
 			hostsvc.NewContextBinder(),
