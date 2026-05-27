@@ -130,7 +130,14 @@ type Manager struct {
 	cfg       ManagerConfig
 	mu        sync.Mutex
 	instances map[string]*Instance
-	starter   processStarter
+	// spawning tracks instance IDs that are currently in the process of being
+	// started (between the guard check and the post-spawn map insert). This is
+	// the sentinel that closes the double-spawn race: a second concurrent Start
+	// for the same instance ID will observe the sentinel under m.mu and return
+	// an error without calling the starter a second time. The entry is removed
+	// whether the spawn succeeds or fails.
+	spawning map[string]struct{}
+	starter  processStarter
 
 	// toolGenMu guards toolGenerations.
 	toolGenMu sync.Mutex
@@ -154,6 +161,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 	return &Manager{
 		cfg:             cfg,
 		instances:       make(map[string]*Instance),
+		spawning:        make(map[string]struct{}),
 		starter:         starter,
 		toolGenerations: make(map[string]int64),
 	}
@@ -184,13 +192,27 @@ func (m *Manager) Start(ctx context.Context, plugin db.Plugin, instance db.Plugi
 		return nil
 	}
 
+	// Insert a spawning sentinel under the lock before calling the starter.
+	// This closes the double-spawn race: a second concurrent Start for the same
+	// instance ID will observe either the sentinel or the live *Instance entry
+	// and return an error without calling the starter a second time.
 	m.mu.Lock()
 	_, alreadyRunning := m.instances[instance.ID]
+	_, alreadySpawning := m.spawning[instance.ID]
+	if !alreadyRunning && !alreadySpawning {
+		m.spawning[instance.ID] = struct{}{}
+	}
 	m.mu.Unlock()
 
-	if alreadyRunning {
+	if alreadyRunning || alreadySpawning {
 		return fmt.Errorf("manager: instance %s is already running", instance.ID)
 	}
+	// Remove the sentinel when Start returns, whether it succeeds or fails.
+	defer func() {
+		m.mu.Lock()
+		delete(m.spawning, instance.ID)
+		m.mu.Unlock()
+	}()
 
 	host := hostwire.HostServer(NoopHostServer{})
 	if m.cfg.HostServerFor != nil {
