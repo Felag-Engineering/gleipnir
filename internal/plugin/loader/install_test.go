@@ -938,6 +938,85 @@ func TestInstall_TransactionalCreate(t *testing.T) {
 	}
 }
 
+// TestInstall_TransactionalUpdateRollback verifies that when the audit insert
+// inside updatePluginCosmetic's transaction fails, the manifest update is also
+// rolled back. The plugin row must remain at the original version so the next
+// retry can succeed (and the CAS guard won't conflict on an already-bumped version).
+//
+// A version-only bump is a cosmetic change and exercises the updatePluginCosmetic
+// path. TestInstall_TransactionalRollback covers the createPlugin path.
+func TestInstall_TransactionalUpdateRollback(t *testing.T) {
+	store := openTestStore(t)
+	q := store.Queries()
+
+	// Generate a keypair and install v1 successfully so an existing row is present.
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	buildTar := func(t *testing.T, version string) string {
+		t.Helper()
+		manifestBytes := []byte("schema_version: v1\nname: update-rollback-plugin\nversion: " + version + "\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+		binaryBytes := []byte("binary for " + version)
+		payload := signing.PluginPayload(binaryBytes, manifestBytes)
+		sig, signErr := signing.Sign(sk.SecretKey, sk.KeyID, payload, "trusted comment")
+		if signErr != nil {
+			t.Fatalf("sign: %v", signErr)
+		}
+		sigBytes := signing.MarshalSignature(sig, "test sig")
+		tarPath := filepath.Join(t.TempDir(), "update-rollback-plugin-"+version+".tar.gz")
+		writeTarball(t, tarPath, []tarEntry{
+			{name: "manifest.yaml", content: manifestBytes, mode: 0o644},
+			{name: "update-rollback-plugin", content: binaryBytes, mode: 0o755},
+			{name: "signing.pub", content: pubkeyBytes, mode: 0o644},
+			{name: "update-rollback-plugin.minisig", content: sigBytes, mode: 0o644},
+		})
+		return tarPath
+	}
+
+	// Install v1 with a working installer (audit table intact).
+	v := &realVerifier{allowUnsigned: false}
+	inst := NewInstaller(v, q, store.DB(), nil, t.TempDir())
+	inst.clock = func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+
+	if _, err := inst.Install(context.Background(), buildTar(t, "1.0.0")); err != nil {
+		t.Fatalf("Install v1: %v", err)
+	}
+	rowBefore, err := q.GetPluginByName(context.Background(), "update-rollback-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after v1: %v", err)
+	}
+	if rowBefore.PluginVersion != "1.0.0" {
+		t.Fatalf("unexpected version after v1 install: %s", rowBefore.PluginVersion)
+	}
+
+	// Sabotage the audit table so the audit insert inside updatePlugin's tx fails.
+	if _, err := store.DB().Exec("DROP TABLE plugin_audit_events"); err != nil {
+		t.Fatalf("drop audit table: %v", err)
+	}
+
+	// Attempt v2 install — must fail because the audit insert will error.
+	id, err := inst.Install(context.Background(), buildTar(t, "2.0.0"))
+	if err == nil {
+		t.Fatalf("expected install to fail when audit insert errors during updatePlugin; got id=%q nil err", id)
+	}
+
+	// The plugins row must still be at v1 — the manifest CAS was rolled back.
+	rowAfter, getErr := q.GetPluginByName(context.Background(), "update-rollback-plugin")
+	if getErr != nil {
+		t.Fatalf("GetPluginByName after failed v2 install: %v", getErr)
+	}
+	if rowAfter.PluginVersion != "1.0.0" {
+		t.Errorf("plugin_version = %q after updatePlugin rollback, want 1.0.0 (rolled back)", rowAfter.PluginVersion)
+	}
+	// The DB-level version counter must also be unchanged so the next retry's CAS guard succeeds.
+	if rowAfter.Version != rowBefore.Version {
+		t.Errorf("db version counter = %d after rollback, want %d (unchanged)", rowAfter.Version, rowBefore.Version)
+	}
+}
+
 func TestReadManifest_Validation(t *testing.T) {
 	base := "schema_version: v1\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n"
 
