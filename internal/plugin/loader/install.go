@@ -559,8 +559,8 @@ func (in *Installer) transitionAllInstances(ctx context.Context, existing db.Plu
 // the InsertPluginAuditEvent error so callers can wrap it with their own context.
 //
 // Used by the non-transactional paths (recordSignatureInvalid, handlePubkeyMismatch,
-// handleManifestMaterialChange, updatePluginCosmetic). Transactional paths
-// (createPlugin, updatePlugin) call insertAuditRow directly with a tx-bound *db.Queries.
+// handleManifestMaterialChange). Transactional paths (createPlugin, updatePlugin,
+// updatePluginCosmetic) call insertAuditRow directly with a tx-bound *db.Queries.
 func (in *Installer) recordAuditEvent(ctx context.Context, eventType, severity, nowStr string, payload map[string]any) error {
 	return insertAuditRow(ctx, in.q, eventType, severity, nowStr, payload)
 }
@@ -629,6 +629,9 @@ func updateBinaryPathTx(ctx context.Context, q *db.Queries, pluginID string, ver
 // preserving the current plugin status so an already-active plugin is not
 // regressed to pending_review for a description tweak. Publishes the verified
 // bundle to disk and updates binary_path after the manifest CAS succeeds.
+//
+// The manifest update and the audit event are committed atomically so a
+// mid-update failure cannot leave the plugins row advanced without an audit row.
 func (in *Installer) updatePluginCosmetic(ctx context.Context, existing db.Plugin, m *manifest.Manifest, manifestBytes []byte, changes []pluginmanifest.Change, tmpDir string, nowStr string) (string, error) {
 	// Publish the verified bundle before touching the DB so the subprocess can
 	// be re-spawned with the correct binary on the next restart.
@@ -641,41 +644,47 @@ func (in *Installer) updatePluginCosmetic(ctx context.Context, existing db.Plugi
 		binaryPathPtr = &publishedPath
 	}
 
-	rows, err := in.q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
-		ManifestSnapshot: string(manifestBytes),
-		PluginVersion:    m.Version,
-		Status:           existing.Status, // preserve current status — cosmetic change must not regress an active plugin
-		UpdatedAt:        nowStr,
-		ID:               existing.ID,
-		ExpectedVersion:  existing.Version,
+	err := in.inTx(ctx, func(q *db.Queries) error {
+		rows, mErr := q.UpdatePluginManifest(ctx, db.UpdatePluginManifestParams{
+			ManifestSnapshot: string(manifestBytes),
+			PluginVersion:    m.Version,
+			Status:           existing.Status, // preserve current status — cosmetic change must not regress an active plugin
+			UpdatedAt:        nowStr,
+			ID:               existing.ID,
+			ExpectedVersion:  existing.Version,
+		})
+		if mErr != nil {
+			return fmt.Errorf("update plugin %q manifest (cosmetic): %w", m.Name, mErr)
+		}
+		if rows == 0 {
+			return fmt.Errorf("update plugin %q manifest (cosmetic): CAS conflict (version mismatch)", m.Name)
+		}
+
+		// The manifest CAS bumped the version; re-read inside the same tx to get
+		// the new version for the binary_path CAS that follows.
+		if binaryPathPtr != nil {
+			updated, rereadErr := q.GetPluginByName(ctx, m.Name)
+			if rereadErr != nil {
+				return fmt.Errorf("re-read plugin %q after cosmetic update: %w", m.Name, rereadErr)
+			}
+			if pathErr := updateBinaryPathTx(ctx, q, existing.ID, updated.Version, binaryPathPtr, nowStr); pathErr != nil {
+				return fmt.Errorf("update binary_path for %q (cosmetic): %w", m.Name, pathErr)
+			}
+		}
+
+		if auditErr := insertAuditRow(ctx, q, auditManifestCosmeticChange, severityInfo, nowStr, map[string]any{
+			"plugin_id":       existing.ID,
+			"name":            existing.Name,
+			"old_version":     existing.PluginVersion,
+			"new_version":     m.Version,
+			"cosmetic_fields": pluginmanifest.CosmeticFields(changes),
+		}); auditErr != nil {
+			return fmt.Errorf("record manifest_cosmetic_change audit for %q: %w", existing.Name, auditErr)
+		}
+		return nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("update plugin %q manifest (cosmetic): %w", m.Name, err)
-	}
-	if rows == 0 {
-		return "", fmt.Errorf("update plugin %q manifest (cosmetic): CAS conflict (version mismatch)", m.Name)
-	}
-
-	// The manifest CAS bumped the version; re-read to get the new version for
-	// the binary_path CAS that follows.
-	if binaryPathPtr != nil {
-		updated, rereadErr := in.q.GetPluginByName(ctx, m.Name)
-		if rereadErr != nil {
-			return "", fmt.Errorf("re-read plugin %q after cosmetic update: %w", m.Name, rereadErr)
-		}
-		if err := in.updateBinaryPath(ctx, existing.ID, updated.Version, binaryPathPtr, nowStr); err != nil {
-			return "", fmt.Errorf("update binary_path for %q (cosmetic): %w", m.Name, err)
-		}
-	}
-
-	if err := in.recordAuditEvent(ctx, auditManifestCosmeticChange, severityInfo, nowStr, map[string]any{
-		"plugin_id":       existing.ID,
-		"name":            existing.Name,
-		"old_version":     existing.PluginVersion,
-		"new_version":     m.Version,
-		"cosmetic_fields": pluginmanifest.CosmeticFields(changes),
-	}); err != nil {
-		return "", fmt.Errorf("record manifest_cosmetic_change audit for %q: %w", existing.Name, err)
+		return "", err
 	}
 	return existing.ID, nil
 }
