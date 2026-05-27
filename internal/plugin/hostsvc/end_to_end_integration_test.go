@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -355,21 +354,12 @@ func startWriteAuditStepFixture(
 		HostServer:         hostSvc,
 		ServerInterceptors: interceptors,
 		Launch: func(ctx context.Context, binaryPath string, host hostwire.HostServer, opts hostwire.Options) (*hostwire.Client, func(), error) {
-			// Inject fixture mode and test-specific env vars before launching.
-			os.Setenv("GLEIPNIR_TEST_FIXTURE", "serve-and-writeauditstep")
-			for _, kv := range env {
-				if k, v, ok := strings.Cut(kv, "="); ok {
-					os.Setenv(k, v)
-				}
-			}
-			client, teardown, err := hostwire.Launch(ctx, binaryPath, host, opts)
-			os.Unsetenv("GLEIPNIR_TEST_FIXTURE")
-			for _, kv := range env {
-				if k, _, ok := strings.Cut(kv, "="); ok {
-					os.Unsetenv(k)
-				}
-			}
-			return client, teardown, err
+			// Inject fixture mode and test-specific env vars via opts.Env so the
+			// subprocess receives them through the hostwire env allowlist mechanism
+			// rather than via os.Setenv on the host process.
+			opts.Env = append(opts.Env, "GLEIPNIR_TEST_FIXTURE=serve-and-writeauditstep")
+			opts.Env = append(opts.Env, env...)
+			return hostwire.Launch(ctx, binaryPath, host, opts)
 		},
 	}
 

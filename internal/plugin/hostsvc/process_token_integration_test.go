@@ -133,12 +133,11 @@ func startIntegrationFixture(t *testing.T, reg *identity.Registry, instanceID st
 		StartupTimeout: 30 * time.Second,
 		StopGrace:      10 * time.Second,
 		IdentityIssuer: reg,
-		// Inject GLEIPNIR_TEST_FIXTURE so the test binary acts as a plugin subprocess.
+		// Inject GLEIPNIR_TEST_FIXTURE via opts.Env (not os.Setenv) so the
+		// subprocess receives it through the hostwire env allowlist mechanism.
 		Launch: func(ctx context.Context, binaryPath string, host hostwire.HostServer, opts hostwire.Options) (*hostwire.Client, func(), error) {
-			os.Setenv("GLEIPNIR_TEST_FIXTURE", "serve-and-block")
-			client, teardown, err := hostwire.Launch(ctx, binaryPath, host, opts)
-			os.Unsetenv("GLEIPNIR_TEST_FIXTURE")
-			return client, teardown, err
+			opts.Env = append(opts.Env, "GLEIPNIR_TEST_FIXTURE=serve-and-block")
+			return hostwire.Launch(ctx, binaryPath, host, opts)
 		},
 	}
 
@@ -259,10 +258,8 @@ func TestProcessTokenIntegration_OldTokenRejectedAfterReissue(t *testing.T) {
 		IdentityIssuer: reg,
 		HealthSetter:   func(_ context.Context, _ string, _ model.PluginHealthState, _ string) {},
 		Launch: func(ctx context.Context, binaryPath string, host hostwire.HostServer, opts hostwire.Options) (*hostwire.Client, func(), error) {
-			os.Setenv("GLEIPNIR_TEST_FIXTURE", "serve-and-block")
-			client, teardown, err := hostwire.Launch(ctx, binaryPath, host, opts)
-			os.Unsetenv("GLEIPNIR_TEST_FIXTURE")
-			return client, teardown, err
+			opts.Env = append(opts.Env, "GLEIPNIR_TEST_FIXTURE=serve-and-block")
+			return hostwire.Launch(ctx, binaryPath, host, opts)
 		},
 	}
 

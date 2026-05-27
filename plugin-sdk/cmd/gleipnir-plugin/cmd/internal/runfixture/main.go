@@ -140,7 +140,7 @@ func (f *fixturePlugin) Bind(_ context.Context, req *bootstrapv1.BindRequest) (*
 	return &bootstrapv1.BindResponse{Ok: true}, nil
 }
 
-// ListTools returns one echo tool.
+// ListTools returns an echo tool and an env_dump tool.
 func (f *fixturePlugin) ListTools(_ context.Context, _ *toolv1.ListToolsRequest) (*toolv1.ListToolsResponse, error) {
 	return &toolv1.ListToolsResponse{
 		Tools: []*toolv1.ToolSchema{
@@ -149,15 +149,30 @@ func (f *fixturePlugin) ListTools(_ context.Context, _ *toolv1.ListToolsRequest)
 				Description: "Echoes the input back as output",
 				InputSchema: `{"type":"object","properties":{"text":{"type":"string"}}}`,
 			},
+			{
+				Name:        "env_dump",
+				Description: "Returns the subprocess environment as a JSON array of KEY=VALUE strings",
+				InputSchema: `{"type":"object"}`,
+			},
 		},
 	}, nil
 }
 
-// Call echoes the input_json back as output_json.
+// Call dispatches to the named tool implementation.
 func (f *fixturePlugin) Call(_ context.Context, req *toolv1.CallRequest) (*toolv1.CallResponse, error) {
-	return &toolv1.CallResponse{
-		OutputJson: req.GetInputJson(),
-	}, nil
+	switch req.GetToolName() {
+	case "env_dump":
+		// Return the subprocess's full environment so tests can assert which vars
+		// were passed in. This is a fixture-only tool — never shipped in production.
+		envJSON, err := json.Marshal(os.Environ())
+		if err != nil {
+			return nil, err
+		}
+		return &toolv1.CallResponse{OutputJson: string(envJSON)}, nil
+	default:
+		// Default: echo the input back as output.
+		return &toolv1.CallResponse{OutputJson: req.GetInputJson()}, nil
+	}
 }
 
 // Start emits one synthetic "fixture.event" via HostService.EmitEvent, then
