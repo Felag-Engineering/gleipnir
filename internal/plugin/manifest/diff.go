@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/felag-engineering/gleipnir/internal/plugin/schemautil"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"gopkg.in/yaml.v3"
 )
@@ -272,13 +273,13 @@ func diffTools(old, new *sdkmanifest.Manifest) []Change {
 				To:       fmt.Sprintf("%v", newTool.ApprovalRequired),
 			})
 		}
-		oldIn := canonicalSchemaBytes(oldTool.InputSchema)
-		newIn := canonicalSchemaBytes(newTool.InputSchema)
+		oldIn := schemautil.ToJSONStripped(oldTool.InputSchema)
+		newIn := schemautil.ToJSONStripped(newTool.InputSchema)
 		if !bytes.Equal(oldIn, newIn) {
 			changes = append(changes, Change{Field: "tools." + name + ".input_schema", Material: true, From: string(oldIn), To: string(newIn)})
 		}
-		oldOut := canonicalSchemaBytes(oldTool.OutputSchema)
-		newOut := canonicalSchemaBytes(newTool.OutputSchema)
+		oldOut := schemautil.ToJSONStripped(oldTool.OutputSchema)
+		newOut := schemautil.ToJSONStripped(newTool.OutputSchema)
 		if !bytes.Equal(oldOut, newOut) {
 			changes = append(changes, Change{Field: "tools." + name + ".output_schema", Material: true, From: string(oldOut), To: string(newOut)})
 		}
@@ -299,8 +300,8 @@ func toolDeclMap(tools []sdkmanifest.ToolDecl) map[string]sdkmanifest.ToolDecl {
 
 // diffConfigSchema compares the instance config_schema after stripping cosmetic keys.
 func diffConfigSchema(old, new *sdkmanifest.Manifest) []Change {
-	oldBytes := canonicalSchemaBytes(old.ConfigSchema)
-	newBytes := canonicalSchemaBytes(new.ConfigSchema)
+	oldBytes := schemautil.ToJSONStripped(old.ConfigSchema)
+	newBytes := schemautil.ToJSONStripped(new.ConfigSchema)
 	if bytes.Equal(oldBytes, newBytes) {
 		return nil
 	}
@@ -312,8 +313,8 @@ func diffConfigSchema(old, new *sdkmanifest.Manifest) []Change {
 // scope JSON might no longer validate against the new schema (same reasoning as
 // config_schema).
 func diffSubscriptionSchema(old, new *sdkmanifest.Manifest) []Change {
-	oldBytes := canonicalSchemaBytes(old.SubscriptionSchema)
-	newBytes := canonicalSchemaBytes(new.SubscriptionSchema)
+	oldBytes := schemautil.ToJSONStripped(old.SubscriptionSchema)
+	newBytes := schemautil.ToJSONStripped(new.SubscriptionSchema)
 	if bytes.Equal(oldBytes, newBytes) {
 		return nil
 	}
@@ -343,13 +344,13 @@ func diffEventKinds(old, new *sdkmanifest.Manifest) []Change {
 		if !ok {
 			continue
 		}
-		oldBinding := canonicalSchemaBytes(oldEK.BindingSchema)
-		newBinding := canonicalSchemaBytes(newEK.BindingSchema)
+		oldBinding := schemautil.ToJSONStripped(oldEK.BindingSchema)
+		newBinding := schemautil.ToJSONStripped(newEK.BindingSchema)
 		if !bytes.Equal(oldBinding, newBinding) {
 			changes = append(changes, Change{Field: "event_kinds." + kind + ".binding_schema", Material: true, From: string(oldBinding), To: string(newBinding)})
 		}
-		oldPayload := canonicalSchemaBytes(oldEK.PayloadSchema)
-		newPayload := canonicalSchemaBytes(newEK.PayloadSchema)
+		oldPayload := schemautil.ToJSONStripped(oldEK.PayloadSchema)
+		newPayload := schemautil.ToJSONStripped(newEK.PayloadSchema)
 		if !bytes.Equal(oldPayload, newPayload) {
 			changes = append(changes, Change{Field: "event_kinds." + kind + ".payload_schema", Material: true, From: string(oldPayload), To: string(newPayload)})
 		}
@@ -368,60 +369,3 @@ func eventKindMap(kinds []sdkmanifest.EventKindDecl) map[string]sdkmanifest.Even
 	return m
 }
 
-// canonicalSchemaBytes produces a deterministic JSON byte representation of a
-// *yaml.Node JSON Schema suitable for material comparison. Two schemas are
-// materially equal if and only if their canonical bytes are equal.
-//
-// Strategy:
-//  1. nil node → nil (nil ↔ nil compares as equal, nil ↔ non-nil as different).
-//  2. YAML-marshal the node to bytes via yaml.v3.
-//  3. Unmarshal those bytes into map[string]any (generic tree).
-//  4. Recursively strip "description" and "default" keys at every depth; sort map keys.
-//  5. json.Marshal the cleaned tree — Go's json package emits map keys alphabetically.
-//
-// Errors in marshal/unmarshal are treated as an empty schema (nil return) so
-// a parse failure on one side always differs from a valid schema on the other.
-func canonicalSchemaBytes(node *yaml.Node) []byte {
-	if node == nil {
-		return nil
-	}
-	raw, err := yaml.Marshal(node)
-	if err != nil {
-		return nil
-	}
-	var tree any
-	if err := yaml.Unmarshal(raw, &tree); err != nil {
-		return nil
-	}
-	cleaned := stripCosmeticKeys(tree)
-	out, err := json.Marshal(cleaned)
-	if err != nil {
-		return nil
-	}
-	return out
-}
-
-// stripCosmeticKeys recursively removes "description" and "default" keys from
-// every map node in the tree. Map keys are sorted for determinism (json.Marshal
-// already sorts map[string]any keys, but we make it explicit).
-func stripCosmeticKeys(v any) any {
-	switch val := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(val))
-		for k, child := range val {
-			if k == "description" || k == "default" {
-				continue
-			}
-			out[k] = stripCosmeticKeys(child)
-		}
-		return out
-	case []any:
-		out := make([]any, len(val))
-		for i, elem := range val {
-			out[i] = stripCosmeticKeys(elem)
-		}
-		return out
-	default:
-		return v
-	}
-}
