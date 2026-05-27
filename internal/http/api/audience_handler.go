@@ -109,6 +109,13 @@ type pluginEventExampleDTO struct {
 	Payload interface{} `json:"payload"`
 }
 
+// pluginToolDTO describes a single tool declared by a plugin's manifest.
+// Used by the admin UI detail pane to list what tools the plugin provides.
+type pluginToolDTO struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 // pluginEventKindDTO is a single event kind from an installed plugin instance's
 // manifest — used by the trigger picker to show plugin-sourced trigger options.
 type pluginEventKindDTO struct {
@@ -155,6 +162,10 @@ type pluginInstanceForAudienceDTO struct {
 	// Possible values: "tool", "trigger", "channel". Omitted when empty.
 	// Used by the admin/plugins page to render service badges on plugin cards.
 	Services []string `json:"services,omitempty"`
+	// Tools lists tool declarations from the plugin manifest (ToolService plugins
+	// only). Each entry carries the tool name and description for the admin UI
+	// detail pane. Omitted when the plugin declares no tools.
+	Tools []pluginToolDTO `json:"tools,omitempty"`
 }
 
 // ListPluginInstances handles GET /api/v1/admin/plugin-instances.
@@ -282,6 +293,17 @@ func (h *AudienceHandler) ListPluginInstances(w http.ResponseWriter, r *http.Req
 			services = append(services, "channel")
 		}
 
+		var tools []pluginToolDTO
+		for _, t := range manifest.Tools {
+			if t.Name == "" {
+				continue
+			}
+			tools = append(tools, pluginToolDTO{
+				Name:        t.Name,
+				Description: t.Description,
+			})
+		}
+
 		dtos = append(dtos, pluginInstanceForAudienceDTO{
 			ID:                   inst.ID,
 			PluginID:             inst.PluginID,
@@ -300,6 +322,7 @@ func (h *AudienceHandler) ListPluginInstances(w http.ResponseWriter, r *http.Req
 			LastOauthCallbackUrl: lastCallbackURL,
 			PluginVersion:        manifest.Version,
 			Services:             services,
+			Tools:                tools,
 		})
 	}
 

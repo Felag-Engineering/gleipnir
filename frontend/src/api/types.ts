@@ -537,6 +537,10 @@ export interface ApiPluginInstanceForAudience {
   // (e.g. ["tool", "trigger", "channel"]). Used by the admin/plugins page
   // to render service badges on each plugin card.
   services?: string[]
+  // tools lists the tool declarations from the plugin manifest (ToolService
+  // plugins only). Each entry has name and description. Absent when the
+  // plugin declares no tools.
+  tools?: { name: string; description: string }[]
 }
 
 // ApiPluginInstanceDetail matches internal/admin/plugin_handler.go → instanceResponse.
@@ -634,6 +638,7 @@ export interface ApiPluginListItem {
   id: string
   name: string
   version: string
+  description?: string
   status: string // 'pending_review' | 'active' | 'removed'
   services: string[] // e.g. ['tool', 'trigger']
   pubkey_fingerprint?: string

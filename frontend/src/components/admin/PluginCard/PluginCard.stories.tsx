@@ -20,12 +20,10 @@ type Story = StoryObj<typeof PluginCard>
 export const AllServices: Story = {
   args: {
     pluginName: 'Slack',
-    pluginVersion: '1.2.0',
-    pluginId: 'plugin-example-01',
+    description: 'Send messages, route approvals, and receive trigger events via Slack.',
     services: ['tool', 'trigger', 'channel'],
     instanceCount: 3,
     aggregateHealth: 'healthy',
-    hasSbom: false,
     isSelected: false,
   },
 }
@@ -34,12 +32,10 @@ export const AllServices: Story = {
 export const ToolOnly: Story = {
   args: {
     pluginName: 'GitHub',
-    pluginVersion: '0.9.1',
-    pluginId: 'plugin-example-02',
+    description: 'Interact with GitHub repositories, issues, and pull requests.',
     services: ['tool'],
     instanceCount: 1,
     aggregateHealth: 'unhealthy',
-    hasSbom: false,
     isSelected: false,
   },
 }
@@ -48,12 +44,9 @@ export const ToolOnly: Story = {
 export const TriggerAndChannel: Story = {
   args: {
     pluginName: 'PagerDuty',
-    pluginVersion: '2.0.0',
-    pluginId: 'plugin-example-03',
     services: ['trigger', 'channel'],
     instanceCount: 2,
     aggregateHealth: 'pending_key_approval',
-    hasSbom: false,
     isSelected: false,
   },
 }
@@ -63,29 +56,21 @@ export const TriggerAndChannel: Story = {
 export const Selected: Story = {
   args: {
     pluginName: 'Jira',
-    pluginVersion: '1.1.0',
-    pluginId: 'plugin-example-04',
+    description: 'Create and update Jira issues from agent runs.',
     services: ['tool', 'channel'],
     instanceCount: 2,
     aggregateHealth: 'healthy',
-    hasSbom: false,
     isSelected: true,
   },
 }
 
-// Plugin with an SBOM declared — shows the green "SBOM" informational badge
-// appended after the service badges. The badge is a plain <span> (not a link)
-// because the card has role="button"; the clickable download link lives in the
-// right-pane detail panel on AdminPluginsPage.
-export const WithSBOM: Story = {
+// No description — name fills the full top row.
+export const NoDescription: Story = {
   args: {
-    pluginName: 'Slack',
-    pluginVersion: '1.2.0',
-    pluginId: 'plugin-example-05',
-    services: ['tool', 'trigger', 'channel'],
-    instanceCount: 2,
+    pluginName: 'Internal Tool',
+    services: ['tool'],
+    instanceCount: 1,
     aggregateHealth: 'healthy',
-    hasSbom: true,
     isSelected: false,
   },
 }

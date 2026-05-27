@@ -1100,6 +1100,20 @@ func TestListPluginInstances_WithEventKindExamplesAndBindingSchema(t *testing.T)
 	}
 }
 
+// toolPluginManifestYAML declares a ToolService plugin with two tools.
+const toolPluginManifestYAML = `
+id: test-tool-plugin
+name: MyTools
+version: 2.0.0
+services:
+  tool: v1
+tools:
+  - name: send_message
+    description: Send a message to a channel
+  - name: list_channels
+    description: List available channels
+`
+
 // oauthManifestYAML declares an oauth2_authcode strategy so we can test
 // that auth_strategy is populated from the manifest Auth field.
 const oauthManifestYAML = `
@@ -1225,6 +1239,76 @@ func TestListPluginInstances_AuthStrategyAndHealthDetail(t *testing.T) {
 	}
 	if items[0].HealthDetail != detail {
 		t.Errorf("health_detail = %q, want %q", items[0].HealthDetail, detail)
+	}
+}
+
+// TestListPluginInstances_Tools verifies that the tools field is populated from
+// the manifest's tools declarations for a ToolService plugin.
+func TestListPluginInstances_Tools(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	snap := configvalidate.NewSnapshotter(store.Queries())
+	t.Cleanup(func() { snap.ResetCache(); configvalidate.ResetCache() })
+
+	pluginID := seedPlugin(t, store, "tool-plugin", toolPluginManifestYAML)
+	instID := seedPluginInstance(t, store, "mytools-prod", pluginID)
+
+	w := do(t, newPluginInstancesRouter(store, snap), http.MethodGet, "/", nil, model.RoleOperator)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\nbody: %s", w.Code, w.Body.String())
+	}
+
+	var items []struct {
+		ID    string `json:"id"`
+		Tools []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"tools"`
+	}
+	parseData(t, w, &items)
+
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].ID != instID {
+		t.Errorf("id = %q, want %q", items[0].ID, instID)
+	}
+	if len(items[0].Tools) != 2 {
+		t.Fatalf("got %d tools, want 2", len(items[0].Tools))
+	}
+	if items[0].Tools[0].Name != "send_message" {
+		t.Errorf("tools[0].name = %q, want send_message", items[0].Tools[0].Name)
+	}
+	if items[0].Tools[0].Description != "Send a message to a channel" {
+		t.Errorf("tools[0].description = %q, want %q", items[0].Tools[0].Description, "Send a message to a channel")
+	}
+	if items[0].Tools[1].Name != "list_channels" {
+		t.Errorf("tools[1].name = %q, want list_channels", items[0].Tools[1].Name)
+	}
+}
+
+// TestListPluginInstances_ToolsOmittedForNonToolPlugin verifies that the tools
+// field is omitted (not present in JSON) for plugins that declare no tools.
+func TestListPluginInstances_ToolsOmittedForNonToolPlugin(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	snap := configvalidate.NewSnapshotter(store.Queries())
+	t.Cleanup(func() { snap.ResetCache(); configvalidate.ResetCache() })
+
+	pluginID := seedPlugin(t, store, "no-tools-plugin", triggerPluginManifestYAML)
+	seedPluginInstance(t, store, "notrigger-inst", pluginID)
+
+	w := do(t, newPluginInstancesRouter(store, snap), http.MethodGet, "/", nil, model.RoleOperator)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\nbody: %s", w.Code, w.Body.String())
+	}
+
+	var raw []map[string]json.RawMessage
+	parseData(t, w, &raw)
+
+	if len(raw) != 1 {
+		t.Fatalf("got %d items, want 1", len(raw))
+	}
+	if _, present := raw[0]["tools"]; present {
+		t.Error("tools should be omitted from JSON when no tools declared, but was present")
 	}
 }
 

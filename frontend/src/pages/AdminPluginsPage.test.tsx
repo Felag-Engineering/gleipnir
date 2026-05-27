@@ -19,7 +19,7 @@ vi.mock('@/hooks/queries/users')
 import { useCurrentUser } from '@/hooks/queries/users'
 
 vi.mock('@/hooks/queries/plugins')
-import { usePlugins, usePluginRSS } from '@/hooks/queries/plugins'
+import { usePlugins, usePluginRSS, usePluginDetail } from '@/hooks/queries/plugins'
 
 // --- Fixtures ---
 
@@ -142,6 +142,9 @@ describe('AdminPluginsPage', () => {
   //
   // usePluginRSS is mocked with zero instances so PluginMemoryBar renders
   // nothing, keeping the existing tests unaffected by the new component.
+  //
+  // usePluginDetail is mocked with no data so the detail summary renders
+  // gracefully (version only) without network calls.
   beforeEach(() => {
     mockPluginList([])
     vi.mocked(usePluginRSS).mockReturnValue({
@@ -150,6 +153,12 @@ describe('AdminPluginsPage', () => {
       isError: false,
       status: 'success',
     } as unknown as ReturnType<typeof usePluginRSS>)
+    vi.mocked(usePluginDetail).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      status: 'success',
+    } as unknown as ReturnType<typeof usePluginDetail>)
   })
 
   it('shows "Needs re-authorization" section when at least one instance is pending_reauthorize', () => {
@@ -656,8 +665,9 @@ describe('AdminPluginsPage', () => {
     mockCurrentUser(['admin'])
     renderPage()
 
-    expect(screen.getByText('Tool')).toBeInTheDocument()
-    expect(screen.getByText('Trigger')).toBeInTheDocument()
+    // Service badges appear in both the PluginCard and the detail summary.
+    expect(screen.getAllByText('Tool').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText('Trigger').length).toBeGreaterThanOrEqual(1)
   })
 
   it('plugin card shows version', () => {
@@ -669,7 +679,8 @@ describe('AdminPluginsPage', () => {
     mockCurrentUser(['admin'])
     renderPage()
 
-    expect(screen.getByText('2.1.0')).toBeInTheDocument()
+    // Version appears in both the PluginCard and the detail summary.
+    expect(screen.getAllByText('2.1.0').length).toBeGreaterThanOrEqual(1)
   })
 
   it('plugin card shows aggregate health (worst across instances)', () => {

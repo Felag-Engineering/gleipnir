@@ -26,6 +26,18 @@ describe('PluginHealthChip', () => {
     }
   })
 
+  it('renders a <span> (non-interactive) when onClick is not provided', () => {
+    render(<PluginHealthChip state="healthy" />)
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.getByText('Healthy').tagName).toBe('SPAN')
+  })
+
+  it('renders a <button> when onClick is provided', () => {
+    const handler = vi.fn()
+    render(<PluginHealthChip state="healthy" onClick={handler} />)
+    expect(screen.getByRole('button', { name: 'Healthy' })).toBeInTheDocument()
+  })
+
   it('calls onClick when clicked', async () => {
     const handler = vi.fn()
     render(<PluginHealthChip state="healthy" onClick={handler} />)
@@ -33,28 +45,34 @@ describe('PluginHealthChip', () => {
     expect(handler).toHaveBeenCalledOnce()
   })
 
-  it('sets the title attribute to the detail prop', () => {
+  it('sets the title attribute to the detail prop (span variant)', () => {
     const detail = 'Manifest hash mismatch'
     render(<PluginHealthChip state="verification_error" detail={detail} />)
+    expect(screen.getByText('Verification error')).toHaveAttribute('title', detail)
+  })
+
+  it('sets the title attribute to the detail prop (button variant)', () => {
+    const detail = 'Manifest hash mismatch'
+    render(<PluginHealthChip state="verification_error" detail={detail} onClick={vi.fn()} />)
     expect(screen.getByRole('button')).toHaveAttribute('title', detail)
   })
 
   it('renders a green variant for healthy state', () => {
     render(<PluginHealthChip state="healthy" />)
-    const btn = screen.getByRole('button')
+    const chip = screen.getByText('Healthy')
     // CSS Modules generate a hashed class name; we verify a class is present.
     // The exact class name is verified by the green/yellow/red naming convention
     // in the CSS module — this test confirms the class is applied at all.
-    expect(btn.className).toMatch(/green/)
+    expect(chip.className).toMatch(/green/)
   })
 
   it('renders a yellow variant for pending states', () => {
     render(<PluginHealthChip state="pending_key_approval" />)
-    expect(screen.getByRole('button').className).toMatch(/yellow/)
+    expect(screen.getByText('Pending key approval').className).toMatch(/yellow/)
   })
 
   it('renders a red variant for error states', () => {
     render(<PluginHealthChip state="crashed" />)
-    expect(screen.getByRole('button').className).toMatch(/red/)
+    expect(screen.getByText('Crashed').className).toMatch(/red/)
   })
 })
