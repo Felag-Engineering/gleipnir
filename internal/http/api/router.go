@@ -259,6 +259,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				r.Post("/plugins/{id}/instances/{iid}/activate", cfg.Handlers.PluginAdminHandler.ActivateInstance)
 				r.Post("/plugins/{id}/accept-new-key", cfg.Handlers.PluginAdminHandler.AcceptNewKey)
 				r.Post("/plugins/{id}/accept-manifest", cfg.Handlers.PluginAdminHandler.AcceptManifest)
+				r.Get("/plugins/{id}/sbom", cfg.Handlers.PluginAdminHandler.GetPluginSBOM)
 				r.Delete("/plugins/{id}", cfg.Handlers.PluginAdminHandler.Uninstall)
 				// Approve/reject routes must come after more-specific /{id}/* paths
 				// to avoid chi capturing "approve" or "reject" as the {id} parameter.

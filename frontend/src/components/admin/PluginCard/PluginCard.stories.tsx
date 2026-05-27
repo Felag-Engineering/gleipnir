@@ -20,7 +20,7 @@ type Story = StoryObj<typeof PluginCard>
 export const AllServices: Story = {
   args: {
     pluginName: 'Slack',
-    pluginVersion: '1.2.0',
+    description: 'Send messages, route approvals, and receive trigger events via Slack.',
     services: ['tool', 'trigger', 'channel'],
     instanceCount: 3,
     aggregateHealth: 'healthy',
@@ -32,7 +32,7 @@ export const AllServices: Story = {
 export const ToolOnly: Story = {
   args: {
     pluginName: 'GitHub',
-    pluginVersion: '0.9.1',
+    description: 'Interact with GitHub repositories, issues, and pull requests.',
     services: ['tool'],
     instanceCount: 1,
     aggregateHealth: 'unhealthy',
@@ -44,7 +44,6 @@ export const ToolOnly: Story = {
 export const TriggerAndChannel: Story = {
   args: {
     pluginName: 'PagerDuty',
-    pluginVersion: '2.0.0',
     services: ['trigger', 'channel'],
     instanceCount: 2,
     aggregateHealth: 'pending_key_approval',
@@ -57,10 +56,21 @@ export const TriggerAndChannel: Story = {
 export const Selected: Story = {
   args: {
     pluginName: 'Jira',
-    pluginVersion: '1.1.0',
+    description: 'Create and update Jira issues from agent runs.',
     services: ['tool', 'channel'],
     instanceCount: 2,
     aggregateHealth: 'healthy',
     isSelected: true,
+  },
+}
+
+// No description — name fills the full top row.
+export const NoDescription: Story = {
+  args: {
+    pluginName: 'Internal Tool',
+    services: ['tool'],
+    instanceCount: 1,
+    aggregateHealth: 'healthy',
+    isSelected: false,
   },
 }

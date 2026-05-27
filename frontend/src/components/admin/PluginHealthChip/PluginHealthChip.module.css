@@ -9,11 +9,12 @@
   transition: opacity var(--duration-fast) var(--ease-out);
 }
 
-.chip:not(:disabled) {
+/* Only <button> chips are interactive; <span> chips are display-only. */
+button.chip {
   cursor: pointer;
 }
 
-.chip:hover:not(:disabled) {
+button.chip:hover {
   opacity: 0.8;
 }
 

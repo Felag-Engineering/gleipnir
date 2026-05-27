@@ -29,14 +29,22 @@ const VARIANT: Record<PluginHealthState, string> = {
 }
 
 export function PluginHealthChip({ state, detail, onClick }: PluginHealthChipProps) {
+  const className = `${styles.chip} ${VARIANT[state]}`
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        className={className}
+        title={detail}
+        onClick={onClick}
+      >
+        {pluginHealthLabel(state)}
+      </button>
+    )
+  }
   return (
-    <button
-      type="button"
-      className={`${styles.chip} ${VARIANT[state]}`}
-      title={detail}
-      onClick={onClick}
-    >
+    <span className={className} title={detail}>
       {pluginHealthLabel(state)}
-    </button>
+    </span>
   )
 }

@@ -110,7 +110,18 @@ export function PluginReviewCard({
         <div className={styles.metaRow}>
           <dt className={styles.metaLabel}>SBOM</dt>
           <dd className={styles.metaValue}>
-            {plugin.has_sbom ? 'Included' : 'Not included'}
+            {plugin.has_sbom ? (
+              <a
+                href={`/api/v1/admin/plugins/${encodeURIComponent(plugin.id)}/sbom`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={styles.sbomLink}
+              >
+                Included
+              </a>
+            ) : (
+              'Not included'
+            )}
           </dd>
         </div>
 

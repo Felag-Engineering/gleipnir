@@ -38,6 +38,12 @@ func (m *AddInactiveHealthState) ShouldSkip(ctx context.Context, db *sql.DB) (bo
 	return strings.Contains(ddl, "'inactive'"), nil
 }
 
+// RequiresForeignKeysOff opts into the runner's PRAGMA foreign_keys=OFF toggle.
+// Other tables (plugin_audit_events, audience_entries, plugin_pending_requests)
+// hold FK references to plugin_instances; the DROP + RENAME rebuild cycle
+// requires FK enforcement to be off for the transaction.
+func (m *AddInactiveHealthState) RequiresForeignKeysOff() bool { return true }
+
 func (m *AddInactiveHealthState) Up(ctx context.Context, tx *sql.Tx) error {
 	// 1. Create the replacement table with the extended CHECK list.
 	_, err := tx.ExecContext(ctx, `

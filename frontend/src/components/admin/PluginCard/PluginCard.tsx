@@ -4,7 +4,7 @@ import styles from './PluginCard.module.css'
 
 interface PluginCardProps {
   pluginName: string
-  pluginVersion: string
+  description?: string
   services: string[]
   instanceCount: number
   aggregateHealth: PluginHealthState
@@ -29,7 +29,7 @@ const SERVICE_BADGE_CLASS: Record<string, string> = {
 
 export function PluginCard({
   pluginName,
-  pluginVersion,
+  description,
   services,
   instanceCount,
   aggregateHealth,
@@ -55,10 +55,11 @@ export function PluginCard({
     >
       <div className={styles.topRow}>
         <span className={styles.name}>{pluginName}</span>
-        {pluginVersion && (
-          <span className={styles.version}>{pluginVersion}</span>
-        )}
       </div>
+
+      {description && (
+        <p className={styles.description}>{description}</p>
+      )}
 
       {services.length > 0 && (
         <div className={styles.serviceBadges}>

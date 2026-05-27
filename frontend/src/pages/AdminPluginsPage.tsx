@@ -10,7 +10,7 @@ import { AddInstanceModal } from '@/components/admin/AddInstanceModal'
 import { UninstallPluginModal } from '@/components/admin/UninstallPluginModal'
 import { Button } from '@/components/Button'
 import { usePluginInstancesForAudience } from '@/hooks/queries/admin'
-import { usePlugins } from '@/hooks/queries/plugins'
+import { usePlugins, usePluginDetail } from '@/hooks/queries/plugins'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { useUninstallPlugin } from '@/hooks/mutations/plugins'
 import { usePageTitle } from '@/hooks/usePageTitle'
@@ -18,6 +18,7 @@ import { extractErrorMessage } from '@/api/fetch'
 import { worstHealth } from '@/utils/pluginHealth'
 import type {
   ApiInstalledPlugin,
+  ApiPluginDetail,
   ApiPluginInstanceForAudience,
   ApiPluginListItem,
   PluginHealthState,
@@ -44,7 +45,7 @@ export default function AdminPluginsPage() {
 
   // Derive one card per unique plugin_id. Insertion order is stable across
   // refetches (same ordering as the old groupByPluginId function).
-  const pluginCards = derivePluginCards(allInstances)
+  const pluginCards = derivePluginCards(allInstances, pluginList ?? [])
 
   // Which plugin's detail pane is currently shown on the right.
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null)
@@ -219,7 +220,7 @@ export default function AdminPluginsPage() {
               <PluginCard
                 key={card.pluginId}
                 pluginName={card.pluginName}
-                pluginVersion={card.pluginVersion}
+                description={card.description || undefined}
                 services={card.services}
                 instanceCount={card.instances.length}
                 aggregateHealth={card.aggregateHealth}
@@ -232,53 +233,29 @@ export default function AdminPluginsPage() {
           {/* Right pane: instance list for the selected plugin */}
           {selectedCard && (
             <div className={styles.rightPane}>
-              <div className={styles.detailHeader}>
-                <h2 className={styles.detailTitle}>{selectedCard.pluginName}</h2>
-                {canManage && (
-                  <div className={styles.detailActions}>
-                    <Button
-                      variant="secondary"
-                      size="small"
-                      onClick={() =>
-                        setOpenAddInstance({
-                          pluginId: selectedCard.pluginId,
-                          pluginName: selectedCard.pluginName,
-                        })
-                      }
-                    >
-                      Add instance
-                    </Button>
-                    <details
-                      className={styles.kebab}
-                      ref={(el) => {
-                        if (el) kebabRefs.current.set(selectedCard.pluginId, el)
-                        else kebabRefs.current.delete(selectedCard.pluginId)
-                      }}
-                    >
-                      <summary className={styles.kebabToggle} aria-label="Plugin actions">
-                        &#8942;
-                      </summary>
-                      <div className={styles.kebabMenu}>
-                        <button
-                          type="button"
-                          className={styles.menuItemDanger}
-                          onClick={() => {
-                            closeKebab(selectedCard.pluginId)
-                            setUninstallError(null)
-                            setOpenUninstall({
-                              pluginId: selectedCard.pluginId,
-                              pluginName: selectedCard.pluginName,
-                              instanceNames: selectedCard.instances.map((i) => i.instance_name),
-                            })
-                          }}
-                        >
-                          Uninstall plugin
-                        </button>
-                      </div>
-                    </details>
-                  </div>
-                )}
-              </div>
+              <PluginDetailPane
+                card={selectedCard}
+                canManage={canManage}
+                onAddInstance={() =>
+                  setOpenAddInstance({
+                    pluginId: selectedCard.pluginId,
+                    pluginName: selectedCard.pluginName,
+                  })
+                }
+                onUninstall={() => {
+                  closeKebab(selectedCard.pluginId)
+                  setUninstallError(null)
+                  setOpenUninstall({
+                    pluginId: selectedCard.pluginId,
+                    pluginName: selectedCard.pluginName,
+                    instanceNames: selectedCard.instances.map((i) => i.instance_name),
+                  })
+                }}
+                kebabRef={(el) => {
+                  if (el) kebabRefs.current.set(selectedCard.pluginId, el)
+                  else kebabRefs.current.delete(selectedCard.pluginId)
+                }}
+              />
 
               <div className={styles.tableWrapper}>
                 <table className={styles.table}>
@@ -286,6 +263,7 @@ export default function AdminPluginsPage() {
                     <tr>
                       <th>Instance</th>
                       <th>Status</th>
+                      <th>Detail</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -301,6 +279,11 @@ export default function AdminPluginsPage() {
                         </td>
                         <td>
                           <PluginHealthChip state={inst.state} detail={inst.health_detail} />
+                        </td>
+                        <td className={styles.instanceDetail}>
+                          {inst.state !== 'healthy' && inst.health_detail
+                            ? inst.health_detail
+                            : <span className={styles.muted}>—</span>}
                         </td>
                       </tr>
                     ))}
@@ -365,15 +348,300 @@ interface PluginCardData {
   pluginId: string
   pluginName: string
   pluginVersion: string
+  description: string
   services: string[]
   instances: ApiPluginInstanceForAudience[]
   aggregateHealth: PluginHealthState
+  hasSbom: boolean
+}
+
+const AUTH_STRATEGY_LABEL: Record<string, string> = {
+  none: 'None',
+  static_api_key: 'Static API key',
+  header_set: 'Custom headers',
+  basic_auth: 'Basic auth',
+  oauth2_authcode: 'OAuth 2.0 (authorization code)',
+  oauth2_clientcred: 'OAuth 2.0 (client credentials)',
+}
+
+interface PluginDetailPaneProps {
+  card: PluginCardData
+  canManage: boolean
+  onAddInstance: () => void
+  onUninstall: () => void
+  kebabRef: (el: HTMLDetailsElement | null) => void
+}
+
+// PluginDetailPane renders the detail header + metadata summary for the
+// selected plugin. It fetches the full plugin detail (description, author,
+// license, tier-2 caps, auth strategy) from the detail endpoint while also
+// reading version, services, and has_sbom from the already-loaded card data
+// and instance event_kinds.
+function PluginDetailPane({
+  card,
+  canManage,
+  onAddInstance,
+  onUninstall,
+  kebabRef,
+}: PluginDetailPaneProps) {
+  const { data: detail } = usePluginDetail(card.pluginId)
+
+  // Deduplicate event kinds across instances — same plugin = same manifest,
+  // but keep full objects (with description) by deduplicating on kind name.
+  const eventKindMap = new Map<string, { kind: string; description: string }>()
+  for (const inst of card.instances) {
+    for (const ek of inst.event_kinds ?? []) {
+      if (!eventKindMap.has(ek.kind)) {
+        eventKindMap.set(ek.kind, { kind: ek.kind, description: ek.description })
+      }
+    }
+  }
+  const eventKinds = Array.from(eventKindMap.values())
+
+  // Deduplicate tools across instances — same plugin = same manifest.
+  const toolMap = new Map<string, { name: string; description: string }>()
+  for (const inst of card.instances) {
+    for (const tool of inst.tools ?? []) {
+      if (!toolMap.has(tool.name)) {
+        toolMap.set(tool.name, { name: tool.name, description: tool.description })
+      }
+    }
+  }
+  const tools = Array.from(toolMap.values())
+
+  // Channel capabilities from any instance (all instances share the same manifest).
+  const firstInst = card.instances[0]
+  const implementsNotify = firstInst?.implements_notify ?? false
+  const implementsRequest = firstInst?.implements_request ?? false
+
+  return (
+    <>
+      <div className={styles.detailHeader}>
+        <div className={styles.detailTitleRow}>
+          <h2 className={styles.detailTitle}>{card.pluginName}</h2>
+          {card.pluginVersion && (
+            <span className={styles.detailVersion}>{card.pluginVersion}</span>
+          )}
+        </div>
+        {canManage && (
+          <div className={styles.detailActions}>
+            <Button
+              variant="secondary"
+              size="small"
+              onClick={onAddInstance}
+            >
+              Add instance
+            </Button>
+            <details
+              className={styles.kebab}
+              ref={kebabRef}
+            >
+              <summary className={styles.kebabToggle} aria-label="Plugin actions">
+                &#8942;
+              </summary>
+              <div className={styles.kebabMenu}>
+                <button
+                  type="button"
+                  className={styles.menuItemDanger}
+                  onClick={onUninstall}
+                >
+                  Uninstall plugin
+                </button>
+              </div>
+            </details>
+          </div>
+        )}
+      </div>
+
+      <PluginDetailSummary
+        card={card}
+        detail={detail}
+        eventKinds={eventKinds}
+        tools={tools}
+        implementsNotify={implementsNotify}
+        implementsRequest={implementsRequest}
+      />
+    </>
+  )
+}
+
+interface PluginDetailSummaryProps {
+  card: PluginCardData
+  detail: ApiPluginDetail | undefined
+  eventKinds: { kind: string; description: string }[]
+  tools: { name: string; description: string }[]
+  implementsNotify: boolean
+  implementsRequest: boolean
+}
+
+// PluginDetailSummary renders a compact metadata block grouped into two
+// visual sections: Capabilities (what it does) and About (identity/reference).
+function PluginDetailSummary({
+  card,
+  detail,
+  eventKinds,
+  tools,
+  implementsNotify,
+  implementsRequest,
+}: PluginDetailSummaryProps) {
+  const hasChannel = card.services.includes('channel')
+  const hasCapabilities =
+    tools.length > 0 ||
+    eventKinds.length > 0 ||
+    (hasChannel && (implementsNotify || implementsRequest))
+
+  // Compact identity line: author · license, skipping missing parts.
+  // Version is now shown in the detail pane header, not here.
+  const identityParts: { text: string; mono: boolean }[] = []
+  if (detail?.author) identityParts.push({ text: detail.author, mono: false })
+  if (detail?.license) identityParts.push({ text: detail.license, mono: false })
+
+  return (
+    <div className={styles.detailSummary}>
+      {hasCapabilities && (
+        <div className={styles.summarySection}>
+          <div className={styles.summarySectionLabel}>Capabilities</div>
+
+          <dl className={styles.summaryDl}>
+            {tools.length > 0 && (
+              <div className={styles.summaryRow}>
+                <dt className={styles.summaryLabel}>Tools</dt>
+                <dd className={styles.summaryValue}>
+                  <div className={styles.summaryItemList}>
+                    {tools.map((tool) => (
+                      <div key={tool.name} className={styles.summaryItem}>
+                        <span className={styles.summaryItemMono}>{tool.name}</span>
+                        {tool.description && (
+                          <span className={styles.summaryItemDesc}>{tool.description}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </dd>
+              </div>
+            )}
+
+            {eventKinds.length > 0 && (
+              <div className={styles.summaryRow}>
+                <dt className={styles.summaryLabel}>Trigger events</dt>
+                <dd className={styles.summaryValue}>
+                  <div className={styles.summaryItemList}>
+                    {eventKinds.map((ek) => (
+                      <div key={ek.kind} className={styles.summaryItem}>
+                        <span className={styles.summaryItemMono}>{ek.kind}</span>
+                        {ek.description && (
+                          <span className={styles.summaryItemDesc}>{ek.description}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </dd>
+              </div>
+            )}
+
+            {hasChannel && (implementsNotify || implementsRequest) && (
+              <div className={styles.summaryRow}>
+                <dt className={styles.summaryLabel}>Channel support</dt>
+                <dd className={styles.summaryValue}>
+                  <div className={styles.summaryItemList}>
+                    {implementsNotify && (
+                      <div className={styles.summaryItem}>
+                        <span className={styles.summaryItemMono}>Notify</span>
+                        <span className={styles.summaryItemDesc}>Can send messages</span>
+                      </div>
+                    )}
+                    {implementsRequest && (
+                      <div className={styles.summaryItem}>
+                        <span className={styles.summaryItemMono}>Request</span>
+                        <span className={styles.summaryItemDesc}>Can route approval/feedback requests</span>
+                      </div>
+                    )}
+                  </div>
+                </dd>
+              </div>
+            )}
+          </dl>
+        </div>
+      )}
+
+      <div className={`${styles.summarySection} ${hasCapabilities ? styles.summarySectionAbout : ''}`}>
+        <div className={styles.summarySectionLabel}>About</div>
+
+        {identityParts.length > 0 && (
+          <div className={styles.summaryIdentityLine}>
+            {identityParts.map((part, i) => (
+              <span key={i}>
+                {i > 0 && <span className={styles.summaryIdentitySep}> · </span>}
+                <span className={part.mono ? styles.summaryIdentityMono : styles.summaryIdentityText}>
+                  {part.text}
+                </span>
+              </span>
+            ))}
+          </div>
+        )}
+
+        <dl className={styles.summaryDl}>
+          {detail?.auth_strategy && (
+            <div className={styles.summaryRow}>
+              <dt className={styles.summaryLabel}>Auth strategy</dt>
+              <dd className={styles.summaryValue}>
+                {AUTH_STRATEGY_LABEL[detail.auth_strategy] ?? detail.auth_strategy}
+                {detail.has_oauth_defaults && (
+                  <span className={styles.summaryHint}> (OAuth defaults declared)</span>
+                )}
+              </dd>
+            </div>
+          )}
+
+          {detail?.tier2_capabilities && detail.tier2_capabilities.length > 0 && (
+            <div className={styles.summaryRow}>
+              <dt className={styles.summaryLabel}>Extended permissions</dt>
+              <dd className={styles.summaryValue}>
+                <div className={styles.summaryBadges}>
+                  {detail.tier2_capabilities.map((cap) => (
+                    <span key={cap} className={styles.capBadge}>{cap}</span>
+                  ))}
+                </div>
+              </dd>
+            </div>
+          )}
+
+          {card.hasSbom && (
+            <div className={styles.summaryRow}>
+              <dt className={styles.summaryLabel}>SBOM</dt>
+              <dd className={styles.summaryValue}>
+                <a
+                  href={`/api/v1/admin/plugins/${encodeURIComponent(card.pluginId)}/sbom`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={styles.sbomLink}
+                >
+                  Download
+                </a>
+              </dd>
+            </div>
+          )}
+        </dl>
+      </div>
+    </div>
+  )
 }
 
 // derivePluginCards groups instances by plugin_id (preserving insertion order
 // so the list is stable across refetches) and computes the aggregate health
 // state (worst across all instances) for each plugin card.
-function derivePluginCards(instances: ApiPluginInstanceForAudience[]): PluginCardData[] {
+//
+// pluginList is used to look up has_sbom by plugin UUID (inst.plugin_id). The
+// map is keyed by p.id because that is what inst.plugin_id carries.
+function derivePluginCards(
+  instances: ApiPluginInstanceForAudience[],
+  pluginList: ApiPluginListItem[],
+): PluginCardData[] {
+  const pluginMap = new Map<string, ApiPluginListItem>()
+  for (const p of pluginList) {
+    pluginMap.set(p.id, p)
+  }
+
   const order: string[] = []
   const map = new Map<string, PluginCardData>()
 
@@ -387,9 +655,11 @@ function derivePluginCards(instances: ApiPluginInstanceForAudience[]): PluginCar
         // the first instance is correct.
         pluginName: inst.plugin_name ?? inst.plugin_id,
         pluginVersion: inst.plugin_version ?? '',
+        description: pluginMap.get(inst.plugin_id)?.description ?? '',
         services: inst.services ?? [],
         instances: [],
         aggregateHealth: 'healthy',
+        hasSbom: pluginMap.get(inst.plugin_id)?.has_sbom ?? false,
       })
     }
     map.get(inst.plugin_id)!.instances.push(inst)

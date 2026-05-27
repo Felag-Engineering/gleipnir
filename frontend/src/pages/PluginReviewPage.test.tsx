@@ -125,10 +125,15 @@ describe('PluginReviewPage', () => {
     expect(screen.getByText('a1b2c3d4e5f60001')).toBeInTheDocument()
   })
 
-  it('renders SBOM status', () => {
+  it('renders SBOM status as a link to the SBOM endpoint', () => {
     renderPage()
 
-    expect(screen.getByText('Included')).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: 'Included' })
+    expect(link).toBeInTheDocument()
+    expect(link).toHaveAttribute(
+      'href',
+      `/api/v1/admin/plugins/${encodeURIComponent(PLUGIN_ID)}/sbom`,
+    )
   })
 
   it('renders Approve and Reject buttons', () => {
