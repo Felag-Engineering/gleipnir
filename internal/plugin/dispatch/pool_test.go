@@ -809,3 +809,161 @@ func TestPool_InflightCountByInstance(t *testing.T) {
 		t.Errorf("InflightCountByInstance(other) = %d after completion, want 0", got)
 	}
 }
+
+// TestPool_CancelRun_MultipleCallsSameInstance_NoRaceOnConnClose verifies that
+// when a run has multiple in-flight calls on the same instance and each Cancel
+// RPC times out (triggering conn.Close), the race detector does not report a
+// concurrent close on the same connection.
+func TestPool_CancelRun_MultipleCallsSameInstance_NoRaceOnConnClose(t *testing.T) {
+	const numCalls = 3
+
+	arrived := make(chan struct{}, numCalls)
+
+	srv := &fakeToolServer{
+		callHook: func(ctx context.Context, _ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			arrived <- struct{}{}
+			<-ctx.Done()
+			return nil, status.Error(codes.Canceled, ctx.Err().Error())
+		},
+		// Deliberately slow cancel — exceeds CancelTimeout so every goroutine
+		// attempts conn.Close(). Without sync.Once this races.
+		cancelHook: func(ctx context.Context, _ *toolv1.CancelRequest) (*toolv1.CancelResponse, error) {
+			select {
+			case <-ctx.Done():
+			case <-time.After(500 * time.Millisecond):
+			}
+			return &toolv1.CancelResponse{}, nil
+		},
+	}
+
+	pool, cleanup := newTestPool(t, srv, func(cfg *dispatch.Config) {
+		cfg.DefaultMaxConcurrent = numCalls
+		cfg.CallTimeout = 10 * time.Second
+		cfg.CancelTimeout = 20 * time.Millisecond // short → all goroutines hit conn.Close
+	})
+	defer cleanup()
+
+	var wg sync.WaitGroup
+	for i := 0; i < numCalls; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pool.Call(context.Background(), "run-race", "pol-1", "inst", "slow-tool", `{}`) //nolint:errcheck
+		}()
+	}
+
+	// Wait until all calls have reached the server hook.
+	for i := 0; i < numCalls; i++ {
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("call %d did not arrive at server", i+1)
+		}
+	}
+
+	pool.CancelRun("run-race")
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("in-flight Call goroutines did not return after CancelRun")
+	}
+}
+
+// TestPool_Close_WaitsForCancelGoroutines verifies that Pool.Close blocks until
+// all goroutines spawned by CancelRun have finished, so they never reference a
+// connection that has already been torn down.
+func TestPool_Close_WaitsForCancelGoroutines(t *testing.T) {
+	const numCalls = 2
+
+	arrived := make(chan struct{}, numCalls)
+	// cancelStarted signals when a cancel goroutine has begun its work.
+	cancelStarted := make(chan struct{}, numCalls)
+
+	srv := &fakeToolServer{
+		callHook: func(ctx context.Context, _ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			arrived <- struct{}{}
+			<-ctx.Done()
+			return nil, status.Error(codes.Canceled, ctx.Err().Error())
+		},
+		cancelHook: func(ctx context.Context, _ *toolv1.CancelRequest) (*toolv1.CancelResponse, error) {
+			// Signal that this cancel goroutine is running, then hold briefly so
+			// Pool.Close has a chance to return too early if the WaitGroup is absent.
+			cancelStarted <- struct{}{}
+			select {
+			case <-ctx.Done():
+			case <-time.After(200 * time.Millisecond):
+			}
+			return &toolv1.CancelResponse{}, nil
+		},
+	}
+
+	pool, srvCleanup := newTestPool(t, srv, func(cfg *dispatch.Config) {
+		cfg.DefaultMaxConcurrent = numCalls
+		cfg.CallTimeout = 10 * time.Second
+		cfg.CancelTimeout = 50 * time.Millisecond
+	})
+	defer srvCleanup()
+
+	var callWg sync.WaitGroup
+	for i := 0; i < numCalls; i++ {
+		callWg.Add(1)
+		go func() {
+			defer callWg.Done()
+			pool.Call(context.Background(), "run-close", "pol-1", "inst", "slow-tool", `{}`) //nolint:errcheck
+		}()
+	}
+
+	// Wait until all calls are registered inside the server.
+	for i := 0; i < numCalls; i++ {
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("call %d did not arrive at server", i+1)
+		}
+	}
+
+	// Close races with the cancel goroutines — it must not return until they
+	// have all finished.
+	closeDone := make(chan struct{})
+	go func() {
+		pool.Close() //nolint:errcheck
+		close(closeDone)
+	}()
+
+	// Wait for all cancel goroutines to be started (ensures CancelRun fired them).
+	for i := 0; i < numCalls; i++ {
+		select {
+		case <-cancelStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("cancel goroutine %d did not start", i+1)
+		}
+	}
+
+	// Pool.Close should not have returned yet because cancel goroutines are
+	// still running. Give it a short window — if it fires during this window the
+	// WaitGroup is missing.
+	select {
+	case <-closeDone:
+		t.Error("Pool.Close returned before cancel goroutines finished")
+	case <-time.After(20 * time.Millisecond):
+		// Good: Close is still blocking.
+	}
+
+	// After cancel goroutines eventually finish, Close must unblock.
+	select {
+	case <-closeDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Pool.Close did not return after cancel goroutines finished")
+	}
+
+	done := make(chan struct{})
+	go func() { callWg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Call goroutines did not return after Pool.Close")
+	}
+}

@@ -52,6 +52,11 @@ type instanceState struct {
 	client    toolv1.ToolServiceClient
 	sem       chan struct{} // capacity = max_concurrent_calls
 	queueGate chan struct{} // capacity = max_queue_depth; controls queue accounting
+
+	// closeOnce ensures conn.Close() is called at most once. Multiple CancelRun
+	// goroutines may each decide to force-disconnect the same connection when their
+	// Cancel RPC fails; without this guard the second close is undefined behavior.
+	closeOnce sync.Once
 }
 
 // inflightCall records the instance backing a single in-flight Call so
@@ -102,6 +107,11 @@ type Pool struct {
 	inflightMu       sync.RWMutex
 	inflight         map[string]map[string]*inflightCall
 	inflightByCallID map[string]callBinding
+
+	// cancelWg tracks goroutines spawned by CancelRun. Pool.Close waits on this
+	// before tearing down connections so cancel goroutines never reference an
+	// already-closed conn.
+	cancelWg sync.WaitGroup
 }
 
 // New returns a Pool ready to use. cfg.Connect must be non-nil.
@@ -326,8 +336,8 @@ func (p *Pool) Call(ctx context.Context, runID, policyID, instanceName, toolName
 // calls conn.Close() if the plugin does not respond in time.
 //
 // CancelRun returns as soon as all cancel goroutines have been started; it does
-// NOT wait for them to finish. The in-flight Call goroutines will return on
-// their own once the plugin aborts or the connection closes.
+// NOT wait for them to finish. Pool.Close waits on the internal WaitGroup so
+// cancel goroutines always complete before connections are torn down.
 func (p *Pool) CancelRun(runID string) {
 	snap := p.snapshotInflightForRun(runID)
 	if len(snap) == 0 {
@@ -338,7 +348,10 @@ func (p *Pool) CancelRun(runID string) {
 		callID := callID
 		ic := ic
 
+		p.cancelWg.Add(1)
 		go func() {
+			defer p.cancelWg.Done()
+
 			st, err := p.getOrCreate(ic.instanceName)
 			if err != nil {
 				// Connection not established; nothing to cancel.
@@ -359,12 +372,16 @@ func (p *Pool) CancelRun(runID string) {
 					"run_id", runID,
 					"err", rpcErr,
 				)
-				if closeErr := st.conn.Close(); closeErr != nil {
-					slog.Warn("plugin conn.Close after cancel timeout",
-						"instance", ic.instanceName,
-						"err", closeErr,
-					)
-				}
+				// closeOnce guards against multiple goroutines (one per call on
+				// the same instance) each trying to close the same connection.
+				st.closeOnce.Do(func() {
+					if closeErr := st.conn.Close(); closeErr != nil {
+						slog.Warn("plugin conn.Close after cancel timeout",
+							"instance", ic.instanceName,
+							"err", closeErr,
+						)
+					}
+				})
 				// Remove the cached (now-closed) connection so the next call
 				// triggers a fresh ConnFactory call.
 				p.instancesMu.Lock()
@@ -391,14 +408,23 @@ func (p *Pool) Close() error {
 		p.CancelRun(runID)
 	}
 
+	// Wait for all cancel goroutines to finish before closing connections.
+	// Without this, a cancel goroutine that races against Close could call
+	// conn.Close() on a connection that Close has already torn down.
+	p.cancelWg.Wait()
+
 	// Close all cached connections.
 	p.instancesMu.Lock()
 	defer p.instancesMu.Unlock()
 	var firstErr error
 	for name, st := range p.instances {
-		if err := st.conn.Close(); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("closing connection to plugin %q: %w", name, err)
-		}
+		// closeOnce ensures we don't double-close a connection that a cancel
+		// goroutine already force-closed before Pool.Close ran.
+		st.closeOnce.Do(func() {
+			if err := st.conn.Close(); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("closing connection to plugin %q: %w", name, err)
+			}
+		})
 	}
 	p.instances = make(map[string]*instanceState)
 	return firstErr
