@@ -68,8 +68,8 @@ func TestWatcher_DebouncesBurstWrites(t *testing.T) {
 	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
 	done := runWatcher(t, ctx, w)
 
-	// Give the watcher time to register the inotify watch.
-	time.Sleep(20 * time.Millisecond)
+	// fw.Add in Setup registers the watch synchronously with the kernel, so
+	// events are captured immediately. No sleep needed to wait for registration.
 
 	tarPath := filepath.Join(dir, "test-plugin.tar.gz")
 
@@ -127,8 +127,6 @@ func TestWatcher_IgnoresNonTarball(t *testing.T) {
 	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
 	done := runWatcher(t, ctx, w)
 
-	time.Sleep(20 * time.Millisecond)
-
 	// Drop a non-tarball file — must not trigger an install.
 	if err := os.WriteFile(filepath.Join(dir, "README.txt"), []byte("notes"), 0o644); err != nil {
 		t.Fatalf("write README.txt: %v", err)
@@ -158,7 +156,6 @@ func TestWatcher_ContextCancel_StopsCleanly(t *testing.T) {
 	w := NewWatcher(dir, install, WithDebounce(testDebounce))
 	done := runWatcher(t, ctx, w)
 
-	time.Sleep(20 * time.Millisecond)
 	cancel()
 
 	select {
@@ -184,9 +181,6 @@ func TestWatcher_CancelDuringDebounce_NoRace(t *testing.T) {
 	const debounce = 50 * time.Millisecond
 	w := NewWatcher(dir, stub.install, WithDebounce(debounce))
 	done := runWatcher(t, ctx, w)
-
-	// Give the watcher time to register the inotify watch.
-	time.Sleep(20 * time.Millisecond)
 
 	// Drop a tarball to arm the debounce timer.
 	tarPath := filepath.Join(dir, "race-check.tar.gz")
@@ -234,10 +228,18 @@ func TestWatcher_FsnotifySetupFailure_NoGoroutineLeak(t *testing.T) {
 		t.Fatal("expected Setup to return an error when dir is a regular file")
 	}
 
-	// Give the runtime a moment to clean up any transient goroutines.
-	time.Sleep(50 * time.Millisecond)
-
-	after := runtime.NumGoroutine()
+	// Poll until the goroutine count stabilises (or a deadline elapses). A
+	// fixed sleep is flaky under high scheduler load; polling with a deadline
+	// correctly handles both fast and slow runtimes.
+	var after int
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		after = runtime.NumGoroutine()
+		if after <= before+2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	// Allow a small delta for unrelated runtime goroutines. The dispatch goroutine
 	// must not have been started, so the count should not have grown.
 	if after > before+2 {
@@ -255,14 +257,16 @@ func TestWatcher_RemoveCancelsPendingTimer(t *testing.T) {
 	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
 	done := runWatcher(t, ctx, w)
 
-	time.Sleep(20 * time.Millisecond)
-
 	tarPath := filepath.Join(dir, "remove-me.tar.gz")
 	if err := os.WriteFile(tarPath, []byte("content"), 0o644); err != nil {
 		t.Fatalf("write tarball: %v", err)
 	}
 
-	// Remove the file before the debounce window expires.
+	// Remove the file before the debounce window expires. A brief sleep here
+	// ensures the Create event has been dispatched to the watcher's event loop
+	// so the debounce timer is armed before the Remove event cancels it.
+	// This is unavoidably time-based because the OS event delivery has no
+	// synchronous acknowledgement we can observe from outside the watcher.
 	time.Sleep(10 * time.Millisecond)
 	if err := os.Remove(tarPath); err != nil {
 		t.Fatalf("remove tarball: %v", err)

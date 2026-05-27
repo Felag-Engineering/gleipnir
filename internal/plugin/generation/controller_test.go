@@ -155,8 +155,14 @@ func TestBeginDrain_DrainsToZeroBeforeGrace(t *testing.T) {
 		t.Fatalf("Acquire: %v", err)
 	}
 
+	// drainStarted is closed by the BeginDrain goroutine just before it blocks
+	// on the drain channel. Because the held refcount keeps refs > 0, BeginDrain
+	// cannot return until we release(), so closing drainStarted is the earliest
+	// moment we know it is in the waiting state — no sleep needed.
+	drainStarted := make(chan struct{})
 	drainResult := make(chan bool, 1)
 	go func() {
+		close(drainStarted)
 		_, drained, err := c.BeginDrain(ctx, "inst-e", time.Second)
 		if err != nil {
 			drainResult <- false
@@ -165,8 +171,14 @@ func TestBeginDrain_DrainsToZeroBeforeGrace(t *testing.T) {
 		drainResult <- drained
 	}()
 
-	// Allow BeginDrain to enter the waiting state.
-	time.Sleep(10 * time.Millisecond)
+	// Wait until the BeginDrain goroutine has started. Because we still hold
+	// the refcount, BeginDrain is blocked in its wait loop — it cannot have
+	// cancelled the context yet, so wrappedCtx must still be live.
+	select {
+	case <-drainStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("BeginDrain goroutine did not start")
+	}
 
 	// The held call's context must still be live (not cancelled).
 	if wrappedCtx.Err() != nil {
@@ -239,7 +251,7 @@ func TestBeginDrain_NewGenerationProceedsAfterForceCancel(t *testing.T) {
 	c.RegisterInstance("inst-g")
 
 	ctx := context.Background()
-	_, release, _, err := c.Acquire(ctx, "inst-g")
+	wrappedCtx, release, _, err := c.Acquire(ctx, "inst-g")
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -250,11 +262,21 @@ func TestBeginDrain_NewGenerationProceedsAfterForceCancel(t *testing.T) {
 		_, _, _ = c.BeginDrain(ctx, "inst-g", 20*time.Millisecond)
 	}()
 
-	// Wait for force-cancel to fire, then release.
-	time.Sleep(100 * time.Millisecond)
+	// Block until BeginDrain force-cancels the held call's context (grace expired).
+	// This is the correct synchronisation point: once wrappedCtx.Done() fires,
+	// the force-cancel has definitively occurred — no sleep guessing needed.
+	select {
+	case <-wrappedCtx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("force-cancel did not arrive within 5s")
+	}
 	release()
 
-	<-done // BeginDrain returned
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("BeginDrain did not return after release")
+	}
 
 	_, rel2, gen2, err := c.Acquire(ctx, "inst-g")
 	if err != nil {
