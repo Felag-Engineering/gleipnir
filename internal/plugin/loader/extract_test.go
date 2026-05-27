@@ -68,7 +68,7 @@ func TestExtractTarball_HappyPath(t *testing.T) {
 	})
 
 	destDir := t.TempDir()
-	if err := ExtractTarball(tarPath, destDir, 100<<20); err != nil {
+	if err := ExtractTarball(tarPath, destDir, 100<<20, 10_000); err != nil {
 		t.Fatalf("ExtractTarball: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestExtractTarball_AbsolutePathRejected(t *testing.T) {
 		{name: "/etc/passwd", content: []byte("should not land here"), mode: 0o644},
 	})
 
-	err := ExtractTarball(tarPath, t.TempDir(), 100<<20)
+	err := ExtractTarball(tarPath, t.TempDir(), 100<<20, 10_000)
 	if err == nil {
 		t.Fatal("expected error for absolute path, got nil")
 	}
@@ -105,7 +105,7 @@ func TestExtractTarball_PathTraversalRejected(t *testing.T) {
 		{name: "../escape.txt", content: []byte("escaped"), mode: 0o644},
 	})
 
-	err := ExtractTarball(tarPath, t.TempDir(), 100<<20)
+	err := ExtractTarball(tarPath, t.TempDir(), 100<<20, 10_000)
 	if err == nil {
 		t.Fatal("expected error for path traversal, got nil")
 	}
@@ -116,7 +116,7 @@ func TestExtractTarball_NestedTraversalRejected(t *testing.T) {
 		{name: "subdir/../../escape.txt", content: []byte("escaped"), mode: 0o644},
 	})
 
-	err := ExtractTarball(tarPath, t.TempDir(), 100<<20)
+	err := ExtractTarball(tarPath, t.TempDir(), 100<<20, 10_000)
 	if err == nil {
 		t.Fatal("expected error for nested path traversal, got nil")
 	}
@@ -127,7 +127,7 @@ func TestExtractTarball_SymlinkRejected(t *testing.T) {
 		{name: "link", content: nil, typeflag: tar.TypeSymlink, mode: 0o644},
 	})
 
-	err := ExtractTarball(tarPath, t.TempDir(), 100<<20)
+	err := ExtractTarball(tarPath, t.TempDir(), 100<<20, 10_000)
 	if err == nil {
 		t.Fatal("expected error for symlink entry, got nil")
 	}
@@ -138,7 +138,7 @@ func TestExtractTarball_HardLinkRejected(t *testing.T) {
 		{name: "hardlink", content: nil, typeflag: tar.TypeLink, mode: 0o644},
 	})
 
-	err := ExtractTarball(tarPath, t.TempDir(), 100<<20)
+	err := ExtractTarball(tarPath, t.TempDir(), 100<<20, 10_000)
 	if err == nil {
 		t.Fatal("expected error for hard link entry, got nil")
 	}
@@ -151,7 +151,7 @@ func TestExtractTarball_OversizedTotalRejected(t *testing.T) {
 		{name: "b.bin", content: []byte("BBBBBB"), mode: 0o644},
 	})
 
-	err := ExtractTarball(tarPath, t.TempDir(), 10)
+	err := ExtractTarball(tarPath, t.TempDir(), 10, 10_000)
 	if err == nil {
 		t.Fatal("expected error for oversized total payload, got nil")
 	}
@@ -163,7 +163,7 @@ func TestExtractTarball_OversizedSingleEntryRejected(t *testing.T) {
 		{name: "big.bin", content: bytes.Repeat([]byte("X"), 20), mode: 0o644},
 	})
 
-	err := ExtractTarball(tarPath, t.TempDir(), 10)
+	err := ExtractTarball(tarPath, t.TempDir(), 10, 10_000)
 	if err == nil {
 		t.Fatal("expected error for single oversized entry, got nil")
 	}
@@ -176,11 +176,46 @@ func TestExtractTarball_SubdirectoryCreated(t *testing.T) {
 	})
 
 	destDir := t.TempDir()
-	if err := ExtractTarball(tarPath, destDir, 100<<20); err != nil {
+	if err := ExtractTarball(tarPath, destDir, 100<<20, 10_000); err != nil {
 		t.Fatalf("ExtractTarball: %v", err)
 	}
 
 	if _, err := os.Stat(filepath.Join(destDir, "subdir", "file.txt")); err != nil {
 		t.Errorf("expected subdir/file.txt to exist: %v", err)
+	}
+}
+
+// TestExtractTarball_FileCountCap defends against inode-exhaustion DoS via
+// tarballs that pack many tiny entries past the configured maxFiles limit.
+func TestExtractTarball_FileCountCap(t *testing.T) {
+	tests := []struct {
+		name     string
+		nEntries int
+		maxFiles int
+		wantErr  bool
+	}{
+		{name: "under cap", nEntries: 5, maxFiles: 10, wantErr: false},
+		{name: "exactly at cap", nEntries: 10, maxFiles: 10, wantErr: false},
+		{name: "one over cap", nEntries: 11, maxFiles: 10, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entries := make([]tarEntry, tt.nEntries)
+			for i := range entries {
+				entries[i] = tarEntry{
+					name:    filepath.Join("f", filepath.Base(t.Name())+"-"+string(rune('a'+i))+".txt"),
+					content: []byte("x"),
+					mode:    0o644,
+				}
+			}
+			tarPath := makeTarball(t, entries)
+			err := ExtractTarball(tarPath, t.TempDir(), 100<<20, tt.maxFiles)
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected file-count cap error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }

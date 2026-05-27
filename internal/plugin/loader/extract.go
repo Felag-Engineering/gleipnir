@@ -21,8 +21,11 @@ import (
 //     devices, and FIFOs are rejected to prevent privilege escalation.
 //   - Cumulative uncompressed bytes across all entries must not exceed maxBytes.
 //     This defends against gzip-bomb payloads (see plan §100MB cap note).
+//   - Total number of entries (files + directories) must not exceed maxFiles.
+//     This defends against inode-exhaustion DoS where a small tarball can encode
+//     millions of zero-byte entries that pass the byte cap.
 //   - File mode is 0755 if the executable bit is set, otherwise 0644.
-func ExtractTarball(tarPath, destDir string, maxBytes int64) error {
+func ExtractTarball(tarPath, destDir string, maxBytes int64, maxFiles int) error {
 	f, err := os.Open(tarPath)
 	if err != nil {
 		return fmt.Errorf("open tarball: %w", err)
@@ -37,6 +40,7 @@ func ExtractTarball(tarPath, destDir string, maxBytes int64) error {
 
 	tr := tar.NewReader(gz)
 	var totalBytes int64
+	var entryCount int
 
 	for {
 		hdr, err := tr.Next()
@@ -45,6 +49,11 @@ func ExtractTarball(tarPath, destDir string, maxBytes int64) error {
 		}
 		if err != nil {
 			return fmt.Errorf("read tar entry: %w", err)
+		}
+
+		entryCount++
+		if entryCount > maxFiles {
+			return fmt.Errorf("tarball exceeds %d-entry cap", maxFiles)
 		}
 
 		if err := validateTarEntry(hdr, destDir); err != nil {
