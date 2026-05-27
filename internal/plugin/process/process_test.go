@@ -68,11 +68,10 @@ type healthCall struct {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // fixtureConfig builds a Config that re-execs the test binary in the given
-// fixture mode. The Launch function injects GLEIPNIR_TEST_FIXTURE into the
-// subprocess environment via os.Setenv before calling hostwire.Launch.
-//
-// Because each test case runs serially, using os.Setenv + os.Unsetenv is
-// correct. (If parallel test execution is needed, switch to building a per-test
+// fixture mode. The Launch function injects GLEIPNIR_TEST_FIXTURE via
+// opts.Env, which hostwire.Launch forwards to the subprocess regardless of
+// the env allowlist (opts.Env is the intentional channel for per-instance vars).
+// (If parallel test execution is needed, switch to building a per-test
 // fixture binary in TestMain via `go build -o tmpdir`.)
 func fixtureConfig(
 	t *testing.T,
@@ -99,11 +98,12 @@ func fixtureConfig(
 		IdentityIssuer: issuer,
 		HealthSetter:   healthSetter,
 		// Launch wraps hostwire.Launch with environment injection.
+		// GLEIPNIR_TEST_FIXTURE is passed via opts.Env (not os.Setenv) because
+		// hostwire.Launch now uses a strict env allowlist — the subprocess only
+		// receives vars explicitly passed through opts.Env or the system allowlist.
 		Launch: func(ctx context.Context, binaryPath string, host hostwire.HostServer, opts hostwire.Options) (*hostwire.Client, func(), error) {
-			os.Setenv("GLEIPNIR_TEST_FIXTURE", mode)
-			client, teardown, err := hostwire.Launch(ctx, binaryPath, host, opts)
-			os.Unsetenv("GLEIPNIR_TEST_FIXTURE")
-			return client, teardown, err
+			opts.Env = append(opts.Env, "GLEIPNIR_TEST_FIXTURE="+mode)
+			return hostwire.Launch(ctx, binaryPath, host, opts)
 		},
 	}
 }

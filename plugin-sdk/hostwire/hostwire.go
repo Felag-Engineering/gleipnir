@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -114,8 +115,10 @@ type Options struct {
 	OnProcessExited func()
 
 	// Env is a list of extra environment variables to set in the subprocess, in
-	// "KEY=VALUE" form. These are appended to the subprocess's inherited
-	// environment. If nil, no extra variables are added.
+	// "KEY=VALUE" form. These are appended to the subprocess's allowlisted base
+	// environment (see safeEnvKeys). Use this to pass per-instance variables
+	// such as GLEIPNIR_INSTANCE_ID and GLEIPNIR_INSTANCE_TOKEN.
+	// If nil, no extra variables are added.
 	Env []string
 
 	// ServerInterceptors are chained (in slice order) onto the host-side gRPC
@@ -221,6 +224,46 @@ var PluginMap = plugin.PluginSet{
 	"gleipnir": &gleipnirPlugin{},
 }
 
+// safeEnvKeys is the allowlist of environment variable names that are safe to
+// pass from the host process into a plugin subprocess. Only system-level vars
+// needed for basic process operation are included. Gleipnir secrets
+// (GLEIPNIR_ENCRYPTION_KEY, GLEIPNIR_DB_PATH, provider API keys, etc.) are
+// never in this list. The three Gleipnir instance vars
+// (GLEIPNIR_INSTANCE_ID, GLEIPNIR_PLUGIN_ID, GLEIPNIR_INSTANCE_TOKEN) are
+// injected separately via opts.Env by the caller (internal/plugin/process).
+var safeEnvKeys = []string{
+	"PATH",    // required for subprocess tool resolution
+	"HOME",    // expected by most Unix programs
+	"USER",    // expected by some runtimes
+	"TZ",      // timezone — affects log timestamps inside the plugin
+	"TMPDIR",  // standard override for temp file location
+	"LANG",    // locale — affects string handling in some libraries
+	"LC_ALL",  // locale override — takes precedence over LANG
+}
+
+// safeEnv builds a minimal environment for plugin subprocesses by extracting
+// only the allowlisted system vars from the host's os.Environ(). This prevents
+// host secrets (GLEIPNIR_ENCRYPTION_KEY, provider API keys, etc.) from leaking
+// into untrusted plugin processes. The go-plugin library appends its own
+// protocol vars (PLUGIN_MIN_PORT, PLUGIN_PROTOCOL_VERSIONS, etc.) after this
+// base, so those do not need to be listed here.
+func safeEnv() []string {
+	// Build a lookup map from the current environment for O(1) key access.
+	hostEnv := make(map[string]string, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		key, val, _ := strings.Cut(entry, "=")
+		hostEnv[key] = val
+	}
+
+	result := make([]string, 0, len(safeEnvKeys))
+	for _, key := range safeEnvKeys {
+		if val, ok := hostEnv[key]; ok {
+			result = append(result, key+"="+val)
+		}
+	}
+	return result
+}
+
 // Launch starts a plugin subprocess at binaryPath, performs the go-plugin
 // handshake, registers the host's HostService on the broker, and calls
 // Bootstrap.Bind so the plugin knows which stream ID to Dial.
@@ -246,12 +289,16 @@ func Launch(ctx context.Context, binaryPath string, host HostServer, opts Option
 	p := newGleipnirPlugin(host, opts.ServerInterceptors)
 
 	cmd := exec.CommandContext(ctx, binaryPath)
-	if len(opts.Env) > 0 {
-		// Append extra env vars to the subprocess's full inherited environment.
-		// Cmd.Env wins over clientConfig.Env when both are set; by setting it
-		// here we ensure the subprocess sees all of os.Environ() plus our extras.
-		cmd.Env = append(os.Environ(), opts.Env...)
-	}
+
+	// Build the subprocess environment from a strict allowlist rather than
+	// inheriting os.Environ(). This prevents GLEIPNIR_ENCRYPTION_KEY and other
+	// host secrets from leaking to untrusted plugin processes.
+	//
+	// SkipHostEnv=true tells go-plugin not to append os.Environ() on top of
+	// what we set here. go-plugin still appends its own protocol vars
+	// (PLUGIN_MIN_PORT, PLUGIN_PROTOCOL_VERSIONS, the magic cookie, etc.) which
+	// the subprocess needs to complete the handshake — those are safe to pass.
+	cmd.Env = append(safeEnv(), opts.Env...)
 
 	clientConfig := &plugin.ClientConfig{
 		HandshakeConfig:     HandshakeConfig,
@@ -261,6 +308,7 @@ func Launch(ctx context.Context, binaryPath string, host HostServer, opts Option
 		StartTimeout:        opts.StartupTimeout,
 		Logger:              newHCLogger(logger),
 		GRPCBrokerMultiplex: true,
+		SkipHostEnv:         true,
 	}
 
 	if opts.Stderr != nil {

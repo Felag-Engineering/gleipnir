@@ -67,10 +67,8 @@ func TestDispatcher_Notify_ProductionWiring(t *testing.T) {
 		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
 			cfg.BinaryPath = os.Args[0]
 			cfg.Launch = func(ctx context.Context, binaryPath string, host hostwire.HostServer, opts hostwire.Options) (*hostwire.Client, func(), error) {
-				os.Setenv("GLEIPNIR_TEST_FIXTURE", "dispatch-serve-via-sdk")
-				client, teardown, err := hostwire.Launch(ctx, binaryPath, host, opts)
-				os.Unsetenv("GLEIPNIR_TEST_FIXTURE")
-				return client, teardown, err
+				opts.Env = append(opts.Env, "GLEIPNIR_TEST_FIXTURE=dispatch-serve-via-sdk")
+				return hostwire.Launch(ctx, binaryPath, host, opts)
 			}
 			return process.Start(ctx, cfg)
 		},

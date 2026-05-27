@@ -2,6 +2,7 @@ package hostwire_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 
 	handshakev1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/handshake/v1"
+	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/fakehost"
@@ -192,6 +194,94 @@ func TestLaunch_ServerInterceptorsAreInvokedInOrder(t *testing.T) {
 		if gotOrder[0] != 1 {
 			t.Errorf("first interceptor should be 1, got %d", gotOrder[0])
 		}
+	}
+}
+
+// TestLaunch_SubprocessEnvDoesNotLeakSecrets is a regression test for the
+// vulnerability where os.Environ() was passed wholesale to plugin subprocesses,
+// leaking GLEIPNIR_ENCRYPTION_KEY and other host secrets.
+//
+// The test injects a sentinel encryption key into the test process's environment,
+// launches the runfixture plugin, calls its env_dump tool (which returns
+// os.Environ() from inside the subprocess), and asserts the key is absent.
+//
+// Skipped unless GOOS == linux and `go` is on PATH.
+func TestLaunch_SubprocessEnvDoesNotLeakSecrets(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("launch_test requires linux")
+	}
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go binary not on PATH; skipping launch test")
+	}
+
+	// Inject secrets into the host process environment. safeEnv must filter
+	// these out so the subprocess never sees them.
+	t.Setenv("GLEIPNIR_ENCRYPTION_KEY", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	t.Setenv("GLEIPNIR_DB_PATH", "/data/secret.db")
+
+	dir := t.TempDir()
+	fixtureBin := filepath.Join(dir, "runfixture")
+	fixturePkg := "github.com/felag-engineering/gleipnir/plugin-sdk/cmd/gleipnir-plugin/cmd/internal/runfixture"
+
+	sdkRoot := findSDKRoot(t)
+
+	buildCmd := exec.Command(goPath, "build", "-tags", "runfixture", "-o", fixtureBin, fixturePkg)
+	buildCmd.Dir = sdkRoot
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("build runfixture: %v\n%s", err, out)
+	}
+
+	host := fakehost.New(fakehost.Options{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client, teardown, err := hostwire.Launch(ctx, fixtureBin, host, hostwire.Options{
+		Stderr: os.Stderr,
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	defer teardown()
+
+	// Call the env_dump tool, which returns the subprocess's os.Environ() as a
+	// JSON array of KEY=VALUE strings.
+	resp, err := client.Tool.Call(ctx, &toolv1.CallRequest{
+		ToolName:  "env_dump",
+		InputJson: "{}",
+	})
+	if err != nil {
+		t.Fatalf("Tool.Call(env_dump): %v", err)
+	}
+
+	var subEnv []string
+	if err := json.Unmarshal([]byte(resp.GetOutputJson()), &subEnv); err != nil {
+		t.Fatalf("parse env_dump output: %v", err)
+	}
+
+	// Assert that no host secrets leaked into the subprocess environment.
+	leakChecks := []string{
+		"GLEIPNIR_ENCRYPTION_KEY",
+		"GLEIPNIR_DB_PATH",
+	}
+	for _, entry := range subEnv {
+		for _, secret := range leakChecks {
+			if strings.HasPrefix(entry, secret+"=") {
+				t.Errorf("subprocess received secret env var %s — host encryption key leaked to plugin subprocess", secret)
+			}
+		}
+	}
+
+	// Assert that fundamental system vars were passed through (PATH at minimum).
+	hasPath := false
+	for _, entry := range subEnv {
+		if strings.HasPrefix(entry, "PATH=") {
+			hasPath = true
+		}
+	}
+	if !hasPath {
+		t.Error("subprocess did not receive PATH; safeEnv allowlist too restrictive")
 	}
 }
 
