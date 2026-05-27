@@ -168,6 +168,25 @@ func (s *Server) GetRunContext(ctx context.Context, _ *hostv1.GetRunContextReque
 	}, nil
 }
 
+// maxPayloadJSONBytes is the per-RPC hard cap on payload_json fields in
+// WriteAuditStep and EmitEvent. 64 KiB is generous for a feedback_response or
+// event payload; anything larger is a sign of misuse or a bug in the plugin.
+const maxPayloadJSONBytes = 64 * 1024
+
+// maxLogMsgBytes is the per-RPC hard cap on the Log msg field. 4 KiB covers
+// any reasonable structured log line including context and stack excerpts.
+const maxLogMsgBytes = 4 * 1024
+
+// maxLogAttrs is the maximum number of key/value pairs a single Log RPC may
+// carry. Unbounded attrs let a plugin override correlation keys such as run_id
+// by appending many attrs; 32 is well above any legitimate use.
+const maxLogAttrs = 32
+
+// maxLogAttrBytes is the per-key and per-value byte cap inside a Log attrs
+// map. 256 bytes accommodates ULIDs, UUIDs, short messages, and most
+// structured metadata. Values that exceed this are signs of misuse.
+const maxLogAttrBytes = 256
+
 // WriteAuditStep accepts only `feedback_response`. It MUST carry a request_id.
 // Authorization is by request-ownership (spec §8.5 exemption): the request_id
 // row's plugin_instance_id (plugin substrate path) or the policy's tool grants
@@ -181,6 +200,11 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 	}
 
 	const rpcMethod = "/gleipnir.plugin.host.v1.HostService/WriteAuditStep"
+
+	if len(req.GetPayloadJson()) > maxPayloadJSONBytes {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"payload_json exceeds maximum size of %d bytes", maxPayloadJSONBytes)
+	}
 
 	if req.GetStepType() != "feedback_response" {
 		s.writeAuditEvent(ctx, inst.ID, "unauthorized_step_type", "high", map[string]string{
@@ -413,6 +437,10 @@ func (s *Server) EmitEvent(ctx context.Context, req *hostv1.EmitEventRequest) (*
 	if req.GetEventKind() == "" {
 		return nil, status.Error(codes.InvalidArgument, "event_kind must not be empty")
 	}
+	if len(req.GetPayloadJson()) > maxPayloadJSONBytes {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"payload_json exceeds maximum size of %d bytes", maxPayloadJSONBytes)
+	}
 
 	// Rate-limit gate: drop excess events before running any per-policy match
 	// scan so a runaway plugin cannot exhaust host resources. Returns Ok=false
@@ -498,6 +526,25 @@ func (s *Server) Log(ctx context.Context, req *hostv1.LogRequest) (*hostv1.LogRe
 	inst, err := s.resolveInstance(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	if len(req.GetMsg()) > maxLogMsgBytes {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"msg exceeds maximum size of %d bytes", maxLogMsgBytes)
+	}
+	if len(req.GetAttrs()) > maxLogAttrs {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"attrs map exceeds maximum of %d entries", maxLogAttrs)
+	}
+	for k, v := range req.GetAttrs() {
+		if len(k) > maxLogAttrBytes {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"attr key exceeds maximum size of %d bytes", maxLogAttrBytes)
+		}
+		if len(v) > maxLogAttrBytes {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"attr value exceeds maximum size of %d bytes", maxLogAttrBytes)
+		}
 	}
 
 	level := protoLevelToSlog(req.GetLevel())

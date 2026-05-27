@@ -2467,3 +2467,342 @@ func readDroppedCounter(t *testing.T, plugin, instance string) float64 {
 	}
 	return 0
 }
+
+// ── tests: per-RPC payload size caps ─────────────────────────────────────────
+
+// oversized returns a string of n bytes filled with 'x'.
+func oversized(n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = 'x'
+	}
+	return string(b)
+}
+
+func TestWriteAuditStep_PayloadJSONTooLarge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		payloadSize int
+		wantCode    codes.Code
+	}{
+		{
+			name:        "exactly at cap: accepted",
+			payloadSize: 64 * 1024,
+			wantCode:    codes.OK,
+		},
+		{
+			name:        "one byte over cap: rejected",
+			payloadSize: 64*1024 + 1,
+			wantCode:    codes.InvalidArgument,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &fakeQuerier{
+				instance:                 db.PluginInstance{ID: "iid-size", PluginID: "plug-size", InstanceName: "myplugin"},
+				pluginPendingRequestErr:  sql.ErrNoRows,
+				feedbackRequest:          db.FeedbackRequest{ID: "fr-size", RunID: "run-size", Status: "pending"},
+				latestStep:               db.RunStep{StepNumber: 0},
+				updateFeedbackStatusRows: 1,
+				run:                      db.Run{ID: "run-size", PolicyID: "pol-size"},
+				policy:                   db.Policy{ID: "pol-size", Yaml: policyYAMLWithTool("myplugin.act")},
+			}
+			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+			_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
+				StepType:    "feedback_response",
+				RequestId:   "fr-size",
+				PayloadJson: oversized(tt.payloadSize),
+			})
+
+			if tt.wantCode == codes.OK {
+				if err != nil {
+					t.Errorf("expected no error for payload at cap, got: %v", err)
+				}
+			} else {
+				st, ok := status.FromError(err)
+				if !ok || st.Code() != tt.wantCode {
+					t.Errorf("expected %v, got %v", tt.wantCode, err)
+				}
+				if !strings.Contains(st.Message(), "payload_json exceeds") {
+					t.Errorf("message = %q, want to contain \"payload_json exceeds\"", st.Message())
+				}
+			}
+		})
+	}
+}
+
+func TestEmitEvent_PayloadJSONTooLarge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		payloadSize int
+		wantCode    codes.Code
+	}{
+		{
+			name:        "exactly at cap: accepted",
+			payloadSize: 64 * 1024,
+			wantCode:    codes.OK,
+		},
+		{
+			name:        "one byte over cap: rejected",
+			payloadSize: 64*1024 + 1,
+			wantCode:    codes.InvalidArgument,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &fakeQuerier{
+				instance: db.PluginInstance{ID: "iid-evsize", PluginID: "plug-evsize"},
+			}
+			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+			_, err := srv.EmitEvent(context.Background(), &hostv1.EmitEventRequest{
+				EventId:     "evt-size",
+				EventKind:   "test.event",
+				PayloadJson: oversized(tt.payloadSize),
+			})
+
+			if tt.wantCode == codes.OK {
+				if err != nil {
+					t.Errorf("expected no error for payload at cap, got: %v", err)
+				}
+			} else {
+				st, ok := status.FromError(err)
+				if !ok || st.Code() != tt.wantCode {
+					t.Errorf("expected %v, got %v", tt.wantCode, err)
+				}
+				if !strings.Contains(st.Message(), "payload_json exceeds") {
+					t.Errorf("message = %q, want to contain \"payload_json exceeds\"", st.Message())
+				}
+			}
+		})
+	}
+}
+
+func TestLog_MsgTooLarge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		msgSize  int
+		wantCode codes.Code
+	}{
+		{
+			name:     "exactly at cap: accepted",
+			msgSize:  4 * 1024,
+			wantCode: codes.OK,
+		},
+		{
+			name:     "one byte over cap: rejected",
+			msgSize:  4*1024 + 1,
+			wantCode: codes.InvalidArgument,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &fakeQuerier{
+				instance: db.PluginInstance{ID: "iid-logsize", PluginID: "plug-logsize"},
+			}
+			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+			_, err := srv.Log(context.Background(), &hostv1.LogRequest{
+				Level: hostv1.LogLevel_LOG_LEVEL_INFO,
+				Msg:   oversized(tt.msgSize),
+			})
+
+			if tt.wantCode == codes.OK {
+				if err != nil {
+					t.Errorf("expected no error for msg at cap, got: %v", err)
+				}
+			} else {
+				st, ok := status.FromError(err)
+				if !ok || st.Code() != tt.wantCode {
+					t.Errorf("expected %v, got %v", tt.wantCode, err)
+				}
+				if !strings.Contains(st.Message(), "msg exceeds") {
+					t.Errorf("message = %q, want to contain \"msg exceeds\"", st.Message())
+				}
+			}
+		})
+	}
+}
+
+func TestLog_TooManyAttrs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		attrCount int
+		wantCode  codes.Code
+	}{
+		{
+			name:      "exactly at cap: accepted",
+			attrCount: 32,
+			wantCode:  codes.OK,
+		},
+		{
+			name:      "one over cap: rejected",
+			attrCount: 33,
+			wantCode:  codes.InvalidArgument,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &fakeQuerier{
+				instance: db.PluginInstance{ID: "iid-logattrs", PluginID: "plug-logattrs"},
+			}
+			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+			attrs := make(map[string]string, tt.attrCount)
+			for i := 0; i < tt.attrCount; i++ {
+				attrs[fmt.Sprintf("key%d", i)] = "val"
+			}
+
+			_, err := srv.Log(context.Background(), &hostv1.LogRequest{
+				Level: hostv1.LogLevel_LOG_LEVEL_INFO,
+				Msg:   "attrs test",
+				Attrs: attrs,
+			})
+
+			if tt.wantCode == codes.OK {
+				if err != nil {
+					t.Errorf("expected no error for %d attrs, got: %v", tt.attrCount, err)
+				}
+			} else {
+				st, ok := status.FromError(err)
+				if !ok || st.Code() != tt.wantCode {
+					t.Errorf("expected %v, got %v", tt.wantCode, err)
+				}
+				if !strings.Contains(st.Message(), "attrs map exceeds") {
+					t.Errorf("message = %q, want to contain \"attrs map exceeds\"", st.Message())
+				}
+			}
+		})
+	}
+}
+
+func TestLog_AttrKeyTooLarge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		keySize  int
+		wantCode codes.Code
+	}{
+		{
+			name:     "exactly at cap: accepted",
+			keySize:  256,
+			wantCode: codes.OK,
+		},
+		{
+			name:     "one byte over cap: rejected",
+			keySize:  257,
+			wantCode: codes.InvalidArgument,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &fakeQuerier{
+				instance: db.PluginInstance{ID: "iid-logkey", PluginID: "plug-logkey"},
+			}
+			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+			_, err := srv.Log(context.Background(), &hostv1.LogRequest{
+				Level: hostv1.LogLevel_LOG_LEVEL_INFO,
+				Msg:   "key size test",
+				Attrs: map[string]string{oversized(tt.keySize): "value"},
+			})
+
+			if tt.wantCode == codes.OK {
+				if err != nil {
+					t.Errorf("expected no error for key at cap, got: %v", err)
+				}
+			} else {
+				st, ok := status.FromError(err)
+				if !ok || st.Code() != tt.wantCode {
+					t.Errorf("expected %v, got %v", tt.wantCode, err)
+				}
+				if !strings.Contains(st.Message(), "attr key exceeds") {
+					t.Errorf("message = %q, want to contain \"attr key exceeds\"", st.Message())
+				}
+			}
+		})
+	}
+}
+
+func TestLog_AttrValueTooLarge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		valueSize int
+		wantCode  codes.Code
+	}{
+		{
+			name:      "exactly at cap: accepted",
+			valueSize: 256,
+			wantCode:  codes.OK,
+		},
+		{
+			name:      "one byte over cap: rejected",
+			valueSize: 257,
+			wantCode:  codes.InvalidArgument,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &fakeQuerier{
+				instance: db.PluginInstance{ID: "iid-logval", PluginID: "plug-logval"},
+			}
+			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+			_, err := srv.Log(context.Background(), &hostv1.LogRequest{
+				Level: hostv1.LogLevel_LOG_LEVEL_INFO,
+				Msg:   "value size test",
+				Attrs: map[string]string{"key": oversized(tt.valueSize)},
+			})
+
+			if tt.wantCode == codes.OK {
+				if err != nil {
+					t.Errorf("expected no error for value at cap, got: %v", err)
+				}
+			} else {
+				st, ok := status.FromError(err)
+				if !ok || st.Code() != tt.wantCode {
+					t.Errorf("expected %v, got %v", tt.wantCode, err)
+				}
+				if !strings.Contains(st.Message(), "attr value exceeds") {
+					t.Errorf("message = %q, want to contain \"attr value exceeds\"", st.Message())
+				}
+			}
+		})
+	}
+}
