@@ -182,8 +182,14 @@ func (c *inAppChannel) Request(ctx context.Context, req feedbackRequest) (string
 		// Race the scanner: only the first writer (rows==1) owns the error step.
 		// If the scanner already resolved it (rows==0), return a sentinel error so
 		// Run() still terminates, but skip logAuditError to avoid a duplicate step.
+		//
+		// Use a fresh Background context (not the parent ctx) so this fire-and-forget
+		// DB write is not cancelled if the parent run context is already done, while
+		// still bounding the write to 5s to avoid an indefinite hang.
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer dbCancel()
 		rows, dbErr := c.sm.Queries().UpdateFeedbackRequestStatus(
-			context.Background(),
+			dbCtx,
 			db.UpdateFeedbackRequestStatusParams{
 				Status:     "timed_out",
 				Response:   nil,

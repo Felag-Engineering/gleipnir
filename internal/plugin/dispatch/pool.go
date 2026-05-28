@@ -378,6 +378,8 @@ func (p *Pool) CancelRun(runID string) {
 					if closeErr := st.conn.Close(); closeErr != nil {
 						slog.Warn("plugin conn.Close after cancel timeout",
 							"instance", ic.instanceName,
+							"run_id", runID,
+							"call_id", callID,
 							"err", closeErr,
 						)
 					}

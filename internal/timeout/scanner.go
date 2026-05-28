@@ -246,7 +246,7 @@ func (s *Scanner) Start(ctx context.Context) {
 				return
 			case <-ticker.C:
 				if err := s.scan(ctx); err != nil {
-					slog.Error(s.cfg.Name+" scanner error", "err", err)
+					slog.ErrorContext(ctx, s.cfg.Name+" scanner error", "err", err)
 				}
 			}
 		}
@@ -271,7 +271,7 @@ func (s *Scanner) scan(ctx context.Context) error {
 	idAttr := s.cfg.Name + "_id"
 	for _, item := range expired {
 		if err := s.resolveTimeout(ctx, item); err != nil {
-			slog.Warn("failed to resolve timed-out "+s.cfg.Name,
+			slog.WarnContext(ctx, "failed to resolve timed-out "+s.cfg.Name,
 				idAttr, item.ID,
 				"run_id", item.RunID,
 				"tool_name", item.ToolName,
@@ -320,7 +320,7 @@ func (s *Scanner) resolveTimeout(ctx context.Context, item ExpiredItem) error {
 		return fmt.Errorf("get run: %w", err)
 	}
 
-	slog.Warn(s.cfg.Name+" timed out",
+	slog.WarnContext(ctx, s.cfg.Name+" timed out",
 		"run_id", item.RunID,
 		s.cfg.Name+"_id", item.ID,
 		"tool_name", item.ToolName,

@@ -77,7 +77,7 @@ func TestPipeLines_LevelsAndLabels(t *testing.T) {
 	handler := &capturingHandler{}
 	logger := slog.New(handler)
 
-	w, done := process.PipeLines(logger, slog.LevelWarn, "stderr")
+	w, done := process.PipeLines(t.Context(), logger, slog.LevelWarn, "stderr")
 
 	lines := []string{"line one", "line two", "line three"}
 	for _, line := range lines {
@@ -122,7 +122,7 @@ func TestPipeLines_DoneOnClose(t *testing.T) {
 	handler := &capturingHandler{}
 	logger := slog.New(handler)
 
-	w, done := process.PipeLines(logger, slog.LevelInfo, "stderr")
+	w, done := process.PipeLines(t.Context(), logger, slog.LevelInfo, "stderr")
 	if err := w.Close(); err != nil {
 		t.Fatalf("close writer: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestPipeLines_StreamAttribute(t *testing.T) {
 	handler := &capturingHandler{}
 	logger := slog.New(handler)
 
-	w, done := process.PipeLines(logger, slog.LevelWarn, "stderr")
+	w, done := process.PipeLines(t.Context(), logger, slog.LevelWarn, "stderr")
 	fmt.Fprintln(w, "test message")
 	w.Close()
 
