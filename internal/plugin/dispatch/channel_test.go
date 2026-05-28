@@ -901,6 +901,12 @@ func TestWait_ScannerWon_NoRunStep(t *testing.T) {
 	if len(steps) != 0 {
 		t.Errorf("plugin_request_timeout steps = %d, want 0 (scanner already won)", len(steps))
 	}
+
+	// Scanner-won path must return the typed sentinel so callers can avoid
+	// writing a duplicate audit step.
+	if !errors.Is(waitErr, dispatch.ErrRequestAlreadyResolved) {
+		t.Errorf("Wait (scanner-won) error = %v, want errors.Is(err, dispatch.ErrRequestAlreadyResolved)", waitErr)
+	}
 }
 
 // ---- Routing outcome tests ----

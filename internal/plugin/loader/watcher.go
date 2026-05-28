@@ -102,7 +102,11 @@ func (w *Watcher) Setup() (*fsnotify.Watcher, error) {
 // w.fire at startup, and a second call would stomp those fields while the first
 // call's AfterFunc callbacks are still reading them.
 func (w *Watcher) Run(ctx context.Context, fw *fsnotify.Watcher) error {
-	defer fw.Close()
+	defer func() {
+		if cerr := fw.Close(); cerr != nil {
+			w.logger.Debug("watcher: fsnotify close error", "dir", w.dir, "err", cerr)
+		}
+	}()
 
 	// fire receives absolute paths of tarballs that have settled (debounce expired).
 	// Buffer of 16 absorbs an initial sweep burst without blocking schedule callbacks.

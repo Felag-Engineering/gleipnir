@@ -487,12 +487,18 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 		}
 
 		if d.cfg.WriteRunStep != nil {
-			_ = d.cfg.WriteRunStep(ctx, rc.RunID, "feedback_dispatch_error", map[string]interface{}{
+			if wErr := d.cfg.WriteRunStep(ctx, rc.RunID, "feedback_dispatch_error", map[string]interface{}{
 				"message":    preAckFailMsg,
 				"code":       "feedback_dispatch_error",
 				"instance":   firstTarget.instanceName,
 				"request_id": reqID,
-			})
+			}); wErr != nil {
+				slog.Warn("dispatch: failed to write feedback_dispatch_error audit step",
+					"run_id", rc.RunID,
+					"request_id", reqID,
+					"err", wErr,
+				)
+			}
 		}
 		return "", 0, fmt.Errorf("%w: %s", ErrPreAckFailed, preAckFailMsg)
 	}
@@ -584,10 +590,11 @@ func (d *Dispatcher) Wait(ctx context.Context, requestID string, timeout time.Du
 		if transErr := TransitionTimedOut(ctx, d.cfg.Queries, requestID); transErr != nil {
 			if errors.Is(transErr, ErrTransitionConflict) {
 				// Scanner already timed out this request and wrote the step.
+				// Return a typed sentinel so callers know not to write a second step.
 				slog.Debug("wait timer: transition conflict — scanner already timed out request",
 					"request_id", requestID,
 				)
-				return "", fmt.Errorf("plugin request timed out")
+				return "", ErrRequestAlreadyResolved
 			}
 			return "", fmt.Errorf("mark plugin request timed out: %w", transErr)
 		}
@@ -596,12 +603,18 @@ func (d *Dispatcher) Wait(ctx context.Context, requestID string, timeout time.Du
 		if d.cfg.WriteRunStep != nil {
 			req, dbErr := d.cfg.Queries.GetPluginPendingRequest(ctx, requestID)
 			if dbErr == nil {
-				_ = d.cfg.WriteRunStep(ctx, req.RunID, "plugin_request_timeout", map[string]interface{}{
+				if wErr := d.cfg.WriteRunStep(ctx, req.RunID, "plugin_request_timeout", map[string]interface{}{
 					"message":    fmt.Sprintf("plugin request timed out after %s", timeout),
 					"code":       "plugin_request_timeout",
 					"request_id": requestID,
 					"tool_name":  req.ToolName,
-				})
+				}); wErr != nil {
+					slog.Warn("dispatch: failed to write plugin_request_timeout audit step",
+						"run_id", req.RunID,
+						"request_id", requestID,
+						"err", wErr,
+					)
+				}
 			}
 		}
 		return "", fmt.Errorf("plugin request timed out")
