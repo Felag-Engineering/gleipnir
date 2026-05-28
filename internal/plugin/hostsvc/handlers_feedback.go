@@ -140,6 +140,12 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 	// Look up the feedback request; reject late responses without mutating state.
 	fr, err := s.q.GetFeedbackRequest(ctx, requestID)
 	if err != nil {
+		// sql.ErrNoRows means neither substrate recognized this request_id — it was
+		// never issued or has already been purged. NotFound is more accurate than
+		// Internal and lets callers distinguish "bad ID" from "unexpected DB error".
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "unknown request_id %q", requestID)
+		}
 		return nil, status.Errorf(codes.Internal, "get feedback request: %v", err)
 	}
 	if fr.Status != "pending" {

@@ -36,6 +36,12 @@ var ErrNoRequestCapableEntry = errors.New("plugin: no request-capable entry in a
 // Dispatcher instance, or it has already been resolved or expired.
 var ErrUnknownRequestID = errors.New("plugin: unknown request ID")
 
+// ErrRequestAlreadyResolved is returned by Dispatcher.Wait when its local
+// timer fired but the background scanner had already CAS-transitioned the
+// plugin_pending_requests row to timed_out. The scanner already wrote the
+// plugin_request_timeout audit step, so callers MUST NOT write a second one.
+var ErrRequestAlreadyResolved = errors.New("plugin: channel request already resolved by scanner")
+
 // ErrInstanceNotRunning is returned by a ConnFactory when no subprocess is
 // currently registered for the requested instance name. The host dispatcher
 // wraps this with the instance name before returning it to callers.

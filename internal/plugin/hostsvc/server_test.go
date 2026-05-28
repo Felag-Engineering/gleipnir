@@ -623,10 +623,8 @@ func TestWriteAuditStep_NoCallID_CrossInstanceEscalation(t *testing.T) {
 
 // TestWriteAuditStep_NoCallID_UnknownRequestID_NativeMiss verifies that when
 // neither the substrate (plugin_pending_requests) nor the native (feedback_requests)
-// row exists, the handler returns codes.Internal.
-//
-// TODO: spec §4.2 hints this should return feedback_response_late for a better
-// UX. Out of scope for this PR.
+// row exists, the handler returns codes.NotFound (not codes.Internal — the request_id
+// is simply unknown, which is a caller error, not a server error).
 func TestWriteAuditStep_NoCallID_UnknownRequestID_NativeMiss(t *testing.T) {
 	t.Parallel()
 
@@ -642,8 +640,8 @@ func TestWriteAuditStep_NoCallID_UnknownRequestID_NativeMiss(t *testing.T) {
 		RequestId: "req-unknown",
 	})
 	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.Internal {
-		t.Errorf("expected codes.Internal for unknown request_id, got %v", err)
+	if !ok || st.Code() != codes.NotFound {
+		t.Errorf("expected codes.NotFound for unknown request_id, got %v", err)
 	}
 }
 
