@@ -13,15 +13,14 @@ package configvalidate
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/felag-engineering/gleipnir/internal/plugin/schemautil"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
-	"gopkg.in/yaml.v3"
 )
 
 // ErrNotChannelPlugin is returned by ForChannelAudience when the manifest does
@@ -54,7 +53,7 @@ func ForChannelAudience(m *sdkmanifest.Manifest) (*Validator, error) {
 	if m.Services.Channel == "" || len(m.Channels) == 0 {
 		return nil, ErrNotChannelPlugin
 	}
-	jsonBytes, err := nodeToJSON(m.Channels[0].ConfigSchema)
+	jsonBytes, err := schemautil.ToJSON(m.Channels[0].ConfigSchema)
 	if err != nil {
 		return nil, fmt.Errorf("configvalidate: marshal channel config_schema: %w", err)
 	}
@@ -64,7 +63,7 @@ func ForChannelAudience(m *sdkmanifest.Manifest) (*Validator, error) {
 // ForInstanceConfig returns a Validator for the per-instance config schema
 // declared in m.ConfigSchema.
 func ForInstanceConfig(m *sdkmanifest.Manifest) (*Validator, error) {
-	jsonBytes, err := nodeToJSON(m.ConfigSchema)
+	jsonBytes, err := schemautil.ToJSON(m.ConfigSchema)
 	if err != nil {
 		return nil, fmt.Errorf("configvalidate: marshal instance config_schema: %w", err)
 	}
@@ -75,7 +74,7 @@ func ForInstanceConfig(m *sdkmanifest.Manifest) (*Validator, error) {
 // scope schema declared in m.SubscriptionSchema. A nil SubscriptionSchema
 // produces a validator that accepts any object (empty schema).
 func ForSubscriptionScope(m *sdkmanifest.Manifest) (*Validator, error) {
-	jsonBytes, err := nodeToJSON(m.SubscriptionSchema)
+	jsonBytes, err := schemautil.ToJSON(m.SubscriptionSchema)
 	if err != nil {
 		return nil, fmt.Errorf("configvalidate: marshal subscription_schema: %w", err)
 	}
@@ -90,7 +89,7 @@ func ForTriggerBinding(m *sdkmanifest.Manifest, eventKind string) (*Validator, e
 		if decl.Kind != eventKind {
 			continue
 		}
-		jsonBytes, err := nodeToJSON(decl.BindingSchema)
+		jsonBytes, err := schemautil.ToJSON(decl.BindingSchema)
 		if err != nil {
 			return nil, fmt.Errorf("configvalidate: marshal binding_schema for %q: %w", eventKind, err)
 		}
@@ -251,28 +250,3 @@ func rfc6901Unescape(tok string) string {
 	return tok
 }
 
-// nodeToJSON converts a *yaml.Node to canonical JSON bytes suitable for
-// feeding to the jsonschema compiler. Returns an error when the node cannot be
-// marshalled.
-//
-// TODO: this mirrors canonicalSchemaBytes in internal/plugin/manifest/diff.go.
-// Consolidate into a shared helper when a third caller appears.
-func nodeToJSON(node *yaml.Node) ([]byte, error) {
-	if node == nil {
-		// nil schema → empty object schema (validates anything).
-		return []byte(`{}`), nil
-	}
-	raw, err := yaml.Marshal(node)
-	if err != nil {
-		return nil, fmt.Errorf("yaml marshal: %w", err)
-	}
-	var tree any
-	if err := yaml.Unmarshal(raw, &tree); err != nil {
-		return nil, fmt.Errorf("yaml unmarshal: %w", err)
-	}
-	out, err := json.Marshal(tree)
-	if err != nil {
-		return nil, fmt.Errorf("json marshal: %w", err)
-	}
-	return out, nil
-}
