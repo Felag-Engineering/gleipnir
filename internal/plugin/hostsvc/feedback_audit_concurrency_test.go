@@ -268,6 +268,10 @@ func (f *fakeInstanceQuerier) ListRunsByPolicy(ctx context.Context, arg db.ListR
 	return f.q.ListRunsByPolicy(ctx, arg)
 }
 
+func (f *fakeInstanceQuerier) ListRunsByPolicies(ctx context.Context, arg db.ListRunsByPoliciesParams) ([]db.ListRunsByPoliciesRow, error) {
+	return f.q.ListRunsByPolicies(ctx, arg)
+}
+
 func (f *fakeInstanceQuerier) ListAllActiveUsersWithRoles(ctx context.Context) ([]db.ListAllActiveUsersWithRolesRow, error) {
 	return f.q.ListAllActiveUsersWithRoles(ctx)
 }

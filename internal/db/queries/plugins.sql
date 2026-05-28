@@ -133,3 +133,22 @@ SELECT * FROM plugin_instances
 WHERE last_oauth_callback_url IS NOT NULL
   AND health_state IN ('healthy', 'unsigned_permissive', 'crashed', 'circuit_broken')
 ORDER BY plugin_id, instance_name;
+
+-- UpsertPluginPendingManifest inserts or replaces the pending candidate manifest
+-- for a plugin. ON CONFLICT(plugin_id) updates the candidate bytes and versions
+-- so a second material change before the admin accepts simply overwrites the
+-- previous candidate rather than accumulating rows.
+-- name: UpsertPluginPendingManifest :exec
+INSERT INTO plugin_pending_manifests (plugin_id, candidate_manifest, old_version, new_version, created_at, updated_at)
+VALUES (:plugin_id, :candidate_manifest, :old_version, :new_version, :created_at, :updated_at)
+ON CONFLICT(plugin_id) DO UPDATE SET
+    candidate_manifest = excluded.candidate_manifest,
+    old_version        = excluded.old_version,
+    new_version        = excluded.new_version,
+    updated_at         = excluded.updated_at;
+
+-- name: GetPluginPendingManifest :one
+SELECT * FROM plugin_pending_manifests WHERE plugin_id = :plugin_id;
+
+-- name: DeletePluginPendingManifest :exec
+DELETE FROM plugin_pending_manifests WHERE plugin_id = :plugin_id;

@@ -428,6 +428,28 @@ CREATE INDEX idx_pae_instance_created ON plugin_audit_events(plugin_instance_id,
 CREATE INDEX idx_pae_event_created    ON plugin_audit_events(event_type, created_at);
 
 -- ---------------------------------------------------------------------------
+-- Plugin pending manifests
+--
+-- Holds the single pending candidate manifest per plugin while it awaits admin
+-- approval. PRIMARY KEY(plugin_id) enforces at-most-one pending candidate;
+-- ON DELETE CASCADE clears the row automatically when a plugin is uninstalled.
+-- Candidate bytes are stored raw (NOT base64) — they only lived in the audit
+-- event payload as base64 for JSON embedding; the table is the new source of
+-- truth. Accepted via POST /api/v1/admin/plugins/{id}/accept-manifest, after
+-- which the row is deleted best-effort (leftover rows self-correct on next
+-- material change via the ON CONFLICT DO UPDATE upsert).
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugin_pending_manifests (
+    plugin_id          TEXT PRIMARY KEY REFERENCES plugins(id) ON DELETE CASCADE,
+    candidate_manifest TEXT NOT NULL,   -- raw candidate manifest bytes (NOT base64)
+    old_version        TEXT NOT NULL,
+    new_version        TEXT NOT NULL,
+    created_at         TEXT NOT NULL,   -- ISO 8601 UTC
+    updated_at         TEXT NOT NULL    -- ISO 8601 UTC
+);
+
+-- ---------------------------------------------------------------------------
 -- Plugin audiences and pending requests
 -- ---------------------------------------------------------------------------
 

@@ -131,14 +131,22 @@ WHERE created_at >= sqlc.arg('since')
 GROUP BY bucket, status, model
 ORDER BY bucket ASC;
 
--- ListRunsByPolicy returns runs for a single policy ordered newest-first, used
--- by the plugin host-service RunHistoryRead handler. The Go handler merges
--- per-policy result sets and truncates to the requested limit.
+-- ListRunsByPolicy returns runs for a single policy ordered newest-first.
+-- Kept for single-policy callers; the multi-policy host path uses ListRunsByPolicies.
 -- name: ListRunsByPolicy :many
 SELECT id, policy_id, status, started_at, completed_at, created_at FROM runs
 WHERE policy_id = sqlc.arg('policy_id')
 ORDER BY created_at DESC
 LIMIT sqlc.arg('limit');
+
+-- ListRunsByPolicies returns runs for a set of policies in a single query,
+-- ordered newest-first. Used by the plugin host-service RunHistoryRead handler
+-- to replace the previous N+1 per-policy query loop (issue #362). The caller
+-- guards against an empty slice to skip the roundtrip.
+-- name: ListRunsByPolicies :many
+SELECT id, policy_id, status, started_at, completed_at, created_at FROM runs
+WHERE policy_id IN (sqlc.slice('policy_ids'))
+ORDER BY created_at DESC LIMIT sqlc.arg('limit');
 
 -- ListAttentionItems returns pending approval requests and pending feedback
 -- requests joined with their parent runs and policies for the attention queue.

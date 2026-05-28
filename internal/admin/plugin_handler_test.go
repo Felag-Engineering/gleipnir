@@ -29,10 +29,11 @@ import (
 
 // fakePluginQuerier is an in-memory PluginQuerier for tests.
 type fakePluginQuerier struct {
-	instances   map[string]db.PluginInstance
-	plugins     map[string]db.Plugin
-	auditEvents []db.PluginAuditEvent
-	policies    []db.Policy
+	instances       map[string]db.PluginInstance
+	plugins         map[string]db.Plugin
+	auditEvents     []db.PluginAuditEvent
+	pendingManifests map[string]db.PluginPendingManifest
+	policies        []db.Policy
 	// audienceEntries maps instance_id → list of audience entries for that instance.
 	audienceEntries map[string][]db.ListAudienceEntriesByInstanceRow
 	// casFailOn is the plugin ID that should return 0 rows for UpdatePluginTrustedPubkey
@@ -50,9 +51,22 @@ type fakePluginQuerier struct {
 
 func newFakePluginQuerier() *fakePluginQuerier {
 	return &fakePluginQuerier{
-		instances:       make(map[string]db.PluginInstance),
-		plugins:         make(map[string]db.Plugin),
-		audienceEntries: make(map[string][]db.ListAudienceEntriesByInstanceRow),
+		instances:        make(map[string]db.PluginInstance),
+		plugins:          make(map[string]db.Plugin),
+		pendingManifests: make(map[string]db.PluginPendingManifest),
+		audienceEntries:  make(map[string][]db.ListAudienceEntriesByInstanceRow),
+	}
+}
+
+// seedPendingManifest registers a pending manifest row for a plugin.
+func (f *fakePluginQuerier) seedPendingManifest(pluginID string, candidateYAML []byte, oldVersion, newVersion string) {
+	f.pendingManifests[pluginID] = db.PluginPendingManifest{
+		PluginID:          pluginID,
+		CandidateManifest: string(candidateYAML),
+		OldVersion:        oldVersion,
+		NewVersion:        newVersion,
+		CreatedAt:         "2026-05-05T00:00:00Z",
+		UpdatedAt:         "2026-05-05T00:00:00Z",
 	}
 }
 
@@ -131,18 +145,17 @@ func (f *fakePluginQuerier) InsertPluginAuditEvent(_ context.Context, arg db.Ins
 	return ev, nil
 }
 
-func (f *fakePluginQuerier) ListPluginAuditEventsByType(_ context.Context, arg db.ListPluginAuditEventsByTypeParams) ([]db.PluginAuditEvent, error) {
-	var result []db.PluginAuditEvent
-	for i := len(f.auditEvents) - 1; i >= 0; i-- {
-		ev := f.auditEvents[i]
-		if ev.EventType == arg.EventType {
-			result = append(result, ev)
-		}
-		if int64(len(result)) >= arg.Limit {
-			break
-		}
+func (f *fakePluginQuerier) GetPluginPendingManifest(_ context.Context, pluginID string) (db.PluginPendingManifest, error) {
+	row, ok := f.pendingManifests[pluginID]
+	if !ok {
+		return db.PluginPendingManifest{}, sql.ErrNoRows
 	}
-	return result, nil
+	return row, nil
+}
+
+func (f *fakePluginQuerier) DeletePluginPendingManifest(_ context.Context, pluginID string) error {
+	delete(f.pendingManifests, pluginID)
+	return nil
 }
 
 func (f *fakePluginQuerier) UpdatePluginInstanceSubscriptionScope(_ context.Context, arg db.UpdatePluginInstanceSubscriptionScopeParams) (int64, error) {
@@ -1027,26 +1040,6 @@ func withChiParams(r *http.Request, params map[string]string) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }
 
-// candidateManifestAuditEvent builds a fake plugin_manifest_material_change audit
-// event payload containing the given candidate manifest bytes for the given plugin.
-func candidateManifestAuditEvent(pluginID string, candidateManifest []byte) db.PluginAuditEvent {
-	payload, _ := json.Marshal(map[string]any{
-		"plugin_id":                    pluginID,
-		"name":                         "test-plugin",
-		"old_version":                  "1.0.0",
-		"new_version":                  "2.0.0",
-		"material_fields":              []string{"services.tool"},
-		"cosmetic_fields":              []string{},
-		"candidate_manifest_b64":       base64.StdEncoding.EncodeToString(candidateManifest),
-		"newly_required_config_fields": []string{},
-	})
-	return db.PluginAuditEvent{
-		EventType:   "plugin_manifest_material_change",
-		Severity:    "high",
-		PayloadJson: string(payload),
-		CreatedAt:   "2026-05-05T00:00:00Z",
-	}
-}
 
 const (
 	// v1 manifest for accept-manifest tests.
@@ -1081,8 +1074,8 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 			HealthState: string(model.PluginHealthStatePendingManifestApproval),
 			Version:     0,
 		})
-		// Seed the audit event as if a material change was previously detected.
-		q.auditEvents = append(q.auditEvents, candidateManifestAuditEvent("plugin-1", []byte(v2ManifestYAML)))
+		// Seed the pending manifest row as if a material change was previously detected.
+		q.seedPendingManifest("plugin-1", []byte(v2ManifestYAML), "1.0.0", "2.0.0")
 
 		h := NewPluginHandler(q, nil, fixedClock)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-1/accept-manifest", bytes.NewBufferString(`{}`))
@@ -1136,7 +1129,7 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 			HealthState: string(model.PluginHealthStatePendingManifestApproval),
 			Version:     0,
 		})
-		q.auditEvents = append(q.auditEvents, candidateManifestAuditEvent("plugin-2", []byte(v2ManifestWithRequiredField)))
+		q.seedPendingManifest("plugin-2", []byte(v2ManifestWithRequiredField), "1.0.0", "2.0.0")
 
 		h := NewPluginHandler(q, nil, fixedClock)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-2/accept-manifest", bytes.NewBufferString(`{}`))
@@ -1204,7 +1197,7 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 			PluginVersion:    "1.0.0",
 			Version:          0,
 		})
-		q.auditEvents = append(q.auditEvents, candidateManifestAuditEvent("plugin-4", []byte(v2ManifestYAML)))
+		q.seedPendingManifest("plugin-4", []byte(v2ManifestYAML), "1.0.0", "2.0.0")
 		q.casFailOn = "plugin-4" // trigger CAS miss on UpdatePluginManifest
 
 		h := NewPluginHandler(q, nil, fixedClock)
@@ -1228,7 +1221,7 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 			Status:           "pending_review",
 			Version:          1,
 		})
-		q.auditEvents = append(q.auditEvents, candidateManifestAuditEvent("plugin-5", []byte(v2ManifestYAML)))
+		q.seedPendingManifest("plugin-5", []byte(v2ManifestYAML), "1.0.0", "2.0.0")
 
 		h := NewPluginHandler(q, nil, fixedClock)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-5/accept-manifest", bytes.NewBufferString(`{}`))
@@ -1258,6 +1251,103 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 		wantActorID := "user-admin-1"
 		if found.ActorUserID == nil || *found.ActorUserID != wantActorID {
 			t.Errorf("actor_user_id = %v, want %q", found.ActorUserID, wantActorID)
+		}
+	})
+
+	// Verifies that a high volume of unrelated audit events for other plugins
+	// does not affect AcceptManifest — it now reads from plugin_pending_manifests
+	// (point-read by plugin_id) rather than scanning audit events.
+	t.Run("high audit volume for other plugins does not affect result", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-target",
+			Name:             "target-plugin",
+			ManifestSnapshot: v1ManifestYAML,
+			PluginVersion:    "1.0.0",
+			Status:           "pending_review",
+			Version:          1,
+		})
+		// Seed many audit events for OTHER plugins (would have buried the target under the old scan).
+		for i := range 300 {
+			ev := db.PluginAuditEvent{
+				EventType:   "plugin_manifest_material_change",
+				Severity:    "high",
+				PayloadJson: fmt.Sprintf(`{"plugin_id":"other-plugin-%d","candidate_manifest_b64":"..."}`, i),
+				CreatedAt:   "2026-05-01T00:00:00Z",
+			}
+			q.auditEvents = append(q.auditEvents, ev)
+		}
+		// Only the target plugin has a pending manifest row.
+		q.seedPendingManifest("plugin-target", []byte(v2ManifestYAML), "1.0.0", "2.0.0")
+
+		h := NewPluginHandler(q, nil, fixedClock)
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`))
+		req = withChiParams(req, map[string]string{"id": "plugin-target"})
+		rec := httptest.NewRecorder()
+		h.AcceptManifest(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+		}
+		data := parseDataResponse(t, rec)
+		var resp acceptManifestResponse
+		if err := json.Unmarshal(data, &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if resp.AcceptedManifestVersion != "2.0.0" {
+			t.Errorf("accepted_manifest_version = %q, want 2.0.0", resp.AcceptedManifestVersion)
+		}
+	})
+
+	t.Run("no pending row returns 409", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-nopending",
+			Name:             "no-pending-plugin",
+			ManifestSnapshot: v1ManifestYAML,
+			Version:          0,
+		})
+		// No pending manifest row seeded.
+
+		h := NewPluginHandler(q, nil, fixedClock)
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`))
+		req = withChiParams(req, map[string]string{"id": "plugin-nopending"})
+		rec := httptest.NewRecorder()
+		h.AcceptManifest(rec, req)
+
+		if rec.Code != http.StatusConflict {
+			t.Errorf("status = %d, want 409 when no pending row", rec.Code)
+		}
+	})
+
+	t.Run("accept then second accept returns 409", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-twiceaccept",
+			Name:             "twice-accept-plugin",
+			ManifestSnapshot: v1ManifestYAML,
+			PluginVersion:    "1.0.0",
+			Status:           "pending_review",
+			Version:          1,
+		})
+		q.seedPendingManifest("plugin-twiceaccept", []byte(v2ManifestYAML), "1.0.0", "2.0.0")
+
+		h := NewPluginHandler(q, nil, fixedClock)
+		// First accept succeeds and deletes the pending row.
+		req1 := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`))
+		req1 = withChiParams(req1, map[string]string{"id": "plugin-twiceaccept"})
+		rec1 := httptest.NewRecorder()
+		h.AcceptManifest(rec1, req1)
+		if rec1.Code != http.StatusOK {
+			t.Fatalf("first accept: status = %d, want 200; body: %s", rec1.Code, rec1.Body.String())
+		}
+		// Second accept finds no pending row and must return 409.
+		req2 := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`))
+		req2 = withChiParams(req2, map[string]string{"id": "plugin-twiceaccept"})
+		rec2 := httptest.NewRecorder()
+		h.AcceptManifest(rec2, req2)
+		if rec2.Code != http.StatusConflict {
+			t.Errorf("second accept: status = %d, want 409 (row deleted after first accept)", rec2.Code)
 		}
 	})
 }
