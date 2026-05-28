@@ -2349,6 +2349,180 @@ func TestUserDirectoryRead_ManifestParseError(t *testing.T) {
 	}
 }
 
+// TestUserDirectoryRead_UnknownRole verifies that a non-empty role_filter value
+// that is not one of the four known Gleipnir roles is rejected with
+// InvalidArgument. This prevents plugins from probing for arbitrary role values
+// via the ListActiveUsersByRole query (issue #357).
+func TestUserDirectoryRead_UnknownRole(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		filter   string
+		wantCode codes.Code
+	}{
+		{"empty filter passes through", "", codes.OK},
+		{"admin is valid", "admin", codes.OK},
+		{"operator is valid", "operator", codes.OK},
+		{"approver is valid", "approver", codes.OK},
+		{"auditor is valid", "auditor", codes.OK},
+		{"unknown role rejected", "superuser", codes.InvalidArgument},
+		{"numeric role rejected", "123", codes.InvalidArgument},
+		{"injection attempt rejected", "admin'; DROP TABLE users; --", codes.InvalidArgument},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			q := &fakeQuerier{
+				instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+				plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("user_directory_read")},
+			}
+			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+			_, err := srv.UserDirectoryRead(context.Background(), &hostv1.UserDirectoryReadRequest{
+				RoleFilter: tc.filter,
+			})
+			if tc.wantCode == codes.OK {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+				return
+			}
+			st, ok := status.FromError(err)
+			if !ok || st.Code() != tc.wantCode {
+				t.Errorf("expected %v, got %v", tc.wantCode, err)
+			}
+		})
+	}
+}
+
+// TestPolicyGrantsInstanceEdgeCases verifies that policyGrantsInstance correctly
+// rejects empty instanceName and does not match prefix-overlapping instance names
+// (issue #357).
+//
+// policyGrantsInstance is unexported; it is exercised through WriteAuditStep's
+// scope check on the native feedback_response path. The querier is configured so
+// the plugin-substrate path falls through (sql.ErrNoRows on GetPluginPendingRequest)
+// and the test reaches the policyGrantsInstance guard.
+func TestPolicyGrantsInstanceEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	policyWithTools := func(tools ...string) string {
+		var sb strings.Builder
+		sb.WriteString("capabilities:\n  tools:\n")
+		for _, tool := range tools {
+			sb.WriteString("  - tool: " + tool + "\n")
+		}
+		return sb.String()
+	}
+
+	cases := []struct {
+		name         string
+		policyYAML   string
+		instanceName string
+		wantGranted  bool
+	}{
+		{
+			name:         "empty instanceName never matches",
+			policyYAML:   policyWithTools("foo.tool1"),
+			instanceName: "",
+			wantGranted:  false,
+		},
+		{
+			name:         "exact first segment matches",
+			policyYAML:   policyWithTools("foo.tool1"),
+			instanceName: "foo",
+			wantGranted:  true,
+		},
+		{
+			// "foo.bar" is a dotted instanceName; strings.Cut on "foo.bar.tool1"
+			// yields first segment "foo" ≠ "foo.bar", so the grant must be rejected.
+			// Old HasPrefix("foo.bar.tool1", "foo.bar.") would match; Cut fixes it.
+			name:         "dotted instanceName 'foo.bar' must not match tool 'foo.bar.tool1'",
+			policyYAML:   policyWithTools("foo.bar.tool1"),
+			instanceName: "foo.bar",
+			wantGranted:  false,
+		},
+		{
+			// instance "foo" correctly owns tool "foo.bar.tool1" (first segment = "foo").
+			name:         "instance 'foo' owns multi-part tool 'foo.bar.tool1'",
+			policyYAML:   policyWithTools("foo.bar.tool1"),
+			instanceName: "foo",
+			wantGranted:  true,
+		},
+		{
+			name:         "tool with no dot never matches any instance",
+			policyYAML:   policyWithTools("toolnodot"),
+			instanceName: "toolnodot",
+			wantGranted:  false,
+		},
+		{
+			name:         "empty policy YAML returns false",
+			policyYAML:   "",
+			instanceName: "foo",
+			wantGranted:  false,
+		},
+		{
+			name:         "unparseable YAML returns false",
+			policyYAML:   "{{not: valid: yaml:::",
+			instanceName: "foo",
+			wantGranted:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &fakeQuerier{
+				instance: db.PluginInstance{
+					ID:           "iid-1",
+					PluginID:     "plug-1",
+					InstanceName: tc.instanceName,
+				},
+				// plugin-substrate path must fall through to native path.
+				pluginPendingRequestErr: sql.ErrNoRows,
+				// native path: feedback request is pending.
+				feedbackRequest: db.FeedbackRequest{
+					ID:     "req-1",
+					RunID:  "run-1",
+					Status: "pending",
+				},
+				run: db.Run{
+					ID:       "run-1",
+					PolicyID: "pol-1",
+					Status:   "running",
+				},
+				policy: db.Policy{
+					ID:   "pol-1",
+					Yaml: tc.policyYAML,
+				},
+			}
+			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+			_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
+				StepType:  "feedback_response",
+				RequestId: "req-1",
+			})
+			if tc.wantGranted {
+				// The scope check passed. Any subsequent error (e.g. writeFeedbackResponseStep
+				// needing a real DB) is fine — we only care the guard did not fire PermissionDenied.
+				if st, ok := status.FromError(err); ok && st.Code() == codes.PermissionDenied {
+					t.Errorf("expected scope check to pass, got PermissionDenied")
+				}
+			} else {
+				st, ok := status.FromError(err)
+				if !ok || st.Code() != codes.PermissionDenied {
+					t.Errorf("expected PermissionDenied from scope check, got %v", err)
+				}
+			}
+		})
+	}
+}
+
 // --- tests: EmitEvent rate limiting ---
 
 // TestEmitEvent_RateLimit_Integration fires 250 EmitEvent calls against a Server

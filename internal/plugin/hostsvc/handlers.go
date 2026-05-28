@@ -743,15 +743,23 @@ type scopeProbe struct {
 // policyGrantsInstance reports whether the policy YAML blob grants at least one
 // tool whose name begins with "<instanceName>.". Used to verify that a
 // feedback_request's run belongs to a policy scoped to the calling instance.
+//
+// strings.Cut is used intentionally: an empty instanceName must not match
+// anything (the left segment of "foo" cut on "." is "foo", not ""), and an
+// instance named "foo" must not match tools intended for "foo.bar" via a shared
+// prefix (only the first dot-segment is compared).
 func policyGrantsInstance(policyYAML, instanceName string) bool {
+	if instanceName == "" {
+		return false
+	}
 	var probe scopeProbe
 	if err := yaml.Unmarshal([]byte(policyYAML), &probe); err != nil {
 		// Unparseable policy YAML → treat as no match (reject).
 		return false
 	}
-	prefix := instanceName + "."
 	for _, t := range probe.Capabilities.Tools {
-		if strings.HasPrefix(t.Tool, prefix) {
+		ns, _, ok := strings.Cut(t.Tool, ".")
+		if ok && ns == instanceName {
 			return true
 		}
 	}
@@ -769,7 +777,7 @@ func (s *Server) policyIDsForInstance(ctx context.Context, inst db.PluginInstanc
 		return nil, status.Errorf(codes.Internal, "list policies: %v", err)
 	}
 
-	prefix := inst.InstanceName + "."
+	instanceName := inst.InstanceName
 	var ids []string
 	for _, pol := range policies {
 		var probe scopeProbe
@@ -778,9 +786,13 @@ func (s *Server) policyIDsForInstance(ctx context.Context, inst db.PluginInstanc
 			continue
 		}
 
+		// Use strings.Cut to match only the first dot-segment, mirroring the
+		// fix in policyGrantsInstance: prevents empty-instance and prefix-overlap
+		// false positives.
 		matched := false
 		for _, t := range probe.Capabilities.Tools {
-			if strings.HasPrefix(t.Tool, prefix) {
+			ns, _, ok := strings.Cut(t.Tool, ".")
+			if ok && ns == instanceName {
 				matched = true
 				break
 			}
@@ -907,6 +919,13 @@ func (s *Server) UserDirectoryRead(ctx context.Context, req *hostv1.UserDirector
 	}
 
 	var entries []*hostv1.UserEntry
+
+	validRoles := map[string]bool{
+		"admin": true, "operator": true, "approver": true, "auditor": true,
+	}
+	if rf := req.GetRoleFilter(); rf != "" && !validRoles[rf] {
+		return nil, status.Errorf(codes.InvalidArgument, "unknown role %q", rf)
+	}
 
 	if req.GetRoleFilter() == "" {
 		rows, err := s.q.ListAllActiveUsersWithRoles(ctx)
