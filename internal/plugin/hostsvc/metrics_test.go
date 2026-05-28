@@ -23,7 +23,7 @@ func newMetricsServer(t *testing.T, pluginID, instanceID string) *hostsvc.Server
 		instance: db.PluginInstance{ID: instanceID, PluginID: pluginID},
 	}
 	binder := &fakeInstanceBinder{id: instanceID, ok: true}
-	return hostsvc.NewServer(q, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
+	return hostsvc.NewServer(q, nil, testEncryptionKey, &fakeResolver{}, binder, &fakePublisher{}, nil)
 }
 
 // TestEmitMetric_MetricNameCap verifies that a plugin instance may not register
