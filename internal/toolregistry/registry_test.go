@@ -169,3 +169,44 @@ func TestConcurrent_Reserve_Race(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestConcurrent_ReadWrite_Race exercises concurrent Lookup and Snapshot
+// (RLock paths) racing against Reserve and Release (Lock paths) under the
+// race detector. No value assertions — this is purely a data-race exercise.
+func TestConcurrent_ReadWrite_Race(t *testing.T) {
+	const n = 32
+	r := toolregistry.New()
+	src := toolregistry.Source{Kind: toolregistry.KindMCP, Name: "srv"}
+
+	// Seed some initial entries so readers have something to observe.
+	for i := range n {
+		dotName := toolregistry.DotName("srv", "seed-"+string(rune('a'+i%26)))
+		_ = r.Reserve(dotName, src)
+	}
+
+	var wg sync.WaitGroup
+
+	// Writers: reserve then release unique names.
+	wg.Add(n)
+	for i := range n {
+		dotName := toolregistry.DotName("srv", "write-"+string(rune('a'+i%26)))
+		go func() {
+			defer wg.Done()
+			_ = r.Reserve(dotName, src)
+			r.Release(dotName, src)
+		}()
+	}
+
+	// Readers: Lookup and Snapshot run concurrently with the writes above.
+	wg.Add(n)
+	for i := range n {
+		dotName := toolregistry.DotName("srv", "seed-"+string(rune('a'+i%26)))
+		go func() {
+			defer wg.Done()
+			_, _ = r.Lookup(dotName)
+			_ = r.Snapshot()
+		}()
+	}
+
+	wg.Wait()
+}

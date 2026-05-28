@@ -170,14 +170,14 @@ func NewManager(cfg ManagerConfig) *Manager {
 // Start spawns a subprocess for the given plugin instance.
 //
 // It refuses to start if:
-//   - The plugin's status is not "active".
+//   - The plugin's status is not PluginStatusActive.
 //   - An instance with the same instance_id is already running.
 //   - The instance's current health state is in blockedHealthStates.
 //
 // On success the Instance is stored in the internal map. Callers should call
 // Stop or StopAll to terminate running instances.
 func (m *Manager) Start(ctx context.Context, plugin db.Plugin, instance db.PluginInstance, binaryPath string) error {
-	if plugin.Status != "active" {
+	if plugin.Status != string(model.PluginStatusActive) {
 		return fmt.Errorf("manager: plugin %s is not active (status=%s)", plugin.ID, plugin.Status)
 	}
 
@@ -448,7 +448,7 @@ func (m *Manager) StopAll(ctx context.Context) error {
 // returns nil regardless of per-instance errors, consistent with the
 // "best-effort bulk start" semantics at server startup.
 func (m *Manager) StartAllActive(ctx context.Context) error {
-	plugins, err := m.cfg.Querier.ListPluginsByStatus(ctx, "active")
+	plugins, err := m.cfg.Querier.ListPluginsByStatus(ctx, string(model.PluginStatusActive))
 	if err != nil {
 		return fmt.Errorf("manager: list active plugins: %w", err)
 	}
