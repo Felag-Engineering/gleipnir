@@ -196,7 +196,7 @@ func NewSupervisor(cfg Config) *Supervisor {
 //
 //	go triggerSupervisor.StartAll(ctx)
 func (s *Supervisor) StartAll(ctx context.Context) error {
-	plugins, err := s.cfg.Querier.ListPluginsByStatus(ctx, "active")
+	plugins, err := s.cfg.Querier.ListPluginsByStatus(ctx, string(model.PluginStatusActive))
 	if err != nil {
 		return err
 	}

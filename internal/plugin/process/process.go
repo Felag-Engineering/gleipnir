@@ -286,10 +286,13 @@ func (i *Instance) Stop(ctx context.Context) error {
 	// Always revoke; identity.Revoke is idempotent.
 	defer i.cfg.IdentityIssuer.Revoke(i.token)
 
+	timer := time.NewTimer(i.cfg.StopGrace)
+	defer timer.Stop()
+
 	select {
 	case <-i.doneCh:
 		return nil
-	case <-time.After(i.cfg.StopGrace):
+	case <-timer.C:
 		return fmt.Errorf("plugin %s: did not exit within %s", i.cfg.InstanceID, i.cfg.StopGrace)
 	case <-ctx.Done():
 		return fmt.Errorf("plugin %s: stop cancelled: %w", i.cfg.InstanceID, ctx.Err())

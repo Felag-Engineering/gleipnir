@@ -10,7 +10,7 @@ import "sync"
 //   - MCP side: ReserveBulk on server creation / RefreshTools; ReleaseAllFor on deletion.
 //   - Plugin side: ReserveBulk on instance start; ReleaseAllFor on instance stop.
 type Registry struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	owners map[string]Source // dot-name → owning Source
 }
 
@@ -98,8 +98,8 @@ func (r *Registry) ReserveBulk(entries []Reservation) error {
 
 // Lookup returns the Source that currently owns dotName, and whether it exists.
 func (r *Registry) Lookup(dotName string) (Source, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	src, ok := r.owners[dotName]
 	return src, ok
@@ -108,8 +108,8 @@ func (r *Registry) Lookup(dotName string) (Source, bool) {
 // Snapshot returns a shallow copy of the current ownership map. Intended for
 // use in tests to assert arbiter state without holding the lock.
 func (r *Registry) Snapshot() map[string]Source {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	out := make(map[string]Source, len(r.owners))
 	for k, v := range r.owners {
