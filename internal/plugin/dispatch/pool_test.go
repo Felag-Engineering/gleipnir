@@ -259,12 +259,16 @@ func TestPool_CancelRun(t *testing.T) {
 	// cancelledIDs receives the call_id from each Cancel RPC.
 	cancelledIDs := make(chan string, numCalls)
 
+	// arrived signals when a Call has entered the server hook (i.e. is in-flight).
+	arrived := make(chan struct{}, numCalls)
+
 	// unblockCh is used by the Call hook to wait until explicitly unblocked.
 	// We close it to release all blocked calls at once.
 	unblockCh := make(chan struct{})
 
 	srv := &fakeToolServer{
 		callHook: func(ctx context.Context, req *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			arrived <- struct{}{}
 			// Block until either the gRPC context is cancelled (conn close or deadline)
 			// or we're explicitly unblocked.
 			select {
@@ -302,7 +306,16 @@ func TestPool_CancelRun(t *testing.T) {
 		}()
 	}
 
-	time.Sleep(50 * time.Millisecond) // let calls establish in the server
+	// Wait until all calls have reached the server hook before calling CancelRun.
+	// This prevents the race where CancelRun fires before the pool has registered
+	// the in-flight calls and snapshotInflightForRun returns empty.
+	for i := 0; i < numCalls; i++ {
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("call %d did not arrive at server", i+1)
+		}
+	}
 
 	pool.CancelRun("run-cancel")
 
@@ -340,6 +353,9 @@ func TestPool_Semaphore(t *testing.T) {
 	var mu sync.Mutex
 	var liveCount, maxSeen int
 
+	// arrived signals when a call enters the hook (consuming a concurrency slot).
+	arrived := make(chan struct{}, total)
+
 	srv := &fakeToolServer{
 		callHook: func(ctx context.Context, _ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
 			mu.Lock()
@@ -348,6 +364,7 @@ func TestPool_Semaphore(t *testing.T) {
 				maxSeen = liveCount
 			}
 			mu.Unlock()
+			arrived <- struct{}{}
 			defer func() { mu.Lock(); liveCount--; mu.Unlock() }()
 
 			select {
@@ -374,7 +391,16 @@ func TestPool_Semaphore(t *testing.T) {
 		}()
 	}
 
-	time.Sleep(40 * time.Millisecond) // let goroutines settle
+	// Wait until maxConc calls are actively executing inside the server hook.
+	// The remaining (total - maxConc) calls are queued and have not entered the
+	// hook yet, so checking liveCount at this point gives a clean assertion.
+	for i := 0; i < maxConc; i++ {
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("call %d did not arrive at server", i+1)
+		}
+	}
 
 	mu.Lock()
 	if liveCount > maxConc {
@@ -397,8 +423,14 @@ func TestPool_Semaphore(t *testing.T) {
 // are taken, a third call is rejected with ErrQueueFull immediately.
 func TestPool_QueueFull(t *testing.T) {
 	unblock := make(chan struct{})
+
+	// arrived signals when the in-flight call has entered the server hook
+	// (i.e. the semaphore slot is consumed).
+	arrived := make(chan struct{}, 1)
+
 	srv := &fakeToolServer{
 		callHook: func(ctx context.Context, _ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			arrived <- struct{}{}
 			select {
 			case <-unblock:
 				return &toolv1.CallResponse{}, nil
@@ -423,7 +455,19 @@ func TestPool_QueueFull(t *testing.T) {
 			pool.Call(context.Background(), "run-qf", "pol-1", "inst", "tool", `{}`) //nolint:errcheck
 		}()
 	}
-	time.Sleep(30 * time.Millisecond) // ensure both above calls are in-flight/queued
+
+	// Wait until the in-flight call has reached the server and the queue slot is
+	// consumed. At this point a third call must be rejected with ErrQueueFull.
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight call did not arrive at server")
+	}
+	// Give the second goroutine time to enter the queue. It does not reach the
+	// server hook (semaphore is full), so we cannot observe it via arrived.
+	// A brief runtime yield is sufficient: the goroutine is already scheduled
+	// and only needs to acquire the semaphore queue slot (not contact the server).
+	time.Sleep(5 * time.Millisecond)
 
 	_, _, err := pool.Call(context.Background(), "run-qf", "pol-1", "inst", "tool", `{}`)
 	if !errors.Is(err, dispatch.ErrQueueFull) {
@@ -445,8 +489,14 @@ func TestPool_QueueFull(t *testing.T) {
 // ctx while a call is waiting for a semaphore slot exits with ctx.Err().
 func TestPool_ParentCtxCancelledWhileQueued(t *testing.T) {
 	unblock := make(chan struct{})
+
+	// firstArrived signals when the first call has reached the server hook and
+	// is holding the only concurrency slot.
+	firstArrived := make(chan struct{}, 1)
+
 	srv := &fakeToolServer{
 		callHook: func(ctx context.Context, _ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			firstArrived <- struct{}{}
 			select {
 			case <-unblock:
 				return &toolv1.CallResponse{}, nil
@@ -472,7 +522,13 @@ func TestPool_ParentCtxCancelledWhileQueued(t *testing.T) {
 		defer wg.Done()
 		pool.Call(context.Background(), "run-ctxq", "pol-1", "inst", "tool", `{}`) //nolint:errcheck
 	}()
-	time.Sleep(10 * time.Millisecond)
+
+	// Wait until the first call is inside the server hook (semaphore slot consumed).
+	select {
+	case <-firstArrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first call did not reach server")
+	}
 
 	// Second call queues; cancel its context.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -482,7 +538,9 @@ func TestPool_ParentCtxCancelledWhileQueued(t *testing.T) {
 		defer wg.Done()
 		_, _, queuedErr = pool.Call(ctx, "run-ctxq", "pol-1", "inst", "tool", `{}`)
 	}()
-	time.Sleep(10 * time.Millisecond)
+	// Give the second goroutine time to enter the queue before we cancel.
+	// It does not reach the server (slot is taken), so a brief yield suffices.
+	time.Sleep(5 * time.Millisecond)
 	cancel()
 
 	done := make(chan struct{})
@@ -520,8 +578,12 @@ func TestPool_ErrorClassification_DeadlineExceeded_ParentHealthy(t *testing.T) {
 // TestPool_ErrorClassification_Canceled_ParentCancelled verifies that
 // codes.Canceled after the parent ctx is cancelled propagates ctx.Err().
 func TestPool_ErrorClassification_Canceled_ParentCancelled(t *testing.T) {
+	// arrived signals when the call has entered the server hook.
+	arrived := make(chan struct{}, 1)
+
 	srv := &fakeToolServer{
 		callHook: func(ctx context.Context, _ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			arrived <- struct{}{}
 			<-ctx.Done()
 			return nil, status.Error(codes.Canceled, "cancelled")
 		},
@@ -539,7 +601,13 @@ func TestPool_ErrorClassification_Canceled_ParentCancelled(t *testing.T) {
 		defer wg.Done()
 		_, _, callErr = pool.Call(ctx, "run-ec2", "pol-1", "inst", "tool", `{}`)
 	}()
-	time.Sleep(10 * time.Millisecond)
+
+	// Wait until the call is inside the server hook before cancelling the context.
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("call did not reach server before cancel")
+	}
 	cancel()
 
 	done := make(chan struct{})

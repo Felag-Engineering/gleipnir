@@ -422,9 +422,6 @@ func TestStart_EnvInjected(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Give the subprocess time to write the env lines before we stop it.
-	time.Sleep(500 * time.Millisecond)
-
 	stopCtx, stopCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer stopCancel()
 	if err := inst.Stop(stopCtx); err != nil {
@@ -432,6 +429,8 @@ func TestStart_EnvInjected(t *testing.T) {
 	}
 
 	// Wait for done so the log pipe has fully flushed all buffered lines.
+	// waitForExit blocks on the stderrDone channel before closing doneCh, so
+	// when Done() fires all stderr has already been written to the capture logger.
 	select {
 	case <-inst.Done():
 	case <-time.After(10 * time.Second):
@@ -469,9 +468,6 @@ func TestStart_TokenInjectedIntoEnv(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Give the subprocess time to write the env line before we stop it.
-	time.Sleep(500 * time.Millisecond)
-
 	stopCtx, stopCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer stopCancel()
 	if err := inst.Stop(stopCtx); err != nil {
@@ -479,6 +475,8 @@ func TestStart_TokenInjectedIntoEnv(t *testing.T) {
 	}
 
 	// Wait for done so the log pipe has fully flushed all buffered lines.
+	// waitForExit blocks on the stderrDone channel before closing doneCh, so
+	// when Done() fires all stderr has already been written to the capture logger.
 	select {
 	case <-inst.Done():
 	case <-time.After(10 * time.Second):
