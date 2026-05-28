@@ -142,6 +142,15 @@ func (q *Queries) DeletePluginInstance(ctx context.Context, id string) (int64, e
 	return result.RowsAffected()
 }
 
+const deletePluginPendingManifest = `-- name: DeletePluginPendingManifest :exec
+DELETE FROM plugin_pending_manifests WHERE plugin_id = ?1
+`
+
+func (q *Queries) DeletePluginPendingManifest(ctx context.Context, pluginID string) error {
+	_, err := q.db.ExecContext(ctx, deletePluginPendingManifest, pluginID)
+	return err
+}
+
 const getPluginByID = `-- name: GetPluginByID :one
 SELECT id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, binary_path, version, created_at, updated_at FROM plugins WHERE id = ?1
 `
@@ -269,6 +278,24 @@ func (q *Queries) GetPluginInstanceByName(ctx context.Context, arg GetPluginInst
 		&i.HealthDetail,
 		&i.LastOauthCallbackUrl,
 		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getPluginPendingManifest = `-- name: GetPluginPendingManifest :one
+SELECT plugin_id, candidate_manifest, old_version, new_version, created_at, updated_at FROM plugin_pending_manifests WHERE plugin_id = ?1
+`
+
+func (q *Queries) GetPluginPendingManifest(ctx context.Context, pluginID string) (PluginPendingManifest, error) {
+	row := q.db.QueryRowContext(ctx, getPluginPendingManifest, pluginID)
+	var i PluginPendingManifest
+	err := row.Scan(
+		&i.PluginID,
+		&i.CandidateManifest,
+		&i.OldVersion,
+		&i.NewVersion,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -850,4 +877,39 @@ func (q *Queries) UpdatePluginTrustedPubkey(ctx context.Context, arg UpdatePlugi
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const upsertPluginPendingManifest = `-- name: UpsertPluginPendingManifest :exec
+INSERT INTO plugin_pending_manifests (plugin_id, candidate_manifest, old_version, new_version, created_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+ON CONFLICT(plugin_id) DO UPDATE SET
+    candidate_manifest = excluded.candidate_manifest,
+    old_version        = excluded.old_version,
+    new_version        = excluded.new_version,
+    updated_at         = excluded.updated_at
+`
+
+type UpsertPluginPendingManifestParams struct {
+	PluginID          string `json:"plugin_id"`
+	CandidateManifest string `json:"candidate_manifest"`
+	OldVersion        string `json:"old_version"`
+	NewVersion        string `json:"new_version"`
+	CreatedAt         string `json:"created_at"`
+	UpdatedAt         string `json:"updated_at"`
+}
+
+// UpsertPluginPendingManifest inserts or replaces the pending candidate manifest
+// for a plugin. ON CONFLICT(plugin_id) updates the candidate bytes and versions
+// so a second material change before the admin accepts simply overwrites the
+// previous candidate rather than accumulating rows.
+func (q *Queries) UpsertPluginPendingManifest(ctx context.Context, arg UpsertPluginPendingManifestParams) error {
+	_, err := q.db.ExecContext(ctx, upsertPluginPendingManifest,
+		arg.PluginID,
+		arg.CandidateManifest,
+		arg.OldVersion,
+		arg.NewVersion,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
 }

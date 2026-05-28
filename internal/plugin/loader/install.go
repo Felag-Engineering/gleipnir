@@ -498,8 +498,10 @@ func (in *Installer) handlePubkeyMismatch(ctx context.Context, existing db.Plugi
 
 // handleManifestMaterialChange blocks the manifest update and transitions all
 // eligible instances to pending_manifest_approval. The candidate manifest is
-// persisted in the audit-event payload (as base64) rather than the plugins row;
-// the running generation continues serving the existing snapshot until an admin
+// persisted in the plugin_pending_manifests table as an indexed point-read so
+// AcceptManifest can retrieve it directly without scanning the audit log; the
+// audit event is still written as the operator-visible signal of the change.
+// The running generation continues serving the existing snapshot until an admin
 // calls POST /api/v1/admin/plugins/{id}/accept-manifest.
 //
 // oldManifest is the already-parsed existing snapshot — passed in to avoid a
@@ -525,6 +527,23 @@ func (in *Installer) handleManifestMaterialChange(ctx context.Context, existing 
 	}); err != nil {
 		return "", fmt.Errorf("record manifest_material_change audit for %q: %w", existing.Name, err)
 	}
+
+	// Persist the candidate bytes directly so AcceptManifest can do a single
+	// indexed point-read instead of scanning the audit-event log. The bytes are
+	// stored raw (not base64) because base64 was only needed for the JSON payload.
+	// ON CONFLICT DO UPDATE means a second material change before accept simply
+	// overwrites the previous candidate.
+	if err := in.q.UpsertPluginPendingManifest(ctx, db.UpsertPluginPendingManifestParams{
+		PluginID:          existing.ID,
+		CandidateManifest: string(candidateBytes),
+		OldVersion:        existing.PluginVersion,
+		NewVersion:        m.Version,
+		CreatedAt:         nowStr,
+		UpdatedAt:         nowStr,
+	}); err != nil {
+		return "", fmt.Errorf("upsert pending manifest for %q: %w", existing.Name, err)
+	}
+
 	return existing.ID, nil
 }
 

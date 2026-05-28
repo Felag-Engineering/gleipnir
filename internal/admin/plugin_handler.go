@@ -82,8 +82,10 @@ type PluginQuerier interface {
 	UpdatePluginInstanceHealth(ctx context.Context, arg db.UpdatePluginInstanceHealthParams) (int64, error)
 	// Audit write (used by AcceptNewKey to record the key rotation).
 	InsertPluginAuditEvent(ctx context.Context, arg db.InsertPluginAuditEventParams) (db.PluginAuditEvent, error)
-	// Audit read (used by AcceptManifest to find the pending candidate).
-	ListPluginAuditEventsByType(ctx context.Context, arg db.ListPluginAuditEventsByTypeParams) ([]db.PluginAuditEvent, error)
+	// Pending manifest read (used by AcceptManifest to retrieve the candidate).
+	GetPluginPendingManifest(ctx context.Context, pluginID string) (db.PluginPendingManifest, error)
+	// Pending manifest delete (best-effort cleanup after AcceptManifest commits).
+	DeletePluginPendingManifest(ctx context.Context, pluginID string) error
 	// Plugin manifest write (used by AcceptManifest to commit the candidate snapshot).
 	UpdatePluginManifest(ctx context.Context, arg db.UpdatePluginManifestParams) (int64, error)
 	// Instance subscription scope write (used by PutSubscriptionScope).
@@ -515,9 +517,9 @@ type acceptManifestResponse struct {
 }
 
 // AcceptManifest handles POST /api/v1/admin/plugins/{id}/accept-manifest.
-// It commits the candidate manifest (stored in the most recent
-// plugin_manifest_material_change audit event) as the new snapshot, then
-// transitions instances out of pending_manifest_approval.
+// It commits the candidate manifest (stored in the plugin_pending_manifests
+// table by handleManifestMaterialChange) as the new snapshot, then transitions
+// instances out of pending_manifest_approval.
 //
 // Instances with no newly-required config fields move to healthy.
 // Instances for which new required config fields appear move to pending_config_migration.
@@ -535,13 +537,7 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidatePayload, err := h.findCandidateManifestEvent(ctx, pluginID)
-	if err != nil {
-		writeCandidateError(w, err)
-		return
-	}
-
-	candidateBytes, newManifest, err := decodeCandidateManifest(candidatePayload)
+	pendingRow, candidateBytes, newManifest, err := h.loadPendingManifest(ctx, pluginID)
 	if err != nil {
 		writeCandidateError(w, err)
 		return
@@ -577,6 +573,14 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Best-effort: delete the pending-manifest row now that the candidate is committed.
+	// We do not fail the request on error because the snapshot is already in plugins.manifest_snapshot.
+	// A leftover row is harmless: the next material change will overwrite it via the upsert.
+	if delErr := h.q.DeletePluginPendingManifest(ctx, pluginID); delErr != nil {
+		slog.WarnContext(ctx, "accept-manifest: delete pending manifest row failed",
+			"plugin_id", pluginID, "err", delErr)
+	}
+
 	targetState := model.PluginHealthStateHealthy
 	if len(newlyRequired) > 0 {
 		targetState = model.PluginHealthStatePendingConfigMigration
@@ -595,11 +599,10 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 		pendingConfig = transitioned
 	}
 
-	oldVersion, _ := candidatePayload["old_version"].(string)
 	h.writeAuditEvent(ctx, auditManifestAccepted, "info", nowStr, map[string]any{
 		"plugin_id":                pluginID,
 		"name":                     plugin.Name,
-		"old_version":              oldVersion,
+		"old_version":              pendingRow.OldVersion,
 		"new_version":              newManifest.Version,
 		"instances_unblocked":      unblocked,
 		"instances_pending_config": pendingConfig,
@@ -635,65 +638,35 @@ func writeCandidateError(w http.ResponseWriter, err error) {
 	httputil.WriteError(w, http.StatusInternalServerError, err.Error(), "")
 }
 
-// findCandidateManifestEvent scans the most recent material-change audit events
-// for one matching pluginID. plugin_audit_events has no plugin_id column, so
-// filtering happens in Go.
-// TODO(v2): add a plugin-scoped query to avoid this in-Go filter on busy installs.
-func (h *PluginHandler) findCandidateManifestEvent(ctx context.Context, pluginID string) (map[string]any, error) {
-	events, err := h.q.ListPluginAuditEventsByType(ctx, db.ListPluginAuditEventsByTypeParams{
-		EventType: auditManifestMaterialChange,
-		Offset:    0,
-		Limit:     200,
-	})
+// loadPendingManifest retrieves the pending candidate manifest for pluginID from
+// the plugin_pending_manifests table. Returns the DB row, the raw manifest bytes,
+// and the parsed manifest. Maps sql.ErrNoRows to 409 (no pending change) so the
+// caller can surface the right status without re-checking the error type.
+func (h *PluginHandler) loadPendingManifest(ctx context.Context, pluginID string) (db.PluginPendingManifest, []byte, sdkmanifest.Manifest, error) {
+	row, err := h.q.GetPluginPendingManifest(ctx, pluginID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return db.PluginPendingManifest{}, nil, sdkmanifest.Manifest{}, &candidateLookupError{
+			status: http.StatusConflict,
+			msg:    "no pending manifest change found for this plugin",
+		}
+	}
 	if err != nil {
-		return nil, &candidateLookupError{
+		return db.PluginPendingManifest{}, nil, sdkmanifest.Manifest{}, &candidateLookupError{
 			status: http.StatusInternalServerError,
-			msg:    "failed to list audit events",
+			msg:    "failed to load pending manifest",
 		}
 	}
 
-	// Events are ordered DESC by created_at; first match for this plugin is newest.
-	for i := range events {
-		var payload map[string]any
-		if jsonErr := json.Unmarshal([]byte(events[i].PayloadJson), &payload); jsonErr != nil {
-			continue
-		}
-		if payload["plugin_id"] == pluginID {
-			return payload, nil
-		}
-	}
-	return nil, &candidateLookupError{
-		status: http.StatusConflict,
-		msg:    "no pending manifest change found for this plugin",
-	}
-}
-
-// decodeCandidateManifest extracts and parses the candidate manifest from the
-// audit event payload.
-func decodeCandidateManifest(payload map[string]any) ([]byte, sdkmanifest.Manifest, error) {
-	candidateB64, _ := payload["candidate_manifest_b64"].(string)
-	if candidateB64 == "" {
-		return nil, sdkmanifest.Manifest{}, &candidateLookupError{
-			status: http.StatusUnprocessableEntity,
-			msg:    "candidate manifest not found in audit event",
-		}
-	}
-	candidateBytes, err := base64.StdEncoding.DecodeString(candidateB64)
-	if err != nil {
-		return nil, sdkmanifest.Manifest{}, &candidateLookupError{
-			status: http.StatusUnprocessableEntity,
-			msg:    "candidate manifest: invalid base64",
-		}
-	}
+	candidateBytes := []byte(row.CandidateManifest)
 	var m sdkmanifest.Manifest
 	if parseErr := sdkmanifest.Unmarshal(candidateBytes, &m); parseErr != nil {
-		return nil, sdkmanifest.Manifest{}, &candidateLookupError{
+		return db.PluginPendingManifest{}, nil, sdkmanifest.Manifest{}, &candidateLookupError{
 			status: http.StatusUnprocessableEntity,
 			msg:    "candidate manifest: parse failed",
 			detail: parseErr.Error(),
 		}
 	}
-	return candidateBytes, m, nil
+	return row, candidateBytes, m, nil
 }
 
 // putSubscriptionScopeRequest is the JSON body for

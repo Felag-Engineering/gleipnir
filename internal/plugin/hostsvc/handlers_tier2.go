@@ -2,7 +2,6 @@ package hostsvc
 
 import (
 	"context"
-	"sort"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -76,33 +75,24 @@ func (s *Server) RunHistoryRead(ctx context.Context, req *hostv1.RunHistoryReadR
 		limit = 100
 	}
 
-	// Fetch per-policy rows and merge them. Because each SQL call returns rows
-	// ordered by created_at DESC, we merge all slices and sort once at the end.
-	// Worst case: len(scopedIDs)*100 rows in memory before truncation.
-	var merged []db.ListRunsByPolicyRow
-	for _, policyID := range scopedIDs {
-		rows, err := s.q.ListRunsByPolicy(ctx, db.ListRunsByPolicyParams{
-			PolicyID: policyID,
-			Limit:    limit,
-		})
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "list runs for policy %s: %v", policyID, err)
-		}
-		merged = append(merged, rows...)
+	// Guard against empty scope: ListRunsByPolicies with zero IDs would hit
+	// IN (NULL) which is valid SQL but pointless; skip the DB roundtrip.
+	if len(scopedIDs) == 0 {
+		return &hostv1.RunHistoryReadResponse{Runs: nil}, nil
 	}
 
-	// Sort merged results by created_at DESC, matching the SQL ORDER BY.
-	// RFC3339 strings sort lexicographically so string comparison is correct.
-	sort.Slice(merged, func(i, j int) bool {
-		return merged[i].CreatedAt > merged[j].CreatedAt
+	// Single query across all scoped policies; ORDER BY created_at DESC LIMIT
+	// in SQL means no Go-side sort or truncation needed.
+	rows, err := s.q.ListRunsByPolicies(ctx, db.ListRunsByPoliciesParams{
+		PolicyIds: scopedIDs,
+		Limit:     limit,
 	})
-
-	if int64(len(merged)) > limit {
-		merged = merged[:limit]
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list runs: %v", err)
 	}
 
-	summaries := make([]*hostv1.RunSummary, 0, len(merged))
-	for _, r := range merged {
+	summaries := make([]*hostv1.RunSummary, 0, len(rows))
+	for _, r := range rows {
 		finishedAt := ""
 		if r.CompletedAt != nil {
 			finishedAt = *r.CompletedAt

@@ -133,6 +133,15 @@ type PluginOauthNonce struct {
 	CreatedAt  string `json:"created_at"`
 }
 
+type PluginPendingManifest struct {
+	PluginID          string `json:"plugin_id"`
+	CandidateManifest string `json:"candidate_manifest"`
+	OldVersion        string `json:"old_version"`
+	NewVersion        string `json:"new_version"`
+	CreatedAt         string `json:"created_at"`
+	UpdatedAt         string `json:"updated_at"`
+}
+
 type PluginPendingRequest struct {
 	ID               string  `json:"id"`
 	PluginInstanceID string  `json:"plugin_instance_id"`

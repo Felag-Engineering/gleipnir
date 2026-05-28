@@ -31,5 +31,6 @@ func All() []Migration {
 		&AddPendingReauthorizeHealthState{},
 		&AddPluginBinaryPath{},
 		&AddInactiveHealthState{},
+		&AddPluginPendingManifests{},
 	}
 }

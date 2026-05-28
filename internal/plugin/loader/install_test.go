@@ -1232,6 +1232,103 @@ func TestInstall_HotReload_MaterialChange_EmitsHighSeverityAuditEvent(t *testing
 	}
 }
 
+// TestInstall_HotReload_MaterialChange_UpsertsPendingManifest verifies that a
+// material manifest change writes a plugin_pending_manifests row with the raw
+// candidate bytes and the correct old/new versions.
+func TestInstall_HotReload_MaterialChange_UpsertsPendingManifest(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	v1Manifest := []byte("schema_version: v1\nname: pending-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath1 := buildSignedTarWithContent(t, "pending-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1: %v", err)
+	}
+
+	v2Manifest := []byte("schema_version: v1\nname: pending-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath2 := buildSignedTarWithContent(t, "pending-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v2 (material change): %v", err)
+	}
+
+	plugin, err := q.GetPluginByName(context.Background(), "pending-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+
+	row, err := q.GetPluginPendingManifest(context.Background(), plugin.ID)
+	if err != nil {
+		t.Fatalf("GetPluginPendingManifest: %v", err)
+	}
+	// Candidate bytes stored raw, not base64.
+	if string(v2Manifest) != row.CandidateManifest {
+		t.Errorf("candidate_manifest = %q, want raw v2 bytes", row.CandidateManifest)
+	}
+	if row.OldVersion != "1.0.0" {
+		t.Errorf("old_version = %q, want 1.0.0", row.OldVersion)
+	}
+	if row.NewVersion != "2.0.0" {
+		t.Errorf("new_version = %q, want 2.0.0", row.NewVersion)
+	}
+}
+
+// TestInstall_HotReload_MaterialChange_SecondChangeOverwritesPendingRow verifies
+// that a second material change overwrites the pending row via ON CONFLICT DO UPDATE
+// (upsert semantics) rather than inserting a second row.
+func TestInstall_HotReload_MaterialChange_SecondChangeOverwritesPendingRow(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	pk, sk, err := signing.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	pubkeyBytes := signing.MarshalPublicKey(pk, "test key")
+
+	v1Manifest := []byte("schema_version: v1\nname: overwrite-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath1 := buildSignedTarWithContent(t, "overwrite-plugin", v1Manifest, []byte("binary v1"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1: %v", err)
+	}
+
+	// First material change (v1 → v2).
+	v2Manifest := []byte("schema_version: v1\nname: overwrite-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath2 := buildSignedTarWithContent(t, "overwrite-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v2: %v", err)
+	}
+
+	// Second material change (v1 → v3, reading existing.PluginVersion from the plugins row, not the pending-manifest row).
+	v3Manifest := []byte("schema_version: v1\nname: overwrite-plugin\nversion: 3.0.0\nservices:\n  tool: v3\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath3 := buildSignedTarWithContent(t, "overwrite-plugin", v3Manifest, []byte("binary v3"), pubkeyBytes, sk.SecretKey, sk.KeyID)
+	if _, err := inst.Install(context.Background(), tarPath3); err != nil {
+		t.Fatalf("Install v3: %v", err)
+	}
+
+	plugin, err := q.GetPluginByName(context.Background(), "overwrite-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+
+	// Only one pending row must exist — the second install overwrites the first.
+	row, err := q.GetPluginPendingManifest(context.Background(), plugin.ID)
+	if err != nil {
+		t.Fatalf("GetPluginPendingManifest after two changes: %v", err)
+	}
+	if row.NewVersion != "3.0.0" {
+		t.Errorf("new_version = %q, want 3.0.0 (second change must overwrite first)", row.NewVersion)
+	}
+	if string(v3Manifest) != row.CandidateManifest {
+		t.Errorf("candidate_manifest does not contain v3 bytes")
+	}
+}
+
 // TestInstall_HotReload_MaterialChange_NewlyRequiredConfigField_PayloadIncludesField
 // verifies that the audit event payload includes newly-required config fields when
 // the new manifest's config_schema gains a required property.

@@ -76,6 +76,11 @@ type fakeQuerier struct {
 	runsByPolicy    map[string][]db.ListRunsByPolicyRow
 	runsByPolicyErr error
 
+	// runsByPoliciesCalls counts ListRunsByPolicies invocations.
+	runsByPoliciesCalls int
+	runsByPoliciesRows  []db.ListRunsByPoliciesRow
+	runsByPoliciesErr   error
+
 	allUsersWithRoles    []db.ListAllActiveUsersWithRolesRow
 	allUsersWithRolesErr error
 
@@ -160,6 +165,21 @@ func (f *fakeQuerier) ListActiveUsersByRole(_ context.Context, _ string) ([]db.L
 
 func (f *fakeQuerier) GetPluginPendingRequest(_ context.Context, _ string) (db.PluginPendingRequest, error) {
 	return f.pluginPendingRequest, f.pluginPendingRequestErr
+}
+
+func (f *fakeQuerier) ListRunsByPolicies(_ context.Context, arg db.ListRunsByPoliciesParams) ([]db.ListRunsByPoliciesRow, error) {
+	f.mu.Lock()
+	f.runsByPoliciesCalls++
+	f.mu.Unlock()
+	if f.runsByPoliciesErr != nil {
+		return nil, f.runsByPoliciesErr
+	}
+	rows := f.runsByPoliciesRows
+	// Respect the SQL LIMIT.
+	if arg.Limit > 0 && int64(len(rows)) > arg.Limit {
+		rows = rows[:arg.Limit]
+	}
+	return rows, nil
 }
 
 // compile-time check
@@ -2000,10 +2020,8 @@ func TestRunHistoryRead_ScopedPolicyMatch(t *testing.T) {
 		policies: []db.Policy{
 			{ID: "pol-mine", Yaml: policyYAMLWithTool("myplugin.do_thing")},
 		},
-		runsByPolicy: map[string][]db.ListRunsByPolicyRow{
-			"pol-mine": {
-				{ID: "run-1", PolicyID: "pol-mine", Status: "complete", StartedAt: "2024-06-01T10:00:00Z", CompletedAt: &completedAt, CreatedAt: "2024-06-01T09:55:00Z"},
-			},
+		runsByPoliciesRows: []db.ListRunsByPoliciesRow{
+			{ID: "run-1", PolicyID: "pol-mine", Status: "complete", StartedAt: "2024-06-01T10:00:00Z", CompletedAt: &completedAt, CreatedAt: "2024-06-01T09:55:00Z"},
 		},
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
@@ -2030,9 +2048,9 @@ func TestRunHistoryRead_SubscribedScoping(t *testing.T) {
 	startedAt := "2024-06-01T10:00:00Z"
 	createdAt := "2024-06-01T09:55:00Z"
 
-	// makeRun produces a single ListRunsByPolicyRow for the given policy ID.
-	makeRun := func(runID, policyID string) db.ListRunsByPolicyRow {
-		return db.ListRunsByPolicyRow{
+	// makeRun produces a single ListRunsByPoliciesRow for the given policy ID.
+	makeRun := func(runID, policyID string) db.ListRunsByPoliciesRow {
+		return db.ListRunsByPoliciesRow{
 			ID:        runID,
 			PolicyID:  policyID,
 			Status:    "complete",
@@ -2083,15 +2101,18 @@ capabilities:
 			t.Parallel()
 
 			policyID := "pol-1"
+			// Only seed a run when the policy is expected to be in scope.
+			var policiesRows []db.ListRunsByPoliciesRow
+			if tc.wantRuns > 0 {
+				policiesRows = []db.ListRunsByPoliciesRow{makeRun("run-1", policyID)}
+			}
 			q := &fakeQuerier{
 				instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
 				plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("run_history_read")},
 				policies: []db.Policy{
 					{ID: policyID, Yaml: tc.policyYAML},
 				},
-				runsByPolicy: map[string][]db.ListRunsByPolicyRow{
-					policyID: {makeRun("run-1", policyID)},
-				},
+				runsByPoliciesRows: policiesRows,
 			}
 			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
 
@@ -2115,8 +2136,8 @@ func TestRunHistoryRead_RequestedPolicyNotInScope(t *testing.T) {
 		policies: []db.Policy{
 			{ID: "pol-mine", Yaml: policyYAMLWithTool("myplugin.do_thing")},
 		},
-		runsByPolicy: map[string][]db.ListRunsByPolicyRow{
-			"pol-mine": {{ID: "run-1", PolicyID: "pol-mine", Status: "complete", StartedAt: "2024-06-01T00:00:00Z", CreatedAt: "2024-06-01T00:00:00Z"}},
+		runsByPoliciesRows: []db.ListRunsByPoliciesRow{
+			{ID: "run-1", PolicyID: "pol-mine", Status: "complete", StartedAt: "2024-06-01T00:00:00Z", CreatedAt: "2024-06-01T00:00:00Z"},
 		},
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
@@ -2137,9 +2158,9 @@ func TestRunHistoryRead_LimitClamping(t *testing.T) {
 	t.Parallel()
 
 	// Build 150 rows for the scoped policy.
-	rows := make([]db.ListRunsByPolicyRow, 150)
+	rows := make([]db.ListRunsByPoliciesRow, 150)
 	for i := range rows {
-		rows[i] = db.ListRunsByPolicyRow{
+		rows[i] = db.ListRunsByPoliciesRow{
 			ID:        fmt.Sprintf("run-%03d", i),
 			PolicyID:  "pol-mine",
 			Status:    "complete",
@@ -2152,9 +2173,7 @@ func TestRunHistoryRead_LimitClamping(t *testing.T) {
 		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
 		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("run_history_read")},
 		policies: []db.Policy{{ID: "pol-mine", Yaml: policyYAMLWithTool("myplugin.do_thing")}},
-		runsByPolicy: map[string][]db.ListRunsByPolicyRow{
-			"pol-mine": rows,
-		},
+		runsByPoliciesRows: rows,
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
 
@@ -2189,7 +2208,7 @@ func TestRunHistoryRead_MergeOrderAcrossPolicies(t *testing.T) {
 	t.Parallel()
 
 	// Two policies with runs whose created_at order differs from started_at order.
-	// This verifies the merge sorts by created_at (not started_at).
+	// SQL ORDER BY created_at DESC returns the correct order in a single query.
 	//
 	// created_at order (newest-first): run-b1 > run-a2 > run-a1
 	// started_at order (newest-first): run-a2 > run-b1 > run-a1  (differs!)
@@ -2200,14 +2219,11 @@ func TestRunHistoryRead_MergeOrderAcrossPolicies(t *testing.T) {
 			{ID: "pol-a", Yaml: policyYAMLWithTool("myplugin.tool_a")},
 			{ID: "pol-b", Yaml: policyYAMLWithTool("myplugin.tool_b")},
 		},
-		runsByPolicy: map[string][]db.ListRunsByPolicyRow{
-			"pol-a": {
-				{ID: "run-a2", PolicyID: "pol-a", Status: "complete", StartedAt: "2024-06-03T00:00:00Z", CreatedAt: "2024-06-02T12:00:00Z"},
-				{ID: "run-a1", PolicyID: "pol-a", Status: "complete", StartedAt: "2024-06-01T00:00:00Z", CreatedAt: "2024-06-01T00:00:00Z"},
-			},
-			"pol-b": {
-				{ID: "run-b1", PolicyID: "pol-b", Status: "complete", StartedAt: "2024-06-02T00:00:00Z", CreatedAt: "2024-06-03T00:00:00Z"},
-			},
+		// SQL returns the merged result pre-sorted by created_at DESC.
+		runsByPoliciesRows: []db.ListRunsByPoliciesRow{
+			{ID: "run-b1", PolicyID: "pol-b", Status: "complete", StartedAt: "2024-06-02T00:00:00Z", CreatedAt: "2024-06-03T00:00:00Z"},
+			{ID: "run-a2", PolicyID: "pol-a", Status: "complete", StartedAt: "2024-06-03T00:00:00Z", CreatedAt: "2024-06-02T12:00:00Z"},
+			{ID: "run-a1", PolicyID: "pol-a", Status: "complete", StartedAt: "2024-06-01T00:00:00Z", CreatedAt: "2024-06-01T00:00:00Z"},
 		},
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
@@ -2220,12 +2236,69 @@ func TestRunHistoryRead_MergeOrderAcrossPolicies(t *testing.T) {
 		t.Fatalf("runs = %d, want 3", len(resp.GetRuns()))
 	}
 	// Expect order by created_at DESC: run-b1 (Jun 3), run-a2 (Jun 2 noon), run-a1 (Jun 1).
-	// If the merge sorted by started_at instead, the order would be run-a2, run-b1, run-a1 — wrong.
 	want := []string{"run-b1", "run-a2", "run-a1"}
 	for i, r := range resp.GetRuns() {
 		if r.GetRunId() != want[i] {
-			t.Errorf("runs[%d].run_id = %q, want %q (merge must sort by created_at, not started_at)", i, r.GetRunId(), want[i])
+			t.Errorf("runs[%d].run_id = %q, want %q (SQL sorts by created_at DESC)", i, r.GetRunId(), want[i])
 		}
+	}
+}
+
+// TestRunHistoryRead_SingleQueryForMultiPolicy asserts that RunHistoryRead issues
+// exactly one ListRunsByPolicies call regardless of how many policies are in scope,
+// replacing the old N+1 per-policy loop.
+func TestRunHistoryRead_SingleQueryForMultiPolicy(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("run_history_read")},
+		policies: []db.Policy{
+			{ID: "pol-a", Yaml: policyYAMLWithTool("myplugin.tool_a")},
+			{ID: "pol-b", Yaml: policyYAMLWithTool("myplugin.tool_b")},
+			{ID: "pol-c", Yaml: policyYAMLWithTool("myplugin.tool_c")},
+		},
+		runsByPoliciesRows: []db.ListRunsByPoliciesRow{
+			{ID: "run-1", PolicyID: "pol-a", Status: "complete", StartedAt: "2024-06-01T00:00:00Z", CreatedAt: "2024-06-01T00:00:00Z"},
+		},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	resp, err := srv.RunHistoryRead(context.Background(), &hostv1.RunHistoryReadRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.GetRuns()) != 1 {
+		t.Errorf("runs = %d, want 1", len(resp.GetRuns()))
+	}
+	// Exactly one DB call for three scoped policies — not three.
+	if q.runsByPoliciesCalls != 1 {
+		t.Errorf("ListRunsByPolicies calls = %d, want 1 (must not N+1)", q.runsByPoliciesCalls)
+	}
+}
+
+// TestRunHistoryRead_ZeroScopedPoliciesSkipsDB asserts that when no policies are
+// in scope the early-return fires before touching the database.
+func TestRunHistoryRead_ZeroScopedPoliciesSkipsDB(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("run_history_read")},
+		// No policies in the list — scopedIDs will be empty.
+		policies: []db.Policy{},
+	}
+	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+	resp, err := srv.RunHistoryRead(context.Background(), &hostv1.RunHistoryReadRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.GetRuns()) != 0 {
+		t.Errorf("runs = %d, want 0", len(resp.GetRuns()))
+	}
+	if q.runsByPoliciesCalls != 0 {
+		t.Errorf("ListRunsByPolicies calls = %d, want 0 (empty scope must skip DB)", q.runsByPoliciesCalls)
 	}
 }
 

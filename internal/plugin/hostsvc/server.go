@@ -61,6 +61,7 @@ type Querier interface {
 	GetPluginByID(ctx context.Context, id string) (db.Plugin, error)
 	ListPolicies(ctx context.Context) ([]db.Policy, error)
 	ListRunsByPolicy(ctx context.Context, arg db.ListRunsByPolicyParams) ([]db.ListRunsByPolicyRow, error)
+	ListRunsByPolicies(ctx context.Context, arg db.ListRunsByPoliciesParams) ([]db.ListRunsByPoliciesRow, error)
 	ListAllActiveUsersWithRoles(ctx context.Context) ([]db.ListAllActiveUsersWithRolesRow, error)
 	ListActiveUsersByRole(ctx context.Context, role string) ([]db.ListActiveUsersByRoleRow, error)
 }
