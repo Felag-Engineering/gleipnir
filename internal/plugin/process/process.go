@@ -183,7 +183,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	var stderrCapMu sync.Mutex
 	var stderrCap bytes.Buffer
 	stderrCapWriter := &cappedWriter{mu: &stderrCapMu, buf: &stderrCap, cap: launchStderrCapSize}
-	logPipeW, stderrDone := PipeLines(logger, slog.LevelWarn, "stderr")
+	logPipeW, stderrDone := PipeLines(ctx, logger, slog.LevelWarn, "stderr")
 	stderrW := &multiWriteCloser{
 		writers: []io.Writer{logPipeW, stderrCapWriter},
 		closer:  logPipeW,

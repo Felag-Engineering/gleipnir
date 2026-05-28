@@ -356,7 +356,7 @@ func (c *Controller) BeginDrain(ctx context.Context, instanceID string, grace ti
 				s.mu.Lock()
 				remaining := s.refs[oldGen]
 				s.mu.Unlock()
-				slog.Warn("plugin generation: force-cancel grace elapsed with in-flight calls remaining",
+				slog.WarnContext(ctx, "plugin generation: force-cancel grace elapsed with in-flight calls remaining",
 					"instance_id", instanceID,
 					"generation", oldGen,
 					"remaining", remaining,

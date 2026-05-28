@@ -27,7 +27,10 @@ const (
 //
 // Callers should call Close() on the returned writer when done to release
 // goroutine resources and unblock any reader waiting on the done channel.
-func PipeLines(logger *slog.Logger, level slog.Level, stream string) (io.WriteCloser, <-chan struct{}) {
+//
+// ctx is captured by the goroutine so that log lines carry run_id/policy_id
+// correlation from the parent span even though the goroutine outlives the call.
+func PipeLines(ctx context.Context, logger *slog.Logger, level slog.Level, stream string) (io.WriteCloser, <-chan struct{}) {
 	pr, pw := io.Pipe()
 	done := make(chan struct{})
 
@@ -39,14 +42,14 @@ func PipeLines(logger *slog.Logger, level slog.Level, stream string) (io.WriteCl
 
 		for scanner.Scan() {
 			line := scanner.Text()
-			logger.Log(context.Background(), level, line, "stream", stream)
+			logger.Log(ctx, level, line, "stream", stream)
 		}
 
 		if err := scanner.Err(); err != nil {
 			// The most common cause is a line too long for the buffer. Log it
 			// once and continue draining; the scanner cannot recover after
 			// ErrTooLong, so we log and break.
-			logger.Warn("plugin log line too long, truncated", "stream", stream, "err", err)
+			logger.WarnContext(ctx, "plugin log line too long, truncated", "stream", stream, "err", err)
 		}
 
 		// Drain any remaining bytes from the pipe so the writer is not blocked
