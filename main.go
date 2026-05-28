@@ -28,17 +28,10 @@ import (
 	openaicompatllm "github.com/felag-engineering/gleipnir/internal/llm/openaicompat"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
-	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
-	"github.com/felag-engineering/gleipnir/internal/plugin/dedup"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
-	"github.com/felag-engineering/gleipnir/internal/plugin/generation"
-	"github.com/felag-engineering/gleipnir/internal/plugin/hostsvc"
-	"github.com/felag-engineering/gleipnir/internal/plugin/identity"
-	pluginoauth "github.com/felag-engineering/gleipnir/internal/plugin/oauth"
 	"github.com/felag-engineering/gleipnir/internal/plugin/process"
 	plugintools "github.com/felag-engineering/gleipnir/internal/plugin/tools"
-	plugintrigger "github.com/felag-engineering/gleipnir/internal/plugin/trigger"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 	"github.com/felag-engineering/gleipnir/internal/timeout"
@@ -82,14 +75,6 @@ func run(cfg config.Config) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Plugin loader: Init sets up the Verifier; StartWatcher starts the fsnotify
-	// watcher after the DB is migrated. Both are no-ops when GLEIPNIR_PLUGINS_ENABLED
-	// is false (the default for this release; spec §15.2).
-	loader := pluginpkg.NewLoader()
-	if err := loader.Init(ctx, cfg); err != nil {
-		return fmt.Errorf("init plugin loader: %w", err)
-	}
-
 	store, err := db.Open(cfg.DBPath)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
@@ -99,9 +84,6 @@ func run(cfg config.Config) error {
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
-
-	// Plugin watcher start is deferred until after broadcaster is initialized;
-	// see below after sse.NewBroadcaster().
 
 	// Mark any in-flight runs as interrupted (ADR-011).
 	if err := store.ScanOrphanedRuns(ctx, slog.Default()); err != nil {
@@ -120,17 +102,6 @@ func run(cfg config.Config) error {
 	broadcaster := sse.NewBroadcaster()
 	sseHandler := sse.NewHandler(broadcaster)
 
-	// Start the plugin watcher after broadcaster is initialized so pubkey-mismatch
-	// transitions can emit plugin.health_changed SSE events. Schema is already
-	// migrated at this point. No-op when GLEIPNIR_PLUGINS_ENABLED=false.
-	if cfg.PluginsEnabled {
-		if err := loader.StartWatcher(ctx, store.Queries(), store.DB(), cfg.PluginsDir, broadcaster); err != nil {
-			return fmt.Errorf("start plugin watcher: %w", err)
-		}
-		// StartManager is called below, after pluginPool and encryptionKey are
-		// in scope, so the hostsvc.Server can be constructed with full dependencies.
-	}
-
 	approvalScanner := timeout.NewApprovalScanner(
 		store,
 		cfg.ApprovalScanInterval,
@@ -145,31 +116,7 @@ func run(cfg config.Config) error {
 	)
 	feedbackScanner.Start(ctx)
 
-	// connFactory bridges the dispatch layer to the host's process.Manager.
-	// It is constructed now (before pluginPool and pluginDispatcher) but the
-	// manager is injected later via setManager, after loader.StartManager
-	// succeeds. Using an atomic pointer lets the factory be captured by value
-	// in both call sites while still seeing the manager once it is available.
-	// Before setManager runs, Connect returns ErrManagerUnavailable — correct
-	// because no plugin subprocesses are running yet.
-	connFactory := &managerConnFactory{}
-
-	// Plugin dispatch pool: routes agent tool calls to plugin instances via gRPC.
-	pluginPool := dispatch.New(dispatch.Config{
-		CallTimeout:          cfg.MCPTimeout,
-		CancelTimeout:        5 * time.Second,
-		DefaultMaxConcurrent: 50,
-		DefaultMaxQueueDepth: 50,
-		Connect:              connFactory.Connect,
-	})
-
-	// pluginDispatchAdapter wraps *dispatch.Pool to satisfy agent.PluginToolDispatcher,
-	// translating dispatch-package sentinel errors to agent-package sentinels so the
-	// agent package does not need to import internal/plugin/dispatch.
-	pluginDispatchAdapter := &pluginDispatchAdapter{pool: pluginPool}
-
 	runManager := runpkg.NewRunManager()
-	runManager.WithPluginCanceller(pluginPool)
 	providerRegistry := llm.NewProviderRegistry()
 
 	// Parse the encryption key for admin API key storage.
@@ -187,88 +134,24 @@ func run(cfg config.Config) error {
 	}
 
 	// Cross-source tool namespace arbiter: a single in-memory registry shared
-	// by the MCP server creation path and (once plugin start lands) the plugin
-	// tool registrar. Constructed once here so both sides see the same state.
+	// by the MCP server creation path and the plugin tool registrar.
+	// Constructed once here so both sides see the same state.
 	arbiter := toolregistry.New()
 
-	// Plugin tool registrar: claims <instance>.<tool> dot-names in the shared
-	// arbiter when a plugin instance starts, and releases them on stop. Constructed
-	// unconditionally so the reference is available regardless of PluginsEnabled;
-	// it is only injected into StartManagerConfig inside the if-block below.
-	pluginToolRegistrar := plugintools.New(arbiter, store.Queries(), broadcaster)
+	// systemSettings is constructed early so startPluginRuntime can use it for
+	// the OAuth getPublicURL closure. It is also used by the provider bootstrap
+	// loop and the launcher below.
+	systemSettings := settings.NewService(store.Queries())
 
-	// Plugin manifest snapshotter: parses and caches plugin manifests by content
-	// hash. Hoisted here (before the launcher) so pluginToolResolverAdapter can
-	// use it. The same instance is reused at line ~442 where the audience handler
-	// and binding test handler are constructed — shared cache hits benefit both.
-	pluginManifestSnap := configvalidate.NewSnapshotter(store.Queries())
-
-	// Activate the hostsvc.Server and start the process.Manager when plugins are
-	// enabled. This block runs after pluginPool (needed as CallContextResolver),
-	// encryptionKey (needed for GetCredentials), and arbiter are all in scope.
-	//
-	// Chain order: token MUST be first because UnaryGenerationRefcountInterceptor
-	// reads the instance ID from the context populated by UnaryInstanceTokenInterceptor.
-	// UnaryCallIDInterceptor is last so it only attaches to authenticated,
-	// generation-tracked calls.
-	// hostSvc and approvalAdapter are declared outside the if block so that
-	// post-launcher wiring (SetTriggerSink, triggerSupervisor) can reach hostSvc,
-	// and the RunLauncherConfig can reference approvalAdapter, without either
-	// variable going out of scope.  Analogous to connFactory being declared at
-	// line ~155 so setManager can be called at line 237.
-	var hostSvc *hostsvc.Server
-	var approvalAdapter agent.ApprovalChannelDispatcher
-	var feedbackAdapter agent.FeedbackChannelDispatcher
-	if cfg.PluginsEnabled {
-		identityReg := identity.New()
-		genCtrl := generation.New()
-
-		pluginDispatcher := dispatch.NewDispatcher(dispatch.DispatcherConfig{
-			Queries: store.Queries(),
-			Connect: connFactory.Connect,
-			// TODO(#NNN): Wire WriteRunStep here for audit trail completeness.
-			// Requires constructing an AuditWriter outside the agent package,
-			// which is deferred to a follow-up issue.
-		})
-
-		// approvalAdapter and feedbackAdapter are constructed here where
-		// pluginDispatcher is in scope.  The outer-scoped variables are assigned so
-		// RunLauncherConfig below can reference them without the dispatcher escaping
-		// the if block.
-		approvalAdapter = runpkg.NewApprovalChannelAdapter(pluginDispatcher)
-		feedbackAdapter = runpkg.NewFeedbackChannelAdapter(pluginDispatcher)
-
-		hostSvc = hostsvc.NewServer(
-			store.Queries(),
-			store.DB(),
-			encryptionKey,
-			pluginPool,
-			hostsvc.NewContextBinder(),
-			broadcaster,
-			pluginDispatcher,
-		)
-
-		interceptors := []grpc.UnaryServerInterceptor{
-			hostsvc.UnaryInstanceTokenInterceptor(identityReg),
-			hostsvc.UnaryGenerationRefcountInterceptor(genCtrl),
-			hostsvc.UnaryCallIDInterceptor(),
-		}
-
-		if err := loader.StartManager(ctx, pluginpkg.StartManagerConfig{
-			Querier:              store.Queries(),
-			Publisher:            broadcaster,
-			HostServer:           hostSvc,
-			IdentityRegistry:     identityReg,
-			GenerationController: genCtrl,
-			ServerInterceptors:   interceptors,
-			ToolRegistrar:        pluginToolRegistrar,
-		}); err != nil {
-			return fmt.Errorf("start plugin manager: %w", err)
-		}
-		// Publish the manager to the factory so Connect calls can now resolve
-		// running instances. This runs after StartManager so the manager is
-		// fully initialised before any call can reach it.
-		connFactory.setManager(loader.Manager())
+	// Bring up the plugin subsystem. rt is nil when GLEIPNIR_PLUGINS_ENABLED=false,
+	// so all downstream callers use a nil-guard (rt != nil) rather than repeating
+	// cfg.PluginsEnabled checks.
+	rt, err := startPluginRuntime(ctx, cfg, store, broadcaster, encryptionKey, arbiter, systemSettings)
+	if err != nil {
+		return fmt.Errorf("start plugin runtime: %w", err)
+	}
+	if rt != nil {
+		runManager.WithPluginCanceller(rt.Pool)
 	}
 
 	// Registry construction is placed after encryption key parsing so
@@ -295,7 +178,6 @@ func run(cfg config.Config) error {
 	}
 
 	adminQuerier := admin.NewQuerierAdapter(store.Queries())
-	systemSettings := settings.NewService(store.Queries())
 	adminHandler := admin.NewHandler(adminQuerier, systemSettings, encryptionKey, knownProviders, configureProvider, removeProvider, providerRegistry)
 
 	// Bootstrap providers from DB-stored encrypted API keys.
@@ -347,17 +229,24 @@ func run(cfg config.Config) error {
 		slog.Warn("could not ensure default model is enabled", "err", err)
 	}
 
-	// Build the plugin tool resolver and classifier only when plugins are enabled.
-	// When nil, every tool grant goes to the MCP path, preserving pre-plugin behaviour.
-	var pluginResolver runpkg.PluginToolResolver
-	var toolClassifier runpkg.ToolSourceClassifier
-	if cfg.PluginsEnabled {
-		pluginResolver = &pluginToolResolverAdapter{
-			snap:      pluginManifestSnap,
-			registrar: pluginToolRegistrar,
-			q:         store.Queries(),
-		}
-		toolClassifier = &arbiterClassifier{arbiter: arbiter}
+	// rt.ToolResolver, rt.ToolClassifier, rt.ToolRegistrar, rt.DispatchAdapter,
+	// rt.ApprovalAdapter, and rt.FeedbackAdapter are all nil when plugins are
+	// disabled; the launcher treats nil values as "no plugin support".
+	var (
+		pluginResolver  runpkg.PluginToolResolver
+		toolClassifier  runpkg.ToolSourceClassifier
+		pluginRegistrar *plugintools.Registrar
+		dispatchAdapter agent.PluginToolDispatcher
+		approvalAdapter agent.ApprovalChannelDispatcher
+		feedbackAdapter agent.FeedbackChannelDispatcher
+	)
+	if rt != nil {
+		pluginResolver = rt.ToolResolver
+		toolClassifier = rt.ToolClassifier
+		pluginRegistrar = rt.ToolRegistrar
+		dispatchAdapter = rt.DispatchAdapter
+		approvalAdapter = rt.ApprovalAdapter
+		feedbackAdapter = rt.FeedbackAdapter
 	}
 
 	launcher := runpkg.NewRunLauncher(runpkg.RunLauncherConfig{
@@ -370,48 +259,17 @@ func run(cfg config.Config) error {
 		ModelResolver:          systemSettings,
 		PluginResolver:         pluginResolver,
 		ToolClassifier:         toolClassifier,
-		PluginRegistrar:        pluginToolRegistrar,
-		PluginDispatcher:       pluginDispatchAdapter,
+		PluginRegistrar:        pluginRegistrar,
+		PluginDispatcher:       dispatchAdapter,
 		ApprovalDispatcher:     approvalAdapter,
 		FeedbackDispatcher:     feedbackAdapter,
 	})
 
-	// Wire the trigger dispatch pipeline now that RunLauncher is available.
-	// hostSvc.SetTriggerSink is the late-bind pattern (analogous to
-	// connFactory.setManager at line ~237): hostSvc was constructed before
-	// RunLauncher existed, so the trigger sink is attached here.
-	// Until SetTriggerSink fires, EmitEvent falls back to publisher-only —
-	// correct because no plugin subprocess has begun emitting events yet
-	// (StartManager runs at line ~224 but Supervisor.StartAll is called below,
-	// after this block).
-	var triggerSupervisor *plugintrigger.Supervisor
-	if cfg.PluginsEnabled && hostSvc != nil {
-		triggerDispatcher := plugintrigger.NewDispatcher(plugintrigger.DispatcherConfig{
-			Launcher:      launcher,
-			Querier:       store.Queries(),
-			Dedup:         dedup.Noop{}, // #215 will swap in a rolling-window store
-			Publisher:     broadcaster,
-			ModelResolver: systemSettings,
-			Logger:        slog.Default(),
-		})
-		hostSvc.SetTriggerSink(plugintrigger.NewSinkAdapter(triggerDispatcher))
-
-		triggerSupervisor = plugintrigger.NewSupervisor(plugintrigger.Config{
-			Manager:      loader.Manager(),
-			Querier:      store.Queries(),
-			Dispatcher:   triggerDispatcher,
-			HealthSetter: loader.Manager().HealthSetter(),
-			Logger:       slog.Default(),
-			// long-lived server ctx; parents stream goroutines so per-request
-			// callers of Restart cannot cancel them (#401).
-			RootCtx: ctx,
-		})
-		go func() {
-			if err := triggerSupervisor.StartAll(ctx); err != nil {
-				slog.Error("trigger supervisor StartAll failed", "err", err)
-			}
-		}()
-	}
+	// Wire the trigger supervisor now that the launcher is available. The trigger
+	// dispatcher needs the launcher (to fire runs); wireTriggerSupervisor is
+	// therefore a two-phase completion of the plugin runtime. It is a no-op when
+	// rt is nil (plugins disabled).
+	rt.wireTriggerSupervisor(ctx, launcher, store, broadcaster, systemSettings)
 
 	webhookSecretLoader := trigger.NewSecretLoader(store.Queries(), encryptionKey)
 	webhookHandler := trigger.NewWebhookHandler(store, launcher, webhookSecretLoader, systemSettings)
@@ -435,10 +293,10 @@ func run(cfg config.Config) error {
 	if webhookEncrypter != nil {
 		policyService.WithWebhookSecretEncrypter(webhookEncrypter)
 	}
-	if cfg.PluginsEnabled {
+	if rt != nil {
 		resolver := &pluginInstanceResolver{q: store.Queries()}
 		policyService.WithSubscribedBindingValidator(
-			policy.NewSubscribedBindingValidator(resolver, pluginManifestSnap),
+			policy.NewSubscribedBindingValidator(resolver, rt.ManifestSnap),
 		)
 	}
 	policyWebhookHandler := api.NewPolicyWebhookHandler(policyService)
@@ -479,52 +337,27 @@ func run(cfg config.Config) error {
 	authHandler := auth.NewHandler(store.Queries(), store.DB())
 	settingsHandler := auth.NewSettingsHandler(store.Queries())
 
-	// Reuse pluginManifestSnap (constructed before the launcher) so the audience
-	// handler and binding test handler benefit from the same cache as the resolver.
-	snap := pluginManifestSnap
+	// ManifestSnap is shared between the audience handler, binding test handler,
+	// and the plugin tool resolver (constructed in startPluginRuntime). When
+	// plugins are disabled rt is nil, so snap is also nil — both handlers
+	// tolerate a nil snapshotter (they return 503 / empty results).
+	var snap *configvalidate.Snapshotter
+	if rt != nil {
+		snap = rt.ManifestSnap
+	}
 	audienceH := api.NewAudienceHandler(store, snap, time.Now)
 	bindingTestH := api.NewBindingTestHandler(snap)
 
-	// OAuth2 token management for plugin instances. Constructed here (after
-	// systemSettings) so getPublicURL can be bound at call time. The scanner
-	// starts only when plugins are enabled and an encryption key is set.
+	// Wire OAuth handlers and the public-URL rescan hook. Both are populated by
+	// startPluginRuntime only when plugins are enabled and an encryption key is
+	// set; they are nil otherwise.
 	var pluginOAuthHandler *admin.PluginOAuthHandler
 	var pluginCredHandler *admin.PluginCredentialsHandler
-	if cfg.PluginsEnabled && encryptionKey != nil {
-		enc := func(p string) (string, error) { return admin.Encrypt(encryptionKey, p) }
-		dec := func(c string) (string, error) { return admin.Decrypt(encryptionKey, c) }
-		oauthStore := pluginoauth.NewDBStore(store.Queries(), enc, dec, store.Queries(), time.Now)
-		oauthNonces := pluginoauth.NewDBNonceStore(store.Queries(), time.Now)
-		go oauthNonces.StartJanitor(ctx, time.Minute)
-		oauthHMACKey := pluginoauth.DeriveHMACKey(encryptionKey)
-		// getPublicURL is a zero-arg closure used by the manager and scanner so
-		// they do not need a context parameter. Context is elided because public_url
-		// is a static admin setting; a background context is adequate here.
-		getPublicURL := func() string {
-			u, _ := systemSettings.GetPublicURL(context.Background())
-			return u
-		}
-		oauthMgr := pluginoauth.NewManager(oauthStore, oauthNonces, time.Now, oauthHMACKey, getPublicURL)
-		oauthScanner := pluginoauth.NewRefreshScanner(
-			oauthStore, store.Queries(),
-			getPublicURL,
-			cfg.OAuthRefreshInterval,
-			cfg.OAuthRefreshLead,
-		)
-		oauthScanner.Start(ctx)
-		pluginOAuthHandler = admin.NewPluginOAuthHandler(store.Queries(), oauthMgr, getPublicURL)
-		pluginCredHandler = admin.NewPluginCredentialsHandler(store.Queries(), oauthStore)
-
-		// Wire the callback-URL rescan so it fires whenever an admin changes
-		// public_url (#230). Constructed after adminHandler so we can set the hook
-		// directly without adminHandler importing internal/plugin/oauth.
-		callbackRescanner := pluginoauth.NewCallbackRescanner(
-			store.Queries(), store.Queries(), getPublicURL, time.Now,
-		)
-		adminHandler.OnPublicURLChanged = func(hookCtx context.Context, _, _ string) {
-			if _, err := callbackRescanner.Scan(hookCtx); err != nil {
-				slog.ErrorContext(hookCtx, "callback rescan failed after public_url change", "err", err)
-			}
+	if rt != nil {
+		pluginOAuthHandler = rt.OAuthHandler
+		pluginCredHandler = rt.CredentialsHandler
+		if rt.OnPublicURLChanged != nil {
+			adminHandler.OnPublicURLChanged = rt.OnPublicURLChanged
 		}
 	}
 
@@ -545,8 +378,8 @@ func run(cfg config.Config) error {
 
 	// Wire the trigger supervisor into the plugin admin handler so that
 	// PutSubscriptionScope can restart the stream after a scope change.
-	if triggerSupervisor != nil && handlers.PluginAdminHandler != nil {
-		handlers.PluginAdminHandler.SetTriggerRestarter(triggerSupervisor)
+	if rt != nil && rt.TriggerSupervisor != nil && handlers.PluginAdminHandler != nil {
+		handlers.PluginAdminHandler.SetTriggerRestarter(rt.TriggerSupervisor)
 	}
 
 	// Wire the *db.Store unconditionally so DeleteInstance and Uninstall can
@@ -559,38 +392,42 @@ func run(cfg config.Config) error {
 
 	// Wire the shared Installer into the plugin admin handler so both the
 	// fsnotify watcher and the Install endpoint use the same pipeline instance.
-	// loader.Installer() returns nil when GLEIPNIR_PLUGINS_ENABLED=false, which
-	// disables the install endpoint cleanly (returns 503).
-	if loader.Installer() != nil && handlers.PluginAdminHandler != nil {
-		handlers.PluginAdminHandler.SetInstaller(loader.Installer())
+	// Installer() returns nil when plugins are disabled, which disables the
+	// install endpoint cleanly (returns 503).
+	if rt != nil && rt.Loader().Installer() != nil && handlers.PluginAdminHandler != nil {
+		handlers.PluginAdminHandler.SetInstaller(rt.Loader().Installer())
 		// Wire the process manager and plugins dir for subprocess stop + FS
 		// cleanup during Uninstall. Only available when plugins are enabled and
 		// the manager was successfully started.
-		if mgr := loader.Manager(); mgr != nil {
+		if mgr := rt.Manager(); mgr != nil {
 			handlers.PluginAdminHandler.SetProcessManager(mgr)
 			handlers.PluginAdminHandler.SetPluginsDir(cfg.PluginsDir)
-			handlers.PluginAdminHandler.SetInflightCounter(pluginPool)
+			handlers.PluginAdminHandler.SetInflightCounter(rt.Pool)
 		}
 	}
 
-	// Wire the RSS sampler inside the plugins-enabled block. When plugins are
-	// disabled, rssAggregator is never set and GetPluginRSS returns 503.
-	if mgr := loader.Manager(); mgr != nil && handlers.PluginAdminHandler != nil {
-		rssSampler := process.NewRSSSampler(mgr.Snapshot)
-		rssSampler.Start(ctx, 30*time.Second)
-		handlers.PluginAdminHandler.SetRSSAggregator(rssAggregatorAdapter{sampler: rssSampler})
+	// Wire the RSS sampler. When plugins are disabled, rssAggregator is never
+	// set and GetPluginRSS returns 503.
+	if rt != nil {
+		if mgr := rt.Manager(); mgr != nil && handlers.PluginAdminHandler != nil {
+			rssSampler := process.NewRSSSampler(mgr.Snapshot)
+			rssSampler.Start(ctx, 30*time.Second)
+			handlers.PluginAdminHandler.SetRSSAggregator(rssAggregatorAdapter{sampler: rssSampler})
+		}
 	}
 
 	// Register the post-install spawn hook so that a fresh install (via the
 	// admin endpoint or the fsnotify watcher) immediately spawns the plugin
 	// subprocess — no server restart required (#386). The same Installer instance
 	// is used by both paths so this registration covers both.
-	if mgr := loader.Manager(); mgr != nil && loader.Installer() != nil {
-		loader.Installer().OnInstalled(func(ctx context.Context, pluginID string) {
-			if err := mgr.StartByPluginID(ctx, pluginID); err != nil {
-				slog.Warn("post-install spawn failed", "plugin_id", pluginID, "err", err)
-			}
-		})
+	if rt != nil {
+		if mgr := rt.Manager(); mgr != nil && rt.Loader().Installer() != nil {
+			rt.Loader().Installer().OnInstalled(func(ctx context.Context, pluginID string) {
+				if err := mgr.StartByPluginID(ctx, pluginID); err != nil {
+					slog.Warn("post-install spawn failed", "plugin_id", pluginID, "err", err)
+				}
+			})
+		}
 	}
 
 	// Phase 3: build the router.
@@ -601,7 +438,7 @@ func run(cfg config.Config) error {
 			Version:                       version.Version,
 			StartTime:                     startTime,
 			DBPath:                        cfg.DBPath,
-			SignatureVerificationDisabled: cfg.PluginsEnabled && cfg.AllowUnsignedPlugins,
+			SignatureVerificationDisabled: rt != nil && cfg.AllowUnsignedPlugins,
 		},
 	})
 
@@ -659,33 +496,9 @@ func run(cfg config.Config) error {
 		slog.Warn("agent run drain timed out, proceeding with server shutdown")
 	}
 
-	// Stop trigger stream goroutines before tearing down plugin subprocesses.
-	// The supervisor's goroutines already observe ctx cancellation; StopAll
-	// blocks until all goroutines have exited cleanly.
-	if triggerSupervisor != nil {
-		triggerSupervisor.StopAll()
-	}
-
-	// Stop all plugin subprocesses before closing the dispatch pool. This order
-	// matters: any in-flight cancel RPCs from the pool (#292/#198) must still
-	// have live transport while subprocesses are stopping.
-	if mgr := loader.Manager(); mgr != nil {
-		stopCtx, cancelStop := context.WithTimeout(context.Background(), 15*time.Second)
-		if err := mgr.StopAll(stopCtx); err != nil {
-			slog.Warn("plugin StopAll error", "err", err)
-		}
-		cancelStop()
-	}
-
-	// Close the plugin dispatch pool after all runs have drained so no new
-	// Cancel RPCs are issued after the connections are torn down.
-	// Note: StopAll above already tore down each subprocess's gRPC transport
-	// via go-plugin's Kill(). pluginPool.Close() may therefore hit already-closed
-	// connections; grpc.ErrClientConnClosing is swallowed by Pool.Close's firstErr
-	// capture and is not surfaced here. This re-close is benign post-StopAll.
-	if err := pluginPool.Close(); err != nil {
-		slog.Warn("plugin dispatch pool close error", "err", err)
-	}
+	// Stop the plugin runtime (trigger supervisor → subprocesses → dispatch pool).
+	// rt.shutdown is a no-op when rt is nil.
+	rt.shutdown()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
