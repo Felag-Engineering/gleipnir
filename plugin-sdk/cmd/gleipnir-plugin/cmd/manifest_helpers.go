@@ -8,14 +8,14 @@ import (
 )
 
 // loadCanonicalManifest reads manifest.yaml from manifestPath and returns
-// canonical YAML bytes (sorted keys, 2-space indent). This is the on-disk
-// manifest leg; the binary --emit-manifest JSON leg uses jsonToCanonicalYAML.
+// canonical YAML bytes (sorted keys, 2-space indent). Delegates to
+// manifest.Canonicalize, which handles both JSON and YAML input.
 func loadCanonicalManifest(manifestPath string) ([]byte, error) {
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", manifestPath, err)
 	}
-	return canonicaliseYAML(data)
+	return manifest.Canonicalize(data)
 }
 
 // parseManifestFromBytes parses canonical or non-canonical YAML bytes into a

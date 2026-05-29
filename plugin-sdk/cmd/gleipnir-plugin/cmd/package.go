@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 )
 
@@ -78,7 +79,7 @@ func runPackage(cmd *cobra.Command, binary, manifestPath, flagKey string, flagKe
 		if err != nil {
 			return fmt.Errorf("package: invoke binary for manifest: %w", err)
 		}
-		manifestData, err = jsonToCanonicalYAML(raw)
+		manifestData, err = manifest.Canonicalize(raw)
 		if err != nil {
 			return fmt.Errorf("package: canonicalise manifest from binary: %w", err)
 		}

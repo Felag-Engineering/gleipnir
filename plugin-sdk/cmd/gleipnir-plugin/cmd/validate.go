@@ -50,7 +50,7 @@ func runValidate(binary, manifestPath string, cmd *cobra.Command) error {
 		return fmt.Errorf("validate: invoke binary: %w", err)
 	}
 
-	canonicalBinary, err := jsonToCanonicalYAML(raw)
+	canonicalBinary, err := manifest.Canonicalize(raw)
 	if err != nil {
 		return fmt.Errorf("validate: canonicalise binary output: %w", err)
 	}
@@ -64,16 +64,6 @@ func runValidate(binary, manifestPath string, cmd *cobra.Command) error {
 	diff := lineDiff(string(canonicalDisk), string(canonicalBinary))
 	fmt.Fprintf(cmd.ErrOrStderr(), "manifest drift detected (run gen-manifest to update):\n%s\n", diff)
 	return fmt.Errorf("manifest does not match binary output")
-}
-
-// canonicaliseYAML parses YAML bytes and re-marshals them through the canonical
-// marshaller. Used to normalise the on-disk manifest before comparison.
-func canonicaliseYAML(data []byte) ([]byte, error) {
-	var m manifest.Manifest
-	if err := manifest.Unmarshal(data, &m); err != nil {
-		return nil, err
-	}
-	return manifest.Marshal(&m)
 }
 
 // lineDiff produces a simple unified-style diff between two multi-line strings.
