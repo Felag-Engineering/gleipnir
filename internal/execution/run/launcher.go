@@ -104,9 +104,12 @@ type PluginToolResolver interface {
 }
 
 // ToolSourceClassifier determines whether a dot-name tool grant should be
-// resolved via MCP or the plugin path.
+// resolved via MCP or the plugin path. The lookup is static — based on the
+// installed plugin instance row and its manifest snapshot, NOT on whether the
+// instance's subprocess is currently running (see #399). It does DB + manifest
+// reads, so it takes a context and can return an error.
 type ToolSourceClassifier interface {
-	IsPluginTool(dotName string) bool
+	IsPluginTool(ctx context.Context, dotName string) (bool, error)
 }
 
 // RunLauncherConfig holds all dependencies for a RunLauncher. Field order
@@ -256,7 +259,26 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	// through to the MCP path — preserving the pre-plugin behaviour exactly.
 	var mcpGrants, pluginGrants []model.ToolCapability
 	for _, t := range params.ParsedPolicy.Capabilities.Tools {
-		if l.toolClassifier != nil && l.toolClassifier.IsPluginTool(t.Tool) {
+		isPlugin := false
+		if l.toolClassifier != nil {
+			var classErr error
+			isPlugin, classErr = l.toolClassifier.IsPluginTool(ctx, t.Tool)
+			if classErr != nil {
+				// A classification read failed (e.g. the manifest snapshot could
+				// not be loaded). Fail the run loudly rather than silently
+				// misrouting the grant to the MCP path.
+				wrapped := fmt.Errorf("classify tool %q: %w", t.Tool, classErr)
+				if tErr := sm.Transition(context.Background(), model.RunStatusFailed, wrapped.Error()); tErr != nil {
+					if errors.Is(tErr, agent.ErrTransitionConflict) {
+						slog.Info("transition lost to concurrent writer on tool classification error", "run_id", run.ID)
+					} else {
+						slog.Error("transition to failed on tool classification error", "run_id", run.ID, "err", tErr)
+					}
+				}
+				return LaunchResult{RunID: run.ID}, wrapped
+			}
+		}
+		if isPlugin {
 			pluginGrants = append(pluginGrants, t)
 		} else {
 			mcpGrants = append(mcpGrants, t)

@@ -774,6 +774,13 @@ func classifyPluginError(instanceName string, err error) string {
 	if errors.Is(err, ErrPluginQueueFull) {
 		return fmt.Sprintf("plugin %q is at capacity", instanceName)
 	}
+	if errors.Is(err, ErrPluginInstanceNotRunning) {
+		return fmt.Sprintf("plugin instance %q is not currently available "+
+			"(it may be starting up, stopped, or unhealthy); the tool cannot be called right now", instanceName)
+	}
+	if errors.Is(err, ErrPluginManagerUnavailable) {
+		return fmt.Sprintf("the plugin subsystem is not available, so plugin instance %q cannot be called right now", instanceName)
+	}
 	return fmt.Sprintf("plugin %q is unavailable", instanceName)
 }
 
