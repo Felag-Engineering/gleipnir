@@ -44,11 +44,14 @@ var ErrRequestAlreadyResolved = errors.New("plugin: channel request already reso
 
 // ErrInstanceNotRunning is returned by a ConnFactory when no subprocess is
 // currently registered for the requested instance name. The host dispatcher
-// wraps this with the instance name before returning it to callers.
-var ErrInstanceNotRunning = errors.New("plugin: instance not running")
+// wraps this with the instance name before returning it to callers. Aliased from
+// pluginerr so the agent runtime can errors.Is against the same sentinel without
+// importing internal/plugin/dispatch (see internal/plugin/pluginerr/errors.go).
+var ErrInstanceNotRunning = pluginerr.ErrInstanceNotRunning
 
 // ErrManagerUnavailable is returned by a ConnFactory when the host plugin
 // subsystem is disabled or the process.Manager has not yet been constructed
 // (i.e. setManager has not been called). Callers can distinguish this from
 // ErrInstanceNotRunning to tell apart "subsystem off" from "instance crashed".
-var ErrManagerUnavailable = errors.New("plugin: process manager unavailable")
+// Aliased from pluginerr (see above).
+var ErrManagerUnavailable = pluginerr.ErrManagerUnavailable

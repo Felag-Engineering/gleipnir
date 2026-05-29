@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -695,16 +696,71 @@ func (a *pluginDispatchAdapter) Call(ctx context.Context, runID, policyID, insta
 	return a.pool.Call(ctx, runID, policyID, instanceName, toolName, inputJSON)
 }
 
-// arbiterClassifier uses the shared tool namespace arbiter to determine whether
-// a dot-name tool grant belongs to a plugin instance. This is the production
-// implementation of runpkg.ToolSourceClassifier.
-type arbiterClassifier struct {
-	arbiter *toolregistry.Registry
+// manifestClassifier decides whether a dot-name tool grant belongs to a plugin
+// instance by consulting the installed instance row and its manifest snapshot —
+// NOT the in-memory namespace arbiter. This makes classification static: a tool's
+// source does not change when its plugin subprocess starts or stops (see #399).
+// The arbiter remains the spawn-time uniqueness enforcer; it is simply no longer
+// the classification oracle. This is the production implementation of
+// runpkg.ToolSourceClassifier.
+//
+// It shares lookupPluginInstanceTool with pluginToolResolverAdapter so the two
+// can never disagree about what is a plugin tool.
+type manifestClassifier struct {
+	snap *configvalidate.Snapshotter
+	q    pluginInstanceLookup
 }
 
-func (c *arbiterClassifier) IsPluginTool(dotName string) bool {
-	src, ok := c.arbiter.Lookup(dotName)
-	return ok && src.Kind == toolregistry.KindPlugin
+func (c *manifestClassifier) IsPluginTool(ctx context.Context, dotName string) (bool, error) {
+	_, decl, instanceFound, err := lookupPluginInstanceTool(ctx, c.snap, c.q, dotName)
+	if err != nil {
+		return false, err
+	}
+	// A grant is a plugin tool only when an installed instance exists AND its
+	// manifest declares the tool. Otherwise it routes to the MCP path.
+	return instanceFound && decl != nil, nil
+}
+
+// lookupPluginInstanceTool resolves dotName ("<instance>.<tool>") to the installed
+// plugin instance and the manifest ToolDecl it declares. It is the single source
+// of truth shared by the classifier (routing) and the resolver (materialization),
+// so the two cannot diverge. The lookup is independent of subprocess liveness.
+//
+// Return contract:
+//   - bad dot-form, or no installed instance with that name: instanceFound=false,
+//     decl=nil, err=nil — "not a plugin tool", route to MCP.
+//   - instance exists but its manifest does not declare the tool: instanceFound=true,
+//     decl=nil, err=nil.
+//   - instance exists and declares the tool: instanceFound=true, decl!=nil, err=nil.
+//   - a lookup that should have succeeded failed (DB error other than no-rows, or
+//     manifest snapshot unreadable): err!=nil — the caller should fail loudly.
+func lookupPluginInstanceTool(ctx context.Context, snap *configvalidate.Snapshotter, q pluginInstanceLookup, dotName string) (inst db.PluginInstance, decl *sdkmanifest.ToolDecl, instanceFound bool, err error) {
+	instanceName, toolName, splitErr := splitDotName(dotName)
+	if splitErr != nil {
+		// Not in instance.tool form — cannot be a plugin tool.
+		return db.PluginInstance{}, nil, false, nil
+	}
+
+	inst, err = q.GetPluginInstanceByGlobalName(ctx, instanceName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// No installed instance by that name — route to MCP.
+			return db.PluginInstance{}, nil, false, nil
+		}
+		return db.PluginInstance{}, nil, false, fmt.Errorf("lookup plugin instance %q: %w", instanceName, err)
+	}
+
+	manifest, err := snap.ForPluginID(ctx, inst.PluginID)
+	if err != nil {
+		return db.PluginInstance{}, nil, true, fmt.Errorf("manifest lookup for instance %q: %w", instanceName, err)
+	}
+
+	for i := range manifest.Tools {
+		if manifest.Tools[i].Name == toolName {
+			return inst, &manifest.Tools[i], true, nil
+		}
+	}
+	return inst, nil, true, nil
 }
 
 // pluginToolGenerationLookup is the narrow interface that pluginToolResolverAdapter
@@ -747,22 +803,18 @@ func (r *pluginToolResolverAdapter) ResolvePluginTools(ctx context.Context, gran
 			return nil, fmt.Errorf("resolve plugin tool %q: %w", g.Tool, err)
 		}
 
-		inst, err := r.q.GetPluginInstanceByGlobalName(ctx, instanceName)
+		// lookupPluginInstanceTool is the same lookup the classifier uses, so
+		// routing and resolution can never disagree. The launcher only sends
+		// already-classified plugin grants here, so a missing instance or
+		// undeclared tool is a genuine error at this point (not a route-to-MCP
+		// signal as it is for the classifier). The instance row itself is not
+		// needed here — the registrar is keyed by instance name below.
+		_, toolDecl, instanceFound, err := lookupPluginInstanceTool(ctx, r.snap, r.q, g.Tool)
 		if err != nil {
-			return nil, fmt.Errorf("plugin tool %q: instance %q not found: %w", g.Tool, instanceName, err)
+			return nil, fmt.Errorf("plugin tool %q: %w", g.Tool, err)
 		}
-
-		manifest, err := r.snap.ForPluginID(ctx, inst.PluginID)
-		if err != nil {
-			return nil, fmt.Errorf("plugin tool %q: manifest lookup: %w", g.Tool, err)
-		}
-
-		var toolDecl *sdkmanifest.ToolDecl
-		for i := range manifest.Tools {
-			if manifest.Tools[i].Name == toolName {
-				toolDecl = &manifest.Tools[i]
-				break
-			}
+		if !instanceFound {
+			return nil, fmt.Errorf("plugin tool %q: instance %q not found", g.Tool, instanceName)
 		}
 		if toolDecl == nil {
 			return nil, fmt.Errorf("plugin tool %q: tool %q not declared in manifest", g.Tool, toolName)

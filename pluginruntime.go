@@ -202,7 +202,7 @@ func startPluginRuntime(
 		registrar: pluginToolRegistrar,
 		q:         store.Queries(),
 	}
-	toolClassifier := &arbiterClassifier{arbiter: arbiter}
+	toolClassifier := &manifestClassifier{snap: pluginManifestSnap, q: store.Queries()}
 
 	rt := &pluginRuntime{
 		Pool:            pool,

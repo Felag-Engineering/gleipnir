@@ -866,13 +866,19 @@ agent:
 }
 
 // stubToolClassifier classifies tools as plugin-sourced when their dot-name is
-// in the pluginTools set. Satisfies run.ToolSourceClassifier.
+// in the pluginTools set. When err is non-nil it is returned for every call, to
+// exercise the launcher's classification-error path. Satisfies
+// run.ToolSourceClassifier.
 type stubToolClassifier struct {
 	pluginTools map[string]bool
+	err         error
 }
 
-func (s *stubToolClassifier) IsPluginTool(dotName string) bool {
-	return s.pluginTools[dotName]
+func (s *stubToolClassifier) IsPluginTool(_ context.Context, dotName string) (bool, error) {
+	if s.err != nil {
+		return false, s.err
+	}
+	return s.pluginTools[dotName], nil
 }
 
 // stubPluginToolResolver returns pre-canned PluginToolEntry values or a canned

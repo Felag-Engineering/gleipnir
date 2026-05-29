@@ -18,3 +18,15 @@ var ErrCallTimeout = errors.New("plugin: call timed out")
 // ErrQueueFull is returned when a plugin instance's concurrency slots and
 // bounded queue are both saturated and the call is rejected immediately.
 var ErrQueueFull = errors.New("plugin: queue full")
+
+// ErrInstanceNotRunning is returned when no subprocess is currently registered
+// for the requested instance name — the instance is installed but its process is
+// not up (freshly created, stopped, crashed, inactive, or mid-restart). The
+// instance's identity is static; only its availability is dynamic (see #399).
+var ErrInstanceNotRunning = errors.New("plugin: instance not running")
+
+// ErrManagerUnavailable is returned when the host plugin subsystem is disabled or
+// the process manager has not yet been constructed. Distinct from
+// ErrInstanceNotRunning so callers can tell "subsystem off" apart from
+// "instance down".
+var ErrManagerUnavailable = errors.New("plugin: process manager unavailable")
