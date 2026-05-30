@@ -98,6 +98,12 @@ func (w *Watcher) Setup() (*fsnotify.Watcher, error) {
 // It takes the fsnotify.Watcher created by Setup, spawns the dispatch goroutine,
 // performs an initial sweep of any existing tarballs, then enters the event loop.
 //
+// Initial sweep: for each unique plugin name found in the drop directory, only
+// the highest-version tarball (by semver comparison) is scheduled. Unreadable
+// tarballs and lower-version duplicates are logged at Warn so operators can see
+// what the sweep chose and why. This makes the sweep deterministic regardless of
+// filename or os.ReadDir order.
+//
 // Run must not be called more than once on the same Watcher: it writes w.ctx and
 // w.fire at startup, and a second call would stomp those fields while the first
 // call's AfterFunc callbacks are still reading them.
@@ -140,17 +146,11 @@ func (w *Watcher) Run(ctx context.Context, fw *fsnotify.Watcher) error {
 		}
 	}()
 
-	// Initial sweep: enqueue tarballs already present before the watcher starts.
-	// The dispatch goroutine is already running so AfterFunc sends will be drained.
-	entries, err := os.ReadDir(w.dir)
-	if err != nil {
-		return fmt.Errorf("read plugins dir %q: %w", w.dir, err)
-	}
-	for _, e := range entries {
-		if !e.IsDir() && isTarball(e.Name()) {
-			abs := filepath.Join(w.dir, e.Name())
-			w.schedule(abs)
-		}
+	// Initial sweep: for each plugin name, select only the highest-version
+	// tarball so a cold start is deterministic regardless of filename order.
+	// The dispatch goroutine is already running so schedule() sends are drained.
+	if err := w.sweepDir(); err != nil {
+		return err
 	}
 
 	for {
@@ -231,4 +231,89 @@ func (w *Watcher) cancelAllTimers() {
 func isTarball(name string) bool {
 	lower := strings.ToLower(name)
 	return strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz")
+}
+
+// sweepCandidate holds the winning tarball path and version for one plugin name.
+type sweepCandidate struct {
+	path    string
+	version string
+}
+
+// sweepDir reads the drop directory, selects the highest-version tarball per
+// plugin name, and schedules only the winners. Unreadable tarballs are logged
+// at Warn and skipped; lower-version duplicates are also logged at Warn so
+// operators can see what was ignored and why.
+func (w *Watcher) sweepDir() error {
+	entries, err := os.ReadDir(w.dir)
+	if err != nil {
+		return fmt.Errorf("read plugins dir %q: %w", w.dir, err)
+	}
+
+	// winners maps plugin name → the current best candidate.
+	winners := make(map[string]sweepCandidate)
+
+	for _, e := range entries {
+		if e.IsDir() || !isTarball(e.Name()) {
+			continue
+		}
+		abs := filepath.Join(w.dir, e.Name())
+
+		m, peekErr := ReadManifestFromTarball(abs)
+		if peekErr != nil {
+			w.logger.Warn("plugin sweep: skipping unreadable tarball",
+				"path", abs, "err", peekErr)
+			continue
+		}
+
+		existing, seen := winners[m.Name]
+		if !seen {
+			winners[m.Name] = sweepCandidate{path: abs, version: m.Version}
+			continue
+		}
+
+		cmp := compareVersions(m.Version, existing.version)
+		switch {
+		case cmp > 0:
+			// Incoming is higher — demote the previous winner.
+			w.logger.Warn("plugin sweep: ignoring lower-version tarball",
+				"name", m.Name,
+				"version", existing.version,
+				"chosen_version", m.Version,
+				"path", existing.path,
+			)
+			winners[m.Name] = sweepCandidate{path: abs, version: m.Version}
+		case cmp == 0:
+			// Same version from a different file — keep the lexically-first path
+			// for stable determinism and log the duplicate.
+			if abs < existing.path {
+				w.logger.Warn("plugin sweep: ignoring duplicate-version tarball",
+					"name", m.Name,
+					"version", m.Version,
+					"chosen_path", abs,
+					"ignored_path", existing.path,
+				)
+				winners[m.Name] = sweepCandidate{path: abs, version: m.Version}
+			} else {
+				w.logger.Warn("plugin sweep: ignoring duplicate-version tarball",
+					"name", m.Name,
+					"version", m.Version,
+					"chosen_path", existing.path,
+					"ignored_path", abs,
+				)
+			}
+		default:
+			// Incoming is lower — keep current winner.
+			w.logger.Warn("plugin sweep: ignoring lower-version tarball",
+				"name", m.Name,
+				"version", m.Version,
+				"chosen_version", existing.version,
+				"path", abs,
+			)
+		}
+	}
+
+	for _, c := range winners {
+		w.schedule(c.path)
+	}
+	return nil
 }

@@ -65,15 +65,6 @@ type BundleVerifier interface {
 }
 
 const (
-	// maxTarballBytes caps cumulative uncompressed bytes extracted from a plugin
-	// tarball. Defends against gzip-bomb payloads (spec §5.1 size guidance).
-	maxTarballBytes = 100 << 20 // 100 MiB
-
-	// maxTarballFiles caps the number of entries (files + directories) extracted
-	// from a plugin tarball. Defends against inode-exhaustion DoS where a small
-	// tarball can encode millions of zero-byte entries that pass the byte cap.
-	maxTarballFiles = 10_000
-
 	// Plugin status values that mirror the DB CHECK constraint.
 	statusPendingReview = "pending_review"
 	statusActive        = "active"
@@ -85,6 +76,7 @@ const (
 	auditPubkeyMismatch         = "plugin_pubkey_mismatch"
 	auditManifestMaterialChange = "plugin_manifest_material_change"
 	auditManifestCosmeticChange = "plugin_manifest_cosmetic_change"
+	auditDowngradeRefused       = "plugin_downgrade_refused"
 
 	// Audit severity levels.
 	severityHigh = "high"
@@ -416,6 +408,31 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 			}
 		}
 		return existing.ID, false, existing.Status, nil
+	}
+
+	// Downgrade guard: refuse to install a lower semver over a higher installed version.
+	// Only enforced when both versions are valid semver; if either is non-semver
+	// (e.g. a hand-edited legacy version string) we fall through to the existing update
+	// path rather than blocking — version was historically cosmetic (manifest/diff.go)
+	// and we must not break pre-semver installs. The guard fires before the pubkey check
+	// so a lower-version tarball with a different key produces a downgrade-refused event
+	// rather than a pubkey-mismatch event (downgrade is the primary rejection reason).
+	if isValidSemver(m.Version) && isValidSemver(existing.PluginVersion) {
+		if compareVersions(m.Version, existing.PluginVersion) < 0 {
+			slog.WarnContext(ctx, "plugin downgrade refused",
+				"name", m.Name,
+				"installed_version", existing.PluginVersion,
+				"rejected_version", m.Version,
+			)
+			if err := in.recordAuditEvent(ctx, auditDowngradeRefused, severityHigh, nowStr, map[string]any{
+				"name":              m.Name,
+				"installed_version": existing.PluginVersion,
+				"rejected_version":  m.Version,
+			}); err != nil {
+				return "", false, "", fmt.Errorf("record downgrade_refused audit for %q: %w", m.Name, err)
+			}
+			return existing.ID, false, existing.Status, nil
+		}
 	}
 
 	// TOFU pubkey trust check: only applies to verified (signed) bundles.

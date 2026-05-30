@@ -2057,3 +2057,132 @@ func TestInstall_TmpDirUnderPluginsDir(t *testing.T) {
 		t.Errorf("binary_path = %q; want prefix %q (must be under pluginsDir, not /tmp)", *row.BinaryPath, pluginsDir)
 	}
 }
+
+// TestInstall_Downgrade_Refused verifies that installing a lower semver over a
+// higher installed version is rejected: the DB row stays at the higher version,
+// no binary is displaced, onInstalled is not called for the refused install,
+// and a plugin_downgrade_refused audit event with high severity is emitted.
+func TestInstall_Downgrade_Refused(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, true) // allowUnsigned to keep the test focused on version ordering
+
+	// Install 1.1 first (no callback registered yet, so we can baseline separately).
+	tarPath11 := unsignedPluginTarball(t, "downgrade-plugin", "1.1")
+	if _, err := inst.Install(context.Background(), tarPath11); err != nil {
+		t.Fatalf("Install 1.1: %v", err)
+	}
+
+	row11, err := q.GetPluginByName(context.Background(), "downgrade-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after 1.1: %v", err)
+	}
+	dbVersionAfterFirstInstall := row11.Version
+	savedBinaryPath := row11.BinaryPath
+
+	// Register the callback now — any call hereafter is from the downgrade attempt.
+	callCount := 0
+	inst.OnInstalled(func(_ context.Context, _ string) { callCount++ })
+
+	// Now attempt to install 1.0 — must be refused.
+	tarPath10 := unsignedPluginTarball(t, "downgrade-plugin", "1.0")
+	if _, err := inst.Install(context.Background(), tarPath10); err != nil {
+		t.Fatalf("Install 1.0 (downgrade attempt): unexpected error %v", err)
+	}
+
+	row10, err := q.GetPluginByName(context.Background(), "downgrade-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after downgrade attempt: %v", err)
+	}
+
+	// Plugin version must remain at 1.1.
+	if row10.PluginVersion != "1.1" {
+		t.Errorf("plugin_version = %q after downgrade attempt, want 1.1", row10.PluginVersion)
+	}
+	// DB row version counter must not have advanced (no update was issued).
+	if row10.Version != dbVersionAfterFirstInstall {
+		t.Errorf("db version counter = %d, want %d (no row update should have occurred)", row10.Version, dbVersionAfterFirstInstall)
+	}
+	// binary_path must be unchanged.
+	if savedBinaryPath != nil && row10.BinaryPath != nil && *row10.BinaryPath != *savedBinaryPath {
+		t.Errorf("binary_path changed after downgrade attempt: got %q, want %q", *row10.BinaryPath, *savedBinaryPath)
+	}
+
+	// onInstalled must not have fired for the refused downgrade.
+	if callCount != 0 {
+		t.Errorf("onInstalled called %d time(s) after a refused downgrade; want 0", callCount)
+	}
+
+	// A plugin_downgrade_refused audit event with high severity must exist.
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditDowngradeRefused,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list downgrade_refused events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected a plugin_downgrade_refused audit event, got none")
+	}
+	if events[0].Severity != "high" {
+		t.Errorf("audit severity = %q, want high", events[0].Severity)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(events[0].PayloadJson), &payload); err != nil {
+		t.Fatalf("parse downgrade_refused audit payload: %v", err)
+	}
+	if payload["name"] != "downgrade-plugin" {
+		t.Errorf("audit payload name = %q, want downgrade-plugin", payload["name"])
+	}
+	if payload["installed_version"] != "1.1" {
+		t.Errorf("audit payload installed_version = %q, want 1.1", payload["installed_version"])
+	}
+	if payload["rejected_version"] != "1.0" {
+		t.Errorf("audit payload rejected_version = %q, want 1.0", payload["rejected_version"])
+	}
+}
+
+// TestInstall_NonSemver_FallsThrough verifies that when either of the installed
+// or incoming version strings is not valid semver, the downgrade guard does not
+// fire and the install proceeds normally through the existing update path.
+// Version was historically cosmetic (manifest/diff.go), and we must not block
+// pre-semver or hand-edited version strings.
+func TestInstall_NonSemver_FallsThrough(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, true) // allowUnsigned for simplicity
+
+	// Install a non-semver version first.
+	tar1 := unsignedPluginTarball(t, "nonsemver-plugin", "hand-edited-v1")
+	if _, err := inst.Install(context.Background(), tar1); err != nil {
+		t.Fatalf("Install hand-edited-v1: %v", err)
+	}
+
+	// Install another non-semver version — guard must not block it.
+	tar2 := unsignedPluginTarball(t, "nonsemver-plugin", "hand-edited-v0")
+	if _, err := inst.Install(context.Background(), tar2); err != nil {
+		t.Fatalf("Install hand-edited-v0 (non-semver fallthrough): %v", err)
+	}
+
+	row, err := q.GetPluginByName(context.Background(), "nonsemver-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+	// The second install must have gone through (no downgrade guard for non-semver).
+	if row.PluginVersion != "hand-edited-v0" {
+		t.Errorf("plugin_version = %q, want hand-edited-v0 (non-semver guard must fall through)", row.PluginVersion)
+	}
+
+	// No downgrade_refused events should have been emitted.
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditDowngradeRefused,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list downgrade_refused events: %v", err)
+	}
+	if len(events) > 0 {
+		t.Errorf("got %d downgrade_refused events for non-semver install, want 0", len(events))
+	}
+}
