@@ -8,6 +8,31 @@
 // --emit-manifest. It writes the plugin's manifest JSON to stdout so that
 // gleipnir-plugin gen-manifest can capture and canonicalise it.
 //
+// # Ergonomic seam (recommended)
+//
+// Authors implement tool.Service, channel.Service, or trigger.Service from the
+// corresponding sub-packages and register them via the WithXHandler options:
+//
+//	serve.Serve(
+//	    serve.WithManifest(pluginManifest),
+//	    serve.WithToolHandler(func(host hostv1.HostServiceClient) tool.Service {
+//	        return NewToolService(host)
+//	    }),
+//	)
+//
+// The ergonomic seam keeps proto types, ErrorEnvelope construction, and
+// []byte↔string JSON conversion inside the serve package. Authors deal only in
+// plain Go types and pluginerr codes. See plugin-sdk/examples/minimal-tool and
+// plugins/ntfy for working examples.
+//
+// # Raw gRPC seam (advanced)
+//
+// Authors who need full control over the generated proto types can implement
+// toolv1.ToolServiceServer / channelv1.ChannelServiceServer /
+// triggerv1.TriggerServiceServer directly and register them via WithToolService
+// / WithChannelService / WithTriggerService. plugins/slack is the canonical
+// example of this path (see ADR-050).
+//
 // # Choosing an event_id for TriggerService plugins
 //
 // Every StartResponse message must carry a stable event_id that the host uses
