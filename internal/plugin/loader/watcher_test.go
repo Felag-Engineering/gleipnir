@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -94,11 +95,15 @@ func TestWatcher_DebouncesBurstWrites(t *testing.T) {
 func TestWatcher_InitialSweep(t *testing.T) {
 	dir := t.TempDir()
 
-	// Drop the tarball BEFORE the watcher starts.
+	// Drop a real tarball BEFORE the watcher starts. The sweep now calls
+	// ReadManifestFromTarball so garbage bytes no longer schedule anything —
+	// we need a parseable manifest.yaml inside the archive.
 	tarPath := filepath.Join(dir, "pre-existing.tar.gz")
-	if err := os.WriteFile(tarPath, []byte("content"), 0o644); err != nil {
-		t.Fatalf("write pre-existing tarball: %v", err)
-	}
+	manifestBytes := []byte("schema_version: v1\nname: pre-existing\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	writeTarball(t, tarPath, []tarEntry{
+		{name: "manifest.yaml", content: manifestBytes, mode: 0o644},
+		{name: "pre-existing", content: []byte("fake binary"), mode: 0o755},
+	})
 
 	stub := &stubInstaller{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -280,4 +285,114 @@ func TestWatcher_RemoveCancelsPendingTimer(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// makeManifestTarball writes a minimal (unsigned) tarball with the given
+// name and version into dir, returning the absolute path.
+func makeManifestTarball(t *testing.T, dir, filename, name, version string) string {
+	t.Helper()
+	manifestBytes := []byte("schema_version: v1\nname: " + name + "\nversion: " + version + "\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	tarPath := filepath.Join(dir, filename)
+	writeTarball(t, tarPath, []tarEntry{
+		{name: "manifest.yaml", content: manifestBytes, mode: 0o644},
+		{name: name, content: []byte("fake binary for " + name), mode: 0o755},
+	})
+	return tarPath
+}
+
+// sweepPaths runs the watcher over a pre-populated directory and collects the
+// set of absolute paths that were scheduled for install. It cancels after the
+// debounce window has elapsed for all expected installs.
+func sweepPaths(t *testing.T, dir string, expectedCount int) []string {
+	t.Helper()
+	stub := &stubInstaller{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w := NewWatcher(dir, stub.install, WithDebounce(testDebounce))
+	done := runWatcher(t, ctx, w)
+
+	// Wait long enough for all debounce timers to fire.
+	stub.waitForCount(expectedCount, testDebounce*20)
+
+	cancel()
+	<-done
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	return append([]string(nil), stub.calls...)
+}
+
+// TestWatcher_Sweep_TwoVersions verifies that when two tarballs for the same
+// plugin name are present, only the higher version is scheduled.
+func TestWatcher_Sweep_TwoVersions(t *testing.T) {
+	dir := t.TempDir()
+	makeManifestTarball(t, dir, "myplugin-1.0.tar.gz", "myplugin", "1.0")
+	makeManifestTarball(t, dir, "myplugin-1.1.tar.gz", "myplugin", "1.1")
+
+	paths := sweepPaths(t, dir, 1)
+	if len(paths) != 1 {
+		t.Fatalf("sweep scheduled %d tarballs, want 1", len(paths))
+	}
+	if !strings.Contains(paths[0], "1.1") {
+		t.Errorf("sweep scheduled %q; want the 1.1 tarball", paths[0])
+	}
+}
+
+// TestWatcher_Sweep_SemverLexicalTrap verifies that 1.10 beats 1.9 even though
+// "1.10" < "1.9" under plain lexical ordering.
+func TestWatcher_Sweep_SemverLexicalTrap(t *testing.T) {
+	dir := t.TempDir()
+	makeManifestTarball(t, dir, "slack-1.9.tar.gz", "slack", "1.9")
+	makeManifestTarball(t, dir, "slack-1.10.tar.gz", "slack", "1.10")
+
+	paths := sweepPaths(t, dir, 1)
+	if len(paths) != 1 {
+		t.Fatalf("sweep scheduled %d tarballs, want 1", len(paths))
+	}
+	if !strings.Contains(paths[0], "1.10") {
+		t.Errorf("sweep scheduled %q; want the 1.10 tarball (semver ordering, not lexical)", paths[0])
+	}
+}
+
+// TestWatcher_Sweep_FilenameOrderIndependence verifies that the sweep picks the
+// highest version regardless of which filename sorts first under os.ReadDir.
+// Here "slack-1.10.tar.gz" < "slack-1.9.tar.gz" lexically, so without version
+// selection the last-processed file would be the wrong choice.
+func TestWatcher_Sweep_FilenameOrderIndependence(t *testing.T) {
+	dir := t.TempDir()
+	// Filenames sort as: "slack-1.10.tar.gz" < "slack-1.9.tar.gz" alphabetically.
+	// Without version selection the sweep would install 1.9 last, overwriting 1.10.
+	makeManifestTarball(t, dir, "slack-1.10.tar.gz", "slack", "1.10")
+	makeManifestTarball(t, dir, "slack-1.9.tar.gz", "slack", "1.9")
+
+	paths := sweepPaths(t, dir, 1)
+	if len(paths) != 1 {
+		t.Fatalf("sweep scheduled %d tarballs, want 1", len(paths))
+	}
+	if !strings.Contains(paths[0], "1.10") {
+		t.Errorf("sweep scheduled %q; want the 1.10 tarball (filename order must not matter)", paths[0])
+	}
+}
+
+// TestWatcher_Sweep_GarbageSkipped verifies that an unreadable (garbage) tarball
+// alongside a valid one does not abort the sweep: the valid tarball is scheduled
+// and the garbage file is skipped.
+func TestWatcher_Sweep_GarbageSkipped(t *testing.T) {
+	dir := t.TempDir()
+	makeManifestTarball(t, dir, "valid-1.0.tar.gz", "valid", "1.0")
+
+	// Write garbage bytes that will fail gzip decoding.
+	garbagePath := filepath.Join(dir, "garbage.tar.gz")
+	if err := os.WriteFile(garbagePath, []byte("not a tarball"), 0o644); err != nil {
+		t.Fatalf("write garbage: %v", err)
+	}
+
+	paths := sweepPaths(t, dir, 1)
+	if len(paths) != 1 {
+		t.Fatalf("sweep scheduled %d tarballs, want 1 (garbage should be skipped)", len(paths))
+	}
+	if !strings.Contains(paths[0], "valid") {
+		t.Errorf("sweep scheduled %q; want the valid tarball", paths[0])
+	}
 }
