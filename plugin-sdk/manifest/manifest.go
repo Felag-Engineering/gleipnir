@@ -117,12 +117,11 @@ type Manifest struct {
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler so that *yaml.Node fields are
-// correctly decoded. The default yaml.v3 decoder does not populate *yaml.Node
-// struct fields; this custom decoder uses value intermediaries and converts.
+// correctly decoded. yaml.v3 does not populate *yaml.Node struct fields; the
+// plain struct below uses rawNode for those fields so the decoder can reach
+// them. See rawnode.go for the full explanation of the quirk.
 func (m *Manifest) UnmarshalYAML(value *yaml.Node) error {
-	// manifestAlias mirrors Manifest with *yaml.Node fields replaced by
-	// yaml.Node (value type) so yaml.v3 populates them correctly.
-	type manifestAlias struct {
+	type plain struct {
 		SchemaVersion      string          `yaml:"schema_version"`
 		Name               string          `yaml:"name"`
 		Version            string          `yaml:"version"`
@@ -135,35 +134,32 @@ func (m *Manifest) UnmarshalYAML(value *yaml.Node) error {
 		EventKinds         []EventKindDecl `yaml:"event_kinds,omitempty"`
 		Channels           []ChannelDecl   `yaml:"channels,omitempty"`
 		Tier2              []string        `yaml:"tier2_capabilities,omitempty"`
-		ConfigSchema       yaml.Node       `yaml:"config_schema,omitempty"`
-		SubscriptionSchema yaml.Node       `yaml:"subscription_schema,omitempty"`
+		ConfigSchema       rawNode         `yaml:"config_schema,omitempty"`
+		SubscriptionSchema rawNode         `yaml:"subscription_schema,omitempty"`
 		SBOM               string          `yaml:"sbom,omitempty"`
 	}
-	var alias manifestAlias
-	if err := value.Decode(&alias); err != nil {
+	var p plain
+	if err := value.Decode(&p); err != nil {
 		return err
 	}
-	m.SchemaVersion = alias.SchemaVersion
-	m.Name = alias.Name
-	m.Version = alias.Version
-	m.Description = alias.Description
-	m.Author = alias.Author
-	m.License = alias.License
-	m.Services = alias.Services
-	m.Auth = alias.Auth
-	m.Tools = alias.Tools
-	m.EventKinds = alias.EventKinds
-	m.Channels = alias.Channels
-	m.Tier2 = alias.Tier2
-	m.SBOM = alias.SBOM
-	if alias.ConfigSchema.Kind != 0 {
-		node := alias.ConfigSchema
-		m.ConfigSchema = &node
-	}
-	if alias.SubscriptionSchema.Kind != 0 {
-		node := alias.SubscriptionSchema
-		m.SubscriptionSchema = &node
-	}
+	m.SchemaVersion = p.SchemaVersion
+	m.Name = p.Name
+	m.Version = p.Version
+	m.Description = p.Description
+	m.Author = p.Author
+	m.License = p.License
+	m.Services = p.Services
+	m.Auth = p.Auth
+	m.Tools = p.Tools
+	m.EventKinds = p.EventKinds
+	m.Channels = p.Channels
+	m.Tier2 = p.Tier2
+	m.SBOM = p.SBOM
+	// An absent field leaves .Node == nil. An explicit YAML null (~) still
+	// yields a non-nil *yaml.Node (a null ScalarNode), identical to the prior
+	// Kind != 0 behaviour, so dropping that guard is not a behaviour change.
+	m.ConfigSchema = p.ConfigSchema.Node
+	m.SubscriptionSchema = p.SubscriptionSchema.Node
 	return nil
 }
 
@@ -246,28 +242,24 @@ type ToolDecl struct {
 
 // UnmarshalYAML implements yaml.Unmarshaler for ToolDecl.
 func (t *ToolDecl) UnmarshalYAML(value *yaml.Node) error {
-	type toolAlias struct {
-		Name             string    `yaml:"name"`
-		Description      string    `yaml:"description,omitempty"`
-		InputSchema      yaml.Node `yaml:"input_schema,omitempty"`
-		OutputSchema     yaml.Node `yaml:"output_schema,omitempty"`
-		ApprovalRequired bool      `yaml:"approval_required,omitempty"`
+	type plain struct {
+		Name             string  `yaml:"name"`
+		Description      string  `yaml:"description,omitempty"`
+		InputSchema      rawNode `yaml:"input_schema,omitempty"`
+		OutputSchema     rawNode `yaml:"output_schema,omitempty"`
+		ApprovalRequired bool    `yaml:"approval_required,omitempty"`
 	}
-	var alias toolAlias
-	if err := value.Decode(&alias); err != nil {
+	var p plain
+	if err := value.Decode(&p); err != nil {
 		return err
 	}
-	t.Name = alias.Name
-	t.Description = alias.Description
-	t.ApprovalRequired = alias.ApprovalRequired
-	if alias.InputSchema.Kind != 0 {
-		node := alias.InputSchema
-		t.InputSchema = &node
-	}
-	if alias.OutputSchema.Kind != 0 {
-		node := alias.OutputSchema
-		t.OutputSchema = &node
-	}
+	t.Name = p.Name
+	t.Description = p.Description
+	t.ApprovalRequired = p.ApprovalRequired
+	// Absent fields leave .Node == nil; an explicit null (~) yields a non-nil
+	// null ScalarNode — identical to the prior Kind != 0 behaviour.
+	t.InputSchema = p.InputSchema.Node
+	t.OutputSchema = p.OutputSchema.Node
 	return nil
 }
 
@@ -306,30 +298,25 @@ type Example struct {
 
 // UnmarshalYAML implements yaml.Unmarshaler for EventKindDecl.
 func (e *EventKindDecl) UnmarshalYAML(value *yaml.Node) error {
-	type ekAlias struct {
-		Kind          string      `yaml:"kind"`
-		Description   string      `yaml:"description,omitempty"`
-		BindingSchema yaml.Node   `yaml:"binding_schema,omitempty"`
-		PayloadSchema yaml.Node   `yaml:"payload_schema,omitempty"`
-		Examples      []yaml.Node `yaml:"examples,omitempty"`
+	type plain struct {
+		Kind          string    `yaml:"kind"`
+		Description   string    `yaml:"description,omitempty"`
+		BindingSchema rawNode   `yaml:"binding_schema,omitempty"`
+		PayloadSchema rawNode   `yaml:"payload_schema,omitempty"`
+		Examples      []rawNode `yaml:"examples,omitempty"`
 	}
-	var alias ekAlias
-	if err := value.Decode(&alias); err != nil {
+	var p plain
+	if err := value.Decode(&p); err != nil {
 		return err
 	}
-	e.Kind = alias.Kind
-	e.Description = alias.Description
-	if alias.BindingSchema.Kind != 0 {
-		node := alias.BindingSchema
-		e.BindingSchema = &node
-	}
-	if alias.PayloadSchema.Kind != 0 {
-		node := alias.PayloadSchema
-		e.PayloadSchema = &node
-	}
-	for _, ex := range alias.Examples {
-		ex := ex
-		e.Examples = append(e.Examples, &ex)
+	e.Kind = p.Kind
+	e.Description = p.Description
+	// Absent fields leave .Node == nil; an explicit null (~) yields a non-nil
+	// null ScalarNode — identical to the prior Kind != 0 behaviour.
+	e.BindingSchema = p.BindingSchema.Node
+	e.PayloadSchema = p.PayloadSchema.Node
+	for _, ex := range p.Examples {
+		e.Examples = append(e.Examples, ex.Node)
 	}
 	return nil
 }
@@ -442,20 +429,19 @@ func (m *Manifest) HasTier2(cap string) bool {
 
 // UnmarshalYAML implements yaml.Unmarshaler for ChannelDecl.
 func (c *ChannelDecl) UnmarshalYAML(value *yaml.Node) error {
-	type chanAlias struct {
-		ImplementsNotify  bool      `yaml:"implements_notify,omitempty"`
-		ImplementsRequest bool      `yaml:"implements_request,omitempty"`
-		ConfigSchema      yaml.Node `yaml:"config_schema,omitempty"`
+	type plain struct {
+		ImplementsNotify  bool    `yaml:"implements_notify,omitempty"`
+		ImplementsRequest bool    `yaml:"implements_request,omitempty"`
+		ConfigSchema      rawNode `yaml:"config_schema,omitempty"`
 	}
-	var alias chanAlias
-	if err := value.Decode(&alias); err != nil {
+	var p plain
+	if err := value.Decode(&p); err != nil {
 		return err
 	}
-	c.ImplementsNotify = alias.ImplementsNotify
-	c.ImplementsRequest = alias.ImplementsRequest
-	if alias.ConfigSchema.Kind != 0 {
-		node := alias.ConfigSchema
-		c.ConfigSchema = &node
-	}
+	c.ImplementsNotify = p.ImplementsNotify
+	c.ImplementsRequest = p.ImplementsRequest
+	// Absent field leaves .Node == nil; an explicit null (~) yields a non-nil
+	// null ScalarNode — identical to the prior Kind != 0 behaviour.
+	c.ConfigSchema = p.ConfigSchema.Node
 	return nil
 }
