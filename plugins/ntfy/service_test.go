@@ -3,81 +3,15 @@ package main
 import (
 	"context"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
-	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 	plugintest "github.com/felag-engineering/gleipnir/plugin-sdk/testing"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 )
-
-// setup starts in-process gRPC servers for both the fake host and the channel
-// service (via the ergonomic adapter). ntfyBackend is an optional httptest.Server
-// used as the fake ntfy endpoint; pass nil to create a ChannelService with no
-// backend configured. Returns the channel client, the fake host, and a cleanup function.
-func setup(t *testing.T, ntfyBackend *httptest.Server, hostOpts ...plugintest.Option) (channelv1.ChannelServiceClient, *plugintest.FakeHost, func()) {
-	t.Helper()
-
-	host := plugintest.NewFakeHost(hostOpts...)
-
-	// Start host gRPC server.
-	hostLis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for host: %v", err)
-	}
-	hostSrv := grpc.NewServer()
-	host.Register(hostSrv)
-	go func() { _ = hostSrv.Serve(hostLis) }()
-
-	// Dial the host and build the hostv1 client used by ChannelService.
-	hostConn, err := grpc.NewClient(hostLis.Addr().String(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("dial host: %v", err)
-	}
-	hostClient := hostv1.NewHostServiceClient(hostConn)
-
-	// Build the channel service, using the test HTTP client so requests go to
-	// the httptest.Server instead of the real internet.
-	var httpClient *http.Client
-	if ntfyBackend != nil {
-		httpClient = ntfyBackend.Client()
-	}
-	svc := NewChannelService(hostClient, httpClient)
-
-	// Start channel service gRPC server via the exported adapter constructor.
-	// This gives the test a live gRPC round-trip through the ergonomic seam,
-	// validating channelHandlerAdapter in addition to ChannelService logic.
-	chanLis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for channel: %v", err)
-	}
-	chanSrv := grpc.NewServer()
-	channelv1.RegisterChannelServiceServer(chanSrv, serve.NewChannelServer(svc))
-	go func() { _ = chanSrv.Serve(chanLis) }()
-
-	// Dial the channel service.
-	chanConn, err := grpc.NewClient(chanLis.Addr().String(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("dial channel: %v", err)
-	}
-	chanClient := channelv1.NewChannelServiceClient(chanConn)
-
-	cleanup := func() {
-		chanConn.Close()
-		chanSrv.Stop()
-		hostConn.Close()
-		hostSrv.Stop()
-	}
-	return chanClient, host, cleanup
-}
 
 // TestNotify_Happy verifies a successful notification: correct URL path, Title
 // header, Authorization header, and body forwarded to the ntfy server.
@@ -93,13 +27,18 @@ func TestNotify_Happy(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	chanClient, _, cleanup := setup(t, backend,
+	h := plugintest.NewChannelHarness(t, func(hc hostv1.HostServiceClient) channel.Service {
+		var httpClient *http.Client
+		if backend != nil {
+			httpClient = backend.Client()
+		}
+		return NewChannelService(hc, httpClient)
+	},
 		plugintest.WithInstanceConfigJSON(`{"server_url":"`+backend.URL+`","default_topic":"alerts"}`),
 		plugintest.WithCredentialsJSON(`{"api_key":"k-test"}`),
 	)
-	defer cleanup()
 
-	resp, err := chanClient.Notify(context.Background(), &channelv1.NotifyRequest{
+	resp, err := h.Client.Notify(context.Background(), &channelv1.NotifyRequest{
 		PayloadJson: `{"title":"Alert","body":"something happened"}`,
 	})
 	if err != nil {
@@ -133,13 +72,18 @@ func TestNotify_PerAudienceTopicOverride(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	chanClient, _, cleanup := setup(t, backend,
+	h := plugintest.NewChannelHarness(t, func(hc hostv1.HostServiceClient) channel.Service {
+		var httpClient *http.Client
+		if backend != nil {
+			httpClient = backend.Client()
+		}
+		return NewChannelService(hc, httpClient)
+	},
 		plugintest.WithInstanceConfigJSON(`{"server_url":"`+backend.URL+`","default_topic":"alerts"}`),
 		plugintest.WithCredentialsJSON(`{}`),
 	)
-	defer cleanup()
 
-	resp, err := chanClient.Notify(context.Background(), &channelv1.NotifyRequest{
+	resp, err := h.Client.Notify(context.Background(), &channelv1.NotifyRequest{
 		ChannelConfigJson: `{"topic":"oncall"}`,
 		PayloadJson:       `{"body":"paging oncall"}`,
 	})
@@ -165,14 +109,19 @@ func TestNotify_NoTopicConfigured(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	chanClient, _, cleanup := setup(t, backend,
+	h := plugintest.NewChannelHarness(t, func(hc hostv1.HostServiceClient) channel.Service {
+		var httpClient *http.Client
+		if backend != nil {
+			httpClient = backend.Client()
+		}
+		return NewChannelService(hc, httpClient)
+	},
 		// No default_topic in instance config; no topic in channel config.
 		plugintest.WithInstanceConfigJSON(`{"server_url":"`+backend.URL+`"}`),
 		plugintest.WithCredentialsJSON(`{}`),
 	)
-	defer cleanup()
 
-	resp, err := chanClient.Notify(context.Background(), &channelv1.NotifyRequest{
+	resp, err := h.Client.Notify(context.Background(), &channelv1.NotifyRequest{
 		PayloadJson: `{"body":"test"}`,
 	})
 	if err != nil {
@@ -197,13 +146,18 @@ func TestNotify_NtfyServerError(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	chanClient, _, cleanup := setup(t, backend,
+	h := plugintest.NewChannelHarness(t, func(hc hostv1.HostServiceClient) channel.Service {
+		var httpClient *http.Client
+		if backend != nil {
+			httpClient = backend.Client()
+		}
+		return NewChannelService(hc, httpClient)
+	},
 		plugintest.WithInstanceConfigJSON(`{"server_url":"`+backend.URL+`","default_topic":"alerts"}`),
 		plugintest.WithCredentialsJSON(`{}`),
 	)
-	defer cleanup()
 
-	resp, err := chanClient.Notify(context.Background(), &channelv1.NotifyRequest{
+	resp, err := h.Client.Notify(context.Background(), &channelv1.NotifyRequest{
 		PayloadJson: `{"body":"test"}`,
 	})
 	if err != nil {
@@ -230,14 +184,19 @@ func TestNotify_NoAPIKey(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	chanClient, _, cleanup := setup(t, backend,
+	h := plugintest.NewChannelHarness(t, func(hc hostv1.HostServiceClient) channel.Service {
+		var httpClient *http.Client
+		if backend != nil {
+			httpClient = backend.Client()
+		}
+		return NewChannelService(hc, httpClient)
+	},
 		plugintest.WithInstanceConfigJSON(`{"server_url":"`+backend.URL+`","default_topic":"alerts"}`),
 		// Empty credentials — no api_key.
 		plugintest.WithCredentialsJSON(`{}`),
 	)
-	defer cleanup()
 
-	resp, err := chanClient.Notify(context.Background(), &channelv1.NotifyRequest{
+	resp, err := h.Client.Notify(context.Background(), &channelv1.NotifyRequest{
 		PayloadJson: `{"body":"no auth test"}`,
 	})
 	if err != nil {
