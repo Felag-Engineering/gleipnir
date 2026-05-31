@@ -2,31 +2,46 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"time"
+
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/trigger"
 )
 
-// TriggerService implements the TriggerService gRPC contract.
-//
-// Start is a long-lived stream. The plugin emits events via the provided emit
-// callback; the host routes them to matching policies.
-//
-// TODO: replace the example poll loop with real substrate subscription logic.
-type TriggerService struct{}
+// TriggerService implements trigger.Service with an example poll loop.
+// Replace the loop with your real substrate subscription logic.
+type TriggerService struct {
+	host hostv1.HostServiceClient
+}
 
-// Start begins the trigger event stream. It blocks until ctx is cancelled.
-// emit(kind, payload) forwards an event to the host.
-func (s *TriggerService) Start(ctx context.Context, emit func(kind string, payload []byte) error) error {
+// NewTriggerService creates a TriggerService that uses hostClient for host RPCs.
+// Stub methods do not dereference host, so NewTriggerService(nil) is safe in tests.
+func NewTriggerService(hostClient hostv1.HostServiceClient) *TriggerService {
+	return &TriggerService{host: hostClient}
+}
+
+// Start opens the event stream. It blocks until ctx is cancelled or emit returns
+// an error (which signals the host closed the stream).
+// Replace the ticker with real substrate subscription logic.
+func (s *TriggerService) Start(ctx context.Context, scope trigger.StartScope, emit func(trigger.Event) error) error {
 	// Example: emit an event every 60 seconds. Replace with real substrate logic.
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
+	var seq int
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			payload := []byte(`{"example": true}`)
-			if err := emit("example_event", payload); err != nil {
+			seq++
+			ev := trigger.Event{
+				EventID:   fmt.Sprintf("example-%d", seq),
+				EventKind: "example_event",
+				Payload:   []byte(`{"example":true}`),
+			}
+			if err := emit(ev); err != nil {
 				return err
 			}
 		}

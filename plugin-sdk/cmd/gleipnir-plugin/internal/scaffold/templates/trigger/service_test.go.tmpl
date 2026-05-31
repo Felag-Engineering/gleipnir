@@ -4,22 +4,22 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/felag-engineering/gleipnir/plugin-sdk/trigger"
 )
 
 func TestTriggerServiceCancellation(t *testing.T) {
-	svc := &TriggerService{}
+	// NewTriggerService(nil) is safe: Start does not dereference host.
+	svc := NewTriggerService(nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	var emitted []string
-	err := svc.Start(ctx, func(kind string, _ []byte) error {
-		emitted = append(emitted, kind)
+	err := svc.Start(ctx, trigger.StartScope{}, func(trigger.Event) error {
 		return nil
 	})
 
-	// Start should return when ctx is cancelled — context.DeadlineExceeded or
-	// context.Canceled are both acceptable.
+	// Start must return when ctx expires — DeadlineExceeded or Canceled both acceptable.
 	if err == nil {
 		t.Error("expected non-nil error when context cancelled, got nil")
 	}

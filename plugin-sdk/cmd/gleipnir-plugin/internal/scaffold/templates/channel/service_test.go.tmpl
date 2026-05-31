@@ -3,12 +3,31 @@ package main
 import (
 	"context"
 	"testing"
+
+	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 )
 
 func TestNotify(t *testing.T) {
-	svc := &ChannelService{}
-	// Notify must not return an error for a well-formed message.
-	if err := svc.Notify(context.Background(), []byte(`{"text":"hello"}`)); err != nil {
+	// NewChannelService(nil, nil) is safe: stub Notify does not dereference host.
+	svc := NewChannelService(nil, nil)
+
+	err := svc.Notify(context.Background(), channel.Notification{
+		EventType: "test",
+		Payload:   []byte(`{"text":"hello"}`),
+	})
+	if err != nil {
 		t.Errorf("Notify: %v", err)
+	}
+}
+
+func TestRequestUnimplemented(t *testing.T) {
+	svc := NewChannelService(nil, nil)
+
+	err := svc.Request(context.Background(), channel.FeedbackRequest{
+		RequestID: "req-1",
+		Prompt:    "approve?",
+	})
+	if err == nil {
+		t.Error("expected error from stub Request, got nil")
 	}
 }
