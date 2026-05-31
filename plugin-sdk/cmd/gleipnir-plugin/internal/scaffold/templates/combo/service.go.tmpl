@@ -3,56 +3,113 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
+
+	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/pluginerr"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/tool"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/trigger"
 )
 
-// ToolService implements the ToolService gRPC contract.
-// TODO: replace with real implementations.
-type ToolService struct{}
-
-func (s *ToolService) ListTools(_ context.Context) ([]string, error) {
-	return []string{"example_tool"}, nil
+// ToolService implements tool.Service.
+// Replace the stub methods with your real implementation.
+type ToolService struct {
+	host hostv1.HostServiceClient
 }
 
-func (s *ToolService) Call(_ context.Context, tool string, input []byte) ([]byte, error) {
-	switch tool {
+// NewToolService creates a ToolService that uses hostClient for host RPCs.
+// Stub methods do not dereference host, so NewToolService(nil) is safe in tests.
+func NewToolService(hostClient hostv1.HostServiceClient) *ToolService {
+	return &ToolService{host: hostClient}
+}
+
+// ListTools returns the tools this plugin exposes. Must match manifest.go.
+func (s *ToolService) ListTools(_ context.Context) ([]tool.ToolSpec, error) {
+	return []tool.ToolSpec{
+		{
+			Name:        "example_tool",
+			Description: "An example tool — replace with your implementation.",
+			InputSchema: `{"type":"object","properties":{},"additionalProperties":false}`,
+		},
+	}, nil
+}
+
+// Call dispatches a tool call to the appropriate handler.
+func (s *ToolService) Call(_ context.Context, name string, input []byte) ([]byte, error) {
+	switch name {
 	case "example_tool":
+		// TODO: implement example_tool.
 		_ = input
 		return []byte(`{"result":"ok"}`), nil
 	default:
-		return nil, fmt.Errorf("unknown tool: %s", tool)
+		return nil, pluginerr.InvalidArg(fmt.Sprintf("unknown tool: %q", name))
 	}
 }
 
-// ChannelService implements the ChannelService gRPC contract.
-// Delete Notify or Request if you only implement one.
-// TODO: replace with real implementations.
-type ChannelService struct{}
+// ChannelService implements channel.Service with Notify and Request stubs.
+// Delete Request and update manifest.go if you only implement Notify.
+type ChannelService struct {
+	host       hostv1.HostServiceClient
+	httpClient *http.Client
+}
 
-func (s *ChannelService) Notify(_ context.Context, msg []byte) error {
-	_ = msg
+// NewChannelService creates a ChannelService that uses hostClient for host RPCs
+// and httpClient for outbound HTTP calls.
+// Stub methods do not dereference host, so NewChannelService(nil, nil) is safe in tests.
+func NewChannelService(hostClient hostv1.HostServiceClient, httpClient *http.Client) *ChannelService {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	return &ChannelService{host: hostClient, httpClient: httpClient}
+}
+
+// Notify delivers a fire-and-forget notification.
+func (s *ChannelService) Notify(_ context.Context, n channel.Notification) error {
+	// TODO: implement Notify.
+	_ = n
 	return nil
 }
 
-func (s *ChannelService) Request(_ context.Context, requestID string, msg []byte) error {
-	_ = requestID
-	_ = msg
-	return fmt.Errorf("Request: not yet implemented")
+// Request opens a request/response feedback channel.
+func (s *ChannelService) Request(_ context.Context, r channel.FeedbackRequest) error {
+	// TODO: implement Request, or delete this method for Notify-only plugins.
+	_ = r
+	return pluginerr.Unimplemented("Request not yet implemented")
 }
 
-// TriggerService implements the TriggerService gRPC contract.
-// TODO: replace with real substrate subscription logic.
-type TriggerService struct{}
+// TriggerService implements trigger.Service with an example poll loop.
+// Replace the loop with your real substrate subscription logic.
+type TriggerService struct {
+	host hostv1.HostServiceClient
+}
 
-func (s *TriggerService) Start(ctx context.Context, emit func(kind string, payload []byte) error) error {
+// NewTriggerService creates a TriggerService that uses hostClient for host RPCs.
+// Stub methods do not dereference host, so NewTriggerService(nil) is safe in tests.
+func NewTriggerService(hostClient hostv1.HostServiceClient) *TriggerService {
+	return &TriggerService{host: hostClient}
+}
+
+// Start opens the event stream. It blocks until ctx is cancelled or emit returns an error.
+func (s *TriggerService) Start(ctx context.Context, scope trigger.StartScope, emit func(trigger.Event) error) error {
+	// Example: emit an event every 60 seconds. Replace with real substrate logic.
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
+
+	var seq int
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := emit("example_event", []byte(`{"example":true}`)); err != nil {
+			seq++
+			ev := trigger.Event{
+				EventID:   fmt.Sprintf("example-%d", seq),
+				EventKind: "example_event",
+				Payload:   []byte(`{"example":true}`),
+			}
+			if err := emit(ev); err != nil {
 				return err
 			}
 		}

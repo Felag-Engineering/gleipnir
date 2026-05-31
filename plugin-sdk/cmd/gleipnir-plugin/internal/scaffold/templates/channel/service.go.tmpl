@@ -2,30 +2,46 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"net/http"
+
+	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/pluginerr"
 )
 
-// ChannelService implements the ChannelService gRPC contract.
-//
-// Delete the methods you don't implement and update manifest.go accordingly.
-// TODO: replace stubbed methods with real implementations.
-type ChannelService struct{}
+// ChannelService implements channel.Service with Notify and Request stubs.
+// Delete Request and update manifest.go if you only implement Notify.
+type ChannelService struct {
+	host       hostv1.HostServiceClient
+	httpClient *http.Client
+}
+
+// NewChannelService creates a ChannelService that uses hostClient for host RPCs
+// and httpClient for outbound HTTP calls.
+// Stub methods do not dereference host, so NewChannelService(nil, nil) is safe in tests.
+func NewChannelService(hostClient hostv1.HostServiceClient, httpClient *http.Client) *ChannelService {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	return &ChannelService{host: hostClient, httpClient: httpClient}
+}
 
 // Notify delivers a fire-and-forget notification.
 // Failures are audited and metric-counted but do NOT fail the run.
-func (s *ChannelService) Notify(_ context.Context, msg []byte) error {
+func (s *ChannelService) Notify(_ context.Context, n channel.Notification) error {
 	// TODO: implement Notify.
-	_ = msg
+	_ = n
 	return nil
 }
 
-// Request sends a notification and asynchronously awaits a human response.
-// The plugin acks the request within 5s, then later calls WriteAuditStep with
-// a feedback_response step carrying the request_id.
-func (s *ChannelService) Request(_ context.Context, requestID string, msg []byte) error {
-	// TODO: implement Request.
-	// Delete this method if you only implement Notify.
-	_ = requestID
-	_ = msg
-	return fmt.Errorf("Request: not yet implemented")
+// Request opens a request/response feedback channel. The plugin must
+// synchronously ack (return nil) within 5s, then later call WriteAuditStep
+// with a feedback_response step carrying the request_id.
+//
+// Remove this method and set ImplementsRequest: false in manifest.go if you
+// only implement Notify.
+func (s *ChannelService) Request(_ context.Context, r channel.FeedbackRequest) error {
+	// TODO: implement Request, or delete this method for Notify-only plugins.
+	_ = r
+	return pluginerr.Unimplemented("Request not yet implemented")
 }

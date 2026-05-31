@@ -3,29 +3,28 @@ package main
 import (
 	"net/http"
 
-	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
-	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
-	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/tool"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/trigger"
 )
 
 func main() {
-	// serve.Serve is the last call in every plugin binary. Passing
-	// --emit-manifest as the first argument causes it to write the manifest
-	// JSON to stdout and exit, which is what gleipnir-plugin gen-manifest uses.
+	// serve.Serve wires up the go-plugin transport, registers all three services,
+	// and blocks until the host disconnects or a signal is received.
+	//
+	// Passing --emit-manifest as the first argument causes it to write the
+	// manifest JSON to stdout and exit (used by gleipnir-plugin gen-manifest).
 	serve.Serve(
 		serve.WithManifest(pluginManifest),
-		serve.WithChannelService(func(host hostv1.HostServiceClient) channelv1.ChannelServiceServer {
-			// TODO: replace with your ChannelService constructor.
-			return NewChannelService(host, http.DefaultClient)
-		}),
-		serve.WithToolService(func(host hostv1.HostServiceClient) toolv1.ToolServiceServer {
-			// TODO: replace with your ToolService constructor.
+		serve.WithToolHandler(func(host hostv1.HostServiceClient) tool.Service {
 			return NewToolService(host)
 		}),
-		serve.WithTriggerService(func(host hostv1.HostServiceClient) triggerv1.TriggerServiceServer {
-			// TODO: replace with your TriggerService constructor.
+		serve.WithChannelHandler(func(host hostv1.HostServiceClient) channel.Service {
+			return NewChannelService(host, http.DefaultClient)
+		}),
+		serve.WithTriggerHandler(func(host hostv1.HostServiceClient) trigger.Service {
 			return NewTriggerService(host)
 		}),
 	)

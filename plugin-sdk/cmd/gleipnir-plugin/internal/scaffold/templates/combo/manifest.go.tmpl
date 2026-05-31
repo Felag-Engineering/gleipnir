@@ -1,39 +1,40 @@
 package main
 
-// declareManifest returns the builder-style manifest declarations for this
-// combo plugin (tool + channel + trigger). gleipnir-plugin gen-manifest invokes
-// the binary with --emit-manifest which calls serve.EmitManifest().
-//
-// TODO: replace with real manifest builder API when serve.EmitManifest is
-// implemented (Phase 3 loader PR, #170).
-func declareManifest() interface{} {
-	return map[string]interface{}{
-		"schema_version": "v1",
-		"name":           "{{.Name}}",
-		"version":        "0.1.0",
-		"services": map[string]string{
-			"tool":    "v1",
-			"channel": "v1",
-			"trigger": "v1",
+import "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+
+// pluginManifest declares this plugin's metadata and capabilities.
+// Pass it to serve.WithManifest so --emit-manifest can write manifest.json
+// and so the host learns what services this binary provides.
+var pluginManifest = manifest.Manifest{
+	SchemaVersion: "v1",
+	Name:          "{{.Name}}",
+	Version:       "0.1.0",
+	Description:   "{{.Name}} Gleipnir plugin.",
+	Services: manifest.Services{
+		Tool:    "v1",
+		Channel: "v1",
+		Trigger: "v1",
+	},
+	Auth: manifest.AuthDecl{
+		Mode:     "instance_credentials",
+		Strategy: "none",
+	},
+	Tools: []manifest.ToolDecl{
+		{
+			Name:        "example_tool",
+			Description: "An example tool — replace with your implementation.",
 		},
-		"auth": map[string]string{"mode": "instance_credentials", "strategy": "none"},
-		"tools": []map[string]string{
-			{
-				"name":        "example_tool",
-				"description": "An example tool — replace with your implementation.",
-			},
+	},
+	Channels: []manifest.ChannelDecl{
+		{
+			ImplementsNotify:  true,
+			ImplementsRequest: true,
 		},
-		"channels": []map[string]interface{}{
-			{
-				"implements_notify":  true,
-				"implements_request": true,
-			},
+	},
+	EventKinds: []manifest.EventKindDecl{
+		{
+			Kind:        "example_event",
+			Description: "An example event kind — replace with your implementation.",
 		},
-		"event_kinds": []map[string]interface{}{
-			{
-				"kind":        "example_event",
-				"description": "An example event kind — replace with your implementation.",
-			},
-		},
-	}
+	},
 }

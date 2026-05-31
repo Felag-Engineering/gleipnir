@@ -2,18 +2,22 @@ package main
 
 import (
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
-	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/tool"
 )
 
 func main() {
-	// serve.Serve is the last call in every plugin binary. Passing
-	// --emit-manifest as the first argument causes it to write the manifest
-	// JSON to stdout and exit, which is what gleipnir-plugin gen-manifest uses.
+	// serve.Serve wires up the go-plugin transport, registers ToolService, and
+	// blocks until the host disconnects or a signal is received.
+	//
+	// Passing --emit-manifest as the first argument causes it to write the
+	// manifest JSON to stdout and exit (used by gleipnir-plugin gen-manifest).
+	//
+	// WithToolHandler is the ergonomic seam: implement tool.Service without
+	// touching proto types directly.
 	serve.Serve(
 		serve.WithManifest(pluginManifest),
-		serve.WithToolService(func(host hostv1.HostServiceClient) toolv1.ToolServiceServer {
-			// TODO: replace with your ToolService constructor.
+		serve.WithToolHandler(func(host hostv1.HostServiceClient) tool.Service {
 			return NewToolService(host)
 		}),
 	)
