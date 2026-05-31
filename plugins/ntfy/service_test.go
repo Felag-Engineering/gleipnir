@@ -13,13 +13,14 @@ import (
 
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 	plugintest "github.com/felag-engineering/gleipnir/plugin-sdk/testing"
 )
 
 // setup starts in-process gRPC servers for both the fake host and the channel
-// service. ntfyBackend is an optional httptest.Server used as the fake ntfy
-// endpoint; pass nil to create a ChannelService with no backend configured.
-// Returns the channel client, the fake host, and a cleanup function.
+// service (via the ergonomic adapter). ntfyBackend is an optional httptest.Server
+// used as the fake ntfy endpoint; pass nil to create a ChannelService with no
+// backend configured. Returns the channel client, the fake host, and a cleanup function.
 func setup(t *testing.T, ntfyBackend *httptest.Server, hostOpts ...plugintest.Option) (channelv1.ChannelServiceClient, *plugintest.FakeHost, func()) {
 	t.Helper()
 
@@ -50,13 +51,15 @@ func setup(t *testing.T, ntfyBackend *httptest.Server, hostOpts ...plugintest.Op
 	}
 	svc := NewChannelService(hostClient, httpClient)
 
-	// Start channel service gRPC server.
+	// Start channel service gRPC server via the exported adapter constructor.
+	// This gives the test a live gRPC round-trip through the ergonomic seam,
+	// validating channelHandlerAdapter in addition to ChannelService logic.
 	chanLis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for channel: %v", err)
 	}
 	chanSrv := grpc.NewServer()
-	channelv1.RegisterChannelServiceServer(chanSrv, svc)
+	channelv1.RegisterChannelServiceServer(chanSrv, serve.NewChannelServer(svc))
 	go func() { _ = chanSrv.Serve(chanLis) }()
 
 	// Dial the channel service.

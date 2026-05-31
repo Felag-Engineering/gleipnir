@@ -9,7 +9,10 @@ import (
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/tool"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/trigger"
 )
 
 // config holds the resolved options for a Serve or EmitManifest call.
@@ -74,4 +77,51 @@ func WithManifest(m manifest.Manifest) Option {
 // default is slog.Default(). Useful in tests to capture log output.
 func WithLogger(l *slog.Logger) Option {
 	return func(c *config) { c.logger = l }
+}
+
+// WithToolHandler registers an ergonomic ToolService factory. The factory
+// receives the typed HostServiceClient after Bootstrap.Bind completes, exactly
+// like WithToolService. The ergonomic tool.Service return value is wrapped via
+// NewToolServer before being stored, so it satisfies toolv1.ToolServiceServer.
+//
+// Passing both WithToolService and WithToolHandler is supported but the last
+// option applied wins (newConfig applies options in order). Do not pass both
+// for the same service type — it is confusing and the earlier one is silently
+// dropped.
+func WithToolHandler(f func(hostv1.HostServiceClient) tool.Service) Option {
+	return func(c *config) {
+		c.toolFactory = func(h hostv1.HostServiceClient) toolv1.ToolServiceServer {
+			return NewToolServer(f(h))
+		}
+	}
+}
+
+// WithChannelHandler registers an ergonomic ChannelService factory. The
+// factory receives the typed HostServiceClient after Bootstrap.Bind completes,
+// exactly like WithChannelService. The ergonomic channel.Service return value
+// is wrapped via NewChannelServer before being stored.
+//
+// Passing both WithChannelService and WithChannelHandler is supported but the
+// last option applied wins. Do not pass both for the same service type.
+func WithChannelHandler(f func(hostv1.HostServiceClient) channel.Service) Option {
+	return func(c *config) {
+		c.channelFactory = func(h hostv1.HostServiceClient) channelv1.ChannelServiceServer {
+			return NewChannelServer(f(h))
+		}
+	}
+}
+
+// WithTriggerHandler registers an ergonomic TriggerService factory. The
+// factory receives the typed HostServiceClient after Bootstrap.Bind completes,
+// exactly like WithTriggerService. The ergonomic trigger.Service return value
+// is wrapped via NewTriggerServer before being stored.
+//
+// Passing both WithTriggerService and WithTriggerHandler is supported but the
+// last option applied wins. Do not pass both for the same service type.
+func WithTriggerHandler(f func(hostv1.HostServiceClient) trigger.Service) Option {
+	return func(c *config) {
+		c.triggerFactory = func(h hostv1.HostServiceClient) triggerv1.TriggerServiceServer {
+			return NewTriggerServer(f(h))
+		}
+	}
 }

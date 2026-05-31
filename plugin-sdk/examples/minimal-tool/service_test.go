@@ -11,11 +11,13 @@ import (
 
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 	plugintest "github.com/felag-engineering/gleipnir/plugin-sdk/testing"
 )
 
 // setup starts an in-process gRPC server hosting both the fake host and the
-// tool service. It returns the tool client, the fake host, and a cleanup function.
+// tool service (via the ergonomic adapter). It returns the tool client, the
+// fake host, and a cleanup function.
 func setup(t *testing.T, hostOpts ...plugintest.Option) (toolv1.ToolServiceClient, *plugintest.FakeHost, func()) {
 	t.Helper()
 
@@ -38,13 +40,14 @@ func setup(t *testing.T, hostOpts ...plugintest.Option) (toolv1.ToolServiceClien
 	}
 	hostClient := hostv1.NewHostServiceClient(hostConn)
 
-	// Start the tool service gRPC server.
+	// Start the tool service gRPC server via the exported adapter constructor.
+	// This gives the test a live gRPC round-trip through the ergonomic seam.
 	toolLis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for tool: %v", err)
 	}
 	toolSrv := grpc.NewServer()
-	toolv1.RegisterToolServiceServer(toolSrv, NewToolService(hostClient))
+	toolv1.RegisterToolServiceServer(toolSrv, serve.NewToolServer(NewToolService(hostClient)))
 	go func() { _ = toolSrv.Serve(toolLis) }()
 
 	// Dial the tool service.

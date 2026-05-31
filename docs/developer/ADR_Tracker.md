@@ -64,6 +64,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-047 | Plugin observability surface — metrics prefix, cardinality cap, Log RPC instead of stdout, OTEL deferred | 🟢 Decided | v2.0 (plugins) | internal/plugin/hostsvc/metrics.go, internal/plugin/hostsvc/handlers.go (Log/EmitMetric), internal/plugin/process/logpipe.go, internal/plugin/state/metrics.go, spec §12 |
 | ADR-048 | Subscribed trigger type — internal-only name, flat picker, no JSONPath for plugin bindings, single-trigger-per-policy v1 | 🟢 Decided | v2.0 (plugins) | internal/model (TriggerType), internal/policy (parser/validator), internal/trigger (new subscribed handler), policy editor trigger picker, spec §7 |
 | ADR-049 | Redact-on-read for plugin instance config secret fields (x-gleipnir-secret) | 🟢 Decided | plugins | internal/plugin/configvalidate, internal/admin/plugin_handler, plugin-sdk/manifest, plugins/slack |
+| ADR-050 | Ergonomic Service seam coexists with raw gRPC seam in plugin-sdk | 🟢 Decided | plugins | plugin-sdk/tool, plugin-sdk/channel, plugin-sdk/trigger, plugin-sdk/pluginerr (new packages); plugin-sdk/serve (New*Server constructors, WithXHandler options); plugins/ntfy (migrated); plugins/slack (stays raw) |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
 | #199    | call_id propagation through gRPC metadata (spec §8.5)  | 🟢 Decided | v2.0 (plugins) | plugin-sdk/serve/callcontext.go, internal/plugin/hostsvc (new package), no new ADR — implements existing spec §8.5 contract |
 | #224    | OAuth2 authcode + clientcred host-side orchestration (spec §9.1/§9.2) | 🟢 Decided | v2.0 (plugins) | internal/plugin/oauth (new package, x/oauth2 + clientcredentials), internal/admin/plugin_oauth_handler.go, plugin_instances.credentials_encrypted, HMAC state envelope with HKDF subkey off GLEIPNIR_ENCRYPTION_KEY; no new ADR — implements existing spec §9 contract. Encryption helpers reused from internal/admin via function injection to avoid an import cycle; planned to move to internal/infra/crypto when #141 lands. |
@@ -121,6 +122,63 @@ Both write handlers (`PutInstanceConfig` and `PutInstanceConfigProperty`) synthe
 - Migrating `StoredCredentials.Token` to this mechanism (it is already write-only via the OAuth callback).
 - Nested object secrets (v1 redacts only top-level `properties`).
 - Frontend UI surface (tracked as follow-up after this API change).
+
+---
+
+## ADR-050: Ergonomic Service seam coexists with raw gRPC seam in plugin-sdk
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+The only author-facing seam for implementing plugin behaviour was the raw generated gRPC server interface injected via a host-client factory (e.g. `serve.WithToolService(func(host hostv1.HostServiceClient) toolv1.ToolServiceServer { ... })`). Authors had to implement `toolv1.ToolServiceServer` directly: deal in `*toolv1.CallRequest` / `*toolv1.CallResponse`, marshal/unmarshal `input_json` / `output_json` by hand, and construct `commonv1.ErrorEnvelope` values on every error path. The `plugin-sdk/examples/minimal-tool` service.go showed the cost: ~90 lines of proto plumbing for a trivial echo implementation.
+
+The `gleipnir-plugin new` scaffold's `service.go` template was already written to an ergonomic interface (`Call(ctx, name string, input []byte) ([]byte, error)`) that no SDK adapter satisfied, leaving the scaffold uncompilable. This gap motivated issue #457.
+
+### Decision
+
+#### 1. Proto-free ergonomic interfaces in new sub-packages
+
+Three new sub-packages — `plugin-sdk/tool`, `plugin-sdk/channel`, `plugin-sdk/trigger` — define ergonomic service interfaces (`tool.Service`, `channel.Service`, `trigger.Service`) with no proto types in their signatures. A fourth sub-package `plugin-sdk/pluginerr` provides a proto-free error-code enum and constructors (`InvalidArg`, `NotFound`, `Internal`, `Unavailable`, `Permission`, `RateLimited`, `Unimplemented`) so authors can signal structured errors without importing `gen/`.
+
+These packages are intentional leaf packages: they must not import `plugin-sdk/gen/` (the proto coupling lives only in `serve/`).
+
+#### 2. Adapters in serve/ via exported constructors
+
+`plugin-sdk/serve` receives three exported adapter constructors — `NewToolServer(tool.Service)`, `NewChannelServer(channel.Service)`, `NewTriggerServer(trigger.Service)` — that bridge the ergonomic interfaces onto the generated gRPC server interfaces. Error mapping is centralized in `serve/erroradapt.go`: `pluginerr.CodedError` maps 1:1 onto `commonv1.ErrorCode`; plain errors map to `ERROR_CODE_INTERNAL`. This is the only place in the codebase where proto error codes and ergonomic codes are coupled.
+
+`ListToolsResponse` has no `Error` field, so `ListTools` errors become a gRPC-level `codes.Internal` status (not an envelope). All other service method errors become application-level envelopes.
+
+The adapter structs stay unexported; the constructors are public. This lets tests register the real adapter for live gRPC round-trip coverage without exposing struct internals.
+
+#### 3. New ergonomic options alongside the raw options (last-option-wins)
+
+Three new option functions — `WithToolHandler`, `WithChannelHandler`, `WithTriggerHandler` — accept `func(hostv1.HostServiceClient) X.Service` factories and wrap the returned value via the exported constructors before storing it in the same `config.{tool,channel,trigger}Factory` field as the raw `WithXService` options. Zero changes to `server.go` are required: wiring, capability derivation (`Negotiate` keys off `*Factory != nil`), and the `Bind` install path are identical.
+
+Both raw and ergonomic options write the same config field. Last applied wins (newConfig applies options in order). Passing both `WithToolService` and `WithToolHandler` is valid but the earlier one is silently dropped; the doc comments warn against it.
+
+#### 4. Dogfood validation: ntfy migrated, slack stays raw
+
+`plugins/ntfy` was migrated to the ergonomic seam in the same PR (issue #457) as proof that the interface satisfies a real second consumer. `ChannelService` now implements `channel.Service`; `Request` returns `pluginerr.Unimplemented` (Notify-only plugin); `main.go` uses `WithChannelHandler`.
+
+`plugins/slack` intentionally stays on the raw `WithChannelService` seam. Slack's implementation exercises the full proto surface (direct `RequestRequest` field access, custom `NotifyResponse` construction) and the raw seam remains the right choice there. Slack's migration is tracked as a separate non-blocking follow-up.
+
+The acceptance criterion "raw variant kept as a second example if still useful" is satisfied by explicit decision: `plugins/slack` is the canonical raw consumer; no second raw example is added to `examples/`.
+
+#### 5. Host-client injection via factory, not context accessor
+
+Host-client injection uses the existing `func(hostv1.HostServiceClient) X.Service` factory pattern (same as the raw seam). The adapter does not auto-apply `serve.WithCallContext` — authors call it themselves inside service method bodies before outbound host RPCs. This preserves correct behaviour in detached goroutines (e.g. Trigger.Start background workers) where the adapter cannot know the correct propagation scope.
+
+### Deferred
+
+- Migration of `plugins/slack` to the ergonomic seam (tracked follow-up; not required to land this change).
+- Wrapper support for `FeedbackRequest.ChannelConfig` field-level helpers (v2, when feedback channel plugins are more common).
+
+### References
+
+- Spec §14.1 (SDK), §14.3 (manifest authoring), §14.6 (new scaffold)
+- Issue #457
 
 ---
 
