@@ -2170,9 +2170,9 @@ func TestRunHistoryRead_LimitClamping(t *testing.T) {
 	}
 
 	q := &fakeQuerier{
-		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
-		plugin:   db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("run_history_read")},
-		policies: []db.Policy{{ID: "pol-mine", Yaml: policyYAMLWithTool("myplugin.do_thing")}},
+		instance:           db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
+		plugin:             db.Plugin{ID: "plug-1", ManifestSnapshot: manifestWithTier2("run_history_read")},
+		policies:           []db.Policy{{ID: "pol-mine", Yaml: policyYAMLWithTool("myplugin.do_thing")}},
 		runsByPoliciesRows: rows,
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})

@@ -48,9 +48,9 @@ func TestCanonicalize(t *testing.T) {
 	tests := []struct {
 		name        string
 		input       []byte
-		wantOutput  []byte   // if set, assert byte-equal
-		wantContain string   // if set, assert output contains this substring
-		wantErr     string   // if set, assert error message contains this
+		wantOutput  []byte // if set, assert byte-equal
+		wantContain string // if set, assert output contains this substring
+		wantErr     string // if set, assert error message contains this
 	}{
 		{
 			name:       "JSON unordered keys → canonical YAML",
@@ -68,7 +68,7 @@ func TestCanonicalize(t *testing.T) {
 			wantOutput: []byte(canonicalManifestYAML),
 		},
 		{
-			name:        "key-ordering normalization: zebra_tool before alpha_tool → sorted output",
+			name: "key-ordering normalization: zebra_tool before alpha_tool → sorted output",
 			input: []byte(`schema_version: v1
 name: myplugin
 version: 2.0.0

@@ -63,4 +63,3 @@ func runGenManifest(binary, out string, cmd *cobra.Command) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote manifest to %s\n", out)
 	return nil
 }
-

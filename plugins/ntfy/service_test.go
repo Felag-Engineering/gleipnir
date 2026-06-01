@@ -7,10 +7,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	plugintest "github.com/felag-engineering/gleipnir/plugin-sdk/testing"
-	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 )
 
 // TestNotify_Happy verifies a successful notification: correct URL path, Title

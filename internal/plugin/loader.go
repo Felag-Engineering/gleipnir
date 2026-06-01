@@ -203,4 +203,3 @@ func (l *Loader) StartManager(ctx context.Context, cfg StartManagerConfig) error
 
 	return l.manager.StartAllActive(ctx)
 }
-

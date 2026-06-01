@@ -3,8 +3,8 @@ package main
 import (
 	"net/http"
 
-	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 )
 

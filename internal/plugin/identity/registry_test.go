@@ -136,7 +136,7 @@ func TestRegistry_LookupRejectsWrongLength(t *testing.T) {
 		token string
 	}{
 		{"empty", ""},
-		{"too_short_16_bytes", "AAAAAAAAAAAAAAAAAAAAAA"},  // 16 bytes base64url
+		{"too_short_16_bytes", "AAAAAAAAAAAAAAAAAAAAAA"},                                          // 16 bytes base64url
 		{"too_long_48_bytes", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}, // 48 bytes base64url
 		{"not_base64", "!!!not-valid-base64!!!"},
 	}

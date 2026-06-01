@@ -216,8 +216,8 @@ func TestManager_ConcurrentStart_SingleSubprocess(t *testing.T) {
 	}
 
 	var (
-		wg      sync.WaitGroup
-		errCh   = make(chan error, 2)
+		wg    sync.WaitGroup
+		errCh = make(chan error, 2)
 	)
 
 	for range 2 {

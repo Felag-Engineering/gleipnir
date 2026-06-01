@@ -338,4 +338,3 @@ func (rt *pluginRuntime) shutdown() {
 		slog.Warn("plugin dispatch pool close error", "err", err)
 	}
 }
-

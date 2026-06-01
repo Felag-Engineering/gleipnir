@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
-	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 	plugintest "github.com/felag-engineering/gleipnir/plugin-sdk/testing"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/tool"

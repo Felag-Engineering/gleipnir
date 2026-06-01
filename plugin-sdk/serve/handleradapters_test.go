@@ -17,11 +17,11 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	commonv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
-	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/pluginerr"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/tool"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/trigger"
@@ -72,7 +72,7 @@ func (f *fakeChannelService) Request(_ context.Context, _ channel.FeedbackReques
 // fakeTriggerService is an in-test trigger.Service implementation.
 // The emitted slice holds events to emit before returning emitErr.
 type fakeTriggerService struct {
-	emitted []trigger.Event
+	emitted  []trigger.Event
 	startErr error
 }
 
