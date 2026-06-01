@@ -3456,6 +3456,48 @@ func pluginSchemaWith(keys ...string) map[string]any {
 	}
 }
 
+// assertPluginPropertyEnum checks that properties[key] in the narrowed schema
+// carries the expected enum entries. Entries are compared by JSON marshaling
+// (same semantics as ValidateCall) so yaml-int / json-float64 comparisons work.
+func assertPluginPropertyEnum(t *testing.T, schema json.RawMessage, key string, wantEnum []any) {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(schema, &m); err != nil {
+		t.Fatalf("assertPluginPropertyEnum: unmarshal: %v", err)
+	}
+	propsMap, ok := m["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("assertPluginPropertyEnum: schema has no properties map")
+	}
+	propRaw, ok := propsMap[key]
+	if !ok {
+		t.Fatalf("assertPluginPropertyEnum: property %q not found", key)
+	}
+	propMap, ok := propRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("assertPluginPropertyEnum: property %q is not a map", key)
+	}
+	enumRaw, ok := propMap["enum"]
+	if !ok {
+		t.Fatalf("assertPluginPropertyEnum: property %q has no 'enum' key", key)
+	}
+	gotEnum, ok := enumRaw.([]any)
+	if !ok {
+		t.Fatalf("assertPluginPropertyEnum: property %q 'enum' is not []any", key)
+	}
+	if len(gotEnum) != len(wantEnum) {
+		t.Errorf("property %q enum len = %d, want %d (got %v, want %v)", key, len(gotEnum), len(wantEnum), gotEnum, wantEnum)
+		return
+	}
+	for i, want := range wantEnum {
+		wantBytes, _ := json.Marshal(want)
+		gotBytes, _ := json.Marshal(gotEnum[i])
+		if string(wantBytes) != string(gotBytes) {
+			t.Errorf("property %q enum[%d] = %v (json:%s), want %v (json:%s)", key, i, gotEnum[i], gotBytes, want, wantBytes)
+		}
+	}
+}
+
 // TestNew_NarrowsPluginToolSchema verifies that New() applies ADR-017 parameter
 // scoping to plugin tools: narrowedSchema is set to the policy-constrained view,
 // while tool.InputSchema retains the full raw schema. Mirrors TestNarrowSchema in
@@ -3464,12 +3506,26 @@ func TestNew_NarrowsPluginToolSchema(t *testing.T) {
 	baseSchema := pluginSchemaWith("namespace", "pod", "force")
 	noPropsSchema := map[string]any{"type": "object"} // no "properties" key
 
+	// Schema with force as boolean so force:true passes type-mismatch validation.
+	boolForceSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"namespace": map[string]any{"type": "string"},
+			"pod":       map[string]any{"type": "string"},
+			"force":     map[string]any{"type": "boolean"},
+		},
+		"required": []any{"namespace", "pod"},
+	}
+
 	tests := []struct {
 		name          string
 		schema        map[string]any
 		params        map[string]any
 		wantKeys      []string // nil means don't check properties
 		wantUnchanged bool     // narrowedSchema must equal marshaled schema
+		// wantEnumFor is a set of per-property enum assertions. Each entry maps a
+		// property key to the expected enum slice. Checked after wantKeys.
+		wantEnumFor map[string][]any
 	}{
 		{
 			name:          "nil Params — schema unchanged",
@@ -3484,28 +3540,36 @@ func TestNew_NarrowsPluginToolSchema(t *testing.T) {
 			wantUnchanged: true,
 		},
 		{
-			name:     "single key in Params — only that property survives",
-			schema:   baseSchema,
-			params:   map[string]any{"namespace": "x"},
-			wantKeys: []string{"namespace"},
+			// ADR-017: scalar param becomes a single-element enum constraining the
+			// LLM-facing schema. Explicit assertion guards against a regression where
+			// the enum is dropped and the property reverts to a free-form string.
+			name:        "single key in Params — only that property survives",
+			schema:      baseSchema,
+			params:      map[string]any{"namespace": "x"},
+			wantKeys:    []string{"namespace"},
+			wantEnumFor: map[string][]any{"namespace": {"x"}},
 		},
 		{
-			name:     "multiple keys in Params — only listed properties survive",
-			schema:   baseSchema,
-			params:   map[string]any{"namespace": "x", "pod": "y"},
-			wantKeys: []string{"namespace", "pod"},
+			name:        "multiple keys in Params — only listed properties survive",
+			schema:      baseSchema,
+			params:      map[string]any{"namespace": "x", "pod": "y"},
+			wantKeys:    []string{"namespace", "pod"},
+			wantEnumFor: map[string][]any{"namespace": {"x"}, "pod": {"y"}},
 		},
 		{
-			name:     "Params key not in schema — silently dropped",
-			schema:   baseSchema,
-			params:   map[string]any{"namespace": "x", "nonexistent": "y"},
-			wantKeys: []string{"namespace"},
+			name:        "Params key not in schema — silently dropped",
+			schema:      baseSchema,
+			params:      map[string]any{"namespace": "x", "nonexistent": "y"},
+			wantKeys:    []string{"namespace"},
+			wantEnumFor: map[string][]any{"namespace": {"x"}},
 		},
 		{
-			name:     "Params drops a required key — required entry removed",
-			schema:   baseSchema,
-			params:   map[string]any{"force": true},
-			wantKeys: []string{"force"},
+			// Uses boolForceSchema so force:true (boolean) matches type:boolean.
+			name:        "Params drops a required key — required entry removed",
+			schema:      boolForceSchema,
+			params:      map[string]any{"force": true},
+			wantKeys:    []string{"force"},
+			wantEnumFor: map[string][]any{"force": {true}},
 		},
 		{
 			name:          "schema with no properties — returned unchanged",
@@ -3560,6 +3624,12 @@ func TestNew_NarrowsPluginToolSchema(t *testing.T) {
 
 			assertSchemaProperties(t, entry.narrowedSchema, tc.wantKeys)
 
+			// Per-property enum assertions: verifies that scalar/slice params produced
+			// the expected enum values in the LLM-facing schema (ADR-017 enforcement).
+			for propKey, wantEnum := range tc.wantEnumFor {
+				assertPluginPropertyEnum(t, entry.narrowedSchema, propKey, wantEnum)
+			}
+
 			// Raw InputSchema must always be the full original schema.
 			if string(entry.tool.InputSchema) != string(rawSchema) {
 				t.Errorf("InputSchema modified; got %s, want %s", entry.tool.InputSchema, rawSchema)
@@ -3608,6 +3678,9 @@ func TestNew_PluginSchemaCannotBypassScoping(t *testing.T) {
 	// narrowedSchema must expose only "namespace".
 	entry := ba.toolsByName["my-plugin.do-thing"]
 	assertSchemaProperties(t, entry.narrowedSchema, []string{"namespace"})
+	// The namespace property must carry enum:["x"] — guards against a regression
+	// where the enum is silently dropped and the property reverts to free-form.
+	assertPluginPropertyEnum(t, entry.narrowedSchema, "namespace", []any{"x"})
 
 	// buildToolDefinitions feeds the narrowedSchema to the LLM — check that too.
 	defs := ba.buildToolDefinitions()
@@ -3622,6 +3695,8 @@ func TestNew_PluginSchemaCannotBypassScoping(t *testing.T) {
 		t.Fatal("plugin tool definition not found in buildToolDefinitions output")
 	}
 	assertSchemaProperties(t, pluginDef.InputSchema, []string{"namespace"})
+	// Verify that the enum constraint survives the path through buildToolDefinitions.
+	assertPluginPropertyEnum(t, pluginDef.InputSchema, "namespace", []any{"x"})
 }
 
 // TestHandleToolCall_PluginTool_ApprovalGated verifies that the approval
