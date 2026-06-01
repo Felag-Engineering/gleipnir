@@ -29,11 +29,11 @@ import (
 
 // fakePluginQuerier is an in-memory PluginQuerier for tests.
 type fakePluginQuerier struct {
-	instances       map[string]db.PluginInstance
-	plugins         map[string]db.Plugin
-	auditEvents     []db.PluginAuditEvent
+	instances        map[string]db.PluginInstance
+	plugins          map[string]db.Plugin
+	auditEvents      []db.PluginAuditEvent
 	pendingManifests map[string]db.PluginPendingManifest
-	policies        []db.Policy
+	policies         []db.Policy
 	// audienceEntries maps instance_id → list of audience entries for that instance.
 	audienceEntries map[string][]db.ListAudienceEntriesByInstanceRow
 	// casFailOn is the plugin ID that should return 0 rows for UpdatePluginTrustedPubkey
@@ -1039,7 +1039,6 @@ func withChiParams(r *http.Request, params map[string]string) *http.Request {
 	}
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }
-
 
 const (
 	// v1 manifest for accept-manifest tests.

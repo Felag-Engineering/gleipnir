@@ -10,11 +10,11 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
+	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
-	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/tool"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/trigger"

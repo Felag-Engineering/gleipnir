@@ -249,4 +249,3 @@ func rfc6901Unescape(tok string) string {
 	tok = strings.ReplaceAll(tok, "~0", "~")
 	return tok
 }
-

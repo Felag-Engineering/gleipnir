@@ -13,7 +13,7 @@ func TestIsValidSemver(t *testing.T) {
 		{"1.9", true},
 		{"1.10.0", true},
 		{"0.1.0-alpha", true},
-		{"v1.0.0", true},  // already has "v" prefix
+		{"v1.0.0", true}, // already has "v" prefix
 		{"", false},
 		{"not-semver", false},
 		{"1.9-final", false},

@@ -368,4 +368,3 @@ func eventKindMap(kinds []sdkmanifest.EventKindDecl) map[string]sdkmanifest.Even
 	}
 	return m
 }
-
