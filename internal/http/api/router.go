@@ -225,7 +225,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			r.Put("/settings/default-model", cfg.Handlers.AdminHandler.SetDefaultModel)
 			r.Get("/models", cfg.Handlers.AdminHandler.ListModelsAdmin)
 			r.Get("/models/all", cfg.Handlers.AdminHandler.ListAllModels(cfg.Services.ModelLister))
-			r.Put("/models/{id}/enabled", cfg.Handlers.AdminHandler.SetModelEnabled)
+			r.Put("/models/enabled", cfg.Handlers.AdminHandler.SetModelEnabled)
 			r.Get("/system-info", admin.GetSystemInfo(admin.SystemInfoDeps{
 				Version:   cfg.Metadata.Version,
 				StartTime: cfg.Metadata.StartTime,

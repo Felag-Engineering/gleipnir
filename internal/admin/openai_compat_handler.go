@@ -408,6 +408,13 @@ func (h *OpenAICompatHandler) TestProvider(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	h.modelsAvail[existing.Name] = modelsAvail
+	// The tester runs against a one-shot client; the registry-side client may
+	// still hold a stale model cache from a prior failed fetch. Drop it so the
+	// next /admin/models/all picks up the freshly verified backend state.
+	if err := h.registry.InvalidateModelCache(existing.Name); err != nil {
+		// Provider isn't registered (deleted between save and test). Not fatal.
+		_ = err
+	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok":                        true,
 		"models_endpoint_available": modelsAvail,
