@@ -240,9 +240,8 @@ func TestSetModelEnabled_DisableDefault_Returns409(t *testing.T) {
 		Value: "anthropic:claude-sonnet-4-20250514",
 	}
 
-	body := `{"provider": "anthropic", "enabled": false}`
-	req := httptest.NewRequest(http.MethodPut, "/models/claude-sonnet-4-20250514/enabled", strings.NewReader(body))
-	req = withChiParam(req, "id", "claude-sonnet-4-20250514")
+	body := `{"provider": "anthropic", "model_name": "claude-sonnet-4-20250514", "enabled": false}`
+	req := httptest.NewRequest(http.MethodPut, "/models/enabled", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.SetModelEnabled(rec, req)
 
@@ -265,14 +264,60 @@ func TestSetModelEnabled_DisableNonDefault_OK(t *testing.T) {
 		Value: "anthropic:claude-sonnet-4-20250514",
 	}
 
-	body := `{"provider": "openai", "enabled": false}`
-	req := httptest.NewRequest(http.MethodPut, "/models/gpt-4o/enabled", strings.NewReader(body))
-	req = withChiParam(req, "id", "gpt-4o")
+	body := `{"provider": "openai", "model_name": "gpt-4o", "enabled": false}`
+	req := httptest.NewRequest(http.MethodPut, "/models/enabled", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.SetModelEnabled(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSetModelEnabled_SlashInName guards the regression that prompted moving
+// the model identifier from the URL path to the request body. chi does not
+// URL-decode path params, so a model name like "google/gemma-4-e4b" used to
+// round-trip as "google%2Fgemma-4-e4b" — written under the encoded key in
+// the DB but compared against the decoded registry name on read, so the
+// toggle silently never took effect.
+func TestSetModelEnabled_SlashInName(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	body := `{"provider": "lmstudio", "model_name": "google/gemma-4-e4b", "enabled": true}`
+	req := httptest.NewRequest(http.MethodPut, "/models/enabled", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.SetModelEnabled(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	row, ok := q.models["lmstudio:google/gemma-4-e4b"]
+	if !ok {
+		t.Fatalf("expected row keyed by raw model name, got models: %#v", q.models)
+	}
+	if row.ModelName != "google/gemma-4-e4b" {
+		t.Errorf("model_name = %q, want %q", row.ModelName, "google/gemma-4-e4b")
+	}
+	if row.Enabled != 1 {
+		t.Errorf("enabled = %d, want 1", row.Enabled)
+	}
+}
+
+func TestSetModelEnabled_MissingFields(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	for _, body := range []string{
+		`{"provider": "lmstudio", "enabled": true}`,
+		`{"model_name": "x", "enabled": true}`,
+	} {
+		req := httptest.NewRequest(http.MethodPut, "/models/enabled", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.SetModelEnabled(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: expected 400, got %d", body, rec.Code)
+		}
 	}
 }
 
