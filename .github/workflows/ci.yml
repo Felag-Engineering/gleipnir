@@ -155,6 +155,21 @@ jobs:
       - name: Self-test (fixture must fail the lint)
         run: make lint-plugins-self-test
 
+  lint:
+    name: Lint (gofmt)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: gofmt
+        run: make lint-go-fmt
+
   # Build and test the plugin-sdk module independently of the root module.
   # Uses GOWORK=off so the workspace does not bleed into this job; the
   # replace directive in go.mod is the only cross-module link needed here.
