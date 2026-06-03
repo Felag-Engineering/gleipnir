@@ -35,7 +35,8 @@ npm run storybook        # Storybook on port 6006
 | `GLEIPNIR_APPROVAL_SCAN_INTERVAL` | `30s` | How often to check for timed-out approvals |
 | `GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT` | `30m` | Default timeout for feedback requests |
 | `GLEIPNIR_FEEDBACK_SCAN_INTERVAL` | `30s` | How often to check for timed-out feedback |
-| `GLEIPNIR_DEFAULT_PROVIDER` | `anthropic` | Default LLM provider |
+| `GLEIPNIR_DRAIN_TIMEOUT` | `5m` | Graceful-shutdown drain timeout for in-flight runs and background loops |
+| `GLEIPNIR_PID_FILE` | `/var/run/gleipnir.pid` | Path the server writes its PID to on startup |
 | `GLEIPNIR_PLUGINS_ENABLED` | `false` | Enable the host-side plugin loader (off by default this release; see docs/developer/plugin-system-spec.md §15.2). |
 | `GLEIPNIR_ENCRYPTION_KEY` | *(required)* | 64-char hex key (32-byte AES-256) for encrypting provider API keys and webhook secrets; generate with `openssl rand -hex 32` |
 
@@ -97,7 +98,7 @@ running | waiting_for_approval | waiting_for_feedback → interrupted (on restar
 
 ## Key packages
 
-See `docs/architecture.md` for the full package dependency graph (Mermaid diagram).
+See `docs/developer/architecture.md` for the full package dependency graph (Mermaid diagram).
 
 ```
 schemas/
@@ -108,14 +109,13 @@ cmd/
   gleipnirctl/        — local admin CLI; direct DB-level maintenance operations (rotate-key, reset-password). Run via `docker compose run --rm api gleipnirctl <command>`.
 
 internal/
-  approval/           — approval-specific timeout wiring (thin wrapper over timeout/)
+  admin/              — admin HTTP handlers (provider/model API keys, OpenAI-compat backends, system settings) + AES-256-GCM helpers for at-rest secret encryption
   arcade/             — Arcade.dev REST client + toolkit pre-authorization helpers (ADR-040)
   db/                 — sqlc-generated data access layer; queries live in internal/db/queries/
   execution/          — agent runtime subsystem
     agent/            — BoundAgent runner, LLM API loop, audit writer
     run/              — run lifecycle: RunManager (goroutine tracking), RunLauncher (concurrency + launch), AgentFactory, RunsHandler (HTTP endpoints for run inspection/control), sentinel concurrency errors
     runstate/         — canonical run status transition table and TransitionRunFailed helper
-  feedback/           — feedback-specific timeout wiring (thin wrapper over timeout/, ADR-031)
   http/               — HTTP layer subsystem
     api/              — router builder (RouterConfig + BuildRouter), chi route handlers, validation middleware, response helper re-exports
     auth/             — authentication, sessions, user management, role middleware
@@ -139,7 +139,7 @@ internal/
   policy/             — YAML parser, validator, system prompt renderer
   settings/           — read-side accessor for system_settings (default model, public URL); injected into runtime so non-admin packages don't depend on the admin HTTP handler
   testutil/           — shared test helpers
-  timeout/            — generic scan-and-resolve loop for expiring requests (used by approval/ and feedback/)
+  timeout/            — generic scan-and-resolve loop for expiring requests, plus the approval and feedback scanner constructors (NewApprovalScanner / NewFeedbackScanner) wired in main.go; agent-side approval/feedback request handling lives in execution/agent/
   trigger/            — trigger dispatch only: webhook, manual, scheduled, poll, and cron handlers (imports execution/run/ for launching)
 ```
 
