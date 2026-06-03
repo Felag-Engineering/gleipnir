@@ -35,7 +35,8 @@ npm run storybook        # Storybook on port 6006
 | `GLEIPNIR_APPROVAL_SCAN_INTERVAL` | `30s` | How often to check for timed-out approvals |
 | `GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT` | `30m` | Default timeout for feedback requests |
 | `GLEIPNIR_FEEDBACK_SCAN_INTERVAL` | `30s` | How often to check for timed-out feedback |
-| `GLEIPNIR_DEFAULT_PROVIDER` | `anthropic` | Default LLM provider |
+| `GLEIPNIR_DRAIN_TIMEOUT` | `5m` | Graceful-shutdown drain timeout for in-flight runs and background loops |
+| `GLEIPNIR_PID_FILE` | `/var/run/gleipnir.pid` | Path the server writes its PID to on startup |
 | `GLEIPNIR_PLUGINS_ENABLED` | `true` | Enable the host-side plugin loader (on by default; set to `false` to opt out for one more release before flag removal; see docs/developer/plugin-system-spec.md §15.2). |
 | `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` | `false` | When `true`, the loader accepts plugins lacking a Minisign `.minisig`/`signing.pub` pair (instance health = `unsigned_permissive`). Every load emits a high-severity audit event; admin UI shows a non-dismissible red banner; `/api/v1/health` reports `signature_verification: disabled`. **Signed plugins are still fully verified even in permissive mode.** Scope is global, not per-plugin. Read once at startup. See ADR-045 §6. |
 | `GLEIPNIR_PLUGINS_DIR` | `/plugins` | Directory watched by the fsnotify watcher for plugin tarballs (`.tar.gz`/`.tgz`). Only consulted when `GLEIPNIR_PLUGINS_ENABLED=true`. |
@@ -102,7 +103,7 @@ running | waiting_for_approval | waiting_for_feedback → interrupted (on restar
 
 ## Key packages
 
-See `docs/architecture.md` for the full package dependency graph (Mermaid diagram).
+See `docs/developer/architecture.md` for the full package dependency graph (Mermaid diagram).
 
 ```
 schemas/
@@ -113,14 +114,13 @@ cmd/
   gleipnirctl/        — local admin CLI; direct DB-level maintenance operations (rotate-key, reset-password). Run via `docker compose run --rm api gleipnirctl <command>`.
 
 internal/
-  approval/           — approval-specific timeout wiring (thin wrapper over timeout/)
+  admin/              — admin HTTP handlers (provider/model API keys, OpenAI-compat backends, system settings) + AES-256-GCM helpers for at-rest secret encryption
   arcade/             — Arcade.dev REST client + toolkit pre-authorization helpers (ADR-040)
   db/                 — sqlc-generated data access layer; queries live in internal/db/queries/
   execution/          — agent runtime subsystem
     agent/            — BoundAgent runner, LLM API loop, audit writer
     run/              — run lifecycle: RunManager (goroutine tracking), RunLauncher (concurrency + launch), AgentFactory, RunsHandler (HTTP endpoints for run inspection/control), sentinel concurrency errors
     runstate/         — canonical run status transition table and TransitionRunFailed helper
-  feedback/           — feedback-specific timeout wiring (thin wrapper over timeout/, ADR-031)
   http/               — HTTP layer subsystem
     api/              — router builder (RouterConfig + BuildRouter), chi route handlers, validation middleware, response helper re-exports
     auth/             — authentication, sessions, user management, role middleware
@@ -160,7 +160,7 @@ internal/
   policy/             — YAML parser, validator, system prompt renderer
   settings/           — read-side accessor for system_settings (default model, public URL); injected into runtime so non-admin packages don't depend on the admin HTTP handler
   testutil/           — shared test helpers
-  timeout/            — generic scan-and-resolve loop for expiring requests (used by approval/ and feedback/)
+  timeout/            — generic scan-and-resolve loop for expiring requests, plus the approval and feedback scanner constructors (NewApprovalScanner / NewFeedbackScanner) wired in main.go; agent-side approval/feedback request handling lives in execution/agent/
   toolregistry/       — neutral leaf package: in-memory uniqueness arbiter for the shared `<source>.<tool>` namespace. Imported by `internal/mcp` (MCP-side reservations) and `internal/plugin/tools` (plugin-side reservations); neither side imports the other (issue #194).
   trigger/            — trigger dispatch only: webhook, manual, scheduled, poll, and cron handlers (imports execution/run/ for launching)
 ```

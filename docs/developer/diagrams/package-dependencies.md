@@ -32,7 +32,6 @@ graph TD
     subgraph orchestration["Agent layer"]
         direction LR
         AGENT["<b>agent</b><br/>BoundAgent, AuditWriter,<br/>approval + feedback handlers"]
-        APPROVAL["<b>approval</b> · <b>feedback</b><br/>Timeout wiring"]
     end
 
     subgraph domain["Domain + integration layer"]
@@ -47,7 +46,7 @@ graph TD
         DB["<b>db</b><br/>SQLite, sqlc queries"]
         SSE["<b>sse</b><br/>Broadcaster"]
         RUNSTATE["<b>runstate</b><br/>Transition table"]
-        TIMEOUT["<b>timeout</b><br/>Scan-and-resolve"]
+        TIMEOUT["<b>timeout</b><br/>Scan-and-resolve;<br/>approval + feedback scanners"]
     end
 
     subgraph leaf["Leaf packages (internal/infra/ + shared types) — imported by nearly everything above"]
@@ -74,7 +73,6 @@ graph TD
     AGENT --> MCP
     AGENT --> POLICY
     AGENT --> DISPATCH
-    APPROVAL --> TIMEOUT
 
     MCP -.->|"must never import"| AGENT
 
