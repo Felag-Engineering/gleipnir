@@ -5,7 +5,7 @@ erDiagram
     policies {
         text id PK "ULID"
         text name UK "unique"
-        text trigger_type "webhook | manual | scheduled | poll"
+        text trigger_type "webhook | manual | scheduled | poll | cron | subscribed"
         text yaml "full policy config"
         text paused_at "nullable"
     }
@@ -46,10 +46,14 @@ erDiagram
     feedback_requests {
         text id PK "ULID"
         text run_id FK
+        text tool_name
+        text proposed_input "JSON"
         text message
         text status "pending | resolved | timed_out"
         text response "nullable"
-        text expires_at
+        text resolved_at "nullable"
+        text expires_at "nullable"
+        text created_at
     }
 
     mcp_servers {
@@ -121,23 +125,39 @@ erDiagram
         text created_at
     }
 
+    plugin_pending_manifests {
+        text plugin_id PK "FK → plugins"
+        text candidate_manifest "raw bytes"
+        text old_version
+        text new_version
+        text created_at
+        text updated_at
+    }
+
     plugin_pending_requests {
         text id PK "ULID"
         text plugin_instance_id FK
-        text request_id
         text run_id FK
-        text feedback_request_id FK "nullable"
-    }
-
-    plugin_oauth_nonces {
-        text nonce PK
-        text plugin_instance_id FK
+        text audience_entry_id FK "nullable (SET NULL)"
+        text tool_name
+        text status "pending | resolved | timed_out"
+        text response "nullable"
+        text expires_at "nullable"
+        text resolved_at "nullable"
         text created_at
     }
 
-    audiences {
+    plugin_oauth_nonces {
+        text nonce PK "base64url 32B"
+        text instance_id "not FK-enforced"
+        text expires_at
+        text created_at
+    }
+
+    plugin_audiences {
         text id PK "ULID"
         text name UK "unique"
+        text created_by_user_id FK "nullable"
         integer disable_in_app_fallback
         integer version
         text created_at
@@ -148,10 +168,10 @@ erDiagram
         text id PK "ULID"
         text audience_id FK
         text plugin_instance_id FK
+        integer position "UNIQUE with audience_id"
         integer notify
         integer request
         text config_json
-        integer priority
     }
 
     policies ||--o{ runs : "triggers"
@@ -162,9 +182,12 @@ erDiagram
     users ||--o{ sessions : "has"
     users ||--o{ user_roles : "has"
     plugins ||--o{ plugin_instances : "has instances"
+    plugins ||--o| plugin_pending_manifests : "pending manifest"
     plugin_instances ||--o{ plugin_audit_events : "audits"
     plugin_instances ||--o{ plugin_pending_requests : "pending requests"
+    runs ||--o{ plugin_pending_requests : "may have"
     plugin_instances ||--o{ plugin_oauth_nonces : "OAuth nonces"
-    audiences ||--o{ audience_entries : "entries"
+    plugin_audiences ||--o{ audience_entries : "entries"
     plugin_instances ||--o{ audience_entries : "routes to"
+    audience_entries ||--o{ plugin_pending_requests : "resolves"
 ```

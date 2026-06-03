@@ -1,6 +1,6 @@
 # Plugin generation lifecycle, drain, and shutdown
 
-**Status:** Design pass — must merge before #187 (fsnotify watcher), #189 (material-change detection), and the implementation issues filed off this doc.
+**Status:** Implemented — the generation reference counting + drain semantics (#190) and subprocess-shutdown wiring into ADR-038 graceful shutdown (#193) described here have shipped (`internal/plugin/generation/controller.go`, `internal/plugin/process/manager.go`), as have the fsnotify watcher (#187, `internal/plugin/loader/watcher.go`) and material-change detection (#189, `internal/plugin/manifest/diff.go`). Retained as the design rationale.
 **Companion ADRs:** ADR-038 (atomic run-state transitions), ADR-041 (plugin system umbrella), ADR-044 (channel routing — `request_id` is instance-scoped, not generation-scoped), ADR-045 (signing & TOFU trust).
 **Spec sections:** §3.2 (plugin vs instance vs generation), §4.2 (Channel `Request` lifecycle across generations), §5.1 (hot-reload), §13.3 (generation stacking), §13.4 (shutdown).
 

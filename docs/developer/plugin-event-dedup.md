@@ -12,9 +12,9 @@ Spec §4.3 mandates:
 
 > **Event delivery semantics.** `EmitEvent` is at-least-once. Plugins MUST include a stable `event_id` in the event envelope; the host dedupes against a 1-hour rolling window per `(plugin_instance, event_kind, event_id)`. Plugins that cannot synthesize a stable id from the substrate (e.g. a webhook substrate that delivers without a sequence number) should hash the canonical payload as a fallback — duplicate detection outside the stated window is best-effort. Ordering is per-stream (one Trigger `Start` stream preserves order); cross-stream ordering is not guaranteed.
 
-The unsettled sub-question is **where the dedup window lives**: in-memory or SQLite. Settling this now unblocks the `event_id` stability guidance issue (#214) and the implementation of trigger-dispatch routing (#158).
+The unsettled sub-question is **where the dedup window lives**: in-memory or SQLite. Settling this unblocks the `event_id` stability guidance issue (#214). Trigger-dispatch routing (#158) is now wired (see below); the remaining work is the dedup store itself, tracked in #215.
 
-The integration point in the current codebase is `internal/plugin/hostsvc/handlers.go:394` (`EmitEvent`). Validation of `event_id` non-empty is at line 400; validation of `event_kind` non-empty is at line 403; payload marshal begins at line 407. The dedup check inserts between line 405 and line 407. A `TODO (#158)` at line 418 marks the downstream routing that lands once dedup is wired.
+The integration point in the current codebase is `EmitEvent` in `internal/plugin/hostsvc/handlers_tier1.go` (the original `handlers.go` was split into `handlers_tier1.go`/`handlers_tier2.go`). `EmitEvent` begins near line 157; `event_id` and `event_kind` non-empty validation are immediately after (around lines 163 and 166); payload marshal begins around line 197. The dedup check inserts after validation and before the `publisher.Publish` / trigger-sink forward. Downstream routing is **already wired**: after publishing `plugin.event_emitted`, the handler forwards the event to the trigger dispatcher via `getTriggerSink()` → `sink.Handle(ctx, evt)` (the old `TODO (#158)` placeholder is gone). The dedup store is still a `Noop` (`internal/plugin/dedup`) until #215 lands the real rolling-window implementation. (Line numbers are approximate — verify against the file before relying on them.)
 
 ---
 
@@ -136,7 +136,7 @@ New environment variable `GLEIPNIR_PLUGIN_DEDUP_SWEEP_INTERVAL`, default `10m`. 
 
 ## 8. Host RPC integration
 
-Insertion point in `internal/plugin/hostsvc/handlers.go`: after `event_kind` validation (line 405), before payload marshal (line 407).
+Insertion point in `internal/plugin/hostsvc/handlers_tier1.go` (`EmitEvent`): after `event_kind` validation, before payload marshal.
 
 Pseudocode:
 
@@ -198,7 +198,7 @@ slog levels: `Debug` per duplicate (high frequency possible under redelivery sto
 
 ## 12. Test strategy
 
-**`handlers_test.go`** — table-driven `EmitEvent` cases:
+**`server_test.go`** (where the `TestEmitEvent_*` cases live) — table-driven `EmitEvent` cases:
 - First emission of a `(instance, kind, id)` triple → publishes, returns `Ok: true`.
 - Second emission of the same triple within 1h → deduplicated, returns `Ok: true`, does not publish.
 - Same triple after the sweep has cleared it → treated as novel again.
@@ -217,7 +217,7 @@ slog levels: `Debug` per duplicate (high frequency possible under redelivery sto
 - Cross-stream ordering guarantees (§4.3 explicitly disclaims this).
 - Persistence beyond 1 hour (the spec window is 1 hour; the sweep enforces it).
 - SDK-side `event_id` synthesis helper (tracked in #214).
-- Per-event-type trigger routing (tracked in #158; the TODO at `handlers.go:418` remains until that issue lands).
+- Per-event-type trigger routing (#158) — now wired via `getTriggerSink()`/`sink.Handle` in `EmitEvent`; no longer pending.
 
 ---
 
@@ -277,7 +277,7 @@ in `plugin_pending_requests.sql`.
   same millisecond): `var id ulid.ULID; _ = id.SetTime(uint64(time.Now().Add(-time.Hour).UnixMilli()))` —
   entropy left at its zero default.
 
-## Integration in `hostsvc/handlers.go`
+## Integration in `hostsvc/handlers_tier1.go`
 
 Wire `RecordEventIfNovel` between `event_kind` validation (line 405) and
 payload marshal (line 407). On `rowsAffected == 0`: increment duplicate
@@ -296,8 +296,9 @@ Construct `Sweeper` alongside approval/feedback scanners; launch
 
 ## Tests
 
-- `internal/plugin/hostsvc/handlers_test.go`: table-driven `EmitEvent`
-  cases covering novel, duplicate, and post-sweep-novel paths.
+- `internal/plugin/hostsvc/server_test.go` (alongside the existing
+  `TestEmitEvent_*` cases): table-driven `EmitEvent` cases covering
+  novel, duplicate, and post-sweep-novel paths.
 - `internal/plugin/eventdedup/sweeper_test.go`: insert rows with crafted
   past/present ULIDs; assert only rows > 1h old are swept.
 

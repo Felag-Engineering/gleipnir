@@ -61,7 +61,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-044 | Channel routing model — Notify/Request semantics, audience as shared resource | 🟢 Decided | v2.0 (plugins) | internal/plugin/channel (new), internal/execution/agent/feedback.go, admin audiences UI, ADR-031 (partial supersession) |
 | ADR-045 | Plugin signing & TOFU trust — Minisign tamper-evidence + first-install pubkey capture | 🟢 Decided | v2.0 (plugins) | internal/plugin (loader), plugin_instances.trusted_pubkey, GLEIPNIR_ALLOW_UNSIGNED_PLUGINS, spec §5 |
 | ADR-046 | Audit-table split — run_steps (LLM-visible) vs plugin_audit_events (operator-only) | 🟢 Decided | v2.0 (plugins) | plugin_audit_events table, WriteAuditStep RPC authorization, spec §12.3 |
-| ADR-047 | Plugin observability surface — metrics prefix, cardinality cap, Log RPC instead of stdout, OTEL deferred | 🟢 Decided | v2.0 (plugins) | internal/plugin/hostsvc/metrics.go, internal/plugin/hostsvc/handlers.go (Log/EmitMetric), internal/plugin/process/logpipe.go, internal/plugin/state/metrics.go, spec §12 |
+| ADR-047 | Plugin observability surface — metrics prefix, cardinality cap, Log RPC instead of stdout, OTEL deferred | 🟢 Decided | v2.0 (plugins) | internal/plugin/hostsvc/metrics.go, internal/plugin/hostsvc/handlers_tier1.go (Log/EmitMetric), internal/plugin/dispatch/channel_metrics.go, internal/plugin/process/{logpipe.go,rss_sampler.go}, internal/plugin/state/metrics.go, spec §12 |
 | ADR-048 | Subscribed trigger type — internal-only name, flat picker, no JSONPath for plugin bindings, single-trigger-per-policy v1 | 🟢 Decided | v2.0 (plugins) | internal/model (TriggerType), internal/policy (parser/validator), internal/trigger (new subscribed handler), policy editor trigger picker, spec §7 |
 | ADR-049 | Redact-on-read for plugin instance config secret fields (x-gleipnir-secret) | 🟢 Decided | plugins | internal/plugin/configvalidate, internal/admin/plugin_handler, plugin-sdk/manifest, plugins/slack |
 | ADR-050 | Ergonomic Service seam coexists with raw gRPC seam in plugin-sdk | 🟢 Decided | plugins | plugin-sdk/tool, plugin-sdk/channel, plugin-sdk/trigger, plugin-sdk/pluginerr (new packages); plugin-sdk/serve (New*Server constructors, WithXHandler options); plugins/ntfy (migrated); plugins/slack (stays raw) |
@@ -283,11 +283,11 @@ This design means plugins cannot escape the namespace (e.g. emit a metric named 
 
 The host appends `plugin` (the stable plugin ID) and `instance` (the instance ID) to every `GaugeVec` registration and every `With()` call for plugin-emitted metrics (`metrics.go:113-117`, `metrics.go:162-169`). Plugins do not supply these labels; submitting them explicitly via the RPC is an error (`reserved_label`; `metrics.go:75-79`).
 
-Auto-injection ensures that multi-instance deployments of the same plugin are always separable by label without any coordination from the plugin author. The label pair is the same `plugin`/`instance` pair used in log attrs emitted by the `Log` handler (`handlers.go:366-367`).
+Auto-injection ensures that multi-instance deployments of the same plugin are always separable by label without any coordination from the plugin author. The label pair is the same `plugin`/`instance` pair used in log attrs emitted by the `Log` handler (`Log` in `handlers_tier1.go`).
 
 #### 3. Cardinality cap — 100 distinct values per (metric, label-key), loud rejection
 
-The host tracks the set of distinct values per `(metric, label-key)` pair. Once the set reaches 100 values, any subsequent `EmitMetric` call that would add a new value is rejected with `codes.ResourceExhausted` and the error code `cardinality_cap_exceeded` (`metrics.go:14-16`, `metrics.go:94-100`, `handlers.go:298-303`). The call is rejected before any Prometheus registration occurs.
+The host tracks the set of distinct values per `(metric, label-key)` pair. Once the set reaches 100 values, any subsequent `EmitMetric` call that would add a new value is rejected with `codes.ResourceExhausted` and the error code `cardinality_cap_exceeded` (see `internal/plugin/hostsvc/metrics.go` and the `EmitMetric` handler in `handlers_tier1.go`). The call is rejected before any Prometheus registration occurs.
 
 The rejection is **loud** (gRPC error returned to the plugin, not silently swallowed) by deliberate design:
 
@@ -305,32 +305,26 @@ The `EmitMetric` RPC carries `(name, value, labels)` with no type discriminator.
 
 The host itself emits metrics in the `gleipnir_plugin_*` namespace to provide operator visibility into the plugin subsystem without requiring plugin cooperation.
 
-**Implemented in Phase 4:**
+**Implemented host-emitted metrics:**
 
 | Metric | Type | Labels | Implemented in |
 |--------|------|--------|----------------|
 | `gleipnir_plugin_health_transitions_total` | Counter | `from`, `to` | `internal/plugin/state/metrics.go` |
+| `gleipnir_plugin_rpc_duration_seconds` | Histogram | `rpc`, `plugin`, `instance` | `internal/plugin/dispatch/channel_metrics.go` |
+| `gleipnir_plugin_rpc_errors_total` | Counter | `rpc`, `plugin`, `instance` | `internal/plugin/dispatch/channel_metrics.go` |
+| `gleipnir_plugin_process_rss_bytes` | Gauge | `plugin`, `instance` | `internal/plugin/process/rss_sampler.go` |
 
-**Specified in `plugin-system-spec.md`, not yet implemented (deferred to Phase 5):**
-
-| Metric | Type | Labels | Spec reference |
-|--------|------|--------|----------------|
-| `gleipnir_plugin_rpc_duration_seconds` | Histogram | `rpc`, `plugin`, `instance` | spec §12.2 |
-| `gleipnir_plugin_process_rss_bytes` | Gauge | `plugin`, `instance` | spec §12.2, §13.1 |
-
-`gleipnir_plugin_health_transitions_total` uses `metrics.LabelFrom` and `metrics.LabelTo` label constants from `internal/infra/metrics` (`state/metrics.go:19`), consistent with ADR-037's shared label-key constants. Host-emitted metrics use `promauto.With(metrics.Registry())` to register on the same custom registry as all other Gleipnir metrics.
-
-When `gleipnir_plugin_rpc_duration_seconds` and `gleipnir_plugin_process_rss_bytes` are implemented, they should use `metrics.BucketsFast` (defined in `internal/infra/metrics/metrics.go:59`) for the RPC histogram and `metrics.Registry()` for registration, consistent with ADR-037.
+`gleipnir_plugin_health_transitions_total` uses `metrics.LabelFrom` and `metrics.LabelTo` label constants from `internal/infra/metrics` (`state/metrics.go:19`), consistent with ADR-037's shared label-key constants. The RPC histogram uses `metrics.BucketsFast` (defined in `internal/infra/metrics/metrics.go:59`); `gleipnir_plugin_rpc_errors_total` was added alongside it (beyond the spec) to track ChannelService RPC failures. All host-emitted metrics register via `promauto.With(metrics.Registry())` on the same custom registry as every other Gleipnir metric.
 
 #### 6. Plugin logging — `Log` Host RPC for production; stderr capture as fallback only
 
-Plugin log lines in production go through the **`Log` Host RPC** (`handlers.go:356-393`), not stdout or stderr. The rationale for this split is:
+Plugin log lines in production go through the **`Log` Host RPC** (`Log` in `handlers_tier1.go`), not stdout or stderr. The rationale for this split is:
 
 **Why `Log` over stdout/stderr:**
 - gRPC calls from a plugin are concurrent. Multiple runs can invoke one plugin instance at the same time; a single plugin goroutine's `fmt.Println` on stdout cannot be attributed to a specific `run_id` — lines interleave arbitrarily.
-- The `Log` RPC carries the `call_id` from the request context (set by `UnaryCallIDInterceptor`). When `call_id` resolves, the handler calls `logctx.WithRunCorrelation` with the associated `run_id` and `policy_id` (`handlers.go:375-376`), injecting full run correlation into every log record. The `call_id` itself is also added as a log attribute (`handlers.go:382`).
-- Without `call_id`, the `Log` handler still attributes the record to `plugin` and `instance` (`handlers.go:365-368`), giving operators enough context to identify the source.
-- All log paths flow through `logctx.Logger`, the host's slog pipeline (`handlers.go:391`), so plugin log lines appear in the same structured log stream as host log lines and are compatible with any log aggregator the operator uses.
+- The `Log` RPC carries the `call_id` from the request context (set by `UnaryCallIDInterceptor`). When `call_id` resolves, the handler calls `logctx.WithRunCorrelation` with the associated `run_id` and `policy_id`, injecting full run correlation into every log record. The `call_id` itself is also added as a log attribute.
+- Without `call_id`, the `Log` handler still attributes the record to `plugin` and `instance`, giving operators enough context to identify the source.
+- All log paths flow through `logctx.Logger`, the host's slog pipeline, so plugin log lines appear in the same structured log stream as host log lines and are compatible with any log aggregator the operator uses. (See the `Log` handler in `internal/plugin/hostsvc/handlers_tier1.go`.)
 
 **Stderr capture — fallback only:**
 Stdout is reserved by the `go-plugin` handshake protocol (the magic cookie negotiation line is written to stdout; reading it would corrupt the protocol). The host pipes only stderr (`process.go:148`: `stderrW, stderrDone := PipeLines(logger, slog.LevelWarn, "stderr")`). Lines written to stderr are scanned line by line by `internal/plugin/process/logpipe.go` (`PipeLines` function) and emitted through slog at `LevelWarn` with a `stream=stderr` attribute.
@@ -364,10 +358,9 @@ The plugin observability surface deliberately reuses existing Gleipnir packages 
 
 ### Out of scope
 
-- Host-emitted `gleipnir_plugin_rpc_duration_seconds` and `gleipnir_plugin_process_rss_bytes`. Specified in §12.2/§13.1; not yet implemented. Phase 5 work.
-- Counter and histogram types for plugin-emitted metrics. Requires a new `EmitMetricTyped` RPC or a declaration step at registration time.
+- Counter and histogram types for *plugin-emitted* metrics. Requires a new `EmitMetricTyped` RPC or a declaration step at registration time. (Note: the host-emitted `gleipnir_plugin_rpc_duration_seconds` and `gleipnir_plugin_process_rss_bytes` are now implemented — see the table above.)
 - OTEL / distributed tracing. Deferred to v2.
-- Per-call gRPC tracing (server interceptors that emit spans). Phase 5.
+- Per-call gRPC tracing (server interceptors that emit spans). Deferred.
 - The admin UI surface for browsing plugin log lines. Deferred.
 - Log rate limiting / sampling at the Host RPC boundary. Deferred; the slog pipeline handles volume in practice for homelab-scale deployments.
 
@@ -558,9 +551,11 @@ The variable is read once at host startup; runtime toggling is not supported (it
 
 #### 7. Per-instance health states
 
-The full set of v1 health states (per spec §5.6) is enumerated here so that downstream UI work has a stable contract:
+The signing/verification health states (per spec §5.6) are enumerated here so that downstream UI work has a stable contract:
 
 `healthy`, `signature_invalid`, `pending_key_approval`, `pending_manifest_approval`, `pending_config_migration`, `verification_error`, `unsigned_permissive`.
+
+The `plugin_instances.health_state` CHECK constraint also carries runtime/lifecycle states added by later work (issues #191, #230, #243): `unhealthy`, `crashed`, `circuit_broken`, `pending_reauthorize`, `inactive`. The full authoritative set lives in `schemas/sql_schemas.sql` (the `health_state` CHECK on `plugin_instances`).
 
 Each state is rendered as a colored chip on `/admin/plugins`, click-through reveals detail and admin actions (Accept new key / Approve manifest / View error / Revert / Remove pending update). Chip rendering and the action set are owned by issue #191; this ADR fixes the state names and the conditions under which the loader assigns them.
 
@@ -894,9 +889,10 @@ user-credentials mode in v1, no OpenTelemetry, etc.).
 - A new `plugin_audit_events` table will be added in a follow-up to
   house operational events outside the LLM-visible `run_steps`
   substrate.
-- Single global env var `GLEIPNIR_PLUGINS_ENABLED` (default off in
-  v1, removed two minor releases later) gates the external loader;
-  the in-app feedback Channel refactor lands flag-independent.
+- Single global env var `GLEIPNIR_PLUGINS_ENABLED` (now default on
+  after a stable opt-in cycle; to be removed entirely a release later)
+  gates the external loader; the in-app feedback Channel refactor
+  lands flag-independent.
 - Existing v1 invariants from ADR-001/004/007/008/017/018 remain the
   authoritative runtime guarantees; the plugin host must preserve them.
 - For any detail not addressed above,

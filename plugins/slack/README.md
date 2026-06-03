@@ -202,9 +202,9 @@ The broader `go test ./plugins/...` does not work, because each first-party plug
 | `TestParseSlackTS` | Valid ts parses correctly; malformed ts falls back to now |
 | `TestSlackSubscriptionScopeMatches` | Table-driven scope matching: by-id, by-name, mention-only, composed |
 | `TestDecodeSubscriptionScope` | Empty/`{}` → zero value; malformed → error |
-| `TestToolListToolsAdvertisesAll` | `ListTools` returns exactly 5 tools with valid JSON-Schema InputSchema |
+| `TestToolListToolsAdvertisesAll` | `ListTools` returns exactly 4 tools with valid JSON-Schema InputSchema |
 | `TestToolCancelIsNoOp` | `Cancel` returns an empty response with no error |
-| `TestToolCalls` | Table-driven: happy path × 5 tools, error cases, auth failures, unknown tool |
+| `TestToolCalls` | Table-driven: happy path × 4 tools, error cases, auth failures, unknown tool |
 | `TestToolCallMetricOutcomeLabel` | Metric `outcome` label is `"ok"` on success and `"error"` on error |
 | `TestToolCallCtxCancel` | Cancelled context surfaces as `UNAVAILABLE` |
 | `TestMapErr` | Slack error-code strings map to the correct `ErrorCode` + health hint |

@@ -1,7 +1,7 @@
 # Plugin System — Design Specification
 
-**Status:** Draft for review — design tree closed 2026-05-02; not yet implemented.
-**Audience:** Engineers, reviewers, and agents evaluating the design before implementation.
+**Status:** Implemented (v1) — design tree closed 2026-05-02; shipped on the `plugin-architecture` branch (ADRs 041–050). This document is retained as the design rationale; the ADR_Tracker is the source of truth for what is decided and implemented. Items still explicitly deferred (event dedup #215, typed plugin-emitted metric counters, per-policy/per-user credential scoping) are called out inline and in §15.
+**Audience:** Engineers, reviewers, and agents working on or extending the plugin system.
 **Companion docs:** `architecture.md` (system overview), `ADR_Tracker.md` (existing ADRs the plugin system extends or supersedes).
 
 ---
@@ -577,7 +577,7 @@ Two first-party plugins + four SDK examples, all in the main repo for v1 (split 
 
 - **`/plugins/slack/`** — kitchen-sink validation: all three kinds, OAuth2 authcode, real day-one value
 - **`/plugins/ntfy/`** — minimum-surface: channel-only Notify, ~100 LOC end-to-end readable
-- `/plugin-sdk/examples/`: `minimal-tool/`, `minimal-trigger/`, `minimal-channel/`, `static-api-key/`
+- `/plugin-sdk/examples/`: `minimal-tool/` (committed). Additional `minimal-trigger/`, `minimal-channel/`, and `static-api-key/` examples are scaffolded on demand via `gleipnir-plugin new --kind {trigger,channel,...}` rather than committed.
 
 Out of v1: GitHub plugin, email/SMTP, Discord/Telegram/Matrix (community territory).
 
@@ -606,11 +606,11 @@ Each step is shippable independently:
 
 ### 15.2 Feature flag
 
-Single global env var `GLEIPNIR_PLUGINS_ENABLED=false` default. Loader/manager doesn't start unless on. When off: `/admin/plugins` returns 404, audience editor hidden, plugin instance pickers empty.
+Single global env var `GLEIPNIR_PLUGINS_ENABLED`, now `true` by default (flipped on after a stable cycle — see lifecycle below). Loader/manager doesn't start unless on. When off: `/admin/plugins` returns 404, audience editor hidden, plugin instance pickers empty.
 
 **The flag is a temporary rollout mechanism, not a permanent config knob.** Lifecycle:
-1. Ships off-default in release N
-2. Flips on-default in release N+1 after a stable cycle
+1. ~~Ships off-default in release N~~ (done)
+2. **Flips on-default in release N+1 after a stable cycle** ← current state; set `GLEIPNIR_PLUGINS_ENABLED=false` to opt out for one more release
 3. **Flag removed entirely** in release N+2
 
 The step-2 in-app feedback refactor lands independently of the flag (behavior-neutral). The flag only gates external plugins, not the internal `inAppChannel`.
