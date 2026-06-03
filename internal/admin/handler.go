@@ -431,15 +431,24 @@ func (h *Handler) ListAllModels(lister llm.ModelLister) http.HandlerFunc {
 }
 
 // SetModelEnabled enables or disables a model. Disabling the current default model returns 409.
+//
+// Identifier is in the body (not the URL) so model names containing '/'
+// (common for OpenAI-compatible backends like LM Studio: "google/gemma-4-e4b")
+// round-trip cleanly. chi does not URL-decode path params, so a path-based
+// identifier would persist the percent-encoded form and never match the
+// registry-returned name on read.
 func (h *Handler) SetModelEnabled(w http.ResponseWriter, r *http.Request) {
-	modelID := chi.URLParam(r, "id")
-
 	var body struct {
-		Provider string `json:"provider"`
-		Enabled  bool   `json:"enabled"`
+		Provider  string `json:"provider"`
+		ModelName string `json:"model_name"`
+		Enabled   bool   `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid JSON body", "")
+		return
+	}
+	if body.Provider == "" || body.ModelName == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "provider and model_name are required", "")
 		return
 	}
 
@@ -447,7 +456,7 @@ func (h *Handler) SetModelEnabled(w http.ResponseWriter, r *http.Request) {
 		defaultRow, err := h.q.GetSystemSetting(r.Context(), "default_model")
 		if err == nil {
 			defaultVal := defaultRow.Value
-			candidate := body.Provider + ":" + modelID
+			candidate := body.Provider + ":" + body.ModelName
 			if defaultVal == candidate {
 				httputil.WriteError(w, http.StatusConflict, "cannot disable the current default model", "")
 				return
@@ -461,7 +470,7 @@ func (h *Handler) SetModelEnabled(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	if err := h.q.UpsertModelSetting(r.Context(), body.Provider, modelID, enabled, now); err != nil {
+	if err := h.q.UpsertModelSetting(r.Context(), body.Provider, body.ModelName, enabled, now); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update model setting", "")
 		return
 	}

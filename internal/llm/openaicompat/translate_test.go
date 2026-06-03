@@ -533,6 +533,40 @@ func TestParseChatCompletionResponse_MalformedToolArguments(t *testing.T) {
 	}
 }
 
+// TestParseChatCompletionResponse_WhitespaceContent guards the regression
+// where local models (LM Studio, Ollama) emit "\n" or "\n\n" in content
+// alongside tool calls. The whitespace string used to slip past the empty
+// check and surface as a thought step containing only newlines.
+func TestParseChatCompletionResponse_WhitespaceContent(t *testing.T) {
+	for _, raw := range []string{"\n", "\n\n", "  ", "\t\n"} {
+		content := raw
+		wire := &chatResponse{
+			Choices: []chatChoice{{
+				Message: chatMessage{
+					Role:    "assistant",
+					Content: &content,
+					ToolCalls: []chatToolCall{{
+						ID:       "c1",
+						Type:     "function",
+						Function: chatToolCallFunc{Name: "t", Arguments: "{}"},
+					}},
+				},
+				FinishReason: "tool_calls",
+			}},
+		}
+		resp, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{})
+		if err != nil {
+			t.Fatalf("content %q: parse: %v", raw, err)
+		}
+		if len(resp.Text) != 0 {
+			t.Errorf("content %q: expected no text blocks, got %d (%q)", raw, len(resp.Text), resp.Text[0].Text)
+		}
+		if len(resp.ToolCalls) != 1 {
+			t.Errorf("content %q: expected tool call to round-trip, got %d", raw, len(resp.ToolCalls))
+		}
+	}
+}
+
 func TestParseChatCompletionResponse_UnknownFinishReason(t *testing.T) {
 	s := "hi"
 	wire := &chatResponse{
