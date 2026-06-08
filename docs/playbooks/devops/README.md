@@ -4,11 +4,14 @@
 
 ## What it does
 
-On a manual trigger, this agent carries out common homelab operations described in natural language by the operator. It can restart a Docker container on a remote host, resolve Proxmox VM or LXC issues, update a DNS record in Technitium, and add or modify a Caddy reverse-proxy route. Before executing any write operation, the agent waits for explicit operator approval — every shell command and config change is reviewed before it runs.
+When [Uptime Kuma](https://github.com/louislam/uptime-kuma) detects that a monitored service has gone **down**, it fires a webhook at Gleipnir, which triggers this agent. The agent reads the Uptime Kuma heartbeat payload to identify which service failed and why, then carries out common homelab remediations: restart a Docker container on a remote host, resolve a Proxmox VM or LXC issue, update a DNS record in Technitium, or add/modify a Caddy reverse-proxy route. Before executing any write operation, the agent waits for explicit operator approval — every shell command and config change is reviewed before it runs.
+
+The webhook trigger filters on the heartbeat status, so only **down** events launch a run; Uptime Kuma's recovery (up) and test pings are accepted and discarded without spending tokens. The agent never touches anything on its own — it only acts in response to a real outage Uptime Kuma reported, and even then only after you approve each change.
 
 ## Prerequisites
 
-- A running Gleipnir instance (see main `README.md`).
+- A running Gleipnir instance (see main `README.md`), reachable from the Uptime Kuma host (Uptime Kuma must be able to POST to Gleipnir's webhook URL).
+- A running [Uptime Kuma](https://github.com/louislam/uptime-kuma) instance with at least one monitor watching a service you want auto-remediated.
 - Docker and Docker Compose on the same host as Gleipnir, with Go 1.24+ available during the `caddy-mcp` build (the multi-stage build handles this; Go does not need to be installed on the host).
 - SSH access from the Gleipnir host to the remote Docker host, using a private key (the `docker-mcp` service connects via `DOCKER_HOST=ssh://`).
 - A Proxmox VE instance with API token authentication configured.
@@ -169,7 +172,18 @@ model:
     enable_prompt_caching: true
 
 trigger:
-  type: manual
+  type: webhook
+  # Uptime Kuma can attach a static Authorization header but cannot HMAC-sign
+  # the body, so use bearer auth (not the hmac default). Reveal the generated
+  # secret on the policy detail page and paste it into Uptime Kuma in Step 6.
+  auth: bearer
+  match: all
+  checks:
+    # Only fire on DOWN events. Uptime Kuma sends status: 1 on recovery and a
+    # test ping when you click "Test"; both fail this check and are discarded
+    # with 200 {"data":{"filtered":true}} without launching a run.
+    - path: "$.heartbeat.status"
+      equals: 0
 
 capabilities:
   tools:
@@ -220,11 +234,23 @@ capabilities:
 
 agent:
   task: |
-    You are a homelab DevOps assistant. The operator will describe a task.
-    Determine what needs to be done, read current state first, then execute.
-    After each change, verify the outcome.
+    You are a homelab DevOps assistant. Uptime Kuma has reported that a
+    monitored service is DOWN. The webhook payload is delivered as your first
+    message — it is the Uptime Kuma notification JSON. Read these fields:
 
-    Common patterns:
+      $.monitor.name  — the human name of the failed service (e.g. "Plex")
+      $.monitor.url   — the URL or host Uptime Kuma was probing
+      $.monitor.type  — the check type (http, port, ping, docker, ...)
+      $.heartbeat.msg — the failure reason (e.g. "connect ECONNREFUSED ...")
+
+    Use these to identify which underlying resource is down, then read current
+    state before making any change, and verify the outcome after each change.
+    Do not act beyond restoring the reported service. If the payload is
+    ambiguous about which resource to touch (e.g. the monitor name does not
+    clearly map to one container or VM), use the feedback channel to ask the
+    operator before proceeding rather than guessing.
+
+    Map the failure to the right remediation and follow that pattern:
 
     Restart a Docker container:
       1. docker.list_containers — find the container and confirm it exists.
@@ -251,8 +277,9 @@ agent:
          Avoid replacing the entire config; prefer the smallest targeted change.
       4. caddy.get_caddy_config — confirm the route is present and correct.
 
-    If the task is ambiguous or would affect more than the operator described,
-    use the feedback channel to clarify before proceeding.
+    If no remediation pattern fits the reported failure, or the fix would
+    affect more than the single service Uptime Kuma flagged, use the feedback
+    channel to clarify before proceeding.
   limits:
     max_tokens_per_run: 20000
     max_tool_calls_per_run: 25
@@ -261,6 +288,8 @@ agent:
 
 **Why these choices:**
 
+- `trigger.auth: bearer` — Uptime Kuma's Webhook notification can attach a static `Authorization` header but cannot HMAC-sign the body, so the `hmac` default would reject every request. Bearer validates a fixed secret header, which Uptime Kuma can send. Do not use `auth: none` — the webhook URL is unauthenticated otherwise and anyone who learns the policy ID could trigger remediation runs.
+- The `checks` filter on `$.heartbeat.status == 0` is a hard pre-run gate: recovery (`status: 1`) and Uptime Kuma test pings are filtered out before a run launches, so the agent only ever wakes up for a real outage. This matters more than for a manual policy because nothing else stands between the webhook and an approval-gated write.
 - Read-only tools (`list_*`, `get_*`) have no approval gate so the agent can assess state without interrupting the operator. Write tools are approval-gated with explicit timeouts.
 - `proxmox.execute_command` — the "break glass" tool for cases where none of the typed Proxmox tools cover the fix — always requires approval since it runs arbitrary commands on the hypervisor.
 - `feedback.enabled: true` gives the agent `gleipnir.ask_operator` for ambiguous tasks (e.g. "which nginx container — there are three?") without failing the run.
@@ -268,12 +297,56 @@ agent:
 - `caddy.get_caddy_config` is not approval-gated; it is a read that never modifies state. `update_caddy_config` is, because Caddy applies config changes live with no undo.
 - Tools not listed in `capabilities.tools` do not exist from the agent's perspective. The agent cannot call tools it was not granted, regardless of what it reasons.
 
-## Step 6 — Trigger a test run
+## Step 6 — Connect Uptime Kuma
 
-1. In Gleipnir, go to **Agents → devops → Run now**.
-2. Enter a read-only task to verify connectivity first: *"List all running containers on the Docker host."*
-3. The agent calls `docker.list_containers` — no approval required. Confirm the list looks correct.
-4. Next, test a write: *"Restart the nginx container on the Docker host."* The agent will call `docker.list_containers`, then `docker.restart_container` (approve in the approval modal), then verify. Review each step in the run trace.
+### Get the webhook URL and secret from Gleipnir
+
+The URL and secret only exist once the policy is saved, so do this after Step 5. Reopen the **devops** agent in the editor (**Agents → devops**) and scroll to the **Trigger** section:
+
+1. **Webhook URL** is shown read-only — click **Copy**. It looks like `https://<gleipnir-host>/api/v1/webhooks/<policy-id>`.
+2. Under **Authentication mode**, confirm **Bearer token** is selected (it is, from the YAML in Step 5).
+3. Under **Shared secret**, click **Generate initial secret** the first time (or **Show** if one already exists), then **Copy** it. Admin or operator role is required. Treat the secret like a password — anyone with the URL and secret can fire a remediation run.
+
+The editor also renders a ready-to-paste `curl` command for the current auth mode just below the secret — handy for the test in Step 7.
+
+### Create the Webhook notification in Uptime Kuma
+
+1. In Uptime Kuma, go to **Settings → Notifications → Setup Notification**.
+2. Set **Notification Type** to **Webhook**.
+3. **Post URL:** the Gleipnir webhook URL from above.
+4. **Request Body:** select **Preset - application/json**. Uptime Kuma's default JSON body includes the `heartbeat` and `monitor` objects this policy reads.
+5. **Additional Headers:** add the bearer token as JSON:
+   ```json
+   { "Authorization": "Bearer <paste the policy secret>" }
+   ```
+6. Save the notification.
+
+### Assign the notification to your monitors
+
+Edit each monitor you want auto-remediated (**Edit → Notifications**) and enable the new notification. Only assign it to services this agent actually knows how to fix — a monitor for an external website the agent cannot touch will trigger a run that can only fail or ask for feedback.
+
+> **Why bearer, not HMAC:** Gleipnir's webhook default is `auth: hmac`, which requires the sender to sign each body with a shared secret. Uptime Kuma cannot compute that signature — it can only attach static headers — so the policy uses `auth: bearer` and Uptime Kuma sends a fixed `Authorization: Bearer` header instead. See ADR-034 for how the secret is stored.
+
+## Step 7 — Trigger a test run
+
+You can exercise the full path without waiting for a real outage by POSTing a representative Uptime Kuma down payload directly to the webhook. Run this from a host that can reach Gleipnir:
+
+```bash
+curl -X POST https://<gleipnir-host>/api/v1/webhooks/<policy-id> \
+  -H "Authorization: Bearer <policy-secret>" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "heartbeat": { "status": 0, "msg": "connect ECONNREFUSED 10.0.0.5:32400", "time": "2026-06-07 03:14:00", "important": true },
+        "monitor": { "name": "nginx", "url": "http://10.0.0.5", "type": "http" },
+        "msg": "[nginx] [🔴 Down] connect ECONNREFUSED 10.0.0.5:32400"
+      }'
+```
+
+Expected: `202 Accepted` with `{"data":{"run_id":"..."}}` and a new run appears in Gleipnir. Open the run trace — the agent should read `$.monitor.name` ("nginx"), call `docker.list_containers`, then request approval for `docker.restart_container`. Approve it in the modal and confirm the agent verifies the restart.
+
+Then prove the filter works: resend the same request with `"status": 1`. Expected: `200 {"data":{"filtered":true}}` and **no** new run — recovery pings are discarded.
+
+Finally, for an end-to-end check, stop a real monitored service and let Uptime Kuma fire the notification on its own. Confirm the run launches from Uptime Kuma's request, not just your `curl`.
 
 ## Extensions
 
@@ -350,3 +423,10 @@ agent:
 | `caddy-mcp` cannot reach Caddy | Caddy admin API bound to localhost only | On the Caddy host, change `admin localhost:2019` to `admin 0.0.0.0:2019` (or the Gleipnir host's LAN IP) in the Caddyfile and reload. |
 | Gleipnir cannot reach MCP servers | Wrong IP or ports not listening | Confirm MCP containers are up with `docker compose ps`. Test connectivity from the Gleipnir host: `curl http://<HOST_IP>:8201/mcp`. |
 | Tool names in policy don't match Discover output | MCP server updated its tool names | Click Discover again on the **Tools** page and update `tool:` entries in the policy. |
+| Webhook returns `401` (credential absent) | No `Authorization` header reached Gleipnir | Add the header in Uptime Kuma's **Additional Headers** as `{"Authorization": "Bearer <secret>"}`. A proxy stripping the header will also cause this. |
+| Webhook returns `403` (credential invalid) | Bearer token present but wrong | The secret does not match the policy's current secret — copy it again from the editor. If you clicked **Rotate** in Gleipnir, update Uptime Kuma with the new value. |
+| Webhook returns `409 Conflict` | A run is already active and `concurrency: skip` | Expected when outages overlap — the second down event is intentionally dropped. Wait for the active run (which may be paused on approval) to finish. |
+| Uptime Kuma fires but no run launches (`200 {"data":{"filtered":true}}`) | Payload did not match the `$.heartbeat.status == 0` check | Down events carry `status: 0`; recovery and test pings do not. Confirm you triggered a real down (not a "Test" click) and that the body preset is **application/json** so the `heartbeat` object is present. |
+| Webhook returns `404 Not Found` | Wrong policy ID in the URL, or the policy was deleted | Copy the URL fresh from the policy detail page. |
+| Webhook returns `400 Bad Request` | Body is not valid JSON | In Uptime Kuma set Request Body to **Preset - application/json**, not a custom non-JSON body. |
+| Run launches but agent can't map the monitor to a resource | `$.monitor.name` doesn't match a container/VM name | The agent will ask via the feedback channel. To automate, name your Uptime Kuma monitors to match the underlying Docker container or Proxmox VM, or add parameter scoping (see Extensions). |
