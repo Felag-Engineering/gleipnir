@@ -148,24 +148,50 @@ func insertUserWithSession(t *testing.T, store *db.Store, username, role string)
 // testSSERoute verifies that GET /api/v1/events returns text/event-stream headers.
 // The SSE handler blocks until the client disconnects, so we cancel the request
 // context immediately after reading the initial headers.
-func testSSERoute(t *testing.T, router http.Handler) {
+func testSSERoute(t *testing.T) {
 	t.Helper()
-	t.Run("SSE endpoint returns text/event-stream", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil).WithContext(ctx)
+	store := testutil.NewTestStore(t)
+	router := buildTestRouterWithStore(t, store)
+
+	// Without a session the stream must be rejected — it discloses live run,
+	// approval, and feedback activity to whoever connects (#486).
+	t.Run("SSE endpoint requires a session", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil)
 		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("unauthenticated SSE: status = %d, want %d; body: %s", w.Code, http.StatusUnauthorized, w.Body.String())
+		}
+	})
 
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			router.ServeHTTP(w, req)
-		}()
+	// With a valid session the stream is served. Use a real server + client so we
+	// read the response headers exactly like an SSE client would: Client.Do
+	// returns once the handler flushes its initial headers (after auth passes),
+	// and we cancel to unblock the still-streaming handler. An in-process recorder
+	// with an immediate cancel would race the auth DB lookup and spuriously 401.
+	t.Run("SSE endpoint returns text/event-stream for an authenticated session", func(t *testing.T) {
+		token := insertUserWithSession(t, store, "sse-user", "auditor")
+		srv := httptest.NewServer(router)
+		defer srv.Close()
 
-		// Cancel the request immediately so the SSE handler exits.
-		cancel()
-		<-done
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/events", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.AddCookie(&http.Cookie{Name: "gleipnir_session", Value: token})
 
-		ct := w.Header().Get("Content-Type")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET /api/v1/events: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("authenticated SSE: status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		ct := resp.Header.Get("Content-Type")
 		if !strings.Contains(ct, "text/event-stream") {
 			t.Errorf("Content-Type = %q, want text/event-stream", ct)
 		}
@@ -395,7 +421,7 @@ func TestBuildRouter(t *testing.T) {
 	}
 
 	router := buildTestRouter(t)
-	testSSERoute(t, router)
+	testSSERoute(t)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -427,5 +453,45 @@ func TestBuildRouter(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// postLogin fires a login request from the given client IP (via X-Real-IP, which
+// middleware.RealIP folds into RemoteAddr for the rate limiter to key on).
+func postLogin(t *testing.T, router http.Handler, ip string) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"nobody","password":"wrong"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Real-IP", ip)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	return w.Code
+}
+
+// TestLoginRateLimitedPerIP verifies that /login is rate-limited per client IP:
+// a single IP is throttled (429) once it exhausts the window, while a different
+// IP is unaffected. Regression guard for #491.
+func TestLoginRateLimitedPerIP(t *testing.T) {
+	router := buildTestRouter(t)
+
+	const limit = 10 // matches httprate.LimitByIP(10, time.Minute) on /login
+	const attackerIP = "198.51.100.10"
+
+	// The first `limit` attempts must not be rate-limited (they get the handler's
+	// normal 401 for bad credentials, not 429).
+	for i := range limit {
+		if code := postLogin(t, router, attackerIP); code == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d/%d from %s was rate-limited before the limit was reached", i+1, limit, attackerIP)
+		}
+	}
+
+	// The next attempt from the same IP is over the limit → 429.
+	if code := postLogin(t, router, attackerIP); code != http.StatusTooManyRequests {
+		t.Errorf("over-limit attempt from %s: status = %d, want %d", attackerIP, code, http.StatusTooManyRequests)
+	}
+
+	// A different IP is keyed separately and must still be allowed through.
+	if code := postLogin(t, router, "203.0.113.5"); code == http.StatusTooManyRequests {
+		t.Error("a fresh IP was rate-limited; the limit is global, not per-IP")
 	}
 }
