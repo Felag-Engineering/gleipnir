@@ -421,6 +421,84 @@ func TestRun_SingleTurnEndTurn(t *testing.T) {
 	}
 }
 
+// hookOnceLLMClient runs hook exactly once, on the first CreateMessage call,
+// before delegating to the embedded mock. It lets a test inject a concurrent
+// state change at a deterministic point inside the agent loop.
+type hookOnceLLMClient struct {
+	*testutil.MockLLMClient
+	hook func()
+	once sync.Once
+}
+
+func (h *hookOnceLLMClient) CreateMessage(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
+	h.once.Do(h.hook)
+	return h.MockLLMClient.CreateMessage(ctx, req)
+}
+
+// TestRun_EndTurn_TransitionConflict_NoCompleteStep verifies that when the
+// end-turn complete transition loses the CAS to a concurrent terminal writer
+// (e.g. the timeout scanner moving the run to failed), the agent does NOT
+// persist a "complete" step. A complete step on a failed run would leave a
+// trace that contradicts the run's real status. Regression guard for #485.
+func TestRun_EndTurn_TransitionConflict_NoCompleteStep(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	w := NewAuditWriter(s.Queries())
+
+	// The hook fires during the LLM call — after the agent has transitioned the
+	// run to running but before it attempts the end-turn complete transition. A
+	// separate state machine moves the run to failed, bumping the version so the
+	// agent's complete CAS loses.
+	mock := testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 20))
+	client := &hookOnceLLMClient{MockLLMClient: mock, hook: func() {
+		run, err := s.GetRun(context.Background(), "r1")
+		if err != nil {
+			t.Errorf("hook GetRun: %v", err)
+			return
+		}
+		external := NewRunStateMachine("r1", model.RunStatus(run.Status), s.DB(), s.Queries(), WithInitialVersion(run.Version))
+		if err := external.Transition(context.Background(), model.RunStatusFailed, "external writer won"); err != nil {
+			t.Errorf("external transition to failed: %v", err)
+		}
+	}}
+
+	ba, err := New(Config{
+		LLMClient:    client,
+		Policy:       minimalPolicy(),
+		Audit:        w,
+		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Run returns nil: losing the CAS to a concurrent terminal writer is not an
+	// agent failure (ADR-038).
+	if err := ba.Run(context.Background(), "r1", "do stuff"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	run, err := s.GetRun(context.Background(), "r1")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if run.Status != string(model.RunStatusFailed) {
+		t.Errorf("run status = %q, want %q (external writer should have won)", run.Status, model.RunStatusFailed)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	for _, st := range steps {
+		if st.Type == string(model.StepTypeComplete) {
+			t.Errorf("found a complete step on a failed run; trace contradicts status (#485)")
+		}
+	}
+}
+
 func TestRun_ToolCallLoop(t *testing.T) {
 	// Fake MCP server that handles tools/call.
 	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

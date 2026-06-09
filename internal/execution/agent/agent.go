@@ -261,13 +261,10 @@ func (a *BoundAgent) runAPILoop(
 		})
 
 		if resp.StopReason == llm.StopReasonEndTurn {
-			if err := a.audit.Write(ctx, Step{
-				RunID:   runID,
-				Type:    model.StepTypeComplete,
-				Content: map[string]string{"message": "agent completed task"},
-			}); err != nil {
-				return a.failRun(ctx, fmt.Errorf("writing complete step: %w", err))
-			}
+			// Transition first, then write the complete step. If the CAS loses to a
+			// concurrent writer (e.g. the timeout scanner moving the run to failed),
+			// we must NOT persist a "complete" step — doing so would leave a trace
+			// that contradicts the run's real terminal status (#485).
 			if err := a.sm.Transition(ctx, model.RunStatusComplete, ""); err != nil {
 				if errors.Is(err, ErrTransitionConflict) {
 					// Another writer (e.g. the timeout scanner) already transitioned
@@ -278,6 +275,17 @@ func (a *BoundAgent) runAPILoop(
 					return nil
 				}
 				return fmt.Errorf("transitioning run to complete: %w", err)
+			}
+			// The run is now authoritatively complete; the trace write is consistent
+			// with its status. A failure here is a logging problem, not a reason to
+			// fail an already-completed run.
+			if err := a.audit.Write(ctx, Step{
+				RunID:   runID,
+				Type:    model.StepTypeComplete,
+				Content: map[string]string{"message": "agent completed task"},
+			}); err != nil {
+				logctx.Logger(ctx).WarnContext(ctx, "failed to write complete step after successful transition",
+					"run_id", runID, "err", err)
 			}
 			return nil
 		}
