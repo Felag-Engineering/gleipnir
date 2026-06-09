@@ -2,16 +2,73 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { fn } from 'storybook/test';
 import { useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { http, HttpResponse } from 'msw';
 import '@/tokens.css';
 import { TriggerSection } from './TriggerSection';
 import type { TriggerFormState } from './types';
+import type { ApiPluginInstanceForAudience } from '@/api/types';
 import decoratorStyles from './TriggerSection.stories.module.css';
 
 function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
 }
 
-const MOCK_CONFIG_RESPONSE = JSON.stringify({ data: { public_url: '', default_model: null } });
+// --- Fixtures ---
+
+const SLACK_INSTANCE: ApiPluginInstanceForAudience = {
+  id: 'inst-1',
+  plugin_id: 'plugin-slack',
+  instance_name: 'slack-prod',
+  state: 'healthy',
+  implements_notify: true,
+  implements_request: false,
+  config_schema: null,
+  event_kinds: [
+    { kind: 'channel_message', description: 'A message posted in a channel' },
+    { kind: 'direct_message', description: 'A direct message to the bot' },
+  ],
+  version: 0,
+};
+
+const SLACK_WITH_EXAMPLES: ApiPluginInstanceForAudience = {
+  ...SLACK_INSTANCE,
+  event_kinds: [
+    {
+      kind: 'channel_message',
+      description: 'A message posted in a channel',
+      binding_schema: {
+        type: 'object',
+        properties: {
+          channel: { type: 'string' },
+        },
+      },
+      examples: [
+        { name: 'incident', payload: { channel: '#incidents', text: 'alert' } },
+        { name: 'general', payload: { channel: '#general', text: 'hello' } },
+      ],
+    },
+    { kind: 'direct_message', description: 'A direct message to the bot' },
+  ],
+};
+
+// Handlers shared across stories that need a config endpoint
+const CONFIG_HANDLER = http.get('/api/v1/config', () =>
+  HttpResponse.json({ data: { public_url: '', default_model: null } }),
+);
+
+const NO_PLUGIN_INSTANCES = http.get('/api/v1/admin/plugin-instances', () =>
+  HttpResponse.json({ data: [] }),
+);
+
+const WITH_SLACK_HANDLER = http.get('/api/v1/admin/plugin-instances', () =>
+  HttpResponse.json({ data: [SLACK_INSTANCE] }),
+);
+
+const WITH_SLACK_EXAMPLES_HANDLER = http.get('/api/v1/admin/plugin-instances', () =>
+  HttpResponse.json({ data: [SLACK_WITH_EXAMPLES] }),
+);
+
+// --- Meta ---
 
 const meta: Meta<typeof TriggerSection> = {
   title: 'PolicyEditor/FormMode/TriggerSection',
@@ -29,30 +86,17 @@ const meta: Meta<typeof TriggerSection> = {
       );
     },
   ],
-  beforeEach: () => {
-    const originalFetch = window.fetch;
-    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string'
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url;
-      if (url.includes('/api/v1/config')) {
-        return new Response(MOCK_CONFIG_RESPONSE, {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      return originalFetch(input, init);
-    };
-    return () => { window.fetch = originalFetch; };
-  },
 };
 
 export default meta;
 type Story = StoryObj<typeof TriggerSection>;
 
+// --- Stories ---
+
 export const WebhookSelected: Story = {
+  parameters: {
+    msw: { handlers: [CONFIG_HANDLER, NO_PLUGIN_INSTANCES] },
+  },
   args: {
     value: { type: 'webhook', auth: 'hmac' },
     policyId: 'abc-123',
@@ -61,6 +105,9 @@ export const WebhookSelected: Story = {
 };
 
 export const WebhookNewAgent: Story = {
+  parameters: {
+    msw: { handlers: [CONFIG_HANDLER, NO_PLUGIN_INSTANCES] },
+  },
   args: {
     value: { type: 'webhook', auth: 'hmac' },
     onChange: fn(),
@@ -68,6 +115,9 @@ export const WebhookNewAgent: Story = {
 };
 
 export const ManualSelected: Story = {
+  parameters: {
+    msw: { handlers: [CONFIG_HANDLER, NO_PLUGIN_INSTANCES] },
+  },
   args: {
     value: { type: 'manual' },
     policyId: 'manual-policy',
@@ -76,6 +126,9 @@ export const ManualSelected: Story = {
 };
 
 export const CronSelected: Story = {
+  parameters: {
+    msw: { handlers: [CONFIG_HANDLER, NO_PLUGIN_INSTANCES] },
+  },
   args: {
     value: { type: 'cron', cronExpr: '0 9 * * 1' },
     policyId: 'cron-policy',
@@ -84,6 +137,9 @@ export const CronSelected: Story = {
 };
 
 export const PollSelected: Story = {
+  parameters: {
+    msw: { handlers: [CONFIG_HANDLER, NO_PLUGIN_INSTANCES] },
+  },
   args: {
     value: {
       type: 'poll',
@@ -99,6 +155,9 @@ export const PollSelected: Story = {
 };
 
 export const PollMultipleChecks: Story = {
+  parameters: {
+    msw: { handlers: [CONFIG_HANDLER, NO_PLUGIN_INSTANCES] },
+  },
   args: {
     value: {
       type: 'poll',
@@ -114,11 +173,51 @@ export const PollMultipleChecks: Story = {
   },
 };
 
+// SubscribedSelected — shows the binding form for a plugin event trigger (no examples).
+export const SubscribedSelected: Story = {
+  parameters: {
+    msw: { handlers: [CONFIG_HANDLER, WITH_SLACK_HANDLER] },
+  },
+  args: {
+    value: { type: 'subscribed', source: 'slack-prod', eventKind: 'channel_message', binding: {} },
+    policyId: 'subscribed-policy',
+    onChange: fn(),
+  },
+};
+
+// SubscribedWithTestButton — plugin declares examples, test button is enabled.
+// MSW returns mixed match results when the button is clicked.
+export const SubscribedWithTestButton: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        CONFIG_HANDLER,
+        WITH_SLACK_EXAMPLES_HANDLER,
+        http.post(
+          '/api/v1/admin/plugin-instances/inst-1/event-kinds/channel_message/test-binding',
+          () =>
+            HttpResponse.json({
+              data: { results: [{ match: true }, { match: false }] },
+            }),
+        ),
+      ],
+    },
+  },
+  args: {
+    value: { type: 'subscribed', source: 'slack-prod', eventKind: 'channel_message', binding: { channel: '#incidents' } },
+    policyId: 'subscribed-examples-policy',
+    onChange: fn(),
+  },
+};
+
 function InteractiveTriggerSection() {
   const [value, setValue] = useState<TriggerFormState>({ type: 'webhook', auth: 'hmac' });
   return <TriggerSection value={value} onChange={setValue} policyId="example-policy" />;
 }
 
 export const Interactive: Story = {
+  parameters: {
+    msw: { handlers: [CONFIG_HANDLER, WITH_SLACK_HANDLER] },
+  },
   render: () => <InteractiveTriggerSection />,
 };

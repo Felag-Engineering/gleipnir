@@ -700,6 +700,35 @@ agent:
   })
 })
 
+// --- Audience field ---
+
+describe('yamlToFormState — audience field', () => {
+  it('parses audience: ops-team into { name: "ops-team" }', () => {
+    const yaml = 'name: p\naudience: ops-team\n'
+    const state = yamlToFormState(yaml)
+    expect(state!.audience).toEqual({ name: 'ops-team' })
+  })
+
+  it('defaults absent audience field to { name: "" }', () => {
+    const state = yamlToFormState('name: p\n')
+    expect(state!.audience).toEqual({ name: '' })
+  })
+})
+
+describe('formStateToYaml — audience field', () => {
+  it('does NOT emit audience when name is empty', () => {
+    const state = yamlToFormState('name: p\n')!
+    const output = formStateToYaml(state)
+    expect(output).not.toContain('audience:')
+  })
+
+  it('emits audience: ops-team at top level when name is "ops-team"', () => {
+    const state = yamlToFormState('name: p\naudience: ops-team\n')!
+    const output = formStateToYaml(state)
+    expect(output).toContain('audience: ops-team')
+  })
+})
+
 // --- defaultFormState ---
 
 describe('defaultFormState', () => {
@@ -716,6 +745,8 @@ describe('defaultFormState', () => {
     // task must start empty so the textarea placeholder guides the user and saving
     // without editing correctly surfaces the "agent.task is required" validation error.
     expect(state.task.task).toBe('')
+    // audience must always be explicitly present (not relying on YAML round-trip)
+    expect(state.audience).toEqual({ name: '' })
   })
 
   it('matches what yamlToFormState(DEFAULT_YAML) returns', () => {
@@ -739,5 +770,119 @@ agent:
     expect(state).not.toBeNull()
     expect(state!.limits.max_tokens_per_run).toBe(0)
     expect(state!.limits.max_tool_calls_per_run).toBe(0)
+  })
+})
+
+// --- Subscribed trigger ---
+
+describe('yamlToFormState — subscribed trigger', () => {
+  it('parses subscribed trigger with source and event_kind', () => {
+    const yaml = `
+name: p
+trigger:
+  type: subscribed
+  source: slack-prod
+  event_kind: channel_message
+`
+    const state = yamlToFormState(yaml)
+    expect(state).not.toBeNull()
+    expect(state!.trigger.type).toBe('subscribed')
+    if (state!.trigger.type !== 'subscribed') throw new Error('expected subscribed')
+    expect(state!.trigger.source).toBe('slack-prod')
+    expect(state!.trigger.eventKind).toBe('channel_message')
+    expect(state!.trigger.binding).toEqual({})
+  })
+
+  it('parses subscribed trigger with a binding map', () => {
+    const yaml = `
+name: p
+trigger:
+  type: subscribed
+  source: slack-prod
+  event_kind: channel_message
+  binding:
+    channel: "#ops"
+`
+    const state = yamlToFormState(yaml)
+    expect(state).not.toBeNull()
+    if (state!.trigger.type !== 'subscribed') throw new Error('expected subscribed')
+    expect(state!.trigger.binding).toEqual({ channel: '#ops' })
+  })
+
+  it('defaults missing fields to empty strings and empty binding', () => {
+    const yaml = `
+name: p
+trigger:
+  type: subscribed
+`
+    const state = yamlToFormState(yaml)
+    expect(state).not.toBeNull()
+    if (state!.trigger.type !== 'subscribed') throw new Error('expected subscribed')
+    expect(state!.trigger.source).toBe('')
+    expect(state!.trigger.eventKind).toBe('')
+    expect(state!.trigger.binding).toEqual({})
+  })
+})
+
+describe('formStateToYaml — subscribed trigger', () => {
+  it('round-trips subscribed trigger with binding', () => {
+    const input = `
+name: p
+trigger:
+  type: subscribed
+  source: slack-prod
+  event_kind: channel_message
+  binding:
+    channel: "#ops"
+agent:
+  task: t
+  limits:
+    max_tokens_per_run: 20000
+    max_tool_calls_per_run: 50
+  concurrency: skip
+capabilities:
+  tools: []
+model:
+  provider: anthropic
+  name: claude-3-5-haiku-latest
+`
+    const state = yamlToFormState(input)
+    expect(state).not.toBeNull()
+    const out = formStateToYaml(state!)
+    const reparsed = yamlToFormState(out)
+    expect(reparsed).not.toBeNull()
+    if (reparsed!.trigger.type !== 'subscribed') throw new Error('expected subscribed')
+    expect(reparsed!.trigger.source).toBe('slack-prod')
+    expect(reparsed!.trigger.eventKind).toBe('channel_message')
+    expect(reparsed!.trigger.binding).toEqual({ channel: '#ops' })
+  })
+
+  it('omits binding key when binding is empty', () => {
+    const input = `
+name: p
+trigger:
+  type: subscribed
+  source: slack-prod
+  event_kind: channel_message
+agent:
+  task: t
+  limits:
+    max_tokens_per_run: 20000
+    max_tool_calls_per_run: 50
+  concurrency: skip
+capabilities:
+  tools: []
+model:
+  provider: anthropic
+  name: claude-3-5-haiku-latest
+`
+    const state = yamlToFormState(input)
+    expect(state).not.toBeNull()
+    const out = formStateToYaml(state!)
+    // 'binding' key must not appear when binding is empty
+    expect(out).not.toContain('binding:')
+    // source and event_kind must be present
+    expect(out).toContain('source: slack-prod')
+    expect(out).toContain('event_kind: channel_message')
   })
 })

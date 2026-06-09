@@ -73,7 +73,7 @@ func validateTrigger(t model.TriggerConfig) []Issue {
 	}
 
 	if !t.Type.Valid() {
-		add("trigger.type", "trigger.type %q is invalid; must be webhook, manual, scheduled, poll, or cron", t.Type)
+		add("trigger.type", "trigger.type %q is invalid; must be webhook, manual, scheduled, poll, cron, or subscribed", t.Type)
 		return issues // can't validate type-specific fields without a valid type
 	}
 
@@ -147,6 +147,14 @@ func validateTrigger(t model.TriggerConfig) []Issue {
 			} else if !c.Comparator.Valid() {
 				add(fmt.Sprintf("trigger.checks[%d].comparator", i), "trigger.checks[%d].comparator %q is invalid; must be equals, not_equals, greater_than, less_than, or contains", i, c.Comparator)
 			}
+		}
+
+	case model.TriggerTypeSubscribed:
+		if t.Source == "" {
+			add("trigger.source", "trigger.source is required for subscribed triggers")
+		}
+		if t.EventKind == "" {
+			add("trigger.event_kind", "trigger.event_kind is required for subscribed triggers")
 		}
 	}
 

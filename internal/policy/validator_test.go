@@ -612,6 +612,32 @@ func assertIssueField(t *testing.T, p *model.ParsedPolicy, field, messageSubstr 
 	}
 }
 
+func TestValidate_SubscribedTrigger_Valid(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypeSubscribed
+	p.Trigger.Source = "my-plugin"
+	p.Trigger.EventKind = "channel_message"
+	if err := Validate(p); err != nil {
+		t.Errorf("expected valid subscribed trigger, got: %v", err)
+	}
+}
+
+func TestValidate_SubscribedTrigger_MissingSource(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypeSubscribed
+	p.Trigger.EventKind = "channel_message"
+	// Source is intentionally empty
+	assertIssueField(t, p, "trigger.source", "required")
+}
+
+func TestValidate_SubscribedTrigger_MissingEventKind(t *testing.T) {
+	p := validPolicy()
+	p.Trigger.Type = model.TriggerTypeSubscribed
+	p.Trigger.Source = "my-plugin"
+	// EventKind is intentionally empty
+	assertIssueField(t, p, "trigger.event_kind", "required")
+}
+
 // TestValidate_IssueFields verifies that each validator rule tags its output
 // with the canonical field path exposed to the frontend. One representative
 // case per field family suffices — the full rule logic is covered by the

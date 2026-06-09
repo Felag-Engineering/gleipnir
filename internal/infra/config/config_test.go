@@ -28,6 +28,8 @@ func TestLoad_Defaults(t *testing.T) {
 		"GLEIPNIR_DRAIN_TIMEOUT",
 		"GLEIPNIR_PID_FILE",
 		"GLEIPNIR_PLUGINS_ENABLED",
+		"GLEIPNIR_ALLOW_UNSIGNED_PLUGINS",
+		"GLEIPNIR_PLUGINS_DIR",
 	} {
 		t.Setenv(key, "")
 	}
@@ -77,8 +79,14 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.EncryptionKey != validKey {
 		t.Errorf("EncryptionKey: got %q, want %q", cfg.EncryptionKey, validKey)
 	}
-	if cfg.PluginsEnabled != false {
-		t.Errorf("PluginsEnabled: got %v, want false", cfg.PluginsEnabled)
+	if cfg.PluginsEnabled != true {
+		t.Errorf("PluginsEnabled: got %v, want true", cfg.PluginsEnabled)
+	}
+	if cfg.AllowUnsignedPlugins != false {
+		t.Errorf("AllowUnsignedPlugins: got %v, want false", cfg.AllowUnsignedPlugins)
+	}
+	if cfg.PluginsDir != "/plugins" {
+		t.Errorf("PluginsDir: got %q, want /plugins", cfg.PluginsDir)
 	}
 }
 
@@ -205,6 +213,15 @@ func TestLoad_Overrides(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "plugins dir override",
+			env:  map[string]string{"GLEIPNIR_PLUGINS_DIR": "/mnt/plugins"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.PluginsDir != "/mnt/plugins" {
+					t.Errorf("got %q, want /mnt/plugins", cfg.PluginsDir)
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -218,6 +235,7 @@ func TestLoad_Overrides(t *testing.T) {
 				"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
 				"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", "GLEIPNIR_FEEDBACK_SCAN_INTERVAL",
 				"GLEIPNIR_DRAIN_TIMEOUT", "GLEIPNIR_PID_FILE", "GLEIPNIR_PLUGINS_ENABLED",
+				"GLEIPNIR_ALLOW_UNSIGNED_PLUGINS", "GLEIPNIR_PLUGINS_DIR",
 			} {
 				t.Setenv(key, "")
 			}
@@ -323,12 +341,12 @@ func TestLoad_PluginsEnabled(t *testing.T) {
 		envValue string
 		want     bool
 	}{
-		{"unset falls back to false", "", false},
+		{"unset falls back to true", "", true},
 		{"true enables", "true", true},
 		{"false disables", "false", false},
 		{"1 enables", "1", true},
 		{"0 disables", "0", false},
-		{"bogus falls back to false", "bogus", false},
+		{"bogus falls back to true", "bogus", true},
 	}
 
 	for _, tc := range tests {
@@ -341,6 +359,34 @@ func TestLoad_PluginsEnabled(t *testing.T) {
 			}
 			if cfg.PluginsEnabled != tc.want {
 				t.Errorf("PluginsEnabled: got %v, want %v", cfg.PluginsEnabled, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_AllowUnsignedPlugins(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		want     bool
+	}{
+		{"unset falls back to false", "", false},
+		{"true enables permissive mode", "true", true},
+		{"false keeps strict mode", "false", false},
+		{"1 enables permissive mode", "1", true},
+		{"bogus falls back to false", "bogus", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GLEIPNIR_ENCRYPTION_KEY", validKey)
+			t.Setenv("GLEIPNIR_ALLOW_UNSIGNED_PLUGINS", tc.envValue)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() unexpected error: %v", err)
+			}
+			if cfg.AllowUnsignedPlugins != tc.want {
+				t.Errorf("AllowUnsignedPlugins: got %v, want %v", cfg.AllowUnsignedPlugins, tc.want)
 			}
 		})
 	}

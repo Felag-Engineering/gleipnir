@@ -20,6 +20,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
+	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 	"github.com/felag-engineering/gleipnir/internal/trigger"
 )
 
@@ -34,13 +35,18 @@ type PolicyNotifier interface {
 // HandlerBundle groups all pre-constructed HTTP handler structs. Every field is
 // a concrete handler type — BuildRouter never constructs handlers itself.
 type HandlerBundle struct {
-	AuthHandler          *auth.Handler
-	SettingsHandler      *auth.SettingsHandler
-	AdminHandler         *admin.Handler
-	OpenAICompatHandler  *admin.OpenAICompatHandler
-	WebhookHandler       *trigger.WebhookHandler
-	SSEHandler           *sse.Handler
-	PolicyWebhookHandler *PolicyWebhookHandler
+	AuthHandler              *auth.Handler
+	SettingsHandler          *auth.SettingsHandler
+	AdminHandler             *admin.Handler
+	OpenAICompatHandler      *admin.OpenAICompatHandler
+	PluginAdminHandler       *admin.PluginHandler
+	PluginOAuthHandler       *admin.PluginOAuthHandler
+	PluginCredentialsHandler *admin.PluginCredentialsHandler
+	AudienceHandler          *AudienceHandler
+	BindingTestHandler       *BindingTestHandler
+	WebhookHandler           *trigger.WebhookHandler
+	SSEHandler               *sse.Handler
+	PolicyWebhookHandler     *PolicyWebhookHandler
 }
 
 // BackgroundServices groups shared infrastructure and long-lived dependencies.
@@ -55,11 +61,12 @@ type BackgroundServices struct {
 	ModelLister      llm.ModelLister       // interface for listing available models
 	ProviderRegistry *llm.ProviderRegistry // concrete registry for policy validation
 	ModelFilter      ModelFilter
-	Poller           PolicyNotifier    // notified on poll-trigger policy mutations
-	Scheduler        PolicyNotifier    // notified on scheduled-trigger policy mutations
-	Cron             PolicyNotifier    // notified on cron-trigger policy mutations
-	EncryptionKey    []byte            // AES-256 key for MCP auth header encryption; nil when unset
-	Settings         *settings.Service // system-wide runtime settings; required by manual-trigger and policy services
+	Poller           PolicyNotifier         // notified on poll-trigger policy mutations
+	Scheduler        PolicyNotifier         // notified on scheduled-trigger policy mutations
+	Cron             PolicyNotifier         // notified on cron-trigger policy mutations
+	EncryptionKey    []byte                 // AES-256 key for MCP auth header encryption; nil when unset
+	Arbiter          *toolregistry.Registry // cross-source tool namespace arbiter; nil disables enforcement
+	Settings         *settings.Service      // system-wide runtime settings; required by manual-trigger and policy services
 }
 
 // Metadata holds descriptive, read-only values about the running instance.
@@ -67,6 +74,13 @@ type Metadata struct {
 	Version   string
 	StartTime time.Time
 	DBPath    string
+	// SignatureVerificationDisabled is true when the host is running with
+	// GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true (ADR-045 §6). It is surfaced via
+	// the public /api/v1/health endpoint so health-checking infrastructure
+	// and the admin UI can detect the permissive mode externally. Signed
+	// plugins are still fully verified — the flag only governs unsigned
+	// bundles.
+	SignatureVerificationDisabled bool
 }
 
 // RouterConfig bundles all dependencies needed to build the complete route tree.
@@ -105,12 +119,27 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	r.With(middleware.Throttle(10), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).
 		Post("/api/v1/webhooks/{policyID}", cfg.Handlers.WebhookHandler.Handle)
 
+	// OAuth callback is unprotected at the session layer: the HMAC-signed state
+	// envelope (spec §9.2) provides CSRF + integrity. The browser arrives from
+	// the OAuth provider with no Gleipnir session cookie — requiring auth here
+	// would 401 every callback. Mirrors the ADR-034 webhook pattern.
+	if cfg.Handlers.PluginOAuthHandler != nil {
+		r.Get("/api/v1/admin/plugins/oauth/callback", cfg.Handlers.PluginOAuthHandler.Callback)
+	}
+
 	// Health check is intentionally public (no auth required).
 	// DO NOT move this route inside the authenticated sub-router — doing so
 	// would break Docker HEALTHCHECK directives, load balancer probes, and
 	// uptime monitors that cannot send session cookies.
 	r.Get("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		body := map[string]string{"status": "ok"}
+		if cfg.Metadata.SignatureVerificationDisabled {
+			// Per ADR-045 §6: the value is reported as a string so the field
+			// type stays stable when v2 introduces additional verification
+			// states (e.g. "degraded" if a TOFU re-pin is mid-flight).
+			body["signature_verification"] = "disabled"
+		}
+		httputil.WriteJSON(w, http.StatusOK, body)
 	})
 
 	// Auth routes that do not require an existing session.
@@ -169,7 +198,20 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 		// Policies, MCP, stats, models, and attention — mounted under /api/v1.
 		policySvc := policy.NewService(cfg.Services.Store, nil, cfg.Services.ProviderRegistry, cfg.Services.ProviderRegistry, cfg.Services.Settings)
-		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, policySvc, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey))
+		r.Mount("/api/v1", newAPISubRouter(cfg.Services.Store, policySvc, cfg.Services.Registry, cfg.Services.ModelLister, cfg.Services.ModelFilter, cfg.Handlers.PolicyWebhookHandler, cfg.Services.Poller, cfg.Services.Scheduler, cfg.Services.Cron, cfg.Services.EncryptionKey, cfg.Services.Arbiter))
+
+		// Plugin install and create-instance endpoints are registered outside the
+		// /api/v1/admin route group so each can carry its own body-size limit.
+		// The /api/v1/admin group applies a 1 MiB cap globally; the install endpoint
+		// needs 100 MiB, and nesting it inside the group would silently cap uploads.
+		if cfg.Handlers.PluginAdminHandler != nil {
+			r.With(auth.RequireRole(model.RoleAdmin),
+				httputil.BodySizeLimit(100<<20)).
+				Post("/api/v1/admin/plugins", cfg.Handlers.PluginAdminHandler.Install)
+			r.With(auth.RequireRole(model.RoleAdmin),
+				httputil.BodySizeLimit(httputil.MaxRequestBodySize)).
+				Post("/api/v1/admin/plugins/{id}/instances", cfg.Handlers.PluginAdminHandler.CreateInstance)
+		}
 
 		// Admin: provider key management, settings, and model configuration.
 		r.Route("/api/v1/admin", func(r chi.Router) {
@@ -180,6 +222,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 			r.Delete("/providers/{name}/key", cfg.Handlers.AdminHandler.DeleteProviderKey)
 			r.Get("/settings", cfg.Handlers.AdminHandler.GetSettings)
 			r.Put("/settings", cfg.Handlers.AdminHandler.UpdateSettings)
+			r.Put("/settings/default-model", cfg.Handlers.AdminHandler.SetDefaultModel)
 			r.Get("/models", cfg.Handlers.AdminHandler.ListModelsAdmin)
 			r.Get("/models/all", cfg.Handlers.AdminHandler.ListAllModels(cfg.Services.ModelLister))
 			r.Put("/models/enabled", cfg.Handlers.AdminHandler.SetModelEnabled)
@@ -201,6 +244,46 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				},
 			}))
 
+			if cfg.Handlers.PluginAdminHandler != nil {
+				// GET /plugins/rss must be registered BEFORE /plugins/{id} so chi
+				// matches the literal path before the parameterized catch-all. chi
+				// routes are matched in registration order when a path segment could
+				// be either a literal or a parameter.
+				r.Get("/plugins/rss", cfg.Handlers.PluginAdminHandler.GetPluginRSS)
+				r.Get("/plugins/{id}/instances/{iid}", cfg.Handlers.PluginAdminHandler.GetInstance)
+				r.Put("/plugins/{id}/instances/{iid}/subscription-scope", cfg.Handlers.PluginAdminHandler.PutSubscriptionScope)
+				r.Put("/plugins/{id}/instances/{iid}/config", cfg.Handlers.PluginAdminHandler.PutInstanceConfig)
+				r.Put("/plugins/{id}/instances/{iid}/config/{property}", cfg.Handlers.PluginAdminHandler.PutInstanceConfigProperty)
+				r.Delete("/plugins/{id}/instances/{iid}", cfg.Handlers.PluginAdminHandler.DeleteInstance)
+				r.Post("/plugins/{id}/instances/{iid}/deactivate", cfg.Handlers.PluginAdminHandler.DeactivateInstance)
+				r.Post("/plugins/{id}/instances/{iid}/activate", cfg.Handlers.PluginAdminHandler.ActivateInstance)
+				r.Post("/plugins/{id}/accept-new-key", cfg.Handlers.PluginAdminHandler.AcceptNewKey)
+				r.Post("/plugins/{id}/accept-manifest", cfg.Handlers.PluginAdminHandler.AcceptManifest)
+				r.Get("/plugins/{id}/sbom", cfg.Handlers.PluginAdminHandler.GetPluginSBOM)
+				r.Delete("/plugins/{id}", cfg.Handlers.PluginAdminHandler.Uninstall)
+				// Approve/reject routes must come after more-specific /{id}/* paths
+				// to avoid chi capturing "approve" or "reject" as the {id} parameter.
+				r.Post("/plugins/{id}/approve", cfg.Handlers.PluginAdminHandler.ApprovePlugin)
+				r.Post("/plugins/{id}/reject", cfg.Handlers.PluginAdminHandler.RejectPlugin)
+				// GET /{id} must come after all /{id}/{sub} routes so chi does not
+				// shadow the sub-paths with the catch-all id parameter.
+				r.Get("/plugins/{id}", cfg.Handlers.PluginAdminHandler.GetPluginDetail)
+				r.Get("/plugins", cfg.Handlers.PluginAdminHandler.ListPlugins)
+			}
+			if cfg.Handlers.PluginOAuthHandler != nil {
+				r.Post("/plugins/{id}/instances/{iid}/oauth/begin", cfg.Handlers.PluginOAuthHandler.Begin)
+			}
+			if h := cfg.Handlers.PluginCredentialsHandler; h != nil {
+				r.Get("/plugins/{id}/instances/{iid}/credentials", h.Get)
+				r.Delete("/plugins/{id}/instances/{iid}/credentials", h.Delete)
+				r.Put("/plugins/{id}/instances/{iid}/credentials/static-api-key", h.SetStaticAPIKey)
+				r.Put("/plugins/{id}/instances/{iid}/credentials/headers/{name}", h.SetHeader)
+				r.Delete("/plugins/{id}/instances/{iid}/credentials/headers/{name}", h.DeleteHeader)
+				r.Put("/plugins/{id}/instances/{iid}/credentials/basic-auth", h.SetBasicAuth)
+				r.Put("/plugins/{id}/instances/{iid}/credentials/oauth-client", h.SetOAuthClient)
+				r.Put("/plugins/{id}/instances/{iid}/credentials/oauth-token", h.SetOAuthToken)
+			}
+
 			r.Route("/openai-providers", func(r chi.Router) {
 				r.Get("/", cfg.Handlers.OpenAICompatHandler.ListProviders)
 				r.Post("/", cfg.Handlers.OpenAICompatHandler.CreateProvider)
@@ -210,6 +293,45 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 				r.Post("/{id}/test", cfg.Handlers.OpenAICompatHandler.TestProvider)
 			})
 		})
+
+		// Plugin instances: trigger picker + audience editor both need this list.
+		// Gated by admin|operator|auditor (read-only; no mutations).
+		if cfg.Handlers.AudienceHandler != nil {
+			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor)).
+				Get("/api/v1/admin/plugin-instances", cfg.Handlers.AudienceHandler.ListPluginInstances)
+		}
+
+		// Binding test endpoint: read-only, gated by admin|operator|auditor.
+		// Registered alongside the plugin-instances list so partial bundles in
+		// tests that omit BindingTestHandler still compile without a nil dereference.
+		if cfg.Handlers.BindingTestHandler != nil {
+			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor),
+				httputil.BodySizeLimit(httputil.MaxRequestBodySize)).
+				Post("/api/v1/admin/plugin-instances/{iid}/event-kinds/{kind}/test-binding",
+					cfg.Handlers.BindingTestHandler.Test)
+		}
+
+		// Audience management: admin/operator for mutations, auditor for reads.
+		// Registered outside the admin-only sub-router (which uses RequireRole(Admin)
+		// globally) so auditors can access GETs per spec §11.7.
+		// Per-route RequireRole mirrors the /api/v1/policies pattern.
+		if cfg.Handlers.AudienceHandler != nil {
+			r.Route("/api/v1/admin/audiences", func(r chi.Router) {
+				r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor)).
+					Get("/", cfg.Handlers.AudienceHandler.List)
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).
+					Post("/", cfg.Handlers.AudienceHandler.Create)
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor)).
+					Get("/{id}", cfg.Handlers.AudienceHandler.Get)
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).
+					Put("/{id}", cfg.Handlers.AudienceHandler.Update)
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).
+					Delete("/{id}", cfg.Handlers.AudienceHandler.Delete)
+				r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator, model.RoleAuditor)).
+					Get("/{id}/references", cfg.Handlers.AudienceHandler.References)
+			})
+		}
 	})
 
 	// SPA catch-all: serve the embedded React frontend for all non-API routes.
@@ -221,7 +343,7 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 
 // newAPISubRouter builds the sub-router that was previously returned by NewRouter.
 // It is mounted at /api/v1 inside the authenticated group in BuildRouter.
-func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter, policyWebhook *PolicyWebhookHandler, poller, scheduler, cron PolicyNotifier, encKey []byte) chi.Router {
+func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registry, modelLister llm.ModelLister, modelFilter ModelFilter, policyWebhook *PolicyWebhookHandler, poller, scheduler, cron PolicyNotifier, encKey []byte, arbiter *toolregistry.Registry) chi.Router {
 	r := chi.NewRouter()
 	r.Use(httputil.BodySizeLimit(httputil.MaxRequestBodySize))
 
@@ -260,7 +382,7 @@ func newAPISubRouter(store *db.Store, svc *policy.Service, registry *mcp.Registr
 
 	r.Route("/mcp", func(r chi.Router) {
 		r.Use(httputil.RequireJSON)
-		mcpH := NewMCPHandler(store, registry, encKey)
+		mcpH := NewMCPHandler(store, registry, encKey, WithToolNamespaceArbiter(arbiter))
 		r.Route("/servers", func(r chi.Router) {
 			r.With(auth.RequireRole(model.RoleOperator, model.RoleAuditor)).Get("/", mcpH.List)
 			r.With(auth.RequireRole(model.RoleAdmin, model.RoleOperator)).Post("/", mcpH.Create)

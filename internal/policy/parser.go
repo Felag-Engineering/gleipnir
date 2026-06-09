@@ -55,6 +55,9 @@ func Parse(raw string, defaultProvider, defaultModel string) (*model.ParsedPolic
 	p.Capabilities = convertCapabilities(r.Capabilities)
 	mc := resolveModelConfig(r.Model, defaultProvider, defaultModel)
 	p.Agent = convertAgent(r.Agent, mc)
+	if s, ok := r.Audience.(string); ok {
+		p.Audience = strings.TrimSpace(s)
+	}
 
 	return p, nil
 }
@@ -112,6 +115,12 @@ func convertTrigger(r rawTrigger) model.TriggerConfig {
 
 	if tc.Type == model.TriggerTypeCron {
 		tc.CronExpr = strings.TrimSpace(r.CronExpr)
+	}
+
+	if tc.Type == model.TriggerTypeSubscribed {
+		tc.Source = strings.TrimSpace(r.Source)
+		tc.EventKind = strings.TrimSpace(r.EventKind)
+		tc.Binding = r.Binding
 	}
 
 	if tc.Type == model.TriggerTypePoll {
@@ -316,6 +325,7 @@ type rawPolicy struct {
 	Trigger      rawTrigger      `yaml:"trigger"`
 	Capabilities rawCapabilities `yaml:"capabilities"`
 	Agent        rawAgent        `yaml:"agent"`
+	Audience     any             `yaml:"audience"`
 }
 
 // rawModel holds the top-level `model:` section introduced in issue #344.
@@ -328,14 +338,17 @@ type rawModel struct {
 }
 
 type rawTrigger struct {
-	Type          string     `yaml:"type"`
-	FireAt        []string   `yaml:"fire_at"`        // scheduled only, RFC3339 timestamps
-	WebhookSecret string     `yaml:"webhook_secret"` // rejected at save time; never propagated to TriggerConfig
-	Auth          string     `yaml:"auth"`           // webhook only: hmac | bearer | none
-	Interval      string     `yaml:"interval"`       // poll only, Go duration string (e.g. "5m")
-	Match         string     `yaml:"match"`          // poll and webhook: "all" or "any", default: "all"
-	Checks        []rawCheck `yaml:"checks"`         // poll: at least one required; webhook: optional body filter
-	CronExpr      string     `yaml:"cron_expr"`      // cron only, 5-field POSIX expression
+	Type          string         `yaml:"type"`
+	FireAt        []string       `yaml:"fire_at"`        // scheduled only, RFC3339 timestamps
+	WebhookSecret string         `yaml:"webhook_secret"` // rejected at save time; never propagated to TriggerConfig
+	Auth          string         `yaml:"auth"`           // webhook only: hmac | bearer | none
+	Interval      string         `yaml:"interval"`       // poll only, Go duration string (e.g. "5m")
+	Match         string         `yaml:"match"`          // poll and webhook: "all" or "any", default: "all"
+	Checks        []rawCheck     `yaml:"checks"`         // poll: at least one required; webhook: optional body filter
+	CronExpr      string         `yaml:"cron_expr"`      // cron only, 5-field POSIX expression
+	Source        string         `yaml:"source"`         // subscribed only: plugin instance name
+	EventKind     string         `yaml:"event_kind"`     // subscribed only: event kind identifier
+	Binding       map[string]any `yaml:"binding"`        // subscribed only: per-event-kind binding config
 }
 
 // rawCheck is one entry in a poll trigger's checks list.

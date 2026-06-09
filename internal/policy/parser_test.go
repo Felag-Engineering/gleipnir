@@ -1158,6 +1158,18 @@ capabilities:
 agent:
   task: do it
 `,
+		model.TriggerTypeSubscribed: `
+name: rt-subscribed
+trigger:
+  type: subscribed
+  source: my-plugin
+  event_kind: channel_message
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: do it
+`,
 	}
 
 	// Catch the case where AllTriggerTypes grew but the fixture map above was not updated.
@@ -1185,6 +1197,93 @@ agent:
 				t.Errorf("Validate() error: %v", err)
 			}
 		})
+	}
+}
+
+func TestParse_Subscribed(t *testing.T) {
+	raw := `
+name: sub-policy
+trigger:
+  type: subscribed
+  source: my-plugin-instance
+  event_kind: channel_message
+  binding:
+    filter: ".*"
+    priority: 1
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: handle event
+`
+	p, err := Parse(raw, "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if p.Trigger.Type != model.TriggerTypeSubscribed {
+		t.Errorf("trigger.type = %q, want %q", p.Trigger.Type, model.TriggerTypeSubscribed)
+	}
+	if p.Trigger.Source != "my-plugin-instance" {
+		t.Errorf("trigger.source = %q, want %q", p.Trigger.Source, "my-plugin-instance")
+	}
+	if p.Trigger.EventKind != "channel_message" {
+		t.Errorf("trigger.event_kind = %q, want %q", p.Trigger.EventKind, "channel_message")
+	}
+	if p.Trigger.Binding["filter"] != ".*" {
+		t.Errorf("trigger.binding[filter] = %v, want %q", p.Trigger.Binding["filter"], ".*")
+	}
+	if p.Trigger.Binding["priority"] != 1 {
+		t.Errorf("trigger.binding[priority] = %v, want 1", p.Trigger.Binding["priority"])
+	}
+}
+
+func TestParse_Subscribed_NilBindingOK(t *testing.T) {
+	// Binding is optional; omitting it should leave Binding as nil.
+	raw := `
+name: sub-no-binding
+trigger:
+  type: subscribed
+  source: my-plugin
+  event_kind: heartbeat
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: do it
+`
+	p, err := Parse(raw, "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Trigger.Binding != nil {
+		t.Errorf("trigger.binding = %v, want nil (omitted)", p.Trigger.Binding)
+	}
+}
+
+func TestParse_Subscribed_SourceTrimmed(t *testing.T) {
+	// Source and EventKind are trimmed of surrounding whitespace by the parser.
+	raw := `
+name: sub-whitespace
+trigger:
+  type: subscribed
+  source: "  my-plugin  "
+  event_kind: "  heartbeat  "
+capabilities:
+  tools:
+    - tool: srv.tool
+agent:
+  task: do it
+`
+	p, err := Parse(raw, "anthropic", "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Trigger.Source != "my-plugin" {
+		t.Errorf("trigger.source = %q, want %q (should be trimmed)", p.Trigger.Source, "my-plugin")
+	}
+	if p.Trigger.EventKind != "heartbeat" {
+		t.Errorf("trigger.event_kind = %q, want %q (should be trimmed)", p.Trigger.EventKind, "heartbeat")
 	}
 }
 

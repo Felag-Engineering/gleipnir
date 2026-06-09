@@ -18,8 +18,8 @@ import (
 
 	handshakev1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/handshake/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/fakehost"
-	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/hostwire"
 )
 
 // ── Scenario YAML parsing ────────────────────────────────────────────────────
@@ -782,6 +782,10 @@ func (s *stubToolClient) ListTools(_ context.Context, _ *toolv1.ListToolsRequest
 
 func (s *stubToolClient) Call(_ context.Context, req *toolv1.CallRequest, _ ...grpc.CallOption) (*toolv1.CallResponse, error) {
 	return s.callFn(req)
+}
+
+func (s *stubToolClient) Cancel(_ context.Context, _ *toolv1.CancelRequest, _ ...grpc.CallOption) (*toolv1.CancelResponse, error) {
+	return &toolv1.CancelResponse{}, nil
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

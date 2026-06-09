@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -716,10 +717,14 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 	pol.Agent.ModelConfig.Provider = "anthropic"
 	pol.Agent.ModelConfig.Name = "claude-sonnet-4-6"
 
+	// Use an MCP tool so we can assert its source is "mcp:<server>".
+	fakeSrv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"ok"}]`), false)
+	mcpTool := makeResolvedTool(fakeSrv.URL, "my-server", "read_data")
+
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		LLMClient:    testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 5)),
-		Tools:        nil,
+		Tools:        []mcp.ResolvedTool{mcpTool},
 		Policy:       pol,
 		Audit:        w,
 		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
@@ -747,10 +752,11 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 		t.Errorf("capability snapshot token cost = %d, want 0", first.TokenCost)
 	}
 
-	// Verify provider and model are recorded in the snapshot content JSON.
+	// Verify provider, model, and MCP tool source are recorded in the snapshot.
 	type snapshotContent struct {
-		Provider string `json:"provider"`
-		Model    string `json:"model"`
+		Provider string              `json:"provider"`
+		Model    string              `json:"model"`
+		Tools    []model.GrantedTool `json:"tools"`
 	}
 	var snap snapshotContent
 	if err := json.Unmarshal([]byte(first.Content), &snap); err != nil {
@@ -761,6 +767,16 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 	}
 	if snap.Model != "claude-sonnet-4-6" {
 		t.Errorf("snapshot model = %q, want %q", snap.Model, "claude-sonnet-4-6")
+	}
+	// Every MCP-source tool must carry source = "mcp:<serverName>".
+	for _, gt := range snap.Tools {
+		if gt.ServerName == "" {
+			continue // synthetic tools have empty server name; skip
+		}
+		wantSource := "mcp:" + gt.ServerName
+		if gt.Source != wantSource {
+			t.Errorf("tool %q source = %q, want %q", gt.ToolName, gt.Source, wantSource)
+		}
 	}
 }
 
@@ -1760,9 +1776,6 @@ func TestHandleToolCall_AskOperator_Success(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
-	feedbackCh := make(chan string, 1)
-	feedbackCh <- "operator says hello"
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		LLMClient: testutil.NewMockLLMClient(
@@ -1773,15 +1786,50 @@ func TestHandleToolCall_AskOperator_Success(t *testing.T) {
 		Tools:        nil,
 		Policy:       feedbackPolicy(),
 		Audit:        w,
-		FeedbackCh:   feedbackCh,
 		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
-	if err := ba.Run(context.Background(), "r1", "trigger"); err != nil {
-		t.Fatalf("Run: %v", err)
+	// Run the agent in a goroutine. It will block in inAppChannel.Request waiting
+	// for Resolve — we deliver the response after the feedback row appears in DB.
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- ba.Run(context.Background(), "r1", "trigger")
+	}()
+
+	// Poll until the feedback row appears in the DB (register-before-transition guarantee).
+	deadline := time.Now().Add(5 * time.Second)
+	var feedbackID string
+	for time.Now().Before(deadline) {
+		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "r1")
+		if err != nil {
+			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+		}
+		if len(rows) > 0 {
+			feedbackID = rows[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if feedbackID == "" {
+		t.Fatal("timed out waiting for feedback row to appear in DB")
+	}
+
+	// Deliver the operator response through the inAppChannel.
+	if err := ba.FeedbackResolver().Resolve(feedbackID, "operator says hello"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// Wait for ba.Run to complete.
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not complete within deadline")
 	}
 
 	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
@@ -1925,8 +1973,6 @@ func TestHandleToolCall_AskOperator_ReasonRequired(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
-	feedbackCh := make(chan string, 1)
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		LLMClient: testutil.NewMockLLMClient(
@@ -1937,7 +1983,6 @@ func TestHandleToolCall_AskOperator_ReasonRequired(t *testing.T) {
 		Tools:        nil,
 		Policy:       feedbackPolicy(),
 		Audit:        w,
-		FeedbackCh:   feedbackCh,
 		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
@@ -2073,9 +2118,6 @@ func TestRun_feedback_timeout(t *testing.T) {
 		},
 	}
 
-	// feedbackCh is never sent on — the operator does not respond (testing timeout path).
-	feedbackCh := make(chan string) // unbuffered — nothing sends on this channel in this test
-
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
 		LLMClient: testutil.NewMockLLMClient(
@@ -2085,7 +2127,6 @@ func TestRun_feedback_timeout(t *testing.T) {
 		Tools:                  nil,
 		Policy:                 pol,
 		Audit:                  w,
-		FeedbackCh:             feedbackCh,
 		StateMachine:           NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 		DefaultFeedbackTimeout: 50 * time.Millisecond,
 	})
@@ -2145,7 +2186,6 @@ func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 		Tools:        nil,
 		Policy:       feedbackPolicy(),
 		Audit:        w,
-		FeedbackCh:   make(chan string), // unbuffered — test verifies run completes without feedback
 		StateMachine: NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
 	})
 	if err != nil {
@@ -2181,6 +2221,10 @@ func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 	for _, gt := range snap.Tools {
 		if gt.ServerName == "gleipnir" && gt.ToolName == "ask_operator" {
 			found = true
+			// Synthetic tools must have empty Source — they have no MCP server or plugin instance.
+			if gt.Source != "" {
+				t.Errorf("gleipnir.ask_operator source = %q, want empty string", gt.Source)
+			}
 		}
 	}
 	if !found {
@@ -2190,7 +2234,7 @@ func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 
 // makeAgentWithFeedback builds a BoundAgent with feedback enabled and a fresh test store.
 // The run starts in RunStatusRunning (same as makeAgentWithTools).
-func makeAgentWithFeedback(t *testing.T, feedbackCh chan string, feedbackTimeout time.Duration) (*BoundAgent, *db.Store, *AuditWriter) {
+func makeAgentWithFeedback(t *testing.T, feedbackTimeout time.Duration) (*BoundAgent, *db.Store, *AuditWriter) {
 	t.Helper()
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
@@ -2202,7 +2246,6 @@ func makeAgentWithFeedback(t *testing.T, feedbackCh chan string, feedbackTimeout
 		Tools:                  nil,
 		LLMClient:              testutil.NewNoopLLMClient(),
 		Audit:                  w,
-		FeedbackCh:             (<-chan string)(feedbackCh),
 		DefaultFeedbackTimeout: feedbackTimeout,
 		StateMachine:           NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
@@ -2351,8 +2394,9 @@ func TestWaitForApproval_ScannerWins(t *testing.T) {
 	}()
 
 	// Poll until the approval row appears in the DB (waitForApproval creates it
-	// inside sm.Transition). Bounded at 100ms to keep the test fast.
-	approvalID := pollForApprovalRow(t, s, time.Now().Add(100*time.Millisecond))
+	// inside sm.Transition). Bounded at 2s — generous headroom for loaded CI
+	// runners; the loop sleeps 1ms per check so passing tests still finish fast.
+	approvalID := pollForApprovalRow(t, s, time.Now().Add(2*time.Second))
 
 	// Back-date the approval so the scanner picks it up as expired.
 	past := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339Nano)
@@ -2414,28 +2458,37 @@ func TestWaitForApproval_ScannerWins(t *testing.T) {
 	}
 }
 
-// TestWaitForFeedback_BufferedLateResponse mirrors TestWaitForApproval_BufferedLateRejection:
-// after feedback timeout fires and the function returns, a late response send lands
-// safely in the buffered channel without blocking.
+// TestWaitForFeedback_BufferedLateResponse verifies that after the feedback
+// timeout fires and waitForFeedback returns, a late Resolve call returns
+// ErrUnknownRequestID (the waiter was unregistered by the deferred delete).
 func TestWaitForFeedback_BufferedLateResponse(t *testing.T) {
-	feedbackCh := make(chan string, 1)
-	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 50*time.Millisecond)
+	ba, s, w := makeAgentWithFeedback(t, 50*time.Millisecond)
 	defer w.Close()
+
+	var requestID string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Poll for the feedback row so we can capture the request ID before timeout.
+		rows, _ := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1") //nolint:errcheck
+		if len(rows) > 0 {
+			requestID = rows[0].ID
+		}
+	}()
 
 	_, err := ba.waitForFeedback(context.Background(), "run1", "ask_operator", "{}", "please answer", 50*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
+	<-done
 
-	// Late response must land in the cap-1 buffer after the receiver exits.
-	sentToBuffer := false
-	select {
-	case feedbackCh <- "late response":
-		sentToBuffer = true
-	default:
-	}
-	if !sentToBuffer {
-		t.Error("late response send hit default arm; expected it to land in the cap-1 buffer")
+	// A late Resolve call after timeout must return ErrUnknownRequestID because
+	// the waiter is removed by inAppChannel.Request's deferred delete.
+	if requestID != "" {
+		lateErr := ba.FeedbackResolver().Resolve(requestID, "late response")
+		if !errors.Is(lateErr, ErrUnknownRequestID) {
+			t.Errorf("late Resolve returned %v, want ErrUnknownRequestID", lateErr)
+		}
 	}
 
 	if err := w.Close(); err != nil {
@@ -2450,8 +2503,7 @@ func TestWaitForFeedback_BufferedLateResponse(t *testing.T) {
 // feedback path: the scanner resolves the feedback row before the in-agent timer
 // fires, leaving exactly one error step.
 func TestWaitForFeedback_ScannerWins(t *testing.T) {
-	feedbackCh := make(chan string, 1)
-	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 200*time.Millisecond)
+	ba, s, w := makeAgentWithFeedback(t, 200*time.Millisecond)
 	pub := &capturePublisher{}
 	ba.sm = NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 
@@ -2462,7 +2514,7 @@ func TestWaitForFeedback_ScannerWins(t *testing.T) {
 	}()
 
 	// Poll until the feedback row appears in the DB.
-	feedbackID := pollForFeedbackRow(t, s, time.Now().Add(100*time.Millisecond))
+	feedbackID := pollForFeedbackRow(t, s, time.Now().Add(2*time.Second))
 
 	// Back-date the feedback row so the scanner picks it up as expired.
 	past := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339Nano)
@@ -2526,17 +2578,38 @@ func TestWaitForFeedback_ScannerWins(t *testing.T) {
 // before the timer fires, and subsequent scanner.scan() is a no-op (the row is
 // no longer pending).
 func TestWaitForFeedback_ResponseWins(t *testing.T) {
-	feedbackCh := make(chan string, 1)
-	feedbackCh <- "operator's answer" // pre-fill so the channel is ready immediately
-	ba, s, w := makeAgentWithFeedback(t, feedbackCh, 200*time.Millisecond)
+	ba, s, w := makeAgentWithFeedback(t, 500*time.Millisecond)
 	defer w.Close()
 
-	response, err := ba.waitForFeedback(context.Background(), "run1", "ask_operator", "{}", "please answer", 200*time.Millisecond)
-	if err != nil {
-		t.Fatalf("waitForFeedback: %v", err)
+	// Spawn waitForFeedback in a goroutine and deliver the response via Resolve
+	// once the feedback row appears in the DB.
+	type result struct {
+		response string
+		err      error
 	}
-	if response != "operator's answer" {
-		t.Errorf("response = %q, want %q", response, "operator's answer")
+	done := make(chan result, 1)
+	go func() {
+		resp, err := ba.waitForFeedback(context.Background(), "run1", "ask_operator", "{}", "please answer", 500*time.Millisecond)
+		done <- result{resp, err}
+	}()
+
+	feedbackID := pollForFeedbackRow(t, s, time.Now().Add(2*time.Second))
+	if err := ba.FeedbackResolver().Resolve(feedbackID, "operator's answer"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	var res result
+	select {
+	case res = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitForFeedback did not return within deadline")
+	}
+
+	if res.err != nil {
+		t.Fatalf("waitForFeedback: %v", res.err)
+	}
+	if res.response != "operator's answer" {
+		t.Errorf("response = %q, want %q", res.response, "operator's answer")
 	}
 
 	// Run must be back to running (sm transitioned back).
@@ -2829,5 +2902,1070 @@ func TestRun_MCPTransportError_BecomesToolResult(t *testing.T) {
 	}
 	if foundErrorStep {
 		t.Error("transport error should NOT produce an error step — it should be a tool_result")
+	}
+}
+
+// fakePluginRegistrar is a test double for PluginGenerationLookup.
+type fakePluginRegistrar struct {
+	activeGen  int64
+	registered bool
+}
+
+func (f *fakePluginRegistrar) Generation(_ string) (int64, bool) {
+	return f.activeGen, f.registered
+}
+
+func TestNew_PanicsWhenPluginToolsWithoutRegistrar(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic when PluginTools is non-empty and PluginRegistrar is nil")
+		}
+	}()
+	s := testutil.NewTestStore(t)
+	_, _ = New(Config{
+		Policy:          minimalPolicy(),
+		Tools:           nil,
+		PluginTools:     []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
+		PluginRegistrar: nil, // intentionally nil — must panic
+		LLMClient:       testutil.NewNoopLLMClient(),
+		Audit:           NewAuditWriter(s.Queries()),
+		StateMachine:    NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+	})
+}
+
+func TestCapabilitySnapshot_IncludesPluginSourceTools(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
+
+	fakeSrv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"ok"}]`), false)
+	mcpTool := makeResolvedTool(fakeSrv.URL, "mcp-server", "mcp-tool")
+
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		LLMClient: testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 5, 5)),
+		Tools:     []mcp.ResolvedTool{mcpTool},
+		PluginTools: []PluginToolEntry{
+			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1, Description: "a plugin tool"},
+		},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: &fakePluginDispatcher{output: `"ok"`},
+		Policy:           minimalPolicy(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := ba.Run(context.Background(), "r1", "trigger"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	if len(steps) == 0 {
+		t.Fatal("no steps written")
+	}
+	if steps[0].Type != string(model.StepTypeCapabilitySnapshot) {
+		t.Fatalf("first step type = %q, want capability_snapshot", steps[0].Type)
+	}
+
+	type snapshotContent struct {
+		Tools []model.GrantedTool `json:"tools"`
+	}
+	var snap snapshotContent
+	if err := json.Unmarshal([]byte(steps[0].Content), &snap); err != nil {
+		t.Fatalf("unmarshal snapshot content: %v", err)
+	}
+
+	var foundMCP, foundPlugin bool
+	for _, gt := range snap.Tools {
+		switch gt.Source {
+		case "mcp:mcp-server":
+			foundMCP = true
+		case "plugin:my-plugin@1":
+			foundPlugin = true
+		}
+	}
+	if !foundMCP {
+		t.Errorf("MCP tool source not found in snapshot; tools = %v", snap.Tools)
+	}
+	if !foundPlugin {
+		t.Errorf("plugin tool source not found in snapshot; tools = %v", snap.Tools)
+	}
+}
+
+func TestHandleToolCall_PluginGenerationMismatch_StructuralError(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	// Registrar reports generation 2 is active; snapshot captured generation 1.
+	registrar := &fakePluginRegistrar{activeGen: 2, registered: true}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy: minimalPolicy(),
+		PluginTools: []PluginToolEntry{
+			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1},
+		},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: &fakePluginDispatcher{}, // not reached on generation mismatch
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	output, isErr, err := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if err != nil {
+		t.Fatalf("handleToolCall returned unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected isErr=true for generation mismatch")
+	}
+	if !strings.Contains(output, "no longer active") {
+		t.Errorf("output = %q; want it to contain 'no longer active'", output)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+
+	var toolResultFound, toolCallFound bool
+	for _, step := range steps {
+		switch step.Type {
+		case string(model.StepTypeToolResult):
+			var content map[string]any
+			if jsonErr := json.Unmarshal([]byte(step.Content), &content); jsonErr != nil {
+				t.Fatalf("unmarshal tool_result: %v", jsonErr)
+			}
+			if isErrFlag, _ := content["is_error"].(bool); isErrFlag {
+				toolResultFound = true
+			}
+		case string(model.StepTypeToolCall):
+			toolCallFound = true
+		}
+	}
+	if !toolResultFound {
+		t.Error("expected tool_result step with is_error=true")
+	}
+	if toolCallFound {
+		t.Error("tool_call step must NOT be written for a generation mismatch")
+	}
+}
+
+func TestHandleToolCall_PluginGenerationUnregistered_StructuralError(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	// Registrar reports instance is not registered.
+	registrar := &fakePluginRegistrar{activeGen: 0, registered: false}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy: minimalPolicy(),
+		PluginTools: []PluginToolEntry{
+			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1},
+		},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: &fakePluginDispatcher{}, // not reached on unregistered instance
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	output, isErr, err := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if err != nil {
+		t.Fatalf("handleToolCall returned unexpected error: %v", err)
+	}
+	if !isErr {
+		t.Error("expected isErr=true for unregistered instance")
+	}
+	if !strings.Contains(output, "no longer active") {
+		t.Errorf("output = %q; want it to contain 'no longer active'", output)
+	}
+
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+
+	var toolResultFound, toolCallFound bool
+	for _, step := range steps {
+		switch step.Type {
+		case string(model.StepTypeToolResult):
+			var content map[string]any
+			if jsonErr := json.Unmarshal([]byte(step.Content), &content); jsonErr != nil {
+				t.Fatalf("unmarshal tool_result: %v", jsonErr)
+			}
+			if isErrFlag, _ := content["is_error"].(bool); isErrFlag {
+				toolResultFound = true
+			}
+		case string(model.StepTypeToolCall):
+			toolCallFound = true
+		}
+	}
+	if !toolResultFound {
+		t.Error("expected tool_result step with is_error=true")
+	}
+	if toolCallFound {
+		t.Error("tool_call step must NOT be written for an unregistered instance")
+	}
+}
+
+// fakePluginDispatcher is a test double for PluginToolDispatcher.
+// It records calls and can be programmed to return specific output or errors.
+type fakePluginDispatcher struct {
+	mu      sync.Mutex
+	calls   int
+	output  string
+	isError bool
+	err     error
+	// blockCh, when non-nil, causes Call to block until the channel is closed.
+	blockCh <-chan struct{}
+}
+
+func (f *fakePluginDispatcher) Call(ctx context.Context, _, _, _, _, _ string) (string, bool, error) {
+	f.mu.Lock()
+	f.calls++
+	blockCh := f.blockCh
+	output := f.output
+	isError := f.isError
+	err := f.err
+	f.mu.Unlock()
+
+	if blockCh != nil {
+		select {
+		case <-blockCh:
+		case <-ctx.Done():
+			return "", false, ctx.Err()
+		}
+	}
+	return output, isError, err
+}
+
+func TestHandleToolCall_PluginDispatch_HappyPath(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+	dispatcher := &fakePluginDispatcher{output: `{"result":"ok"}`, isError: false}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy: minimalPolicy(),
+		PluginTools: []PluginToolEntry{
+			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1},
+		},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: dispatcher,
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	output, isErr, callErr := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if callErr != nil {
+		t.Fatalf("handleToolCall returned unexpected error: %v", callErr)
+	}
+	if output != `{"result":"ok"}` {
+		t.Errorf("output = %q; want %q", output, `{"result":"ok"}`)
+	}
+	if isErr {
+		t.Error("isErr should be false for success")
+	}
+	if dispatcher.calls != 1 {
+		t.Errorf("dispatcher called %d times; want 1", dispatcher.calls)
+	}
+
+	// Verify tool_call step has server_id = instance name, and tool_result is written.
+	steps, listErr := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if listErr != nil {
+		t.Fatalf("ListRunSteps: %v", listErr)
+	}
+	var toolCallFound, toolResultFound bool
+	for _, step := range steps {
+		switch step.Type {
+		case string(model.StepTypeToolCall):
+			var content map[string]any
+			if jsonErr := json.Unmarshal([]byte(step.Content), &content); jsonErr != nil {
+				t.Fatalf("unmarshal tool_call: %v", jsonErr)
+			}
+			if content["server_id"] != "my-plugin" {
+				t.Errorf("tool_call server_id = %v; want 'my-plugin'", content["server_id"])
+			}
+			toolCallFound = true
+		case string(model.StepTypeToolResult):
+			toolResultFound = true
+		}
+	}
+	if !toolCallFound {
+		t.Error("expected tool_call step; none found")
+	}
+	if !toolResultFound {
+		t.Error("expected tool_result step; none found")
+	}
+}
+
+func TestHandleToolCall_PluginDispatch_Timeout(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+	dispatcher := &fakePluginDispatcher{err: ErrPluginCallTimeout}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy:           minimalPolicy(),
+		PluginTools:      []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: dispatcher,
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	output, isErr, callErr := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if callErr != nil {
+		t.Fatalf("handleToolCall returned unexpected Go error: %v", callErr)
+	}
+	if !isErr {
+		t.Error("isErr should be true for timeout")
+	}
+	if !strings.Contains(output, "timed out") {
+		t.Errorf("output = %q; want it to contain 'timed out'", output)
+	}
+
+	// Verify tool_result is written with is_error=true.
+	steps, _ := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	var toolResultFound bool
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeToolResult) {
+			var content map[string]any
+			json.Unmarshal([]byte(step.Content), &content) //nolint:errcheck
+			if isErrFlag, _ := content["is_error"].(bool); isErrFlag {
+				toolResultFound = true
+			}
+		}
+	}
+	if !toolResultFound {
+		t.Error("expected tool_result with is_error=true for timeout")
+	}
+}
+
+func TestHandleToolCall_PluginDispatch_QueueFull(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+	dispatcher := &fakePluginDispatcher{err: ErrPluginQueueFull}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy:           minimalPolicy(),
+		PluginTools:      []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: dispatcher,
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	output, isErr, callErr := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if callErr != nil {
+		t.Fatalf("unexpected Go error: %v", callErr)
+	}
+	if !isErr {
+		t.Error("isErr should be true for queue full")
+	}
+	if !strings.Contains(output, "at capacity") {
+		t.Errorf("output = %q; want it to contain 'at capacity'", output)
+	}
+}
+
+func TestHandleToolCall_PluginDispatch_CtxCancellation(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+	// blockCh is never closed; Call will block until ctx is cancelled.
+	blockCh := make(chan struct{})
+	dispatcher := &fakePluginDispatcher{blockCh: blockCh}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy:           minimalPolicy(),
+		PluginTools:      []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: dispatcher,
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	done := make(chan struct{})
+	var gotErr error
+	go func() {
+		defer close(done)
+		_, _, gotErr = ba.handleToolCall(ctx, "r1", "my-plugin.do-thing", map[string]any{})
+	}()
+
+	// Cancel after a short delay to ensure the call is in-flight.
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleToolCall did not return after ctx cancellation")
+	}
+
+	if gotErr == nil {
+		t.Error("expected error after ctx cancellation, got nil")
+	}
+}
+
+func TestHandleToolCall_PluginDispatch_GenerationMismatch_DispatcherNotCalled(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	// Generation mismatch: registrar reports 2 but snapshot captured 1.
+	registrar := &fakePluginRegistrar{activeGen: 2, registered: true}
+	dispatcher := &fakePluginDispatcher{output: "should not be called"}
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy:           minimalPolicy(),
+		PluginTools:      []PluginToolEntry{{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1}},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: dispatcher,
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, isErr, callErr := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if callErr != nil {
+		t.Fatalf("unexpected Go error: %v", callErr)
+	}
+	if !isErr {
+		t.Error("expected isErr=true for generation mismatch")
+	}
+	if dispatcher.calls != 0 {
+		t.Errorf("dispatcher called %d times; want 0 (should not be reached on generation mismatch)", dispatcher.calls)
+	}
+}
+
+// assertSchemaProperties unmarshals schema and checks that the keys in the
+// properties map exactly match wantKeys (order-independent). Mirrors the helper
+// in internal/mcp/narrow_test.go — copied here to avoid a cross-package export.
+func assertSchemaProperties(t *testing.T, schema json.RawMessage, wantKeys []string) {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(schema, &m); err != nil {
+		t.Fatalf("assertSchemaProperties: unmarshal: %v", err)
+	}
+
+	propsRaw, ok := m["properties"]
+	if !ok {
+		if len(wantKeys) > 0 {
+			t.Errorf("schema has no 'properties', want keys %v", wantKeys)
+		}
+		return
+	}
+	propsMap, ok := propsRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("assertSchemaProperties: 'properties' is not map[string]any")
+	}
+
+	var gotKeys []string
+	for k := range propsMap {
+		gotKeys = append(gotKeys, k)
+	}
+	sortStrings(gotKeys)
+
+	want := make([]string, len(wantKeys))
+	copy(want, wantKeys)
+	sortStrings(want)
+
+	if len(gotKeys) != len(want) {
+		t.Errorf("property keys = %v, want %v", gotKeys, want)
+		return
+	}
+	for i := range gotKeys {
+		if gotKeys[i] != want[i] {
+			t.Errorf("property keys = %v, want %v", gotKeys, want)
+			return
+		}
+	}
+}
+
+// sortStrings sorts a string slice in-place; avoids importing sort at the top level.
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
+}
+
+// pluginSchemaWith builds a simple JSON Schema object for use in plugin tool tests.
+func pluginSchemaWith(keys ...string) map[string]any {
+	props := make(map[string]any, len(keys))
+	for _, k := range keys {
+		props[k] = map[string]any{"type": "string"}
+	}
+	return map[string]any{
+		"type":       "object",
+		"properties": props,
+	}
+}
+
+// TestNew_NarrowsPluginToolSchema verifies that New() applies ADR-017 parameter
+// scoping to plugin tools: narrowedSchema is set to the policy-constrained view,
+// while tool.InputSchema retains the full raw schema. Mirrors TestNarrowSchema in
+// internal/mcp/narrow_test.go for parity across all v1 ADR-017 operations.
+func TestNew_NarrowsPluginToolSchema(t *testing.T) {
+	baseSchema := pluginSchemaWith("namespace", "pod", "force")
+	noPropsSchema := map[string]any{"type": "object"} // no "properties" key
+
+	tests := []struct {
+		name          string
+		schema        map[string]any
+		params        map[string]any
+		wantKeys      []string // nil means don't check properties
+		wantUnchanged bool     // narrowedSchema must equal marshaled schema
+	}{
+		{
+			name:          "nil Params — schema unchanged",
+			schema:        baseSchema,
+			params:        nil,
+			wantUnchanged: true,
+		},
+		{
+			name:          "empty Params — schema unchanged",
+			schema:        baseSchema,
+			params:        map[string]any{},
+			wantUnchanged: true,
+		},
+		{
+			name:     "single key in Params — only that property survives",
+			schema:   baseSchema,
+			params:   map[string]any{"namespace": "x"},
+			wantKeys: []string{"namespace"},
+		},
+		{
+			name:     "multiple keys in Params — only listed properties survive",
+			schema:   baseSchema,
+			params:   map[string]any{"namespace": "x", "pod": "y"},
+			wantKeys: []string{"namespace", "pod"},
+		},
+		{
+			name:     "Params key not in schema — silently dropped",
+			schema:   baseSchema,
+			params:   map[string]any{"namespace": "x", "nonexistent": "y"},
+			wantKeys: []string{"namespace"},
+		},
+		{
+			name:     "Params drops a required key — required entry removed",
+			schema:   baseSchema,
+			params:   map[string]any{"force": true},
+			wantKeys: []string{"force"},
+		},
+		{
+			name:          "schema with no properties — returned unchanged",
+			schema:        noPropsSchema,
+			params:        map[string]any{"namespace": "x"},
+			wantUnchanged: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testutil.NewTestStore(t)
+			registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+
+			ba, err := New(Config{
+				Policy: minimalPolicy(),
+				PluginTools: []PluginToolEntry{
+					{
+						InstanceName: "my-plugin",
+						ToolName:     "do-thing",
+						Generation:   1,
+						Schema:       tc.schema,
+						Params:       tc.params,
+					},
+				},
+				PluginRegistrar:  registrar,
+				PluginDispatcher: &fakePluginDispatcher{},
+				LLMClient:        testutil.NewNoopLLMClient(),
+				Audit:            NewAuditWriter(s.Queries()),
+				StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			entry, ok := ba.toolsByName["my-plugin.do-thing"]
+			if !ok {
+				t.Fatal("tool entry not found in toolsByName")
+			}
+
+			rawSchema, err := json.Marshal(tc.schema)
+			if err != nil {
+				t.Fatalf("marshal base schema: %v", err)
+			}
+
+			if tc.wantUnchanged {
+				if string(entry.narrowedSchema) != string(rawSchema) {
+					t.Errorf("narrowedSchema = %s, want unchanged %s", entry.narrowedSchema, rawSchema)
+				}
+				return
+			}
+
+			assertSchemaProperties(t, entry.narrowedSchema, tc.wantKeys)
+
+			// Raw InputSchema must always be the full original schema.
+			if string(entry.tool.InputSchema) != string(rawSchema) {
+				t.Errorf("InputSchema modified; got %s, want %s", entry.tool.InputSchema, rawSchema)
+			}
+		})
+	}
+}
+
+// TestNew_PluginSchemaCannotBypassScoping verifies that a plugin tool's Params
+// field restricts what the LLM sees (via buildToolDefinitions), closing the
+// "no escape hatch" acceptance criterion in issue #197.
+func TestNew_PluginSchemaCannotBypassScoping(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+
+	// Plugin declares both "namespace" and "secret", but policy only permits "namespace".
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"namespace": map[string]any{"type": "string"},
+			"secret":    map[string]any{"type": "string"},
+		},
+	}
+
+	ba, err := New(Config{
+		Policy: minimalPolicy(),
+		PluginTools: []PluginToolEntry{
+			{
+				InstanceName: "my-plugin",
+				ToolName:     "do-thing",
+				Generation:   1,
+				Schema:       schema,
+				Params:       map[string]any{"namespace": "x"},
+			},
+		},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: &fakePluginDispatcher{},
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            NewAuditWriter(s.Queries()),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusPending, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// narrowedSchema must expose only "namespace".
+	entry := ba.toolsByName["my-plugin.do-thing"]
+	assertSchemaProperties(t, entry.narrowedSchema, []string{"namespace"})
+
+	// buildToolDefinitions feeds the narrowedSchema to the LLM — check that too.
+	defs := ba.buildToolDefinitions()
+	var pluginDef *llm.ToolDefinition
+	for i, d := range defs {
+		if d.Name == "my-plugin.do-thing" {
+			pluginDef = &defs[i]
+			break
+		}
+	}
+	if pluginDef == nil {
+		t.Fatal("plugin tool definition not found in buildToolDefinitions output")
+	}
+	assertSchemaProperties(t, pluginDef.InputSchema, []string{"namespace"})
+}
+
+// TestHandleToolCall_PluginTool_ApprovalGated verifies that the approval
+// interceptor in handleToolCall runs BEFORE the plugin generation guard —
+// i.e. there is exactly one approval chokepoint regardless of tool source
+// (ADR-008, ADR-029).
+func TestHandleToolCall_PluginTool_ApprovalGated(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// approvalRequired controls whether the plugin tool is registered with
+		// ApprovalModeRequired and whether approvalCh is wired in the harness.
+		approvalRequired bool
+
+		// approvalCh configuration.
+		approvalChSend *bool // nil = don't send, pointer to false = reject, pointer to true = approve
+		toolTimeout    time.Duration
+		cancelCtx      bool // cancel the context before calling handleToolCall
+
+		// Plugin configuration.
+		generation       int64
+		activeGeneration int64
+		registered       bool
+
+		// Expected outcomes.
+		wantErr             string  // substring expected in returned error (empty = no error)
+		wantApprovalRequest bool    // expect approval_request step written
+		wantToolResult      bool    // expect tool_result step written
+		wantApprovalErrCode *string // expected ErrorCode in error step (nil = any/none)
+	}{
+		{
+			// Approved + generation match → approval_request written, then real
+			// dispatch runs and returns a tool_result step.
+			name:                "approved",
+			approvalRequired:    true,
+			approvalChSend:      boolPtr(true),
+			generation:          1,
+			activeGeneration:    1,
+			registered:          true,
+			wantErr:             "", // no error — dispatch succeeds
+			wantApprovalRequest: true,
+			wantToolResult:      true,
+		},
+		{
+			// Operator rejects → approval_request written, error returned, no tool_result.
+			name:                "rejected",
+			approvalRequired:    true,
+			approvalChSend:      boolPtr(false),
+			generation:          1,
+			activeGeneration:    1,
+			registered:          true,
+			wantErr:             "rejected by operator",
+			wantApprovalRequest: true,
+			wantApprovalErrCode: strPtr(string(model.ErrorCodeApprovalRejected)),
+		},
+		{
+			// Approval times out before a decision arrives.
+			name:                "timeout",
+			approvalRequired:    true,
+			approvalChSend:      nil, // no send → select falls through to timeout
+			toolTimeout:         20 * time.Millisecond,
+			generation:          1,
+			activeGeneration:    1,
+			registered:          true,
+			wantErr:             "approval timeout",
+			wantApprovalRequest: true,
+			wantApprovalErrCode: strPtr(string(model.ErrorCodeApprovalRejected)),
+		},
+		{
+			// Context is cancelled before handleToolCall is even entered.
+			name:                "ctx_cancelled",
+			approvalRequired:    true,
+			approvalChSend:      nil,
+			cancelCtx:           true,
+			generation:          1,
+			activeGeneration:    1,
+			registered:          true,
+			wantErr:             "context cancelled",
+			wantApprovalRequest: false,
+		},
+		{
+			// Sanity case: approval NOT required + generation mismatch → generation
+			// guard produces a structural tool_result error, no approval gate involved.
+			name:                "approval_not_required_generation_mismatch_returns_structural_error",
+			approvalRequired:    false,
+			approvalChSend:      nil,
+			generation:          1,
+			activeGeneration:    2, // mismatch
+			registered:          true,
+			wantErr:             "", // no error returned
+			wantApprovalRequest: false,
+			wantToolResult:      true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testutil.NewTestStore(t)
+			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+			testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+			registrar := &fakePluginRegistrar{
+				activeGen:  tc.activeGeneration,
+				registered: tc.registered,
+			}
+
+			// Wire ApprovalCh only for cases that need approval gating.
+			var approvalCh chan bool
+			approval := model.ApprovalModeNone
+			if tc.approvalRequired {
+				approval = model.ApprovalModeRequired
+				approvalCh = make(chan bool, 1)
+				if tc.approvalChSend != nil {
+					approvalCh <- *tc.approvalChSend
+				}
+			}
+
+			// Provide a no-op dispatcher so the agent can be constructed.
+			// For the "approved" case it returns a successful result; for others
+			// it should not be reached (approval rejection / timeout / ctx cancel
+			// terminate before dispatch).
+			testDispatcher := &fakePluginDispatcher{output: `"dispatched"`}
+
+			w := NewAuditWriter(s.Queries())
+			ba, err := New(Config{
+				Policy: minimalPolicy(),
+				PluginTools: []PluginToolEntry{
+					{
+						InstanceName: "my-plugin",
+						ToolName:     "do-thing",
+						Generation:   tc.generation,
+						Approval:     approval,
+						Timeout:      tc.toolTimeout,
+					},
+				},
+				PluginRegistrar:  registrar,
+				PluginDispatcher: testDispatcher,
+				LLMClient:        testutil.NewNoopLLMClient(),
+				Audit:            w,
+				ApprovalCh:       approvalCh,
+				StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			ctx := context.Background()
+			if tc.cancelCtx {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+
+			_, _, callErr := ba.handleToolCall(ctx, "r1", "my-plugin.do-thing", map[string]any{})
+
+			if tc.wantErr != "" {
+				if callErr == nil {
+					t.Fatalf("handleToolCall returned nil; want error containing %q", tc.wantErr)
+				}
+				if !strings.Contains(callErr.Error(), tc.wantErr) {
+					t.Errorf("handleToolCall error = %q; want it to contain %q", callErr.Error(), tc.wantErr)
+				}
+			} else if callErr != nil {
+				t.Fatalf("handleToolCall returned unexpected error: %v", callErr)
+			}
+
+			steps, listErr := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+			if listErr != nil {
+				t.Fatalf("ListRunSteps: %v", listErr)
+			}
+
+			var approvalRequestFound, toolResultFound bool
+			var foundErrCode string
+			for _, step := range steps {
+				switch step.Type {
+				case string(model.StepTypeApprovalRequest):
+					approvalRequestFound = true
+				case string(model.StepTypeToolResult):
+					toolResultFound = true
+				case string(model.StepTypeError):
+					var content map[string]string
+					if jsonErr := json.Unmarshal([]byte(step.Content), &content); jsonErr == nil {
+						foundErrCode = content["code"]
+					}
+				}
+			}
+
+			if tc.wantApprovalRequest && !approvalRequestFound {
+				t.Error("expected approval_request step to be written; none found")
+			}
+			if !tc.wantApprovalRequest && approvalRequestFound {
+				t.Error("approval_request step written unexpectedly")
+			}
+			if tc.wantToolResult && !toolResultFound {
+				t.Error("expected tool_result step to be written; none found")
+			}
+			if tc.wantApprovalErrCode != nil && foundErrCode != *tc.wantApprovalErrCode {
+				t.Errorf("error step code = %q; want %q", foundErrCode, *tc.wantApprovalErrCode)
+			}
+		})
+	}
+}
+
+// boolPtr returns a pointer to a bool literal.
+func boolPtr(b bool) *bool { return &b }
+
+// strPtr returns a pointer to a string literal.
+func strPtr(s string) *string { return &s }
+
+// TestHandleToolCall_PluginTool_ApprovalGated_GateFiredBeforeGenerationGuard
+// verifies the specific invariant: when a plugin tool has Approval: required AND
+// the generation is mismatched, the approval gate fires FIRST (approval_request
+// step is written and the run waits), and only after approval does the generation
+// guard produce the structural tool_result error.
+func TestHandleToolCall_PluginTool_ApprovalGated_GateFiredBeforeGenerationGuard(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	// Generation mismatch: snapshot captured generation 1, registrar says 2 is active.
+	registrar := &fakePluginRegistrar{activeGen: 2, registered: true}
+
+	// Operator approves — we want to confirm approval runs before the guard.
+	approvalCh := make(chan bool, 1)
+	approvalCh <- true
+
+	w := NewAuditWriter(s.Queries())
+	ba, err := New(Config{
+		Policy: minimalPolicy(),
+		PluginTools: []PluginToolEntry{
+			{
+				InstanceName: "my-plugin",
+				ToolName:     "do-thing",
+				Generation:   1, // stale generation
+				Approval:     model.ApprovalModeRequired,
+			},
+		},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: &fakePluginDispatcher{}, // not reached — generation guard fires first
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            w,
+		ApprovalCh:       approvalCh,
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// The call should succeed at the handleToolCall level (structural tool_result, no error).
+	output, isErr, callErr := ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{})
+	if callErr != nil {
+		t.Fatalf("handleToolCall returned unexpected error: %v", callErr)
+	}
+	if !isErr {
+		t.Error("expected isErr=true for generation mismatch after approval")
+	}
+	if !strings.Contains(output, "no longer active") {
+		t.Errorf("output = %q; want it to contain 'no longer active'", output)
+	}
+
+	steps, listErr := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if listErr != nil {
+		t.Fatalf("ListRunSteps: %v", listErr)
+	}
+
+	var approvalRequestFound, toolResultFound bool
+	for _, step := range steps {
+		switch step.Type {
+		case string(model.StepTypeApprovalRequest):
+			approvalRequestFound = true
+		case string(model.StepTypeToolResult):
+			var content map[string]any
+			if jsonErr := json.Unmarshal([]byte(step.Content), &content); jsonErr == nil {
+				if isErrFlag, _ := content["is_error"].(bool); isErrFlag {
+					toolResultFound = true
+				}
+			}
+		}
+	}
+
+	if !approvalRequestFound {
+		t.Error("approval_request step not written — gate must fire before generation guard")
+	}
+	if !toolResultFound {
+		t.Error("expected tool_result step with is_error=true for generation mismatch")
+	}
+}
+
+// TestNew_PluginToolValidateCallRejectsUndeclared verifies that handleToolCall
+// runs ValidateCall against the narrowed plugin schema before reaching the plugin
+// generation guard or dispatch placeholder. The reorder in agent.go ensures
+// schema errors surface even for plugin tools.
+func TestNew_PluginToolValidateCallRejectsUndeclared(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusRunning)
+
+	// Generation matches — if ValidateCall were absent, execution would reach the dispatcher.
+	registrar := &fakePluginRegistrar{activeGen: 1, registered: true}
+	dispatcher := &fakePluginDispatcher{output: "should not be called"}
+
+	ba, err := New(Config{
+		Policy: minimalPolicy(),
+		PluginTools: []PluginToolEntry{
+			{
+				InstanceName: "my-plugin",
+				ToolName:     "do-thing",
+				Generation:   1,
+				Schema:       pluginSchemaWith("a"),
+				Params:       map[string]any{"a": "x"}, // narrows schema to only "a"
+			},
+		},
+		PluginRegistrar:  registrar,
+		PluginDispatcher: dispatcher,
+		LLMClient:        testutil.NewNoopLLMClient(),
+		Audit:            NewAuditWriter(s.Queries()),
+		StateMachine:     NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Call with undeclared key "b" — ValidateCall must reject it before dispatch.
+	_, _, err = ba.handleToolCall(context.Background(), "r1", "my-plugin.do-thing", map[string]any{"b": 1})
+
+	if err == nil {
+		t.Fatal("handleToolCall returned nil; want schema validation error")
+	}
+	if !strings.Contains(err.Error(), "b") {
+		t.Errorf("error %q should reference the rejected key %q", err.Error(), "b")
+	}
+	// Must NOT have called the dispatcher — schema validation ran first.
+	if dispatcher.calls != 0 {
+		t.Errorf("dispatcher called %d times; schema validation should have fired before dispatch", dispatcher.calls)
+	}
+
+	// No tool_call step should have been written (validation precedes audit writes).
+	steps, err2 := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "r1", After: -1, Limit: listAll})
+	if err2 != nil {
+		t.Fatalf("ListRunSteps: %v", err2)
+	}
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeToolCall) {
+			t.Error("tool_call step must NOT be written when schema validation fails")
+		}
 	}
 }

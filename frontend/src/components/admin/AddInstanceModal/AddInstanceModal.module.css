@@ -1,0 +1,74 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.label {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-second);
+}
+
+.input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-mid);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-family: var(--font-body);
+  box-sizing: border-box;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-blue);
+}
+
+.input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.fieldError {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-red);
+}
+
+/* API-level error banner */
+
+.apiError {
+  padding: var(--space-3) var(--space-4);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-red) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-red) 25%, transparent);
+  font-size: var(--text-sm);
+}
+
+.apiErrorMessage {
+  margin: 0;
+  color: var(--color-red);
+}
+
+.apiErrorDetail {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-second);
+}
+
+.apiErrorDetail pre {
+  margin: var(--space-1) 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+}

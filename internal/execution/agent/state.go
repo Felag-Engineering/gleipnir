@@ -333,3 +333,10 @@ func (sm *RunStateMachine) Version() int64 {
 func (sm *RunStateMachine) Queries() *db.Queries {
 	return sm.queries
 }
+
+// Publisher returns the event.Publisher injected at construction time, or nil
+// if none was provided. Set once at construction via WithStateMachinePublisher;
+// no locking needed (same pattern as Queries).
+func (sm *RunStateMachine) Publisher() event.Publisher {
+	return sm.publisher
+}

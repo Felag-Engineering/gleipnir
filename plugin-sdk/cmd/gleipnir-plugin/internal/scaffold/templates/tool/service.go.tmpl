@@ -3,31 +3,45 @@ package main
 import (
 	"context"
 	"fmt"
+
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/pluginerr"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/tool"
 )
 
-// ToolService implements the ToolService gRPC contract.
-//
-// TODO: replace stubbed methods with real implementations.
-// Each tool declared in manifest.go needs a corresponding case in Call.
-type ToolService struct{}
+// ToolService implements tool.Service with a single example_tool.
+// Replace the stub methods with your real implementation.
+type ToolService struct {
+	host hostv1.HostServiceClient
+}
 
-// ListTools returns the list of tool names this plugin implements.
-// The list must match what is declared in manifest.go / manifest.yaml.
-func (s *ToolService) ListTools(_ context.Context) ([]string, error) {
-	return []string{"example_tool"}, nil
+// NewToolService creates a ToolService that uses hostClient for host RPCs.
+// Stub methods do not dereference host, so NewToolService(nil) is safe in tests.
+func NewToolService(hostClient hostv1.HostServiceClient) *ToolService {
+	return &ToolService{host: hostClient}
+}
+
+// ListTools returns the tools this plugin exposes. Must match manifest.go.
+func (s *ToolService) ListTools(_ context.Context) ([]tool.ToolSpec, error) {
+	return []tool.ToolSpec{
+		{
+			Name:        "example_tool",
+			Description: "An example tool — replace with your implementation.",
+			InputSchema: `{"type":"object","properties":{},"additionalProperties":false}`,
+		},
+	}, nil
 }
 
 // Call dispatches a tool call to the appropriate handler.
-func (s *ToolService) Call(_ context.Context, tool string, input []byte) ([]byte, error) {
-	switch tool {
+// Return pluginerr.InvalidArg for unknown or malformed input; the serve adapter
+// maps it to an application-level ErrorEnvelope with ERROR_CODE_INVALID_ARG.
+func (s *ToolService) Call(_ context.Context, name string, input []byte) ([]byte, error) {
+	switch name {
 	case "example_tool":
-		return s.exampleTool(input)
+		// TODO: implement example_tool.
+		_ = input
+		return []byte(`{"result":"ok"}`), nil
 	default:
-		return nil, fmt.Errorf("unknown tool: %s", tool)
+		return nil, pluginerr.InvalidArg(fmt.Sprintf("unknown tool: %q", name))
 	}
-}
-
-func (s *ToolService) exampleTool(_ []byte) ([]byte, error) {
-	// TODO: implement example_tool.
-	return []byte(`{"result": "ok"}`), nil
 }

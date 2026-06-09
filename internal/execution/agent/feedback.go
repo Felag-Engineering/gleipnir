@@ -6,7 +6,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
@@ -50,25 +52,131 @@ func askOperatorToolDefinition() llm.ToolDefinition {
 type FeedbackHandler struct {
 	audit          *AuditWriter
 	sm             *RunStateMachine
-	feedbackCh     <-chan string // receive-only: handler never closes the channel
 	defaultTimeout time.Duration
+	inApp          *inAppChannel
+
+	// Plugin channel routing — populated by WithFeedbackChannelDispatch.
+	// When non-nil and audienceID is non-empty, Wait routes feedback through the
+	// plugin channel instead of blocking on the inApp waiter.
+	channelDispatcher FeedbackChannelDispatcher
+	policyID          string
+	audienceID        string
 }
 
-// NewFeedbackHandler constructs a FeedbackHandler. feedbackCh must be receive-only
-// (compile-time guarantee the handler does not close it).
-func NewFeedbackHandler(audit *AuditWriter, sm *RunStateMachine, feedbackCh <-chan string, defaultTimeout time.Duration) *FeedbackHandler {
-	return &FeedbackHandler{
-		audit:          audit,
-		sm:             sm,
-		feedbackCh:     feedbackCh,
-		defaultTimeout: defaultTimeout,
+// FeedbackHandlerOption is a functional option for NewFeedbackHandler.
+type FeedbackHandlerOption func(*FeedbackHandler)
+
+// WithFeedbackChannelDispatch attaches a plugin channel dispatcher to the
+// handler.  When d is non-nil and audienceID is non-empty, Wait routes the
+// feedback request through the plugin channel instead of waiting on the in-app
+// waiter channel.
+func WithFeedbackChannelDispatch(d FeedbackChannelDispatcher, audienceID, policyID string) FeedbackHandlerOption {
+	return func(h *FeedbackHandler) {
+		h.channelDispatcher = d
+		h.audienceID = audienceID
+		h.policyID = policyID
 	}
 }
 
+// NewFeedbackHandler constructs a FeedbackHandler.
+// Optional functional opts (e.g. WithFeedbackChannelDispatch) are applied
+// after initialization; existing callers that pass zero opts are unaffected.
+func NewFeedbackHandler(audit *AuditWriter, sm *RunStateMachine, defaultTimeout time.Duration, opts ...FeedbackHandlerOption) *FeedbackHandler {
+	inApp := newInAppChannel(audit, sm)
+	h := &FeedbackHandler{
+		audit:          audit,
+		sm:             sm,
+		defaultTimeout: defaultTimeout,
+		inApp:          inApp,
+	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+// Resolve delivers an operator response to the in-app waiter for requestID.
+// Returns agent.ErrUnknownRequestID if no waiter is currently registered
+// (timed out, already answered, or the run was cancelled). Callers should treat
+// that as a benign late-callback signal, not an error.
+//
+// When the plugin dispatch path is active, Resolve returns ErrUnknownRequestID
+// because no in-app waiter is registered — the plugin path uses
+// dispatch.Dispatcher.Resolve (via hostsvc WriteAuditStep) instead.
+func (h *FeedbackHandler) Resolve(requestID, body string) error {
+	return h.inApp.Resolve(requestID, body)
+}
+
+// resolveFeedbackRecord marks the feedback_requests DB row as resolved and
+// emits the feedback.resolved SSE event.  Both operations are best-effort:
+// the agent goroutine must resume regardless of DB or marshal errors.  SSE is
+// gated on the CAS winning (rows > 0) — if the scanner already timed out the
+// row, the SSE must not be emitted for a stale decision.
+func (h *FeedbackHandler) resolveFeedbackRecord(ctx context.Context, runID, feedbackID, responseText string) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rows, err := h.sm.Queries().UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
+		Status:     "resolved",
+		Response:   &responseText,
+		ResolvedAt: &now,
+		ID:         feedbackID,
+	})
+	if err != nil {
+		logctx.Logger(ctx).WarnContext(ctx, "plugin feedback: UpdateFeedbackRequestStatus failed",
+			"feedback_id", feedbackID, "run_id", runID, "err", err)
+		return
+	}
+	if rows == 0 {
+		// Scanner already resolved this row (e.g. timeout beat the callback).
+		logctx.Logger(ctx).DebugContext(ctx, "feedback already resolved by scanner",
+			"feedback_id", feedbackID, "run_id", runID)
+		return
+	}
+
+	if pub := h.sm.Publisher(); pub != nil {
+		payload := map[string]string{
+			"feedback_id": feedbackID,
+			"run_id":      runID,
+			"status":      "resolved",
+		}
+		if data, marshalErr := json.Marshal(payload); marshalErr == nil {
+			pub.Publish("feedback.resolved", data)
+		}
+	}
+}
+
+// parseFeedbackResponse extracts the "text" field from a JSON response string.
+// The plugin encodes the reply as {"text":"...", "user":"...", "request_id":"..."}.
+// On parse failure or missing "text", logs a warning and returns responseJSON
+// as-is so the agent always resumes with something meaningful.
+func parseFeedbackResponse(responseJSON string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(responseJSON), &m); err != nil {
+		slog.Warn("feedback response JSON parse failed, using raw response", "err", err)
+		return responseJSON
+	}
+	text, ok := m["text"].(string)
+	if !ok {
+		slog.Warn("feedback response JSON missing 'text' field, using raw response")
+		return responseJSON
+	}
+	return text
+}
+
 // Wait suspends the run waiting for a freeform operator response.
-// It transitions to waiting_for_feedback (which creates the DB record and
-// publishes feedback.created), then blocks on the feedback channel, the timeout
-// channel, or context cancellation. Returns the operator's response text on success.
+//
+// Phase 1 (always runs): write the feedback_request audit step, transition to
+// waiting_for_feedback (which creates the DB record and publishes feedback.created).
+//
+// Phase 2 branches on whether a plugin channel dispatcher is configured:
+//
+//   - Plugin path: delegates to channelDispatcher.DispatchFeedback and blocks
+//     until the Slack plugin calls WriteAuditStep(feedback_response) which triggers
+//     dispatch.Dispatcher.Resolve → Wait unblocks.  The feedback_response audit
+//     step is written by hostsvc, NOT here (hostsvc already writes it, see
+//     BLOCKING #4 in the implementation plan).
+//
+//   - In-app path (fallback): blocks on the inApp waiter channel, writes the
+//     feedback_response audit step here (preserving existing behavior).
 func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, mcpOutput string, feedbackTimeout time.Duration) (string, error) {
 	feedbackID := model.NewULID()
 
@@ -79,6 +187,15 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 		expiresAt = time.Now().UTC().Add(feedbackTimeout).Format(time.RFC3339Nano)
 	}
 
+	// Pre-register the in-app waiter BEFORE the state transition.  This preserves
+	// the invariant from the original inAppChannel.Request: a Resolve call arriving
+	// immediately after the SSE event (which fires on transition) is never lost.
+	// On the plugin path the waiter is unused; UnregisterWaiter is deferred so it
+	// is cleaned up regardless of which branch executes.
+	ch := h.inApp.RegisterWaiter(feedbackID)
+	defer h.inApp.UnregisterWaiter(feedbackID)
+
+	// Phase 1: write audit step and transition — always runs regardless of dispatch path.
 	if err := h.audit.Write(ctx, Step{
 		RunID: runID,
 		Type:  model.StepTypeFeedbackRequest,
@@ -102,6 +219,43 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 		return "", fmt.Errorf("transitioning run to waiting_for_feedback: %w", err)
 	}
 
+	// Phase 2a: plugin channel path.
+	if h.channelDispatcher != nil && h.audienceID != "" {
+		var expiresAtTime *time.Time
+		if feedbackTimeout > 0 {
+			t := time.Now().UTC().Add(feedbackTimeout)
+			expiresAtTime = &t
+		}
+
+		response, dispatchErr := h.channelDispatcher.DispatchFeedback(ctx, FeedbackDispatchRequest{
+			AudienceID: h.audienceID,
+			RunID:      runID,
+			PolicyID:   h.policyID,
+			ToolName:   toolName,
+			Prompt:     mcpOutput,
+			ExpiresAt:  expiresAtTime,
+		})
+		if errors.Is(dispatchErr, ErrFeedbackRouteToInApp) {
+			// Audience resolved to in-app; fall through to the waiter select below.
+		} else if dispatchErr != nil {
+			return "", fmt.Errorf("plugin feedback dispatch: %w", dispatchErr)
+		} else {
+			// Plugin resolved the request.
+			// NOTE: Do NOT write a feedback_response audit step here.
+			// hostsvc.WriteAuditStep (called by the Slack plugin) has already written
+			// it — writing another would create a duplicate (BLOCKING #4).
+			parsedText := parseFeedbackResponse(response)
+			h.resolveFeedbackRecord(ctx, runID, feedbackID, parsedText)
+			if err := h.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
+				return "", fmt.Errorf("transitioning run back to running after plugin feedback: %w", err)
+			}
+			return parsedText, nil
+		}
+	}
+
+	// Phase 2b: in-app waiter path (no dispatcher or fallback from plugin path).
+	// ch was registered before Phase 1; deferred UnregisterWaiter handles cleanup.
+
 	// nil timeoutCh (when feedbackTimeout == 0) blocks forever in the select,
 	// meaning no in-process timeout is applied. Use NewTimer so we can Stop it
 	// on early response — time.After leaks until the duration fires.
@@ -113,18 +267,26 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 	}
 
 	select {
-	case responseText := <-h.feedbackCh:
+	case resp := <-ch:
 		if err := h.audit.Write(ctx, Step{
 			RunID:   runID,
 			Type:    model.StepTypeFeedbackResponse,
-			Content: map[string]any{"feedback_id": feedbackID, "response": responseText},
+			Content: map[string]any{"feedback_id": feedbackID, "response": resp.text},
 		}); err != nil {
 			return "", fmt.Errorf("writing feedback_response step: %w", err)
 		}
 		if err := h.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
 			return "", fmt.Errorf("transitioning run back to running after feedback: %w", err)
 		}
-		return responseText, nil
+		// Do NOT call resolveFeedbackRecord here. The HTTP SubmitFeedback handler
+		// owns the pending→resolved CAS for the in-app path (step d in runs_handler.go).
+		// Calling UpdateFeedbackRequestStatus from both sides creates a two-writer
+		// race: whichever loses the CAS gets rows==0, and the HTTP handler would
+		// return 409 to an operator whose submission was genuinely delivered.
+		// resolveFeedbackRecord is only needed on the plugin-dispatched path (Phase 2a
+		// above), where no HTTP handler transitions the record.
+		return resp.text, nil
+
 	case <-timeoutCh:
 		logctx.Logger(ctx).WarnContext(ctx, "feedback timeout reached",
 			"tool", toolName,
@@ -158,6 +320,7 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 		// the run. Return a sentinel so Run() knows to stop, but avoid a duplicate step.
 		logctx.Logger(ctx).DebugContext(ctx, "feedback already resolved by scanner", "feedback_id", feedbackID)
 		return "", fmt.Errorf("feedback timeout: already resolved by scanner for tool %s", toolName)
+
 	case <-ctx.Done():
 		return "", fmt.Errorf("context cancelled waiting for feedback: %w", ctx.Err())
 	}

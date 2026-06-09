@@ -66,7 +66,7 @@ CREATE INDEX idx_mcp_tools_server_id ON mcp_tools(server_id);
 CREATE TABLE policies (
     id              TEXT    PRIMARY KEY,  -- ULID
     name            TEXT    NOT NULL UNIQUE,
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll', 'cron')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll', 'cron', 'subscribed')),
     yaml            TEXT    NOT NULL,
     -- Encrypted webhook shared secret (AES-256-GCM, key from GLEIPNIR_ENCRYPTION_KEY).
     -- Stored outside yaml because yaml is returned wholesale via GET /api/v1/policies/:id — see ADR-034.
@@ -110,7 +110,7 @@ CREATE TABLE runs (
                         'failed',
                         'interrupted'
                     )),
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll', 'cron')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll', 'cron', 'subscribed')),
     trigger_payload TEXT    NOT NULL,     -- JSON blob
     started_at      TEXT    NOT NULL,     -- ISO 8601 UTC
     completed_at    TEXT,                 -- nullable, ISO 8601 UTC
@@ -302,7 +302,7 @@ CREATE TABLE user_roles (
 CREATE TABLE trigger_queue (
     id              TEXT    PRIMARY KEY,  -- ULID
     policy_id       TEXT    NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
-    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll', 'cron')),
+    trigger_type    TEXT    NOT NULL CHECK(trigger_type IN ('webhook', 'manual', 'scheduled', 'poll', 'cron', 'subscribed')),
     trigger_payload TEXT    NOT NULL,     -- JSON blob
     position        INTEGER NOT NULL,     -- monotonically increasing per-policy ordering
     created_at      TEXT    NOT NULL,     -- ISO 8601 UTC
@@ -366,3 +366,190 @@ CREATE TABLE openai_compat_providers (
 );
 
 CREATE INDEX idx_openai_compat_providers_name ON openai_compat_providers(name);
+
+-- ---------------------------------------------------------------------------
+-- Plugin system (ADR-041, ADR-045, ADR-046)
+--
+-- Three tables back the v1 plugin system:
+--   - plugins:             one row per installed plugin (binary + manifest).
+--   - plugin_instances:    one row per configured deployment of a plugin.
+--   - plugin_audit_events: operator-only audit trail for plugin lifecycle
+--                          (install, signature verification, key rotations,
+--                          credential lifecycle, late callbacks). NEVER
+--                          surfaced to the LLM — see ADR-046.
+--
+-- ADR-045 captures the trusted_pubkey on each plugin row at first install
+-- (TOFU). The manifest_snapshot column is the canonical manifest captured at
+-- install/approval; hot-reload diffs against this column to detect material
+-- changes (spec §5.4). The status column drives the install-flow state
+-- machine: a freshly installed plugin sits in pending_review until an admin
+-- clicks through; uninstall keeps the row but flips status to removed so
+-- audit history (FK from plugin_audit_events) survives.
+--
+-- The version column on plugins and plugin_instances is the ADR-038 CAS
+-- counter (do not confuse with plugin_version, which is the plugin author's
+-- own SemVer string from the manifest). Health-state transitions on
+-- plugin_instances inherit ADR-038 semantics for free.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugins (
+    id                 TEXT    PRIMARY KEY,                                              -- ULID
+    name               TEXT    NOT NULL UNIQUE,                                          -- manifest name; stable identity for TOFU
+    plugin_version     TEXT    NOT NULL,                                                 -- author's SemVer (ADR-042)
+    manifest_snapshot  TEXT    NOT NULL,                                                 -- canonical manifest JSON (signed payload component)
+    trusted_pubkey     TEXT    NOT NULL,                                                 -- Minisign Ed25519 pubkey, TOFU-captured (ADR-045)
+    status             TEXT    NOT NULL CHECK(status IN ('pending_review','active','removed')),
+    binary_path        TEXT,                                                             -- absolute path to extracted plugin executable (#386); NULL on legacy rows
+    version            INTEGER NOT NULL DEFAULT 0,                                       -- ADR-038 CAS counter
+    created_at         TEXT    NOT NULL,                                                 -- ISO 8601 UTC
+    updated_at         TEXT    NOT NULL                                                  -- ISO 8601 UTC
+);
+
+CREATE INDEX idx_plugins_status ON plugins(status);
+
+CREATE TABLE plugin_instances (
+    id                       TEXT    PRIMARY KEY,                                        -- ULID
+    plugin_id                TEXT    NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+    instance_name            TEXT    NOT NULL,                                           -- e.g. "slack-prod"
+    config_json              TEXT    NOT NULL DEFAULT '{}',                              -- per-instance config validated against plugin's config_schema
+    subscription_scope_json  TEXT    NOT NULL DEFAULT '{}',                              -- coarse subscription scope sent to plugin via TriggerService.Start (spec §4.3, #223)
+    -- Encrypted credentials (AES-256-GCM, key from GLEIPNIR_ENCRYPTION_KEY).
+    -- Reuses the existing crypto helpers; mirrors ADR-039 / ADR-034 write-only
+    -- pattern: GET endpoints expose presence only, never decrypted values.
+    credentials_encrypted    TEXT,                                                        -- nullable; base64 ciphertext
+    credentials_expires_at   TEXT,                                                        -- nullable; OAuth token refresh hook (#227)
+    handshake_versions       TEXT    NOT NULL DEFAULT '{}',                              -- JSON: per-service version pin from §10.3 handshake
+    health_state             TEXT    NOT NULL DEFAULT 'pending_key_approval'
+                                     CHECK(health_state IN (
+                                         'healthy',
+                                         'signature_invalid',
+                                         'pending_key_approval',
+                                         'pending_manifest_approval',
+                                         'pending_config_migration',
+                                         'verification_error',
+                                         'unsigned_permissive',
+                                         'unhealthy',
+                                         'crashed',
+                                         'circuit_broken',
+                                         'pending_reauthorize',
+                                         'inactive'
+                                     )),                                                  -- ADR-038, ADR-045 §7, issue #191, #230, #243
+    health_detail            TEXT,                                                        -- nullable; operator-facing reason for non-healthy state
+    last_oauth_callback_url  TEXT,                                                        -- nullable; OAuth-flow plumbing (#230)
+    version                  INTEGER NOT NULL DEFAULT 0,                                  -- ADR-038 CAS counter
+    created_at               TEXT    NOT NULL,                                            -- ISO 8601 UTC
+    updated_at               TEXT    NOT NULL,                                            -- ISO 8601 UTC
+    UNIQUE (plugin_id, instance_name)
+);
+
+CREATE INDEX idx_plugin_instances_plugin_id    ON plugin_instances(plugin_id);
+CREATE INDEX idx_plugin_instances_health_state ON plugin_instances(health_state);
+
+CREATE TABLE plugin_audit_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    plugin_instance_id  TEXT    REFERENCES plugin_instances(id) ON DELETE SET NULL,      -- nullable: pre-install + plugin-level events
+    event_type          TEXT    NOT NULL,                                                  -- e.g. 'plugin_installed', 'pubkey_rotated', 'feedback_response_late'
+    severity            TEXT    NOT NULL CHECK(severity IN ('info','warning','high','critical')),
+    actor_user_id       TEXT    REFERENCES users(id) ON DELETE SET NULL,                 -- nullable: system-driven events have no human actor
+    payload_json        TEXT    NOT NULL,                                                  -- structured event detail
+    created_at          TEXT    NOT NULL                                                   -- ISO 8601 UTC
+);
+
+CREATE INDEX idx_pae_instance_created ON plugin_audit_events(plugin_instance_id, created_at);
+CREATE INDEX idx_pae_event_created    ON plugin_audit_events(event_type, created_at);
+
+-- ---------------------------------------------------------------------------
+-- Plugin pending manifests
+--
+-- Holds the single pending candidate manifest per plugin while it awaits admin
+-- approval. PRIMARY KEY(plugin_id) enforces at-most-one pending candidate;
+-- ON DELETE CASCADE clears the row automatically when a plugin is uninstalled.
+-- Candidate bytes are stored raw (NOT base64) — they only lived in the audit
+-- event payload as base64 for JSON embedding; the table is the new source of
+-- truth. Accepted via POST /api/v1/admin/plugins/{id}/accept-manifest, after
+-- which the row is deleted best-effort (leftover rows self-correct on next
+-- material change via the ON CONFLICT DO UPDATE upsert).
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugin_pending_manifests (
+    plugin_id          TEXT PRIMARY KEY REFERENCES plugins(id) ON DELETE CASCADE,
+    candidate_manifest TEXT NOT NULL,   -- raw candidate manifest bytes (NOT base64)
+    old_version        TEXT NOT NULL,
+    new_version        TEXT NOT NULL,
+    created_at         TEXT NOT NULL,   -- ISO 8601 UTC
+    updated_at         TEXT NOT NULL    -- ISO 8601 UTC
+);
+
+-- ---------------------------------------------------------------------------
+-- Plugin audiences and pending requests (spec §6.1, §4.2, §11.5)
+--
+-- plugin_audiences — first-class shared resources. Each audience is a named
+--   ordered list of plugin-instance entries. The version column is the
+--   ADR-038 CAS counter for atomic edits.
+--
+-- audience_entries — ordered member list for an audience. The position
+--   column drives ordering; the UNIQUE constraint on (audience_id, position)
+--   is NOT DEFERRABLE (modernc.org/sqlite rejects DEFERRABLE on table
+--   constraints). Multi-row reorders inside a single transaction must use a
+--   temporary sentinel position to avoid transient violations. CASCADE from
+--   plugin_audiences so deleting an audience removes its entries. RESTRICT
+--   from plugin_instances so an instance cannot be uninstalled while
+--   referenced (§11.5 uninstall gate).
+--
+-- plugin_pending_requests — tracks ChannelService.Request rows once
+--   pre-ack has succeeded. Status enum mirrors feedback_requests so
+--   internal/timeout/scanner.go can drive both tables. The (status,
+--   expires_at) index reuses the same access pattern as feedback_requests.
+--   audience_entry_id is nullable with SET NULL so in-flight Channel
+--   Requests continue to resolve after an entry is edited/deleted (§11.7).
+--   No CASCADE from plugin_instances — uninstall is blocked upstream by
+--   §11.5; an orphaned row should never exist but must not be silently
+--   deleted. tool_name mirrors feedback_requests.tool_name so the timeout
+--   scanner has the field it reads when building ExpiredItem values.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugin_audiences (
+    id                      TEXT    PRIMARY KEY,                             -- ULID (ADR-013)
+    name                    TEXT    NOT NULL UNIQUE,
+    created_by_user_id      TEXT    REFERENCES users(id) ON DELETE SET NULL,
+    version                 INTEGER NOT NULL DEFAULT 0,                      -- ADR-038 CAS counter
+    created_at              TEXT    NOT NULL,                                -- ISO 8601 UTC
+    updated_at              TEXT    NOT NULL,                                -- ISO 8601 UTC
+    disable_in_app_fallback INTEGER NOT NULL DEFAULT 0                       -- §6.2 opt-out toggle
+);
+
+CREATE TABLE audience_entries (
+    id                 TEXT    PRIMARY KEY,                                  -- ULID
+    audience_id        TEXT    NOT NULL REFERENCES plugin_audiences(id) ON DELETE CASCADE,
+    plugin_instance_id TEXT    NOT NULL REFERENCES plugin_instances(id) ON DELETE RESTRICT,
+    position           INTEGER NOT NULL,
+    notify             INTEGER NOT NULL DEFAULT 0,
+    request            INTEGER NOT NULL DEFAULT 0,
+    config_json        TEXT    NOT NULL DEFAULT '{}',
+    UNIQUE (audience_id, position)
+);
+CREATE INDEX idx_audience_entries_audience  ON audience_entries(audience_id);
+CREATE INDEX idx_audience_entries_instance  ON audience_entries(plugin_instance_id);
+
+CREATE TABLE plugin_pending_requests (
+    id                  TEXT    PRIMARY KEY,                                 -- ULID; spec's request_id
+    plugin_instance_id  TEXT    NOT NULL REFERENCES plugin_instances(id) ON DELETE RESTRICT,
+    run_id              TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    audience_entry_id   TEXT    REFERENCES audience_entries(id) ON DELETE SET NULL,
+    tool_name           TEXT    NOT NULL DEFAULT '',
+    status              TEXT    NOT NULL CHECK(status IN ('pending','resolved','timed_out')),
+    response            TEXT,
+    expires_at          TEXT,
+    resolved_at         TEXT,
+    created_at          TEXT    NOT NULL
+);
+CREATE INDEX idx_plugin_pending_requests_run_status      ON plugin_pending_requests(run_id, status);
+CREATE INDEX idx_plugin_pending_requests_status_expires  ON plugin_pending_requests(status, expires_at);
+
+CREATE TABLE plugin_oauth_nonces (
+    nonce       TEXT PRIMARY KEY,           -- base64url-encoded 32B random
+    instance_id TEXT NOT NULL,              -- not FK-enforced: instance may have been uninstalled mid-flow
+    expires_at  TEXT NOT NULL,              -- RFC3339Nano UTC; pruned by janitor
+    created_at  TEXT NOT NULL
+) STRICT;
+CREATE INDEX plugin_oauth_nonces_expires_at_idx ON plugin_oauth_nonces (expires_at);

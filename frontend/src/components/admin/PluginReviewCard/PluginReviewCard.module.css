@@ -1,0 +1,134 @@
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-section);
+  padding: var(--space-5) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Header ─────────────────────────────────────────────────── */
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.nameRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.name {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.version {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.description {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-second);
+}
+
+/* Metadata table ─────────────────────────────────────────── */
+
+.meta {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-section);
+  padding: var(--space-4);
+}
+
+.metaRow {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.metaLabel {
+  min-width: 148px;
+  font-size: var(--text-sm);
+  color: var(--text-second);
+  font-weight: var(--weight-medium);
+  flex-shrink: 0;
+}
+
+.metaValue {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  margin: 0;
+  flex: 1;
+}
+
+.metaValueMono {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--text-second);
+  margin: 0;
+  flex: 1;
+  word-break: break-all;
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+/* Badges ─────────────────────────────────────────────────── */
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.serviceTool {
+  composes: badgeRect from '../../../styles/badges.module.css';
+  composes: colorBlue from '../../../styles/badges.module.css';
+}
+
+.serviceTrigger {
+  composes: badgeRect from '../../../styles/badges.module.css';
+  composes: colorTeal from '../../../styles/badges.module.css';
+}
+
+.serviceChannel {
+  composes: badgeRect from '../../../styles/badges.module.css';
+  composes: colorPurple from '../../../styles/badges.module.css';
+}
+
+.capBadge {
+  composes: badgeRect from '../../../styles/badges.module.css';
+  composes: colorAmber from '../../../styles/badges.module.css';
+}
+
+/* SBOM link ───────────────────────────────────────────────── */
+
+.sbomLink {
+  color: var(--color-green);
+  text-decoration: none;
+}
+
+.sbomLink:hover {
+  text-decoration: underline;
+}
+
+/* Actions ────────────────────────────────────────────────── */
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+}

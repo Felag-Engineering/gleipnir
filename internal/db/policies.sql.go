@@ -249,6 +249,42 @@ func (q *Queries) GetScheduledActivePolicies(ctx context.Context) ([]Policy, err
 	return items, nil
 }
 
+const getSubscribedActivePolicies = `-- name: GetSubscribedActivePolicies :many
+SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies WHERE trigger_type = 'subscribed' AND paused_at IS NULL
+`
+
+func (q *Queries) GetSubscribedActivePolicies(ctx context.Context) ([]Policy, error) {
+	rows, err := q.db.QueryContext(ctx, getSubscribedActivePolicies)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Policy
+	for rows.Next() {
+		var i Policy
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.TriggerType,
+			&i.Yaml,
+			&i.WebhookSecretEncrypted,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.PausedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPolicies = `-- name: ListPolicies :many
 SELECT id, name, trigger_type, yaml, webhook_secret_encrypted, created_at, updated_at, paused_at FROM policies ORDER BY created_at DESC
 `

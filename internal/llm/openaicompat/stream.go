@@ -114,6 +114,13 @@ func parseSSEStream(ctx context.Context, body io.ReadCloser, out chan<- llm.Mess
 		}
 	}
 
+	// Prefer the context error over scanner.Err()/missing-DONE: a cancelled
+	// reader can return EOF before the in-loop ctx check fires, which would
+	// otherwise misreport cancellation as "stream ended without [DONE]".
+	if err := ctx.Err(); err != nil {
+		out <- llm.MessageChunk{Err: err}
+		return
+	}
 	if err := scanner.Err(); err != nil {
 		out <- llm.MessageChunk{Err: fmt.Errorf("openai: reading SSE stream: %w", err)}
 		return

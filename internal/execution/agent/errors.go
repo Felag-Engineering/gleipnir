@@ -9,7 +9,31 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/plugin/pluginerr"
 )
+
+// ErrPluginCallTimeout is the sentinel for "plugin call exceeded its
+// per-call deadline." It is the same value as pluginerr.ErrCallTimeout and
+// internal/plugin/dispatch.ErrCallTimeout — errors.Is across all three
+// returns true. The leaf pluginerr package keeps agent and dispatch from
+// importing each other.
+var ErrPluginCallTimeout = pluginerr.ErrCallTimeout
+
+// ErrPluginQueueFull is the sentinel for "plugin instance is at capacity."
+// Same identity as pluginerr.ErrQueueFull / dispatch.ErrQueueFull (see above).
+var ErrPluginQueueFull = pluginerr.ErrQueueFull
+
+// ErrPluginInstanceNotRunning is the sentinel for "the plugin instance's
+// subprocess is not currently running" (freshly created, stopped, crashed,
+// inactive, or mid-restart). Same identity as pluginerr.ErrInstanceNotRunning /
+// dispatch.ErrInstanceNotRunning, so errors.Is matches across all three without
+// agent importing dispatch.
+var ErrPluginInstanceNotRunning = pluginerr.ErrInstanceNotRunning
+
+// ErrPluginManagerUnavailable is the sentinel for "the host plugin subsystem is
+// disabled or not yet wired." Distinct from ErrPluginInstanceNotRunning so the
+// agent can tell "subsystem off" apart from "instance down."
+var ErrPluginManagerUnavailable = pluginerr.ErrManagerUnavailable
 
 // failRun transitions the run to failed status and returns the original error.
 // If the context is already cancelled, a background context is used so the DB

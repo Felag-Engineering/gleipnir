@@ -9,7 +9,11 @@ RUN npm run build
 # Stage 2: Build the Go binary
 FROM golang:1.25-alpine AS builder
 WORKDIR /app
+# plugin-sdk is a sub-module pulled in via a `replace` directive in the root
+# go.mod; its go.mod/go.sum must exist on disk before `go mod download` can
+# resolve the replacement target.
 COPY go.mod go.sum ./
+COPY plugin-sdk/go.mod plugin-sdk/go.sum ./plugin-sdk/
 RUN go mod download
 COPY . .
 # Overwrite frontend/dist with the freshly built assets so go:embed picks them up.

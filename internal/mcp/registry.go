@@ -14,7 +14,14 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
+
+// ErrToolNamespaceConflict is returned by RefreshTools when an added tool's
+// dot-name is already owned by a different source (e.g. a plugin instance).
+// Callers can use errors.As to recover the *toolregistry.ConflictError for the
+// specific conflicting name and its existing owner.
+var ErrToolNamespaceConflict = errors.New("tool namespace conflict")
 
 // ResolvedTool pairs a granted tool's model metadata with a ready Client
 // targeting its server. Used by the agent runner to call tools.
@@ -39,7 +46,8 @@ type ToolDiff struct {
 type Registry struct {
 	queries    *db.Queries
 	mcpTimeout time.Duration
-	encKey     []byte // AES-256-GCM key for decrypting auth_headers_encrypted; nil if unset
+	encKey     []byte                 // AES-256-GCM key for decrypting auth_headers_encrypted; nil if unset
+	arbiter    *toolregistry.Registry // cross-source tool namespace arbiter; nil means no uniqueness enforcement
 }
 
 // RegistryOption configures a Registry.
@@ -59,6 +67,16 @@ func WithMCPTimeout(d time.Duration) RegistryOption {
 func WithEncryptionKey(key []byte) RegistryOption {
 	return func(r *Registry) {
 		r.encKey = key
+	}
+}
+
+// WithToolNamespaceArbiter wires the shared cross-source uniqueness arbiter
+// into the Registry. When set, RefreshTools will reserve dot-names for tools
+// it adds and release them for tools it removes. A nil arbiter (the default)
+// disables uniqueness enforcement so existing tests remain unaffected.
+func WithToolNamespaceArbiter(a *toolregistry.Registry) RegistryOption {
+	return func(r *Registry) {
+		r.arbiter = a
 	}
 }
 
@@ -216,6 +234,27 @@ func (r *Registry) ResolveToolByName(ctx context.Context, dotName string) (*Clie
 	return r.newClientForServer(srv), toolName, nil
 }
 
+// ProbeTools performs a one-shot tool discovery against the MCP server at
+// urlStr without writing any DB rows. It is used by MCPHandler.Create to
+// discover tools before committing the server row, so a namespace conflict can
+// be rejected with HTTP 409 before an orphan row is created.
+//
+// The synthetic db.McpServer passed to newClientForServer carries ID "<probe>"
+// so log output is not misleading about a real server ID.
+func (r *Registry) ProbeTools(ctx context.Context, name, urlStr string, encryptedAuthHeaders *string) ([]Tool, error) {
+	synthetic := db.McpServer{
+		ID:                   "<probe>",
+		Name:                 name,
+		Url:                  urlStr,
+		AuthHeadersEncrypted: encryptedAuthHeaders,
+	}
+	tools, err := r.newClientForServer(synthetic).DiscoverTools(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("probe tools for %q: %w", name, err)
+	}
+	return tools, nil
+}
+
 // RegisterServer stores a new MCP server record, discovers its tools via the
 // MCP client, and upserts all discovered tools into mcp_tools.
 // last_discovered_at is intentionally left NULL here — it is set only by RefreshTools.
@@ -314,12 +353,37 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 	sort.Strings(diff.Removed)
 	sort.Strings(diff.Modified)
 
+	// Reserve newly-added dot-names in the cross-source arbiter before touching
+	// the DB. If another source (e.g. a plugin) already owns a name, return
+	// ErrToolNamespaceConflict so the caller can surface it as a real failure
+	// rather than silently overwriting the namespace.
+	mcpSrc := toolregistry.Source{Kind: toolregistry.KindMCP, Name: srv.Name}
+	if r.arbiter != nil && len(diff.Added) > 0 {
+		entries := make([]toolregistry.Reservation, len(diff.Added))
+		for i, name := range diff.Added {
+			entries[i] = toolregistry.Reservation{
+				DotName: toolregistry.DotName(srv.Name, name),
+				Owner:   mcpSrc,
+			}
+		}
+		if err := r.arbiter.ReserveBulk(entries); err != nil {
+			var ce *toolregistry.ConflictError
+			if errors.As(err, &ce) {
+				return ToolDiff{}, fmt.Errorf("refresh tools for %q: %w", srv.Name, ErrToolNamespaceConflict)
+			}
+			return ToolDiff{}, fmt.Errorf("reserve tool namespace for %q: %w", srv.Name, err)
+		}
+	}
+
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	// Upsert all fresh tools. Preserve the existing ID for tools already in the
 	// DB so foreign key references (e.g. in audit steps) remain stable.
 	// ON CONFLICT does not touch the enabled column — operator-set disable state
 	// survives rediscovery (see the UpsertMCPTool query for the ON CONFLICT clause).
+	//
+	// On any DB error after a successful arbiter reservation, release all
+	// reservations for this server so the namespace is not permanently locked.
 	for _, t := range freshTools {
 		toolID := model.NewULID()
 		if old, exists := oldByName[t.Name]; exists {
@@ -334,6 +398,11 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 			InputSchema: string(t.InputSchema),
 			CreatedAt:   now,
 		}); err != nil {
+			if r.arbiter != nil {
+				// Releases all reservations for this server, including pre-existing ones,
+				// because the server's tool set is in an unknown state after the partial failure.
+				r.arbiter.ReleaseAllFor(mcpSrc)
+			}
 			return ToolDiff{}, fmt.Errorf("upsert tool %q: %w", t.Name, err)
 		}
 	}
@@ -344,7 +413,20 @@ func (r *Registry) RefreshTools(ctx context.Context, serverID string) (ToolDiff,
 			ServerID: serverID,
 			Name:     name,
 		}); err != nil {
+			if r.arbiter != nil {
+				// Releases all reservations for this server, including pre-existing ones,
+				// because the server's tool set is in an unknown state after the partial failure.
+				r.arbiter.ReleaseAllFor(mcpSrc)
+			}
 			return ToolDiff{}, fmt.Errorf("delete removed tool %q: %w", name, err)
+		}
+	}
+
+	// Release arbiter slots for tools that are no longer on the server. This
+	// must happen after successful deletion so the names are genuinely free.
+	if r.arbiter != nil {
+		for _, name := range diff.Removed {
+			r.arbiter.Release(toolregistry.DotName(srv.Name, name), mcpSrc)
 		}
 	}
 

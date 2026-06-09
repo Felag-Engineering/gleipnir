@@ -4,4 +4,6 @@ use (
 	.
 	./plugin-sdk
 	./plugin-sdk/examples/minimal-tool
+	./plugins/ntfy
+	./plugins/slack
 )

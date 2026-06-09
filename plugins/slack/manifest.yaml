@@ -1,0 +1,280 @@
+auth:
+  mode: instance_credentials
+  oauth_defaults:
+    authorization_url: https://slack.com/oauth/v2/authorize
+    scopes:
+      - channels:history
+      - channels:read
+      - chat:write
+      - groups:history
+      - im:history
+      - im:write
+      - mpim:history
+      - users:read
+    token_url: https://slack.com/api/oauth.v2.access
+  strategy: oauth2_authcode
+channels:
+  - config_schema:
+      properties:
+        channel:
+          description: 'Slack channel or user DM target (e.g. #general or @username)'
+          type: string
+        mention:
+          description: Slack user or group to mention in the message (e.g. @oncall)
+          type: string
+        response_buttons:
+          description: Custom response buttons for Request messages. Defaults to Approve/Reject if omitted.
+          items:
+            properties:
+              label:
+                description: Button label text displayed to the operator
+                type: string
+              option_id:
+                description: Unique identifier for this button option (echoed in feedback_response payload)
+                type: string
+              style:
+                description: 'Button colour: primary (green), danger (red), or default (no colour)'
+                enum:
+                  - default
+                  - primary
+                  - danger
+                type: string
+              value:
+                description: Value echoed in feedback_response payload
+                type: string
+            required:
+              - option_id
+              - label
+              - value
+            type: object
+          type: array
+      required:
+        - channel
+      type: object
+    implements_notify: true
+    implements_request: true
+config_schema:
+  properties:
+    app_level_token:
+      description: 'Slack app-level token (xapp- prefix) for Socket Mode. Generate in Slack admin: Settings → Socket Mode → Generate token with scope connections:write.'
+      type: string
+      x-gleipnir-secret: true
+  required:
+    - app_level_token
+  type: object
+description: 'Slack integration: tools (send/list channels), triggers (channel messages), and channels (notify/request via Slack DMs and posts).'
+event_kinds:
+  - binding_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: 'Substring matched against the Slack channel name or ID (e.g. #incidents)'
+          format: contains
+          title: Channel
+          type: string
+        mention_only:
+          description: Only trigger when the bot is mentioned in the message
+          title: Mention-only
+          type: boolean
+        text:
+          description: Substring matched against the message text
+          format: contains
+          title: Text contains
+          type: string
+        user:
+          description: Slack user ID to match (e.g. U012AB3CD). Leave empty to match all users.
+          title: User
+          type: string
+      type: object
+    description: A message was posted to a Slack channel
+    examples:
+      - name: Plain channel message
+        payload:
+          channel: '#general'
+          channel_id: C012ABCDEF
+          channel_type: channel
+          event_ts: "1700000001.000100"
+          mentioned: false
+          team_id: T03TEAM001
+          text: Lunch order is in.
+          ts: "1700000001.000100"
+          user: U01USER001
+      - name: Bot mention in incidents channel
+        payload:
+          channel: '#incidents'
+          channel_id: C09INCIDENT
+          channel_type: channel
+          event_ts: "1700001000.000200"
+          mentioned: true
+          team_id: T03TEAM001
+          text: <@U07BOTUSER> the database is degraded
+          ts: "1700001000.000200"
+          user: U01USER002
+      - name: Threaded reply
+        payload:
+          channel: '#ops'
+          channel_id: C09OPSCHAN
+          channel_type: channel
+          event_ts: "1700002000.000300"
+          mentioned: false
+          team_id: T03TEAM001
+          text: Rolled back the deployment, monitoring now.
+          thread_ts: "1700002000.000100"
+          ts: "1700002000.000300"
+          user: U01USER003
+    kind: channel_message
+    payload_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: 'Channel display name (e.g. #incidents) or channel ID when the name is unknown'
+          title: Channel
+          type: string
+        channel_id:
+          description: Stable Slack channel identifier (e.g. C01ABC)
+          title: Channel ID
+          type: string
+        channel_type:
+          description: 'Slack channel kind: channel (public), group (private), im (DM), mim (multi-DM)'
+          title: Channel type
+          type: string
+        event_ts:
+          description: Timestamp of the event itself
+          title: Event timestamp
+          type: string
+        mentioned:
+          description: True when the bot was explicitly mentioned in the message
+          title: Mentioned
+          type: boolean
+        team_id:
+          description: Slack workspace ID (best-effort; may be empty for some event shapes)
+          title: Team ID
+          type: string
+        text:
+          description: Plain-text message body
+          title: Text
+          type: string
+        thread_ts:
+          description: Parent thread timestamp (present only for threaded replies)
+          title: Thread timestamp
+          type: string
+        ts:
+          description: Slack message timestamp (uniquely identifies the message within a channel)
+          title: Timestamp
+          type: string
+        user:
+          description: Slack user ID of the sender (empty for bot/system messages)
+          title: User
+          type: string
+      required:
+        - channel
+        - channel_id
+        - text
+        - ts
+        - event_ts
+        - channel_type
+        - mentioned
+      type: object
+name: slack
+schema_version: v1
+services:
+  channel: v1
+  tool: v1
+  trigger: v1
+subscription_schema:
+  additionalProperties: false
+  properties:
+    channels:
+      description: Slack channel IDs (e.g. C012ABCDEF). Empty = watch all. Find IDs in channel settings → About → Channel ID.
+      items:
+        pattern: ^C[A-Z0-9]+$
+        type: string
+      title: Channels
+      type: array
+    mention_only:
+      description: Only emit when bot is mentioned.
+      title: Mention-only
+      type: boolean
+  type: object
+tools:
+  - description: Post a plain-text message to a Slack channel or DM.
+    input_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: Channel ID (C…) or name (#general)
+          title: Channel
+          type: string
+        text:
+          description: Plain-text message body. Block Kit not supported in v0.1.
+          title: Text
+          type: string
+        thread_ts:
+          description: Optional parent thread timestamp to reply in-thread
+          title: Thread TS
+          type: string
+      required:
+        - channel
+        - text
+      type: object
+    name: post_message
+  - description: List Slack channels visible to the bot user.
+    input_schema:
+      additionalProperties: false
+      properties:
+        exclude_archived:
+          default: true
+          title: Exclude archived
+          type: boolean
+        limit:
+          description: Max channels to return (1-1000). Defaults to 200
+          maximum: 1000
+          minimum: 1
+          title: Limit
+          type: integer
+        types:
+          description: Comma-separated channel types (public_channel,private_channel,mpim,im). Defaults to public_channel.
+          title: Types
+          type: string
+      type: object
+    name: list_channels
+  - description: Add an emoji reaction to a Slack message.
+    input_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: Channel ID containing the message
+          title: Channel
+          type: string
+        name:
+          description: Reaction name without colons (e.g. thumbsup)
+          title: Emoji name
+          type: string
+        timestamp:
+          description: Message ts (e.g. 1700000000.123456)
+          title: Timestamp
+          type: string
+      required:
+        - channel
+        - timestamp
+        - name
+      type: object
+    name: react
+  - description: Set the topic of a Slack channel.
+    input_schema:
+      additionalProperties: false
+      properties:
+        channel:
+          description: Channel ID
+          title: Channel
+          type: string
+        topic:
+          description: New channel topic (max 250 chars)
+          title: Topic
+          type: string
+      required:
+        - channel
+        - topic
+      type: object
+    name: set_topic
+version: 0.1.1

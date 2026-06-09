@@ -295,6 +295,60 @@ func TestWebhookSecretEndpointsRoleGating(t *testing.T) {
 	}
 }
 
+// TestPluginEndpointsRoleGating verifies that the two new plugin endpoints
+// (install + create-instance) require an active session and the admin role.
+func TestPluginEndpointsRoleGating(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	router := buildTestRouterWithStore(t, store)
+
+	adminToken := insertUserWithSession(t, store, "plugin-admin", "admin")
+	operatorToken := insertUserWithSession(t, store, "plugin-operator", "operator")
+
+	endpoints := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"install", http.MethodPost, "/api/v1/admin/plugins"},
+		{"create-instance", http.MethodPost, "/api/v1/admin/plugins/some-id/instances"},
+		{"settings-default-model", http.MethodPut, "/api/v1/admin/settings/default-model"},
+		{"instance-config", http.MethodPut, "/api/v1/admin/plugins/some-id/instances/some-iid/config"},
+		{"oauth-token", http.MethodPut, "/api/v1/admin/plugins/some-id/instances/some-iid/credentials/oauth-token"},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.name+"/unauthenticated returns 401", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, strings.NewReader("{}"))
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401; body: %s", w.Code, w.Body.String())
+			}
+		})
+		t.Run(ep.name+"/operator returns 403", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, strings.NewReader("{}"))
+			req.AddCookie(&http.Cookie{Name: "gleipnir_session", Value: operatorToken})
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want 403; body: %s", w.Code, w.Body.String())
+			}
+		})
+		t.Run(ep.name+"/admin passes auth gate", func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.path, strings.NewReader("{}"))
+			req.AddCookie(&http.Cookie{Name: "gleipnir_session", Value: adminToken})
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			// PluginAdminHandler is nil in the test router, so the route is not
+			// registered — the request reaches the SPA catch-all and returns non-401/403.
+			// We only assert the auth gate passes (not 401 or 403).
+			if w.Code == http.StatusUnauthorized || w.Code == http.StatusForbidden {
+				t.Errorf("status = %d, want auth to pass (not 401/403); body: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestBuildRouter(t *testing.T) {
 	cases := []struct {
 		name            string

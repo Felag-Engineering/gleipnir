@@ -77,6 +77,46 @@ func (q *Queries) ListActiveUsersByRole(ctx context.Context, role string) ([]Lis
 	return items, nil
 }
 
+const listAllActiveUsersWithRoles = `-- name: ListAllActiveUsersWithRoles :many
+SELECT u.id AS user_id, u.username, ur.role
+FROM users u
+JOIN user_roles ur ON ur.user_id = u.id
+WHERE u.deactivated_at IS NULL
+ORDER BY u.username, ur.role
+`
+
+type ListAllActiveUsersWithRolesRow struct {
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
+}
+
+// ListAllActiveUsersWithRoles returns one row per (user, role) pair for
+// all non-deactivated users, used by the plugin host-service UserDirectoryRead
+// handler. The 1:1 row-to-UserEntry mapping avoids GROUP_CONCAT.
+func (q *Queries) ListAllActiveUsersWithRoles(ctx context.Context) ([]ListAllActiveUsersWithRolesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAllActiveUsersWithRoles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAllActiveUsersWithRolesRow
+	for rows.Next() {
+		var i ListAllActiveUsersWithRolesRow
+		if err := rows.Scan(&i.UserID, &i.Username, &i.Role); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAllUserRoles = `-- name: ListAllUserRoles :many
 SELECT user_id, role FROM user_roles ORDER BY user_id, role
 `

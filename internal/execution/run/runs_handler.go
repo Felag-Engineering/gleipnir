@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/execution/agent"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/model"
@@ -105,12 +106,24 @@ type sortKey struct{ sort, order string }
 // implements it. Built once at package init; each closure converts the
 // canonical ListRunsParams to the concrete *Params type required by sqlc.
 var listRunsDispatch = map[sortKey]func(ctx context.Context, store *db.Store, p db.ListRunsParams) ([]db.Run, error){
-	{"started_at", "asc"}:  func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsAsc(ctx, db.ListRunsAscParams(p)) },
-	{"started_at", "desc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRuns(ctx, p) },
-	{"token_cost", "asc"}:  func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsByTokenCostAsc(ctx, db.ListRunsByTokenCostAscParams(p)) },
-	{"token_cost", "desc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsByTokenCostDesc(ctx, db.ListRunsByTokenCostDescParams(p)) },
-	{"duration", "asc"}:    func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsByDurationAsc(ctx, db.ListRunsByDurationAscParams(p)) },
-	{"duration", "desc"}:   func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) { return s.ListRunsByDurationDesc(ctx, db.ListRunsByDurationDescParams(p)) },
+	{"started_at", "asc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) {
+		return s.ListRunsAsc(ctx, db.ListRunsAscParams(p))
+	},
+	{"started_at", "desc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) {
+		return s.ListRuns(ctx, p)
+	},
+	{"token_cost", "asc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) {
+		return s.ListRunsByTokenCostAsc(ctx, db.ListRunsByTokenCostAscParams(p))
+	},
+	{"token_cost", "desc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) {
+		return s.ListRunsByTokenCostDesc(ctx, db.ListRunsByTokenCostDescParams(p))
+	},
+	{"duration", "asc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) {
+		return s.ListRunsByDurationAsc(ctx, db.ListRunsByDurationAscParams(p))
+	},
+	{"duration", "desc"}: func(ctx context.Context, s *db.Store, p db.ListRunsParams) ([]db.Run, error) {
+		return s.ListRunsByDurationDesc(ctx, db.ListRunsByDurationDescParams(p))
+	},
 }
 
 // parseListFilters reads and validates query parameters from r, returning the
@@ -570,12 +583,15 @@ func (h *RunsHandler) SubmitApproval(w http.ResponseWriter, r *http.Request) {
 }
 
 // SubmitFeedback handles POST /api/v1/runs/{runID}/feedback.
-// It routes the operator's freeform text response to the BoundAgent via the
-// RunManager and updates the feedback_requests DB record. Returns 409 if no
-// goroutine is waiting on the feedback gate.
+// It delivers the operator's freeform text response through inAppChannel.Resolve
+// via RunManager.ResolveFeedback, then updates the feedback_requests DB record
+// and emits an SSE event. Returns 409 if no pending feedback row exists, 410 if
+// the waiter has already timed out or been answered.
 func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	runID := chi.URLParam(r, "runID")
 
+	// (a) Validate body.
 	var req FeedbackDecisionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
@@ -586,37 +602,91 @@ func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.resolveRequest(w, r, runID, resolveSpec{
-		sendToGate:   func() error { return h.manager.SendFeedback(runID, req.Response) },
-		gateErrorMsg: "no active feedback gate for this run",
-		fetchPending: func(ctx context.Context) (string, error) {
-			pendingFeedbacks, err := h.store.GetPendingFeedbackRequestsByRun(ctx, runID)
-			if err != nil {
-				return "", err
-			}
-			if len(pendingFeedbacks) > 0 {
-				return pendingFeedbacks[0].ID, nil
-			}
-			return "", nil
-		},
-		updateStatus: func(ctx context.Context, requestID string) (int64, error) {
-			// now must be evaluated here, at DB-write time, not captured at spec-construction time.
-			now := time.Now().UTC().Format(time.RFC3339Nano)
-			return h.store.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
-				Status:     "resolved",
-				Response:   &req.Response,
-				ResolvedAt: &now,
-				ID:         requestID,
-			})
-		},
-		alreadyResolvedMsg: "feedback request already resolved",
-		sseTopic:           "feedback.resolved",
-		sseRequestIDKey:    "feedback_id",
-		sseExtra:           nil,
-		successResponse:    map[string]string{"run_id": runID},
-		logTagPending:      "GetPendingFeedbackRequestsByRun failed after feedback send",
-		logTagUpdate:       "UpdateFeedbackRequestStatus failed",
+	if _, err := h.store.GetRun(ctx, runID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, "run not found", "")
+			return
+		}
+		slog.Error("GetRun query failed", "run_id", runID, "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		return
+	}
+
+	// (b) Look up pending feedback row. Zero rows means no active feedback gate.
+	// Per key decision #8: inAppChannel.Request registers the waiter BEFORE
+	// sm.Transition writes the DB row, so by the time the run is observable as
+	// waiting_for_feedback, the row exists. Zero rows genuinely means no waiter.
+	pendingFeedbacks, err := h.store.GetPendingFeedbackRequestsByRun(ctx, runID)
+	if err != nil {
+		slog.Error("GetPendingFeedbackRequestsByRun query failed", "run_id", runID, "err", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+		return
+	}
+	if len(pendingFeedbacks) == 0 {
+		httputil.WriteError(w, http.StatusConflict, "no active feedback gate for this run", "")
+		return
+	}
+	pendingID := pendingFeedbacks[0].ID
+
+	// (c) Deliver response through the inAppChannel waiter map.
+	if err := h.manager.ResolveFeedback(runID, pendingID, req.Response); err != nil {
+		switch {
+		case errors.Is(err, ErrRunNotFound):
+			httputil.WriteError(w, http.StatusConflict, "no active feedback gate for this run", "")
+			return
+		case errors.Is(err, agent.ErrUnknownRequestID):
+			// The waiter has already expired or been answered (e.g. the feedback-timeout
+			// scanner resolved it between step (b) and step (c)). This is a benign
+			// late-callback; log for observability but never log the body itself.
+			slog.Warn("feedback_response_late",
+				"request_id", pendingID,
+				"run_id", runID,
+				"body_len", len(req.Response))
+			// TODO(#180): emit feedback_response_late event into plugin_audit_events
+			// once ADR-041 audit split lands.
+			httputil.WriteError(w, http.StatusGone, "feedback request expired or already answered", "")
+			return
+		default:
+			slog.Error("ResolveFeedback failed", "run_id", runID, "request_id", pendingID, "err", err)
+			httputil.WriteError(w, http.StatusInternalServerError, "internal server error", "")
+			return
+		}
+	}
+
+	// (d) Update the DB record. Best-effort after the channel delivery — DB
+	// consistency is secondary to unblocking the agent.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rows, err := h.store.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
+		Status:     "resolved",
+		Response:   &req.Response,
+		ResolvedAt: &now,
+		ID:         pendingID,
 	})
+	if err != nil {
+		slog.Warn("UpdateFeedbackRequestStatus failed", "feedback_id", pendingID, "run_id", runID, "err", err)
+		// proceed — best-effort; agent has already resumed
+	} else if rows == 0 {
+		// Benign two-writer race: the feedback-timeout scanner can resolve this row
+		// between (b) and (d). Resolve in (c) still succeeded against the live waiter
+		// map, so the agent has already resumed; only this HTTP caller sees 409.
+		// See plan key decision #7.
+		httputil.WriteError(w, http.StatusConflict, "feedback request already resolved", pendingID)
+		return
+	}
+
+	// (e) Emit SSE feedback.resolved.
+	if h.publisher != nil {
+		payload := map[string]string{
+			"feedback_id": pendingID,
+			"run_id":      runID,
+		}
+		if data, err := json.Marshal(payload); err == nil {
+			h.publisher.Publish("feedback.resolved", data)
+		}
+	}
+
+	// (f) Return 202.
+	httputil.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": runID})
 }
 
 func toRunSummary(r db.Run) RunSummary {

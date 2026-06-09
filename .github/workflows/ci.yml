@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, plugin-architecture]
   push:
-    branches: [main]
+    branches: [main, plugin-architecture]
     # Match semver tags: v1.2.3 and pre-releases like v1.2.3-rc1. The two
     # patterns avoid the false-positives of a single `v*.*.*` glob (which
     # would also match `v1.2.3.4`). GHA glob: `+` is a quantifier for the
@@ -155,6 +155,21 @@ jobs:
       - name: Self-test (fixture must fail the lint)
         run: make lint-plugins-self-test
 
+  lint:
+    name: Lint (gofmt)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: gofmt
+        run: make lint-go-fmt
+
   # Build and test the plugin-sdk module independently of the root module.
   # Uses GOWORK=off so the workspace does not bleed into this job; the
   # replace directive in go.mod is the only cross-module link needed here.
@@ -190,6 +205,17 @@ jobs:
       - name: Test examples (workspace)
         working-directory: ${{ github.workspace }}
         run: go test ./plugin-sdk/examples/minimal-tool/...
+
+      # First-party plugins each live in their own module under ./plugins/,
+      # so `go test ./plugins/...` from the workspace root matches no packages
+      # (the root module owns nothing there). Iterate over each module instead
+      # so future plugins (#233+) are automatically picked up without editing CI.
+      - name: Test plugins (workspace)
+        working-directory: ${{ github.workspace }}
+        run: |
+          for dir in plugins/*/; do
+            (cd "$dir" && go test ./...)
+          done
 
   storybook-build:
     if: github.event_name == 'push'

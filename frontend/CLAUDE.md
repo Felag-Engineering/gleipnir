@@ -32,6 +32,12 @@ npm run build-storybook  # static Storybook build
 /admin/users        → user management (admin)
 /admin/models       → model enable/disable, provider key management (admin)
 /admin/system       → system settings (public URL, run limits, system info) (admin)
+/admin/audiences    → audience list (admin|operator: + new; auditor: read-only)
+/admin/audiences/new → create audience (admin|operator)
+/admin/audiences/:id → audience detail/editor (admin|operator: edit; auditor: read-only)
+/admin/plugins      → plugin instance list (admin); shows pending-review section at top (fresh installs require approval before any instances can be created — #242); groups instances pending re-authorization below (#230)
+/admin/plugins/:id/review → plugin review consent surface (admin); shows full manifest metadata (services, auth strategy, pubkey fingerprint, SBOM) with Approve/Reject actions (#242)
+/admin/plugins/:id/instances/:iid → plugin instance editor (admin); Subscriptions tab edits coarse watch scope (#223), Credentials tab renders per the manifest's auth strategy (write-only static API key / header set / basic auth; Authorize / Re-authorize for OAuth — #231), Config tab is a placeholder for #241
 *                   → 404 not found
 ```
 
@@ -127,6 +133,11 @@ queryKeys.users.all             // ['users']
 queryKeys.currentUser.all       // ['currentUser']
 queryKeys.models.all            // ['models']
 queryKeys.config.all            // ['config']
+queryKeys.plugins.list          // ['plugins', 'list']               — installed plugins (invalidated on plugin install, approve, reject)
+queryKeys.plugins.detail(id)    // ['plugins', id, 'detail']          — plugin detail with parsed manifest for review consent surface
+queryKeys.plugins.rss           // ['admin', 'plugins', 'rss']        — aggregate plugin process RSS (30s refetch)
+queryKeys.plugins.instances(id) // ['plugins', id, 'instances']      — instances of one plugin (invalidated on instance create)
+queryKeys.plugins.credentials(p, i) // ['plugins', p, 'instances', i, 'credentials'] — redacted credentials view
 ```
 
 ### Data fetching
@@ -205,6 +216,17 @@ Triggers + Events:
 POST   /api/v1/webhooks/:policyID      (trigger endpoint)
 GET    /api/v1/events                   (SSE stream)
 GET    /api/v1/health
+
+Admin / Plugins:
+GET    /api/v1/admin/plugin-instances                                         (admin|operator|auditor; list with channel + event_kinds enrichment)
+POST   /api/v1/admin/plugins                                                   (admin; install tarball as application/octet-stream, max 100 MiB)
+POST   /api/v1/admin/plugins/:id/instances                                     (admin; create instance with {instance_name})
+DELETE /api/v1/admin/plugins/:id                                               (admin; uninstall plugin — 409 on policy/audience references, removes bundle dir)
+DELETE /api/v1/admin/plugins/:id/instances/:iid                                (admin; delete a single instance — same 409 guards, scoped to one)
+GET    /api/v1/admin/plugins/:id/instances/:iid                                (admin; per-instance health detail)
+PUT    /api/v1/admin/plugins/:id/instances/:iid/config                         (admin; CAS-guarded instance config blob; validates against manifest config_schema when declared)
+PUT    /api/v1/admin/plugins/:id/instances/:iid/credentials/oauth-token        (admin; advanced seed for oauth2_* strategies — escape hatch for E2E/manual recovery)
+PUT    /api/v1/admin/settings/default-model                                    (admin; set system default LLM model {provider, name}; 400 on missing key for known providers, 422 on disabled model)
 ```
 
 Response envelope: `{ data: T }` for success, `{ error: string, detail?: string }` for failure.
@@ -221,11 +243,11 @@ Organized by feature area:
 
 - **Layout** — sidebar navigation, content area, theme toggle, connection status banner
 - **dashboard/** — StatsBar, StatusBadge, StatusBoard, TriggerChip, ActivityFeed, SetupChecklist (context-aware onboarding checklist that renders until all setup steps are complete)
-- **AgentEditor/** — the agent editor (EditorTopBar, FormMode with 7 form sections)
+- **AgentEditor/** — the agent editor (EditorTopBar, FormMode with 8 form sections)
 - **AgentList/** — agent list with folder grouping
 - **RunDetail/** — RunHeader, StepTimeline, FilterBar, MetadataGrid, CapabilitySnapshotCard, ThoughtBlock, ThinkingBlock, ToolBlock, CompleteBlock, ErrorBlock, FeedbackBlock, ApprovalActions, FeedbackActions
 - **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal, ServerDetailModal (per-header auth editor: existing name fields are read-only, value field is empty with placeholder; save fans out via `useSetMcpServerHeader`/`useDeleteMcpServerHeader`; no sentinel; see ADR-039), ArcadeAuthSection (toolkit-level OAuth pre-authorization for Arcade gateways; renders only when `server.is_arcade_gateway && canManage`; see ADR-040)
-- **admin/** — EncryptionKeyNotice (persistent warning banner on the Models page about encryption key backup requirements)
+- **admin/** — EncryptionKeyNotice (persistent warning banner on the Models page about encryption key backup requirements), PluginHealthChip (colored chip — green/yellow/red/gray — for the 11 plugin-instance health states including `inactive`; pairs with `utils/pluginHealth.ts` for the worst-across-instances aggregate), PluginCard (clickable card for the `/admin/plugins` two-pane list: name, version, service badges Tool/Trigger/Channel, instance count, aggregate health chip; `isSelected` prop for visual selection state), PluginMemoryBar (aggregate plugin RSS display in the plugins page header; shows total bytes + instance count; click-to-expand per-instance breakdown table sorted by RSS descending; 30s polling via `usePluginRSS`), PluginReviewCard (consent surface for pending-review plugins: services, tier-2 capabilities, auth strategy, pubkey fingerprint, SBOM badge, author/license; Approve/Reject buttons), RejectPluginModal (confirmation modal before rejecting a pending-review plugin; follows UninstallPluginModal pattern), InstallPluginButton (file-picker upload of a plugin tarball; persistent success card with "Review & approve" link for `pending_review` status or "Add instance" CTA for `active` status), AddInstanceModal (form to instantiate an installed plugin by name; reused as a standalone modal on the plugins page AND inline from the install-success card; client-side validation + per-status error mapping)
 - **form/** — FieldError (inline message under a field), ErrorBanner (top-of-form bulleted summary with scroll-to-field). Shared primitives for surfacing validation/save errors.
 - **Shared** — Button, Modal, ModalFooter, EmptyState, ErrorBoundary, QueryBoundary, CopyBlock, CollapsibleJSON, SkeletonBlock, PageHeader, ApprovalBanner, ConnectionBanner, TriggerRunModal
 
@@ -237,7 +259,7 @@ Organized by feature area:
 
 ### Storybook
 
-46 story files covering components, dashboard widgets, form sections, and hook demonstrations. Stories use MSW for API mocking and have their own `.stories.module.css` for layout scaffolding where needed.
+48 story files covering components, dashboard widgets, form sections, and hook demonstrations. Stories use MSW for API mocking and have their own `.stories.module.css` for layout scaffolding where needed. Stories that need to demonstrate non-idle states (uploading, success, error) use Storybook `play` functions with `userEvent` to drive the component through real interactions rather than seeding cache state.
 
 ## Key architectural decisions
 

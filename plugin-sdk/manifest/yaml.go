@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -50,6 +51,61 @@ func Unmarshal(data []byte, m *Manifest) error {
 		return fmt.Errorf("manifest unmarshal: %w", err)
 	}
 	return nil
+}
+
+// Canonicalize accepts manifest bytes encoded as either JSON or YAML and
+// returns the canonical YAML form (sorted keys, 2-space indent, single trailing
+// newline). It is the single source of truth for canonical form and is suitable
+// for use by any code that needs a stable byte representation — including
+// signature verification paths that must hash the manifest.
+//
+// Format detection uses the first non-whitespace byte: '{' or '[' is treated as
+// JSON; anything else as YAML. This heuristic is valid for the two known
+// producers — a plugin binary's --emit-manifest output (JSON object) and an
+// on-disk manifest.yaml (starts with a mapping key). It is NOT a general
+// JSON/YAML distinguisher: a hand-written flow-style YAML opening with '{' would
+// be misread as JSON.
+//
+// The JSON branch converts JSON → generic map → YAML bytes before decoding into
+// a Manifest. This round-trip is load-bearing: *yaml.Node fields (ConfigSchema,
+// InputSchema, etc.) are only populated when yaml.v3 decodes from a YAML node
+// tree. Shortcutting via json.Unmarshal into Manifest directly would leave those
+// fields nil.
+func Canonicalize(data []byte) ([]byte, error) {
+	// Find first non-whitespace byte to detect format.
+	first := byte(0)
+	for _, b := range data {
+		if b != ' ' && b != '\t' && b != '\n' && b != '\r' {
+			first = b
+			break
+		}
+	}
+
+	if first == '{' || first == '[' {
+		// JSON path: JSON → generic any → YAML bytes → Manifest → canonical YAML.
+		var generic any
+		if err := json.Unmarshal(data, &generic); err != nil {
+			return nil, fmt.Errorf("parse JSON: %w", err)
+		}
+
+		rawYAML, err := yaml.Marshal(generic)
+		if err != nil {
+			return nil, fmt.Errorf("re-marshal to YAML: %w", err)
+		}
+
+		var m Manifest
+		if err := Unmarshal(rawYAML, &m); err != nil {
+			return nil, err
+		}
+		return Marshal(&m)
+	}
+
+	// YAML path.
+	var m Manifest
+	if err := Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return Marshal(&m)
 }
 
 // sortMappingNode recursively sorts all mapping nodes in the YAML node tree

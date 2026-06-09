@@ -22,5 +22,15 @@ func All() []Migration {
 		&AddCronTriggerType{},
 		&AddMCPToolEnabled{},
 		&AddMCPAuthHeaders{},
+		&AddPluginTables{},
+		&AddPluginAudiencesAndPendingRequests{},
+		&AddDisableInAppFallback{},
+		&AddSubscribedTriggerType{},
+		&AddSubscriptionScope{},
+		&AddPluginOAuthNonces{},
+		&AddPendingReauthorizeHealthState{},
+		&AddPluginBinaryPath{},
+		&AddInactiveHealthState{},
+		&AddPluginPendingManifests{},
 	}
 }

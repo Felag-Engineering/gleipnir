@@ -1,0 +1,4 @@
+/* ReauthorizeButton has no additional styles beyond what Button provides.
+   This file exists so the component folder structure is consistent with other
+   admin components (e.g. PluginHealthChip) that may need component-specific
+   overrides in future. */

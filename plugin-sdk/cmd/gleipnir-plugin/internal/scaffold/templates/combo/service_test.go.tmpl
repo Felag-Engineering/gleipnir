@@ -4,10 +4,15 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/trigger"
 )
 
 func TestToolService(t *testing.T) {
-	svc := &ToolService{}
+	// NewToolService(nil) is safe: stub methods do not dereference host.
+	svc := NewToolService(nil)
+
 	tools, err := svc.ListTools(context.Background())
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
@@ -15,6 +20,10 @@ func TestToolService(t *testing.T) {
 	if len(tools) == 0 {
 		t.Fatal("ListTools returned empty list")
 	}
+	if tools[0].Name != "example_tool" {
+		t.Errorf("want tools[0].Name == %q, got %q", "example_tool", tools[0].Name)
+	}
+
 	out, err := svc.Call(context.Background(), "example_tool", nil)
 	if err != nil {
 		t.Fatalf("Call example_tool: %v", err)
@@ -25,17 +34,30 @@ func TestToolService(t *testing.T) {
 }
 
 func TestChannelNotify(t *testing.T) {
-	svc := &ChannelService{}
-	if err := svc.Notify(context.Background(), []byte(`{"text":"hello"}`)); err != nil {
+	// NewChannelService(nil, nil) is safe: stub Notify does not dereference host.
+	svc := NewChannelService(nil, nil)
+
+	err := svc.Notify(context.Background(), channel.Notification{
+		EventType: "test",
+		Payload:   []byte(`{"text":"hello"}`),
+	})
+	if err != nil {
 		t.Errorf("Notify: %v", err)
 	}
 }
 
 func TestTriggerCancellation(t *testing.T) {
-	svc := &TriggerService{}
+	// NewTriggerService(nil) is safe: Start does not dereference host.
+	svc := NewTriggerService(nil)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	err := svc.Start(ctx, func(_ string, _ []byte) error { return nil })
+
+	err := svc.Start(ctx, trigger.StartScope{}, func(trigger.Event) error {
+		return nil
+	})
+
+	// Start must return when ctx expires — DeadlineExceeded or Canceled both acceptable.
 	if err == nil {
 		t.Error("expected non-nil error when context cancelled")
 	}

@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -17,30 +18,77 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/timeout"
 )
 
+// mockFeedbackDispatcher is a simple mock for FeedbackChannelDispatcher.
+type mockFeedbackDispatcher struct {
+	response string
+	err      error
+}
+
+func (m *mockFeedbackDispatcher) DispatchFeedback(_ context.Context, _ FeedbackDispatchRequest) (string, error) {
+	return m.response, m.err
+}
+
 // TestFeedbackHandler_Wait_ResponseReceived verifies the happy path: operator
-// responds before timeout; feedback_request and feedback_response steps are written;
-// run transitions back to running.
+// responds via h.Resolve before timeout; feedback_request and feedback_response
+// steps are written; run transitions back to running.
 func TestFeedbackHandler_Wait_ResponseReceived(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
-
-	feedbackCh := make(chan string, 1)
-	feedbackCh <- "operator response"
 
 	pub := &capturePublisher{}
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
-	got, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 200*time.Millisecond)
-	if err != nil {
-		t.Fatalf("Wait: unexpected error: %v", err)
+	// Spawn Wait in a goroutine and deliver the response via h.Resolve once
+	// the feedback row appears in the DB (register-before-transition guarantee).
+	type waitResult struct {
+		body string
+		err  error
 	}
-	if got != "operator response" {
-		t.Errorf("response = %q, want %q", got, "operator response")
+	done := make(chan waitResult, 1)
+	go func() {
+		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 500*time.Millisecond)
+		done <- waitResult{body: body, err: err}
+	}()
+
+	// Poll until the feedback row appears in the DB.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	var feedbackID string
+	for time.Now().Before(deadline) {
+		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+		if err != nil {
+			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+		}
+		if len(rows) > 0 {
+			feedbackID = rows[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if feedbackID == "" {
+		t.Fatal("timed out waiting for feedback row to appear in DB")
+	}
+
+	// Deliver the operator response through the inAppChannel.
+	if err := h.Resolve(feedbackID, "operator response"); err != nil {
+		t.Fatalf("Resolve: unexpected error: %v", err)
+	}
+
+	// Wait for the goroutine to return.
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("Wait: unexpected error: %v", res.err)
+		}
+		if res.body != "operator response" {
+			t.Errorf("response = %q, want %q", res.body, "operator response")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not return within deadline")
 	}
 
 	// Run must be back to running.
@@ -81,14 +129,12 @@ func TestFeedbackHandler_Wait_Timeout_HandlerWins(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string) // unbuffered — nothing sends
-
 	pub := &capturePublisher{}
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	_, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 50*time.Millisecond)
 	if err == nil {
@@ -126,14 +172,12 @@ func TestFeedbackHandler_Wait_Timeout_ScannerWins(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string, 1)
-
 	pub := &capturePublisher{}
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	done := make(chan error, 1)
 	go func() {
@@ -210,13 +254,11 @@ func TestFeedbackHandler_Wait_ContextCancelled(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string) // unbuffered — nothing sends
-
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
@@ -238,12 +280,11 @@ func TestFeedbackHandler_HandleAskOperator_FeedbackDisabled(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string)
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	// feedbackCfg.Enabled = false — hard runtime rejection.
 	_, isError, err := h.HandleAskOperator(context.Background(), "run1", AskOperatorToolName,
@@ -283,12 +324,11 @@ func TestFeedbackHandler_HandleAskOperator_MissingReason(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string)
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	// No 'reason' field — schema violation.
 	_, isError, err := h.HandleAskOperator(context.Background(), "run1", AskOperatorToolName,
@@ -328,12 +368,11 @@ func TestFeedbackHandler_HandleAskOperator_ReasonNotString(t *testing.T) {
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-	feedbackCh := make(chan string)
 	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 	w := NewAuditWriter(s.Queries())
 	defer w.Close() //nolint:errcheck
 
-	h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), time.Minute)
+	h := NewFeedbackHandler(w, sm, time.Minute)
 
 	_, isError, err := h.HandleAskOperator(context.Background(), "run1", AskOperatorToolName,
 		map[string]any{"reason": 42}, model.FeedbackConfig{Enabled: true})
@@ -384,12 +423,11 @@ func TestFeedbackHandler_HandleAskOperator_TimeoutResolution(t *testing.T) {
 			testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
 			testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
 
-			feedbackCh := make(chan string) // never receives
 			sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
 			w := NewAuditWriter(s.Queries())
 			defer w.Close() //nolint:errcheck
 
-			h := NewFeedbackHandler(w, sm, (<-chan string)(feedbackCh), defaultTimeout)
+			h := NewFeedbackHandler(w, sm, defaultTimeout)
 
 			start := time.Now()
 			_, _, err := h.HandleAskOperator(context.Background(), "run1", AskOperatorToolName,
@@ -406,5 +444,249 @@ func TestFeedbackHandler_HandleAskOperator_TimeoutResolution(t *testing.T) {
 				t.Errorf("elapsed %v >= %v, timeout should have fired sooner", elapsed, tc.wantFasterThan)
 			}
 		})
+	}
+}
+
+// TestFeedbackHandler_Wait_PluginResponse verifies the plugin dispatch path:
+// mock returns a JSON-encoded response; Wait extracts the text, does NOT write a
+// feedback_response audit step (hostsvc writes it), resolves the DB row, and
+// transitions back to running.
+func TestFeedbackHandler_Wait_PluginResponse(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	mock := &mockFeedbackDispatcher{
+		response: `{"text":"operator reply","user":"U123","request_id":"req-1"}`,
+	}
+	h := NewFeedbackHandler(w, sm, time.Minute, WithFeedbackChannelDispatch(mock, "aud-1", "pol-1"))
+
+	responseText, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", time.Minute)
+	if err != nil {
+		t.Fatalf("Wait: unexpected error: %v", err)
+	}
+	if responseText != "operator reply" {
+		t.Errorf("response = %q, want %q", responseText, "operator reply")
+	}
+
+	// Run must be back to running.
+	if sm.Current() != model.RunStatusRunning {
+		t.Errorf("run status = %s, want running", sm.Current())
+	}
+
+	// Flush writer and check audit steps.
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	var hasFeedbackRequest, hasFeedbackResponse bool
+	for _, step := range steps {
+		switch step.Type {
+		case string(model.StepTypeFeedbackRequest):
+			hasFeedbackRequest = true
+		case string(model.StepTypeFeedbackResponse):
+			hasFeedbackResponse = true
+		}
+	}
+	if !hasFeedbackRequest {
+		t.Error("expected feedback_request step in audit trail")
+	}
+	// Plugin path: feedback_response is written by hostsvc, NOT by FeedbackHandler.
+	if hasFeedbackResponse {
+		t.Error("feedback_response step must NOT be written by FeedbackHandler on plugin path (hostsvc writes it)")
+	}
+
+	// The feedback_requests DB row must be resolved.
+	rows, dbErr := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+	if dbErr != nil {
+		t.Fatalf("GetPendingFeedbackRequestsByRun: %v", dbErr)
+	}
+	if len(rows) > 0 {
+		t.Error("feedback_requests row should be resolved (no pending rows)")
+	}
+}
+
+// TestFeedbackHandler_Wait_PluginFallbackToInApp verifies that when the plugin
+// dispatcher returns ErrFeedbackRouteToInApp, Wait falls through to the in-app
+// path and writes a feedback_response audit step.
+func TestFeedbackHandler_Wait_PluginFallbackToInApp(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	mock := &mockFeedbackDispatcher{err: ErrFeedbackRouteToInApp}
+	h := NewFeedbackHandler(w, sm, time.Minute, WithFeedbackChannelDispatch(mock, "aud-1", "pol-1"))
+
+	done := make(chan struct {
+		body string
+		err  error
+	}, 1)
+	go func() {
+		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 500*time.Millisecond)
+		done <- struct {
+			body string
+			err  error
+		}{body, err}
+	}()
+
+	// Poll until the feedback row appears in the DB.
+	deadline := time.Now().Add(300 * time.Millisecond)
+	var feedbackID string
+	for time.Now().Before(deadline) {
+		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+		if err != nil {
+			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+		}
+		if len(rows) > 0 {
+			feedbackID = rows[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if feedbackID == "" {
+		t.Fatal("timed out waiting for feedback row to appear in DB")
+	}
+
+	// Deliver the response via the in-app Resolve path.
+	if err := h.Resolve(feedbackID, "in-app reply"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("Wait: unexpected error: %v", res.err)
+		}
+		if res.body != "in-app reply" {
+			t.Errorf("response = %q, want %q", res.body, "in-app reply")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not return within deadline")
+	}
+
+	// In-app path: feedback_response step MUST be written.
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	steps, err := s.ListRunSteps(context.Background(), db.ListRunStepsParams{RunID: "run1", After: -1, Limit: listAll})
+	if err != nil {
+		t.Fatalf("ListRunSteps: %v", err)
+	}
+	var hasFeedbackResponse bool
+	for _, step := range steps {
+		if step.Type == string(model.StepTypeFeedbackResponse) {
+			hasFeedbackResponse = true
+		}
+	}
+	if !hasFeedbackResponse {
+		t.Error("in-app fallback path: expected feedback_response step in audit trail")
+	}
+}
+
+// TestFeedbackHandler_Wait_InApp_DoesNotResolveDBRow verifies that after the
+// in-app select branch completes, the feedback_requests DB row remains in
+// "pending" status. The HTTP SubmitFeedback handler owns the pending→resolved
+// CAS on the in-app path; the agent must not race it with a second write.
+func TestFeedbackHandler_Wait_InApp_DoesNotResolveDBRow(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	h := NewFeedbackHandler(w, sm, time.Minute)
+
+	type waitResult struct {
+		body string
+		err  error
+	}
+	done := make(chan waitResult, 1)
+	go func() {
+		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 500*time.Millisecond)
+		done <- waitResult{body: body, err: err}
+	}()
+
+	// Wait for the pending feedback row to appear.
+	var feedbackID string
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+		if err != nil {
+			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+		}
+		if len(rows) > 0 {
+			feedbackID = rows[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if feedbackID == "" {
+		t.Fatal("timed out waiting for feedback row")
+	}
+
+	// Deliver response through the in-app channel.
+	if err := h.Resolve(feedbackID, "hello"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("Wait: %v", res.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not return within deadline")
+	}
+
+	// The DB row must still be pending — the HTTP handler owns the CAS transition.
+	// If the agent had called UpdateFeedbackRequestStatus, the row would be resolved.
+	pending, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+	if err != nil {
+		t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+	}
+	if len(pending) == 0 {
+		t.Error("feedback_requests row was resolved by the agent — it must stay pending so the HTTP handler can own the CAS")
+	}
+}
+
+// TestFeedbackHandler_Wait_PluginDispatchError verifies that a non-sentinel error
+// from the plugin dispatcher is propagated wrapped with "plugin feedback dispatch".
+func TestFeedbackHandler_Wait_PluginDispatchError(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries())
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	dispatchErr := errors.New("gRPC unavailable")
+	mock := &mockFeedbackDispatcher{err: dispatchErr}
+	h := NewFeedbackHandler(w, sm, time.Minute, WithFeedbackChannelDispatch(mock, "aud-1", "pol-1"))
+
+	_, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", time.Minute)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "plugin feedback dispatch") {
+		t.Errorf("error = %q, want to contain 'plugin feedback dispatch'", err.Error())
+	}
+	if !errors.Is(err, dispatchErr) {
+		t.Errorf("error chain should contain original dispatchErr")
 	}
 }

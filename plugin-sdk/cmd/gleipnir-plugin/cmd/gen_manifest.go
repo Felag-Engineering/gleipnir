@@ -1,12 +1,10 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
@@ -49,7 +47,7 @@ func runGenManifest(binary, out string, cmd *cobra.Command) error {
 		return fmt.Errorf("gen-manifest: invoke binary: %w", err)
 	}
 
-	canonicalYAML, err := jsonToCanonicalYAML(raw)
+	canonicalYAML, err := manifest.Canonicalize(raw)
 	if err != nil {
 		return fmt.Errorf("gen-manifest: canonicalise output: %w", err)
 	}
@@ -64,38 +62,4 @@ func runGenManifest(binary, out string, cmd *cobra.Command) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote manifest to %s\n", out)
 	return nil
-}
-
-// jsonToCanonicalYAML parses JSON from --emit-manifest output into a Manifest
-// and re-marshals it through the canonical YAML marshaller. The two-pass
-// approach (JSON → Manifest struct → canonical YAML) guarantees that the
-// output conforms to the canonical schema regardless of the JSON key order.
-func jsonToCanonicalYAML(jsonData []byte) ([]byte, error) {
-	// First unmarshal the JSON into a generic yaml.Node so we can pass it
-	// through the canonical YAML path without losing *yaml.Node fields.
-	//
-	// Strategy: unmarshal JSON into a manifest.Manifest struct. Fields that
-	// are *yaml.Node (like ConfigSchema, InputSchema) must come through as
-	// JSON objects — yaml.v3 can decode them from JSON-encoded YAML nodes when
-	// we go via an intermediate yaml.Node.
-
-	// Convert JSON bytes to a yaml.Node by first parsing JSON into a generic
-	// map, converting to YAML bytes, then decoding as yaml.Node.
-	var generic interface{}
-	if err := json.Unmarshal(jsonData, &generic); err != nil {
-		return nil, fmt.Errorf("parse JSON: %w", err)
-	}
-
-	// Re-encode as YAML so we can unmarshal into manifest.Manifest.
-	rawYAML, err := yaml.Marshal(generic)
-	if err != nil {
-		return nil, fmt.Errorf("re-marshal to YAML: %w", err)
-	}
-
-	var m manifest.Manifest
-	if err := manifest.Unmarshal(rawYAML, &m); err != nil {
-		return nil, fmt.Errorf("unmarshal manifest: %w", err)
-	}
-
-	return manifest.Marshal(&m)
 }

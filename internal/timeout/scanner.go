@@ -63,6 +63,14 @@ type Config struct {
 	// SSEPayload builds the event payload published under SSEEventName. The
 	// key names differ between domains ("approval_id" vs "feedback_id").
 	SSEPayload func(id string, runID string) map[string]string
+
+	// OnClaimed is an optional hook invoked once per successfully-claimed
+	// timeout, after the conditional UPDATE wins and before downstream run
+	// side-effects (which may be skipped if the run already left the waiting
+	// state). The approval scanner uses this to increment its prometheus
+	// counter so the metric reflects approvals that genuinely timed out,
+	// independent of the run's eventual disposition.
+	OnClaimed func()
 }
 
 // NewApprovalScanner creates a Scanner that checks for expired approval requests
@@ -102,6 +110,7 @@ func NewApprovalScanner(store *db.Store, interval time.Duration, opts ...Scanner
 				"status":      string(model.ApprovalStatusTimeout),
 			}
 		},
+		OnClaimed: approvalTimeoutsTotal.Inc,
 	}
 	return NewScanner(store, interval, cfg, opts...)
 }
@@ -142,6 +151,48 @@ func NewFeedbackScanner(store *db.Store, interval time.Duration, opts ...Scanner
 				"feedback_id": id,
 				"run_id":      runID,
 				"status":      "timed_out",
+			}
+		},
+	}
+	return NewScanner(store, interval, cfg, opts...)
+}
+
+// NewPluginRequestScanner creates a Scanner that checks for expired plugin
+// pending requests on the given interval.  Only rows with a non-NULL expires_at
+// are candidates (rows without a timeout are excluded).
+func NewPluginRequestScanner(store *db.Store, interval time.Duration, opts ...ScannerOption) *Scanner {
+	cfg := Config{
+		Name: "plugin_request",
+		ListExpired: func(ctx context.Context, cutoff string) ([]ExpiredItem, error) {
+			rows, err := store.Queries().ListExpiredPluginPendingRequests(ctx, &cutoff)
+			if err != nil {
+				return nil, err
+			}
+			items := make([]ExpiredItem, len(rows))
+			for i, r := range rows {
+				items[i] = ExpiredItem{ID: r.ID, RunID: r.RunID, ToolName: r.ToolName}
+			}
+			return items, nil
+		},
+		ClaimTimeout: func(ctx context.Context, id string, now string) (int64, error) {
+			return store.Queries().UpdatePluginPendingRequestStatus(ctx, db.UpdatePluginPendingRequestStatusParams{
+				Status:     "timed_out",
+				Response:   nil,
+				ResolvedAt: &now,
+				ID:         id,
+			})
+		},
+		WaitingRunStatus: model.RunStatusWaitingForFeedback,
+		ErrorCode:        "plugin_request_timeout",
+		ErrorMessage: func(toolName string) string {
+			return fmt.Sprintf("plugin request timeout: no response received within the configured timeout for %s", toolName)
+		},
+		SSEEventName: "plugin.request.timed_out",
+		SSEPayload: func(id, runID string) map[string]string {
+			return map[string]string{
+				"request_id": id,
+				"run_id":     runID,
+				"status":     "timed_out",
 			}
 		},
 	}
@@ -195,7 +246,7 @@ func (s *Scanner) Start(ctx context.Context) {
 				return
 			case <-ticker.C:
 				if err := s.scan(ctx); err != nil {
-					slog.Error(s.cfg.Name+" scanner error", "err", err)
+					slog.ErrorContext(ctx, s.cfg.Name+" scanner error", "err", err)
 				}
 			}
 		}
@@ -220,7 +271,7 @@ func (s *Scanner) scan(ctx context.Context) error {
 	idAttr := s.cfg.Name + "_id"
 	for _, item := range expired {
 		if err := s.resolveTimeout(ctx, item); err != nil {
-			slog.Warn("failed to resolve timed-out "+s.cfg.Name,
+			slog.WarnContext(ctx, "failed to resolve timed-out "+s.cfg.Name,
 				idAttr, item.ID,
 				"run_id", item.RunID,
 				"tool_name", item.ToolName,
@@ -254,16 +305,11 @@ func (s *Scanner) resolveTimeout(ctx context.Context, item ExpiredItem) error {
 		return nil
 	}
 
-	if s.cfg.Name == "approval" {
-		// Increment the approval timeout counter here — right after we
-		// successfully claimed the timeout — even if the run was already
-		// moved out of waiting_for_approval (e.g. interrupted by
-		// ScanOrphanedRuns on restart). The approval itself timed out;
-		// the run's subsequent state is irrelevant to this counter. The
-		// downstream `run.Status != WaitingRunStatus` branch below may
-		// skip the run-side side effects, but the approval-timed-out
-		// fact remains true.
-		approvalTimeoutsTotal.Inc()
+	// Invoke the post-claim hook (e.g. the approval scanner increments its
+	// prometheus counter here) even if the run was already moved out of the
+	// waiting status — the request itself genuinely timed out.
+	if s.cfg.OnClaimed != nil {
+		s.cfg.OnClaimed()
 	}
 
 	// Check whether the run is still waiting. ScanOrphanedRuns may have already
@@ -274,7 +320,7 @@ func (s *Scanner) resolveTimeout(ctx context.Context, item ExpiredItem) error {
 		return fmt.Errorf("get run: %w", err)
 	}
 
-	slog.Warn(s.cfg.Name+" timed out",
+	slog.WarnContext(ctx, s.cfg.Name+" timed out",
 		"run_id", item.RunID,
 		s.cfg.Name+"_id", item.ID,
 		"tool_name", item.ToolName,

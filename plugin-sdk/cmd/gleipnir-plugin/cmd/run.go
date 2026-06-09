@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/fakehost"
-	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/hostwire"
 )
 
 // launchPlugin and newFakeHost are package-level variables so tests can replace

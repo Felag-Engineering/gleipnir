@@ -6,7 +6,51 @@
 // event kinds, and JSON schemas for per-instance configuration.
 package manifest
 
-import "gopkg.in/yaml.v3"
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Tier-2 capability identifiers declared in the manifest under
+// tier2_capabilities. Each identifier corresponds to a manifest-declared,
+// admin-approved Host RPC (spec §8.2).
+const (
+	Tier2RunHistoryRead    = "run_history_read"
+	Tier2UserDirectoryRead = "user_directory_read"
+)
+
+// Auth strategy constants for AuthDecl.Strategy. The canonical values are
+// enumerated here so both the host and plugin authors share one source of truth
+// (spec §9.1). Use these constants rather than string literals.
+const (
+	// AuthStrategyNone means the plugin requires no credentials.
+	AuthStrategyNone = "none"
+
+	// AuthStrategyStaticAPIKey means the plugin expects a static API key
+	// stored in credentials_encrypted.
+	AuthStrategyStaticAPIKey = "static_api_key"
+
+	// AuthStrategyHeaderSet means the plugin expects one or more static HTTP
+	// headers stored in credentials_encrypted.
+	AuthStrategyHeaderSet = "header_set"
+
+	// AuthStrategyBasicAuth means the plugin expects HTTP Basic Auth credentials
+	// stored in credentials_encrypted.
+	AuthStrategyBasicAuth = "basic_auth"
+
+	// AuthStrategyOAuth2Authcode means the host runs the OAuth2 authorization
+	// code flow on behalf of the plugin. The host stores the resulting access +
+	// refresh token pair in credentials_encrypted and provides automatic renewal
+	// via golang.org/x/oauth2 (spec §9.2).
+	AuthStrategyOAuth2Authcode = "oauth2_authcode"
+
+	// AuthStrategyOAuth2Clientcred means the host runs the OAuth2 client
+	// credentials flow on behalf of the plugin. No user interaction is required;
+	// the host exchanges client_id/client_secret for an access token directly and
+	// refreshes it automatically (spec §9.2).
+	AuthStrategyOAuth2Clientcred = "oauth2_clientcred"
+)
 
 // Manifest is the top-level structure for a Gleipnir plugin manifest file
 // (manifest.yaml). It is the install-time authority for UX, gating, and
@@ -52,12 +96,19 @@ type Manifest struct {
 
 	// Tier2 lists any Tier-2 Host RPCs this binary declares (shown in the
 	// install consent screen). See spec §8.2.
-	Tier2 []string `yaml:"tier2,omitempty"`
+	Tier2 []string `yaml:"tier2_capabilities,omitempty"`
 
 	// ConfigSchema is a JSON Schema (stored as a raw YAML node to preserve
 	// structure without re-ordering) for the per-instance config block.
 	// Must be an object schema. nil means no config needed.
 	ConfigSchema *yaml.Node `yaml:"config_schema,omitempty"`
+
+	// SubscriptionSchema is a JSON Schema (stored as a raw YAML node) for the
+	// instance-level coarse subscription scope sent in TriggerService.Start as
+	// watch_scope_json. Distinct from per-event-kind BindingSchema: scope is
+	// configured once on the instance to limit chattiness (spec §4.3, §11.3).
+	// nil means no scope config is needed; the plugin receives an empty scope.
+	SubscriptionSchema *yaml.Node `yaml:"subscription_schema,omitempty"`
 
 	// SBOM is an optional relative path to a CycloneDX SBOM JSON file bundled
 	// with the plugin tarball. Gleipnir surfaces it as a badge in the admin UI
@@ -66,48 +117,49 @@ type Manifest struct {
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler so that *yaml.Node fields are
-// correctly decoded. The default yaml.v3 decoder does not populate *yaml.Node
-// struct fields; this custom decoder uses value intermediaries and converts.
+// correctly decoded. yaml.v3 does not populate *yaml.Node struct fields; the
+// plain struct below uses rawNode for those fields so the decoder can reach
+// them. See rawnode.go for the full explanation of the quirk.
 func (m *Manifest) UnmarshalYAML(value *yaml.Node) error {
-	// manifestAlias mirrors Manifest with *yaml.Node fields replaced by
-	// yaml.Node (value type) so yaml.v3 populates them correctly.
-	type manifestAlias struct {
-		SchemaVersion string          `yaml:"schema_version"`
-		Name          string          `yaml:"name"`
-		Version       string          `yaml:"version"`
-		Description   string          `yaml:"description,omitempty"`
-		Author        string          `yaml:"author,omitempty"`
-		License       string          `yaml:"license,omitempty"`
-		Services      Services        `yaml:"services"`
-		Auth          AuthDecl        `yaml:"auth"`
-		Tools         []ToolDecl      `yaml:"tools,omitempty"`
-		EventKinds    []EventKindDecl `yaml:"event_kinds,omitempty"`
-		Channels      []ChannelDecl   `yaml:"channels,omitempty"`
-		Tier2         []string        `yaml:"tier2,omitempty"`
-		ConfigSchema  yaml.Node       `yaml:"config_schema,omitempty"`
-		SBOM          string          `yaml:"sbom,omitempty"`
+	type plain struct {
+		SchemaVersion      string          `yaml:"schema_version"`
+		Name               string          `yaml:"name"`
+		Version            string          `yaml:"version"`
+		Description        string          `yaml:"description,omitempty"`
+		Author             string          `yaml:"author,omitempty"`
+		License            string          `yaml:"license,omitempty"`
+		Services           Services        `yaml:"services"`
+		Auth               AuthDecl        `yaml:"auth"`
+		Tools              []ToolDecl      `yaml:"tools,omitempty"`
+		EventKinds         []EventKindDecl `yaml:"event_kinds,omitempty"`
+		Channels           []ChannelDecl   `yaml:"channels,omitempty"`
+		Tier2              []string        `yaml:"tier2_capabilities,omitempty"`
+		ConfigSchema       rawNode         `yaml:"config_schema,omitempty"`
+		SubscriptionSchema rawNode         `yaml:"subscription_schema,omitempty"`
+		SBOM               string          `yaml:"sbom,omitempty"`
 	}
-	var alias manifestAlias
-	if err := value.Decode(&alias); err != nil {
+	var p plain
+	if err := value.Decode(&p); err != nil {
 		return err
 	}
-	m.SchemaVersion = alias.SchemaVersion
-	m.Name = alias.Name
-	m.Version = alias.Version
-	m.Description = alias.Description
-	m.Author = alias.Author
-	m.License = alias.License
-	m.Services = alias.Services
-	m.Auth = alias.Auth
-	m.Tools = alias.Tools
-	m.EventKinds = alias.EventKinds
-	m.Channels = alias.Channels
-	m.Tier2 = alias.Tier2
-	m.SBOM = alias.SBOM
-	if alias.ConfigSchema.Kind != 0 {
-		node := alias.ConfigSchema
-		m.ConfigSchema = &node
-	}
+	m.SchemaVersion = p.SchemaVersion
+	m.Name = p.Name
+	m.Version = p.Version
+	m.Description = p.Description
+	m.Author = p.Author
+	m.License = p.License
+	m.Services = p.Services
+	m.Auth = p.Auth
+	m.Tools = p.Tools
+	m.EventKinds = p.EventKinds
+	m.Channels = p.Channels
+	m.Tier2 = p.Tier2
+	m.SBOM = p.SBOM
+	// An absent field leaves .Node == nil. An explicit YAML null (~) still
+	// yields a non-nil *yaml.Node (a null ScalarNode), identical to the prior
+	// Kind != 0 behaviour, so dropping that guard is not a behaviour change.
+	m.ConfigSchema = p.ConfigSchema.Node
+	m.SubscriptionSchema = p.SubscriptionSchema.Node
 	return nil
 }
 
@@ -133,12 +185,16 @@ type AuthDecl struct {
 	// one credential set serves all calls. "user_credentials" is v2-only.
 	Mode string `yaml:"mode"`
 
-	// Strategy is the auth strategy type: "static_key", "header_set",
-	// "oauth_authcode", or "none".
+	// Strategy is the auth strategy type. Valid v1 values (use the
+	// AuthStrategy* constants): "none", "static_api_key", "header_set",
+	// "basic_auth", "oauth2_authcode", "oauth2_clientcred".
 	Strategy string `yaml:"strategy"`
 
-	// OAuthDefaults carries default OAuth parameters baked into the manifest by
-	// the plugin author. Only set when Strategy is "oauth_authcode".
+	// OAuthDefaults carries default OAuth2 parameters baked into the manifest
+	// by the plugin author. Applies to both "oauth2_authcode" and
+	// "oauth2_clientcred" strategies. AuthorizationURL is only meaningful for
+	// "oauth2_authcode". Instance config may override these defaults for power
+	// users with private apps (client_id/client_secret/scopes/token_url).
 	OAuthDefaults *OAuthDefaultsDecl `yaml:"oauth_defaults,omitempty"`
 }
 
@@ -186,28 +242,24 @@ type ToolDecl struct {
 
 // UnmarshalYAML implements yaml.Unmarshaler for ToolDecl.
 func (t *ToolDecl) UnmarshalYAML(value *yaml.Node) error {
-	type toolAlias struct {
-		Name             string    `yaml:"name"`
-		Description      string    `yaml:"description,omitempty"`
-		InputSchema      yaml.Node `yaml:"input_schema,omitempty"`
-		OutputSchema     yaml.Node `yaml:"output_schema,omitempty"`
-		ApprovalRequired bool      `yaml:"approval_required,omitempty"`
+	type plain struct {
+		Name             string  `yaml:"name"`
+		Description      string  `yaml:"description,omitempty"`
+		InputSchema      rawNode `yaml:"input_schema,omitempty"`
+		OutputSchema     rawNode `yaml:"output_schema,omitempty"`
+		ApprovalRequired bool    `yaml:"approval_required,omitempty"`
 	}
-	var alias toolAlias
-	if err := value.Decode(&alias); err != nil {
+	var p plain
+	if err := value.Decode(&p); err != nil {
 		return err
 	}
-	t.Name = alias.Name
-	t.Description = alias.Description
-	t.ApprovalRequired = alias.ApprovalRequired
-	if alias.InputSchema.Kind != 0 {
-		node := alias.InputSchema
-		t.InputSchema = &node
-	}
-	if alias.OutputSchema.Kind != 0 {
-		node := alias.OutputSchema
-		t.OutputSchema = &node
-	}
+	t.Name = p.Name
+	t.Description = p.Description
+	t.ApprovalRequired = p.ApprovalRequired
+	// Absent fields leave .Node == nil; an explicit null (~) yields a non-nil
+	// null ScalarNode — identical to the prior Kind != 0 behaviour.
+	t.InputSchema = p.InputSchema.Node
+	t.OutputSchema = p.OutputSchema.Node
 	return nil
 }
 
@@ -229,36 +281,42 @@ type EventKindDecl struct {
 	PayloadSchema *yaml.Node `yaml:"payload_schema,omitempty"`
 
 	// Examples provides sample payloads for the "Test binding against sample"
-	// feature in the policy editor. See spec §7.5.
+	// feature in the policy editor. Each node must conform to the canonical
+	// shape {name: string, payload: <typed struct>} so the host decoder can
+	// extract the display name and pass the payload to the binding evaluator.
+	// See spec §7.5. Use AddEventKindWithExamples for the typed helper.
 	Examples []*yaml.Node `yaml:"examples,omitempty"`
+}
+
+// Example is a named sample event payload for use with AddEventKindWithExamples.
+// Name is shown in the policy editor UI; Payload is a typed Go struct that
+// round-trips through yaml.Marshal so the host receives a structured map.
+type Example struct {
+	Name    string
+	Payload any
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for EventKindDecl.
 func (e *EventKindDecl) UnmarshalYAML(value *yaml.Node) error {
-	type ekAlias struct {
-		Kind          string      `yaml:"kind"`
-		Description   string      `yaml:"description,omitempty"`
-		BindingSchema yaml.Node   `yaml:"binding_schema,omitempty"`
-		PayloadSchema yaml.Node   `yaml:"payload_schema,omitempty"`
-		Examples      []yaml.Node `yaml:"examples,omitempty"`
+	type plain struct {
+		Kind          string    `yaml:"kind"`
+		Description   string    `yaml:"description,omitempty"`
+		BindingSchema rawNode   `yaml:"binding_schema,omitempty"`
+		PayloadSchema rawNode   `yaml:"payload_schema,omitempty"`
+		Examples      []rawNode `yaml:"examples,omitempty"`
 	}
-	var alias ekAlias
-	if err := value.Decode(&alias); err != nil {
+	var p plain
+	if err := value.Decode(&p); err != nil {
 		return err
 	}
-	e.Kind = alias.Kind
-	e.Description = alias.Description
-	if alias.BindingSchema.Kind != 0 {
-		node := alias.BindingSchema
-		e.BindingSchema = &node
-	}
-	if alias.PayloadSchema.Kind != 0 {
-		node := alias.PayloadSchema
-		e.PayloadSchema = &node
-	}
-	for _, ex := range alias.Examples {
-		ex := ex
-		e.Examples = append(e.Examples, &ex)
+	e.Kind = p.Kind
+	e.Description = p.Description
+	// Absent fields leave .Node == nil; an explicit null (~) yields a non-nil
+	// null ScalarNode — identical to the prior Kind != 0 behaviour.
+	e.BindingSchema = p.BindingSchema.Node
+	e.PayloadSchema = p.PayloadSchema.Node
+	for _, ex := range p.Examples {
+		e.Examples = append(e.Examples, ex.Node)
 	}
 	return nil
 }
@@ -277,22 +335,113 @@ type ChannelDecl struct {
 	ConfigSchema *yaml.Node `yaml:"config_schema,omitempty"`
 }
 
+// AddEventKind appends an EventKindDecl to m.EventKinds. When filterStruct is
+// nil, the declaration has no binding schema (valid for event kinds that carry
+// no operator-configurable binding). When filterStruct is non-nil, ReflectSchema
+// is called to derive the BindingSchema; any reflection error is returned
+// wrapped with the event kind name for context.
+//
+// payloadSchema and examples are optional (pass nil/zero values to omit).
+func (m *Manifest) AddEventKind(kind, description string, filterStruct any, payloadSchema *yaml.Node, examples ...*yaml.Node) error {
+	decl := EventKindDecl{
+		Kind:          kind,
+		Description:   description,
+		PayloadSchema: payloadSchema,
+		Examples:      examples,
+	}
+	if filterStruct != nil {
+		node, err := ReflectSchema(filterStruct)
+		if err != nil {
+			return fmt.Errorf("manifest: reflect binding_schema for event kind %q: %w", kind, err)
+		}
+		decl.BindingSchema = node
+	}
+	m.EventKinds = append(m.EventKinds, decl)
+	return nil
+}
+
+// MustAddEventKind is the panicking variant of AddEventKind. A nil filterStruct
+// is the documented no-binding form and does NOT cause a panic; only invopop
+// reflection failures panic.
+func (m *Manifest) MustAddEventKind(kind, description string, filterStruct any, payloadSchema *yaml.Node, examples ...*yaml.Node) {
+	if err := m.AddEventKind(kind, description, filterStruct, payloadSchema, examples...); err != nil {
+		panic(err)
+	}
+}
+
+// AddEventKindWithExamples is the typed variant of AddEventKind. It accepts a
+// slice of Example values, marshals each one into a *yaml.Node of shape
+// {name: string, payload: <struct>}, then delegates to AddEventKind. This is
+// the canonical path for plugin authors who want compile-time safety on their
+// example payloads.
+//
+// The first marshal error short-circuits with the example name for context.
+// Zero examples is valid: the declaration is added with no sample payloads.
+func (m *Manifest) AddEventKindWithExamples(kind, description string, filterStruct any, payloadSchema *yaml.Node, examples ...Example) error {
+	if len(examples) == 0 {
+		return m.AddEventKind(kind, description, filterStruct, payloadSchema)
+	}
+	nodes := make([]*yaml.Node, 0, len(examples))
+	for _, ex := range examples {
+		raw, err := yaml.Marshal(map[string]any{
+			"name":    ex.Name,
+			"payload": ex.Payload,
+		})
+		if err != nil {
+			return fmt.Errorf("example %q: %w", ex.Name, err)
+		}
+		var node yaml.Node
+		if err := yaml.Unmarshal(raw, &node); err != nil {
+			return fmt.Errorf("example %q: unmarshal node: %w", ex.Name, err)
+		}
+		// yaml.Unmarshal wraps the root in a DocumentNode; unwrap to the
+		// inner MappingNode so callers get consistent node shapes.
+		if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
+			inner := node.Content[0]
+			nodes = append(nodes, inner)
+		} else {
+			nodes = append(nodes, &node)
+		}
+	}
+	return m.AddEventKind(kind, description, filterStruct, payloadSchema, nodes...)
+}
+
+// MustAddEventKindWithExamples is the panicking variant of
+// AddEventKindWithExamples. It panics on any marshal or reflection error so
+// plugin authors can call it at package init time without error propagation.
+func (m *Manifest) MustAddEventKindWithExamples(kind, description string, filterStruct any, payloadSchema *yaml.Node, examples ...Example) {
+	if err := m.AddEventKindWithExamples(kind, description, filterStruct, payloadSchema, examples...); err != nil {
+		panic(err)
+	}
+}
+
+// HasTier2 reports whether the manifest declares the given Tier-2 capability.
+// The capability string must match one of the Tier2* constants (e.g.
+// Tier2RunHistoryRead). Comparison is case-sensitive.
+func (m *Manifest) HasTier2(cap string) bool {
+	for _, c := range m.Tier2 {
+		if c == cap {
+			return true
+		}
+	}
+	return false
+}
+
 // UnmarshalYAML implements yaml.Unmarshaler for ChannelDecl.
 func (c *ChannelDecl) UnmarshalYAML(value *yaml.Node) error {
-	type chanAlias struct {
-		ImplementsNotify  bool      `yaml:"implements_notify,omitempty"`
-		ImplementsRequest bool      `yaml:"implements_request,omitempty"`
-		ConfigSchema      yaml.Node `yaml:"config_schema,omitempty"`
+	type plain struct {
+		ImplementsNotify  bool    `yaml:"implements_notify,omitempty"`
+		ImplementsRequest bool    `yaml:"implements_request,omitempty"`
+		ConfigSchema      rawNode `yaml:"config_schema,omitempty"`
 	}
-	var alias chanAlias
-	if err := value.Decode(&alias); err != nil {
+	var p plain
+	if err := value.Decode(&p); err != nil {
 		return err
 	}
-	c.ImplementsNotify = alias.ImplementsNotify
-	c.ImplementsRequest = alias.ImplementsRequest
-	if alias.ConfigSchema.Kind != 0 {
-		node := alias.ConfigSchema
-		c.ConfigSchema = &node
-	}
+	c.ImplementsNotify = p.ImplementsNotify
+	c.ImplementsRequest = p.ImplementsRequest
+	// Absent field leaves .Node == nil; an explicit null (~) yields a non-nil
+	// null ScalarNode — identical to the prior Kind != 0 behaviour.
+	c.ConfigSchema = p.ConfigSchema.Node
 	return nil
 }

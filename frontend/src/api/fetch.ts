@@ -113,3 +113,27 @@ export async function apiFetchVoid(path: string, init?: RequestInit): Promise<vo
 }
 
 export { baseRequest }
+
+// errMessage extracts a human-readable error message from a TanStack Query
+// onError callback value. TanStack Query types its error as `unknown`; for
+// ApiError it prefers `detail` (server-supplied context) over `message`, and
+// falls back to the caller-supplied default for unknown error shapes.
+export function errMessage(err: unknown, fallback: string): string {
+  const apiErr = err as ApiError
+  return apiErr?.detail ?? apiErr?.message ?? fallback
+}
+
+// extractErrorMessage is the strict-typed variant of errMessage for callers
+// that want to distinguish ApiError → real-Error → unknown values cleanly
+// (e.g. when populating an inline error banner from a mutation onError).
+// Prefers ApiError.detail over .message; falls back to Error.message; final
+// fallback for non-Error values is the generic "Unexpected error" string.
+export function extractErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    return err.detail ?? err.message
+  }
+  if (err instanceof Error) {
+    return err.message
+  }
+  return 'Unexpected error — please try again.'
+}

@@ -3,21 +3,9 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
-	"golang.org/x/net/http/httpguts"
+	"github.com/felag-engineering/gleipnir/internal/infra/headervalidate"
 )
-
-// reservedHeaderNames lists the headers that operators must not override via
-// auth headers. These are either managed by the MCP client itself or are
-// required HTTP transport headers that must remain under client control.
-var reservedHeaderNames = []string{
-	"Mcp-Session-Id",
-	"Content-Type",
-	"Accept",
-	"Content-Length",
-	"Host",
-}
 
 // AuthHeader is a single HTTP header to be injected on every outbound MCP request.
 type AuthHeader struct {
@@ -32,21 +20,11 @@ type AuthHeader struct {
 //     CR/LF/NUL/colon/whitespace and all non-token chars)
 //   - names that collide with headers managed by the MCP client or the HTTP
 //     transport layer (Mcp-Session-Id, Content-Type, Accept, Content-Length, Host)
+//
+// Delegates to headervalidate.ValidateName; kept here for backward compatibility
+// with existing call sites in internal/http/api/mcp_handler.go.
 func ValidateHeaderName(name string) error {
-	if name == "" {
-		return fmt.Errorf("header name must not be empty")
-	}
-	// httpguts.ValidHeaderFieldName implements RFC 7230 §3.2 token syntax.
-	// It is the single source of truth for CR/LF/colon/whitespace rejection.
-	if !httpguts.ValidHeaderFieldName(name) {
-		return fmt.Errorf("header name %q contains invalid characters", name)
-	}
-	for _, reserved := range reservedHeaderNames {
-		if strings.EqualFold(name, reserved) {
-			return fmt.Errorf("header name %q is reserved and cannot be overridden", name)
-		}
-	}
-	return nil
+	return headervalidate.ValidateName(name)
 }
 
 // MarshalAuthHeaders serializes headers to a JSON byte slice suitable for

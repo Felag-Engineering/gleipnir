@@ -70,8 +70,8 @@ sequenceDiagram
             BA ->> AW: Write(FeedbackRequestStep)
             BA ->> SSE: Publish(feedback.created)
 
-            Op ->> RM: SendFeedback(response)
-            RM -->> BA: FeedbackResponse via channel
+            Op ->> RM: ResolveFeedback(request_id, response)
+            RM -->> BA: response via inAppChannel.Resolve
 
             BA ->> AW: Write(FeedbackResponseStep)
             BA ->> DB: UpdateRunStatus(running)

@@ -156,6 +156,22 @@ export function formatDate(iso: string): string {
   }
 }
 
+// formatBytes converts a byte count to a human-readable string using 1024-based
+// units displayed as KB/MB/GB (operator-familiar labels matching the spec's
+// "412 MB" example). One decimal place is shown, but trailing ".0" is dropped.
+//
+// Examples: 0 → "0 B", 1023 → "1023 B", 1024 → "1 KB", 1536 → "1.5 KB",
+//           1048576 → "1 MB", 123456789 → "117.7 MB", 1073741824 → "1 GB".
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const kb = bytes / 1024
+  if (kb < 1024) return `${+kb.toFixed(1)} KB`
+  const mb = kb / 1024
+  if (mb < 1024) return `${+mb.toFixed(1)} MB`
+  const gb = mb / 1024
+  return `${+gb.toFixed(1)} GB`
+}
+
 // computeRunDuration returns the run duration in seconds, or null if the run has not completed.
 // started_at is required on ApiRun (non-nullable).
 export function computeRunDuration(run: { completed_at: string | null; started_at: string }): number | null {

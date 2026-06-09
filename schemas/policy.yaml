@@ -25,6 +25,15 @@ description: string
 #   Stored in the YAML blob, not as a separate column.
 folder: string
 
+# audience: string — optional
+#   Name of a shared audience (defined under /admin/audiences) used for
+#   notification fan-out and operator-request routing. Omit for policies
+#   that do not use the audience system.
+#   Stored in the YAML blob (ADR-002). The Go side already reads this field
+#   via internal/policy/audience_refs.go. No validator change needed — the
+#   policy editor enforces selection via the AudienceSection dropdown.
+audience: string
+
 
 # ---------------------------------------------------------------------------
 # Model (preferred format, introduced in issue #344)
@@ -66,7 +75,10 @@ model:
 
 trigger:
 
-  # type: webhook | manual | scheduled | poll | cron — required
+  # type: webhook | manual | scheduled | poll | cron | subscribed — required
+  #   subscribed: policy fires when a plugin's TriggerService emits a matching
+  #   event. The UI presents subscribed triggers using the event kind's
+  #   human-readable name rather than the string "subscribed" (spec §7.1).
   type: webhook
 
 
@@ -165,6 +177,27 @@ trigger:
   #   down when a fire time passed, that fire is silently skipped (no
   #   catch-up). Cron policies run indefinitely until paused or deleted.
   cron_expr: "0 9 * * 1"
+
+
+  # --- subscribed ---
+  # source: string — required for subscribed
+  #   The plugin instance name that provides the TriggerService to listen to.
+  #   Must match an existing plugin_instances.instance_name; resolved globally
+  #   by name (LIMIT 1 across all plugins — unique instance names are strongly
+  #   recommended). Runtime dispatch is wired in issue #214.
+  source: my-plugin-instance
+
+  # event_kind: string — required for subscribed
+  #   The event kind identifier (e.g. "channel_message") declared by the plugin
+  #   in its manifest under event_kinds[].kind. Must be present in the manifest.
+  event_kind: channel_message
+
+  # binding: map — optional
+  #   Per-event-kind binding configuration. Validated at save time against the
+  #   manifest's event_kinds[].binding_schema using JSON Schema. The shape is
+  #   defined by the plugin author; see the plugin's manifest for the schema.
+  binding:
+    filter: ".*"
 
 
 # ---------------------------------------------------------------------------

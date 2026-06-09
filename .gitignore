@@ -17,3 +17,9 @@ node_modules
 *.png
 *.jpeg
 /gleipnirctl
+/gleipnir-plugin
+
+# Local plugin bundles extracted by the loader at runtime (owned by container root)
+local-plugins/installed/
+local-plugins/*.tar.gz
+local-plugins/*.tgz

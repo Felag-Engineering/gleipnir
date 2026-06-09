@@ -25,7 +25,9 @@ export interface IdentityFormState {
   folder: string;
 }
 
-export type TriggerType = 'webhook' | 'manual' | 'scheduled' | 'poll' | 'cron';
+// 'subscribed' is an internal-only storage value — it is never shown as a label
+// in the UI (ADR-048). The trigger picker hides it behind plugin event_kind entries.
+export type TriggerType = 'webhook' | 'manual' | 'scheduled' | 'poll' | 'cron' | 'subscribed';
 
 export type WebhookAuthMode = 'hmac' | 'bearer' | 'none';
 
@@ -63,12 +65,23 @@ export interface CronTriggerState {
   cronExpr: string; // 5-field POSIX cron expression
 }
 
+// SubscribedTriggerState represents a plugin-sourced event trigger.
+// `binding` is opaque here — #218 owns the binding-form UI; this issue only
+// reads and writes the field as a passthrough.
+export interface SubscribedTriggerState {
+  type: 'subscribed';
+  source: string;     // instance_name — survives generation rotation + DB-id churn
+  eventKind: string;  // matches an EventKindDecl.Kind in the plugin's manifest
+  binding: Record<string, unknown>;
+}
+
 export type TriggerFormState =
   | WebhookTriggerState
   | ManualTriggerState
   | ScheduledTriggerState
   | PollTriggerState
-  | CronTriggerState;
+  | CronTriggerState
+  | SubscribedTriggerState;
 
 export interface TaskInstructionsFormState {
   task: string;
@@ -89,6 +102,10 @@ export interface ConcurrencyFormState {
 export interface ModelFormState {
   provider: string;
   model: string;
+}
+
+export interface AudienceFormState {
+  name: string; // empty string means no audience selected
 }
 
 // FormIssue is defined in validateFormState.ts (single source of truth).

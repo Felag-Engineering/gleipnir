@@ -76,7 +76,7 @@ Hard capability enforcement (ADR-001) is preserved:
 - Plugin tools and MCP tools live in **one namespace**: `<source>.<tool>`, where `<source>` is either an MCP server name or a plugin instance name. Uniqueness is enforced across both registries at registration time.
 - Agents only see the tools their policy grants. Tools not granted are never registered with the LLM.
 - Capability snapshot (ADR-018) records all granted tools at run start, regardless of source.
-- Per-policy parameter scoping (ADR-017) and approval gating (ADR-008) apply to plugin tools identically.
+- Per-policy parameter scoping (ADR-017) and approval gating (ADR-008) apply to plugin tools identically. Implementation invariant: the approval interceptor in `handleToolCall` runs BEFORE source-specific dispatch (MCP transport or plugin generation guard); there is exactly one approval chokepoint.
 - The agent never sees `gleipnir.ask_operator` directly. Internally it sees a synthetic `request_feedback` tool; the runtime resolves the audience and routes to the appropriate Channel implementation. From the agent's perspective, who gets paged is not its concern.
 
 ## 4. Plugin model
@@ -252,7 +252,13 @@ One trigger binding per policy. Multiple triggers per policy is deferred. The st
 
 Plugin manifests provide `examples` in each `event_kind` declaration. Policy editor offers a **Test binding against sample** button per saved binding. No paste-your-own-JSON in v1.
 
-**Known sharp edge:** operators bound to events whose canonical payload differs from the manifest's example must wait for v2 paste-your-own-JSON. v1 workaround: capture a real event with `gleipnir-plugin run --capture` against a dev instance, then iterate locally with `--replay <captured_event.json>`.
+**Declaring examples (SDK):** The canonical typed path is `Manifest.AddEventKindWithExamples`, which accepts `...manifest.Example{Name, Payload}` structs and round-trips the payload through `yaml.Marshal`. The raw-node path `AddEventKind(..., examples ...*yaml.Node)` remains supported for callers that construct nodes directly.
+
+**Server-side evaluation:** Clicking "Test against sample" in the policy editor sends the current binding + example payloads to `POST /api/v1/admin/plugin-instances/{iid}/event-kinds/{kind}/test-binding`. The server evaluates using `internal/plugin/binding.Compile` + `Evaluate` — the same code path as the runtime dispatcher — so Go RE2 semantics are used, not browser JavaScript regexes.
+
+**Client-side design:** The client sends payloads back in the request body (stateless endpoint). This avoids hot-reload drift between the list call that returned examples and the test call, and removes any server-side caching requirement.
+
+**Known sharp edge (v1):** Only manifest-declared examples are tested. Operators bound to events whose canonical payload differs from the manifest examples must wait for v2 paste-your-own-JSON. **v1 workaround:** capture a real event with `gleipnir-plugin run --capture` against a dev instance, then iterate locally with `--replay <captured_event.json>`.
 
 ## 8. Host API (plugin → host RPCs)
 
@@ -300,12 +306,14 @@ Every host→plugin service RPC injects a host-generated `call_id` into gRPC met
 
 ### 9.1 Strategies in v1
 
-- `none`
-- `static_api_key`
-- `header_set` (generalized from ADR-039)
-- `basic_auth` (legacy enterprise stepping stone)
-- `oauth2_authcode`
-- `oauth2_clientcred`
+- `none` — no credentials required; `credentials_encrypted` may be absent.
+- `static_api_key` — one secret header. Storage shape: `{header_name, scheme?, api_key}` inside `credentials_encrypted`. See `internal/plugin/oauth.StaticAPIKeyCreds`.
+- `header_set` — one or more named HTTP headers (generalises ADR-039). Storage shape: `{headers: [{name, value}]}`. Reserved headers (`Mcp-Session-Id`, `Content-Type`, `Accept`, `Content-Length`, `Host`) are rejected at write time. See `internal/plugin/oauth.HeaderSetCreds`.
+- `basic_auth` — HTTP Basic Auth. Storage shape: `{username, password}`. See `internal/plugin/oauth.BasicAuthCreds`.
+- `oauth2_authcode` — host-side authorization code flow (see §9.2).
+- `oauth2_clientcred` — host-side client credentials flow (see §9.2).
+
+**`basic_auth` is a stepping stone.** It exists to integrate with legacy enterprise services that have not migrated to OAuth or API-key headers. New plugin authors should prefer `static_api_key` or `oauth2_authcode`. Gleipnir does not redact the basic-auth password from outbound HTTP request logs — operators are responsible for minimising log retention when basic_auth is in use.
 
 Out of v1: mTLS, SAML, Kerberos, custom strategies. Flagged as v2 candidates when concrete enterprise demand surfaces.
 
@@ -455,8 +463,7 @@ Plugin-author intent determines surfacing:
 ### 13.1 Memory
 
 - **GOMEMLIMIT advisory** set on plugin process start (manifest-declared or 256MB default). Soft, plugin-side.
-- **`gleipnir_plugin_process_rss_bytes`** sampled every 30s and surfaced in admin UI alongside health chip.
-- **Aggregate plugin RSS** displayed in `/admin/plugins` header (`Plugin memory: 412 MB across 3 instances`). Operators sizing the API container should reserve `host_baseline + sum(plugin_GOMEMLIMIT) × 1.2` to absorb burst above the soft limit.
+- **Container sizing:** operators should reserve `host_baseline + sum(plugin_GOMEMLIMIT) × 1.2` for the API container. The `/admin/plugins` page header shows aggregate plugin RSS in real time (`Plugin memory: 412 MB across 3 instances`, sampled every 30s via `gleipnir_plugin_process_rss_bytes{plugin, instance}`). Per-instance breakdown is available by clicking the summary. The gauge is also available for external Prometheus alerting.
 - **Circuit-break-on-OOM**: SIGKILL'd plugin processes count toward the failure-mode circuit breaker (§13.7).
 - Hard cgroup-per-subprocess deferred to v2. Implementing it inside the already-containerized API container is non-trivial Linux plumbing; first-party + admin-installed v1 plugins do not justify the complexity.
 
@@ -607,6 +614,8 @@ Single global env var `GLEIPNIR_PLUGINS_ENABLED=false` default. Loader/manager d
 3. **Flag removed entirely** in release N+2
 
 The step-2 in-app feedback refactor lands independently of the flag (behavior-neutral). The flag only gates external plugins, not the internal `inAppChannel`.
+
+**Subprocess spawn on instance creation.** When an admin creates a plugin instance via the API, the handler immediately calls `StartByPluginID` to spawn the subprocess — no server restart required (same fire-and-forget pattern as the post-install hook).
 
 ### 15.3 Default-on success criteria
 

@@ -5,16 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 
-	commonv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
-	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/pluginerr"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/tool"
 )
 
-// ToolService implements toolv1.ToolServiceServer with a single "echo" tool.
+// ToolService implements tool.Service with a single "echo" tool.
 // It communicates with the host via hostClient, which is provided at
-// construction time (in production by serve.Serve; in tests by loopback TCP (127.0.0.1:0)).
+// construction time (in production by serve.Serve; in tests by loopback TCP).
 type ToolService struct {
-	toolv1.UnimplementedToolServiceServer
 	host hostv1.HostServiceClient
 }
 
@@ -24,14 +24,12 @@ func NewToolService(hostClient hostv1.HostServiceClient) *ToolService {
 }
 
 // ListTools returns the single "echo" tool declaration.
-func (s *ToolService) ListTools(_ context.Context, _ *toolv1.ListToolsRequest) (*toolv1.ListToolsResponse, error) {
-	return &toolv1.ListToolsResponse{
-		Tools: []*toolv1.ToolSchema{
-			{
-				Name:        "echo",
-				Description: "Returns the message it received.",
-				InputSchema: `{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}`,
-			},
+func (s *ToolService) ListTools(_ context.Context) ([]tool.ToolSpec, error) {
+	return []tool.ToolSpec{
+		{
+			Name:        "echo",
+			Description: "Returns the message it received.",
+			InputSchema: `{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}`,
 		},
 	}, nil
 }
@@ -42,67 +40,50 @@ func (s *ToolService) ListTools(_ context.Context, _ *toolv1.ListToolsRequest) (
 //  3. Logs a confirmation line.
 //  4. Returns the echoed message as output JSON.
 //
-// Any JSON parse error results in a populated ErrorEnvelope in the response.
-func (s *ToolService) Call(ctx context.Context, req *toolv1.CallRequest) (*toolv1.CallResponse, error) {
-	if req.GetToolName() != "echo" {
-		return &toolv1.CallResponse{
-			Error: &commonv1.ErrorEnvelope{
-				Code:    commonv1.ErrorCode_ERROR_CODE_INVALID_ARG,
-				Message: fmt.Sprintf("unknown tool: %q", req.GetToolName()),
-			},
-		}, nil
+// Plugins MUST honor ctx.Done(): when the host cancels the call (run cancelled
+// or operator cancellation), every blocking I/O performed inside Call must use
+// this ctx so the goroutine returns promptly. The host enforces a 5s grace
+// before force-disconnecting (spec §13.8).
+func (s *ToolService) Call(ctx context.Context, toolName string, input []byte) ([]byte, error) {
+	if toolName != "echo" {
+		return nil, pluginerr.InvalidArg(fmt.Sprintf("unknown tool: %q", toolName))
 	}
 
-	var input struct {
+	var in struct {
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal([]byte(req.GetInputJson()), &input); err != nil {
-		return &toolv1.CallResponse{
-			Error: &commonv1.ErrorEnvelope{
-				Code:    commonv1.ErrorCode_ERROR_CODE_INVALID_ARG,
-				Message: fmt.Sprintf("invalid input JSON: %v", err),
-			},
-		}, nil
+	if err := json.Unmarshal(input, &in); err != nil {
+		return nil, pluginerr.InvalidArg(fmt.Sprintf("invalid input JSON: %v", err))
 	}
 
+	// Propagate the host-injected call ID to all outgoing host RPCs so the host
+	// can correlate Log, EmitMetric, and WriteAuditStep calls back to this run
+	// and step. See serve.WithCallContext and plugin-system-spec.md §8.5.
+	hostCtx := serve.WithCallContext(ctx)
+
 	// 1. GetInstanceConfig — exercises host connectivity.
-	if _, err := s.host.GetInstanceConfig(ctx, &hostv1.GetInstanceConfigRequest{}); err != nil {
-		return &toolv1.CallResponse{
-			Error: &commonv1.ErrorEnvelope{
-				Code:    commonv1.ErrorCode_ERROR_CODE_INTERNAL,
-				Message: fmt.Sprintf("GetInstanceConfig: %v", err),
-			},
-		}, nil
+	if _, err := s.host.GetInstanceConfig(hostCtx, &hostv1.GetInstanceConfigRequest{}); err != nil {
+		return nil, fmt.Errorf("GetInstanceConfig: %w", err)
 	}
 
 	// 2. EmitMetric.
-	if _, err := s.host.EmitMetric(ctx, &hostv1.EmitMetricRequest{
+	if _, err := s.host.EmitMetric(hostCtx, &hostv1.EmitMetricRequest{
 		Name:   "echo_calls_total",
 		Value:  1,
 		Labels: map[string]string{"tool": "echo"},
 	}); err != nil {
-		return &toolv1.CallResponse{
-			Error: &commonv1.ErrorEnvelope{
-				Code:    commonv1.ErrorCode_ERROR_CODE_INTERNAL,
-				Message: fmt.Sprintf("EmitMetric: %v", err),
-			},
-		}, nil
+		return nil, fmt.Errorf("EmitMetric: %w", err)
 	}
 
 	// 3. Log confirmation.
-	if _, err := s.host.Log(ctx, &hostv1.LogRequest{
+	if _, err := s.host.Log(hostCtx, &hostv1.LogRequest{
 		Level: hostv1.LogLevel_LOG_LEVEL_INFO,
 		Msg:   "echo handled",
 	}); err != nil {
-		return &toolv1.CallResponse{
-			Error: &commonv1.ErrorEnvelope{
-				Code:    commonv1.ErrorCode_ERROR_CODE_INTERNAL,
-				Message: fmt.Sprintf("Log: %v", err),
-			},
-		}, nil
+		return nil, fmt.Errorf("Log: %w", err)
 	}
 
 	// 4. Return the echoed output.
-	out, _ := json.Marshal(map[string]string{"echoed": input.Message})
-	return &toolv1.CallResponse{OutputJson: string(out)}, nil
+	out, _ := json.Marshal(map[string]string{"echoed": in.Message})
+	return out, nil
 }

@@ -11,8 +11,8 @@ import (
 
 	handshakev1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/handshake/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/fakehost"
-	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/hostwire"
 )
 
 // ── Scenario YAML schema ─────────────────────────────────────────────────────

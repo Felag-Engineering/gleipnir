@@ -49,8 +49,28 @@ export const queryKeys = {
     settings: ['admin', 'settings'] as const,
     systemInfo: ['admin', 'system-info'] as const,
     openaiCompatProviders: ['admin', 'openai-compat-providers'] as const,
+    audiences: ['admin', 'audiences'] as const,
+    audienceDetail: (id: string) => ['admin', 'audiences', id] as const,
+    audienceReferences: (id: string) => ['admin', 'audiences', id, 'references'] as const,
+    pluginInstances: ['admin', 'plugin-instances'] as const,
   },
   config: {
     all: ['config'] as const,
+  },
+  plugins: {
+    // list() is invalidated after a successful install so that any future
+    // read-side hook that consumes it picks up the new plugin immediately.
+    list: () => ['admin', 'plugins'] as const,
+    // detail(pluginId) is invalidated after approve/reject.
+    detail: (pluginId: string) => ['admin', 'plugins', pluginId] as const,
+    // instances(pluginId) is invalidated after a successful create-instance.
+    instances: (pluginId: string) =>
+      ['admin', 'plugins', pluginId, 'instances'] as const,
+    instance: (pluginId: string, instanceId: string) =>
+      ['admin', 'plugins', pluginId, 'instances', instanceId] as const,
+    credentials: (pluginId: string, instanceId: string) =>
+      ['admin', 'plugins', pluginId, 'instances', instanceId, 'credentials'] as const,
+    // rss() is the aggregate memory usage across all running plugin subprocesses.
+    rss: () => ['admin', 'plugins', 'rss'] as const,
   },
 } as const

@@ -1,0 +1,50 @@
+.chip {
+  composes: badgeRect from '../../../styles/badges.module.css';
+  font-family: var(--font-mono);
+  cursor: default;
+  border: 1px solid transparent;
+  /* Reset button styles */
+  background: transparent;
+  padding: var(--space-1) var(--space-2);
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+/* Only <button> chips are interactive; <span> chips are display-only. */
+button.chip {
+  cursor: pointer;
+}
+
+button.chip:hover {
+  opacity: 0.8;
+}
+
+.green {
+  color: var(--color-green);
+  background: color-mix(in srgb, var(--color-green) 8%, transparent);
+  border-color: color-mix(in srgb, var(--color-green) 20%, transparent);
+}
+
+.yellow {
+  color: var(--color-amber);
+  background: color-mix(in srgb, var(--color-amber) 8%, transparent);
+  border-color: color-mix(in srgb, var(--color-amber) 20%, transparent);
+}
+
+.red {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 8%, transparent);
+  border-color: color-mix(in srgb, var(--color-red) 20%, transparent);
+}
+
+/* inactive — deliberately deactivated by an admin; muted to signal "off" not "broken" */
+.gray {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+  border-color: color-mix(in srgb, var(--text-muted) 20%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chip {
+    transition: none;
+  }
+}

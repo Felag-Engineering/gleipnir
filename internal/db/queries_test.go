@@ -1339,3 +1339,660 @@ func TestApprovalRequestQueries(t *testing.T) {
 		t.Errorf("timeout transition: note = %v, want nil", timedOut.Note)
 	}
 }
+
+// insertPlugin inserts a minimal plugins row and returns its id.
+func insertPlugin(t *testing.T, s *Store, id string) {
+	t.Helper()
+	_, err := s.DB().Exec(
+		`INSERT INTO plugins(id, name, plugin_version, manifest_snapshot, trusted_pubkey, status, version, created_at, updated_at)
+		 VALUES (?, ?, '1.0.0', '{}', 'pubkey', 'active', 0, '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+		id, "plugin-"+id,
+	)
+	if err != nil {
+		t.Fatalf("insertPlugin %s: %v", id, err)
+	}
+}
+
+// insertPluginInstance inserts a minimal plugin_instances row and returns its id.
+func insertPluginInstance(t *testing.T, s *Store, id, pluginID string) {
+	t.Helper()
+	_, err := s.DB().Exec(
+		`INSERT INTO plugin_instances(id, plugin_id, instance_name, config_json, handshake_versions, health_state, version, created_at, updated_at)
+		 VALUES (?, ?, ?, '{}', '{}', 'healthy', 0, '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+		id, pluginID, "instance-"+id,
+	)
+	if err != nil {
+		t.Fatalf("insertPluginInstance %s: %v", id, err)
+	}
+}
+
+func TestPluginAudienceRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	now := "2024-01-01T00:00:00Z"
+
+	t.Run("create get list", func(t *testing.T) {
+		s := newTestStore(t)
+		q := s.Queries()
+
+		aud, err := q.CreatePluginAudience(ctx, CreatePluginAudienceParams{
+			ID:        "aud1",
+			Name:      "test-audience",
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatalf("CreatePluginAudience: %v", err)
+		}
+		if aud.ID != "aud1" || aud.Name != "test-audience" || aud.Version != 0 {
+			t.Errorf("created audience = %+v, unexpected fields", aud)
+		}
+
+		byID, err := q.GetPluginAudienceByID(ctx, "aud1")
+		if err != nil {
+			t.Fatalf("GetPluginAudienceByID: %v", err)
+		}
+		if byID.Name != "test-audience" {
+			t.Errorf("GetPluginAudienceByID: name = %q, want %q", byID.Name, "test-audience")
+		}
+
+		byName, err := q.GetPluginAudienceByName(ctx, "test-audience")
+		if err != nil {
+			t.Fatalf("GetPluginAudienceByName: %v", err)
+		}
+		if byName.ID != "aud1" {
+			t.Errorf("GetPluginAudienceByName: id = %q, want %q", byName.ID, "aud1")
+		}
+
+		list, err := q.ListPluginAudiences(ctx)
+		if err != nil {
+			t.Fatalf("ListPluginAudiences: %v", err)
+		}
+		if len(list) != 1 || list[0].ID != "aud1" {
+			t.Errorf("ListPluginAudiences: got %v, want [aud1]", list)
+		}
+	})
+
+	t.Run("update CAS happy path", func(t *testing.T) {
+		s := newTestStore(t)
+		q := s.Queries()
+
+		if _, err := q.CreatePluginAudience(ctx, CreatePluginAudienceParams{
+			ID:        "aud2",
+			Name:      "old-name",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreatePluginAudience: %v", err)
+		}
+
+		rows, err := q.UpdatePluginAudience(ctx, UpdatePluginAudienceParams{
+			ID:              "aud2",
+			Name:            "new-name",
+			UpdatedAt:       now,
+			ExpectedVersion: 0,
+		})
+		if err != nil {
+			t.Fatalf("UpdatePluginAudience: %v", err)
+		}
+		if rows != 1 {
+			t.Errorf("UpdatePluginAudience rows = %d, want 1", rows)
+		}
+
+		updated, err := q.GetPluginAudienceByID(ctx, "aud2")
+		if err != nil {
+			t.Fatalf("GetPluginAudienceByID after update: %v", err)
+		}
+		if updated.Name != "new-name" {
+			t.Errorf("name after update = %q, want %q", updated.Name, "new-name")
+		}
+		if updated.Version != 1 {
+			t.Errorf("version after update = %d, want 1", updated.Version)
+		}
+	})
+
+	t.Run("update CAS stale version returns 0 rows", func(t *testing.T) {
+		s := newTestStore(t)
+		q := s.Queries()
+
+		if _, err := q.CreatePluginAudience(ctx, CreatePluginAudienceParams{
+			ID:        "aud3",
+			Name:      "name",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreatePluginAudience: %v", err)
+		}
+
+		rows, err := q.UpdatePluginAudience(ctx, UpdatePluginAudienceParams{
+			ID:              "aud3",
+			Name:            "changed",
+			UpdatedAt:       now,
+			ExpectedVersion: 99, // stale
+		})
+		if err != nil {
+			t.Fatalf("UpdatePluginAudience stale: %v", err)
+		}
+		if rows != 0 {
+			t.Errorf("stale CAS: rows = %d, want 0", rows)
+		}
+	})
+}
+
+func TestAudienceCascadeAndRestrict(t *testing.T) {
+	ctx := context.Background()
+	now := "2024-01-01T00:00:00Z"
+
+	t.Run("delete audience cascades to entries", func(t *testing.T) {
+		s := newTestStore(t)
+		q := s.Queries()
+
+		insertPlugin(t, s, "pl1")
+		insertPluginInstance(t, s, "pi1", "pl1")
+
+		if _, err := q.CreatePluginAudience(ctx, CreatePluginAudienceParams{
+			ID:        "aud1",
+			Name:      "cascade-aud",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreatePluginAudience: %v", err)
+		}
+		if _, err := q.CreateAudienceEntry(ctx, CreateAudienceEntryParams{
+			ID:               "ae1",
+			AudienceID:       "aud1",
+			PluginInstanceID: "pi1",
+			Position:         0,
+			Notify:           1,
+			Request:          0,
+			ConfigJson:       "{}",
+		}); err != nil {
+			t.Fatalf("CreateAudienceEntry: %v", err)
+		}
+
+		if _, err := q.DeletePluginAudience(ctx, "aud1"); err != nil {
+			t.Fatalf("DeletePluginAudience: %v", err)
+		}
+
+		var count int
+		if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM audience_entries WHERE id = 'ae1'`).Scan(&count); err != nil {
+			t.Fatalf("count audience_entries: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("entry count after audience delete = %d, want 0 (cascade)", count)
+		}
+	})
+
+	t.Run("delete plugin_instance with referencing entry is rejected", func(t *testing.T) {
+		s := newTestStore(t)
+		q := s.Queries()
+
+		insertPlugin(t, s, "pl1")
+		insertPluginInstance(t, s, "pi1", "pl1")
+
+		if _, err := q.CreatePluginAudience(ctx, CreatePluginAudienceParams{
+			ID:        "aud1",
+			Name:      "restrict-aud",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreatePluginAudience: %v", err)
+		}
+		if _, err := q.CreateAudienceEntry(ctx, CreateAudienceEntryParams{
+			ID:               "ae1",
+			AudienceID:       "aud1",
+			PluginInstanceID: "pi1",
+			Position:         0,
+			Notify:           1,
+			Request:          0,
+			ConfigJson:       "{}",
+		}); err != nil {
+			t.Fatalf("CreateAudienceEntry: %v", err)
+		}
+
+		// Deleting the referenced plugin_instance must fail (ON DELETE RESTRICT).
+		_, err := s.DB().ExecContext(ctx, `DELETE FROM plugin_instances WHERE id = 'pi1'`)
+		if err == nil {
+			t.Error("expected FK restrict error when deleting referenced plugin_instance, got nil")
+		}
+	})
+
+	t.Run("pending_request audience_entry_id set to NULL when entry deleted", func(t *testing.T) {
+		s := newTestStore(t)
+		q := s.Queries()
+
+		insertPlugin(t, s, "pl1")
+		insertPluginInstance(t, s, "pi1", "pl1")
+		insertPolicy(t, s, "pol1")
+		insertRun(t, s, "run1", "pol1", "running")
+
+		if _, err := q.CreatePluginAudience(ctx, CreatePluginAudienceParams{
+			ID:        "aud1",
+			Name:      "setnull-aud",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreatePluginAudience: %v", err)
+		}
+		entryID := "ae1"
+		if _, err := q.CreateAudienceEntry(ctx, CreateAudienceEntryParams{
+			ID:               entryID,
+			AudienceID:       "aud1",
+			PluginInstanceID: "pi1",
+			Position:         0,
+			Notify:           1,
+			Request:          0,
+			ConfigJson:       "{}",
+		}); err != nil {
+			t.Fatalf("CreateAudienceEntry: %v", err)
+		}
+
+		if _, err := q.CreatePluginPendingRequest(ctx, CreatePluginPendingRequestParams{
+			ID:               "req1",
+			PluginInstanceID: "pi1",
+			RunID:            "run1",
+			AudienceEntryID:  &entryID,
+			ToolName:         "my_tool",
+			CreatedAt:        now,
+		}); err != nil {
+			t.Fatalf("CreatePluginPendingRequest: %v", err)
+		}
+
+		// Deleting the audience entry should SET NULL on the pending request.
+		if _, err := q.DeleteAudienceEntry(ctx, entryID); err != nil {
+			t.Fatalf("DeleteAudienceEntry: %v", err)
+		}
+
+		req, err := q.GetPluginPendingRequest(ctx, "req1")
+		if err != nil {
+			t.Fatalf("GetPluginPendingRequest: %v", err)
+		}
+		if req.AudienceEntryID != nil {
+			t.Errorf("audience_entry_id = %v, want nil after entry delete (SET NULL)", req.AudienceEntryID)
+		}
+	})
+}
+
+func TestGetPluginAudienceWithEntries(t *testing.T) {
+	ctx := context.Background()
+	now := "2024-01-01T00:00:00Z"
+
+	t.Run("zero-entry audience returns one NULL-entry row", func(t *testing.T) {
+		s := newTestStore(t)
+		q := s.Queries()
+
+		if _, err := q.CreatePluginAudience(ctx, CreatePluginAudienceParams{
+			ID:        "aud1",
+			Name:      "empty-aud",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreatePluginAudience: %v", err)
+		}
+
+		rows, err := q.GetPluginAudienceWithEntries(ctx, "aud1")
+		if err != nil {
+			t.Fatalf("GetPluginAudienceWithEntries: %v", err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("rows = %d, want 1 (NULL entry row for empty audience)", len(rows))
+		}
+		if rows[0].EntryID != nil {
+			t.Errorf("EntryID = %v, want nil for empty audience", rows[0].EntryID)
+		}
+	})
+
+	t.Run("audience with N entries returns N rows ordered by position", func(t *testing.T) {
+		s := newTestStore(t)
+		q := s.Queries()
+
+		insertPlugin(t, s, "pl1")
+		insertPluginInstance(t, s, "pi1", "pl1")
+		insertPluginInstance(t, s, "pi2", "pl1")
+		insertPluginInstance(t, s, "pi3", "pl1")
+
+		if _, err := q.CreatePluginAudience(ctx, CreatePluginAudienceParams{
+			ID:        "aud1",
+			Name:      "multi-aud",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreatePluginAudience: %v", err)
+		}
+
+		// Insert entries out of order to test ORDER BY position.
+		for _, e := range []struct {
+			id  string
+			pi  string
+			pos int64
+		}{
+			{"ae3", "pi3", 2},
+			{"ae1", "pi1", 0},
+			{"ae2", "pi2", 1},
+		} {
+			if _, err := q.CreateAudienceEntry(ctx, CreateAudienceEntryParams{
+				ID:               e.id,
+				AudienceID:       "aud1",
+				PluginInstanceID: e.pi,
+				Position:         e.pos,
+				ConfigJson:       "{}",
+			}); err != nil {
+				t.Fatalf("CreateAudienceEntry %s: %v", e.id, err)
+			}
+		}
+
+		rows, err := q.GetPluginAudienceWithEntries(ctx, "aud1")
+		if err != nil {
+			t.Fatalf("GetPluginAudienceWithEntries: %v", err)
+		}
+		if len(rows) != 3 {
+			t.Fatalf("rows = %d, want 3", len(rows))
+		}
+		for i, row := range rows {
+			if row.Position == nil || *row.Position != int64(i) {
+				t.Errorf("row[%d].Position = %v, want %d", i, row.Position, i)
+			}
+		}
+	})
+}
+
+func TestPluginPendingRequestCAS(t *testing.T) {
+	ctx := context.Background()
+	now := "2024-01-01T00:00:00Z"
+	resolvedAt := "2024-01-01T01:00:00Z"
+	response := "ok"
+
+	t.Run("first update returns 1, second returns 0", func(t *testing.T) {
+		s := newTestStore(t)
+		q := s.Queries()
+
+		insertPlugin(t, s, "pl1")
+		insertPluginInstance(t, s, "pi1", "pl1")
+		insertPolicy(t, s, "pol1")
+		insertRun(t, s, "run1", "pol1", "running")
+
+		if _, err := q.CreatePluginPendingRequest(ctx, CreatePluginPendingRequestParams{
+			ID:               "req1",
+			PluginInstanceID: "pi1",
+			RunID:            "run1",
+			ToolName:         "my_tool",
+			CreatedAt:        now,
+		}); err != nil {
+			t.Fatalf("CreatePluginPendingRequest: %v", err)
+		}
+
+		rows, err := q.UpdatePluginPendingRequestStatus(ctx, UpdatePluginPendingRequestStatusParams{
+			ID:         "req1",
+			Status:     "resolved",
+			Response:   &response,
+			ResolvedAt: &resolvedAt,
+		})
+		if err != nil {
+			t.Fatalf("first UpdatePluginPendingRequestStatus: %v", err)
+		}
+		if rows != 1 {
+			t.Errorf("first update rows = %d, want 1", rows)
+		}
+
+		// Second call must be a no-op — status is no longer 'pending'.
+		rows, err = q.UpdatePluginPendingRequestStatus(ctx, UpdatePluginPendingRequestStatusParams{
+			ID:         "req1",
+			Status:     "timed_out",
+			ResolvedAt: &resolvedAt,
+		})
+		if err != nil {
+			t.Fatalf("second UpdatePluginPendingRequestStatus: %v", err)
+		}
+		if rows != 0 {
+			t.Errorf("second update rows = %d, want 0 (CAS guard)", rows)
+		}
+	})
+}
+
+func TestPluginPendingRequestRunCascade(t *testing.T) {
+	ctx := context.Background()
+	now := "2024-01-01T00:00:00Z"
+
+	s := newTestStore(t)
+	q := s.Queries()
+
+	insertPlugin(t, s, "pl1")
+	insertPluginInstance(t, s, "pi1", "pl1")
+	insertPolicy(t, s, "pol1")
+	insertRun(t, s, "run1", "pol1", "running")
+
+	if _, err := q.CreatePluginPendingRequest(ctx, CreatePluginPendingRequestParams{
+		ID:               "req1",
+		PluginInstanceID: "pi1",
+		RunID:            "run1",
+		ToolName:         "my_tool",
+		CreatedAt:        now,
+	}); err != nil {
+		t.Fatalf("CreatePluginPendingRequest: %v", err)
+	}
+
+	// Deleting the run must cascade to the pending request.
+	if _, err := s.DB().ExecContext(ctx, `DELETE FROM runs WHERE id = 'run1'`); err != nil {
+		t.Fatalf("delete run: %v", err)
+	}
+
+	var count int
+	if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_pending_requests WHERE id = 'req1'`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("pending request count after run delete = %d, want 0 (cascade)", count)
+	}
+}
+
+func TestListExpiredPluginPendingRequests(t *testing.T) {
+	ctx := context.Background()
+	now := "2024-01-01T00:00:00Z"
+
+	s := newTestStore(t)
+	q := s.Queries()
+
+	insertPlugin(t, s, "pl1")
+	insertPluginInstance(t, s, "pi1", "pl1")
+	insertPolicy(t, s, "pol1")
+	insertRun(t, s, "run1", "pol1", "running")
+
+	// Row with past expires_at — should be returned.
+	if _, err := q.CreatePluginPendingRequest(ctx, CreatePluginPendingRequestParams{
+		ID:               "req-expired",
+		PluginInstanceID: "pi1",
+		RunID:            "run1",
+		ToolName:         "expired_tool",
+		ExpiresAt:        strPtr("2023-12-31T00:00:00Z"),
+		CreatedAt:        now,
+	}); err != nil {
+		t.Fatalf("CreatePluginPendingRequest expired: %v", err)
+	}
+
+	// Row with future expires_at — must not be returned.
+	if _, err := q.CreatePluginPendingRequest(ctx, CreatePluginPendingRequestParams{
+		ID:               "req-future",
+		PluginInstanceID: "pi1",
+		RunID:            "run1",
+		ToolName:         "future_tool",
+		ExpiresAt:        strPtr("2099-01-01T00:00:00Z"),
+		CreatedAt:        now,
+	}); err != nil {
+		t.Fatalf("CreatePluginPendingRequest future: %v", err)
+	}
+
+	// Row with NULL expires_at — must not be returned.
+	if _, err := q.CreatePluginPendingRequest(ctx, CreatePluginPendingRequestParams{
+		ID:               "req-no-expiry",
+		PluginInstanceID: "pi1",
+		RunID:            "run1",
+		ToolName:         "no_expiry_tool",
+		CreatedAt:        now,
+	}); err != nil {
+		t.Fatalf("CreatePluginPendingRequest no-expiry: %v", err)
+	}
+
+	cutoff := strPtr("2024-01-01T00:00:00Z")
+	expired, err := q.ListExpiredPluginPendingRequests(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("ListExpiredPluginPendingRequests: %v", err)
+	}
+
+	if len(expired) != 1 {
+		t.Fatalf("expired count = %d, want 1", len(expired))
+	}
+	if expired[0].ID != "req-expired" {
+		t.Errorf("expired[0].ID = %q, want %q", expired[0].ID, "req-expired")
+	}
+	if expired[0].ToolName != "expired_tool" {
+		t.Errorf("expired[0].ToolName = %q, want %q", expired[0].ToolName, "expired_tool")
+	}
+	if expired[0].RunID != "run1" {
+		t.Errorf("expired[0].RunID = %q, want %q", expired[0].RunID, "run1")
+	}
+}
+
+// TestDeferredUniqueNotSupported documents that modernc.org/sqlite does not
+// support DEFERRABLE on table constraints. Multi-row position swaps inside a
+// single transaction require a sentinel intermediate value.
+func TestDeferredUniqueNotSupported(t *testing.T) {
+	ctx := context.Background()
+	now := "2024-01-01T00:00:00Z"
+
+	s := newTestStore(t)
+	q := s.Queries()
+
+	insertPlugin(t, s, "pl1")
+	insertPluginInstance(t, s, "pi1", "pl1")
+
+	if _, err := q.CreatePluginAudience(ctx, CreatePluginAudienceParams{
+		ID:        "aud1",
+		Name:      "reorder-aud",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreatePluginAudience: %v", err)
+	}
+	if _, err := q.CreateAudienceEntry(ctx, CreateAudienceEntryParams{
+		ID:               "ae1",
+		AudienceID:       "aud1",
+		PluginInstanceID: "pi1",
+		Position:         0,
+		ConfigJson:       "{}",
+	}); err != nil {
+		t.Fatalf("CreateAudienceEntry ae1: %v", err)
+	}
+	if _, err := q.CreateAudienceEntry(ctx, CreateAudienceEntryParams{
+		ID:               "ae2",
+		AudienceID:       "aud1",
+		PluginInstanceID: "pi1",
+		Position:         1,
+		ConfigJson:       "{}",
+	}); err != nil {
+		t.Fatalf("CreateAudienceEntry ae2: %v", err)
+	}
+
+	// Direct position swap inside a transaction fails because the constraint is
+	// NOT deferrable — moving ae1 to position 1 collides with ae2 before ae2
+	// is moved away.
+	tx, err := s.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	_, err1 := tx.ExecContext(ctx, `UPDATE audience_entries SET position = 1 WHERE id = 'ae1'`)
+	_, err2 := tx.ExecContext(ctx, `UPDATE audience_entries SET position = 0 WHERE id = 'ae2'`)
+
+	if err1 == nil && err2 == nil {
+		// If both succeed we may be on a future version that supports deferred
+		// constraints — commit and verify correctness rather than failing.
+		if cerr := tx.Commit(); cerr != nil {
+			// Commit itself rejected — DEFERRABLE still not supported.
+			t.Logf("deferred-UNIQUE swap: commit rejected (%v); sentinel approach required", cerr)
+		} else {
+			t.Logf("deferred-UNIQUE swap: both UPDATEs and COMMIT succeeded — check SQLite version")
+		}
+	} else {
+		// At least one UPDATE failed — expected behaviour with non-deferrable UNIQUE.
+		t.Logf("deferred-UNIQUE swap: UPDATE failed as expected (%v / %v); sentinel approach required for multi-row reorders", err1, err2)
+	}
+
+	// Verify the sentinel approach works: use a large out-of-range position
+	// as a temporary placeholder to avoid the transient violation.
+	s2 := newTestStore(t)
+	q2 := s2.Queries()
+
+	insertPlugin(t, s2, "pl1")
+	insertPluginInstance(t, s2, "pi1", "pl1")
+
+	if _, err := q2.CreatePluginAudience(ctx, CreatePluginAudienceParams{
+		ID:        "aud1",
+		Name:      "sentinel-aud",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreatePluginAudience (s2): %v", err)
+	}
+	if _, err := q2.CreateAudienceEntry(ctx, CreateAudienceEntryParams{
+		ID:               "ae1",
+		AudienceID:       "aud1",
+		PluginInstanceID: "pi1",
+		Position:         0,
+		ConfigJson:       "{}",
+	}); err != nil {
+		t.Fatalf("CreateAudienceEntry ae1 (s2): %v", err)
+	}
+	if _, err := q2.CreateAudienceEntry(ctx, CreateAudienceEntryParams{
+		ID:               "ae2",
+		AudienceID:       "aud1",
+		PluginInstanceID: "pi1",
+		Position:         1,
+		ConfigJson:       "{}",
+	}); err != nil {
+		t.Fatalf("CreateAudienceEntry ae2 (s2): %v", err)
+	}
+
+	tx2, err := s2.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx2: %v", err)
+	}
+
+	const sentinel int64 = 9999
+	_, err = tx2.ExecContext(ctx, `UPDATE audience_entries SET position = ? WHERE id = 'ae1'`, sentinel)
+	if err != nil {
+		tx2.Rollback() //nolint:errcheck
+		t.Fatalf("sentinel move ae1: %v", err)
+	}
+	_, err = tx2.ExecContext(ctx, `UPDATE audience_entries SET position = 0 WHERE id = 'ae2'`)
+	if err != nil {
+		tx2.Rollback() //nolint:errcheck
+		t.Fatalf("move ae2: %v", err)
+	}
+	_, err = tx2.ExecContext(ctx, `UPDATE audience_entries SET position = 1 WHERE id = 'ae1'`)
+	if err != nil {
+		tx2.Rollback() //nolint:errcheck
+		t.Fatalf("finalize ae1: %v", err)
+	}
+	if err := tx2.Commit(); err != nil {
+		t.Fatalf("commit sentinel swap: %v", err)
+	}
+
+	entries, err := q2.ListAudienceEntries(ctx, "aud1")
+	if err != nil {
+		t.Fatalf("ListAudienceEntries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entry count = %d, want 2", len(entries))
+	}
+	if entries[0].ID != "ae2" || entries[0].Position != 0 {
+		t.Errorf("entries[0] = {id:%s pos:%d}, want {id:ae2 pos:0}", entries[0].ID, entries[0].Position)
+	}
+	if entries[1].ID != "ae1" || entries[1].Position != 1 {
+		t.Errorf("entries[1] = {id:%s pos:%d}, want {id:ae1 pos:1}", entries[1].ID, entries[1].Position)
+	}
+}
+
+// strPtr is a test helper that returns a pointer to a string literal.
+func strPtr(s string) *string {
+	return &s
+}

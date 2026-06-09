@@ -10,12 +10,31 @@
 //
 // # Minimal usage
 //
-//	host := plugintest.NewFakeHost(
+//	h := plugintest.NewToolHarness(t,
+//	    func(hc hostv1.HostServiceClient) tool.Service { return NewToolService(hc) },
 //	    plugintest.WithInstanceConfigJSON(`{"greeting":"hi"}`),
-//	    plugintest.WithRunContext(plugintest.RunContext{RunID: "r-1"}),
 //	)
-//	// wire host into a gRPC server, invoke your service, then:
-//	host.AssertMetricEmitted(t, "echo_calls_total", map[string]string{"tool":"echo"})
+//	out, err := h.Call(ctx, "echo", []byte(`{"message":"hi"}`))
+//	h.Host.AssertMetricEmitted(t, "echo_calls_total", map[string]string{"tool": "echo"})
+//
+// NewToolHarness (and the analogous NewChannelHarness / NewTriggerHarness)
+// wires the author's service against a live FakeHost over in-process bufconn
+// gRPC, registers a single t.Cleanup that tears everything down, and returns
+// a typed client plus the FakeHost for assertions.
+//
+// # Host callbacks in harness tests
+//
+// Harness gRPC contexts carry no gleipnir-call-id header, so serve.WithCallContext
+// is a graceful no-op — it leaves the context unchanged rather than injecting a
+// call ID. Host RPCs (EmitMetric, Log, …) still reach the FakeHost over the live
+// connection, so AssertMetricEmitted / AssertLogContains assertions pass normally.
+//
+// # Raw wire exception
+//
+// plugin-sdk/cmd/gleipnir-plugin/cmd/internal/runfixture deliberately uses the
+// real go-plugin subprocess transport and is intentionally NOT migrated to the
+// harness. It exists to exercise the full plugin subprocess launch path (the
+// binary, not the service logic) and must remain on the raw wire.
 //
 // # Spec reference
 //

@@ -18,8 +18,8 @@ import (
 	handshakev1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/handshake/v1"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/hostwire"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/fakehost"
-	"github.com/felag-engineering/gleipnir/plugin-sdk/internal/hostwire"
 )
 
 // captureOpts holds the options for --capture mode.
@@ -40,10 +40,10 @@ type captureHeader struct {
 
 // captureRecord is one event line in the JSONL file.
 type captureRecord struct {
-	CapturedAt     string `json:"captured_at"`
-	Sequence       int    `json:"sequence"`
-	EventID        string `json:"event_id"`
-	EventKind      string `json:"event_kind"`
+	CapturedAt  string `json:"captured_at"`
+	Sequence    int    `json:"sequence"`
+	EventID     string `json:"event_id"`
+	EventKind   string `json:"event_kind"`
 	PayloadJSON string `json:"payload_json"`
 	// WatchScopeJSON is the watch scope passed to Trigger.Start by the
 	// capture host (--watch-scope CLI flag). It is the same value for every

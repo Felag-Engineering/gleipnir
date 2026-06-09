@@ -7,6 +7,7 @@ import { TriggerRunModal } from '@/components/TriggerRunModal/TriggerRunModal'
 import { PolicyIdentitySection } from '@/components/AgentEditor/FormMode/PolicyIdentitySection'
 import { TriggerSection } from '@/components/AgentEditor/FormMode/TriggerSection'
 import { CapabilitiesSection } from '@/components/AgentEditor/FormMode/CapabilitiesSection'
+import { AudienceSection } from '@/components/AgentEditor/FormMode/AudienceSection'
 import { TaskInstructionsSection } from '@/components/AgentEditor/FormMode/TaskInstructionsSection'
 import { RunLimitsSection } from '@/components/AgentEditor/FormMode/RunLimitsSection'
 import { ConcurrencySection } from '@/components/AgentEditor/FormMode/ConcurrencySection'
@@ -24,6 +25,33 @@ import { defaultFormState, FormState, formStateToYaml, yamlToFormState } from '@
 import { validateFormState, type FormIssue } from '@/components/AgentEditor/validateFormState'
 import styles from './AgentEditorPage.module.css'
 import alerts from '@/styles/alerts.module.css'
+
+// Draft state key for the create-new-agent flow. Scoped to the /agents/new
+// route only — the edit route always seeds from server data, which avoids
+// stale-draft-vs-fresh-server races. See plan §6 for the design rationale.
+const DRAFT_KEY_NEW = 'policyDraft:new'
+
+function readDraft(): FormState | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY_NEW)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as FormState
+    // Defend against drafts saved before the audience field existed (when
+    // JSON.parse produces `audience: undefined`). Normalize to empty string.
+    if (parsed.audience == null) parsed.audience = { name: '' }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writeDraft(next: FormState) {
+  try {
+    localStorage.setItem(DRAFT_KEY_NEW, JSON.stringify(next))
+  } catch {
+    // quota / private-mode — silently ignored, draft is best-effort
+  }
+}
 
 // findDisabledGrantNames returns display names ("serverName.toolName") for any
 // tools in formState.capabilities.tools that are currently disabled according
@@ -70,6 +98,8 @@ function splitIssuesBySection(issues: FormIssue[]) {
     identity: issues.filter(iss => iss.field === 'name'),
     trigger: issues.filter(iss => iss.field.startsWith('trigger.')),
     capabilities: issues.filter(iss => iss.field.startsWith('capabilities')),
+    // audience bucket is forward-compatible — no backend validation yet in v1
+    audience: issues.filter(iss => iss.field === 'audience'),
     task: issues.filter(iss => iss.field === 'agent.task'),
     model: issues.filter(iss => iss.field.startsWith('model.')),
     limits: issues.filter(iss => iss.field.startsWith('agent.limits.')),
@@ -107,7 +137,16 @@ export function AgentEditorPage() {
     : []
 
   const [isDirty, setIsDirty] = useState(false)
-  const [formState, setFormState] = useState<FormState>(() => defaultFormState())
+
+  // Draft preservation for the /agents/new route: read synchronously on first
+  // mount so the lazy initializer and the init effect cannot race.
+  const firstMount = useRef(true)
+  const initialDraft = useRef<FormState | null>(
+    !id ? readDraft() : null
+  )
+  const [formState, setFormState] = useState<FormState>(() =>
+    !id && initialDraft.current ? initialDraft.current : defaultFormState()
+  )
   // issues holds the current set of validation errors (either from client-side
   // validation or from the server). detailMsg holds a non-structured error
   // message (e.g. "already exists") when the server does not return issues[].
@@ -121,22 +160,40 @@ export function AgentEditorPage() {
   // after a successful save. Shown as a dismissible warning banner.
   const [savedDisabledTools, setSavedDisabledTools] = useState<string[]>([])
 
-  // Initialize from fetched policy data
+  // Initialize from fetched policy data. The firstMount ref prevents this
+  // effect from clobbering a restored draft on the /agents/new route.
   useEffect(() => {
     if (!id) {
-      setFormState(defaultFormState())
-      setIsDirty(false)
+      if (firstMount.current) {
+        firstMount.current = false
+        if (!initialDraft.current) {
+          setFormState(defaultFormState())
+          setIsDirty(false)
+        } else {
+          // Draft restored — mark dirty so unsaved-changes affordance shows.
+          setIsDirty(true)
+        }
+      }
       return
     }
     if (policy) {
       const parsed = yamlToFormState(policy.yaml)
       if (parsed) setFormState(parsed)
       setIsDirty(false)
+      // Clear firstMount here too so a later id-less mount in the same session
+      // doesn't read a stale true value and skip the draft-restore branch.
+      firstMount.current = false
     }
   }, [id, policy])
 
   function handleFormChange(patch: Partial<FormState>) {
-    setFormState(prev => ({ ...prev, ...patch }))
+    setFormState(prev => {
+      const next = { ...prev, ...patch }
+      // Persist draft on every change for the create route only.
+      // The edit route always seeds from server data on mount.
+      if (!id) writeDraft(next)
+      return next
+    })
     setIsDirty(true)
     setSavedDisabledTools([])
   }
@@ -161,6 +218,8 @@ export function AgentEditorPage() {
       setIsDirty(false)
       setSavedPolicyId(result.id)
       setSavedDisabledTools(findDisabledGrantNames(formState, queryClient))
+      // Clear the draft on successful save — no longer needed.
+      localStorage.removeItem(DRAFT_KEY_NEW)
       if (!id) {
         navigate(`/agents/${result.id}`, { replace: true })
       }
@@ -341,6 +400,12 @@ export function AgentEditorPage() {
               value={formState.capabilities}
               onChange={v => handleFormChange({ capabilities: v })}
               errors={sectionIssues.capabilities}
+            />
+            <AudienceSection
+              value={formState.audience}
+              onChange={v => handleFormChange({ audience: v })}
+              onNewAudienceClick={() => navigate('/admin/audiences/new')}
+              errors={sectionIssues.audience}
             />
             <TaskInstructionsSection
               value={formState.task}

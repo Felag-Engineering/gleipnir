@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"strings"
 )
 
 const countActiveRuns = `-- name: CountActiveRuns :one
@@ -276,6 +277,7 @@ func (q *Queries) ListActiveRunsByPolicy(ctx context.Context, policyID string) (
 }
 
 const listAttentionItems = `-- name: ListAttentionItems :many
+
 SELECT
   'approval' AS item_type,
   ar.id AS request_id,
@@ -643,6 +645,124 @@ func (q *Queries) ListRunsByDurationDesc(ctx context.Context, arg ListRunsByDura
 			&i.SystemPrompt,
 			&i.Model,
 			&i.Version,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunsByPolicies = `-- name: ListRunsByPolicies :many
+SELECT id, policy_id, status, started_at, completed_at, created_at FROM runs
+WHERE policy_id IN (/*SLICE:policy_ids*/?)
+ORDER BY created_at DESC LIMIT ?2
+`
+
+type ListRunsByPoliciesParams struct {
+	PolicyIds []string `json:"policy_ids"`
+	Limit     int64    `json:"limit"`
+}
+
+type ListRunsByPoliciesRow struct {
+	ID          string  `json:"id"`
+	PolicyID    string  `json:"policy_id"`
+	Status      string  `json:"status"`
+	StartedAt   string  `json:"started_at"`
+	CompletedAt *string `json:"completed_at"`
+	CreatedAt   string  `json:"created_at"`
+}
+
+// ListRunsByPolicies returns runs for a set of policies in a single query,
+// ordered newest-first. Used by the plugin host-service RunHistoryRead handler
+// to replace the previous N+1 per-policy query loop (issue #362). The caller
+// guards against an empty slice to skip the roundtrip.
+func (q *Queries) ListRunsByPolicies(ctx context.Context, arg ListRunsByPoliciesParams) ([]ListRunsByPoliciesRow, error) {
+	query := listRunsByPolicies
+	var queryParams []interface{}
+	if len(arg.PolicyIds) > 0 {
+		for _, v := range arg.PolicyIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:policy_ids*/?", strings.Repeat(",?", len(arg.PolicyIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:policy_ids*/?", "NULL", 1)
+	}
+	queryParams = append(queryParams, arg.Limit)
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRunsByPoliciesRow
+	for rows.Next() {
+		var i ListRunsByPoliciesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunsByPolicy = `-- name: ListRunsByPolicy :many
+SELECT id, policy_id, status, started_at, completed_at, created_at FROM runs
+WHERE policy_id = ?1
+ORDER BY created_at DESC
+LIMIT ?2
+`
+
+type ListRunsByPolicyParams struct {
+	PolicyID string `json:"policy_id"`
+	Limit    int64  `json:"limit"`
+}
+
+type ListRunsByPolicyRow struct {
+	ID          string  `json:"id"`
+	PolicyID    string  `json:"policy_id"`
+	Status      string  `json:"status"`
+	StartedAt   string  `json:"started_at"`
+	CompletedAt *string `json:"completed_at"`
+	CreatedAt   string  `json:"created_at"`
+}
+
+// ListRunsByPolicy returns runs for a single policy ordered newest-first.
+// Kept for single-policy callers; the multi-policy host path uses ListRunsByPolicies.
+func (q *Queries) ListRunsByPolicy(ctx context.Context, arg ListRunsByPolicyParams) ([]ListRunsByPolicyRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRunsByPolicy, arg.PolicyID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRunsByPolicyRow
+	for rows.Next() {
+		var i ListRunsByPolicyRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PolicyID,
+			&i.Status,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

@@ -33,11 +33,12 @@ const (
 type TriggerType string
 
 const (
-	TriggerTypeWebhook   TriggerType = "webhook"
-	TriggerTypeManual    TriggerType = "manual"
-	TriggerTypeScheduled TriggerType = "scheduled"
-	TriggerTypePoll      TriggerType = "poll"
-	TriggerTypeCron      TriggerType = "cron"
+	TriggerTypeWebhook    TriggerType = "webhook"
+	TriggerTypeManual     TriggerType = "manual"
+	TriggerTypeScheduled  TriggerType = "scheduled"
+	TriggerTypePoll       TriggerType = "poll"
+	TriggerTypeCron       TriggerType = "cron"
+	TriggerTypeSubscribed TriggerType = "subscribed"
 )
 
 // AllTriggerTypes lists every TriggerType constant. Update this slice when a
@@ -50,6 +51,7 @@ var AllTriggerTypes = []TriggerType{
 	TriggerTypeScheduled,
 	TriggerTypePoll,
 	TriggerTypeCron,
+	TriggerTypeSubscribed,
 }
 
 // StepType identifies the kind of event recorded in a run's reasoning trace.
@@ -319,6 +321,12 @@ type ParsedPolicy struct {
 	Trigger      TriggerConfig
 	Capabilities CapabilitiesConfig
 	Agent        AgentConfig
+	// Audience names the plugin audience used for approval routing.
+	// Unlike folder (ADR-020, cosmetic/UI-only), audience is consumed at
+	// runtime — the launcher resolves it to an audience DB row ID and passes
+	// it to the agent so Wait can route approvals through a plugin channel.
+	// Empty string means no audience is configured; fall back to in-app.
+	Audience string
 }
 
 // TriggerConfig holds trigger-type-specific fields. Only fields relevant to
@@ -335,6 +343,9 @@ type TriggerConfig struct {
 	Match       MatchMode       // poll and webhook filter; defaults to MatchAll
 	Checks      []PollCheck     // poll: MCP tool checks (at least one required); webhook: body filter checks (optional)
 	CronExpr    string          // cron only, 5-field POSIX expression
+	Source      string          // subscribed only: plugin instance name
+	EventKind   string          // subscribed only: event kind declared by the plugin
+	Binding     map[string]any  // subscribed only: per-event-kind binding config, validated against the manifest's binding_schema
 }
 
 // FeedbackConfig controls the native human-in-the-loop feedback channel.
@@ -398,6 +409,7 @@ type GrantedTool struct {
 	Timeout    time.Duration  `json:"timeout"` // zero means no timeout; serializes as nanoseconds
 	OnTimeout  OnTimeout      `json:"on_timeout"`
 	Params     map[string]any `json:"params,omitempty"` // policy-level parameter scoping (ADR-017)
+	Source     string         `json:"source,omitempty"` // "mcp:<server>", "plugin:<instance>@<generation>", or empty for synthetic tools
 }
 
 // MCPServer represents a registered MCP tool server.

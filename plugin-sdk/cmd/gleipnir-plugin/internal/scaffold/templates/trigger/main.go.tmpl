@@ -1,20 +1,24 @@
 package main
 
 import (
-	"flag"
-	"os"
-
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
+	"github.com/felag-engineering/gleipnir/plugin-sdk/trigger"
 )
 
 func main() {
-	emitManifest := flag.Bool("emit-manifest", false, "write manifest JSON to stdout and exit")
-	flag.Parse()
-
-	if *emitManifest {
-		serve.EmitManifest()
-		os.Exit(0)
-	}
-
-	serve.Serve()
+	// serve.Serve wires up the go-plugin transport, registers TriggerService, and
+	// blocks until the host disconnects or a signal is received.
+	//
+	// Passing --emit-manifest as the first argument causes it to write the
+	// manifest JSON to stdout and exit (used by gleipnir-plugin gen-manifest).
+	//
+	// WithTriggerHandler is the ergonomic seam: implement trigger.Service without
+	// touching proto types directly.
+	serve.Serve(
+		serve.WithManifest(pluginManifest),
+		serve.WithTriggerHandler(func(host hostv1.HostServiceClient) trigger.Service {
+			return NewTriggerService(host)
+		}),
+	)
 }

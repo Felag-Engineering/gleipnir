@@ -356,6 +356,150 @@ CREATE TABLE user_preferences (
 );
 
 -- ---------------------------------------------------------------------------
+-- Plugin system (ADR-041, ADR-045, ADR-046)
+--
+-- See schemas/sql_schemas.sql for the canonical definition and rationale.
+-- Three tables: plugins (one per binary+manifest, TOFU-pinned pubkey),
+-- plugin_instances (configured deployments), plugin_audit_events (operator-
+-- only audit trail; NEVER surfaced to the LLM — see ADR-046). Existing
+-- deployments get these via the AddPluginTables Go migration.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugins (
+    id                 TEXT    PRIMARY KEY,
+    name               TEXT    NOT NULL UNIQUE,
+    plugin_version     TEXT    NOT NULL,
+    manifest_snapshot  TEXT    NOT NULL,
+    trusted_pubkey     TEXT    NOT NULL,
+    status             TEXT    NOT NULL CHECK(status IN ('pending_review','active','removed')),
+    binary_path        TEXT,                   -- absolute path to extracted plugin executable (#386); NULL on legacy rows
+    version            INTEGER NOT NULL DEFAULT 0,
+    created_at         TEXT    NOT NULL,
+    updated_at         TEXT    NOT NULL
+);
+
+CREATE INDEX idx_plugins_status ON plugins(status);
+
+CREATE TABLE plugin_instances (
+    id                       TEXT    PRIMARY KEY,
+    plugin_id                TEXT    NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+    instance_name            TEXT    NOT NULL,
+    config_json              TEXT    NOT NULL DEFAULT '{}',
+    subscription_scope_json  TEXT    NOT NULL DEFAULT '{}',
+    credentials_encrypted    TEXT,
+    credentials_expires_at   TEXT,
+    handshake_versions       TEXT    NOT NULL DEFAULT '{}',
+    health_state             TEXT    NOT NULL DEFAULT 'pending_key_approval'
+                                     CHECK(health_state IN (
+                                         'healthy',
+                                         'signature_invalid',
+                                         'pending_key_approval',
+                                         'pending_manifest_approval',
+                                         'pending_config_migration',
+                                         'verification_error',
+                                         'unsigned_permissive',
+                                         'unhealthy',
+                                         'crashed',
+                                         'circuit_broken',
+                                         'pending_reauthorize'
+                                     )),
+    health_detail            TEXT,
+    last_oauth_callback_url  TEXT,
+    version                  INTEGER NOT NULL DEFAULT 0,
+    created_at               TEXT    NOT NULL,
+    updated_at               TEXT    NOT NULL,
+    UNIQUE (plugin_id, instance_name)
+);
+
+CREATE INDEX idx_plugin_instances_plugin_id    ON plugin_instances(plugin_id);
+CREATE INDEX idx_plugin_instances_health_state ON plugin_instances(health_state);
+
+CREATE TABLE plugin_audit_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    plugin_instance_id  TEXT    REFERENCES plugin_instances(id) ON DELETE SET NULL,
+    event_type          TEXT    NOT NULL,
+    severity            TEXT    NOT NULL CHECK(severity IN ('info','warning','high','critical')),
+    actor_user_id       TEXT    REFERENCES users(id) ON DELETE SET NULL,
+    payload_json        TEXT    NOT NULL,
+    created_at          TEXT    NOT NULL
+);
+
+CREATE INDEX idx_pae_instance_created ON plugin_audit_events(plugin_instance_id, created_at);
+CREATE INDEX idx_pae_event_created    ON plugin_audit_events(event_type, created_at);
+
+-- ---------------------------------------------------------------------------
+-- Plugin pending manifests
+--
+-- Holds the single pending candidate manifest per plugin while it awaits admin
+-- approval. PRIMARY KEY(plugin_id) enforces at-most-one pending candidate;
+-- ON DELETE CASCADE clears the row automatically when a plugin is uninstalled.
+-- Candidate bytes are stored raw (NOT base64) — they only lived in the audit
+-- event payload as base64 for JSON embedding; the table is the new source of
+-- truth. Accepted via POST /api/v1/admin/plugins/{id}/accept-manifest, after
+-- which the row is deleted best-effort (leftover rows self-correct on next
+-- material change via the ON CONFLICT DO UPDATE upsert).
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugin_pending_manifests (
+    plugin_id          TEXT PRIMARY KEY REFERENCES plugins(id) ON DELETE CASCADE,
+    candidate_manifest TEXT NOT NULL,   -- raw candidate manifest bytes (NOT base64)
+    old_version        TEXT NOT NULL,
+    new_version        TEXT NOT NULL,
+    created_at         TEXT NOT NULL,   -- ISO 8601 UTC
+    updated_at         TEXT NOT NULL    -- ISO 8601 UTC
+);
+
+-- ---------------------------------------------------------------------------
+-- Plugin audiences and pending requests
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugin_audiences (
+    id                      TEXT    PRIMARY KEY,                             -- ULID (ADR-013)
+    name                    TEXT    NOT NULL UNIQUE,
+    created_by_user_id      TEXT    REFERENCES users(id) ON DELETE SET NULL,
+    version                 INTEGER NOT NULL DEFAULT 0,                      -- ADR-038 CAS counter
+    created_at              TEXT    NOT NULL,                                -- ISO 8601 UTC
+    updated_at              TEXT    NOT NULL,                                -- ISO 8601 UTC
+    disable_in_app_fallback INTEGER NOT NULL DEFAULT 0                       -- §6.2 opt-out toggle
+);
+
+CREATE TABLE audience_entries (
+    id                 TEXT    PRIMARY KEY,                                  -- ULID
+    audience_id        TEXT    NOT NULL REFERENCES plugin_audiences(id) ON DELETE CASCADE,
+    plugin_instance_id TEXT    NOT NULL REFERENCES plugin_instances(id) ON DELETE RESTRICT,
+    position           INTEGER NOT NULL,
+    notify             INTEGER NOT NULL DEFAULT 0,
+    request            INTEGER NOT NULL DEFAULT 0,
+    config_json        TEXT    NOT NULL DEFAULT '{}',
+    UNIQUE (audience_id, position)
+);
+CREATE INDEX idx_audience_entries_audience  ON audience_entries(audience_id);
+CREATE INDEX idx_audience_entries_instance  ON audience_entries(plugin_instance_id);
+
+CREATE TABLE plugin_pending_requests (
+    id                  TEXT    PRIMARY KEY,                                 -- ULID; spec's request_id
+    plugin_instance_id  TEXT    NOT NULL REFERENCES plugin_instances(id) ON DELETE RESTRICT,
+    run_id              TEXT    NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    audience_entry_id   TEXT    REFERENCES audience_entries(id) ON DELETE SET NULL,
+    tool_name           TEXT    NOT NULL DEFAULT '',
+    status              TEXT    NOT NULL CHECK(status IN ('pending','resolved','timed_out')),
+    response            TEXT,
+    expires_at          TEXT,
+    resolved_at         TEXT,
+    created_at          TEXT    NOT NULL
+);
+CREATE INDEX idx_plugin_pending_requests_run_status      ON plugin_pending_requests(run_id, status);
+CREATE INDEX idx_plugin_pending_requests_status_expires  ON plugin_pending_requests(status, expires_at);
+
+CREATE TABLE plugin_oauth_nonces (
+    nonce       TEXT PRIMARY KEY,           -- base64url-encoded 32B random
+    instance_id TEXT NOT NULL,              -- not FK-enforced: instance may have been uninstalled mid-flow
+    expires_at  TEXT NOT NULL,              -- RFC3339Nano UTC; pruned by janitor
+    created_at  TEXT NOT NULL
+) STRICT;
+CREATE INDEX plugin_oauth_nonces_expires_at_idx ON plugin_oauth_nonces (expires_at);
+
+-- ---------------------------------------------------------------------------
 -- Seed migration version
 -- ---------------------------------------------------------------------------
 

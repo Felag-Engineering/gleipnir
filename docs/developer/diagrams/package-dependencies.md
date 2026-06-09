@@ -17,6 +17,18 @@ graph TD
         RUN["<b>run</b><br/>RunLauncher, RunManager,<br/>concurrency"]
     end
 
+    subgraph plugins["Plugin layer"]
+        direction LR
+        PLUGIN["<b>plugin</b><br/>Loader, watcher,<br/>installer"]
+        HOSTSVC["<b>hostsvc</b><br/>Host RPCs<br/>(8 Tier-1 + 2 Tier-2)"]
+        DISPATCH["<b>dispatch</b><br/>gRPC tool-call<br/>dispatcher"]
+        PROCESS["<b>process</b><br/>Subprocess lifecycle"]
+        OAUTH["<b>oauth</b><br/>OAuth2 orchestration"]
+        PTRIGGER["<b>plugin/trigger</b><br/>Supervisor + dispatcher"]
+        PTOOLS["<b>plugin/tools</b><br/>Tool registrar"]
+        PSTATE["<b>plugin/state</b><br/>Health state machine"]
+    end
+
     subgraph orchestration["Agent layer"]
         direction LR
         AGENT["<b>agent</b><br/>BoundAgent, AuditWriter,<br/>approval + feedback handlers"]
@@ -45,12 +57,14 @@ graph TD
         EVENT["<b>infra/event</b><br/>Pub/sub"]
         METRICS["<b>infra/metrics</b><br/>Prometheus registry"]
         HTTPUTIL["<b>httputil</b>"]
+        TOOLREG["<b>toolregistry</b><br/>Cross-source uniqueness"]
     end
 
     %% Primary relationships (top to bottom)
     API --> AUTH
     API --> TRIGGER
     API --> RUN
+    API --> PLUGIN
 
     TRIGGER --> RUN
     RUN --> AGENT
@@ -58,6 +72,15 @@ graph TD
     AGENT --> LLM
     AGENT --> MCP
     AGENT --> POLICY
+    AGENT --> DISPATCH
 
     MCP -.->|"must never import"| AGENT
+
+    PLUGIN --> PROCESS
+    PLUGIN --> HOSTSVC
+    HOSTSVC --> DISPATCH
+    DISPATCH --> PROCESS
+    PTOOLS --> TOOLREG
+    MCP --> TOOLREG
+    PTRIGGER --> RUN
 ```

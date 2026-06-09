@@ -819,6 +819,232 @@ func TestGetPublicConfig_DefaultModelDisabled(t *testing.T) {
 	}
 }
 
+// --- OnPublicURLChanged hook tests ---
+
+func TestUpdateSettings_OnPublicURLChanged_InvokedWhenChanged(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+	q.settings["public_url"] = db.SystemSetting{Key: "public_url", Value: "https://old.example.com"}
+
+	var gotOld, gotNew string
+	h.OnPublicURLChanged = func(_ context.Context, oldURL, newURL string) {
+		gotOld = oldURL
+		gotNew = newURL
+	}
+
+	body := `{"public_url": "https://new.example.com"}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if gotOld != "https://old.example.com" {
+		t.Errorf("oldURL = %q, want https://old.example.com", gotOld)
+	}
+	if gotNew != "https://new.example.com" {
+		t.Errorf("newURL = %q, want https://new.example.com", gotNew)
+	}
+}
+
+func TestUpdateSettings_OnPublicURLChanged_NotInvokedWhenUnchanged(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+	q.settings["public_url"] = db.SystemSetting{Key: "public_url", Value: "https://gleipnir.example.com"}
+
+	invoked := false
+	h.OnPublicURLChanged = func(_ context.Context, _, _ string) {
+		invoked = true
+	}
+
+	// Same value — hook must not fire.
+	body := `{"public_url": "https://gleipnir.example.com"}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if invoked {
+		t.Error("OnPublicURLChanged must not be invoked when the URL has not changed")
+	}
+}
+
+func TestUpdateSettings_OnPublicURLChanged_NotInvokedWhenAbsent(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q)
+
+	invoked := false
+	h.OnPublicURLChanged = func(_ context.Context, _, _ string) {
+		invoked = true
+	}
+
+	// Request does not include public_url — hook must not fire.
+	body := `{"some_other_setting": "value"}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req)
+
+	if invoked {
+		t.Error("OnPublicURLChanged must not be invoked when public_url is not in the request")
+	}
+}
+
+func TestUpdateSettings_OnPublicURLChanged_NilSafe(t *testing.T) {
+	q := newMockQuerier()
+	h := newTestHandler(q) // hook is nil by default
+
+	// Must not panic when hook is nil.
+	body := `{"public_url": "https://gleipnir.example.com"}`
+	req := httptest.NewRequest(http.MethodPut, "/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.UpdateSettings(rec, req) // must not panic
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+// --- SetDefaultModel tests ---
+
+func TestSetDefaultModel(t *testing.T) {
+	tests := []struct {
+		name       string
+		setupQ     func(q *mockQuerier)
+		body       string
+		wantStatus int
+		wantErr    string
+		checkQ     func(t *testing.T, q *mockQuerier)
+	}{
+		{
+			name: "happy_path_known_provider",
+			setupQ: func(q *mockQuerier) {
+				// Anthropic is a known provider — needs a key row.
+				q.settings["anthropic_api_key"] = db.SystemSetting{Key: "anthropic_api_key", Value: "encrypted-key"}
+				// And the model must be enabled.
+				q.models["anthropic:claude-sonnet-4-6"] = db.ModelSetting{
+					Provider: "anthropic", ModelName: "claude-sonnet-4-6", Enabled: 1,
+				}
+			},
+			body:       `{"provider":"anthropic","name":"claude-sonnet-4-6"}`,
+			wantStatus: http.StatusOK,
+			checkQ: func(t *testing.T, q *mockQuerier) {
+				t.Helper()
+				row, ok := q.settings["default_model"]
+				if !ok {
+					t.Fatal("default_model not written to settings")
+				}
+				if row.Value != "anthropic:claude-sonnet-4-6" {
+					t.Errorf("default_model value = %q, want anthropic:claude-sonnet-4-6", row.Value)
+				}
+			},
+		},
+		{
+			name: "happy_path_openai_compat",
+			setupQ: func(q *mockQuerier) {
+				// "my-compat" is NOT a known provider — no API key check.
+				// Only need an enabled model entry.
+				q.models["my-compat:some-model"] = db.ModelSetting{
+					Provider: "my-compat", ModelName: "some-model", Enabled: 1,
+				}
+			},
+			body:       `{"provider":"my-compat","name":"some-model"}`,
+			wantStatus: http.StatusOK,
+			checkQ: func(t *testing.T, q *mockQuerier) {
+				t.Helper()
+				row, ok := q.settings["default_model"]
+				if !ok {
+					t.Fatal("default_model not written to settings")
+				}
+				if row.Value != "my-compat:some-model" {
+					t.Errorf("default_model value = %q, want my-compat:some-model", row.Value)
+				}
+			},
+		},
+		{
+			name: "missing_provider_key_known_provider",
+			setupQ: func(q *mockQuerier) {
+				// Anthropic is known, but no API key row seeded.
+				q.models["anthropic:claude-sonnet-4-6"] = db.ModelSetting{
+					Provider: "anthropic", ModelName: "claude-sonnet-4-6", Enabled: 1,
+				}
+			},
+			body:       `{"provider":"anthropic","name":"claude-sonnet-4-6"}`,
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "provider has no API key configured",
+		},
+		{
+			name: "unknown_model_known_provider",
+			setupQ: func(q *mockQuerier) {
+				q.settings["anthropic_api_key"] = db.SystemSetting{Key: "anthropic_api_key", Value: "encrypted"}
+				// No enabled model entry for claude-sonnet-4-6.
+			},
+			body:       `{"provider":"anthropic","name":"claude-sonnet-4-6"}`,
+			wantStatus: http.StatusUnprocessableEntity,
+			wantErr:    "model is not enabled for this provider",
+		},
+		{
+			name: "unknown_model_openai_compat",
+			setupQ: func(q *mockQuerier) {
+				// Unknown provider AND no enabled model row.
+			},
+			body:       `{"provider":"my-compat","name":"nonexistent-model"}`,
+			wantStatus: http.StatusUnprocessableEntity,
+			wantErr:    "model is not enabled for this provider",
+		},
+		{
+			name:       "empty_provider",
+			setupQ:     func(_ *mockQuerier) {},
+			body:       `{"provider":"","name":"claude-sonnet-4-6"}`,
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "provider is required",
+		},
+		{
+			name:       "empty_name",
+			setupQ:     func(_ *mockQuerier) {},
+			body:       `{"provider":"anthropic","name":""}`,
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "name is required",
+		},
+		{
+			name:       "invalid_json",
+			setupQ:     func(_ *mockQuerier) {},
+			body:       `not json`,
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "invalid JSON body",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := newMockQuerier()
+			tt.setupQ(q)
+			h := newTestHandler(q)
+
+			req := httptest.NewRequest(http.MethodPut, "/admin/settings/default-model", strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+			h.SetDefaultModel(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+
+			if tt.wantErr != "" {
+				errMsg := parseErrorResponse(t, rec)
+				if !strings.Contains(errMsg, tt.wantErr) {
+					t.Errorf("error = %q, want to contain %q", errMsg, tt.wantErr)
+				}
+			}
+
+			if tt.checkQ != nil {
+				tt.checkQ(t, q)
+			}
+		})
+	}
+}
+
 func TestFormatUptime(t *testing.T) {
 	tests := []struct {
 		name     string

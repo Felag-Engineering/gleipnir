@@ -17,6 +17,16 @@ type ApprovalRequest struct {
 	CreatedAt        string  `json:"created_at"`
 }
 
+type AudienceEntry struct {
+	ID               string `json:"id"`
+	AudienceID       string `json:"audience_id"`
+	PluginInstanceID string `json:"plugin_instance_id"`
+	Position         int64  `json:"position"`
+	Notify           int64  `json:"notify"`
+	Request          int64  `json:"request"`
+	ConfigJson       string `json:"config_json"`
+}
+
 type FeedbackRequest struct {
 	ID            string  `json:"id"`
 	RunID         string  `json:"run_id"`
@@ -64,6 +74,85 @@ type OpenaiCompatProvider struct {
 	ApiKeyEncrypted string `json:"api_key_encrypted"`
 	CreatedAt       string `json:"created_at"`
 	UpdatedAt       string `json:"updated_at"`
+}
+
+type Plugin struct {
+	ID               string  `json:"id"`
+	Name             string  `json:"name"`
+	PluginVersion    string  `json:"plugin_version"`
+	ManifestSnapshot string  `json:"manifest_snapshot"`
+	TrustedPubkey    string  `json:"trusted_pubkey"`
+	Status           string  `json:"status"`
+	BinaryPath       *string `json:"binary_path"`
+	Version          int64   `json:"version"`
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
+}
+
+type PluginAudience struct {
+	ID                   string  `json:"id"`
+	Name                 string  `json:"name"`
+	CreatedByUserID      *string `json:"created_by_user_id"`
+	Version              int64   `json:"version"`
+	CreatedAt            string  `json:"created_at"`
+	UpdatedAt            string  `json:"updated_at"`
+	DisableInAppFallback int64   `json:"disable_in_app_fallback"`
+}
+
+type PluginAuditEvent struct {
+	ID               int64   `json:"id"`
+	PluginInstanceID *string `json:"plugin_instance_id"`
+	EventType        string  `json:"event_type"`
+	Severity         string  `json:"severity"`
+	ActorUserID      *string `json:"actor_user_id"`
+	PayloadJson      string  `json:"payload_json"`
+	CreatedAt        string  `json:"created_at"`
+}
+
+type PluginInstance struct {
+	ID                    string  `json:"id"`
+	PluginID              string  `json:"plugin_id"`
+	InstanceName          string  `json:"instance_name"`
+	ConfigJson            string  `json:"config_json"`
+	SubscriptionScopeJson string  `json:"subscription_scope_json"`
+	CredentialsEncrypted  *string `json:"credentials_encrypted"`
+	CredentialsExpiresAt  *string `json:"credentials_expires_at"`
+	HandshakeVersions     string  `json:"handshake_versions"`
+	HealthState           string  `json:"health_state"`
+	HealthDetail          *string `json:"health_detail"`
+	LastOauthCallbackUrl  *string `json:"last_oauth_callback_url"`
+	Version               int64   `json:"version"`
+	CreatedAt             string  `json:"created_at"`
+	UpdatedAt             string  `json:"updated_at"`
+}
+
+type PluginOauthNonce struct {
+	Nonce      string `json:"nonce"`
+	InstanceID string `json:"instance_id"`
+	ExpiresAt  string `json:"expires_at"`
+	CreatedAt  string `json:"created_at"`
+}
+
+type PluginPendingManifest struct {
+	PluginID          string `json:"plugin_id"`
+	CandidateManifest string `json:"candidate_manifest"`
+	OldVersion        string `json:"old_version"`
+	NewVersion        string `json:"new_version"`
+	CreatedAt         string `json:"created_at"`
+	UpdatedAt         string `json:"updated_at"`
+}
+
+type PluginPendingRequest struct {
+	ID               string  `json:"id"`
+	PluginInstanceID string  `json:"plugin_instance_id"`
+	RunID            string  `json:"run_id"`
+	AudienceEntryID  *string `json:"audience_entry_id"`
+	ToolName         string  `json:"tool_name"`
+	Status           string  `json:"status"`
+	Response         *string `json:"response"`
+	ExpiresAt        *string `json:"expires_at"`
+	ResolvedAt       *string `json:"resolved_at"`
+	CreatedAt        string  `json:"created_at"`
 }
 
 type Policy struct {

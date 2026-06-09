@@ -3,12 +3,14 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { http, HttpResponse } from 'msw'
 
 import { AgentEditorPage } from './AgentEditorPage'
-import { yamlToFormState, formStateToYaml } from '@/components/AgentEditor/agentEditorUtils'
+import { yamlToFormState, formStateToYaml, defaultFormState } from '@/components/AgentEditor/agentEditorUtils'
 import { ApiError } from '@/api/fetch'
 import { queryKeys } from '@/hooks/queryKeys'
 import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
+import { server } from '@/test/server'
 
 // --- Mocks ---
 
@@ -113,7 +115,14 @@ function renderEditor(path = '/agents/new', queryClient = makeQueryClient()) {
 // useTriggerPolicy, usePausePolicy, useResumePolicy, useWebhookSecret, and
 // useRotateWebhookSecret mocks must remain even if individual tests don't
 // exercise those paths directly.
+// AudienceSection also always mounts and calls useAudiences — the MSW handler
+// added here returns an empty list so existing tests are unaffected.
 function mockHooksDefault() {
+  server.use(
+    http.get('/api/v1/admin/audiences', () =>
+      HttpResponse.json({ data: [] }),
+    ),
+  )
   vi.mocked(usePolicy).mockReturnValue({
     data: undefined,
     status: 'pending',
@@ -265,10 +274,48 @@ describe('AgentEditorUtils — YAML ↔ form round-trip (pure functions)', () =>
     const pollParsed = yamlToFormState('name: x\ntrigger:\n  type: poll\n  interval: 5m\n  checks:\n    - tool: s.t\n      path: "$.status"\n      equals: ok\ncapabilities:\n  tools: []\nagent:\n  task: t\n')
     expect(pollParsed?.trigger.type).toBe('poll')
   })
+
+  it('round-trips audience: ops-team — audience field is preserved', () => {
+    const yaml = `name: p
+audience: ops-team
+trigger:
+  type: webhook
+capabilities:
+  tools: []
+agent:
+  task: do things
+`
+    const parsed = yamlToFormState(yaml)!
+    expect(parsed.audience).toEqual({ name: 'ops-team' })
+    const output = formStateToYaml(parsed)
+    expect(output).toContain('audience: ops-team')
+    const roundTripped = yamlToFormState(output)!
+    expect(roundTripped.audience).toEqual({ name: 'ops-team' })
+  })
+
+  it('round-trips YAML without audience — audience defaults to { name: "" } and is not emitted', () => {
+    const yaml = `name: p
+trigger:
+  type: webhook
+capabilities:
+  tools: []
+agent:
+  task: do things
+`
+    const parsed = yamlToFormState(yaml)!
+    expect(parsed.audience).toEqual({ name: '' })
+    const output = formStateToYaml(parsed)
+    expect(output).not.toContain('audience:')
+  })
 })
 
 describe('AgentEditorPage — dirty state and save', () => {
   it('editing the name field sets isDirty; saving clears it', async () => {
+    server.use(
+      http.get('/api/v1/admin/audiences', () =>
+        HttpResponse.json({ data: [] }),
+      ),
+    )
     // Use an existing-policy route so save does not navigate away.
     // VALID_YAML passes all client-side validation so the save button works.
     vi.mocked(usePolicy).mockReturnValue({
@@ -859,5 +906,132 @@ describe('AgentEditorPage — save-success disabled-tool banner', () => {
     })
 
     expect(screen.queryByText(/Policy saved\. Note:/)).not.toBeInTheDocument()
+  })
+})
+
+describe('AgentEditorPage — audience draft preservation', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    server.use(
+      http.get('/api/v1/admin/audiences', () =>
+        HttpResponse.json({ data: [] }),
+      ),
+    )
+  })
+
+  it('writes the merged FormState to localStorage on every edit', async () => {
+    mockHooksDefault()
+    renderEditor('/agents/new')
+
+    // Type in the name field — first textbox belongs to PolicyIdentitySection.
+    const nameInput = screen.getAllByRole('textbox')[0]
+    await userEvent.type(nameInput, 'draft-agent')
+
+    await waitFor(() => {
+      const raw = localStorage.getItem('policyDraft:new')
+      expect(raw).not.toBeNull()
+      const saved = JSON.parse(raw!)
+      // The persisted value is the merged FormState, not a raw partial patch.
+      expect(saved.identity.name).toBe('draft-agent')
+      expect(saved.audience).toBeDefined()
+    })
+  })
+
+  it('restores draft from localStorage on mount and does not clobber it with defaultFormState', async () => {
+    // Pre-seed localStorage with a saved draft.
+    const draft = defaultFormState()
+    draft.identity.name = 'restored-draft-name'
+    localStorage.setItem('policyDraft:new', JSON.stringify(draft))
+
+    mockHooksDefault()
+    renderEditor('/agents/new')
+
+    // The name input should show the draft value, not the empty default.
+    await waitFor(() => {
+      const nameInput = screen.getAllByRole('textbox')[0] as HTMLInputElement
+      expect(nameInput.value).toBe('restored-draft-name')
+    })
+  })
+
+  it('clears localStorage after a successful save', async () => {
+    // Seed a valid draft before mounting so the lazy useState initializer
+    // picks it up and Ctrl+S can pass client-side validation without extra edits.
+    const validDraft = yamlToFormState(VALID_YAML) ?? defaultFormState()
+    localStorage.setItem('policyDraft:new', JSON.stringify(validDraft))
+
+    vi.mocked(usePolicy).mockReturnValue({
+      data: undefined,
+      status: 'pending',
+    } as ReturnType<typeof usePolicy>)
+
+    const mutateAsync = vi.fn().mockResolvedValue({
+      id: 'new-saved-id',
+      name: 'my-agent',
+      yaml: VALID_YAML,
+      trigger_type: 'webhook',
+      folder: '',
+      created_at: '',
+      updated_at: '',
+      warnings: [],
+    })
+
+    vi.mocked(useSavePolicy).mockReturnValue({
+      mutateAsync,
+      isPending: false,
+    } as unknown as ReturnType<typeof useSavePolicy>)
+
+    vi.mocked(useDeletePolicy).mockReturnValue({
+      mutateAsync: vi.fn().mockResolvedValue(undefined),
+      isPending: false,
+    } as unknown as ReturnType<typeof useDeletePolicy>)
+
+    vi.mocked(useTriggerPolicy).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      error: null,
+    } as unknown as ReturnType<typeof useTriggerPolicy>)
+
+    vi.mocked(usePausePolicy).mockReturnValue({
+      mutateAsync: vi.fn().mockResolvedValue(undefined),
+      isPending: false,
+    } as unknown as ReturnType<typeof usePausePolicy>)
+
+    vi.mocked(useResumePolicy).mockReturnValue({
+      mutateAsync: vi.fn().mockResolvedValue(undefined),
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumePolicy>)
+
+    vi.mocked(useMcpServers).mockReturnValue({
+      data: [],
+      isLoading: false,
+    } as unknown as ReturnType<typeof useMcpServers>)
+
+    vi.mocked(usePolicies).mockReturnValue({
+      data: [],
+      status: 'success',
+    } as unknown as ReturnType<typeof usePolicies>)
+
+    vi.mocked(useWebhookSecret).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+    } as unknown as ReturnType<typeof useWebhookSecret>)
+
+    vi.mocked(useRotateWebhookSecret).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useRotateWebhookSecret>)
+
+    // Single mount — the draft seeded above is read by the lazy useState initializer.
+    renderEditor('/agents/new')
+
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+
+    await waitFor(() => {
+      expect(mutateAsync).toHaveBeenCalled()
+    })
+
+    await waitFor(() => {
+      expect(localStorage.getItem('policyDraft:new')).toBeNull()
+    })
   })
 })

@@ -1,3 +1,6 @@
+export { AudienceSection } from './AudienceSection';
+export type { AudienceSectionProps } from './AudienceSection';
+
 export { PolicyIdentitySection } from './PolicyIdentitySection';
 export type { PolicyIdentitySectionProps } from './PolicyIdentitySection';
 
@@ -20,6 +23,7 @@ export { ModelSection } from './ModelSection';
 export type { ModelSectionProps } from './ModelSection';
 
 export type {
+  AudienceFormState,
   IdentityFormState,
   TriggerType,
   WebhookTriggerState,

@@ -55,10 +55,647 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-038 | Atomic run-state transitions with optimistic locking   | 🟢 Decided | v1.0 | runs.version column, RunStateMachine.Transition (tx), runstate.ErrTransitionConflict |
 | ADR-039 | Per-server encrypted auth headers for authenticated MCP providers | 🟢 Decided | v1.0 | mcp_servers table, internal/mcp, internal/admin, gleipnirctl rotate-key |
 | ADR-040 | Arcade gateway pre-authorization (toolkit-level OAuth pre-warm) | 🟢 Decided | v1.0 | internal/arcade (new), internal/http/api/arcade_handler, frontend ServerDetailModal |
-| ADR-041 | Plugin system architecture (umbrella) | 🟢 Decided | v2.0 | internal/plugin (new), internal/execution/agent/feedback.go, plugin-sdk (new module), admin UI, ADR-004 (parallel to MCP) |
+| ADR-041 | Plugin system architecture (umbrella) | 🟢 Decided | v2.0 | internal/plugin (new), internal/execution/agent/feedback.go, plugin-sdk (new module), admin UI, ADR-004 (parallel to MCP) — cross-source tool uniqueness arbiter lives in `internal/toolregistry` per spec §3.3 / issue #194 |
 | ADR-042 | Plugin service & HostAPI versioning policy | 🟢 Decided | v1.0 (plugins) | docs/developer/plugin-system-spec.md §10, buf.yaml, .github/workflows/ci.yml |
 | ADR-043 | Plugin signing tooling — bundled Minisign in plugin-sdk/signing, fresh-written | 🟢 Decided | v2.0 (plugins) | plugin-sdk/signing (new), gleipnir-plugin keygen/sign/package subcommands, spec §5.2 §14.5 |
+| ADR-044 | Channel routing model — Notify/Request semantics, audience as shared resource | 🟢 Decided | v2.0 (plugins) | internal/plugin/channel (new), internal/execution/agent/feedback.go, admin audiences UI, ADR-031 (partial supersession) |
+| ADR-045 | Plugin signing & TOFU trust — Minisign tamper-evidence + first-install pubkey capture | 🟢 Decided | v2.0 (plugins) | internal/plugin (loader), plugin_instances.trusted_pubkey, GLEIPNIR_ALLOW_UNSIGNED_PLUGINS, spec §5 |
+| ADR-046 | Audit-table split — run_steps (LLM-visible) vs plugin_audit_events (operator-only) | 🟢 Decided | v2.0 (plugins) | plugin_audit_events table, WriteAuditStep RPC authorization, spec §12.3 |
+| ADR-047 | Plugin observability surface — metrics prefix, cardinality cap, Log RPC instead of stdout, OTEL deferred | 🟢 Decided | v2.0 (plugins) | internal/plugin/hostsvc/metrics.go, internal/plugin/hostsvc/handlers.go (Log/EmitMetric), internal/plugin/process/logpipe.go, internal/plugin/state/metrics.go, spec §12 |
+| ADR-048 | Subscribed trigger type — internal-only name, flat picker, no JSONPath for plugin bindings, single-trigger-per-policy v1 | 🟢 Decided | v2.0 (plugins) | internal/model (TriggerType), internal/policy (parser/validator), internal/trigger (new subscribed handler), policy editor trigger picker, spec §7 |
+| ADR-049 | Redact-on-read for plugin instance config secret fields (x-gleipnir-secret) | 🟢 Decided | plugins | internal/plugin/configvalidate, internal/admin/plugin_handler, plugin-sdk/manifest, plugins/slack |
+| ADR-050 | Ergonomic Service seam coexists with raw gRPC seam in plugin-sdk | 🟢 Decided | plugins | plugin-sdk/tool, plugin-sdk/channel, plugin-sdk/trigger, plugin-sdk/pluginerr (new packages); plugin-sdk/serve (New*Server constructors, WithXHandler options); plugins/ntfy (migrated); plugins/slack (stays raw) |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
+| #199    | call_id propagation through gRPC metadata (spec §8.5)  | 🟢 Decided | v2.0 (plugins) | plugin-sdk/serve/callcontext.go, internal/plugin/hostsvc (new package), no new ADR — implements existing spec §8.5 contract |
+| #224    | OAuth2 authcode + clientcred host-side orchestration (spec §9.1/§9.2) | 🟢 Decided | v2.0 (plugins) | internal/plugin/oauth (new package, x/oauth2 + clientcredentials), internal/admin/plugin_oauth_handler.go, plugin_instances.credentials_encrypted, HMAC state envelope with HKDF subkey off GLEIPNIR_ENCRYPTION_KEY; no new ADR — implements existing spec §9 contract. Encryption helpers reused from internal/admin via function injection to avoid an import cycle; planned to move to internal/infra/crypto when #141 lands. |
+| #226    | Non-OAuth credential strategies: static_api_key, header_set, basic_auth, none (spec §9.1) | 🟢 Decided | v2.0 (plugins) | internal/plugin/oauth.StoredCredentials widened to discriminated union; internal/admin/plugin_credentials_handler.go (write-only API, mirrors ADR-039/034); internal/infra/headervalidate (extracted from internal/mcp to avoid import cycle); plugin-sdk/credentials (typed Apply helper for plugins); no new ADR — implements settled spec §9.1 contract. |
+
+---
+
+## ADR-049: Redact-on-read for plugin instance config secret fields
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+Per-instance plugin config (`config_json`, validated against the manifest's `ConfigSchema`) is encrypted at rest, but the admin GET endpoint (`GET /api/v1/admin/plugins/{id}/instances/{iid}`) previously returned the decrypted JSON verbatim. Any admin with access to that endpoint could read secrets stored in config fields.
+
+This generalizes the write-only patterns established by ADR-034 (webhook secrets) and ADR-039 (MCP server auth headers) to the per-instance plugin config blob. The immediate trigger is the Slack plugin's `app_level_token` (xapp- prefix) added in PR #367, which would otherwise be readable on GET.
+
+### Decision
+
+#### 1. Annotation: `x-gleipnir-secret: true`
+
+Properties holding secrets are annotated with the JSON Schema extension key `x-gleipnir-secret: true`. This was chosen over `format: gleipnir-secret` for three reasons:
+- JSON Schema `format` semantics imply validation; secret is metadata, not a validator.
+- `x-` extension keys are the canonical JSON Schema extension mechanism.
+- It composes cleanly with type-specific `format` values (e.g. `"uri"`).
+
+#### 2. SDK marker: `SecretString` typed string
+
+Go plugin authors declare secrets by typing config struct fields as `manifest.SecretString`. The `JSONSchema()` method returns `{type: string, extras: {"x-gleipnir-secret": true}}`, following the same pattern as `RegexField`, `ContainsField`, and `GlobField` in `plugin-sdk/manifest/filters.go`. Hand-authored YAML manifests add `x-gleipnir-secret: true` directly.
+
+#### 3. Redaction is read-time only
+
+Storage shape is unchanged; the `config_json` column continues to hold the raw plaintext (which is already encrypted at rest by the column-level protections). Redaction happens in the Go handler before serializing the HTTP response. The redaction sentinel is the string `"***"`.
+
+#### 4. Per-field write-only PUT endpoint
+
+A new `PUT /api/v1/admin/plugins/{id}/instances/{iid}/config/{property}` endpoint mirrors the ADR-039 `PUT /mcp/servers/:id/headers/:name` pattern: one property at a time, CAS-guarded by `expected_version`. This lets the UI update a single secret field without transmitting all config properties in the request body.
+
+#### 5. Bulk PUT rejects the redaction sentinel
+
+The existing `PUT /api/v1/admin/plugins/{id}/instances/{iid}/config` continues to work but rejects requests that include `"***"` as the value for any secret field. This prevents the round-trip clobber: UI reads `"***"`, user hits Save, real secret is overwritten with the sentinel.
+
+#### 6. GET returns 500 on manifest-parse failure (fail-closed)
+
+If the manifest cannot be parsed when serving a GET, the handler returns 500 ("corrupt manifest snapshot") rather than falling through to an unredacted response. This matches the ADR-001 posture: fail closed, never silently omit a security control.
+
+#### 7. Fallback synthesized responses also redact
+
+Both write handlers (`PutInstanceConfig` and `PutInstanceConfigProperty`) synthesize a fallback response when the post-write re-fetch fails. The fallback path applies the same redaction so neither code path can emit raw secret JSON.
+
+### Deferred
+
+- Per-user / per-policy config scoping (v2 `user_credentials` mode, spec §17).
+- Migrating `StoredCredentials.Token` to this mechanism (it is already write-only via the OAuth callback).
+- Nested object secrets (v1 redacts only top-level `properties`).
+- Frontend UI surface (tracked as follow-up after this API change).
+
+---
+
+## ADR-050: Ergonomic Service seam coexists with raw gRPC seam in plugin-sdk
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+The only author-facing seam for implementing plugin behaviour was the raw generated gRPC server interface injected via a host-client factory (e.g. `serve.WithToolService(func(host hostv1.HostServiceClient) toolv1.ToolServiceServer { ... })`). Authors had to implement `toolv1.ToolServiceServer` directly: deal in `*toolv1.CallRequest` / `*toolv1.CallResponse`, marshal/unmarshal `input_json` / `output_json` by hand, and construct `commonv1.ErrorEnvelope` values on every error path. The `plugin-sdk/examples/minimal-tool` service.go showed the cost: ~90 lines of proto plumbing for a trivial echo implementation.
+
+The `gleipnir-plugin new` scaffold's `service.go` template was already written to an ergonomic interface (`Call(ctx, name string, input []byte) ([]byte, error)`) that no SDK adapter satisfied, leaving the scaffold uncompilable. This gap motivated issue #457.
+
+### Decision
+
+#### 1. Proto-free ergonomic interfaces in new sub-packages
+
+Three new sub-packages — `plugin-sdk/tool`, `plugin-sdk/channel`, `plugin-sdk/trigger` — define ergonomic service interfaces (`tool.Service`, `channel.Service`, `trigger.Service`) with no proto types in their signatures. A fourth sub-package `plugin-sdk/pluginerr` provides a proto-free error-code enum and constructors (`InvalidArg`, `NotFound`, `Internal`, `Unavailable`, `Permission`, `RateLimited`, `Unimplemented`) so authors can signal structured errors without importing `gen/`.
+
+These packages are intentional leaf packages: they must not import `plugin-sdk/gen/` (the proto coupling lives only in `serve/`).
+
+#### 2. Adapters in serve/ via exported constructors
+
+`plugin-sdk/serve` receives three exported adapter constructors — `NewToolServer(tool.Service)`, `NewChannelServer(channel.Service)`, `NewTriggerServer(trigger.Service)` — that bridge the ergonomic interfaces onto the generated gRPC server interfaces. Error mapping is centralized in `serve/erroradapt.go`: `pluginerr.CodedError` maps 1:1 onto `commonv1.ErrorCode`; plain errors map to `ERROR_CODE_INTERNAL`. This is the only place in the codebase where proto error codes and ergonomic codes are coupled.
+
+`ListToolsResponse` has no `Error` field, so `ListTools` errors become a gRPC-level `codes.Internal` status (not an envelope). All other service method errors become application-level envelopes.
+
+The adapter structs stay unexported; the constructors are public. This lets tests register the real adapter for live gRPC round-trip coverage without exposing struct internals.
+
+#### 3. New ergonomic options alongside the raw options (last-option-wins)
+
+Three new option functions — `WithToolHandler`, `WithChannelHandler`, `WithTriggerHandler` — accept `func(hostv1.HostServiceClient) X.Service` factories and wrap the returned value via the exported constructors before storing it in the same `config.{tool,channel,trigger}Factory` field as the raw `WithXService` options. Zero changes to `server.go` are required: wiring, capability derivation (`Negotiate` keys off `*Factory != nil`), and the `Bind` install path are identical.
+
+Both raw and ergonomic options write the same config field. Last applied wins (newConfig applies options in order). Passing both `WithToolService` and `WithToolHandler` is valid but the earlier one is silently dropped; the doc comments warn against it.
+
+#### 4. Dogfood validation: ntfy migrated, slack stays raw
+
+`plugins/ntfy` was migrated to the ergonomic seam in the same PR (issue #457) as proof that the interface satisfies a real second consumer. `ChannelService` now implements `channel.Service`; `Request` returns `pluginerr.Unimplemented` (Notify-only plugin); `main.go` uses `WithChannelHandler`.
+
+`plugins/slack` intentionally stays on the raw `WithChannelService` seam. Slack's implementation exercises the full proto surface (direct `RequestRequest` field access, custom `NotifyResponse` construction) and the raw seam remains the right choice there. Slack's migration is tracked as a separate non-blocking follow-up.
+
+The acceptance criterion "raw variant kept as a second example if still useful" is satisfied by explicit decision: `plugins/slack` is the canonical raw consumer; no second raw example is added to `examples/`.
+
+#### 5. Host-client injection via factory, not context accessor
+
+Host-client injection uses the existing `func(hostv1.HostServiceClient) X.Service` factory pattern (same as the raw seam). The adapter does not auto-apply `serve.WithCallContext` — authors call it themselves inside service method bodies before outbound host RPCs. This preserves correct behaviour in detached goroutines (e.g. Trigger.Start background workers) where the adapter cannot know the correct propagation scope.
+
+### Deferred
+
+- Migration of `plugins/slack` to the ergonomic seam (tracked follow-up; not required to land this change).
+- Wrapper support for `FeedbackRequest.ChannelConfig` field-level helpers (v2, when feedback channel plugins are more common).
+
+### References
+
+- Spec §14.1 (SDK), §14.3 (manifest authoring), §14.6 (new scaffold)
+- Issue #457
+
+---
+
+## ADR-048: Subscribed trigger type
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+The plugin system (ADR-041) introduces event-emitting plugin triggers via `TriggerService.Start` (spec §4.3 / §7). Today there are five built-in trigger types (`webhook`, `manual`, `scheduled`, `poll`, `cron`); a sixth internal type is needed to bind a policy to a `(plugin_instance, event_kind)` pair declared in an installed plugin's manifest.
+
+This ADR records the four settled decisions that define how plugin-sourced triggers integrate with the existing policy model. The primary spec reference is `docs/developer/plugin-system-spec.md` §7. This ADR refines (does not supersede) `docs/developer/adding-a-trigger-type.md`.
+
+### Decision
+
+#### 1. Internal-only trigger type name; flat conceptual picker
+
+The new trigger type is named `subscribed` for storage and dispatch purposes. It is used as the DB CHECK constraint value on `policies.trigger_type`, `runs.trigger_type`, and `trigger_queue.trigger_type`, and as the discriminator in handler switch-cases. It is never shown to operators.
+
+From spec §7.1: "**The trigger picker UI is flat at the conceptual level** — operators see built-ins (`webhook`, `manual`, `scheduled`, `poll`, `cron`) and every plugin event_kind as peer options. … The internal `subscribed` type is never rendered as a label."
+
+The user-facing model is a `(source, event_kind)` pair. The picker presents plugin event_kinds alongside the five built-ins as peers. At scale, entries are grouped visually by source (built-ins as one top-of-list group; each plugin instance as its own group), with a search box across all entries — but the grouping is purely presentational. The underlying selection is still a single `(source, event_kind)` pair stored as `trigger_type: subscribed` in the policy YAML.
+
+#### 2. Multi-instance disambiguation in the picker
+
+Multiple instances of the same plugin contribute separate, disambiguated entries in the trigger picker. The spec example (§7.1): `Slack (slack-prod): Channel message` vs `Slack (slack-personal): Channel message`. Both map to the same internal `subscribed` type but carry different `source:` values in the policy YAML binding (§7.2).
+
+Instances are credential/configuration envelopes — two instances of the same plugin may watch entirely disjoint workspaces, channels, or tenants. Combining them under a single picker entry would require the operator to then disambiguate in a second step; listing them separately makes the `(source, event_kind)` pair the first-class selection unit. The YAML representation is:
+
+```yaml
+trigger:
+  type: subscribed              # internal, never rendered in UI
+  source: slack-prod            # plugin instance
+  event_kind: channel_message
+  binding:
+    channel: "#incidents"
+    mention_only: true
+```
+
+#### 3. No JSONPath for plugin trigger bindings — rich field types instead
+
+Plugin trigger bindings use typed form fields (regex, contains, equals, etc.) derived from the manifest's `event_kinds[].binding_schema`. JSONPath is explicitly excluded from plugin trigger filtering.
+
+From spec §7.2: "Plugin authors express filters via richer fields (regex, contains, equals, etc.) — **JSONPath is not used for plugin trigger filtering.**" (JSONPath remains in the built-in `poll` trigger, which evaluates MCP tool output.)
+
+Rationale:
+
+- **JSONPath is stringly-typed.** It provides no autocomplete, no schema validation, and no UI affordance. An operator who mistyped a path gets a silent non-match, not a validation error.
+- **Typed binding schema enables a structured form.** The manifest's `binding_schema` is a JSON Schema document (reflection-derived from Go struct types). The policy editor renders it as a typed form per `event_kind` — the same mechanism used for instance config in §4.2.
+- **Filters run host-side against typed Go fields (§7.3).** There is no per-match round-trip RPC to the plugin; the host evaluates binding predicates directly against the event payload. This means the host, not the plugin, owns the evaluation semantics — and the schema defines those semantics at install time.
+- **Filter expressiveness extends additively.** New operator types (prefix, suffix, numeric range) widen the binding schema without changing the trigger type or the YAML shape. JSONPath cannot be extended this way without versioning the expression language.
+- **Explicit asymmetry with `poll`.** The `poll` trigger evaluates arbitrary MCP tool output — no per-tool typed schema is available, so JSONPath is the only tractable option. Plugin triggers have a manifest-declared schema; the typed approach is strictly better in that context. The asymmetry is intentional.
+
+#### 4. v1 single-trigger-per-policy limit; structured-form path for future generalization
+
+From spec §7.4: "One trigger binding per policy. Multiple triggers per policy is deferred. The structured-form approach generalizes cleanly when needed."
+
+Today's policy YAML `trigger:` key is a single object across all five built-in trigger types. Widening it to a list before there is a real user requirement would compound parser, validator, and UI complexity with no concrete gain.
+
+Forward path: when multi-trigger per policy becomes a real requirement, `trigger:` becomes a list of `(source, event_kind, binding)` entries. Each entry is still rendered by the same per-`event_kind` form component — a `map(renderForm)` call over the list rather than a new abstraction. No proto-level changes and no new DB CHECK constraint values are forced at that point; `subscribed` continues to cover all plugin-sourced trigger entries regardless of how many appear in the list.
+
+### Out of scope
+
+- Multi-trigger per policy (deferred per §7.4).
+- Per-event-type routing overrides on the audience side (§6.4).
+- Paste-your-own-JSON binding tester (§7.5; v1 surface is "Test against sample" using manifest `examples`).
+- Operator-side JSONPath in plugin bindings (rejected, see decision §3).
+- Implementation of the `subscribed` handler, parser, validator, migration, and frontend picker — tracked separately under parent #160.
+
+### Consequences
+
+- `TriggerType` enum (`internal/model`) and DB CHECK constraints on `policies.trigger_type`, `runs.trigger_type`, and `trigger_queue.trigger_type` must accept `subscribed` (steps 1 and 6 of `adding-a-trigger-type.md`). This is one-time work when `subscribed` ships; subsequent plugin event_kinds are additive at the manifest level only.
+- The policy-editor trigger picker grows from a fixed list of five built-ins to a dynamic list assembled from "five built-ins + (plugin instances × declared `event_kinds`)". The internal storage discriminator stays small (six enum values).
+- Plugin authors cannot use JSONPath expressions in their manifest's `binding_schema` — bindings are typed Go-struct fields surfaced as a structured form. Plugin authors get a schema validation error at manifest install time if they attempt one.
+- When multi-trigger per policy becomes a real requirement, the schema migration is YAML-shape only (single object → list of objects). No new trigger type enum value and no new handler dispatch path is required.
+
+---
+
+## ADR-047: Plugin observability surface
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+The plugin system (ADR-041) introduces subprocess processes that emit logs and metrics back to the host. Without a defined observability surface, each plugin author would invent their own naming scheme, make independent cardinality decisions, and choose between stdout and gRPC for log delivery — creating an inconsistent operator experience and, in the worst case, unbounded Prometheus cardinality that crashes the host registry.
+
+This ADR records the observability decisions encoded in Phase 4 (issues #200 and #287). It is a strict predecessor of issue #205 (dispatcher metrics), so new metric names in the dispatcher can be reviewed against a written standard rather than archaeology in handler code.
+
+The primary spec reference is `docs/developer/plugin-system-spec.md` §12.
+
+### Decision
+
+#### 1. `gleipnir_plugin_*` metric namespace — host force-prefixes
+
+All plugin-emitted metrics carry the `gleipnir_plugin_` prefix. Plugins submit bare names via `EmitMetric`; the host prepends the prefix unconditionally before registration (`internal/plugin/hostsvc/metrics.go:81`: `fullName := "gleipnir_plugin_" + name`). Plugins that try to pre-apply the prefix themselves receive an `invalid_metric_name` error — the host detects and rejects names that already start with `gleipnir_plugin_` (`metrics.go:68-70`).
+
+This design means plugins cannot escape the namespace (e.g. emit a metric named `gleipnir_core_something` to impersonate a host metric), and operators see a consistent `gleipnir_plugin_` prefix for everything plugin-sourced when browsing `/metrics`.
+
+#### 2. Auto-injected `plugin` and `instance` labels
+
+The host appends `plugin` (the stable plugin ID) and `instance` (the instance ID) to every `GaugeVec` registration and every `With()` call for plugin-emitted metrics (`metrics.go:113-117`, `metrics.go:162-169`). Plugins do not supply these labels; submitting them explicitly via the RPC is an error (`reserved_label`; `metrics.go:75-79`).
+
+Auto-injection ensures that multi-instance deployments of the same plugin are always separable by label without any coordination from the plugin author. The label pair is the same `plugin`/`instance` pair used in log attrs emitted by the `Log` handler (`handlers.go:366-367`).
+
+#### 3. Cardinality cap — 100 distinct values per (metric, label-key), loud rejection
+
+The host tracks the set of distinct values per `(metric, label-key)` pair. Once the set reaches 100 values, any subsequent `EmitMetric` call that would add a new value is rejected with `codes.ResourceExhausted` and the error code `cardinality_cap_exceeded` (`metrics.go:14-16`, `metrics.go:94-100`, `handlers.go:298-303`). The call is rejected before any Prometheus registration occurs.
+
+The rejection is **loud** (gRPC error returned to the plugin, not silently swallowed) by deliberate design:
+
+- Silent drops hide misconfigured high-cardinality labels during development. A plugin author whose metric silently stops updating has no signal that the cap was reached.
+- Loud rejection surfaces in integration tests and local dev runs immediately. The plugin author can observe the `ResourceExhausted` error, diagnose the label value (e.g. a UUID per-call label), and fix it before the plugin ships.
+- The cardinality cap protects the host's Prometheus registry from unbounded metric registration (each distinct label combination is a separate series in the `GaugeVec`), which can exhaust heap and crash the host process.
+
+The 100-value cap is chosen as a pragmatic upper bound. Real plugin metrics should have label cardinalities in the single digits (e.g. `status=ok|error`, `level=debug|info|warn|error`). A cap of 100 gives generous headroom for legitimate use cases (e.g. one label value per user role, per trigger type) while stopping runaway cases (UUIDs, request IDs, file paths) well before registry size becomes a problem.
+
+#### 4. Metric type — all plugin-emitted metrics are Gauges
+
+The `EmitMetric` RPC carries `(name, value, labels)` with no type discriminator. Counter and histogram semantics require declaration metadata (whether to track cumulative rate, explicit bucket boundaries) that the current RPC does not provide. `GaugeVec` is therefore the universal type: it is the safest choice when the host cannot know the plugin's intent at registration time (`metrics.go:29-34`). Plugins that need monotonic counters or histograms require a future follow-up RPC with explicit type support.
+
+#### 5. Host-emitted plugin metrics
+
+The host itself emits metrics in the `gleipnir_plugin_*` namespace to provide operator visibility into the plugin subsystem without requiring plugin cooperation.
+
+**Implemented in Phase 4:**
+
+| Metric | Type | Labels | Implemented in |
+|--------|------|--------|----------------|
+| `gleipnir_plugin_health_transitions_total` | Counter | `from`, `to` | `internal/plugin/state/metrics.go` |
+
+**Specified in `plugin-system-spec.md`, not yet implemented (deferred to Phase 5):**
+
+| Metric | Type | Labels | Spec reference |
+|--------|------|--------|----------------|
+| `gleipnir_plugin_rpc_duration_seconds` | Histogram | `rpc`, `plugin`, `instance` | spec §12.2 |
+| `gleipnir_plugin_process_rss_bytes` | Gauge | `plugin`, `instance` | spec §12.2, §13.1 |
+
+`gleipnir_plugin_health_transitions_total` uses `metrics.LabelFrom` and `metrics.LabelTo` label constants from `internal/infra/metrics` (`state/metrics.go:19`), consistent with ADR-037's shared label-key constants. Host-emitted metrics use `promauto.With(metrics.Registry())` to register on the same custom registry as all other Gleipnir metrics.
+
+When `gleipnir_plugin_rpc_duration_seconds` and `gleipnir_plugin_process_rss_bytes` are implemented, they should use `metrics.BucketsFast` (defined in `internal/infra/metrics/metrics.go:59`) for the RPC histogram and `metrics.Registry()` for registration, consistent with ADR-037.
+
+#### 6. Plugin logging — `Log` Host RPC for production; stderr capture as fallback only
+
+Plugin log lines in production go through the **`Log` Host RPC** (`handlers.go:356-393`), not stdout or stderr. The rationale for this split is:
+
+**Why `Log` over stdout/stderr:**
+- gRPC calls from a plugin are concurrent. Multiple runs can invoke one plugin instance at the same time; a single plugin goroutine's `fmt.Println` on stdout cannot be attributed to a specific `run_id` — lines interleave arbitrarily.
+- The `Log` RPC carries the `call_id` from the request context (set by `UnaryCallIDInterceptor`). When `call_id` resolves, the handler calls `logctx.WithRunCorrelation` with the associated `run_id` and `policy_id` (`handlers.go:375-376`), injecting full run correlation into every log record. The `call_id` itself is also added as a log attribute (`handlers.go:382`).
+- Without `call_id`, the `Log` handler still attributes the record to `plugin` and `instance` (`handlers.go:365-368`), giving operators enough context to identify the source.
+- All log paths flow through `logctx.Logger`, the host's slog pipeline (`handlers.go:391`), so plugin log lines appear in the same structured log stream as host log lines and are compatible with any log aggregator the operator uses.
+
+**Stderr capture — fallback only:**
+Stdout is reserved by the `go-plugin` handshake protocol (the magic cookie negotiation line is written to stdout; reading it would corrupt the protocol). The host pipes only stderr (`process.go:148`: `stderrW, stderrDone := PipeLines(logger, slog.LevelWarn, "stderr")`). Lines written to stderr are scanned line by line by `internal/plugin/process/logpipe.go` (`PipeLines` function) and emitted through slog at `LevelWarn` with a `stream=stderr` attribute.
+
+Stderr capture is the fallback path for two specific situations (spec §12.1):
+1. Pre-handshake panics — the plugin crashes before establishing its gRPC connection, so the `Log` RPC is not available.
+2. Output written outside any active call context — e.g. init code that panics, or a goroutine that is not tracked by the dispatcher.
+
+In normal operation, a well-behaved plugin uses `Log` exclusively and stderr is silent.
+
+#### 7. OpenTelemetry / distributed tracing — deferred to v2
+
+OpenTelemetry is explicitly out of scope for v1 (spec §12.2). The reasons:
+
+- **Single-binary deployment.** Gleipnir's standard deployment is a single Docker Compose stack with no distributed services. Distributed tracing is designed for environments where a request traverses multiple services; adding OTEL to a single process adds substantial dependency weight and operational complexity (collector, exporter, sampling configuration) for no benefit.
+- **No tracing pressure.** There are no current operator requirements for trace-level observability; structured logs with run/policy/call correlation (via `logctx`) are sufficient for diagnosing slow or failed runs in the homelab-scale deployment model.
+- **OTEL adds dependency weight.** The `go.opentelemetry.io` module family adds ~15 dependencies and significant binary size. Gleipnir's dependency hygiene (small `go.mod`, no unnecessary transitive imports) argues against pulling this in until there is a concrete use case.
+
+The decision is revisited when a distributed deployment model (multi-node, separate services) materializes. At that point, OTEL traces can be wired through the existing `call_id` correlation primitives as span baggage.
+
+#### 8. Existing infrastructure reuse
+
+The plugin observability surface deliberately reuses existing Gleipnir packages rather than building parallel systems:
+
+| Concern | Package reused | How |
+|---------|---------------|-----|
+| Metric registration | `internal/infra/metrics` (ADR-037) | `metrics.Registry()`, `metrics.BucketsFast`/`BucketsSlow`, `metrics.Label*` constants |
+| Log correlation | `internal/infra/logctx` | `logctx.WithRunCorrelation(ctx, runID, policyID)` in `Log` handler; `logctx.Logger(ctx)` for final emit |
+| Internal event pub/sub | `internal/infra/event.Publisher` | `EmitEvent` handler publishes on the internal bus so SSE subscribers and tests observe plugin events |
+| Prometheus client | already in `go.mod` via ADR-037 | no new metric backend |
+
+### Out of scope
+
+- Host-emitted `gleipnir_plugin_rpc_duration_seconds` and `gleipnir_plugin_process_rss_bytes`. Specified in §12.2/§13.1; not yet implemented. Phase 5 work.
+- Counter and histogram types for plugin-emitted metrics. Requires a new `EmitMetricTyped` RPC or a declaration step at registration time.
+- OTEL / distributed tracing. Deferred to v2.
+- Per-call gRPC tracing (server interceptors that emit spans). Phase 5.
+- The admin UI surface for browsing plugin log lines. Deferred.
+- Log rate limiting / sampling at the Host RPC boundary. Deferred; the slog pipeline handles volume in practice for homelab-scale deployments.
+
+### Consequences
+
+- Plugin authors use `EmitMetric` with bare names (no prefix). Including the prefix is an error, not silently coerced.
+- `plugin` and `instance` labels must not appear in user-supplied label maps — reserved by the host. Plugin authors learn this from the `reserved_label` error at development time.
+- A plugin that uses high-cardinality labels (e.g. a UUID per request) will see `codes.ResourceExhausted` once it hits the 100-value cap on any label. This is intentional developer feedback, not a silent degradation.
+- Plugin subprocess stderr is always wired through `logpipe.PipeLines` regardless of whether the plugin uses `Log` RPC; operators see pre-handshake panics in structured slog output without any special configuration.
+- Issue #205 (dispatcher metrics) must name new host-emitted metrics in the `gleipnir_plugin_` namespace with `plugin` and `instance` labels per this ADR. The dispatcher is the natural place to implement `gleipnir_plugin_rpc_duration_seconds` (tracking per-RPC call latency from the host side).
+
+---
+
+## ADR-046: Audit-table split — `run_steps` vs `plugin_audit_events`
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+Gleipnir already has one audit substrate: `run_steps`. It records the agent's reasoning trace and is **visible to the LLM** as it executes a run (per ADR-018, the capability snapshot is the first step of every run; subsequent `tool_call`, `tool_result`, `feedback_request`, `feedback_response`, `thought`, `thinking`, `error`, and `complete` steps form the conversation context the agent sees on the next turn). Anything written to `run_steps` is part of that conversational context.
+
+The plugin system (ADR-041) adds an entire class of operational events that have no place in the LLM's context: plugin install, signature verification outcomes, TOFU pubkey captures and admin "Accept new key" decisions, key rotations, manifest material-change blocks, credential issue/refresh/revoke, unauthorized RPC attempts, deactivate/remove, and late-callback rejections from ADR-044's `feedback_response_late` event. These are operator-and-auditor concerns. Routing them through `run_steps` would (a) leak operator-side information into agent context — for example a TOFU key-rotation rejection visible to the agent — and (b) mix two unrelated audit purposes into one table with one query path.
+
+The plugin system spec calls this out in §12.3 as a structural decision because it determines what plugins are allowed to write where. The `WriteAuditStep` Host RPC introduced by ADR-044 lets plugins write into Gleipnir's audit substrate; without an explicit boundary, a misbehaving or malicious plugin could inject arbitrary content into the LLM's context window.
+
+### Decision
+
+#### 1. Two substrates, two purposes
+
+| Substrate | Purpose | Visible to LLM? | Step / event types |
+|-----------|---------|-----------------|--------------------|
+| `run_steps` | LLM-relevant operations on a specific run | **Yes** — replayed into the agent's context on each turn | `capability_snapshot`, `thought`, `thinking`, `tool_call`, `tool_result`, `approval_request`, `feedback_request`, `feedback_response`, `error`, `complete` (existing v1 set) |
+| `plugin_audit_events` | Operational / admin / security events about plugins and instances | **No** — never enters agent context | install, manifest changes, signature verification outcomes, TOFU pubkey events, key rotations, credential lifecycle, unauthorized RPC attempts, deactivate/remove, `feedback_response_late` (ADR-044) |
+
+`run_steps` is unchanged from its v1 shape. This ADR does not migrate, rename, or restructure it; it only fixes the boundary.
+
+#### 2. `plugin_audit_events` schema
+
+The schema follows the plugin-system-spec §12.3 SQL block, adjusted to project conventions (TEXT ULIDs for cross-table references per ADR-013, TEXT ISO-8601 timestamps per ADR-003):
+
+```sql
+CREATE TABLE plugin_audit_events (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  plugin_instance_id  TEXT    NULL REFERENCES plugin_instances(id) ON DELETE SET NULL,
+  event_type          TEXT    NOT NULL,
+  severity            TEXT    NOT NULL CHECK(severity IN ('info','warning','high','critical')),
+  actor_user_id       TEXT    NULL REFERENCES users(id) ON DELETE SET NULL,
+  payload_json        TEXT    NOT NULL,
+  created_at          TEXT    NOT NULL  -- ISO 8601 UTC
+);
+CREATE INDEX idx_pae_instance_created ON plugin_audit_events(plugin_instance_id, created_at);
+CREATE INDEX idx_pae_event_created    ON plugin_audit_events(event_type, created_at);
+```
+
+The deviations from the spec block are:
+- `id` is `INTEGER PRIMARY KEY AUTOINCREMENT` rather than the spec's bare `INTEGER PRIMARY KEY`. Audit-event rows are append-only and have no cross-table references, so a monotonic surrogate is the right shape — matches `openai_compat_providers` precedent.
+- `plugin_instance_id` and `actor_user_id` are `TEXT` ULIDs with proper foreign keys to the actual id columns of their tables. The spec block's `INTEGER NULL` placeholders predate the project's TEXT-ULID convention.
+- `created_at` is `TEXT` ISO-8601 UTC. SQLite has no real `TIMESTAMP` type; the project standardises on TEXT ISO-8601 (per ADR-003 / 0001_initial.sql).
+- `ON DELETE SET NULL` on both nullable foreign keys means audit-event history outlives the deletion of a plugin instance or user — operators retain a tamper-evident trail of "an instance that no longer exists did this on 2026-05-04".
+
+`plugin_instance_id` is nullable because some events fire before any instance row exists (e.g. signature verification on install of a previously-unknown plugin) or apply to a plugin definition rather than a single instance. `actor_user_id` is nullable because background events (fsnotify-driven installs, scheduled key rotations, automated revocations) have no human actor. `payload_json` carries the event-specific fields (e.g. `{"old_pubkey": "...", "new_pubkey": "...", "approver_user_id": 7}` for a TOFU acceptance) and is structurally validated by the writing call site, not by the database.
+
+#### 3. `WriteAuditStep` is restricted to `feedback_response` only
+
+The `WriteAuditStep` Host RPC introduced by ADR-044 (so plugin-provided channels can resolve a `Request` once a human replies) is the **only path by which a plugin can write into `run_steps`**, and it is restricted to a single step type: `feedback_response`. Any other step type submitted via `WriteAuditStep` is rejected with `permission_denied` and recorded as an `unauthorized_audit_step` event in `plugin_audit_events` at high severity.
+
+This restriction is structural, not advisory. Plugins cannot write `tool_call`, `tool_result`, `thought`, `thinking`, `approval_request`, `error`, or any other LLM-visible step type — that surface is reserved for the host runtime. The host writes `tool_call` / `tool_result` itself when invoking a plugin's ToolService; a tool-result step originating from `WriteAuditStep` is by definition an attempt to inject content the host did not authorize.
+
+All other plugin-originated events flow into `plugin_audit_events` via host-side write paths (the plugin loader, the trust manager, the credential manager). Plugins do not have direct write access to `plugin_audit_events`; the host writes on their behalf based on observed state changes.
+
+#### 4. Authorization semantics for `WriteAuditStep`
+
+A `WriteAuditStep(request_id, feedback_response)` call is authorized only when:
+1. The calling plugin process (identified by its per-generation gRPC connection identity) belongs to the plugin instance that was originally routed the `request_id` (per ADR-044 §4 — `request_id` is instance-scoped, not generation-scoped, so a post-hot-reload generation can resolve a request issued by its predecessor).
+2. The `request_id` is still open (run is in `waiting_for_feedback`, no prior response written, no timeout fired).
+
+A mismatch on (1) is rejected as `unauthorized_request_id` (logged at high severity, `plugin_audit_events`). A mismatch on (2) — i.e. the request has already been resolved — is the late-callback path: rejected with `feedback_response_late` (ADR-044 §5), `plugin_audit_events`, normal severity. Neither case mutates `run_steps` or run state.
+
+#### 5. Operator-facing surfaces
+
+`plugin_audit_events` is queryable by admin and auditor roles via a new admin endpoint (deferred to the admin-UI work package; not specified here). The LLM has no read path. `run_steps` keeps its existing endpoints and SSE feeds.
+
+### Out of scope
+
+- Migration of any existing `run_steps` content. There is none to migrate; `plugin_audit_events` is purely additive.
+- The admin UI surfaces for browsing `plugin_audit_events` (filter by event type, severity, instance). Tracked in the admin-UI work package.
+- Retention / compaction policy for `plugin_audit_events`. v1 keeps everything; revisit when volumes warrant.
+- Cross-substrate joins (e.g. "show me the run_step that failed because the plugin instance was unhealthy at the time"). Operators can correlate by timestamp and `run_id`; structured cross-references are deferred.
+- Generic `WriteAuditEvent` Host RPC for plugins to push their own structured events into `plugin_audit_events`. v1 does not expose this; all `plugin_audit_events` writes are host-internal.
+
+### Consequences
+
+- A new `plugin_audit_events` table is added in the schema migration tracked by issue #184. `run_steps` is unchanged.
+- The `WriteAuditStep` Host RPC handler enforces the `feedback_response`-only restriction at the boundary; an enum/oneof guard in the proto definition (issue #167) makes a wider type structurally unrepresentable on the wire.
+- ADR-044's `feedback_response_late` event lands in `plugin_audit_events`. The audit split is therefore a hard prerequisite for plugin-provided channels shipping. Captured as a dependency in #184.
+- Plugins have no path to inject arbitrary content into the agent's context window. The structural guarantee is the same shape as ADR-001 (hard capability enforcement): plugins cannot prompt-inject, cannot impersonate tool calls, and cannot fabricate feedback for requests they don't own.
+- Operator workflows for trust events (TOFU acceptance, key rotation review) have a stable backing table from day one; the admin UI work can evolve without re-shaping the substrate.
+
+---
+
+## ADR-045: Plugin signing & TOFU trust
+
+**Status:** Decided
+**Date:** 2026-05
+
+### Context
+
+ADR-041 chose `go-plugin` subprocesses launched from a `/plugins` filesystem dropin as the v1 distribution model: no curated registry, no upload-via-UI, just operator-controlled tarballs. ADR-043 chose the signing-tooling implementation (bundled Minisign Go library at `plugin-sdk/signing`, fresh-written, no external `minisign` binary dependency, surfaced via `gleipnir-plugin keygen|sign|package` subcommands). What is still missing is the **trust model** the host applies when it sees a signed tarball: which keys are trusted, when verification runs, what counts as a manifest change worth blocking on, and what happens when verification fails.
+
+This ADR records that model. The signing scheme itself (Minisign / Ed25519, signed payload, hash strategy) is owned by ADR-043 from the producer side; this ADR governs the consumer side — the host loader, the per-instance trust state, and the failure-mode policy. Spec sections §5.2-§5.5 are the source of truth for the matrices below; this ADR is the formal decision record.
+
+### Decision
+
+#### 1. Honest framing: tamper-evidence, not author identity attestation
+
+Minisign verification proves that the bundle was signed by the holder of the captured Ed25519 private key. It does **not** prove that the holder is the named author, that the binary does what the manifest says it does, or that the author is who they claim to be. v1 buys *tamper-evidence between admin install and admin run* — a meaningful security property, but a narrower one than a curated registry with an identity layer would provide. Sigstore-keyless transparency-log verification is the v2 path once a storefront-era identity layer materializes.
+
+The admin install gate (`plugins:install` permission, manual review of declared capabilities at `/admin/plugins`) is the bridge: the human in the loop is the identity check. This honest framing is the load-bearing assumption for every other decision in this ADR.
+
+#### 2. Trust model: TOFU per plugin instance
+
+Trust is captured at the instance level (one row per `plugin_instances`, see issue #185), keyed by the plugin's identity (manifest `name` + `version`-independent key). On first install of a plugin name, the embedded `signing.pub` is captured into `plugin_instances.trusted_pubkey`. All subsequent updates to that plugin must be signed by the captured key; mismatch is a hard block until an admin explicitly approves the new key via the "Accept new key" flow.
+
+Rotation = manual admin approval. Rotation certificates (signed-by-old-key statements that authorize a successor key) are deferred to v2; in v1, every key rotation is an explicit human decision, audited as a `plugin_pubkey_rotated` event in `plugin_audit_events` (per ADR-046) with the approving `actor_user_id`.
+
+An advanced "pin out-of-band" toggle is available at first install: an admin can paste a pubkey acquired through a separate trusted channel (e.g. a project's website over HTTPS) instead of taking the leap on the embedded one. This skips the TOFU first-install gap for security-conscious operators without changing the steady-state machinery.
+
+#### 3. Validation timing
+
+| Trigger                       | Action                                                                 |
+|-------------------------------|------------------------------------------------------------------------|
+| Install                       | Verify signature; capture pubkey (TOFU) or check against pinned pubkey; snapshot manifest into DB |
+| Plugin process start          | Verify signature against snapshotted manifest                          |
+| Hot-reload (`fsnotify` event) | Verify signature; if manifest has **material changes**, block reload pending admin re-approval |
+| Per-RPC call                  | None — verification is process-boundary, not call-boundary             |
+| Background scan               | None — next process start covers it                                    |
+
+Per-RPC verification is deliberately omitted: the security boundary is the subprocess identity (which the host launched and connected to over a private socket), not each RPC. Adding per-call verification would burn CPU without changing the threat model.
+
+#### 4. Material vs. cosmetic manifest changes
+
+A hot-reload that re-verifies signature successfully is still **blocked** if the new manifest differs from the snapshotted manifest in any **material** field. The bright-line list, taken from spec §5.4:
+
+**Material (block until admin re-approves):**
+- Embedded pubkey claim
+- Declared services (TriggerService / ToolService / ChannelService presence or version)
+- Tier-2 Host capability declarations
+- OAuth scopes, OAuth strategy
+- Declared tool list (any addition, removal, or schema change)
+- Per-instance `config_schema` shape
+- `event_kinds[].binding_schema` shape
+
+**Cosmetic (flow silently with audit log):**
+- Description, version string, author email
+- Default values inside config schemas
+- JSON Schema `description` strings
+- Example fixtures
+
+Material changes raise a `pending_manifest_approval` health state on every existing instance of the plugin; the new generation does not start until an admin reviews and approves the diff. This preserves ADR-018's capability-snapshot invariant: a run that started under one declared tool surface cannot suddenly see a different surface mid-flight.
+
+`config_schema` material changes are particularly load-bearing: the new generation cannot start until each existing instance's configuration is brought into compliance, which moves those instances into `pending_config_migration` (per spec §5.4). **No automated config migration tooling ships in v1** — admin manually edits each instance's config before the new generation activates. Migration tooling is a v2 concern.
+
+#### 5. Failure modes
+
+| Condition                             | Behavior                                                                         |
+|---------------------------------------|----------------------------------------------------------------------------------|
+| Invalid signature                     | Hard block. No override. (Distinct from "unsigned" — a signature was claimed and is wrong.) |
+| TOFU violation (signed by unknown key)| Block + "Accept new key" UI; instance enters `pending_key_approval`              |
+| Material manifest change on hot-reload| Block reload; instance enters `pending_manifest_approval`                        |
+| Verification system error (missing `.minisig`, I/O failure) | Fail closed; surface detailed error; instance enters `verification_error` |
+| Unsigned plugin                       | Block by default. See decision 6 for permissive override.                        |
+| Hot-reload failure on running plugin  | Old generation drains in-flight; new generation never starts. Admin sees "serving in-flight, no new requests accepted" with View error / Revert / Remove pending update actions. |
+
+"Block" means the new generation does not start; existing healthy generations continue serving until drained. The host never silently swaps a generation under an unverified or unapproved manifest.
+
+#### 6. `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` permissive-mode override
+
+Unsigned plugins are blocked by default. Operators who need to run an unsigned local development build, or a vendored fork still being signed, can set the **global** environment variable `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true`. The semantics are deliberately blunt:
+
+- Scope is global, not per-plugin. There is no per-plugin allowlist — that would create a slow drift toward "well, just this one more" until the trust model has rotted.
+- Every load of an unsigned plugin emits a high-severity `unsigned_plugin_loaded` event into `plugin_audit_events`.
+- The admin UI shows a red banner across `/admin/plugins` while permissive mode is active. The banner is non-dismissible.
+- `/api/v1/health` reports `signature_verification: disabled` so health-checking infrastructure can detect the mode externally.
+- **Signed plugins are still fully verified** even in permissive mode. Permissive mode does not relax verification of bundles that *do* carry a signature; a tampered signed bundle is still hard-blocked. The toggle affects unsigned bundles only.
+
+The variable is read once at host startup; runtime toggling is not supported (it would require recomputing the trust state of every loaded plugin).
+
+#### 7. Per-instance health states
+
+The full set of v1 health states (per spec §5.6) is enumerated here so that downstream UI work has a stable contract:
+
+`healthy`, `signature_invalid`, `pending_key_approval`, `pending_manifest_approval`, `pending_config_migration`, `verification_error`, `unsigned_permissive`.
+
+Each state is rendered as a colored chip on `/admin/plugins`, click-through reveals detail and admin actions (Accept new key / Approve manifest / View error / Revert / Remove pending update). Chip rendering and the action set are owned by issue #191; this ADR fixes the state names and the conditions under which the loader assigns them.
+
+### Audit event types (issue #188)
+
+Two audit event types are emitted by the TOFU trust machinery (both at severity `high`):
+
+| Event type              | When emitted                                                                 | Key payload fields |
+|-------------------------|------------------------------------------------------------------------------|--------------------|
+| `plugin_pubkey_mismatch`| A signed update arrives with a different key than the captured trusted pubkey. The update is blocked; all instances move to `pending_key_approval`. | `plugin_id`, `name`, `old_pubkey_fingerprint`, `new_pubkey_fingerprint`, `new_pubkey_b64` (base64 of the full signing.pub bytes), `version` |
+| `plugin_pubkey_rotated` | An admin accepts the new key via `POST /api/v1/admin/plugins/:id/accept-new-key`. The `trusted_pubkey` column is updated (CAS-guarded); `pending_key_approval` instances transition to `healthy`. | `plugin_id`, `name`, `old_pubkey_fingerprint`, `new_pubkey_fingerprint` |
+
+`PluginInstanceID` is `nil` for both events (plugin-level, not instance-level). `ActorUserID` is set for `plugin_pubkey_rotated` from the authenticated session.
+
+### Out of scope
+
+- The Minisign Go library implementation itself (ADR-043 covers it from the producer side; the host imports the same `plugin-sdk/signing` package for verification).
+- Sigstore / Rekor transparency logs. Deferred to v2 storefront era.
+- Per-plugin unsigned-allow lists. Explicitly rejected (decision 6).
+- Rotation certificates (signed-by-old-key authorizations of a new key). Deferred to v2; v1 = manual admin approval per rotation.
+- Revocation lists. v1 has no revocation channel; admins remove a compromised plugin by uninstalling it. CRL-style infrastructure is deferred.
+- Verifying plugin behavior against the manifest at runtime. Out of scope — that's a sandboxing concern (not v1).
+- The admin UI flows for "Accept new key" and "Approve manifest". Owned by issues #188 (TOFU UI) and #189 (material-change detection); this ADR specifies the conditions, not the screens.
+- Out-of-band pubkey paste at install time (deferred to a follow-up per issue #188 scope-down). The TOFU first-leap plus `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` is the v1 escape hatch.
+
+### Consequences
+
+- `internal/plugin` (host loader) gains a verification step on install and on every process start. It imports `plugin-sdk/signing` for the verification primitive.
+- `plugin_instances.trusted_pubkey` (TEXT) and a snapshotted manifest column are required by issue #185 — the trust model presumes per-instance state.
+- `plugin_audit_events` (issue #184, ADR-046) is a hard prerequisite: every trust-relevant action emits an event into that table. Fail-loud rather than fail-silent is only meaningful with a recorded trail.
+- `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` joins the documented env var list in the project-level CLAUDE.md table. The red banner and the `/api/v1/health` field are the two operator-visible signals that the toggle is on.
+- The "block on material manifest change" rule means a signed plugin update that adds a new declared tool will not auto-load — it sits in `pending_manifest_approval` until an admin reviews it. This is intentional friction; operators who want a smooth path negotiate manifest stability with their plugin authors.
+- TOFU's first-install gap is acknowledged, not closed. The `plugins:install` permission gate and the optional pin-out-of-band toggle are the v1 mitigations.
+
+---
+
+## ADR-044: Channel routing model
+
+**Status:** Decided
+**Date:** 2026-05
+**Supersedes (partially):** ADR-031 (native feedback as a Gleipnir runtime primitive) — the in-app dispatcher implementation detail is superseded; the first-class-feedback principle stands.
+
+### Context
+
+ADR-031 established that feedback is a first-class runtime primitive: the agent calls a synthetic `gleipnir.ask_operator` tool, `BoundAgent` intercepts it, the run pauses at `waiting_for_feedback`, and an operator supplies a response through the UI. The in-app UI was the only delivery surface. Notification dispatch lived in `internal/notify` as a separate fan-out concern.
+
+The plugin system umbrella (ADR-041) extends feedback delivery to plugin-provided channels (Slack, PagerDuty, ntfy, email, etc.) and introduces a general-purpose `Notify` surface for run-state alerts alongside the existing `Request` surface for operator input. Both surfaces share a single routing abstraction — the **Audience** — that is policy-referenced and admin-managed.
+
+This ADR records the routing model: how `Notify` and `Request` differ, how audiences are structured, the lifecycle rules for `request_id`, and the failure modes for both operation types. The proto contracts (gRPC RPC signatures, message schemas) are specified separately in issue #167; this ADR governs the semantics those contracts must implement.
+
+### Decision
+
+#### 1. Two channel operations with different semantics
+
+A `ChannelService` implementation may support either or both of two operations:
+
+**`Notify`** — fire-and-forget, parallel fan-out. The host calls `Notify` on every audience entry that has `notify: true` and whose plugin instance implements `Notify`, concurrently. A per-call deadline of 10 seconds applies. Failures from individual channels are audited and metric-counted but do NOT fail the run — the best-effort guarantee means a broken ntfy server does not stop an in-flight agent. Total latency is bounded by the single slowest channel subject to the 10s deadline, not by the count of channels.
+
+**`Request`** — request/response, exactly one channel per request. The host routes to the first ordered audience entry that has `request: true` and whose plugin instance implements `Request`. There is no inter-channel fallback: once an entry is selected, it owns the request. The protocol is async via callback: the plugin synchronously acknowledges the request within a 5-second pre-ack deadline (confirming it received and will track the request), then later calls the host's `WriteAuditStep` Host RPC with a `feedback_response` step when the human replies.
+
+#### 2. Audience as a shared resource
+
+An **audience** is a named, ordered list of channel entries. Audiences are first-class admin-managed resources, editable at `/admin/audiences` (admin/operator edit; auditor read), referenced by name from policy YAML. They are shared: the same audience may be used by multiple policies.
+
+Each entry in an audience specifies:
+- `plugin_instance` — which plugin instance to route to (or the built-in `gleipnir.in-app` token).
+- `notify: true/false` — whether this entry participates in `Notify` fan-out.
+- `request: true/false` — whether this entry is eligible for `Request` routing.
+- `config` — per-entry configuration validated against the plugin's `config_schema` (e.g. Slack channel name, mention group).
+
+The audience editor validates the per-entry `config` against the channel plugin's manifest `config_schema` at save time. Partial implementations (a plugin that supports only `Notify`, not `Request`) cause the editor to disable the corresponding toggle with an explanatory tooltip.
+
+When an audience referenced by one or more policies is edited, the save dialog lists the affected policies and requires confirmation. Audiences with active in-flight runs that reference them are flagged: the change applies to subsequent steps only; `Request` operations already in-flight continue to resolve against the routing that was active when they were issued.
+
+#### 3. `gleipnir.in-app` is auto-appended to every audience
+
+The built-in `gleipnir.in-app` channel is automatically appended as the lowest-priority entry of every audience by default. This guarantees that first-class feedback (ADR-031) always has a landing surface — an operator can always respond through the Gleipnir UI even if every plugin-provided channel is broken or misconfigured.
+
+Audiences include an advanced toggle to disable the `gleipnir.in-app` auto-append. If disabled, the audience editor enforces a save-time validation: at least one remaining entry must have `request: true`. Disabling `gleipnir.in-app` with no remaining `Request`-capable entries is a validation error — an audience in that state could leave a `Request` operation permanently unresolvable.
+
+#### 4. `request_id` is instance-scoped, not generation-scoped
+
+When the host routes a `Request` to a channel, it issues a `request_id` token. The `request_id` is **instance-scoped**: it identifies the plugin instance that owns the request, not the specific subprocess generation that received it.
+
+This distinction matters because hot-reload can occur while a `Request` is awaiting human response — the operator may not reply for minutes or hours. When the plugin is reloaded (old generation replaced by a new generation), the new generation may service the callback for a request that was issued to the old generation. The `request_id` survives the reload because it is bound to the instance, not to the generation.
+
+Lifecycle:
+- `request_id` is created when the host issues a `Request` to a channel entry.
+- It remains valid as long as the feedback request is open (run is in `waiting_for_feedback`).
+- If the old generation is force-killed at the 60-second drain grace without delivering a response, the open `Request` resolves via the normal feedback timeout path (existing `internal/timeout/scanner.go` machinery). Runs in `waiting_for_feedback` are NOT eagerly failed at force-kill — the timeout scanner handles expiry uniformly.
+- After force-kill, the substrate (Slack, PagerDuty, etc.) may still surface the original message to a human. If the human replies, the new generation can service the callback using the same `request_id`, provided the substrate connection state is recoverable.
+
+Authorization for `WriteAuditStep` is also instance-scoped: the host verifies that the calling plugin process (identified by its per-generation gRPC connection identity) belongs to the instance that was originally routed the request. A mismatch (e.g. a different plugin instance attempting to resolve another instance's `request_id`) is rejected and recorded as an `unauthorized_request_id` audit event at high severity.
+
+#### 5. Late-callback rejection — `feedback_response_late` event
+
+A `WriteAuditStep` call carrying a `feedback_response` step for a `request_id` that has already been resolved (response received through another path, or timed out) is rejected. The run state is not mutated. The host emits a `feedback_response_late` event into `plugin_audit_events` (the operational audit substrate introduced by ADR-041's audit split decision).
+
+The `feedback_response_late` event carries: `request_id`, `plugin_instance`, `generation_id`, the `feedback_response` body that arrived late, and the timestamp. It is not surfaced in `run_steps` and is not visible to the LLM. Operators and auditors can view it in the plugin audit log.
+
+This rule applies regardless of why the original request resolved — normal operator response, timeout expiry, or run cancellation. Once resolved, the `request_id` is closed and any subsequent `WriteAuditStep` for it is a late callback.
+
+#### 6. Pre-ack vs post-ack failure modes for `Request`
+
+**Pre-ack failure** — the plugin does not acknowledge the `Request` within the 5-second deadline. The host treats this as a dispatch failure: it writes a `feedback_dispatch_error` step to `run_steps` and the run fails fast. There is no retry and no fallback to the next audience entry. The operator must investigate the channel plugin and relaunch the run.
+
+**Post-ack failure** — the plugin acknowledged the request but the human never responds (or the plugin crashes before delivering the response). This is handled by the existing `internal/timeout/scanner.go` machinery: the feedback request has a configured timeout, and if it expires without a response, the scanner resolves the request with a timeout outcome and the run continues (or fails, depending on policy configuration). The same timeout machinery handles both in-app and plugin-provided channels.
+
+The asymmetry is deliberate: pre-ack failure means the channel never took responsibility for the request (the operator may not have been paged at all), which is a hard failure. Post-ack failure means the channel took responsibility but the human did not respond in time, which is a soft timeout the run can reason about.
+
+### Supersedes / Preserves
+
+**What this ADR supersedes from ADR-031:**
+
+The dispatcher implementation detail. ADR-031's `internal/execution/agent/feedback.go` routed directly to the in-app mechanism (writing a `feedback_request` step and blocking on `feedbackCh`). This ADR supersedes that direct coupling: `feedback.go` is refactored so the in-app surface becomes one Channel implementation (`gleipnir.in-app`) among many, and the host resolves the feedback audience before dispatch. The refactor is behavior-neutral for existing deployments — `gleipnir.in-app` is auto-appended to every audience and is always the lowest-priority (and only) entry in a default single-channel deployment.
+
+**What this ADR preserves from ADR-031:**
+
+The first-class-feedback principle. Feedback remains a runtime primitive: `BoundAgent` still intercepts the synthetic `request_feedback` tool call, the run still pauses at `waiting_for_feedback`, and the operator's response still flows through `WriteAuditStep` → `internal/timeout/` machinery. The principle that feedback is not an MCP concept, not prompt-based, and not externally dispatched is unchanged. The in-app UI remains fully functional as the built-in `gleipnir.in-app` channel.
+
+### Out of scope
+
+- The proto contracts (gRPC RPC signatures, message schemas for `Notify`, `Request`, and `WriteAuditStep`). These are tracked in issue #167.
+- Per-event-type routing overrides (e.g. `run_failed → pagerduty`, `feedback_request → slack-ops`). Deferred; v1 audiences are flat.
+- `RecoverChannelRequests` RPC for substrate-side request recovery after generation replacement. Deferred; v1 relies on the drain grace and timeout scanner.
+- Cross-plugin or cross-instance routing. Each audience entry maps to exactly one plugin instance.
+
+### Consequences
+
+- `internal/execution/agent/feedback.go` is refactored to route through a Channel dispatcher. The in-process `inAppChannel` becomes a Channel implementation. `runsHandler.SubmitFeedback` calls `inAppChannel.Resolve(request_id, body)`. The existing `internal/feedback/` and `internal/timeout/` machinery is unchanged; the refactor only changes what is called before the pause, not the pause mechanics.
+- A new `plugin/channel` package (or equivalent) is introduced to hold the Channel dispatcher, the `gleipnir.in-app` built-in implementation, and the routing logic that consults the audience configuration.
+- `request_id` tokens are issued at the host level and are durable across hot-reloads. They must be stored with enough context (instance ID, associated run, feedback request row) to allow late-callback detection and `unauthorized_request_id` checks.
+- `feedback_response_late` events land in `plugin_audit_events`, not `run_steps`. The LLM does not see them. The audit split (ADR-041 decision 7) must be in place before plugin-provided channels ship.
+- The `gleipnir.in-app` auto-append guarantee means no existing deployment changes behavior. The toggle to disable it is an advanced opt-out; disabling it without a replacement `Request`-capable entry is a save-time validation error.
+- Audience save-guard (listing affected policies, requiring confirmation) prevents silent routing changes on shared audiences.
 
 ---
 
@@ -1395,6 +2032,7 @@ user-visible text uses "Tools" and "source" vocabulary. Backend API routes are n
 **Status:** Decided
 **Date:** 2026-04
 **Supersedes (partially):** ADR-007 (sensor/actuator/feedback role model), ADR-008 (two approval modes), ADR-009 (feedback channel resolution)
+**Partially superseded by:** ADR-044 (Channel routing model) — the in-app dispatcher implementation detail is superseded; the first-class-feedback principle and `waiting_for_feedback` state machinery are preserved.
 
 ### Background
 

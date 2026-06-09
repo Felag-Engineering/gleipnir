@@ -1,0 +1,1 @@
+export { InstallPluginButton } from './InstallPluginButton'
