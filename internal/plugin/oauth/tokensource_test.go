@@ -173,6 +173,79 @@ func TestPersistingTokenSource_InnerErrorMarksRefreshFailed(t *testing.T) {
 	}
 }
 
+// TestPersistingTokenSource_SaveTokenFailDoesNotAdvanceLastSeen guards the
+// Bug B fix: when SaveToken returns an error, lastSeen must not be advanced so
+// that the next Token() call detects a change and retries the save.
+func TestPersistingTokenSource_SaveTokenFailDoesNotAdvanceLastSeen(t *testing.T) {
+	oldTok := testToken(time.Unix(2000000, 0))
+	newTok := &oauth2.Token{AccessToken: "rotated", Expiry: time.Unix(3000000, 0)}
+
+	q := &fakeOAuthQuerier{
+		instance:     db.PluginInstance{ID: "inst-1", HealthState: "healthy", Version: 0},
+		casFailTimes: 5, // enough to exhaust SaveToken's 3 retry attempts → returns error
+	}
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, func() time.Time { return time.Unix(1000000, 0) })
+	// Seed the row so LoadCredentials inside SaveToken can find the instance.
+	creds := testCreds("oauth2_authcode")
+	creds.Token = oldTok
+	// Bypass SaveToken's CAS machinery for the initial seed.
+	q.casFailTimes = 0
+	if err := store.SaveCredentials(context.Background(), "inst-1", creds, 0); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	q.auditEvents = nil
+	// Now arm the CAS failures so the first SaveToken inside Token() fails.
+	q.casFailTimes = 5
+
+	inner := &fakeInnerSource{tokens: []*oauth2.Token{newTok, newTok}}
+	ts := newPersistingTS(t, store, "inst-1", inner, oldTok)
+
+	// First call: inner returns newTok, tokenChanged fires, SaveToken fails.
+	// lastSeen must NOT advance — so a second call must also detect the change.
+	tok1, err := ts.Token()
+	if err != nil {
+		t.Fatalf("Token() first call should not error (token is still returned): %v", err)
+	}
+	if tok1.AccessToken != "rotated" {
+		t.Errorf("first Token() = %q, want rotated", tok1.AccessToken)
+	}
+
+	// No EmitRefreshed should have fired (save failed).
+	for _, ev := range q.auditEvents {
+		if ev.EventType == auditOAuthRefreshed {
+			t.Errorf("did not expect plugin_oauth_refreshed event when SaveToken failed")
+		}
+	}
+
+	// Now let SaveToken succeed on the next attempt.
+	q.casFailTimes = 0
+	prevUpdateCalls := q.updateCalls
+
+	tok2, err := ts.Token()
+	if err != nil {
+		t.Fatalf("Token() second call: %v", err)
+	}
+	if tok2.AccessToken != "rotated" {
+		t.Errorf("second Token() = %q, want rotated", tok2.AccessToken)
+	}
+
+	// The second call must have retried SaveToken (because lastSeen was not
+	// advanced on the first failure).
+	if q.updateCalls == prevUpdateCalls {
+		t.Error("expected SaveToken to be retried on second Token() call after prior failure, but no UpdatePluginInstanceCredentials call was made")
+	}
+	// And now EmitRefreshed should have fired.
+	sawRefreshed := false
+	for _, ev := range q.auditEvents {
+		if ev.EventType == auditOAuthRefreshed {
+			sawRefreshed = true
+		}
+	}
+	if !sawRefreshed {
+		t.Error("expected plugin_oauth_refreshed audit event on successful retry save")
+	}
+}
+
 func TestInstanceLocks_PerInstanceMutex(t *testing.T) {
 	locks := &instanceLocks{}
 	m1a := locks.Get("inst-1")

@@ -739,6 +739,57 @@ func TestDBStore_SeedOAuthToken_CASRetry(t *testing.T) {
 	}
 }
 
+// TestDBStore_SaveToken_ZeroExpiryPersistsEvenWhenStoredTokenHasFutureExpiry
+// guards the Bug A fix: a non-expiring token (Expiry == time.Time{}) must not
+// be treated as "stale" and silently discarded just because the row already
+// holds a token with a future expiry.
+func TestDBStore_SaveToken_ZeroExpiryPersistsEvenWhenStoredTokenHasFutureExpiry(t *testing.T) {
+	baseTime := time.Unix(1000000, 0)
+	// Existing token has a far-future expiry.
+	creds := testCreds("oauth2_authcode")
+	creds.Token = testToken(baseTime.Add(24 * time.Hour))
+
+	plain, _ := creds.Marshal()
+	enc, _ := noopEncrypt(plain)
+	q := &fakeOAuthQuerier{
+		instance: db.PluginInstance{
+			ID:                   "inst-1",
+			HealthState:          "healthy",
+			Version:              0,
+			CredentialsEncrypted: &enc,
+		},
+	}
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, func() time.Time { return baseTime })
+
+	// A non-expiring token has Expiry zero. Before the fix, zero.Before(future)
+	// was true and SaveToken would skip the write, losing the token entirely.
+	nonExpiringTok := &oauth2.Token{
+		AccessToken: "non-expiring-access",
+		TokenType:   "Bearer",
+		// Expiry intentionally left as zero (time.Time{}).
+	}
+	if err := store.SaveToken(context.Background(), "inst-1", nonExpiringTok); err != nil {
+		t.Fatalf("SaveToken: unexpected error: %v", err)
+	}
+	if q.updateCalls != 1 {
+		t.Errorf("expected 1 update call for non-expiring token, got %d (token was silently dropped)", q.updateCalls)
+	}
+
+	loaded, _, err := store.LoadCredentials(context.Background(), "inst-1")
+	if err != nil {
+		t.Fatalf("LoadCredentials: %v", err)
+	}
+	if loaded.Token == nil {
+		t.Fatal("expected Token to be set after SaveToken")
+	}
+	if loaded.Token.AccessToken != "non-expiring-access" {
+		t.Errorf("AccessToken = %q, want non-expiring-access", loaded.Token.AccessToken)
+	}
+	if !loaded.Token.Expiry.IsZero() {
+		t.Errorf("Expiry should be zero (non-expiring), got %v", loaded.Token.Expiry)
+	}
+}
+
 // --- Mutex serialisation test ---
 
 // TestDBStore_MutexSerialisation_SetAPIKeyAndSaveTokenConcurrent fires

@@ -167,7 +167,10 @@ func (s *DBStore) SaveToken(ctx context.Context, instanceID string, tok *oauth2.
 
 		// Skip if the reloaded token is already strictly fresher than ours.
 		// A concurrent refresher already wrote a better token; accept that.
-		if creds.Token != nil && tok.Expiry.Before(creds.Token.Expiry) {
+		// Only apply the check when tok has a real expiry — a zero Expiry means
+		// the token is non-expiring and must always be persisted regardless of
+		// what's currently stored.
+		if !tok.Expiry.IsZero() && creds.Token != nil && tok.Expiry.Before(creds.Token.Expiry) {
 			return nil
 		}
 

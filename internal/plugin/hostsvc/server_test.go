@@ -424,7 +424,7 @@ func TestGetRunContext_ResolvesFromCallID(t *testing.T) {
 	t.Parallel()
 
 	q := &fakeQuerier{
-		instance:   db.PluginInstance{ID: "iid-1", PluginID: "plug-1"},
+		instance:   db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "inst"},
 		latestStep: db.RunStep{StepNumber: 4},
 		run:        db.Run{ID: "run-A", PolicyID: "pol-A", StartedAt: "2024-01-01T00:00:00Z"},
 	}
@@ -475,6 +475,99 @@ func TestGetRunContext_ZeroSteps(t *testing.T) {
 	}
 	if resp.GetStepIndex() != 0 {
 		t.Errorf("step_index = %d, want 0 for empty run", resp.GetStepIndex())
+	}
+}
+
+// TestGetRunContext_RejectsCallBelongingToOtherInstance verifies that an
+// authenticated instance cannot supply a call_id that was issued to a different
+// instance. The fix for Bug A: LookupCall now cross-checks CallInfo.InstanceName
+// against the authenticated instance's name and returns PermissionDenied with an
+// unauthorized_request_id audit event (severity high) on mismatch.
+func TestGetRunContext_RejectsCallBelongingToOtherInstance(t *testing.T) {
+	t.Parallel()
+
+	// The calling instance is "instance-a"; the call_id belongs to "instance-b".
+	q := &fakeQuerier{
+		instance: db.PluginInstance{ID: "iid-a", PluginID: "plug-a", InstanceName: "instance-a"},
+		run:      db.Run{ID: "run-b", PolicyID: "pol-b", StartedAt: "2024-01-01T00:00:00Z"},
+	}
+	resolver := &fakeResolver{
+		info: dispatch.CallInfo{RunID: "run-b", PolicyID: "pol-b", InstanceName: "instance-b"},
+		ok:   true,
+	}
+	binder := &fakeInstanceBinder{id: "iid-a", ok: true}
+	pub := &fakePublisher{}
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, resolver, binder, pub, nil)
+
+	ctx := ctxWithCallID("call-foreign")
+	_, err := srv.GetRunContext(ctx, &hostv1.GetRunContextRequest{})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied for foreign call_id, got %v", err)
+	}
+	if st.Message() != "unauthorized_request_id" {
+		t.Errorf("message = %q, want unauthorized_request_id", st.Message())
+	}
+
+	events := q.all()
+	var found bool
+	for _, e := range events {
+		if e.EventType == hostsvc.EventTypeUnauthorizedRequestID {
+			found = true
+			if e.Severity != "high" {
+				t.Errorf("severity = %q, want high", e.Severity)
+			}
+			var payload map[string]string
+			if err := json.Unmarshal([]byte(e.PayloadJson), &payload); err != nil {
+				t.Fatalf("parse audit payload: %v", err)
+			}
+			if payload["call_id"] != "call-foreign" {
+				t.Errorf("payload.call_id = %q, want call-foreign", payload["call_id"])
+			}
+			if payload["run_id"] != "run-b" {
+				t.Errorf("payload.run_id = %q, want run-b", payload["run_id"])
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected %s audit event (severity high), got: %v", hostsvc.EventTypeUnauthorizedRequestID, events)
+	}
+}
+
+// TestGetRunContext_SucceedsForOwningInstance verifies the positive case: the
+// authenticated instance matches the call_id's InstanceName and the RPC succeeds.
+func TestGetRunContext_SucceedsForOwningInstance(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{
+		instance:   db.PluginInstance{ID: "iid-own", PluginID: "plug-own", InstanceName: "my-instance"},
+		latestStep: db.RunStep{StepNumber: 2},
+		run:        db.Run{ID: "run-own", PolicyID: "pol-own", StartedAt: "2024-06-01T00:00:00Z"},
+	}
+	resolver := &fakeResolver{
+		info: dispatch.CallInfo{RunID: "run-own", PolicyID: "pol-own", InstanceName: "my-instance"},
+		ok:   true,
+	}
+	binder := &fakeInstanceBinder{id: "iid-own", ok: true}
+	srv := hostsvc.NewServer(q, nil, testEncryptionKey, resolver, binder, &fakePublisher{}, nil)
+
+	ctx := ctxWithCallID("call-own")
+	resp, err := srv.GetRunContext(ctx, &hostv1.GetRunContextRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.GetRunId() != "run-own" {
+		t.Errorf("run_id = %q, want run-own", resp.GetRunId())
+	}
+	if resp.GetStepIndex() != 3 {
+		t.Errorf("step_index = %d, want 3 (latest=2, next=3)", resp.GetStepIndex())
+	}
+
+	// No unauthorized audit events.
+	for _, e := range q.all() {
+		if e.EventType == hostsvc.EventTypeUnauthorizedRequestID {
+			t.Errorf("unexpected unauthorized_request_id audit event: %+v", e)
+		}
 	}
 }
 

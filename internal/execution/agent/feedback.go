@@ -278,7 +278,13 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 		if err := h.sm.Transition(ctx, model.RunStatusRunning, ""); err != nil {
 			return "", fmt.Errorf("transitioning run back to running after feedback: %w", err)
 		}
-		h.resolveFeedbackRecord(ctx, runID, feedbackID, resp.text)
+		// Do NOT call resolveFeedbackRecord here. The HTTP SubmitFeedback handler
+		// owns the pending→resolved CAS for the in-app path (step d in runs_handler.go).
+		// Calling UpdateFeedbackRequestStatus from both sides creates a two-writer
+		// race: whichever loses the CAS gets rows==0, and the HTTP handler would
+		// return 409 to an operator whose submission was genuinely delivered.
+		// resolveFeedbackRecord is only needed on the plugin-dispatched path (Phase 2a
+		// above), where no HTTP handler transitions the record.
 		return resp.text, nil
 
 	case <-timeoutCh:

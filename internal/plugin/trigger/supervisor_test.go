@@ -126,6 +126,23 @@ func (s *recoverServer) Start(_ *triggerv1.StartRequest, stream grpc.ServerStrea
 	return nil
 }
 
+// singleEventThenBlockServer sends one event then blocks until the stream
+// context is cancelled, mimicking a long-lived connected plugin.  This prevents
+// the reconnect loop from accumulating consecutive failures during tests that
+// want to observe exactly what happens before the first event.
+type singleEventThenBlockServer struct {
+	triggerv1.UnimplementedTriggerServiceServer
+	event *triggerv1.StartResponse
+}
+
+func (s *singleEventThenBlockServer) Start(_ *triggerv1.StartRequest, stream grpc.ServerStreamingServer[triggerv1.StartResponse]) error {
+	if err := stream.Send(s.event); err != nil {
+		return err
+	}
+	<-stream.Context().Done()
+	return stream.Context().Err()
+}
+
 // ── fake InstanceLookup ───────────────────────────────────────────────────────
 
 type fakeInstanceLookup struct {
@@ -1040,5 +1057,140 @@ func TestSupervisor_Restart_EmptyToNonEmpty_TriggersStream(t *testing.T) {
 	}
 	if got[0].EventID != "after-scope-set" {
 		t.Errorf("first event ID = %q, want %q", got[0].EventID, "after-scope-set")
+	}
+}
+
+// ── Bug-fix regression tests ──────────────────────────────────────────────────
+
+// nilThenClientLookup returns nil on the first N lookups (simulating a slow
+// subprocess start), then returns the real client.  Used to verify that startup
+// waits do not inflate consecutive toward the unhealthy threshold.
+type nilThenClientLookup struct {
+	mu         sync.Mutex
+	nilCount   int
+	callsSoFar int
+	client     triggerv1.TriggerServiceClient
+	pluginID   string
+}
+
+func (l *nilThenClientLookup) LookupInstance(_ string) (triggerv1.TriggerServiceClient, string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.callsSoFar++
+	if l.callsSoFar <= l.nilCount {
+		return nil, ""
+	}
+	return l.client, l.pluginID
+}
+
+// TestSupervisor_StartupWaits_DoNotInflateConsecutive verifies that returning
+// nil from LookupInstance (subprocess not yet running) does NOT increment the
+// consecutive-failure counter.  Without the fix, enough nil lookups would push
+// the backoff to BackoffMax and trip maybeMarkUnhealthy before any real stream
+// failure occurred.
+//
+// Strategy: use UnhealthyAfter=3 and let the lookup return nil exactly 4 times
+// (> threshold if consecutive were incremented).  The 5th lookup returns the
+// real client, which opens a blocking stream (sends one event then blocks).
+// We stop the supervisor after the event is dispatched to prevent subsequent
+// reconnect failures from tripping the Unhealthy check.  If consecutive WERE
+// incremented during the nil-lookup waits, Unhealthy would be set before the
+// event dispatch.
+func TestSupervisor_StartupWaits_DoNotInflateConsecutive(t *testing.T) {
+	t.Parallel()
+
+	// blockAfterEventServer sends events then blocks until context is cancelled.
+	// Using blockingServer after one event prevents the reconnect loop from
+	// accumulating post-event consecutive failures during the assertion window.
+	evSrv := &singleEventThenBlockServer{
+		event: &triggerv1.StartResponse{EventId: "post-startup", EventKind: "message"},
+	}
+
+	client, stop := startFakeTriggerServer(t, evSrv)
+	defer stop()
+
+	// 4 nil lookups before the client is available — more than UnhealthyAfter=3.
+	lookup := &nilThenClientLookup{nilCount: 4, client: client, pluginID: "test-plugin"}
+	dispatcher := &fakeEventDispatcher{}
+
+	var unhealthyCalled atomic.Bool
+	healthSetter := func(_ context.Context, _ string, state model.PluginHealthState, _ string) {
+		if state == model.PluginHealthStateUnhealthy {
+			unhealthyCalled.Store(true)
+		}
+	}
+
+	sup := newSupervisor(lookup, dispatcher, healthSetter)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sup.Start(ctx, "inst-slow-start")
+
+	// Wait for the event — confirms the stream opened after startup waits.
+	waitFor(t, 8*time.Second, func() bool {
+		return len(dispatcher.received()) >= 1
+	})
+
+	// Stop the supervisor before the stream ends so the reconnect loop cannot
+	// accumulate post-event failures that would trip Unhealthy.
+	sup.Stop("inst-slow-start")
+
+	if unhealthyCalled.Load() {
+		t.Error("HealthSetter called with Unhealthy; consecutive must not be incremented for nil-lookup startup waits")
+	}
+	if len(dispatcher.received()) == 0 {
+		t.Error("no events dispatched; stream should have opened after startup waits")
+	}
+}
+
+// TestSupervisor_BackoffResets_OnSuccessfulStreamOpen verifies that consecutive
+// is reset on a successful TriggerService.Start, not only on the first Recv.
+//
+// Scenario: the server EOFs immediately for the first N calls (racking up
+// consecutive failures), then opens a real event stream.  Before the fix the
+// backoff counter was only reset inside recvLoop on the first Recv; a stream
+// that opened then immediately EOFed never reset consecutive, so the backoff
+// climbed unboundedly across reconnects.  After the fix, consecutive is reset
+// at the stream-open point, so recovery is immediate.
+//
+// Observable proxy: we count Start calls.  With the fix, after the initial
+// failures the supervisor should reconnect quickly (low backoff due to reset)
+// and reach the event-serving stream.  We assert the event is dispatched within
+// a generous timeout; the exact call count is not asserted (scheduler-dependent).
+func TestSupervisor_BackoffResets_OnSuccessfulStreamOpen(t *testing.T) {
+	t.Parallel()
+
+	evCh := make(chan *triggerv1.StartResponse, 1)
+	evCh <- &triggerv1.StartResponse{EventId: "recovery-event", EventKind: "message"}
+	close(evCh)
+
+	// Fail the first 3 Start calls with immediate EOF, then serve the event.
+	srv := &recoverServer{failCount: 3, ch: evCh}
+	client, stop := startFakeTriggerServer(t, srv)
+	defer stop()
+
+	lookup := &fakeInstanceLookup{client: client, pluginID: "test-plugin"}
+	dispatcher := &fakeEventDispatcher{}
+
+	sup := newSupervisor(lookup, dispatcher, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sup.Start(ctx, "inst-backoff-reset")
+
+	// Wait for the recovery event — confirms the stream opened after failures
+	// and consecutive was reset so the next successful open is not delayed.
+	waitFor(t, 8*time.Second, func() bool {
+		return len(dispatcher.received()) >= 1
+	})
+
+	got := dispatcher.received()
+	if len(got) == 0 {
+		t.Fatal("no events dispatched; supervisor did not recover from initial EOF failures")
+	}
+	if got[0].EventID != "recovery-event" {
+		t.Errorf("first event ID = %q, want recovery-event", got[0].EventID)
 	}
 }

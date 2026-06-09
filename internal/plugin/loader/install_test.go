@@ -15,6 +15,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
+	manifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 	_ "modernc.org/sqlite"
 )
@@ -556,6 +557,108 @@ func TestInstall_UnsignedPermissive_Active(t *testing.T) {
 	}
 	if row.Status != "active" {
 		t.Errorf("status = %q, want active", row.Status)
+	}
+}
+
+// TestInstall_UnsignedPermissive_Create_EmitsHighSeverityAuditEvent verifies that
+// a fresh install of an unsigned plugin under GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true
+// emits a plugin_installed audit event with high severity (ADR-045 §6).
+func TestInstall_UnsignedPermissive_Create_EmitsHighSeverityAuditEvent(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, true)
+
+	tarPath := unsignedPluginTarball(t, "unsigned-audit-plugin", "1.0.0")
+
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
+		t.Fatalf("Install (unsigned permissive): %v", err)
+	}
+
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditPluginInstalled,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected a plugin_installed audit event, got none")
+	}
+	if events[0].Severity != severityHigh {
+		t.Errorf("audit severity = %q, want %q (ADR-045 §6: unsigned-permissive load must emit high severity)", events[0].Severity, severityHigh)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(events[0].PayloadJson), &payload); err != nil {
+		t.Fatalf("parse audit payload: %v", err)
+	}
+	if payload["outcome"] != OutcomeUnsignedPermissive.String() {
+		t.Errorf("audit payload outcome = %q, want %q", payload["outcome"], OutcomeUnsignedPermissive.String())
+	}
+}
+
+// TestUpdatePlugin_UnsignedPermissive_EmitsHighSeverityAuditEvent verifies that
+// updatePlugin emits a plugin_update_pending audit event with high severity when
+// result.Outcome == OutcomeUnsignedPermissive (ADR-045 §6). updatePlugin is called
+// directly because the normal install flow routes unsigned version bumps through
+// updatePluginCosmetic (version changes are always cosmetic per the manifest diff).
+// The defensive fix in updatePlugin covers callers that construct a VerifyResult
+// with OutcomeUnsignedPermissive before calling it, e.g. future paths that bypass
+// the cosmetic-change short-circuit.
+func TestUpdatePlugin_UnsignedPermissive_EmitsHighSeverityAuditEvent(t *testing.T) {
+	store := openTestStore(t)
+	q := store.Queries()
+	v := &realVerifier{allowUnsigned: true}
+	inst := NewInstaller(v, q, store.DB(), nil, "")
+	nowStr := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC).UTC().Format(time.RFC3339Nano)
+	inst.clock = func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+
+	// Seed a minimal plugin row so updatePlugin has an existing row to update.
+	ctx := context.Background()
+	manifestContent := []byte("schema_version: v1\nname: upd-unsigned-plugin\nversion: 1.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	pluginID := "test-upd-unsigned-id"
+	if _, err := q.CreatePlugin(ctx, db.CreatePluginParams{
+		ID:               pluginID,
+		Name:             "upd-unsigned-plugin",
+		PluginVersion:    "1.0.0",
+		ManifestSnapshot: string(manifestContent),
+		TrustedPubkey:    "",
+		Status:           statusActive,
+		BinaryPath:       nil,
+		CreatedAt:        nowStr,
+		UpdatedAt:        nowStr,
+	}); err != nil {
+		t.Fatalf("CreatePlugin: %v", err)
+	}
+	existing, err := q.GetPluginByName(ctx, "upd-unsigned-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+
+	newManifestContent := []byte("schema_version: v1\nname: upd-unsigned-plugin\nversion: 2.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n")
+	m := &manifest.Manifest{
+		Name:    "upd-unsigned-plugin",
+		Version: "2.0.0",
+	}
+	result := VerifyResult{Outcome: OutcomeUnsignedPermissive}
+
+	if _, err := inst.updatePlugin(ctx, existing, m, newManifestContent, result, "", nowStr); err != nil {
+		t.Fatalf("updatePlugin (unsigned permissive): %v", err)
+	}
+
+	events, err := q.ListPluginAuditEventsByType(ctx, db.ListPluginAuditEventsByTypeParams{
+		EventType: auditUpdatePending,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected a plugin_update_pending audit event, got none")
+	}
+	if events[0].Severity != severityHigh {
+		t.Errorf("audit severity = %q, want %q (ADR-045 §6: unsigned-permissive load must emit high severity)", events[0].Severity, severityHigh)
 	}
 }
 

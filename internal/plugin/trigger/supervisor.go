@@ -393,10 +393,12 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 		triggerClient, _ := s.lookup.LookupInstance(instanceID)
 		if triggerClient == nil {
 			// Subprocess not running yet — wait one backoff unit and retry.
+			// This is a transient startup condition, not a stream failure: do
+			// not increment consecutive so startup waits cannot prematurely
+			// push the backoff to BackoffMax or trigger maybeMarkUnhealthy.
 			if !s.sleep(ctx, s.backoff(consecutive)) {
 				return
 			}
-			consecutive++
 			continue
 		}
 
@@ -457,12 +459,16 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 			continue
 		}
 
-		// On the very first successful stream open, mark Healthy so the admin
-		// UI can see the instance is connected before any events arrive.
-		// Subsequent reconnects skip this — the recovery path in recvLoop
-		// handles marking Healthy after failures resolve.
+		// On the very first successful stream open, mark Healthy and reset the
+		// consecutive-failure counter.  Resetting here ensures that startup waits
+		// (nil-lookup branches, which no longer increment consecutive) plus any
+		// real failures accumulated before the subprocess became reachable do not
+		// carry stale backoff state into the first live connection.  Subsequent
+		// reconnects rely on recvLoop's firstEvent reset for recovery — see
+		// recvLoop for why that is sufficient for the post-startup case.
 		if !initialHealthSet {
 			initialHealthSet = true
+			consecutive = 0
 			if s.cfg.HealthSetter != nil {
 				s.cfg.HealthSetter(ctx, instanceID, model.PluginHealthStateHealthy, "")
 			}

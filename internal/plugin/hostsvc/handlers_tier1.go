@@ -99,6 +99,19 @@ func (s *Server) GetRunContext(ctx context.Context, _ *hostv1.GetRunContextReque
 		return nil, status.Errorf(codes.FailedPrecondition, "call_id %q is not currently in-flight", callID)
 	}
 
+	// Verify the resolved call belongs to the authenticated instance. Without
+	// this check any authenticated plugin could supply a foreign call_id and
+	// read run/policy context belonging to a different instance.
+	if info.InstanceName != inst.InstanceName {
+		const rpcMethod = "/gleipnir.plugin.host.v1.HostService/GetRunContext"
+		s.writeAuditEvent(ctx, inst.ID, EventTypeUnauthorizedRequestID, "high", map[string]string{
+			"call_id":    callID,
+			"run_id":     info.RunID,
+			"rpc_method": rpcMethod,
+		})
+		return nil, status.Error(codes.PermissionDenied, "unauthorized_request_id")
+	}
+
 	latestStep, err := s.latestStepNumber(ctx, info.RunID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "resolve step index: %v", err)
@@ -110,8 +123,6 @@ func (s *Server) GetRunContext(ctx context.Context, _ *hostv1.GetRunContextReque
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "fetch run: %v", err)
 	}
-
-	_ = inst // identity already verified; not needed in response payload
 
 	return &hostv1.GetRunContextResponse{
 		RunId:     info.RunID,

@@ -60,12 +60,19 @@ type pluginMetrics struct {
 	// It is checked before calling GaugeVec.With so we never register a new
 	// label combination once the cap is reached.
 	cardinality map[string]map[string]map[string]struct{} // metric → labelKey → valueSet
+
+	// namesByInstance tracks the set of distinct fully-qualified metric names
+	// registered by each instance (keyed by instanceID). The metricNameCap is
+	// enforced per-instance so one misbehaving instance cannot exhaust the
+	// budget for every other instance on the host.
+	namesByInstance map[string]map[string]struct{} // instanceID → set of fullNames
 }
 
 func newPluginMetrics() *pluginMetrics {
 	return &pluginMetrics{
-		gauges:      make(map[string]gaugeEntry),
-		cardinality: make(map[string]map[string]map[string]struct{}),
+		gauges:          make(map[string]gaugeEntry),
+		cardinality:     make(map[string]map[string]map[string]struct{}),
+		namesByInstance: make(map[string]map[string]struct{}),
 	}
 }
 
@@ -129,11 +136,13 @@ func (m *pluginMetrics) set(name string, value float64, userLabels map[string]st
 
 	entry, exists := m.gauges[fullName]
 	if !exists {
-		// Enforce the per-plugin metric name cap before registering a new GaugeVec.
-		// This prevents a misbehaving plugin from growing the registry without bound.
-		if len(m.gauges) >= metricNameCap {
+		// Enforce the per-instance metric name cap. Counting m.gauges (global)
+		// would let one instance deny registration to every other instance on
+		// the host; the cap must be scoped to the calling instance instead.
+		instNames := m.namesByInstance[instanceID]
+		if _, alreadyOwned := instNames[fullName]; !alreadyOwned && len(instNames) >= metricNameCap {
 			return "metric_name_cap_exceeded", fmt.Errorf(
-				"plugin has reached the %d distinct metric name cap; metric %q rejected",
+				"plugin instance has reached the %d distinct metric name cap; metric %q rejected",
 				metricNameCap, fullName,
 			)
 		}
@@ -181,6 +190,12 @@ func (m *pluginMetrics) set(name string, value float64, userLabels map[string]st
 		}
 		entry = gaugeEntry{gv: gv, labelKeys: userKeySet}
 		m.gauges[fullName] = entry
+		// Record the new name against this instance so the per-instance cap
+		// check stays accurate on subsequent calls.
+		if m.namesByInstance[instanceID] == nil {
+			m.namesByInstance[instanceID] = make(map[string]struct{})
+		}
+		m.namesByInstance[instanceID][fullName] = struct{}{}
 	} else {
 		// Validate that the caller presents exactly the same user-supplied label
 		// keys as the original registration. A mismatch would cause gv.With to

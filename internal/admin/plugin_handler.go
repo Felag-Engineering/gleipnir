@@ -785,34 +785,19 @@ func (h *PluginHandler) PutSubscriptionScope(w http.ResponseWriter, r *http.Requ
 		h.triggerRestarter.Restart(ctx, instanceID)
 	}
 
-	// Re-fetch to return the updated row.
+	// Re-fetch to return the updated row. On failure synthesise the response
+	// from the pre-write snapshot + known deltas; secret fields must still be
+	// redacted in both paths (ADR-049).
 	updated, err := h.q.GetPluginInstanceByID(ctx, instanceID)
 	if err != nil {
-		// The write succeeded; fall back to a synthesised response.
-		httputil.WriteJSON(w, http.StatusOK, instanceResponse{
-			ID:                    instanceID,
-			PluginID:              pluginID,
-			InstanceName:          inst.InstanceName,
-			State:                 inst.HealthState,
-			Detail:                inst.HealthDetail,
-			Version:               inst.Version + 1,
-			UpdatedAt:             nowStr,
-			SubscriptionScopeJson: string(scopeBytes),
-			ConfigJson:            inst.ConfigJson,
-		})
+		synthetic := inst
+		synthetic.Version++
+		synthetic.UpdatedAt = nowStr
+		synthetic.SubscriptionScopeJson = string(scopeBytes)
+		h.writeInstanceResponseWithRedaction(ctx, w, pluginID, synthetic)
 		return
 	}
-	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
-		ID:                    updated.ID,
-		PluginID:              updated.PluginID,
-		InstanceName:          updated.InstanceName,
-		State:                 updated.HealthState,
-		Detail:                updated.HealthDetail,
-		Version:               updated.Version,
-		UpdatedAt:             updated.UpdatedAt,
-		SubscriptionScopeJson: updated.SubscriptionScopeJson,
-		ConfigJson:            updated.ConfigJson,
-	})
+	h.writeInstanceResponseWithRedaction(ctx, w, pluginID, updated)
 }
 
 // putInstanceConfigRequest is the JSON body for

@@ -780,7 +780,13 @@ func (in *Installer) createPlugin(ctx context.Context, m *manifest.Manifest, man
 		}); qErr != nil {
 			return fmt.Errorf("create plugin %q: %w", m.Name, qErr)
 		}
-		if auditErr := insertAuditRow(ctx, q, auditPluginInstalled, severityInfo, nowStr, map[string]any{
+		// ADR-045 §6: unsigned-permissive installs must emit a high-severity audit event
+		// so severity-based alerting catches every load that bypassed signature verification.
+		installSeverity := severityInfo
+		if result.Outcome == OutcomeUnsignedPermissive {
+			installSeverity = severityHigh
+		}
+		if auditErr := insertAuditRow(ctx, q, auditPluginInstalled, installSeverity, nowStr, map[string]any{
 			"name":    m.Name,
 			"version": m.Version,
 			"outcome": result.Outcome.String(),
@@ -846,7 +852,13 @@ func (in *Installer) updatePlugin(ctx context.Context, existing db.Plugin, m *ma
 			}
 		}
 
-		if auditErr := insertAuditRow(ctx, q, auditUpdatePending, severityInfo, nowStr, map[string]any{
+		// ADR-045 §6: unsigned-permissive updates must emit a high-severity audit event
+		// so severity-based alerting catches every load that bypassed signature verification.
+		updateSeverity := severityInfo
+		if result.Outcome == OutcomeUnsignedPermissive {
+			updateSeverity = severityHigh
+		}
+		if auditErr := insertAuditRow(ctx, q, auditUpdatePending, updateSeverity, nowStr, map[string]any{
 			"name":        m.Name,
 			"old_version": existing.PluginVersion,
 			"new_version": m.Version,

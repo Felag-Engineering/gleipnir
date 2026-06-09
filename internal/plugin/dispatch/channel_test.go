@@ -1025,6 +1025,73 @@ func TestRequest_RowInsertedBeforeGRPCCall(t *testing.T) {
 	}
 }
 
+// TestWait_TimerFires_CancelledCtx_RowTransitionedToTimedOut verifies that when
+// Wait's timer fires, the cleanup DB operations (TransitionTimedOut and
+// GetPluginPendingRequest) use a detached context.Background() deadline rather
+// than the caller's run ctx.  This means the row is transitioned to 'timed_out'
+// even when the caller's ctx has been cancelled at the moment cleanup runs —
+// the canonical scenario is a run that is interrupted while a channel request
+// is still pending.
+//
+// The test exercises this by calling Wait with a context that is cancelled
+// AFTER the timer deadline, ensuring the timer branch runs first.  A separate
+// goroutine cancels the ctx after a delay longer than the timer so the timer
+// wins the select race deterministically.
+func TestWait_TimerFires_CancelledCtx_RowTransitionedToTimedOut(t *testing.T) {
+	ds := newSetup(t)
+
+	pluginID := insertPlugin(t, ds.store, "p1", "plug")
+	instID := insertPluginInstance(t, ds.store, "i1", pluginID, "inst-ok")
+	audID := insertAudience(t, ds.store, "aud1", "aud")
+	insertAudienceEntry(t, ds.store, "ae1", audID, instID, 0, false, true)
+
+	ds.clientMap["inst-ok"] = &fakeChannelClient{
+		requestHook: func(_ context.Context, _ *channelv1.RequestRequest) (*channelv1.RequestResponse, error) {
+			return &channelv1.RequestResponse{Acked: true}, nil
+		},
+	}
+
+	testutil.InsertPolicy(t, ds.store, "pol1", "policy-pol1", "webhook", "{}")
+	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
+
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+
+	reqID, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+
+	// Use a ctx that will be cancelled 50ms AFTER the timer fires. This ensures
+	// the timer branch wins the select.  The 30ms timer fires first; the ctx
+	// cancel at 80ms is the "run was cancelled shortly after" scenario.
+	runCtx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	// Wait with a 30ms timeout. Nobody calls Resolve. Timer fires at ~30ms;
+	// ctx is cancelled at ~80ms so the timer wins the select.
+	_, waitErr := d.Wait(runCtx, reqID, 30*time.Millisecond)
+	if waitErr == nil {
+		t.Fatal("Wait should return an error (timeout)")
+	}
+
+	// The row must be timed_out — the cleanup used a detached context so it
+	// succeeds regardless of whether the caller's ctx is (or becomes) cancelled.
+	var status string
+	if err := ds.store.DB().QueryRow(`SELECT status FROM plugin_pending_requests WHERE id = ?`, reqID).Scan(&status); err != nil {
+		t.Fatalf("query pending request: %v", err)
+	}
+	if status != "timed_out" {
+		t.Errorf("status = %q, want timed_out (cleanup must succeed independent of run ctx state)", status)
+	}
+
+	// WriteRunStep must also have been called (GetPluginPendingRequest succeeded
+	// with the detached cleanup context).
+	steps := ds.stepsByType("plugin_request_timeout")
+	if len(steps) != 1 {
+		t.Errorf("plugin_request_timeout steps = %d, want 1", len(steps))
+	}
+}
+
 // TestRequest_PreAckFailure_RowTransitionedToTimedOut verifies the cleanup path:
 // when the plugin returns acked=false, the already-inserted row is transitioned
 // to timed_out rather than left as a dangling pending entry.

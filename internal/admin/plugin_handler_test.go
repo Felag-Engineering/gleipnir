@@ -47,14 +47,26 @@ type fakePluginQuerier struct {
 	deletedInstanceIDs []string
 	// deletedPluginIDs tracks which plugin IDs were deleted.
 	deletedPluginIDs []string
+	// getInstanceCallCounts tracks how many times GetPluginInstanceByID has been
+	// called per instance ID, used to inject errors on the Nth call.
+	getInstanceCallCounts map[string]int
+	// getInstanceErrAfterN maps instance ID → call count threshold; calls
+	// strictly after that count return errFakeGetInstance instead of the row.
+	getInstanceErrAfterN map[string]int
 }
+
+// errFakeGetInstance is returned by GetPluginInstanceByID when the call
+// threshold set via getInstanceErrAfterN is exceeded.
+var errFakeGetInstance = errors.New("fake: GetPluginInstanceByID injected error")
 
 func newFakePluginQuerier() *fakePluginQuerier {
 	return &fakePluginQuerier{
-		instances:        make(map[string]db.PluginInstance),
-		plugins:          make(map[string]db.Plugin),
-		pendingManifests: make(map[string]db.PluginPendingManifest),
-		audienceEntries:  make(map[string][]db.ListAudienceEntriesByInstanceRow),
+		instances:             make(map[string]db.PluginInstance),
+		plugins:               make(map[string]db.Plugin),
+		pendingManifests:      make(map[string]db.PluginPendingManifest),
+		audienceEntries:       make(map[string][]db.ListAudienceEntriesByInstanceRow),
+		getInstanceCallCounts: make(map[string]int),
+		getInstanceErrAfterN:  make(map[string]int),
 	}
 }
 
@@ -79,6 +91,10 @@ func (f *fakePluginQuerier) seedPlugin(p db.Plugin) {
 }
 
 func (f *fakePluginQuerier) GetPluginInstanceByID(_ context.Context, id string) (db.PluginInstance, error) {
+	f.getInstanceCallCounts[id]++
+	if threshold, ok := f.getInstanceErrAfterN[id]; ok && f.getInstanceCallCounts[id] > threshold {
+		return db.PluginInstance{}, errFakeGetInstance
+	}
 	row, ok := f.instances[id]
 	if !ok {
 		return db.PluginInstance{}, ErrNotFound
@@ -1052,6 +1068,11 @@ const (
 	triggerManifestWithScope = "schema_version: v1\nname: trigger-plugin\nversion: 1.0.0\nservices:\n  trigger: v1\nauth:\n  mode: instance_credentials\n  strategy: none\nsubscription_schema:\n  type: object\n  additionalProperties: false\n  required:\n    - channels\n  properties:\n    channels:\n      type: array\n      items:\n        type: string\n"
 	// triggerManifestNoScope is a TriggerService manifest without subscription_schema.
 	triggerManifestNoScope = "schema_version: v1\nname: trigger-plugin\nversion: 1.0.0\nservices:\n  trigger: v1\nauth:\n  mode: instance_credentials\n  strategy: none\n"
+
+	// triggerManifestWithScopeAndSecret is a TriggerService manifest that
+	// has both a subscription_schema and a config_schema with a secret field
+	// (app_level_token). Used to verify ADR-049 redaction in PutSubscriptionScope.
+	triggerManifestWithScopeAndSecret = "schema_version: v1\nname: trigger-plugin\nversion: 1.0.0\nservices:\n  trigger: v1\nauth:\n  mode: instance_credentials\n  strategy: none\nsubscription_schema:\n  type: object\n  additionalProperties: false\n  required:\n    - channels\n  properties:\n    channels:\n      type: array\n      items:\n        type: string\nconfig_schema:\n  type: object\n  properties:\n    app_level_token:\n      type: string\n      x-gleipnir-secret: true\n  required:\n    - app_level_token\n"
 )
 
 func TestPluginHandler_AcceptManifest(t *testing.T) {
@@ -1564,6 +1585,112 @@ func TestPluginHandler_PutSubscriptionScope(t *testing.T) {
 
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 on mismatched plugin", rec.Code)
+		}
+	})
+
+	// ADR-049: secret config fields must be redacted in the success response.
+	t.Run("200 secret config field is redacted in success response", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-sec",
+			Name:             "trigger-plugin",
+			ManifestSnapshot: triggerManifestWithScopeAndSecret,
+			Version:          0,
+		})
+		q.seed(db.PluginInstance{
+			ID:                    "inst-sec",
+			PluginID:              "plugin-sec",
+			InstanceName:          "prod",
+			ConfigJson:            `{"app_level_token":"xoxb-secret-value"}`,
+			SubscriptionScopeJson: "{}",
+			HealthState:           "healthy",
+			Version:               1,
+			UpdatedAt:             "2026-05-01T00:00:00Z",
+		})
+
+		restarter := &fakeTriggerRestarter{}
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetTriggerRestarter(restarter)
+
+		body := `{"scope":{"channels":["#alerts"]},"expected_version":1}`
+		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+		req = withChiParams(req, map[string]string{"id": "plugin-sec", "iid": "inst-sec"})
+		rec := httptest.NewRecorder()
+		h.PutSubscriptionScope(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp struct {
+			Data struct {
+				ConfigJson string `json:"config_json"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		var cfg map[string]any
+		if err := json.Unmarshal([]byte(resp.Data.ConfigJson), &cfg); err != nil {
+			t.Fatalf("unmarshal config_json: %v", err)
+		}
+		if cfg["app_level_token"] != "***" {
+			t.Errorf("app_level_token = %q, want \"***\" (must be redacted per ADR-049)", cfg["app_level_token"])
+		}
+	})
+
+	// ADR-049: secret config fields must be redacted even on the fallback
+	// synthesised response path (when the re-fetch after write fails).
+	t.Run("200 secret config field is redacted in fallback synthesised response", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-sec2",
+			Name:             "trigger-plugin",
+			ManifestSnapshot: triggerManifestWithScopeAndSecret,
+			Version:          0,
+		})
+		q.seed(db.PluginInstance{
+			ID:                    "inst-sec2",
+			PluginID:              "plugin-sec2",
+			InstanceName:          "prod",
+			ConfigJson:            `{"app_level_token":"xoxb-secret-value"}`,
+			SubscriptionScopeJson: "{}",
+			HealthState:           "healthy",
+			Version:               1,
+			UpdatedAt:             "2026-05-01T00:00:00Z",
+		})
+		// Allow the initial GetPluginInstanceByID (call 1) to succeed, but
+		// fail the re-fetch (call 2) to trigger the synthesised-response path.
+		q.getInstanceErrAfterN["inst-sec2"] = 1
+
+		restarter := &fakeTriggerRestarter{}
+		h := NewPluginHandler(q, nil, fixedClock)
+		h.SetTriggerRestarter(restarter)
+
+		body := `{"scope":{"channels":["#alerts"]},"expected_version":1}`
+		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+		req = withChiParams(req, map[string]string{"id": "plugin-sec2", "iid": "inst-sec2"})
+		rec := httptest.NewRecorder()
+		h.PutSubscriptionScope(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp struct {
+			Data struct {
+				ConfigJson string `json:"config_json"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		var cfg map[string]any
+		if err := json.Unmarshal([]byte(resp.Data.ConfigJson), &cfg); err != nil {
+			t.Fatalf("unmarshal config_json: %v", err)
+		}
+		if cfg["app_level_token"] != "***" {
+			t.Errorf("app_level_token = %q, want \"***\" (must be redacted per ADR-049)", cfg["app_level_token"])
 		}
 	})
 }

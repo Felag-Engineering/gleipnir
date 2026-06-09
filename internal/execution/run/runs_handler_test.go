@@ -1495,6 +1495,136 @@ func TestRunsHandler_SubmitFeedback(t *testing.T) {
 	}
 }
 
+// TestRunsHandler_SubmitFeedback_InApp_NoSpuriousConflict exercises the race that
+// existed before the fix: the agent's Wait goroutine and the HTTP handler both
+// raced on UpdateFeedbackRequestStatus(pending→resolved). After the fix the agent
+// does NOT call UpdateFeedbackRequestStatus on the in-app path, so the HTTP
+// handler always wins the CAS and the operator sees 202 (never a spurious 409).
+//
+// Setup: register a real FeedbackHandler as the resolver so the concurrent paths
+// are real.  The handler's Wait goroutine is running when the HTTP POST arrives.
+// The HTTP handler must return 202; the Wait goroutine must resume correctly.
+func TestRunsHandler_SubmitFeedback_InApp_NoSpuriousConflict(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	manager := run.NewRunManager()
+
+	testutil.InsertPolicy(t, store, "p-inapp-race", "policy-p-inapp-race", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-inapp-race", "p-inapp-race", model.RunStatusRunning)
+
+	// Build a real FeedbackHandler wired into the manager (mirrors launcher.go production path).
+	sm := agent.NewRunStateMachine("r-inapp-race", model.RunStatusRunning, store.DB(), store.Queries())
+	aw := agent.NewAuditWriter(store.Queries())
+	t.Cleanup(func() { aw.Close() }) //nolint:errcheck
+	fh := agent.NewFeedbackHandler(aw, sm, time.Minute)
+
+	cancel := func() {}
+	approvalCh := make(chan bool, 1)
+	manager.RegisterWithFeedbackResolver("r-inapp-race", cancel, approvalCh, fh)
+
+	// Launch Wait in the background — it will block until Resolve is called.
+	type waitResult struct {
+		body string
+		err  error
+	}
+	waitDone := make(chan waitResult, 1)
+	go func() {
+		body, err := fh.Wait(context.Background(), "r-inapp-race", agent.AskOperatorToolName, "{}", "what now?", time.Minute)
+		waitDone <- waitResult{body, err}
+	}()
+
+	// Poll until the pending DB row appears (the goroutine has passed Phase 1).
+	var feedbackID string
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rows, err := store.GetPendingFeedbackRequestsByRun(context.Background(), "r-inapp-race")
+		if err != nil {
+			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+		}
+		if len(rows) > 0 {
+			feedbackID = rows[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if feedbackID == "" {
+		t.Fatal("timed out waiting for feedback row")
+	}
+
+	// Fire the HTTP POST — this resolves the in-app waiter and owns the CAS.
+	h := run.NewRunsHandler(store, manager, nil)
+	router := newRunsRouter(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/r-inapp-race/feedback",
+		strings.NewReader(`{"response":"go ahead"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("HTTP status = %d, want 202 (not a spurious 409); body: %s", w.Code, w.Body.String())
+	}
+
+	// The agent goroutine must unblock and resume without error.
+	select {
+	case res := <-waitDone:
+		if res.err != nil {
+			t.Fatalf("Wait goroutine returned error: %v", res.err)
+		}
+		if res.body != "go ahead" {
+			t.Errorf("Wait body = %q, want %q", res.body, "go ahead")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Wait goroutine did not unblock within 3s")
+	}
+
+	manager.Deregister("r-inapp-race")
+}
+
+// TestRunsHandler_SubmitFeedback_GenuineDoubleSubmit asserts that a second
+// operator submission after the feedback row has already been resolved still
+// returns 409.  This distinguishes the fixed spurious-409 path (first submit,
+// agent racing) from the legitimate 409 (second submit, row already resolved).
+func TestRunsHandler_SubmitFeedback_GenuineDoubleSubmit(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	manager := run.NewRunManager()
+
+	testutil.InsertPolicy(t, store, "p-double-submit", "policy-p-double-submit", "webhook", testutil.MinimalWebhookPolicy)
+	testutil.InsertRun(t, store, "r-double-submit", "p-double-submit", model.RunStatusWaitingForFeedback)
+	insertFeedbackRequest(t, store, "fr-double-1", "r-double-submit")
+
+	// Resolver returns nil — simulates the first submit having succeeded.
+	resolver := &stubResolver{ResolveFunc: nil}
+	manager.Register("r-double-submit", func() {}, make(chan bool, 1))
+	manager.RegisterFeedbackResolver("r-double-submit", resolver)
+
+	h := run.NewRunsHandler(store, manager, nil)
+	router := newRunsRouter(h)
+
+	// First submit — succeeds (row pending → resolved).
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/runs/r-double-submit/feedback",
+		strings.NewReader(`{"response":"first answer"}`))
+	req1.Header.Set("Content-Type", "application/json")
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, req1)
+
+	if w1.Code != http.StatusAccepted {
+		t.Fatalf("first submit status = %d, want 202; body: %s", w1.Code, w1.Body.String())
+	}
+
+	// Second submit — same pending row is now resolved; must return 409.
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/runs/r-double-submit/feedback",
+		strings.NewReader(`{"response":"second answer"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusConflict {
+		t.Fatalf("second submit status = %d, want 409; body: %s", w2.Code, w2.Body.String())
+	}
+
+	manager.Deregister("r-double-submit")
+}
+
 // TestRunsHandler_SubmitFeedback_LateCallback explicitly exercises the 410 path:
 // a pending DB row exists but the waiter map entry has already been cleared
 // (e.g. the in-agent timeout fired or another response arrived first).

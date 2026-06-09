@@ -596,6 +596,74 @@ func TestFeedbackHandler_Wait_PluginFallbackToInApp(t *testing.T) {
 	}
 }
 
+// TestFeedbackHandler_Wait_InApp_DoesNotResolveDBRow verifies that after the
+// in-app select branch completes, the feedback_requests DB row remains in
+// "pending" status. The HTTP SubmitFeedback handler owns the pending→resolved
+// CAS on the in-app path; the agent must not race it with a second write.
+func TestFeedbackHandler_Wait_InApp_DoesNotResolveDBRow(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "run1", "p1", model.RunStatusRunning)
+
+	pub := &capturePublisher{}
+	sm := NewRunStateMachine("run1", model.RunStatusRunning, s.DB(), s.Queries(), WithStateMachinePublisher(pub))
+	w := NewAuditWriter(s.Queries())
+	defer w.Close() //nolint:errcheck
+
+	h := NewFeedbackHandler(w, sm, time.Minute)
+
+	type waitResult struct {
+		body string
+		err  error
+	}
+	done := make(chan waitResult, 1)
+	go func() {
+		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 500*time.Millisecond)
+		done <- waitResult{body: body, err: err}
+	}()
+
+	// Wait for the pending feedback row to appear.
+	var feedbackID string
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+		if err != nil {
+			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+		}
+		if len(rows) > 0 {
+			feedbackID = rows[0].ID
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if feedbackID == "" {
+		t.Fatal("timed out waiting for feedback row")
+	}
+
+	// Deliver response through the in-app channel.
+	if err := h.Resolve(feedbackID, "hello"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("Wait: %v", res.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not return within deadline")
+	}
+
+	// The DB row must still be pending — the HTTP handler owns the CAS transition.
+	// If the agent had called UpdateFeedbackRequestStatus, the row would be resolved.
+	pending, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
+	if err != nil {
+		t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+	}
+	if len(pending) == 0 {
+		t.Error("feedback_requests row was resolved by the agent — it must stay pending so the HTTP handler can own the CAS")
+	}
+}
+
 // TestFeedbackHandler_Wait_PluginDispatchError verifies that a non-sentinel error
 // from the plugin dispatcher is propagated wrapped with "plugin feedback dispatch".
 func TestFeedbackHandler_Wait_PluginDispatchError(t *testing.T) {

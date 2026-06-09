@@ -109,12 +109,13 @@ func (ts *persistingTokenSource) Token() (*oauth2.Token, error) {
 	if tok != nil && tokenChanged(ts.lastSeen, tok) {
 		if saveErr := ts.store.SaveToken(ts.ctx, ts.instanceID, tok); saveErr != nil {
 			// Non-fatal: the caller can still use the token; persistence will be
-			// retried by the background scanner.
+			// retried on the next Token() call because lastSeen is NOT advanced on
+			// failure — tokenChanged will fire again next time.
 			_ = saveErr
 		} else {
 			ts.store.EmitRefreshed(ts.ctx, ts.instanceID)
+			ts.lastSeen = tok
 		}
-		ts.lastSeen = tok
 	}
 	return tok, nil
 }

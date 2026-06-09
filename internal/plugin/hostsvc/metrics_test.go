@@ -183,6 +183,51 @@ func TestEmitMetric_LabelValueLengthCap(t *testing.T) {
 	}
 }
 
+// TestEmitMetric_MetricNameCap_PerInstance verifies that the 100-name cap is
+// enforced per-instance, not globally. Before the Bug B fix a single instance
+// exhausting its 100-name budget would prevent every other instance from
+// registering any new metrics, because the cap checked the global gauges map.
+// After the fix instance B must still be able to register metrics even after
+// instance A has filled its own cap.
+func TestEmitMetric_MetricNameCap_PerInstance(t *testing.T) {
+	// Use distinct plugin+instance IDs so Prometheus does not collision-detect
+	// across tests running in the same process.
+	srvA := newMetricsServer(t, "plug-cap-perinstance-a", "iid-cap-perinstance-a")
+	srvB := newMetricsServer(t, "plug-cap-perinstance-b", "iid-cap-perinstance-b")
+
+	// Fill instance A's name budget completely.
+	for i := 0; i < hostsvc.MetricNameCap; i++ {
+		name := fmt.Sprintf("cap_perinstance_a_%04d", i)
+		_, err := srvA.EmitMetric(context.Background(), &hostv1.EmitMetricRequest{
+			Name:  name,
+			Value: float64(i),
+		})
+		if err != nil {
+			t.Fatalf("instance A emission %d: unexpected error: %v", i, err)
+		}
+	}
+
+	// Instance A's next distinct name must be rejected.
+	_, err := srvA.EmitMetric(context.Background(), &hostv1.EmitMetricRequest{
+		Name:  "cap_perinstance_a_overflow",
+		Value: 0,
+	})
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.ResourceExhausted {
+		t.Fatalf("instance A overflow: expected ResourceExhausted, got %v", err)
+	}
+
+	// Instance B must still be able to register a metric — its budget is
+	// independent of A's.
+	_, err = srvB.EmitMetric(context.Background(), &hostv1.EmitMetricRequest{
+		Name:  "cap_perinstance_b_first",
+		Value: 1,
+	})
+	if err != nil {
+		t.Errorf("instance B first metric: unexpected error after instance A exhausted its cap: %v", err)
+	}
+}
+
 // TestEmitMetric_LabelKeySortingDeterminism verifies that two EmitMetric calls
 // for the same metric name with the same set of label keys — but constructed in
 // a way that could produce different map iteration orders — do not produce an

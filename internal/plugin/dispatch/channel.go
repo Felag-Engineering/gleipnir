@@ -583,11 +583,21 @@ func (d *Dispatcher) Wait(ctx context.Context, requestID string, timeout time.Du
 		delete(d.waiters, requestID)
 		d.waitersMu.Unlock()
 
+		// Use a detached context for cleanup DB operations: the caller's run ctx
+		// may already be cancelled when the timer fires (e.g. the run was
+		// interrupted), which would make TransitionTimedOut and
+		// GetPluginPendingRequest fail with ctx.Err() and leave the row dangling
+		// as 'pending' forever. Mirror CancelRun's pattern: context.Background()
+		// with a short bounded deadline ensures cleanup succeeds regardless of
+		// the caller's ctx state.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+
 		// Attempt to claim the timeout via CAS.  Only write the run step when
 		// this caller won (rows == 1).  When ErrTransitionConflict (rows == 0)
 		// the scanner already wrote the step; writing a second one would
 		// duplicate it.
-		if transErr := TransitionTimedOut(ctx, d.cfg.Queries, requestID); transErr != nil {
+		if transErr := TransitionTimedOut(cleanupCtx, d.cfg.Queries, requestID); transErr != nil {
 			if errors.Is(transErr, ErrTransitionConflict) {
 				// Scanner already timed out this request and wrote the step.
 				// Return a typed sentinel so callers know not to write a second step.
@@ -601,7 +611,7 @@ func (d *Dispatcher) Wait(ctx context.Context, requestID string, timeout time.Du
 
 		// CAS winner: write the timeout step to the run trace.
 		if d.cfg.WriteRunStep != nil {
-			req, dbErr := d.cfg.Queries.GetPluginPendingRequest(ctx, requestID)
+			req, dbErr := d.cfg.Queries.GetPluginPendingRequest(cleanupCtx, requestID)
 			if dbErr == nil {
 				if wErr := d.cfg.WriteRunStep(ctx, req.RunID, "plugin_request_timeout", map[string]interface{}{
 					"message":    fmt.Sprintf("plugin request timed out after %s", timeout),
