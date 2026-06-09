@@ -71,7 +71,11 @@ func (c *GeminiClient) CreateMessage(ctx context.Context, req llm.MessageRequest
 	// ToolCallBlock/ToolResultBlock use the sanitized wire-format names.
 	names := llm.BuildNameMapping(req.Tools, "")
 	contents := buildContents(req.History, names)
-	config := buildConfig(req, hints, names)
+	config, err := buildConfig(req, hints, names)
+	if err != nil {
+		err = fmt.Errorf("building request config: %w", err)
+		return
+	}
 
 	sdkResp, sdkErr := c.generator.GenerateContent(ctx, req.Model, contents, config)
 	if sdkErr != nil {
@@ -104,7 +108,10 @@ func (c *GeminiClient) StreamMessage(ctx context.Context, req llm.MessageRequest
 	hints, _ := req.Hints.(*GeminiHints)
 	names := llm.BuildNameMapping(req.Tools, "")
 	contents := buildContents(req.History, names)
-	config := buildConfig(req, hints, names)
+	config, err := buildConfig(req, hints, names)
+	if err != nil {
+		return nil, fmt.Errorf("building request config: %w", err)
+	}
 
 	seq := c.generator.GenerateContentStream(ctx, req.Model, contents, config)
 	out := make(chan llm.MessageChunk, 16)
@@ -242,7 +249,7 @@ func mapRoleToGenai(role llm.Role) string {
 }
 
 // buildConfig constructs the GenerateContentConfig for a request.
-func buildConfig(req llm.MessageRequest, hints *GeminiHints, names llm.ToolNameMapping) *genai.GenerateContentConfig {
+func buildConfig(req llm.MessageRequest, hints *GeminiHints, names llm.ToolNameMapping) (*genai.GenerateContentConfig, error) {
 	config := &genai.GenerateContentConfig{}
 
 	if req.MaxTokens > 0 {
@@ -258,7 +265,11 @@ func buildConfig(req llm.MessageRequest, hints *GeminiHints, names llm.ToolNameM
 	}
 
 	if len(req.Tools) > 0 {
-		config.Tools = buildTools(req.Tools)
+		tools, err := buildTools(req.Tools)
+		if err != nil {
+			return nil, err
+		}
+		config.Tools = tools
 	}
 
 	if hints != nil {
@@ -281,13 +292,13 @@ func buildConfig(req llm.MessageRequest, hints *GeminiHints, names llm.ToolNameM
 		}
 	}
 
-	return config
+	return config, nil
 }
 
 // buildTools groups all ToolDefinitions into a single genai.Tool with all
 // FunctionDeclarations. Tool names are sanitized to comply with Gemini's
 // naming requirements (alphanumeric + underscore only).
-func buildTools(tools []llm.ToolDefinition) []*genai.Tool {
+func buildTools(tools []llm.ToolDefinition) ([]*genai.Tool, error) {
 	decls := make([]*genai.FunctionDeclaration, 0, len(tools))
 	for _, t := range tools {
 		decl := &genai.FunctionDeclaration{
@@ -295,16 +306,23 @@ func buildTools(tools []llm.ToolDefinition) []*genai.Tool {
 			Description: t.Description,
 		}
 		if len(t.InputSchema) > 0 {
+			// Treat schema translation failures as hard errors, matching the
+			// Anthropic and OpenAI providers. Registering a tool with a nil
+			// parameter schema would let the model call it with unvalidated
+			// arguments, silently weakening ADR-017's parameter enforcement (#490).
 			var schemaMap map[string]any
-			if err := json.Unmarshal(t.InputSchema, &schemaMap); err == nil {
-				if schema, err := translateJSONSchemaToGenaiSchema(schemaMap); err == nil {
-					decl.Parameters = schema
-				}
+			if err := json.Unmarshal(t.InputSchema, &schemaMap); err != nil {
+				return nil, fmt.Errorf("unmarshalling schema for tool %s: %w", t.Name, err)
 			}
+			schema, err := translateJSONSchemaToGenaiSchema(schemaMap)
+			if err != nil {
+				return nil, fmt.Errorf("translating schema for tool %s: %w", t.Name, err)
+			}
+			decl.Parameters = schema
 		}
 		decls = append(decls, decl)
 	}
-	return []*genai.Tool{{FunctionDeclarations: decls}}
+	return []*genai.Tool{{FunctionDeclarations: decls}}, nil
 }
 
 // translateResponse converts a Gemini API response into the provider-neutral

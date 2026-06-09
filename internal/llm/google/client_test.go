@@ -235,7 +235,10 @@ func TestBuildConfig_SystemPrompt(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req := llm.MessageRequest{SystemPrompt: tc.systemPrompt}
-			config := buildConfig(req, nil, llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
+			config, err := buildConfig(req, nil, llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
+			if err != nil {
+				t.Fatalf("buildConfig returned error: %v", err)
+			}
 
 			if tc.wantNil {
 				if config.SystemInstruction != nil {
@@ -262,7 +265,10 @@ func TestBuildConfig_SystemPrompt(t *testing.T) {
 
 func TestBuildConfig_MaxTokens(t *testing.T) {
 	req := llm.MessageRequest{MaxTokens: 1024}
-	config := buildConfig(req, nil, llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
+	config, err := buildConfig(req, nil, llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
+	if err != nil {
+		t.Fatalf("buildConfig returned error: %v", err)
+	}
 
 	if config.MaxOutputTokens != 1024 {
 		t.Errorf("expected MaxOutputTokens=1024, got %d", config.MaxOutputTokens)
@@ -270,7 +276,10 @@ func TestBuildConfig_MaxTokens(t *testing.T) {
 
 	// Zero MaxTokens should leave MaxOutputTokens unset.
 	reqZero := llm.MessageRequest{MaxTokens: 0}
-	configZero := buildConfig(reqZero, nil, llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
+	configZero, err := buildConfig(reqZero, nil, llm.ToolNameMapping{SanitizedToOriginal: map[string]string{}, OriginalToSanitized: map[string]string{}})
+	if err != nil {
+		t.Fatalf("buildConfig returned error: %v", err)
+	}
 	if configZero.MaxOutputTokens != 0 {
 		t.Errorf("expected MaxOutputTokens=0 when MaxTokens is zero, got %d", configZero.MaxOutputTokens)
 	}
@@ -282,7 +291,10 @@ func TestBuildTools(t *testing.T) {
 		{Name: "search", Description: "Search the web", InputSchema: schema},
 	}
 
-	genaiTools := buildTools(tools)
+	genaiTools, err := buildTools(tools)
+	if err != nil {
+		t.Fatalf("buildTools returned error: %v", err)
+	}
 
 	if len(genaiTools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(genaiTools))
@@ -302,6 +314,28 @@ func TestBuildTools(t *testing.T) {
 	}
 	if decls[0].Parameters.Type != genai.TypeObject {
 		t.Errorf("expected TypeObject, got %v", decls[0].Parameters.Type)
+	}
+}
+
+// TestBuildTools_InvalidSchemaError verifies that an unparseable tool input
+// schema is a hard error rather than being silently swallowed — registering a
+// tool with nil Parameters would let the model call it with unvalidated
+// arguments, weakening ADR-017's parameter enforcement. Regression guard for
+// #490; matches the Anthropic and OpenAI providers' behavior.
+func TestBuildTools_InvalidSchemaError(t *testing.T) {
+	tools := []llm.ToolDefinition{
+		{Name: "broken", Description: "bad schema", InputSchema: json.RawMessage(`{not valid json`)},
+	}
+
+	genaiTools, err := buildTools(tools)
+	if err == nil {
+		t.Fatal("expected error for invalid tool schema, got nil")
+	}
+	if genaiTools != nil {
+		t.Errorf("expected nil tools on error, got %+v", genaiTools)
+	}
+	if !strings.Contains(err.Error(), "broken") {
+		t.Errorf("expected error to name the offending tool, got %q", err.Error())
 	}
 }
 
@@ -1425,7 +1459,10 @@ func TestBuildConfig_ThinkingLevel(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			config := buildConfig(llm.MessageRequest{}, tc.hints, noMapping)
+			config, err := buildConfig(llm.MessageRequest{}, tc.hints, noMapping)
+			if err != nil {
+				t.Fatalf("buildConfig returned error: %v", err)
+			}
 
 			if tc.wantConfigNil {
 				if config.ThinkingConfig != nil {
