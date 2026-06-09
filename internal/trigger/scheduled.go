@@ -199,6 +199,11 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 		case errors.Is(err, run.ErrConcurrencySkipActive):
 			slog.Info("scheduled: skipping fire, active run exists (concurrency: skip)",
 				"policy_id", policyID, "fire_at", fireTime)
+			// The fire time was consumed (skipped); it will not be retried. Pause
+			// the policy if all fire_at times are now exhausted, just like the
+			// queue and successful-launch paths — otherwise the policy stays
+			// "active" forever with no future timers and never fires again (#488).
+			s.pauseIfExhausted(ctx, policyID, parsed)
 		case errors.Is(err, run.ErrConcurrencyQueueActive):
 			if enqErr := s.launcher.Enqueue(ctx, run.LaunchParams{
 				PolicyID:       policyID,

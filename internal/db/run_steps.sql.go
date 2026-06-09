@@ -59,6 +59,55 @@ func (q *Queries) CreateRunStep(ctx context.Context, arg CreateRunStepParams) (R
 	return i, err
 }
 
+const createRunStepNextNumber = `-- name: CreateRunStepNextNumber :one
+INSERT INTO run_steps (id, run_id, step_number, type, content, token_cost, created_at)
+VALUES (
+  ?1,
+  ?2,
+  COALESCE((SELECT MAX(step_number) + 1 FROM run_steps WHERE run_id = ?2), 0),
+  ?3,
+  ?4,
+  ?5,
+  ?6
+)
+RETURNING id, run_id, step_number, type, content, token_cost, created_at
+`
+
+type CreateRunStepNextNumberParams struct {
+	ID        string `json:"id"`
+	RunID     string `json:"run_id"`
+	Type      string `json:"type"`
+	Content   string `json:"content"`
+	TokenCost int64  `json:"token_cost"`
+	CreatedAt string `json:"created_at"`
+}
+
+// Inserts a run step deriving step_number atomically as MAX(step_number)+1 for
+// the run (0 for the first step). Used by writers that do NOT share the agent
+// AuditWriter's in-memory counter (e.g. the timeout scanner) so out-of-band
+// inserts can never reuse or collide with an existing number. See issue #484.
+func (q *Queries) CreateRunStepNextNumber(ctx context.Context, arg CreateRunStepNextNumberParams) (RunStep, error) {
+	row := q.db.QueryRowContext(ctx, createRunStepNextNumber,
+		arg.ID,
+		arg.RunID,
+		arg.Type,
+		arg.Content,
+		arg.TokenCost,
+		arg.CreatedAt,
+	)
+	var i RunStep
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.StepNumber,
+		&i.Type,
+		&i.Content,
+		&i.TokenCost,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getLatestRunStep = `-- name: GetLatestRunStep :one
 SELECT id, run_id, step_number, type, content, token_cost, created_at FROM run_steps WHERE run_id = ?1 ORDER BY step_number DESC LIMIT 1
 `
