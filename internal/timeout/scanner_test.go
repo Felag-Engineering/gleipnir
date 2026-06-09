@@ -369,6 +369,43 @@ func TestScanner_StepNumberContinuesExistingSteps(t *testing.T) {
 	}
 }
 
+// TestScanner_StepNumberSkipsGap proves the error step is numbered from
+// MAX(step_number)+1, not COUNT(*). When the trace has a numbering gap (which
+// the agent's AuditWriter produces if a step's content fails to marshal after
+// its counter already advanced), COUNT(*) would reuse an existing number and
+// collide; MAX+1 does not. Regression guard for #484.
+func TestScanner_StepNumberSkipsGap(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusWaitingForApproval)
+	insertApprovalRequest(t, s, "a1", "r1", "tool_w", pastTimestamp())
+
+	// Steps numbered 0, 1, 3 — a gap at 2. COUNT(*) is 3, which would collide
+	// with the existing step 3; MAX(step_number)+1 must yield 4.
+	_, err := s.DB().Exec(
+		`INSERT INTO run_steps(id, run_id, step_number, type, content, created_at)
+		 VALUES ('s0', 'r1', 0, 'thought', '{}', '2024-01-01T00:00:00Z'),
+		        ('s1', 'r1', 1, 'tool_call', '{}', '2024-01-01T00:00:00Z'),
+		        ('s3', 'r1', 3, 'tool_result', '{}', '2024-01-01T00:00:00Z')`,
+	)
+	if err != nil {
+		t.Fatalf("insert existing steps: %v", err)
+	}
+
+	scanner := timeout.NewScanner(s, time.Minute, approvalConfig(s))
+	if err := scanner.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	var stepNumber int64
+	if err := s.DB().QueryRow(`SELECT step_number FROM run_steps WHERE run_id = 'r1' AND type = 'error'`).Scan(&stepNumber); err != nil {
+		t.Fatalf("query error step: %v", err)
+	}
+	if stepNumber != 4 {
+		t.Errorf("error step step_number = %d, want 4 (MAX+1, not COUNT)", stepNumber)
+	}
+}
+
 // TestScanner_ConcurrentScans_SingleTimeout verifies that N concurrent Scan
 // calls racing on a single expired approval row each produce exactly one
 // timeout approval, one failed run, one error step, and one run.status_changed

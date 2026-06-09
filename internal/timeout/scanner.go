@@ -287,26 +287,24 @@ func (s *Scanner) resolveTimeout(ctx context.Context, item ExpiredItem) error {
 		return nil
 	}
 
-	// Insert an error RunStep so the run's trace explains why it failed.
-	stepCount, err := s.store.Queries().CountRunSteps(ctx, item.RunID)
-	if err != nil {
-		return fmt.Errorf("count run steps: %w", err)
-	}
-
+	// Insert an error RunStep so the run's trace explains why it failed. The
+	// scanner does not share the agent AuditWriter's in-memory step counter, so
+	// it derives step_number from MAX(step_number)+1 inside the insert rather
+	// than from a separate COUNT(*) read — the latter races the agent's writes
+	// and mismatches the counter whenever the trace has a numbering gap (#484).
 	errMsg := s.cfg.ErrorMessage(item.ToolName)
 	content, _ := json.Marshal(map[string]string{
 		"message": errMsg,
 		"code":    s.cfg.ErrorCode,
 	})
 
-	if _, err := s.store.Queries().CreateRunStep(ctx, db.CreateRunStepParams{
-		ID:         model.NewULID(),
-		RunID:      item.RunID,
-		StepNumber: stepCount,
-		Type:       string(model.StepTypeError),
-		Content:    string(content),
-		TokenCost:  0,
-		CreatedAt:  now,
+	if _, err := s.store.Queries().CreateRunStepNextNumber(ctx, db.CreateRunStepNextNumberParams{
+		ID:        model.NewULID(),
+		RunID:     item.RunID,
+		Type:      string(model.StepTypeError),
+		Content:   string(content),
+		TokenCost: 0,
+		CreatedAt: now,
 	}); err != nil {
 		return fmt.Errorf("create error step: %w", err)
 	}
