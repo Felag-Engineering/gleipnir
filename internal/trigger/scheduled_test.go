@@ -335,6 +335,63 @@ func TestScheduler_ConcurrencySkip_BlocksWhenActive(t *testing.T) {
 	}
 }
 
+// TestScheduler_ConcurrencySkip_AutoPausesWhenExhausted verifies that when the
+// last fire_at time is skipped because a run is active (concurrency: skip), the
+// policy still auto-pauses — the skipped time is consumed and will not retry, so
+// an exhausted policy must not linger "active" forever with no future timers.
+// Regression guard for #488.
+func TestScheduler_ConcurrencySkip_AutoPausesWhenExhausted(t *testing.T) {
+	store, registry := setupSchedulerFixture(t)
+
+	future := time.Now().Add(2 * time.Second)
+	yaml := scheduledPolicyYAMLWithConcurrency("skip-exhaust-policy", []time.Time{future}, "skip")
+	insertTestScheduledPolicy(t, store, "pol-skip-exhaust", "skip-exhaust-policy", yaml)
+
+	// Active run forces the only fire_at into the ErrConcurrencySkipActive branch.
+	insertTestRun(t, store, "r-active-skip-exhaust", "pol-skip-exhaust", model.RunStatusRunning)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	manager := run.NewRunManager()
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                manager,
+		AgentFactory:           schedulerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
+	scheduler := trigger.NewScheduler(store, launcher, resolver)
+
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for the policy to be paused (removed from active scheduled policies).
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		policies, err := store.GetScheduledActivePolicies(ctx)
+		if err != nil {
+			t.Fatalf("GetScheduledActivePolicies: %v", err)
+		}
+		found := false
+		for _, p := range policies {
+			if p.ID == "pol-skip-exhaust" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return // success — policy auto-paused after the skipped fire exhausted it
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Error("expected policy to auto-pause after its only fire time was skipped (concurrency: skip)")
+}
+
 // TestScheduler_ConcurrencySkip_ProceedsWhenIdle verifies that a scheduled
 // trigger with concurrency: skip proceeds normally when no active run exists.
 func TestScheduler_ConcurrencySkip_ProceedsWhenIdle(t *testing.T) {
