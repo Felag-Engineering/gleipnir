@@ -7,4 +7,4 @@ End-to-end setups for common Gleipnir automations. Each playbook includes the tr
 - [Connect to Arcade (hosted MCP runtime)](arcade/README.md) — required prerequisite for any playbook that uses Google services
 - [Plan the week's meals](meal-planning/README.md)
 - [Research your own todo list](todoist-research/README.md)
-- [Homelab DevOps operations](devops/README.md)
+- [Homelab DevOps operations](devops/README.md) — auto-remediate outages from an Uptime Kuma webhook
