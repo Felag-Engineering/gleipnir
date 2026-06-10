@@ -458,9 +458,19 @@ func TestBuildRouter(t *testing.T) {
 
 // postLogin fires a login request from the given client IP (via X-Real-IP, which
 // middleware.RealIP folds into RemoteAddr for the rate limiter to key on).
+//
+// The body intentionally omits the password so the handler short-circuits with a
+// 400 ("password is required") BEFORE the constant-time dummy-bcrypt branch
+// (auth.Login). That branch hashes at cost 12, which under `-race` + parallel
+// package load takes seconds per call; ten such calls let the burst straddle a
+// wall-clock minute boundary, and httprate's sliding-window count decays below
+// the limit so the over-limit request is admitted (was a flaky 401 instead of
+// 429). The rate-limit middleware runs ahead of the handler and counts every
+// request regardless of status, so a 400 exercises the limiter identically while
+// keeping the whole burst inside a single window. (#494 CI flake.)
 func postLogin(t *testing.T, router http.Handler, ip string) int {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"nobody","password":"wrong"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"nobody"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Real-IP", ip)
 	w := httptest.NewRecorder()
@@ -478,7 +488,8 @@ func TestLoginRateLimitedPerIP(t *testing.T) {
 	const attackerIP = "198.51.100.10"
 
 	// The first `limit` attempts must not be rate-limited (they get the handler's
-	// normal 401 for bad credentials, not 429).
+	// 400 for the missing password, not 429 — see postLogin for why the password
+	// is omitted).
 	for i := range limit {
 		if code := postLogin(t, router, attackerIP); code == http.StatusTooManyRequests {
 			t.Fatalf("attempt %d/%d from %s was rate-limited before the limit was reached", i+1, limit, attackerIP)

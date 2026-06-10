@@ -115,6 +115,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: bufbuild/buf-setup-action@v1
+        with:
+          # Authenticate the buf release download to avoid the unauthenticated
+          # GitHub API per-IP rate limit, which intermittently fails setup on
+          # busy shared runners before buf ever runs.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       # `buf lint` errors when a module has zero .proto files. The lint gate
       # is intentionally a no-op until #167 lands the proto contracts; skip
       # the invocation entirely while the tree has no .proto files.
@@ -137,6 +142,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: bufbuild/buf-setup-action@v1
+        with:
+          # See proto-lint: authenticate the release download to dodge the
+          # unauthenticated GitHub API rate limit on shared runners.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Regenerate stubs
         run: buf generate
