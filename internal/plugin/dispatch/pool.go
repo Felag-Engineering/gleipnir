@@ -47,6 +47,14 @@ type Config struct {
 }
 
 // instanceState holds per-plugin-instance connection and concurrency state.
+//
+// Pool deliberately does NOT use connCache (internal/plugin/dispatch/conncache.go)
+// even though both paths share the fast-path/lock/double-check/connect pattern.
+// Pool needs per-instance sem, queueGate, and closeOnce fields that are
+// intrinsic to the concurrency and force-disconnect semantics (CancelRun closes
+// the conn directly via closeOnce, then evicts the entry); folding those concerns
+// into the generic cache would couple the helper to Pool's call-lifecycle policy.
+// The asymmetry is intentional.
 type instanceState struct {
 	conn      *grpc.ClientConn
 	client    toolv1.ToolServiceClient

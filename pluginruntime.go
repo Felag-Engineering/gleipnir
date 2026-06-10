@@ -41,6 +41,10 @@ type pluginRuntime struct {
 	// and reads it for the SetInflightCounter wiring and the shutdown Close call.
 	Pool *dispatch.Pool
 
+	// ChannelDispatcher routes channel Notify/Request RPCs. shutdown() closes its
+	// cached gRPC connections (channel-path analogue of Pool.Close).
+	ChannelDispatcher *dispatch.Dispatcher
+
 	// DispatchAdapter satisfies agent.PluginToolDispatcher for RunLauncherConfig.
 	DispatchAdapter agent.PluginToolDispatcher
 
@@ -205,16 +209,17 @@ func startPluginRuntime(
 	toolClassifier := &manifestClassifier{snap: pluginManifestSnap, q: store.Queries()}
 
 	rt := &pluginRuntime{
-		Pool:            pool,
-		DispatchAdapter: dispatchAdapter,
-		ApprovalAdapter: approvalAdapter,
-		FeedbackAdapter: feedbackAdapter,
-		ToolRegistrar:   pluginToolRegistrar,
-		ToolResolver:    toolResolver,
-		ToolClassifier:  toolClassifier,
-		ManifestSnap:    pluginManifestSnap,
-		HostSvc:         hostSvc,
-		loader:          loader,
+		Pool:              pool,
+		ChannelDispatcher: pluginDispatcher,
+		DispatchAdapter:   dispatchAdapter,
+		ApprovalAdapter:   approvalAdapter,
+		FeedbackAdapter:   feedbackAdapter,
+		ToolRegistrar:     pluginToolRegistrar,
+		ToolResolver:      toolResolver,
+		ToolClassifier:    toolClassifier,
+		ManifestSnap:      pluginManifestSnap,
+		HostSvc:           hostSvc,
+		loader:            loader,
 	}
 
 	// Wire OAuth handlers when an encryption key is available. The rescan hook
@@ -336,5 +341,14 @@ func (rt *pluginRuntime) shutdown() {
 	// post-StopAll.
 	if err := rt.Pool.Close(); err != nil {
 		slog.Warn("plugin dispatch pool close error", "err", err)
+	}
+
+	// Close the channel dispatcher's cached gRPC connections. StopAll above may
+	// have already torn down the underlying transports; grpc.ErrClientConnClosing
+	// from a re-close here is benign — warn-log only, do not fail shutdown.
+	if rt.ChannelDispatcher != nil {
+		if err := rt.ChannelDispatcher.Close(); err != nil {
+			slog.Warn("plugin channel dispatcher close error", "err", err)
+		}
 	}
 }

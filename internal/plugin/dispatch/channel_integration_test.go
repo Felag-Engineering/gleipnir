@@ -121,6 +121,10 @@ func TestDispatcher_Notify_ProductionWiring(t *testing.T) {
 		Queries: s.Queries(),
 		Connect: connFactory,
 	})
+	// After this change connCache retains the dialed connection; Close() is
+	// required so goleak.VerifyTestMain does not flag the retained gRPC goroutine.
+	// Use t.Cleanup (not defer) so it runs even if a later t.Fatalf short-circuits.
+	t.Cleanup(func() { _ = dispatcher.Close() })
 
 	rc := dispatch.RouteContext{
 		RunID:    "run-dispatch-integ",
