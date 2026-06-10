@@ -240,15 +240,31 @@ func buildRelease(s *genState, g uint64, entry *cancelEntry) func() {
 				}
 			}
 			s.mu.Unlock()
+
+			// Release the derived context's cancel func now that the call has
+			// completed. Called outside s.mu because cancel() touches only the
+			// child context — it never reaches back into genState — so holding
+			// the mutex across it would be an unnecessary re-entrancy risk.
+			// once.Do keeps this exactly-once; if BeginDrain's force-cancel path
+			// already called entry.cancel(), the second call here is a no-op
+			// (context.CancelFunc is documented idempotent).
+			entry.cancel()
 		})
 	}
 }
 
 // removeCancelEntry removes the entry with the given id from the slice.
+// A fresh backing array is allocated on removal so the caller's original slice
+// is never mutated — avoiding the aliasing footgun of in-place append when
+// BeginDrain also holds a reference to the same backing array under s.mu.
+// When no entry matches, the input slice is returned unchanged (same header).
 func removeCancelEntry(entries []*cancelEntry, id uint64) []*cancelEntry {
 	for i, e := range entries {
 		if e.id == id {
-			return append(entries[:i], entries[i+1:]...)
+			out := make([]*cancelEntry, 0, len(entries)-1)
+			out = append(out, entries[:i]...)
+			out = append(out, entries[i+1:]...)
+			return out
 		}
 	}
 	return entries

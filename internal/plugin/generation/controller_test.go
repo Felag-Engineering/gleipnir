@@ -473,6 +473,106 @@ func TestBeginDrain_ConcurrentUnregister_NoPanic(t *testing.T) {
 	}
 }
 
+// TestAcquire_ReleaseCancelsWrappedContext is the load-bearing proof of the
+// cancel-func leak fix. Before the fix, wrappedCtx.Err() remained nil after
+// release() because buildRelease never called entry.cancel(). After the fix,
+// release() must cancel the derived context exactly once.
+func TestAcquire_ReleaseCancelsWrappedContext(t *testing.T) {
+	c := generation.New()
+	c.RegisterInstance("inst-leak-proof")
+
+	wrappedCtx, release, _, err := c.Acquire(context.Background(), "inst-leak-proof")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	// Before release, the wrapped context must be live.
+	if wrappedCtx.Err() != nil {
+		t.Fatalf("wrapped ctx already cancelled before release: %v", wrappedCtx.Err())
+	}
+
+	release()
+
+	// After release, the derived cancel func must have been invoked.
+	if wrappedCtx.Err() != context.Canceled {
+		t.Fatalf("expected context.Canceled after release(), got %v", wrappedCtx.Err())
+	}
+}
+
+// TestAcquire_DoubleReleaseAfterCancel_NoPanic verifies that calling release()
+// twice is safe (once.Do guard) and that the context remains Canceled after
+// both calls — the second call is a no-op.
+func TestAcquire_DoubleReleaseAfterCancel_NoPanic(t *testing.T) {
+	c := generation.New()
+	c.RegisterInstance("inst-double-release")
+
+	wrappedCtx, release, _, err := c.Acquire(context.Background(), "inst-double-release")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	release()
+	release() // must not panic
+
+	if wrappedCtx.Err() != context.Canceled {
+		t.Fatalf("expected context.Canceled after double release, got %v", wrappedCtx.Err())
+	}
+}
+
+// TestBeginDrain_ForceCancelThenRelease_NoPanic verifies that BeginDrain's
+// force-cancel path followed by a normal release() does not panic. Both paths
+// call entry.cancel(), but context.CancelFunc is documented idempotent, so the
+// double-cancel must be benign.
+//
+// Synchronisation mirrors TestBeginDrain_ForceCancelsOnGraceExceeded:
+// wait on wrappedCtx.Done() for the force-cancel signal, then call release().
+func TestBeginDrain_ForceCancelThenRelease_NoPanic(t *testing.T) {
+	c := generation.New()
+	c.RegisterInstance("inst-force-then-release")
+
+	ctx := context.Background()
+	wrappedCtx, release, _, err := c.Acquire(ctx, "inst-force-then-release")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer release() // idempotent safety net
+
+	drainResult := make(chan bool, 1)
+	go func() {
+		// 50ms grace: short enough that the held call exceeds it.
+		_, drained, err := c.BeginDrain(ctx, "inst-force-then-release", 50*time.Millisecond)
+		if err != nil {
+			drainResult <- false
+			return
+		}
+		drainResult <- drained
+	}()
+
+	// Wait for BeginDrain to force-cancel the context (grace elapsed).
+	select {
+	case <-wrappedCtx.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("force-cancel did not arrive within 10s")
+	}
+
+	// Call release() after the force-cancel — double-cancel must not panic.
+	release()
+
+	select {
+	case drained := <-drainResult:
+		if drained {
+			t.Fatal("expected drained=false for grace-exceeded scenario, got true")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("BeginDrain did not return after force-cancel + release")
+	}
+
+	// Context must still be Canceled (not affected by double-cancel).
+	if wrappedCtx.Err() != context.Canceled {
+		t.Fatalf("expected context.Canceled after force-cancel + release, got %v", wrappedCtx.Err())
+	}
+}
+
 // TestUnregisterInstance_WakesBlockedAcquires verifies that UnregisterInstance
 // causes any goroutine blocked in Acquire to return an error without leaking,
 // and that subsequent Acquire calls also return an error immediately.
