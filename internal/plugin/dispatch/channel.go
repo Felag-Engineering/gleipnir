@@ -597,7 +597,12 @@ func (d *Dispatcher) Wait(ctx context.Context, requestID string, timeout time.Du
 		if d.cfg.WriteRunStep != nil {
 			req, dbErr := d.cfg.Queries.GetPluginPendingRequest(cleanupCtx, requestID)
 			if dbErr == nil {
-				if wErr := d.cfg.WriteRunStep(ctx, req.RunID, "plugin_request_timeout", map[string]interface{}{
+				// Use cleanupCtx, not the caller's run ctx: same reason it was
+				// created two lines up — the run ctx may already be cancelled
+				// (e.g. interrupted run) when the timer fires. Writing the
+				// timeout step with the cancelled ctx would silently fail and
+				// lose the very step this CAS winner exists to record (#499).
+				if wErr := d.cfg.WriteRunStep(cleanupCtx, req.RunID, "plugin_request_timeout", map[string]interface{}{
 					"message":    fmt.Sprintf("plugin request timed out after %s", timeout),
 					"code":       "plugin_request_timeout",
 					"request_id": requestID,
