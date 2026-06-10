@@ -41,6 +41,12 @@ func (m *AddPendingReauthorizeHealthState) ShouldSkip(ctx context.Context, db *s
 	return strings.Contains(ddl, "pending_reauthorize"), nil
 }
 
+// RequiresForeignKeysOff opts into the runner's PRAGMA foreign_keys=OFF toggle.
+// plugin_audit_events, audience_entries, and plugin_pending_requests hold FK
+// references to plugin_instances; the DROP + RENAME rebuild requires FK
+// enforcement off for the transaction (issue #494).
+func (m *AddPendingReauthorizeHealthState) RequiresForeignKeysOff() bool { return true }
+
 func (m *AddPendingReauthorizeHealthState) Up(ctx context.Context, tx *sql.Tx) error {
 	// 1. Create the replacement table with the extended CHECK list.
 	_, err := tx.ExecContext(ctx, `
