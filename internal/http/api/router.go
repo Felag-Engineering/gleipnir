@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/httprate"
 
 	"github.com/felag-engineering/gleipnir/frontend"
 	"github.com/felag-engineering/gleipnir/internal/admin"
@@ -109,9 +110,6 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	// list — the middleware forwards it unmodified.
 	r.Use(middleware.Compress(5))
 
-	// SSE endpoint is unprotected: the UI needs events before and during auth.
-	r.Get("/api/v1/events", cfg.Handlers.SSEHandler.ServeHTTP)
-
 	// Webhook endpoint is unprotected at the session layer: the WebhookHandler
 	// dispatches authentication based on the trigger.auth mode stored in the
 	// policy YAML (hmac | bearer | none). The shared secret itself lives in the
@@ -143,10 +141,17 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	})
 
 	// Auth routes that do not require an existing session.
+	//
+	// /setup and /login are brute-force / credential-stuffing targets, so they
+	// carry a per-IP rate limit (httprate, keyed by middleware.RealIP) returning
+	// 429 once the window is exhausted (#491). This is the real rate limiter;
+	// middleware.Throttle only caps concurrent in-flight requests and is kept
+	// alongside it purely to bound concurrent bcrypt work (CPU), not as a
+	// brute-force control. Setup is effectively one-time, so its window is tighter.
 	r.Route("/api/v1/auth", func(r chi.Router) {
 		r.Get("/status", cfg.Handlers.AuthHandler.Status)
-		r.With(middleware.Throttle(5), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/setup", cfg.Handlers.AuthHandler.Setup)
-		r.With(middleware.Throttle(10), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/login", cfg.Handlers.AuthHandler.Login)
+		r.With(httprate.LimitByIP(5, time.Minute), middleware.Throttle(5), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/setup", cfg.Handlers.AuthHandler.Setup)
+		r.With(httprate.LimitByIP(10, time.Minute), middleware.Throttle(10), httputil.BodySizeLimit(httputil.MaxRequestBodySize)).Post("/login", cfg.Handlers.AuthHandler.Login)
 		r.Post("/logout", cfg.Handlers.AuthHandler.Logout)
 	})
 
@@ -155,6 +160,12 @@ func BuildRouter(cfg RouterConfig) chi.Router {
 	// All UI-facing API endpoints require a valid session cookie.
 	r.Group(func(r chi.Router) {
 		r.Use(requireAuth)
+
+		// SSE event stream requires a session: it discloses live run/approval/
+		// feedback IDs, step types, and activity, which must not reach
+		// unauthenticated clients (#486). The pre-auth UI (login/setup) does not
+		// mount the stream — it polls /api/v1/auth/status instead.
+		r.Get("/api/v1/events", cfg.Handlers.SSEHandler.ServeHTTP)
 
 		// Auth: session management and password operations.
 		r.Get("/api/v1/auth/me", cfg.Handlers.AuthHandler.Me)
