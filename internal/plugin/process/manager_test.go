@@ -575,6 +575,14 @@ func TestReloadInstance_DrainsAndRestarts(t *testing.T) {
 
 	// Release the slot before the grace deadline → drain should complete naturally.
 	time.Sleep(20 * time.Millisecond)
+	// Check liveness BEFORE releasing: a force-cancel would have cancelled this
+	// ctx while the call was still in-flight, but we release well within the grace
+	// window so the drain completes naturally and the ctx is still live here.
+	// (After release() the ctx is cancelled by the release itself — issue #498 —
+	// so this distinction is only observable before release, not after.)
+	if wrappedCtx.Err() != nil {
+		t.Errorf("held call ctx was force-cancelled before release; drain should complete naturally")
+	}
 	release()
 
 	select {
@@ -584,11 +592,6 @@ func TestReloadInstance_DrainsAndRestarts(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("ReloadInstance did not return")
-	}
-
-	// The held call's context must NOT have been force-cancelled.
-	if wrappedCtx.Err() != nil {
-		t.Errorf("held call ctx was cancelled; drain must have completed naturally")
 	}
 
 	// processStarter should have been called twice: initial Start + post-reload Start.

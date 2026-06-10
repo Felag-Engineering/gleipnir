@@ -61,9 +61,14 @@ func TestGenerationInterceptor_HappyPath(t *testing.T) {
 
 	ctx := ctxWithInstanceID("inst-gp")
 	var handlerCtx context.Context
+	var ctxErrDuringCall error
 
 	err := runGenerationInterceptor(c, ctx, func(hctx context.Context, _ any) (any, error) {
 		handlerCtx = hctx
+		// The handler must run under a live (un-cancelled) ctx. Capture the error
+		// here, during the call — not after the interceptor returns, because the
+		// deferred release() cancels the derived ctx on the way out (issue #498).
+		ctxErrDuringCall = hctx.Err()
 		return nil, nil
 	})
 	if err != nil {
@@ -72,8 +77,14 @@ func TestGenerationInterceptor_HappyPath(t *testing.T) {
 	if handlerCtx == nil {
 		t.Fatal("handler was not called")
 	}
-	if handlerCtx.Err() != nil {
-		t.Fatalf("handler ctx already cancelled: %v", handlerCtx.Err())
+	if ctxErrDuringCall != nil {
+		t.Fatalf("handler ctx was already cancelled during the call: %v", ctxErrDuringCall)
+	}
+	// After the interceptor returns, release() has run and cancels the derived
+	// context — that is the issue #498 fix (release must not leak the cancel
+	// func). The ctx being Canceled here is the fix working, not a force-cancel.
+	if handlerCtx.Err() != context.Canceled {
+		t.Fatalf("handler ctx should be Canceled after release() returned; got: %v", handlerCtx.Err())
 	}
 
 	// After the interceptor returns the release func must have been called, so
