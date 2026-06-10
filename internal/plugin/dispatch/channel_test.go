@@ -1025,6 +1025,24 @@ func TestRequest_RowInsertedBeforeGRPCCall(t *testing.T) {
 	}
 }
 
+// TestDispatcher_Close_NoConnsWhenInjected verifies that Close() returns nil
+// and is idempotent when the Dispatcher was constructed with NewChannelClient
+// (the test seam).  In this path the connection cache is never populated, so
+// Close is a no-op — the intent is that callers in production always call Close
+// and tests using the injected path are not broken by doing so.
+func TestDispatcher_Close_NoConnsWhenInjected(t *testing.T) {
+	ds := newSetup(t)
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+
+	if err := d.Close(); err != nil {
+		t.Errorf("first Close() returned error: %v", err)
+	}
+	// Second call must also be a no-op.
+	if err := d.Close(); err != nil {
+		t.Errorf("second Close() returned error: %v", err)
+	}
+}
+
 // TestWait_TimerFires_CancelledCtx_RowTransitionedToTimedOut verifies that when
 // Wait's timer fires, the cleanup DB operations (TransitionTimedOut and
 // GetPluginPendingRequest) use a detached context.Background() deadline rather

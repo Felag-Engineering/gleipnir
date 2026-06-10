@@ -84,14 +84,17 @@ type Dispatcher struct {
 	// blocks even when the caller has already timed out.
 	waiters map[string]chan string
 
-	// connMu guards the conns map.
-	connMu sync.Mutex
-	// conns caches ChannelServiceClient per instance name so repeated Notify /
-	// Request calls to the same instance reuse the same underlying gRPC
-	// connection rather than opening a new TCP connection on every dispatch.
-	// Only populated when NewChannelClient is nil (production path); the test
-	// path injects clients directly via NewChannelClient and never writes here.
-	conns map[string]channelv1.ChannelServiceClient
+	// conns caches gRPC connections (and their ChannelServiceClient wrappers)
+	// per instance name so repeated Notify / Request calls to the same instance
+	// reuse the same underlying gRPC connection rather than opening a new TCP
+	// connection on every dispatch.  Only populated when NewChannelClient is nil
+	// (production path); the test path injects clients directly via
+	// NewChannelClient and never writes into the cache.
+	//
+	// connCache stores the *grpc.ClientConn alongside the client so that
+	// Close can call conn.Close().  Storing only the client (the original
+	// bug, issue #497) made the connection unreachable and leaked it.
+	conns *connCache[channelv1.ChannelServiceClient]
 }
 
 // NewDispatcher creates a Dispatcher ready to use.
@@ -105,48 +108,29 @@ func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
 	return &Dispatcher{
 		cfg:     cfg,
 		waiters: make(map[string]chan string),
-		conns:   make(map[string]channelv1.ChannelServiceClient),
+		// cfg.Connect may be nil in the test path (NewChannelClient is set instead);
+		// newConnCache does not dial at construction so nil is safe here.
+		conns: newConnCache(cfg.Connect, channelv1.NewChannelServiceClient),
 	}
 }
 
 // channelClient returns a ChannelServiceClient for the given instance.
 // When NewChannelClient is set (e.g. in tests), the factory is called directly
-// without going through Connect.  In production, the client is lazily created
-// and cached so repeated Notify / Request calls to the same instance reuse
-// the same underlying gRPC connection rather than opening a new TCP connection
-// on every dispatch (mirrors Pool.getOrCreate for the tool path).
+// without touching the connection cache.  In production the cache handles lazy
+// dial, dedup, and close-loser semantics (see connCache.getOrConnect).
 func (d *Dispatcher) channelClient(instanceName string) (channelv1.ChannelServiceClient, error) {
 	if d.cfg.NewChannelClient != nil {
 		return d.cfg.NewChannelClient(instanceName), nil
 	}
-
-	// Fast path: already cached.
-	d.connMu.Lock()
-	if c, ok := d.conns[instanceName]; ok {
-		d.connMu.Unlock()
-		return c, nil
-	}
-	d.connMu.Unlock()
-
-	// Slow path: create and cache.
-	conn, err := d.cfg.Connect(instanceName)
-	if err != nil {
-		return nil, fmt.Errorf("connecting to plugin instance %q: %w", instanceName, err)
-	}
-	c := channelv1.NewChannelServiceClient(conn)
-
-	d.connMu.Lock()
-	// Double-check: another goroutine may have won the race.
-	if existing, ok := d.conns[instanceName]; ok {
-		d.connMu.Unlock()
-		// Close the connection we just created to avoid leaking it.
-		conn.Close()
-		return existing, nil
-	}
-	d.conns[instanceName] = c
-	d.connMu.Unlock()
-	return c, nil
+	return d.conns.getOrConnect(instanceName)
 }
+
+// Close closes every cached gRPC connection opened by the channel path.
+// It is the channel-path analogue of Pool.Close and must be called during
+// plugin-runtime shutdown to avoid leaking gRPC transport goroutines.
+// Safe (no-op) when constructed with NewChannelClient (test path), and
+// idempotent: a second call returns nil and does not panic.
+func (d *Dispatcher) Close() error { return d.conns.closeAll() }
 
 // channelTarget is a resolved audience entry with the plugin instance fields
 // needed for a Notify or Request gRPC call.
