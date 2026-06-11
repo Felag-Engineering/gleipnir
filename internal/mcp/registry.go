@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
@@ -105,7 +105,7 @@ func (r *Registry) newClientForServer(srv db.McpServer) *Client {
 			slog.Warn("encryption key unset; mcp server has stored auth headers but they will not be sent",
 				"server_id", srv.ID, "server_name", srv.Name)
 		} else {
-			plaintext, err := admin.Decrypt(r.encKey, *srv.AuthHeadersEncrypted)
+			plaintext, err := crypto.Decrypt(r.encKey, *srv.AuthHeadersEncrypted)
 			if err != nil {
 				slog.Warn("failed to decrypt mcp server auth headers; headers will not be sent",
 					"server_id", srv.ID, "server_name", srv.Name, "err", err)

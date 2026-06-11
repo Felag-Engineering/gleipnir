@@ -11,14 +11,14 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 )
 
 // mustKey parses a hex key or panics. Used only for test key constants.
 func mustKey(hex string) []byte {
-	k, err := admin.ParseEncryptionKey(hex)
+	k, err := crypto.ParseEncryptionKey(hex)
 	if err != nil {
 		panic(err)
 	}
@@ -58,7 +58,7 @@ func seedDB(t *testing.T, s *db.Store, encKey []byte) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	encryptWith := func(plaintext string) string {
-		c, err := admin.Encrypt(encKey, plaintext)
+		c, err := crypto.Encrypt(encKey, plaintext)
 		if err != nil {
 			t.Fatalf("encrypt %q: %v", plaintext, err)
 		}
@@ -205,10 +205,10 @@ func TestRotate_RoundTripsAllThreeSecretTypes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get %s: %v", key, err)
 		}
-		if _, err := admin.Decrypt(newKey, row.Value); err != nil {
+		if _, err := crypto.Decrypt(newKey, row.Value); err != nil {
 			t.Errorf("%s: decrypt with new key failed: %v", key, err)
 		}
-		if _, err := admin.Decrypt(oldKey, row.Value); err == nil {
+		if _, err := crypto.Decrypt(oldKey, row.Value); err == nil {
 			t.Errorf("%s: old key should no longer decrypt ciphertext", key)
 		}
 	}
@@ -231,10 +231,10 @@ func TestRotate_RoundTripsAllThreeSecretTypes(t *testing.T) {
 		t.Fatalf("expected 2 compat rows, got %d", len(compatRows))
 	}
 	for _, row := range compatRows {
-		if _, err := admin.Decrypt(newKey, row.ApiKeyEncrypted); err != nil {
+		if _, err := crypto.Decrypt(newKey, row.ApiKeyEncrypted); err != nil {
 			t.Errorf("compat provider %q: decrypt with new key failed: %v", row.Name, err)
 		}
-		if _, err := admin.Decrypt(oldKey, row.ApiKeyEncrypted); err == nil {
+		if _, err := crypto.Decrypt(oldKey, row.ApiKeyEncrypted); err == nil {
 			t.Errorf("compat provider %q: old key should no longer decrypt ciphertext", row.Name)
 		}
 	}
@@ -251,10 +251,10 @@ func TestRotate_RoundTripsAllThreeSecretTypes(t *testing.T) {
 		if row.WebhookSecretEncrypted == nil {
 			t.Fatal("webhook_secret_encrypted is nil")
 		}
-		if _, err := admin.Decrypt(newKey, *row.WebhookSecretEncrypted); err != nil {
+		if _, err := crypto.Decrypt(newKey, *row.WebhookSecretEncrypted); err != nil {
 			t.Errorf("policy %s: decrypt webhook secret with new key failed: %v", row.ID, err)
 		}
-		if _, err := admin.Decrypt(oldKey, *row.WebhookSecretEncrypted); err == nil {
+		if _, err := crypto.Decrypt(oldKey, *row.WebhookSecretEncrypted); err == nil {
 			t.Errorf("policy %s: old key should no longer decrypt webhook secret", row.ID)
 		}
 	}
@@ -271,10 +271,10 @@ func TestRotate_RoundTripsAllThreeSecretTypes(t *testing.T) {
 		if row.AuthHeadersEncrypted == nil {
 			t.Fatal("auth_headers_encrypted is nil")
 		}
-		if _, err := admin.Decrypt(newKey, *row.AuthHeadersEncrypted); err != nil {
+		if _, err := crypto.Decrypt(newKey, *row.AuthHeadersEncrypted); err != nil {
 			t.Errorf("mcp server %s: decrypt auth headers with new key failed: %v", row.ID, err)
 		}
-		if _, err := admin.Decrypt(oldKey, *row.AuthHeadersEncrypted); err == nil {
+		if _, err := crypto.Decrypt(oldKey, *row.AuthHeadersEncrypted); err == nil {
 			t.Errorf("mcp server %s: old key should no longer decrypt auth headers", row.ID)
 		}
 	}
@@ -321,7 +321,7 @@ func TestRotate_DryRunRollsBack(t *testing.T) {
 		t.Fatalf("list api key settings after dry-run: %v", err)
 	}
 	for _, row := range afterRows {
-		if _, err := admin.Decrypt(oldKey, row.Value); err != nil {
+		if _, err := crypto.Decrypt(oldKey, row.Value); err != nil {
 			t.Errorf("%s: ciphertext changed after dry-run (should still decrypt with old key): %v", row.Key, err)
 		}
 		if origByKey[row.Key] != row.Value {
@@ -339,11 +339,11 @@ func TestRotate_WrongOldKeyFailsWithoutPartialWrites(t *testing.T) {
 
 	// Encrypt anthropic with keyA, openai with keyB — mixing keys so keyA alone
 	// cannot decrypt the openai row.
-	antCipher, err := admin.Encrypt(mustKey(keyA), "sk-ant-test")
+	antCipher, err := crypto.Encrypt(mustKey(keyA), "sk-ant-test")
 	if err != nil {
 		t.Fatalf("encrypt anthropic: %v", err)
 	}
-	openaiCipher, err := admin.Encrypt(mustKey(keyB), "sk-openai-test")
+	openaiCipher, err := crypto.Encrypt(mustKey(keyB), "sk-openai-test")
 	if err != nil {
 		t.Fatalf("encrypt openai: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestRotate_WrongOldKeyFailsWithoutPartialWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get anthropic_api_key: %v", err)
 	}
-	if _, err := admin.Decrypt(mustKey(keyA), row.Value); err != nil {
+	if _, err := crypto.Decrypt(mustKey(keyA), row.Value); err != nil {
 		t.Errorf("anthropic_api_key should still decrypt with keyA after rollback: %v", err)
 	}
 }

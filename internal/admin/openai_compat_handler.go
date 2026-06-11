@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	"github.com/felag-engineering/gleipnir/internal/llm/openaicompat"
 )
@@ -107,14 +108,14 @@ type providerResponse struct {
 
 func (h *OpenAICompatHandler) rowToResponse(row OpenAICompatRow) providerResponse {
 	// Decrypt error is intentionally swallowed: if the key is unreadable we
-	// still want to return a response — MaskKey("") produces an empty string,
+	// still want to return a response — crypto.MaskKey("") produces an empty string,
 	// which is a safe degraded value the UI can handle without crashing.
-	plain, _ := Decrypt(h.encKey, row.APIKeyEncrypted)
+	plain, _ := crypto.Decrypt(h.encKey, row.APIKeyEncrypted)
 	return providerResponse{
 		ID:                      row.ID,
 		Name:                    row.Name,
 		BaseURL:                 row.BaseURL,
-		MaskedKey:               MaskKey(plain),
+		MaskedKey:               crypto.MaskKey(plain),
 		ModelsEndpointAvailable: h.modelsAvail[row.Name],
 		CreatedAt:               row.CreatedAt,
 		UpdatedAt:               row.UpdatedAt,
@@ -238,7 +239,7 @@ func (h *OpenAICompatHandler) CreateProvider(w http.ResponseWriter, r *http.Requ
 			fmt.Sprintf("connection test failed: %v", err), "")
 		return
 	}
-	enc, err := Encrypt(h.encKey, body.APIKey)
+	enc, err := crypto.Encrypt(h.encKey, body.APIKey)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "encryption failed", "")
 		return
@@ -308,7 +309,7 @@ func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Requ
 	var effectiveKey string
 	var newCiphertext string
 	if isMaskedKey(body.APIKey) || body.APIKey == "" {
-		plain, err := Decrypt(h.encKey, existing.APIKeyEncrypted)
+		plain, err := crypto.Decrypt(h.encKey, existing.APIKeyEncrypted)
 		if err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, "could not decrypt existing key", "")
 			return
@@ -317,7 +318,7 @@ func (h *OpenAICompatHandler) UpdateProvider(w http.ResponseWriter, r *http.Requ
 		newCiphertext = existing.APIKeyEncrypted
 	} else {
 		effectiveKey = body.APIKey
-		enc, err := Encrypt(h.encKey, body.APIKey)
+		enc, err := crypto.Encrypt(h.encKey, body.APIKey)
 		if err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, "encryption failed", "")
 			return
@@ -392,7 +393,7 @@ func (h *OpenAICompatHandler) TestProvider(w http.ResponseWriter, r *http.Reques
 		httputil.WriteError(w, http.StatusNotFound, "provider not found", "")
 		return
 	}
-	plain, err := Decrypt(h.encKey, existing.APIKeyEncrypted)
+	plain, err := crypto.Decrypt(h.encKey, existing.APIKeyEncrypted)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "could not decrypt key", "")
 		return

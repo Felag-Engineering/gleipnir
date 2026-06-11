@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 )
 
 // Rotate re-encrypts all secrets under newKey. oldKey and newKey are already
@@ -122,11 +122,11 @@ func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byt
 	}
 	for _, row := range apiKeyRows {
 		// plaintext cannot be zeroed (Go string is immutable); key bytes are zeroed by the caller
-		plaintext, err := admin.Decrypt(oldKey, row.Value)
+		plaintext, err := crypto.Decrypt(oldKey, row.Value)
 		if err != nil {
 			return 0, 0, 0, 0, fmt.Errorf("decrypt system_settings[%s]: %w", row.Key, err)
 		}
-		newCiphertext, err := admin.Encrypt(newKey, plaintext)
+		newCiphertext, err := crypto.Encrypt(newKey, plaintext)
 		if err != nil {
 			return 0, 0, 0, 0, fmt.Errorf("re-encrypt system_settings[%s]: %w", row.Key, err)
 		}
@@ -146,11 +146,11 @@ func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byt
 		return 0, 0, 0, 0, fmt.Errorf("list openai-compat providers: %w", err)
 	}
 	for _, row := range compatRows {
-		plaintext, err := admin.Decrypt(oldKey, row.ApiKeyEncrypted)
+		plaintext, err := crypto.Decrypt(oldKey, row.ApiKeyEncrypted)
 		if err != nil {
 			return 0, 0, 0, 0, fmt.Errorf("decrypt openai_compat_providers id=%d name=%q: %w", row.ID, row.Name, err)
 		}
-		newCiphertext, err := admin.Encrypt(newKey, plaintext)
+		newCiphertext, err := crypto.Encrypt(newKey, plaintext)
 		if err != nil {
 			return 0, 0, 0, 0, fmt.Errorf("re-encrypt openai_compat_providers id=%d name=%q: %w", row.ID, row.Name, err)
 		}
@@ -175,11 +175,11 @@ func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byt
 		if row.WebhookSecretEncrypted == nil {
 			continue
 		}
-		plaintext, err := admin.Decrypt(oldKey, *row.WebhookSecretEncrypted)
+		plaintext, err := crypto.Decrypt(oldKey, *row.WebhookSecretEncrypted)
 		if err != nil {
 			return 0, 0, 0, 0, fmt.Errorf("decrypt policies.webhook_secret_encrypted id=%s: %w", row.ID, err)
 		}
-		newCiphertext, err := admin.Encrypt(newKey, plaintext)
+		newCiphertext, err := crypto.Encrypt(newKey, plaintext)
 		if err != nil {
 			return 0, 0, 0, 0, fmt.Errorf("re-encrypt policies.webhook_secret_encrypted id=%s: %w", row.ID, err)
 		}
@@ -202,11 +202,11 @@ func rotateWithDryRun(ctx context.Context, store *db.Store, oldKey, newKey []byt
 		if row.AuthHeadersEncrypted == nil {
 			continue
 		}
-		plaintext, err := admin.Decrypt(oldKey, *row.AuthHeadersEncrypted)
+		plaintext, err := crypto.Decrypt(oldKey, *row.AuthHeadersEncrypted)
 		if err != nil {
 			return 0, 0, 0, 0, fmt.Errorf("decrypt mcp_servers.auth_headers_encrypted id=%s: %w", row.ID, err)
 		}
-		newCiphertext, err := admin.Encrypt(newKey, plaintext)
+		newCiphertext, err := crypto.Encrypt(newKey, plaintext)
 		if err != nil {
 			return 0, 0, 0, 0, fmt.Errorf("re-encrypt mcp_servers.auth_headers_encrypted id=%s: %w", row.ID, err)
 		}

@@ -1,4 +1,4 @@
-package admin
+package crypto
 
 import (
 	"crypto/rand"

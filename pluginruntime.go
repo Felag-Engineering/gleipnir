@@ -18,6 +18,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/execution/agent"
 	runpkg "github.com/felag-engineering/gleipnir/internal/execution/run"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
@@ -234,8 +235,8 @@ func startPluginRuntime(
 	// (OnPublicURLChanged) is returned as a field so run() can attach it to
 	// adminHandler without this file importing admin.Handler directly.
 	if encryptionKey != nil {
-		enc := func(p string) (string, error) { return admin.Encrypt(encryptionKey, p) }
-		dec := func(c string) (string, error) { return admin.Decrypt(encryptionKey, c) }
+		enc := func(p string) (string, error) { return crypto.Encrypt(encryptionKey, p) }
+		dec := func(c string) (string, error) { return crypto.Decrypt(encryptionKey, c) }
 		oauthStore := pluginoauth.NewDBStore(store.Queries(), enc, dec, store.Queries(), time.Now)
 		oauthNonces := pluginoauth.NewDBNonceStore(store.Queries(), time.Now)
 		// Own the janitor goroutine under bgWG so shutdown() can join it rather

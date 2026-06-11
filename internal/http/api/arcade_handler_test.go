@@ -11,10 +11,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/arcade"
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/api"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
@@ -42,7 +42,7 @@ func encryptArcadeHeaders(t *testing.T, encKey []byte, headers []mcp.AuthHeader)
 	if err != nil {
 		t.Fatalf("MarshalAuthHeaders: %v", err)
 	}
-	ct, err := admin.Encrypt(encKey, string(raw))
+	ct, err := crypto.Encrypt(encKey, string(raw))
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}

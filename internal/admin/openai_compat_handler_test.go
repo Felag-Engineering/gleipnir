@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
@@ -294,7 +295,7 @@ func TestUpdate_NewKeyReencrypts(t *testing.T) {
 	if q.rows[1].APIKeyEncrypted == originalCiphertext {
 		t.Errorf("ciphertext should have changed")
 	}
-	plain, _ := Decrypt(testKey, q.rows[1].APIKeyEncrypted)
+	plain, _ := crypto.Decrypt(testKey, q.rows[1].APIKeyEncrypted)
 	if plain != "sk-new-key-xyz" {
 		t.Errorf("plaintext after decrypt: %q", plain)
 	}

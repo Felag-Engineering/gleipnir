@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 )
 
 const defaultDBPath = "/data/gleipnir.db"
@@ -83,13 +83,13 @@ func runRotateKey(cmd *cobra.Command, oldKeyFlag, newKeyFlag, dbPath string, dry
 		newKeyFlag = strings.TrimSpace(line)
 	}
 
-	oldKey, err := admin.ParseEncryptionKey(oldKeyFlag)
+	oldKey, err := crypto.ParseEncryptionKey(oldKeyFlag)
 	if err != nil {
 		return fmt.Errorf("parse --old key: %w", err)
 	}
 	defer zeroKey(oldKey)
 
-	newKey, err := admin.ParseEncryptionKey(newKeyFlag)
+	newKey, err := crypto.ParseEncryptionKey(newKeyFlag)
 	if err != nil {
 		return fmt.Errorf("parse --new key: %w", err)
 	}

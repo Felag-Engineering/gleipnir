@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
 
@@ -685,7 +685,7 @@ func mustEncryptHeaders(t *testing.T, key []byte, headers []AuthHeader) *string 
 	if raw == nil {
 		return nil
 	}
-	ciphertext, err := admin.Encrypt(key, string(raw))
+	ciphertext, err := crypto.Encrypt(key, string(raw))
 	if err != nil {
 		t.Fatalf("encrypt auth headers: %v", err)
 	}
@@ -790,7 +790,7 @@ func TestRegistry_WarnAndFailOpenWhenNoEncKey(t *testing.T) {
 // mustTestKey generates a deterministic 32-byte test key.
 func mustTestKey(t *testing.T) []byte {
 	t.Helper()
-	k, err := admin.ParseEncryptionKey("aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd")
+	k, err := crypto.ParseEncryptionKey("aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd")
 	if err != nil {
 		t.Fatalf("parse test key: %v", err)
 	}

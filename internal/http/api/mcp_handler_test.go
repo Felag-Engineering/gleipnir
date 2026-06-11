@@ -13,10 +13,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/api"
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/testutil"
@@ -1179,7 +1179,7 @@ func TestMCPSetToolEnabledHandler(t *testing.T) {
 // testEncKey returns a deterministic 32-byte key for handler tests.
 func testEncKey(t *testing.T) []byte {
 	t.Helper()
-	k, err := admin.ParseEncryptionKey("aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd")
+	k, err := crypto.ParseEncryptionKey("aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd")
 	if err != nil {
 		t.Fatalf("parse test key: %v", err)
 	}
@@ -1201,7 +1201,7 @@ func insertTestMCPServerWithHeaders(t *testing.T, s *db.Store, name, url string,
 		if err != nil {
 			t.Fatalf("marshal auth headers: %v", err)
 		}
-		ct, err := admin.Encrypt(encKey, string(raw))
+		ct, err := crypto.Encrypt(encKey, string(raw))
 		if err != nil {
 			t.Fatalf("encrypt auth headers: %v", err)
 		}
@@ -1259,7 +1259,7 @@ func TestMCPAuthHeaders_Create(t *testing.T) {
 			t.Fatal("auth_headers_encrypted is nil, want non-nil")
 		}
 		// Decrypt and verify value.
-		plaintext, err := admin.Decrypt(encKey, *rows[0].AuthHeadersEncrypted)
+		plaintext, err := crypto.Decrypt(encKey, *rows[0].AuthHeadersEncrypted)
 		if err != nil {
 			t.Fatalf("decrypt: %v", err)
 		}
@@ -1448,7 +1448,7 @@ func TestMCPAuthHeaders_Update(t *testing.T) {
 		if row.AuthHeadersEncrypted == nil {
 			t.Fatal("auth_headers_encrypted is nil after update — should have been preserved")
 		}
-		plaintext, err := admin.Decrypt(encKey, *row.AuthHeadersEncrypted)
+		plaintext, err := crypto.Decrypt(encKey, *row.AuthHeadersEncrypted)
 		if err != nil {
 			t.Fatalf("decrypt: %v", err)
 		}
@@ -1491,7 +1491,7 @@ func TestSetAuthHeader(t *testing.T) {
 		if row.AuthHeadersEncrypted == nil {
 			t.Fatal("auth_headers_encrypted is nil after set")
 		}
-		plaintext, _ := admin.Decrypt(encKey, *row.AuthHeadersEncrypted)
+		plaintext, _ := crypto.Decrypt(encKey, *row.AuthHeadersEncrypted)
 		headers, _ := mcp.UnmarshalAuthHeaders([]byte(plaintext))
 		if len(headers) != 1 || headers[0].Name != "x-api-key" || headers[0].Value != "sk-new" {
 			t.Errorf("headers = %+v, want [{x-api-key sk-new}]", headers)
@@ -1527,7 +1527,7 @@ func TestSetAuthHeader(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get server: %v", err)
 		}
-		plaintext, _ := admin.Decrypt(encKey, *row.AuthHeadersEncrypted)
+		plaintext, _ := crypto.Decrypt(encKey, *row.AuthHeadersEncrypted)
 		headers, _ := mcp.UnmarshalAuthHeaders([]byte(plaintext))
 		// Must have exactly one header — no duplicates.
 		if len(headers) != 1 {
@@ -1642,7 +1642,7 @@ func TestDeleteAuthHeader(t *testing.T) {
 		if row.AuthHeadersEncrypted == nil {
 			t.Fatal("auth_headers_encrypted is nil — x-keep should still be stored")
 		}
-		plaintext, _ := admin.Decrypt(encKey, *row.AuthHeadersEncrypted)
+		plaintext, _ := crypto.Decrypt(encKey, *row.AuthHeadersEncrypted)
 		headers, _ := mcp.UnmarshalAuthHeaders([]byte(plaintext))
 		if len(headers) != 1 || headers[0].Name != "x-keep" {
 			t.Errorf("headers = %+v, want [{x-keep KEEP}]", headers)

@@ -23,6 +23,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
 	"github.com/felag-engineering/gleipnir/internal/http/sse"
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/infra/version"
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	llmfactory "github.com/felag-engineering/gleipnir/internal/llm/factory"
@@ -124,7 +125,7 @@ func run(cfg config.Config) error {
 	var encryptionKey []byte
 	if raw := cfg.EncryptionKey; raw != "" {
 		var err error
-		encryptionKey, err = admin.ParseEncryptionKey(raw)
+		encryptionKey, err = crypto.ParseEncryptionKey(raw)
 		if err != nil {
 			return fmt.Errorf("parse GLEIPNIR_ENCRYPTION_KEY: %w", err)
 		}
@@ -187,7 +188,7 @@ func run(cfg config.Config) error {
 		if err != nil {
 			continue
 		}
-		apiKey, err := admin.Decrypt(encryptionKey, row.Value)
+		apiKey, err := crypto.Decrypt(encryptionKey, row.Value)
 		if err != nil {
 			slog.Error("failed to decrypt stored API key", "provider", provName, "err", err)
 			continue
@@ -218,7 +219,7 @@ func run(cfg config.Config) error {
 	// Load any previously-saved OpenAI-compat providers from the DB into the
 	// registry at startup. Failure is non-fatal (mirrors bootstrap-providers
 	// loop above) — a log entry is sufficient.
-	if err := openaicompatllm.LoadAndRegister(ctx, openaiAdapter, encryptionKey, providerRegistry, admin.Decrypt); err != nil {
+	if err := openaicompatllm.LoadAndRegister(ctx, openaiAdapter, encryptionKey, providerRegistry, crypto.Decrypt); err != nil {
 		slog.Error("failed to load openai-compat providers at startup", "err", err)
 	}
 
@@ -667,8 +668,9 @@ func (a *modelFilterAdapter) ListEnabledModels(ctx context.Context) ([]api.Enabl
 	return result, nil
 }
 
-// webhookSecretEncrypterAdapter wraps admin.Encrypt and admin.Decrypt so the
-// policy package can encrypt/decrypt webhook secrets without importing admin.
+// webhookSecretEncrypterAdapter wraps crypto.Encrypt and crypto.Decrypt so the
+// policy package can encrypt/decrypt webhook secrets through the SecretCipher
+// interface without binding to a concrete crypto helper.
 // It satisfies both the policy.secretEncrypter interface and the decrypter
 // extension interface checked via type assertion in service.go.
 type webhookSecretEncrypterAdapter struct {
@@ -676,11 +678,11 @@ type webhookSecretEncrypterAdapter struct {
 }
 
 func (a *webhookSecretEncrypterAdapter) EncryptWebhookSecret(plaintext string) (string, error) {
-	return admin.Encrypt(a.key, plaintext)
+	return crypto.Encrypt(a.key, plaintext)
 }
 
 func (a *webhookSecretEncrypterAdapter) DecryptWebhookSecret(ciphertext string) (string, error) {
-	return admin.Decrypt(a.key, ciphertext)
+	return crypto.Decrypt(a.key, ciphertext)
 }
 
 // countEncryptedWebhookSecrets returns the number of policies with a non-NULL

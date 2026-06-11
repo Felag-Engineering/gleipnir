@@ -42,13 +42,13 @@ const RefreshFailureDetailPrefix = "oauth refresh failed"
 var ErrWrongStrategy = errors.New("oauth store: instance strategy does not match operation")
 
 // EncryptFunc encrypts a plaintext string to a base64-encoded ciphertext blob.
-// The concrete implementation is admin.Encrypt bound to the host's
+// The concrete implementation is crypto.Encrypt bound to the host's
 // GLEIPNIR_ENCRYPTION_KEY — passed as a function to avoid importing
 // internal/admin (which imports internal/plugin/oauth, causing a cycle).
 type EncryptFunc func(plaintext string) (string, error)
 
 // DecryptFunc decrypts a base64-encoded ciphertext blob produced by EncryptFunc.
-// The concrete implementation is admin.Decrypt bound to the same key.
+// The concrete implementation is crypto.Decrypt bound to the same key.
 type DecryptFunc func(encoded string) (string, error)
 
 // OAuthQuerier is the narrow DB interface required by DBStore and Manager.

@@ -33,8 +33,8 @@ var (
 	ErrNoSecret = errors.New("no webhook secret stored")
 )
 
-// SecretCipher is satisfied by an adapter that wraps admin.Encrypt and
-// admin.Decrypt. Defined as an interface so the policy package does not import
+// SecretCipher is satisfied by an adapter that wraps crypto.Encrypt and
+// crypto.Decrypt. Defined as an interface so the policy package does not import
 // internal/admin directly.
 type SecretCipher interface {
 	EncryptWebhookSecret(plaintext string) (ciphertext string, err error)

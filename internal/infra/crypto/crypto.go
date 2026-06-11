@@ -1,4 +1,11 @@
-package admin
+// Package crypto provides AES-256-GCM encryption helpers and encryption-key
+// parsing/masking utilities shared across packages that store secrets at rest
+// (provider API keys, webhook secrets, MCP auth headers, plugin credentials).
+//
+// These helpers are algorithm-agnostic and carry no admin-handler concerns;
+// they live in internal/infra so leaf packages (e.g. internal/mcp) can reuse
+// them without importing the higher-level internal/admin package (issue #141).
+package crypto
 
 import (
 	"crypto/aes"
