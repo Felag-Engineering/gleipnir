@@ -30,12 +30,16 @@ CREATE TABLE schema_migrations (
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE mcp_servers (
-    id                  TEXT    PRIMARY KEY,  -- ULID
-    name                TEXT    NOT NULL UNIQUE,
-    url                 TEXT    NOT NULL,
-    last_discovered_at  TEXT,                 -- nullable, ISO 8601 UTC
-    has_drift           INTEGER NOT NULL DEFAULT 0,  -- 1 when re-discovery found changes
-    created_at          TEXT    NOT NULL      -- ISO 8601 UTC
+    id                      TEXT    PRIMARY KEY,  -- ULID
+    name                    TEXT    NOT NULL UNIQUE,
+    url                     TEXT    NOT NULL,
+    last_discovered_at      TEXT,                 -- nullable, ISO 8601 UTC
+    has_drift               INTEGER NOT NULL DEFAULT 0,  -- 1 when re-discovery found changes
+    created_at              TEXT    NOT NULL,     -- ISO 8601 UTC
+    -- Encrypted auth headers (AES-256-GCM, key from GLEIPNIR_ENCRYPTION_KEY).
+    -- JSON array of {"name":"...","value":"..."} objects, serialized then encrypted.
+    -- Values are write-only; only header names are returned via the API (ADR-039).
+    auth_headers_encrypted  TEXT                  -- nullable; TEXT stores base64 ciphertext
 );
 
 -- ---------------------------------------------------------------------------
@@ -137,6 +141,7 @@ CREATE INDEX idx_runs_policy_status  ON runs(policy_id, status);
 -- type discriminates the content shape:
 --
 --   thought          { "text": "..." }
+--   thinking         { "text": "..." }   (extended/redacted thinking blocks)
 --   tool_call        { "tool_name": "...", "server_id": "...", "input": {...} }
 --   tool_result      { "tool_name": "...", "output": ..., "is_error": false }
 --   approval_request { "approval_request_id": "..." }
@@ -164,6 +169,7 @@ CREATE TABLE run_steps (
     type        TEXT    NOT NULL CHECK(type IN (
                     'capability_snapshot',
                     'thought',
+                    'thinking',
                     'tool_call',
                     'tool_result',
                     'approval_request',
@@ -268,7 +274,9 @@ CREATE TABLE sessions (
     user_id     TEXT    NOT NULL REFERENCES users(id),
     token       TEXT    NOT NULL UNIQUE,
     created_at  TEXT    NOT NULL,     -- ISO 8601 UTC
-    expires_at  TEXT    NOT NULL      -- ISO 8601 UTC
+    expires_at  TEXT    NOT NULL,     -- ISO 8601 UTC
+    user_agent  TEXT    NOT NULL DEFAULT '',  -- captured at login for the active-sessions UI
+    ip_address  TEXT    NOT NULL DEFAULT ''   -- captured at login for the active-sessions UI
 );
 
 CREATE INDEX idx_sessions_user_id    ON sessions(user_id);
@@ -328,6 +336,21 @@ CREATE TABLE poll_states (
     next_poll_at         TEXT    NOT NULL,      -- ISO 8601 UTC, used by the poller to schedule
     created_at           TEXT    NOT NULL,      -- ISO 8601 UTC
     updated_at           TEXT    NOT NULL       -- ISO 8601 UTC
+);
+
+-- ---------------------------------------------------------------------------
+-- User preferences
+--
+-- Key-value store for per-user UI preferences (e.g. timezone). Keys are
+-- validated at the application layer; not constrained in the schema.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE user_preferences (
+    user_id          TEXT NOT NULL REFERENCES users(id),
+    preference_key   TEXT NOT NULL,
+    preference_value TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,  -- ISO 8601 UTC
+    UNIQUE(user_id, preference_key)
 );
 
 -- ---------------------------------------------------------------------------
