@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	"github.com/felag-engineering/gleipnir/internal/llm/openaicompat"
 )
@@ -22,7 +22,7 @@ func (f *fakeLoaderQuerier) ListOpenAICompatProvidersForLoader(ctx context.Conte
 func TestLoadAndRegister_NoRows(t *testing.T) {
 	reg := llm.NewProviderRegistry()
 	q := &fakeLoaderQuerier{}
-	if err := openaicompat.LoadAndRegister(context.Background(), q, []byte("01234567890123456789012345678901"), reg, admin.Decrypt); err != nil {
+	if err := openaicompat.LoadAndRegister(context.Background(), q, []byte("01234567890123456789012345678901"), reg, crypto.Decrypt); err != nil {
 		t.Fatalf("LoadAndRegister: %v", err)
 	}
 	if len(reg.Providers()) != 0 {
@@ -32,15 +32,15 @@ func TestLoadAndRegister_NoRows(t *testing.T) {
 
 func TestLoadAndRegister_MultipleRows(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
-	enc1, _ := admin.Encrypt(key, "sk-one")
-	enc2, _ := admin.Encrypt(key, "sk-two")
+	enc1, _ := crypto.Encrypt(key, "sk-one")
+	enc2, _ := crypto.Encrypt(key, "sk-two")
 
 	reg := llm.NewProviderRegistry()
 	q := &fakeLoaderQuerier{rows: []openaicompat.LoaderRow{
 		{Name: "openai", BaseURL: "https://api.openai.com/v1", APIKeyEncrypted: enc1},
 		{Name: "ollama-local", BaseURL: "http://ollama:11434/v1", APIKeyEncrypted: enc2},
 	}}
-	if err := openaicompat.LoadAndRegister(context.Background(), q, key, reg, admin.Decrypt); err != nil {
+	if err := openaicompat.LoadAndRegister(context.Background(), q, key, reg, crypto.Decrypt); err != nil {
 		t.Fatalf("LoadAndRegister: %v", err)
 	}
 	names := reg.Providers()
@@ -57,13 +57,13 @@ func TestLoadAndRegister_MultipleRows(t *testing.T) {
 
 func TestLoadAndRegister_CorruptCiphertextRowIsSkipped(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
-	enc, _ := admin.Encrypt(key, "sk-good")
+	enc, _ := crypto.Encrypt(key, "sk-good")
 	reg := llm.NewProviderRegistry()
 	q := &fakeLoaderQuerier{rows: []openaicompat.LoaderRow{
 		{Name: "corrupt", BaseURL: "https://api.openai.com/v1", APIKeyEncrypted: "not-valid-ciphertext"},
 		{Name: "good", BaseURL: "https://api.openai.com/v1", APIKeyEncrypted: enc},
 	}}
-	if err := openaicompat.LoadAndRegister(context.Background(), q, key, reg, admin.Decrypt); err != nil {
+	if err := openaicompat.LoadAndRegister(context.Background(), q, key, reg, crypto.Decrypt); err != nil {
 		t.Fatalf("LoadAndRegister should not abort on corrupt row: %v", err)
 	}
 	if _, err := reg.Get("good"); err != nil {

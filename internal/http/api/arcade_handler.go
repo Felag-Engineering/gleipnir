@@ -13,10 +13,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/arcade"
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 )
 
@@ -260,7 +260,7 @@ func (h *ArcadeHandler) loadArcadeServer(ctx context.Context, id string) (db.Mcp
 		return db.McpServer{}, "", "", http.StatusInternalServerError, "missing required Arcade headers"
 	}
 
-	plaintext, err := admin.Decrypt(h.encKey, *server.AuthHeadersEncrypted)
+	plaintext, err := crypto.Decrypt(h.encKey, *server.AuthHeadersEncrypted)
 	if err != nil {
 		slog.Warn("failed to decrypt MCP server auth headers for Arcade handler",
 			"server_id", server.ID, "err", err)

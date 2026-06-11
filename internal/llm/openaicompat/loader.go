@@ -23,9 +23,9 @@ type LoaderQuerier interface {
 }
 
 // DecryptFunc decrypts a ciphertext using the provided key. In production
-// main.go passes admin.Decrypt; in tests the loader_test file can pass its
-// own helper. Accepting it as a parameter avoids an import cycle between
-// internal/llm/openai and internal/admin.
+// main.go passes crypto.Decrypt; in tests the loader_test file can pass its
+// own helper. Accepting it as a parameter keeps the decryption strategy
+// injectable for tests without binding the loader to a concrete crypto helper.
 type DecryptFunc func(key []byte, encoded string) (string, error)
 
 // LoadAndRegister reads all rows from the querier, decrypts each API key

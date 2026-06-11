@@ -17,8 +17,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	inframetrics "github.com/felag-engineering/gleipnir/internal/infra/metrics"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dispatch"
 	"github.com/felag-engineering/gleipnir/internal/plugin/hostsvc"
@@ -312,7 +312,7 @@ func TestGetCredentials_DecryptsAndReturns(t *testing.T) {
 	t.Parallel()
 
 	creds := `{"token":"secret-value"}`
-	encrypted, err := admin.Encrypt(testEncryptionKey, creds)
+	encrypted, err := crypto.Encrypt(testEncryptionKey, creds)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestGetCredentials_NoCaching(t *testing.T) {
 	t.Parallel()
 
 	creds := `{"key":"no-cache"}`
-	encrypted, _ := admin.Encrypt(testEncryptionKey, creds)
+	encrypted, _ := crypto.Encrypt(testEncryptionKey, creds)
 
 	q := &fakeQuerier{
 		instance: db.PluginInstance{ID: "iid-1", PluginID: "plug-1", CredentialsEncrypted: &encrypted},
@@ -367,7 +367,7 @@ func TestGetCredentials_NoAuditEventOnRead(t *testing.T) {
 	t.Run("configured credentials", func(t *testing.T) {
 		t.Parallel()
 		creds := `{"strategy":"static_api_key"}`
-		encrypted, err := admin.Encrypt(testEncryptionKey, creds)
+		encrypted, err := crypto.Encrypt(testEncryptionKey, creds)
 		if err != nil {
 			t.Fatalf("encrypt: %v", err)
 		}

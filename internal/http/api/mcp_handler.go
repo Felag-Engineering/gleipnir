@@ -19,10 +19,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/arcade"
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
@@ -104,7 +104,7 @@ func (h *MCPHandler) serverToResponse(s db.McpServer) mcpServerResponse {
 	keys := make([]string, 0)
 
 	if s.AuthHeadersEncrypted != nil && h.encKey != nil {
-		plaintext, err := admin.Decrypt(h.encKey, *s.AuthHeadersEncrypted)
+		plaintext, err := crypto.Decrypt(h.encKey, *s.AuthHeadersEncrypted)
 		if err != nil {
 			slog.Warn("failed to decrypt mcp server auth headers for response",
 				"server_id", s.ID, "err", err)
@@ -667,7 +667,7 @@ func (h *MCPHandler) decryptHeaders(server db.McpServer) ([]mcp.AuthHeader, erro
 	if h.encKey == nil {
 		return nil, fmt.Errorf("encryption key not configured")
 	}
-	plaintext, err := admin.Decrypt(h.encKey, *server.AuthHeadersEncrypted)
+	plaintext, err := crypto.Decrypt(h.encKey, *server.AuthHeadersEncrypted)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt: %w", err)
 	}
@@ -692,7 +692,7 @@ func (h *MCPHandler) encryptHeaders(headers []mcp.AuthHeader) (*string, int) {
 	if raw == nil {
 		return nil, 0
 	}
-	ct, err := admin.Encrypt(h.encKey, string(raw))
+	ct, err := crypto.Encrypt(h.encKey, string(raw))
 	if err != nil {
 		return nil, http.StatusInternalServerError
 	}

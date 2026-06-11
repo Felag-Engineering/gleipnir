@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 )
 
 // ErrNoSecret is returned by LoadWebhookSecret when the policy has no stored secret.
@@ -43,7 +43,7 @@ func (l *SecretLoader) LoadWebhookSecret(ctx context.Context, policyID string) (
 	if l.key == nil {
 		return "", ErrEncryptionKeyMissing
 	}
-	plaintext, err := admin.Decrypt(l.key, *ciphertext)
+	plaintext, err := crypto.Decrypt(l.key, *ciphertext)
 	if err != nil {
 		return "", fmt.Errorf("decrypt webhook secret: %w", err)
 	}

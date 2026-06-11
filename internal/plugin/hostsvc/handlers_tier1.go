@@ -11,7 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/felag-engineering/gleipnir/internal/admin"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/infra/metrics"
 	"github.com/felag-engineering/gleipnir/internal/model"
@@ -69,7 +69,7 @@ func (s *Server) GetCredentials(ctx context.Context, _ *hostv1.GetCredentialsReq
 		return &hostv1.GetCredentialsResponse{}, nil
 	}
 
-	plaintext, decryptErr := admin.Decrypt(s.encryptionKey, *inst.CredentialsEncrypted)
+	plaintext, decryptErr := crypto.Decrypt(s.encryptionKey, *inst.CredentialsEncrypted)
 	if decryptErr != nil {
 		return nil, status.Errorf(codes.Internal, "decrypt credentials: %v", decryptErr)
 	}

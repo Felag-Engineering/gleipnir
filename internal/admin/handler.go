@@ -17,6 +17,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
+	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	"github.com/felag-engineering/gleipnir/internal/settings"
 )
@@ -84,10 +85,10 @@ func (h *Handler) ListProviders(w http.ResponseWriter, r *http.Request) {
 		ps := ProviderStatus{Name: name}
 		row, err := h.q.GetSystemSetting(ctx, name+"_api_key")
 		if err == nil {
-			decrypted, derr := Decrypt(h.encryptionKey, row.Value)
+			decrypted, derr := crypto.Decrypt(h.encryptionKey, row.Value)
 			if derr == nil {
 				ps.HasKey = true
-				ps.MaskedKey = MaskKey(decrypted)
+				ps.MaskedKey = crypto.MaskKey(decrypted)
 			}
 		}
 		statuses = append(statuses, ps)
@@ -123,7 +124,7 @@ func (h *Handler) SetProviderKey(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	encrypted, err := Encrypt(h.encryptionKey, body.Key)
+	encrypted, err := crypto.Encrypt(h.encryptionKey, body.Key)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "encryption failed", "")
 		return
