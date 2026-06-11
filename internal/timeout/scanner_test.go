@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -220,6 +221,44 @@ func TestScanner_AlreadyDecided_NotReprocessed(t *testing.T) {
 	}
 	if status != "approved" {
 		t.Errorf("approval status = %q, want approved (must not be re-processed)", status)
+	}
+}
+
+func TestScanner_OnTimeoutClaimed_InvokedOncePerClaim(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusWaitingForApproval)
+	testutil.InsertRun(t, s, "r2", "p1", model.RunStatusWaitingForApproval)
+	// Two expired (claimable) and one not-yet-expired (must not fire the hook).
+	insertApprovalRequest(t, s, "a1", "r1", "tool_a", pastTimestamp())
+	insertApprovalRequest(t, s, "a2", "r2", "tool_b", pastTimestamp())
+	insertApprovalRequest(t, s, "a3", "r1", "tool_c", futureTimestamp())
+
+	var calls atomic.Int64
+	cfg := approvalConfig(s)
+	cfg.OnTimeoutClaimed = func(ctx context.Context) {
+		if ctx == nil {
+			t.Error("OnTimeoutClaimed received a nil context")
+		}
+		calls.Add(1)
+	}
+
+	scanner := timeout.NewScanner(s, time.Minute, cfg)
+	if err := scanner.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if got := calls.Load(); got != 2 {
+		t.Errorf("OnTimeoutClaimed invoked %d times, want 2 (one per claimed timeout)", got)
+	}
+
+	// A second scan must not re-invoke the hook: both expired items are already
+	// claimed (status='timeout'), so ListExpired returns nothing claimable.
+	if err := scanner.Scan(context.Background()); err != nil {
+		t.Fatalf("second Scan: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("OnTimeoutClaimed invoked %d times after re-scan, want 2 (no double-count)", got)
 	}
 }
 
