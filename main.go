@@ -476,6 +476,17 @@ func run(cfg config.Config) error {
 	// this does NOT cancel in-flight agent runs — CancelAll handles that below.
 	cancel()
 
+	// Quiesce plugin trigger ingress BEFORE draining runs. cancel() above only
+	// signals the supervisor's stream goroutines cooperatively; a goroutine could
+	// still pass its ctx check and reach RunLauncher.Launch — which does the
+	// RunManager wg.Add — after runManager.Wait() returns below. That add-after-Wait
+	// leaves the run unawaited and racing dispatch-pool teardown. quiesceTriggers
+	// calls TriggerSupervisor.StopAll(), which synchronously cancels and joins every
+	// stream goroutine, so no new Launch can land once it returns. Doing this before
+	// CancelAll means any run that does land during the quiesce window is still
+	// cancelled by CancelAll and awaited by the drain below (#500). No-op when rt is nil.
+	rt.quiesceTriggers()
+
 	// Signal all in-flight agent runs to stop.
 	runManager.CancelAll()
 
