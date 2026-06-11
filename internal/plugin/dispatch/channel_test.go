@@ -1110,6 +1110,96 @@ func TestWait_TimerFires_CancelledCtx_RowTransitionedToTimedOut(t *testing.T) {
 	}
 }
 
+// TestWait_TimerFires_WriteRunStepUsesDetachedCtx is the regression test for
+// #499: when Wait's timer fires, the timeout step must be written with the
+// detached cleanup context, NOT the caller's run ctx. On an interrupted run the
+// run ctx is already cancelled by the time the timer fires, so writing the step
+// with the run ctx would silently fail and lose the very step the CAS winner
+// exists to record.
+//
+// We cannot probe the cleanup ctx AFTER Wait returns: cleanupCtx is cancelled by
+// Wait's own `defer cancelCleanup()`, so it always reads cancelled afterwards.
+// Instead we observe liveness INSIDE the WriteRunStep hook (while we are still on
+// Wait's stack and cleanupCtx is live): the hook cancels the run ctx and then
+// checks whether the ctx it was handed became Done.
+//
+//   - bug  (WriteRunStep(ctx, ...)):        handed ctx IS runCtx → Done after cancel.
+//   - fix  (WriteRunStep(cleanupCtx, ...)): handed ctx is detached → stays alive.
+//
+// The timer (30ms) fires while runCtx is still live so the timer branch wins the
+// select deterministically; the run-ctx cancellation happens entirely inside the
+// hook, after the branch is already committed.
+func TestWait_TimerFires_WriteRunStepUsesDetachedCtx(t *testing.T) {
+	ds := newSetup(t)
+
+	pluginID := insertPlugin(t, ds.store, "p1", "plug")
+	instID := insertPluginInstance(t, ds.store, "i1", pluginID, "inst-ok")
+	audID := insertAudience(t, ds.store, "aud1", "aud")
+	insertAudienceEntry(t, ds.store, "ae1", audID, instID, 0, false, true)
+
+	ds.clientMap["inst-ok"] = &fakeChannelClient{
+		requestHook: func(_ context.Context, _ *channelv1.RequestRequest) (*channelv1.RequestResponse, error) {
+			return &channelv1.RequestResponse{Acked: true}, nil
+		},
+	}
+
+	testutil.InsertPolicy(t, ds.store, "pol1", "policy-pol1", "webhook", "{}")
+	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+
+	var stepCtxStillLive atomic.Bool
+	var stepCalled atomic.Bool
+
+	d := dispatch.NewDispatcher(dispatch.DispatcherConfig{
+		Queries:       ds.store.Queries(),
+		NotifyTimeout: 200 * time.Millisecond,
+		PreAckTimeout: 100 * time.Millisecond,
+		WriteRunStep: func(ctx context.Context, _ string, stepType string, _ map[string]interface{}) error {
+			if stepType != "plugin_request_timeout" {
+				return nil
+			}
+			stepCalled.Store(true)
+			// Cancel the caller's run ctx now. If the dispatcher handed us runCtx
+			// (the #499 bug), our ctx becomes Done; if it handed us the detached
+			// cleanup ctx (the fix), our ctx stays alive.
+			cancelRun()
+			select {
+			case <-ctx.Done():
+				stepCtxStillLive.Store(false)
+			default:
+				stepCtxStillLive.Store(true)
+			}
+			return nil
+		},
+		NewChannelClient: func(instanceName string) channelv1.ChannelServiceClient {
+			if c := ds.clientMap[instanceName]; c != nil {
+				return c
+			}
+			return &fakeChannelClient{}
+		},
+	})
+
+	reqID, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+
+	_, waitErr := d.Wait(runCtx, reqID, 30*time.Millisecond)
+	if waitErr == nil {
+		t.Fatal("Wait should return an error (timeout)")
+	}
+
+	if !stepCalled.Load() {
+		t.Fatal("WriteRunStep was never called for plugin_request_timeout — the timeout step was lost")
+	}
+	if !stepCtxStillLive.Load() {
+		t.Errorf("WriteRunStep was handed the caller's run ctx (#499 regression): " +
+			"cancelling the run ctx cancelled the step ctx. It must use the detached cleanup ctx.")
+	}
+}
+
 // TestRequest_PreAckFailure_RowTransitionedToTimedOut verifies the cleanup path:
 // when the plugin returns acked=false, the already-inserted row is transitioned
 // to timed_out rather than left as a dangling pending entry.
