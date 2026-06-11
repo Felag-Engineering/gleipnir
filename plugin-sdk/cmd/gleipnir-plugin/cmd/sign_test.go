@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 )
 
@@ -72,6 +73,83 @@ func TestRunSignProducesVerifiableSignature(t *testing.T) {
 	payload := signing.PluginPayload(binaryData, manifestData)
 	if err := signing.Verify(pk, payload, sig, "timestamp:999"); err != nil {
 		t.Errorf("verify: %v", err)
+	}
+}
+
+// nonCanonicalManifestYAML is the same manifest as canonicalManifestYAML but
+// with keys out of sorted order and 4-space indentation. Canonicalising it
+// (sorted keys, 2-space indent) yields exactly canonicalManifestYAML, so it
+// proves sign canonicalises before hashing rather than signing raw bytes.
+const nonCanonicalManifestYAML = `version: 1.0.0
+name: testplugin
+schema_version: v1
+auth:
+    strategy: none
+    mode: instance_credentials
+services:
+    tool: v1
+tools:
+    - name: my_tool
+      description: Does things
+`
+
+// TestRunSignCanonicalisesManifest is the regression test for #489: sign must
+// hash the CANONICAL manifest bytes (matching package.go and the host loader),
+// not the raw on-disk bytes. Against the pre-fix code (os.ReadFile) the produced
+// signature covers the raw, non-canonical bytes and FAILS to verify against the
+// canonical form below. After the fix both sides agree.
+func TestRunSignCanonicalisesManifest(t *testing.T) {
+	dir := t.TempDir()
+	pk := writeTestKey(t, dir)
+
+	binaryPath := filepath.Join(dir, "myplugin")
+	manifestPath := filepath.Join(dir, "manifest.yaml")
+	outPath := filepath.Join(dir, "myplugin.minisig")
+
+	binaryData := []byte("fake binary content")
+
+	if err := os.WriteFile(binaryPath, binaryData, 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	// Write the deliberately NON-canonical manifest to disk.
+	if err := os.WriteFile(manifestPath, []byte(nonCanonicalManifestYAML), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	// Sanity check the test is not a tautology: the on-disk bytes must differ
+	// from the canonical bytes, otherwise raw-vs-canonical signing is identical.
+	canonicalManifest, err := manifest.Canonicalize([]byte(nonCanonicalManifestYAML))
+	if err != nil {
+		t.Fatalf("canonicalise: %v", err)
+	}
+	if bytes.Equal([]byte(nonCanonicalManifestYAML), canonicalManifest) {
+		t.Fatal("non-canonical fixture canonicalises to itself — test would be a tautology")
+	}
+
+	fakeCmd := &cobra.Command{}
+	fakeCmd.SetOut(&bytes.Buffer{})
+	fakeCmd.SetErr(&bytes.Buffer{})
+	fakeCmd.SetIn(strings.NewReader(""))
+
+	keyPath := filepath.Join(dir, "signing.key")
+	if err := runSign(fakeCmd, keyPath, false, binaryPath, manifestPath, outPath, "timestamp:489"); err != nil {
+		t.Fatalf("runSign: %v", err)
+	}
+
+	sigData, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read .minisig: %v", err)
+	}
+	sig, _, err := signing.ParseSignature(sigData)
+	if err != nil {
+		t.Fatalf("parse signature: %v", err)
+	}
+
+	// Verify against the CANONICAL bytes — the bytes package and the host loader
+	// hash. Pre-fix this fails (signature covered the raw bytes); post-fix it passes.
+	payload := signing.PluginPayload(binaryData, canonicalManifest)
+	if err := signing.Verify(pk, payload, sig, "timestamp:489"); err != nil {
+		t.Errorf("verify against canonical manifest: %v", err)
 	}
 }
 

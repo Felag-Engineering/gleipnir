@@ -64,9 +64,17 @@ func runSign(cmd *cobra.Command, flagKey string, flagKeyStdin bool, binary, mani
 		return fmt.Errorf("sign: read binary %s: %w", binary, err)
 	}
 
-	manifestData, err := os.ReadFile(manifestPath)
+	// Sign the CANONICAL manifest bytes, not the raw on-disk bytes. `package`
+	// canonicalises (sorted keys, 2-space indent) the manifest before both
+	// hashing it AND writing it into the bundle, and the host loader verifies the
+	// signature against the bundle's manifest.yaml as-is. So if `sign` hashed the
+	// raw bytes, its signature would not verify whenever the on-disk manifest is
+	// not already canonical (#489) — `sign` and `package` would sign different
+	// bytes. loadCanonicalManifest is the same helper package.go and validate.go
+	// use, guaranteeing all three paths hash identical bytes.
+	manifestData, err := loadCanonicalManifest(manifestPath)
 	if err != nil {
-		return fmt.Errorf("sign: read manifest %s: %w", manifestPath, err)
+		return fmt.Errorf("sign: %w", err)
 	}
 
 	if trustedComment == "" {
