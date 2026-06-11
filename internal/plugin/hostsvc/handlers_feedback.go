@@ -189,8 +189,28 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 	// Without a transaction, two concurrent writers can observe the same
 	// MAX(step_number) and attempt to insert with the same (run_id, step_number),
 	// violating the unique constraint (fixes #348, ADR-038 discipline).
-	if err := s.writeFeedbackResponseStep(ctx, fr.RunID, requestID, payloadJSON); err != nil {
+	resolved, err := s.writeFeedbackResponseStep(ctx, fr.RunID, requestID, payloadJSON)
+	if err != nil {
 		return nil, err
+	}
+	if !resolved {
+		// The guarded CAS affected 0 rows: the request was resolved by another
+		// writer in the residual window between the fr.Status pre-check above and
+		// the commit. The transaction has been rolled back, so NO feedback_response
+		// step was committed — without this guard we would write a spurious audit
+		// step with no corresponding state change (#496, residual of #348).
+		s.writeAuditEvent(ctx, inst.ID, EventTypeFeedbackResponseLate, "warning", map[string]string{
+			"request_id": requestID,
+			"reason":     "cas_lost",
+			"status":     fr.Status,
+		})
+		return &hostv1.WriteAuditStepResponse{
+			Ok: false,
+			Error: &commonv1.ErrorEnvelope{
+				Code:    commonv1.ErrorCode_ERROR_CODE_INVALID_ARG,
+				Message: EventTypeFeedbackResponseLate,
+			},
+		}, nil
 	}
 
 	// Publish so SSE subscribers and tests can observe the step.
@@ -211,18 +231,41 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 // the TOCTOU race where two concurrent writers observe the same MAX(step_number)
 // and attempt to insert with the same (run_id, step_number) value (fixes #348).
 //
+// The returned bool reports whether the guarded CAS
+// (UpdateFeedbackRequestStatus, WHERE status='pending') actually transitioned
+// the request. When it affects 0 rows another writer resolved the request in
+// the residual window after the caller's fr.Status pre-check, so the step
+// INSERT is rolled back (never committed) and (false, nil) is returned — the
+// caller then emits the late-callback ok=false envelope. This closes the
+// orphan-step window left open by #348 (#496).
+//
 // When s.sqlDB is nil (unit tests using a fake Querier), the operations run
 // without a transaction — acceptable because fake Queriers are single-threaded
-// and the race only manifests against a real SQLite connection pool.
-func (s *Server) writeFeedbackResponseStep(ctx context.Context, runID, requestID, payloadJSON string) error {
+// and the race only manifests against a real SQLite connection pool. The
+// rows-affected guard is still honored so the contract is uniform across paths.
+func (s *Server) writeFeedbackResponseStep(ctx context.Context, runID, requestID, payloadJSON string) (resolved bool, err error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	stepID := model.NewULID()
 
 	if s.sqlDB == nil {
-		// Test path: no real DB, run without transaction.
+		// Test path: no real DB, run without transaction. Resolve the request
+		// FIRST so a 0-row CAS short-circuits before the step INSERT — there is no
+		// transaction to roll back here, so we must not write the step on CAS loss.
+		rows, err := s.q.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
+			Status:     "resolved",
+			Response:   &payloadJSON,
+			ResolvedAt: &now,
+			ID:         requestID,
+		})
+		if err != nil {
+			return false, status.Errorf(codes.Internal, "update feedback request status: %v", err)
+		}
+		if rows == 0 {
+			return false, nil
+		}
 		latestStep, err := s.latestStepNumber(ctx, runID)
 		if err != nil {
-			return status.Errorf(codes.Internal, "resolve step index: %v", err)
+			return false, status.Errorf(codes.Internal, "resolve step index: %v", err)
 		}
 		_, err = s.q.CreateRunStep(ctx, db.CreateRunStepParams{
 			ID:         stepID,
@@ -234,23 +277,14 @@ func (s *Server) writeFeedbackResponseStep(ctx context.Context, runID, requestID
 			CreatedAt:  now,
 		})
 		if err != nil {
-			return status.Errorf(codes.Internal, "create run step: %v", err)
+			return false, status.Errorf(codes.Internal, "create run step: %v", err)
 		}
-		_, err = s.q.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
-			Status:     "resolved",
-			Response:   &payloadJSON,
-			ResolvedAt: &now,
-			ID:         requestID,
-		})
-		if err != nil {
-			return status.Errorf(codes.Internal, "update feedback request status: %v", err)
-		}
-		return nil
+		return true, nil
 	}
 
 	tx, err := s.sqlDB.BeginTx(ctx, nil)
 	if err != nil {
-		return status.Errorf(codes.Internal, "begin feedback response tx: %v", err)
+		return false, status.Errorf(codes.Internal, "begin feedback response tx: %v", err)
 	}
 	defer tx.Rollback() //nolint:errcheck — Rollback is a no-op after Commit
 
@@ -260,7 +294,7 @@ func (s *Server) writeFeedbackResponseStep(ctx context.Context, runID, requestID
 	var nextStep int64
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
-			return status.Errorf(codes.Internal, "resolve step index in tx: %v", err)
+			return false, status.Errorf(codes.Internal, "resolve step index in tx: %v", err)
 		}
 		// No steps yet — first step is 0.
 		nextStep = 0
@@ -278,21 +312,28 @@ func (s *Server) writeFeedbackResponseStep(ctx context.Context, runID, requestID
 		CreatedAt:  now,
 	})
 	if err != nil {
-		return status.Errorf(codes.Internal, "create run step in tx: %v", err)
+		return false, status.Errorf(codes.Internal, "create run step in tx: %v", err)
 	}
 
-	_, err = qtx.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
+	rows, err := qtx.UpdateFeedbackRequestStatus(ctx, db.UpdateFeedbackRequestStatusParams{
 		Status:     "resolved",
 		Response:   &payloadJSON,
 		ResolvedAt: &now,
 		ID:         requestID,
 	})
 	if err != nil {
-		return status.Errorf(codes.Internal, "update feedback request status in tx: %v", err)
+		return false, status.Errorf(codes.Internal, "update feedback request status in tx: %v", err)
+	}
+	if rows == 0 {
+		// Guarded CAS lost: the request was resolved concurrently after the
+		// caller's pre-check. Return without committing so the deferred Rollback
+		// discards the feedback_response step we just staged (#496). Returning
+		// (false, nil) — not an error — lets the caller emit the late envelope.
+		return false, nil
 	}
 
 	if err := tx.Commit(); err != nil {
-		return status.Errorf(codes.Internal, "commit feedback response tx: %v", err)
+		return false, status.Errorf(codes.Internal, "commit feedback response tx: %v", err)
 	}
-	return nil
+	return true, nil
 }
