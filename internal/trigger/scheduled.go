@@ -194,68 +194,23 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 
 	// Enforce concurrency policy before launching, consistent with webhook and
 	// manual triggers. All non-nil errors prevent the run from firing.
-	if err := s.launcher.CheckConcurrency(ctx, policyID, parsed.Agent.Concurrency); err != nil {
-		switch {
-		case errors.Is(err, run.ErrConcurrencySkipActive):
-			slog.Info("scheduled: skipping fire, active run exists (concurrency: skip)",
-				"policy_id", policyID, "fire_at", fireTime)
-			// The fire time was consumed (skipped); it will not be retried. Pause
-			// the policy if all fire_at times are now exhausted, just like the
-			// queue and successful-launch paths — otherwise the policy stays
-			// "active" forever with no future timers and never fires again (#488).
-			s.pauseIfExhausted(ctx, policyID, parsed)
-		case errors.Is(err, run.ErrConcurrencyQueueActive):
-			if enqErr := s.launcher.Enqueue(ctx, run.LaunchParams{
-				PolicyID:       policyID,
-				TriggerType:    model.TriggerTypeScheduled,
-				TriggerPayload: string(payload),
-				ParsedPolicy:   parsed,
-			}, parsed.Agent.QueueDepth); enqErr != nil {
-				if errors.Is(enqErr, run.ErrConcurrencyQueueFull) {
-					slog.Warn("scheduled: trigger queue is full",
-						"policy_id", policyID, "fire_at", fireTime)
-				} else {
-					slog.Error("scheduled: failed to enqueue trigger",
-						"policy_id", policyID, "fire_at", fireTime, "err", enqErr)
-				}
-			} else {
-				slog.Info("scheduled: trigger queued (active run exists)",
-					"policy_id", policyID, "fire_at", fireTime)
-				// The fire time was consumed (enqueued). Pause the policy if
-				// all fire_at times are now exhausted — DrainQueue calls Launch
-				// directly and does not invoke pauseIfExhausted.
-				s.pauseIfExhausted(ctx, policyID, parsed)
-			}
-		default:
-			slog.Error("scheduled: concurrency check failed",
-				"policy_id", policyID, "err", err)
-		}
-		return
-	}
-
-	result, err := s.launcher.Launch(ctx, run.LaunchParams{
+	outcome := launchOrQueueBackground(ctx, s.launcher, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypeScheduled,
 		TriggerPayload: string(payload),
 		ParsedPolicy:   parsed,
-	})
-	if err != nil {
-		// run_id is populated when the failure happened after the row was
-		// created (tool resolution, agent construction). Operators can use it
-		// to find the failed run in history, where the recorded error lives.
-		slog.Error("scheduled: failed to launch run",
-			"policy_id", policyID,
-			"run_id", result.RunID,
-			"fire_at", fireTime,
-			"err", err,
-		)
-		return
+	}, parsed.Agent.Concurrency, parsed.Agent.QueueDepth, "scheduled", "fire_at", fireTime)
+
+	// The fire time is consumed whenever the trigger was skipped, queued, or
+	// launched — only a hard error (concurrency check, enqueue, or launch
+	// failure) leaves it unconsumed. Pause the policy if all fire_at times are
+	// now exhausted; otherwise a skip would strand it "active" forever with no
+	// future timers and it would never fire again (#488). DrainQueue calls
+	// Launch directly and does not invoke pauseIfExhausted, so the queued path
+	// must pause here too.
+	if outcome != outcomeError {
+		s.pauseIfExhausted(ctx, policyID, parsed)
 	}
-
-	slog.Info("scheduled: run launched", "run_id", result.RunID, "policy_id", policyID, "fire_at", fireTime)
-
-	// Pause policy if all fire times are now in the past.
-	s.pauseIfExhausted(ctx, policyID, parsed)
 }
 
 // alreadyFired returns true if a scheduled run already exists for this policy

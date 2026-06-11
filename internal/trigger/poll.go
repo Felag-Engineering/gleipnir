@@ -317,52 +317,12 @@ func (p *Poller) poll(ctx context.Context, policyID string, parsed *model.Parsed
 	// Checks matched — enforce concurrency policy, then launch or queue a run.
 	payload := buildTriggerPayload(checks, results)
 
-	if err := p.launcher.CheckConcurrency(ctx, policyID, parsed.Agent.Concurrency); err != nil {
-		switch {
-		case errors.Is(err, run.ErrConcurrencySkipActive):
-			slog.Info("poller: skipping run, active run exists (concurrency: skip)", "policy_id", policyID)
-			return
-		case errors.Is(err, run.ErrConcurrencyQueueActive):
-			if enqErr := p.launcher.Enqueue(ctx, run.LaunchParams{
-				PolicyID:       policyID,
-				TriggerType:    model.TriggerTypePoll,
-				TriggerPayload: payload,
-				ParsedPolicy:   parsed,
-			}, parsed.Agent.QueueDepth); enqErr != nil {
-				if errors.Is(enqErr, run.ErrConcurrencyQueueFull) {
-					slog.Warn("poller: trigger queue is full", "policy_id", policyID)
-				} else {
-					slog.Error("poller: failed to enqueue trigger", "policy_id", policyID, "err", enqErr)
-				}
-			} else {
-				slog.Info("poller: trigger queued (active run exists)", "policy_id", policyID)
-			}
-			return
-		default:
-			slog.Error("poller: concurrency check failed", "policy_id", policyID, "err", err)
-			return
-		}
-	}
-
-	launchResult, err := p.launcher.Launch(ctx, run.LaunchParams{
+	launchOrQueueBackground(ctx, p.launcher, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypePoll,
 		TriggerPayload: payload,
 		ParsedPolicy:   parsed,
-	})
-	if err != nil {
-		// run_id is populated when the failure happened after the row was
-		// created (tool resolution, agent construction). Operators can use it
-		// to find the failed run in history, where the recorded error lives.
-		slog.Error("poller: failed to launch run",
-			"policy_id", policyID,
-			"run_id", launchResult.RunID,
-			"err", err,
-		)
-		return
-	}
-
-	slog.Info("poller: run launched", "run_id", launchResult.RunID, "policy_id", policyID)
+	}, parsed.Agent.Concurrency, parsed.Agent.QueueDepth, "poller")
 }
 
 // pollResultEntry is one item in the poll_results trigger payload array.

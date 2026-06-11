@@ -283,52 +283,12 @@ func (c *CronRunner) fire(ctx context.Context, policyID string, parsed *model.Pa
 		"expression":    parsed.Trigger.CronExpr,
 	})
 
-	if err := c.launcher.CheckConcurrency(ctx, policyID, parsed.Agent.Concurrency); err != nil {
-		switch {
-		case errors.Is(err, run.ErrConcurrencySkipActive):
-			slog.Info("cron: skipping fire, active run exists (concurrency: skip)",
-				"policy_id", policyID, "fired_at", firedAt)
-		case errors.Is(err, run.ErrConcurrencyQueueActive):
-			if enqErr := c.launcher.Enqueue(ctx, run.LaunchParams{
-				PolicyID:       policyID,
-				TriggerType:    model.TriggerTypeCron,
-				TriggerPayload: string(payload),
-				ParsedPolicy:   parsed,
-			}, parsed.Agent.QueueDepth); enqErr != nil {
-				if errors.Is(enqErr, run.ErrConcurrencyQueueFull) {
-					slog.Warn("cron: trigger queue is full", "policy_id", policyID, "fired_at", firedAt)
-				} else {
-					slog.Error("cron: failed to enqueue trigger", "policy_id", policyID, "fired_at", firedAt, "err", enqErr)
-				}
-			} else {
-				slog.Info("cron: trigger queued (active run exists)", "policy_id", policyID, "fired_at", firedAt)
-			}
-		default:
-			slog.Error("cron: concurrency check failed", "policy_id", policyID, "err", err)
-		}
-		return
-	}
-
-	result, err := c.launcher.Launch(ctx, run.LaunchParams{
+	launchOrQueueBackground(ctx, c.launcher, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypeCron,
 		TriggerPayload: string(payload),
 		ParsedPolicy:   parsed,
-	})
-	if err != nil {
-		// run_id is populated when the failure happened after the row was
-		// created (tool resolution, agent construction). Operators can use it
-		// to find the failed run in history, where the recorded error lives.
-		slog.Error("cron: failed to launch run",
-			"policy_id", policyID,
-			"run_id", result.RunID,
-			"fired_at", firedAt,
-			"err", err,
-		)
-		return
-	}
-
-	slog.Info("cron: run launched", "run_id", result.RunID, "policy_id", policyID, "fired_at", firedAt)
+	}, parsed.Agent.Concurrency, parsed.Agent.QueueDepth, "cron", "fired_at", firedAt)
 }
 
 // Wait blocks until all active cron goroutines have exited. Call after cancelling
