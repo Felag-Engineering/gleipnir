@@ -120,3 +120,82 @@ func checkConcurrencyAndLaunch(
 
 	httputil.WriteJSON(w, http.StatusAccepted, map[string]string{"run_id": result.RunID})
 }
+
+// launchOutcome reports what launchOrQueueBackground did so background callers
+// can take follow-up action (e.g. the scheduler auto-pausing a policy whose
+// fire time was consumed by a skip, enqueue, or launch).
+type launchOutcome int
+
+const (
+	// outcomeSkipped: an active run exists and concurrency is "skip" — the
+	// trigger was dropped. The fire time is considered consumed.
+	outcomeSkipped launchOutcome = iota
+	// outcomeQueued: an active run exists and concurrency is "queue" — the
+	// trigger was enqueued for later. The fire time is considered consumed.
+	outcomeQueued
+	// outcomeLaunched: the run was launched immediately.
+	outcomeLaunched
+	// outcomeError: concurrency check, enqueue, or launch failed; the run did
+	// not start and was not queued. The error was already logged.
+	outcomeError
+)
+
+// launchOrQueueBackground mirrors checkConcurrencyAndLaunch for background
+// triggers (poll, cron, scheduled) that have no http.ResponseWriter: it enforces
+// the concurrency policy, enqueues or launches a run, logs the result with the
+// given logPrefix ("poller"/"cron"/"scheduled"), and returns a structured
+// outcome so callers can react. logAttrs are appended to every log line emitted
+// here so per-trigger context (e.g. "fired_at"/"fire_at") is preserved.
+func launchOrQueueBackground(
+	ctx context.Context,
+	launcher *run.RunLauncher,
+	params run.LaunchParams,
+	concurrency model.ConcurrencyPolicy,
+	queueDepth int,
+	logPrefix string,
+	logAttrs ...any,
+) launchOutcome {
+	// withAttrs prepends "policy_id" then appends the caller's extra attrs so
+	// every log line carries consistent correlation fields.
+	withAttrs := func(extra ...any) []any {
+		attrs := make([]any, 0, 2+len(logAttrs)+len(extra))
+		attrs = append(attrs, "policy_id", params.PolicyID)
+		attrs = append(attrs, logAttrs...)
+		attrs = append(attrs, extra...)
+		return attrs
+	}
+
+	if err := launcher.CheckConcurrency(ctx, params.PolicyID, concurrency); err != nil {
+		switch {
+		case errors.Is(err, run.ErrConcurrencySkipActive):
+			slog.Info(logPrefix+": skipping run, active run exists (concurrency: skip)", withAttrs()...)
+			return outcomeSkipped
+		case errors.Is(err, run.ErrConcurrencyQueueActive):
+			if enqErr := launcher.Enqueue(ctx, params, queueDepth); enqErr != nil {
+				if errors.Is(enqErr, run.ErrConcurrencyQueueFull) {
+					slog.Warn(logPrefix+": trigger queue is full", withAttrs()...)
+				} else {
+					slog.Error(logPrefix+": failed to enqueue trigger", withAttrs("err", enqErr)...)
+				}
+				return outcomeError
+			}
+			slog.Info(logPrefix+": trigger queued (active run exists)", withAttrs()...)
+			return outcomeQueued
+		default:
+			slog.Error(logPrefix+": concurrency check failed", withAttrs("err", err)...)
+			return outcomeError
+		}
+	}
+
+	result, err := launcher.Launch(ctx, params)
+	if err != nil {
+		// run_id is populated when the failure happened after the row was
+		// created (tool resolution, agent construction). Operators can use it
+		// to find the failed run in history, where the recorded error lives.
+		slog.Error(logPrefix+": failed to launch run", withAttrs("run_id", result.RunID, "err", err)...)
+		return outcomeError
+	}
+
+	slog.Info(logPrefix+": run launched", withAttrs("run_id", result.RunID)...)
+	return outcomeLaunched
+}
