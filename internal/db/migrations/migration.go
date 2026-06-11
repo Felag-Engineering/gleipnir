@@ -2,6 +2,16 @@
 // interfaces used by the runner in runner.go. Each migration lives in its own
 // file and is registered in All() (registry.go).
 //
+// Apply order is governed solely by the position of each migration in the
+// All() slice (registry.go), which in turn must follow ascending Version().
+// The NNNN_ filename prefix is a human-readable hint ONLY — it is never read
+// by the runner and is NOT authoritative for ordering. The prefix and Version()
+// are deliberately offset (prefix = Version + 11) for historical reasons, so do
+// not infer one from the other. When adding a migration, give it the next free
+// prefix that sorts after the current highest and append it to All(); if a
+// prefix would collide, disambiguate with a suffix (e.g. 0025b_) rather than
+// renumbering existing files (issue #492).
+//
 // Migrations receive *sql.Tx so they cannot accidentally use sqlc-generated
 // queries — raw DDL only, consistent with ADR-003.
 package migrations
