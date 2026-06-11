@@ -64,13 +64,14 @@ type Config struct {
 	// key names differ between domains ("approval_id" vs "feedback_id").
 	SSEPayload func(id string, runID string) map[string]string
 
-	// OnClaimed is an optional hook invoked once per successfully-claimed
+	// OnTimeoutClaimed is an optional hook invoked once per successfully-claimed
 	// timeout, after the conditional UPDATE wins and before downstream run
 	// side-effects (which may be skipped if the run already left the waiting
-	// state). The approval scanner uses this to increment its prometheus
-	// counter so the metric reflects approvals that genuinely timed out,
-	// independent of the run's eventual disposition.
-	OnClaimed func()
+	// state). The approval and feedback scanners use this to increment their
+	// respective prometheus counters so the metric reflects requests that
+	// genuinely timed out, independent of the run's eventual disposition. Nil
+	// is treated as a no-op.
+	OnTimeoutClaimed func(ctx context.Context)
 }
 
 // NewApprovalScanner creates a Scanner that checks for expired approval requests
@@ -110,7 +111,7 @@ func NewApprovalScanner(store *db.Store, interval time.Duration, opts ...Scanner
 				"status":      string(model.ApprovalStatusTimeout),
 			}
 		},
-		OnClaimed: approvalTimeoutsTotal.Inc,
+		OnTimeoutClaimed: func(ctx context.Context) { approvalTimeoutsTotal.Inc() },
 	}
 	return NewScanner(store, interval, cfg, opts...)
 }
@@ -153,6 +154,7 @@ func NewFeedbackScanner(store *db.Store, interval time.Duration, opts ...Scanner
 				"status":      "timed_out",
 			}
 		},
+		OnTimeoutClaimed: func(ctx context.Context) { feedbackTimeoutsTotal.Inc() },
 	}
 	return NewScanner(store, interval, cfg, opts...)
 }
@@ -305,11 +307,11 @@ func (s *Scanner) resolveTimeout(ctx context.Context, item ExpiredItem) error {
 		return nil
 	}
 
-	// Invoke the post-claim hook (e.g. the approval scanner increments its
-	// prometheus counter here) even if the run was already moved out of the
-	// waiting status — the request itself genuinely timed out.
-	if s.cfg.OnClaimed != nil {
-		s.cfg.OnClaimed()
+	// Invoke the post-claim hook (e.g. the approval/feedback scanners increment
+	// their prometheus counters here) even if the run was already moved out of
+	// the waiting status — the request itself genuinely timed out.
+	if s.cfg.OnTimeoutClaimed != nil {
+		s.cfg.OnTimeoutClaimed(ctx)
 	}
 
 	// Check whether the run is still waiting. ScanOrphanedRuns may have already

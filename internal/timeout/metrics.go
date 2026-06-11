@@ -17,3 +17,14 @@ var approvalTimeoutsTotal = promauto.With(metrics.Registry()).NewCounter(
 		Help: "Count of approval requests that expired before a decision was made.",
 	},
 )
+
+// feedbackTimeoutsTotal counts feedback requests that expired before an operator
+// responded. Incremented right after the conditional claim succeeds, even if the
+// run was already interrupted — the feedback request itself timed out regardless
+// of subsequent run state.
+var feedbackTimeoutsTotal = promauto.With(metrics.Registry()).NewCounter(
+	prometheus.CounterOpts{
+		Name: "gleipnir_feedback_timeouts_total",
+		Help: "Count of feedback requests that expired before a response was received.",
+	},
+)
