@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/admin"
@@ -89,6 +90,13 @@ type pluginRuntime struct {
 	// loader is the Loader constructed by startPluginRuntime. run() reads
 	// Manager() and Installer() from it.
 	loader *pluginpkg.Loader
+
+	// bgWG joins the long-lived OAuth background goroutines (nonce janitor +
+	// refresh scanner) so shutdown() can wait for them to exit rather than
+	// abandoning them mid-DB-write. Both goroutines are parented to the root
+	// ctx; shutdown() relies on main.go having cancelled that ctx first, then
+	// joins bgWG under a bounded deadline (#500).
+	bgWG sync.WaitGroup
 }
 
 // Manager returns the process.Manager started by the Loader. Callers that
@@ -230,7 +238,14 @@ func startPluginRuntime(
 		dec := func(c string) (string, error) { return admin.Decrypt(encryptionKey, c) }
 		oauthStore := pluginoauth.NewDBStore(store.Queries(), enc, dec, store.Queries(), time.Now)
 		oauthNonces := pluginoauth.NewDBNonceStore(store.Queries(), time.Now)
-		go oauthNonces.StartJanitor(ctx, time.Minute)
+		// Own the janitor goroutine under bgWG so shutdown() can join it rather
+		// than abandoning a mid-Prune DB write (#500). The janitor selects on
+		// ctx.Done() and returns promptly once the root ctx is cancelled.
+		rt.bgWG.Add(1)
+		go func() {
+			defer rt.bgWG.Done()
+			oauthNonces.StartJanitor(ctx, time.Minute)
+		}()
 		oauthHMACKey := pluginoauth.DeriveHMACKey(encryptionKey)
 		getPublicURL := func() string {
 			u, _ := systemSettings.GetPublicURL(context.Background())
@@ -243,7 +258,15 @@ func startPluginRuntime(
 			cfg.OAuthRefreshInterval,
 			cfg.OAuthRefreshLead,
 		)
-		oauthScanner.Start(ctx)
+		// Own the refresh-scanner goroutine under bgWG (same rationale as the
+		// janitor above): Run blocks until ctx is cancelled, after the in-flight
+		// scan tick finishes, so shutdown() can join it instead of racing a
+		// mid-refresh token write (#500).
+		rt.bgWG.Add(1)
+		go func() {
+			defer rt.bgWG.Done()
+			oauthScanner.Run(ctx)
+		}()
 		rt.OAuthHandler = admin.NewPluginOAuthHandler(store.Queries(), oauthMgr, getPublicURL)
 		rt.CredentialsHandler = admin.NewPluginCredentialsHandler(store.Queries(), oauthStore)
 
@@ -306,9 +329,51 @@ func (rt *pluginRuntime) wireTriggerSupervisor(
 	}()
 }
 
-// shutdown stops the trigger supervisor, the plugin manager subprocesses, and
-// finally the dispatch pool, in that order. This order matches the original
-// main.go shutdown sequence and must be preserved.
+// quiesceTriggers stops every avenue by which a plugin trigger event can reach
+// RunLauncher.Launch, synchronously, and MUST be called before the run-drain
+// wait in main.go.
+//
+// Why before the drain: a trigger event that reaches Launch registers the run
+// with RunManager (wg.Add) only inside the call. An event arriving at Launch
+// AFTER runManager.Wait() returns but BEFORE trigger ingress is stopped is a
+// WaitGroup add-after-Wait: that run is never awaited and races teardown of the
+// dispatch pool it depends on. The root ctx cancel only *signals* goroutines
+// cooperatively — it does not close the window atomically.
+//
+// There are two trigger-event ingresses, and this closes both:
+//
+//  1. The supervisor's per-instance Start streams. StopAll cancels each stream's
+//     child ctx and joins (<-doneCh) every goroutine, so once it returns no
+//     stream goroutine is alive to call Launch.
+//
+//  2. The substrate-initiated hostsvc.EmitEvent RPC (e.g. Slack Socket Mode),
+//     which forwards to the trigger Dispatcher via the trigger sink. Clearing
+//     the sink (SetTriggerSink(nil)) makes EmitEvent fall through to its
+//     publisher-only (SSE) path so it no longer reaches Launch. SetTriggerSink
+//     is RWMutex-guarded and safe to call concurrently with EmitEvent; at most
+//     one EmitEvent that already read a non-nil sink can still be mid-Launch,
+//     which is the same bounded-Launch property as case 1 (Launch returns after
+//     registering + spawning the agent goroutine; it does not block on the run).
+//
+// quiesceTriggers is a no-op when rt is nil, tolerates a nil supervisor / nil
+// HostSvc, and is safe to call more than once (StopAll on the now-empty instance
+// map is a no-op; clearing an already-nil sink is a no-op) (#500).
+func (rt *pluginRuntime) quiesceTriggers() {
+	if rt == nil {
+		return
+	}
+	// Clear the EmitEvent → Dispatcher sink first so no new substrate event can
+	// be forwarded to Launch while we are joining the stream goroutines.
+	if rt.HostSvc != nil {
+		rt.HostSvc.SetTriggerSink(nil)
+	}
+	if rt.TriggerSupervisor != nil {
+		rt.TriggerSupervisor.StopAll()
+	}
+}
+
+// shutdown stops the trigger supervisor, joins the OAuth background goroutines,
+// the plugin manager subprocesses, and finally the dispatch pool, in that order.
 //
 // shutdown is a no-op when rt is nil.
 func (rt *pluginRuntime) shutdown() {
@@ -317,8 +382,27 @@ func (rt *pluginRuntime) shutdown() {
 	}
 
 	// Stop trigger stream goroutines before tearing down plugin subprocesses.
+	// Normally main.go has already called quiesceTriggers before the drain wait;
+	// this call is the idempotent backstop (StopAll on an empty map is a no-op)
+	// for any path that shuts the runtime down without a prior quiesce.
 	if rt.TriggerSupervisor != nil {
 		rt.TriggerSupervisor.StopAll()
+	}
+
+	// Join the OAuth background goroutines (nonce janitor + refresh scanner). The
+	// root ctx was cancelled in main.go before shutdown() runs, so both loops have
+	// already been signalled to exit; this join just confirms they have returned
+	// rather than abandoning them mid-DB-write. Bound the wait so a goroutine stuck
+	// inside an in-flight DB call cannot hang shutdown indefinitely.
+	bgDone := make(chan struct{})
+	go func() {
+		rt.bgWG.Wait()
+		close(bgDone)
+	}()
+	select {
+	case <-bgDone:
+	case <-time.After(5 * time.Second):
+		slog.Warn("plugin OAuth background goroutines did not exit within 5s; proceeding with shutdown")
 	}
 
 	// Stop all plugin subprocesses before closing the dispatch pool. This order

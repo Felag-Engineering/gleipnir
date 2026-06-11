@@ -392,6 +392,59 @@ func TestSupervisor_ContextCancel(t *testing.T) {
 	}
 }
 
+// TestSupervisor_StopAll_JoinsWithoutRootCancel proves StopAll synchronously
+// cancels and joins a live stream goroutine WITHOUT a prior rootCtx cancel.
+//
+// This is the exact contract the shutdown quiesce relies on (#500): main.go
+// calls TriggerSupervisor.StopAll() before the run-drain wait while the root
+// ctx may still be effectively live for in-flight work. StopAll must drive the
+// goroutine to exit on its own (via the per-stream child ctx) and block until
+// it has, so no further RunLauncher.Launch can land after StopAll returns.
+func TestSupervisor_StopAll_JoinsWithoutRootCancel(t *testing.T) {
+	t.Parallel()
+
+	srv := &blockingServer{}
+	client, stop := startFakeTriggerServer(t, srv)
+	defer stop()
+
+	lookup := &fakeInstanceLookup{client: client, pluginID: "test-plugin"}
+	dispatcher := &fakeEventDispatcher{}
+	q := &supQuerier{}
+
+	// RootCtx stays live for the whole test — we never cancel it. StopAll alone
+	// must drive the goroutine to exit.
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+
+	sup := plugintrigger.NewSupervisor(plugintrigger.Config{
+		Querier:             q,
+		BackoffInitial:      time.Microsecond,
+		BackoffMax:          time.Millisecond,
+		UnhealthyAfter:      3,
+		TestInstanceLookup:  lookup,
+		TestEventDispatcher: dispatcher,
+		RootCtx:             rootCtx,
+	})
+
+	sup.Start(context.Background(), "inst-1")
+
+	// Let the goroutine reach stream.Recv (blocked in blockingServer).
+	time.Sleep(30 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		sup.StopAll()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// StopAll returned only after the goroutine exited — quiesce works.
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopAll did not join the stream goroutine within 5s (no rootCtx cancel)")
+	}
+}
+
 // TestSupervisor_UnhealthyAfterConsecutiveFailures verifies that the health
 // setter is called with Unhealthy after UnhealthyAfter consecutive EOF streams.
 func TestSupervisor_UnhealthyAfterConsecutiveFailures(t *testing.T) {

@@ -47,8 +47,20 @@ func NewRefreshScanner(store *DBStore, q ScannerQuerier, getPublicURL func() str
 // Start launches the background refresh goroutine. It runs until ctx is
 // cancelled and is designed to be called once at startup (analogous to
 // approvalScanner.Start).
+//
+// Prefer Run when the caller needs a join point on shutdown (it blocks until
+// ctx is cancelled and the in-flight scan finishes). Start is the fire-and-forget
+// variant retained for callers that do not join the goroutine.
 func (rs *RefreshScanner) Start(ctx context.Context) {
 	go rs.run(ctx)
+}
+
+// Run executes the refresh loop synchronously, returning only when ctx is
+// cancelled (after any in-flight scan tick completes). It is the blocking
+// counterpart to Start so a caller can own the goroutine and join it on
+// shutdown — see pluginruntime.go's bgWG wiring (#500).
+func (rs *RefreshScanner) Run(ctx context.Context) {
+	rs.run(ctx)
 }
 
 func (rs *RefreshScanner) run(ctx context.Context) {

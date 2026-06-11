@@ -19,6 +19,37 @@ func (f *fakeScannerQuerier) ListPluginInstancesWithExpiringCredentials(_ contex
 	return f.rows, nil
 }
 
+// TestRefreshScanner_Run_ReturnsOnContextCancel proves Run (the blocking,
+// joinable variant added for #500) returns promptly once its context is
+// cancelled. pluginruntime.go relies on this so shutdown() can join the
+// scanner goroutine via bgWG instead of abandoning it mid-refresh.
+func TestRefreshScanner_Run_ReturnsOnContextCancel(t *testing.T) {
+	clock := func() time.Time { return time.Unix(1000000, 0) }
+	q := &fakeOAuthQuerier{}
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, clock)
+	sq := &fakeScannerQuerier{rows: nil}
+	// Long interval so the loop is parked in its select on ctx.Done() rather
+	// than mid-scan — exactly the steady state shutdown must unblock.
+	scanner := NewRefreshScanner(store, sq, func() string { return "" }, time.Hour, 15*time.Minute)
+	scanner.timeNow = clock
+
+	ctx, cancel := context.WithCancel(context.Background())
+	returned := make(chan struct{})
+	go func() {
+		scanner.Run(ctx)
+		close(returned)
+	}()
+
+	cancel()
+
+	select {
+	case <-returned:
+		// Run observed the cancellation and exited — the join point works.
+	case <-time.After(2 * time.Second):
+		t.Fatal("RefreshScanner.Run did not return within 2s of context cancellation")
+	}
+}
+
 func TestRefreshScanner_NoRows_NoPanic(t *testing.T) {
 	baseTime := time.Unix(1000000, 0)
 	clock := func() time.Time { return baseTime }
