@@ -8,6 +8,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/tool"
@@ -124,18 +125,27 @@ func (a *channelHandlerAdapter) Request(ctx context.Context, req *channelv1.Requ
 // The struct stays unexported; use NewTriggerServer to construct one.
 type triggerHandlerAdapter struct {
 	triggerv1.UnimplementedTriggerServiceServer
-	svc trigger.Service
+	svc  trigger.Service
+	host hostv1.HostServiceClient
 }
 
 // NewTriggerServer wraps svc in a triggerv1.TriggerServiceServer adapter.
 // The returned value can be registered directly with
 // triggerv1.RegisterTriggerServiceServer.
 //
-// The Start adapter passes stream.Context() as the ctx and wraps stream.Send
-// as the emit callback. Author errors propagate as the gRPC stream return
-// status (no ErrorEnvelope — StartResponse has no Error field).
-func NewTriggerServer(svc trigger.Service) triggerv1.TriggerServiceServer {
-	return &triggerHandlerAdapter{svc: svc}
+// Event delivery (issue #495, spec §4.3): the ergonomic emit callback routes
+// each Event through the canonical HostService.EmitEvent Host RPC — NOT through
+// stream.Send. This is the single blessed delivery mechanism (#214): EmitEvent
+// carries identity (instance-token interceptor), per-instance rate limiting, the
+// payload size cap, SSE observability, and generation-drain semantics that the
+// long-lived Start stream itself does not. The Start stream is kept open purely
+// as a liveness/cancellation channel and carries no StartResponse messages —
+// exactly what the plugins/slack raw-seam reference already does. host must be
+// the typed client bound after Bootstrap.Bind (see WithTriggerHandler).
+//
+// Author errors from Start propagate as the gRPC stream return status.
+func NewTriggerServer(svc trigger.Service, host hostv1.HostServiceClient) triggerv1.TriggerServiceServer {
+	return &triggerHandlerAdapter{svc: svc, host: host}
 }
 
 func (a *triggerHandlerAdapter) Start(req *triggerv1.StartRequest, stream triggerv1.TriggerService_StartServer) error {
@@ -143,12 +153,19 @@ func (a *triggerHandlerAdapter) Start(req *triggerv1.StartRequest, stream trigge
 		WatchScope: []byte(req.GetWatchScopeJson()),
 	}
 
+	// WithCallContext propagates the host-injected call-id (if any) onto the
+	// outgoing metadata of every EmitEvent made from this scope, so the host can
+	// correlate emitted events back to the trigger stream. The SDK's instance-
+	// token interceptor attaches the identity token independently.
+	hostCtx := WithCallContext(stream.Context())
+
 	emit := func(e trigger.Event) error {
-		return stream.Send(&triggerv1.StartResponse{
+		_, err := a.host.EmitEvent(hostCtx, &hostv1.EmitEventRequest{
 			EventId:     e.EventID,
 			EventKind:   e.EventKind,
 			PayloadJson: string(e.Payload),
 		})
+		return err
 	}
 
 	return a.svc.Start(stream.Context(), scope, emit)

@@ -116,12 +116,16 @@ func WithChannelHandler(f func(hostv1.HostServiceClient) channel.Service) Option
 // exactly like WithTriggerService. The ergonomic trigger.Service return value
 // is wrapped via NewTriggerServer before being stored.
 //
+// The same host client is threaded into NewTriggerServer so the ergonomic emit
+// callback can route events through the canonical HostService.EmitEvent Host RPC
+// (issue #495, spec §4.3) rather than the deprecated StartResponse stream.
+//
 // Passing both WithTriggerService and WithTriggerHandler is supported but the
 // last option applied wins. Do not pass both for the same service type.
 func WithTriggerHandler(f func(hostv1.HostServiceClient) trigger.Service) Option {
 	return func(c *config) {
 		c.triggerFactory = func(h hostv1.HostServiceClient) triggerv1.TriggerServiceServer {
-			return NewTriggerServer(f(h))
+			return NewTriggerServer(f(h), h)
 		}
 	}
 }

@@ -206,7 +206,9 @@ func NewTriggerHarness(t *testing.T, factory func(hostv1.HostServiceClient) trig
 
 	svc := factory(hostClient)
 	svcConn, svcSrv, svcLis := serveInProcess(t, func(s *grpc.Server) {
-		triggerv1.RegisterTriggerServiceServer(s, serve.NewTriggerServer(svc))
+		// Thread the FakeHost client so the ergonomic emit callback routes
+		// through the canonical EmitEvent Host RPC (issue #495, spec §4.3).
+		triggerv1.RegisterTriggerServiceServer(s, serve.NewTriggerServer(svc, hostClient))
 	})
 
 	t.Cleanup(func() {
