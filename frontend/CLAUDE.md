@@ -242,7 +242,7 @@ Response envelope: `{ data: T }` for success, `{ error: string, detail?: string 
 Organized by feature area:
 
 - **Layout** — sidebar navigation, content area, theme toggle, connection status banner; a Contact nav item is pinned to the bottom of the sidebar nav (below the main/admin items) and opens the `ContactTray` (#153)
-- **ContactTray** — maintainer contact tray (email mailto + GitHub repo link). Reuses the shared `Modal` primitive for focus-trap / Esc / outside-click / focus-restore. Triggered from the Layout sidebar bottom; available to all authenticated roles (#153)
+- **ContactTray** — maintainer contact tray (email mailto + intent-routed GitHub links: "Report a bug" → Issues, "Ask a question" → Discussions). Reuses the shared `Modal` primitive for focus-trap / Esc / outside-click / focus-restore. Triggered from the Layout sidebar bottom; available to all authenticated roles (#153)
 - **dashboard/** — StatsBar, StatusBadge, StatusBoard, TriggerChip, ActivityFeed, SetupChecklist (context-aware onboarding checklist that renders until all setup steps are complete)
 - **AgentEditor/** — the agent editor (EditorTopBar, FormMode with 8 form sections)
 - **AgentList/** — agent list with folder grouping

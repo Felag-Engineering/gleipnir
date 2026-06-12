@@ -1,9 +1,11 @@
-import { ExternalLink, Mail } from 'lucide-react'
+import { Bug, Mail, MessagesSquare } from 'lucide-react'
 import { Modal } from '@/components/Modal'
 import styles from './ContactTray.module.css'
 
 const SUPPORT_EMAIL = 'support@gleipnir.dev'
 const GITHUB_REPO_URL = 'https://github.com/Felag-Engineering/gleipnir'
+const GITHUB_NEW_ISSUE_URL = `${GITHUB_REPO_URL}/issues/new`
+const GITHUB_DISCUSSIONS_URL = `${GITHUB_REPO_URL}/discussions`
 
 interface Props {
   open: boolean
@@ -23,7 +25,7 @@ export function ContactTray({ open, onClose }: Props) {
     <Modal title="Get in touch" onClose={onClose}>
       <p className={styles.intro}>
         Questions, feedback, or a bug to report? Reach the Gleipnir maintainers
-        through either channel below.
+        through whichever channel fits.
       </p>
       <ul className={styles.channelList}>
         <li>
@@ -40,16 +42,32 @@ export function ContactTray({ open, onClose }: Props) {
         <li>
           <a
             className={styles.channel}
-            href={GITHUB_REPO_URL}
+            href={GITHUB_NEW_ISSUE_URL}
             target="_blank"
             rel="noopener noreferrer"
           >
             <span className={styles.channelIcon}>
-              <ExternalLink size={18} aria-hidden strokeWidth={1.5} />
+              <Bug size={18} aria-hidden strokeWidth={1.5} />
             </span>
             <span className={styles.channelText}>
-              <span className={styles.channelLabel}>GitHub</span>
-              <span className={styles.channelValue}>Felag-Engineering/gleipnir</span>
+              <span className={styles.channelLabel}>Report a bug</span>
+              <span className={styles.channelValue}>GitHub Issues</span>
+            </span>
+          </a>
+        </li>
+        <li>
+          <a
+            className={styles.channel}
+            href={GITHUB_DISCUSSIONS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <span className={styles.channelIcon}>
+              <MessagesSquare size={18} aria-hidden strokeWidth={1.5} />
+            </span>
+            <span className={styles.channelText}>
+              <span className={styles.channelLabel}>Ask a question</span>
+              <span className={styles.channelValue}>GitHub Discussions</span>
             </span>
           </a>
         </li>

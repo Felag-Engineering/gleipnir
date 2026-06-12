@@ -25,7 +25,7 @@ export const Closed: Story = {
   },
 }
 
-/** The tray is open, showing the email and GitHub contact channels. */
+/** The tray is open, showing the email, bug-report, and ask-a-question channels. */
 export const Open: Story = {
   args: {
     open: true,

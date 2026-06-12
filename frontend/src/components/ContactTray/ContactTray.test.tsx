@@ -22,12 +22,20 @@ describe('ContactTray — contact links', () => {
     expect(email).toHaveAttribute('href', 'mailto:support@gleipnir.dev')
   })
 
-  it('renders the GitHub link opening in a new tab with safe rel', () => {
+  it('renders the bug report link to GitHub Issues, opening in a new tab with safe rel', () => {
     render(<ContactTray open onClose={vi.fn()} />)
-    const gh = screen.getByRole('link', { name: /github/i })
-    expect(gh).toHaveAttribute('href', 'https://github.com/Felag-Engineering/gleipnir')
-    expect(gh).toHaveAttribute('target', '_blank')
-    expect(gh).toHaveAttribute('rel', 'noopener noreferrer')
+    const bug = screen.getByRole('link', { name: /report a bug/i })
+    expect(bug).toHaveAttribute('href', 'https://github.com/Felag-Engineering/gleipnir/issues/new')
+    expect(bug).toHaveAttribute('target', '_blank')
+    expect(bug).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('renders the question link to GitHub Discussions, opening in a new tab with safe rel', () => {
+    render(<ContactTray open onClose={vi.fn()} />)
+    const question = screen.getByRole('link', { name: /ask a question/i })
+    expect(question).toHaveAttribute('href', 'https://github.com/Felag-Engineering/gleipnir/discussions')
+    expect(question).toHaveAttribute('target', '_blank')
+    expect(question).toHaveAttribute('rel', 'noopener noreferrer')
   })
 })
 
