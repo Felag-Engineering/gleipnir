@@ -26,9 +26,11 @@ type Scheduler struct {
 	store         *db.Store
 	launcher      *run.RunLauncher
 	modelResolver *settings.Service
-	mu            sync.Mutex                      // protects timers and rootCtx
+	mu            sync.Mutex                      // protects timers, rootCtx, and rootCancel
 	timers        map[string][]context.CancelFunc // policyID -> per-fire-time cancel funcs
+	wg            sync.WaitGroup                  // tracks all timer goroutines
 	rootCtx       context.Context                 // set in Start; used by Notify to outlive the HTTP request
+	rootCancel    context.CancelFunc              // cancels rootCtx; set in Start
 }
 
 // NewScheduler returns a Scheduler ready to be started.
@@ -45,17 +47,24 @@ func NewScheduler(store *db.Store, launcher *run.RunLauncher, modelResolver *set
 // It returns immediately after scheduling; timers fire in background goroutines.
 // Cancelling ctx stops any pending timers before they fire.
 func (s *Scheduler) Start(ctx context.Context) error {
+	// Derive a cancellable root context with a stored cancel so Stop()/Wait()
+	// can drain in-flight timer goroutines (and the fire() calls they make)
+	// during shutdown, even when the caller does not own the context passed
+	// here. Mirrors CronRunner.Start.
+	rootCtx, rootCancel := context.WithCancel(ctx)
 	s.mu.Lock()
-	s.rootCtx = ctx
+	s.rootCtx = rootCtx
+	s.rootCancel = rootCancel
 	s.mu.Unlock()
 
-	policies, err := s.store.GetScheduledActivePolicies(ctx)
+	policies, err := s.store.GetScheduledActivePolicies(rootCtx)
 	if err != nil {
+		rootCancel()
 		return fmt.Errorf("load scheduled policies: %w", err)
 	}
 
 	for _, p := range policies {
-		provider, modelName := s.resolveDefaults(ctx)
+		provider, modelName := s.resolveDefaults(rootCtx)
 		parsed, err := policy.Parse(p.Yaml, provider, modelName)
 		if err != nil {
 			slog.Error("scheduled: failed to parse policy yaml", "policy_id", p.ID, "err", err)
@@ -66,7 +75,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 				"policy_id", p.ID)
 			continue
 		}
-		s.schedulePolicy(ctx, p.ID, parsed)
+		s.schedulePolicy(rootCtx, p.ID, parsed)
 	}
 	return nil
 }
@@ -114,11 +123,18 @@ func (s *Scheduler) schedulePolicy(ctx context.Context, policyID string, parsed 
 		// without cancelling unrelated ones.
 		timerCtx, timerCancel := context.WithCancel(ctx)
 
+		// Add to the WaitGroup under the same lock that records the timer cancel
+		// so Wait() (which is called only after the root context is cancelled)
+		// cannot observe a zero counter between the append and the goroutine
+		// launch. Each goroutine is tracked so Wait() can drain an in-flight
+		// fire() during shutdown rather than cutting it off mid-launch.
 		s.mu.Lock()
 		s.timers[policyID] = append(s.timers[policyID], timerCancel)
+		s.wg.Add(1)
 		s.mu.Unlock()
 
 		go func() {
+			defer s.wg.Done()
 			timer := time.NewTimer(delay)
 			defer timer.Stop()
 
@@ -247,4 +263,26 @@ func (s *Scheduler) pauseIfExhausted(ctx context.Context, policyID string, parse
 	} else {
 		slog.Info("scheduled: policy paused after all fire times consumed", "policy_id", policyID)
 	}
+}
+
+// Wait blocks until all timer goroutines have exited. Call after cancelling the
+// root context to drain an in-flight fire() cleanly during shutdown. Wait is
+// safe to call when Start was never called (the WaitGroup counter is zero).
+func (s *Scheduler) Wait() {
+	s.wg.Wait()
+}
+
+// Stop cancels all pending timers (including the reconcile-less fire goroutines)
+// and waits for them to exit. It is equivalent to cancelling the context passed
+// to Start, but is provided as an explicit method for callers that do not own
+// the context. Stop is safe to call when Start was never called (rootCancel is
+// nil → no-op) and is idempotent (context.CancelFunc tolerates repeated calls).
+func (s *Scheduler) Stop() {
+	s.mu.Lock()
+	cancel := s.rootCancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	s.wg.Wait()
 }

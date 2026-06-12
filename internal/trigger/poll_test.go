@@ -546,6 +546,62 @@ func TestPoller_GracefulShutdown(t *testing.T) {
 	}
 }
 
+// TestPoller_Stop_DoesNotDeadlock verifies that Stop() exits cleanly without
+// cancelling the context passed to Start. Previously Stop() only cancelled the
+// per-policy loops and never the reconcile goroutine, so wg.Wait() blocked
+// forever (the reconcile loop only exits on root-context cancellation, and
+// Stop() had no stored cancel for it). The fix wires a stored rootCancel into
+// Stop() (#487). Note we pass context.Background() (never cancelled) so the only
+// thing that can drain the goroutines is Stop()'s own cancel.
+func TestPoller_Stop_DoesNotDeadlock(t *testing.T) {
+	mcpSrv, _ := pollResultServer(t, textContent(`{"status":"healthy"}`))
+	store, registry := setupPollerFixture(t, mcpSrv)
+
+	yamlStr := pollPolicyYAML("poll-stop", "100ms")
+	insertTestPollPolicy(t, store, "pol-poll-stop", "poll-stop", yamlStr)
+
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                run.NewRunManager(),
+		AgentFactory:           pollerFactory(),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
+	poller := trigger.NewPoller(store, launcher, registry, resolver)
+
+	if err := poller.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() { poller.Stop(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() deadlocked — reconcile goroutine was not cancelled")
+	}
+}
+
+// TestPoller_Stop_SafeWithoutStart verifies that Stop() is a no-op (no panic, no
+// hang) when Start was never called — rootCancel is nil and the WaitGroup is
+// empty (#487).
+func TestPoller_Stop_SafeWithoutStart(t *testing.T) {
+	poller := trigger.NewPoller(nil, nil, nil, nil)
+
+	done := make(chan struct{})
+	go func() { poller.Stop(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() hung when Start was never called")
+	}
+}
+
 // pollPolicyYAMLNoModel builds a poll policy with no model block in the agent
 // section. Used to test the empty-system-default code path.
 func pollPolicyYAMLNoModel(name, intervalStr string) string {

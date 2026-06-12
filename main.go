@@ -491,13 +491,20 @@ func run(cfg config.Config) error {
 	// Signal all in-flight agent runs to stop.
 	runManager.CancelAll()
 
-	// Wait for poll loops, cron loops, and agent runs to drain, with a timeout.
-	// Poll and cron loops should exit quickly (they are just sleeping timers).
-	// Agent runs may take longer, so all are waited concurrently.
+	// Wait for poll loops, cron loops, scheduled timers, timeout scanners, and
+	// agent runs to drain, with a timeout. The trigger loops/timers and scanner
+	// loops should exit quickly once their root context is cancelled (cancel()
+	// above), but an in-flight scheduled fire() or scanner resolveTimeout() — the
+	// latter writes run steps and transitions run state — must be allowed to
+	// finish rather than be cut off mid-flight. Agent runs may take longer, so
+	// all are waited concurrently and bounded by cfg.DrainTimeout below (#487).
 	runsDrained := make(chan struct{})
 	go func() {
 		poller.Wait()
 		cronRunner.Wait()
+		scheduler.Wait()
+		approvalScanner.Wait()
+		feedbackScanner.Wait()
 		runManager.Wait()
 		close(runsDrained)
 	}()

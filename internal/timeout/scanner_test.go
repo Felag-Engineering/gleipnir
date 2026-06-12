@@ -378,6 +378,105 @@ func TestScanner_StartStop(t *testing.T) {
 	}
 }
 
+// TestScanner_Wait_DrainsInFlightScan verifies that Scanner.Wait() (called after
+// the context is cancelled) blocks until an in-flight scan finishes instead of
+// returning while the scan goroutine is mid-flight. Previously Start() was
+// fire-and-forget with no WaitGroup, so a scan in progress at shutdown (which
+// writes run steps and transitions run state in resolveTimeout) could be cut off
+// mid-flight (#487).
+//
+// The scan is held in-flight by gating ListExpired: it signals `entered` on the
+// first call and then blocks until `release` is closed.
+func TestScanner_Wait_DrainsInFlightScan(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusWaitingForApproval)
+	insertApprovalRequest(t, s, "a1", "r1", "tool_z", pastTimestamp())
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var scanFinished atomic.Bool
+
+	cfg := approvalConfig(s)
+	inner := cfg.ListExpired
+	cfg.ListExpired = func(ctx context.Context, cutoff string) ([]timeout.ExpiredItem, error) {
+		// Perform the real read first under the live context so the scan does
+		// real work, then hold the goroutine in-flight at the gate.
+		items, err := inner(ctx, cutoff)
+		once.Do(func() { close(entered) })
+		<-release
+		// scanFinished flips only after the gate releases — if Wait() returned
+		// before this, the goroutine was not tracked by the WaitGroup.
+		scanFinished.Store(true)
+		return items, err
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	scanner := timeout.NewScanner(s, 20*time.Millisecond, cfg)
+	scanner.Start(ctx)
+
+	// Wait until the scan goroutine is inside ListExpired (in-flight).
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		cancel()
+		close(release)
+		t.Fatal("scan never reached the in-flight gate")
+	}
+
+	// Cancel the context while the scan is held in-flight. The in-flight scan
+	// must still be drained by Wait() even though the loop has been signalled
+	// to stop.
+	cancel()
+
+	waitReturned := make(chan struct{})
+	go func() { scanner.Wait(); close(waitReturned) }()
+
+	// Wait() must NOT return while the scan is still blocked at the gate.
+	select {
+	case <-waitReturned:
+		t.Fatal("Wait() returned while a scan was still in-flight — goroutine not tracked by wg")
+	case <-time.After(200 * time.Millisecond):
+		// Good: still draining.
+	}
+	if scanFinished.Load() {
+		t.Fatal("scan finished before the gate was released — test gate is ineffective")
+	}
+
+	// Release the gate; the scan completes, the goroutine returns, Wait() unblocks.
+	close(release)
+
+	select {
+	case <-waitReturned:
+		// Drained cleanly.
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait() did not return after the in-flight scan completed")
+	}
+
+	// Wait() returning guarantees the goroutine reached the end of the gated
+	// function — the in-flight scan was drained rather than abandoned.
+	if !scanFinished.Load() {
+		t.Error("Wait() returned but the in-flight scan goroutine had not finished")
+	}
+}
+
+// TestScanner_Wait_SafeWithoutStart verifies that Wait() is a no-op (no panic,
+// no hang) when Start was never called — the WaitGroup counter is zero (#487).
+func TestScanner_Wait_SafeWithoutStart(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	scanner := timeout.NewScanner(s, time.Minute, approvalConfig(s))
+
+	done := make(chan struct{})
+	go func() { scanner.Wait(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait() hung when Start was never called")
+	}
+}
+
 func TestScanner_StepNumberContinuesExistingSteps(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
