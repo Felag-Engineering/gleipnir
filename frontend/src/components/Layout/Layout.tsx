@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
-import { Activity, Bot, ChevronUp, Cpu, History, Megaphone, Puzzle, Settings2, Users, Wrench } from 'lucide-react'
+import { Activity, Bot, ChevronUp, Cpu, History, Mail, Megaphone, Puzzle, Settings2, Users, Wrench } from 'lucide-react'
 import { Logo } from '@/components/Logo/Logo'
+import { ContactTray } from '@/components/ContactTray'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useSSE } from '@/hooks/useSSE'
 import { useCurrentUser } from '@/hooks/queries/users'
@@ -30,6 +31,8 @@ export default function Layout() {
   const { data: currentUser } = useCurrentUser()
   const [menuOpen, setMenuOpen] = useState(false)
   const handleMenuClose = useCallback(() => setMenuOpen(false), [])
+  const [contactOpen, setContactOpen] = useState(false)
+  const handleContactClose = useCallback(() => setContactOpen(false), [])
   const { items: attentionItems } = useAttentionItems()
   const { data: mcpServers } = useMcpServers()
 
@@ -95,7 +98,20 @@ export default function Layout() {
               ))}
             </>
           )}
+
+          <button
+            type="button"
+            className={`${styles.navLink} ${styles.navContact}`}
+            onClick={() => setContactOpen(true)}
+          >
+            <span className={styles.navIcon}>
+              <Mail size={20} aria-hidden strokeWidth={1.5} />
+            </span>
+            <span className={styles.navLabel}>Contact</span>
+          </button>
         </nav>
+
+        <ContactTray open={contactOpen} onClose={handleContactClose} />
 
         <div className={styles.sidebarFooterWrapper}>
           <UserMenu

@@ -241,7 +241,8 @@ Response envelope: `{ data: T }` for success, `{ error: string, detail?: string 
 
 Organized by feature area:
 
-- **Layout** — sidebar navigation, content area, theme toggle, connection status banner
+- **Layout** — sidebar navigation, content area, theme toggle, connection status banner; a Contact nav item is pinned to the bottom of the sidebar nav (below the main/admin items) and opens the `ContactTray` (#153)
+- **ContactTray** — maintainer contact tray (email mailto + GitHub repo link). Reuses the shared `Modal` primitive for focus-trap / Esc / outside-click / focus-restore. Triggered from the Layout sidebar bottom; available to all authenticated roles (#153)
 - **dashboard/** — StatsBar, StatusBadge, StatusBoard, TriggerChip, ActivityFeed, SetupChecklist (context-aware onboarding checklist that renders until all setup steps are complete)
 - **AgentEditor/** — the agent editor (EditorTopBar, FormMode with 8 form sections)
 - **AgentList/** — agent list with folder grouping
@@ -249,7 +250,7 @@ Organized by feature area:
 - **MCPPage/** — ServerCard, ToolList, ToolRow, MCPStatsBar, HealthIndicator, AddServerModal, DeleteServerModal, ServerDetailModal (per-header auth editor: existing name fields are read-only, value field is empty with placeholder; save fans out via `useSetMcpServerHeader`/`useDeleteMcpServerHeader`; no sentinel; see ADR-039), ArcadeAuthSection (toolkit-level OAuth pre-authorization for Arcade gateways; renders only when `server.is_arcade_gateway && canManage`; see ADR-040)
 - **admin/** — EncryptionKeyNotice (persistent warning banner on the Models page about encryption key backup requirements), PluginHealthChip (colored chip — green/yellow/red/gray — for the 11 plugin-instance health states including `inactive`; pairs with `utils/pluginHealth.ts` for the worst-across-instances aggregate), PluginCard (clickable card for the `/admin/plugins` two-pane list: name, version, service badges Tool/Trigger/Channel, instance count, aggregate health chip; `isSelected` prop for visual selection state), PluginMemoryBar (aggregate plugin RSS display in the plugins page header; shows total bytes + instance count; click-to-expand per-instance breakdown table sorted by RSS descending; 30s polling via `usePluginRSS`), PluginReviewCard (consent surface for pending-review plugins: services, tier-2 capabilities, auth strategy, pubkey fingerprint, SBOM badge, author/license; Approve/Reject buttons), RejectPluginModal (confirmation modal before rejecting a pending-review plugin; follows UninstallPluginModal pattern), InstallPluginButton (file-picker upload of a plugin tarball; persistent success card with "Review & approve" link for `pending_review` status or "Add instance" CTA for `active` status), AddInstanceModal (form to instantiate an installed plugin by name; reused as a standalone modal on the plugins page AND inline from the install-success card; client-side validation + per-status error mapping)
 - **form/** — FieldError (inline message under a field), ErrorBanner (top-of-form bulleted summary with scroll-to-field). Shared primitives for surfacing validation/save errors.
-- **Shared** — Button, Modal, ModalFooter, EmptyState, ErrorBoundary, QueryBoundary, CopyBlock, CollapsibleJSON, SkeletonBlock, PageHeader, ApprovalBanner, ConnectionBanner, TriggerRunModal
+- **Shared** — Button, Modal, ModalFooter, ContactTray, EmptyState, ErrorBoundary, QueryBoundary, CopyBlock, CollapsibleJSON, SkeletonBlock, PageHeader, ApprovalBanner, ConnectionBanner, TriggerRunModal
 
 ### Hooks (`src/hooks/`)
 
