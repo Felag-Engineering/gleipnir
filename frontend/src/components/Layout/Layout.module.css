@@ -106,6 +106,28 @@
   overflow: hidden;
 }
 
+/* Contact — pinned to the bottom of the nav, set visually apart from the
+   main items by a top border. margin-top:auto works because .nav is a flex
+   column with flex:1. Reset button defaults since .navLink targets links. */
+.navContact {
+  margin-top: auto;
+  margin-bottom: var(--space-1);
+  padding-top: var(--space-3);
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
+  width: auto;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.navContact:hover {
+  color: var(--text-second);
+  background: var(--bg-elevated);
+}
+
 /* ---- Sidebar footer ---- */
 
 .sidebarFooterWrapper {
