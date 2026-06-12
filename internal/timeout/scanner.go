@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
@@ -209,6 +210,7 @@ type Scanner struct {
 	interval  time.Duration
 	publisher event.Publisher
 	cfg       Config
+	wg        sync.WaitGroup // tracks the background scan goroutine for graceful drain
 }
 
 // ScannerOption is a functional option for Scanner.
@@ -237,9 +239,14 @@ func NewScanner(store *db.Store, interval time.Duration, cfg Config, opts ...Sca
 }
 
 // Start launches the background scan goroutine. It returns immediately; the
-// goroutine exits when ctx is cancelled.
+// goroutine exits when ctx is cancelled. The goroutine is tracked by a
+// WaitGroup so Wait() can drain an in-flight scan during shutdown rather than
+// cutting off a resolveTimeout mid-flight (which writes run steps and
+// transitions run state).
 func (s *Scanner) Start(ctx context.Context) {
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		ticker := time.NewTicker(s.interval)
 		defer ticker.Stop()
 		for {
@@ -253,6 +260,14 @@ func (s *Scanner) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// Wait blocks until the background scan goroutine has exited. Call after
+// cancelling the context passed to Start to drain an in-flight scan cleanly
+// during shutdown. Wait is safe to call when Start was never called (the
+// WaitGroup counter is zero) and may be called more than once.
+func (s *Scanner) Wait() {
+	s.wg.Wait()
 }
 
 // Scan finds all pending requests whose deadline has passed and resolves each

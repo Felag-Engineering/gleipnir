@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -603,5 +604,119 @@ func TestScheduler_SkipsPolicy_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T)
 	}
 	if len(runs) != 0 {
 		t.Errorf("expected 0 runs when system default is unset and policy omits model, got %d", len(runs))
+	}
+}
+
+// gatedSchedulerFactory returns an AgentFactory that signals on `entered` when a
+// fire() reaches agent construction (the run row already exists at this point),
+// then blocks until `release` is closed. Used to hold a fire() in-flight so a
+// test can assert Scheduler.Wait() drains it rather than cutting it off.
+func gatedSchedulerFactory(entered chan<- struct{}, release <-chan struct{}) run.AgentFactory {
+	var once sync.Once
+	return func(cfg agent.Config) (*agent.BoundAgent, error) {
+		once.Do(func() { close(entered) })
+		<-release
+		cfg.LLMClient = testutil.NewMockLLMClient(
+			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
+		)
+		return agent.New(cfg)
+	}
+}
+
+// TestScheduler_Wait_DrainsInFlightFire verifies that Scheduler.Wait() (called
+// after the root context is cancelled) blocks until an in-flight fire() finishes
+// instead of returning while the fire goroutine is mid-launch. Previously the
+// Scheduler had no WaitGroup, so a fire() in progress at shutdown was undrained
+// and could be cut off after writing partial state (#487).
+func TestScheduler_Wait_DrainsInFlightFire(t *testing.T) {
+	store, registry := setupSchedulerFixture(t)
+
+	// Near-immediate fire so the timer fires almost at once.
+	future := time.Now().Add(1 * time.Second)
+	yaml := scheduledPolicyYAML("drain-policy", []time.Time{future})
+	insertTestScheduledPolicy(t, store, "pol-drain", "drain-policy", yaml)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+
+	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
+	launcher := run.NewRunLauncher(run.RunLauncherConfig{
+		Store:                  store,
+		Registry:               registry,
+		Manager:                run.NewRunManager(),
+		AgentFactory:           gatedSchedulerFactory(entered, release),
+		Publisher:              nil,
+		DefaultFeedbackTimeout: 0,
+		ModelResolver:          resolver,
+	})
+	scheduler := trigger.NewScheduler(store, launcher, resolver)
+
+	// Pass a cancellable context we will cancel while fire() is held in-flight.
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait until fire() has reached agent construction (it is now in-flight,
+	// holding the wg counter above zero).
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("fire() never reached the agent factory")
+	}
+
+	// Cancel the root context now — the fire goroutine is past its ctx check and
+	// must run to completion regardless.
+	cancel()
+
+	waitReturned := make(chan struct{})
+	go func() { scheduler.Wait(); close(waitReturned) }()
+
+	// Wait() must NOT return while fire() is still blocked in the factory.
+	select {
+	case <-waitReturned:
+		t.Fatal("Wait() returned while fire() was still in-flight — goroutine not tracked by wg")
+	case <-time.After(200 * time.Millisecond):
+		// Good: still draining.
+	}
+
+	// Release the gate; fire() completes, the goroutine returns, Wait() unblocks.
+	close(release)
+
+	select {
+	case <-waitReturned:
+		// Drained cleanly.
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait() did not return after the in-flight fire() completed")
+	}
+
+	// The run row created by the drained fire() must exist (proof fire() finished).
+	runs, err := store.ListRuns(context.Background(), db.ListRunsParams{PolicyID: "pol-drain", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) == 0 {
+		t.Error("expected the drained fire() to have created a run row")
+	}
+}
+
+// TestScheduler_Stop_SafeWithoutStart verifies that Stop() and Wait() are no-ops
+// (no panic, no hang) when Start was never called — rootCancel is nil and the
+// WaitGroup counter is zero (#487).
+func TestScheduler_Stop_SafeWithoutStart(t *testing.T) {
+	scheduler := trigger.NewScheduler(nil, nil, nil)
+
+	done := make(chan struct{})
+	go func() {
+		scheduler.Stop()
+		scheduler.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop()/Wait() hung when Start was never called")
 	}
 }

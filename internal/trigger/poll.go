@@ -48,10 +48,11 @@ type Poller struct {
 	launcher      *run.RunLauncher
 	toolResolver  toolResolver
 	modelResolver *settings.Service
-	mu            sync.Mutex                 // protects loops and rootCtx
+	mu            sync.Mutex                 // protects loops, rootCtx, and rootCancel
 	loops         map[string]*pollLoopHandle // policyID -> handle for that goroutine
 	wg            sync.WaitGroup             // tracks all poll loop goroutines
 	rootCtx       context.Context            // set in Start; used by Notify to outlive the HTTP request
+	rootCancel    context.CancelFunc         // cancels rootCtx; set in Start
 }
 
 // NewPoller returns a Poller ready to be started. resolver is used to call
@@ -73,24 +74,31 @@ func NewPoller(store *db.Store, launcher *run.RunLauncher, resolver toolResolver
 // created, paused, or deleted after startup.
 // Start returns immediately; goroutines run in the background.
 func (p *Poller) Start(ctx context.Context) error {
+	// Derive a cancellable root context with a stored cancel so Stop() can
+	// terminate the reconcile loop (and every per-policy loop, which derive
+	// from rootCtx) even when the caller does not own the context passed here.
+	// Mirrors CronRunner.Start.
+	rootCtx, rootCancel := context.WithCancel(ctx)
 	p.mu.Lock()
-	p.rootCtx = ctx
+	p.rootCtx = rootCtx
+	p.rootCancel = rootCancel
 	p.mu.Unlock()
 
-	policies, err := p.store.GetPollActivePolicies(ctx)
+	policies, err := p.store.GetPollActivePolicies(rootCtx)
 	if err != nil {
+		rootCancel()
 		return fmt.Errorf("load poll policies: %w", err)
 	}
 
 	for _, pol := range policies {
-		p.startPollLoop(ctx, pol)
+		p.startPollLoop(rootCtx, pol)
 	}
 
 	// The reconciliation goroutine is tracked by wg so Wait() waits for it too.
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		p.reconcileLoop(ctx)
+		p.reconcileLoop(rootCtx)
 	}()
 
 	return nil
@@ -358,14 +366,24 @@ func (p *Poller) Wait() {
 	p.wg.Wait()
 }
 
-// Stop cancels all active poll goroutines and waits for them to exit.
-// It is equivalent to cancelling the context passed to Start, but is
-// provided as an explicit method for callers that do not own the context.
+// Stop cancels all active poll goroutines (including the reconcile loop) and
+// waits for them to exit. It is equivalent to cancelling the context passed to
+// Start, but is provided as an explicit method for callers that do not own the
+// context.
+//
+// Cancelling rootCtx propagates to every per-policy loop context (derived from
+// rootCtx) and to the reconcile loop, so a single cancel drains all goroutines.
+// Previously Stop() only cancelled the per-policy loops and never the reconcile
+// loop, so wg.Wait() blocked forever (the reconcile goroutine only exits on
+// rootCtx cancellation). Stop() is safe to call when Start was never called
+// (rootCancel is nil → no-op) and is idempotent (context.CancelFunc tolerates
+// repeated calls).
 func (p *Poller) Stop() {
 	p.mu.Lock()
-	for _, h := range p.loops {
-		h.cancel()
-	}
+	cancel := p.rootCancel
 	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	p.wg.Wait()
 }
