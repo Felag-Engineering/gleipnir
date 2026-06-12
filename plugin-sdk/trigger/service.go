@@ -5,9 +5,9 @@ package trigger
 
 import "context"
 
-// Event is a single substrate event emitted by a plugin to the host. Fields
-// map 1:1 to the triggerv1.StartResponse proto message; the adapter in serve/
-// translates between them.
+// Event is a single substrate event emitted by a plugin to the host. The serve
+// adapter routes each Event through the canonical HostService.EmitEvent Host RPC
+// (issue #495, spec §4.3); the fields map 1:1 onto EmitEventRequest.
 type Event struct {
 	// EventID is a stable, substrate-derived identifier for this specific event
 	// occurrence. Used by the host for deduplication within a 1-hour rolling
@@ -45,15 +45,20 @@ type StartScope struct {
 //
 // # Emit errors
 //
-// If emit(e) returns an error, the stream has been closed by the host.
-// Start SHOULD return at that point (the error from emit propagates as the
-// stream return status).
+// emit routes each event through the canonical HostService.EmitEvent Host RPC
+// (issue #495, spec §4.3). If emit(e) returns an error, the EmitEvent RPC
+// failed (host unavailable, generation drain, or stream closed). Start SHOULD
+// return at that point (the error from emit propagates as the stream return
+// status). Note: a non-nil error from emit means delivery did NOT succeed; a
+// nil error means the host accepted the event (subject to its rate limiter and
+// dedup window, which never surface as an emit error).
 //
 // # Host RPCs
 //
-// To make outbound host RPCs from a background goroutine started inside Start,
-// call serve.WithCallContext(ctx) passing a context derived from the stream
-// context. The adapter does NOT apply it automatically.
+// To make additional outbound host RPCs from a background goroutine started
+// inside Start, call serve.WithCallContext(ctx) passing a context derived from
+// the stream context. The emit callback already propagates the stream's call
+// context; this note covers any OTHER host RPCs the author makes directly.
 type Service interface {
 	// Start opens the event stream. The plugin monitors its substrate and calls
 	// emit for each incoming event. Start runs for the lifetime of the stream;

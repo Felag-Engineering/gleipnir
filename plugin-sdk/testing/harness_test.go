@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
@@ -161,27 +162,41 @@ func TestTriggerHarness_Start(t *testing.T) {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	stream, err := h.Client.Start(ctx, &triggerv1.StartRequest{
+	defer cancel()
+
+	// Opening the stream starts fakeTriggerService.Start, which emits one event.
+	// Canonical delivery (issue #495, spec §4.3) routes the ergonomic emit
+	// callback through HostService.EmitEvent — NOT through stream.Recv — so the
+	// emitted event lands on the FakeHost, not on the response stream.
+	if _, err := h.Client.Start(ctx, &triggerv1.StartRequest{
 		WatchScopeJson: `{"ch":"#ops"}`,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	resp, err := stream.Recv()
-	if err != nil {
-		t.Fatalf("Recv: %v", err)
-	}
-	if resp.GetEventKind() != "test.event" {
-		t.Errorf("event_kind: want %q, got %q", "test.event", resp.GetEventKind())
-	}
-	if resp.GetEventId() != "evt-1" {
-		t.Errorf("event_id: want %q, got %q", "evt-1", resp.GetEventId())
+	// emit runs inside the server-side Start goroutine; EmitEvent is a blocking
+	// host RPC. There is no publisher to signal on here, so poll the FakeHost
+	// record with a generous CI-tolerance deadline (seconds, not ms).
+	deadline := time.Now().Add(5 * time.Second)
+	var got plugintest.Event
+	for {
+		events := h.Host.Events()
+		if len(events) > 0 {
+			got = events[0]
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no event delivered via EmitEvent within deadline")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Cancelling the context closes the stream and unblocks ctx.Done() inside
-	// fakeTriggerService.Start.
-	cancel()
+	if got.EventKind != "test.event" {
+		t.Errorf("event_kind: want %q, got %q", "test.event", got.EventKind)
+	}
+	if got.EventID != "evt-1" {
+		t.Errorf("event_id: want %q, got %q", "evt-1", got.EventID)
+	}
 }
 
 // ── TestHarness_Cleanup ───────────────────────────────────────────────────────

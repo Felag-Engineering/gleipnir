@@ -494,6 +494,17 @@ func (s *Supervisor) streamLoop(ctx context.Context, instanceID string, doneCh c
 // recvLoop drains messages from stream until EOF, an error, or ctx cancellation.
 // On the first successful Recv it resets the consecutive-failure counter and
 // clears the markedUnhealthy flag. Returns nil on clean context cancellation.
+//
+// Event delivery (issue #495, spec §4.3): the canonical path is the EmitEvent
+// Host RPC, which arrives via the hostsvc TriggerSink — NOT this stream. The
+// SDK's trigger adapter and the reference plugins emit through EmitEvent and
+// send NO StartResponse messages, so in normal operation this loop only ever
+// sees EOF/cancellation (it is the liveness/reconnect channel). The
+// StartResponse → Dispatcher.Handle dispatch below is retained as a deprecated,
+// defensive path: a plugin that bypasses the SDK and pushes StartResponse
+// directly still works (dedup in Dispatcher.Handle catches duplicates), but it
+// is not the documented mechanism and gains none of EmitEvent's rate-limiting,
+// SSE observability, or identity guarantees.
 func (s *Supervisor) recvLoop(
 	ctx context.Context,
 	instanceID string,

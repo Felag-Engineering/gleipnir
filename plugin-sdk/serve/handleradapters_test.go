@@ -17,9 +17,12 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"google.golang.org/grpc"
+
 	"github.com/felag-engineering/gleipnir/plugin-sdk/channel"
 	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	commonv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/common/v1"
+	hostv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/host/v1"
 	toolv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/tool/v1"
 	triggerv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/trigger/v1"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/pluginerr"
@@ -83,6 +86,25 @@ func (f *fakeTriggerService) Start(_ context.Context, _ trigger.StartScope, emit
 		}
 	}
 	return f.startErr
+}
+
+// emitCapturingHost is a fake hostv1.HostServiceClient that records EmitEvent
+// calls. The ergonomic trigger emit callback routes through EmitEvent (issue
+// #495, spec §4.3), so trigger adapter tests assert against this capture rather
+// than the StartResponse stream. Embedding the interface (nil) satisfies the
+// many unused HostServiceClient methods; only EmitEvent is overridden.
+type emitCapturingHost struct {
+	hostv1.HostServiceClient
+	emitted []*hostv1.EmitEventRequest
+	emitErr error
+}
+
+func (h *emitCapturingHost) EmitEvent(_ context.Context, req *hostv1.EmitEventRequest, _ ...grpc.CallOption) (*hostv1.EmitEventResponse, error) {
+	if h.emitErr != nil {
+		return nil, h.emitErr
+	}
+	h.emitted = append(h.emitted, req)
+	return &hostv1.EmitEventResponse{Ok: true}, nil
 }
 
 // fakeStartStream captures Send calls and returns a fixed context.
@@ -350,15 +372,18 @@ func TestChannelAdapter_Request_Success(t *testing.T) {
 
 // ── triggerHandlerAdapter tests ──────────────────────────────────────────────
 
-// TestTriggerAdapter_Start_EmitForwardedToStream verifies that events passed
-// to emit are forwarded via stream.Send with correct field mapping.
-func TestTriggerAdapter_Start_EmitForwardedToStream(t *testing.T) {
+// TestTriggerAdapter_Start_EmitForwardedToEmitEvent verifies that events passed
+// to emit are forwarded via the canonical HostService.EmitEvent Host RPC (issue
+// #495, spec §4.3) with correct field mapping — NOT via stream.Send. The Start
+// response stream carries no StartResponse messages.
+func TestTriggerAdapter_Start_EmitForwardedToEmitEvent(t *testing.T) {
 	events := []trigger.Event{
 		{EventID: "id-1", EventKind: "slack_message", Payload: []byte(`{"text":"hello"}`)},
 		{EventID: "id-2", EventKind: "slack_message", Payload: []byte(`{"text":"world"}`)},
 	}
 	svc := &fakeTriggerService{emitted: events}
-	srv := NewTriggerServer(svc)
+	host := &emitCapturingHost{}
+	srv := NewTriggerServer(svc, host)
 
 	stream := &fakeStartStream{}
 	req := &triggerv1.StartRequest{WatchScopeJson: `{"channels":["#gen"]}`}
@@ -367,11 +392,16 @@ func TestTriggerAdapter_Start_EmitForwardedToStream(t *testing.T) {
 		t.Fatalf("Start returned error: %v", err)
 	}
 
-	if len(stream.sent) != len(events) {
-		t.Fatalf("want %d sent messages, got %d", len(events), len(stream.sent))
+	// The deprecated StartResponse stream must carry nothing.
+	if len(stream.sent) != 0 {
+		t.Errorf("want 0 StartResponse messages on the stream, got %d", len(stream.sent))
+	}
+
+	if len(host.emitted) != len(events) {
+		t.Fatalf("want %d EmitEvent calls, got %d", len(events), len(host.emitted))
 	}
 	for i, e := range events {
-		got := stream.sent[i]
+		got := host.emitted[i]
 		if got.GetEventId() != e.EventID {
 			t.Errorf("[%d] EventId: want %q, got %q", i, e.EventID, got.GetEventId())
 		}
@@ -389,7 +419,7 @@ func TestTriggerAdapter_Start_EmitForwardedToStream(t *testing.T) {
 func TestTriggerAdapter_Start_AuthorErrorPropagates(t *testing.T) {
 	wantErr := errors.New("substrate disconnected")
 	svc := &fakeTriggerService{startErr: wantErr}
-	srv := NewTriggerServer(svc)
+	srv := NewTriggerServer(svc, &emitCapturingHost{})
 
 	stream := &fakeStartStream{}
 	err := srv.Start(&triggerv1.StartRequest{}, stream)
@@ -401,31 +431,32 @@ func TestTriggerAdapter_Start_AuthorErrorPropagates(t *testing.T) {
 	}
 }
 
-// TestTriggerAdapter_Start_SendErrorShortCircuits verifies that when stream.Send
-// returns an error, the emit function returns it and Start exits.
-func TestTriggerAdapter_Start_SendErrorShortCircuits(t *testing.T) {
-	sendErr := errors.New("stream closed")
+// TestTriggerAdapter_Start_EmitErrorShortCircuits verifies that when EmitEvent
+// returns an error, the emit callback surfaces it and Start exits (the author's
+// Start loop returns on the first emit error).
+func TestTriggerAdapter_Start_EmitErrorShortCircuits(t *testing.T) {
+	emitErr := errors.New("host unavailable")
 	events := []trigger.Event{
 		{EventID: "id-1", EventKind: "kind", Payload: []byte(`{}`)},
 		{EventID: "id-2", EventKind: "kind", Payload: []byte(`{}`)},
 	}
 	svc := &fakeTriggerService{emitted: events}
-	srv := NewTriggerServer(svc)
+	host := &emitCapturingHost{emitErr: emitErr}
+	srv := NewTriggerServer(svc, host)
 
-	// Stream that fails on every Send.
-	stream := &fakeStartStream{sendErr: sendErr}
+	stream := &fakeStartStream{}
 	err := srv.Start(&triggerv1.StartRequest{}, stream)
 
 	// The emit error propagates out through Start.
 	if err == nil {
-		t.Fatal("expected error from Start after Send failure, got nil")
+		t.Fatal("expected error from Start after EmitEvent failure, got nil")
 	}
-	if err.Error() != sendErr.Error() {
-		t.Errorf("error: want %q, got %q", sendErr.Error(), err.Error())
+	if err.Error() != emitErr.Error() {
+		t.Errorf("error: want %q, got %q", emitErr.Error(), err.Error())
 	}
-	// No messages should have been appended to stream.sent (sendErr fires before append).
-	if len(stream.sent) != 0 {
-		t.Errorf("want 0 sent messages (send failed), got %d", len(stream.sent))
+	// No events should have been recorded (emitErr fires before append).
+	if len(host.emitted) != 0 {
+		t.Errorf("want 0 recorded events (EmitEvent failed), got %d", len(host.emitted))
 	}
 }
 

@@ -33,11 +33,30 @@
 // / WithChannelService / WithTriggerService. plugins/slack is the canonical
 // example of this path (see ADR-050).
 //
+// # TriggerService event delivery
+//
+// Plugin-emitted trigger events are delivered to the host through the canonical
+// HostService.EmitEvent Host RPC (spec §4.3) — this is the single blessed
+// delivery mechanism (#214). The ergonomic seam preserves this contract: the
+// emit(trigger.Event) callback handed to trigger.Service.Start routes each event
+// through EmitEvent automatically (issue #495). Raw-seam authors (plugins/slack)
+// call host.EmitEvent directly. Both arrive at the same host dispatcher.
+//
+// The long-lived TriggerService.Start response stream itself carries NO events.
+// It is held open by the host purely as a liveness/cancellation channel: the
+// host detects disconnects and cancels the stream context on shutdown or
+// hot-reload. Do NOT use stream.Send / StartResponse to deliver events — the
+// host's supervisor still drains the stream defensively, but StartResponse as a
+// delivery path is deprecated and unused by the SDK and the reference plugins.
+// EmitEvent is strictly more robust: it carries plugin/instance identity, the
+// per-instance event rate limiter, the payload size cap, SSE observability, and
+// generation-drain semantics that the stream does not.
+//
 // # Choosing an event_id for TriggerService plugins
 //
-// Every StartResponse message must carry a stable event_id that the host uses
-// for deduplication within a 1-hour rolling window (spec §4.3). Two patterns
-// are supported:
+// Every emitted event must carry a stable event_id that the host uses for
+// deduplication within a 1-hour rolling window (spec §4.3). Two patterns are
+// supported:
 //
 // ## Preferred: ULID-encoded substrate sequence number
 //
@@ -49,7 +68,7 @@
 //
 //	// Substrate provides a monotonic offset; encode as ULID with event time.
 //	id := ulid.MustNew(ulid.Timestamp(eventTime), ulid.DefaultEntropy())
-//	resp.EventId = id.String()
+//	emit(trigger.Event{EventID: id.String(), EventKind: kind, Payload: payload})
 //
 // ULIDs are lexicographically time-sortable, which allows the dedup store
 // (#215) to use primary-key range cleanup rather than full-table scans.
@@ -70,7 +89,7 @@
 //	// is deterministic across equivalent payloads with different key orders.
 //	b, _ := json.Marshal(payload)
 //	sum := sha256.Sum256(b)
-//	resp.EventId = hex.EncodeToString(sum[:])
+//	emit(trigger.Event{EventID: hex.EncodeToString(sum[:]), EventKind: kind, Payload: b})
 //
 // With this approach, deduplication works within the 1-hour window; events
 // separated by more than the window may fire more than once (best-effort only,
