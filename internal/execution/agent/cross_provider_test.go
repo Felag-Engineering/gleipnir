@@ -21,7 +21,7 @@ import (
 // trail step type sequence. Both entries use MockLLMClient — provider name is
 // recorded in the capability_snapshot step but does not affect routing here.
 func TestCrossProvider_StructuralParity(t *testing.T) {
-	t.Log("Both sub-tests use MockLLMClient which returns scripted IDs. These tests validate the provider-agnostic architecture path, not provider-specific behaviors like Gemini's synthetic UUID generation (which occurs in the real GeminiClient.translateResponse, not exercised here).")
+	t.Log("Both sub-tests run through the real ProviderAdapter (FakeWire). Provider-specific continuity-state round-trip, stop-reason normalization, and tool-name round-trip are covered by the contract suite in internal/llm/contract.")
 
 	mcpSrv := makeToolCallServer(t, json.RawMessage(`[{"type":"text","text":"result data"}]`), false)
 
@@ -46,15 +46,16 @@ func TestCrossProvider_StructuralParity(t *testing.T) {
 			pol.Agent.ModelConfig.Provider = tc.provider
 			pol.Agent.ModelConfig.Name = tc.modelName
 
-			mockClient := testutil.NewMockLLMClient(
+			fakeClient, fakeWire := testutil.NewFakeClient(
 				testutil.MakeToolCallResponse("my-server.read_data", "call-1", nil),
 				testutil.MakeTextResponse("Done."),
 			)
+			_ = fakeWire // requests not inspected in this sub-test
 
 			tools := []mcp.ResolvedTool{toolForRun(mcpSrv.URL, "my-server", "read_data")}
 
 			ba, err := New(Config{
-				LLMClient:    mockClient,
+				LLMClient:    fakeClient,
 				Tools:        tools,
 				Policy:       pol,
 				Audit:        NewAuditWriter(s.Queries()),
@@ -210,7 +211,7 @@ func TestCrossProvider_OptionsValidation(t *testing.T) {
 // multiple tool calls in a single response, the agent dispatches each one and
 // records interleaved tool_call/tool_result pairs in the audit trail.
 func TestCrossProvider_MultiToolCallBatching(t *testing.T) {
-	t.Log("Both sub-tests use MockLLMClient. Gemini synthetic UUID generation is not exercised here — these tests validate provider-agnostic batching behavior.")
+	t.Log("Both sub-tests run through the real ProviderAdapter (FakeWire). Provider-specific behaviors (Gemini synthetic UUID generation, etc.) are covered by the contract suite in internal/llm/contract.")
 
 	// makeToolCallServer handles any tools/call request with a fixed response,
 	// so a single server can back all three registered tools.
@@ -243,7 +244,7 @@ func TestCrossProvider_MultiToolCallBatching(t *testing.T) {
 				toolForRun(mcpSrv.URL, "srv", "tool_c"),
 			}
 
-			mockClient := testutil.NewMockLLMClient(
+			fakeClient2, _ := testutil.NewFakeClient(
 				testutil.MakeMultiToolCallResponse([]testutil.MockToolCall{
 					{ID: "call-a", Name: "srv.tool_a", Input: nil},
 					{ID: "call-b", Name: "srv.tool_b", Input: nil},
@@ -253,7 +254,7 @@ func TestCrossProvider_MultiToolCallBatching(t *testing.T) {
 			)
 
 			ba, err := New(Config{
-				LLMClient:    mockClient,
+				LLMClient:    fakeClient2,
 				Tools:        tools,
 				Policy:       pol,
 				Audit:        NewAuditWriter(s.Queries()),
@@ -329,7 +330,7 @@ func TestToolResultBlocksBeforeTextInUserTurn(t *testing.T) {
 		toolForRun(mcpSrv.URL, "srv", "tool_b"),
 	}
 
-	mockClient := testutil.NewMockLLMClient(
+	fakeClient3, fakeWire3 := testutil.NewFakeClient(
 		testutil.MakeMultiToolCallResponse([]testutil.MockToolCall{
 			{ID: "call-a", Name: "srv.tool_a", Input: nil},
 			{ID: "call-b", Name: "srv.tool_b", Input: nil},
@@ -338,7 +339,7 @@ func TestToolResultBlocksBeforeTextInUserTurn(t *testing.T) {
 	)
 
 	ba, err := New(Config{
-		LLMClient:    mockClient,
+		LLMClient:    fakeClient3,
 		Tools:        tools,
 		Policy:       pol,
 		Audit:        NewAuditWriter(s.Queries()),
@@ -353,7 +354,7 @@ func TestToolResultBlocksBeforeTextInUserTurn(t *testing.T) {
 	}
 
 	// The second CreateMessage call should have the tool results turn in its history.
-	reqs := mockClient.Requests()
+	reqs := fakeWire3.Requests()
 	if len(reqs) < 2 {
 		t.Fatalf("expected at least 2 API calls, got %d", len(reqs))
 	}

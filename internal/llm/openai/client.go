@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	openaisdk "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -27,7 +26,20 @@ var _ llm.LLMClient = (*Client)(nil)
 // Client implements llm.LLMClient against the OpenAI Responses API via the
 // official openai-go SDK. Unlike the compat client, it uses the stateless
 // Responses API which provides native reasoning tokens and a typed surface.
+//
+// Client embeds *llm.ProviderAdapter which promotes CreateMessage and
+// StreamMessage. The four model/option methods are kept as thin explicit
+// forwarders so that a zero-value &Client{} is safe (BLOCKING-1, issue #506).
 type Client struct {
+	*llm.ProviderAdapter
+	w *wire
+}
+
+// wire implements llm.ProviderWire for the OpenAI provider. It owns all
+// wire-specific work: param building, SDK call, response translation, and error
+// classification. The streaming state machine lives in consumeStream (stream.go),
+// called by Stream.
+type wire struct {
 	sdk *openaisdk.Client
 }
 
@@ -38,51 +50,18 @@ type Client struct {
 func NewClient(apiKey string, opts ...option.RequestOption) *Client {
 	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
 	sdk := openaisdk.NewClient(allOpts...)
-	return &Client{sdk: &sdk}
+	w := &wire{sdk: &sdk}
+	return &Client{ProviderAdapter: llm.NewAdapter(w), w: w}
 }
 
-// CreateMessage sends a single synchronous Responses API request and returns
-// the normalized response.
-func (c *Client) CreateMessage(ctx context.Context, req llm.MessageRequest) (resp *llm.MessageResponse, err error) {
-	start := time.Now()
-	defer func() {
-		llm.ObserveRequestDuration("openai", req.Model, time.Since(start))
-		if err != nil {
-			llm.RecordError("openai", classifyOpenAIError(err))
-			return
-		}
-		if resp != nil {
-			llm.RecordTokens("openai", req.Model, resp.Usage)
-		}
-	}()
+// --- ProviderWire implementation on wire ---
 
-	hints, _ := req.Hints.(*OpenAIHints)
+// ProviderName returns the Prometheus label for this provider.
+func (w *wire) ProviderName() string { return "openai" }
 
-	tools, names, buildErr := buildTools(req.Tools)
-	if buildErr != nil {
-		err = fmt.Errorf("openai: building tools: %w", buildErr)
-		return
-	}
-
-	params, buildErr := c.buildParams(req, hints, tools, names)
-	if buildErr != nil {
-		err = fmt.Errorf("openai: %w", buildErr)
-		return
-	}
-
-	sdkResp, sdkErr := c.sdk.Responses.New(ctx, params)
-	if sdkErr != nil {
-		err = wrapSDKError(sdkErr)
-		return
-	}
-
-	resp, err = translateResponse(sdkResp, names)
-	return
-}
-
-// classifyOpenAIError maps an OpenAI SDK error to the fixed error_type enum.
+// ClassifyError maps an OpenAI SDK error to the fixed error_type enum.
 // openaisdk.Error is a pointer type, so the errors.As target is **openaisdk.Error.
-func classifyOpenAIError(err error) string {
+func (w *wire) ClassifyError(err error) string {
 	if et, ok := llm.ClassifyContextError(err); ok {
 		return et
 	}
@@ -93,10 +72,10 @@ func classifyOpenAIError(err error) string {
 	return metrics.ErrorTypeConnection
 }
 
-// StreamMessage sends a streaming Responses API request and returns a channel
-// that delivers chunks as they arrive. Pre-stream errors are returned
-// synchronously. Mid-stream errors arrive as MessageChunk{Err: err}.
-func (c *Client) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
+// Call executes a synchronous Responses API request and returns the normalized
+// response. This is the body previously in Client.CreateMessage (minus the
+// metrics-defer, which now lives in ProviderAdapter.CreateMessage).
+func (w *wire) Call(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
 	hints, _ := req.Hints.(*OpenAIHints)
 
 	tools, names, err := buildTools(req.Tools)
@@ -104,21 +83,122 @@ func (c *Client) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-c
 		return nil, fmt.Errorf("openai: building tools: %w", err)
 	}
 
-	params, err := c.buildParams(req, hints, tools, names)
+	params, err := buildParams(req, hints, tools, names)
 	if err != nil {
 		return nil, fmt.Errorf("openai: %w", err)
 	}
 
-	stream := c.sdk.Responses.NewStreaming(ctx, params)
+	sdkResp, sdkErr := w.sdk.Responses.New(ctx, params)
+	if sdkErr != nil {
+		return nil, wrapSDKError(sdkErr)
+	}
+
+	return translateResponse(sdkResp, names)
+}
+
+// Stream sends a streaming Responses API request and returns a channel that
+// delivers chunks as they arrive. The accumulate-and-emit state machine lives
+// in consumeStream (stream.go).
+func (w *wire) Stream(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
+	hints, _ := req.Hints.(*OpenAIHints)
+
+	tools, names, err := buildTools(req.Tools)
+	if err != nil {
+		return nil, fmt.Errorf("openai: building tools: %w", err)
+	}
+
+	params, err := buildParams(req, hints, tools, names)
+	if err != nil {
+		return nil, fmt.Errorf("openai: %w", err)
+	}
+
+	stream := w.sdk.Responses.NewStreaming(ctx, params)
 
 	out := make(chan llm.MessageChunk, 16)
 	go consumeStream(ctx, stream, out, names)
 	return out, nil
 }
 
+// ListModels returns a defensive copy of the curated OpenAI model list.
+func (w *wire) ListModels(_ context.Context) ([]llm.ModelInfo, error) {
+	result := make([]llm.ModelInfo, len(curatedModels))
+	copy(result, curatedModels)
+	return result, nil
+}
+
+// ValidateModelName returns nil if name is in the curated model list, or a
+// descriptive error if not.
+func (w *wire) ValidateModelName(_ context.Context, name string) error {
+	if name == "" {
+		return errors.New("openai: model name is empty")
+	}
+	if _, ok := curatedModelsByName[name]; ok {
+		return nil
+	}
+	names := make([]string, len(curatedModels))
+	for i, m := range curatedModels {
+		names[i] = m.DisplayName
+	}
+	return fmt.Errorf("unknown OpenAI model %q; available models: %s", name, strings.Join(names, ", "))
+}
+
+// ValidateOptions validates provider-specific options from the policy YAML.
+func (w *wire) ValidateOptions(options map[string]any) error {
+	_, err := parseHints(options)
+	return err
+}
+
+// InvalidateModelCache is a no-op: the curated model list is static.
+func (w *wire) InvalidateModelCache() {}
+
+// --- Thin forwarders on Client (zero-value safe, BLOCKING-1) ---
+//
+// These four methods are declared on the CONCRETE type so they satisfy the
+// LLMClient interface without promotion and a zero-value &Client{} is safe.
+// They call package-level helpers directly — never the embedded *ProviderAdapter.
+
+// ValidateOptions validates provider-specific options from the policy YAML.
+// Accepted keys: temperature, top_p, reasoning_effort, max_output_tokens.
+func (c *Client) ValidateOptions(options map[string]any) error {
+	_, err := parseHints(options)
+	return err
+}
+
+// ListModels returns a defensive copy of the curated OpenAI model list.
+// No network call is made — this never panics even on a zero-value client.
+func (c *Client) ListModels(_ context.Context) ([]llm.ModelInfo, error) {
+	result := make([]llm.ModelInfo, len(curatedModels))
+	copy(result, curatedModels)
+	return result, nil
+}
+
+// ValidateModelName returns nil if name is in the curated model list, or a
+// descriptive error if not. No network call is made.
+func (c *Client) ValidateModelName(_ context.Context, name string) error {
+	if name == "" {
+		return errors.New("openai: model name is empty")
+	}
+	if _, ok := curatedModelsByName[name]; ok {
+		return nil
+	}
+	names := make([]string, len(curatedModels))
+	for i, m := range curatedModels {
+		names[i] = m.DisplayName
+	}
+	return fmt.Errorf("unknown OpenAI model %q; available models: %s", name, strings.Join(names, ", "))
+}
+
+// InvalidateModelCache is a no-op: the curated model list is static and
+// requires no cache invalidation. The method exists to satisfy the LLMClient
+// interface so the provider registry's /api/v1/models/refresh path works.
+func (c *Client) InvalidateModelCache() {}
+
+// --- Package-level helpers ---
+
 // buildParams constructs the ResponseNewParams from a MessageRequest. Shared
-// between CreateMessage and StreamMessage.
-func (c *Client) buildParams(
+// between Call and Stream (was a method on *Client; moved here since it touches
+// no receiver state — only its arguments and the package-level curatedModelsByName).
+func buildParams(
 	req llm.MessageRequest,
 	hints *OpenAIHints,
 	tools []responses.ToolUnionParam,
@@ -174,42 +254,6 @@ func (c *Client) buildParams(
 
 	return params, nil
 }
-
-// ValidateOptions validates provider-specific options from the policy YAML.
-// Accepted keys: temperature, top_p, reasoning_effort, max_output_tokens.
-func (c *Client) ValidateOptions(options map[string]any) error {
-	_, err := parseHints(options)
-	return err
-}
-
-// ListModels returns a defensive copy of the curated OpenAI model list.
-// No network call is made — this never panics even on a zero-value client.
-func (c *Client) ListModels(_ context.Context) ([]llm.ModelInfo, error) {
-	result := make([]llm.ModelInfo, len(curatedModels))
-	copy(result, curatedModels)
-	return result, nil
-}
-
-// ValidateModelName returns nil if name is in the curated model list, or a
-// descriptive error if not. No network call is made.
-func (c *Client) ValidateModelName(_ context.Context, name string) error {
-	if name == "" {
-		return errors.New("openai: model name is empty")
-	}
-	if _, ok := curatedModelsByName[name]; ok {
-		return nil
-	}
-	names := make([]string, len(curatedModels))
-	for i, m := range curatedModels {
-		names[i] = m.DisplayName
-	}
-	return fmt.Errorf("unknown OpenAI model %q; available models: %s", name, strings.Join(names, ", "))
-}
-
-// InvalidateModelCache is a no-op: the curated model list is static and
-// requires no cache invalidation. The method exists to satisfy the LLMClient
-// interface so the provider registry's /api/v1/models/refresh path works.
-func (c *Client) InvalidateModelCache() {}
 
 // curatedModelIsReasoning reports whether model is marked IsReasoning in the
 // curated model list. Unknown models return false.

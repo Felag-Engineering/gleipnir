@@ -74,7 +74,7 @@ func buildBoundAgent(t *testing.T, store *db.Store, runRow db.Run, resolvedTools
 		Audit:        audit,
 		StateMachine: sm,
 		ApprovalCh:   make(chan bool, 1),
-		LLMClient: testutil.NewMockLLMClient(
+		LLMClient: testutil.NewFakeClientOnly(
 			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
 		),
 	})
@@ -221,7 +221,7 @@ func TestRunAndDrain_QueuePolicy(t *testing.T) {
 		Resolver: NewDefaultToolResolver(registry, nil, nil),
 		Manager:  manager,
 		AgentFactory: func(cfg agent.Config) (*agent.BoundAgent, error) {
-			cfg.LLMClient = testutil.NewMockLLMClient(
+			cfg.LLMClient = testutil.NewFakeClientOnly(
 				testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
 			)
 			return agent.New(cfg)

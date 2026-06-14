@@ -116,7 +116,7 @@ func TestIntegration(t *testing.T) {
 		insertTestPolicy(t, store, "pol-happy", integrationPolicy)
 
 		// Two responses: tool-use on the first turn, then end-turn text.
-		router, manager := buildIntegrationRouter(store, registry, testutil.NewMockLLMClient(
+		router, manager := buildIntegrationRouter(store, registry, testutil.NewFakeClientOnly(
 			testutil.MakeLLMToolCallResponse("tu-1", "stub-server.read_data", map[string]any{}, 10, 5),
 			testutil.MakeLLMTextResponse("All done.", llm.StopReasonEndTurn, 10, 5),
 		))
@@ -190,7 +190,7 @@ func TestIntegration(t *testing.T) {
 		store, registry := setupIntegrationFixture(t)
 		insertTestPolicy(t, store, "pol-concurrent", integrationPolicy)
 
-		router, manager := buildIntegrationRouter(store, registry, testutil.NewMockLLMClient(
+		router, manager := buildIntegrationRouter(store, registry, testutil.NewFakeClientOnly(
 			testutil.MakeLLMToolCallResponse("tu-1", "stub-server.read_data", map[string]any{}, 10, 5),
 			testutil.MakeLLMToolCallResponse("tu-2", "stub-server.read_data", map[string]any{}, 10, 5),
 			testutil.MakeLLMTextResponse("Done A.", llm.StopReasonEndTurn, 10, 5),

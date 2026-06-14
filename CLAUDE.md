@@ -133,8 +133,9 @@ internal/
     logctx/           — context-based structured log correlation (run_id + policy_id)
     metrics/          — custom Prometheus registry, histogram bucket presets (BucketsFast/BucketsSlow), shared label constants, Handler()/Registry() accessors (ADR-037)
     version/          — single-source-of-truth release version constant; bump in the commit immediately preceding a release tag
-  llm/                — LLM provider abstraction (ADR-026)
+  llm/                — LLM provider abstraction (ADR-026). The shallow `ProviderWire` seam (wire.go) splits each provider into wire-level translation behind a single shared `ProviderAdapter` (adapter.go) that owns the common choreography (request-duration/token/error metrics defer); each provider's exported Client embeds the adapter and promotes only CreateMessage/StreamMessage, keeping thin forwarders for the model/option methods so a zero-value client stays panic-free. `FakeWire` (fake_wire.go, exposed via testutil.NewFakeClient) is the fifth wire used to drive agent/trigger tests through the real adapter (ADR-022, undeferred). Streaming state machines stay per-provider (#506).
     anthropic/        — Anthropic API client
+    contract/         — cross-wire contract test suite (external test package); table-driven over all four real wires, asserting continuity-state round-trip, tool-name round-trip, stop-reason normalization, and usage extraction uniformly. Sits outside internal/llm to avoid the provider-import cycle (same reason as factory/). #506
     factory/          — NewClientForProvider: maps a provider name string to a concrete LLMClient; lives in its own sub-package to avoid the cycle caused by provider packages importing internal/llm
     google/           — Google AI client
     openai/           — OpenAI API client

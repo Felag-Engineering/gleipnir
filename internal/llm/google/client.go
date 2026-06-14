@@ -8,7 +8,6 @@ import (
 	"iter"
 	"log/slog"
 	"strings"
-	"time"
 
 	"google.golang.org/genai"
 
@@ -28,7 +27,19 @@ type contentGenerator interface {
 var _ llm.LLMClient = (*GeminiClient)(nil)
 
 // GeminiClient implements llm.LLMClient using the Google Gemini API.
+// It embeds *llm.ProviderAdapter which promotes CreateMessage and StreamMessage;
+// the four model/option methods are kept as thin explicit forwarders so that a
+// zero-value &GeminiClient{} is safe (BLOCKING-1, issue #506).
 type GeminiClient struct {
+	*llm.ProviderAdapter
+	w *wire
+}
+
+// wire implements llm.ProviderWire for the Google provider. It owns all
+// wire-specific work: param building, API call, response translation, and error
+// classification. The streaming state machine lives in consumeStream (stream.go),
+// called by Stream.
+type wire struct {
 	generator contentGenerator
 }
 
@@ -41,55 +52,39 @@ func NewClient(ctx context.Context, apiKey string) (*GeminiClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("google: creating client: %w", err)
 	}
-	return &GeminiClient{generator: client.Models}, nil
+	return newClientWithGenerator(client.Models), nil
 }
 
 // newClientWithGenerator constructs a GeminiClient with an injected generator.
-// Used in tests to avoid real API calls.
+// Used in tests to avoid real API calls. Unexported to keep the contentGenerator
+// type unexported; use NewClientWithGenerator for external test packages.
 func newClientWithGenerator(gen contentGenerator) *GeminiClient {
-	return &GeminiClient{generator: gen}
+	w := &wire{generator: gen}
+	return &GeminiClient{ProviderAdapter: llm.NewAdapter(w), w: w}
 }
 
-// CreateMessage sends a single synchronous request to the Gemini API and
-// returns the normalized response.
-func (c *GeminiClient) CreateMessage(ctx context.Context, req llm.MessageRequest) (resp *llm.MessageResponse, err error) {
-	start := time.Now()
-	defer func() {
-		llm.ObserveRequestDuration("google", req.Model, time.Since(start))
-		if err != nil {
-			llm.RecordError("google", classifyGoogleError(err))
-			return
-		}
-		if resp != nil {
-			llm.RecordTokens("google", req.Model, resp.Usage)
-		}
-	}()
-
-	hints, _ := req.Hints.(*GeminiHints)
-
-	// Build name mapping before translating history so tool names in
-	// ToolCallBlock/ToolResultBlock use the sanitized wire-format names.
-	names := llm.BuildNameMapping(req.Tools, "")
-	contents := buildContents(req.History, names)
-	config, err := buildConfig(req, hints, names)
-	if err != nil {
-		err = fmt.Errorf("building request config: %w", err)
-		return
-	}
-
-	sdkResp, sdkErr := c.generator.GenerateContent(ctx, req.Model, contents, config)
-	if sdkErr != nil {
-		err = wrapSDKError(sdkErr)
-		return
-	}
-
-	resp, err = translateResponse(sdkResp, names)
-	return
+// NewClientWithGenerator constructs a GeminiClient with an injected generator.
+// This is an exported test seam used by the cross-wire contract suite
+// (internal/llm/contract) to drive the Google wire without a real API key.
+// Production code should use NewClient.
+//
+// The contentGenerator parameter type is unexported, but Go's structural typing
+// lets an external package pass any value implementing the two genai methods:
+//
+//	GenerateContent(ctx, model, contents, config) (*genai.GenerateContentResponse, error)
+//	GenerateContentStream(ctx, model, contents, config) iter.Seq2[*genai.GenerateContentResponse, error]
+func NewClientWithGenerator(gen contentGenerator) *GeminiClient {
+	return newClientWithGenerator(gen)
 }
 
-// classifyGoogleError maps a Gemini SDK error to the fixed error_type enum.
+// --- ProviderWire implementation on wire ---
+
+// ProviderName returns the Prometheus label for this provider.
+func (w *wire) ProviderName() string { return "google" }
+
+// ClassifyError maps a Gemini SDK error to the fixed error_type enum.
 // genai.APIError is a value type, so the errors.As target is a pointer-to-value.
-func classifyGoogleError(err error) string {
+func (w *wire) ClassifyError(err error) string {
 	if et, ok := llm.ClassifyContextError(err); ok {
 		return et
 	}
@@ -100,11 +95,33 @@ func classifyGoogleError(err error) string {
 	return metrics.ErrorTypeConnection
 }
 
-// StreamMessage opens a streaming request to the Gemini API and emits
-// llm.MessageChunk values on the returned channel as responses arrive. The
-// channel is closed when the stream ends. Errors arrive as Err chunks rather
-// than synchronous returns because GenerateContentStream is a lazy iterator.
-func (c *GeminiClient) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
+// Call executes a synchronous request to the Gemini API and returns the
+// normalized response. This is the body previously in GeminiClient.CreateMessage
+// (minus the metrics-defer, which now lives in ProviderAdapter.CreateMessage).
+func (w *wire) Call(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
+	hints, _ := req.Hints.(*GeminiHints)
+
+	// Build name mapping before translating history so tool names in
+	// ToolCallBlock/ToolResultBlock use the sanitized wire-format names.
+	names := llm.BuildNameMapping(req.Tools, "")
+	contents := buildContents(req.History, names)
+	config, err := buildConfig(req, hints, names)
+	if err != nil {
+		return nil, fmt.Errorf("building request config: %w", err)
+	}
+
+	sdkResp, sdkErr := w.generator.GenerateContent(ctx, req.Model, contents, config)
+	if sdkErr != nil {
+		return nil, wrapSDKError(sdkErr)
+	}
+
+	return translateResponse(sdkResp, names)
+}
+
+// Stream opens a streaming request to the Gemini API and returns the neutral
+// chunk channel. The accumulate-and-emit state machine lives in consumeStream
+// (stream.go).
+func (w *wire) Stream(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
 	hints, _ := req.Hints.(*GeminiHints)
 	names := llm.BuildNameMapping(req.Tools, "")
 	contents := buildContents(req.History, names)
@@ -113,11 +130,48 @@ func (c *GeminiClient) StreamMessage(ctx context.Context, req llm.MessageRequest
 		return nil, fmt.Errorf("building request config: %w", err)
 	}
 
-	seq := c.generator.GenerateContentStream(ctx, req.Model, contents, config)
+	seq := w.generator.GenerateContentStream(ctx, req.Model, contents, config)
 	out := make(chan llm.MessageChunk, 16)
 	go consumeStream(ctx, seq, out, names)
 	return out, nil
 }
+
+// ListModels returns a defensive copy of the curated Gemini model list.
+func (w *wire) ListModels(_ context.Context) ([]llm.ModelInfo, error) {
+	result := make([]llm.ModelInfo, len(curatedModels))
+	copy(result, curatedModels)
+	return result, nil
+}
+
+// ValidateModelName returns nil if modelName is in the curated model list, or
+// a descriptive error if not.
+func (w *wire) ValidateModelName(_ context.Context, modelName string) error {
+	for _, m := range curatedModels {
+		if m.Name == modelName {
+			return nil
+		}
+	}
+	names := make([]string, len(curatedModels))
+	for i, m := range curatedModels {
+		names[i] = m.DisplayName
+	}
+	return fmt.Errorf("unknown Google model %q; available models: %s", modelName, strings.Join(names, ", "))
+}
+
+// ValidateOptions validates provider-specific options from the policy YAML.
+func (w *wire) ValidateOptions(options map[string]any) error {
+	_, err := parseHints(options)
+	return err
+}
+
+// InvalidateModelCache is a no-op: the curated model list is static.
+func (w *wire) InvalidateModelCache() {}
+
+// --- Thin forwarders on GeminiClient (zero-value safe, BLOCKING-1) ---
+//
+// These four methods are declared on the CONCRETE type so they satisfy the
+// LLMClient interface without promotion and a zero-value &GeminiClient{} is safe.
+// They call package-level helpers directly — never the embedded *ProviderAdapter.
 
 // ValidateOptions validates provider-specific options from the policy YAML.
 // Accepted keys: "thinking_level" (string), "thinking_budget" (int), "enable_grounding" (bool).
@@ -154,6 +208,8 @@ func (c *GeminiClient) ListModels(_ context.Context) ([]llm.ModelInfo, error) {
 // requires no cache invalidation. The method exists to satisfy the LLMClient
 // interface so the provider registry's /api/v1/models/refresh path works.
 func (c *GeminiClient) InvalidateModelCache() {}
+
+// --- Request translation helpers ---
 
 // buildContents translates the provider-neutral conversation history into
 // genai Content structs. It performs a two-pass approach: first collecting

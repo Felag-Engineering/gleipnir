@@ -10,6 +10,24 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/llm"
 )
 
+// NewFakeClient constructs a FakeWire backed by the scripted responses and
+// wraps it in a ProviderAdapter. Tests that care about the real adapter
+// choreography (metrics-defer, delegation path) should use this instead of
+// NewMockLLMClient. The returned FakeWire gives access to Requests()/Calls().
+func NewFakeClient(responses ...*llm.MessageResponse) (*llm.ProviderAdapter, *llm.FakeWire) {
+	w := llm.NewFakeWire(responses...)
+	return llm.NewAdapter(w), w
+}
+
+// NewFakeClientOnly constructs a FakeWire backed by the scripted responses and
+// returns only the ProviderAdapter as an llm.LLMClient. Use this in tests that
+// need the adapter choreography but don't need to inspect captured requests.
+// Use NewFakeClient when you also need Requests()/Calls() on the FakeWire.
+func NewFakeClientOnly(responses ...*llm.MessageResponse) llm.LLMClient {
+	c, _ := NewFakeClient(responses...)
+	return c
+}
+
 // --- LLMClient mocks ---
 
 // MockLLMClient implements llm.LLMClient by returning pre-canned responses in
