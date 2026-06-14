@@ -245,7 +245,7 @@ Implemented via agentic development pipeline.
 Closes #<issue-number>"
 ```
 
-**The commit hook runs `go vet`, `go build`, `go test`, and — if frontend files are staged — `npm run build` and `npx vitest run`.** This replaces the old Stage 5.5 test gate: broken code cannot be committed.
+**The commit hook first auto-formats Go (`gofmt -w -s . && git add -u`, matching the CI `Lint (gofmt)` job), then runs `go vet`, `go build`, `go test`, and — if frontend files are staged — `npm run build` and `npx vitest run`.** This replaces the old Stage 5.5 test gate: broken or unformatted code cannot be committed. The gofmt step is an auto-fixer (never blocks the commit), so a CI gofmt failure should be impossible from a dev-loop commit — earlier loops shipped unformatted test files because formatting only ran in the Stop hook, which fires *after* the push.
 
 **If the commit is blocked by hook failure:**
 1. Capture the failure output from the hook.
