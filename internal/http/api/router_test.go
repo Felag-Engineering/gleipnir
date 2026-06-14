@@ -43,7 +43,7 @@ func buildTestRouterWithStore(t *testing.T, store *db.Store) http.Handler {
 
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                runManager,
 		AgentFactory:           run.NewAgentFactory(providerRegistry),
 		Publisher:              broadcaster,

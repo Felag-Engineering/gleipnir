@@ -154,7 +154,7 @@ func TestCheckConcurrency(t *testing.T) {
 			// factory is nil — CheckConcurrency never calls it.
 			launcher := run.NewRunLauncher(run.RunLauncherConfig{
 				Store:                  store,
-				Registry:               registry,
+				Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 				Manager:                manager,
 				AgentFactory:           nil,
 				Publisher:              nil,
@@ -203,7 +203,7 @@ func TestCheckConcurrency_Replace(t *testing.T) {
 		registry := mcp.NewRegistry(store.Queries())
 		launcher := run.NewRunLauncher(run.RunLauncherConfig{
 			Store:                  store,
-			Registry:               registry,
+			Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 			Manager:                manager,
 			AgentFactory:           nil,
 			Publisher:              nil,
@@ -256,7 +256,7 @@ func TestCheckConcurrency_Replace(t *testing.T) {
 		registry := mcp.NewRegistry(store.Queries())
 		launcher := run.NewRunLauncher(run.RunLauncherConfig{
 			Store:                  store,
-			Registry:               registry,
+			Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 			Manager:                manager,
 			AgentFactory:           nil,
 			Publisher:              nil,
@@ -285,7 +285,7 @@ func TestLaunch_ToolResolutionFailure(t *testing.T) {
 	manager := run.NewRunManager()
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           nil,
 		Publisher:              nil,
@@ -350,7 +350,7 @@ func TestLaunch_AgentConstructionFailure(t *testing.T) {
 	agentErr := errors.New("deliberate construction failure")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           failingAgentFactory(agentErr),
 		Publisher:              nil,
@@ -414,7 +414,7 @@ func TestLaunch_Successful(t *testing.T) {
 	manager := run.NewRunManager()
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           localAgentFactory(),
 		Publisher:              nil,
@@ -537,7 +537,7 @@ agent:
 			registry := mcp.NewRegistry(store.Queries())
 			launcher := run.NewRunLauncher(run.RunLauncherConfig{
 				Store:                  store,
-				Registry:               registry,
+				Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 				Manager:                run.NewRunManager(),
 				AgentFactory:           nil,
 				Publisher:              nil,
@@ -591,7 +591,7 @@ agent:
 		manager := run.NewRunManager()
 		launcher := run.NewRunLauncher(run.RunLauncherConfig{
 			Store:                  store,
-			Registry:               registry,
+			Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 			Manager:                manager,
 			AgentFactory:           localAgentFactory(),
 			Publisher:              nil,
@@ -635,7 +635,7 @@ agent:
 		manager := run.NewRunManager()
 		launcher := run.NewRunLauncher(run.RunLauncherConfig{
 			Store:                  store,
-			Registry:               registry,
+			Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 			Manager:                manager,
 			AgentFactory:           nil,
 			Publisher:              nil,
@@ -685,7 +685,7 @@ agent:
 		manager := run.NewRunManager()
 		launcher := run.NewRunLauncher(run.RunLauncherConfig{
 			Store:                  store,
-			Registry:               registry,
+			Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 			Manager:                manager,
 			AgentFactory:           nil,
 			Publisher:              nil,
@@ -745,7 +745,7 @@ agent:
 		registry := mcp.NewRegistry(store.Queries())
 		launcher := run.NewRunLauncher(run.RunLauncherConfig{
 			Store:                  store,
-			Registry:               registry,
+			Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 			Manager:                manager,
 			AgentFactory:           nil,
 			Publisher:              nil,
@@ -773,7 +773,7 @@ func TestLaunch_ToolResolutionFailure_PublishesEvent(t *testing.T) {
 	pub := &testutil.RecordingPublisher{}
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           nil,
 		Publisher:              pub,
@@ -823,7 +823,7 @@ func TestLaunch_AgentConstructionFailure_PublishesEvent(t *testing.T) {
 	agentErr := errors.New("deliberate construction failure")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           failingAgentFactory(agentErr),
 		Publisher:              pub,
@@ -946,9 +946,12 @@ agent:
 	}
 
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
-		Store:    store,
-		Registry: registry,
-		Manager:  manager,
+		Store: store,
+		Resolver: run.NewDefaultToolResolver(registry,
+			&stubToolClassifier{pluginTools: map[string]bool{"test-plugin.do-thing": true}},
+			&stubPluginToolResolver{entries: []agent.PluginToolEntry{pluginEntry}},
+		),
+		Manager: manager,
 		AgentFactory: func(cfg agent.Config) (*agent.BoundAgent, error) {
 			cfg.LLMClient = testutil.NewMockLLMClient(
 				testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
@@ -958,14 +961,8 @@ agent:
 		Publisher:              nil,
 		DefaultFeedbackTimeout: 0,
 		ModelResolver:          nil,
-		ToolClassifier: &stubToolClassifier{
-			pluginTools: map[string]bool{"test-plugin.do-thing": true},
-		},
-		PluginResolver: &stubPluginToolResolver{
-			entries: []agent.PluginToolEntry{pluginEntry},
-		},
-		PluginRegistrar:  &stubPluginGenerationLookup{generation: 1, registered: true},
-		PluginDispatcher: &stubPluginDispatcher{},
+		PluginRegistrar:        &stubPluginGenerationLookup{generation: 1, registered: true},
+		PluginDispatcher:       &stubPluginDispatcher{},
 	})
 
 	result, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
@@ -1024,17 +1021,16 @@ agent:
 	resolverErr := errors.New("instance subprocess is not running")
 
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
-		Store:                  store,
-		Registry:               registry,
+		Store: store,
+		Resolver: run.NewDefaultToolResolver(registry,
+			&stubToolClassifier{pluginTools: map[string]bool{"test-plugin.do-thing": true}},
+			&stubPluginToolResolver{err: resolverErr},
+		),
 		Manager:                manager,
 		AgentFactory:           nil,
 		Publisher:              nil,
 		DefaultFeedbackTimeout: 0,
 		ModelResolver:          nil,
-		ToolClassifier: &stubToolClassifier{
-			pluginTools: map[string]bool{"test-plugin.do-thing": true},
-		},
-		PluginResolver: &stubPluginToolResolver{err: resolverErr},
 	})
 
 	result, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
@@ -1101,9 +1097,14 @@ agent:
 	}
 
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
-		Store:    store,
-		Registry: registry,
-		Manager:  manager,
+		Store: store,
+		// Only the plugin tool is classified as plugin-sourced; stub-server.read_data
+		// falls through to the MCP path inside DefaultToolResolver.
+		Resolver: run.NewDefaultToolResolver(registry,
+			&stubToolClassifier{pluginTools: map[string]bool{"test-plugin.do-thing": true}},
+			&stubPluginToolResolver{entries: []agent.PluginToolEntry{pluginEntry}},
+		),
+		Manager: manager,
 		AgentFactory: func(cfg agent.Config) (*agent.BoundAgent, error) {
 			cfg.LLMClient = testutil.NewMockLLMClient(
 				testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
@@ -1113,16 +1114,8 @@ agent:
 		Publisher:              nil,
 		DefaultFeedbackTimeout: 0,
 		ModelResolver:          nil,
-		// Only the plugin tool is classified as plugin-sourced; stub-server.read_data
-		// falls through to the MCP path.
-		ToolClassifier: &stubToolClassifier{
-			pluginTools: map[string]bool{"test-plugin.do-thing": true},
-		},
-		PluginResolver: &stubPluginToolResolver{
-			entries: []agent.PluginToolEntry{pluginEntry},
-		},
-		PluginRegistrar:  &stubPluginGenerationLookup{generation: 1, registered: true},
-		PluginDispatcher: &stubPluginDispatcher{},
+		PluginRegistrar:        &stubPluginGenerationLookup{generation: 1, registered: true},
+		PluginDispatcher:       &stubPluginDispatcher{},
 	})
 
 	result, launchErr := launcher.Launch(context.Background(), run.LaunchParams{
@@ -1168,18 +1161,18 @@ agent:
 	}
 
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
-		Store:                  store,
-		Registry:               registry,
+		Store: store,
+		// Classifier marks the tool as plugin-sourced, but pluginResolver is nil —
+		// belt-and-braces failure path exercising the "subsystem not enabled" error.
+		Resolver: run.NewDefaultToolResolver(registry,
+			&stubToolClassifier{pluginTools: map[string]bool{"test-plugin.do-thing": true}},
+			nil, // nil pluginResolver
+		),
 		Manager:                manager,
 		AgentFactory:           nil,
 		Publisher:              nil,
 		DefaultFeedbackTimeout: 0,
 		ModelResolver:          nil,
-		// Classifier marks the tool as plugin-sourced, but PluginResolver is nil.
-		ToolClassifier: &stubToolClassifier{
-			pluginTools: map[string]bool{"test-plugin.do-thing": true},
-		},
-		PluginResolver: nil, // belt-and-braces failure path
 	})
 
 	result, launchErr := launcher.Launch(context.Background(), run.LaunchParams{

@@ -13,7 +13,6 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/infra/logctx"
 	"github.com/felag-engineering/gleipnir/internal/llm"
-	"github.com/felag-engineering/gleipnir/internal/mcp"
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/policy"
 	"github.com/felag-engineering/gleipnir/internal/settings"
@@ -76,54 +75,28 @@ type LaunchResult struct {
 // All three trigger handlers (webhook, manual, scheduled) delegate to it.
 type RunLauncher struct {
 	store                  *db.Store
-	registry               registryResolver
+	resolver               ToolResolver
 	manager                *RunManager
 	newAgent               AgentFactory
 	publisher              event.Publisher
 	defaultFeedbackTimeout time.Duration
 	modelResolver          *settings.Service
-	pluginResolver         PluginToolResolver
-	toolClassifier         ToolSourceClassifier
 	pluginRegistrar        agent.PluginGenerationLookup
 	pluginDispatcher       agent.PluginToolDispatcher
 	approvalDispatcher     agent.ApprovalChannelDispatcher
 	feedbackDispatcher     agent.FeedbackChannelDispatcher
 }
 
-// registryResolver is the subset of mcp.Registry used by RunLauncher, defined
-// as an interface so tests can supply a stub without importing internal/mcp directly.
-type registryResolver interface {
-	ResolveForPolicy(ctx context.Context, p *model.ParsedPolicy) ([]mcp.ResolvedTool, error)
-}
-
-// PluginToolResolver resolves plugin-sourced tool grants into agent-ready
-// entries. The implementation looks up the manifest, finds each tool's
-// description and schema, and reads the current generation from the registrar.
-type PluginToolResolver interface {
-	ResolvePluginTools(ctx context.Context, grants []model.ToolCapability) ([]agent.PluginToolEntry, error)
-}
-
-// ToolSourceClassifier determines whether a dot-name tool grant should be
-// resolved via MCP or the plugin path. The lookup is static — based on the
-// installed plugin instance row and its manifest snapshot, NOT on whether the
-// instance's subprocess is currently running (see #399). It does DB + manifest
-// reads, so it takes a context and can return an error.
-type ToolSourceClassifier interface {
-	IsPluginTool(ctx context.Context, dotName string) (bool, error)
-}
-
 // RunLauncherConfig holds all dependencies for a RunLauncher. Field order
 // mirrors the former positional parameters so a grep-diff is auditable.
 type RunLauncherConfig struct {
 	Store                  *db.Store
-	Registry               registryResolver
+	Resolver               ToolResolver
 	Manager                *RunManager
 	AgentFactory           AgentFactory
 	Publisher              event.Publisher // nil = no real-time events
 	DefaultFeedbackTimeout time.Duration
 	ModelResolver          *settings.Service            // nil = use launch-time snapshot only
-	PluginResolver         PluginToolResolver           // nil when plugins are disabled
-	ToolClassifier         ToolSourceClassifier         // nil when plugins are disabled; all grants go to MCP path
 	PluginRegistrar        agent.PluginGenerationLookup // nil when plugins are disabled
 	PluginDispatcher       agent.PluginToolDispatcher   // nil when plugins are disabled
 	// ApprovalDispatcher routes approvals through a plugin channel when the
@@ -143,14 +116,12 @@ type RunLauncherConfig struct {
 func NewRunLauncher(cfg RunLauncherConfig) *RunLauncher {
 	return &RunLauncher{
 		store:                  cfg.Store,
-		registry:               cfg.Registry,
+		resolver:               cfg.Resolver,
 		manager:                cfg.Manager,
 		newAgent:               cfg.AgentFactory,
 		publisher:              cfg.Publisher,
 		defaultFeedbackTimeout: cfg.DefaultFeedbackTimeout,
 		modelResolver:          cfg.ModelResolver,
-		pluginResolver:         cfg.PluginResolver,
-		toolClassifier:         cfg.ToolClassifier,
 		pluginRegistrar:        cfg.PluginRegistrar,
 		pluginDispatcher:       cfg.PluginDispatcher,
 		approvalDispatcher:     cfg.ApprovalDispatcher,
@@ -254,91 +225,22 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 		agent.WithInitialVersion(run.Version),
 	)
 
-	// Split policy tool grants by source kind so each list goes to the right
-	// resolver. When ToolClassifier is nil (plugins disabled), every grant falls
-	// through to the MCP path — preserving the pre-plugin behaviour exactly.
-	var mcpGrants, pluginGrants []model.ToolCapability
-	for _, t := range params.ParsedPolicy.Capabilities.Tools {
-		isPlugin := false
-		if l.toolClassifier != nil {
-			var classErr error
-			isPlugin, classErr = l.toolClassifier.IsPluginTool(ctx, t.Tool)
-			if classErr != nil {
-				// A classification read failed (e.g. the manifest snapshot could
-				// not be loaded). Fail the run loudly rather than silently
-				// misrouting the grant to the MCP path.
-				wrapped := fmt.Errorf("classify tool %q: %w", t.Tool, classErr)
-				if tErr := sm.Transition(context.Background(), model.RunStatusFailed, wrapped.Error()); tErr != nil {
-					if errors.Is(tErr, agent.ErrTransitionConflict) {
-						slog.Info("transition lost to concurrent writer on tool classification error", "run_id", run.ID)
-					} else {
-						slog.Error("transition to failed on tool classification error", "run_id", run.ID, "err", tErr)
-					}
-				}
-				return LaunchResult{RunID: run.ID}, wrapped
+	// Resolve all capability grants in one call. Classification (MCP vs plugin),
+	// per-source resolution, and error handling are encapsulated in the resolver.
+	// context.Background() is used for the fail-run transition because the HTTP
+	// request context that produced ctx may already be cancelled when this error
+	// surfaces, but the DB write must complete so the run does not linger in
+	// 'pending' indefinitely.
+	toolSet, resolveErr := l.resolver.ResolveCapabilities(ctx, params.ParsedPolicy.Capabilities.Tools)
+	if resolveErr != nil {
+		if tErr := sm.Transition(context.Background(), model.RunStatusFailed, resolveErr.Error()); tErr != nil {
+			if errors.Is(tErr, agent.ErrTransitionConflict) {
+				slog.Info("transition lost to concurrent writer on tool resolution error", "run_id", run.ID)
+			} else {
+				slog.Error("transition to failed on tool resolution error", "run_id", run.ID, "err", tErr)
 			}
 		}
-		if isPlugin {
-			pluginGrants = append(pluginGrants, t)
-		} else {
-			mcpGrants = append(mcpGrants, t)
-		}
-	}
-
-	// Resolve MCP tools via existing path. When mcpGrants is empty we skip the
-	// DB round-trip entirely — ResolveForPolicy with an empty list is a no-op
-	// but the shallow copy and call are still wasted work.
-	var resolvedTools []mcp.ResolvedTool
-	if len(mcpGrants) > 0 {
-		// Shallow copy avoids mutating the caller's ParsedPolicy; only Capabilities.Tools is swapped.
-		mcpPolicy := *params.ParsedPolicy
-		mcpPolicy.Capabilities.Tools = mcpGrants
-		var mcpErr error
-		resolvedTools, mcpErr = l.registry.ResolveForPolicy(ctx, &mcpPolicy)
-		if mcpErr != nil {
-			// context.Background(): the HTTP request context that produced ctx may
-			// already be cancelled, but the DB write must complete so the run does
-			// not linger in 'pending' indefinitely.
-			if tErr := sm.Transition(context.Background(), model.RunStatusFailed, mcpErr.Error()); tErr != nil {
-				if errors.Is(tErr, agent.ErrTransitionConflict) {
-					slog.Info("transition lost to concurrent writer on tool resolution error", "run_id", run.ID)
-				} else {
-					slog.Error("transition to failed on tool resolution error", "run_id", run.ID, "err", tErr)
-				}
-			}
-			return LaunchResult{RunID: run.ID}, mcpErr
-		}
-	}
-
-	// Resolve plugin tools. When no plugin grants exist this is a no-op.
-	// When grants exist but PluginResolver is nil, the policy references a
-	// plugin tool while the plugin subsystem is not enabled — fail clearly
-	// rather than silently dropping the grant.
-	var pluginToolEntries []agent.PluginToolEntry
-	if len(pluginGrants) > 0 {
-		if l.pluginResolver == nil {
-			pluginErr := fmt.Errorf("plugin tools granted but plugin subsystem is not enabled")
-			if tErr := sm.Transition(context.Background(), model.RunStatusFailed, pluginErr.Error()); tErr != nil {
-				if errors.Is(tErr, agent.ErrTransitionConflict) {
-					slog.Info("transition lost to concurrent writer on plugin tool resolution error", "run_id", run.ID)
-				} else {
-					slog.Error("transition to failed on plugin tool resolution error", "run_id", run.ID, "err", tErr)
-				}
-			}
-			return LaunchResult{RunID: run.ID}, pluginErr
-		}
-		var pluginErr error
-		pluginToolEntries, pluginErr = l.pluginResolver.ResolvePluginTools(ctx, pluginGrants)
-		if pluginErr != nil {
-			if tErr := sm.Transition(context.Background(), model.RunStatusFailed, pluginErr.Error()); tErr != nil {
-				if errors.Is(tErr, agent.ErrTransitionConflict) {
-					slog.Info("transition lost to concurrent writer on plugin tool resolution error", "run_id", run.ID)
-				} else {
-					slog.Error("transition to failed on plugin tool resolution error", "run_id", run.ID, "err", tErr)
-				}
-			}
-			return LaunchResult{RunID: run.ID}, pluginErr
-		}
+		return LaunchResult{RunID: run.ID}, resolveErr
 	}
 
 	audit := agent.NewAuditWriter(l.store.Queries(), agent.WithPublisher(l.publisher))
@@ -366,14 +268,14 @@ func (l *RunLauncher) Launch(ctx context.Context, params LaunchParams) (LaunchRe
 	// channel.
 	approvalCh := make(chan bool, 1)
 	ba, err := l.newAgent(agent.Config{
-		Tools:                  resolvedTools,
+		Tools:                  toolSet.MCPTools,
 		Policy:                 params.ParsedPolicy,
 		PolicyID:               params.PolicyID,
 		Audit:                  audit,
 		StateMachine:           sm,
 		ApprovalCh:             approvalCh,
 		DefaultFeedbackTimeout: l.defaultFeedbackTimeout,
-		PluginTools:            pluginToolEntries,
+		PluginTools:            toolSet.PluginTools,
 		PluginRegistrar:        l.pluginRegistrar,
 		PluginDispatcher:       l.pluginDispatcher,
 		ApprovalDispatcher:     l.approvalDispatcher,

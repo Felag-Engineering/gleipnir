@@ -164,7 +164,7 @@ func newHandler(t *testing.T, store *db.Store, loader trigger.SecretLoaderInterf
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                run.NewRunManager(),
 		AgentFactory:           run.NewAgentFactory(providerReg),
 		Publisher:              nil,
@@ -536,7 +536,7 @@ func TestWebhookHandler_RunCreatedInDB(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                run.NewRunManager(),
 		AgentFactory:           run.NewAgentFactory(providerReg),
 		Publisher:              nil,
@@ -614,7 +614,7 @@ func TestWebhookHandler_Returns500_WhenNoDefaultModelAndPolicyOmitsModel(t *test
 	noDefault := newTestSettings("", "")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                run.NewRunManager(),
 		AgentFactory:           run.NewAgentFactory(providerReg),
 		Publisher:              nil,

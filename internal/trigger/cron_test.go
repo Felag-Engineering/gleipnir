@@ -40,7 +40,7 @@ func setupCronFixture(t *testing.T) (*db.Store, *CronRunner) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           cronAgentFactory(),
 		Publisher:              nil,
@@ -221,7 +221,7 @@ func TestCronRunner_Start_LoadsActivePolicies(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           cronAgentFactory(),
 		Publisher:              nil,
@@ -472,7 +472,7 @@ func TestCronRunner_Stop_DoesNotDeadlock(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           cronAgentFactory(),
 		Publisher:              nil,

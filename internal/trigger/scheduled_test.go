@@ -123,7 +123,7 @@ func TestScheduler_SkipsPastTimestampsOnStartup(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           schedulerFactory(),
 		Publisher:              nil,
@@ -166,7 +166,7 @@ func TestScheduler_FiresFutureTimestamp(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           schedulerFactory(),
 		Publisher:              nil,
@@ -210,7 +210,7 @@ func TestScheduler_AutoPausesAfterAllTimesConsumed(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           schedulerFactory(),
 		Publisher:              nil,
@@ -264,7 +264,7 @@ func TestScheduler_DeduplicatesAlreadyFiredTime(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           schedulerFactory(),
 		Publisher:              nil,
@@ -310,7 +310,7 @@ func TestScheduler_ConcurrencySkip_BlocksWhenActive(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           schedulerFactory(),
 		Publisher:              nil,
@@ -358,7 +358,7 @@ func TestScheduler_ConcurrencySkip_AutoPausesWhenExhausted(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           schedulerFactory(),
 		Publisher:              nil,
@@ -409,7 +409,7 @@ func TestScheduler_ConcurrencySkip_ProceedsWhenIdle(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           schedulerFactory(),
 		Publisher:              nil,
@@ -456,7 +456,7 @@ func TestScheduler_ConcurrencyQueue_EnqueuesWhenActive(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           schedulerFactory(),
 		Publisher:              nil,
@@ -508,7 +508,7 @@ func TestScheduler_ConcurrencyQueue_LaunchesWhenIdle(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           schedulerFactory(),
 		Publisher:              nil,
@@ -582,7 +582,7 @@ func TestScheduler_SkipsPolicy_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T)
 	noDefault := newTestSettings("", "")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           schedulerFactory(),
 		Publisher:              nil,
@@ -642,7 +642,7 @@ func TestScheduler_Wait_DrainsInFlightFire(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                run.NewRunManager(),
 		AgentFactory:           gatedSchedulerFactory(entered, release),
 		Publisher:              nil,

@@ -158,7 +158,7 @@ func TestRunAndDrain_NonQueuePolicy(t *testing.T) {
 
 	launcher := NewRunLauncher(RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               NewDefaultToolResolver(registry, nil, nil),
 		Manager:                NewRunManager(),
 		AgentFactory:           nil,
 		Publisher:              nil,
@@ -218,7 +218,7 @@ func TestRunAndDrain_QueuePolicy(t *testing.T) {
 	manager := NewRunManager()
 	launcher := NewRunLauncher(RunLauncherConfig{
 		Store:    store,
-		Registry: registry,
+		Resolver: NewDefaultToolResolver(registry, nil, nil),
 		Manager:  manager,
 		AgentFactory: func(cfg agent.Config) (*agent.BoundAgent, error) {
 			cfg.LLMClient = testutil.NewMockLLMClient(
