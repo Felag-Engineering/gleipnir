@@ -51,7 +51,7 @@ agent:
 // no real Claude API calls are made during scheduler tests.
 func schedulerFactory() run.AgentFactory {
 	return func(cfg agent.Config) (*agent.BoundAgent, error) {
-		cfg.LLMClient = testutil.NewMockLLMClient(
+		cfg.LLMClient = testutil.NewFakeClientOnly(
 			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
 		)
 		return agent.New(cfg)
@@ -616,7 +616,7 @@ func gatedSchedulerFactory(entered chan<- struct{}, release <-chan struct{}) run
 	return func(cfg agent.Config) (*agent.BoundAgent, error) {
 		once.Do(func() { close(entered) })
 		<-release
-		cfg.LLMClient = testutil.NewMockLLMClient(
+		cfg.LLMClient = testutil.NewFakeClientOnly(
 			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
 		)
 		return agent.New(cfg)

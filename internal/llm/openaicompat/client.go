@@ -23,7 +23,26 @@ var _ llm.LLMClient = (*Client)(nil)
 // The same client serves OpenAI itself and any OpenAI-compatible backend
 // (Ollama, vLLM, OpenRouter, etc.) — the only differences are baseURL and
 // apiKey, both set at construction time. See ADR-032.
+//
+// Client embeds *llm.ProviderAdapter which promotes CreateMessage and
+// StreamMessage. The four model/option methods are kept as thin explicit
+// forwarders delegating to the compatWire's cache so cache state is never
+// split across the adapter and the wire (BLOCKING-1, issue #506).
 type Client struct {
+	*llm.ProviderAdapter
+	w *compatWire
+}
+
+// compatWire implements llm.ProviderWire for the OpenAI-compatible provider.
+// Named compatWire (not wire) to avoid collision with the existing wire.go
+// HTTP-shape file in this package (BLOCKING-2, issue #506).
+//
+// compatWire carries the state that was previously on Client: the http client,
+// base URL, API key, provider name, and the model cache. The model cache state
+// (models + modelsUnavailable) lives here so it is never split across the wire
+// and the adapter. modelsUnavailable is intentionally unguarded by a mutex —
+// preserving the existing behavior exactly.
+type compatWire struct {
 	httpClient        *http.Client
 	baseURL           string
 	apiKey            string
@@ -33,7 +52,7 @@ type Client struct {
 }
 
 // Option is a functional option for configuring a Client.
-type Option func(*Client)
+type Option func(*compatWire)
 
 // WithHTTPClient injects a custom *http.Client. Tests pass srv.Client() from
 // an httptest.Server to route requests to the test server's TLS stack.
@@ -42,7 +61,7 @@ type Option func(*Client)
 // current at the time it runs, including one set by WithHTTPClient. Apply
 // WithHTTPClient before WithTimeout if you need both.
 func WithHTTPClient(hc *http.Client) Option {
-	return func(c *Client) {
+	return func(c *compatWire) {
 		c.httpClient = hc
 	}
 }
@@ -50,7 +69,7 @@ func WithHTTPClient(hc *http.Client) Option {
 // WithTimeout sets the request timeout on the Client's http.Client. If no
 // http.Client has been set yet (via WithHTTPClient), a new one is allocated.
 func WithTimeout(d time.Duration) Option {
-	return func(c *Client) {
+	return func(c *compatWire) {
 		if c.httpClient == nil {
 			c.httpClient = &http.Client{}
 		}
@@ -62,7 +81,7 @@ func WithTimeout(d time.Duration) Option {
 // When unset, CreateMessage falls back to "openaicompat". The loader sets this
 // to the admin-registered provider name so metrics reflect the configured backend.
 func WithProviderName(name string) Option {
-	return func(c *Client) { c.providerName = name }
+	return func(c *compatWire) { c.providerName = name }
 }
 
 // NewClient constructs a Client for the given base URL and API key.
@@ -71,84 +90,32 @@ func WithProviderName(name string) Option {
 // http.Client or timeout; any nil httpClient is defaulted to a 60-second
 // timeout client after options are applied.
 func NewClient(baseURL, apiKey string, opts ...Option) *Client {
-	c := &Client{
+	w := &compatWire{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
 		models:  llm.NewModelCache("OpenAI-compatible"),
 	}
 	for _, opt := range opts {
-		opt(c)
+		opt(w)
 	}
-	if c.httpClient == nil {
-		c.httpClient = &http.Client{Timeout: 60 * time.Second}
+	if w.httpClient == nil {
+		w.httpClient = &http.Client{Timeout: 60 * time.Second}
 	}
-	return c
+	return &Client{ProviderAdapter: llm.NewAdapter(w), w: w}
 }
 
-// CreateMessage sends a single synchronous Chat Completions request and returns
-// the normalized response.
-func (c *Client) CreateMessage(ctx context.Context, req llm.MessageRequest) (resp *llm.MessageResponse, err error) {
-	start := time.Now()
-	defer func() {
-		provider := c.providerName
-		if provider == "" {
-			provider = "openaicompat"
-		}
-		llm.ObserveRequestDuration(provider, req.Model, time.Since(start))
-		if err != nil {
-			llm.RecordError(provider, classifyCompatError(err))
-			return
-		}
-		if resp != nil {
-			llm.RecordTokens(provider, req.Model, resp.Usage)
-		}
-	}()
+// --- ProviderWire implementation on compatWire ---
 
-	// OpenAI allows [a-zA-Z0-9_-] in tool names; build the mapping once and
-	// use it for both outbound sanitization and inbound reversal.
-	names := llm.BuildNameMapping(req.Tools, "-")
-	wireReq := BuildChatCompletionRequest(req, false, names)
-
-	var body []byte
-	body, err = json.Marshal(wireReq)
-	if err != nil {
-		err = fmt.Errorf("openai: marshalling request: %w", err)
-		return
+// ProviderName returns the Prometheus label, defaulting to "openaicompat".
+func (w *compatWire) ProviderName() string {
+	if w.providerName != "" {
+		return w.providerName
 	}
-
-	var httpResp *http.Response
-	httpResp, err = c.doRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	defer httpResp.Body.Close()
-
-	var raw []byte
-	raw, err = io.ReadAll(httpResp.Body)
-	if err != nil {
-		err = fmt.Errorf("openai: reading response body: %w", err)
-		return
-	}
-
-	if httpResp.StatusCode >= 400 {
-		err = wrapHTTPError(httpResp.StatusCode, raw)
-		return
-	}
-
-	var wire chatResponse
-	if umErr := json.Unmarshal(raw, &wire); umErr != nil {
-		err = fmt.Errorf("openai: decoding response: %w", umErr)
-		return
-	}
-
-	resp, err = ParseChatCompletionResponse(&wire, names)
-	return
+	return "openaicompat"
 }
 
-// classifyCompatError maps an openaicompat error to the fixed error_type enum.
-// wrapHTTPError wraps *llm.HTTPError so we can recover the status code here via
-// errors.As without re-parsing the raw HTTP response in the defer.
-func classifyCompatError(err error) string {
+// ClassifyError maps an openaicompat error to the fixed error_type enum.
+func (w *compatWire) ClassifyError(err error) string {
 	if et, ok := llm.ClassifyContextError(err); ok {
 		return et
 	}
@@ -167,12 +134,49 @@ func classifyCompatError(err error) string {
 	return metrics.ErrorTypeConnection
 }
 
-// StreamMessage sends a streaming Chat Completions request and returns a
+// Call executes a synchronous Chat Completions request and returns the
+// normalized response. This is the body previously in Client.CreateMessage
+// (minus the metrics-defer, which now lives in ProviderAdapter.CreateMessage).
+func (w *compatWire) Call(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
+	// OpenAI allows [a-zA-Z0-9_-] in tool names; build the mapping once and
+	// use it for both outbound sanitization and inbound reversal.
+	names := llm.BuildNameMapping(req.Tools, "-")
+	wireReq := BuildChatCompletionRequest(req, false, names)
+
+	body, err := json.Marshal(wireReq)
+	if err != nil {
+		return nil, fmt.Errorf("openai: marshalling request: %w", err)
+	}
+
+	httpResp, err := w.doRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer httpResp.Body.Close()
+
+	raw, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("openai: reading response body: %w", err)
+	}
+
+	if httpResp.StatusCode >= 400 {
+		return nil, wrapHTTPError(httpResp.StatusCode, raw)
+	}
+
+	var wireResp chatResponse
+	if umErr := json.Unmarshal(raw, &wireResp); umErr != nil {
+		return nil, fmt.Errorf("openai: decoding response: %w", umErr)
+	}
+
+	return ParseChatCompletionResponse(&wireResp, names)
+}
+
+// Stream sends a streaming Chat Completions request and returns a
 // channel that delivers chunks as they arrive. Pre-stream HTTP errors (e.g.
 // 401, 429) are returned synchronously; mid-stream errors arrive on the
 // channel as MessageChunk{Err: err}. parseSSEStream owns closing resp.Body
 // and the out channel, so callers must not close either.
-func (c *Client) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
+func (w *compatWire) Stream(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
 	names := llm.BuildNameMapping(req.Tools, "-")
 	wireReq := BuildChatCompletionRequest(req, true, names)
 
@@ -181,7 +185,7 @@ func (c *Client) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-c
 		return nil, fmt.Errorf("openai: marshal stream request: %w", err)
 	}
 
-	resp, err := c.doRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(body))
+	resp, err := w.doRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -197,56 +201,85 @@ func (c *Client) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-c
 	return out, nil
 }
 
-// ValidateOptions validates provider-specific options from the policy YAML.
-// Accepted keys: temperature, top_p, reasoning_effort, max_output_tokens.
-func (c *Client) ValidateOptions(options map[string]any) error {
-	_, err := parseHints(options)
-	return err
-}
-
 // ListModels returns the models available from the backend. Results are cached
 // after the first successful fetch; call InvalidateModelCache to force a refresh.
-func (c *Client) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
-	c.models.LoadOnce(func() (map[string]string, error) {
-		return c.fetchModels(ctx)
+func (w *compatWire) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+	w.models.LoadOnce(func() (map[string]string, error) {
+		return w.fetchModels(ctx)
 	})
-	if c.modelsUnavailable {
+	if w.modelsUnavailable {
 		// The backend does not expose a /models endpoint (ADR-032 escape hatch).
 		return []llm.ModelInfo{}, nil
 	}
-	return c.models.ListModels()
+	return w.models.ListModels()
 }
 
 // ValidateModelName returns nil if name is recognized by the backend, or a
 // descriptive error. If the backend has no /models endpoint (404), any
 // non-empty name is accepted (ADR-032 escape hatch for unknown backends).
-func (c *Client) ValidateModelName(ctx context.Context, name string) error {
+func (w *compatWire) ValidateModelName(ctx context.Context, name string) error {
 	if name == "" {
 		return errors.New("openai: model name is empty")
 	}
-	c.models.LoadOnce(func() (map[string]string, error) {
-		return c.fetchModels(ctx)
+	w.models.LoadOnce(func() (map[string]string, error) {
+		return w.fetchModels(ctx)
 	})
-	if c.modelsUnavailable {
+	if w.modelsUnavailable {
 		// Unknown backend: we can't validate, so we accept any non-empty name.
 		return nil
 	}
-	return c.models.ValidateModelName(name)
+	return w.models.ValidateModelName(name)
+}
+
+// ValidateOptions validates provider-specific options from the policy YAML.
+func (w *compatWire) ValidateOptions(options map[string]any) error {
+	_, err := parseHints(options)
+	return err
 }
 
 // InvalidateModelCache clears the cached model list so the next call to
 // ListModels or ValidateModelName fetches fresh data from the backend.
-func (c *Client) InvalidateModelCache() {
-	c.models.Invalidate()
-	c.modelsUnavailable = false
+func (w *compatWire) InvalidateModelCache() {
+	w.models.Invalidate()
+	w.modelsUnavailable = false
 }
+
+// --- Thin forwarders on Client (zero-value safe, BLOCKING-1) ---
+//
+// These four methods are declared on the CONCRETE type so they satisfy the
+// LLMClient interface without promotion. They forward to the wire's cache
+// (which holds models + modelsUnavailable), never to the embedded adapter.
+// A real-world Client is always constructed via NewClient, so c.w is non-nil.
+
+// ValidateOptions validates provider-specific options from the policy YAML.
+// Accepted keys: temperature, top_p, reasoning_effort, max_output_tokens.
+func (c *Client) ValidateOptions(options map[string]any) error {
+	return c.w.ValidateOptions(options)
+}
+
+// ListModels returns the models available from the backend, with caching.
+func (c *Client) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
+	return c.w.ListModels(ctx)
+}
+
+// ValidateModelName returns nil if name is recognized by the backend.
+func (c *Client) ValidateModelName(ctx context.Context, name string) error {
+	return c.w.ValidateModelName(ctx, name)
+}
+
+// InvalidateModelCache clears the cached model list.
+func (c *Client) InvalidateModelCache() {
+	c.w.InvalidateModelCache()
+}
+
+// --- Internal helpers on compatWire ---
 
 // fetchModels calls GET /models and returns a map of id → id. The display name
 // equals the model ID because OpenAI-compatible backends don't expose human
 // readable names — using the id as DisplayName matches the unknown-backend
 // convention where we show exactly what you would type in the policy YAML.
-func (c *Client) fetchModels(ctx context.Context) (map[string]string, error) {
-	resp, err := c.doRequest(ctx, http.MethodGet, "/models", nil)
+func (w *compatWire) fetchModels(ctx context.Context) (map[string]string, error) {
+	resp, err := w.doRequest(ctx, http.MethodGet, "/models", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +288,7 @@ func (c *Client) fetchModels(ctx context.Context) (map[string]string, error) {
 	if resp.StatusCode == http.StatusNotFound {
 		// The backend doesn't implement /models. Mark it unavailable so callers
 		// skip validation entirely rather than blocking on a missing endpoint.
-		c.modelsUnavailable = true
+		w.modelsUnavailable = true
 		return map[string]string{}, nil
 	}
 
@@ -267,34 +300,34 @@ func (c *Client) fetchModels(ctx context.Context) (map[string]string, error) {
 		return nil, wrapHTTPError(resp.StatusCode, raw)
 	}
 
-	var wire modelsResponse
-	if err := json.Unmarshal(raw, &wire); err != nil {
+	var wireResp modelsResponse
+	if err := json.Unmarshal(raw, &wireResp); err != nil {
 		return nil, fmt.Errorf("openai: decoding models response: %w", err)
 	}
 
-	cache := make(map[string]string, len(wire.Data))
-	for _, entry := range wire.Data {
+	cache := make(map[string]string, len(wireResp.Data))
+	for _, entry := range wireResp.Data {
 		// id → id: display name equals the model ID for OpenAI-compatible backends
 		// because they don't surface human-readable names.
 		cache[entry.ID] = entry.ID
 	}
-	c.modelsUnavailable = false
+	w.modelsUnavailable = false
 	return cache, nil
 }
 
 // doRequest builds and executes an HTTP request against the backend. On
 // network error it returns ctx.Err() directly when the context is done, so
 // callers can use errors.Is(err, context.Canceled) without unwrapping.
-func (c *Client) doRequest(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+func (w *compatWire) doRequest(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, w.baseURL+path, body)
 	if err != nil {
 		return nil, fmt.Errorf("openai: building request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+w.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := w.httpClient.Do(req)
 	if err != nil {
 		// Prefer the context error so callers can distinguish cancellation from
 		// network failures with errors.Is(err, context.Canceled).

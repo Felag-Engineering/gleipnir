@@ -381,7 +381,7 @@ func TestRun_SingleTurnEndTurn(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient:    testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("I completed the task.", llm.StopReasonEndTurn, 10, 20)),
+		LLMClient:    testutil.NewFakeClientOnly(testutil.MakeLLMTextResponse("I completed the task.", llm.StopReasonEndTurn, 10, 20)),
 		Tools:        nil,
 		Policy:       minimalPolicy(),
 		Audit:        w,
@@ -523,7 +523,7 @@ func TestRun_ToolCallLoop(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient: testutil.NewMockLLMClient(
+		LLMClient: testutil.NewFakeClientOnly(
 			testutil.MakeLLMToolCallResponse("tu-1", "my-server.read_data", map[string]any{"arg": "x"}, 10, 5),
 			testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 3),
 		),
@@ -678,7 +678,7 @@ func TestRun_ToolNotFound(t *testing.T) {
 	// No tools registered, but response asks for one.
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient: testutil.NewMockLLMClient(
+		LLMClient: testutil.NewFakeClientOnly(
 			testutil.MakeLLMToolCallResponse("tu-1", "missing-server.nonexistent", map[string]any{}, 10, 5),
 		),
 		Tools:        nil,
@@ -745,7 +745,7 @@ func TestRun_TokenBudgetExceeded(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient: testutil.NewMockLLMClient(
+		LLMClient: testutil.NewFakeClientOnly(
 			testutil.MakeLLMToolCallResponse("tu-1", "my-server.read_data", map[string]any{}, 600, 400),
 			// This second response should never be reached.
 			testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 5),
@@ -801,7 +801,7 @@ func TestRun_CapabilitySnapshotFirst(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient:    testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 5)),
+		LLMClient:    testutil.NewFakeClientOnly(testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 5)),
 		Tools:        []mcp.ResolvedTool{mcpTool},
 		Policy:       pol,
 		Audit:        w,
@@ -874,7 +874,7 @@ func TestHandleToolCall_SchemaValidation(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient: testutil.NewMockLLMClient(
+		LLMClient: testutil.NewFakeClientOnly(
 			testutil.MakeLLMToolCallResponse("tu-1", "my-server.read_data", map[string]any{"badkey": "val"}, 10, 5),
 		),
 		Tools:        tools,
@@ -942,7 +942,7 @@ func TestHandleToolCall_ApprovalRejected(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient: testutil.NewMockLLMClient(
+		LLMClient: testutil.NewFakeClientOnly(
 			testutil.MakeLLMToolCallResponse("tu-1", "my-server.do_thing", map[string]any{"arg": "v"}, 10, 5),
 		),
 		Tools:        []mcp.ResolvedTool{approvalTool},
@@ -1032,7 +1032,7 @@ func TestRun_ToolCallCapExceeded(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient: testutil.NewMockLLMClient(
+		LLMClient: testutil.NewFakeClientOnly(
 			testutil.MakeLLMToolCallResponse("tu-1", "my-server.read_data", map[string]any{}, 10, 5),
 			testutil.MakeLLMToolCallResponse("tu-2", "my-server.read_data", map[string]any{}, 10, 5),
 			// Third response should never be reached.
@@ -1103,7 +1103,7 @@ func TestRun_LimitsNotExceeded(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient: testutil.NewMockLLMClient(
+		LLMClient: testutil.NewFakeClientOnly(
 			testutil.MakeLLMToolCallResponse("tu-1", "my-server.read_data", map[string]any{}, 10, 5),
 			testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 3),
 		),
@@ -1286,7 +1286,7 @@ func TestRun_Cancellation(t *testing.T) {
 
 		w := NewAuditWriter(s.Queries())
 		ba, err := New(Config{
-			LLMClient: testutil.NewMockLLMClient(
+			LLMClient: testutil.NewFakeClientOnly(
 				testutil.MakeLLMToolCallResponse("tu-1", "slow-server.slow_tool", map[string]any{}, 10, 5),
 			),
 			Tools:        tools,
@@ -1352,14 +1352,14 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 
 	tools := []mcp.ResolvedTool{toolForRun(mcpSrv.URL, "my-server", "read_data")}
 
-	mockClient := testutil.NewMockLLMClient(
+	fakeClient, fakeWire := testutil.NewFakeClient(
 		testutil.MakeLLMToolCallResponse("tu-1", "my-server.read_data", map[string]any{"arg": "x"}, 10, 5),
 		testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 3),
 	)
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient:    mockClient,
+		LLMClient:    fakeClient,
 		Tools:        tools,
 		Policy:       minimalPolicy(),
 		Audit:        w,
@@ -1378,7 +1378,7 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 	//   [0] user (trigger payload)
 	//   [1] assistant (tool_use response)
 	//   [2] user (tool results with prepended timestamp)
-	requests := mockClient.Requests()
+	requests := fakeWire.Requests()
 	if len(requests) != 2 {
 		t.Fatalf("expected 2 API calls, got %d", len(requests))
 	}
@@ -1729,7 +1729,7 @@ func TestRunAPILoop_EndTurn(t *testing.T) {
 	ba, err := New(Config{
 		Policy:       minimalPolicy(),
 		Tools:        nil,
-		LLMClient:    testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("all done", llm.StopReasonEndTurn, 10, 5)),
+		LLMClient:    testutil.NewFakeClientOnly(testutil.MakeLLMTextResponse("all done", llm.StopReasonEndTurn, 10, 5)),
 		Audit:        w,
 		StateMachine: NewRunStateMachine("r1", model.RunStatusRunning, s.DB(), s.Queries()),
 	})
@@ -1839,7 +1839,7 @@ func TestHandleToolCall_AskOperator_Success(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient: testutil.NewMockLLMClient(
+		LLMClient: testutil.NewFakeClientOnly(
 			testutil.MakeLLMToolCallResponse("tc-1", AskOperatorToolName,
 				map[string]any{"reason": "Need clarification", "context": "Some details"}, 10, 5),
 			testutil.MakeLLMTextResponse("All done.", llm.StopReasonEndTurn, 5, 3),
@@ -1967,7 +1967,7 @@ func TestHandleToolCall_AskOperator_NotAvailableWhenDisabled(t *testing.T) {
 	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusPending)
 
 	// Policy has feedback disabled — gleipnir.ask_operator must not be offered to the LLM.
-	mockClient := testutil.NewMockLLMClient(
+	fakeClient, fakeWire := testutil.NewFakeClient(
 		// LLM hallucinates a call to gleipnir.ask_operator even though it was never registered.
 		testutil.MakeLLMToolCallResponse("tc-1", AskOperatorToolName,
 			map[string]any{"reason": "something"}, 10, 5),
@@ -1975,7 +1975,7 @@ func TestHandleToolCall_AskOperator_NotAvailableWhenDisabled(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient:    mockClient,
+		LLMClient:    fakeClient,
 		Tools:        nil,
 		Policy:       minimalPolicy(), // feedback disabled
 		Audit:        w,
@@ -2018,7 +2018,7 @@ func TestHandleToolCall_AskOperator_NotAvailableWhenDisabled(t *testing.T) {
 	}
 
 	// Verify gleipnir.ask_operator was not in the tools sent to the LLM.
-	requests := mockClient.Requests()
+	requests := fakeWire.Requests()
 	if len(requests) == 0 {
 		t.Fatal("expected at least one API request")
 	}
@@ -2036,7 +2036,7 @@ func TestHandleToolCall_AskOperator_ReasonRequired(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient: testutil.NewMockLLMClient(
+		LLMClient: testutil.NewFakeClientOnly(
 			// Missing required "reason" field — only "context" provided.
 			testutil.MakeLLMToolCallResponse("tc-1", AskOperatorToolName,
 				map[string]any{"context": "only context, no reason"}, 10, 5),
@@ -2181,7 +2181,7 @@ func TestRun_feedback_timeout(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient: testutil.NewMockLLMClient(
+		LLMClient: testutil.NewFakeClientOnly(
 			testutil.MakeLLMToolCallResponse("tc-1", AskOperatorToolName,
 				map[string]any{"reason": "Need your input"}, 10, 5),
 		),
@@ -2243,7 +2243,7 @@ func TestCapabilitySnapshot_IncludesAskOperator(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient:    testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 5, 3)),
+		LLMClient:    testutil.NewFakeClientOnly(testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 5, 3)),
 		Tools:        nil,
 		Policy:       feedbackPolicy(),
 		Audit:        w,
@@ -2721,14 +2721,14 @@ func TestRun_ThinkingBlocksIncludedInHistory(t *testing.T) {
 		Usage:      llm.TokenUsage{InputTokens: 10, OutputTokens: 5},
 	}
 
-	mock := testutil.NewMockLLMClient(
+	fakeClient, fakeWire := testutil.NewFakeClient(
 		firstResp,
 		testutil.MakeLLMTextResponse("Done.", llm.StopReasonEndTurn, 5, 3),
 	)
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient:    mock,
+		LLMClient:    fakeClient,
 		Tools:        tools,
 		Policy:       minimalPolicy(),
 		Audit:        w,
@@ -2742,13 +2742,13 @@ func TestRun_ThinkingBlocksIncludedInHistory(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if mock.Calls() != 2 {
-		t.Fatalf("expected 2 API calls, got %d", mock.Calls())
+	if fakeWire.Calls() != 2 {
+		t.Fatalf("expected 2 API calls, got %d", fakeWire.Calls())
 	}
 
 	// The second request's history should include the assistant turn from the
 	// first response. That turn must contain the ThinkingBlock before the tool call.
-	reqs := mock.Requests()
+	reqs := fakeWire.Requests()
 	secondReq := reqs[1]
 
 	// Find the assistant turn in history.
@@ -2810,7 +2810,7 @@ func TestRun_ThinkingTokensIncludedInCost(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient:    testutil.NewMockLLMClient(resp),
+		LLMClient:    testutil.NewFakeClientOnly(resp),
 		Tools:        nil,
 		Policy:       minimalPolicy(),
 		Audit:        w,
@@ -2904,7 +2904,7 @@ func TestRun_MCPTransportError_BecomesToolResult(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient: testutil.NewMockLLMClient(
+		LLMClient: testutil.NewFakeClientOnly(
 			// LLM issues a tool call.
 			testutil.MakeLLMToolCallResponse("tu-1", "failing-server.do_thing", map[string]any{}, 10, 5),
 			// After receiving the is_error tool result, LLM completes.
@@ -3006,7 +3006,7 @@ func TestCapabilitySnapshot_IncludesPluginSourceTools(t *testing.T) {
 
 	w := NewAuditWriter(s.Queries())
 	ba, err := New(Config{
-		LLMClient: testutil.NewMockLLMClient(testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 5, 5)),
+		LLMClient: testutil.NewFakeClientOnly(testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 5, 5)),
 		Tools:     []mcp.ResolvedTool{mcpTool},
 		PluginTools: []PluginToolEntry{
 			{InstanceName: "my-plugin", ToolName: "do-thing", Generation: 1, Description: "a plugin tool"},

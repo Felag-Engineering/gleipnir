@@ -9,7 +9,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -37,7 +36,19 @@ var validOptions = map[string]bool{
 var _ llm.LLMClient = (*AnthropicClient)(nil)
 
 // AnthropicClient implements llm.LLMClient using the Anthropic Claude API.
+// It embeds *llm.ProviderAdapter which promotes CreateMessage and StreamMessage;
+// the four model/option methods are kept as thin explicit forwarders so that a
+// zero-value &AnthropicClient{} is safe (BLOCKING-1, issue #506).
 type AnthropicClient struct {
+	*llm.ProviderAdapter
+	w *wire
+}
+
+// wire implements llm.ProviderWire for the Anthropic provider. It owns all
+// wire-specific work: param building, SDK call, response translation, and error
+// classification. The streaming state machine lives in consumeStream (stream.go),
+// called by Stream.
+type wire struct {
 	client *anthropic.Client
 }
 
@@ -48,7 +59,8 @@ type AnthropicClient struct {
 func NewClient(apiKey string, opts ...option.RequestOption) *AnthropicClient {
 	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
 	c := anthropic.NewClient(allOpts...)
-	return &AnthropicClient{client: &c}
+	w := &wire{client: &c}
+	return &AnthropicClient{ProviderAdapter: llm.NewAdapter(w), w: w}
 }
 
 // NewClientFromEnv constructs an AnthropicClient using only the default SDK
@@ -56,71 +68,17 @@ func NewClient(apiKey string, opts ...option.RequestOption) *AnthropicClient {
 // is read from the environment without an empty string override.
 func NewClientFromEnv(opts ...option.RequestOption) *AnthropicClient {
 	c := anthropic.NewClient(opts...)
-	return &AnthropicClient{client: &c}
+	w := &wire{client: &c}
+	return &AnthropicClient{ProviderAdapter: llm.NewAdapter(w), w: w}
 }
 
-// CreateMessage sends a single synchronous request to the Anthropic API and
-// returns the normalized response.
-func (c *AnthropicClient) CreateMessage(ctx context.Context, req llm.MessageRequest) (resp *llm.MessageResponse, err error) {
-	start := time.Now()
-	defer func() {
-		llm.ObserveRequestDuration("anthropic", req.Model, time.Since(start))
-		if err != nil {
-			llm.RecordError("anthropic", classifyAnthropicError(err))
-			return
-		}
-		if resp != nil {
-			llm.RecordTokens("anthropic", req.Model, resp.Usage)
-		}
-	}()
+// --- ProviderWire implementation on wire ---
 
-	hints, _ := req.Hints.(*AnthropicHints)
-	isReasoning := curatedModelsByName[req.Model].IsReasoning
+// ProviderName returns the Prometheus label for this provider.
+func (w *wire) ProviderName() string { return "anthropic" }
 
-	maxTokens := resolveMaxTokens(req, hints, isReasoning)
-	system := buildSystemBlocks(req, hints)
-
-	tools, nameMap, buildErr := buildTools(req.Tools)
-	if buildErr != nil {
-		err = fmt.Errorf("anthropic: building tools: %w", buildErr)
-		return
-	}
-	messages, buildErr := buildMessages(req.History, nameMap.OriginalToSanitized)
-	if buildErr != nil {
-		err = fmt.Errorf("anthropic: %w", buildErr)
-		return
-	}
-
-	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(req.Model),
-		MaxTokens: maxTokens,
-		System:    system,
-		Messages:  messages,
-		Tools:     tools,
-	}
-	if isReasoning {
-		params.Thinking = anthropic.ThinkingConfigParamUnion{
-			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{},
-		}
-	}
-
-	sdkResp, sdkErr := c.client.Messages.New(ctx, params)
-	if sdkErr != nil {
-		err = wrapSDKError(sdkErr)
-		return
-	}
-
-	resp, err = translateResponse(sdkResp, nameMap.SanitizedToOriginal)
-	if err != nil {
-		err = fmt.Errorf("anthropic: translateResponse: %w", err)
-		return
-	}
-	return
-}
-
-// classifyAnthropicError maps an Anthropic SDK error to the fixed error_type
-// enum. Uses errors.As with a typed pointer variable per the two-step pattern.
-func classifyAnthropicError(err error) string {
+// ClassifyError maps an Anthropic SDK error to the fixed error_type enum.
+func (w *wire) ClassifyError(err error) string {
 	if et, ok := llm.ClassifyContextError(err); ok {
 		return et
 	}
@@ -131,11 +89,10 @@ func classifyAnthropicError(err error) string {
 	return metrics.ErrorTypeConnection
 }
 
-// StreamMessage opens a streaming request to the Anthropic API and emits
-// llm.MessageChunk values on the returned channel as events arrive. The channel
-// is closed when the stream ends. Pre-stream errors (e.g. tool schema failures)
-// are returned synchronously; mid-stream errors arrive as Err chunks.
-func (c *AnthropicClient) StreamMessage(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
+// Call executes a synchronous request to the Anthropic API and returns the
+// normalized response. This is the body previously in AnthropicClient.CreateMessage
+// (minus the metrics-defer, which now lives in ProviderAdapter.CreateMessage).
+func (w *wire) Call(ctx context.Context, req llm.MessageRequest) (*llm.MessageResponse, error) {
 	hints, _ := req.Hints.(*AnthropicHints)
 	isReasoning := curatedModelsByName[req.Model].IsReasoning
 
@@ -164,16 +121,136 @@ func (c *AnthropicClient) StreamMessage(ctx context.Context, req llm.MessageRequ
 		}
 	}
 
-	stream := c.client.Messages.NewStreaming(ctx, params)
+	sdkResp, sdkErr := w.client.Messages.New(ctx, params)
+	if sdkErr != nil {
+		return nil, wrapSDKError(sdkErr)
+	}
+
+	resp, err := translateResponse(sdkResp, nameMap.SanitizedToOriginal)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: translateResponse: %w", err)
+	}
+	return resp, nil
+}
+
+// Stream opens a streaming request to the Anthropic API and returns the neutral
+// chunk channel. The accumulate-and-emit state machine lives in consumeStream.
+func (w *wire) Stream(ctx context.Context, req llm.MessageRequest) (<-chan llm.MessageChunk, error) {
+	hints, _ := req.Hints.(*AnthropicHints)
+	isReasoning := curatedModelsByName[req.Model].IsReasoning
+
+	maxTokens := resolveMaxTokens(req, hints, isReasoning)
+	system := buildSystemBlocks(req, hints)
+
+	tools, nameMap, err := buildTools(req.Tools)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: building tools: %w", err)
+	}
+	messages, err := buildMessages(req.History, nameMap.OriginalToSanitized)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: %w", err)
+	}
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model(req.Model),
+		MaxTokens: maxTokens,
+		System:    system,
+		Messages:  messages,
+		Tools:     tools,
+	}
+	if isReasoning {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{},
+		}
+	}
+
+	stream := w.client.Messages.NewStreaming(ctx, params)
 	out := make(chan llm.MessageChunk, 16)
 	go consumeStream(ctx, stream, out, nameMap.SanitizedToOriginal)
 	return out, nil
 }
 
+// ListModels returns a defensive copy of the curated Anthropic model list.
+func (w *wire) ListModels(_ context.Context) ([]llm.ModelInfo, error) {
+	result := make([]llm.ModelInfo, len(curatedModels))
+	copy(result, curatedModels)
+	return result, nil
+}
+
+// ValidateModelName returns nil if modelName is in the curated model list or in
+// validationAliases (for backward compat with stored policies using dated pins).
+func (w *wire) ValidateModelName(_ context.Context, modelName string) error {
+	if _, ok := curatedModelsByName[modelName]; ok {
+		return nil
+	}
+	if _, ok := validationAliases[modelName]; ok {
+		return nil
+	}
+	names := make([]string, len(curatedModels))
+	for i, m := range curatedModels {
+		names[i] = m.DisplayName
+	}
+	return fmt.Errorf("unknown Anthropic model %q; available models: %s", modelName, strings.Join(names, ", "))
+}
+
+// ValidateOptions validates provider-specific options from the policy YAML.
+func (w *wire) ValidateOptions(options map[string]any) error {
+	return validateOptions(options)
+}
+
+// InvalidateModelCache is a no-op: the curated model list is static.
+func (w *wire) InvalidateModelCache() {}
+
+// --- Thin forwarders on AnthropicClient (zero-value safe, BLOCKING-1) ---
+//
+// These four methods are declared on the CONCRETE type so they satisfy the
+// LLMClient interface without promotion and a zero-value &AnthropicClient{}
+// is safe. They call package-level helpers directly — never the embedded
+// *ProviderAdapter — so a nil adapter cannot be dereferenced.
+
 // ValidateOptions validates provider-specific options from the policy YAML.
 // Accepted keys: "enable_prompt_caching" (bool), "max_tokens" (positive int).
 // All errors are collected before returning so the caller sees every problem at once.
 func (c *AnthropicClient) ValidateOptions(options map[string]any) error {
+	return validateOptions(options)
+}
+
+// ValidateModelName returns nil if modelName is in the curated model list or in
+// validationAliases (for backward compat with stored policies using dated pins).
+// No network call is made — validation is purely against the curated list.
+func (c *AnthropicClient) ValidateModelName(_ context.Context, modelName string) error {
+	if _, ok := curatedModelsByName[modelName]; ok {
+		return nil
+	}
+	if _, ok := validationAliases[modelName]; ok {
+		return nil
+	}
+	names := make([]string, len(curatedModels))
+	for i, m := range curatedModels {
+		names[i] = m.DisplayName
+	}
+	return fmt.Errorf("unknown Anthropic model %q; available models: %s", modelName, strings.Join(names, ", "))
+}
+
+// ListModels returns a defensive copy of the curated Anthropic model list.
+// No network call is made — this never panics even on a zero-value client.
+func (c *AnthropicClient) ListModels(_ context.Context) ([]llm.ModelInfo, error) {
+	result := make([]llm.ModelInfo, len(curatedModels))
+	copy(result, curatedModels)
+	return result, nil
+}
+
+// InvalidateModelCache is a no-op: the curated model list is static and
+// requires no cache invalidation. The method exists to satisfy the LLMClient
+// interface so the provider registry's /api/v1/models/refresh path works.
+func (c *AnthropicClient) InvalidateModelCache() {}
+
+// --- Package-level helpers shared by both wire and AnthropicClient ---
+
+// validateOptions validates provider-specific options from the policy YAML.
+// Both the wire and the AnthropicClient forwarder call this so the logic lives
+// in one place without routing through the adapter.
+func validateOptions(options map[string]any) error {
 	if options == nil {
 		return nil
 	}
@@ -225,32 +302,6 @@ func (c *AnthropicClient) ValidateOptions(options map[string]any) error {
 	return nil
 }
 
-// ValidateModelName returns nil if modelName is in the curated model list or in
-// validationAliases (for backward compat with stored policies using dated pins).
-// No network call is made — validation is purely against the curated list.
-func (c *AnthropicClient) ValidateModelName(_ context.Context, modelName string) error {
-	if _, ok := curatedModelsByName[modelName]; ok {
-		return nil
-	}
-	if _, ok := validationAliases[modelName]; ok {
-		return nil
-	}
-
-	names := make([]string, len(curatedModels))
-	for i, m := range curatedModels {
-		names[i] = m.DisplayName
-	}
-	return fmt.Errorf("unknown Anthropic model %q; available models: %s", modelName, strings.Join(names, ", "))
-}
-
-// ListModels returns a defensive copy of the curated Anthropic model list.
-// No network call is made — this never panics even on a zero-value client.
-func (c *AnthropicClient) ListModels(_ context.Context) ([]llm.ModelInfo, error) {
-	result := make([]llm.ModelInfo, len(curatedModels))
-	copy(result, curatedModels)
-	return result, nil
-}
-
 // humanizeModelName turns a raw Anthropic model ID into a human-readable label.
 // "claude-opus-4-6" → "Claude Opus 4.6"
 // Models that don't follow the expected pattern are returned unchanged.
@@ -284,11 +335,6 @@ func humanizeModelName(name string) string {
 	titleFamily := strings.ToUpper(family[:1]) + family[1:]
 	return fmt.Sprintf("Claude %s %s", titleFamily, strings.Join(vClean, "."))
 }
-
-// InvalidateModelCache is a no-op: the curated model list is static and
-// requires no cache invalidation. The method exists to satisfy the LLMClient
-// interface so the provider registry's /api/v1/models/refresh path works.
-func (c *AnthropicClient) InvalidateModelCache() {}
 
 // resolveMaxTokens determines the effective max_tokens for a request.
 // Precedence (highest to lowest):

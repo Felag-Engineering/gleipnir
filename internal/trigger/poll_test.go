@@ -197,7 +197,7 @@ func insertTestPollPolicy(t *testing.T, store *db.Store, policyID, name, yamlStr
 // make real Claude API calls.
 func pollerFactory() run.AgentFactory {
 	return func(cfg agent.Config) (*agent.BoundAgent, error) {
-		cfg.LLMClient = testutil.NewMockLLMClient(
+		cfg.LLMClient = testutil.NewFakeClientOnly(
 			testutil.MakeLLMTextResponse("done", llm.StopReasonEndTurn, 10, 5),
 		)
 		return agent.New(cfg)

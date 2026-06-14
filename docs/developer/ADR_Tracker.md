@@ -38,7 +38,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-019 | Dual-mode policy editor (form + YAML)             | 🟢 Decided    | v0.1   | Frontend, policy YAML schema                         |
 | ADR-020 | Policy folders for UI grouping                    | 🟢 Decided    | v0.1   | Policy YAML schema, frontend dashboard               |
 | ADR-021 | MCP discovery diffs                               | 🟢 Decided    | v0.1   | MCP discovery endpoint, frontend                     |
-| ADR-022 | Transport-level fake for Anthropic API in tests   | ⬜ Deferred   | v0.1   | agent package, integration tests                     |
+| ADR-022 | ProviderWire seam + cross-wire contract suite      | 🟢 Decided    | v1.1   | internal/llm, all four provider packages, contract suite |
 | ADR-023 | Per-policy model selection                         | 🟢 Decided    | v0.1   | Policy schema, agent runtime, capability snapshot    |
 | ADR-024 | Webhook HMAC-SHA256 signature verification         | 🟢 Decided    | v0.1   | Webhook handler, policy schema, trigger package      |
 | ADR-026 | Model-agnostic design (multi-provider) — revised   | 🟢 Decided    | v1.0   | LLM client interface, agent runtime, policy schema   |
@@ -1749,23 +1749,58 @@ used in policies.
 
 ---
 
-## ADR-022: Transport-level fake for Anthropic API in tests
+## ADR-022: ProviderWire seam + cross-wire contract suite
 
-**Status:** Deferred (tracked: #78)
-**Date:** 2026-03
+**Status:** Decided (undeferred 2026-06, issue #506)
+**Date:** 2026-03 (original deferral); revised 2026-06
 
-**Decision:** Test infrastructure that needs to avoid real Anthropic API calls should inject
-a fake `http.RoundTripper` into the `anthropic.Client` rather than bypassing the SDK via an
-interface seam in production types.
+**Original decision (deferred):** Test infrastructure should inject a fake `http.RoundTripper`
+rather than adding interface seams to production types. Deferred because `agent.Config.MessagesOverride`
+was the blocking prerequisite.
 
-**Rejected alternative:** `MessagesOverride MessagesAPI` field on `agent.Config`. This is a
-test concern embedded in a production struct — production code should not be modified to
-accommodate tests. Superseded by the `AgentFactory` pattern which already removed the seam
-from `WebhookHandler`; `agent.Config.MessagesOverride` is the remaining field to eliminate.
+**Revised decision:** A `ProviderWire` interface is introduced in `internal/llm` as a shallow
+provider-level seam. Each provider adapter (anthropic, openai, google, openaicompat) implements
+`ProviderWire` with methods `Call`, `Stream`, `ListModels`, `ValidateModelName`, `ValidateOptions`,
+`InvalidateModelCache`, `ClassifyError`, and `ProviderName`. A shared `ProviderAdapter` wraps any
+`ProviderWire` and owns the metrics-defer choreography in `CreateMessage` (timer, `ObserveRequestDuration`,
+`RecordError`, `RecordTokens`). `StreamMessage` delegates directly.
 
-**Consequence:** `agent.Config.MessagesOverride` and `integrationFakeMessages` to be removed
-when the transport fake is implemented. `agent_test.go` and `integration_test.go` both move
-to the transport fake.
+**Test infrastructure:** `FakeWire` is a fifth `ProviderWire` implementation that returns scripted
+responses and captures requests. `testutil.NewFakeClient` wraps a `FakeWire` in a `ProviderAdapter`
+so tests get a real client that exercises the metrics path. `testutil.NewFakeClientOnly` discards
+the wire handle for inline use. `MockLLMClient` is retained for the `hookOnceLLMClient` pattern
+in `agent_test.go` which requires the concrete type; all other test call sites migrated to
+`NewFakeClient` / `NewFakeClientOnly`.
+
+**Cross-wire contract suite:** `internal/llm/contract` contains a table-driven test suite
+(`package contract_test`) parameterized over all four real wires. It asserts the
+provider-agnostic invariants uniformly: stop-reason normalization (end_turn / tool_use /
+max_tokens), usage extraction (InputTokens / OutputTokens / ThinkingTokens), tool-name
+round-trip (sanitization + reverse-mapping), and continuity-state carriers (per-provider,
+explicitly non-uniform per BLOCKING-3):
+- anthropic / openai: `ThinkingBlock.ProviderState` JSON round-trip
+- google: `ToolCallBlock.ProviderMetadata["google.thought_signature"]` (no ProviderState)
+- openaicompat: ThinkingBlocks are DROPPED (Chat Completions has no reasoning round-trip;
+  the contract test asserts they do not appear in the outbound request)
+
+**Boundary preserved:** `LLMClient` interface and agent runtime are unchanged (ADR-026). The
+`ProviderWire` seam is entirely inside `internal/llm`; `internal/execution/agent` imports
+`internal/llm` only, never provider packages.
+
+**Zero-value safety (BLOCKING-1):** The four model/option methods (`ValidateOptions`,
+`ValidateModelName`, `ListModels`, `InvalidateModelCache`) are kept as thin explicit forwarders
+on each concrete Client type, never promoted from the embedded `*ProviderAdapter`. A zero-value
+`&AnthropicClient{}` / `&Client{}` / `&GeminiClient{}` is still safe to call model methods on.
+
+**Consequences:**
+- `internal/llm/wire.go` — `ProviderWire` interface definition
+- `internal/llm/adapter.go` — `ProviderAdapter` + metrics-defer
+- `internal/llm/fake_wire.go` — `FakeWire` + `NewFakeWire`
+- All four provider `client.go` files restructured with an inner `wire` / `compatWire` type
+- `internal/testutil/mock_llm.go` — `NewFakeClient`, `NewFakeClientOnly` added
+- `internal/llm/contract/` — new package with cross-wire contract suite
+- All test call sites in execution, trigger, run, admin, http packages migrated from
+  `NewMockLLMClient` to `NewFakeClient` / `NewFakeClientOnly`
 
 ---
 
@@ -1979,6 +2014,12 @@ and the agent fails the run with a wrapped message — do not silently drop cont
 Destructive migration: no DB schema change (`ThinkingBlock` provider-specific fields were never
 persisted — the audit writer records only `{text, redacted}`). Fresh installs only for in-flight
 conversations.
+
+**Amendment (2026-06, issue #506):** The `LLMClient` interface and `internal/execution/agent`
+runtime are confirmed unchanged by the ProviderWire refactor (ADR-022). The seam is internal to
+`internal/llm`; the agent boundary remains `LLMClient`. Adding a new provider requires implementing
+`ProviderWire` (not `LLMClient`) and registering in `internal/llm/factory`. The `ProviderAdapter`
+handles metrics uniformly so new providers inherit observability without per-provider boilerplate.
 
 ---
 
