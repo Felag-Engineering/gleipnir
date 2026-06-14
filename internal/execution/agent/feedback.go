@@ -190,10 +190,11 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 	// Pre-register the in-app waiter BEFORE the state transition.  This preserves
 	// the invariant from the original inAppChannel.Request: a Resolve call arriving
 	// immediately after the SSE event (which fires on transition) is never lost.
-	// On the plugin path the waiter is unused; UnregisterWaiter is deferred so it
-	// is cleaned up regardless of which branch executes.
-	ch := h.inApp.RegisterWaiter(feedbackID)
-	defer h.inApp.UnregisterWaiter(feedbackID)
+	// The waiter handle bundles registration with its cleanup; on the plugin path
+	// the waiter is unused; release is deferred so it is cleaned up regardless of
+	// which branch executes.
+	waiter := h.inApp.registerWaiter(feedbackID)
+	defer waiter.release()
 
 	// Phase 1: write audit step and transition — always runs regardless of dispatch path.
 	if err := h.audit.Write(ctx, Step{
@@ -254,7 +255,7 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 	}
 
 	// Phase 2b: in-app waiter path (no dispatcher or fallback from plugin path).
-	// ch was registered before Phase 1; deferred UnregisterWaiter handles cleanup.
+	// The waiter was registered before Phase 1; deferred release handles cleanup.
 
 	// nil timeoutCh (when feedbackTimeout == 0) blocks forever in the select,
 	// meaning no in-process timeout is applied. Use NewTimer so we can Stop it
@@ -267,7 +268,7 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 	}
 
 	select {
-	case resp := <-ch:
+	case resp := <-waiter.responses():
 		if err := h.audit.Write(ctx, Step{
 			RunID:   runID,
 			Type:    model.StepTypeFeedbackResponse,
@@ -291,35 +292,24 @@ func (h *FeedbackHandler) Wait(ctx context.Context, runID, toolName, inputJSON, 
 		logctx.Logger(ctx).WarnContext(ctx, "feedback timeout reached",
 			"tool", toolName,
 			"timeout", feedbackTimeout.String())
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		// Race the scanner: only the first writer (rows==1) owns the error step.
-		// If the scanner already resolved it (rows==0), return a sentinel error so
-		// Run() still terminates, but skip logAuditError to avoid a duplicate step.
-		rows, dbErr := h.sm.Queries().UpdateFeedbackRequestStatus(
-			context.Background(),
-			db.UpdateFeedbackRequestStatusParams{
-				Status:     "timed_out",
-				Response:   nil,
-				ResolvedAt: &now,
-				ID:         feedbackID,
+		// Race the timeout scanner for the pending row (#505): claimRequestTimeout
+		// owns the rows==1/rows==0 branch and the error-step write.
+		return "", claimRequestTimeout(ctx, h.audit, timeoutClaim{
+			name:      "feedback",
+			runID:     runID,
+			requestID: feedbackID,
+			claim: func(dbCtx context.Context, now string) (int64, error) {
+				return h.sm.Queries().UpdateFeedbackRequestStatus(dbCtx, db.UpdateFeedbackRequestStatusParams{
+					Status:     "timed_out",
+					Response:   nil,
+					ResolvedAt: &now,
+					ID:         feedbackID,
+				})
 			},
-		)
-		if dbErr != nil {
-			logctx.Logger(ctx).WarnContext(ctx, "failed to update feedback status on timeout", "feedback_id", feedbackID, "err", dbErr)
-		}
-		if rows == 1 {
-			err := fmt.Errorf("feedback timeout: operator did not respond within %s", feedbackTimeout)
-			logAuditError(ctx, h.audit, Step{
-				RunID:   runID,
-				Type:    model.StepTypeError,
-				Content: model.ErrorStepContent{Message: err.Error(), Code: model.ErrorCodeFeedbackTimeout},
-			})
-			return "", err
-		}
-		// Scanner won the race: it already wrote the error step and transitioned
-		// the run. Return a sentinel so Run() knows to stop, but avoid a duplicate step.
-		logctx.Logger(ctx).DebugContext(ctx, "feedback already resolved by scanner", "feedback_id", feedbackID)
-		return "", fmt.Errorf("feedback timeout: already resolved by scanner for tool %s", toolName)
+			errorCode:   model.ErrorCodeFeedbackTimeout,
+			wonMessage:  fmt.Sprintf("feedback timeout: operator did not respond within %s", feedbackTimeout),
+			lostMessage: fmt.Sprintf("feedback timeout: already resolved by scanner for tool %s", toolName),
+		})
 
 	case <-ctx.Done():
 		return "", fmt.Errorf("context cancelled waiting for feedback: %w", ctx.Err())
