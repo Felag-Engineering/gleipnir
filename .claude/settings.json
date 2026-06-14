@@ -6,6 +6,12 @@
         "hooks": [
           {
             "type": "command",
+            "command": "gofmt -w -s . && git add -u",
+            "timeout": 60,
+            "statusMessage": "Auto-formatting Go files (gofmt -w -s; matches CI Lint check)..."
+          },
+          {
+            "type": "command",
             "command": "go vet ./... && go build ./... && go test ./...",
             "timeout": 300,
             "statusMessage": "Running go vet, build, and tests..."
