@@ -40,11 +40,6 @@ const (
 	// material manifest change via POST /api/v1/admin/plugins/{id}/accept-manifest.
 	auditManifestAccepted = "plugin_manifest_accepted"
 
-	// auditManifestMaterialChange is the event type written by the install pipeline
-	// when a hot-reload introduces a material manifest change. AcceptManifest
-	// scans these to find the candidate awaiting admin approval.
-	auditManifestMaterialChange = "plugin_manifest_material_change"
-
 	// auditInstanceDeleted is emitted by DeleteInstance on success.
 	auditInstanceDeleted = "plugin_instance_deleted"
 
@@ -62,6 +57,10 @@ const (
 
 	// auditInstanceActivated is emitted when an admin re-activates an instance (#243).
 	auditInstanceActivated = "plugin_instance_activated"
+
+	// casConflictMsg is the standard 409 response body for CAS version conflicts.
+	// Consistent with the majority phrasing used elsewhere in the file.
+	casConflictMsg = "concurrent modification detected; retry"
 )
 
 // PluginQuerier is the narrow DB interface required by PluginHandler.
@@ -352,67 +351,27 @@ func (h *PluginHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 	pluginID := chi.URLParam(r, "id")
 	instanceID := chi.URLParam(r, "iid")
 
-	row, err := h.q.GetPluginInstanceByID(r.Context(), instanceID)
-	if errors.Is(err, ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
-		return
-	}
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
+	row, ok := h.resolveInstance(r.Context(), w, pluginID, instanceID)
+	if !ok {
 		return
 	}
 
-	// Return 404 (not 403) on a plugin/instance mismatch to avoid leaking
-	// instance existence across plugins.
-	if row.PluginID != pluginID {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
-		return
-	}
-
-	// Load the manifest to derive the set of secret properties for redaction.
-	// A second DB round-trip is consistent with PutInstanceConfig and
-	// PutSubscriptionScope, which both load the manifest on every request.
+	// Fetch the plugin once. Map ErrNotFound to 404 explicitly so the caller
+	// gets the expected status — writeInstanceResponseWithRedactionForPlugin
+	// maps any plugin-fetch error to 500, which is wrong for the missing-plugin
+	// case. Passing the already-fetched row to the inner variant avoids a second
+	// DB round-trip and the TOCTOU window that would exist if we fetched twice.
 	plugin, err := h.q.GetPluginByID(r.Context(), pluginID)
-	if errors.Is(err, ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
-		return
-	}
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		if errors.Is(err, ErrNotFound) {
+			httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+		} else {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		}
 		return
 	}
 
-	var m sdkmanifest.Manifest
-	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
-		// Fail-closed: we must not return unredacted config when we cannot
-		// determine which fields are secret (ADR-049 §6, ADR-001 posture).
-		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
-		return
-	}
-
-	secretNames, err := configvalidate.SecretPropertyNames(m.ConfigSchema)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse config schema", err.Error())
-		return
-	}
-
-	redactedConfig, err := configvalidate.RedactSecrets(row.ConfigJson, secretNames)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to redact config", err.Error())
-		return
-	}
-
-	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
-		ID:                    row.ID,
-		PluginID:              row.PluginID,
-		InstanceName:          row.InstanceName,
-		State:                 row.HealthState,
-		Detail:                row.HealthDetail,
-		Version:               row.Version,
-		UpdatedAt:             row.UpdatedAt,
-		SubscriptionScopeJson: row.SubscriptionScopeJson,
-		ConfigJson:            redactedConfig,
-	})
+	h.writeInstanceResponseWithRedactionForPlugin(w, plugin, row)
 }
 
 // acceptNewKeyRequest is the JSON body for POST /api/v1/admin/plugins/{id}/accept-new-key.
@@ -484,7 +443,7 @@ func (h *PluginHandler) AcceptNewKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if rows == 0 {
-		httputil.WriteError(w, http.StatusConflict, "concurrent modification detected; retry", "")
+		httputil.WriteError(w, http.StatusConflict, casConflictMsg, "")
 		return
 	}
 
@@ -569,7 +528,7 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if rows == 0 {
-		httputil.WriteError(w, http.StatusConflict, "concurrent modification detected; retry", "")
+		httputil.WriteError(w, http.StatusConflict, casConflictMsg, "")
 		return
 	}
 
@@ -695,19 +654,8 @@ func (h *PluginHandler) PutSubscriptionScope(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
-	if errors.Is(err, ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
-		return
-	}
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
-		return
-	}
-	// Return 404 (not 403) on a plugin/instance mismatch to avoid leaking
-	// instance existence across plugins.
-	if inst.PluginID != pluginID {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+	inst, ok := h.resolveInstance(ctx, w, pluginID, instanceID)
+	if !ok {
 		return
 	}
 
@@ -746,11 +694,7 @@ func (h *PluginHandler) PutSubscriptionScope(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if len(fieldErrs) > 0 {
-		issues := make([]httputil.ErrorIssue, 0, len(fieldErrs))
-		for _, fe := range fieldErrs {
-			issues = append(issues, httputil.ErrorIssue{Field: fe.Field, Message: fe.Message})
-		}
-		httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", issues)
+		httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", toErrorIssues(fieldErrs))
 		return
 	}
 
@@ -772,7 +716,7 @@ func (h *PluginHandler) PutSubscriptionScope(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if rows == 0 {
-		httputil.WriteError(w, http.StatusConflict, "version conflict", "")
+		httputil.WriteError(w, http.StatusConflict, casConflictMsg, "")
 		return
 	}
 
@@ -827,19 +771,8 @@ func (h *PluginHandler) PutInstanceConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
-	if errors.Is(err, ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
-		return
-	}
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
-		return
-	}
-	// Return 404 (not 403) on a plugin/instance mismatch to avoid leaking
-	// instance existence across plugins.
-	if inst.PluginID != pluginID {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+	inst, ok := h.resolveInstance(ctx, w, pluginID, instanceID)
+	if !ok {
 		return
 	}
 
@@ -884,11 +817,7 @@ func (h *PluginHandler) PutInstanceConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if len(fieldErrs) > 0 {
-		issues := make([]httputil.ErrorIssue, 0, len(fieldErrs))
-		for _, fe := range fieldErrs {
-			issues = append(issues, httputil.ErrorIssue{Field: fe.Field, Message: fe.Message})
-		}
-		httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", issues)
+		httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", toErrorIssues(fieldErrs))
 		return
 	}
 
@@ -925,7 +854,7 @@ func (h *PluginHandler) PutInstanceConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if rows == 0 {
-		httputil.WriteError(w, http.StatusConflict, "version conflict", "")
+		httputil.WriteError(w, http.StatusConflict, casConflictMsg, "")
 		return
 	}
 
@@ -1018,19 +947,8 @@ func (h *PluginHandler) PutInstanceConfigProperty(w http.ResponseWriter, r *http
 		return
 	}
 
-	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
-	if errors.Is(err, ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
-		return
-	}
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
-		return
-	}
-	// Return 404 (not 403) on a plugin/instance mismatch to avoid leaking
-	// instance existence across plugins.
-	if inst.PluginID != pluginID {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+	inst, ok := h.resolveInstance(ctx, w, pluginID, instanceID)
+	if !ok {
 		return
 	}
 
@@ -1098,11 +1016,7 @@ func (h *PluginHandler) PutInstanceConfigProperty(w http.ResponseWriter, r *http
 		return
 	}
 	if len(fieldErrs) > 0 {
-		issues := make([]httputil.ErrorIssue, 0, len(fieldErrs))
-		for _, fe := range fieldErrs {
-			issues = append(issues, httputil.ErrorIssue{Field: fe.Field, Message: fe.Message})
-		}
-		httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", issues)
+		httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", toErrorIssues(fieldErrs))
 		return
 	}
 
@@ -1124,7 +1038,7 @@ func (h *PluginHandler) PutInstanceConfigProperty(w http.ResponseWriter, r *http
 		return
 	}
 	if rows == 0 {
-		httputil.WriteError(w, http.StatusConflict, "version conflict", "")
+		httputil.WriteError(w, http.StatusConflict, casConflictMsg, "")
 		return
 	}
 
@@ -1286,6 +1200,54 @@ func (h *PluginHandler) advanceInstanceReadiness(ctx context.Context, inst db.Pl
 	}
 }
 
+// resolveInstance fetches the instance row for instanceID and verifies that it
+// belongs to pluginID. On any error it writes the appropriate HTTP response and
+// returns false, so callers can early-return. This is the instance-first variant
+// (GetInstance, PutSubscriptionScope, PutInstanceConfig, PutInstanceConfigProperty);
+// the plugin-first handlers (Deactivate/Activate/DeleteInstance) are left
+// unchanged because they emit a distinct "plugin not found" 404 first.
+func (h *PluginHandler) resolveInstance(ctx context.Context, w http.ResponseWriter, pluginID, instanceID string) (db.PluginInstance, bool) {
+	row, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if errors.Is(err, ErrNotFound) {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return db.PluginInstance{}, false
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
+		return db.PluginInstance{}, false
+	}
+	// Return 404 (not 403) on a plugin/instance mismatch to avoid leaking
+	// instance existence across plugins.
+	if row.PluginID != pluginID {
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+		return db.PluginInstance{}, false
+	}
+	return row, true
+}
+
+// toErrorIssues converts a slice of configvalidate.FieldError values into the
+// httputil.ErrorIssue slice expected by WriteValidationError. The three
+// schema-validation sites (subscription scope, instance config bulk, instance
+// config per-property) all produce identical loops; this helper collapses them.
+func toErrorIssues(fes []configvalidate.FieldError) []httputil.ErrorIssue {
+	out := make([]httputil.ErrorIssue, 0, len(fes))
+	for _, fe := range fes {
+		out = append(out, httputil.ErrorIssue{Field: fe.Field, Message: fe.Message})
+	}
+	return out
+}
+
+// joinNames returns a comma-separated string of names extracted from a slice
+// via the provided accessor. Used by deletion guards that need to format a
+// human-readable list of blocking dependents.
+func joinNames[T any](items []T, name func(T) string) string {
+	names := make([]string, len(items))
+	for i, item := range items {
+		names[i] = name(item)
+	}
+	return strings.Join(names, ", ")
+}
+
 // writeAuditEvent inserts a plugin-level audit row (PluginInstanceID = nil) with
 // the calling user as actor when one is on the request context. Failures are
 // logged but not surfaced — the upstream DB change has already committed.
@@ -1309,9 +1271,9 @@ func (h *PluginHandler) writeAuditEvent(ctx context.Context, eventType, severity
 	}
 }
 
-// writeInstanceResponseWithRedaction loads the manifest for pluginID, derives
-// secret property names, redacts configJSON, and writes a 200 instanceResponse
-// to w. On manifest parse or redaction failure it writes a 500 and returns false.
+// writeInstanceResponseWithRedaction loads the manifest for pluginID (via a DB
+// fetch), derives secret property names, redacts configJSON, and writes a 200
+// instanceResponse to w. On any error it writes a 500 and returns false.
 // Callers should return immediately when this returns false.
 func (h *PluginHandler) writeInstanceResponseWithRedaction(
 	ctx context.Context,
@@ -1324,7 +1286,18 @@ func (h *PluginHandler) writeInstanceResponseWithRedaction(
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
 		return false
 	}
+	return h.writeInstanceResponseWithRedactionForPlugin(w, plugin, inst)
+}
 
+// writeInstanceResponseWithRedactionForPlugin is the inner variant that accepts
+// an already-fetched db.Plugin row. This lets callers that already hold the
+// plugin (e.g. GetInstance) avoid a second DB round-trip and the TOCTOU window
+// that would otherwise exist between the fetch and the response write.
+func (h *PluginHandler) writeInstanceResponseWithRedactionForPlugin(
+	w http.ResponseWriter,
+	plugin db.Plugin,
+	inst db.PluginInstance,
+) bool {
 	var m sdkmanifest.Manifest
 	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
 		// Fail-closed: we must not return unredacted config (ADR-049, ADR-001).
@@ -1846,12 +1819,8 @@ func (h *PluginHandler) DeleteInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(policyRefs) > 0 {
-		names := make([]string, len(policyRefs))
-		for i, ref := range policyRefs {
-			names[i] = ref.Name
-		}
 		httputil.WriteError(w, http.StatusConflict, "instance is referenced by policies",
-			strings.Join(names, ", "))
+			joinNames(policyRefs, func(r policy.ToolPolicyRef) string { return r.Name }))
 		return
 	}
 
@@ -2002,13 +1971,9 @@ func (h *PluginHandler) Uninstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(instances) > 0 {
-		names := make([]string, len(instances))
-		for i, inst := range instances {
-			names[i] = inst.InstanceName
-		}
 		httputil.WriteError(w, http.StatusConflict,
 			"all instances must be removed before uninstalling the plugin",
-			strings.Join(names, ", "))
+			joinNames(instances, func(inst db.PluginInstance) string { return inst.InstanceName }))
 		return
 	}
 

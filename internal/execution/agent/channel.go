@@ -26,18 +26,6 @@ type inAppResponse struct {
 	text string
 }
 
-// channel is the internal service contract that each feedback channel must
-// satisfy. It mirrors the plugin-spec §4.2 ChannelService surface so that
-// #178/#179 can plug in alternative implementations without touching
-// FeedbackHandler.
-type channel interface {
-	// Notify sends a fire-and-forget notification (no operator response expected).
-	Notify(ctx context.Context, req notifyRequest) error
-
-	// Request suspends the run and waits for an operator response.
-	Request(ctx context.Context, req feedbackRequest) (string, error)
-}
-
 // notifyRequest carries the arguments for a one-way notification.
 type notifyRequest struct {
 	RunID   string
@@ -53,26 +41,6 @@ type feedbackRequest struct {
 	Message       string
 	Timeout       time.Duration
 	ExpiresAt     string
-}
-
-// channelDispatcher routes feedback calls to the configured channel
-// implementation. Today every call goes to the single hard-wired in-app
-// implementation; future routing (#178+) will pick a channel by policy
-// audience without touching FeedbackHandler.
-type channelDispatcher struct {
-	inApp channel
-}
-
-func newChannelDispatcher(inApp channel) *channelDispatcher {
-	return &channelDispatcher{inApp: inApp}
-}
-
-func (d *channelDispatcher) Notify(ctx context.Context, req notifyRequest) error {
-	return d.inApp.Notify(ctx, req)
-}
-
-func (d *channelDispatcher) Request(ctx context.Context, req feedbackRequest) (string, error) {
-	return d.inApp.Request(ctx, req)
 }
 
 // inAppChannel is the in-process feedback channel implementation. It stores

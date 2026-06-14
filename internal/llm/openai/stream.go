@@ -30,8 +30,6 @@ func consumeStream(
 
 	// Track per-item tool call argument accumulation, keyed by item_id.
 	type partialCall struct {
-		id   string // call_id for FunctionCallOutput
-		name string
 		args strings.Builder
 	}
 	partials := map[string]*partialCall{}

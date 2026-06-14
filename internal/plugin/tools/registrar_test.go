@@ -2,9 +2,7 @@ package tools_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -16,26 +14,6 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/testutil"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
 )
-
-// capturePublisher records published events for assertion.
-type capturePublisher struct {
-	mu     sync.Mutex
-	events []string
-}
-
-func (p *capturePublisher) Publish(eventType string, _ json.RawMessage) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.events = append(p.events, eventType)
-}
-
-func (p *capturePublisher) all() []string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	out := make([]string, len(p.events))
-	copy(out, p.events)
-	return out
-}
 
 // seedInstance inserts a plugin + plugin_instance row and returns the instance ID.
 // Mirrors the helper in internal/plugin/state/pluginstate_test.go.
