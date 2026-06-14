@@ -18,10 +18,10 @@ import (
 // stubRegistry is a test double for registryResolver. It records the grants
 // it was called with and returns pre-canned results or errors.
 type stubRegistry struct {
-	called bool
+	called   bool
 	gotTools []model.ToolCapability
-	tools  []mcp.ResolvedTool
-	err    error
+	tools    []mcp.ResolvedTool
+	err      error
 }
 
 func (s *stubRegistry) ResolveForPolicy(_ context.Context, p *model.ParsedPolicy) ([]mcp.ResolvedTool, error) {
@@ -204,4 +204,3 @@ func TestDefaultToolResolver_PluginResolveError(t *testing.T) {
 		t.Errorf("error chain does not wrap plugErr: %v", err)
 	}
 }
-
