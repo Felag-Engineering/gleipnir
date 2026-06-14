@@ -222,35 +222,24 @@ func (h *ApprovalHandler) Wait(ctx context.Context, runID string, entry resolved
 		logctx.Logger(ctx).WarnContext(ctx, "approval timeout reached",
 			"tool", internalName,
 			"timeout", entry.tool.Timeout.String())
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		// Race the scanner: only the first writer (rows==1) owns the error step.
-		// If the scanner already resolved it (rows==0), return a sentinel error so
-		// Run() still terminates, but skip logAuditError to avoid a duplicate step.
-		rows, dbErr := h.sm.Queries().UpdateApprovalRequestStatus(
-			context.Background(),
-			db.UpdateApprovalRequestStatusParams{
-				Status:    string(model.ApprovalStatusTimeout),
-				DecidedAt: &now,
-				Note:      nil,
-				ID:        approvalID,
+		// Race the timeout scanner for the pending row (#505): claimRequestTimeout
+		// owns the rows==1/rows==0 branch and the error-step write.
+		return claimRequestTimeout(ctx, h.audit, timeoutClaim{
+			name:      "approval",
+			runID:     runID,
+			requestID: approvalID,
+			claim: func(dbCtx context.Context, now string) (int64, error) {
+				return h.sm.Queries().UpdateApprovalRequestStatus(dbCtx, db.UpdateApprovalRequestStatusParams{
+					Status:    string(model.ApprovalStatusTimeout),
+					DecidedAt: &now,
+					Note:      nil,
+					ID:        approvalID,
+				})
 			},
-		)
-		if dbErr != nil {
-			logctx.Logger(ctx).WarnContext(ctx, "failed to update approval status on timeout", "approval_id", approvalID, "err", dbErr)
-		}
-		if rows == 1 {
-			err := fmt.Errorf("approval timeout for tool %s", internalName)
-			logAuditError(ctx, h.audit, Step{
-				RunID:   runID,
-				Type:    model.StepTypeError,
-				Content: model.ErrorStepContent{Message: err.Error(), Code: model.ErrorCodeApprovalRejected},
-			})
-			return err
-		}
-		// Scanner won the race: it already wrote the error step and transitioned
-		// the run. Return a sentinel so Run() knows to stop, but avoid a duplicate step.
-		logctx.Logger(ctx).DebugContext(ctx, "approval already resolved by scanner", "approval_id", approvalID)
-		return fmt.Errorf("approval timeout for tool %s: already resolved by scanner", internalName)
+			errorCode:   model.ErrorCodeApprovalRejected,
+			wonMessage:  fmt.Sprintf("approval timeout for tool %s", internalName),
+			lostMessage: fmt.Sprintf("approval timeout for tool %s: already resolved by scanner", internalName),
+		})
 	case <-ctx.Done():
 		return fmt.Errorf("context cancelled waiting for approval: %w", ctx.Err())
 	}
