@@ -241,7 +241,7 @@ func TestPoller_CheckMatchFires(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           pollerFactory(),
 		Publisher:              nil,
@@ -278,7 +278,7 @@ func TestPoller_CheckNoMatchNoRun(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           pollerFactory(),
 		Publisher:              nil,
@@ -323,7 +323,7 @@ func TestPoller_MatchAny_OnePassFires(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           pollerFactory(),
 		Publisher:              nil,
@@ -382,7 +382,7 @@ agent:
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           pollerFactory(),
 		Publisher:              nil,
@@ -426,7 +426,7 @@ func TestPoller_ToolErrorTreatedAsNotPassed(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           pollerFactory(),
 		Publisher:              nil,
@@ -472,7 +472,7 @@ func TestPoller_ConcurrencySkip(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           pollerFactory(),
 		Publisher:              nil,
@@ -515,7 +515,7 @@ func TestPoller_GracefulShutdown(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           pollerFactory(),
 		Publisher:              nil,
@@ -563,7 +563,7 @@ func TestPoller_Stop_DoesNotDeadlock(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                run.NewRunManager(),
 		AgentFactory:           pollerFactory(),
 		Publisher:              nil,
@@ -679,7 +679,7 @@ func TestPoller_CheckTimeout_CancelsCallTool(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           pollerFactory(),
 		Publisher:              nil,
@@ -743,7 +743,7 @@ func TestPoller_SkipsLoop_WhenNoSystemDefaultAndNoModelInYAML(t *testing.T) {
 	noDefault := newTestSettings("", "")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           pollerFactory(),
 		Publisher:              nil,

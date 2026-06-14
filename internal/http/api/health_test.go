@@ -41,7 +41,7 @@ func buildHealthTestRouter(t *testing.T, sigDisabled bool) http.Handler {
 	systemSettings := settings.NewService(store.Queries())
 	adminHandler := admin.NewHandler(adminQuerier, systemSettings, nil, []string{"anthropic"}, nil, nil, nil)
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
-		Store: store, Registry: registry, Manager: runManager,
+		Store: store, Resolver: run.NewDefaultToolResolver(registry, nil, nil), Manager: runManager,
 		AgentFactory: run.NewAgentFactory(providerRegistry), Publisher: broadcaster,
 		DefaultFeedbackTimeout: 30 * time.Minute, ModelResolver: systemSettings,
 	})

@@ -105,51 +105,14 @@ func New(cfg Config) (*BoundAgent, error) {
 	}
 
 	// Derive dispatch-side entries and snapshot-side granted tools from plugin
-	// tool configs in a single pass (plan decision (f)).
-	pluginGrantedTools := make([]model.GrantedTool, 0, len(cfg.PluginTools))
-	for _, pt := range cfg.PluginTools {
-		dotName := pt.InstanceName + "." + pt.ToolName
-
-		schemaJSON, err := json.Marshal(pt.Schema)
-		if err != nil {
-			return nil, fmt.Errorf("marshaling schema for plugin tool %s: %w", dotName, err)
-		}
-
-		// Apply policy-level parameter scoping (ADR-017) to plugin tools, exactly
-		// as buildResolvedToolMap does for MCP tools. narrowedSchema feeds the LLM;
-		// InputSchema is the raw schema of record.
-		narrowed, err := mcp.NarrowSchema(schemaJSON, pt.Params)
-		if err != nil {
-			return nil, fmt.Errorf("narrowing schema for plugin tool %s: %w", dotName, err)
-		}
-
-		toolsByName[dotName] = resolvedToolEntry{
-			tool: mcp.ResolvedTool{
-				GrantedTool: model.GrantedTool{
-					ServerName: "", // no MCP server; plugin dispatch is via pluginSource
-					ToolName:   pt.ToolName,
-					Approval:   pt.Approval,
-					Timeout:    pt.Timeout,
-					Params:     pt.Params,
-				},
-				Client:      nil, // real dispatch wired in #198
-				Description: pt.Description,
-				InputSchema: schemaJSON,
-			},
-			narrowedSchema: narrowed,
-			pluginSource: &pluginToolSource{
-				InstanceName: pt.InstanceName,
-				Generation:   pt.Generation,
-			},
-		}
-
-		pluginGrantedTools = append(pluginGrantedTools, model.GrantedTool{
-			ServerName: "",
-			ToolName:   pt.ToolName,
-			Approval:   pt.Approval,
-			Params:     pt.Params,
-			Source:     sourceString(toolsByName[dotName]),
-		})
+	// tool configs in a single pass (plan decision (f)). buildPluginToolEntries
+	// is the single place that produces both structures so they stay in sync.
+	pluginEntries, pluginGrantedTools, err := buildPluginToolEntries(cfg.PluginTools)
+	if err != nil {
+		return nil, err
+	}
+	for dotName, entry := range pluginEntries {
+		toolsByName[dotName] = entry
 	}
 
 	var approvalOpts []ApprovalHandlerOption
@@ -493,26 +456,9 @@ func (a *BoundAgent) Run(ctx context.Context, runID string, triggerPayload strin
 		return fmt.Errorf("transitioning run to running: %w", err)
 	}
 
-	// Extract granted tools for system prompt rendering, populating the Source
-	// field so the capability snapshot identifies each tool's origin.
-	grantedTools := make([]model.GrantedTool, len(a.tools))
-	for i, rt := range a.tools {
-		gt := rt.GrantedTool // copy: GrantedTool is a value type
-		gt.Source = sourceString(resolvedToolEntry{tool: rt})
-		grantedTools[i] = gt
-	}
-	// Include the synthetic ask_operator tool in the capability snapshot when
-	// feedback is enabled, so the audit trail reflects the full set of tools
-	// available to the agent at run start. Source is intentionally empty for
-	// synthetic tools (they have no MCP server or plugin instance).
-	if a.policy.Capabilities.Feedback.Enabled {
-		grantedTools = append(grantedTools, model.GrantedTool{
-			ServerName: "gleipnir",
-			ToolName:   "ask_operator",
-		})
-	}
-	// Append plugin-source tools; their Source strings were set at New() time.
-	grantedTools = append(grantedTools, a.pluginGrantedTools...)
+	// Assemble the ordered granted-tool list for the capability snapshot and
+	// system prompt. Ordering: MCP → synthetic gleipnir.ask_operator → plugin.
+	grantedTools := buildCapabilitySnapshotTools(a.tools, a.pluginGrantedTools, a.policy.Capabilities.Feedback.Enabled)
 
 	// Render system prompt (ADR-001: only granted tools are visible to the agent).
 	systemPrompt := policy.RenderSystemPrompt(a.policy, grantedTools, time.Now().UTC())

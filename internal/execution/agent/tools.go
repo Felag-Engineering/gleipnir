@@ -8,6 +8,7 @@ import (
 
 	"github.com/felag-engineering/gleipnir/internal/llm"
 	"github.com/felag-engineering/gleipnir/internal/mcp"
+	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
 // pluginToolSource identifies the plugin instance and generation captured at run
@@ -58,6 +59,94 @@ func buildResolvedToolMap(tools []mcp.ResolvedTool) (map[string]resolvedToolEntr
 	return toolsByName, nil
 }
 
+// buildPluginToolEntries produces the dispatch-side map entries and the
+// snapshot-side granted-tool slice from a single pass over the plugin tool
+// configs. New() calls it once and merges the returned map into toolsByName,
+// keeping both structures derived from the same source (plan decision (f)).
+//
+// Panics are intentionally NOT in this helper — they live in New() as a gate
+// on PluginRegistrar/PluginDispatcher, before this function is called.
+func buildPluginToolEntries(pts []PluginToolEntry) (map[string]resolvedToolEntry, []model.GrantedTool, error) {
+	entries := make(map[string]resolvedToolEntry, len(pts))
+	granted := make([]model.GrantedTool, 0, len(pts))
+
+	for _, pt := range pts {
+		dotName := pt.InstanceName + "." + pt.ToolName
+
+		schemaJSON, err := json.Marshal(pt.Schema)
+		if err != nil {
+			return nil, nil, fmt.Errorf("marshaling schema for plugin tool %s: %w", dotName, err)
+		}
+
+		// Apply policy-level parameter scoping (ADR-017) to plugin tools, exactly
+		// as buildResolvedToolMap does for MCP tools.
+		narrowed, err := mcp.NarrowSchema(schemaJSON, pt.Params)
+		if err != nil {
+			return nil, nil, fmt.Errorf("narrowing schema for plugin tool %s: %w", dotName, err)
+		}
+
+		entry := resolvedToolEntry{
+			tool: mcp.ResolvedTool{
+				GrantedTool: model.GrantedTool{
+					ServerName: "", // no MCP server; plugin dispatch is via pluginSource
+					ToolName:   pt.ToolName,
+					Approval:   pt.Approval,
+					Timeout:    pt.Timeout,
+					Params:     pt.Params,
+				},
+				Client:      nil, // real dispatch wired in #198
+				Description: pt.Description,
+				InputSchema: schemaJSON,
+			},
+			narrowedSchema: narrowed,
+			pluginSource: &pluginToolSource{
+				InstanceName: pt.InstanceName,
+				Generation:   pt.Generation,
+			},
+		}
+		entries[dotName] = entry
+
+		granted = append(granted, model.GrantedTool{
+			ServerName: "",
+			ToolName:   pt.ToolName,
+			Approval:   pt.Approval,
+			Params:     pt.Params,
+			Source:     sourceString(entry),
+		})
+	}
+
+	return entries, granted, nil
+}
+
+// buildCapabilitySnapshotTools assembles the ordered list of granted tools for
+// the ADR-018 capability snapshot. Ordering is MCP tools → synthetic
+// gleipnir.ask_operator (when feedback is enabled) → plugin tools.
+//
+// pluginGranted carries Source strings already set at New() time (via
+// buildPluginToolEntries), so they pass through unchanged. MCP tool Source
+// strings are computed here via sourceString.
+func buildCapabilitySnapshotTools(tools []mcp.ResolvedTool, pluginGranted []model.GrantedTool, feedbackEnabled bool) []model.GrantedTool {
+	out := make([]model.GrantedTool, len(tools), len(tools)+len(pluginGranted))
+	for i, rt := range tools {
+		gt := rt.GrantedTool // copy: GrantedTool is a value type
+		gt.Source = sourceString(resolvedToolEntry{tool: rt})
+		out[i] = gt
+	}
+	// Include the synthetic ask_operator tool in the capability snapshot when
+	// feedback is enabled, so the audit trail reflects the full set of tools
+	// available to the agent at run start. Source is intentionally empty for
+	// synthetic tools (they have no MCP server or plugin instance).
+	if feedbackEnabled {
+		out = append(out, model.GrantedTool{
+			ServerName: "gleipnir",
+			ToolName:   "ask_operator",
+		})
+	}
+	// Append plugin-source tools; their Source strings were set at New() time.
+	out = append(out, pluginGranted...)
+	return out
+}
+
 // checkCapabilities verifies every capability reference in the policy resolves
 // to a tool registered at BoundAgent construction time. Called at the start of
 // Run(), before the pending→running transition, so a run with unresolvable
@@ -73,7 +162,7 @@ func (a *BoundAgent) checkCapabilities() error {
 	// check. A plugin tool that fails namespace reservation never reaches toolsByName.
 	for _, t := range a.policy.Capabilities.Tools {
 		if _, ok := a.toolsByName[t.Tool]; !ok {
-			return fmt.Errorf("capability '%s' not found in MCP registry — verify the MCP server is registered and the tool exists", t.Tool)
+			return fmt.Errorf("capability %q is not a registered tool — verify the MCP server or plugin providing it is installed and the tool exists", t.Tool)
 		}
 	}
 	return nil

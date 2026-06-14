@@ -39,7 +39,7 @@ func setupNotifyPollerFixture(t *testing.T) (*db.Store, *Poller) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           notifyPollerFactory(),
 		Publisher:              nil,
@@ -185,7 +185,7 @@ func setupNotifySchedulerFixture(t *testing.T) (*db.Store, *Scheduler) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                manager,
 		AgentFactory:           notifyPollerFactory(),
 		Publisher:              nil,

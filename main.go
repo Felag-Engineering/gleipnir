@@ -253,14 +253,12 @@ func run(cfg config.Config) error {
 
 	launcher := runpkg.NewRunLauncher(runpkg.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               runpkg.NewDefaultToolResolver(registry, toolClassifier, pluginResolver),
 		Manager:                runManager,
 		AgentFactory:           runpkg.NewAgentFactory(providerRegistry),
 		Publisher:              broadcaster,
 		DefaultFeedbackTimeout: cfg.DefaultFeedbackTimeout,
 		ModelResolver:          systemSettings,
-		PluginResolver:         pluginResolver,
-		ToolClassifier:         toolClassifier,
 		PluginRegistrar:        pluginRegistrar,
 		PluginDispatcher:       dispatchAdapter,
 		ApprovalDispatcher:     approvalAdapter,

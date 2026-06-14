@@ -212,7 +212,7 @@ func TestManualTriggerHandler(t *testing.T) {
 			resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 			launcher := run.NewRunLauncher(run.RunLauncherConfig{
 				Store:                  store,
-				Registry:               registry,
+				Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 				Manager:                run.NewRunManager(),
 				AgentFactory:           run.NewAgentFactory(providerReg),
 				Publisher:              nil,
@@ -240,7 +240,7 @@ func TestManualTriggerHandler_RunCreatedInDB(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                run.NewRunManager(),
 		AgentFactory:           run.NewAgentFactory(providerReg),
 		Publisher:              nil,
@@ -304,7 +304,7 @@ func TestManualTriggerHandler_LaunchFailureSurfacesDetailAndRunID(t *testing.T) 
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                run.NewRunManager(),
 		AgentFactory:           run.NewAgentFactory(providerReg),
 		Publisher:              nil,
@@ -371,7 +371,7 @@ func TestManualTriggerHandler_EmptyBody(t *testing.T) {
 	resolver := newTestSettings("anthropic", "claude-sonnet-4-6")
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
-		Registry:               registry,
+		Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
 		Manager:                run.NewRunManager(),
 		AgentFactory:           run.NewAgentFactory(providerReg),
 		Publisher:              nil,
