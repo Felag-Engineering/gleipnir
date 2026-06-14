@@ -33,11 +33,17 @@ type streamOptions struct {
 //   - system/user/assistant with text only: Content is a string.
 //   - assistant with tool calls and no text: Content is nil (JSON null).
 //   - tool: Content is a string; ToolCallID is set.
+//
+// ReasoningContent is the chain-of-thought field emitted by reasoning-capable
+// OpenAI-compatible backends (LM Studio, Ollama ≥0.5, vLLM, llama.cpp). It is
+// present only in responses — the Chat Completions API has no round-trip for it
+// in the request direction, so it is never set when building outbound messages.
 type chatMessage struct {
-	Role       string         `json:"role"`
-	Content    *string        `json:"content"` // pointer so we can emit JSON null
-	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
+	Role             string         `json:"role"`
+	Content          *string        `json:"content"` // pointer so we can emit JSON null
+	ReasoningContent *string        `json:"reasoning_content,omitempty"`
+	ToolCalls        []chatToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string         `json:"tool_call_id,omitempty"`
 }
 
 type chatToolCall struct {
@@ -116,8 +122,9 @@ type streamChoice struct {
 }
 
 type streamDelta struct {
-	Content   *string              `json:"content,omitempty"`
-	ToolCalls []streamToolCallPart `json:"tool_calls,omitempty"`
+	Content          *string              `json:"content,omitempty"`
+	ReasoningContent *string              `json:"reasoning_content,omitempty"`
+	ToolCalls        []streamToolCallPart `json:"tool_calls,omitempty"`
 }
 
 type streamToolCallPart struct {

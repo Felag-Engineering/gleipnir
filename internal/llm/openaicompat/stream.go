@@ -14,17 +14,23 @@ import (
 
 // parseSSEStream reads OpenAI Chat Completions SSE from body and emits
 // llm.MessageChunk values on out. The channel is always closed exactly once.
-// Text deltas are emitted as they arrive; tool calls are buffered per
-// delta.index and emitted as complete blocks when the stream's
-// finish_reason arrives. The `names` mapping reverses sanitized wire-format
-// tool names back to the original Gleipnir names when flushing tool calls;
-// pass an empty mapping to disable rewriting.
+// Text deltas are emitted as they arrive; reasoning_content deltas from
+// thinking-capable backends (LM Studio, Ollama ≥0.5, vLLM, llama.cpp) are
+// emitted as Thinking chunks immediately before any Content chunk in the same
+// delta — reasoning precedes the answer. Tool calls are buffered per
+// delta.index and emitted as complete blocks when the stream's finish_reason
+// arrives. The `names` mapping reverses sanitized wire-format tool names back
+// to the original Gleipnir names when flushing tool calls; pass an empty
+// mapping to disable rewriting.
+//
+// providerName is the admin-registered backend name (from ProviderWire.ProviderName)
+// and is used as ThinkingBlock.Provider on emitted Thinking chunks.
 //
 // Error handling: any parse or I/O error emits a final MessageChunk{Err: err}
 // and closes the channel. Context cancellation emits {Err: ctx.Err()} and
 // closes the channel. A stream that ends without a [DONE] terminator is
 // treated as an error.
-func parseSSEStream(ctx context.Context, body io.ReadCloser, out chan<- llm.MessageChunk, names llm.ToolNameMapping) {
+func parseSSEStream(ctx context.Context, body io.ReadCloser, out chan<- llm.MessageChunk, names llm.ToolNameMapping, providerName string) {
 	defer close(out)
 	defer body.Close()
 
@@ -87,6 +93,13 @@ func parseSSEStream(ctx context.Context, body io.ReadCloser, out chan<- llm.Mess
 		}
 
 		for _, choice := range chunk.Choices {
+			// Emit reasoning_content before content so that when one delta carries
+			// both fields the thinking chunk precedes the text chunk — reasoning
+			// precedes the answer, and each chunk carries at most one content field.
+			if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
+				thinking := *choice.Delta.ReasoningContent
+				out <- llm.MessageChunk{Thinking: &llm.ThinkingBlock{Provider: providerName, Text: thinking, Redacted: false}}
+			}
 			if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 				text := *choice.Delta.Content
 				out <- llm.MessageChunk{Text: &text}

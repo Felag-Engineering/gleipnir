@@ -171,7 +171,10 @@ func translateUserTurn(blocks []llm.ContentBlock) []chatMessage {
 // through unchanged (used by tests that don't exercise tool calls). Returns
 // an error only on malformed tool call arguments — all other abnormalities
 // (unknown finish reasons, missing usage details) degrade gracefully.
-func ParseChatCompletionResponse(wire *chatResponse, names llm.ToolNameMapping) (*llm.MessageResponse, error) {
+//
+// providerName is the admin-registered backend name (from ProviderWire.ProviderName)
+// and is used as ThinkingBlock.Provider when reasoning_content is surfaced.
+func ParseChatCompletionResponse(wire *chatResponse, names llm.ToolNameMapping, providerName string) (*llm.MessageResponse, error) {
 	out := &llm.MessageResponse{}
 	if len(wire.Choices) == 0 {
 		return out, nil
@@ -186,6 +189,17 @@ func ParseChatCompletionResponse(wire *chatResponse, names llm.ToolNameMapping) 
 	// having to filter blank thought steps.
 	if choice.Message.Content != nil && strings.TrimSpace(*choice.Message.Content) != "" {
 		out.Text = []llm.TextBlock{{Text: *choice.Message.Content}}
+	}
+
+	// reasoning_content is emitted by thinking-capable OpenAI-compatible backends
+	// (LM Studio, Ollama ≥0.5, vLLM, llama.cpp). Apply the same whitespace guard
+	// as Content above — some backends emit "\n" even when there is no real reasoning.
+	if choice.Message.ReasoningContent != nil && strings.TrimSpace(*choice.Message.ReasoningContent) != "" {
+		out.Thinking = append(out.Thinking, llm.ThinkingBlock{
+			Provider: providerName,
+			Text:     *choice.Message.ReasoningContent,
+			Redacted: false,
+		})
 	}
 
 	for _, tc := range choice.Message.ToolCalls {
@@ -226,9 +240,10 @@ func ParseChatCompletionResponse(wire *chatResponse, names llm.ToolNameMapping) 
 		}
 	}
 
-	// Thinking is always nil for OpenAI — reasoning content is not surfaced
-	// by the Chat Completions endpoint. See ADR-032 §2 ("Why Chat Completions
-	// only, not the Responses API").
+	// reasoning_content from OpenAI-compatible backends is surfaced as
+	// ThinkingBlocks above. The official OpenAI Chat Completions endpoint simply
+	// never sends the field, so official OpenAI calls produce zero ThinkingBlocks
+	// here — ADR-032 §2 ("Why Chat Completions only") is unaffected.
 	return out, nil
 }
 
