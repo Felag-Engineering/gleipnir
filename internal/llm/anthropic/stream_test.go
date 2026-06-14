@@ -34,16 +34,6 @@ func (f *fakeStream) Current() anthropic.MessageStreamEventUnion {
 
 func (f *fakeStream) Err() error { return f.err }
 
-// unmarshalEvent decodes a raw JSON string into a MessageStreamEventUnion.
-func unmarshalEvent(t *testing.T, raw string) anthropic.MessageStreamEventUnion {
-	t.Helper()
-	var evt anthropic.MessageStreamEventUnion
-	if err := json.Unmarshal([]byte(raw), &evt); err != nil {
-		t.Fatalf("unmarshalEvent: %v", err)
-	}
-	return evt
-}
-
 // makeMessageStartEvent builds a message_start event with the given input token count.
 func makeMessageStartEvent(inputTokens int) anthropic.MessageStreamEventUnion {
 	raw := fmt.Sprintf(`{"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022","stop_reason":null,"usage":{"input_tokens":%d,"output_tokens":0}}}`, inputTokens)

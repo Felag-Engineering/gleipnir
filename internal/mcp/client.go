@@ -161,11 +161,6 @@ func NewClient(serverURL string, opts ...ClientOption) *Client {
 	return c
 }
 
-// initializeResult holds the fields we care about from the MCP initialize response.
-type initializeResult struct {
-	ProtocolVersion string `json:"protocolVersion"`
-}
-
 // initialize performs the MCP handshake and returns the session ID assigned by
 // the server. Callers must include this ID as "Mcp-Session-Id" on all
 // subsequent requests to the same server.

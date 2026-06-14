@@ -1411,23 +1411,6 @@ func TestRun_ToolResultTimestamp(t *testing.T) {
 	}
 }
 
-// makeApprovalTool builds a ResolvedTool with the given approval settings,
-// pointing at the provided server URL.
-func makeApprovalTool(serverURL, serverName, toolName string, approval model.ApprovalMode, timeout time.Duration, onTimeout model.OnTimeout) mcp.ResolvedTool {
-	return mcp.ResolvedTool{
-		GrantedTool: model.GrantedTool{
-			ServerName: serverName,
-			ToolName:   toolName,
-			Approval:   approval,
-			Timeout:    timeout,
-			OnTimeout:  onTimeout,
-		},
-		Client:      mcp.NewClient(serverURL),
-		Description: "a world-affecting tool",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-	}
-}
-
 // makeAgentWithTools is a helper that builds a BoundAgent for a running run with
 // the given tools. The SM is initialised at RunStatusRunning to skip the
 // pending→running transition (which Run() owns).

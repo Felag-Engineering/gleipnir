@@ -23,7 +23,6 @@ import (
 // ── fakes ────────────────────────────────────────────────────────────────────
 
 type fakeQuerier struct {
-	mu        sync.Mutex
 	policies  []db.Policy
 	polErr    error
 	instances map[string]db.PluginInstance // id → instance
