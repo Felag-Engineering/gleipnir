@@ -65,10 +65,80 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-048 | Subscribed trigger type — internal-only name, flat picker, no JSONPath for plugin bindings, single-trigger-per-policy v1 | 🟢 Decided | v2.0 (plugins) | internal/model (TriggerType), internal/policy (parser/validator), internal/trigger (new subscribed handler), policy editor trigger picker, spec §7 |
 | ADR-049 | Redact-on-read for plugin instance config secret fields (x-gleipnir-secret) | 🟢 Decided | plugins | internal/plugin/configvalidate, internal/admin/plugin_handler, plugin-sdk/manifest, plugins/slack |
 | ADR-050 | Ergonomic Service seam coexists with raw gRPC seam in plugin-sdk (amended #495: ergonomic trigger emit routes through canonical EmitEvent, not StartResponse) | 🟢 Decided | plugins | plugin-sdk/tool, plugin-sdk/channel, plugin-sdk/trigger, plugin-sdk/pluginerr (new packages); plugin-sdk/serve (New*Server constructors, WithXHandler options); plugins/ntfy (migrated); plugins/slack (stays raw) |
+| ADR-051 | Three plugin dispatchers are deliberately separate (tool-call pool, channel Notify/Request, trigger events) — do not merge into one routing module | 🟢 Decided | plugins | internal/plugin/dispatch (pool.go, channel.go), internal/plugin/trigger (dispatcher.go), internal/plugin/hostsvc (identity/generation interceptors) |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
 | #199    | call_id propagation through gRPC metadata (spec §8.5)  | 🟢 Decided | v2.0 (plugins) | plugin-sdk/serve/callcontext.go, internal/plugin/hostsvc (new package), no new ADR — implements existing spec §8.5 contract |
 | #224    | OAuth2 authcode + clientcred host-side orchestration (spec §9.1/§9.2) | 🟢 Decided | v2.0 (plugins) | internal/plugin/oauth (new package, x/oauth2 + clientcredentials), internal/admin/plugin_oauth_handler.go, plugin_instances.credentials_encrypted, HMAC state envelope with HKDF subkey off GLEIPNIR_ENCRYPTION_KEY; no new ADR — implements existing spec §9 contract. Encryption helpers reused from internal/admin via function injection to avoid an import cycle; planned to move to internal/infra/crypto when #141 lands. |
 | #226    | Non-OAuth credential strategies: static_api_key, header_set, basic_auth, none (spec §9.1) | 🟢 Decided | v2.0 (plugins) | internal/plugin/oauth.StoredCredentials widened to discriminated union; internal/admin/plugin_credentials_handler.go (write-only API, mirrors ADR-039/034); internal/infra/headervalidate (extracted from internal/mcp to avoid import cycle); plugin-sdk/credentials (typed Apply helper for plugins); no new ADR — implements settled spec §9.1 contract. |
+
+---
+
+## ADR-051: Three plugin dispatchers are deliberately separate — do not merge
+
+**Status:** Decided
+**Date:** 2026-06
+
+### Context
+
+Issue #508 was originally proposed as a "consolidate three dispatchers" refactor, based on the observation that `internal/plugin/dispatch/pool.go`, `internal/plugin/dispatch/channel.go`, and `internal/plugin/trigger/dispatcher.go` all route plugin-related work. After investigation, the consolidation was rejected and the issue was re-scoped to two standalone deliverables: e2e safety-net tests (#508) and this ADR. This ADR records the deliberate design intent so future architecture-review passes do not re-propose the incorrect consolidation.
+
+### Decision
+
+The three dispatchers are **intentionally separate**. Their surface similarity (all route something to a plugin) obscures fundamental structural differences that make consolidation wrong.
+
+#### 1. Distinct routing keys
+
+| Dispatcher | Routing key | Location |
+|------------|-------------|----------|
+| `dispatch/pool.go` (tool calls) | Stable plugin **instance name** (via `<instance>.<tool>` policy capability grant) | `internal/plugin/dispatch/pool.go` |
+| `dispatch/channel.go` (Notify/Request) | **Audience → instance** mapping (admin-managed ordered list in `audiences`/`audience_entries` tables) | `internal/plugin/dispatch/channel.go` |
+| `trigger/dispatcher.go` (events) | Plugin **instance ID** (from the supervisor's `TriggerService.Start` stream) | `internal/plugin/trigger/dispatcher.go` |
+
+These are three different routing namespaces. A unified dispatcher would need to accept all three key types, making every dispatch path pay the overhead of distinguishing them at runtime — adding complexity with no benefit.
+
+#### 2. Distinct concurrency models
+
+| Dispatcher | Concurrency model |
+|------------|-------------------|
+| `dispatch/pool.go` | Per-instance semaphore + bounded queue gate (spec §13.2/§13.6); in-flight call cancellation via `Cancel(call_id)` with 5s deadline + force-disconnect fallback (spec §13.8, issue #198). Calls are long-lived and may need individual cancellation. |
+| `dispatch/channel.go` | Synchronous waiter: `Notify` is parallel fan-out with a 10s deadline; `Request` routes to exactly one entry and waits for the async `WriteAuditStep` callback. No per-call cancellation — individual entry timeouts govern. |
+| `trigger/dispatcher.go` | Synchronous launch: `Handle` evaluates all subscribed policies and calls `RunLauncher.Launch` for matches. No in-flight tracking — fire-and-forget into the run manager. |
+
+Merging these into a single module would require supporting all three models simultaneously, with no shared code path because the models are orthogonal.
+
+#### 3. Distinct persistence
+
+| Dispatcher | Persistence |
+|------------|-------------|
+| `dispatch/pool.go` | None — in-memory call tracking only; runs are persisted by the agent runtime, not the dispatcher. |
+| `dispatch/channel.go` | Writes `plugin_pending_requests` rows for `Request` routing; the callback path (`WriteAuditStep`) resolves them. |
+| `trigger/dispatcher.go` | None — event dedup is handled by `internal/plugin/dedup` (a separate leaf package); run launch is handled by `RunLauncher`. |
+
+#### 4. Identity/generation gating lives in the hostsvc interceptor layer — not in any dispatcher
+
+All three dispatchers are **host-to-plugin** paths (the host dispatches work to the plugin). The security gate — identity-token verification and per-generation refcounting — lives in the **plugin-to-host** path, specifically in the gRPC unary interceptor chain on the hostsvc gRPC server:
+
+```
+plugin → network → UnaryInstanceTokenInterceptor → UnaryGenerationRefcountInterceptor → handler
+```
+
+Merging the three dispatchers into one routing module would not consolidate this gate, because the gate is on the opposite side of the wire. The interceptors live in `internal/plugin/hostsvc` and apply to **every** host RPC regardless of which dispatcher initiated the corresponding outbound call. They are correctly placed and should not be moved into dispatcher code.
+
+The e2e safety-net tests added in issue #508 (`internal/plugin/e2e/identity_rotation_e2e_test.go` and `internal/plugin/e2e/generation_drain_e2e_test.go`) lock this gating behavior over a real gRPC wire with the production interceptor chain, serving as a regression guard across Phase 5 work.
+
+### Decision: do not merge
+
+The original #508 "consolidate three dispatchers" proposal is **explicitly rejected**. The three dispatchers are structurally separate by design and should remain so. Adding a shared routing module would obscure the distinct semantics of each dispatch path, increase coupling between three independently-understandable components, and provide no runtime or maintenance benefit.
+
+### References
+
+- Issue #508 (re-scoped; original consolidation proposal and investigation comment)
+- `internal/plugin/dispatch/pool.go`, `internal/plugin/dispatch/channel.go`
+- `internal/plugin/trigger/dispatcher.go`
+- `internal/plugin/hostsvc/identity.go` (`UnaryInstanceTokenInterceptor`)
+- `internal/plugin/hostsvc/generation_interceptor.go` (`UnaryGenerationRefcountInterceptor`)
+- `internal/plugin/e2e/identity_rotation_e2e_test.go`, `internal/plugin/e2e/generation_drain_e2e_test.go`
+- ADR-041 (plugin system architecture), ADR-044 (channel routing model)
 
 ---
 
