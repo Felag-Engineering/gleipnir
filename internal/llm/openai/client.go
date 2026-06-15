@@ -48,8 +48,11 @@ type wire struct {
 // option.WithHTTPClient + option.WithBaseURL for tests without exposing the
 // SDK client directly.
 func NewClient(apiKey string, opts ...option.RequestOption) *Client {
-	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
-	sdk := openaisdk.NewClient(allOpts...)
+	// SDKMaxRetries comes first so caller-supplied opts (e.g. WithMaxRetries(0)
+	// in tests) still win via last-option-wins. The OpenAI SDK does its own
+	// Retry-After-aware retry of connection errors + 408/409/429/5xx.
+	base := []option.RequestOption{option.WithAPIKey(apiKey), option.WithMaxRetries(llm.SDKMaxRetries())}
+	sdk := openaisdk.NewClient(append(base, opts...)...)
 	w := &wire{sdk: &sdk}
 	return &Client{ProviderAdapter: llm.NewAdapter(w), w: w}
 }

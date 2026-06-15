@@ -39,6 +39,14 @@ type Config struct {
 	PluginsDir             string
 	OAuthRefreshInterval   time.Duration // GLEIPNIR_OAUTH_REFRESH_INTERVAL, default 5m
 	OAuthRefreshLead       time.Duration // GLEIPNIR_OAUTH_REFRESH_LEAD, default 15m
+
+	// LLM transient-failure retry. A 429 (TPM/RPM rate limit) or 5xx response
+	// from a provider is retried up to LLMRetryMaxAttempts times, honoring the
+	// provider's Retry-After header when present and otherwise backing off
+	// exponentially from LLMRetryInitialBackoff up to LLMRetryMaxBackoff.
+	LLMRetryMaxAttempts    int           // GLEIPNIR_LLM_RETRY_MAX_ATTEMPTS, default 4 (1 disables retry)
+	LLMRetryInitialBackoff time.Duration // GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF, default 1s
+	LLMRetryMaxBackoff     time.Duration // GLEIPNIR_LLM_RETRY_MAX_BACKOFF, default 30s
 }
 
 // Load reads configuration from environment variables, applies defaults for
@@ -72,6 +80,9 @@ func Load() (Config, error) {
 		PluginsDir:             envOrDefault("GLEIPNIR_PLUGINS_DIR", "/plugins"),
 		OAuthRefreshInterval:   envDuration("GLEIPNIR_OAUTH_REFRESH_INTERVAL", 5*time.Minute),
 		OAuthRefreshLead:       envDuration("GLEIPNIR_OAUTH_REFRESH_LEAD", 15*time.Minute),
+		LLMRetryMaxAttempts:    envInt("GLEIPNIR_LLM_RETRY_MAX_ATTEMPTS", 4),
+		LLMRetryInitialBackoff: envDuration("GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF", 1*time.Second),
+		LLMRetryMaxBackoff:     envDuration("GLEIPNIR_LLM_RETRY_MAX_BACKOFF", 30*time.Second),
 	}, nil
 }
 
@@ -136,6 +147,19 @@ func envLogLevel(key string, def slog.Level) slog.Level {
 		return def
 	}
 	return level
+}
+
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: invalid int value %q for %s, using default %d\n", v, key, def)
+		return def
+	}
+	return n
 }
 
 func envBool(key string, def bool) bool {

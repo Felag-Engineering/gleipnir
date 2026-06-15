@@ -57,8 +57,11 @@ type wire struct {
 // to inject options such as option.WithBaseURL for tests without exposing
 // the SDK client directly.
 func NewClient(apiKey string, opts ...option.RequestOption) *AnthropicClient {
-	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
-	c := anthropic.NewClient(allOpts...)
+	// SDKMaxRetries comes first so caller-supplied opts (e.g. WithMaxRetries(0)
+	// in tests) still win via last-option-wins. The Anthropic SDK does its own
+	// Retry-After-aware retry of connection errors + 408/409/429/5xx.
+	base := []option.RequestOption{option.WithAPIKey(apiKey), option.WithMaxRetries(llm.SDKMaxRetries())}
+	c := anthropic.NewClient(append(base, opts...)...)
 	w := &wire{client: &c}
 	return &AnthropicClient{ProviderAdapter: llm.NewAdapter(w), w: w}
 }
@@ -67,7 +70,8 @@ func NewClient(apiKey string, opts ...option.RequestOption) *AnthropicClient {
 // options (ANTHROPIC_API_KEY env var). Use this in production so the API key
 // is read from the environment without an empty string override.
 func NewClientFromEnv(opts ...option.RequestOption) *AnthropicClient {
-	c := anthropic.NewClient(opts...)
+	base := []option.RequestOption{option.WithMaxRetries(llm.SDKMaxRetries())}
+	c := anthropic.NewClient(append(base, opts...)...)
 	w := &wire{client: &c}
 	return &AnthropicClient{ProviderAdapter: llm.NewAdapter(w), w: w}
 }
