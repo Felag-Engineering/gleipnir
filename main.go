@@ -361,12 +361,74 @@ func run(cfg config.Config) error {
 		}
 	}
 
+	// Build InstanceLifecycle and InstanceConfig modules before PluginHandler so
+	// all deps are constructor-injected (no late-bind setters, per issue #504).
+	//
+	// Conditional deps: processManager/trigger/pool are nil when plugins are
+	// disabled. store is always wired (DB-only cleanup works even when disabled).
+	// pluginsDir is empty when plugins disabled (disables FS cleanup in Uninstall).
+	//
+	// processManager and pluginsDir are shared by reference/value into BOTH the
+	// InstanceLifecycleDeps AND the PluginHandlerDeps — both holders use the
+	// one shared instance (plan §DEPS THAT STAY).
+	var (
+		pluginProcMgr   admin.PluginProcessManager
+		pluginTrigger   admin.TriggerRestarter
+		pluginInflight  admin.InflightCounter
+		pluginPluginsDir string
+		pluginInstaller admin.PluginInstaller
+		pluginRSSAgg    admin.RSSAggregator
+	)
+	if rt != nil {
+		if rt.TriggerSupervisor != nil {
+			pluginTrigger = rt.TriggerSupervisor
+		}
+		if rt.Loader().Installer() != nil {
+			pluginInstaller = rt.Loader().Installer()
+			if mgr := rt.Manager(); mgr != nil {
+				pluginProcMgr = mgr
+				pluginPluginsDir = cfg.PluginsDir
+				pluginInflight = rt.Pool
+			}
+		}
+		if mgr := rt.Manager(); mgr != nil {
+			rssSampler := process.NewRSSSampler(mgr.Snapshot)
+			rssSampler.Start(ctx, 30*time.Second)
+			pluginRSSAgg = rssAggregatorAdapter{sampler: rssSampler}
+		}
+	}
+
+	pluginLifecycle := admin.NewInstanceLifecycle(admin.InstanceLifecycleDeps{
+		Q:          store.Queries(),
+		Store:      store,
+		Publisher:  broadcaster,
+		ProcMgr:    pluginProcMgr,
+		Trigger:    pluginTrigger,
+		Inflight:   pluginInflight,
+		PluginsDir: pluginPluginsDir,
+	})
+	pluginConfig := admin.NewInstanceConfig(admin.InstanceConfigDeps{
+		Q:         store.Queries(),
+		Publisher: broadcaster,
+		Trigger:   pluginTrigger,
+	})
+	pluginAdmin := admin.NewPluginHandler(admin.PluginHandlerDeps{
+		Q:              store.Queries(),
+		Publisher:      broadcaster,
+		Installer:      pluginInstaller,
+		RSSAggregator:  pluginRSSAgg,
+		ProcessManager: pluginProcMgr,
+		PluginsDir:     pluginPluginsDir,
+		Lifecycle:      pluginLifecycle,
+		Config:         pluginConfig,
+	})
+
 	handlers := api.HandlerBundle{
 		AuthHandler:              authHandler,
 		SettingsHandler:          settingsHandler,
 		AdminHandler:             adminHandler,
 		OpenAICompatHandler:      openaiCompatHandler,
-		PluginAdminHandler:       admin.NewPluginHandler(store.Queries(), broadcaster, nil),
+		PluginAdminHandler:       pluginAdmin,
 		PluginOAuthHandler:       pluginOAuthHandler,
 		PluginCredentialsHandler: pluginCredHandler,
 		AudienceHandler:          audienceH,
@@ -374,46 +436,6 @@ func run(cfg config.Config) error {
 		WebhookHandler:           webhookHandler,
 		SSEHandler:               sseHandler,
 		PolicyWebhookHandler:     policyWebhookHandler,
-	}
-
-	// Wire the trigger supervisor into the plugin admin handler so that
-	// PutSubscriptionScope can restart the stream after a scope change.
-	if rt != nil && rt.TriggerSupervisor != nil && handlers.PluginAdminHandler != nil {
-		handlers.PluginAdminHandler.SetTriggerRestarter(rt.TriggerSupervisor)
-	}
-
-	// Wire the *db.Store unconditionally so DeleteInstance and Uninstall can
-	// open transactions via store.DB().BeginTx. This is always needed — the
-	// transactional delete path works even when the plugin subsystem is
-	// disabled (DB-only cleanup for the kitchen-sink recovery use case).
-	if handlers.PluginAdminHandler != nil {
-		handlers.PluginAdminHandler.SetStore(store)
-	}
-
-	// Wire the shared Installer into the plugin admin handler so both the
-	// fsnotify watcher and the Install endpoint use the same pipeline instance.
-	// Installer() returns nil when plugins are disabled, which disables the
-	// install endpoint cleanly (returns 503).
-	if rt != nil && rt.Loader().Installer() != nil && handlers.PluginAdminHandler != nil {
-		handlers.PluginAdminHandler.SetInstaller(rt.Loader().Installer())
-		// Wire the process manager and plugins dir for subprocess stop + FS
-		// cleanup during Uninstall. Only available when plugins are enabled and
-		// the manager was successfully started.
-		if mgr := rt.Manager(); mgr != nil {
-			handlers.PluginAdminHandler.SetProcessManager(mgr)
-			handlers.PluginAdminHandler.SetPluginsDir(cfg.PluginsDir)
-			handlers.PluginAdminHandler.SetInflightCounter(rt.Pool)
-		}
-	}
-
-	// Wire the RSS sampler. When plugins are disabled, rssAggregator is never
-	// set and GetPluginRSS returns 503.
-	if rt != nil {
-		if mgr := rt.Manager(); mgr != nil && handlers.PluginAdminHandler != nil {
-			rssSampler := process.NewRSSSampler(mgr.Snapshot)
-			rssSampler.Start(ctx, 30*time.Second)
-			handlers.PluginAdminHandler.SetRSSAggregator(rssAggregatorAdapter{sampler: rssSampler})
-		}
 	}
 
 	// Register the post-install spawn hook so that a fresh install (via the
