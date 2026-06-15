@@ -15,14 +15,14 @@ import (
 // parseErrorEnvelope decodes the full error envelope from a recorder for
 // detailed assertions (status + error + detail + issues).
 func parseErrorEnvelope(t *testing.T, rec *httptest.ResponseRecorder) struct {
-	Error  string              `json:"error"`
-	Detail string              `json:"detail"`
+	Error  string                `json:"error"`
+	Detail string                `json:"detail"`
 	Issues []httputil.ErrorIssue `json:"issues"`
 } {
 	t.Helper()
 	var env struct {
-		Error  string              `json:"error"`
-		Detail string              `json:"detail"`
+		Error  string                `json:"error"`
+		Detail string                `json:"detail"`
 		Issues []httputil.ErrorIssue `json:"issues"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&env); err != nil {

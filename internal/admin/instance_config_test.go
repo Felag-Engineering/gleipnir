@@ -407,7 +407,6 @@ func TestInstanceConfig_PutConfigProperty(t *testing.T) {
 	})
 }
 
-
 // ─── propertyExistsInSchema ──────────────────────────────────────────────────
 
 func TestPropertyExistsInSchema(t *testing.T) {

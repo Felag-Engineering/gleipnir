@@ -372,12 +372,12 @@ func run(cfg config.Config) error {
 	// InstanceLifecycleDeps AND the PluginHandlerDeps — both holders use the
 	// one shared instance (plan §DEPS THAT STAY).
 	var (
-		pluginProcMgr   admin.PluginProcessManager
-		pluginTrigger   admin.TriggerRestarter
-		pluginInflight  admin.InflightCounter
+		pluginProcMgr    admin.PluginProcessManager
+		pluginTrigger    admin.TriggerRestarter
+		pluginInflight   admin.InflightCounter
 		pluginPluginsDir string
-		pluginInstaller admin.PluginInstaller
-		pluginRSSAgg    admin.RSSAggregator
+		pluginInstaller  admin.PluginInstaller
+		pluginRSSAgg     admin.RSSAggregator
 	)
 	if rt != nil {
 		if rt.TriggerSupervisor != nil {

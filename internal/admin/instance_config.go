@@ -77,8 +77,8 @@ type configInternalError struct {
 	Err       error
 }
 
-func (e *configInternalError) Error() string    { return e.PublicMsg + ": " + e.Err.Error() }
-func (e *configInternalError) Unwrap() error    { return e.Err }
+func (e *configInternalError) Error() string { return e.PublicMsg + ": " + e.Err.Error() }
+func (e *configInternalError) Unwrap() error { return e.Err }
 
 // ─── InstanceConfigResult ────────────────────────────────────────────────────
 
@@ -708,4 +708,3 @@ func propertyExistsInSchema(schemaNode *yaml.Node, property string) bool {
 	_, exists := propertiesMap[property]
 	return exists
 }
-

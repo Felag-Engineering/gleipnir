@@ -126,8 +126,8 @@ type lifecycleInternalError struct {
 	Err       error
 }
 
-func (e *lifecycleInternalError) Error() string    { return e.PublicMsg + ": " + e.Err.Error() }
-func (e *lifecycleInternalError) Unwrap() error    { return e.Err }
+func (e *lifecycleInternalError) Error() string { return e.PublicMsg + ": " + e.Err.Error() }
+func (e *lifecycleInternalError) Unwrap() error { return e.Err }
 
 // ─── InstanceLifecycleDeps ───────────────────────────────────────────────────
 

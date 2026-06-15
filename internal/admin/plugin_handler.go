@@ -735,7 +735,6 @@ func (h *PluginHandler) unblockInstances(
 	return count
 }
 
-
 // resolveInstance fetches the instance row for instanceID and verifies that it
 // belongs to pluginID. On any error it writes the appropriate HTTP response and
 // returns false, so callers can early-return. This is the instance-first variant
