@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"gopkg.in/yaml.v3"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/http/auth"
@@ -26,7 +25,6 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
-	"github.com/felag-engineering/gleipnir/internal/policy"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
 )
@@ -188,90 +186,55 @@ type RSSAggregator interface {
 	Aggregate() (totalBytes uint64, count int, perInstance []RSSSample)
 }
 
+// PluginHandlerDeps holds all constructor-injected dependencies for PluginHandler.
+// This replaces the 8 SetXxx late-bind setters (compile-checked per issue #504).
+//
+// processManager and pluginsDir are held by BOTH PluginHandler (for
+// CreateInstance/ApprovePlugin and RejectPlugin respectively) AND by the
+// InstanceLifecycle module. Wire the SAME instance/value to both from main.go.
+type PluginHandlerDeps struct {
+	Q              PluginQuerier
+	Publisher      event.Publisher
+	Clock          func() time.Time
+	Installer      PluginInstaller      // nil disables Install (503)
+	RSSAggregator  RSSAggregator        // nil disables GetPluginRSS (503)
+	ProcessManager PluginProcessManager // nil skips subprocess spawn in CreateInstance/ApprovePlugin
+	PluginsDir     string               // empty disables FS cleanup in RejectPlugin
+	Lifecycle      *InstanceLifecycle   // extracted lifecycle module
+	Config         *InstanceConfig      // extracted config module
+}
+
 // PluginHandler handles plugin-related admin endpoints.
 type PluginHandler struct {
-	q                PluginQuerier
-	publisher        event.Publisher
-	clock            func() time.Time
-	triggerRestarter TriggerRestarter     // may be nil if plugins are disabled
-	installer        PluginInstaller      // may be nil if GLEIPNIR_PLUGINS_ENABLED=false
-	store            *db.Store            // nil disables DeleteInstance and Uninstall (503)
-	pluginsDir       string               // empty disables FS cleanup in Uninstall
-	processManager   PluginProcessManager // nil means skip subprocess Stop
-	toolUnregistrar  ToolUnregistrar      // nil until #194 wires tools.Registrar
-	inflightCounter  InflightCounter      // may be nil; gates deactivate/delete on zero in-flight calls
-	rssAggregator    RSSAggregator        // nil when plugins are disabled; GetPluginRSS returns 503
+	q              PluginQuerier
+	publisher      event.Publisher
+	clock          func() time.Time
+	installer      PluginInstaller      // may be nil if GLEIPNIR_PLUGINS_ENABLED=false
+	pluginsDir     string               // empty disables FS cleanup in RejectPlugin
+	processManager PluginProcessManager // nil means skip subprocess spawn in CreateInstance/ApprovePlugin
+	rssAggregator  RSSAggregator        // nil when plugins are disabled; GetPluginRSS returns 503
+	lifecycle      *InstanceLifecycle   // owns Deactivate/Activate/Delete/Uninstall
+	config         *InstanceConfig      // owns PutSubscriptionScope/PutConfig/PutConfigProperty
 }
 
-// NewPluginHandler returns a PluginHandler backed by the given querier, event
-// publisher, and clock. publisher may be nil — events are skipped when nil.
-// clock may be nil — time.Now is used as the default.
-func NewPluginHandler(q PluginQuerier, publisher event.Publisher, clock func() time.Time) *PluginHandler {
-	if clock == nil {
-		clock = time.Now
+// NewPluginHandler constructs a PluginHandler from the given deps struct.
+// clock defaults to time.Now when nil. All other nil-able deps are nil-safe.
+func NewPluginHandler(deps PluginHandlerDeps) *PluginHandler {
+	clk := deps.Clock
+	if clk == nil {
+		clk = time.Now
 	}
-	return &PluginHandler{q: q, publisher: publisher, clock: clock}
-}
-
-// SetTriggerRestarter wires the TriggerRestarter (typically *plugintrigger.Supervisor)
-// into the handler after it is constructed. Called from main.go after the supervisor
-// is created so construction order does not create an import cycle.
-func (h *PluginHandler) SetTriggerRestarter(r TriggerRestarter) {
-	h.triggerRestarter = r
-}
-
-// SetInstaller wires the PluginInstaller into the handler. A nil installer
-// disables the Install endpoint (returns 503). Called from main.go after
-// loader.StartWatcher runs so plugins disabled mode is handled cleanly.
-func (h *PluginHandler) SetInstaller(inst PluginInstaller) {
-	h.installer = inst
-}
-
-// SetStore wires the *db.Store into the handler so DeleteInstance and Uninstall
-// can open transactions via store.DB().BeginTx. A nil store disables both
-// endpoints (returns 503). Called from main.go unconditionally because *db.Store
-// is always available — the transactional delete path needs it regardless of
-// whether the plugin subsystem is enabled.
-func (h *PluginHandler) SetStore(s *db.Store) {
-	h.store = s
-}
-
-// SetPluginsDir sets the plugins directory used for FS cleanup during Uninstall.
-// An empty string disables binary removal (DB rows are still deleted). Called
-// from main.go inside the plugins-enabled block.
-func (h *PluginHandler) SetPluginsDir(dir string) {
-	h.pluginsDir = dir
-}
-
-// SetProcessManager wires the PluginProcessManager so DeleteInstance and
-// Uninstall can stop subprocesses before clearing DB rows. A nil manager skips
-// subprocess stop (DB-only cleanup, matching the kitchen-sink recovery path).
-func (h *PluginHandler) SetProcessManager(pm PluginProcessManager) {
-	h.processManager = pm
-}
-
-// SetToolUnregistrar wires the ToolUnregistrar for post-delete tool-namespace
-// cleanup. Currently not called from main.go — tools.Registrar is not yet in
-// the live process path (see TODO at main.go). A nil unregistrar is a no-op.
-// When #194 wires tools.New(arbiter, ...), add the one-line wire-up there.
-func (h *PluginHandler) SetToolUnregistrar(u ToolUnregistrar) {
-	h.toolUnregistrar = u
-}
-
-// SetInflightCounter wires the InflightCounter (typically *dispatch.Pool) for
-// the in-flight gate in DeactivateInstance and DeleteInstance. A nil counter
-// skips the gate (safe default for tests and the GLEIPNIR_PLUGINS_ENABLED=false
-// path). Called from main.go inside the plugins-enabled block.
-func (h *PluginHandler) SetInflightCounter(ic InflightCounter) {
-	h.inflightCounter = ic
-}
-
-// SetRSSAggregator wires the RSSAggregator (a main.go adapter wrapping
-// *process.RSSSampler) into the handler. A nil aggregator disables
-// GetPluginRSS (returns 503). Called from main.go inside the plugins-enabled
-// block after the RSSSampler is constructed.
-func (h *PluginHandler) SetRSSAggregator(a RSSAggregator) {
-	h.rssAggregator = a
+	return &PluginHandler{
+		q:              deps.Q,
+		publisher:      deps.Publisher,
+		clock:          clk,
+		installer:      deps.Installer,
+		pluginsDir:     deps.PluginsDir,
+		processManager: deps.ProcessManager,
+		rssAggregator:  deps.RSSAggregator,
+		lifecycle:      deps.Lifecycle,
+		config:         deps.Config,
+	}
 }
 
 // pluginRSSResponse is the JSON shape returned by GetPluginRSS.
@@ -654,94 +617,12 @@ func (h *PluginHandler) PutSubscriptionScope(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	inst, ok := h.resolveInstance(ctx, w, pluginID, instanceID)
-	if !ok {
-		return
-	}
-
-	plugin, err := h.q.GetPluginByID(ctx, inst.PluginID)
-	if errors.Is(err, ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
-		return
-	}
+	result, err := h.config.PutSubscriptionScope(ctx, pluginID, instanceID, req.Scope, *req.ExpectedVersion)
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		h.mapConfigError(w, err)
 		return
 	}
-
-	var m sdkmanifest.Manifest
-	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
-		return
-	}
-	if m.SubscriptionSchema == nil {
-		httputil.WriteError(w, http.StatusBadRequest, "plugin declares no subscription_schema", "")
-		return
-	}
-
-	validator, err := configvalidate.ForSubscriptionScope(&m)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to build scope validator", err.Error())
-		return
-	}
-	scope := req.Scope
-	if scope == nil {
-		scope = map[string]any{}
-	}
-	fieldErrs, err := validator.Validate(scope)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "validation error", err.Error())
-		return
-	}
-	if len(fieldErrs) > 0 {
-		httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", toErrorIssues(fieldErrs))
-		return
-	}
-
-	scopeBytes, err := json.Marshal(scope)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to marshal scope", err.Error())
-		return
-	}
-
-	nowStr := h.clock().UTC().Format(time.RFC3339)
-	rows, err := h.q.UpdatePluginInstanceSubscriptionScope(ctx, db.UpdatePluginInstanceSubscriptionScopeParams{
-		SubscriptionScopeJson: string(scopeBytes),
-		UpdatedAt:             nowStr,
-		ID:                    instanceID,
-		ExpectedVersion:       *req.ExpectedVersion,
-	})
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to update subscription scope", "")
-		return
-	}
-	if rows == 0 {
-		httputil.WriteError(w, http.StatusConflict, casConflictMsg, "")
-		return
-	}
-
-	// Ensure the trigger stream is running with the latest scope. Start is
-	// a no-op if already supervised; Restart cancels and re-opens so the
-	// plugin picks up the new scope. Both are needed because instances
-	// created after boot were never supervised by StartAll.
-	if h.triggerRestarter != nil {
-		h.triggerRestarter.Start(ctx, instanceID)
-		h.triggerRestarter.Restart(ctx, instanceID)
-	}
-
-	// Re-fetch to return the updated row. On failure synthesise the response
-	// from the pre-write snapshot + known deltas; secret fields must still be
-	// redacted in both paths (ADR-049).
-	updated, err := h.q.GetPluginInstanceByID(ctx, instanceID)
-	if err != nil {
-		synthetic := inst
-		synthetic.Version++
-		synthetic.UpdatedAt = nowStr
-		synthetic.SubscriptionScopeJson = string(scopeBytes)
-		h.writeInstanceResponseWithRedaction(ctx, w, pluginID, synthetic)
-		return
-	}
-	h.writeInstanceResponseWithRedaction(ctx, w, pluginID, updated)
+	httputil.WriteJSON(w, http.StatusOK, result.Response)
 }
 
 // putInstanceConfigRequest is the JSON body for
@@ -771,147 +652,12 @@ func (h *PluginHandler) PutInstanceConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	inst, ok := h.resolveInstance(ctx, w, pluginID, instanceID)
-	if !ok {
-		return
-	}
-
-	plugin, err := h.q.GetPluginByID(ctx, inst.PluginID)
-	if errors.Is(err, ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
-		return
-	}
+	result, err := h.config.PutConfig(ctx, pluginID, instanceID, req.Config, *req.ExpectedVersion)
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		h.mapConfigError(w, err)
 		return
 	}
-
-	var m sdkmanifest.Manifest
-	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
-		return
-	}
-
-	// Derive the set of secret property names for sentinel rejection and
-	// response redaction (ADR-049).
-	secretNames, err := configvalidate.SecretPropertyNames(m.ConfigSchema)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse config schema", err.Error())
-		return
-	}
-
-	// ForInstanceConfig returns a validator that accepts anything when ConfigSchema is nil
-	// (per Q7 in the plan). Do NOT early-return on nil schema — it is valid.
-	validator, err := configvalidate.ForInstanceConfig(&m)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to build config validator", err.Error())
-		return
-	}
-	cfg := req.Config
-	if cfg == nil {
-		cfg = map[string]any{}
-	}
-	fieldErrs, err := validator.Validate(cfg)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "validation error", err.Error())
-		return
-	}
-	if len(fieldErrs) > 0 {
-		httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", toErrorIssues(fieldErrs))
-		return
-	}
-
-	// Reject any secret field whose submitted value is the redaction sentinel.
-	// This prevents the round-trip clobber: UI reads "***", user hits Save,
-	// real secret would be overwritten with the sentinel (ADR-049 §5).
-	if offenders := configvalidate.ContainsRedactionSentinel(cfg, secretNames); len(offenders) > 0 {
-		issues := make([]httputil.ErrorIssue, 0, len(offenders))
-		for _, field := range offenders {
-			issues = append(issues, httputil.ErrorIssue{
-				Field:   field,
-				Message: "value '***' is the redaction sentinel; submit the real secret or omit the field to leave it unchanged",
-			})
-		}
-		httputil.WriteValidationError(w, http.StatusBadRequest, "sentinel value rejected", "", issues)
-		return
-	}
-
-	configBytes, err := json.Marshal(cfg)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to marshal config", err.Error())
-		return
-	}
-
-	nowStr := h.clock().UTC().Format(time.RFC3339)
-	rows, err := h.q.UpdatePluginInstanceConfig(ctx, db.UpdatePluginInstanceConfigParams{
-		ConfigJson:      string(configBytes),
-		UpdatedAt:       nowStr,
-		ID:              instanceID,
-		ExpectedVersion: *req.ExpectedVersion,
-	})
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to update instance config", "")
-		return
-	}
-	if rows == 0 {
-		httputil.WriteError(w, http.StatusConflict, casConflictMsg, "")
-		return
-	}
-
-	// Compute the redacted form of the written config once. Both the re-fetch
-	// success branch and the fallback synthesized branch use this value so
-	// neither path can emit raw secret JSON (ADR-049 §7, §6).
-	redactedWrittenConfig, err := configvalidate.RedactSecrets(string(configBytes), secretNames)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to redact config", err.Error())
-		return
-	}
-
-	// Re-fetch to return the updated row.
-	updated, err := h.q.GetPluginInstanceByID(ctx, instanceID)
-	if err != nil {
-		// The write succeeded; fall back to a synthesised response.
-		// Use the pre-computed redacted config — never the raw written bytes.
-		httputil.WriteJSON(w, http.StatusOK, instanceResponse{
-			ID:                    instanceID,
-			PluginID:              pluginID,
-			InstanceName:          inst.InstanceName,
-			State:                 inst.HealthState,
-			Detail:                inst.HealthDetail,
-			Version:               inst.Version + 1,
-			UpdatedAt:             nowStr,
-			SubscriptionScopeJson: inst.SubscriptionScopeJson,
-			ConfigJson:            redactedWrittenConfig,
-		})
-		return
-	}
-
-	// Advance the readiness detail (config_missing → credentials_missing → "")
-	// so the admin UI tells the operator what's still missing. Best-effort —
-	// the config write has already committed; advanceInstanceReadiness logs
-	// failures internally.
-	h.advanceInstanceReadiness(ctx, updated, &m)
-	if refreshed, refetchErr := h.q.GetPluginInstanceByID(ctx, instanceID); refetchErr == nil {
-		updated = refreshed
-	}
-
-	// Redact the re-fetched config before returning.
-	redactedFetchedConfig, err := configvalidate.RedactSecrets(updated.ConfigJson, secretNames)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to redact config", err.Error())
-		return
-	}
-	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
-		ID:                    updated.ID,
-		PluginID:              updated.PluginID,
-		InstanceName:          updated.InstanceName,
-		State:                 updated.HealthState,
-		Detail:                updated.HealthDetail,
-		Version:               updated.Version,
-		UpdatedAt:             updated.UpdatedAt,
-		SubscriptionScopeJson: updated.SubscriptionScopeJson,
-		ConfigJson:            redactedFetchedConfig,
-	})
+	httputil.WriteJSON(w, http.StatusOK, result.Response)
 }
 
 // putInstanceConfigPropertyRequest is the JSON body for
@@ -947,169 +693,12 @@ func (h *PluginHandler) PutInstanceConfigProperty(w http.ResponseWriter, r *http
 		return
 	}
 
-	inst, ok := h.resolveInstance(ctx, w, pluginID, instanceID)
-	if !ok {
-		return
-	}
-
-	plugin, err := h.q.GetPluginByID(ctx, inst.PluginID)
-	if errors.Is(err, ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
-		return
-	}
+	result, err := h.config.PutConfigProperty(ctx, pluginID, instanceID, property, req.Value, *req.ExpectedVersion)
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
+		h.mapConfigError(w, err)
 		return
 	}
-
-	var m sdkmanifest.Manifest
-	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &m); parseErr != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
-		return
-	}
-
-	// Validate that the property name exists in the manifest's ConfigSchema.
-	// A property not in the schema cannot be set via this endpoint; use the
-	// bulk PUT for schema-less plugins.
-	if !propertyExistsInSchema(m.ConfigSchema, property) {
-		httputil.WriteError(w, http.StatusNotFound, "property not found in config_schema", "")
-		return
-	}
-
-	// Derive secret names for sentinel rejection and redaction (ADR-049).
-	secretNames, err := configvalidate.SecretPropertyNames(m.ConfigSchema)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse config schema", err.Error())
-		return
-	}
-
-	// Reject the redaction sentinel — the caller must supply the real value.
-	if strVal, isStr := req.Value.(string); isStr && strVal == configvalidate.RedactionSentinel {
-		httputil.WriteError(w, http.StatusBadRequest,
-			"value '***' is the redaction sentinel; submit the real secret",
-			"")
-		return
-	}
-
-	// Merge the new value into the existing config.
-	var cfg map[string]any
-	if inst.ConfigJson != "" && inst.ConfigJson != "{}" {
-		if err := json.Unmarshal([]byte(inst.ConfigJson), &cfg); err != nil {
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to parse existing config", err.Error())
-			return
-		}
-	}
-	if cfg == nil {
-		cfg = map[string]any{}
-	}
-	cfg[property] = req.Value
-
-	// Validate the full merged config against the schema.
-	validator, err := configvalidate.ForInstanceConfig(&m)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to build config validator", err.Error())
-		return
-	}
-	fieldErrs, err := validator.Validate(cfg)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "validation error", err.Error())
-		return
-	}
-	if len(fieldErrs) > 0 {
-		httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", toErrorIssues(fieldErrs))
-		return
-	}
-
-	configBytes, err := json.Marshal(cfg)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to marshal config", err.Error())
-		return
-	}
-
-	nowStr := h.clock().UTC().Format(time.RFC3339)
-	rows, err := h.q.UpdatePluginInstanceConfig(ctx, db.UpdatePluginInstanceConfigParams{
-		ConfigJson:      string(configBytes),
-		UpdatedAt:       nowStr,
-		ID:              instanceID,
-		ExpectedVersion: *req.ExpectedVersion,
-	})
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to update instance config", "")
-		return
-	}
-	if rows == 0 {
-		httputil.WriteError(w, http.StatusConflict, casConflictMsg, "")
-		return
-	}
-
-	// Pre-compute the redacted form of the written config. Both the re-fetch
-	// success branch and the fallback synthesized branch use this value so
-	// neither path can emit raw secret JSON (ADR-049 §7).
-	redactedWrittenConfig, err := configvalidate.RedactSecrets(string(configBytes), secretNames)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to redact config", err.Error())
-		return
-	}
-
-	// Re-fetch to return the updated row.
-	updated, err := h.q.GetPluginInstanceByID(ctx, instanceID)
-	if err != nil {
-		// The write succeeded; fall back to a synthesised response.
-		// Use the pre-computed redacted config — never the raw written bytes.
-		httputil.WriteJSON(w, http.StatusOK, instanceResponse{
-			ID:                    instanceID,
-			PluginID:              pluginID,
-			InstanceName:          inst.InstanceName,
-			State:                 inst.HealthState,
-			Detail:                inst.HealthDetail,
-			Version:               inst.Version + 1,
-			UpdatedAt:             nowStr,
-			SubscriptionScopeJson: inst.SubscriptionScopeJson,
-			ConfigJson:            redactedWrittenConfig,
-		})
-		return
-	}
-
-	// Redact the re-fetched config before returning.
-	redactedFetchedConfig, err := configvalidate.RedactSecrets(updated.ConfigJson, secretNames)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to redact config", err.Error())
-		return
-	}
-	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
-		ID:                    updated.ID,
-		PluginID:              updated.PluginID,
-		InstanceName:          updated.InstanceName,
-		State:                 updated.HealthState,
-		Detail:                updated.HealthDetail,
-		Version:               updated.Version,
-		UpdatedAt:             updated.UpdatedAt,
-		SubscriptionScopeJson: updated.SubscriptionScopeJson,
-		ConfigJson:            redactedFetchedConfig,
-	})
-}
-
-// propertyExistsInSchema returns true when the named property appears in the
-// root-level properties map of schemaNode. Returns false when schemaNode is nil
-// or has no properties key (including schema-less plugins).
-func propertyExistsInSchema(schemaNode *yaml.Node, property string) bool {
-	if schemaNode == nil {
-		return false
-	}
-	var schema map[string]any
-	if err := schemaNode.Decode(&schema); err != nil {
-		return false
-	}
-	propertiesRaw, ok := schema["properties"]
-	if !ok {
-		return false
-	}
-	propertiesMap, ok := propertiesRaw.(map[string]any)
-	if !ok {
-		return false
-	}
-	_, exists := propertiesMap[property]
-	return exists
+	httputil.WriteJSON(w, http.StatusOK, result.Response)
 }
 
 // unblockInstances transitions every instance of pluginID currently in fromState
@@ -1144,60 +733,6 @@ func (h *PluginHandler) unblockInstances(
 		count++
 	}
 	return count
-}
-
-// computeInstanceReadinessDetail returns the appropriate health_detail string
-// for an instance that is sitting in PluginHealthStateUnhealthy, based on what
-// the operator still needs to configure. This is used after the operator saves
-// instance config or credentials so the admin UI tells them what's still
-// missing — without it, the detail stayed at "config_missing" forever even
-// after config was set, giving operators no signal what to do next.
-//
-// The returned string is empty when the instance has everything it needs and
-// is just waiting for the subprocess to come up healthy.
-func computeInstanceReadinessDetail(m *sdkmanifest.Manifest, configJSON string, credentialsPresent bool) string {
-	if configJSON == "" || configJSON == "{}" {
-		return "config_missing"
-	}
-	// Credentials are only required for auth strategies that consume them.
-	// "none" plugins (and unset strategy, which defaults to "none" in the parser)
-	// are config-only.
-	switch m.Auth.Strategy {
-	case "", sdkmanifest.AuthStrategyNone:
-		return "" // ready — subprocess will mark healthy on handshake
-	default:
-		if !credentialsPresent {
-			return "credentials_missing"
-		}
-		return "" // ready
-	}
-}
-
-// advanceInstanceReadiness re-evaluates the instance's readiness detail and
-// writes it back through SetHealthState if it has changed. Best-effort — any
-// failure is logged but not returned to the caller because the underlying
-// config/credentials write has already succeeded. Bypasses the update entirely
-// when the instance is not currently in unhealthy (e.g. already healthy, or
-// pending some other admin action).
-func (h *PluginHandler) advanceInstanceReadiness(ctx context.Context, inst db.PluginInstance, m *sdkmanifest.Manifest) {
-	if model.PluginHealthState(inst.HealthState) != model.PluginHealthStateUnhealthy {
-		return
-	}
-	credentialsPresent := inst.CredentialsEncrypted != nil && *inst.CredentialsEncrypted != ""
-	wanted := computeInstanceReadinessDetail(m, inst.ConfigJson, credentialsPresent)
-	var currentDetail string
-	if inst.HealthDetail != nil {
-		currentDetail = *inst.HealthDetail
-	}
-	if wanted == currentDetail {
-		return
-	}
-	err := pluginstate.SetHealthState(ctx, h.q, h.publisher, inst.ID, pluginstate.OriginHost,
-		model.PluginHealthStateUnhealthy, wanted)
-	if err != nil && !errors.Is(err, pluginstate.ErrTransitionConflict) {
-		slog.WarnContext(ctx, "advanceInstanceReadiness: set health detail failed",
-			"instance_id", inst.ID, "from", currentDetail, "to", wanted, "err", err)
-	}
 }
 
 // resolveInstance fetches the instance row for instanceID and verifies that it
@@ -1246,6 +781,128 @@ func joinNames[T any](items []T, name func(T) string) string {
 		names[i] = name(item)
 	}
 	return strings.Join(names, ", ")
+}
+
+// mapLifecycleError maps a typed error from InstanceLifecycle to the EXACT
+// current HTTP status code and response body. Every distinct string here was
+// verified against the old inline handlers (ERROR SURFACE in plan.md).
+func (h *PluginHandler) mapLifecycleError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrStoreUnavailable):
+		httputil.WriteError(w, http.StatusServiceUnavailable, "plugin management not configured", "")
+	case errors.Is(err, ErrPluginNotFound):
+		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+	case errors.Is(err, ErrInstanceNotFound):
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+	case errors.Is(err, ErrAlreadyInactive):
+		httputil.WriteError(w, http.StatusConflict, "instance is already deactivated", "")
+	case errors.Is(err, ErrRefetchFailed):
+		httputil.WriteError(w, http.StatusInternalServerError, "state transition succeeded but re-fetch failed", "")
+	default:
+		var termErr TerminalStateError
+		if errors.As(err, &termErr) {
+			httputil.WriteError(w, http.StatusConflict,
+				"cannot deactivate instance in terminal state",
+				fmt.Sprintf("current state: %s", termErr.State))
+			return
+		}
+		var inflightErr InflightError
+		if errors.As(err, &inflightErr) {
+			switch inflightErr.Op {
+			case inflightOpDeactivate:
+				httputil.WriteError(w, http.StatusConflict,
+					"cannot deactivate while tool calls are in progress",
+					fmt.Sprintf("%d in-flight calls", inflightErr.Count))
+			default: // inflightOpDelete
+				httputil.WriteError(w, http.StatusConflict,
+					"instance has in-flight tool calls",
+					fmt.Sprintf("%d in-flight calls", inflightErr.Count))
+			}
+			return
+		}
+		var notInactiveErr NotInactiveError
+		if errors.As(err, &notInactiveErr) {
+			httputil.WriteError(w, http.StatusConflict,
+				"instance is not deactivated",
+				fmt.Sprintf("current state: %s", notInactiveErr.State))
+			return
+		}
+		var policyRefErr PolicyRefError
+		if errors.As(err, &policyRefErr) {
+			httputil.WriteError(w, http.StatusConflict,
+				"instance is referenced by policies",
+				strings.Join(policyRefErr.Names, ", "))
+			return
+		}
+		var audienceRefErr AudienceRefError
+		if errors.As(err, &audienceRefErr) {
+			httputil.WriteError(w, http.StatusConflict,
+				"instance is referenced by audiences",
+				strings.Join(audienceRefErr.Names, ", "))
+			return
+		}
+		var instancesRemainErr InstancesRemainError
+		if errors.As(err, &instancesRemainErr) {
+			httputil.WriteError(w, http.StatusConflict,
+				"all instances must be removed before uninstalling the plugin",
+				strings.Join(instancesRemainErr.Names, ", "))
+			return
+		}
+		var internalErr *lifecycleInternalError
+		if errors.As(err, &internalErr) {
+			httputil.WriteError(w, http.StatusInternalServerError, internalErr.PublicMsg, internalErr.Detail)
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error(), "")
+	}
+}
+
+// mapConfigError maps a typed error from InstanceConfig to the EXACT current
+// HTTP status code and response body. Every distinct string here was verified
+// against the old inline handlers (ERROR SURFACE in plan.md).
+func (h *PluginHandler) mapConfigError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrInstanceNotFound):
+		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
+	case errors.Is(err, ErrPluginNotFound):
+		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+	case errors.Is(err, ErrPropertyNotFound):
+		httputil.WriteError(w, http.StatusNotFound, "property not found in config_schema", "")
+	case errors.Is(err, ErrNoSubscriptionSchema):
+		httputil.WriteError(w, http.StatusBadRequest, "plugin declares no subscription_schema", "")
+	case errors.Is(err, ErrCASConflict):
+		httputil.WriteError(w, http.StatusConflict, casConflictMsg, "")
+	default:
+		var corruptErr CorruptManifestError
+		if errors.As(err, &corruptErr) {
+			httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", corruptErr.Detail)
+			return
+		}
+		var valErr configValidationError
+		if errors.As(err, &valErr) {
+			httputil.WriteValidationError(w, http.StatusUnprocessableEntity, "validation failed", "", toErrorIssues(valErr.Issues))
+			return
+		}
+		var sentinelErr SentinelRejectedError
+		if errors.As(err, &sentinelErr) {
+			if sentinelErr.Single {
+				// Per-property endpoint: plain error, exact current message.
+				httputil.WriteError(w, http.StatusBadRequest,
+					"value '***' is the redaction sentinel; submit the real secret", "")
+			} else {
+				// Bulk PUT: validation-style response with issues slice.
+				issues := toErrorIssues(sentinelErr.Issues)
+				httputil.WriteValidationError(w, http.StatusBadRequest, "sentinel value rejected", "", issues)
+			}
+			return
+		}
+		var internalErr *configInternalError
+		if errors.As(err, &internalErr) {
+			httputil.WriteError(w, http.StatusInternalServerError, internalErr.PublicMsg, internalErr.Detail)
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, err.Error(), "")
+	}
 }
 
 // writeAuditEvent inserts a plugin-level audit row (PluginInstanceID = nil) with
@@ -1348,98 +1005,11 @@ func (h *PluginHandler) DeactivateInstance(w http.ResponseWriter, r *http.Reques
 	pluginID := chi.URLParam(r, "id")
 	instanceID := chi.URLParam(r, "iid")
 
-	if _, err := h.q.GetPluginByID(ctx, pluginID); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
-		} else {
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
-		}
-		return
-	}
-
-	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
-	if errors.Is(err, ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
-		return
-	}
+	updated, err := h.lifecycle.Deactivate(ctx, pluginID, instanceID)
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
+		h.mapLifecycleError(w, err)
 		return
 	}
-	if inst.PluginID != pluginID {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
-		return
-	}
-
-	current := model.PluginHealthState(inst.HealthState)
-
-	if current == model.PluginHealthStateInactive {
-		httputil.WriteError(w, http.StatusConflict, "instance is already deactivated", "")
-		return
-	}
-
-	// Terminal states cannot transition to inactive (state machine enforces this,
-	// but we surface a clear error here before hitting ErrIllegalTransition).
-	if current == model.PluginHealthStateSignatureInvalid || current == model.PluginHealthStateVerificationError {
-		httputil.WriteError(w, http.StatusConflict,
-			"cannot deactivate instance in terminal state",
-			fmt.Sprintf("current state: %s", current))
-		return
-	}
-
-	// Gate on zero in-flight tool calls. TOCTOU is acceptable here: a new call
-	// arriving after this check will fail at the dispatch layer once the subprocess
-	// is stopped. The gate prevents disrupting calls that are actively running.
-	if h.inflightCounter != nil {
-		count := h.inflightCounter.InflightCountByInstance(inst.InstanceName)
-		if count > 0 {
-			httputil.WriteError(w, http.StatusConflict,
-				"cannot deactivate while tool calls are in progress",
-				fmt.Sprintf("%d in-flight calls", count))
-			return
-		}
-	}
-
-	if err := pluginstate.SetHealthState(ctx, h.q, h.publisher, instanceID, pluginstate.OriginHost,
-		model.PluginHealthStateInactive, "deactivated by admin"); err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to set health state", err.Error())
-		return
-	}
-
-	// Best-effort subprocess stop (5s deadline — same pattern as DeleteInstance).
-	if h.processManager != nil {
-		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if err := h.processManager.Stop(stopCtx, instanceID); err != nil {
-			slog.WarnContext(ctx, "deactivate instance: subprocess stop failed",
-				"instance_id", instanceID, "err", err)
-		}
-		cancel()
-	}
-
-	// Best-effort trigger stream stop.
-	if h.triggerRestarter != nil {
-		h.triggerRestarter.Stop(instanceID)
-	}
-
-	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
-	h.writeAuditEvent(ctx, auditInstanceDeactivated, "info", nowStr, map[string]any{
-		"plugin_id":     pluginID,
-		"instance_id":   instanceID,
-		"instance_name": inst.InstanceName,
-	})
-
-	// Re-fetch to return the current row after the state transition.
-	updated, err := h.q.GetPluginInstanceByID(ctx, instanceID)
-	if err != nil {
-		// State write succeeded but the re-fetch failed. Return 500 — the client
-		// can re-fetch via GET. We must not synthesize a response here because
-		// config_json may contain unredacted secrets (ADR-049).
-		slog.WarnContext(ctx, "deactivate instance: re-fetch after transition failed",
-			"instance_id", instanceID, "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "state transition succeeded but re-fetch failed", "")
-		return
-	}
-
 	h.writeInstanceResponseWithRedaction(ctx, w, pluginID, updated)
 }
 
@@ -1460,76 +1030,11 @@ func (h *PluginHandler) ActivateInstance(w http.ResponseWriter, r *http.Request)
 	pluginID := chi.URLParam(r, "id")
 	instanceID := chi.URLParam(r, "iid")
 
-	if _, err := h.q.GetPluginByID(ctx, pluginID); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
-		} else {
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
-		}
-		return
-	}
-
-	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
-	if errors.Is(err, ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
-		return
-	}
+	updated, err := h.lifecycle.Activate(ctx, pluginID, instanceID)
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
+		h.mapLifecycleError(w, err)
 		return
 	}
-	if inst.PluginID != pluginID {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
-		return
-	}
-
-	if model.PluginHealthState(inst.HealthState) != model.PluginHealthStateInactive {
-		httputil.WriteError(w, http.StatusConflict,
-			"instance is not deactivated",
-			fmt.Sprintf("current state: %s", inst.HealthState))
-		return
-	}
-
-	// Transition to unhealthy first. The subprocess handshake will drive the
-	// state to healthy once the process comes up.
-	if err := pluginstate.SetHealthState(ctx, h.q, h.publisher, instanceID, pluginstate.OriginHost,
-		model.PluginHealthStateUnhealthy, "reactivated by admin"); err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to set health state", err.Error())
-		return
-	}
-
-	// Best-effort subprocess spawn. StartByPluginID spawns all instances for the
-	// plugin; siblings already running return "already running" (swallowed internally).
-	if h.processManager != nil {
-		if err := h.processManager.StartByPluginID(context.Background(), pluginID); err != nil {
-			slog.WarnContext(ctx, "activate instance: spawn failed", "plugin_id", pluginID, "err", err)
-		}
-	}
-
-	// Best-effort trigger stream start.
-	if h.triggerRestarter != nil {
-		h.triggerRestarter.Start(ctx, instanceID)
-	}
-
-	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
-	h.writeAuditEvent(ctx, auditInstanceActivated, "info", nowStr, map[string]any{
-		"plugin_id":     pluginID,
-		"instance_id":   instanceID,
-		"instance_name": inst.InstanceName,
-	})
-
-	// Re-fetch to return the current row after the state transition.
-	updated, err := h.q.GetPluginInstanceByID(ctx, instanceID)
-	if err != nil {
-		// State write succeeded but the re-fetch failed. Return 500 — the client
-		// can re-fetch via GET. We must not synthesize a response here because
-		// config_json may contain unredacted secrets (ADR-049).
-		slog.WarnContext(ctx, "activate instance: re-fetch after transition failed",
-			"instance_id", instanceID, "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "state transition succeeded but re-fetch failed", "")
-		return
-	}
-
 	h.writeInstanceResponseWithRedaction(ctx, w, pluginID, updated)
 }
 
@@ -1773,303 +1278,42 @@ func (h *PluginHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 //   - 204 — deleted
 //   - 404 — plugin or instance not found (also returned on plugin/instance mismatch)
 //   - 409 — audience or policy references still exist
-//   - 503 — plugin store not configured (SetStore not called)
+//   - 503 — plugin store not configured (store == nil)
 //   - 500 — DB or unexpected error
 func (h *PluginHandler) DeleteInstance(w http.ResponseWriter, r *http.Request) {
-	if h.store == nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, "plugin management not configured", "")
-		return
-	}
 	ctx := r.Context()
 	pluginID := chi.URLParam(r, "id")
 	instanceID := chi.URLParam(r, "iid")
 
-	// Verify the instance exists and belongs to the given plugin.
-	if _, err := h.q.GetPluginByID(ctx, pluginID); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
-		} else {
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
-		}
+	if err := h.lifecycle.Delete(ctx, pluginID, instanceID); err != nil {
+		h.mapLifecycleError(w, err)
 		return
 	}
-	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
-	if errors.Is(err, ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
-		return
-	}
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get instance", "")
-		return
-	}
-	// Return 404 (not 403) on a plugin/instance mismatch to avoid leaking
-	// instance existence across plugins.
-	if inst.PluginID != pluginID {
-		httputil.WriteError(w, http.StatusNotFound, "instance not found", "")
-		return
-	}
-
-	// Policy reference guard: refuse deletion if any policy still references
-	// this instance's tools or subscribed trigger. TOCTOU with concurrent policy
-	// create is acceptable — mirrors the audience-delete precedent.
-	policyRefs, err := policy.ScanPolicyToolRefsForInstance(ctx, h.q, inst.InstanceName)
-	if err != nil {
-		slog.ErrorContext(ctx, "delete instance: scan policy refs", "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-	if len(policyRefs) > 0 {
-		httputil.WriteError(w, http.StatusConflict, "instance is referenced by policies",
-			joinNames(policyRefs, func(r policy.ToolPolicyRef) string { return r.Name }))
-		return
-	}
-
-	// Audience reference guard: refuse deletion if any audience entry references
-	// this instance (the operator must update audiences first).
-	audienceEntries, err := h.q.ListAudienceEntriesByInstance(ctx, instanceID)
-	if err != nil {
-		slog.ErrorContext(ctx, "delete instance: list audience entries", "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-	if len(audienceEntries) > 0 {
-		// Deduplicate audience names — one instance can appear in multiple entries
-		// of the same audience.
-		seen := make(map[string]bool)
-		var audienceNames []string
-		for _, ae := range audienceEntries {
-			if !seen[ae.AudienceName] {
-				seen[ae.AudienceName] = true
-				audienceNames = append(audienceNames, ae.AudienceName)
-			}
-		}
-		httputil.WriteError(w, http.StatusConflict,
-			"instance is referenced by audiences", strings.Join(audienceNames, ", "))
-		return
-	}
-
-	// In-flight gate: refuse deletion if tool calls are actively dispatched to
-	// this instance. TOCTOU is acceptable — mirrors the policy/audience guards.
-	if h.inflightCounter != nil {
-		count := h.inflightCounter.InflightCountByInstance(inst.InstanceName)
-		if count > 0 {
-			httputil.WriteError(w, http.StatusConflict,
-				"instance has in-flight tool calls",
-				fmt.Sprintf("%d in-flight calls", count))
-			return
-		}
-	}
-
-	// Best-effort subprocess stop before DB cleanup so in-flight RPCs don't hit
-	// a half-deleted instance. A wedged subprocess must not block DB cleanup.
-	if h.processManager != nil {
-		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if err := h.processManager.Stop(stopCtx, instanceID); err != nil {
-			slog.WarnContext(ctx, "delete instance: subprocess stop failed",
-				"instance_id", instanceID, "err", err)
-		}
-		cancel()
-	}
-
-	// Transactional delete in FK-safe order:
-	//   1. plugin_pending_requests (RESTRICT FK — must clear first)
-	//   2. plugin_oauth_nonces (instance_id FK)
-	//   3. plugin_instances row (audit events use SET NULL so history survives)
-	tx, err := h.store.DB().BeginTx(ctx, nil)
-	if err != nil {
-		slog.ErrorContext(ctx, "delete instance: begin tx", "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-	defer func() {
-		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
-			slog.ErrorContext(ctx, "delete instance: rollback failed", "err", rbErr)
-		}
-	}()
-
-	q := db.New(tx)
-	if err := q.DeletePluginPendingRequestsByInstance(ctx, instanceID); err != nil {
-		slog.ErrorContext(ctx, "delete instance: clear pending requests", "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-	if err := q.DeletePluginOAuthNoncesByInstance(ctx, instanceID); err != nil {
-		slog.ErrorContext(ctx, "delete instance: clear oauth nonces", "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-	if _, err := q.DeletePluginInstance(ctx, instanceID); err != nil {
-		slog.ErrorContext(ctx, "delete instance: delete row", "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		slog.ErrorContext(ctx, "delete instance: commit", "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-
-	// Best-effort tool-namespace release. Nil-safe: not yet wired in main.go
-	// (see SetToolUnregistrar godoc and TODO at main.go). #194 follow-up will
-	// add the one-line wire-up.
-	if h.toolUnregistrar != nil {
-		h.toolUnregistrar.UnregisterInstance(ctx, inst.InstanceName)
-	}
-
-	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
-	h.writeAuditEvent(ctx, auditInstanceDeleted, "info", nowStr, map[string]any{
-		"plugin_id":     pluginID,
-		"instance_id":   instanceID,
-		"instance_name": inst.InstanceName,
-	})
-
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // Uninstall handles DELETE /api/v1/admin/plugins/{id}.
 //
-// Validates that no policies or audience entries reference any of the plugin's
-// instances, stops all subprocesses (best-effort), removes pending requests and
-// OAuth nonces for every instance in a transaction, then removes the plugin row
-// (which cascades to plugin_instances). After the commit, removes the plugin
-// binary directory from disk (best-effort, containment-checked). Emits an audit
-// event on success.
+// Validates that no instances remain, stops all subprocesses (best-effort),
+// removes pending requests and OAuth nonces for every instance in a transaction,
+// then removes the plugin row (which cascades to plugin_instances). After the
+// commit, removes the plugin binary directory from disk (best-effort,
+// containment-checked). Emits an audit event on success.
 //
 // Status codes:
 //   - 204 — uninstalled
 //   - 404 — plugin not found
-//   - 409 — audience or policy references still exist
-//   - 503 — plugin store not configured (SetStore not called)
+//   - 409 — instances still exist
+//   - 503 — plugin store not configured (store == nil)
 //   - 500 — DB or unexpected error
 func (h *PluginHandler) Uninstall(w http.ResponseWriter, r *http.Request) {
-	if h.store == nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, "plugin management not configured", "")
-		return
-	}
 	ctx := r.Context()
 	pluginID := chi.URLParam(r, "id")
 
-	plugin, err := h.q.GetPluginByID(ctx, pluginID)
-	if errors.Is(err, ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
+	if err := h.lifecycle.Uninstall(ctx, pluginID); err != nil {
+		h.mapLifecycleError(w, err)
 		return
 	}
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get plugin", "")
-		return
-	}
-
-	// Collect all instances. Per the issue (#243): removing the plugin (binary +
-	// manifest) requires all instances to be removed first — per-instance
-	// DeleteInstance enforces the policy/audience/in-flight gates individually.
-	// This simpler gate avoids duplicating those checks here.
-	instances, err := h.q.ListPluginInstancesByPlugin(ctx, pluginID)
-	if err != nil {
-		slog.ErrorContext(ctx, "uninstall: list instances", "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-
-	if len(instances) > 0 {
-		httputil.WriteError(w, http.StatusConflict,
-			"all instances must be removed before uninstalling the plugin",
-			joinNames(instances, func(inst db.PluginInstance) string { return inst.InstanceName }))
-		return
-	}
-
-	// Best-effort: stop all running subprocesses before clearing rows.
-	if h.processManager != nil {
-		stopCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		if err := h.processManager.StopByPluginID(stopCtx, pluginID); err != nil {
-			slog.WarnContext(ctx, "uninstall: stop subprocesses failed",
-				"plugin_id", pluginID, "err", err)
-		}
-		cancel()
-	}
-
-	// Transactional delete:
-	//   1. For each instance: clear pending requests + OAuth nonces (RESTRICT FKs).
-	//   2. DeletePlugin — cascades to plugin_instances via ON DELETE CASCADE.
-	tx, err := h.store.DB().BeginTx(ctx, nil)
-	if err != nil {
-		slog.ErrorContext(ctx, "uninstall: begin tx", "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-	defer func() {
-		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
-			slog.ErrorContext(ctx, "uninstall: rollback failed", "err", rbErr)
-		}
-	}()
-
-	q := db.New(tx)
-	for _, inst := range instances {
-		if err := q.DeletePluginPendingRequestsByInstance(ctx, inst.ID); err != nil {
-			slog.ErrorContext(ctx, "uninstall: clear pending requests",
-				"instance_id", inst.ID, "err", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-			return
-		}
-		if err := q.DeletePluginOAuthNoncesByInstance(ctx, inst.ID); err != nil {
-			slog.ErrorContext(ctx, "uninstall: clear oauth nonces",
-				"instance_id", inst.ID, "err", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-			return
-		}
-	}
-	if _, err := q.DeletePlugin(ctx, pluginID); err != nil {
-		slog.ErrorContext(ctx, "uninstall: delete plugin", "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		slog.ErrorContext(ctx, "uninstall: commit", "err", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-
-	// Best-effort tool-namespace release for each instance. Nil-safe.
-	if h.toolUnregistrar != nil {
-		for _, inst := range instances {
-			h.toolUnregistrar.UnregisterInstance(ctx, inst.InstanceName)
-		}
-	}
-
-	// Post-commit: remove the binary directory from disk.
-	// Containment check (fail-closed per ADR-001): only remove paths that are
-	// strictly within pluginsDir. A path that starts with ".." after filepath.Rel
-	// is a traversal attempt — we refuse and log a warning.
-	//
-	// Note: if the fsnotify watcher is mid-publishBundle at the moment of
-	// RemoveAll, the newly extracted bundle may land with a nil binary_path.
-	// In that case the operator may need to re-install via the upload endpoint.
-	binaryPathRemoved := false
-	if plugin.BinaryPath != nil && h.pluginsDir != "" {
-		dir := filepath.Dir(*plugin.BinaryPath)
-		rel, relErr := filepath.Rel(h.pluginsDir, dir)
-		if relErr != nil || strings.HasPrefix(rel, "..") {
-			slog.WarnContext(ctx, "uninstall: binary path escapes plugins dir — skipping removal",
-				"binary_path", *plugin.BinaryPath,
-				"plugins_dir", h.pluginsDir)
-		} else {
-			if err := os.RemoveAll(dir); err != nil {
-				slog.WarnContext(ctx, "uninstall: remove binary dir failed",
-					"dir", dir, "err", err)
-			} else {
-				binaryPathRemoved = true
-			}
-		}
-	}
-
-	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
-	h.writeAuditEvent(ctx, auditPluginUninstalled, "info", nowStr, map[string]any{
-		"plugin_id":           pluginID,
-		"plugin_name":         plugin.Name,
-		"plugin_version":      plugin.PluginVersion,
-		"instance_count":      len(instances),
-		"binary_path_removed": binaryPathRemoved,
-	})
-
 	w.WriteHeader(http.StatusNoContent)
 }
 

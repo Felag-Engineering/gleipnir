@@ -180,10 +180,13 @@ func TestPluginHandler_Install(t *testing.T) {
 			if tt.seedPlugin != nil {
 				q.seedPlugin(*tt.seedPlugin)
 			}
-			h := NewPluginHandler(q, nil, fixedClock)
+			var inst PluginInstaller
 			if tt.installer != nil {
-				h.SetInstaller(tt.installer)
+				inst = tt.installer
 			}
+			h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{
+				installer: inst,
+			})
 
 			rec := serveInstall(h, tt.body)
 
@@ -321,7 +324,7 @@ func TestPluginHandler_CreateInstance(t *testing.T) {
 				q.createInstanceErr = tt.createInstanceErr
 			}
 
-			h := NewPluginHandler(q, nil, fixedClock)
+			h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 			rec := serveCreateInstance(h, pluginID, []byte(tt.body))
 
 			if rec.Code != tt.wantStatus {
@@ -377,8 +380,7 @@ func TestPluginHandler_CreateInstance(t *testing.T) {
 			Status:        "active",
 		})
 		pm := &fakeProcessManager{}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetProcessManager(pm)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{procMgr: pm})
 
 		rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"spawn-test"}`))
 		if rec.Code != http.StatusCreated {
@@ -402,8 +404,7 @@ func TestPluginHandler_CreateInstance(t *testing.T) {
 			Status:        "active",
 		})
 		pm := &fakeProcessManager{startErr: errors.New("binary not found")}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetProcessManager(pm)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{procMgr: pm})
 
 		rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"spawn-fail-test"}`))
 		// The row was created; spawn failure must not retroactively change the status.
@@ -420,8 +421,8 @@ func TestPluginHandler_CreateInstance(t *testing.T) {
 			PluginVersion: "0.1.0",
 			Status:        "active",
 		})
-		h := NewPluginHandler(q, nil, fixedClock)
-		// No SetProcessManager — simulates GLEIPNIR_PLUGINS_ENABLED=false path.
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+		// No processManager — simulates GLEIPNIR_PLUGINS_ENABLED=false path.
 
 		rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"no-pm-test"}`))
 		if rec.Code != http.StatusCreated {
@@ -438,8 +439,7 @@ func TestPluginHandler_CreateInstance(t *testing.T) {
 			Status:        "active",
 		})
 		pm := &fakeProcessManager{}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetProcessManager(pm)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{procMgr: pm})
 
 		// Empty instance_name triggers a 400 before the DB insert.
 		rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":""}`))

@@ -326,6 +326,50 @@ func (f *fakePluginQuerier) seedPolicy(p db.Policy) {
 	f.policies = append(f.policies, p)
 }
 
+// testPluginHandlerConfig holds optional dependencies for newTestPluginHandler.
+// Zero-value is safe: all fields are nil-able and treated as no-op.
+type testPluginHandlerConfig struct {
+	store      *db.Store
+	procMgr    PluginProcessManager
+	trigger    TriggerRestarter
+	inflight   InflightCounter
+	unreg      ToolUnregistrar
+	pluginsDir string
+	installer  PluginInstaller
+	rssAgg     RSSAggregator
+}
+
+// newTestPluginHandler builds InstanceLifecycle + InstanceConfig + PluginHandler
+// from a single querier and clock, wiring all optional deps from cfg. It is the
+// shared constructor for all ~97 test sites so a future API change touches one
+// place, not 97.
+func newTestPluginHandler(q PluginQuerier, clock func() time.Time, cfg testPluginHandlerConfig) *PluginHandler {
+	lifecycle := NewInstanceLifecycle(InstanceLifecycleDeps{
+		Q:          q,
+		Store:      cfg.store,
+		ProcMgr:    cfg.procMgr,
+		Trigger:    cfg.trigger,
+		Inflight:   cfg.inflight,
+		Unreg:      cfg.unreg,
+		PluginsDir: cfg.pluginsDir,
+	})
+	instanceConfig := NewInstanceConfig(InstanceConfigDeps{
+		Q:       q,
+		Trigger: cfg.trigger,
+		Clock:   clock,
+	})
+	return NewPluginHandler(PluginHandlerDeps{
+		Q:              q,
+		Clock:          clock,
+		Installer:      cfg.installer,
+		RSSAggregator:  cfg.rssAgg,
+		ProcessManager: cfg.procMgr,
+		PluginsDir:     cfg.pluginsDir,
+		Lifecycle:      lifecycle,
+		Config:         instanceConfig,
+	})
+}
+
 func TestPluginHandler_GetInstance(t *testing.T) {
 	detail := "verified by host"
 
@@ -392,7 +436,7 @@ func TestPluginHandler_GetInstance(t *testing.T) {
 					ManifestSnapshot: instanceConfigManifestNoSchema,
 				})
 			}
-			h := NewPluginHandler(q, nil, nil)
+			h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins/"+tt.pluginID+"/instances/"+tt.instanceID, nil)
 			req = withChiParams(req, map[string]string{"id": tt.pluginID, "iid": tt.instanceID})
@@ -447,7 +491,7 @@ func TestGetInstance_RedactsSecretConfigField(t *testing.T) {
 		UpdatedAt:    "2026-01-01T00:00:00Z",
 	})
 
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
 	rec := httptest.NewRecorder()
@@ -494,7 +538,7 @@ func TestGetInstance_ManifestParseFails_500(t *testing.T) {
 		UpdatedAt:   "2026-01-01T00:00:00Z",
 	})
 
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
 	rec := httptest.NewRecorder()
@@ -523,7 +567,7 @@ func TestPutInstanceConfig_RejectsSentinelInSecretField(t *testing.T) {
 		Version:     0,
 	})
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	// Submitting "***" for a secret field must be rejected.
 	body := `{"config":{"app_level_token":"***"},"expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
@@ -555,7 +599,7 @@ func TestPutInstanceConfig_AllowsSentinelInNonSecretField(t *testing.T) {
 		Version:     0,
 	})
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	body := `{"config":{"any_field":"***"},"expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
@@ -587,7 +631,7 @@ func TestPutInstanceConfig_ResponseRedactsWrittenSecret(t *testing.T) {
 		UpdatedAt:   "2026-01-01T00:00:00Z",
 	})
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	body := `{"config":{"app_level_token":"xapp-real-secret"},"expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
@@ -652,7 +696,7 @@ func TestPutInstanceConfig_FallbackResponseRedactsWrittenSecret(t *testing.T) {
 	})
 
 	q := &failOnSecondGetInstance{fakePluginQuerier: base, targetID: "inst-1"}
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 
 	body := `{"config":{"app_level_token":"xapp-real-secret"},"expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
@@ -698,7 +742,7 @@ func TestPutInstanceConfigProperty_HappyPath(t *testing.T) {
 		UpdatedAt:   "2026-01-01T00:00:00Z",
 	})
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	body := `{"value":"xapp-new-real-token","expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1", "property": "app_level_token"})
@@ -751,7 +795,7 @@ func TestPutInstanceConfigProperty_UnknownProperty(t *testing.T) {
 		Version:     0,
 	})
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	body := `{"value":"whatever","expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1", "property": "nonexistent_field"})
@@ -780,7 +824,7 @@ func TestPutInstanceConfigProperty_RejectsSentinelValue(t *testing.T) {
 		Version:     0,
 	})
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	body := `{"value":"***","expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1", "property": "app_level_token"})
@@ -810,7 +854,7 @@ func TestPutInstanceConfigProperty_VersionConflict(t *testing.T) {
 	})
 	q.configCASFailOnID = "inst-1"
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	body := `{"value":"xapp-new","expected_version":5}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1", "property": "app_level_token"})
@@ -843,7 +887,7 @@ func TestPutInstanceConfigProperty_FallbackResponseRedactsWrittenSecret(t *testi
 	})
 
 	q := &failOnSecondGetInstance{fakePluginQuerier: base, targetID: "inst-1"}
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 
 	body := `{"value":"xapp-real-secret","expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
@@ -897,7 +941,7 @@ func TestPluginHandler_AcceptNewKey(t *testing.T) {
 		_, newB64 := makeTestPubkey(t)
 		body := fmt.Sprintf(`{"candidate_pubkey": %q}`, newB64)
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-1/accept-new-key", bytes.NewBufferString(body))
 		req = withChiParams(req, map[string]string{"id": "plugin-1"})
 		rec := httptest.NewRecorder()
@@ -950,7 +994,7 @@ func TestPluginHandler_AcceptNewKey(t *testing.T) {
 		_, newB64 := makeTestPubkey(t)
 		body := fmt.Sprintf(`{"candidate_pubkey": %q}`, newB64)
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-2/accept-new-key", bytes.NewBufferString(body))
 		req = withChiParams(req, map[string]string{"id": "plugin-2"})
 		rec := httptest.NewRecorder()
@@ -986,7 +1030,7 @@ func TestPluginHandler_AcceptNewKey(t *testing.T) {
 		oldPubkey, _ := makeTestPubkey(t)
 		q.seedPlugin(db.Plugin{ID: "plugin-3", Name: "p", TrustedPubkey: string(oldPubkey), Version: 0})
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 
 		// Not valid base64.
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"candidate_pubkey": "not-valid-base64!!!"}`))
@@ -1013,7 +1057,7 @@ func TestPluginHandler_AcceptNewKey(t *testing.T) {
 		_, newB64 := makeTestPubkey(t)
 		body := fmt.Sprintf(`{"candidate_pubkey": %q}`, newB64)
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body))
 		req = withChiParams(req, map[string]string{"id": "nonexistent"})
 		rec := httptest.NewRecorder()
@@ -1033,7 +1077,7 @@ func TestPluginHandler_AcceptNewKey(t *testing.T) {
 		_, newB64 := makeTestPubkey(t)
 		body := fmt.Sprintf(`{"candidate_pubkey": %q}`, newB64)
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body))
 		req = withChiParams(req, map[string]string{"id": "plugin-4"})
 		rec := httptest.NewRecorder()
@@ -1097,7 +1141,7 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 		// Seed the pending manifest row as if a material change was previously detected.
 		q.seedPendingManifest("plugin-1", []byte(v2ManifestYAML), "1.0.0", "2.0.0")
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-1/accept-manifest", bytes.NewBufferString(`{}`))
 		req = withChiParams(req, map[string]string{"id": "plugin-1"})
 		rec := httptest.NewRecorder()
@@ -1151,7 +1195,7 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 		})
 		q.seedPendingManifest("plugin-2", []byte(v2ManifestWithRequiredField), "1.0.0", "2.0.0")
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-2/accept-manifest", bytes.NewBufferString(`{}`))
 		req = withChiParams(req, map[string]string{"id": "plugin-2"})
 		rec := httptest.NewRecorder()
@@ -1183,7 +1227,7 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-3", Name: "test-plugin", ManifestSnapshot: v1ManifestYAML, Version: 0})
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-3/accept-manifest", bytes.NewBufferString(`{}`))
 		req = withChiParams(req, map[string]string{"id": "plugin-3"})
 		rec := httptest.NewRecorder()
@@ -1197,7 +1241,7 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 	t.Run("plugin not found returns 404", func(t *testing.T) {
 		q := newFakePluginQuerier()
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/nonexistent/accept-manifest", bytes.NewBufferString(`{}`))
 		req = withChiParams(req, map[string]string{"id": "nonexistent"})
 		rec := httptest.NewRecorder()
@@ -1220,7 +1264,7 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 		q.seedPendingManifest("plugin-4", []byte(v2ManifestYAML), "1.0.0", "2.0.0")
 		q.casFailOn = "plugin-4" // trigger CAS miss on UpdatePluginManifest
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-4/accept-manifest", bytes.NewBufferString(`{}`))
 		req = withChiParams(req, map[string]string{"id": "plugin-4"})
 		rec := httptest.NewRecorder()
@@ -1243,7 +1287,7 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 		})
 		q.seedPendingManifest("plugin-5", []byte(v2ManifestYAML), "1.0.0", "2.0.0")
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-5/accept-manifest", bytes.NewBufferString(`{}`))
 		req = withChiParams(req, map[string]string{"id": "plugin-5"})
 		// Inject an authenticated user so AcceptManifest can record actor_user_id.
@@ -1300,7 +1344,7 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 		// Only the target plugin has a pending manifest row.
 		q.seedPendingManifest("plugin-target", []byte(v2ManifestYAML), "1.0.0", "2.0.0")
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`))
 		req = withChiParams(req, map[string]string{"id": "plugin-target"})
 		rec := httptest.NewRecorder()
@@ -1329,7 +1373,7 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 		})
 		// No pending manifest row seeded.
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`))
 		req = withChiParams(req, map[string]string{"id": "plugin-nopending"})
 		rec := httptest.NewRecorder()
@@ -1352,7 +1396,7 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 		})
 		q.seedPendingManifest("plugin-twiceaccept", []byte(v2ManifestYAML), "1.0.0", "2.0.0")
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		// First accept succeeds and deletes the pending row.
 		req1 := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`))
 		req1 = withChiParams(req1, map[string]string{"id": "plugin-twiceaccept"})
@@ -1420,8 +1464,7 @@ func TestPluginHandler_PutSubscriptionScope(t *testing.T) {
 		})
 
 		restarter := &fakeTriggerRestarter{}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetTriggerRestarter(restarter)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{trigger: restarter})
 
 		body := `{"scope":{"channels":["#incidents","#ops"]},"expected_version":2}`
 		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
@@ -1447,9 +1490,8 @@ func TestPluginHandler_PutSubscriptionScope(t *testing.T) {
 
 	t.Run("400 missing expected_version", func(t *testing.T) {
 		q := newFakePluginQuerier()
-		h := NewPluginHandler(q, nil, fixedClock)
 		restarter := &fakeTriggerRestarter{}
-		h.SetTriggerRestarter(restarter)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{trigger: restarter})
 
 		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(`{"scope":{}}`))
 		req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
@@ -1480,8 +1522,7 @@ func TestPluginHandler_PutSubscriptionScope(t *testing.T) {
 		})
 
 		restarter := &fakeTriggerRestarter{}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetTriggerRestarter(restarter)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{trigger: restarter})
 
 		body := `{"scope":{"channels":["#a"]},"expected_version":0}`
 		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
@@ -1513,8 +1554,7 @@ func TestPluginHandler_PutSubscriptionScope(t *testing.T) {
 		})
 
 		restarter := &fakeTriggerRestarter{}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetTriggerRestarter(restarter)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{trigger: restarter})
 
 		// "channels" is required but absent; additionalProperties:false means extra keys are rejected.
 		body := `{"scope":{"bad_field":"x"},"expected_version":0}`
@@ -1548,8 +1588,7 @@ func TestPluginHandler_PutSubscriptionScope(t *testing.T) {
 		q.scopeCASFailOnID = "inst-4"
 
 		restarter := &fakeTriggerRestarter{}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetTriggerRestarter(restarter)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{trigger: restarter})
 
 		// Send expected_version=5 but scopeCASFailOnID will force 0 rows.
 		body := `{"scope":{"channels":["#x"]},"expected_version":5}`
@@ -1575,7 +1614,7 @@ func TestPluginHandler_PutSubscriptionScope(t *testing.T) {
 			Version:     0,
 		})
 
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 
 		body := `{"scope":{},"expected_version":0}`
 		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
@@ -1609,8 +1648,7 @@ func TestPluginHandler_PutSubscriptionScope(t *testing.T) {
 		})
 
 		restarter := &fakeTriggerRestarter{}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetTriggerRestarter(restarter)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{trigger: restarter})
 
 		body := `{"scope":{"channels":["#alerts"]},"expected_version":1}`
 		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
@@ -1664,8 +1702,7 @@ func TestPluginHandler_PutSubscriptionScope(t *testing.T) {
 		q.getInstanceErrAfterN["inst-sec2"] = 1
 
 		restarter := &fakeTriggerRestarter{}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetTriggerRestarter(restarter)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{trigger: restarter})
 
 		body := `{"scope":{"channels":["#alerts"]},"expected_version":1}`
 		req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
@@ -1722,7 +1759,7 @@ func TestPluginHandler_PutInstanceConfig_HappyPath(t *testing.T) {
 		UpdatedAt:    "2026-01-01T00:00:00Z",
 	})
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	body := `{"config":{"app_level_token":"xapp-1-test"},"expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
@@ -1766,7 +1803,7 @@ func TestPluginHandler_PutInstanceConfig_ValidationFailure_422(t *testing.T) {
 		Version:     0,
 	})
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	// Missing required app_level_token.
 	body := `{"config":{},"expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
@@ -1796,7 +1833,7 @@ func TestPluginHandler_PutInstanceConfig_NoSchema_AcceptsAnyObject(t *testing.T)
 		Version:     0,
 	})
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	body := `{"config":{"any":"value","nested":{"x":1}},"expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
@@ -1811,7 +1848,7 @@ func TestPluginHandler_PutInstanceConfig_NoSchema_AcceptsAnyObject(t *testing.T)
 func TestPluginHandler_PutInstanceConfig_MissingExpectedVersion_400(t *testing.T) {
 	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
 	q := newFakePluginQuerier()
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 
 	body := `{"config":{"app_level_token":"tok"}}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
@@ -1842,7 +1879,7 @@ func TestPluginHandler_PutInstanceConfig_CASConflict_409(t *testing.T) {
 	})
 	q.configCASFailOnID = "inst-1"
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	body := `{"config":{},"expected_version":5}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
@@ -1858,7 +1895,7 @@ func TestPluginHandler_PutInstanceConfig_InstanceNotFound_404(t *testing.T) {
 	fixedClock := func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
 	q := newFakePluginQuerier()
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	body := `{"config":{},"expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-missing"})
@@ -1880,7 +1917,7 @@ func TestPluginHandler_PutInstanceConfig_PluginIDMismatch_404(t *testing.T) {
 		Version:     0,
 	})
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	body := `{"config":{},"expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
@@ -1909,7 +1946,7 @@ func TestPluginHandler_PutInstanceConfig_MalformedManifest_500(t *testing.T) {
 		Version:     0,
 	})
 
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 	body := `{"config":{},"expected_version":0}`
 	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
 	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
@@ -1962,7 +1999,7 @@ func TestPluginHandler_DeactivateInstance(t *testing.T) {
 
 	t.Run("404 unknown plugin", func(t *testing.T) {
 		q := newFakePluginQuerier()
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		rec := serveDeactivateInstance(h, "nonexistent-plugin", "inst-1")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 for unknown plugin", rec.Code)
@@ -1972,7 +2009,7 @@ func TestPluginHandler_DeactivateInstance(t *testing.T) {
 	t.Run("404 unknown instance", func(t *testing.T) {
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		rec := serveDeactivateInstance(h, "plugin-1", "nonexistent-inst")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 for unknown instance", rec.Code)
@@ -1983,7 +2020,7 @@ func TestPluginHandler_DeactivateInstance(t *testing.T) {
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
 		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-other", InstanceName: "prod", HealthState: "healthy"})
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		rec := serveDeactivateInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 on plugin/instance mismatch", rec.Code)
@@ -1994,7 +2031,7 @@ func TestPluginHandler_DeactivateInstance(t *testing.T) {
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
 		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "inactive"})
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		rec := serveDeactivateInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusConflict {
 			t.Errorf("status = %d, want 409 when already inactive", rec.Code)
@@ -2005,7 +2042,7 @@ func TestPluginHandler_DeactivateInstance(t *testing.T) {
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
 		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "signature_invalid"})
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		rec := serveDeactivateInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusConflict {
 			t.Errorf("status = %d, want 409 for terminal state", rec.Code)
@@ -2019,8 +2056,7 @@ func TestPluginHandler_DeactivateInstance(t *testing.T) {
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
 		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy"})
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetInflightCounter(&fakeInflightCounter{counts: map[string]int{"prod": 3}})
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{inflight: &fakeInflightCounter{counts: map[string]int{"prod": 3}}})
 		rec := serveDeactivateInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusConflict {
 			t.Errorf("status = %d, want 409 for in-flight calls", rec.Code)
@@ -2041,10 +2077,11 @@ func TestPluginHandler_DeactivateInstance(t *testing.T) {
 
 		pm := &fakeProcessManager{}
 		restarter := &fakeTriggerRestarter{}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetProcessManager(pm)
-		h.SetTriggerRestarter(restarter)
-		h.SetInflightCounter(&fakeInflightCounter{counts: map[string]int{"prod": 0}})
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{
+			procMgr:  pm,
+			trigger:  restarter,
+			inflight: &fakeInflightCounter{counts: map[string]int{"prod": 0}},
+		})
 
 		rec := serveDeactivateInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusOK {
@@ -2083,7 +2120,7 @@ func TestPluginHandler_ActivateInstance(t *testing.T) {
 
 	t.Run("404 unknown plugin", func(t *testing.T) {
 		q := newFakePluginQuerier()
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		rec := serveActivateInstance(h, "nonexistent-plugin", "inst-1")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 for unknown plugin", rec.Code)
@@ -2093,7 +2130,7 @@ func TestPluginHandler_ActivateInstance(t *testing.T) {
 	t.Run("404 unknown instance", func(t *testing.T) {
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		rec := serveActivateInstance(h, "plugin-1", "nonexistent-inst")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 for unknown instance", rec.Code)
@@ -2104,7 +2141,7 @@ func TestPluginHandler_ActivateInstance(t *testing.T) {
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
 		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-other", InstanceName: "prod", HealthState: "inactive"})
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		rec := serveActivateInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 on plugin/instance mismatch", rec.Code)
@@ -2115,7 +2152,7 @@ func TestPluginHandler_ActivateInstance(t *testing.T) {
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
 		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy"})
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		rec := serveActivateInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusConflict {
 			t.Errorf("status = %d, want 409 when not inactive", rec.Code)
@@ -2132,9 +2169,10 @@ func TestPluginHandler_ActivateInstance(t *testing.T) {
 
 		pm := &fakeProcessManager{}
 		restarter := &fakeTriggerRestarter{}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetProcessManager(pm)
-		h.SetTriggerRestarter(restarter)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{
+			procMgr: pm,
+			trigger: restarter,
+		})
 
 		rec := serveActivateInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusOK {
@@ -2227,7 +2265,7 @@ func TestPluginHandler_DeleteInstance(t *testing.T) {
 
 	t.Run("503 when store is nil", func(t *testing.T) {
 		q := newFakePluginQuerier()
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		// store not wired: DeleteInstance must return 503.
 		rec := serveDeleteInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusServiceUnavailable {
@@ -2238,8 +2276,7 @@ func TestPluginHandler_DeleteInstance(t *testing.T) {
 	t.Run("404 unknown plugin", func(t *testing.T) {
 		store := newPluginTestStore(t)
 		q := newFakePluginQuerier()
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{store: store})
 		rec := serveDeleteInstance(h, "nonexistent-plugin", "inst-1")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 for unknown plugin", rec.Code)
@@ -2250,8 +2287,7 @@ func TestPluginHandler_DeleteInstance(t *testing.T) {
 		store := newPluginTestStore(t)
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{store: store})
 		rec := serveDeleteInstance(h, "plugin-1", "nonexistent-inst")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 for unknown instance", rec.Code)
@@ -2263,8 +2299,7 @@ func TestPluginHandler_DeleteInstance(t *testing.T) {
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
 		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-other", InstanceName: "prod", HealthState: "healthy"})
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{store: store})
 		rec := serveDeleteInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 on plugin/instance mismatch", rec.Code)
@@ -2276,9 +2311,10 @@ func TestPluginHandler_DeleteInstance(t *testing.T) {
 		q := newFakePluginQuerier()
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
 		q.seed(db.PluginInstance{ID: "inst-1", PluginID: "plugin-1", InstanceName: "prod", HealthState: "healthy"})
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
-		h.SetInflightCounter(&fakeInflightCounter{counts: map[string]int{"prod": 3}})
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{
+			store:    store,
+			inflight: &fakeInflightCounter{counts: map[string]int{"prod": 3}},
+		})
 		rec := serveDeleteInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusConflict {
 			t.Errorf("status = %d, want 409 for in-flight calls", rec.Code)
@@ -2297,8 +2333,7 @@ func TestPluginHandler_DeleteInstance(t *testing.T) {
 			{ID: "ae-1", AudienceID: "aud-1", PluginInstanceID: "inst-1", AudienceName: "ops-audience"},
 			{ID: "ae-2", AudienceID: "aud-1", PluginInstanceID: "inst-1", AudienceName: "ops-audience"},
 		})
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{store: store})
 		rec := serveDeleteInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusConflict {
 			t.Errorf("status = %d, want 409 for audience reference", rec.Code)
@@ -2320,8 +2355,7 @@ func TestPluginHandler_DeleteInstance(t *testing.T) {
 			Name: "Slack Policy",
 			Yaml: "trigger:\n  type: webhook\ncapabilities:\n  tools:\n    - tool: slack-prod.post_message\n",
 		})
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{store: store})
 		rec := serveDeleteInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusConflict {
 			t.Errorf("status = %d, want 409 for policy reference", rec.Code)
@@ -2342,9 +2376,10 @@ func TestPluginHandler_DeleteInstance(t *testing.T) {
 		seedStoreInstance(t, store, "inst-1", "plugin-1", "prod")
 
 		pm := &fakeProcessManager{}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
-		h.SetProcessManager(pm)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{
+			store:   store,
+			procMgr: pm,
+		})
 
 		rec := serveDeleteInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusNoContent {
@@ -2386,9 +2421,10 @@ func TestPluginHandler_DeleteInstance(t *testing.T) {
 		seedStoreInstance(t, store, "inst-1", "plugin-1", "prod")
 
 		pm := &fakeProcessManager{stopErr: errors.New("subprocess wedged")}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
-		h.SetProcessManager(pm)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{
+			store:   store,
+			procMgr: pm,
+		})
 
 		rec := serveDeleteInstance(h, "plugin-1", "inst-1")
 		if rec.Code != http.StatusNoContent {
@@ -2408,8 +2444,7 @@ func TestPluginHandler_DeleteInstance(t *testing.T) {
 		seedStorePlugin(t, store, "plugin-1", "p", nil)
 		seedStoreInstance(t, store, "inst-1", "plugin-1", "prod")
 
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{store: store})
 		// No processManager set — must not panic.
 
 		rec := serveDeleteInstance(h, "plugin-1", "inst-1")
@@ -2427,7 +2462,7 @@ func TestPluginHandler_Uninstall(t *testing.T) {
 
 	t.Run("503 when store is nil", func(t *testing.T) {
 		q := newFakePluginQuerier()
-		h := NewPluginHandler(q, nil, fixedClock)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 		rec := serveUninstall(h, "plugin-1")
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Errorf("status = %d, want 503 when store is nil", rec.Code)
@@ -2437,8 +2472,7 @@ func TestPluginHandler_Uninstall(t *testing.T) {
 	t.Run("404 unknown plugin", func(t *testing.T) {
 		store := newPluginTestStore(t)
 		q := newFakePluginQuerier()
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{store: store})
 		rec := serveUninstall(h, "nonexistent")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d, want 404 for unknown plugin", rec.Code)
@@ -2454,8 +2488,7 @@ func TestPluginHandler_Uninstall(t *testing.T) {
 		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "my-plugin", ManifestSnapshot: instanceConfigManifestNoSchema})
 		q.seed(db.PluginInstance{ID: "inst-a", PluginID: "plugin-1", InstanceName: "slack-prod", HealthState: "healthy"})
 		q.seed(db.PluginInstance{ID: "inst-b", PluginID: "plugin-1", InstanceName: "slack-staging", HealthState: "healthy"})
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{store: store})
 
 		rec := serveUninstall(h, "plugin-1")
 		if rec.Code != http.StatusConflict {
@@ -2498,10 +2531,11 @@ func TestPluginHandler_Uninstall(t *testing.T) {
 		seedStorePlugin(t, store, "plugin-2", "my-plugin", &bp)
 
 		pm := &fakeProcessManager{}
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
-		h.SetProcessManager(pm)
-		h.SetPluginsDir(pluginsDir)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{
+			store:      store,
+			procMgr:    pm,
+			pluginsDir: pluginsDir,
+		})
 
 		rec := serveUninstall(h, "plugin-2")
 		if rec.Code != http.StatusNoContent {
@@ -2547,9 +2581,10 @@ func TestPluginHandler_Uninstall(t *testing.T) {
 		// Seed real store so DELETE finds the row.
 		seedStorePlugin(t, store, "plugin-2", "no-binary", nil)
 
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
-		h.SetPluginsDir(t.TempDir())
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{
+			store:      store,
+			pluginsDir: t.TempDir(),
+		})
 
 		rec := serveUninstall(h, "plugin-2")
 		if rec.Code != http.StatusNoContent {
@@ -2576,9 +2611,10 @@ func TestPluginHandler_Uninstall(t *testing.T) {
 		})
 		seedStorePlugin(t, store, "plugin-evil", "evil", &bp)
 
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
-		h.SetPluginsDir(pluginsDir)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{
+			store:      store,
+			pluginsDir: pluginsDir,
+		})
 
 		rec := serveUninstall(h, "plugin-evil")
 		if rec.Code != http.StatusNoContent {
@@ -2596,8 +2632,7 @@ func TestPluginHandler_Uninstall(t *testing.T) {
 		q.seedPlugin(db.Plugin{ID: "plugin-3", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
 		seedStorePlugin(t, store, "plugin-3", "p", nil)
 
-		h := NewPluginHandler(q, nil, fixedClock)
-		h.SetStore(store)
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{store: store})
 
 		rec := serveUninstall(h, "plugin-3")
 		if rec.Code != http.StatusNoContent {
@@ -2715,7 +2750,7 @@ func TestApprovePlugin_HappyPath(t *testing.T) {
 		Status:           "pending_review",
 		Version:          0,
 	})
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-1/approve", nil)
 	req = withChiParams(req, map[string]string{"id": "plugin-1"})
@@ -2759,7 +2794,7 @@ func TestApprovePlugin_HappyPath(t *testing.T) {
 
 func TestApprovePlugin_NotFound(t *testing.T) {
 	q := newFakePluginQuerier()
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req = withChiParams(req, map[string]string{"id": "missing-plugin"})
@@ -2781,7 +2816,7 @@ func TestApprovePlugin_AlreadyActive(t *testing.T) {
 		Status:           "active",
 		Version:          0,
 	})
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req = withChiParams(req, map[string]string{"id": "plugin-1"})
@@ -2806,7 +2841,7 @@ func TestRejectPlugin_HappyPath(t *testing.T) {
 		Status:           "pending_review",
 		Version:          0,
 	})
-	h := NewPluginHandler(q, nil, fixedClock)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req = withChiParams(req, map[string]string{"id": "plugin-1"})
@@ -2846,7 +2881,7 @@ func TestRejectPlugin_HappyPath(t *testing.T) {
 
 func TestRejectPlugin_NotFound(t *testing.T) {
 	q := newFakePluginQuerier()
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req = withChiParams(req, map[string]string{"id": "missing-plugin"})
@@ -2868,7 +2903,7 @@ func TestRejectPlugin_AlreadyActive(t *testing.T) {
 		Status:           "active",
 		Version:          0,
 	})
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req = withChiParams(req, map[string]string{"id": "plugin-1"})
@@ -2913,7 +2948,7 @@ func TestGetPluginDetail_HappyPath(t *testing.T) {
 		Version:          0,
 		CreatedAt:        "2026-01-01T00:00:00Z",
 	})
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins/plugin-1", nil)
 	req = withChiParams(req, map[string]string{"id": "plugin-1"})
@@ -2970,7 +3005,7 @@ func TestGetPluginDetail_HappyPath(t *testing.T) {
 
 func TestGetPluginDetail_NotFound(t *testing.T) {
 	q := newFakePluginQuerier()
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = withChiParams(req, map[string]string{"id": "missing"})
@@ -2986,7 +3021,7 @@ func TestGetPluginDetail_NotFound(t *testing.T) {
 
 func TestListPlugins_Empty(t *testing.T) {
 	q := newFakePluginQuerier()
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins", nil)
 	rec := httptest.NewRecorder()
@@ -3034,7 +3069,7 @@ func TestListPlugins_MixedStatuses(t *testing.T) {
 		HealthState:  "healthy",
 		Version:      0,
 	})
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins", nil)
 	rec := httptest.NewRecorder()
@@ -3090,7 +3125,7 @@ func (s *stubRSSAggregator) Aggregate() (uint64, int, []RSSSample) {
 }
 
 func TestPluginHandler_GetPluginRSS_NilAggregator(t *testing.T) {
-	h := NewPluginHandler(newFakePluginQuerier(), nil, nil)
+	h := newTestPluginHandler(newFakePluginQuerier(), nil, testPluginHandlerConfig{})
 	// No aggregator wired — plugins are disabled.
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins/rss", nil)
@@ -3125,8 +3160,7 @@ func TestPluginHandler_GetPluginRSS_WithData(t *testing.T) {
 		},
 	}
 
-	h := NewPluginHandler(newFakePluginQuerier(), nil, nil)
-	h.SetRSSAggregator(agg)
+	h := newTestPluginHandler(newFakePluginQuerier(), nil, testPluginHandlerConfig{rssAgg: agg})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins/rss", nil)
 	rec := httptest.NewRecorder()
@@ -3161,8 +3195,7 @@ func TestPluginHandler_GetPluginRSS_WithData(t *testing.T) {
 func TestPluginHandler_GetPluginRSS_ZeroInstances(t *testing.T) {
 	agg := &stubRSSAggregator{total: 0, count: 0, samples: nil}
 
-	h := NewPluginHandler(newFakePluginQuerier(), nil, nil)
-	h.SetRSSAggregator(agg)
+	h := newTestPluginHandler(newFakePluginQuerier(), nil, testPluginHandlerConfig{rssAgg: agg})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plugins/rss", nil)
 	rec := httptest.NewRecorder()
@@ -3267,7 +3300,7 @@ func TestGetPluginSBOM_Success(t *testing.T) {
 		BinaryPath:       &binaryPath,
 	})
 
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 	rec := serveGetSBOM(h, "plugin-sbom")
 
 	if rec.Code != http.StatusOK {
@@ -3282,7 +3315,7 @@ func TestGetPluginSBOM_Success(t *testing.T) {
 }
 
 func TestGetPluginSBOM_NotFound_NoPlugin(t *testing.T) {
-	h := NewPluginHandler(newFakePluginQuerier(), nil, nil)
+	h := newTestPluginHandler(newFakePluginQuerier(), nil, testPluginHandlerConfig{})
 	rec := serveGetSBOM(h, "plugin-missing")
 
 	if rec.Code != http.StatusNotFound {
@@ -3299,7 +3332,7 @@ func TestGetPluginSBOM_NotFound_NoBinaryPath(t *testing.T) {
 		BinaryPath:       nil, // no bundle on disk
 	})
 
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 	rec := serveGetSBOM(h, "plugin-nobinary")
 
 	if rec.Code != http.StatusNotFound {
@@ -3319,7 +3352,7 @@ func TestGetPluginSBOM_NotFound_NoSBOMField(t *testing.T) {
 		BinaryPath:       &binaryPath,
 	})
 
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 	rec := serveGetSBOM(h, "plugin-nosbom")
 
 	if rec.Code != http.StatusNotFound {
@@ -3340,7 +3373,7 @@ func TestGetPluginSBOM_NotFound_FileMissing(t *testing.T) {
 		BinaryPath:       &binaryPath,
 	})
 
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 	rec := serveGetSBOM(h, "plugin-filemissing")
 
 	if rec.Code != http.StatusNotFound {
@@ -3360,7 +3393,7 @@ func TestGetPluginSBOM_PathTraversal(t *testing.T) {
 		BinaryPath:       &binaryPath,
 	})
 
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 	rec := serveGetSBOM(h, "plugin-traversal")
 
 	if rec.Code != http.StatusNotFound {
@@ -3384,7 +3417,7 @@ func TestGetPluginSBOM_FallbackContentType(t *testing.T) {
 		BinaryPath:       &binaryPath,
 	})
 
-	h := NewPluginHandler(q, nil, nil)
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
 	rec := serveGetSBOM(h, "plugin-spdx")
 
 	if rec.Code != http.StatusOK {
