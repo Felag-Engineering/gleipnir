@@ -118,6 +118,17 @@ func run(cfg config.Config) error {
 	)
 	feedbackScanner.Start(ctx)
 
+	// Apply the LLM transient-failure retry policy BEFORE any provider client is
+	// constructed. The Anthropic/OpenAI SDKs retry internally — they read
+	// MaxAttempts (via SDKMaxRetries) at construction. Google + openaicompat have
+	// no built-in retry, so our manual loop handles them at call time (429/5xx
+	// honoring Retry-After, plus connection errors with backoff + full jitter).
+	llm.SetDefaultRetryConfig(llm.RetryConfig{
+		MaxAttempts:    cfg.LLMRetryMaxAttempts,
+		InitialBackoff: cfg.LLMRetryInitialBackoff,
+		MaxBackoff:     cfg.LLMRetryMaxBackoff,
+	})
+
 	runManager := runpkg.NewRunManager()
 	providerRegistry := llm.NewProviderRegistry()
 

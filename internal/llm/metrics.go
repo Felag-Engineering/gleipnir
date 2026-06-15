@@ -20,6 +20,10 @@ import (
 type HTTPError struct {
 	StatusCode int
 	Body       string
+	// RetryAfter carries the response's Retry-After hint (0 if absent). The
+	// openaicompat client populates this from the raw response headers so the
+	// retry classifier can honor it without re-reading the consumed body.
+	RetryAfter time.Duration
 }
 
 func (e *HTTPError) Error() string {

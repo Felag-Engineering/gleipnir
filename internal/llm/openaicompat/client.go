@@ -114,6 +114,22 @@ func (w *compatWire) ProviderName() string {
 	return "openaicompat"
 }
 
+// compatRetryDecision drives the retry loop for OpenAI-compatible backends,
+// which have no built-in retry. An HTTP error defers to the shared per-status
+// policy (reusing the Retry-After captured by wrapHTTPError); a bare network
+// failure is retried as a connection error. Context cancellation/deadline is
+// excluded by IsRetryableNetworkError, so a cancelled run is not retried.
+func compatRetryDecision(err error) llm.RetryDecision {
+	var httpErr *llm.HTTPError
+	if errors.As(err, &httpErr) {
+		return llm.RetryDecisionForStatus(httpErr.StatusCode, httpErr.RetryAfter)
+	}
+	if llm.IsRetryableNetworkError(err) {
+		return llm.RetryDecision{Retry: true, ErrorType: metrics.ErrorTypeConnection}
+	}
+	return llm.RetryDecision{}
+}
+
 // ClassifyError maps an openaicompat error to the fixed error_type enum.
 func (w *compatWire) ClassifyError(err error) string {
 	if et, ok := llm.ClassifyContextError(err); ok {
@@ -148,19 +164,28 @@ func (w *compatWire) Call(ctx context.Context, req llm.MessageRequest) (*llm.Mes
 		return nil, fmt.Errorf("openai: marshalling request: %w", err)
 	}
 
-	httpResp, err := w.doRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(body))
-	if err != nil {
+	// The compat backend has no built-in retry, so the loop lives here. Each
+	// attempt re-issues with a fresh body reader (the previous one is consumed by
+	// doRequest); transient 429/5xx and connection errors are retried.
+	var raw []byte
+	if err := llm.DoWithRetry(ctx, llm.DefaultRetryConfig, w.ProviderName(), compatRetryDecision, func() error {
+		httpResp, doErr := w.doRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(body))
+		if doErr != nil {
+			return doErr
+		}
+		defer httpResp.Body.Close()
+
+		b, readErr := io.ReadAll(httpResp.Body)
+		if readErr != nil {
+			return fmt.Errorf("openai: reading response body: %w", readErr)
+		}
+		if httpResp.StatusCode >= 400 {
+			return wrapHTTPError(httpResp.StatusCode, httpResp.Header, b)
+		}
+		raw = b
+		return nil
+	}); err != nil {
 		return nil, err
-	}
-	defer httpResp.Body.Close()
-
-	raw, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("openai: reading response body: %w", err)
-	}
-
-	if httpResp.StatusCode >= 400 {
-		return nil, wrapHTTPError(httpResp.StatusCode, raw)
 	}
 
 	var wireResp chatResponse
@@ -193,7 +218,7 @@ func (w *compatWire) Stream(ctx context.Context, req llm.MessageRequest) (<-chan
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, wrapHTTPError(resp.StatusCode, raw)
+		return nil, wrapHTTPError(resp.StatusCode, resp.Header, raw)
 	}
 
 	out := make(chan llm.MessageChunk, 16)
@@ -297,7 +322,7 @@ func (w *compatWire) fetchModels(ctx context.Context) (map[string]string, error)
 		return nil, fmt.Errorf("openai: reading models response: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, wrapHTTPError(resp.StatusCode, raw)
+		return nil, wrapHTTPError(resp.StatusCode, resp.Header, raw)
 	}
 
 	var wireResp modelsResponse
@@ -349,9 +374,10 @@ type errorEnvelope struct {
 // the body is a JSON object with an "error" field, the message from that field
 // is included; otherwise the raw body is truncated to 256 characters. The
 // returned error wraps *llm.HTTPError via %w so the defer in CreateMessage can
-// recover the status code via errors.As for metric classification.
-func wrapHTTPError(status int, body []byte) error {
-	httpErr := &llm.HTTPError{StatusCode: status, Body: string(body)}
+// recover the status code via errors.As for metric classification. The response
+// headers are parsed for a Retry-After hint so the retry classifier can honor it.
+func wrapHTTPError(status int, header http.Header, body []byte) error {
+	httpErr := &llm.HTTPError{StatusCode: status, Body: string(body), RetryAfter: llm.ParseRetryAfter(header)}
 	var env errorEnvelope
 	if err := json.Unmarshal(body, &env); err == nil && env.Error != nil && env.Error.Message != "" {
 		return fmt.Errorf("openai: HTTP %d: %s (type=%s code=%s): %w",

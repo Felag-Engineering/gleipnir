@@ -110,12 +110,34 @@ func (w *wire) Call(ctx context.Context, req llm.MessageRequest) (*llm.MessageRe
 		return nil, fmt.Errorf("building request config: %w", err)
 	}
 
-	sdkResp, sdkErr := w.generator.GenerateContent(ctx, req.Model, contents, config)
+	// The genai SDK does not retry on its own, so the retry loop lives here.
+	var sdkResp *genai.GenerateContentResponse
+	sdkErr := llm.DoWithRetry(ctx, llm.DefaultRetryConfig, "google", googleRetryDecision, func() error {
+		var opErr error
+		sdkResp, opErr = w.generator.GenerateContent(ctx, req.Model, contents, config)
+		return opErr
+	})
 	if sdkErr != nil {
 		return nil, wrapSDKError(sdkErr)
 	}
 
 	return translateResponse(sdkResp, names)
+}
+
+// googleRetryDecision drives the retry loop for Gemini, whose SDK does not retry
+// on its own. An APIError defers to the shared per-status policy (genai.APIError
+// is a value type exposing no headers, so there is no Retry-After hint — the
+// loop uses computed backoff). A bare network failure is retried as a connection
+// error; everything else (including context cancellation) is terminal.
+func googleRetryDecision(err error) llm.RetryDecision {
+	var apiErr genai.APIError
+	if errors.As(err, &apiErr) {
+		return llm.RetryDecisionForStatus(apiErr.Code, 0)
+	}
+	if llm.IsRetryableNetworkError(err) {
+		return llm.RetryDecision{Retry: true, ErrorType: metrics.ErrorTypeConnection}
+	}
+	return llm.RetryDecision{}
 }
 
 // Stream opens a streaming request to the Gemini API and returns the neutral
