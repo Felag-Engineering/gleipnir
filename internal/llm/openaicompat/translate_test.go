@@ -421,15 +421,16 @@ func TestBuildChatCompletionRequest_JSONRoundTrip(t *testing.T) {
 
 func TestParseChatCompletionResponse(t *testing.T) {
 	cases := []struct {
-		name        string
-		fixture     string
-		wantText    string
-		wantCalls   int
-		wantStop    llm.StopReason
-		wantInTok   int
-		wantOutTok  int
-		wantThinkTk int
-		wantErr     bool
+		name         string
+		fixture      string
+		wantText     string
+		wantCalls    int
+		wantStop     llm.StopReason
+		wantInTok    int
+		wantOutTok   int
+		wantThinkTk  int
+		wantThinking int // number of ThinkingBlocks expected in resp.Thinking
+		wantErr      bool
 	}{
 		{
 			name:     "text only",
@@ -450,6 +451,8 @@ func TestParseChatCompletionResponse(t *testing.T) {
 			wantInTok: 50, wantOutTok: 20,
 		},
 		{
+			// reasoning_tokens is present but no reasoning_content field — token
+			// accounting only; zero ThinkingBlocks must be produced.
 			name:     "o-series reasoning tokens",
 			fixture:  "chat_response_o_series_with_reasoning_tokens.json",
 			wantText: "42", wantStop: llm.StopReasonEndTurn,
@@ -478,7 +481,7 @@ func TestParseChatCompletionResponse(t *testing.T) {
 			if err := json.Unmarshal(raw, &wire); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			resp, err := ParseChatCompletionResponse(&wire, llm.ToolNameMapping{})
+			resp, err := ParseChatCompletionResponse(&wire, llm.ToolNameMapping{}, "openaicompat")
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
@@ -505,8 +508,8 @@ func TestParseChatCompletionResponse(t *testing.T) {
 			if resp.Usage.ThinkingTokens != tc.wantThinkTk {
 				t.Errorf("thinking tokens: got %d, want %d", resp.Usage.ThinkingTokens, tc.wantThinkTk)
 			}
-			if resp.Thinking != nil {
-				t.Errorf("Thinking should always be nil for OpenAI, got %+v", resp.Thinking)
+			if len(resp.Thinking) != tc.wantThinking {
+				t.Errorf("ThinkingBlocks: got %d, want %d (%+v)", len(resp.Thinking), tc.wantThinking, resp.Thinking)
 			}
 		})
 	}
@@ -528,7 +531,7 @@ func TestParseChatCompletionResponse_MalformedToolArguments(t *testing.T) {
 			FinishReason: "tool_calls",
 		}},
 	}
-	if _, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{}); err == nil {
+	if _, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{}, "openaicompat"); err == nil {
 		t.Error("expected error for malformed tool arguments")
 	}
 }
@@ -554,7 +557,7 @@ func TestParseChatCompletionResponse_WhitespaceContent(t *testing.T) {
 				FinishReason: "tool_calls",
 			}},
 		}
-		resp, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{})
+		resp, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{}, "openaicompat")
 		if err != nil {
 			t.Fatalf("content %q: parse: %v", raw, err)
 		}
@@ -567,6 +570,72 @@ func TestParseChatCompletionResponse_WhitespaceContent(t *testing.T) {
 	}
 }
 
+// TestParseChatCompletionResponse_ReasoningContent verifies that reasoning_content
+// from thinking-capable OpenAI-compatible backends (LM Studio, Ollama ≥0.5, etc.)
+// is surfaced as a ThinkingBlock, and that whitespace-only values are dropped just
+// like whitespace-only content.
+func TestParseChatCompletionResponse_ReasoningContent(t *testing.T) {
+	const providerName = "lmstudio"
+	const reasoningText = "I should think about this carefully."
+
+	t.Run("non-empty reasoning_content produces one ThinkingBlock", func(t *testing.T) {
+		rc := reasoningText
+		answer := "The answer is 42."
+		wire := &chatResponse{
+			Choices: []chatChoice{{
+				Message: chatMessage{
+					Role:             "assistant",
+					Content:          &answer,
+					ReasoningContent: &rc,
+				},
+				FinishReason: "stop",
+			}},
+			Usage: &chatUsage{PromptTokens: 5, CompletionTokens: 10},
+		}
+		resp, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{}, providerName)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if len(resp.Thinking) != 1 {
+			t.Fatalf("want 1 ThinkingBlock, got %d", len(resp.Thinking))
+		}
+		tb := resp.Thinking[0]
+		if tb.Text != reasoningText {
+			t.Errorf("ThinkingBlock.Text = %q, want %q", tb.Text, reasoningText)
+		}
+		if tb.Provider != providerName {
+			t.Errorf("ThinkingBlock.Provider = %q, want %q", tb.Provider, providerName)
+		}
+		if tb.Redacted {
+			t.Error("ThinkingBlock.Redacted must be false")
+		}
+	})
+
+	// Whitespace-only reasoning_content must be dropped, same as whitespace-only content.
+	for _, raw := range []string{"\n", "\n\n", "  ", "\t\n"} {
+		raw := raw
+		t.Run("whitespace-only reasoning_content is dropped: "+raw, func(t *testing.T) {
+			rc := raw
+			wire := &chatResponse{
+				Choices: []chatChoice{{
+					Message: chatMessage{
+						Role:             "assistant",
+						ReasoningContent: &rc,
+					},
+					FinishReason: "stop",
+				}},
+			}
+			resp, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{}, providerName)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(resp.Thinking) != 0 {
+				t.Errorf("whitespace reasoning_content %q: want 0 ThinkingBlocks, got %d", raw, len(resp.Thinking))
+			}
+		})
+	}
+}
+
 func TestParseChatCompletionResponse_UnknownFinishReason(t *testing.T) {
 	s := "hi"
 	wire := &chatResponse{
@@ -575,7 +644,7 @@ func TestParseChatCompletionResponse_UnknownFinishReason(t *testing.T) {
 			FinishReason: "something_new",
 		}},
 	}
-	resp, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{})
+	resp, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{}, "openaicompat")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -593,7 +662,7 @@ func TestParseChatCompletionResponse_MissingUsageDetails(t *testing.T) {
 		}},
 		Usage: &chatUsage{PromptTokens: 5, CompletionTokens: 10},
 	}
-	resp, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{})
+	resp, err := ParseChatCompletionResponse(wire, llm.ToolNameMapping{}, "openaicompat")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -653,7 +722,7 @@ func TestToolNameSanitization_RoundTrip(t *testing.T) {
 		},
 		FinishReason: "tool_calls",
 	}}}
-	parsed, err := ParseChatCompletionResponse(resp, names)
+	parsed, err := ParseChatCompletionResponse(resp, names, "openaicompat")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

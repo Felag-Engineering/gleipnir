@@ -1,0 +1,10 @@
+data: {"choices":[{"index":0,"delta":{"reasoning_content":"I should"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_content":" think carefully."},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_content":"The answer is 42.","content":"42"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+

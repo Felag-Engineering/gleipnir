@@ -19,9 +19,12 @@
 //   - anthropic / openai: ThinkingBlock.ProviderState (opaque JSON round-trip).
 //   - google: ToolCallBlock.ProviderMetadata["google.thought_signature"]
 //     (thought bytes attached to a FunctionCall part).
-//   - openaicompat: ThinkingBlocks are DROPPED (Chat Completions has no
-//     reasoning round-trip; sending a ThinkingBlock in history must not echo it
-//     back in the outbound chatRequest).
+//   - openaicompat: REQUEST-direction ThinkingBlocks (history fed back through
+//     CreateMessage) are DROPPED — Chat Completions has no reasoning round-trip,
+//     so sending a ThinkingBlock in history must not echo it back in the outbound
+//     chatRequest. RESPONSE-direction reasoning_content from thinking-capable
+//     backends (LM Studio, Ollama ≥0.5, vLLM, llama.cpp) IS surfaced as
+//     llm.ThinkingBlocks on the way in — see TestContract_ReasoningContent_OpenAICompat.
 package contract_test
 
 import (
@@ -721,6 +724,29 @@ func TestContract_ContinuityState_Google(t *testing.T) {
 	}
 	if string(echoed) != string(sig) {
 		t.Errorf("buildContents must re-attach thought_signature on the outbound part; got %v, want %v", echoed, sig)
+	}
+}
+
+// TestContract_ReasoningContent_OpenAICompat verifies that reasoning_content
+// returned by an OpenAI-compatible backend in a sync response is surfaced as a
+// ThinkingBlock in the normalized llm.MessageResponse. This is the response
+// direction; the request-direction drop is asserted by
+// TestContract_ContinuityState_OpenAICompat below.
+func TestContract_ReasoningContent_OpenAICompat(t *testing.T) {
+	const reasoningSentinel = "<reasoning-sentinel>"
+	msgJSON := `{"role":"assistant","content":"answer","reasoning_content":"` + reasoningSentinel + `"}`
+	body := compatResponse("stop", msgJSON, 5, 3)
+	client := newCompatClientJSON(t, body)
+
+	resp, err := client.CreateMessage(context.Background(), llm.MessageRequest{Model: "gpt-4"})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	if len(resp.Thinking) != 1 {
+		t.Fatalf("want 1 ThinkingBlock, got %d", len(resp.Thinking))
+	}
+	if resp.Thinking[0].Text != reasoningSentinel {
+		t.Errorf("ThinkingBlock.Text = %q, want %q", resp.Thinking[0].Text, reasoningSentinel)
 	}
 }
 

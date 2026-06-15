@@ -33,7 +33,7 @@ func collectChunks(t *testing.T, ch <-chan llm.MessageChunk) []llm.MessageChunk 
 func TestParseSSEStream_TextOnly(t *testing.T) {
 	body := loadStreamFixture(t, "stream_chunks_text.txt")
 	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{}, "openaicompat")
 	chunks := collectChunks(t, ch)
 
 	var text strings.Builder
@@ -63,7 +63,7 @@ func TestParseSSEStream_TextOnly(t *testing.T) {
 func TestParseSSEStream_ToolCallsAreEmittedComplete(t *testing.T) {
 	body := loadStreamFixture(t, "stream_chunks_with_tool_calls.txt")
 	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{}, "openaicompat")
 	chunks := collectChunks(t, ch)
 
 	var toolCallChunks int
@@ -94,7 +94,7 @@ func TestParseSSEStream_ToolCallsAreEmittedComplete(t *testing.T) {
 func TestParseSSEStream_UsageChunkPopulatesFinalUsage(t *testing.T) {
 	body := loadStreamFixture(t, "stream_chunks_with_usage.txt")
 	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{}, "openaicompat")
 	chunks := collectChunks(t, ch)
 
 	var gotUsage *llm.TokenUsage
@@ -116,7 +116,7 @@ func TestParseSSEStream_NoDoneTerminatorIsError(t *testing.T) {
 		`data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}` + "\n\n",
 	))
 	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{}, "openaicompat")
 	chunks := collectChunks(t, ch)
 
 	// Stream ends without [DONE] → final chunk should carry an error.
@@ -134,7 +134,7 @@ func TestParseSSEStream_MalformedJSONIsError(t *testing.T) {
 		`data: {not-valid-json` + "\n\n" + `data: [DONE]` + "\n\n",
 	))
 	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{}, "openaicompat")
 	chunks := collectChunks(t, ch)
 	var sawErr bool
 	for _, c := range chunks {
@@ -159,7 +159,7 @@ func TestParseSSEStream_ContextCancellation(t *testing.T) {
 	slow := &blockingReader{done: ctx.Done()}
 	out := make(chan llm.MessageChunk, 4)
 
-	go parseSSEStream(ctx, slow, out, llm.ToolNameMapping{})
+	go parseSSEStream(ctx, slow, out, llm.ToolNameMapping{}, "openaicompat")
 	cancel()
 
 	// Expect the channel to close; expect a context-related error on the last chunk.
@@ -195,7 +195,7 @@ func (b *blockingReader) Close() error {
 func TestParseSSEStream_ChannelClosedExactlyOnce(t *testing.T) {
 	body := loadStreamFixture(t, "stream_chunks_text.txt")
 	ch := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{})
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{}, "openaicompat")
 	for range ch {
 	}
 	// Second receive on a closed channel must not panic.
@@ -207,5 +207,67 @@ func TestParseSSEStream_ChannelClosedExactlyOnce(t *testing.T) {
 	_, ok := <-ch
 	if ok {
 		t.Error("channel should be closed")
+	}
+}
+
+// TestParseSSEStream_ReasoningContent verifies that delta.reasoning_content from
+// thinking-capable OpenAI-compatible backends is surfaced as Thinking chunks with
+// the correct Provider, and that when one delta carries both reasoning_content and
+// content the Thinking chunk is emitted first (thinking precedes the answer).
+func TestParseSSEStream_ReasoningContent(t *testing.T) {
+	const providerName = "lmstudio"
+	body := loadStreamFixture(t, "stream_chunks_with_reasoning.txt")
+	ch := make(chan llm.MessageChunk, 32)
+	go parseSSEStream(context.Background(), body, ch, llm.ToolNameMapping{}, providerName)
+	chunks := collectChunks(t, ch)
+
+	// No error chunks.
+	for _, c := range chunks {
+		if c.Err != nil {
+			t.Fatalf("unexpected error chunk: %v", c.Err)
+		}
+	}
+
+	// Assemble the full reasoning text from all Thinking chunks.
+	var reasoning strings.Builder
+	for _, c := range chunks {
+		if c.Thinking != nil {
+			reasoning.WriteString(c.Thinking.Text)
+		}
+	}
+	wantReasoning := "I should think carefully.The answer is 42."
+	if reasoning.String() != wantReasoning {
+		t.Errorf("assembled reasoning text = %q, want %q", reasoning.String(), wantReasoning)
+	}
+
+	// All Thinking chunks must carry the configured provider name.
+	for i, c := range chunks {
+		if c.Thinking != nil && c.Thinking.Provider != providerName {
+			t.Errorf("chunk[%d].Thinking.Provider = %q, want %q", i, c.Thinking.Provider, providerName)
+		}
+	}
+
+	// The delta that carries both reasoning_content and content must emit a
+	// Thinking chunk immediately before a Text chunk. Find the boundary and assert
+	// the ordering: the last Thinking chunk precedes the first Text chunk that
+	// follows it.
+	var lastThinkingIdx, firstTextAfterThinkingIdx int = -1, -1
+	for i, c := range chunks {
+		if c.Thinking != nil {
+			lastThinkingIdx = i
+		}
+	}
+	for i, c := range chunks {
+		if c.Text != nil && i >= lastThinkingIdx {
+			firstTextAfterThinkingIdx = i
+			break
+		}
+	}
+	if firstTextAfterThinkingIdx == -1 {
+		t.Fatal("expected at least one Text chunk after the last Thinking chunk")
+	}
+	if firstTextAfterThinkingIdx != lastThinkingIdx+1 {
+		t.Errorf("expected text chunk immediately after the last thinking chunk; "+
+			"lastThinkingIdx=%d firstTextAfterThinkingIdx=%d", lastThinkingIdx, firstTextAfterThinkingIdx)
 	}
 }

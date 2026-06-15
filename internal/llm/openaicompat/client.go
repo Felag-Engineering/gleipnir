@@ -168,7 +168,7 @@ func (w *compatWire) Call(ctx context.Context, req llm.MessageRequest) (*llm.Mes
 		return nil, fmt.Errorf("openai: decoding response: %w", umErr)
 	}
 
-	return ParseChatCompletionResponse(&wireResp, names)
+	return ParseChatCompletionResponse(&wireResp, names, w.ProviderName())
 }
 
 // Stream sends a streaming Chat Completions request and returns a
@@ -197,7 +197,7 @@ func (w *compatWire) Stream(ctx context.Context, req llm.MessageRequest) (<-chan
 	}
 
 	out := make(chan llm.MessageChunk, 16)
-	go parseSSEStream(ctx, resp.Body, out, names)
+	go parseSSEStream(ctx, resp.Body, out, names, w.ProviderName())
 	return out, nil
 }
 
