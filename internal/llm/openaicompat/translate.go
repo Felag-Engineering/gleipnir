@@ -67,16 +67,16 @@ func BuildChatCompletionRequest(req llm.MessageRequest, stream bool, names llm.T
 			p := *hints.TopP
 			out.TopP = &p
 		}
-		// reasoning_effort is an o-series-only parameter; sending it to other
-		// models causes a 400 error from OpenAI.
-		if hints.ReasoningEffort != nil && isOSeriesModel(req.Model) {
+		// reasoning_effort is a reasoning-model-only parameter; sending it to a
+		// non-reasoning model causes a 400 error from OpenAI.
+		if hints.ReasoningEffort != nil && isReasoningModel(req.Model) {
 			e := *hints.ReasoningEffort
 			out.ReasoningEffort = &e
 		}
 	}
 	if effectiveMax > 0 {
 		v := effectiveMax
-		if isOSeriesModel(req.Model) {
+		if isReasoningModel(req.Model) {
 			out.MaxCompletionTokens = &v
 		} else {
 			out.MaxTokens = &v
@@ -247,21 +247,29 @@ func ParseChatCompletionResponse(wire *chatResponse, names llm.ToolNameMapping, 
 	return out, nil
 }
 
-// isOSeriesModel returns true when the model should route max_tokens to
-// max_completion_tokens and honor reasoning_effort. The heuristic is:
-// name starts with "o<digit>" (o1, o3, o4) or contains "reasoning".
-// Contained to this function; no other place in the package pattern-matches
-// on model names.
-func isOSeriesModel(model string) bool {
+// isReasoningModel reports whether model is an OpenAI-style reasoning model: the
+// o-series (o1/o3/o4…), the gpt-5 family, or any name containing "reasoning". It
+// is the single signal behind three request-shaping decisions for OpenAI-style
+// backends — routing the token cap to max_completion_tokens (which OpenAI requires
+// for these models and rejects max_tokens for), gating reasoning_effort, and the
+// IsReasoning model-picker badge.
+//
+// This is a name-based heuristic because the standard OpenAI-compat /models
+// endpoint advertises no per-model capabilities. Backends that DO advertise them
+// (e.g. OpenRouter's per-model supported_parameters / max_completion_tokens) are a
+// deferred follow-up (#539): parse those fields opportunistically and let real
+// capability data override this heuristic when present, falling back here only when
+// absent.
+//
+// Contained to this function; no other place in the package pattern-matches on
+// model names.
+func isReasoningModel(model string) bool {
 	if strings.Contains(model, "reasoning") {
 		return true
 	}
-	if len(model) < 2 {
-		return false
+	if strings.HasPrefix(model, "gpt-5") {
+		return true
 	}
-	if model[0] != 'o' {
-		return false
-	}
-	c := model[1]
-	return c >= '0' && c <= '9'
+	// o-series: name starts with o<digit> (o1, o3, o4, ...).
+	return len(model) >= 2 && model[0] == 'o' && model[1] >= '0' && model[1] <= '9'
 }

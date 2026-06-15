@@ -287,6 +287,33 @@ func TestBuildChatCompletionRequest(t *testing.T) {
 			},
 		},
 		{
+			name: "MaxTokens with bare gpt-5 uses max_completion_tokens",
+			in: llm.MessageRequest{
+				Model:     "gpt-5",
+				MaxTokens: 1024,
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if req.MaxTokens != nil {
+					t.Errorf("MaxTokens should be nil for gpt-5, got %+v", req.MaxTokens)
+				}
+				if req.MaxCompletionTokens == nil || *req.MaxCompletionTokens != 1024 {
+					t.Errorf("MaxCompletionTokens: %+v", req.MaxCompletionTokens)
+				}
+			},
+		},
+		{
+			name: "reasoning_effort passed through for bare gpt-5",
+			in: llm.MessageRequest{
+				Model: "gpt-5",
+				Hints: &OpenAIHints{ReasoningEffort: strp("high")},
+			},
+			check: func(t *testing.T, req chatRequest) {
+				if req.ReasoningEffort == nil || *req.ReasoningEffort != "high" {
+					t.Errorf("reasoning_effort: %+v", req.ReasoningEffort)
+				}
+			},
+		},
+		{
 			name: "hints populate temperature and top_p",
 			in: llm.MessageRequest{
 				Model: "gpt-4o",
@@ -373,14 +400,18 @@ func TestBuildChatCompletionRequest_StreamFlag(t *testing.T) {
 	}
 }
 
-// isOSeriesModel is exported via test helper to lock the heuristic.
-func TestIsOSeriesModel(t *testing.T) {
+// TestIsReasoningModel locks the model-name heuristic that drives token-field
+// routing, reasoning_effort gating, and the IsReasoning picker badge.
+func TestIsReasoningModel(t *testing.T) {
 	cases := map[string]bool{
 		"o1":              true,
 		"o1-mini":         true,
 		"o3":              true,
 		"o3-mini":         true,
 		"o4-mini":         true,
+		"gpt-5":           true, // bare gpt-5 family must route to max_completion_tokens
+		"gpt-5-mini":      true,
+		"gpt-5-nano":      true,
 		"gpt-5-reasoning": true,
 		"gpt-4o":          false,
 		"gpt-4o-mini":     false,
@@ -388,8 +419,8 @@ func TestIsOSeriesModel(t *testing.T) {
 		"llama3.1:70b":    false,
 	}
 	for model, want := range cases {
-		if got := isOSeriesModel(model); got != want {
-			t.Errorf("isOSeriesModel(%q) = %v, want %v", model, got, want)
+		if got := isReasoningModel(model); got != want {
+			t.Errorf("isReasoningModel(%q) = %v, want %v", model, got, want)
 		}
 	}
 }

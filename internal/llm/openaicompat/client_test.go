@@ -220,6 +220,34 @@ func TestListModels_HappyPathAndCache(t *testing.T) {
 	}
 }
 
+// TestListModels_ClassifiesReasoning confirms compat-backend models are flagged
+// IsReasoning via the same o-series heuristic the translator uses for token-field
+// routing: o3-mini is reasoning; the gpt-4o family is not.
+func TestListModels_ClassifiesReasoning(t *testing.T) {
+	fixture := loadFixture(t, "models_response.json")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(fixture)
+	}))
+	defer srv.Close()
+
+	models, err := newTestClient(srv).ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := map[string]bool{"gpt-4o": false, "gpt-4o-mini": false, "o3-mini": true}
+	got := make(map[string]bool, len(models))
+	for _, m := range models {
+		got[m.Name] = m.IsReasoning
+	}
+	for name, wantReasoning := range want {
+		if got[name] != wantReasoning {
+			t.Errorf("model %q IsReasoning = %v; want %v", name, got[name], wantReasoning)
+		}
+	}
+}
+
 func TestListModels_404IsEmptySlice(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

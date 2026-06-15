@@ -145,6 +145,45 @@ func TestModelCache_ListModels(t *testing.T) {
 	})
 }
 
+func TestModelCache_WithReasoning_ClassifiesListModels(t *testing.T) {
+	// Classifier flags any model whose name starts with "r-" as reasoning.
+	isReasoning := func(name string) bool { return strings.HasPrefix(name, "r-") }
+	mc := llm.NewModelCacheWithReasoning("TestProvider", isReasoning)
+	mc.LoadOnce(func() (map[string]string, error) {
+		return map[string]string{"r-think": "Reasoner", "plain": "Plain"}, nil
+	})
+
+	models, err := mc.ListModels()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := make(map[string]bool, len(models))
+	for _, m := range models {
+		got[m.Name] = m.IsReasoning
+	}
+	if !got["r-think"] {
+		t.Error("expected r-think to be classified IsReasoning=true")
+	}
+	if got["plain"] {
+		t.Error("expected plain to be classified IsReasoning=false")
+	}
+}
+
+func TestModelCache_WithoutReasoning_DefaultsFalse(t *testing.T) {
+	// The plain constructor leaves the classifier nil → every model is non-reasoning.
+	mc := llm.NewModelCache("TestProvider")
+	mc.LoadOnce(func() (map[string]string, error) {
+		return map[string]string{"o3-mini": "o3-mini"}, nil
+	})
+	models, err := mc.ListModels()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(models) != 1 || models[0].IsReasoning {
+		t.Errorf("expected single non-reasoning model, got %+v", models)
+	}
+}
+
 func TestModelCache_Invalidate_AllowsRefetch(t *testing.T) {
 	mc := llm.NewModelCache("TestProvider")
 	callCount := 0
