@@ -20,7 +20,10 @@ export function EncryptionKeyNotice() {
           Provider API keys and webhook secrets are encrypted with this key. If it is lost, every
           credential stored in the database becomes permanently unrecoverable.
         </p>
-        <p className={styles.footnote}>Key rotation is not supported in v1.0 — see Operations docs.</p>
+        <p className={styles.footnote}>
+          To rotate this key, stop the server first, then run{' '}
+          <code>gleipnirctl rotate-key</code> to re-encrypt all credentials in one transaction.
+        </p>
       </div>
     </div>
   )
