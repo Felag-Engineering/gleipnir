@@ -37,6 +37,18 @@ const PENDING_PLUGIN: ApiPluginListItem = {
   created_at: new Date().toISOString(),
 }
 
+// An active plugin that has been approved but not yet had any instance created.
+const ACTIVE_PLUGIN_NO_INSTANCES: ApiPluginListItem = {
+  id: 'plugin-minimal-01',
+  name: 'MinimalTool',
+  version: '0.1.1',
+  status: 'active',
+  services: ['tool'],
+  has_sbom: false,
+  instance_count: 0,
+  created_at: new Date().toISOString(),
+}
+
 const PLUGIN_ID = 'plugin-slack-01'
 const PLUGIN_ID_JIRA = 'plugin-jira-01'
 const INSTANCE_ID_SLACK = 'inst-slack-prod'
@@ -207,12 +219,69 @@ describe('AdminPluginsPage', () => {
     }
   })
 
-  it('shows empty state when no instances are installed', () => {
+  it('shows empty state when there are no plugins at all (no instances, no active plugins)', () => {
     mockInstances([])
     mockCurrentUser(['admin'])
+    // mockPluginList([]) is already set by beforeEach
     renderPage()
 
     expect(screen.getByText('No plugins installed yet')).toBeInTheDocument()
+  })
+
+  it('does NOT show empty state when an active plugin exists with zero instances', () => {
+    mockInstances([])
+    mockCurrentUser(['admin'])
+    mockPluginList([ACTIVE_PLUGIN_NO_INSTANCES])
+    renderPage()
+
+    expect(screen.queryByText('No plugins installed yet')).not.toBeInTheDocument()
+  })
+
+  it('renders a card for an active plugin with zero instances', () => {
+    mockInstances([])
+    mockCurrentUser(['admin'])
+    mockPluginList([ACTIVE_PLUGIN_NO_INSTANCES])
+    renderPage()
+
+    // The PluginCard uses an aria-label of "MinimalTool plugin, ..."
+    const cards = screen.getAllByRole('button', { name: /MinimalTool plugin,/i })
+    expect(cards).toHaveLength(1)
+  })
+
+  it('shows "Add instance" CTA for a zero-instance active plugin', () => {
+    mockInstances([])
+    mockCurrentUser(['admin'])
+    mockPluginList([ACTIVE_PLUGIN_NO_INSTANCES])
+    renderPage()
+
+    expect(screen.getByRole('button', { name: /add instance/i })).toBeInTheDocument()
+  })
+
+  it('clicking "Add instance" on a zero-instance plugin opens the modal', async () => {
+    mockInstances([])
+    mockCurrentUser(['admin'])
+    mockPluginList([ACTIVE_PLUGIN_NO_INSTANCES])
+    server.use(
+      http.post('/api/v1/admin/plugins/:id/instances', () =>
+        HttpResponse.json({
+          data: {
+            id: 'inst-new',
+            plugin_id: ACTIVE_PLUGIN_NO_INSTANCES.id,
+            instance_name: 'prod',
+            health_state: 'healthy',
+            version: 1,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        }),
+      ),
+    )
+
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /add instance/i }))
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByText(/Add instance to MinimalTool/i)).toBeInTheDocument()
   })
 
   // --- Role gating ---
