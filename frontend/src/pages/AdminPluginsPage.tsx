@@ -154,7 +154,7 @@ export default function AdminPluginsPage() {
 
       <QueryBoundary
         status={status}
-        isEmpty={allInstances.length === 0}
+        isEmpty={pluginCards.length === 0}
         errorMessage="Failed to load plugin instances."
         onRetry={() => { void refetch() }}
         skeleton={<SkeletonList count={3} height={48} gap={12} borderRadius={8} />}
@@ -627,12 +627,20 @@ function PluginDetailSummary({
   )
 }
 
-// derivePluginCards groups instances by plugin_id (preserving insertion order
-// so the list is stable across refetches) and computes the aggregate health
-// state (worst across all instances) for each plugin card.
+// derivePluginCards builds one card per active plugin.
 //
-// pluginList is used to look up has_sbom by plugin UUID (inst.plugin_id). The
-// map is keyed by p.id because that is what inst.plugin_id carries.
+// Cards for plugins that have instances are built from the instance list so
+// they carry full manifest metadata (services, version, event kinds, tools).
+// Active plugins with zero instances are seeded directly from pluginList so
+// they still appear as a card with an "Add instance" CTA — this is the gap
+// fixed by the zero-instance bug: previously such plugins produced no card.
+//
+// Ordering: instance-bearing plugins appear first (in instance-list order),
+// followed by zero-instance active plugins (in pluginList order). Both groups
+// preserve stable insertion order across refetches.
+//
+// pending_review plugins are deliberately excluded — they are rendered in their
+// own section above the QueryBoundary.
 function derivePluginCards(
   instances: ApiPluginInstanceForAudience[],
   pluginList: ApiPluginListItem[],
@@ -668,6 +676,22 @@ function derivePluginCards(
   // Compute aggregate health after all instances are collected.
   for (const card of map.values()) {
     card.aggregateHealth = worstHealth(card.instances.map((i) => i.state))
+  }
+
+  // Add zero-instance active plugins that weren't covered by the instance loop.
+  for (const p of pluginList) {
+    if (p.status !== 'active' || map.has(p.id)) continue
+    order.push(p.id)
+    map.set(p.id, {
+      pluginId: p.id,
+      pluginName: p.name,
+      pluginVersion: p.version,
+      description: p.description ?? '',
+      services: p.services ?? [],
+      instances: [],
+      aggregateHealth: 'healthy',
+      hasSbom: p.has_sbom,
+    })
   }
 
   return order.map((id) => map.get(id)!)
