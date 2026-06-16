@@ -11,16 +11,31 @@ import (
 // a single provider. It is safe for concurrent use.
 type ModelCache struct {
 	providerName string
-	mu           sync.RWMutex
-	cache        map[string]string // model name → display name
-	err          error
-	loaded       bool
+	// isReasoning, when set, classifies each cached model's IsReasoning flag in
+	// ListModels. It is nil for providers that fetch an opaque model list with no
+	// way to tell reasoning models apart — those report IsReasoning=false.
+	isReasoning func(modelName string) bool
+	mu          sync.RWMutex
+	cache       map[string]string // model name → display name
+	err         error
+	loaded      bool
 }
 
 // NewModelCache returns a ModelCache that will use providerName in error
-// messages (e.g. "Anthropic", "Google").
+// messages (e.g. "Anthropic", "Google"). Models listed from this cache always
+// report IsReasoning=false; use NewModelCacheWithReasoning to classify them.
 func NewModelCache(providerName string) ModelCache {
 	return ModelCache{providerName: providerName}
+}
+
+// NewModelCacheWithReasoning returns a ModelCache that classifies each model's
+// IsReasoning flag via the isReasoning predicate when building ListModels output.
+// Providers (e.g. openaicompat) that fetch a flat model list and infer reasoning
+// support from the model ID supply their heuristic here so the admin model picker
+// flags reasoning-capable backends correctly. A nil predicate behaves exactly
+// like NewModelCache.
+func NewModelCacheWithReasoning(providerName string, isReasoning func(modelName string) bool) ModelCache {
+	return ModelCache{providerName: providerName, isReasoning: isReasoning}
 }
 
 // LoadOnce fetches models via the provided closure if not already loaded.
@@ -90,7 +105,11 @@ func (mc *ModelCache) ListModels() ([]ModelInfo, error) {
 
 	models := make([]ModelInfo, 0, len(mc.cache))
 	for name, displayName := range mc.cache {
-		models = append(models, ModelInfo{Name: name, DisplayName: displayName})
+		info := ModelInfo{Name: name, DisplayName: displayName}
+		if mc.isReasoning != nil {
+			info.IsReasoning = mc.isReasoning(name)
+		}
+		models = append(models, info)
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
 	return models, nil

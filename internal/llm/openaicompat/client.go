@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -93,7 +92,10 @@ func NewClient(baseURL, apiKey string, opts ...Option) *Client {
 	w := &compatWire{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
-		models:  llm.NewModelCache("OpenAI-compatible"),
+		// isReasoningModel is the same heuristic the translator uses to route
+		// max_completion_tokens / reasoning_effort, reused here so reasoning models
+		// served by a compat backend surface IsReasoning=true in the model picker.
+		models: llm.NewModelCacheWithReasoning("OpenAI-compatible", isReasoningModel),
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -131,6 +133,10 @@ func compatRetryDecision(err error) llm.RetryDecision {
 }
 
 // ClassifyError maps an openaicompat error to the fixed error_type enum.
+// Mirrors the google wire's three-branch shape: a cancelled/timed-out context is
+// "timeout"; an HTTP error defers to the shared per-status policy; everything else
+// (dial failure, DNS error, connection reset — none of which carry an HTTP status)
+// is a connection error.
 func (w *compatWire) ClassifyError(err error) string {
 	if et, ok := llm.ClassifyContextError(err); ok {
 		return et
@@ -138,14 +144,6 @@ func (w *compatWire) ClassifyError(err error) string {
 	var httpErr *llm.HTTPError
 	if errors.As(err, &httpErr) {
 		return llm.ClassifyHTTPStatus(httpErr.StatusCode)
-	}
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
-		return metrics.ErrorTypeConnection
-	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		return metrics.ErrorTypeConnection
 	}
 	return metrics.ErrorTypeConnection
 }
@@ -210,15 +208,33 @@ func (w *compatWire) Stream(ctx context.Context, req llm.MessageRequest) (<-chan
 		return nil, fmt.Errorf("openai: marshal stream request: %w", err)
 	}
 
-	resp, err := w.doRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(body))
-	if err != nil {
+	// Retry stream ESTABLISHMENT the same way the sync Call path does: a pre-stream
+	// 429/5xx or connection blip when opening the stream is exactly as transient as
+	// on a sync request, and at this point no bytes have reached the caller yet.
+	// Once the SSE body starts flowing, mid-stream failures surface on the channel
+	// and are NOT retried — a partial stream cannot be replayed. Each attempt
+	// re-issues with a fresh body reader and drains+closes the failed response
+	// before the next try; the successful response's body stays open for the SSE
+	// goroutine.
+	//
+	// The Google wire has the same establishment-retry gap, but its SDK returns a
+	// lazy iter.Seq2 with no synchronous establishment step to wrap — closing that
+	// gap there needs first-event-drain logic and is tracked separately.
+	var resp *http.Response
+	if err := llm.DoWithRetry(ctx, llm.DefaultRetryConfig, w.ProviderName(), compatRetryDecision, func() error {
+		r, doErr := w.doRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(body))
+		if doErr != nil {
+			return doErr
+		}
+		if r.StatusCode >= 400 {
+			raw, _ := io.ReadAll(r.Body)
+			r.Body.Close()
+			return wrapHTTPError(r.StatusCode, r.Header, raw)
+		}
+		resp = r
+		return nil
+	}); err != nil {
 		return nil, err
-	}
-
-	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, wrapHTTPError(resp.StatusCode, resp.Header, raw)
 	}
 
 	out := make(chan llm.MessageChunk, 16)
