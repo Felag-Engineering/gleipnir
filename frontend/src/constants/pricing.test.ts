@@ -48,6 +48,10 @@ describe('estimateCost', () => {
     expect(estimateCost('Sonnet 4.6', 1000)).toBeGreaterThan(0)
   })
 
+  it('Opus 4.8 with ~1000 tokens returns non-zero cost', () => {
+    expect(estimateCost('Opus 4.8', 1000)).toBeGreaterThan(0)
+  })
+
   it('Opus 4.7 with ~1000 tokens returns non-zero cost', () => {
     expect(estimateCost('Opus 4.7', 1000)).toBeGreaterThan(0)
   })
