@@ -58,10 +58,43 @@ Run `sqlc generate` after adding queries. Update `sqlc.yaml` if you added a new 
 **File:** `internal/trigger/yourtype.go` (new)
 
 Create a handler struct with at minimum `store *db.Store` and `launcher *run.RunLauncher`. The handler either:
-- **HTTP-driven** (like webhook/manual): implements `http.HandlerFunc`, validates the request, and calls `launcher.Launch()`
-- **Background-driven** (like scheduled/poll): runs a loop or timer, loading policies from DB and calling `launcher.Launch()` when conditions are met
+- **HTTP-driven** (like webhook/manual): implements `http.HandlerFunc`, validates the request, and calls `writeLaunchOutcome()` (the shared HTTP adapter in `launch.go`)
+- **Background-driven** (like scheduled/poll): runs a loop or timer, loading policies from DB and calling `launcher.LaunchWithConcurrency()` when conditions are met
 
-In both cases, construct a `run.LaunchParams` with the correct `TriggerType` and `TriggerPayload`.
+In both cases, construct a `run.LaunchParams` with the correct `TriggerType`, `TriggerPayload`, and `ParsedPolicy`. The concurrency policy and queue depth are read from `ParsedPolicy.Agent` inside `LaunchWithConcurrency` — do not add them to `LaunchParams`.
+
+**HTTP-driven handlers** call `writeLaunchOutcome(ctx, w, h.launcher, params, "your-trigger-type")`. The function writes the response in all cases (202 Launched, 202 Queued, 409 Skipped, 429 QueueFull, 500 errors) — no additional switch is needed.
+
+**Background-driven handlers** call `launcher.LaunchWithConcurrency(ctx, params)` and switch on the result:
+
+```go
+res, err := launcher.LaunchWithConcurrency(ctx, params)
+if err != nil {
+    switch {
+    case errors.Is(err, run.ErrConcurrencyQueueFull):
+        slog.Warn("yourtype: trigger queue is full", "policy_id", policyID)
+    case errors.Is(err, run.ErrConcurrencyUnrecognised):
+        slog.Error("yourtype: concurrency check failed", "policy_id", policyID, "err", err)
+    case run.IsConcurrencyCheckError(err):
+        slog.Error("yourtype: concurrency check failed", "policy_id", policyID, "err", err)
+    case run.IsEnqueueError(err):
+        slog.Error("yourtype: failed to enqueue trigger", "policy_id", policyID, "err", err)
+    default:
+        slog.Error("yourtype: failed to launch run", "policy_id", policyID, "run_id", res.RunID, "err", err)
+    }
+    return
+}
+switch res.Outcome {
+case run.OutcomeLaunched:
+    slog.Info("yourtype: run launched", "policy_id", policyID, "run_id", res.RunID)
+case run.OutcomeQueued:
+    slog.Info("yourtype: trigger queued (active run exists)", "policy_id", policyID)
+case run.OutcomeSkipped:
+    slog.Info("yourtype: skipping run, active run exists (concurrency: skip)", "policy_id", policyID)
+}
+```
+
+`ErrConcurrencyQueueFull` and `ErrConcurrencyUnrecognised` are returned verbatim so `errors.Is` works. `run.IsConcurrencyCheckError` and `run.IsEnqueueError` classify the two wrapped DB-error classes (`concurrencyCheckError` / `enqueueError`) that are unexported from the `run` package.
 
 ### 9. Wire it up in main.go
 

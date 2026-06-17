@@ -92,12 +92,12 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	checkConcurrencyAndLaunch(ctx, w, h.launcher, run.LaunchParams{
+	writeLaunchOutcome(ctx, w, h.launcher, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypeWebhook,
 		TriggerPayload: string(body),
 		ParsedPolicy:   parsed,
-	}, parsed.Agent.Concurrency, parsed.Agent.QueueDepth, "webhook")
+	}, "webhook")
 }
 
 // authenticate verifies the incoming request's credentials based on the

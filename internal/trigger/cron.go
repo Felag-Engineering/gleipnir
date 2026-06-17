@@ -283,12 +283,36 @@ func (c *CronRunner) fire(ctx context.Context, policyID string, parsed *model.Pa
 		"expression":    parsed.Trigger.CronExpr,
 	})
 
-	launchOrQueueBackground(ctx, c.launcher, run.LaunchParams{
+	res, err := c.launcher.LaunchWithConcurrency(ctx, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypeCron,
 		TriggerPayload: string(payload),
 		ParsedPolicy:   parsed,
-	}, parsed.Agent.Concurrency, parsed.Agent.QueueDepth, "cron", "fired_at", firedAt)
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, run.ErrConcurrencyQueueFull):
+			slog.Warn("cron: trigger queue is full", "policy_id", policyID, "fired_at", firedAt)
+		case errors.Is(err, run.ErrConcurrencyUnrecognised):
+			slog.Error("cron: concurrency check failed", "policy_id", policyID, "fired_at", firedAt, "err", err)
+		case run.IsConcurrencyCheckError(err):
+			slog.Error("cron: concurrency check failed", "policy_id", policyID, "fired_at", firedAt, "err", err)
+		case run.IsEnqueueError(err):
+			slog.Error("cron: failed to enqueue trigger", "policy_id", policyID, "fired_at", firedAt, "err", err)
+		default:
+			slog.Error("cron: failed to launch run", "policy_id", policyID, "fired_at", firedAt, "run_id", res.RunID, "err", err)
+		}
+		return
+	}
+
+	switch res.Outcome {
+	case run.OutcomeLaunched:
+		slog.Info("cron: run launched", "policy_id", policyID, "fired_at", firedAt, "run_id", res.RunID)
+	case run.OutcomeQueued:
+		slog.Info("cron: trigger queued (active run exists)", "policy_id", policyID, "fired_at", firedAt)
+	case run.OutcomeSkipped:
+		slog.Info("cron: skipping run, active run exists (concurrency: skip)", "policy_id", policyID, "fired_at", firedAt)
+	}
 }
 
 // Wait blocks until all active cron goroutines have exited. Call after cancelling

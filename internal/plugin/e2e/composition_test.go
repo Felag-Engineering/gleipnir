@@ -232,19 +232,11 @@ type fakeRunLauncher struct {
 	launched []string // policy IDs in launch order
 }
 
-func (l *fakeRunLauncher) CheckConcurrency(_ context.Context, _ string, _ model.ConcurrencyPolicy) error {
-	return nil
-}
-
-func (l *fakeRunLauncher) Launch(_ context.Context, params run.LaunchParams) (run.LaunchResult, error) {
+func (l *fakeRunLauncher) LaunchWithConcurrency(_ context.Context, params run.LaunchParams) (run.LaunchResult, error) {
 	l.mu.Lock()
 	l.launched = append(l.launched, params.PolicyID)
 	l.mu.Unlock()
-	return run.LaunchResult{RunID: model.NewULID()}, nil
-}
-
-func (l *fakeRunLauncher) Enqueue(_ context.Context, _ run.LaunchParams, _ int) error {
-	return nil
+	return run.LaunchResult{RunID: model.NewULID(), Outcome: run.OutcomeLaunched}, nil
 }
 
 func (l *fakeRunLauncher) snapshot() []string {

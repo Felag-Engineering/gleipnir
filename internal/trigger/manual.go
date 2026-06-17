@@ -68,10 +68,10 @@ func (h *ManualTriggerHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	checkConcurrencyAndLaunch(ctx, w, h.launcher, run.LaunchParams{
+	writeLaunchOutcome(ctx, w, h.launcher, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypeManual,
 		TriggerPayload: string(body),
 		ParsedPolicy:   parsed,
-	}, parsed.Agent.Concurrency, parsed.Agent.QueueDepth, "manual trigger")
+	}, "manual trigger")
 }

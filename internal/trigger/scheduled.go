@@ -210,23 +210,47 @@ func (s *Scheduler) fire(ctx context.Context, policyID string, parsed *model.Par
 
 	// Enforce concurrency policy before launching, consistent with webhook and
 	// manual triggers. All non-nil errors prevent the run from firing.
-	outcome := launchOrQueueBackground(ctx, s.launcher, run.LaunchParams{
+	logAttrs := func(extra ...any) []any {
+		attrs := []any{"policy_id", policyID, "fire_at", fireTime}
+		return append(attrs, extra...)
+	}
+	res, err := s.launcher.LaunchWithConcurrency(ctx, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypeScheduled,
 		TriggerPayload: string(payload),
 		ParsedPolicy:   parsed,
-	}, parsed.Agent.Concurrency, parsed.Agent.QueueDepth, "scheduled", "fire_at", fireTime)
-
-	// The fire time is consumed whenever the trigger was skipped, queued, or
-	// launched — only a hard error (concurrency check, enqueue, or launch
-	// failure) leaves it unconsumed. Pause the policy if all fire_at times are
-	// now exhausted; otherwise a skip would strand it "active" forever with no
-	// future timers and it would never fire again (#488). DrainQueue calls
-	// Launch directly and does not invoke pauseIfExhausted, so the queued path
-	// must pause here too.
-	if outcome != outcomeError {
-		s.pauseIfExhausted(ctx, policyID, parsed)
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, run.ErrConcurrencyQueueFull):
+			slog.Warn("scheduled: trigger queue is full", logAttrs()...)
+		case errors.Is(err, run.ErrConcurrencyUnrecognised):
+			slog.Error("scheduled: concurrency check failed", logAttrs("err", err)...)
+		case run.IsConcurrencyCheckError(err):
+			slog.Error("scheduled: concurrency check failed", logAttrs("err", err)...)
+		case run.IsEnqueueError(err):
+			slog.Error("scheduled: failed to enqueue trigger", logAttrs("err", err)...)
+		default:
+			slog.Error("scheduled: failed to launch run", logAttrs("run_id", res.RunID, "err", err)...)
+		}
+		return // fire time NOT consumed on a real error — do not pause
 	}
+
+	switch res.Outcome {
+	case run.OutcomeLaunched:
+		slog.Info("scheduled: run launched", logAttrs("run_id", res.RunID)...)
+	case run.OutcomeQueued:
+		slog.Info("scheduled: trigger queued (active run exists)", logAttrs()...)
+	case run.OutcomeSkipped:
+		slog.Info("scheduled: skipping run, active run exists (concurrency: skip)", logAttrs()...)
+	}
+
+	// The fire time is consumed for Launched, Queued, or Skipped outcomes —
+	// only a real error leaves it unconsumed. Pause the policy if all fire_at
+	// times are now exhausted; otherwise a skip would strand it "active" forever
+	// with no future timers (#488). DrainQueue calls Launch directly and does not
+	// invoke pauseIfExhausted, so the queued path must pause here too.
+	s.pauseIfExhausted(ctx, policyID, parsed)
 }
 
 // alreadyFired returns true if a scheduled run already exists for this policy

@@ -30,9 +30,7 @@ import (
 // RunLauncher is the narrow interface that Dispatcher uses from
 // *run.RunLauncher. Defined as an interface so tests can inject a fake.
 type RunLauncher interface {
-	CheckConcurrency(ctx context.Context, policyID string, concurrency model.ConcurrencyPolicy) error
-	Launch(ctx context.Context, params run.LaunchParams) (run.LaunchResult, error)
-	Enqueue(ctx context.Context, params run.LaunchParams, queueDepth int) error
+	LaunchWithConcurrency(ctx context.Context, params run.LaunchParams) (run.LaunchResult, error)
 }
 
 // Querier is the narrow DB interface the Dispatcher needs. Using an interface
@@ -263,51 +261,44 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 	d.publishMatch(evt, pol.ID)
 
 	// 5. Launch.
-	if err := d.launcher.CheckConcurrency(ctx, pol.ID, parsed.Agent.Concurrency); err != nil {
-		switch {
-		case errors.Is(err, run.ErrConcurrencySkipActive):
-			d.log.InfoContext(ctx, "trigger dispatcher: skipping fire, active run exists (concurrency: skip)",
-				"policy_id", pol.ID,
-				"event_id", evt.EventID,
-			)
-		case errors.Is(err, run.ErrConcurrencyQueueActive):
-			if enqErr := d.launcher.Enqueue(ctx, run.LaunchParams{
-				PolicyID:       pol.ID,
-				TriggerType:    model.TriggerTypeSubscribed,
-				TriggerPayload: string(evt.PayloadJSON),
-				ParsedPolicy:   parsed,
-			}, parsed.Agent.QueueDepth); enqErr != nil {
-				if errors.Is(enqErr, run.ErrConcurrencyQueueFull) {
-					d.log.WarnContext(ctx, "trigger dispatcher: trigger queue is full",
-						"policy_id", pol.ID, "event_id", evt.EventID)
-				} else {
-					d.log.ErrorContext(ctx, "trigger dispatcher: failed to enqueue trigger",
-						"policy_id", pol.ID, "event_id", evt.EventID, "err", enqErr)
-				}
-			} else {
-				d.log.InfoContext(ctx, "trigger dispatcher: trigger queued (active run exists)",
-					"policy_id", pol.ID, "event_id", evt.EventID)
-			}
-		default:
-			d.log.ErrorContext(ctx, "trigger dispatcher: concurrency check failed",
-				"policy_id", pol.ID, "event_id", evt.EventID, "err", err)
-		}
-		return
-	}
-
-	result, err := d.launcher.Launch(ctx, run.LaunchParams{
+	res, err := d.launcher.LaunchWithConcurrency(ctx, run.LaunchParams{
 		PolicyID:       pol.ID,
 		TriggerType:    model.TriggerTypeSubscribed,
 		TriggerPayload: string(evt.PayloadJSON),
 		ParsedPolicy:   parsed,
 	})
 	if err != nil {
-		d.log.ErrorContext(ctx, "trigger dispatcher: failed to launch run",
-			"policy_id", pol.ID,
-			"run_id", result.RunID,
-			"event_id", evt.EventID,
-			"err", err,
-		)
+		switch {
+		case errors.Is(err, run.ErrConcurrencyQueueFull):
+			d.log.WarnContext(ctx, "trigger dispatcher: trigger queue is full",
+				"policy_id", pol.ID, "event_id", evt.EventID)
+		case errors.Is(err, run.ErrConcurrencyUnrecognised):
+			// Error-level log for the unrecognised policy, matching the old
+			// launchOrQueueBackground default "concurrency check failed" branch.
+			d.log.ErrorContext(ctx, "trigger dispatcher: concurrency check failed",
+				"policy_id", pol.ID, "event_id", evt.EventID, "err", err)
+		case run.IsConcurrencyCheckError(err):
+			d.log.ErrorContext(ctx, "trigger dispatcher: concurrency check failed",
+				"policy_id", pol.ID, "event_id", evt.EventID, "err", err)
+		case run.IsEnqueueError(err):
+			d.log.ErrorContext(ctx, "trigger dispatcher: failed to enqueue trigger",
+				"policy_id", pol.ID, "event_id", evt.EventID, "err", err)
+		default:
+			d.log.ErrorContext(ctx, "trigger dispatcher: failed to launch run",
+				"policy_id", pol.ID, "run_id", res.RunID, "event_id", evt.EventID, "err", err)
+		}
+		return
+	}
+
+	switch res.Outcome {
+	case run.OutcomeSkipped:
+		d.log.InfoContext(ctx, "trigger dispatcher: skipping fire, active run exists (concurrency: skip)",
+			"policy_id", pol.ID, "event_id", evt.EventID)
+	case run.OutcomeQueued:
+		d.log.InfoContext(ctx, "trigger dispatcher: trigger queued (active run exists)",
+			"policy_id", pol.ID, "event_id", evt.EventID)
+	case run.OutcomeLaunched:
+		// No info log on plain launch — avoids a log-volume regression.
 	}
 }
 

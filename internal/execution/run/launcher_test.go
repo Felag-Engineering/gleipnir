@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -890,6 +891,217 @@ type stubPluginToolResolver struct {
 
 func (s *stubPluginToolResolver) ResolvePluginTools(_ context.Context, _ []model.ToolCapability) ([]agent.PluginToolEntry, error) {
 	return s.entries, s.err
+}
+
+// TestLaunchWithConcurrency is the canonical home for the concurrency matrix.
+// It covers every branch of LaunchWithConcurrency for all policy concurrency
+// modes, verifying Outcome, RunID presence/emptiness, and error identity.
+func TestLaunchWithConcurrency(t *testing.T) {
+	// baseYAML is a minimal webhook policy with stub-server.read_data so
+	// resolution succeeds on idle-path rows.
+	const baseYAML = `
+name: lwc-policy
+trigger:
+  type: webhook
+capabilities:
+  tools:
+    - tool: stub-server.read_data
+agent:
+  model: claude-opus-4-5
+  task: "test task"
+  concurrency: %s
+  queue_depth: %d
+`
+	buildYAML := func(concurrency string, queueDepth int) string {
+		return fmt.Sprintf(baseYAML, concurrency, queueDepth)
+	}
+
+	cases := []struct {
+		name        string
+		concurrency string
+		queueDepth  int
+		hasActive   bool
+		queueFull   bool // pre-fill queue to capacity before calling
+		wantOutcome run.LaunchOutcome
+		wantRunID   bool  // expect non-empty RunID
+		wantErr     error // errors.Is match; nil means expect nil error
+	}{
+		// skip mode
+		{
+			name:        "skip + idle → launched",
+			concurrency: "skip", queueDepth: 1,
+			hasActive:   false,
+			wantOutcome: run.OutcomeLaunched, wantRunID: true,
+		},
+		{
+			name:        "skip + active → skipped (non-error)",
+			concurrency: "skip", queueDepth: 1,
+			hasActive:   true,
+			wantOutcome: run.OutcomeSkipped,
+		},
+		// queue mode
+		{
+			name:        "queue + idle → launched",
+			concurrency: "queue", queueDepth: 2,
+			hasActive:   false,
+			wantOutcome: run.OutcomeLaunched, wantRunID: true,
+		},
+		{
+			name:        "queue + active (room) → queued",
+			concurrency: "queue", queueDepth: 2,
+			hasActive:   true,
+			wantOutcome: run.OutcomeQueued,
+		},
+		{
+			name:        "queue + active (full) → ErrConcurrencyQueueFull",
+			concurrency: "queue", queueDepth: 1,
+			hasActive: true, queueFull: true,
+			wantErr: run.ErrConcurrencyQueueFull,
+		},
+		// parallel
+		{
+			name:        "parallel → always launched",
+			concurrency: "parallel", queueDepth: 1,
+			hasActive:   true, // parallel ignores active runs
+			wantOutcome: run.OutcomeLaunched, wantRunID: true,
+		},
+		// replace
+		{
+			name:        "replace + active → launched (old run cancelled)",
+			concurrency: "replace", queueDepth: 1,
+			hasActive:   true,
+			wantOutcome: run.OutcomeLaunched, wantRunID: true,
+		},
+		// unrecognised
+		{
+			name:        "unrecognised concurrency → ErrConcurrencyUnrecognised",
+			concurrency: "bogus", queueDepth: 1,
+			wantErr: run.ErrConcurrencyUnrecognised,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			store, registry := setupIntegrationFixture(t)
+
+			policyYAML := buildYAML(tc.concurrency, tc.queueDepth)
+			policyID := "lwc-" + tc.name
+			testutil.InsertPolicy(t, store, policyID, "policy-"+policyID, "webhook", policyYAML)
+
+			manager := run.NewRunManager()
+
+			if tc.hasActive {
+				activeID := "lwc-active-" + tc.name
+				testutil.InsertRun(t, store, activeID, policyID, model.RunStatusRunning)
+				if tc.concurrency == "replace" {
+					// Register with the manager so WaitForDeregistration works.
+					manager.Register(activeID, func() {}, make(chan bool, 1))
+					// Simulate the run goroutine exiting quickly.
+					go func() {
+						manager.Deregister(activeID)
+					}()
+				}
+			}
+
+			if tc.queueFull {
+				// Pre-fill the queue to capacity so Enqueue returns QueueFull.
+				for i := 0; i < tc.queueDepth; i++ {
+					testutil.InsertQueueEntry(t, store, policyID, "webhook")
+				}
+			}
+
+			launcher := run.NewRunLauncher(run.RunLauncherConfig{
+				Store:                  store,
+				Resolver:               run.NewDefaultToolResolver(registry, nil, nil),
+				Manager:                manager,
+				AgentFactory:           localAgentFactory(),
+				Publisher:              nil,
+				DefaultFeedbackTimeout: 0,
+				ModelResolver:          nil,
+			})
+
+			parsed, err := policy.Parse(policyYAML, "anthropic", "claude-sonnet-4-6")
+			if err != nil {
+				t.Fatalf("policy.Parse: %v", err)
+			}
+
+			res, launchErr := launcher.LaunchWithConcurrency(context.Background(), run.LaunchParams{
+				PolicyID:       policyID,
+				TriggerType:    model.TriggerTypeWebhook,
+				TriggerPayload: `{}`,
+				ParsedPolicy:   parsed,
+			})
+
+			if tc.wantErr != nil {
+				if !errors.Is(launchErr, tc.wantErr) {
+					t.Errorf("err = %v, want errors.Is(%v)", launchErr, tc.wantErr)
+				}
+				if res.RunID != "" {
+					t.Errorf("RunID = %q, want empty on error", res.RunID)
+				}
+				return
+			}
+
+			if launchErr != nil {
+				t.Fatalf("unexpected error: %v", launchErr)
+			}
+			if res.Outcome != tc.wantOutcome {
+				t.Errorf("Outcome = %v, want %v", res.Outcome, tc.wantOutcome)
+			}
+			if tc.wantRunID && res.RunID == "" {
+				t.Error("RunID is empty, want non-empty")
+			}
+			if !tc.wantRunID && res.RunID != "" {
+				t.Errorf("RunID = %q, want empty", res.RunID)
+			}
+
+			// Drain any launched goroutines.
+			manager.Wait()
+		})
+	}
+}
+
+// TestLaunchWithConcurrency_PredicateClassification verifies that the exported
+// predicate helpers correctly classify the two unexported error wrapper types,
+// and do not false-positive on the verbatim sentinel errors or a bare error.
+// This regression-guards the three distinct HTTP 500 branches.
+func TestLaunchWithConcurrency_PredicateClassification(t *testing.T) {
+	bareErr := fmt.Errorf("some db error")
+
+	// IsConcurrencyCheckError should match only its own wrapper.
+	if !run.IsConcurrencyCheckError(run.MakeConcurrencyCheckErrorForTest(bareErr)) {
+		t.Error("IsConcurrencyCheckError should be true for concurrencyCheckError wrapper")
+	}
+	if run.IsConcurrencyCheckError(run.ErrConcurrencyQueueFull) {
+		t.Error("IsConcurrencyCheckError should be false for ErrConcurrencyQueueFull")
+	}
+	if run.IsConcurrencyCheckError(run.ErrConcurrencyUnrecognised) {
+		t.Error("IsConcurrencyCheckError should be false for ErrConcurrencyUnrecognised")
+	}
+	if run.IsConcurrencyCheckError(bareErr) {
+		t.Error("IsConcurrencyCheckError should be false for a bare error")
+	}
+	if run.IsConcurrencyCheckError(run.MakeEnqueueErrorForTest(bareErr)) {
+		t.Error("IsConcurrencyCheckError should be false for enqueueError wrapper")
+	}
+
+	// IsEnqueueError should match only its own wrapper.
+	if !run.IsEnqueueError(run.MakeEnqueueErrorForTest(bareErr)) {
+		t.Error("IsEnqueueError should be true for enqueueError wrapper")
+	}
+	if run.IsEnqueueError(run.ErrConcurrencyQueueFull) {
+		t.Error("IsEnqueueError should be false for ErrConcurrencyQueueFull")
+	}
+	if run.IsEnqueueError(run.ErrConcurrencyUnrecognised) {
+		t.Error("IsEnqueueError should be false for ErrConcurrencyUnrecognised")
+	}
+	if run.IsEnqueueError(bareErr) {
+		t.Error("IsEnqueueError should be false for a bare error")
+	}
+	if run.IsEnqueueError(run.MakeConcurrencyCheckErrorForTest(bareErr)) {
+		t.Error("IsEnqueueError should be false for concurrencyCheckError wrapper")
+	}
 }
 
 // stubPluginGenerationLookup satisfies agent.PluginGenerationLookup.
