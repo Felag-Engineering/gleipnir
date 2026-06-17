@@ -325,12 +325,36 @@ func (p *Poller) poll(ctx context.Context, policyID string, parsed *model.Parsed
 	// Checks matched — enforce concurrency policy, then launch or queue a run.
 	payload := buildTriggerPayload(checks, results)
 
-	launchOrQueueBackground(ctx, p.launcher, run.LaunchParams{
+	res, err := p.launcher.LaunchWithConcurrency(ctx, run.LaunchParams{
 		PolicyID:       policyID,
 		TriggerType:    model.TriggerTypePoll,
 		TriggerPayload: payload,
 		ParsedPolicy:   parsed,
-	}, parsed.Agent.Concurrency, parsed.Agent.QueueDepth, "poller")
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, run.ErrConcurrencyQueueFull):
+			slog.Warn("poller: trigger queue is full", "policy_id", policyID)
+		case errors.Is(err, run.ErrConcurrencyUnrecognised):
+			slog.Error("poller: concurrency check failed", "policy_id", policyID, "err", err)
+		case run.IsConcurrencyCheckError(err):
+			slog.Error("poller: concurrency check failed", "policy_id", policyID, "err", err)
+		case run.IsEnqueueError(err):
+			slog.Error("poller: failed to enqueue trigger", "policy_id", policyID, "err", err)
+		default:
+			slog.Error("poller: failed to launch run", "policy_id", policyID, "run_id", res.RunID, "err", err)
+		}
+		return
+	}
+
+	switch res.Outcome {
+	case run.OutcomeLaunched:
+		slog.Info("poller: run launched", "policy_id", policyID, "run_id", res.RunID)
+	case run.OutcomeQueued:
+		slog.Info("poller: trigger queued (active run exists)", "policy_id", policyID)
+	case run.OutcomeSkipped:
+		slog.Info("poller: skipping run, active run exists (concurrency: skip)", "policy_id", policyID)
+	}
 }
 
 // pollResultEntry is one item in the poll_results trigger payload array.

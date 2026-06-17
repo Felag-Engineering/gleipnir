@@ -47,6 +47,52 @@ var (
 	ErrConcurrencyUnrecognised = errors.New("unrecognised concurrency policy")
 )
 
+// concurrencyCheckError wraps a non-sentinel error returned by CheckConcurrency
+// (a real DB failure listing active runs). It exists so the HTTP adapter can
+// map it to the distinct "failed to check active runs" 500 and background
+// adapters can log "concurrency check failed", preserving the three separate
+// failure messages the inline copies had.
+type concurrencyCheckError struct{ err error }
+
+func (e *concurrencyCheckError) Error() string { return e.err.Error() }
+func (e *concurrencyCheckError) Unwrap() error { return e.err }
+
+// enqueueError wraps a non-sentinel error from Enqueue (a real DB failure
+// counting/inserting queued triggers), distinct from ErrConcurrencyQueueFull.
+// Lets the HTTP adapter keep the "failed to enqueue trigger" 500 message.
+type enqueueError struct{ err error }
+
+func (e *enqueueError) Error() string { return e.err.Error() }
+func (e *enqueueError) Unwrap() error { return e.err }
+
+// IsConcurrencyCheckError reports whether err is a wrapped CheckConcurrency DB
+// error. Use this predicate instead of naming the unexported type directly.
+func IsConcurrencyCheckError(err error) bool {
+	var e *concurrencyCheckError
+	return errors.As(err, &e)
+}
+
+// IsEnqueueError reports whether err is a wrapped non-queue-full Enqueue DB
+// error. Use this predicate instead of naming the unexported type directly.
+func IsEnqueueError(err error) bool {
+	var e *enqueueError
+	return errors.As(err, &e)
+}
+
+// LaunchOutcome classifies the branch taken by LaunchWithConcurrency.
+type LaunchOutcome int
+
+const (
+	// OutcomeLaunched means the run was launched immediately.
+	OutcomeLaunched LaunchOutcome = iota
+	// OutcomeQueued means an active run existed and the trigger was enqueued for
+	// later execution (concurrency: queue).
+	OutcomeQueued
+	// OutcomeSkipped means an active run existed and the trigger was dropped
+	// (concurrency: skip).
+	OutcomeSkipped
+)
+
 // replaceCancelTimeout is how long CheckConcurrency waits for a cancelled run's
 // goroutine to exit before proceeding with the new run. Long enough for the agent
 // loop to observe context cancellation; short enough to not stall trigger handlers.
@@ -60,14 +106,17 @@ type LaunchParams struct {
 	ParsedPolicy   *model.ParsedPolicy
 }
 
-// LaunchResult carries the output of a Launch call. RunID is populated on
-// success and on any failure path that occurred *after* the run row was
-// created — in those cases the row has been transitioned to status=failed
-// with the underlying error stored on it, so callers can deep-link to the
-// run detail page. RunID is empty only when the run row could not be created
-// at all (e.g. CreateRun returned a DB error).
+// LaunchResult carries the output of a Launch or LaunchWithConcurrency call.
+// RunID is populated on success and on any failure path that occurred *after*
+// the run row was created — in those cases the row has been transitioned to
+// status=failed with the underlying error stored on it, so callers can
+// deep-link to the run detail page. RunID is empty for OutcomeQueued,
+// OutcomeSkipped, and for errors that occur before any run row is created
+// (CheckConcurrency DB error, queue-full, unrecognised, enqueue error).
+// Outcome identifies which branch fired; it is only meaningful when error is nil.
 type LaunchResult struct {
-	RunID string
+	RunID   string
+	Outcome LaunchOutcome
 }
 
 // RunLauncher encapsulates the shared logic for creating a run record,
@@ -127,6 +176,52 @@ func NewRunLauncher(cfg RunLauncherConfig) *RunLauncher {
 		approvalDispatcher:     cfg.ApprovalDispatcher,
 		feedbackDispatcher:     cfg.FeedbackDispatcher,
 	}
+}
+
+// LaunchWithConcurrency is the single entry point for all trigger types. It
+// enforces the concurrency policy declared in params.ParsedPolicy, then either
+// skips, enqueues, or launches the run. It owns all choreography so trigger
+// handlers reduce to thin adapters that only handle their transport-specific
+// reaction (HTTP status vs. structured log).
+//
+// Skip and queue are returned as (LaunchResult{Outcome: …}, nil) — they are
+// non-error outcomes. A non-nil error is returned only for genuine failures:
+//   - ErrConcurrencyQueueFull (verbatim) — queue is at capacity
+//   - ErrConcurrencyUnrecognised (verbatim) — unknown concurrency policy
+//   - IsConcurrencyCheckError(err) == true — raw DB error from CheckConcurrency
+//   - IsEnqueueError(err) == true — raw DB error from Enqueue
+//   - any other error — from Launch (may carry a RunID in the result)
+func (l *RunLauncher) LaunchWithConcurrency(ctx context.Context, params LaunchParams) (LaunchResult, error) {
+	concurrency := params.ParsedPolicy.Agent.Concurrency
+	queueDepth := params.ParsedPolicy.Agent.QueueDepth
+
+	err := l.CheckConcurrency(ctx, params.PolicyID, concurrency)
+	switch {
+	case err == nil:
+		// fall through to Launch.
+	case errors.Is(err, ErrConcurrencySkipActive):
+		return LaunchResult{Outcome: OutcomeSkipped}, nil
+	case errors.Is(err, ErrConcurrencyQueueActive):
+		if enqErr := l.Enqueue(ctx, params, queueDepth); enqErr != nil {
+			if errors.Is(enqErr, ErrConcurrencyQueueFull) {
+				return LaunchResult{}, ErrConcurrencyQueueFull // verbatim so errors.Is works
+			}
+			return LaunchResult{}, &enqueueError{err: enqErr}
+		}
+		return LaunchResult{Outcome: OutcomeQueued}, nil
+	case errors.Is(err, ErrConcurrencyUnrecognised):
+		return LaunchResult{}, ErrConcurrencyUnrecognised // verbatim so errors.Is works
+	default:
+		// Real DB error from CheckConcurrency. Wrap so adapters can distinguish
+		// "failed to check active runs" from a launch failure.
+		return LaunchResult{}, &concurrencyCheckError{err: err}
+	}
+
+	res, err := l.Launch(ctx, params)
+	// On Launch error, res.RunID may be set (failure after the row was created).
+	// Propagate it so HTTP adapters can deep-link to the failed run row via
+	// WriteLaunchError — matches the pre-refactor behavior.
+	return LaunchResult{RunID: res.RunID, Outcome: OutcomeLaunched}, err
 }
 
 // drainResolveDefaults fetches the system default model for the drain path.

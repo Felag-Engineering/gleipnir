@@ -106,61 +106,27 @@ func (p *fakePublisher) published() []string {
 	return out
 }
 
-// fakeLauncher satisfies plugintrigger.RunLauncher and counts Launch/Enqueue calls.
+// fakeLauncher satisfies plugintrigger.RunLauncher and records LaunchWithConcurrency calls.
 type fakeLauncher struct {
-	mu         sync.Mutex
-	launches   []run.LaunchParams
-	launchErr  error
-	concurrErr error
-
-	enqueues   []enqueueCall
-	enqueueErr error
-}
-
-type enqueueCall struct {
-	params     run.LaunchParams
-	queueDepth int
+	mu     sync.Mutex
+	calls  []run.LaunchParams
+	result run.LaunchResult // outcome to return on success
+	err    error            // e.g. run.ErrConcurrencyQueueFull
 }
 
 var _ plugintrigger.RunLauncher = (*fakeLauncher)(nil)
 
-func (l *fakeLauncher) CheckConcurrency(_ context.Context, _ string, _ model.ConcurrencyPolicy) error {
-	return l.concurrErr
-}
-
-func (l *fakeLauncher) Launch(_ context.Context, params run.LaunchParams) (run.LaunchResult, error) {
+func (l *fakeLauncher) LaunchWithConcurrency(_ context.Context, p run.LaunchParams) (run.LaunchResult, error) {
 	l.mu.Lock()
-	l.launches = append(l.launches, params)
+	l.calls = append(l.calls, p)
 	l.mu.Unlock()
-	return run.LaunchResult{}, l.launchErr
+	return l.result, l.err
 }
 
-func (l *fakeLauncher) Enqueue(_ context.Context, params run.LaunchParams, queueDepth int) error {
-	l.mu.Lock()
-	l.enqueues = append(l.enqueues, enqueueCall{params: params, queueDepth: queueDepth})
-	l.mu.Unlock()
-	return l.enqueueErr
-}
-
-func (l *fakeLauncher) launchCount() int {
+func (l *fakeLauncher) callCount() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return len(l.launches)
-}
-
-func (l *fakeLauncher) enqueueCount() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.enqueues)
-}
-
-func (l *fakeLauncher) lastEnqueue() (enqueueCall, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if len(l.enqueues) == 0 {
-		return enqueueCall{}, false
-	}
-	return l.enqueues[len(l.enqueues)-1], true
+	return len(l.calls)
 }
 
 // buildManifestYAML produces a minimal manifest YAML with one event kind and
@@ -249,8 +215,8 @@ func TestDispatcher_DedupHit(t *testing.T) {
 	if err := d.Handle(context.Background(), evt); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if launcher.launchCount() != 0 {
-		t.Errorf("expected 0 launches on dedup hit, got %d", launcher.launchCount())
+	if launcher.callCount() != 0 {
+		t.Errorf("expected 0 launches on dedup hit, got %d", launcher.callCount())
 	}
 }
 
@@ -287,8 +253,8 @@ func TestDispatcher_DedupMiss_MatchingPolicyLaunches(t *testing.T) {
 	if err := d.Handle(context.Background(), evt); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if launcher.launchCount() != 1 {
-		t.Errorf("expected 1 launch, got %d", launcher.launchCount())
+	if launcher.callCount() != 1 {
+		t.Errorf("expected 1 launch, got %d", launcher.callCount())
 	}
 }
 
@@ -328,8 +294,8 @@ func TestDispatcher_BindingNoMatch(t *testing.T) {
 	if err := d.Handle(context.Background(), evt); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if launcher.launchCount() != 0 {
-		t.Errorf("expected 0 launches on non-matching binding, got %d", launcher.launchCount())
+	if launcher.callCount() != 0 {
+		t.Errorf("expected 0 launches on non-matching binding, got %d", launcher.callCount())
 	}
 	// plugin.event_no_match should have been published.
 	published := pub.published()
@@ -370,8 +336,8 @@ func TestDispatcher_BadPolicyYAML_OtherPoliciesStillMatch(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 	// The good policy should still launch.
-	if launcher.launchCount() != 1 {
-		t.Errorf("expected 1 launch (bad policy skipped), got %d", launcher.launchCount())
+	if launcher.callCount() != 1 {
+		t.Errorf("expected 1 launch (bad policy skipped), got %d", launcher.callCount())
 	}
 }
 
@@ -393,7 +359,7 @@ func TestDispatcher_LaunchError_StreamStaysAlive(t *testing.T) {
 			"plug-1": {ID: "plug-1", ManifestSnapshot: buildManifestYAML(t, "message", nil)},
 		},
 	}
-	launcher := &fakeLauncher{launchErr: errors.New("launch broke")}
+	launcher := &fakeLauncher{err: errors.New("launch broke")}
 	pub := &fakePublisher{}
 	d := newDispatcher(q, dedup.Noop{}, launcher, pub)
 
@@ -458,8 +424,8 @@ func TestDispatcher_CacheInvalidation(t *testing.T) {
 	}
 
 	// All three should have launched (one per event).
-	if launcher.launchCount() != 3 {
-		t.Errorf("expected 3 launches, got %d", launcher.launchCount())
+	if launcher.callCount() != 3 {
+		t.Errorf("expected 3 launches, got %d", launcher.callCount())
 	}
 }
 
@@ -506,8 +472,8 @@ func TestDispatcher_ConcurrentEvents(t *testing.T) {
 	}
 	wg.Wait()
 
-	if launcher.launchCount() != goroutines {
-		t.Errorf("expected %d launches, got %d", goroutines, launcher.launchCount())
+	if launcher.callCount() != goroutines {
+		t.Errorf("expected %d launches, got %d", goroutines, launcher.callCount())
 	}
 }
 
@@ -546,20 +512,19 @@ func TestDispatcher_ManifestParsedAsYAML(t *testing.T) {
 	if err := d.Handle(context.Background(), evt); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if launcher.launchCount() != 1 {
-		t.Errorf("expected 1 launch, got %d", launcher.launchCount())
+	if launcher.callCount() != 1 {
+		t.Errorf("expected 1 launch, got %d", launcher.callCount())
 	}
 }
 
 // TestDispatcher_ConcurrencyCap_SkipBlocksFire verifies that when
-// CheckConcurrency returns ErrConcurrencySkipActive, no Launch or Enqueue call
-// is made, Handle returns nil, and the plugin.event_matched event was still
-// published (binding evaluation precedes the concurrency check).
+// LaunchWithConcurrency returns OutcomeSkipped, Handle returns nil and
+// plugin.event_matched was still published (binding evaluation precedes launch).
 func TestDispatcher_ConcurrencyCap_SkipBlocksFire(t *testing.T) {
 	t.Parallel()
 
 	q := newBasicQuerier(t, "my-instance", "message")
-	launcher := &fakeLauncher{concurrErr: run.ErrConcurrencySkipActive}
+	launcher := &fakeLauncher{result: run.LaunchResult{Outcome: run.OutcomeSkipped}}
 	pub := &fakePublisher{}
 	d := newDispatcher(q, dedup.Noop{}, launcher, pub)
 
@@ -574,22 +539,19 @@ func TestDispatcher_ConcurrencyCap_SkipBlocksFire(t *testing.T) {
 	if err := d.Handle(context.Background(), evt); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if launcher.launchCount() != 0 {
-		t.Errorf("expected 0 launches on concurrency skip, got %d", launcher.launchCount())
+	if launcher.callCount() != 1 {
+		t.Errorf("expected 1 LaunchWithConcurrency call, got %d", launcher.callCount())
 	}
-	if launcher.enqueueCount() != 0 {
-		t.Errorf("expected 0 enqueues on concurrency skip, got %d", launcher.enqueueCount())
-	}
-	// plugin.event_matched is published before the concurrency check.
+	// plugin.event_matched is published before the launch attempt.
 	if !contains(pub.published(), "plugin.event_matched") {
 		t.Errorf("expected plugin.event_matched in %v", pub.published())
 	}
 }
 
 // TestDispatcher_ConcurrencyCap_QueueFullDrops verifies that when
-// CheckConcurrency returns ErrConcurrencyQueueActive and Enqueue returns
-// ErrConcurrencyQueueFull, no Launch call is made, exactly one Enqueue call
-// is made with the correct QueueDepth, and Handle returns nil.
+// LaunchWithConcurrency returns ErrConcurrencyQueueFull, exactly one
+// LaunchWithConcurrency call is made carrying the parsed queue_depth, and
+// Handle returns nil.
 func TestDispatcher_ConcurrencyCap_QueueFullDrops(t *testing.T) {
 	t.Parallel()
 
@@ -623,10 +585,7 @@ agent:
 			"plug-1": {ID: "plug-1", ManifestSnapshot: buildManifestYAML(t, "message", nil)},
 		},
 	}
-	launcher := &fakeLauncher{
-		concurrErr: run.ErrConcurrencyQueueActive,
-		enqueueErr: run.ErrConcurrencyQueueFull,
-	}
+	launcher := &fakeLauncher{err: run.ErrConcurrencyQueueFull}
 	pub := &fakePublisher{}
 	d := newDispatcher(q, dedup.Noop{}, launcher, pub)
 
@@ -641,18 +600,12 @@ agent:
 	if err := d.Handle(context.Background(), evt); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if launcher.launchCount() != 0 {
-		t.Errorf("expected 0 launches on queue full, got %d", launcher.launchCount())
+	if launcher.callCount() != 1 {
+		t.Errorf("expected 1 LaunchWithConcurrency call, got %d", launcher.callCount())
 	}
-	if launcher.enqueueCount() != 1 {
-		t.Errorf("expected 1 enqueue call, got %d", launcher.enqueueCount())
-	}
-	call, ok := launcher.lastEnqueue()
-	if !ok {
-		t.Fatal("expected at least one enqueue call")
-	}
-	if call.queueDepth != wantQueueDepth {
-		t.Errorf("enqueue queueDepth = %d, want %d", call.queueDepth, wantQueueDepth)
+	call := launcher.calls[0]
+	if call.ParsedPolicy.Agent.QueueDepth != wantQueueDepth {
+		t.Errorf("queue depth = %d, want %d", call.ParsedPolicy.Agent.QueueDepth, wantQueueDepth)
 	}
 }
 
@@ -679,10 +632,10 @@ func TestDispatcher_HappyPath_PayloadPropagation(t *testing.T) {
 	if err := d.Handle(context.Background(), evt); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if launcher.launchCount() != 1 {
-		t.Fatalf("expected 1 launch, got %d", launcher.launchCount())
+	if launcher.callCount() != 1 {
+		t.Fatalf("expected 1 launch, got %d", launcher.callCount())
 	}
-	lp := launcher.launches[0]
+	lp := launcher.calls[0]
 	if lp.PolicyID != "pol-1" {
 		t.Errorf("PolicyID = %q, want %q", lp.PolicyID, "pol-1")
 	}

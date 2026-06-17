@@ -28,6 +28,24 @@ func (m *mockFeedbackDispatcher) DispatchFeedback(_ context.Context, _ FeedbackD
 	return m.response, m.err
 }
 
+// awaitPendingFeedbackID blocks until the state machine publishes feedback.created
+// — the signal that the feedback_requests INSERT has committed (the publish in
+// state.go fires only after tx.Commit) — then returns the pending row's ID. This
+// replaces polling the DB on a tight wall-clock budget, which flaked under -race
+// on loaded CI runners (CLAUDE.md "signal-don't-poll").
+func awaitPendingFeedbackID(t *testing.T, pub *capturePublisher, s *db.Store, runID string) string {
+	t.Helper()
+	pub.waitForEvent(t, "feedback.created", 5*time.Second)
+	rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("no pending feedback row after feedback.created event")
+	}
+	return rows[0].ID
+}
+
 // TestFeedbackHandler_Wait_ResponseReceived verifies the happy path: operator
 // responds via h.Resolve before timeout; feedback_request and feedback_response
 // steps are written; run transitions back to running.
@@ -51,27 +69,11 @@ func TestFeedbackHandler_Wait_ResponseReceived(t *testing.T) {
 	}
 	done := make(chan waitResult, 1)
 	go func() {
-		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 500*time.Millisecond)
+		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", time.Minute)
 		done <- waitResult{body: body, err: err}
 	}()
 
-	// Poll until the feedback row appears in the DB.
-	deadline := time.Now().Add(200 * time.Millisecond)
-	var feedbackID string
-	for time.Now().Before(deadline) {
-		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
-		if err != nil {
-			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
-		}
-		if len(rows) > 0 {
-			feedbackID = rows[0].ID
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if feedbackID == "" {
-		t.Fatal("timed out waiting for feedback row to appear in DB")
-	}
+	feedbackID := awaitPendingFeedbackID(t, pub, s, "run1")
 
 	// Deliver the operator response through the inAppChannel.
 	if err := h.Resolve(feedbackID, "operator response"); err != nil {
@@ -535,30 +537,14 @@ func TestFeedbackHandler_Wait_PluginFallbackToInApp(t *testing.T) {
 		err  error
 	}, 1)
 	go func() {
-		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 500*time.Millisecond)
+		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", time.Minute)
 		done <- struct {
 			body string
 			err  error
 		}{body, err}
 	}()
 
-	// Poll until the feedback row appears in the DB.
-	deadline := time.Now().Add(300 * time.Millisecond)
-	var feedbackID string
-	for time.Now().Before(deadline) {
-		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
-		if err != nil {
-			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
-		}
-		if len(rows) > 0 {
-			feedbackID = rows[0].ID
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if feedbackID == "" {
-		t.Fatal("timed out waiting for feedback row to appear in DB")
-	}
+	feedbackID := awaitPendingFeedbackID(t, pub, s, "run1")
 
 	// Deliver the response via the in-app Resolve path.
 	if err := h.Resolve(feedbackID, "in-app reply"); err != nil {
@@ -618,27 +604,11 @@ func TestFeedbackHandler_Wait_InApp_DoesNotResolveDBRow(t *testing.T) {
 	}
 	done := make(chan waitResult, 1)
 	go func() {
-		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", 500*time.Millisecond)
+		body, err := h.Wait(context.Background(), "run1", AskOperatorToolName, "{}", "please answer", time.Minute)
 		done <- waitResult{body: body, err: err}
 	}()
 
-	// Wait for the pending feedback row to appear.
-	var feedbackID string
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		rows, err := s.GetPendingFeedbackRequestsByRun(context.Background(), "run1")
-		if err != nil {
-			t.Fatalf("GetPendingFeedbackRequestsByRun: %v", err)
-		}
-		if len(rows) > 0 {
-			feedbackID = rows[0].ID
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if feedbackID == "" {
-		t.Fatal("timed out waiting for feedback row")
-	}
+	feedbackID := awaitPendingFeedbackID(t, pub, s, "run1")
 
 	// Deliver response through the in-app channel.
 	if err := h.Resolve(feedbackID, "hello"); err != nil {
