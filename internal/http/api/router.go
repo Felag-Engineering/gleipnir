@@ -33,12 +33,32 @@ type PolicyNotifier interface {
 	Notify(ctx context.Context, policyID string)
 }
 
-// HandlerBundle groups all pre-constructed HTTP handler structs. Every field is
-// a concrete handler type — BuildRouter never constructs handlers itself.
+// AdminHandler is the subset of *admin.Handler's HTTP-handler surface that
+// BuildRouter wires into routes. Defining it here (rather than importing the
+// concrete type) lets BuildRouter be exercised with a stub in tests, and is
+// consistent with how every other handler dependency in RouterConfig is
+// expressed as an interface rather than a concrete type.
+type AdminHandler interface {
+	GetPublicConfig(w http.ResponseWriter, r *http.Request)
+	ListProviders(w http.ResponseWriter, r *http.Request)
+	SetProviderKey(w http.ResponseWriter, r *http.Request)
+	DeleteProviderKey(w http.ResponseWriter, r *http.Request)
+	GetSettings(w http.ResponseWriter, r *http.Request)
+	UpdateSettings(w http.ResponseWriter, r *http.Request)
+	SetDefaultModel(w http.ResponseWriter, r *http.Request)
+	ListModelsAdmin(w http.ResponseWriter, r *http.Request)
+	ListAllModels(lister llm.ModelLister) http.HandlerFunc
+	SetModelEnabled(w http.ResponseWriter, r *http.Request)
+}
+
+// HandlerBundle groups all pre-constructed HTTP handlers. Each field is a
+// handler ready to wire into routes — either a concrete handler pointer or a
+// consumer-defined interface (AdminHandler). BuildRouter never constructs
+// handlers itself.
 type HandlerBundle struct {
 	AuthHandler              *auth.Handler
 	SettingsHandler          *auth.SettingsHandler
-	AdminHandler             *admin.Handler
+	AdminHandler             AdminHandler
 	OpenAICompatHandler      *admin.OpenAICompatHandler
 	PluginAdminHandler       *admin.PluginHandler
 	PluginOAuthHandler       *admin.PluginOAuthHandler
