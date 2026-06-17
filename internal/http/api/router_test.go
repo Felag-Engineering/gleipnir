@@ -22,9 +22,87 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/trigger"
 )
 
-// buildTestRouterWithStore is the shared core: it lets callers inject the store
-// so they can seed rows before the router is built.
-func buildTestRouterWithStore(t *testing.T, store *db.Store) http.Handler {
+// Compile-time checks: the stub must satisfy the interface, and the real
+// *admin.Handler must still satisfy it (guards against future signature drift).
+var _ api.AdminHandler = (*stubAdminHandler)(nil)
+var _ api.AdminHandler = (*admin.Handler)(nil)
+
+// stubAdminHandler implements api.AdminHandler with a sentinel response so
+// tests can verify that BuildRouter dispatches to the injected implementation
+// rather than requiring a real *admin.Handler.
+type stubAdminHandler struct{}
+
+const stubSentinelBody = `{"stub":"admin"}`
+const stubSentinelStatus = http.StatusTeapot
+
+func (s *stubAdminHandler) respond(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(stubSentinelStatus)
+	_, _ = w.Write([]byte(stubSentinelBody))
+}
+
+func (s *stubAdminHandler) GetPublicConfig(w http.ResponseWriter, r *http.Request) { s.respond(w) }
+func (s *stubAdminHandler) ListProviders(w http.ResponseWriter, r *http.Request)   { s.respond(w) }
+func (s *stubAdminHandler) SetProviderKey(w http.ResponseWriter, r *http.Request)  { s.respond(w) }
+func (s *stubAdminHandler) DeleteProviderKey(w http.ResponseWriter, r *http.Request) {
+	s.respond(w)
+}
+func (s *stubAdminHandler) GetSettings(w http.ResponseWriter, r *http.Request)    { s.respond(w) }
+func (s *stubAdminHandler) UpdateSettings(w http.ResponseWriter, r *http.Request) { s.respond(w) }
+func (s *stubAdminHandler) SetDefaultModel(w http.ResponseWriter, r *http.Request) {
+	s.respond(w)
+}
+func (s *stubAdminHandler) ListModelsAdmin(w http.ResponseWriter, r *http.Request) { s.respond(w) }
+func (s *stubAdminHandler) ListAllModels(lister llm.ModelLister) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { s.respond(w) }
+}
+func (s *stubAdminHandler) SetModelEnabled(w http.ResponseWriter, r *http.Request) { s.respond(w) }
+
+// TestBuildRouter_AdminHandlerStub verifies that BuildRouter wires the injected
+// AdminHandler into routes rather than requiring a concrete *admin.Handler. It
+// builds the router with a stubAdminHandler and asserts the stub's sentinel
+// response is returned for the public-config route (all authenticated users)
+// and the admin-gated settings route (admin role required).
+func TestBuildRouter_AdminHandlerStub(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	stub := &stubAdminHandler{}
+	router := buildTestRouterWithStoreAndAdmin(t, store, stub)
+
+	adminToken := insertUserWithSession(t, store, "stub-admin", "admin")
+
+	t.Run("GET /api/v1/config dispatches to stub", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
+		req.AddCookie(&http.Cookie{Name: "gleipnir_session", Value: adminToken})
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != stubSentinelStatus {
+			t.Errorf("status = %d, want %d (stub sentinel); body: %s", w.Code, stubSentinelStatus, w.Body.String())
+		}
+		if got := w.Body.String(); got != stubSentinelBody {
+			t.Errorf("body = %q, want %q", got, stubSentinelBody)
+		}
+	})
+
+	t.Run("GET /api/v1/admin/settings dispatches to stub", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+		req.AddCookie(&http.Cookie{Name: "gleipnir_session", Value: adminToken})
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != stubSentinelStatus {
+			t.Errorf("status = %d, want %d (stub sentinel); body: %s", w.Code, stubSentinelStatus, w.Body.String())
+		}
+		if got := w.Body.String(); got != stubSentinelBody {
+			t.Errorf("body = %q, want %q", got, stubSentinelBody)
+		}
+	})
+}
+
+// buildTestRouterWithStoreAndAdmin is the shared core: it lets callers inject
+// the store (so they can seed rows before the router is built) and the
+// AdminHandler implementation (so tests can substitute a stub).
+func buildTestRouterWithStoreAndAdmin(t *testing.T, store *db.Store, adminHandler api.AdminHandler) http.Handler {
 	t.Helper()
 
 	broadcaster := sse.NewBroadcaster()
@@ -37,9 +115,7 @@ func buildTestRouterWithStore(t *testing.T, store *db.Store) http.Handler {
 	providerRegistry := llm.NewProviderRegistry()
 	providerRegistry.Register("anthropic", noopClient)
 
-	adminQuerier := admin.NewQuerierAdapter(store.Queries())
 	systemSettings := settings.NewService(store.Queries())
-	adminHandler := admin.NewHandler(adminQuerier, systemSettings, nil, []string{"anthropic"}, nil, nil, nil)
 
 	launcher := run.NewRunLauncher(run.RunLauncherConfig{
 		Store:                  store,
@@ -87,6 +163,17 @@ func buildTestRouterWithStore(t *testing.T, store *db.Store) http.Handler {
 			DBPath:    "",
 		},
 	})
+}
+
+// buildTestRouterWithStore builds the router with the real *admin.Handler backed
+// by the given store. Callers that need a different AdminHandler implementation
+// should use buildTestRouterWithStoreAndAdmin directly.
+func buildTestRouterWithStore(t *testing.T, store *db.Store) http.Handler {
+	t.Helper()
+	adminQuerier := admin.NewQuerierAdapter(store.Queries())
+	systemSettings := settings.NewService(store.Queries())
+	adminHandler := admin.NewHandler(adminQuerier, systemSettings, nil, []string{"anthropic"}, nil, nil, nil)
+	return buildTestRouterWithStoreAndAdmin(t, store, adminHandler)
 }
 
 // buildTestRouter constructs a minimal RouterConfig backed by a real in-memory
