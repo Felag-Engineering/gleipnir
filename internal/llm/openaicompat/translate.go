@@ -246,4 +246,3 @@ func ParseChatCompletionResponse(wire *chatResponse, names llm.ToolNameMapping, 
 	// here — ADR-032 §2 ("Why Chat Completions only") is unaffected.
 	return out, nil
 }
-
