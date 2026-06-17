@@ -266,38 +266,29 @@ func TestBuildChatCompletionRequest(t *testing.T) {
 				if req.MaxTokens == nil || *req.MaxTokens != 1024 {
 					t.Errorf("MaxTokens: %+v", req.MaxTokens)
 				}
-				if req.MaxCompletionTokens != nil {
-					t.Errorf("MaxCompletionTokens should be nil, got %+v", req.MaxCompletionTokens)
-				}
 			},
 		},
 		{
-			name: "MaxTokens with o-series uses max_completion_tokens",
+			name: "MaxTokens with o-series still routes to max_tokens",
 			in: llm.MessageRequest{
 				Model:     "o3-mini",
 				MaxTokens: 1024,
 			},
 			check: func(t *testing.T, req chatRequest) {
-				if req.MaxTokens != nil {
-					t.Errorf("MaxTokens should be nil, got %+v", req.MaxTokens)
-				}
-				if req.MaxCompletionTokens == nil || *req.MaxCompletionTokens != 1024 {
-					t.Errorf("MaxCompletionTokens: %+v", req.MaxCompletionTokens)
+				if req.MaxTokens == nil || *req.MaxTokens != 1024 {
+					t.Errorf("MaxTokens: %+v", req.MaxTokens)
 				}
 			},
 		},
 		{
-			name: "MaxTokens with bare gpt-5 uses max_completion_tokens",
+			name: "MaxTokens with bare gpt-5 still routes to max_tokens",
 			in: llm.MessageRequest{
 				Model:     "gpt-5",
 				MaxTokens: 1024,
 			},
 			check: func(t *testing.T, req chatRequest) {
-				if req.MaxTokens != nil {
-					t.Errorf("MaxTokens should be nil for gpt-5, got %+v", req.MaxTokens)
-				}
-				if req.MaxCompletionTokens == nil || *req.MaxCompletionTokens != 1024 {
-					t.Errorf("MaxCompletionTokens: %+v", req.MaxCompletionTokens)
+				if req.MaxTokens == nil || *req.MaxTokens != 1024 {
+					t.Errorf("MaxTokens: %+v", req.MaxTokens)
 				}
 			},
 		},
@@ -329,14 +320,14 @@ func TestBuildChatCompletionRequest(t *testing.T) {
 			},
 		},
 		{
-			name: "reasoning_effort only sent for o-series",
+			name: "reasoning_effort sent for non-reasoning-named model when admin-provided",
 			in: llm.MessageRequest{
 				Model: "gpt-4o",
 				Hints: &OpenAIHints{ReasoningEffort: strp("high")},
 			},
 			check: func(t *testing.T, req chatRequest) {
-				if req.ReasoningEffort != nil {
-					t.Errorf("reasoning_effort should be omitted for non-o-series, got %+v", req.ReasoningEffort)
+				if req.ReasoningEffort == nil || *req.ReasoningEffort != "high" {
+					t.Errorf("reasoning_effort: %+v", req.ReasoningEffort)
 				}
 			},
 		},
@@ -397,31 +388,6 @@ func TestBuildChatCompletionRequest_StreamFlag(t *testing.T) {
 	}
 	if req.StreamOptions == nil || !req.StreamOptions.IncludeUsage {
 		t.Errorf("want stream_options.include_usage true, got %+v", req.StreamOptions)
-	}
-}
-
-// TestIsReasoningModel locks the model-name heuristic that drives token-field
-// routing, reasoning_effort gating, and the IsReasoning picker badge.
-func TestIsReasoningModel(t *testing.T) {
-	cases := map[string]bool{
-		"o1":              true,
-		"o1-mini":         true,
-		"o3":              true,
-		"o3-mini":         true,
-		"o4-mini":         true,
-		"gpt-5":           true, // bare gpt-5 family must route to max_completion_tokens
-		"gpt-5-mini":      true,
-		"gpt-5-nano":      true,
-		"gpt-5-reasoning": true,
-		"gpt-4o":          false,
-		"gpt-4o-mini":     false,
-		"gpt-4.1":         false,
-		"llama3.1:70b":    false,
-	}
-	for model, want := range cases {
-		if got := isReasoningModel(model); got != want {
-			t.Errorf("isReasoningModel(%q) = %v, want %v", model, got, want)
-		}
 	}
 }
 

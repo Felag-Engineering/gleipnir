@@ -92,10 +92,7 @@ func NewClient(baseURL, apiKey string, opts ...Option) *Client {
 	w := &compatWire{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
-		// isReasoningModel is the same heuristic the translator uses to route
-		// max_completion_tokens / reasoning_effort, reused here so reasoning models
-		// served by a compat backend surface IsReasoning=true in the model picker.
-		models: llm.NewModelCacheWithReasoning("OpenAI-compatible", isReasoningModel),
+		models:  llm.NewModelCache("OpenAI-compatible"),
 	}
 	for _, opt := range opts {
 		opt(w)

@@ -15,9 +15,8 @@ type chatRequest struct {
 	Stream        bool           `json:"stream,omitempty"`
 	StreamOptions *streamOptions `json:"stream_options,omitempty"`
 
-	// Exactly one of MaxTokens or MaxCompletionTokens is set by the translator.
-	MaxTokens           *int `json:"max_tokens,omitempty"`
-	MaxCompletionTokens *int `json:"max_completion_tokens,omitempty"`
+	// MaxTokens is always set by the translator (never max_completion_tokens).
+	MaxTokens *int `json:"max_tokens,omitempty"`
 
 	Temperature     *float64 `json:"temperature,omitempty"`
 	TopP            *float64 `json:"top_p,omitempty"`

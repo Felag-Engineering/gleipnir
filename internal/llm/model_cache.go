@@ -30,10 +30,10 @@ func NewModelCache(providerName string) ModelCache {
 
 // NewModelCacheWithReasoning returns a ModelCache that classifies each model's
 // IsReasoning flag via the isReasoning predicate when building ListModels output.
-// Providers (e.g. openaicompat) that fetch a flat model list and infer reasoning
-// support from the model ID supply their heuristic here so the admin model picker
-// flags reasoning-capable backends correctly. A nil predicate behaves exactly
-// like NewModelCache.
+// Providers that fetch a flat model list and infer reasoning support from the
+// model ID supply their heuristic here so the admin model picker flags
+// reasoning-capable backends correctly. A nil predicate behaves exactly like
+// NewModelCache.
 func NewModelCacheWithReasoning(providerName string, isReasoning func(modelName string) bool) ModelCache {
 	return ModelCache{providerName: providerName, isReasoning: isReasoning}
 }
