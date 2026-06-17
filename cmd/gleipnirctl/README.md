@@ -18,6 +18,7 @@ The web UI handles day-to-day operations: managing policies, reviewing runs, app
 |---|---|
 | `rotate-key` | Re-encrypt all at-rest secrets under a new encryption key |
 | `reset-password` | Reset a user's password directly in the database |
+| `create-user` | Create a new user with an assigned role directly in the database |
 
 ---
 
@@ -182,3 +183,61 @@ The server does not need to be stopped. This command performs a single short UPD
 - **Generated password is secret material.** It is printed to stdout so it can be captured by downstream tools (`... | tee password.txt`). Do not share terminal output containing this line.
 - **Rotate via the UI after logging in.** Once access is restored, change the password through the settings page so it is set according to your organization's password policy.
 - **Deactivated users.** This command resets the password hash only. It does not reactivate a deactivated account. Use the web UI (admin role) to reactivate a user.
+
+---
+
+## create-user
+
+Creates a new Gleipnir user with the specified role, writing the account directly to the database. Useful for bootstrapping a second admin account or automating user provisioning without going through the web UI.
+
+### When to use this
+
+- You need a second admin account and have only database access (no working admin session in the UI)
+- You are provisioning users in a CI/CD pipeline or automated setup script
+
+### Full workflow
+
+**With auto-generated password** (recommended):
+
+```bash
+docker compose run --rm api gleipnirctl create-user <username> --role admin
+```
+
+Example output:
+```
+generated password: dGhpcyBpcyBhIHRlc3Q
+created user alice with role admin
+```
+
+The generated password is printed to stdout before the confirmation line. Store it immediately — it is shown only once.
+
+**With an explicit password:**
+
+```bash
+docker compose run --rm api gleipnirctl create-user <username> --role operator --password <password>
+```
+
+The server does not need to be stopped. This command performs a short INSERT that does not require holding the database write lock across long operations.
+
+### Flags
+
+| Flag / Argument | Default | Description |
+|---|---|---|
+| `<username>` | *(required positional)* | Username for the new account |
+| `--role` | `operator` | Role to assign (`admin`, `operator`, `approver`, `auditor`) |
+| `--password` | *(auto-generated if omitted)* | Password for the new account. Must be at least 8 characters. |
+| `--db-path` | `$GLEIPNIR_DB_PATH` or `/data/gleipnir.db` | Path to the SQLite database file. |
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Unexpected error (I/O failure, DB error, hashing failure) |
+| 2 | Bad input (invalid role, password shorter than 8 characters) |
+| 4 | Username already exists |
+
+### Security notes
+
+- **Generated password is secret material.** It is printed to stdout so it can be captured by downstream tools (`... | tee password.txt`). Do not share terminal output containing this line.
+- **Role validation happens before the database is opened.** Supplying an unrecognised role exits with code 2 without writing anything to the database.
