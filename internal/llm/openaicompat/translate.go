@@ -52,7 +52,12 @@ func BuildChatCompletionRequest(req llm.MessageRequest, stream bool, names llm.T
 		})
 	}
 
-	// MaxTokens: route to the right field depending on the model family.
+	// The token cap always goes to max_tokens. We do not attempt to detect models
+	// that require max_completion_tokens (e.g. o-series or gpt-5 hosted directly on
+	// OpenAI). If this compat client is ever pointed at those models, those requests
+	// will get a 400 — but the dedicated internal/llm/openai client handles OpenAI
+	// proper correctly and is the right path for those models. The tradeoff is
+	// intentional (see issue #539).
 	hints, _ := req.Hints.(*OpenAIHints)
 	effectiveMax := req.MaxTokens
 	if hints != nil {
@@ -67,20 +72,15 @@ func BuildChatCompletionRequest(req llm.MessageRequest, stream bool, names llm.T
 			p := *hints.TopP
 			out.TopP = &p
 		}
-		// reasoning_effort is a reasoning-model-only parameter; sending it to a
-		// non-reasoning model causes a 400 error from OpenAI.
-		if hints.ReasoningEffort != nil && isReasoningModel(req.Model) {
+		// Admin setting reasoning_effort is their assertion that the model supports it.
+		if hints.ReasoningEffort != nil {
 			e := *hints.ReasoningEffort
 			out.ReasoningEffort = &e
 		}
 	}
 	if effectiveMax > 0 {
 		v := effectiveMax
-		if isReasoningModel(req.Model) {
-			out.MaxCompletionTokens = &v
-		} else {
-			out.MaxTokens = &v
-		}
+		out.MaxTokens = &v
 	}
 
 	return out
@@ -245,31 +245,4 @@ func ParseChatCompletionResponse(wire *chatResponse, names llm.ToolNameMapping, 
 	// never sends the field, so official OpenAI calls produce zero ThinkingBlocks
 	// here — ADR-032 §2 ("Why Chat Completions only") is unaffected.
 	return out, nil
-}
-
-// isReasoningModel reports whether model is an OpenAI-style reasoning model: the
-// o-series (o1/o3/o4…), the gpt-5 family, or any name containing "reasoning". It
-// is the single signal behind three request-shaping decisions for OpenAI-style
-// backends — routing the token cap to max_completion_tokens (which OpenAI requires
-// for these models and rejects max_tokens for), gating reasoning_effort, and the
-// IsReasoning model-picker badge.
-//
-// This is a name-based heuristic because the standard OpenAI-compat /models
-// endpoint advertises no per-model capabilities. Backends that DO advertise them
-// (e.g. OpenRouter's per-model supported_parameters / max_completion_tokens) are a
-// deferred follow-up (#539): parse those fields opportunistically and let real
-// capability data override this heuristic when present, falling back here only when
-// absent.
-//
-// Contained to this function; no other place in the package pattern-matches on
-// model names.
-func isReasoningModel(model string) bool {
-	if strings.Contains(model, "reasoning") {
-		return true
-	}
-	if strings.HasPrefix(model, "gpt-5") {
-		return true
-	}
-	// o-series: name starts with o<digit> (o1, o3, o4, ...).
-	return len(model) >= 2 && model[0] == 'o' && model[1] >= '0' && model[1] <= '9'
 }
