@@ -25,6 +25,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
 		"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT",
 		"GLEIPNIR_FEEDBACK_SCAN_INTERVAL",
+		"GLEIPNIR_PLUGIN_REQUEST_SCAN_INTERVAL",
 		"GLEIPNIR_DRAIN_TIMEOUT",
 		"GLEIPNIR_PID_FILE",
 		"GLEIPNIR_ALLOW_UNSIGNED_PLUGINS",
@@ -68,6 +69,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.FeedbackScanInterval != 30*time.Second {
 		t.Errorf("FeedbackScanInterval: got %v, want 30s", cfg.FeedbackScanInterval)
+	}
+	if cfg.PluginRequestScanInterval != 30*time.Second {
+		t.Errorf("PluginRequestScanInterval: got %v, want 30s", cfg.PluginRequestScanInterval)
 	}
 	if cfg.DrainTimeout != 5*time.Minute {
 		t.Errorf("DrainTimeout: got %v, want 5m", cfg.DrainTimeout)
@@ -174,6 +178,15 @@ func TestLoad_Overrides(t *testing.T) {
 			},
 		},
 		{
+			name: "plugin request scan interval",
+			env:  map[string]string{"GLEIPNIR_PLUGIN_REQUEST_SCAN_INTERVAL": "1m"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.PluginRequestScanInterval != time.Minute {
+					t.Errorf("got %v, want 1m", cfg.PluginRequestScanInterval)
+				}
+			},
+		},
+		{
 			name: "drain timeout",
 			env:  map[string]string{"GLEIPNIR_DRAIN_TIMEOUT": "10m"},
 			check: func(t *testing.T, cfg Config) {
@@ -221,6 +234,7 @@ func TestLoad_Overrides(t *testing.T) {
 				"GLEIPNIR_HTTP_WRITE_TIMEOUT", "GLEIPNIR_HTTP_IDLE_TIMEOUT",
 				"GLEIPNIR_APPROVAL_SCAN_INTERVAL",
 				"GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", "GLEIPNIR_FEEDBACK_SCAN_INTERVAL",
+				"GLEIPNIR_PLUGIN_REQUEST_SCAN_INTERVAL",
 				"GLEIPNIR_DRAIN_TIMEOUT", "GLEIPNIR_PID_FILE",
 				"GLEIPNIR_ALLOW_UNSIGNED_PLUGINS", "GLEIPNIR_PLUGINS_DIR",
 			} {
@@ -285,6 +299,7 @@ func TestLoad_InvalidDuration(t *testing.T) {
 		{"invalid approval scan interval falls back", "GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30 * time.Second},
 		{"invalid default feedback timeout falls back", "GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", 30 * time.Minute},
 		{"invalid feedback scan interval falls back", "GLEIPNIR_FEEDBACK_SCAN_INTERVAL", 30 * time.Second},
+		{"invalid plugin request scan interval falls back", "GLEIPNIR_PLUGIN_REQUEST_SCAN_INTERVAL", 30 * time.Second},
 		{"invalid drain timeout falls back", "GLEIPNIR_DRAIN_TIMEOUT", 5 * time.Minute},
 	}
 
@@ -312,6 +327,8 @@ func TestLoad_InvalidDuration(t *testing.T) {
 				got = cfg.DefaultFeedbackTimeout
 			case "GLEIPNIR_FEEDBACK_SCAN_INTERVAL":
 				got = cfg.FeedbackScanInterval
+			case "GLEIPNIR_PLUGIN_REQUEST_SCAN_INTERVAL":
+				got = cfg.PluginRequestScanInterval
 			case "GLEIPNIR_DRAIN_TIMEOUT":
 				got = cfg.DrainTimeout
 			}

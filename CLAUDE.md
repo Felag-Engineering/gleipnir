@@ -35,7 +35,8 @@ npm run storybook        # Storybook on port 6006
 | `GLEIPNIR_APPROVAL_SCAN_INTERVAL` | `30s` | How often to check for timed-out approvals |
 | `GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT` | `30m` | Default timeout for feedback requests |
 | `GLEIPNIR_FEEDBACK_SCAN_INTERVAL` | `30s` | How often to check for timed-out feedback |
-| `GLEIPNIR_DRAIN_TIMEOUT` | `5m` | Graceful-shutdown drain timeout for in-flight runs and background loops. Bounds the concurrent drain of the poller, cron runner, scheduler (in-flight `fire()`), and the approval/feedback timeout scanners (in-flight `resolveTimeout()`), plus the run manager — all joined in one timeout-raced goroutine (#487). |
+| `GLEIPNIR_PLUGIN_REQUEST_SCAN_INTERVAL` | `30s` | How often to check for timed-out plugin channel requests (reclaims stranded `plugin_pending_requests` rows whose in-memory waiter died on host restart) |
+| `GLEIPNIR_DRAIN_TIMEOUT` | `5m` | Graceful-shutdown drain timeout for in-flight runs and background loops. Bounds the concurrent drain of the poller, cron runner, scheduler (in-flight `fire()`), the approval/feedback/plugin-request timeout scanners (in-flight `resolveTimeout()`), plus the run manager — all joined in one timeout-raced goroutine (#487). |
 | `GLEIPNIR_PID_FILE` | `/var/run/gleipnir.pid` | Path the server writes its PID to on startup |
 | `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` | `false` | When `true`, the loader accepts plugins lacking a Minisign `.minisig`/`signing.pub` pair (instance health = `unsigned_permissive`). Every load emits a high-severity audit event; admin UI shows a non-dismissible red banner; `/api/v1/health` reports `signature_verification: disabled`. **Signed plugins are still fully verified even in permissive mode.** Scope is global, not per-plugin. Read once at startup. See ADR-045 §6. |
 | `GLEIPNIR_PLUGINS_DIR` | `/plugins` | Directory watched by the fsnotify watcher for plugin tarballs (`.tar.gz`/`.tgz`). |

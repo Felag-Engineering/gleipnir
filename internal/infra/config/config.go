@@ -28,10 +28,11 @@ type Config struct {
 	ReadTimeout            time.Duration
 	WriteTimeout           time.Duration
 	IdleTimeout            time.Duration
-	ApprovalScanInterval   time.Duration
-	DefaultFeedbackTimeout time.Duration
-	FeedbackScanInterval   time.Duration
-	DrainTimeout           time.Duration
+	ApprovalScanInterval      time.Duration
+	DefaultFeedbackTimeout    time.Duration
+	FeedbackScanInterval      time.Duration
+	PluginRequestScanInterval time.Duration
+	DrainTimeout              time.Duration
 	PIDFile                string
 	EncryptionKey          string
 	AllowUnsignedPlugins   bool
@@ -68,10 +69,11 @@ func Load() (Config, error) {
 		ReadTimeout:            envDuration("GLEIPNIR_HTTP_READ_TIMEOUT", 15*time.Second),
 		WriteTimeout:           envDuration("GLEIPNIR_HTTP_WRITE_TIMEOUT", 15*time.Second),
 		IdleTimeout:            envDuration("GLEIPNIR_HTTP_IDLE_TIMEOUT", 60*time.Second),
-		ApprovalScanInterval:   envDuration("GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30*time.Second),
-		DefaultFeedbackTimeout: envDuration("GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", 30*time.Minute),
-		FeedbackScanInterval:   envDuration("GLEIPNIR_FEEDBACK_SCAN_INTERVAL", 30*time.Second),
-		DrainTimeout:           envDuration("GLEIPNIR_DRAIN_TIMEOUT", 5*time.Minute),
+		ApprovalScanInterval:      envDuration("GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30*time.Second),
+		DefaultFeedbackTimeout:    envDuration("GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", 30*time.Minute),
+		FeedbackScanInterval:      envDuration("GLEIPNIR_FEEDBACK_SCAN_INTERVAL", 30*time.Second),
+		PluginRequestScanInterval: envDuration("GLEIPNIR_PLUGIN_REQUEST_SCAN_INTERVAL", 30*time.Second),
+		DrainTimeout:              envDuration("GLEIPNIR_DRAIN_TIMEOUT", 5*time.Minute),
 		PIDFile:                envOrDefault("GLEIPNIR_PID_FILE", "/var/run/gleipnir.pid"),
 		EncryptionKey:          raw,
 		AllowUnsignedPlugins:   envBool("GLEIPNIR_ALLOW_UNSIGNED_PLUGINS", false),
