@@ -106,14 +106,14 @@ type ManagerConfig struct {
 
 	// GenerationController tracks in-flight Host RPC refcounts per instance and
 	// coordinates hot-reload drains. When nil, the Manager skips generation
-	// tracking — this preserves test injection ergonomics and the
-	// GLEIPNIR_PLUGINS_ENABLED=false path. ReloadInstance requires a non-nil
-	// controller and returns an error when one is not configured.
+	// tracking — this preserves test injection ergonomics. ReloadInstance
+	// requires a non-nil controller and returns an error when one is not
+	// configured.
 	GenerationController *generation.Controller
 
 	// ToolRegistrar claims and releases plugin tool dot-names in the shared
-	// namespace arbiter. When nil (tests, GLEIPNIR_PLUGINS_ENABLED=false),
-	// tool registration is skipped. Production callers must set this.
+	// namespace arbiter. When nil (tests), tool registration is skipped.
+	// Production callers must set this.
 	ToolRegistrar ToolRegistrar
 
 	// TestProcessStarter overrides process.Start. Intended for unit tests only;

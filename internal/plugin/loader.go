@@ -1,19 +1,17 @@
 // Package plugin is the host-side plugin loader.
 //
-// The Phase 3 loader is being assembled across several PRs. Today's surface:
+// Today's surface:
 //
-//   - GLEIPNIR_PLUGINS_ENABLED gates the subsystem on/off; when off, Init is a
-//     fast no-op and nothing else in this package is touched at runtime.
-//   - When enabled, Init constructs a Verifier configured by the
-//     GLEIPNIR_ALLOW_UNSIGNED_PLUGINS toggle and logs a permissive-mode banner
-//     if applicable. The verifier itself (verify.go) is fully wired into
-//     plugin-sdk/signing — single source of truth for the Minisign format.
-//   - StartWatcher (#187, this PR) sets up the fsnotify watcher and runs the
-//     debounced install loop. Material-change detection (#189) and the
-//     generation/shutdown manager (#190/#193 implementations) are follow-up PRs.
+//   - Init constructs a Verifier configured by the GLEIPNIR_ALLOW_UNSIGNED_PLUGINS
+//     toggle and logs a permissive-mode banner if applicable. The verifier itself
+//     (verify.go) is fully wired into plugin-sdk/signing — single source of truth
+//     for the Minisign format.
+//   - StartWatcher (#187) sets up the fsnotify watcher and runs the debounced
+//     install loop. Material-change detection (#189) and the generation/shutdown
+//     manager (#190/#193) round out the lifecycle.
 //   - StartManager (#291, #295) constructs the process.Manager and calls
 //     StartAllActive so existing plugin instances are re-spawned on server
-//     restart. No-op when GLEIPNIR_PLUGINS_ENABLED=false.
+//     restart.
 package plugin
 
 import (
@@ -47,29 +45,20 @@ type Loader struct {
 func NewLoader() *Loader { return &Loader{} }
 
 // Manager returns the process.Manager constructed by StartManager. Returns nil
-// when the plugin subsystem is disabled or StartManager has not been called.
+// when StartManager has not been called.
 func (l *Loader) Manager() *process.Manager { return l.manager }
 
-// Verifier returns the verifier configured at Init time. nil when the plugin
-// subsystem is disabled. Callers downstream of Init (the fsnotify watcher,
-// the install handler) read it to verify bundles.
+// Verifier returns the verifier configured at Init time. Callers downstream of
+// Init (the fsnotify watcher, the install handler) read it to verify bundles.
 func (l *Loader) Verifier() *Verifier { return l.verifier }
 
 // Installer returns the shared Installer created by StartWatcher. Returns nil
-// when the plugin subsystem is disabled (Init was not called or StartWatcher
-// has not run). Mirrors the Verifier() nil-return pattern.
+// when StartWatcher has not run.
 func (l *Loader) Installer() *loader.Installer { return l.installer }
 
-// Init wires up the plugin subsystem. When cfg.PluginsEnabled is false it
-// returns nil immediately and leaves Verifier() nil. When true it builds the
-// Verifier and logs the permissive-mode warning if
-// GLEIPNIR_ALLOW_UNSIGNED_PLUGINS is set.
+// Init wires up the plugin subsystem: it builds the Verifier and logs the
+// permissive-mode warning if GLEIPNIR_ALLOW_UNSIGNED_PLUGINS is set.
 func (l *Loader) Init(_ context.Context, cfg config.Config) error {
-	if !cfg.PluginsEnabled {
-		slog.Default().Debug("plugin loader disabled")
-		return nil
-	}
-
 	l.verifier = &Verifier{AllowUnsigned: cfg.AllowUnsignedPlugins}
 
 	if cfg.AllowUnsignedPlugins {
@@ -100,8 +89,8 @@ func (l *Loader) Init(_ context.Context, cfg config.Config) error {
 //
 // StartWatcher must be called after Init and after store.Migrate so the DB
 // schema is ready for plugin rows and audit events. It is a no-op (returns nil)
-// when Init was not called (i.e. when GLEIPNIR_PLUGINS_ENABLED=false) —
-// l.verifier will be nil in that case and we return early.
+// when Init was not called — l.verifier will be nil in that case and we return
+// early.
 //
 // publisher is used to emit plugin.health_changed events when a pubkey mismatch
 // transitions instances to pending_key_approval. It may be nil — events are
@@ -151,9 +140,8 @@ type StartManagerConfig struct {
 	// ToolRegistrar claims and releases plugin tool dot-names in the shared
 	// namespace arbiter when instances start/stop. Required — a nil registrar
 	// means tools would be silently invisible to agents (StartManager enforces
-	// non-nil). ManagerConfig.ToolRegistrar accepts nil for tests and the
-	// GLEIPNIR_PLUGINS_ENABLED=false path; this field is the stricter production
-	// entry point.
+	// non-nil). ManagerConfig.ToolRegistrar accepts nil for tests; this field is
+	// the stricter production entry point.
 	ToolRegistrar process.ToolRegistrar
 }
 
@@ -161,9 +149,9 @@ type StartManagerConfig struct {
 // supplied in cfg and calls StartAllActive so that any plugin instances whose
 // plugin row has status="active" are spawned on server startup.
 //
-// Returns nil immediately when the plugin subsystem is disabled (Init was not
-// called or GLEIPNIR_PLUGINS_ENABLED=false). Any per-instance start errors are
-// logged at Warn inside Manager.StartAllActive and do not propagate here.
+// Returns nil immediately when Init was not called (verifier is nil). Any
+// per-instance start errors are logged at Warn inside Manager.StartAllActive
+// and do not propagate here.
 //
 // The IdentityRegistry must be the same registry backing the token interceptor
 // so that the per-generation rotation guarantee (one registry, one source of
