@@ -1,6 +1,6 @@
 # Slack kitchen-sink E2E stack override.
-# Builds Gleipnir from the local source, enables plugins, exposes the OAuth
-# callback at http://localhost:3000.
+# Builds Gleipnir from the local source and exposes the OAuth callback at
+# http://localhost:3000.
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.slack-e2e.yml up --build
@@ -14,7 +14,6 @@ services:
     environment:
       - GLEIPNIR_DB_PATH=${GLEIPNIR_DB_PATH:-/data/gleipnir.db}
       - GLEIPNIR_ENCRYPTION_KEY=${GLEIPNIR_ENCRYPTION_KEY:?set in .env}
-      - GLEIPNIR_PLUGINS_ENABLED=true
       - GLEIPNIR_PLUGINS_DIR=/plugins
       - GLEIPNIR_LOG_LEVEL=debug
     volumes:
