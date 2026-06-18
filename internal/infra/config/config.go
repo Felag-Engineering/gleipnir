@@ -21,23 +21,24 @@ const DefaultPerCallMaxTokens = 8192
 
 // Config holds all runtime configuration for the Gleipnir server.
 type Config struct {
-	DBPath                 string
-	ListenAddr             string
-	LogLevel               slog.Level
-	MCPTimeout             time.Duration
-	ReadTimeout            time.Duration
-	WriteTimeout           time.Duration
-	IdleTimeout            time.Duration
-	ApprovalScanInterval   time.Duration
-	DefaultFeedbackTimeout time.Duration
-	FeedbackScanInterval   time.Duration
-	DrainTimeout           time.Duration
-	PIDFile                string
-	EncryptionKey          string
-	AllowUnsignedPlugins   bool
-	PluginsDir             string
-	OAuthRefreshInterval   time.Duration // GLEIPNIR_OAUTH_REFRESH_INTERVAL, default 5m
-	OAuthRefreshLead       time.Duration // GLEIPNIR_OAUTH_REFRESH_LEAD, default 15m
+	DBPath                    string
+	ListenAddr                string
+	LogLevel                  slog.Level
+	MCPTimeout                time.Duration
+	ReadTimeout               time.Duration
+	WriteTimeout              time.Duration
+	IdleTimeout               time.Duration
+	ApprovalScanInterval      time.Duration
+	DefaultFeedbackTimeout    time.Duration
+	FeedbackScanInterval      time.Duration
+	PluginRequestScanInterval time.Duration
+	DrainTimeout              time.Duration
+	PIDFile                   string
+	EncryptionKey             string
+	AllowUnsignedPlugins      bool
+	PluginsDir                string
+	OAuthRefreshInterval      time.Duration // GLEIPNIR_OAUTH_REFRESH_INTERVAL, default 5m
+	OAuthRefreshLead          time.Duration // GLEIPNIR_OAUTH_REFRESH_LEAD, default 15m
 
 	// LLM transient-failure retry. A 429 (TPM/RPM rate limit) or 5xx response
 	// from a provider is retried up to LLMRetryMaxAttempts times, honoring the
@@ -61,26 +62,27 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		DBPath:                 envOrDefault("GLEIPNIR_DB_PATH", "/data/gleipnir.db"),
-		ListenAddr:             envOrDefault("GLEIPNIR_LISTEN_ADDR", ":8080"),
-		LogLevel:               envLogLevel("GLEIPNIR_LOG_LEVEL", slog.LevelInfo),
-		MCPTimeout:             envDuration("GLEIPNIR_MCP_TIMEOUT", 30*time.Second),
-		ReadTimeout:            envDuration("GLEIPNIR_HTTP_READ_TIMEOUT", 15*time.Second),
-		WriteTimeout:           envDuration("GLEIPNIR_HTTP_WRITE_TIMEOUT", 15*time.Second),
-		IdleTimeout:            envDuration("GLEIPNIR_HTTP_IDLE_TIMEOUT", 60*time.Second),
-		ApprovalScanInterval:   envDuration("GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30*time.Second),
-		DefaultFeedbackTimeout: envDuration("GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", 30*time.Minute),
-		FeedbackScanInterval:   envDuration("GLEIPNIR_FEEDBACK_SCAN_INTERVAL", 30*time.Second),
-		DrainTimeout:           envDuration("GLEIPNIR_DRAIN_TIMEOUT", 5*time.Minute),
-		PIDFile:                envOrDefault("GLEIPNIR_PID_FILE", "/var/run/gleipnir.pid"),
-		EncryptionKey:          raw,
-		AllowUnsignedPlugins:   envBool("GLEIPNIR_ALLOW_UNSIGNED_PLUGINS", false),
-		PluginsDir:             envOrDefault("GLEIPNIR_PLUGINS_DIR", "/plugins"),
-		OAuthRefreshInterval:   envDuration("GLEIPNIR_OAUTH_REFRESH_INTERVAL", 5*time.Minute),
-		OAuthRefreshLead:       envDuration("GLEIPNIR_OAUTH_REFRESH_LEAD", 15*time.Minute),
-		LLMRetryMaxAttempts:    envInt("GLEIPNIR_LLM_RETRY_MAX_ATTEMPTS", 4),
-		LLMRetryInitialBackoff: envDuration("GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF", 1*time.Second),
-		LLMRetryMaxBackoff:     envDuration("GLEIPNIR_LLM_RETRY_MAX_BACKOFF", 30*time.Second),
+		DBPath:                    envOrDefault("GLEIPNIR_DB_PATH", "/data/gleipnir.db"),
+		ListenAddr:                envOrDefault("GLEIPNIR_LISTEN_ADDR", ":8080"),
+		LogLevel:                  envLogLevel("GLEIPNIR_LOG_LEVEL", slog.LevelInfo),
+		MCPTimeout:                envDuration("GLEIPNIR_MCP_TIMEOUT", 30*time.Second),
+		ReadTimeout:               envDuration("GLEIPNIR_HTTP_READ_TIMEOUT", 15*time.Second),
+		WriteTimeout:              envDuration("GLEIPNIR_HTTP_WRITE_TIMEOUT", 15*time.Second),
+		IdleTimeout:               envDuration("GLEIPNIR_HTTP_IDLE_TIMEOUT", 60*time.Second),
+		ApprovalScanInterval:      envDuration("GLEIPNIR_APPROVAL_SCAN_INTERVAL", 30*time.Second),
+		DefaultFeedbackTimeout:    envDuration("GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT", 30*time.Minute),
+		FeedbackScanInterval:      envDuration("GLEIPNIR_FEEDBACK_SCAN_INTERVAL", 30*time.Second),
+		PluginRequestScanInterval: envDuration("GLEIPNIR_PLUGIN_REQUEST_SCAN_INTERVAL", 30*time.Second),
+		DrainTimeout:              envDuration("GLEIPNIR_DRAIN_TIMEOUT", 5*time.Minute),
+		PIDFile:                   envOrDefault("GLEIPNIR_PID_FILE", "/var/run/gleipnir.pid"),
+		EncryptionKey:             raw,
+		AllowUnsignedPlugins:      envBool("GLEIPNIR_ALLOW_UNSIGNED_PLUGINS", false),
+		PluginsDir:                envOrDefault("GLEIPNIR_PLUGINS_DIR", "/plugins"),
+		OAuthRefreshInterval:      envDuration("GLEIPNIR_OAUTH_REFRESH_INTERVAL", 5*time.Minute),
+		OAuthRefreshLead:          envDuration("GLEIPNIR_OAUTH_REFRESH_LEAD", 15*time.Minute),
+		LLMRetryMaxAttempts:       envInt("GLEIPNIR_LLM_RETRY_MAX_ATTEMPTS", 4),
+		LLMRetryInitialBackoff:    envDuration("GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF", 1*time.Second),
+		LLMRetryMaxBackoff:        envDuration("GLEIPNIR_LLM_RETRY_MAX_BACKOFF", 30*time.Second),
 	}, nil
 }
 

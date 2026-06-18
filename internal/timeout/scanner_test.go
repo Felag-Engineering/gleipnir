@@ -890,6 +890,36 @@ func TestPluginRequestScanner_NoExpiry_NotCollected(t *testing.T) {
 	}
 }
 
+// TestPluginRequestScanner_StartStop verifies the Start(ctx) -> cancel -> Wait()
+// lifecycle: a pre-seeded expired plugin_pending_requests row is resolved to
+// timed_out by the background goroutine, and Wait() returns cleanly after cancel.
+// This directly exercises the start-at-boot / drain-at-shutdown wiring.
+func TestPluginRequestScanner_StartStop(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusWaitingForFeedback)
+	instID := insertPluginForScanner(t, s)
+	insertPluginPendingRequest(t, s, "req1", instID, "r1", "ask_tool", pastTimestamp())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Short interval so the scan fires quickly in the test.
+	scanner := timeout.NewPluginRequestScanner(s, 20*time.Millisecond)
+	scanner.Start(ctx)
+
+	// Wait long enough for at least one scan tick.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	scanner.Wait()
+
+	var status string
+	if err := s.DB().QueryRow(`SELECT status FROM plugin_pending_requests WHERE id = 'req1'`).Scan(&status); err != nil {
+		t.Fatalf("query request: %v", err)
+	}
+	if status != "timed_out" {
+		t.Errorf("status = %q after scanner ran, want timed_out", status)
+	}
+}
+
 // TestPluginRequestScanner_RunNotWaiting_RowTimedOutNoRunStep verifies that
 // when the run is not in waiting_for_feedback (e.g. already interrupted), the
 // scanner still marks the row timed_out but does NOT write an error step or
