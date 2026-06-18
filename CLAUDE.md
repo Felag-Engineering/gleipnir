@@ -114,7 +114,7 @@ schemas/
   sql_schemas.sql     — human-readable reference snapshot of the full datastore. NOT consumed by sqlc or the migration runner (sqlc reads internal/db/migrations/0001_initial.sql + the two .sql migrations listed in sqlc.yaml); keep it in sync by hand with the post-migration schema. The migration NNNN_ filename prefix is a hint only — Version() (via the All() slice in registry.go) is authoritative for apply order; prefixes may carry a suffix (e.g. 0025b_) to avoid collisions (#492).
 
 cmd/
-  gleipnirctl/        — local admin CLI; direct DB-level maintenance operations (rotate-key, reset-password). Run via `docker compose run --rm api gleipnirctl <command>`.
+  gleipnirctl/        — local admin CLI; direct DB-level maintenance operations (rotate-key, reset-password, create-user). Run via `docker compose run --rm api gleipnirctl <command>`.
 
 internal/
   admin/              — admin HTTP handlers (provider/model API keys, OpenAI-compat backends, system settings) + AES-256-GCM helpers for at-rest secret encryption
