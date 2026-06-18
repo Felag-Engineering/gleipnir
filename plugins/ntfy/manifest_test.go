@@ -8,6 +8,18 @@ import (
 	"github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
 
+// TestManifestAuthStrategyIsKnownConstant verifies that the auth strategy
+// declared in the Go manifest matches manifest.AuthStrategyStaticAPIKey.
+// This catches literal-vs-constant drift that would break credential setup:
+// requireOneOfStrategies, BuildSeedCredentials, and SetStaticAPIKey all
+// compare against the SDK constant, so the manifest must match it exactly.
+func TestManifestAuthStrategyIsKnownConstant(t *testing.T) {
+	if pluginManifest.Auth.Strategy != manifest.AuthStrategyStaticAPIKey {
+		t.Errorf("Auth.Strategy = %q, want %q (manifest.AuthStrategyStaticAPIKey)",
+			pluginManifest.Auth.Strategy, manifest.AuthStrategyStaticAPIKey)
+	}
+}
+
 // TestManifestYAMLIsCanonical verifies that manifest.yaml on disk is the
 // byte-exact canonical projection of the pluginManifest Go declaration.
 //

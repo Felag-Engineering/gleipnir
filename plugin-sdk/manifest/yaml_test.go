@@ -23,7 +23,7 @@ func sampleManifest() *manifest.Manifest {
 		},
 		Auth: manifest.AuthDecl{
 			Mode:     "instance_credentials",
-			Strategy: "static_key",
+			Strategy: "static_api_key",
 		},
 		Tools: []manifest.ToolDecl{
 			{Name: "zebra_tool", Description: "Does zebra things"},

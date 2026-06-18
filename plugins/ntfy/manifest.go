@@ -17,13 +17,11 @@ var pluginManifest = manifest.Manifest{
 	Services: manifest.Services{
 		Channel: "v1",
 	},
-	// static_key strategy: the host stores an API key that the plugin retrieves
-	// via GetCredentials. The credentials JSON shape is {"api_key":"<token>"}.
-	// Spec §9.1 uses the conceptual name "static_api_key"; the manifest validator
-	// uses the code-level name "static_key" (see plugin-sdk/manifest/manifest.go).
+	// static_api_key strategy: the host stores an API key that the plugin
+	// retrieves via GetCredentials. Credentials JSON shape: {"api_key":"<token>"}.
 	Auth: manifest.AuthDecl{
 		Mode:     "instance_credentials",
-		Strategy: "static_key",
+		Strategy: manifest.AuthStrategyStaticAPIKey,
 	},
 	Channels: []manifest.ChannelDecl{
 		{

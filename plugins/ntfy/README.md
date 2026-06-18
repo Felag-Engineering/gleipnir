@@ -7,9 +7,9 @@ only — no `Request` surface.
 ## What this plugin demonstrates
 
 - Declaring a `ChannelService` with `implements_notify: true` only.
-- Using `static_api_key` auth strategy (`static_key` in the manifest field):
-  the host stores an optional API key that the plugin fetches at call time via
-  `GetCredentials`. No OAuth, not auth-required at install.
+- Using `static_api_key` auth strategy: the host stores an optional API key
+  that the plugin fetches at call time via `GetCredentials`. No OAuth, not
+  auth-required at install.
 - Per-audience topic override: the `channels[].config_schema` carries a single
   `topic` field that the audience editor surfaces per entry.
 - Instance config (`server_url`, `default_topic`, `auth_header_name`) fetched
@@ -50,14 +50,9 @@ The API key is optional — ntfy supports unauthenticated topics. When `api_key`
 is present the plugin sends `Bearer <key>` in the auth header (or whatever
 `auth_header_name` is set to).
 
-**This plugin uses `static_key` auth strategy** — it is not auth-required at
-install (no OAuth). An admin installs it and sets the API key once in the
+**This plugin uses `static_api_key` auth strategy** — it is not auth-required
+at install (no OAuth). An admin installs it and sets the API key once in the
 instance credentials screen.
-
-> Note: the plugin-system spec §9.1 uses the conceptual name `static_api_key`
-> for this credential strategy. The manifest validator code uses the field value
-> `static_key`. The README uses the descriptive name; the manifest uses the
-> code-level name.
 
 ## Build
 
@@ -100,18 +95,19 @@ go test ./plugins/ntfy/...
 
 2. **Generate signing keys** (not committed — keep the private key secret):
    ```sh
-   gleipnir-plugin keygen --out ntfy.key
+   gleipnir-plugin keygen --out-dir . --name ntfy --unencrypted
    # produces ntfy.key (private) and ntfy.pub (public)
    ```
 
-3. **Sign and package:**
+3. **Sign and package** (the `package` subcommand signs internally):
    ```sh
-   gleipnir-plugin sign   --binary ./ntfy-plugin --manifest manifest.yaml --key ntfy.key
-   gleipnir-plugin package --binary ./ntfy-plugin --manifest manifest.yaml --sig ntfy-plugin.sig --out ntfy.tar.gz
+   gleipnir-plugin package --binary ./ntfy-plugin --manifest manifest.yaml \
+     --key ntfy.key --pubkey ntfy.pub --out-dir dist
+   # produces dist/ntfy-0.1.0.tar.gz
    ```
 
 4. **Install** via the Gleipnir admin UI at `/admin/plugins` → "Install plugin"
-   → upload `ntfy.tar.gz`.
+   → upload `dist/ntfy-0.1.0.tar.gz`.
 
 5. **Configure the instance** in the plugin settings:
    - `server_url` — your ntfy server URL
