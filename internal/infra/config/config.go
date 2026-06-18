@@ -34,7 +34,6 @@ type Config struct {
 	DrainTimeout           time.Duration
 	PIDFile                string
 	EncryptionKey          string
-	PluginsEnabled         bool
 	AllowUnsignedPlugins   bool
 	PluginsDir             string
 	OAuthRefreshInterval   time.Duration // GLEIPNIR_OAUTH_REFRESH_INTERVAL, default 5m
@@ -75,7 +74,6 @@ func Load() (Config, error) {
 		DrainTimeout:           envDuration("GLEIPNIR_DRAIN_TIMEOUT", 5*time.Minute),
 		PIDFile:                envOrDefault("GLEIPNIR_PID_FILE", "/var/run/gleipnir.pid"),
 		EncryptionKey:          raw,
-		PluginsEnabled:         envBool("GLEIPNIR_PLUGINS_ENABLED", true),
 		AllowUnsignedPlugins:   envBool("GLEIPNIR_ALLOW_UNSIGNED_PLUGINS", false),
 		PluginsDir:             envOrDefault("GLEIPNIR_PLUGINS_DIR", "/plugins"),
 		OAuthRefreshInterval:   envDuration("GLEIPNIR_OAUTH_REFRESH_INTERVAL", 5*time.Minute),

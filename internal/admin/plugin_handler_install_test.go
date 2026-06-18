@@ -422,7 +422,7 @@ func TestPluginHandler_CreateInstance(t *testing.T) {
 			Status:        "active",
 		})
 		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
-		// No processManager — simulates GLEIPNIR_PLUGINS_ENABLED=false path.
+		// No processManager — simulates a handler built without subprocess wiring.
 
 		rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"no-pm-test"}`))
 		if rec.Code != http.StatusCreated {

@@ -1,8 +1,8 @@
 package main
 
 // pluginruntime.go extracts the plugin subsystem bring-up from run() in main.go
-// into a single constructor. run() calls startPluginRuntime once (or not at all
-// when GLEIPNIR_PLUGINS_ENABLED=false) and then reads the fields it needs.
+// into a single constructor. run() calls startPluginRuntime once and then reads
+// the fields it needs.
 //
 // Motivation: ADR-reference for plugin system spec §15.2; issue #351.
 
@@ -37,7 +37,9 @@ import (
 )
 
 // pluginRuntime holds the handles that run() needs after the plugin subsystem
-// has been started. All fields are non-nil when plugins are enabled.
+// has been started. Fields that depend on an encryption key (OAuthHandler,
+// CredentialsHandler, OnPublicURLChanged) are nil when no key is configured;
+// all others are non-nil.
 type pluginRuntime struct {
 	// Pool is the dispatch pool. run() passes it to runManager.WithPluginCanceller
 	// and reads it for the SetInflightCounter wiring and the shutdown Close call.
@@ -109,9 +111,8 @@ func (rt *pluginRuntime) Manager() *process.Manager { return rt.loader.Manager()
 func (rt *pluginRuntime) Loader() *pluginpkg.Loader { return rt.loader }
 
 // startPluginRuntime brings up the plugin subsystem and returns a populated
-// *pluginRuntime. Returns nil (not an error) when cfg.PluginsEnabled is false,
-// which lets callers use a simple nil-guard instead of an explicit
-// cfg.PluginsEnabled check.
+// *pluginRuntime. On success the returned value is always non-nil; a nil return
+// is always paired with a non-nil error.
 //
 // arbiter is the shared cross-source tool namespace registry; it must already
 // be constructed before this call.
@@ -127,10 +128,6 @@ func startPluginRuntime(
 	arbiter *toolregistry.Registry,
 	systemSettings *settings.Service,
 ) (*pluginRuntime, error) {
-	if !cfg.PluginsEnabled {
-		return nil, nil
-	}
-
 	loader := pluginpkg.NewLoader()
 	if err := loader.Init(ctx, cfg); err != nil {
 		return nil, fmt.Errorf("init plugin loader: %w", err)
@@ -289,7 +286,7 @@ func startPluginRuntime(
 // RunLauncher is constructed (launcher depends on the runtime, and the trigger
 // dispatcher depends on the launcher — this two-phase split is intentional).
 //
-// wireTriggerSupervisor is a no-op when rt is nil.
+// wireTriggerSupervisor is a no-op when HostSvc is nil.
 func (rt *pluginRuntime) wireTriggerSupervisor(
 	ctx context.Context,
 	launcher *runpkg.RunLauncher,
@@ -297,7 +294,7 @@ func (rt *pluginRuntime) wireTriggerSupervisor(
 	broadcaster event.Publisher,
 	systemSettings *settings.Service,
 ) {
-	if rt == nil || rt.HostSvc == nil {
+	if rt.HostSvc == nil {
 		return
 	}
 
@@ -356,13 +353,10 @@ func (rt *pluginRuntime) wireTriggerSupervisor(
 //     which is the same bounded-Launch property as case 1 (Launch returns after
 //     registering + spawning the agent goroutine; it does not block on the run).
 //
-// quiesceTriggers is a no-op when rt is nil, tolerates a nil supervisor / nil
-// HostSvc, and is safe to call more than once (StopAll on the now-empty instance
-// map is a no-op; clearing an already-nil sink is a no-op) (#500).
+// quiesceTriggers tolerates a nil supervisor / nil HostSvc and is safe to call
+// more than once (StopAll on the now-empty instance map is a no-op; clearing an
+// already-nil sink is a no-op) (#500).
 func (rt *pluginRuntime) quiesceTriggers() {
-	if rt == nil {
-		return
-	}
 	// Clear the EmitEvent → Dispatcher sink first so no new substrate event can
 	// be forwarded to Launch while we are joining the stream goroutines.
 	if rt.HostSvc != nil {
@@ -375,13 +369,7 @@ func (rt *pluginRuntime) quiesceTriggers() {
 
 // shutdown stops the trigger supervisor, joins the OAuth background goroutines,
 // the plugin manager subprocesses, and finally the dispatch pool, in that order.
-//
-// shutdown is a no-op when rt is nil.
 func (rt *pluginRuntime) shutdown() {
-	if rt == nil {
-		return
-	}
-
 	// Stop trigger stream goroutines before tearing down plugin subprocesses.
 	// Normally main.go has already called quiesceTriggers before the drain wait;
 	// this call is the idempotent backstop (StopAll on an empty map is a no-op)

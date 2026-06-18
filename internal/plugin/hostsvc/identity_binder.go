@@ -20,8 +20,7 @@ func (contextBinder) InstanceIDFromContext(ctx context.Context) (string, bool) {
 //
 // The loader/subprocess wiring (#158) passes this to NewServer alongside a
 // real *identity.Registry, so every Host RPC is authenticated against the
-// token the broker assigned at subprocess launch. The plugin-disabled path in
-// main.go is unchanged (gated by GLEIPNIR_PLUGINS_ENABLED=false).
+// token the broker assigned at subprocess launch.
 func NewContextBinder() InstanceBinder {
 	return contextBinder{}
 }
