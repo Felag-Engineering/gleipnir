@@ -1,6 +1,6 @@
 auth:
   mode: instance_credentials
-  strategy: static_key
+  strategy: static_api_key
 channels:
   - config_schema:
       properties:

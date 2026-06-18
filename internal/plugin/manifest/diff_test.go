@@ -99,7 +99,7 @@ func TestDiff_MaterialOAuthScopesChanged(t *testing.T) {
 
 func TestDiff_MaterialOAuthStrategyChanged(t *testing.T) {
 	old := baseManifest()
-	old.Auth.Strategy = "static_key"
+	old.Auth.Strategy = sdkmanifest.AuthStrategyStaticAPIKey
 
 	new := baseManifest()
 	new.Auth.Strategy = sdkmanifest.AuthStrategyOAuth2Authcode
