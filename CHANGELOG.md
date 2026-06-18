@@ -10,11 +10,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- **`GLEIPNIR_PLUGINS_ENABLED` now defaults to `true`.** The plugin loader is enabled out of the box. Operators who need to opt out can still set `GLEIPNIR_PLUGINS_ENABLED=false`; the flag will be removed entirely in the next release (spec §15.2).
-
 ### Fixed
 
 ### Security
+
+## [1.1.0] - 2026-06-18
+
+The plugin system. Gleipnir can now be extended with signed, out-of-process plugins that add tools, channels, and event triggers alongside MCP.
+
+### Added
+
+- **Plugin system (ADR-041).** First-party extension model running HashiCorp go-plugin subprocesses over gRPC/UDS, parallel to MCP. One plugin binary can expose any of three capability surfaces:
+  - **Tools** — agent-callable tools that share the single `<source>.<tool>` namespace with MCP. Hard capability enforcement (ADR-001), parameter scoping (ADR-017), and approval gating (ADR-008) apply identically.
+  - **Channels (ADR-044)** — `Notify` (fire-and-forget fan-out) and `Request` (exactly-one routing with async callback) for human-in-the-loop. Routing is configured through named, admin-managed **audiences** referenced by policy. In-app feedback (ADR-031) is now itself a channel; `gleipnir.in-app` is the always-available fallback.
+  - **Triggers (ADR-048).** A new internal `subscribed` trigger type binds a policy to a `(source, event_kind)` pair declared by a plugin. Bindings use typed form fields (regex / contains / equals) from the manifest's `binding_schema` — no JSONPath.
+- **Plugin signing & TOFU trust (ADR-045).** Minisign (Ed25519) tamper-evidence with trust-on-first-use pubkey pinning. Updates must verify against the pinned key; rotation requires admin approval ("Accept new key"). Material manifest changes block hot-reload pending admin re-approval. `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true` is the development escape hatch (loud, global, audited).
+- **Host-side OAuth2 + credential management.** Six auth strategies (`none`, `static_api_key`, `header_set`, `basic_auth`, `oauth2_authcode`, `oauth2_clientcred`); the host owns the OAuth dance and a refresh scanner. Credentials are encrypted at rest and pulled by plugins on demand (never cached plugin-side).
+- **Admin plugin surfaces.** `/admin/plugins` (install → pending-review → approve, per-instance lifecycle, health, RSS), `/admin/audiences` (channel routing), and a plugin trigger picker in the policy editor.
+- **Plugin observability (ADR-047).** Plugin metrics are force-prefixed `gleipnir_plugin_` with auto-injected `plugin`/`instance` labels and a per-label cardinality cap; plugin logs ride a host RPC with run/policy correlation.
+- **Plugin SDK & CLI.** The `plugin-sdk/` module and `gleipnir-plugin` CLI (`new`, `gen-manifest`, `validate`, `keygen`, `sign`, `package`, `run`) for building, signing, and packaging plugins. Two first-party reference plugins ship in-repo: **ntfy** (minimal, channel-only) and **Slack** (kitchen-sink — all three surfaces + OAuth). See the new [Plugin Author Guide](docs/developer/plugin-author-guide.md).
+
+### Changed
+
+- **`GLEIPNIR_PLUGINS_ENABLED` has been removed.** The plugin system is now an unconditional part of the host. The flag existed only as a temporary rollout mechanism and never appeared in a tagged release; operators tracking `main` who set it should drop it — it is now ignored (spec §15.2).
 
 ## [1.0.0] - 2026-04-29
 

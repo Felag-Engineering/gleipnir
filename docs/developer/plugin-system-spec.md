@@ -1,8 +1,8 @@
-# Plugin System — Design Specification
+# Plugin System — Specification
 
-**Status:** Draft for review — design tree closed 2026-05-02; not yet implemented.
-**Audience:** Engineers, reviewers, and agents evaluating the design before implementation.
-**Companion docs:** `architecture.md` (system overview), `ADR_Tracker.md` (existing ADRs the plugin system extends or supersedes).
+**Status:** Implemented — shipped in v1.1.0. Design tree closed 2026-05-02; this document is now the reference specification for the implemented system.
+**Audience:** Engineers and agents working on or extending the plugin subsystem. Plugin authors building against the SDK should start with the [Plugin Author Guide](plugin-author-guide.md).
+**Companion docs:** `plugin-author-guide.md` (build a plugin), `architecture.md` (system overview), `ADR_Tracker.md` (existing ADRs the plugin system extends or supersedes).
 
 ---
 
@@ -604,16 +604,14 @@ Each step is shippable independently:
 8. **Slack plugin.** Kitchen-sink validation of all three services + OAuth.
 9. Admin UI iterates throughout.
 
-### 15.2 Feature flag
+### 15.2 Feature flag (removed)
 
-Single global env var `GLEIPNIR_PLUGINS_ENABLED=false` default. Loader/manager doesn't start unless on. When off: `/admin/plugins` returns 404, audience editor hidden, plugin instance pickers empty.
+The plugin system rolled out behind a single global env var, `GLEIPNIR_PLUGINS_ENABLED`, which has since completed its lifecycle and **been removed** (issue #247). The flag was always a temporary rollout mechanism, not a permanent config knob:
+1. Shipped off-default in release N
+2. Flipped on-default in release N+1 after a stable cycle
+3. **Removed entirely in v1.1.0 (release N+2)** — the plugin system is now an unconditional part of the host. Setting `GLEIPNIR_PLUGINS_ENABLED` is ignored.
 
-**The flag is a temporary rollout mechanism, not a permanent config knob.** Lifecycle:
-1. Ships off-default in release N
-2. Flips on-default in release N+1 after a stable cycle
-3. **Flag removed entirely** in release N+2
-
-The step-2 in-app feedback refactor lands independently of the flag (behavior-neutral). The flag only gates external plugins, not the internal `inAppChannel`.
+The in-app feedback refactor landed independently of the flag (behavior-neutral) and was never gated by it — the flag only ever gated external plugins, not the internal `inAppChannel`.
 
 **Subprocess spawn on instance creation.** When an admin creates a plugin instance via the API, the handler immediately calls `StartByPluginID` to spawn the subprocess — no server restart required (same fire-and-forget pattern as the post-install hook).
 

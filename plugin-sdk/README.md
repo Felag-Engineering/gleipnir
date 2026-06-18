@@ -3,18 +3,23 @@
 The plugin SDK provides the protobuf contracts, generated gRPC stubs, and
 developer tooling for building Gleipnir plugins.
 
+> **New to plugin development?** Start with the
+> [Plugin Author Guide](../docs/developer/plugin-author-guide.md) — it walks
+> through scaffolding, implementing a service, signing, packaging, and
+> installing a plugin end to end.
+
 ## Structure
 
 ```
 plugin-sdk/
   proto/          — .proto source files for all plugin services
   gen/            — generated Go stubs (committed; regenerate with `make proto`)
-  manifest/       — manifest builder types (Phase 3)
-  serve/          — plugin entry point: serve.Serve() (Phase 3)
-  testing/        — fake host for unit tests (issue #172)
-  examples/       — end-to-end examples (issue #173)
+  manifest/       — manifest builder types (code-first manifest authoring)
+  serve/          — plugin entry point: serve.Serve()
+  testing/        — fake host for unit tests
+  examples/       — end-to-end examples
   cmd/
-    gleipnir-plugin/  — developer CLI (issue #169 onward)
+    gleipnir-plugin/  — developer CLI (new, gen-manifest, validate, keygen, sign, package, run)
   internal/
     tools/        — pinned generator versions for `go mod tidy`
 ```
