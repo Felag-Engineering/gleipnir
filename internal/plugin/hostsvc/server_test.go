@@ -736,8 +736,8 @@ func TestWriteAuditStep_NoCallID_CrossInstanceEscalation(t *testing.T) {
 
 // TestWriteAuditStep_NoCallID_UnknownRequestID_NativeMiss verifies that when
 // neither the substrate (plugin_pending_requests) nor the native (feedback_requests)
-// row exists, the handler returns codes.NotFound (not codes.Internal — the request_id
-// is simply unknown, which is a caller error, not a server error).
+// row exists, the handler returns codes.PermissionDenied — oracle-closed: an
+// unknown id is indistinguishable from a foreign id so both return the same error.
 func TestWriteAuditStep_NoCallID_UnknownRequestID_NativeMiss(t *testing.T) {
 	t.Parallel()
 
@@ -753,18 +753,100 @@ func TestWriteAuditStep_NoCallID_UnknownRequestID_NativeMiss(t *testing.T) {
 		RequestId: "req-unknown",
 	})
 	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.NotFound {
-		t.Errorf("expected codes.NotFound for unknown request_id, got %v", err)
+	if !ok || st.Code() != codes.PermissionDenied {
+		t.Errorf("expected codes.PermissionDenied for unknown request_id, got %v", err)
+	}
+	if st.Message() != "unauthorized_request_id" {
+		t.Errorf("message = %q, want unauthorized_request_id", st.Message())
+	}
+}
+
+// TestWriteAuditStep_Native_OwnershipOracleClosed verifies that the native
+// feedback path returns an identical codes.PermissionDenied/"unauthorized_request_id"
+// for all three non-owner scenarios, closing the request_id probing oracle:
+//
+//   - nonexistent: the request_id does not exist in either table.
+//   - foreign-pending: the request exists but belongs to a different policy.
+//   - foreign-resolved: same as foreign-pending but with Status="responded" —
+//     CRITICAL: must return PermissionDenied, not the late ok=false envelope,
+//     proving ownership is checked before the status branch.
+func TestWriteAuditStep_Native_OwnershipOracleClosed(t *testing.T) {
+	t.Parallel()
+
+	// foreignPolicy grants "otherplugin.*" but the caller is "myplugin".
+	foreignPolicyYAML := policyYAMLWithTool("otherplugin.do_thing")
+
+	tests := []struct {
+		name        string
+		feedbackReq db.FeedbackRequest
+		feedbackErr error
+		run         db.Run
+		policy      db.Policy
+	}{
+		{
+			name:        "nonexistent",
+			feedbackErr: sql.ErrNoRows,
+		},
+		{
+			name:        "foreign-pending",
+			feedbackReq: db.FeedbackRequest{ID: "fr-foreign", RunID: "run-foreign", Status: "pending"},
+			run:         db.Run{ID: "run-foreign", PolicyID: "pol-other"},
+			policy:      db.Policy{ID: "pol-other", Yaml: foreignPolicyYAML},
+		},
+		{
+			// This is the critical guard: a resolved request must still return
+			// PermissionDenied — the status branch must not precede ownership.
+			name:        "foreign-resolved",
+			feedbackReq: db.FeedbackRequest{ID: "fr-foreign", RunID: "run-foreign", Status: "responded"},
+			run:         db.Run{ID: "run-foreign", PolicyID: "pol-other"},
+			policy:      db.Policy{ID: "pol-other", Yaml: foreignPolicyYAML},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := &fakeQuerier{
+				instance:                db.PluginInstance{ID: "iid-probe", PluginID: "plug-probe", InstanceName: "myplugin"},
+				feedbackRequest:         tt.feedbackReq,
+				feedbackErr:             tt.feedbackErr,
+				run:                     tt.run,
+				policy:                  tt.policy,
+				pluginPendingRequestErr: sql.ErrNoRows, // native path
+			}
+			srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
+
+			_, err := srv.WriteAuditStep(context.Background(), &hostv1.WriteAuditStepRequest{
+				StepType:  "feedback_response",
+				RequestId: "fr-foreign",
+			})
+			st, ok := status.FromError(err)
+			if !ok || st.Code() != codes.PermissionDenied {
+				t.Errorf("[%s] expected codes.PermissionDenied, got %v", tt.name, err)
+			}
+			if st.Message() != "unauthorized_request_id" {
+				t.Errorf("[%s] message = %q, want unauthorized_request_id", tt.name, st.Message())
+			}
+		})
 	}
 }
 
 func TestWriteAuditStep_LateFeedback(t *testing.T) {
 	t.Parallel()
 
+	// The caller must be an owner of the request so the ownership check passes
+	// and the late-feedback branch is reached. Without the owner fixture the
+	// restructured handler would return PermissionDenied before the status check.
 	q := &fakeQuerier{
-		instance:                db.PluginInstance{ID: "iid-1", PluginID: "plug-1"},
+		instance:                db.PluginInstance{ID: "iid-1", PluginID: "plug-1", InstanceName: "myplugin"},
 		feedbackRequest:         db.FeedbackRequest{ID: "fr-1", RunID: "run-1", Status: "responded"},
+		run:                     db.Run{ID: "run-1", PolicyID: "pol-1"},
+		policy:                  db.Policy{ID: "pol-1", Yaml: policyYAMLWithTool("myplugin.do_thing")},
 		pluginPendingRequestErr: sql.ErrNoRows, // native path
+		// updateFeedbackStatusRows is intentionally unset: the late-feedback path
+		// returns ok=false before reaching writeFeedbackResponseStep.
 	}
 	srv := newTestServer(t, q, &fakeResolver{}, &fakePublisher{})
 
