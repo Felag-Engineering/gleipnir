@@ -399,10 +399,30 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 		// If the row has no binary_path yet (legacy row from before #386), backfill it
 		// so a re-deploy of the same tarball repairs the gap without a version bump.
 		if in.pluginsDir != "" && (existing.BinaryPath == nil || *existing.BinaryPath == "") {
+			// Run the TOFU pin check before publishing — a same-version tarball signed by
+			// a different key must not be allowed to publish its binary to disk.
+			refreshed, mismatch, pinErr := in.checkPubkeyPin(ctx, existing, result, nowStr)
+			if pinErr != nil {
+				return "", false, "", fmt.Errorf("pubkey pin check for %q (backfill): %w", m.Name, pinErr)
+			}
+			if mismatch {
+				id, mErr := in.handlePubkeyMismatch(ctx, existing, result, m.Version, nowStr)
+				return id, false, existing.Status, mErr // BLOCK: no publishBundle
+			}
+			// Pick up the delayed-TOFU re-read. UpdatePluginTrustedPubkey bumps the row
+			// version, so updateBinaryPath's CAS must run against the refreshed version
+			// or it silently no-ops (rows==0 → logged warning, binary_path not written).
+			existing = refreshed
 			publishedPath, pubErr := in.publishBundle(ctx, tmpDir, m.Name)
 			if pubErr != nil {
 				return "", false, "", fmt.Errorf("publish bundle for %q (backfill): %w", m.Name, pubErr)
 			}
+			// INTENTIONALLY non-transactional: the backfill branch has never been wrapped
+			// in a tx (mirroring the pre-fix behavior); a crash between publishBundle and
+			// updateBinaryPath leaves the bundle on disk but binary_path unwritten — a
+			// subsequent re-drop of the tarball repairs it. Wrapping in a tx would require
+			// re-reading the version after the TOFU capture inside the tx, which is out
+			// of scope for this targeted security fix.
 			if err := in.updateBinaryPath(ctx, existing.ID, existing.Version, &publishedPath, nowStr); err != nil {
 				return "", false, "", fmt.Errorf("backfill binary_path for %q: %w", m.Name, err)
 			}
@@ -436,34 +456,13 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 	}
 
 	// TOFU pubkey trust check: only applies to verified (signed) bundles.
-	if result.Outcome == OutcomeVerified {
-		if existing.TrustedPubkey == "" {
-			// Delayed TOFU: plugin was first installed under GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true
-			// and a signed update has now arrived. Capture the pubkey silently — no mismatch event.
-			rows, updateErr := in.q.UpdatePluginTrustedPubkey(ctx, db.UpdatePluginTrustedPubkeyParams{
-				TrustedPubkey:   string(result.Pubkey),
-				UpdatedAt:       nowStr,
-				ID:              existing.ID,
-				ExpectedVersion: existing.Version,
-			})
-			if updateErr != nil {
-				return "", false, "", fmt.Errorf("capture trusted pubkey for %q (delayed TOFU): %w", m.Name, updateErr)
-			}
-			if rows == 0 {
-				return "", false, "", fmt.Errorf("capture trusted pubkey for %q: CAS conflict (version mismatch)", m.Name)
-			}
-			// Re-read so updatePlugin sees the bumped version.
-			existing, err = in.q.GetPluginByName(ctx, m.Name)
-			if err != nil {
-				return "", false, "", fmt.Errorf("re-read plugin %q after TOFU capture: %w", m.Name, err)
-			}
-		} else if !bytes.Equal(result.Pubkey, []byte(existing.TrustedPubkey)) {
-			// Key mismatch: a different signing key was used for this update.
-			// Block the update and transition all instances to pending_key_approval
-			// so admins are alerted. Do not publish the bundle.
-			id, mismatchErr := in.handlePubkeyMismatch(ctx, existing, result, m.Version, nowStr)
-			return id, false, existing.Status, mismatchErr
-		}
+	existing, mismatch, pinErr := in.checkPubkeyPin(ctx, existing, result, nowStr)
+	if pinErr != nil {
+		return "", false, "", pinErr
+	}
+	if mismatch {
+		id, mismatchErr := in.handlePubkeyMismatch(ctx, existing, result, m.Version, nowStr)
+		return id, false, existing.Status, mismatchErr
 	}
 
 	// Diff the incoming manifest against the stored snapshot before calling
@@ -487,6 +486,57 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 
 	id, upErr := in.updatePlugin(ctx, existing, m, manifestBytes, result, tmpDir, nowStr)
 	return id, upErr == nil && id != "", existing.Status, upErr
+}
+
+// checkPubkeyPin runs the TOFU pubkey pin check for a verified bundle against
+// the existing plugin row. It is the single implementation shared by the
+// version-bump path and the same-version backfill path.
+//
+// Four sub-cases:
+//
+//	(a) result.Outcome != OutcomeVerified  →  no-op; (existing, false, nil)
+//	(b) Verified && TrustedPubkey==""      →  delayed-TOFU capture via UpdatePluginTrustedPubkey,
+//	    re-read row; (refreshed, false, nil)
+//	(c) Verified && keys match             →  (existing, false, nil)
+//	(d) Verified && keys differ            →  (existing, true, nil)  — mismatch
+//
+// handlePubkeyMismatch is NOT called here; callers invoke it when mismatch==true
+// so the return values stay explicit and testable.
+func (in *Installer) checkPubkeyPin(ctx context.Context, existing db.Plugin, result VerifyResult, nowStr string) (refreshed db.Plugin, mismatch bool, err error) {
+	if result.Outcome != OutcomeVerified {
+		// Unsigned-permissive or rejected — no pin to check.
+		return existing, false, nil
+	}
+
+	if existing.TrustedPubkey == "" {
+		// Delayed TOFU: the plugin was first installed under GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true
+		// and a signed bundle has now arrived. Capture the pubkey silently — no mismatch event.
+		rows, updateErr := in.q.UpdatePluginTrustedPubkey(ctx, db.UpdatePluginTrustedPubkeyParams{
+			TrustedPubkey:   string(result.Pubkey),
+			UpdatedAt:       nowStr,
+			ID:              existing.ID,
+			ExpectedVersion: existing.Version,
+		})
+		if updateErr != nil {
+			return existing, false, fmt.Errorf("capture trusted pubkey for %q (delayed TOFU): %w", existing.Name, updateErr)
+		}
+		if rows == 0 {
+			return existing, false, fmt.Errorf("capture trusted pubkey for %q: CAS conflict (version mismatch)", existing.Name)
+		}
+		// Re-read so the caller sees the bumped version for subsequent CAS operations
+		// (UpdatePluginManifest in the version-bump path; UpdatePluginBinaryPath in backfill).
+		reread, rereadErr := in.q.GetPluginByName(ctx, existing.Name)
+		if rereadErr != nil {
+			return existing, false, fmt.Errorf("re-read plugin %q after TOFU capture: %w", existing.Name, rereadErr)
+		}
+		return reread, false, nil
+	}
+
+	if !bytes.Equal(result.Pubkey, []byte(existing.TrustedPubkey)) {
+		return existing, true, nil
+	}
+
+	return existing, false, nil
 }
 
 // handlePubkeyMismatch transitions all instances of the plugin to
