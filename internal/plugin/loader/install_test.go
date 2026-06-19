@@ -1538,6 +1538,46 @@ func TestInstall_HotReload_CosmeticChange_UpdatesSnapshot_EmitsInfoAuditEvent(t 
 	}
 }
 
+// TestInstall_HotReload_CosmeticChange_UnsignedPermissive_EmitsHighSeverityAuditEvent
+// verifies that a cosmetic update of an unsigned-permissive plugin emits a
+// plugin_manifest_cosmetic_change audit event with high severity (ADR-045 §6).
+// A version-only bump is used because it is cosmetic per the manifest diff logic
+// and routes through updatePluginCosmetic without triggering a same-version
+// idempotency early-return.
+func TestInstall_HotReload_CosmeticChange_UnsignedPermissive_EmitsHighSeverityAuditEvent(t *testing.T) {
+	q := openTestDB(t)
+	// allowUnsigned=true so unsigned bundles are accepted.
+	inst := newTestInstaller(t, q, true)
+
+	// First install: v1.0.0 — seeds the plugin row.
+	tarPath1 := unsignedPluginTarball(t, "unsigned-cosm-plugin", "1.0.0")
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1.0.0: %v", err)
+	}
+
+	// Second install: v1.0.1 — version-only bump, cosmetic diff, routes through
+	// updatePluginCosmetic. Must emit high-severity audit event (ADR-045 §6).
+	tarPath2 := unsignedPluginTarball(t, "unsigned-cosm-plugin", "1.0.1")
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v1.0.1 (unsigned cosmetic): %v", err)
+	}
+
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditManifestCosmeticChange,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list cosmetic audit events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected a plugin_manifest_cosmetic_change audit event, got none")
+	}
+	if events[0].Severity != severityHigh {
+		t.Errorf("audit severity = %q, want %q (ADR-045 §6: unsigned-permissive load must emit high severity)", events[0].Severity, severityHigh)
+	}
+}
+
 // TestInstall_HotReload_NoChange_NoOp verifies that a tarball with a new version but
 // structurally identical manifest content (differing only in version field) uses the
 // cosmetic path and does not emit a material-change event.

@@ -480,7 +480,7 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 		return id, false, existing.Status, matErr
 	}
 	if len(changes) > 0 {
-		id, cosErr := in.updatePluginCosmetic(ctx, existing, m, manifestBytes, changes, tmpDir, nowStr)
+		id, cosErr := in.updatePluginCosmetic(ctx, existing, m, manifestBytes, result, changes, tmpDir, nowStr)
 		return id, cosErr == nil && id != "", existing.Status, cosErr
 	}
 
@@ -718,7 +718,7 @@ func updateBinaryPathTx(ctx context.Context, q *db.Queries, pluginID string, ver
 //
 // The manifest update and the audit event are committed atomically so a
 // mid-update failure cannot leave the plugins row advanced without an audit row.
-func (in *Installer) updatePluginCosmetic(ctx context.Context, existing db.Plugin, m *manifest.Manifest, manifestBytes []byte, changes []pluginmanifest.Change, tmpDir string, nowStr string) (string, error) {
+func (in *Installer) updatePluginCosmetic(ctx context.Context, existing db.Plugin, m *manifest.Manifest, manifestBytes []byte, result VerifyResult, changes []pluginmanifest.Change, tmpDir string, nowStr string) (string, error) {
 	// Publish the verified bundle before touching the DB so the subprocess can
 	// be re-spawned with the correct binary on the next restart.
 	var binaryPathPtr *string
@@ -758,7 +758,13 @@ func (in *Installer) updatePluginCosmetic(ctx context.Context, existing db.Plugi
 			}
 		}
 
-		if auditErr := insertAuditRow(ctx, q, auditManifestCosmeticChange, severityInfo, nowStr, map[string]any{
+		// ADR-045 §6: unsigned-permissive loads must emit a high-severity audit event
+		// so severity-based alerting catches every load that bypassed signature verification.
+		cosmeticSeverity := severityInfo
+		if result.Outcome == OutcomeUnsignedPermissive {
+			cosmeticSeverity = severityHigh
+		}
+		if auditErr := insertAuditRow(ctx, q, auditManifestCosmeticChange, cosmeticSeverity, nowStr, map[string]any{
 			"plugin_id":       existing.ID,
 			"name":            existing.Name,
 			"old_version":     existing.PluginVersion,
