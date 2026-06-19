@@ -94,11 +94,11 @@ type pluginRuntime struct {
 	// Manager() and Installer() from it.
 	loader *pluginpkg.Loader
 
-	// bgWG joins the long-lived OAuth background goroutines (nonce janitor +
-	// refresh scanner) so shutdown() can wait for them to exit rather than
-	// abandoning them mid-DB-write. Both goroutines are parented to the root
-	// ctx; shutdown() relies on main.go having cancelled that ctx first, then
-	// joins bgWG under a bounded deadline (#500).
+	// bgWG joins long-lived background goroutines (OAuth nonce janitor, OAuth
+	// refresh scanner, and dedup sweeper) so shutdown() can wait for them to
+	// exit rather than abandoning them mid-DB-write. All goroutines are parented
+	// to the root ctx; shutdown() relies on main.go having cancelled that ctx
+	// first, then joins bgWG under a bounded deadline (#500, #562).
 	bgWG sync.WaitGroup
 }
 
@@ -278,6 +278,16 @@ func startPluginRuntime(
 		}
 	}
 
+	// Start the dedup sweeper under bgWG so shutdown() can join it rather than
+	// abandoning a mid-sweep DB write (#562). The sweeper selects on ctx.Done()
+	// and returns promptly once the root ctx is cancelled.
+	sweeper := dedup.NewSweeper(store.Queries(), cfg.PluginDedupSweepInterval, time.Hour)
+	rt.bgWG.Add(1)
+	go func() {
+		defer rt.bgWG.Done()
+		sweeper.Start(ctx)
+	}()
+
 	return rt, nil
 }
 
@@ -301,7 +311,7 @@ func (rt *pluginRuntime) wireTriggerSupervisor(
 	triggerDispatcher := plugintrigger.NewDispatcher(plugintrigger.DispatcherConfig{
 		Launcher:      launcher,
 		Querier:       store.Queries(),
-		Dedup:         dedup.Noop{}, // #215 will swap in a rolling-window store
+		Dedup:         dedup.NewDBStore(store.Queries()),
 		Publisher:     broadcaster,
 		ModelResolver: systemSettings,
 		Logger:        slog.Default(),
@@ -378,11 +388,11 @@ func (rt *pluginRuntime) shutdown() {
 		rt.TriggerSupervisor.StopAll()
 	}
 
-	// Join the OAuth background goroutines (nonce janitor + refresh scanner). The
-	// root ctx was cancelled in main.go before shutdown() runs, so both loops have
-	// already been signalled to exit; this join just confirms they have returned
-	// rather than abandoning them mid-DB-write. Bound the wait so a goroutine stuck
-	// inside an in-flight DB call cannot hang shutdown indefinitely.
+	// Join background goroutines (OAuth nonce janitor, OAuth refresh scanner, and
+	// dedup sweeper). The root ctx was cancelled in main.go before shutdown() runs,
+	// so all loops have already been signalled to exit; this join confirms they have
+	// returned rather than abandoning a mid-DB-write. Bound the wait so a goroutine
+	// stuck inside an in-flight DB call cannot hang shutdown indefinitely.
 	bgDone := make(chan struct{})
 	go func() {
 		rt.bgWG.Wait()
@@ -391,7 +401,7 @@ func (rt *pluginRuntime) shutdown() {
 	select {
 	case <-bgDone:
 	case <-time.After(5 * time.Second):
-		slog.Warn("plugin OAuth background goroutines did not exit within 5s; proceeding with shutdown")
+		slog.Warn("plugin background goroutines (OAuth + dedup sweeper) did not exit within 5s; proceeding with shutdown")
 	}
 
 	// Stop all plugin subprocesses before closing the dispatch pool. This order

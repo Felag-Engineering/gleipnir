@@ -39,6 +39,7 @@ type Config struct {
 	PluginsDir                string
 	OAuthRefreshInterval      time.Duration // GLEIPNIR_OAUTH_REFRESH_INTERVAL, default 5m
 	OAuthRefreshLead          time.Duration // GLEIPNIR_OAUTH_REFRESH_LEAD, default 15m
+	PluginDedupSweepInterval  time.Duration // GLEIPNIR_PLUGIN_DEDUP_SWEEP_INTERVAL, default 10m
 
 	// LLM transient-failure retry. A 429 (TPM/RPM rate limit) or 5xx response
 	// from a provider is retried up to LLMRetryMaxAttempts times, honoring the
@@ -80,6 +81,7 @@ func Load() (Config, error) {
 		PluginsDir:                envOrDefault("GLEIPNIR_PLUGINS_DIR", "/plugins"),
 		OAuthRefreshInterval:      envDuration("GLEIPNIR_OAUTH_REFRESH_INTERVAL", 5*time.Minute),
 		OAuthRefreshLead:          envDuration("GLEIPNIR_OAUTH_REFRESH_LEAD", 15*time.Minute),
+		PluginDedupSweepInterval:  envDuration("GLEIPNIR_PLUGIN_DEDUP_SWEEP_INTERVAL", 10*time.Minute),
 		LLMRetryMaxAttempts:       envInt("GLEIPNIR_LLM_RETRY_MAX_ATTEMPTS", 4),
 		LLMRetryInitialBackoff:    envDuration("GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF", 1*time.Second),
 		LLMRetryMaxBackoff:        envDuration("GLEIPNIR_LLM_RETRY_MAX_BACKOFF", 30*time.Second),

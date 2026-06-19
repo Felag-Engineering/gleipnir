@@ -63,7 +63,11 @@ func (q *fakeQuerier) ListPluginInstancesByPlugin(_ context.Context, _ string) (
 	return nil, nil
 }
 
-// fakeDedupStore counts Seen calls and returns seen=true for registered keys.
+// fakeDedupStore implements the atomic record-and-check contract of
+// dedup.Store: Seen records a key on first call (returns false) and returns
+// true on all subsequent calls for the same key. markSeen pre-populates a key
+// so the very first Seen call returns true, mimicking a key already present in
+// the window (e.g. after a replay from a pre-populated store).
 type fakeDedupStore struct {
 	mu      sync.Mutex
 	seenSet map[dedup.Key]bool
@@ -74,7 +78,12 @@ func (s *fakeDedupStore) Seen(_ context.Context, k dedup.Key) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls++
-	return s.seenSet[k], nil
+	if s.seenSet == nil {
+		s.seenSet = make(map[dedup.Key]bool)
+	}
+	already := s.seenSet[k]
+	s.seenSet[k] = true // record so subsequent calls return true
+	return already, nil
 }
 
 func (s *fakeDedupStore) markSeen(k dedup.Key) {
@@ -697,6 +706,45 @@ func buildStringSchema(key string) *yaml.Node {
 		},
 	}
 	return schema
+}
+
+// TestDispatcher_RestartReplay verifies that delivering the same event twice
+// (simulating at-least-once replay on stream reconnect) results in exactly one
+// launch call. The second Handle call for the same event_id must be short-
+// circuited by the dedup store.
+func TestDispatcher_RestartReplay(t *testing.T) {
+	t.Parallel()
+
+	q := newBasicQuerier(t, "my-instance", "message")
+	dedupStore := &fakeDedupStore{}
+	launcher := &fakeLauncher{}
+	pub := &fakePublisher{}
+	d := newDispatcher(q, dedupStore, launcher, pub)
+
+	evt := plugintrigger.Event{
+		InstanceID:  "inst-1",
+		PluginID:    "plug-1",
+		EventKind:   "message",
+		EventID:     "evt-replay-1",
+		PayloadJSON: []byte(`{"text":"hello"}`),
+		ObservedAt:  time.Now(),
+	}
+
+	// First delivery: dedup miss → should launch.
+	if err := d.Handle(context.Background(), evt); err != nil {
+		t.Fatalf("Handle (first): %v", err)
+	}
+	if launcher.callCount() != 1 {
+		t.Fatalf("after first delivery: expected 1 launch, got %d", launcher.callCount())
+	}
+
+	// Second delivery of identical event (replay): dedup hit → must NOT launch.
+	if err := d.Handle(context.Background(), evt); err != nil {
+		t.Fatalf("Handle (second): %v", err)
+	}
+	if launcher.callCount() != 1 {
+		t.Errorf("after replay: expected 1 launch total, got %d (duplicate run fired)", launcher.callCount())
+	}
 }
 
 func contains(ss []string, s string) bool {
