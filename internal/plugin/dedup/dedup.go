@@ -5,11 +5,11 @@
 //
 // # Noop implementation
 //
-// Noop always returns (false, nil): every event is treated as new. This is the
-// default until issue #215 lands a SQLite-backed rolling-window implementation
-// that slots in without any caller changes. Using Noop deliberately means a host
-// restart will replay events that were already dispatched; at-least-once delivery
-// on the plugin side is the design assumption (spec §4.3).
+// Noop always returns (false, nil): every event is treated as new. Production
+// uses the SQLite-backed rolling-window dbStore (store.go, #562); Noop is retained
+// for tests and for callers that do not need dedup semantics. Wiring Noop means a
+// host restart will replay events that were already dispatched; at-least-once
+// delivery on the plugin side is the design assumption (spec §4.3).
 //
 // # Interface contract
 //
@@ -44,7 +44,8 @@ type Store interface {
 }
 
 // Noop is a Store that never deduplicates: every Seen call returns (false, nil).
-// It is the default implementation until #215 lands a real rolling-window store.
+// Production wires the real rolling-window store (dbStore, store.go); Noop is for
+// tests and callers that do not need dedup semantics.
 type Noop struct{}
 
 // Seen always returns (false, nil). With Noop, every event proceeds to dispatch.

@@ -109,6 +109,13 @@ type PluginAuditEvent struct {
 	CreatedAt        string  `json:"created_at"`
 }
 
+type PluginEventDedup struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	EventKind        string `json:"event_kind"`
+	EventID          string `json:"event_id"`
+	CreatedAtMs      int64  `json:"created_at_ms"`
+}
+
 type PluginInstance struct {
 	ID                    string  `json:"id"`
 	PluginID              string  `json:"plugin_id"`

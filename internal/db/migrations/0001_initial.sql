@@ -500,6 +500,32 @@ CREATE TABLE plugin_oauth_nonces (
 CREATE INDEX plugin_oauth_nonces_expires_at_idx ON plugin_oauth_nonces (expires_at);
 
 -- ---------------------------------------------------------------------------
+-- Plugin event dedup (spec §4.3, issue #562)
+--
+-- Deduplicates at-least-once substrate events so a host restart cannot
+-- re-fire already-handled events as duplicate agent runs.
+--
+-- Key = (plugin_instance_id, event_kind, event_id) — the plugin-supplied
+-- identity tuple. created_at_ms is HOST-ASSIGNED Unix milliseconds; eviction
+-- sweeps on this column, never on the plugin-supplied event_id (which is not
+-- guaranteed to be time-sortable). int64 millis is monotonically ordered
+-- under integer comparison; RFC3339Nano strings are not (ADR-003 §notes).
+--
+-- WITHOUT ROWID: composite primary key, narrow row — textbook usage (doc §6).
+-- The secondary index on created_at_ms is valid because SQLite uses the PK
+-- columns as the row pointer in a WITHOUT ROWID table.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE plugin_event_dedup (
+    plugin_instance_id TEXT    NOT NULL REFERENCES plugin_instances(id) ON DELETE CASCADE,
+    event_kind         TEXT    NOT NULL,
+    event_id           TEXT    NOT NULL,
+    created_at_ms      INTEGER NOT NULL,   -- host-assigned Unix millis; eviction orders on THIS
+    PRIMARY KEY (plugin_instance_id, event_kind, event_id)
+) WITHOUT ROWID;
+CREATE INDEX idx_plugin_event_dedup_created_at_ms ON plugin_event_dedup(created_at_ms);
+
+-- ---------------------------------------------------------------------------
 -- Seed migration version
 -- ---------------------------------------------------------------------------
 
