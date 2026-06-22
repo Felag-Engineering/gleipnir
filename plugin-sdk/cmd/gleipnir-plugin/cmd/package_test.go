@@ -50,9 +50,14 @@ func TestRunPackageSignedBundle(t *testing.T) {
 	tarPath := filepath.Join(outDir, entries[0].Name())
 	contents := readTarball(t, tarPath)
 
-	// Verify required files exist.
-	if _, ok := contents["myplugin"]; !ok {
-		t.Error("binary (myplugin) not in bundle; keys:", mapKeys(contents))
+	// Verify required files exist. The binary is stored under manifest.Name
+	// ("testplugin"), NOT the source binary basename ("myplugin"), because the
+	// host locates it at <bundle>/<manifest.Name> to hash and verify it.
+	if _, ok := contents["testplugin"]; !ok {
+		t.Error("binary (testplugin, from manifest.Name) not in bundle; keys:", mapKeys(contents))
+	}
+	if _, ok := contents["myplugin"]; ok {
+		t.Error("binary stored under source basename 'myplugin'; must use manifest.Name 'testplugin'")
 	}
 	if _, ok := contents["manifest.yaml"]; !ok {
 		t.Error("manifest.yaml not in bundle")
@@ -74,7 +79,7 @@ func TestRunPackageSignedBundle(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse signature: %v", err)
 		}
-		payload := signing.PluginPayload(contents["myplugin"], contents["manifest.yaml"])
+		payload := signing.PluginPayload(contents["testplugin"], contents["manifest.yaml"])
 		if err := signing.Verify(pk, payload, sig, sig.TrustedComment); err != nil {
 			t.Errorf("verify bundle signature: %v", err)
 		}
@@ -125,7 +130,7 @@ func TestRunPackageEncryptedKeyProducesVerifiableSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse signature: %v", err)
 	}
-	payload := signing.PluginPayload(contents["myplugin"], contents["manifest.yaml"])
+	payload := signing.PluginPayload(contents["testplugin"], contents["manifest.yaml"])
 	if err := signing.Verify(pk, payload, sig, sig.TrustedComment); err != nil {
 		t.Errorf("verify encrypted-key bundle signature: %v", err)
 	}

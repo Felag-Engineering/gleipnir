@@ -31,13 +31,15 @@ func NewPackageCmd() *cobra.Command {
 
 The tarball contains:
   <name>-<version>/
-    <binary-basename>         (mode 0755)
+    <manifest.Name>            (mode 0755, the binary)
     manifest.yaml             (mode 0644)
     <manifest.Name>.minisig   (mode 0644)
     signing.pub               (mode 0644)
     sbom.cyclonedx.json       (mode 0644, optional)
 
-The .minisig filename derives from manifest.Name, not the binary basename.
+The binary and .minisig filenames both derive from manifest.Name — the host
+locates the binary at <bundle>/<manifest.Name> to hash and verify it, so the
+binary basename on disk is irrelevant.
 
 Signed payload is sha256(binary) || sha256(manifest) per spec §5.2.
 
@@ -154,7 +156,7 @@ func runPackage(cmd *cobra.Command, binary, manifestPath, flagKey string, flagKe
 	tarName := fmt.Sprintf("%s-%s.tar.gz", m.Name, m.Version)
 	tarPath := filepath.Join(outDir, tarName)
 
-	if err := writeTarball(tarPath, binary, binaryData, manifestData, sigData, pubData, sbomData, m.Name, m.Version); err != nil {
+	if err := writeTarball(tarPath, binaryData, manifestData, sigData, pubData, sbomData, m.Name, m.Version); err != nil {
 		return fmt.Errorf("package: write tarball: %w", err)
 	}
 
@@ -171,8 +173,10 @@ func validateBundleNameComponent(field, value string) error {
 	return nil
 }
 
-// writeTarball writes the plugin bundle tarball per spec §14.5.
-func writeTarball(tarPath, binaryPath string, binaryData, manifestData, sigData, pubData, sbomData []byte, name, version string) error {
+// writeTarball writes the plugin bundle tarball per spec §14.5. The binary is
+// stored under the manifest name (not the source binary's basename) because the
+// host locates it at <bundle>/<manifest.Name> to hash and verify the signature.
+func writeTarball(tarPath string, binaryData, manifestData, sigData, pubData, sbomData []byte, name, version string) error {
 	f, err := os.Create(tarPath)
 	if err != nil {
 		return fmt.Errorf("create tarball: %w", err)
@@ -183,7 +187,6 @@ func writeTarball(tarPath, binaryPath string, binaryData, manifestData, sigData,
 
 	mtime := sourceDateEpoch()
 	prefix := fmt.Sprintf("%s-%s", name, version)
-	binaryBase := filepath.Base(binaryPath)
 
 	// Build entries, then sort by name for determinism.
 	type entry struct {
@@ -193,7 +196,7 @@ func writeTarball(tarPath, binaryPath string, binaryData, manifestData, sigData,
 	}
 
 	entries := []entry{
-		{prefix + "/" + binaryBase, 0o755, binaryData},
+		{prefix + "/" + name, 0o755, binaryData},
 		{prefix + "/manifest.yaml", 0o644, manifestData},
 	}
 	if sigData != nil {

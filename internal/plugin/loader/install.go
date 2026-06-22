@@ -77,10 +77,34 @@ const (
 	auditManifestMaterialChange = "plugin_manifest_material_change"
 	auditManifestCosmeticChange = "plugin_manifest_cosmetic_change"
 	auditDowngradeRefused       = "plugin_downgrade_refused"
+	auditReinstallIgnored       = "plugin_reinstall_ignored"
 
 	// Audit severity levels.
 	severityHigh = "high"
 	severityInfo = "info"
+)
+
+// InstallRejectedError signals that a bundle was structurally valid and
+// signature-verified, but the host refused to apply it for a trust/policy
+// reason (pinned-key mismatch, material manifest change, or downgrade). The
+// relevant high-severity audit event has already been recorded and the running
+// generation is untouched. The HTTP layer maps this to 409 Conflict so the
+// caller learns the upload was not applied — it previously surfaced as a
+// misleading 200 with the unchanged plugin row.
+type InstallRejectedError struct {
+	Reason  string // machine-readable: pubkey_mismatch | material_change | downgrade_refused
+	Message string // operator-facing guidance
+}
+
+func (e *InstallRejectedError) Error() string {
+	return "install rejected: " + e.Message
+}
+
+// Rejection reasons for InstallRejectedError.Reason.
+const (
+	rejectPubkeyMismatch = "pubkey_mismatch"
+	rejectMaterialChange = "material_change"
+	rejectDowngrade      = "downgrade_refused"
 )
 
 // Installer runs the extract → verify → snapshot-into-DB pipeline for a single
@@ -398,6 +422,7 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 		// Same version already recorded — idempotent re-install (debounce safety net).
 		// If the row has no binary_path yet (legacy row from before #386), backfill it
 		// so a re-deploy of the same tarball repairs the gap without a version bump.
+		backfilled := false
 		if in.pluginsDir != "" && (existing.BinaryPath == nil || *existing.BinaryPath == "") {
 			// Run the TOFU pin check before publishing — a same-version tarball signed by
 			// a different key must not be allowed to publish its binary to disk.
@@ -407,7 +432,13 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 			}
 			if mismatch {
 				id, mErr := in.handlePubkeyMismatch(ctx, existing, result, m.Version, nowStr)
-				return id, false, existing.Status, mErr // BLOCK: no publishBundle
+				if mErr != nil {
+					return id, false, existing.Status, mErr // BLOCK: no publishBundle
+				}
+				return id, false, existing.Status, &InstallRejectedError{
+					Reason:  rejectPubkeyMismatch,
+					Message: "signing key does not match the pinned key; review and approve the new key via the \"Accept new key\" admin flow",
+				}
 			}
 			// Pick up the delayed-TOFU re-read. UpdatePluginTrustedPubkey bumps the row
 			// version, so updateBinaryPath's CAS must run against the refreshed version
@@ -425,6 +456,21 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 			// of scope for this targeted security fix.
 			if err := in.updateBinaryPath(ctx, existing.ID, existing.Version, &publishedPath, nowStr); err != nil {
 				return "", false, "", fmt.Errorf("backfill binary_path for %q: %w", m.Name, err)
+			}
+			backfilled = true
+		}
+		if !backfilled {
+			// Pure same-version re-upload of an already-installed plugin whose binary
+			// is already published: an idempotent no-op. Record it so a re-submitted
+			// bundle for an existing version (e.g. a tampered or differently-signed
+			// tarball that cannot displace the verified binary) leaves an audit trail
+			// instead of vanishing silently. Info severity — this is expected on a
+			// re-deploy of the same artifact.
+			if auditErr := in.recordAuditEvent(ctx, auditReinstallIgnored, severityInfo, nowStr, map[string]any{
+				"name":    m.Name,
+				"version": m.Version,
+			}); auditErr != nil {
+				return "", false, "", fmt.Errorf("record reinstall_ignored audit for %q: %w", m.Name, auditErr)
 			}
 		}
 		return existing.ID, false, existing.Status, nil
@@ -451,7 +497,10 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 			}); err != nil {
 				return "", false, "", fmt.Errorf("record downgrade_refused audit for %q: %w", m.Name, err)
 			}
-			return existing.ID, false, existing.Status, nil
+			return existing.ID, false, existing.Status, &InstallRejectedError{
+				Reason:  rejectDowngrade,
+				Message: fmt.Sprintf("version %s is older than the installed version %s; downgrades are refused", m.Version, existing.PluginVersion),
+			}
 		}
 	}
 
@@ -462,7 +511,13 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 	}
 	if mismatch {
 		id, mismatchErr := in.handlePubkeyMismatch(ctx, existing, result, m.Version, nowStr)
-		return id, false, existing.Status, mismatchErr
+		if mismatchErr != nil {
+			return id, false, existing.Status, mismatchErr
+		}
+		return id, false, existing.Status, &InstallRejectedError{
+			Reason:  rejectPubkeyMismatch,
+			Message: "signing key does not match the pinned key; review and approve the new key via the \"Accept new key\" admin flow",
+		}
 	}
 
 	// Diff the incoming manifest against the stored snapshot before calling
@@ -477,7 +532,13 @@ func (in *Installer) upsertPlugin(ctx context.Context, m *manifest.Manifest, man
 		// Rejected path: do not publish the bundle or update binary_path.
 		// The running generation continues using the previously-verified binary.
 		id, matErr := in.handleManifestMaterialChange(ctx, existing, &oldManifest, m, manifestBytes, changes, nowStr)
-		return id, false, existing.Status, matErr
+		if matErr != nil {
+			return id, false, existing.Status, matErr
+		}
+		return id, false, existing.Status, &InstallRejectedError{
+			Reason:  rejectMaterialChange,
+			Message: "manifest has material changes that require admin review; approve them via the \"Accept manifest\" admin flow",
+		}
 	}
 	if len(changes) > 0 {
 		id, cosErr := in.updatePluginCosmetic(ctx, existing, m, manifestBytes, result, changes, tmpDir, nowStr)

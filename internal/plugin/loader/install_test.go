@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -500,6 +501,20 @@ func TestInstall_VersionBump_ActivePreserved_OnInstalledCalled(t *testing.T) {
 	}
 }
 
+// installExpectRejected runs Install and fails unless it returns a typed
+// InstallRejectedError. Rejection branches (pinned-key mismatch, material
+// manifest change, downgrade) record their audit event and leave the row
+// untouched, then surface this error so the HTTP layer returns 409 instead of a
+// misleading 200. Each caller asserts the specific blocking behavior separately.
+func installExpectRejected(t *testing.T, inst *Installer, tarPath string) {
+	t.Helper()
+	_, err := inst.Install(context.Background(), tarPath)
+	var rej *InstallRejectedError
+	if !errors.As(err, &rej) {
+		t.Fatalf("Install: want InstallRejectedError, got %v", err)
+	}
+}
+
 func TestInstall_SameVersion_NoOp(t *testing.T) {
 	q := openTestDB(t)
 	inst := newTestInstaller(t, q, false)
@@ -521,6 +536,24 @@ func TestInstall_SameVersion_NoOp(t *testing.T) {
 	// Version counter stays at 0 (no update was issued).
 	if row.Version != 0 {
 		t.Errorf("version = %d, want 0 (same-version should be a no-op)", row.Version)
+	}
+
+	// The same-version re-upload must leave an audit trail (info severity) rather
+	// than vanishing silently — so a re-submitted (possibly tampered) bundle for an
+	// existing version is observable.
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditReinstallIgnored,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list reinstall_ignored events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected a plugin_reinstall_ignored audit event, got none")
+	}
+	if events[0].Severity != "info" {
+		t.Errorf("audit severity = %q, want info", events[0].Severity)
 	}
 }
 
@@ -794,8 +827,16 @@ func TestInstall_DifferentPubkeyUpdate_BlocksAndAudits(t *testing.T) {
 
 	// Second tarball signed by a different key (signedPluginTarball generates a fresh keypair).
 	tarPath2, _ := signedPluginTarball(t, "mismatch-plugin", "2.0.0")
-	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
-		t.Fatalf("Install v2 (different key): %v", err)
+	// The install is rejected (pinned-key mismatch) and now surfaces a typed
+	// InstallRejectedError so the HTTP layer can return 409 instead of a
+	// misleading 200. The audit event is still recorded (asserted below).
+	_, err = inst.Install(context.Background(), tarPath2)
+	var rejErr *InstallRejectedError
+	if !errors.As(err, &rejErr) {
+		t.Fatalf("Install v2 (different key): want InstallRejectedError, got %v", err)
+	}
+	if rejErr.Reason != rejectPubkeyMismatch {
+		t.Errorf("rejection reason = %q, want %q", rejErr.Reason, rejectPubkeyMismatch)
 	}
 
 	// Plugin version must remain at 1.0.0 (blocked).
@@ -1215,9 +1256,7 @@ func TestInstall_HotReload_MaterialChange_DoesNotUpdateSnapshot(t *testing.T) {
 	// v2 adds a new tool — material change.
 	v2Manifest := []byte("schema_version: v1\nname: mat-plugin\nversion: 2.0.0\nservices:\n  tool: v1\nauth:\n  mode: instance_credentials\n  strategy: none\ntools:\n- name: my_tool\n  description: a tool\n")
 	tarPath2 := buildSignedTarWithContent(t, "mat-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
-		t.Fatalf("Install v2 (material change): %v", err)
-	}
+	installExpectRejected(t, inst, tarPath2)
 
 	row2, err := q.GetPluginByName(context.Background(), "mat-plugin")
 	if err != nil {
@@ -1262,9 +1301,7 @@ func TestInstall_HotReload_MaterialChange_TransitionsInstancesToPendingManifestA
 
 	v2Manifest := []byte("schema_version: v1\nname: trans-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath2 := buildSignedTarWithContent(t, "trans-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
-		t.Fatalf("Install v2 (material change): %v", err)
-	}
+	installExpectRejected(t, inst, tarPath2)
 
 	instHealthy, err := q.GetPluginInstanceByID(context.Background(), "inst-healthy")
 	if err != nil {
@@ -1303,9 +1340,7 @@ func TestInstall_HotReload_MaterialChange_EmitsHighSeverityAuditEvent(t *testing
 
 	v2Manifest := []byte("schema_version: v1\nname: audit-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath2 := buildSignedTarWithContent(t, "audit-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
-		t.Fatalf("Install v2 (material change): %v", err)
-	}
+	installExpectRejected(t, inst, tarPath2)
 
 	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
 		EventType: auditManifestMaterialChange,
@@ -1356,9 +1391,7 @@ func TestInstall_HotReload_MaterialChange_UpsertsPendingManifest(t *testing.T) {
 
 	v2Manifest := []byte("schema_version: v1\nname: pending-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath2 := buildSignedTarWithContent(t, "pending-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
-		t.Fatalf("Install v2 (material change): %v", err)
-	}
+	installExpectRejected(t, inst, tarPath2)
 
 	plugin, err := q.GetPluginByName(context.Background(), "pending-plugin")
 	if err != nil {
@@ -1403,16 +1436,12 @@ func TestInstall_HotReload_MaterialChange_SecondChangeOverwritesPendingRow(t *te
 	// First material change (v1 → v2).
 	v2Manifest := []byte("schema_version: v1\nname: overwrite-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath2 := buildSignedTarWithContent(t, "overwrite-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
-		t.Fatalf("Install v2: %v", err)
-	}
+	installExpectRejected(t, inst, tarPath2)
 
 	// Second material change (v1 → v3, reading existing.PluginVersion from the plugins row, not the pending-manifest row).
 	v3Manifest := []byte("schema_version: v1\nname: overwrite-plugin\nversion: 3.0.0\nservices:\n  tool: v3\nauth:\n  mode: instance_credentials\n  strategy: none\n")
 	tarPath3 := buildSignedTarWithContent(t, "overwrite-plugin", v3Manifest, []byte("binary v3"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if _, err := inst.Install(context.Background(), tarPath3); err != nil {
-		t.Fatalf("Install v3: %v", err)
-	}
+	installExpectRejected(t, inst, tarPath3)
 
 	plugin, err := q.GetPluginByName(context.Background(), "overwrite-plugin")
 	if err != nil {
@@ -1455,9 +1484,7 @@ func TestInstall_HotReload_MaterialChange_NewlyRequiredConfigField_PayloadInclud
 	// v2 adds a required config field AND changes services (to ensure it's material).
 	v2Manifest := []byte("schema_version: v1\nname: config-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\nconfig_schema:\n  type: object\n  properties:\n    api_key:\n      type: string\n  required:\n    - api_key\n")
 	tarPath2 := buildSignedTarWithContent(t, "config-plugin", v2Manifest, []byte("binary v2"), pubkeyBytes, sk.SecretKey, sk.KeyID)
-	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
-		t.Fatalf("Install v2 (with newly required config field): %v", err)
-	}
+	installExpectRejected(t, inst, tarPath2)
 
 	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
 		EventType: auditManifestMaterialChange,
@@ -1899,9 +1926,7 @@ func TestInstall_PubkeyMismatch_DoesNotOverwriteBinary(t *testing.T) {
 
 	// Attempt v2 signed by a different key (signedPluginTarball generates a fresh keypair each call).
 	tarPath2, _ := signedPluginTarball(t, "tofu-guard-plugin", "2.0.0")
-	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
-		t.Fatalf("Install v2 (different key): %v", err)
-	}
+	installExpectRejected(t, inst, tarPath2)
 
 	row2, err := q.GetPluginByName(context.Background(), "tofu-guard-plugin")
 	if err != nil {
@@ -1971,9 +1996,7 @@ func TestInstall_MaterialChange_DoesNotOverwriteBinary(t *testing.T) {
 	// v2 adds a new tool — material change that must be blocked.
 	v2Manifest := []byte("schema_version: v1\nname: matguard-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\ntools:\n- name: my_tool\n  description: new tool\n")
 	tarPath2 := buildTar(t, "2.0.0", v2Manifest, []byte("binary content v2"))
-	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
-		t.Fatalf("Install v2 (material change): %v", err)
-	}
+	installExpectRejected(t, inst, tarPath2)
 
 	row2, err := q.GetPluginByName(context.Background(), "matguard-plugin")
 	if err != nil {
@@ -2038,9 +2061,7 @@ func TestInstall_OnInstalled_NotCalledForPubkeyMismatch(t *testing.T) {
 
 	// Install v2 with a different key — pubkey mismatch, callback must NOT fire.
 	tarPath2, _ := signedPluginTarball(t, "hook-mismatch-plugin", "2.0.0")
-	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
-		t.Fatalf("Install v2 (different key): %v", err)
-	}
+	installExpectRejected(t, inst, tarPath2)
 	if callCount != 0 {
 		t.Errorf("after pubkey-mismatch install: callback count = %d, want 0 (no new call)", callCount)
 	}
@@ -2226,10 +2247,13 @@ func TestInstall_Downgrade_Refused(t *testing.T) {
 	callCount := 0
 	inst.OnInstalled(func(_ context.Context, _ string) { callCount++ })
 
-	// Now attempt to install 1.0 — must be refused.
+	// Now attempt to install 1.0 — must be refused with a typed rejection error
+	// (so the HTTP layer returns 409 rather than a misleading 200).
 	tarPath10 := unsignedPluginTarball(t, "downgrade-plugin", "1.0")
-	if _, err := inst.Install(context.Background(), tarPath10); err != nil {
-		t.Fatalf("Install 1.0 (downgrade attempt): unexpected error %v", err)
+	_, err = inst.Install(context.Background(), tarPath10)
+	var downgradeRej *InstallRejectedError
+	if !errors.As(err, &downgradeRej) || downgradeRej.Reason != rejectDowngrade {
+		t.Fatalf("Install 1.0 (downgrade attempt): want InstallRejectedError(downgrade_refused), got %v", err)
 	}
 
 	row10, err := q.GetPluginByName(context.Background(), "downgrade-plugin")
@@ -2393,8 +2417,12 @@ func TestInstall_SameVersionBackfill_MismatchedKey_Blocks(t *testing.T) {
 	// Install a SECOND same-name same-version tarball signed by a DIFFERENT key B.
 	// signedPluginTarball generates a fresh keypair each call, so this is key B.
 	tarPath2, _ := signedPluginTarball(t, "backfill-mismatch-plugin", "1.0.0")
-	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
-		t.Fatalf("Install v1 (key B, same version): %v", err)
+	// The backfill must be blocked by the pinned-key check and now surfaces a
+	// typed rejection error (audit event still recorded; asserted below).
+	_, backfillErr := inst.Install(context.Background(), tarPath2)
+	var backfillRej *InstallRejectedError
+	if !errors.As(backfillErr, &backfillRej) || backfillRej.Reason != rejectPubkeyMismatch {
+		t.Fatalf("Install v1 (key B, same version): want InstallRejectedError(pubkey_mismatch), got %v", backfillErr)
 	}
 
 	// binary_path must still be nil — publishBundle must not have run.
