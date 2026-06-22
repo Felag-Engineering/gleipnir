@@ -147,7 +147,7 @@ The grace is **the existing `cfg.DrainTimeout`**, not a new timer. ADR-038's 10s
 
 **3b. SIGTERM plugin subprocesses via `plugin.Client.Kill()`.** Done after the drain wait completes (or its timeout fires). go-plugin handles the SIGTERM-grace-then-SIGKILL; we just call `Kill()` per generation. Order does not matter across instances.
 
-**3c. Skip step (3a) if `GLEIPNIR_PLUGINS_ENABLED=false`.** No-op. The flag is checked at startup; the plugin manager doesn't exist when disabled, so its shutdown method is a nil-receiver no-op or a guarded call site.
+**3c. Drain is a no-op when no plugins are installed.** Since v1.1.0 the plugin manager is unconditional — `GLEIPNIR_PLUGINS_ENABLED` was removed (#247), so there is no "disabled" branch to guard. With zero installed instances the generation drain in (3a) simply finds nothing to wait on and returns immediately.
 
 ### 3.3 Order of operations (consolidated)
 

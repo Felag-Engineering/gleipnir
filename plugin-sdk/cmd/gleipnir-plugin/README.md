@@ -306,7 +306,7 @@ authors can rely on consistent behavior between local dev and production.
 - No interactive REPL / TUI mode (explicitly out of scope for #171).
 - Does NOT simulate signature verification, version mismatch, or a real
   LLM/SQLite.
-- `GLEIPNIR_PLUGINS_ENABLED` is unaffected — `gleipnir-plugin run` runs
+- Host configuration does not affect it — `gleipnir-plugin run` runs
   out-of-band, not through the host's plugin loader.
 
 See `docs/developer/plugin-system-spec.md §14.4` for the testing harness spec
