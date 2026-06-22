@@ -11,7 +11,7 @@ import (
 )
 
 func TestResolveForPolicy_AllToolsFound(t *testing.T) {
-	reg, _ := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
 
 	tools := []map[string]any{
 		{"name": "read_pods", "description": "list pods", "inputSchema": map[string]any{"type": "object"}},
@@ -19,8 +19,8 @@ func TestResolveForPolicy_AllToolsFound(t *testing.T) {
 	}
 	srv := makeMCPServer(t, tools)
 
-	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	p := &model.ParsedPolicy{
@@ -80,15 +80,15 @@ func TestResolveForPolicy_AllToolsFound(t *testing.T) {
 }
 
 func TestResolveForPolicy_MissingTool(t *testing.T) {
-	reg, _ := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
 
 	tools := []map[string]any{
 		{"name": "read_pods", "description": "list pods", "inputSchema": map[string]any{"type": "object"}},
 	}
 	srv := makeMCPServer(t, tools)
 
-	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	p := &model.ParsedPolicy{
@@ -165,15 +165,15 @@ func TestResolveForPolicy_ServerNotFound(t *testing.T) {
 }
 
 func TestResolveForPolicy_ToolNotFound(t *testing.T) {
-	reg, _ := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
 
 	tools := []map[string]any{
 		{"name": "read_pods", "description": "list pods", "inputSchema": map[string]any{"type": "object"}},
 	}
 	srv := makeMCPServer(t, tools)
 
-	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	p := &model.ParsedPolicy{
@@ -195,7 +195,7 @@ func TestResolveForPolicy_ToolNotFound(t *testing.T) {
 }
 
 func TestResolveForPolicy_SharedClient(t *testing.T) {
-	reg, _ := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
 
 	tools := []map[string]any{
 		{"name": "tool_a", "description": "tool a", "inputSchema": map[string]any{"type": "object"}},
@@ -204,8 +204,8 @@ func TestResolveForPolicy_SharedClient(t *testing.T) {
 	}
 	srv := makeMCPServer(t, tools)
 
-	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	p := &model.ParsedPolicy{
@@ -236,7 +236,7 @@ func TestResolveForPolicy_SharedClient(t *testing.T) {
 }
 
 func TestResolveForPolicy_ToolsOrdered(t *testing.T) {
-	reg, _ := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
 
 	tools := []map[string]any{
 		{"name": "tool_a", "description": "tool a", "inputSchema": map[string]any{"type": "object"}},
@@ -245,8 +245,8 @@ func TestResolveForPolicy_ToolsOrdered(t *testing.T) {
 	}
 	srv := makeMCPServer(t, tools)
 
-	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	p := &model.ParsedPolicy{
@@ -287,8 +287,8 @@ func TestResolveForPolicy_DisabledTool(t *testing.T) {
 	}
 	srv := makeMCPServer(t, tools)
 
-	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	// Fetch the tool ID so we can disable it.
@@ -335,8 +335,8 @@ func TestResolveToolByName_DisabledTool(t *testing.T) {
 	}
 	srv := makeMCPServer(t, tools)
 
-	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	registered, err := store.Queries().GetMCPToolByServerAndName(context.Background(), db.GetMCPToolByServerAndNameParams{

@@ -255,51 +255,6 @@ func (r *Registry) ProbeTools(ctx context.Context, name, urlStr string, encrypte
 	return tools, nil
 }
 
-// RegisterServer stores a new MCP server record, discovers its tools via the
-// MCP client, and upserts all discovered tools into mcp_tools.
-// last_discovered_at is intentionally left NULL here — it is set only by RefreshTools.
-func (r *Registry) RegisterServer(ctx context.Context, name, url string) error {
-	if err := ValidateServerURL(ctx, url); err != nil {
-		return fmt.Errorf("invalid server url: %w", err)
-	}
-
-	serverID := model.NewULID()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-
-	if _, err := r.queries.CreateMCPServer(ctx, db.CreateMCPServerParams{
-		ID:        serverID,
-		Name:      name,
-		Url:       url,
-		CreatedAt: now,
-	}); err != nil {
-		return fmt.Errorf("create mcp server: %w", err)
-	}
-
-	// Build a synthetic server record so newClientForServer can apply auth headers.
-	// RegisterServer does not yet have a DB row to read from, so we construct the
-	// minimal record. auth_headers_encrypted is always nil at creation time —
-	// headers are added via the Update endpoint after the server is registered.
-	tools, err := r.newClientForServer(db.McpServer{ID: serverID, Name: name, Url: url}).DiscoverTools(ctx)
-	if err != nil {
-		return fmt.Errorf("discover tools for server %q: %w", name, err)
-	}
-
-	for _, t := range tools {
-		if _, err := r.queries.UpsertMCPTool(ctx, db.UpsertMCPToolParams{
-			ID:          model.NewULID(),
-			ServerID:    serverID,
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: string(t.InputSchema),
-			CreatedAt:   now,
-		}); err != nil {
-			return fmt.Errorf("upsert tool %q: %w", t.Name, err)
-		}
-	}
-
-	return nil
-}
-
 // RefreshTools re-discovers tools for a registered server, computes the diff
 // against the current DB state, upserts all fresh tools, deletes tools that
 // have disappeared, and updates last_discovered_at.
