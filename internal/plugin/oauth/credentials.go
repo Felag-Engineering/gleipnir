@@ -246,10 +246,10 @@ func Resolve(authDecl sdkmanifest.AuthDecl, defaults *sdkmanifest.OAuthDefaultsD
 // Returns (StoredCredentials{Strategy: s}, true) for every supported strategy.
 // Returns (StoredCredentials{}, false) only for an unrecognised strategy string.
 //
-// TODO(plugin-instance-provision): Call this from the instance creation path
-// when CreatePluginInstance lands. For #224 the helper exists but has no live
-// call site; production wiring is deferred to the instance auto-provision
-// follow-up.
+// TODO(#572): Call this from the instance creation path so credentials_encrypted
+// is non-NULL (carrying the manifest strategy) from the start. The functional
+// need — setting non-OAuth credentials on a fresh instance — is already met by
+// the self-seeding setters in store.go; this remains as create-time cleanup.
 func BuildSeedCredentials(authDecl sdkmanifest.AuthDecl, defaults *sdkmanifest.OAuthDefaultsDecl) (StoredCredentials, bool) {
 	switch authDecl.Strategy {
 	case sdkmanifest.AuthStrategyOAuth2Authcode, sdkmanifest.AuthStrategyOAuth2Clientcred:

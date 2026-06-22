@@ -470,11 +470,11 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // Updates the server's name and url only. Auth headers are managed separately
 // via PUT/DELETE /api/v1/mcp/servers/:id/headers/:name (ADR-039).
 //
-// TODO #194 follow-up: server rename leaves stale arbiter reservations. A rename
-// changes the server's name (and therefore the dot-name prefix for all its
-// tools), but this handler does not refresh tools, so the arbiter still holds
-// reservations under the old name. A follow-up should release the old
-// reservations and re-reserve under the new name.
+// TODO(#578): server rename leaves stale arbiter reservations. A rename changes
+// the server's name (and therefore the dot-name prefix for all its tools), but
+// this handler does not refresh tools, so the arbiter still holds reservations
+// under the old name. A follow-up should release the old reservations and
+// re-reserve under the new name.
 func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 

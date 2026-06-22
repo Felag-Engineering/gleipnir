@@ -1,6 +1,10 @@
 # Plugin EmitEvent dedup window — storage design
 
-**Status:** Design pass — must merge before the implementation issue filed off this doc.
+**Status:** Implemented — shipped in v1.1.0 (#562). The SQLite-backed `dedup.Store`
++ sweeper landed as designed; the dedup check runs in the trigger dispatcher
+(`internal/plugin/trigger/dispatcher.go`, `Dispatcher.Handle`), not in the
+`EmitEvent` handler as the pre-implementation sketch below assumed. Retained as
+the design record — file/line references below are historical.
 **Companion ADRs:** ADR-003 (SQLite/WAL), ADR-013 (ULID IDs).
 **Spec sections:** §4.3 (event delivery semantics), §7 (trigger dispatch), §8.1 (`EmitEvent` RPC).
 
@@ -217,7 +221,7 @@ slog levels: `Debug` per duplicate (high frequency possible under redelivery sto
 - Cross-stream ordering guarantees (§4.3 explicitly disclaims this).
 - Persistence beyond 1 hour (the spec window is 1 hour; the sweep enforces it).
 - SDK-side `event_id` synthesis helper (tracked in #214).
-- Per-event-type trigger routing (tracked in #158; the TODO at `handlers.go:418` remains until that issue lands).
+- Per-event-type trigger routing — out of scope for this dedup design; implemented separately in the trigger dispatcher (`internal/plugin/trigger/dispatcher.go`).
 
 ---
 

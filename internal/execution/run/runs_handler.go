@@ -642,8 +642,8 @@ func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 				"request_id", pendingID,
 				"run_id", runID,
 				"body_len", len(req.Response))
-			// TODO(#180): emit feedback_response_late event into plugin_audit_events
-			// once ADR-041 audit split lands.
+			// TODO(#579): also emit a feedback_response_late row into
+			// plugin_audit_events (ADR-046) in addition to this slog line.
 			httputil.WriteError(w, http.StatusGone, "feedback request expired or already answered", "")
 			return
 		default:
