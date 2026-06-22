@@ -45,6 +45,10 @@ func (f *fakeOAuthPluginQuerier) GetPluginByID(_ context.Context, id string) (db
 	return row, nil
 }
 
+func (f *fakeOAuthPluginQuerier) UpdatePluginInstanceHealth(_ context.Context, _ db.UpdatePluginInstanceHealthParams) (int64, error) {
+	return 1, nil
+}
+
 // fakeOAuthQuerier from store_test.go also satisfies oauth.OAuthQuerier and
 // oauth.HealthSetter, but it is in the same package (admin), so we build a
 // minimal one here that satisfies oauth.OAuthQuerier.

@@ -266,7 +266,7 @@ func startPluginRuntime(
 			oauthScanner.Run(ctx)
 		}()
 		rt.OAuthHandler = admin.NewPluginOAuthHandler(store.Queries(), oauthMgr, getPublicURL)
-		rt.CredentialsHandler = admin.NewPluginCredentialsHandler(store.Queries(), oauthStore)
+		rt.CredentialsHandler = admin.NewPluginCredentialsHandler(store.Queries(), oauthStore, broadcaster)
 
 		callbackRescanner := pluginoauth.NewCallbackRescanner(
 			store.Queries(), store.Queries(), getPublicURL, time.Now,
