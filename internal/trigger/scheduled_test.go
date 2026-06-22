@@ -66,8 +66,8 @@ func setupSchedulerFixture(t *testing.T) (*db.Store, *mcp.Registry) {
 	mcpSrv := newStubMCPServer(t)
 	t.Cleanup(mcpSrv.Close)
 	registry := mcp.NewRegistry(store.Queries())
-	if err := registry.RegisterServer(context.Background(), "stub-server", mcpSrv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := mcp.RegisterServerForTest(context.Background(), store.Queries(), registry, "stub-server", mcpSrv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 	return store, registry
 }

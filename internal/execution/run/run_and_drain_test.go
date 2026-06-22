@@ -138,8 +138,8 @@ func TestRunAndDrain_NonQueuePolicy(t *testing.T) {
 	mcpSrv := newStubMCPServerInternal(t)
 	t.Cleanup(mcpSrv.Close)
 	registry := mcp.NewRegistry(store.Queries())
-	if err := registry.RegisterServer(context.Background(), "stub-server", mcpSrv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := mcp.RegisterServerForTest(context.Background(), store.Queries(), registry, "stub-server", mcpSrv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	testutil.InsertPolicy(t, store, "p-parallel", "policy-p-parallel", "webhook", parallelPolicyYAML)
@@ -194,8 +194,8 @@ func TestRunAndDrain_QueuePolicy(t *testing.T) {
 	mcpSrv := newStubMCPServerInternal(t)
 	t.Cleanup(mcpSrv.Close)
 	registry := mcp.NewRegistry(store.Queries())
-	if err := registry.RegisterServer(context.Background(), "stub-server", mcpSrv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := mcp.RegisterServerForTest(context.Background(), store.Queries(), registry, "stub-server", mcpSrv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	testutil.InsertPolicy(t, store, "p-queue", "policy-p-queue", "webhook", queuePolicyYAML)

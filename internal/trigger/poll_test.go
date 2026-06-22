@@ -117,8 +117,8 @@ func setupPollerFixture(t *testing.T, mcpSrv *httptest.Server) (*db.Store, *mcp.
 	t.Helper()
 	store := testutil.NewTestStore(t)
 	registry := mcp.NewRegistry(store.Queries())
-	if err := registry.RegisterServer(context.Background(), "poll-server", mcpSrv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := mcp.RegisterServerForTest(context.Background(), store.Queries(), registry, "poll-server", mcpSrv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 	return store, registry
 }

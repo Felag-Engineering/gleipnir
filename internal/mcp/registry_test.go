@@ -49,7 +49,7 @@ func makeMCPServer(t *testing.T, tools []map[string]any) *httptest.Server {
 	return srv
 }
 
-func TestRegisterServer_HappyPath(t *testing.T) {
+func TestRegisterServerForTest_HappyPath(t *testing.T) {
 	reg, store := newTestRegistry(t)
 	rawDB := store.DB()
 
@@ -59,15 +59,9 @@ func TestRegisterServer_HappyPath(t *testing.T) {
 	}
 	srv := makeMCPServer(t, tools)
 
-	if err := reg.RegisterServer(context.Background(), "test-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
-	}
-
-	// Verify server row exists.
-	var serverID string
-	err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID)
+	serverID, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "test-server", srv.URL)
 	if err != nil {
-		t.Fatalf("query server: %v", err)
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	// Verify exactly 2 tool rows.
@@ -100,17 +94,17 @@ func TestRegisterServer_HappyPath(t *testing.T) {
 		t.Errorf("tools[1].name = %q, want %q", gotNames[1], "tool-b")
 	}
 
-	// last_discovered_at must be NULL after RegisterServer — only RefreshTools sets it.
+	// last_discovered_at must be SET after discovery via RefreshTools.
 	var lastDiscovered *string
 	if err := rawDB.QueryRow(`SELECT last_discovered_at FROM mcp_servers WHERE id = ?`, serverID).Scan(&lastDiscovered); err != nil {
 		t.Fatalf("query last_discovered_at: %v", err)
 	}
-	if lastDiscovered != nil {
-		t.Errorf("last_discovered_at = %q, want NULL after RegisterServer", *lastDiscovered)
+	if lastDiscovered == nil {
+		t.Error("last_discovered_at must be SET after discovery via RefreshTools.")
 	}
 }
 
-func TestRegisterServer_MCPServerUnreachable(t *testing.T) {
+func TestRegisterServerForTest_MCPServerUnreachable(t *testing.T) {
 	reg, store := newTestRegistry(t)
 	rawDB := store.DB()
 
@@ -119,7 +113,7 @@ func TestRegisterServer_MCPServerUnreachable(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 
-	err := reg.RegisterServer(context.Background(), "unreachable-server", url)
+	_, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "unreachable-server", url)
 	if err == nil {
 		t.Fatal("expected error for unreachable MCP server, got nil")
 	}
@@ -144,13 +138,9 @@ func TestRefreshTools_NoChanges(t *testing.T) {
 	}
 	srv := makeMCPServer(t, tools)
 
-	if err := reg.RegisterServer(context.Background(), "test-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
-	}
-
-	var serverID string
-	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
-		t.Fatalf("query server id: %v", err)
+	serverID, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "test-server", srv.URL)
+	if err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	diff, err := reg.RefreshTools(context.Background(), serverID)
@@ -196,13 +186,9 @@ func TestRefreshTools_AddedTools(t *testing.T) {
 	}
 	firstSrv := makeMCPServer(t, oneTool)
 
-	if err := reg.RegisterServer(context.Background(), "test-server", firstSrv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
-	}
-
-	var serverID string
-	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
-		t.Fatalf("query server id: %v", err)
+	serverID, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "test-server", firstSrv.URL)
+	if err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	// Now point the server at a handler that returns two tools.
@@ -249,13 +235,9 @@ func TestRefreshTools_RemovedTools(t *testing.T) {
 	}
 	firstSrv := makeMCPServer(t, twoTools)
 
-	if err := reg.RegisterServer(context.Background(), "test-server", firstSrv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
-	}
-
-	var serverID string
-	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
-		t.Fatalf("query server id: %v", err)
+	serverID, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "test-server", firstSrv.URL)
+	if err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	// Second discovery returns only tool-a.
@@ -308,13 +290,9 @@ func TestRefreshTools_ModifiedTools(t *testing.T) {
 	}
 	firstSrv := makeMCPServer(t, original)
 
-	if err := reg.RegisterServer(context.Background(), "test-server", firstSrv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
-	}
-
-	var serverID string
-	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
-		t.Fatalf("query server id: %v", err)
+	serverID, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "test-server", firstSrv.URL)
+	if err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	// Same name, changed description.
@@ -370,13 +348,9 @@ func TestRefreshTools_MCPServerUnreachable(t *testing.T) {
 	}
 	srv := makeMCPServer(t, tools)
 
-	if err := reg.RegisterServer(context.Background(), "test-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
-	}
-
-	var serverID string
-	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
-		t.Fatalf("query server id: %v", err)
+	serverID, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "test-server", srv.URL)
+	if err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	// Capture state before the failed refresh.
@@ -394,7 +368,7 @@ func TestRefreshTools_MCPServerUnreachable(t *testing.T) {
 		t.Fatalf("update server url: %v", err)
 	}
 
-	_, err := reg.RefreshTools(context.Background(), serverID)
+	_, err = reg.RefreshTools(context.Background(), serverID)
 	if err == nil {
 		t.Fatal("expected error for unreachable MCP server, got nil")
 	}
@@ -412,15 +386,15 @@ func TestRefreshTools_MCPServerUnreachable(t *testing.T) {
 // TestResolveToolByName_HappyPath verifies that a registered tool can be
 // resolved to a ready Client and bare tool name.
 func TestResolveToolByName_HappyPath(t *testing.T) {
-	reg, _ := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
 
 	tools := []map[string]any{
 		{"name": "my-tool", "description": "a tool", "inputSchema": map[string]any{"type": "object"}},
 	}
 	srv := makeMCPServer(t, tools)
 
-	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	client, toolName, err := reg.ResolveToolByName(context.Background(), "my-server.my-tool")
@@ -438,15 +412,15 @@ func TestResolveToolByName_HappyPath(t *testing.T) {
 // TestResolveToolByName_UnknownTool verifies that resolving a tool that is not
 // in the registry returns an error.
 func TestResolveToolByName_UnknownTool(t *testing.T) {
-	reg, _ := newTestRegistry(t)
+	reg, store := newTestRegistry(t)
 
 	tools := []map[string]any{
 		{"name": "real-tool", "description": "exists", "inputSchema": map[string]any{"type": "object"}},
 	}
 	srv := makeMCPServer(t, tools)
 
-	if err := reg.RegisterServer(context.Background(), "my-server", srv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
+	if _, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "my-server", srv.URL); err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	_, _, err := reg.ResolveToolByName(context.Background(), "my-server.nonexistent")
@@ -614,13 +588,9 @@ func TestRefreshTools_DriftClearedOnCleanRefresh(t *testing.T) {
 	}
 	firstSrv := makeMCPServer(t, oneTool)
 
-	if err := reg.RegisterServer(context.Background(), "test-server", firstSrv.URL); err != nil {
-		t.Fatalf("RegisterServer: %v", err)
-	}
-
-	var serverID string
-	if err := rawDB.QueryRow(`SELECT id FROM mcp_servers WHERE name = 'test-server'`).Scan(&serverID); err != nil {
-		t.Fatalf("query server id: %v", err)
+	serverID, err := RegisterServerForTest(context.Background(), store.Queries(), reg, "test-server", firstSrv.URL)
+	if err != nil {
+		t.Fatalf("RegisterServerForTest: %v", err)
 	}
 
 	// Point to a server that returns tool-a + tool-b: diff is non-empty, so has_drift=1.
