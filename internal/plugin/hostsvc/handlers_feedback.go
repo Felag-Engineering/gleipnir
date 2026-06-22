@@ -29,6 +29,11 @@ const maxPayloadJSONBytes = 64 * 1024
 // matching `<instance_name>.` (native path) must match the calling instance.
 // The detached-context check does not apply — request-ownership is the §8.5
 // alternative auth primitive.
+//
+// NATIVE PATH ORDERING: ownership is resolved BEFORE the fr.Status check so a
+// non-owner cannot probe whether a request_id exists or what state it is in —
+// nonexistent, foreign-pending, and foreign-resolved all collapse to a single
+// codes.PermissionDenied "unauthorized_request_id".
 func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepRequest) (*hostv1.WriteAuditStepResponse, error) {
 	inst, err := s.resolveInstance(ctx)
 	if err != nil {
@@ -137,35 +142,29 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 	}
 	// sql.ErrNoRows: not a plugin-substrate request — fall through to native path.
 
-	// Look up the feedback request; reject late responses without mutating state.
+	// Look up the feedback request. Ownership is resolved before the status
+	// check so a non-owner cannot probe whether a request_id exists or what
+	// state it is in (existence oracle / state oracle closure).
 	fr, err := s.q.GetFeedbackRequest(ctx, requestID)
 	if err != nil {
-		// sql.ErrNoRows means neither substrate recognized this request_id — it was
-		// never issued or has already been purged. NotFound is more accurate than
-		// Internal and lets callers distinguish "bad ID" from "unexpected DB error".
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, status.Errorf(codes.NotFound, "unknown request_id %q", requestID)
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.Internal, "get feedback request: %v", err)
 		}
-		return nil, status.Errorf(codes.Internal, "get feedback request: %v", err)
-	}
-	if fr.Status != "pending" {
-		// Spec §4.2 line 106: record the late attempt and return ok=false.
-		s.writeAuditEvent(ctx, inst.ID, EventTypeFeedbackResponseLate, "warning", map[string]string{
-			"request_id": requestID,
-			"status":     fr.Status,
-		})
-		return &hostv1.WriteAuditStepResponse{
-			Ok: false,
-			Error: &commonv1.ErrorEnvelope{
-				Code:    commonv1.ErrorCode_ERROR_CODE_INVALID_ARG,
-				Message: EventTypeFeedbackResponseLate,
-			},
-		}, nil
+		// Unknown request_id: ownership is undeterminable — deny by default
+		// (ADR-001). Return the same codes.PermissionDenied a foreign request
+		// would get so the response is identical and the request_id existence is
+		// not revealed.
+		//
+		// No audit event is written here: there is no run_id to attribute it to,
+		// and writing a high-severity event on every probe of a nonexistent id
+		// would flood plugin_audit_events. The foreign-but-existing case below
+		// DOES write an audit event — that asymmetry is intentional and must be
+		// preserved (do not add an unconditional audit write to this branch).
+		return nil, status.Error(codes.PermissionDenied, "unauthorized_request_id")
 	}
 
-	// Verify that the feedback_request's run belongs to a policy that grants
-	// tools to the calling instance (i.e. has at least one capabilities.tools
-	// entry with the prefix "<instanceName>."). This is the heuristic available
+	// Verify ownership BEFORE the status check so a non-owner cannot distinguish
+	// a pending request from a resolved one. This is the heuristic available
 	// today; audience-based routing (audiences.plugin_instance per spec §4.2/§6)
 	// is a follow-up — no audiences DB schema exists yet.
 	run, err := s.q.GetRun(ctx, fr.RunID)
@@ -183,6 +182,22 @@ func (s *Server) WriteAuditStep(ctx context.Context, req *hostv1.WriteAuditStepR
 			"rpc_method": rpcMethod,
 		})
 		return nil, status.Error(codes.PermissionDenied, "unauthorized_request_id")
+	}
+
+	// Ownership confirmed. Now check whether the request is still actionable.
+	if fr.Status != "pending" {
+		// Spec §4.2 line 106: record the late attempt and return ok=false.
+		s.writeAuditEvent(ctx, inst.ID, EventTypeFeedbackResponseLate, "warning", map[string]string{
+			"request_id": requestID,
+			"status":     fr.Status,
+		})
+		return &hostv1.WriteAuditStepResponse{
+			Ok: false,
+			Error: &commonv1.ErrorEnvelope{
+				Code:    commonv1.ErrorCode_ERROR_CODE_INVALID_ARG,
+				Message: EventTypeFeedbackResponseLate,
+			},
+		}, nil
 	}
 
 	// Insert the run step and resolve the feedback request atomically.

@@ -67,11 +67,18 @@ Once the stack is running and you're logged in, here's how to wire up your first
 
 For fully worked examples against specific services, follow one of the [playbooks](docs/playbooks/).
 
+## Plugins
+
+Gleipnir supports plugins — signed sandboxed subprocesses that add tools, notification channels, and trigger event sources. Drop a `.tar.gz` bundle into `GLEIPNIR_PLUGINS_DIR` (default: `/plugins`) or upload it via **Admin → Plugins**. Signed plugins require admin approval before any subprocess is spawned. Signature verification and TOFU key pinning are enforced by default; every signing key is pinned on first install and subsequent updates must match.
+
+See [Plugins](docs/user/plugins.md) for the full operator runbook: installing, signing, approving, and rotating keys.
+
 ## More reading
 
 - [Setup](docs/user/setup.md) — detailed first-run walkthrough.
 - [Policies](docs/user/policies.md) — trigger types, capability grants, run states.
 - [Roles](docs/user/roles.md) — what each role can and cannot do.
+- [Plugins](docs/user/plugins.md) — installing, signing, approving, and key-rotating plugins.
 - [Operations](docs/user/operations.md) — upgrading, backups, environment variables.
 - [Playbooks](docs/playbooks/) — copy-pasteable setups for the use cases above.
 - [Developer docs](docs/developer/) — architecture, building, contributing.

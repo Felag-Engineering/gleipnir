@@ -1,4 +1,4 @@
-/slack
+/ntfy
 
 # Signing material — NEVER commit. Keys are the plugin author's, kept out of
 # the repo (generated via `gleipnir-plugin keygen`).

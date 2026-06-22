@@ -1538,6 +1538,46 @@ func TestInstall_HotReload_CosmeticChange_UpdatesSnapshot_EmitsInfoAuditEvent(t 
 	}
 }
 
+// TestInstall_HotReload_CosmeticChange_UnsignedPermissive_EmitsHighSeverityAuditEvent
+// verifies that a cosmetic update of an unsigned-permissive plugin emits a
+// plugin_manifest_cosmetic_change audit event with high severity (ADR-045 §6).
+// A version-only bump is used because it is cosmetic per the manifest diff logic
+// and routes through updatePluginCosmetic without triggering a same-version
+// idempotency early-return.
+func TestInstall_HotReload_CosmeticChange_UnsignedPermissive_EmitsHighSeverityAuditEvent(t *testing.T) {
+	q := openTestDB(t)
+	// allowUnsigned=true so unsigned bundles are accepted.
+	inst := newTestInstaller(t, q, true)
+
+	// First install: v1.0.0 — seeds the plugin row.
+	tarPath1 := unsignedPluginTarball(t, "unsigned-cosm-plugin", "1.0.0")
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1.0.0: %v", err)
+	}
+
+	// Second install: v1.0.1 — version-only bump, cosmetic diff, routes through
+	// updatePluginCosmetic. Must emit high-severity audit event (ADR-045 §6).
+	tarPath2 := unsignedPluginTarball(t, "unsigned-cosm-plugin", "1.0.1")
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v1.0.1 (unsigned cosmetic): %v", err)
+	}
+
+	events, err := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditManifestCosmeticChange,
+		Offset:    0,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list cosmetic audit events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected a plugin_manifest_cosmetic_change audit event, got none")
+	}
+	if events[0].Severity != severityHigh {
+		t.Errorf("audit severity = %q, want %q (ADR-045 §6: unsigned-permissive load must emit high severity)", events[0].Severity, severityHigh)
+	}
+}
+
 // TestInstall_HotReload_NoChange_NoOp verifies that a tarball with a new version but
 // structurally identical manifest content (differing only in version field) uses the
 // cosmetic path and does not emit a material-change event.
@@ -2243,6 +2283,233 @@ func TestInstall_Downgrade_Refused(t *testing.T) {
 	}
 	if payload["rejected_version"] != "1.0" {
 		t.Errorf("audit payload rejected_version = %q, want 1.0", payload["rejected_version"])
+	}
+}
+
+// TestInstall_LegacyRowBackfill_NoMismatchEvent_MatchingKey extends
+// TestInstall_LegacyRowBackfill with assertions that the matching-key backfill
+// path does NOT emit a pubkey_mismatch event and does NOT move the instance out
+// of healthy state — confirming that the new pin check is a no-op when keys match.
+func TestInstall_LegacyRowBackfill_NoMismatchEvent_MatchingKey(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	tarPath, _ := signedPluginTarball(t, "backfill-nomatch-plugin", "1.0.0")
+
+	// First install to create the row.
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
+		t.Fatalf("Install v1: %v", err)
+	}
+
+	row, err := q.GetPluginByName(context.Background(), "backfill-nomatch-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName: %v", err)
+	}
+
+	// Seed a healthy instance.
+	seedPluginInstance(t, q, row.ID, "inst-nomatch", model.PluginHealthStateHealthy)
+
+	// Clear binary_path to simulate a legacy row.
+	if _, err := q.UpdatePluginBinaryPath(context.Background(), db.UpdatePluginBinaryPathParams{
+		BinaryPath:      nil,
+		UpdatedAt:       row.UpdatedAt,
+		ID:              row.ID,
+		ExpectedVersion: row.Version,
+	}); err != nil {
+		t.Fatalf("clear binary_path: %v", err)
+	}
+
+	// Re-install the same tarball (same key) — should backfill binary_path.
+	if _, err := inst.Install(context.Background(), tarPath); err != nil {
+		t.Fatalf("Install (same version, matching key, backfill): %v", err)
+	}
+
+	// binary_path must now be set.
+	row2, err := q.GetPluginByName(context.Background(), "backfill-nomatch-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after backfill: %v", err)
+	}
+	if row2.BinaryPath == nil || *row2.BinaryPath == "" {
+		t.Error("binary_path: still nil after matching-key backfill, expected non-empty")
+	}
+
+	// No pubkey_mismatch event should have been emitted.
+	events, evErr := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditPubkeyMismatch,
+		Offset:    0,
+		Limit:     10,
+	})
+	if evErr != nil {
+		t.Fatalf("list mismatch events: %v", evErr)
+	}
+	if len(events) > 0 {
+		t.Errorf("got %d pubkey_mismatch events after matching-key backfill, want 0", len(events))
+	}
+
+	// Instance must still be healthy.
+	inst1, instErr := q.GetPluginInstanceByID(context.Background(), "inst-nomatch")
+	if instErr != nil {
+		t.Fatalf("GetPluginInstanceByID: %v", instErr)
+	}
+	if inst1.HealthState != string(model.PluginHealthStateHealthy) {
+		t.Errorf("instance health_state = %q, want healthy after matching-key backfill", inst1.HealthState)
+	}
+}
+
+// TestInstall_SameVersionBackfill_MismatchedKey_Blocks verifies the security fix:
+// when a same-version tarball with a DIFFERENT signing key is dropped and the
+// existing row has no binary_path, the publish is blocked entirely — binary_path
+// stays nil, a high-severity plugin_pubkey_mismatch audit event is emitted, and
+// the instance transitions to pending_key_approval. No .new/.old artefact must
+// appear on disk.
+func TestInstall_SameVersionBackfill_MismatchedKey_Blocks(t *testing.T) {
+	q := openTestDB(t)
+	inst := newTestInstaller(t, q, false)
+
+	// Install v1.0.0 with key A (signedPluginTarball generates a fresh keypair each call).
+	tarPath1, _ := signedPluginTarball(t, "backfill-mismatch-plugin", "1.0.0")
+	if _, err := inst.Install(context.Background(), tarPath1); err != nil {
+		t.Fatalf("Install v1 (key A): %v", err)
+	}
+
+	row, err := q.GetPluginByName(context.Background(), "backfill-mismatch-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after first install: %v", err)
+	}
+
+	// Seed a healthy instance.
+	seedPluginInstance(t, q, row.ID, "bm-inst-1", model.PluginHealthStateHealthy)
+
+	// Clear binary_path to simulate the vulnerable backfill scenario.
+	if _, err := q.UpdatePluginBinaryPath(context.Background(), db.UpdatePluginBinaryPathParams{
+		BinaryPath:      nil,
+		UpdatedAt:       row.UpdatedAt,
+		ID:              row.ID,
+		ExpectedVersion: row.Version,
+	}); err != nil {
+		t.Fatalf("clear binary_path: %v", err)
+	}
+
+	// Install a SECOND same-name same-version tarball signed by a DIFFERENT key B.
+	// signedPluginTarball generates a fresh keypair each call, so this is key B.
+	tarPath2, _ := signedPluginTarball(t, "backfill-mismatch-plugin", "1.0.0")
+	if _, err := inst.Install(context.Background(), tarPath2); err != nil {
+		t.Fatalf("Install v1 (key B, same version): %v", err)
+	}
+
+	// binary_path must still be nil — publishBundle must not have run.
+	row2, err := q.GetPluginByName(context.Background(), "backfill-mismatch-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after mismatch install: %v", err)
+	}
+	if row2.BinaryPath != nil && *row2.BinaryPath != "" {
+		t.Errorf("binary_path = %q after mismatch backfill install; want nil/empty (publish must be blocked)", *row2.BinaryPath)
+	}
+
+	// A high-severity plugin_pubkey_mismatch audit event must exist.
+	events, evErr := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditPubkeyMismatch,
+		Offset:    0,
+		Limit:     10,
+	})
+	if evErr != nil {
+		t.Fatalf("list mismatch events: %v", evErr)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected a plugin_pubkey_mismatch audit event, got none")
+	}
+	if events[0].Severity != severityHigh {
+		t.Errorf("audit severity = %q, want %q", events[0].Severity, severityHigh)
+	}
+
+	// The seeded instance must be in pending_key_approval.
+	instRow, instErr := q.GetPluginInstanceByID(context.Background(), "bm-inst-1")
+	if instErr != nil {
+		t.Fatalf("GetPluginInstanceByID: %v", instErr)
+	}
+	if instRow.HealthState != string(model.PluginHealthStatePendingKeyApproval) {
+		t.Errorf("instance health_state = %q, want pending_key_approval", instRow.HealthState)
+	}
+
+	// No .new or .old artefact must exist under the installed dir (no partial publish).
+	installedDir := filepath.Join(inst.pluginsDir, "installed", "backfill-mismatch-plugin")
+	for _, suffix := range []string{".new", ".old"} {
+		if _, statErr := os.Stat(installedDir + suffix); statErr == nil {
+			t.Errorf("unexpected artefact %s after mismatch backfill install", installedDir+suffix)
+		}
+	}
+}
+
+// TestInstall_SameVersionBackfill_DelayedTOFU verifies the load-bearing
+// `existing = refreshed` line: when the existing row has an empty trusted_pubkey
+// (installed unsigned) and binary_path is nil, a signed re-install of the same
+// version must capture the pubkey AND successfully backfill binary_path. Without
+// `existing = refreshed`, the updateBinaryPath CAS would run against the pre-capture
+// version, get rows==0 (non-fatal warning), and silently leave binary_path unset.
+func TestInstall_SameVersionBackfill_DelayedTOFU(t *testing.T) {
+	q := openTestDB(t)
+
+	// First install: unsigned so trusted_pubkey="" but binary_path gets set.
+	instUnsigned := newTestInstaller(t, q, true) // allowUnsigned=true
+	tarPathUnsigned := unsignedPluginTarball(t, "backfill-tofu-plugin", "1.0.0")
+	if _, err := instUnsigned.Install(context.Background(), tarPathUnsigned); err != nil {
+		t.Fatalf("Install v1 (unsigned): %v", err)
+	}
+
+	row, err := q.GetPluginByName(context.Background(), "backfill-tofu-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after unsigned install: %v", err)
+	}
+	if row.TrustedPubkey != "" {
+		t.Fatalf("trusted_pubkey after unsigned install = %q, want empty", row.TrustedPubkey)
+	}
+
+	// Clear binary_path to enter the backfill branch on re-install.
+	if _, err := q.UpdatePluginBinaryPath(context.Background(), db.UpdatePluginBinaryPathParams{
+		BinaryPath:      nil,
+		UpdatedAt:       row.UpdatedAt,
+		ID:              row.ID,
+		ExpectedVersion: row.Version,
+	}); err != nil {
+		t.Fatalf("clear binary_path: %v", err)
+	}
+
+	// Second install: signed same-version tarball. The installer must:
+	//   1. Run delayed-TOFU capture (trusted_pubkey="" → capture key, bump version)
+	//   2. Re-read the row (existing = refreshed) to pick up the bumped version
+	//   3. Successfully backfill binary_path via updateBinaryPath CAS
+	instSigned := newTestInstaller(t, q, false) // allowUnsigned=false
+	tarPathSigned, _ := signedPluginTarball(t, "backfill-tofu-plugin", "1.0.0")
+	if _, err := instSigned.Install(context.Background(), tarPathSigned); err != nil {
+		t.Fatalf("Install v1 (signed, backfill): %v", err)
+	}
+
+	row2, err := q.GetPluginByName(context.Background(), "backfill-tofu-plugin")
+	if err != nil {
+		t.Fatalf("GetPluginByName after signed backfill: %v", err)
+	}
+
+	// trusted_pubkey must now be captured.
+	if row2.TrustedPubkey == "" {
+		t.Error("trusted_pubkey: want non-empty after delayed TOFU capture via backfill")
+	}
+
+	// binary_path must be backfilled — proves `existing = refreshed` made the CAS succeed.
+	if row2.BinaryPath == nil || *row2.BinaryPath == "" {
+		t.Error("binary_path: still nil after delayed-TOFU backfill; `existing = refreshed` may be missing")
+	}
+
+	// No mismatch event — delayed TOFU is a capture, not a mismatch.
+	events, evErr := q.ListPluginAuditEventsByType(context.Background(), db.ListPluginAuditEventsByTypeParams{
+		EventType: auditPubkeyMismatch,
+		Offset:    0,
+		Limit:     10,
+	})
+	if evErr != nil {
+		t.Fatalf("list mismatch events: %v", evErr)
+	}
+	if len(events) > 0 {
+		t.Errorf("got %d pubkey_mismatch events after delayed TOFU backfill, want 0", len(events))
 	}
 }
 

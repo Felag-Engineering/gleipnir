@@ -10,28 +10,20 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 )
 
-func TestLoader_Init_Disabled(t *testing.T) {
-	l := NewLoader()
-	err := l.Init(context.Background(), config.Config{PluginsEnabled: false})
-	if err != nil {
-		t.Fatalf("Init() with PluginsEnabled=false: got error %v, want nil", err)
-	}
-}
-
-func TestLoader_Init_Enabled(t *testing.T) {
+func TestLoader_Init(t *testing.T) {
 	logged := captureLogs(t)
 
 	l := NewLoader()
-	err := l.Init(context.Background(), config.Config{PluginsEnabled: true})
+	err := l.Init(context.Background(), config.Config{})
 	if err != nil {
-		t.Fatalf("Init() with PluginsEnabled=true: got error %v, want nil", err)
+		t.Fatalf("Init(): got error %v, want nil", err)
 	}
 
 	if !strings.Contains(logged.String(), "plugin loader enabled") {
 		t.Errorf("expected log to contain %q, got: %s", "plugin loader enabled", logged.String())
 	}
 	if l.Verifier() == nil {
-		t.Errorf("Verifier() = nil; want non-nil when plugins enabled")
+		t.Errorf("Verifier() = nil; want non-nil after Init")
 	}
 	if l.Verifier().AllowUnsigned {
 		t.Errorf("AllowUnsigned: got true, want false (default)")
@@ -43,7 +35,6 @@ func TestLoader_Init_PermissiveMode(t *testing.T) {
 
 	l := NewLoader()
 	err := l.Init(context.Background(), config.Config{
-		PluginsEnabled:       true,
 		AllowUnsignedPlugins: true,
 	})
 	if err != nil {
@@ -64,33 +55,11 @@ func TestLoader_Init_PermissiveMode(t *testing.T) {
 	}
 }
 
-func TestLoader_Init_Disabled_LeavesVerifierNil(t *testing.T) {
-	l := NewLoader()
-	if err := l.Init(context.Background(), config.Config{PluginsEnabled: false}); err != nil {
-		t.Fatalf("Init disabled: %v", err)
-	}
-	if l.Verifier() != nil {
-		t.Errorf("Verifier() = %+v; want nil when plugins disabled", l.Verifier())
-	}
-}
-
-// TestLoader_StartWatcher_DisabledIsNoOp asserts that StartWatcher is a no-op
-// when GLEIPNIR_PLUGINS_ENABLED=false (i.e. Init was never called, verifier is nil).
-func TestLoader_StartWatcher_DisabledIsNoOp(t *testing.T) {
-	l := NewLoader()
-	if err := l.Init(context.Background(), config.Config{PluginsEnabled: false}); err != nil {
-		t.Fatalf("Init disabled: %v", err)
-	}
-	// StartWatcher must return without panicking or starting anything.
-	// Pass nil for q — the code must not reach any q calls when disabled.
-	l.StartWatcher(context.Background(), nil, nil, t.TempDir(), nil)
-}
-
 // TestLoader_Installer_NilBeforeStartWatcher verifies that Installer() returns
-// nil before StartWatcher is called (i.e. when plugins are disabled).
+// nil after Init but before StartWatcher is called.
 func TestLoader_Installer_NilBeforeStartWatcher(t *testing.T) {
 	l := NewLoader()
-	if err := l.Init(context.Background(), config.Config{PluginsEnabled: false}); err != nil {
+	if err := l.Init(context.Background(), config.Config{}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	if l.Installer() != nil {
@@ -99,10 +68,10 @@ func TestLoader_Installer_NilBeforeStartWatcher(t *testing.T) {
 }
 
 // TestLoader_Installer_NonNilAfterStartWatcher verifies that Installer() returns
-// a non-nil *loader.Installer after StartWatcher succeeds with plugins enabled.
+// a non-nil *loader.Installer after StartWatcher succeeds.
 func TestLoader_Installer_NonNilAfterStartWatcher(t *testing.T) {
 	l := NewLoader()
-	if err := l.Init(context.Background(), config.Config{PluginsEnabled: true}); err != nil {
+	if err := l.Init(context.Background(), config.Config{}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 

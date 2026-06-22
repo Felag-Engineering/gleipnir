@@ -115,8 +115,16 @@ All variables are read at startup. Changing a value requires restarting the stac
 | `GLEIPNIR_APPROVAL_SCAN_INTERVAL` | `30s` | How often to check for timed-out approval requests. |
 | `GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT` | `30m` | Default timeout for feedback requests when not set in the policy. |
 | `GLEIPNIR_FEEDBACK_SCAN_INTERVAL` | `30s` | How often to check for timed-out feedback requests. |
+| `GLEIPNIR_PLUGINS_DIR` | `/plugins` | Directory watched for plugin tarballs (`.tar.gz`/`.tgz`) by the fsnotify watcher. |
+| `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` | `false` | When `true`, unsigned bundles load; every unsigned load emits a high-severity audit event; `GET /api/v1/health` reports `signature_verification: disabled`. Signed bundles are still fully verified. Dev-only — leave `false` in production. |
+| `GLEIPNIR_OAUTH_REFRESH_INTERVAL` | `5m` | How often the OAuth refresh scanner proactively refreshes plugin OAuth2 tokens approaching expiry. |
+| `GLEIPNIR_OAUTH_REFRESH_LEAD` | `15m` | Lead-time window before OAuth token expiry within which the scanner triggers a refresh attempt. |
+| `GLEIPNIR_PLUGIN_REQUEST_SCAN_INTERVAL` | `30s` | How often to scan for plugin channel requests that have timed out. |
+| `GLEIPNIR_PLUGIN_DEDUP_SWEEP_INTERVAL` | `10m` | How often the dedup sweeper evicts entries older than the 1-hour dedup window. |
 
 `GLEIPNIR_PORT` is a Docker Compose variable (not read by the Go server directly). It controls which host port the container exposes and defaults to `3000`.
+
+Installing and managing plugins — see [Plugins](plugins.md).
 
 ## Viewing structured logs
 

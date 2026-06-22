@@ -14,7 +14,7 @@ import (
 // manifest. Used to pin byte-identical output across code paths.
 const canonicalManifestYAML = `auth:
   mode: instance_credentials
-  strategy: static_key
+  strategy: static_api_key
 name: testplugin
 schema_version: v1
 services:
@@ -29,7 +29,7 @@ const minimalManifestJSON = `{
   "name": "testplugin",
   "schema_version": "v1",
   "services": {"tool": "v1"},
-  "auth": {"mode": "instance_credentials", "strategy": "static_key"}
+  "auth": {"mode": "instance_credentials", "strategy": "static_api_key"}
 }`
 
 // minimalManifestYAMLUnsorted is YAML with keys in non-canonical order.
@@ -40,7 +40,7 @@ services:
   tool: v1
 auth:
   mode: instance_credentials
-  strategy: static_key
+  strategy: static_api_key
 `
 
 // TestCanonicalize is a table-driven test covering the main Canonicalize paths.
@@ -76,7 +76,7 @@ services:
   tool: v1
 auth:
   mode: instance_credentials
-  strategy: static_key
+  strategy: static_api_key
 tools:
   - name: zebra_tool
     description: Does zebra things
@@ -139,7 +139,7 @@ func TestCanonicalizePreservesSchemaNodes(t *testing.T) {
 		"name": "schema-plugin",
 		"version": "1.0.0",
 		"services": {"tool": "v1"},
-		"auth": {"mode": "instance_credentials", "strategy": "static_key"},
+		"auth": {"mode": "instance_credentials", "strategy": "static_api_key"},
 		"config_schema": {
 			"type": "object",
 			"properties": {

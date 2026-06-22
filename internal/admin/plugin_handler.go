@@ -209,10 +209,10 @@ type PluginHandler struct {
 	q              PluginQuerier
 	publisher      event.Publisher
 	clock          func() time.Time
-	installer      PluginInstaller      // may be nil if GLEIPNIR_PLUGINS_ENABLED=false
+	installer      PluginInstaller      // may be nil in tests
 	pluginsDir     string               // empty disables FS cleanup in RejectPlugin
 	processManager PluginProcessManager // nil means skip subprocess spawn in CreateInstance/ApprovePlugin
-	rssAggregator  RSSAggregator        // nil when plugins are disabled; GetPluginRSS returns 503
+	rssAggregator  RSSAggregator        // may be nil in tests; GetPluginRSS returns 503
 	lifecycle      *InstanceLifecycle   // owns Deactivate/Activate/Delete/Uninstall
 	config         *InstanceConfig      // owns PutSubscriptionScope/PutConfig/PutConfigProperty
 }
@@ -260,10 +260,10 @@ type pluginRSSInstance struct {
 // Samples are produced by the RSSSampler every 30s; the response reflects
 // the most recent snapshot.
 //
-// Returns 503 when the plugin subsystem is disabled (GLEIPNIR_PLUGINS_ENABLED=false).
+// Returns 503 when the RSS sampler is not initialized (no process manager).
 func (h *PluginHandler) GetPluginRSS(w http.ResponseWriter, r *http.Request) {
 	if h.rssAggregator == nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, "plugin system is disabled", "")
+		httputil.WriteError(w, http.StatusServiceUnavailable, "plugin RSS sampler not initialized", "")
 		return
 	}
 
