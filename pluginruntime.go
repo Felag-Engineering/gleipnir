@@ -162,7 +162,7 @@ func startPluginRuntime(
 	pluginDispatcher := dispatch.NewDispatcher(dispatch.DispatcherConfig{
 		Queries: store.Queries(),
 		Connect: connFactory.Connect,
-		// TODO(#NNN): Wire WriteRunStep here for audit trail completeness.
+		// TODO(#573): Wire WriteRunStep here for audit trail completeness.
 		// Requires constructing an AuditWriter outside the agent package,
 		// which is deferred to a follow-up issue.
 	})

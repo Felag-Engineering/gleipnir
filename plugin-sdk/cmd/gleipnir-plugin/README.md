@@ -131,14 +131,16 @@ gleipnir-plugin package --binary ./myplugin --sbom sbom.cyclonedx.json
 ```
 <name>-<version>.tar.gz
   <name>-<version>/
-    <binary-basename>         (mode 0755)
+    <manifest.Name>           (mode 0755, the binary)
     manifest.yaml             (mode 0644)
     <manifest.Name>.minisig   (mode 0644)
     signing.pub               (mode 0644)
     sbom.cyclonedx.json       (mode 0644, optional)
 ```
 
-The `.minisig` filename derives from `manifest.Name`, not the binary basename.
+Both the binary and the `.minisig` filename derive from `manifest.Name`, not the
+source binary's basename — the host locates the binary at `<bundle>/<manifest.Name>`
+to hash and verify it.
 
 **Unsigned bundles:**
 
