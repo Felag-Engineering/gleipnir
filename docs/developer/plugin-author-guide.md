@@ -238,7 +238,7 @@ Every plugin instance uses one of six auth strategies, declared in the manifest:
 | `manifest.AuthStrategyOAuth2Authcode` | `"oauth2_authcode"` | Host runs the OAuth2 authorization code flow |
 | `manifest.AuthStrategyOAuth2Clientcred` | `"oauth2_clientcred"` | Host runs the OAuth2 client credentials flow |
 
-> **Note on `static_key` vs `static_api_key`:** The `manifest.AuthStrategyStaticAPIKey` constant has the value `"static_api_key"`. The `plugins/ntfy/manifest.go` file uses the literal string `"static_key"` (a legacy value) — that is an inconsistency in the ntfy reference plugin, not the norm. Use the `manifest.AuthStrategy*` constants for all new plugins.
+> Always reference the `manifest.AuthStrategy*` constants rather than hand-writing the string values — the constants are the single source of truth and protect you from typos that silently break credential setup.
 
 The host stores and refreshes all credentials. **Plugins must never cache credentials between calls** — always fetch via `GetCredentials` at the start of each `Call`/`Notify`/`Request`. The host handles token refresh automatically for OAuth strategies.
 

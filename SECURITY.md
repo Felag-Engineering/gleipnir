@@ -34,6 +34,8 @@ Gleipnir is a self-hosted agent orchestrator intended for homelab and small-team
 | Gleipnir binary, SQLite DB, embedded frontend | Gleipnir |
 | Session cookies, encrypted secrets at rest, role-based access control | Gleipnir |
 | MCP server containers and what they do when called | **Operator** |
+| Plugin signature verification, TOFU pinning, capability gating, process isolation | Gleipnir |
+| Plugin binaries dropped into `GLEIPNIR_PLUGINS_DIR` and what they do when run | **Operator** (vets the binary) |
 | LLM provider selection and the compliance posture of data sent there | **Operator** |
 | TLS termination, network isolation, firewall rules | **Operator** |
 | Host OS, Docker daemon, kernel patching | **Operator** |
@@ -65,6 +67,8 @@ The following controls are in place on `main` and are part of the product's guar
 **Audit trail.** Every agent step — capability snapshot, reasoning, tool call, tool result, approval, feedback, error, completion — is persisted to `run_steps`. Writes are serialized through an application-layer queue.
 
 **Fail-fast configuration.** `docker-compose.yml` refuses to start if `GLEIPNIR_ENCRYPTION_KEY` is unset, with a message pointing to the generator command.
+
+**Plugin signing and isolation (ADR-041 / ADR-045 / ADR-046).** Plugins run as out-of-process subprocesses speaking gRPC over a per-instance Unix socket — a crash or hang is contained to the subprocess. Each bundle is Minisign-verified at install with trust-on-first-use pubkey pinning; updates must verify against the pinned key, and key rotation requires explicit admin approval. Plugin tools share the same hard capability enforcement (ADR-001) and approval gating (ADR-008) as MCP tools. Every host RPC from a plugin is authenticated by a per-instance identity token and routed through a generation-refcount drain, so a killed generation cannot impersonate its replacement. Plugin-initiated audit callbacks are restricted to the `feedback_response` step type and authenticated by request ownership (ADR-046); all other plugin events are host-written. Plugin credentials are encrypted at rest under `GLEIPNIR_ENCRYPTION_KEY`. See §4.7.
 
 ## 4. Known Gaps and Accepted Risks
 
@@ -134,6 +138,21 @@ All encrypted-at-rest secrets (provider API keys, webhook secrets) are protected
 
 Back up the key immediately after generation. Store it in a password manager or secrets vault separate from the Gleipnir host.
 
+### 4.7 Plugin Trust
+
+Plugins are out-of-process subprocesses that the host runs and grants capabilities to. Signing (ADR-045) provides **tamper-evidence and origin-pinning, not sandboxing**: a verified signature proves the bundle matches the pinned key, not that the code is safe. A plugin runs with the privileges of the Gleipnir process on the host.
+
+Specific risks:
+
+- **A plugin binary executes as the host process.** It is a native subprocess, not a container. It can read the host filesystem and make network calls subject only to the OS and Docker isolation the operator has configured. Signature verification does not constrain what the code does once it runs.
+- **Capability grants bound the agent, not the plugin.** Hard capability enforcement controls which plugin tools the *agent* may call. It does not control what the plugin does internally with the credentials and host RPCs it is granted.
+- **TOFU pins the first key seen.** If a malicious bundle is installed at *first* install, its key is what gets pinned. TOFU protects against later tampering, not against a compromised initial drop. Vet the first bundle out-of-band.
+- **`GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true` disables signature verification globally.** It exists for development only. When set, the loader accepts unsigned bundles, every load emits a high-severity audit event, and the admin UI shows a non-dismissible banner. Never set it in production.
+
+What the host *does* guarantee: process isolation (a plugin crash cannot take down the host), per-instance identity-token authentication on every host RPC, generation-refcount draining so a replaced plugin generation cannot impersonate the new one, capability and approval gating identical to MCP tools, and encryption at rest for plugin credentials.
+
+Operators must treat a plugin binary as part of their trust boundary, at the same level as an MCP server (§4.1): only install plugins you trust at the level of the capabilities and credentials you plan to grant them.
+
 ## 5. Operator Responsibilities
 
 Gleipnir delegates the following to the operator. These are not suggestions — the system cannot function safely without them.
@@ -144,6 +163,7 @@ Gleipnir delegates the following to the operator. These are not suggestions — 
 4. **Encryption key backup.** Back up `GLEIPNIR_ENCRYPTION_KEY` to a location independent of the Gleipnir host. Losing it means losing every stored provider API key and webhook secret.
 5. **Database backup.** Back up the SQLite file at `/data/gleipnir.db`. It contains every policy, run, audit step, and encrypted secret.
 6. **MCP server vetting.** Only register MCP servers you trust at the same level as the capabilities you plan to grant them. Run them in isolated containers with minimal host access.
+7. **Plugin vetting.** Only drop plugin binaries into `GLEIPNIR_PLUGINS_DIR` that you trust to run as the host process. Verify the publisher's pubkey out-of-band before the first (trust-on-first-use) install, and never set `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true` in production. See §4.7.
 7. **Data flow to LLM providers.** Evaluate what data your policies will expose to Anthropic / Google / OpenAI / your chosen OpenAI-compatible backend. Any data reachable by a granted tool can end up in the provider's context. See §4.5.
 8. **User account hygiene.** Use strong passwords. Revoke sessions (`DELETE /api/v1/auth/sessions/:id`) when a device is lost or a user leaves.
 9. **Policy review.** Policy authoring is an operator-level privilege. Operators are trusted to review the YAML they save, including any content pasted from third parties.
