@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/felag-engineering/gleipnir/internal/http/httputil"
+	"github.com/felag-engineering/gleipnir/internal/infra/event"
 	"github.com/felag-engineering/gleipnir/internal/infra/headervalidate"
 	"github.com/felag-engineering/gleipnir/internal/plugin/oauth"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
@@ -32,13 +34,17 @@ type PluginCredentialsHandler struct {
 	// q is used to look up instance details (belongs-to-plugin check and
 	// manifest snapshot for strategy validation). OAuthPluginQuerier is
 	// declared in plugin_oauth_handler.go — same package, no redeclaration.
-	q     OAuthPluginQuerier
-	store *oauth.DBStore
+	q         OAuthPluginQuerier
+	store     *oauth.DBStore
+	publisher event.Publisher
 }
 
 // NewPluginCredentialsHandler constructs a PluginCredentialsHandler.
-func NewPluginCredentialsHandler(q OAuthPluginQuerier, store *oauth.DBStore) *PluginCredentialsHandler {
-	return &PluginCredentialsHandler{q: q, store: store}
+// pub is used to broadcast plugin.health_changed events after a credential write
+// advances the instance readiness detail (config_missing → credentials_missing → "").
+// Pass nil when health events are not needed (e.g. tests that don't assert on them).
+func NewPluginCredentialsHandler(q OAuthPluginQuerier, store *oauth.DBStore, pub event.Publisher) *PluginCredentialsHandler {
+	return &PluginCredentialsHandler{q: q, store: store, publisher: pub}
 }
 
 // Get handles GET /api/v1/admin/plugins/{id}/instances/{iid}/credentials.
@@ -125,6 +131,7 @@ func (h *PluginCredentialsHandler) SetStaticAPIKey(w http.ResponseWriter, r *htt
 		return
 	}
 
+	h.advanceReadiness(ctx, pluginID, instanceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -164,6 +171,7 @@ func (h *PluginCredentialsHandler) SetHeader(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	h.advanceReadiness(ctx, pluginID, instanceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -188,6 +196,7 @@ func (h *PluginCredentialsHandler) DeleteHeader(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	h.advanceReadiness(ctx, pluginID, instanceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -231,6 +240,7 @@ func (h *PluginCredentialsHandler) SetBasicAuth(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	h.advanceReadiness(ctx, pluginID, instanceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -411,4 +421,33 @@ func (h *PluginCredentialsHandler) handleStoreError(w http.ResponseWriter, r *ht
 	default:
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to "+op, "")
 	}
+}
+
+// advanceReadiness re-fetches the instance row (which now reflects the
+// just-written credentials_encrypted) and calls AdvanceInstanceReadiness to
+// progress the health detail through credentials_missing → "". Best-effort:
+// any error is logged and the caller still returns 204.
+func (h *PluginCredentialsHandler) advanceReadiness(ctx context.Context, pluginID, instanceID string) {
+	inst, err := h.q.GetPluginInstanceByID(ctx, instanceID)
+	if err != nil {
+		slog.WarnContext(ctx, "credentials: advanceReadiness: failed to re-fetch instance",
+			"instance_id", instanceID, "err", err)
+		return
+	}
+
+	plugin, err := h.q.GetPluginByID(ctx, pluginID)
+	if err != nil {
+		slog.WarnContext(ctx, "credentials: advanceReadiness: failed to get plugin",
+			"plugin_id", pluginID, "err", err)
+		return
+	}
+
+	var manifest sdkmanifest.Manifest
+	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &manifest); parseErr != nil {
+		slog.WarnContext(ctx, "credentials: advanceReadiness: corrupt manifest snapshot",
+			"plugin_id", pluginID, "err", parseErr)
+		return
+	}
+
+	AdvanceInstanceReadiness(ctx, h.q, h.publisher, inst, &manifest)
 }

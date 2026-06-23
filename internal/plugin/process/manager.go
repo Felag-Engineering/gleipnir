@@ -250,34 +250,63 @@ func (m *Manager) Start(ctx context.Context, plugin db.Plugin, instance db.Plugi
 	m.instances[instance.ID] = inst
 	m.mu.Unlock()
 
+	// Parse the manifest once for both tool registration and the Gap B healthy
+	// transition below. A parse failure skips both (fail-closed per ADR-001).
+	var mfst sdkmanifest.Manifest
+	manifestOK := false
+	if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &mfst); parseErr != nil {
+		m.logger().Warn("could not parse manifest after spawn",
+			"instance_id", instance.ID,
+			"err", parseErr,
+		)
+	} else {
+		manifestOK = true
+	}
+
 	// Register the plugin's manifest-declared tools in the shared namespace
 	// arbiter. Parsing the manifest here (rather than in the caller) keeps
 	// tool registration tightly coupled to the spawn lifecycle. On conflict,
 	// the Registrar already drives the instance to unhealthy and writes an audit
 	// event (#194); we surface the error to the caller so the subsystem can
 	// decide how to handle it.
-	if m.cfg.ToolRegistrar != nil {
-		var mfst sdkmanifest.Manifest
-		if parseErr := sdkmanifest.Unmarshal([]byte(plugin.ManifestSnapshot), &mfst); parseErr != nil {
-			m.logger().Warn("could not parse manifest for tool registration",
+	if m.cfg.ToolRegistrar != nil && manifestOK && len(mfst.Tools) > 0 {
+		toolNames := make([]string, len(mfst.Tools))
+		for i, td := range mfst.Tools {
+			toolNames[i] = td.Name
+		}
+		gen := m.nextToolGeneration(instance.ID)
+		if regErr := m.cfg.ToolRegistrar.RegisterInstanceTools(
+			ctx, instance.ID, instance.InstanceName, toolNames, gen,
+		); regErr != nil {
+			m.logger().Warn("plugin tool registration failed",
 				"instance_id", instance.ID,
-				"err", parseErr,
+				"instance_name", instance.InstanceName,
+				"err", regErr,
 			)
-		} else if len(mfst.Tools) > 0 {
-			toolNames := make([]string, len(mfst.Tools))
-			for i, td := range mfst.Tools {
-				toolNames[i] = td.Name
-			}
-			gen := m.nextToolGeneration(instance.ID)
-			if regErr := m.cfg.ToolRegistrar.RegisterInstanceTools(
-				ctx, instance.ID, instance.InstanceName, toolNames, gen,
-			); regErr != nil {
-				m.logger().Warn("plugin tool registration failed",
-					"instance_id", instance.ID,
-					"instance_name", instance.InstanceName,
-					"err", regErr,
-				)
-				return fmt.Errorf("manager: register tools for instance %s: %w", instance.ID, regErr)
+			return fmt.Errorf("manager: register tools for instance %s: %w", instance.ID, regErr)
+		}
+	}
+
+	// Gap B (#576): a channel-only or tool-only instance has no TriggerService stream
+	// to drive the healthy transition (trigger/supervisor.go owns that path for trigger
+	// plugins). When the manifest declares no TriggerService and the instance is
+	// unhealthy with an empty readiness detail — meaning config + credentials are
+	// present and we just successfully spawned the subprocess — mark it healthy here.
+	// Trigger plugins are explicitly excluded: Services.Trigger != "" means the
+	// supervisor will drive the transition when the TriggerService stream connects.
+	if manifestOK && mfst.Services.Trigger == "" {
+		// Re-fetch the row: the `instance` arg passed to Start may be stale (it
+		// carries the health state at dispatch time, not the current DB value).
+		fresh, fetchErr := m.cfg.Querier.GetPluginInstanceByID(ctx, instance.ID)
+		if fetchErr != nil {
+			m.logger().Warn("Gap B: failed to re-fetch instance for healthy transition",
+				"instance_id", instance.ID, "err", fetchErr)
+		} else if model.PluginHealthState(fresh.HealthState) == model.PluginHealthStateUnhealthy &&
+			(fresh.HealthDetail == nil || *fresh.HealthDetail == "") {
+			// Config and credentials are in place (empty detail = fully ready).
+			// Subprocess handshake succeeded. Transition to healthy.
+			if healthSetter := m.HealthSetter(); healthSetter != nil {
+				healthSetter(ctx, instance.ID, model.PluginHealthStateHealthy, "")
 			}
 		}
 	}

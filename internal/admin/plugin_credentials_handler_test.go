@@ -30,7 +30,7 @@ func buildCredHandlerWithStore(t *testing.T, q OAuthPluginQuerier, fakeStore *fa
 		return "", nil
 	}
 	store := oauth.NewDBStore(fakeStore, enc, dec, fakeStore, clock)
-	return NewPluginCredentialsHandler(q, store), store
+	return NewPluginCredentialsHandler(q, store, nil), store
 }
 
 // buildCredHandler builds a PluginCredentialsHandler backed by the given fake
@@ -47,13 +47,15 @@ func buildCredHandler(t *testing.T, q OAuthPluginQuerier, fakeStore *fakeCredQue
 		return "", nil
 	}
 	store := oauth.NewDBStore(fakeStore, enc, dec, fakeStore, clock)
-	return NewPluginCredentialsHandler(q, store)
+	return NewPluginCredentialsHandler(q, store, nil)
 }
 
-// fakeCredQuerier satisfies both oauth.OAuthQuerier and pluginstate.Querier for
-// the credential handler tests. It stores a single instance in memory.
+// fakeCredQuerier satisfies oauth.OAuthQuerier, OAuthPluginQuerier, and
+// pluginstate.Querier for the credential handler tests. It stores a single
+// instance and plugin in memory.
 type fakeCredQuerier struct {
 	instance      db.PluginInstance
+	plugin        db.Plugin
 	casFailTimes  int
 	auditEvents   []db.InsertPluginAuditEventParams
 	healthUpdates []db.UpdatePluginInstanceHealthParams
@@ -64,6 +66,13 @@ func (f *fakeCredQuerier) GetPluginInstanceByID(_ context.Context, id string) (d
 		return f.instance, nil
 	}
 	return db.PluginInstance{}, ErrNotFound
+}
+
+func (f *fakeCredQuerier) GetPluginByID(_ context.Context, id string) (db.Plugin, error) {
+	if f.plugin.ID == id {
+		return f.plugin, nil
+	}
+	return db.Plugin{}, ErrNotFound
 }
 
 func (f *fakeCredQuerier) UpdatePluginInstanceCredentials(_ context.Context, arg db.UpdatePluginInstanceCredentialsParams) (int64, error) {
@@ -619,6 +628,303 @@ func TestPluginCredentialsHandler_SetOAuthToken_PluginIDMismatch_404(t *testing.
 }
 
 // --- Write-only assertion: GET must never expose raw secrets ---
+
+// buildReadinessCredHandler builds a handler for readiness-advancement tests.
+// It uses sq as BOTH the h.q querier and the backing store for oauth.DBStore,
+// so health writes land in sq.healthUpdates where tests can assert them.
+func buildReadinessCredHandler(t *testing.T, sq *fakeCredQuerier) *PluginCredentialsHandler {
+	t.Helper()
+	clock := func() time.Time { return time.Unix(1000000, 0) }
+	enc := func(p string) (string, error) { return "enc:" + p, nil }
+	dec := func(c string) (string, error) {
+		if strings.HasPrefix(c, "enc:") {
+			return c[4:], nil
+		}
+		return "", nil
+	}
+	store := oauth.NewDBStore(sq, enc, dec, sq, clock)
+	return NewPluginCredentialsHandler(sq, store, nil)
+}
+
+// --- Readiness advancement tests (#576 Gap A) ---
+
+// TestPluginCredentialsHandler_SetStaticAPIKey_AdvancesReadiness verifies that
+// SetStaticAPIKey on an instance at unhealthy/credentials_missing advances the
+// health detail to "" (fully ready) via AdvanceInstanceReadiness.
+func TestPluginCredentialsHandler_SetStaticAPIKey_AdvancesReadiness(t *testing.T) {
+	credsMissing := "credentials_missing"
+	sq := &fakeCredQuerier{
+		instance: db.PluginInstance{
+			ID:           "inst-1",
+			PluginID:     "plugin-1",
+			HealthState:  "unhealthy",
+			HealthDetail: &credsMissing,
+			// Non-empty config so computeInstanceReadinessDetail passes config gate.
+			ConfigJson: `{"server_url":"https://ntfy.sh"}`,
+			Version:    1,
+		},
+		plugin: db.Plugin{
+			ID:               "plugin-1",
+			ManifestSnapshot: buildTestManifest(t, sdkmanifest.AuthStrategyStaticAPIKey),
+		},
+	}
+	// Seed initial credentials blob so UpdatePluginInstanceCredentials succeeds.
+	seedCredentials(t, sq, oauth.StoredCredentials{Strategy: sdkmanifest.AuthStrategyStaticAPIKey})
+
+	h := buildReadinessCredHandler(t, sq)
+	body := map[string]string{"header_name": "X-API-Key", "scheme": "Bearer", "api_key": "sk-123"}
+	r := newCredRequest(http.MethodPut, "/credentials/static-api-key", body, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+	h.SetStaticAPIKey(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	// advanceReadiness must have written a health update advancing the detail to "".
+	if len(sq.healthUpdates) == 0 {
+		t.Fatal("expected a health update (readiness advancement), got none")
+	}
+	last := sq.healthUpdates[len(sq.healthUpdates)-1]
+	if last.HealthState != "unhealthy" {
+		t.Errorf("health state = %q, want unhealthy", last.HealthState)
+	}
+	if last.HealthDetail != nil {
+		t.Errorf("health detail = %q, want nil (empty string → nil ptr)", *last.HealthDetail)
+	}
+}
+
+// TestPluginCredentialsHandler_SetBasicAuth_AdvancesReadiness mirrors the
+// SetStaticAPIKey readiness test for the basic_auth strategy.
+func TestPluginCredentialsHandler_SetBasicAuth_AdvancesReadiness(t *testing.T) {
+	credsMissing := "credentials_missing"
+	sq := &fakeCredQuerier{
+		instance: db.PluginInstance{
+			ID:           "inst-1",
+			PluginID:     "plugin-1",
+			HealthState:  "unhealthy",
+			HealthDetail: &credsMissing,
+			ConfigJson:   `{"endpoint":"https://api.example.com"}`,
+			Version:      1,
+		},
+		plugin: db.Plugin{
+			ID:               "plugin-1",
+			ManifestSnapshot: buildTestManifest(t, sdkmanifest.AuthStrategyBasicAuth),
+		},
+	}
+	seedCredentials(t, sq, oauth.StoredCredentials{Strategy: sdkmanifest.AuthStrategyBasicAuth})
+
+	h := buildReadinessCredHandler(t, sq)
+	body := map[string]string{"username": "alice", "password": "s3cr3t"}
+	r := newCredRequest(http.MethodPut, "/credentials/basic-auth", body, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+	h.SetBasicAuth(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(sq.healthUpdates) == 0 {
+		t.Fatal("expected a health update (readiness advancement), got none")
+	}
+	last := sq.healthUpdates[len(sq.healthUpdates)-1]
+	if last.HealthState != "unhealthy" {
+		t.Errorf("health state = %q, want unhealthy", last.HealthState)
+	}
+	if last.HealthDetail != nil {
+		t.Errorf("health detail = %q, want nil (empty → nil ptr)", *last.HealthDetail)
+	}
+}
+
+// TestPluginCredentialsHandler_SetHeader_AdvancesReadiness mirrors the
+// SetStaticAPIKey readiness test for the header_set strategy.
+func TestPluginCredentialsHandler_SetHeader_AdvancesReadiness(t *testing.T) {
+	credsMissing := "credentials_missing"
+	sq := &fakeCredQuerier{
+		instance: db.PluginInstance{
+			ID:           "inst-1",
+			PluginID:     "plugin-1",
+			HealthState:  "unhealthy",
+			HealthDetail: &credsMissing,
+			ConfigJson:   `{"org":"my-org"}`,
+			Version:      1,
+		},
+		plugin: db.Plugin{
+			ID:               "plugin-1",
+			ManifestSnapshot: buildTestManifest(t, sdkmanifest.AuthStrategyHeaderSet),
+		},
+	}
+	seedCredentials(t, sq, oauth.StoredCredentials{
+		Strategy:  sdkmanifest.AuthStrategyHeaderSet,
+		HeaderSet: &oauth.HeaderSetCreds{Headers: []oauth.NamedHeader{}},
+	})
+
+	h := buildReadinessCredHandler(t, sq)
+	body := map[string]string{"value": "org-123"}
+	params := map[string]string{"id": "plugin-1", "iid": "inst-1", "name": "X-Org-ID"}
+	r := newCredRequest(http.MethodPut, "/credentials/headers/X-Org-ID", body, params)
+	w := httptest.NewRecorder()
+	h.SetHeader(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(sq.healthUpdates) == 0 {
+		t.Fatal("expected a health update (readiness advancement), got none")
+	}
+	last := sq.healthUpdates[len(sq.healthUpdates)-1]
+	if last.HealthDetail != nil {
+		t.Errorf("health detail = %q, want nil (empty → nil ptr)", *last.HealthDetail)
+	}
+}
+
+// TestPluginCredentialsHandler_DeleteHeader_AdvancesReadiness_NoHealthWrite verifies
+// that DeleteHeaderSetEntry — which always leaves a non-empty StoredCredentials blob
+// (Strategy + empty HeaderSet{}) — does NOT cause a health write when the current
+// detail is already "". The unhealthy-only gate plus the wanted==current no-op keep
+// the call safe.
+func TestPluginCredentialsHandler_DeleteHeader_AdvancesReadiness_NoHealthWrite(t *testing.T) {
+	// Detail is already "" — fully configured. Deleting a header should be a no-op
+	// for the readiness state machine.
+	emptyDetail := ""
+	sq := &fakeCredQuerier{
+		instance: db.PluginInstance{
+			ID:           "inst-1",
+			PluginID:     "plugin-1",
+			HealthState:  "unhealthy",
+			HealthDetail: &emptyDetail,
+			ConfigJson:   `{"org":"my-org"}`,
+			Version:      1,
+		},
+		plugin: db.Plugin{
+			ID:               "plugin-1",
+			ManifestSnapshot: buildTestManifest(t, sdkmanifest.AuthStrategyHeaderSet),
+		},
+	}
+	seedCredentials(t, sq, oauth.StoredCredentials{
+		Strategy:  sdkmanifest.AuthStrategyHeaderSet,
+		HeaderSet: &oauth.HeaderSetCreds{Headers: []oauth.NamedHeader{{Name: "X-Org-ID", Value: "org-123"}}},
+	})
+
+	h := buildReadinessCredHandler(t, sq)
+	params := map[string]string{"id": "plugin-1", "iid": "inst-1", "name": "X-Org-ID"}
+	r := newCredRequest(http.MethodDelete, "/credentials/headers/X-Org-ID", nil, params)
+	w := httptest.NewRecorder()
+	h.DeleteHeader(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	// Deleting a header from a non-empty StoredCredentials leaves credentials_encrypted
+	// non-nil (Strategy + empty HeaderSet), so credentialsPresent stays true and
+	// computeInstanceReadinessDetail returns "" == currentDetail → no health write.
+	if len(sq.healthUpdates) != 0 {
+		t.Errorf("expected no health write for DeleteHeader when detail is already empty, got %d writes", len(sq.healthUpdates))
+	}
+}
+
+// secondCallFailQuerier wraps fakeCredQuerier and returns a corrupt manifest
+// on the SECOND call to GetPluginByID (the first call is requireOneOfStrategies;
+// the second is advanceReadiness). This lets us verify that advanceReadiness
+// handles a corrupt manifest gracefully without a panic or extra HTTP error.
+type secondCallFailQuerier struct {
+	fakeCredQuerier
+	pluginCallCount int
+}
+
+func (q *secondCallFailQuerier) GetPluginByID(ctx context.Context, id string) (db.Plugin, error) {
+	q.pluginCallCount++
+	if q.pluginCallCount >= 2 {
+		// Return a corrupt manifest on the advanceReadiness call.
+		return db.Plugin{
+			ID:               id,
+			ManifestSnapshot: "not valid yaml {{{",
+		}, nil
+	}
+	return q.fakeCredQuerier.GetPluginByID(ctx, id)
+}
+
+// TestPluginCredentialsHandler_AdvancesReadiness_CorruptManifest verifies that
+// when advanceReadiness encounters a corrupt manifest snapshot on the re-fetch
+// it logs and returns without writing a health update and without panicking.
+// The credential write has already returned 204.
+func TestPluginCredentialsHandler_AdvancesReadiness_CorruptManifest(t *testing.T) {
+	credsMissing := "credentials_missing"
+	inner := &fakeCredQuerier{
+		instance: db.PluginInstance{
+			ID:           "inst-1",
+			PluginID:     "plugin-1",
+			HealthState:  "unhealthy",
+			HealthDetail: &credsMissing,
+			ConfigJson:   `{"x":"y"}`,
+			Version:      1,
+		},
+		plugin: db.Plugin{
+			ID:               "plugin-1",
+			ManifestSnapshot: buildTestManifest(t, sdkmanifest.AuthStrategyStaticAPIKey),
+		},
+	}
+	seedCredentials(t, inner, oauth.StoredCredentials{Strategy: sdkmanifest.AuthStrategyStaticAPIKey})
+	sq := &secondCallFailQuerier{fakeCredQuerier: *inner}
+
+	clock := func() time.Time { return time.Unix(1000000, 0) }
+	enc := func(p string) (string, error) { return "enc:" + p, nil }
+	dec := func(c string) (string, error) {
+		if strings.HasPrefix(c, "enc:") {
+			return c[4:], nil
+		}
+		return "", nil
+	}
+	store := oauth.NewDBStore(sq, enc, dec, sq, clock)
+	h := NewPluginCredentialsHandler(sq, store, nil)
+
+	body := map[string]string{"header_name": "X-Key", "scheme": "", "api_key": "val"}
+	r := newCredRequest(http.MethodPut, "/credentials/static-api-key", body, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+	h.SetStaticAPIKey(w, r)
+
+	// Despite the corrupt manifest on the second GetPluginByID call, the handler
+	// still returns 204 — the credential write already committed.
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 even with corrupt manifest in advanceReadiness, got %d: %s", w.Code, w.Body.String())
+	}
+	// No health write because advanceReadiness returns early on parse failure.
+	if len(sq.fakeCredQuerier.healthUpdates) != 0 {
+		t.Errorf("expected no health write on corrupt manifest, got %d writes", len(sq.fakeCredQuerier.healthUpdates))
+	}
+}
+
+// TestPluginCredentialsHandler_AdvancesReadiness_AlreadyHealthy verifies that
+// when an instance is already healthy, advanceReadiness is a no-op (the
+// unhealthy-only gate fires and no UpdatePluginInstanceHealth is called).
+func TestPluginCredentialsHandler_AdvancesReadiness_AlreadyHealthy(t *testing.T) {
+	sq := &fakeCredQuerier{
+		instance: db.PluginInstance{
+			ID:          "inst-1",
+			PluginID:    "plugin-1",
+			HealthState: "healthy",
+			ConfigJson:  `{"x":"y"}`,
+			Version:     1,
+		},
+		plugin: db.Plugin{
+			ID:               "plugin-1",
+			ManifestSnapshot: buildTestManifest(t, sdkmanifest.AuthStrategyStaticAPIKey),
+		},
+	}
+	seedCredentials(t, sq, oauth.StoredCredentials{Strategy: sdkmanifest.AuthStrategyStaticAPIKey})
+
+	h := buildReadinessCredHandler(t, sq)
+	body := map[string]string{"header_name": "X-Key", "scheme": "", "api_key": "val"}
+	r := newCredRequest(http.MethodPut, "/credentials/static-api-key", body, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+	h.SetStaticAPIKey(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	// Already healthy → AdvanceInstanceReadiness returns immediately; no health write.
+	if len(sq.healthUpdates) != 0 {
+		t.Errorf("expected no health write for already-healthy instance, got %d writes", len(sq.healthUpdates))
+	}
+}
 
 func TestPluginCredentialsHandler_Get_NoRawSecretFields(t *testing.T) {
 	tests := []struct {

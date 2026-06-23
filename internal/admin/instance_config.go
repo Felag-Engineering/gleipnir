@@ -632,13 +632,22 @@ func (m *InstanceConfig) PutConfigProperty(ctx context.Context, pluginID, instan
 	}}, nil
 }
 
-// advanceInstanceReadiness re-evaluates the instance's readiness detail and
-// writes it back through SetHealthState if it has changed. Best-effort — any
-// failure is logged but not returned to the caller because the underlying
-// config/credentials write has already succeeded. Bypasses the update entirely
-// when the instance is not currently in unhealthy (e.g. already healthy, or
-// pending some other admin action).
-func (m *InstanceConfig) advanceInstanceReadiness(ctx context.Context, inst db.PluginInstance, manifest *sdkmanifest.Manifest) {
+// AdvanceInstanceReadiness re-evaluates an instance's readiness detail and
+// writes it back through SetHealthState if it has changed. This is called after
+// the operator saves instance config or credentials so the admin UI progresses
+// through config_missing → credentials_missing → "" (fully ready) without
+// requiring a manual page refresh.
+//
+// Best-effort: any failure is logged but not returned to the caller because the
+// underlying config/credentials write has already committed. The update is
+// skipped when the instance is not currently in unhealthy (e.g. already healthy
+// or pending an admin action).
+//
+// The querier param satisfies pluginstate.Querier (GetPluginInstanceByID +
+// UpdatePluginInstanceHealth). Both InstanceConfig.q and PluginCredentialsHandler's
+// querier satisfy it, which is why this is a package-level helper rather than a
+// method — it lets both handlers share the same logic without a circular dep.
+func AdvanceInstanceReadiness(ctx context.Context, q pluginstate.Querier, pub event.Publisher, inst db.PluginInstance, manifest *sdkmanifest.Manifest) {
 	if model.PluginHealthState(inst.HealthState) != model.PluginHealthStateUnhealthy {
 		return
 	}
@@ -651,12 +660,19 @@ func (m *InstanceConfig) advanceInstanceReadiness(ctx context.Context, inst db.P
 	if wanted == currentDetail {
 		return
 	}
-	err := pluginstate.SetHealthState(ctx, m.q, m.publisher, inst.ID, pluginstate.OriginHost,
+	err := pluginstate.SetHealthState(ctx, q, pub, inst.ID, pluginstate.OriginHost,
 		model.PluginHealthStateUnhealthy, wanted)
 	if err != nil && !errors.Is(err, pluginstate.ErrTransitionConflict) {
-		slog.WarnContext(ctx, "advanceInstanceReadiness: set health detail failed",
+		slog.WarnContext(ctx, "AdvanceInstanceReadiness: set health detail failed",
 			"instance_id", inst.ID, "from", currentDetail, "to", wanted, "err", err)
 	}
+}
+
+// advanceInstanceReadiness is the method-scoped thin forward to AdvanceInstanceReadiness
+// used by PutConfig (and PutConfigProperty which calls PutConfig indirectly).
+// Keeping the method preserves the existing PutConfig call site unchanged.
+func (m *InstanceConfig) advanceInstanceReadiness(ctx context.Context, inst db.PluginInstance, manifest *sdkmanifest.Manifest) {
+	AdvanceInstanceReadiness(ctx, m.q, m.publisher, inst, manifest)
 }
 
 // computeInstanceReadinessDetail returns the appropriate health_detail string

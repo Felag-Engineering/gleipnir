@@ -1160,3 +1160,299 @@ func (a *dbQuerierAdapter) UpdatePluginInstanceHealth(ctx context.Context, arg d
 func (a *dbQuerierAdapter) InsertPluginAuditEvent(ctx context.Context, arg db.InsertPluginAuditEventParams) (db.PluginAuditEvent, error) {
 	return a.q.InsertPluginAuditEvent(ctx, arg)
 }
+
+// ── Gap B tests (#576) ───────────────────────────────────────────────────────
+
+// healthCapturingQuerier extends fakeQuerier with instance tracking: it holds
+// a map of instance rows by ID so GetPluginInstanceByID returns the right row
+// (needed for the Gap B healthy-transition gate that re-fetches the instance),
+// and it records UpdatePluginInstanceHealth calls for assertion.
+type healthCapturingQuerier struct {
+	fakeQuerier
+	mu            sync.Mutex
+	instancesByID map[string]db.PluginInstance
+	healthCalls   []db.UpdatePluginInstanceHealthParams
+}
+
+func newHealthCapturingQuerier() *healthCapturingQuerier {
+	return &healthCapturingQuerier{
+		instancesByID: make(map[string]db.PluginInstance),
+	}
+}
+
+func (q *healthCapturingQuerier) GetPluginInstanceByID(_ context.Context, id string) (db.PluginInstance, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if inst, ok := q.instancesByID[id]; ok {
+		return inst, nil
+	}
+	// Fallback to fakeQuerier's flat instances map.
+	for _, instances := range q.fakeQuerier.instances {
+		for _, inst := range instances {
+			if inst.ID == id {
+				return inst, nil
+			}
+		}
+	}
+	return db.PluginInstance{}, errors.New("not found")
+}
+
+func (q *healthCapturingQuerier) UpdatePluginInstanceHealth(_ context.Context, arg db.UpdatePluginInstanceHealthParams) (int64, error) {
+	q.mu.Lock()
+	q.healthCalls = append(q.healthCalls, arg)
+	q.mu.Unlock()
+	return 1, nil
+}
+
+// manifestWithChannelService returns a minimal manifest YAML declaring a
+// ChannelService but no TriggerService and no tools.
+func manifestWithChannelService() string {
+	return `schema_version: "1"
+name: channel-plugin
+version: "1.0.0"
+services:
+  channel: v1
+`
+}
+
+// manifestWithTriggerService returns a minimal manifest YAML declaring a
+// TriggerService — used to verify the Gap B gate excludes trigger plugins.
+func manifestWithTriggerService() string {
+	return `schema_version: "1"
+name: trigger-plugin
+version: "1.0.0"
+services:
+  trigger: v1
+`
+}
+
+// stubSuccessStarter returns a fake starter that succeeds without spawning a
+// real subprocess. The returned *process.Instance is nil, which is sufficient
+// for Manager.Start unit tests that don't call inst.Stop().
+//
+// The TestProcessStarter field type is processStarter; the Manager stores the
+// result in m.instances. Because *Instance methods are not called in Gap B
+// tests (no Stop, no Pid), a nil *Instance is safe here.
+//
+// NOTE: process.Instance has no exported constructor; for tests that DO call
+// Stop we use the real fixture approach (see TestManager_IdempotentStart).
+// Gap B tests only assert on health writes, not on subprocess lifecycle.
+func stubSuccessStarter(t *testing.T, reg *identity.Registry) func(context.Context, process.Config) (*process.Instance, error) {
+	t.Helper()
+	return func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+		// Use a real minimal instance so m.instances[id] is non-nil and Stop
+		// can be called at cleanup time without panic. We use the fixture binary
+		// approach from other tests in this file.
+		fc := fixtureConfig(t, "serve-and-block", reg, nil)
+		fc.InstanceID = cfg.InstanceID
+		return process.Start(ctx, fc)
+	}
+}
+
+// TestManager_Start_ChannelOnly_AdvancesToHealthy verifies Gap B (#576):
+// a channel-only instance (no TriggerService) that is unhealthy with empty
+// readiness detail is marked healthy after a successful spawn.
+func TestManager_Start_ChannelOnly_AdvancesToHealthy(t *testing.T) {
+	reg := identity.New()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	q := newHealthCapturingQuerier()
+	emptyDetail := ""
+	inst := db.PluginInstance{
+		ID:           "i-channel",
+		PluginID:     "p-channel",
+		InstanceName: "channel-inst",
+		HealthState:  string(model.PluginHealthStateUnhealthy),
+		HealthDetail: &emptyDetail, // empty = config + creds present
+		Version:      1,
+	}
+	q.instancesByID[inst.ID] = inst
+
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:            q,
+		IdentityIssuer:     reg,
+		TestProcessStarter: stubSuccessStarter(t, reg),
+	})
+
+	plugin := db.Plugin{
+		ID:               "p-channel",
+		Status:           "active",
+		ManifestSnapshot: manifestWithChannelService(),
+	}
+
+	if err := mgr.Start(ctx, plugin, inst, os.Args[0]); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { mgr.Stop(ctx, inst.ID) }) //nolint:errcheck
+
+	// The Gap B transition is synchronous inside Start; assert directly.
+	q.mu.Lock()
+	calls := q.healthCalls
+	q.mu.Unlock()
+
+	var sawHealthy bool
+	for _, c := range calls {
+		if c.HealthState == string(model.PluginHealthStateHealthy) {
+			sawHealthy = true
+			break
+		}
+	}
+	if !sawHealthy {
+		t.Errorf("expected UpdatePluginInstanceHealth(healthy) after channel-only spawn, got calls: %+v", calls)
+	}
+}
+
+// TestManager_Start_ChannelOnly_ConfigMissing_NoHealthyTransition verifies that
+// a channel-only instance with a non-empty readiness detail (e.g. config_missing)
+// does NOT get the Gap B healthy transition — it must stay unhealthy until the
+// operator finishes configuration.
+func TestManager_Start_ChannelOnly_ConfigMissing_NoHealthyTransition(t *testing.T) {
+	reg := identity.New()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	q := newHealthCapturingQuerier()
+	configMissing := "config_missing"
+	inst := db.PluginInstance{
+		ID:           "i-channel-cfg",
+		PluginID:     "p-channel-cfg",
+		InstanceName: "channel-cfg-inst",
+		HealthState:  string(model.PluginHealthStateUnhealthy),
+		HealthDetail: &configMissing,
+		Version:      1,
+	}
+	q.instancesByID[inst.ID] = inst
+
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:            q,
+		IdentityIssuer:     reg,
+		TestProcessStarter: stubSuccessStarter(t, reg),
+	})
+
+	plugin := db.Plugin{
+		ID:               "p-channel-cfg",
+		Status:           "active",
+		ManifestSnapshot: manifestWithChannelService(),
+	}
+
+	if err := mgr.Start(ctx, plugin, inst, os.Args[0]); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { mgr.Stop(ctx, inst.ID) }) //nolint:errcheck
+
+	q.mu.Lock()
+	calls := q.healthCalls
+	q.mu.Unlock()
+
+	for _, c := range calls {
+		if c.HealthState == string(model.PluginHealthStateHealthy) {
+			t.Errorf("unexpected healthy transition for config_missing instance; calls: %+v", calls)
+		}
+	}
+}
+
+// TestManager_Start_TriggerPlugin_NoHealthyTransition verifies that a trigger
+// plugin (Services.Trigger != "") is excluded from the Gap B healthy transition —
+// trigger/supervisor.go owns that path when the TriggerService stream connects.
+func TestManager_Start_TriggerPlugin_NoHealthyTransition(t *testing.T) {
+	reg := identity.New()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	q := newHealthCapturingQuerier()
+	emptyDetail := ""
+	inst := db.PluginInstance{
+		ID:           "i-trigger",
+		PluginID:     "p-trigger",
+		InstanceName: "trigger-inst",
+		HealthState:  string(model.PluginHealthStateUnhealthy),
+		HealthDetail: &emptyDetail,
+		Version:      1,
+	}
+	q.instancesByID[inst.ID] = inst
+
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:            q,
+		IdentityIssuer:     reg,
+		TestProcessStarter: stubSuccessStarter(t, reg),
+	})
+
+	plugin := db.Plugin{
+		ID:               "p-trigger",
+		Status:           "active",
+		ManifestSnapshot: manifestWithTriggerService(),
+	}
+
+	if err := mgr.Start(ctx, plugin, inst, os.Args[0]); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { mgr.Stop(ctx, inst.ID) }) //nolint:errcheck
+
+	q.mu.Lock()
+	calls := q.healthCalls
+	q.mu.Unlock()
+
+	for _, c := range calls {
+		if c.HealthState == string(model.PluginHealthStateHealthy) {
+			t.Errorf("trigger plugin should NOT get Gap B healthy transition; got: %+v", calls)
+		}
+	}
+}
+
+// TestManager_Start_ToolOnly_AdvancesToHealthy verifies that a tool-only plugin
+// (no TriggerService, has tools) also receives the Gap B healthy transition.
+// The manifest is parsed before the ToolRegistrar block, so the transition runs
+// even for tool-only plugins. A non-nil ToolRegistrar is provided to mirror
+// production wiring.
+func TestManager_Start_ToolOnly_AdvancesToHealthy(t *testing.T) {
+	reg := identity.New()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	q := newHealthCapturingQuerier()
+	emptyDetail := ""
+	inst := db.PluginInstance{
+		ID:           "i-tool",
+		PluginID:     "p-tool",
+		InstanceName: "tool-inst",
+		HealthState:  string(model.PluginHealthStateUnhealthy),
+		HealthDetail: &emptyDetail,
+		Version:      1,
+	}
+	q.instancesByID[inst.ID] = inst
+
+	registrar := &fakeToolRegistrar{}
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:            q,
+		IdentityIssuer:     reg,
+		ToolRegistrar:      registrar,
+		TestProcessStarter: stubSuccessStarter(t, reg),
+	})
+
+	plugin := db.Plugin{
+		ID:               "p-tool",
+		Status:           "active",
+		ManifestSnapshot: manifestWithTools("send", "read"),
+	}
+
+	if err := mgr.Start(ctx, plugin, inst, os.Args[0]); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { mgr.Stop(ctx, inst.ID) }) //nolint:errcheck
+
+	q.mu.Lock()
+	calls := q.healthCalls
+	q.mu.Unlock()
+
+	var sawHealthy bool
+	for _, c := range calls {
+		if c.HealthState == string(model.PluginHealthStateHealthy) {
+			sawHealthy = true
+			break
+		}
+	}
+	if !sawHealthy {
+		t.Errorf("expected UpdatePluginInstanceHealth(healthy) after tool-only spawn, got calls: %+v", calls)
+	}
+}

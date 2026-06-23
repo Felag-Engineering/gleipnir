@@ -19,10 +19,13 @@ import (
 )
 
 // OAuthPluginQuerier is the narrow DB interface required by PluginOAuthHandler
-// to look up instance details needed for strategy validation.
+// and PluginCredentialsHandler to look up instance details and write health
+// transitions. UpdatePluginInstanceHealth is needed by AdvanceInstanceReadiness
+// (called after credential writes) to progress config_missing → credentials_missing → "".
 type OAuthPluginQuerier interface {
 	GetPluginInstanceByID(ctx context.Context, id string) (db.PluginInstance, error)
 	GetPluginByID(ctx context.Context, id string) (db.Plugin, error)
+	UpdatePluginInstanceHealth(ctx context.Context, arg db.UpdatePluginInstanceHealthParams) (int64, error)
 }
 
 // PluginOAuthHandler handles the admin OAuth2 endpoints for plugin instances.
