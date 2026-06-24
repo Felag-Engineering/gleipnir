@@ -318,6 +318,12 @@ type instanceResponse struct {
 	UpdatedAt             string  `json:"updated_at"`
 	SubscriptionScopeJson string  `json:"subscription_scope_json"`
 	ConfigJson            string  `json:"config_json"`
+	// ConfigSchema is the manifest's instance-level JSON Schema (manifest.ConfigSchema
+	// decoded verbatim). The schema is metadata — x-gleipnir-secret annotations
+	// live IN the schema to drive redaction of VALUES in ConfigJson; the schema
+	// itself contains no secrets and is returned as-is (ADR-049). nil when the
+	// manifest declares no config_schema.
+	ConfigSchema interface{} `json:"config_schema"`
 }
 
 // GetInstance handles GET /api/v1/admin/plugins/{id}/instances/{iid}.
@@ -992,6 +998,19 @@ func (h *PluginHandler) writeInstanceResponseWithRedactionForPlugin(
 		return false
 	}
 
+	// Decode the manifest's instance-level config_schema into a plain interface{}
+	// so the frontend ConfigTab can render the correct fields. The schema is
+	// metadata and returned verbatim — it is never redacted (ADR-049). A nil node
+	// or a decode error yields a nil field rather than a request failure, mirroring
+	// the listing endpoint's decode at plugin_instance_handler.go:117-123.
+	var configSchema interface{}
+	if m.ConfigSchema != nil {
+		if decodeErr := m.ConfigSchema.Decode(&configSchema); decodeErr != nil {
+			// Non-fatal: schema is non-load-bearing for security; continue without it.
+			configSchema = nil
+		}
+	}
+
 	httputil.WriteJSON(w, http.StatusOK, instanceResponse{
 		ID:                    inst.ID,
 		PluginID:              inst.PluginID,
@@ -1002,6 +1021,7 @@ func (h *PluginHandler) writeInstanceResponseWithRedactionForPlugin(
 		UpdatedAt:             inst.UpdatedAt,
 		SubscriptionScopeJson: inst.SubscriptionScopeJson,
 		ConfigJson:            redactedConfig,
+		ConfigSchema:          configSchema,
 	})
 	return true
 }

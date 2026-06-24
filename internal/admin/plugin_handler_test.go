@@ -523,6 +523,79 @@ func TestGetInstance_RedactsSecretConfigField(t *testing.T) {
 	}
 }
 
+func TestGetInstance_ReturnsInstanceConfigSchema(t *testing.T) {
+	q := newFakePluginQuerier()
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: instanceConfigManifestWithSecret,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:           "inst-1",
+		PluginID:     "plugin-1",
+		InstanceName: "prod",
+		ConfigJson:   `{"app_level_token":"xapp-real-token"}`,
+		HealthState:  "healthy",
+		Version:      1,
+		UpdatedAt:    "2026-01-01T00:00:00Z",
+	})
+
+	h := newTestPluginHandler(q, nil, testPluginHandlerConfig{})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = withChiParams(req, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	rec := httptest.NewRecorder()
+	h.GetInstance(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	data := parseDataResponse(t, rec)
+	var resp instanceResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	// (a) config_schema must be present and expose the instance-level field.
+	if resp.ConfigSchema == nil {
+		t.Fatal("config_schema is nil, want non-nil instance-level schema")
+	}
+	// The schema is decoded as map[string]interface{} by yaml → json → Go.
+	schemaMap, ok := resp.ConfigSchema.(map[string]interface{})
+	if !ok {
+		t.Fatalf("config_schema type = %T, want map[string]interface{}", resp.ConfigSchema)
+	}
+	propsRaw, ok := schemaMap["properties"]
+	if !ok {
+		t.Fatal("config_schema.properties missing")
+	}
+	props, ok := propsRaw.(map[string]interface{})
+	if !ok {
+		t.Fatalf("config_schema.properties type = %T, want map[string]interface{}", propsRaw)
+	}
+	tokenPropRaw, ok := props["app_level_token"]
+	if !ok {
+		t.Fatal("config_schema.properties.app_level_token missing")
+	}
+	tokenProp, ok := tokenPropRaw.(map[string]interface{})
+	if !ok {
+		t.Fatalf("config_schema.properties.app_level_token type = %T, want map[string]interface{}", tokenPropRaw)
+	}
+	if tokenProp["x-gleipnir-secret"] != true {
+		t.Errorf("x-gleipnir-secret = %v, want true", tokenProp["x-gleipnir-secret"])
+	}
+
+	// (b) The VALUE in config_json must still be redacted (ADR-049).
+	var cfg map[string]interface{}
+	if err := json.Unmarshal([]byte(resp.ConfigJson), &cfg); err != nil {
+		t.Fatalf("unmarshal config_json: %v", err)
+	}
+	if cfg["app_level_token"] != "***" {
+		t.Errorf("config_json app_level_token = %v, want %q (redacted)", cfg["app_level_token"], "***")
+	}
+}
+
 func TestGetInstance_ManifestParseFails_500(t *testing.T) {
 	q := newFakePluginQuerier()
 	q.seedPlugin(db.Plugin{
