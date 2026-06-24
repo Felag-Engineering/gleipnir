@@ -39,6 +39,16 @@ func TestNoop_SatisfiesInterface(t *testing.T) {
 	var _ dedup.Store = dedup.Noop{}
 }
 
+// TestNoop_UnseeIsNoop verifies Noop.Unsee always returns nil (#585).
+func TestNoop_UnseeIsNoop(t *testing.T) {
+	t.Parallel()
+
+	var store dedup.Noop
+	if err := store.Unsee(context.Background(), dedup.Key{InstanceID: "i", EventKind: "k", EventID: "e"}); err != nil {
+		t.Errorf("Noop.Unsee returned %v, want nil", err)
+	}
+}
+
 // TestNoop_DifferentKeys verifies that Noop returns false for all key variants.
 func TestNoop_DifferentKeys(t *testing.T) {
 	t.Parallel()
