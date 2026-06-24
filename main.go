@@ -392,15 +392,24 @@ func run(cfg config.Config) error {
 		Publisher: broadcaster,
 		Trigger:   pluginTrigger,
 	})
+	// Seed the credential blob on instance create (#572). rt.CredStore is nil
+	// when no encryption key is configured; we must avoid stuffing a typed-nil
+	// pointer into the CredentialSeeder interface (that would defeat the handler's
+	// nil-guard), so only set the field when the store is genuinely present.
+	var pluginCredSeeder admin.CredentialSeeder
+	if rt.CredStore != nil {
+		pluginCredSeeder = rt.CredStore
+	}
 	pluginAdmin := admin.NewPluginHandler(admin.PluginHandlerDeps{
-		Q:              store.Queries(),
-		Publisher:      broadcaster,
-		Installer:      pluginInstaller,
-		RSSAggregator:  pluginRSSAgg,
-		ProcessManager: pluginProcMgr,
-		PluginsDir:     pluginPluginsDir,
-		Lifecycle:      pluginLifecycle,
-		Config:         pluginConfig,
+		Q:                store.Queries(),
+		Publisher:        broadcaster,
+		Installer:        pluginInstaller,
+		RSSAggregator:    pluginRSSAgg,
+		ProcessManager:   pluginProcMgr,
+		PluginsDir:       pluginPluginsDir,
+		Lifecycle:        pluginLifecycle,
+		Config:           pluginConfig,
+		CredentialSeeder: pluginCredSeeder,
 	})
 
 	handlers := api.HandlerBundle{

@@ -24,6 +24,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/model"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
+	"github.com/felag-engineering/gleipnir/internal/plugin/oauth"
 	pluginstate "github.com/felag-engineering/gleipnir/internal/plugin/state"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 	"github.com/felag-engineering/gleipnir/plugin-sdk/signing"
@@ -186,6 +187,17 @@ type RSSAggregator interface {
 	Aggregate() (totalBytes uint64, count int, perInstance []RSSSample)
 }
 
+// CredentialSeeder writes an initial encrypted credential blob for a freshly
+// created plugin instance. *oauth.DBStore satisfies it. The interface keeps the
+// admin package from depending on the concrete store wiring and lets tests
+// inject a recording fake.
+//
+// CreateInstance calls SaveCredentials with expectedVersion 0 because a row
+// created by CreatePluginInstance always starts at version 0 (ADR-038 CAS).
+type CredentialSeeder interface {
+	SaveCredentials(ctx context.Context, instanceID string, creds oauth.StoredCredentials, expectedVersion int64) error
+}
+
 // PluginHandlerDeps holds all constructor-injected dependencies for PluginHandler.
 // This replaces the 8 SetXxx late-bind setters (compile-checked per issue #504).
 //
@@ -202,6 +214,10 @@ type PluginHandlerDeps struct {
 	PluginsDir     string               // empty disables FS cleanup in RejectPlugin
 	Lifecycle      *InstanceLifecycle   // extracted lifecycle module
 	Config         *InstanceConfig      // extracted config module
+	// CredentialSeeder seeds the initial credential blob on instance create.
+	// nil (e.g. no encryption key configured) skips seeding — the row is still
+	// created, the operator can set credentials later via the credentials API.
+	CredentialSeeder CredentialSeeder
 }
 
 // PluginHandler handles plugin-related admin endpoints.
@@ -215,6 +231,7 @@ type PluginHandler struct {
 	rssAggregator  RSSAggregator        // may be nil in tests; GetPluginRSS returns 503
 	lifecycle      *InstanceLifecycle   // owns Deactivate/Activate/Delete/Uninstall
 	config         *InstanceConfig      // owns PutSubscriptionScope/PutConfig/PutConfigProperty
+	credSeeder     CredentialSeeder     // nil means skip credential seeding on create
 }
 
 // NewPluginHandler constructs a PluginHandler from the given deps struct.
@@ -234,6 +251,7 @@ func NewPluginHandler(deps PluginHandlerDeps) *PluginHandler {
 		rssAggregator:  deps.RSSAggregator,
 		lifecycle:      deps.Lifecycle,
 		config:         deps.Config,
+		credSeeder:     deps.CredentialSeeder,
 	}
 }
 
@@ -1193,7 +1211,8 @@ func (h *PluginHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.q.GetPluginByID(ctx, pluginID); err != nil {
+	plugin, err := h.q.GetPluginByID(ctx, pluginID)
+	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			httputil.WriteError(w, http.StatusNotFound, "plugin not found", "")
 		} else {
@@ -1240,6 +1259,22 @@ func (h *PluginHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Seed the credential blob with the manifest's declared strategy + endpoints
+	// (#572). This records the Strategy at creation time so any flow that reads
+	// the credential structure before the first authorize (e.g. an OAuth instance
+	// that hasn't run /oauth/begin yet) sees a well-formed blob rather than NULL.
+	// Best-effort: the row already exists; a seed failure is logged and the
+	// operator can still set credentials via the credentials API. expectedVersion
+	// is 0 — CreatePluginInstance inserts at version 0 (ADR-038 CAS).
+	//
+	// A successful seed performs a CAS write that bumps the row to version 1. We
+	// reflect that in the returned version so a caller can immediately issue a
+	// CAS-guarded follow-up write without a spurious conflict.
+	respVersion := inst.Version
+	if h.seedInstanceCredentials(ctx, instanceID, plugin.ManifestSnapshot) {
+		respVersion++
+	}
+
 	httputil.WriteCreated(w,
 		"/api/v1/admin/plugins/"+pluginID+"/instances/"+instanceID,
 		createInstanceResponse{
@@ -1248,7 +1283,7 @@ func (h *PluginHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 			InstanceName: inst.InstanceName,
 			HealthState:  inst.HealthState,
 			HealthDetail: inst.HealthDetail,
-			Version:      inst.Version,
+			Version:      respVersion,
 			CreatedAt:    inst.CreatedAt,
 			UpdatedAt:    inst.UpdatedAt,
 		})
@@ -1265,6 +1300,46 @@ func (h *PluginHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 			slog.WarnContext(context.Background(), "post-create spawn failed", "plugin_id", pluginID, "err", err)
 		}
 	}
+}
+
+// seedInstanceCredentials initializes the credential blob for a newly created
+// instance from the manifest's declared auth strategy + OAuth endpoint defaults
+// (#572). It is a no-op when no seeder is wired (e.g. no encryption key), when
+// the manifest snapshot cannot be parsed, or when the strategy is unrecognised
+// (BuildSeedCredentials returns ok=false for an empty/unknown strategy — a
+// manifest without an auth block is silently skipped).
+//
+// All failures are best-effort: the instance row already exists, so a seed
+// failure is logged rather than surfaced to the caller. Non-OAuth strategies
+// get a blob carrying only the Strategy; OAuth strategies additionally carry the
+// manifest endpoint defaults.
+//
+// Returns true only when a credential blob was actually written (which bumps the
+// row's CAS version); the caller uses this to report the post-seed version.
+func (h *PluginHandler) seedInstanceCredentials(ctx context.Context, instanceID, manifestSnapshot string) bool {
+	if h.credSeeder == nil {
+		return false
+	}
+
+	var m sdkmanifest.Manifest
+	if err := sdkmanifest.Unmarshal([]byte(manifestSnapshot), &m); err != nil {
+		slog.WarnContext(ctx, "credential seed: corrupt manifest snapshot; skipping",
+			"instance_id", instanceID, "err", err)
+		return false
+	}
+
+	seed, ok := oauth.BuildSeedCredentials(m.Auth, m.Auth.OAuthDefaults)
+	if !ok {
+		// Unknown/empty strategy — nothing to seed.
+		return false
+	}
+
+	if err := h.credSeeder.SaveCredentials(ctx, instanceID, seed, 0); err != nil {
+		slog.WarnContext(ctx, "credential seed: save failed; instance created without seeded credentials",
+			"instance_id", instanceID, "strategy", seed.Strategy, "err", err)
+		return false
+	}
+	return true
 }
 
 // DeleteInstance handles DELETE /api/v1/admin/plugins/{id}/instances/{iid}.
