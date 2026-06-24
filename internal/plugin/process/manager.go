@@ -283,6 +283,25 @@ func (m *Manager) Start(ctx context.Context, plugin db.Plugin, instance db.Plugi
 				"instance_name", instance.InstanceName,
 				"err", regErr,
 			)
+			// The subprocess is already spawned and visible in the instances map at
+			// this point, and (when a controller is configured) registered with the
+			// generation controller. Returning the error without cleanup would leave
+			// a live subprocess that can never serve tool calls — a zombie. Roll the
+			// partial start back so Start is self-contained: kill the subprocess,
+			// remove it from the map, drop the generation entry, and reset the tool
+			// generation. This also keeps ReloadInstance's caller-side cleanup simple
+			// (it only has to handle the spawn-failure path). See issue #587.
+			if stopErr := m.stopWithoutUnregister(ctx, instance.ID); stopErr != nil {
+				m.logger().Warn("plugin tool registration rollback: stop failed",
+					"instance_id", instance.ID, "err", stopErr)
+			}
+			if m.cfg.GenerationController != nil {
+				m.cfg.GenerationController.UnregisterInstance(instance.ID)
+			}
+			m.removeToolGeneration(instance.ID)
+			if healthSetter := m.HealthSetter(); healthSetter != nil {
+				healthSetter(ctx, instance.ID, model.PluginHealthStateUnhealthy, "tool_registration_failed")
+			}
 			return fmt.Errorf("manager: register tools for instance %s: %w", instance.ID, regErr)
 		}
 	}
@@ -371,16 +390,28 @@ func (m *Manager) stopWithoutUnregister(ctx context.Context, instanceID string) 
 // the same instance ID. The new generation does not begin accepting Host RPCs
 // until BeginDrain returns.
 //
-// Note: if Start fails after BeginDrain and stopWithoutUnregister have already
-// succeeded, the instance is in a stopped state with a bumped generation but no
-// running subprocess. The caller is responsible for calling Stop to fully
-// unregister the instance from the generation controller before retrying.
+// Recoverability guarantee (issue #587): if any step after BeginDrain fails —
+// the subprocess stop, or the post-reload Start — ReloadInstance cleans up
+// internally so the instance is left in a CLEAN, RECOVERABLE state rather than a
+// half-present "zombie". A failed reload always ends with the instance:
+//   - absent from the manager map (no live subprocess),
+//   - unregistered from the generation controller (no advanced generation
+//     pointing at nothing, no leaked refcount entry),
+//   - tool reservations released, and
+//   - health = unhealthy with an actionable detail.
+//
+// The operator's recovery path is then unambiguous: re-activate the instance
+// (deactivate → activate) or re-install the plugin. We do NOT attempt to roll
+// back to the prior healthy generation: by the time Start can fail, the old
+// subprocess has already been torn down and its identity token revoked, so a
+// true rollback is not achievable. A clean unhealthy stop is the achievable and
+// correct end-state.
 //
 // The actual hot-reload trigger (loader watcher → fresh tarball → calling
 // ReloadInstance) is out of scope for #294; this method is the public API that
 // #295 / the loader will call.
 //
-// See issue #294.
+// See issues #294 and #587.
 func (m *Manager) ReloadInstance(ctx context.Context, plugin db.Plugin, instance db.PluginInstance, binaryPath string, graceTimeout time.Duration) error {
 	if m.cfg.GenerationController == nil {
 		return errors.New("manager: generation controller not configured; reload requires #294 wiring")
@@ -400,10 +431,21 @@ func (m *Manager) ReloadInstance(ctx context.Context, plugin db.Plugin, instance
 		)
 	}
 
+	// From here on the generation has been bumped and (after the stop below) the
+	// old subprocess is gone. Any failure must route through cleanupFailedReload
+	// so we never return with a bumped generation still registered against no
+	// running subprocess.
+
 	// Stop the subprocess without unregistering from the controller: the
 	// generation was already bumped by BeginDrain, and RegisterInstance (called
 	// inside Start below) is idempotent and will not reset it.
 	if err := m.stopWithoutUnregister(ctx, instance.ID); err != nil {
+		// The stop failed but the instance was already removed from the map and the
+		// generation is bumped. handleLaunchFailure is NOT on this path (Start never
+		// ran), so drive health to unhealthy explicitly with an actionable detail.
+		// Truncate the cause to keep the admin UI card readable (mirrors the 120-char
+		// cap in handleLaunchFailure).
+		m.cleanupFailedReload(ctx, instance, "subprocess_stop_failed: "+truncateReason(err.Error()))
 		return fmt.Errorf("manager: stop instance %s for reload: %w", instance.ID, err)
 	}
 
@@ -417,10 +459,44 @@ func (m *Manager) ReloadInstance(ctx context.Context, plugin db.Plugin, instance
 	}
 
 	if err := m.Start(ctx, plugin, instance, binaryPath); err != nil {
+		// Start already set health to unhealthy (handleLaunchFailure on a spawn
+		// failure, or the tool-registration rollback) and, on the tool-registration
+		// path, already cleaned the generation controller + tool generation. The
+		// spawn-failure path does NOT touch the controller, so cleanupFailedReload
+		// makes the end-state uniform: unregistered + tool generation dropped. Both
+		// the controller's UnregisterInstance and removeToolGeneration are
+		// idempotent, so calling them again on the tool-registration path is safe.
+		// Pass an empty detail so we do not overwrite the more specific detail Start
+		// already recorded.
+		m.cleanupFailedReload(ctx, instance, "")
 		return fmt.Errorf("manager: restart instance %s after reload: %w", instance.ID, err)
 	}
 
 	return nil
+}
+
+// cleanupFailedReload restores a consistent, recoverable end-state after a
+// reload fails partway through (issue #587). It unregisters the instance from
+// the generation controller — removing the bumped-but-orphaned generation entry
+// and waking any Acquire callers still blocked on it — and drops the tool
+// generation counter (symmetry with full Stop teardown). When detail is
+// non-empty it also drives health to unhealthy with that detail; callers pass an
+// empty detail when a more specific health detail was already recorded upstream
+// (e.g. handleLaunchFailure) so this does not clobber it.
+//
+// All operations are idempotent so callers may invoke this even when an earlier
+// failure path (e.g. Start's tool-registration rollback) already performed some
+// of the same cleanup.
+func (m *Manager) cleanupFailedReload(ctx context.Context, instance db.PluginInstance, detail string) {
+	if m.cfg.GenerationController != nil {
+		m.cfg.GenerationController.UnregisterInstance(instance.ID)
+	}
+	m.removeToolGeneration(instance.ID)
+	if detail != "" {
+		if healthSetter := m.HealthSetter(); healthSetter != nil {
+			healthSetter(ctx, instance.ID, model.PluginHealthStateUnhealthy, detail)
+		}
+	}
 }
 
 // StopAll stops all running instances concurrently. Each Stop call shares the
@@ -685,11 +761,7 @@ func (m *Manager) handleLaunchFailure(ctx context.Context, plugin db.Plugin, ins
 	if le != nil {
 		reason = le.Cause.Error()
 	}
-	const maxReasonLen = 120
-	if len(reason) > maxReasonLen {
-		reason = reason[:maxReasonLen] + "..."
-	}
-	healthDetail := "subprocess_handshake_failed: " + reason
+	healthDetail := "subprocess_handshake_failed: " + truncateReason(reason)
 
 	// Update health state to unhealthy with the actionable detail. We call the
 	// HealthSetter directly (same path the crash watchdog uses) so the state
@@ -721,6 +793,20 @@ func (m *Manager) handleLaunchFailure(ctx context.Context, plugin db.Plugin, ins
 		m.logger().Warn("handleLaunchFailure: could not write plugin_crashed audit event",
 			"instance_id", instanceID, "err", auditErr)
 	}
+}
+
+// maxReasonLen caps how many characters of an error string we embed in a
+// health_detail value so the admin UI card stays readable without wrapping.
+const maxReasonLen = 120
+
+// truncateReason clamps reason to maxReasonLen characters, appending an ellipsis
+// when truncation occurs. Used for the runtime error strings embedded in
+// health_detail values (handshake / stop failures).
+func truncateReason(reason string) string {
+	if len(reason) > maxReasonLen {
+		return reason[:maxReasonLen] + "..."
+	}
+	return reason
 }
 
 // nextToolGeneration returns the next tool-registrar generation for instanceID.

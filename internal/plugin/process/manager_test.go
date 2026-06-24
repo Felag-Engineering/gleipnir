@@ -695,6 +695,225 @@ func TestReloadInstance_WithoutControllerReturnsError(t *testing.T) {
 	}
 }
 
+// TestReloadInstance_StartFails_CleanUpToRecoverableState verifies the issue
+// #587 recoverability guarantee: when the post-reload Start fails to spawn the
+// new subprocess, ReloadInstance must NOT leave a zombie (absent from the map
+// but with a bumped generation still registered against no subprocess). Instead
+// it cleans up to a consistent, recoverable end-state:
+//   - error returned,
+//   - instance absent from the manager map,
+//   - instance unregistered from the generation controller (so a later restart
+//     re-registers fresh at generation 1, not the orphaned bumped generation),
+//   - health = unhealthy.
+func TestReloadInstance_StartFails_CleanUpToRecoverableState(t *testing.T) {
+	reg := identity.New()
+	ctrl := generation.New()
+	q := &auditCapturingQuerier{
+		fakeQuerier: fakeQuerier{
+			plugins: []db.Plugin{{ID: "p1", Status: "active"}},
+			instances: map[string][]db.PluginInstance{
+				"p1": {{ID: "i-reload-fail", PluginID: "p1", InstanceName: "inst-fail", HealthState: "healthy"}},
+			},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// The starter succeeds on the first (initial) Start and fails on the second
+	// (post-reload restart), exercising the spawn-failure cleanup path.
+	var startCount atomic.Int32
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:              q,
+		IdentityIssuer:       reg,
+		GenerationController: ctrl,
+		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+			if startCount.Add(1) == 1 {
+				fc := fixtureConfig(t, "serve-and-block", reg, nil)
+				fc.InstanceID = cfg.InstanceID
+				return process.Start(ctx, fc)
+			}
+			// Spawn fails on the reload restart. Returning a LaunchError mirrors a
+			// real handshake failure and drives handleLaunchFailure (health=unhealthy
+			// with "subprocess_handshake_failed:").
+			return nil, &process.LaunchError{Cause: errors.New("simulated reload spawn failure")}
+		},
+	})
+
+	plugin := db.Plugin{ID: "p1", Status: "active"}
+	instance := db.PluginInstance{ID: "i-reload-fail", PluginID: "p1", InstanceName: "inst-fail", HealthState: "healthy"}
+
+	if err := mgr.Start(ctx, plugin, instance, os.Args[0]); err != nil {
+		t.Fatalf("initial Start: %v", err)
+	}
+
+	// Sanity: before reload the generation is 1.
+	if gen := ctrl.RegisterInstance(instance.ID); gen != 1 {
+		t.Fatalf("pre-reload generation = %d, want 1", gen)
+	}
+
+	err := mgr.ReloadInstance(ctx, plugin, instance, os.Args[0], 5*time.Second)
+	if err == nil {
+		mgr.Stop(ctx, instance.ID) //nolint:errcheck
+		t.Fatal("expected error from ReloadInstance when restart spawn fails, got nil")
+	}
+
+	// End-state 1: the instance must be absent from the manager map.
+	if inst := mgr.Lookup(instance.ID); inst != nil {
+		t.Errorf("instance still present in manager map after failed reload (zombie); want absent")
+	}
+
+	// End-state 2: the instance must be unregistered from the generation
+	// controller. The observable signal is that RegisterInstance re-creates a
+	// fresh entry at generation 1 — if the zombie entry had survived, the bumped
+	// generation (2) would be returned instead.
+	if gen := ctrl.RegisterInstance(instance.ID); gen != 1 {
+		t.Errorf("generation after failed reload = %d; want 1 (instance should have been unregistered, not left at the bumped generation)", gen)
+	}
+
+	// End-state 3: health must have been driven to unhealthy with the
+	// handshake-failure detail (handleLaunchFailure path).
+	var sawUnhealthy bool
+	for _, detail := range q.healthDetails {
+		if strings.HasPrefix(detail, "subprocess_handshake_failed:") {
+			sawUnhealthy = true
+			break
+		}
+	}
+	if !sawUnhealthy {
+		t.Errorf("no subprocess_handshake_failed health detail recorded; got: %v", q.healthDetails)
+	}
+}
+
+// TestReloadInstance_StartFails_Recoverable verifies the end-state from a failed
+// reload is actually recoverable: a fresh Start after the failed reload succeeds
+// and the instance returns to a live, registered state. This is the operator's
+// "re-activate" recovery path.
+func TestReloadInstance_StartFails_Recoverable(t *testing.T) {
+	reg := identity.New()
+	ctrl := generation.New()
+	q := &fakeQuerier{
+		plugins: []db.Plugin{{ID: "p1", Status: "active"}},
+		instances: map[string][]db.PluginInstance{
+			"p1": {{ID: "i-recover", PluginID: "p1", InstanceName: "inst-recover", HealthState: "healthy"}},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var startCount atomic.Int32
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:              q,
+		IdentityIssuer:       reg,
+		GenerationController: ctrl,
+		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+			// Fail only the second call (the reload restart). Calls 1 and 3 succeed.
+			if startCount.Add(1) == 2 {
+				return nil, &process.LaunchError{Cause: errors.New("simulated reload spawn failure")}
+			}
+			fc := fixtureConfig(t, "serve-and-block", reg, nil)
+			fc.InstanceID = cfg.InstanceID
+			return process.Start(ctx, fc)
+		},
+	})
+
+	plugin := db.Plugin{ID: "p1", Status: "active"}
+	instance := db.PluginInstance{ID: "i-recover", PluginID: "p1", InstanceName: "inst-recover", HealthState: "healthy"}
+
+	if err := mgr.Start(ctx, plugin, instance, os.Args[0]); err != nil {
+		t.Fatalf("initial Start: %v", err)
+	}
+	if err := mgr.ReloadInstance(ctx, plugin, instance, os.Args[0], 5*time.Second); err == nil {
+		t.Fatal("expected error from failed reload, got nil")
+	}
+
+	// Recovery: a fresh Start must succeed and leave a live, registered instance.
+	if err := mgr.Start(ctx, plugin, instance, os.Args[0]); err != nil {
+		t.Fatalf("recovery Start after failed reload: %v", err)
+	}
+	defer mgr.Stop(ctx, instance.ID) //nolint:errcheck
+
+	if inst := mgr.Lookup(instance.ID); inst == nil {
+		t.Errorf("instance not present in manager map after recovery Start; want live")
+	}
+}
+
+// TestReloadInstance_StartFails_NoLeakedRefcount runs the failed-reload path with
+// the race detector and an in-flight Acquire to confirm cleanup does not leave a
+// leaked refcount or deadlock a blocked Acquire caller. Run the package with
+// -race to exercise the concurrency guarantee.
+func TestReloadInstance_StartFails_NoLeakedRefcount(t *testing.T) {
+	reg := identity.New()
+	ctrl := generation.New()
+	q := &fakeQuerier{
+		plugins: []db.Plugin{{ID: "p1", Status: "active"}},
+		instances: map[string][]db.PluginInstance{
+			"p1": {{ID: "i-reload-race", PluginID: "p1", InstanceName: "inst-race", HealthState: "healthy"}},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var startCount atomic.Int32
+	mgr := process.NewManager(process.ManagerConfig{
+		Querier:              q,
+		IdentityIssuer:       reg,
+		GenerationController: ctrl,
+		TestProcessStarter: func(ctx context.Context, cfg process.Config) (*process.Instance, error) {
+			if startCount.Add(1) == 1 {
+				fc := fixtureConfig(t, "serve-and-block", reg, nil)
+				fc.InstanceID = cfg.InstanceID
+				return process.Start(ctx, fc)
+			}
+			return nil, &process.LaunchError{Cause: errors.New("simulated reload spawn failure")}
+		},
+	})
+
+	plugin := db.Plugin{ID: "p1", Status: "active"}
+	instance := db.PluginInstance{ID: "i-reload-race", PluginID: "p1", InstanceName: "inst-race", HealthState: "healthy"}
+
+	if err := mgr.Start(ctx, plugin, instance, os.Args[0]); err != nil {
+		t.Fatalf("initial Start: %v", err)
+	}
+
+	// Hold an in-flight refcount across the reload. BeginDrain force-cancels it
+	// after the (very short) grace window; the held ctx must observe cancellation.
+	wrappedCtx, release, _, err := ctrl.Acquire(ctx, instance.ID)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	reloadDone := make(chan error, 1)
+	go func() {
+		reloadDone <- mgr.ReloadInstance(ctx, plugin, instance, os.Args[0], 30*time.Millisecond)
+	}()
+
+	// The held call's ctx must be force-cancelled (drain grace is short).
+	select {
+	case <-wrappedCtx.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("held call ctx was not force-cancelled within 10s")
+	}
+	release() // simulate the handler observing ctx.Done()
+
+	select {
+	case err := <-reloadDone:
+		if err == nil {
+			t.Fatal("expected error from failed reload, got nil")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("ReloadInstance did not return after failed restart")
+	}
+
+	// After cleanup, a fresh Acquire on the unregistered instance must return an
+	// error (not block, not panic) — proving the controller entry was removed.
+	if _, _, _, acqErr := ctrl.Acquire(ctx, instance.ID); acqErr == nil {
+		t.Errorf("Acquire succeeded after failed-reload cleanup; want error (instance should be unregistered)")
+	}
+}
+
 // ── auditCapturingQuerier ─────────────────────────────────────────────────────
 
 // auditCapturingQuerier extends fakeQuerier with audit-event capture so tests
@@ -1089,13 +1308,15 @@ func TestManager_Start_ToolConflict_DrivesUnhealthy(t *testing.T) {
 	// Start returns an error because RegisterInstanceTools encounters a conflict.
 	err := mgr.Start(startCtx, plugin, instance, os.Args[0])
 	if err == nil {
-		// Subprocess started — clean up before failing.
+		// Unexpected success — defensively stop the spawned subprocess before failing.
 		mgr.Stop(startCtx, instance.ID) //nolint:errcheck
 		t.Fatal("expected error from Manager.Start on tool conflict, got nil")
 	}
 
-	// The subprocess was stored in the map before registration ran, so Stop
-	// is safe to call to clean up the spawned goroutine.
+	// Stop is now a defensive no-op: Start's tool-registration rollback (#587)
+	// already killed the subprocess and removed it from the map on the conflict
+	// path. We still call it so the test stays correct if that rollback ever
+	// changes.
 	mgr.Stop(startCtx, instance.ID) //nolint:errcheck
 
 	// Assert health_state in DB is unhealthy.
