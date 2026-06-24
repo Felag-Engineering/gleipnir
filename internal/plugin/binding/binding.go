@@ -50,9 +50,12 @@
 package binding
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -103,11 +106,23 @@ type CompiledField struct {
 	// distinguish BoolValue==false from "not set").
 	HasBool bool
 
-	// FloatValue is set when the binding value was a number.
+	// FloatValue is set when the binding value was a non-integral number.
 	FloatValue float64
 
-	// HasFloat is true when the binding value was a number.
+	// HasFloat is true when the binding value is a number to be compared as a
+	// float (i.e. it was fractional, or it was an integer too large to compare
+	// exactly — see IntValue for the exact-integer fast path).
 	HasFloat bool
+
+	// IntValue holds the binding value when it was an integer. Integer bindings
+	// are compared exactly as int64 rather than via float64 so that IDs above
+	// 2^53 (Slack/Snowflake-style 64-bit event/channel/user IDs, common in this
+	// substrate) do not lose precision (#586).
+	IntValue int64
+
+	// HasInt is true when the binding value was an integer (use IntValue, not
+	// FloatValue).
+	HasInt bool
 
 	// Regex is the pre-compiled regular expression for OpRegex fields.
 	Regex *regexp.Regexp
@@ -241,17 +256,33 @@ func compileField(name string, rawVal any, fieldSchema *yaml.Node) (CompiledFiel
 		cf.HasBool = true
 
 	case "number", "integer":
-		// YAML numbers unmarshal as int or float64 depending on value.
+		// YAML numbers unmarshal as int or float64 depending on value;
+		// json.Number can also appear if the binding was decoded with
+		// UseNumber. Classify each as either an exact integer (compared via
+		// IntValue/int64) or a fractional float (compared via FloatValue). We
+		// must NOT route integers through float64 here — values above 2^53 lose
+		// precision, which is exactly the #586 bug.
 		switch v := rawVal.(type) {
-		case float64:
-			cf.FloatValue = v
-			cf.HasFloat = true
 		case int:
-			cf.FloatValue = float64(v)
-			cf.HasFloat = true
+			cf.IntValue = int64(v)
+			cf.HasInt = true
 		case int64:
-			cf.FloatValue = float64(v)
-			cf.HasFloat = true
+			cf.IntValue = v
+			cf.HasInt = true
+		case float64:
+			setNumericField(&cf, v)
+		case json.Number:
+			if i, err := v.Int64(); err == nil {
+				cf.IntValue = i
+				cf.HasInt = true
+			} else {
+				fl, ferr := v.Float64()
+				if ferr != nil {
+					return cf, fmt.Errorf("binding: field %q: invalid number %q: %w", name, v.String(), ferr)
+				}
+				cf.FloatValue = fl
+				cf.HasFloat = true
+			}
 		default:
 			return cf, fmt.Errorf("binding: field %q: expected number, got %T", name, rawVal)
 		}
@@ -317,6 +348,20 @@ func evalField(f CompiledField, payload map[string]any) bool {
 	return false
 }
 
+// setNumericField stores a float64 binding value as either an exact integer
+// (when it is integral and within int64 range) or a fractional float. Routing
+// whole numbers through IntValue lets Evaluate compare them exactly against
+// integer payload values rather than via lossy float64 arithmetic (#586).
+func setNumericField(cf *CompiledField, v float64) {
+	if i, ok := floatAsExactInt(v); ok {
+		cf.IntValue = i
+		cf.HasInt = true
+		return
+	}
+	cf.FloatValue = v
+	cf.HasFloat = true
+}
+
 // valuesEqual compares a compiled field's expected value against a payload
 // value. Silent false on type mismatch.
 func valuesEqual(f CompiledField, pv any) bool {
@@ -324,20 +369,99 @@ func valuesEqual(f CompiledField, pv any) bool {
 		b, ok := pv.(bool)
 		return ok && b == f.BoolValue
 	}
+	if f.HasInt {
+		// Integer binding: compare exactly as int64 whenever the payload value
+		// is (or losslessly represents) an integer. This is the precision-safe
+		// path for 64-bit IDs above 2^53 (#586). Only fall back to float
+		// comparison when the payload value is genuinely fractional.
+		if pi, ok := payloadAsInt(pv); ok {
+			return pi == f.IntValue
+		}
+		if pf, ok := payloadAsFloat(pv); ok {
+			return pf == float64(f.IntValue)
+		}
+		return false
+	}
 	if f.HasFloat {
-		switch v := pv.(type) {
-		case float64:
-			return v == f.FloatValue
-		case int:
-			return float64(v) == f.FloatValue
-		case int64:
-			return float64(v) == f.FloatValue
+		if pf, ok := payloadAsFloat(pv); ok {
+			return pf == f.FloatValue
 		}
 		return false
 	}
 	// String equals.
 	s, ok := pv.(string)
 	return ok && s == f.StrValue
+}
+
+// payloadAsInt extracts an exact int64 from a payload value. It handles the
+// concrete number types that json.Unmarshal / json.Decoder(UseNumber) / YAML
+// can produce, plus integer strings (some plugins JSON-encode 64-bit IDs as
+// strings to dodge the JS float53 limit). Returns false for fractional or
+// out-of-range values, leaving those to the float fallback.
+func payloadAsInt(pv any) (int64, bool) {
+	switch v := pv.(type) {
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case float64:
+		return floatAsExactInt(v)
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return i, true
+		}
+		// A json.Number that doesn't parse as int64 is fractional or out of
+		// range; let the float path handle it.
+		return 0, false
+	case string:
+		// Accept a string only when it is a clean base-10 integer.
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return i, true
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+// payloadAsFloat extracts a float64 from a payload value for fractional
+// comparison. Used only when an exact integer comparison was not possible.
+func payloadAsFloat(pv any) (float64, bool) {
+	switch v := pv.(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case json.Number:
+		if f, err := v.Float64(); err == nil {
+			return f, true
+		}
+		return 0, false
+	case string:
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f, true
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+// floatAsExactInt reports whether v is an integral value that fits exactly in
+// an int64 (no fractional part, within range, and representable without loss).
+func floatAsExactInt(v float64) (int64, bool) {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	if v != math.Trunc(v) {
+		return 0, false // has a fractional part
+	}
+	// math.MaxInt64 is not exactly representable as float64; use a strict
+	// upper bound (2^63) and inclusive lower bound (-2^63) that are.
+	if v < math.MinInt64 || v >= math.MaxInt64 {
+		return 0, false
+	}
+	return int64(v), true
 }
 
 // payloadString extracts a string field from the payload. Returns ("", false)
