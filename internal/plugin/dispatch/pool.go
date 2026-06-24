@@ -393,9 +393,15 @@ func (p *Pool) CancelRun(runID string) {
 					}
 				})
 				// Remove the cached (now-closed) connection so the next call
-				// triggers a fresh ConnFactory call.
+				// triggers a fresh ConnFactory call. Guard the delete with a
+				// pointer match: a concurrent Call may have already re-dialed a
+				// fresh instanceState for this instance (e.g. a second cancel
+				// goroutine racing this one), and an unconditional delete would
+				// evict that healthy connection.
 				p.instancesMu.Lock()
-				delete(p.instances, ic.instanceName)
+				if cur, ok := p.instances[ic.instanceName]; ok && cur == st {
+					delete(p.instances, ic.instanceName)
+				}
 				p.instancesMu.Unlock()
 			}
 		}()

@@ -5,4 +5,4 @@ package version
 
 // Version is the current Gleipnir release. It is reported through the API
 // metadata and sent to MCP servers in the initialize handshake's clientInfo.
-const Version = "1.0.0"
+const Version = "1.1.0"

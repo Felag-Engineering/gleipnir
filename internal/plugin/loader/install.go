@@ -655,8 +655,11 @@ func (in *Installer) recordAuditEvent(ctx context.Context, eventType, severity, 
 // Callers pass the tx-bound *db.Queries when running inside a transaction; the
 // non-transactional path is reached via Installer.recordAuditEvent.
 func insertAuditRow(ctx context.Context, q *db.Queries, eventType, severity, nowStr string, payload map[string]any) error {
-	body, _ := json.Marshal(payload)
-	_, err := q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal %s audit payload: %w", eventType, err)
+	}
+	_, err = q.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
 		PluginInstanceID: nil,
 		EventType:        eventType,
 		Severity:         severity,
