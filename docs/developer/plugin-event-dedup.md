@@ -1,6 +1,21 @@
 # Plugin EmitEvent dedup window — storage design
 
-**Status:** Design pass — must merge before the implementation issue filed off this doc.
+**Status:** Implemented — shipped in v1.1.0 (#562). The SQLite-backed `dedup.Store`
++ sweeper landed as designed; the dedup check runs in the trigger dispatcher
+(`internal/plugin/trigger/dispatcher.go`, `Dispatcher.Handle`), not in the
+`EmitEvent` handler as the pre-implementation sketch below assumed. Retained as
+the design record — file/line references below are historical.
+
+**Names as shipped (read these, not the pre-implementation names in §7–§8 below):**
+- Package is `internal/plugin/dedup` (not `internal/plugin/eventdedup`).
+- The dedup primitive is the `Store` interface with one method `Seen(ctx, Key) (bool, error)`
+  — `dbStore` (constructed via `dedup.NewDBStore(querier)`) wraps the sqlc
+  `RecordEventIfNovel :execrows` query and maps 0-rows-affected to "already seen".
+  `Noop` (always returns `false`) backs tests that don't need dedup semantics.
+- The sweeper is `dedup.Sweeper` (`dedup.NewSweeper(querier, interval, ttl)`), whose
+  `Start(ctx)` ticker calls `SweepEventDedup`. Both `Store` and `Sweeper` take an
+  injected clock (`SetClockForTest`) for deterministic tests.
+- The migration shipped as `0039_add_plugin_event_dedup.go` (the §6 sketch guessed `0032`).
 **Companion ADRs:** ADR-003 (SQLite/WAL), ADR-013 (ULID IDs).
 **Spec sections:** §4.3 (event delivery semantics), §7 (trigger dispatch), §8.1 (`EmitEvent` RPC).
 
@@ -217,7 +232,7 @@ slog levels: `Debug` per duplicate (high frequency possible under redelivery sto
 - Cross-stream ordering guarantees (§4.3 explicitly disclaims this).
 - Persistence beyond 1 hour (the spec window is 1 hour; the sweep enforces it).
 - SDK-side `event_id` synthesis helper (tracked in #214).
-- Per-event-type trigger routing (tracked in #158; the TODO at `handlers.go:418` remains until that issue lands).
+- Per-event-type trigger routing — out of scope for this dedup design; implemented separately in the trigger dispatcher (`internal/plugin/trigger/dispatcher.go`).
 
 ---
 

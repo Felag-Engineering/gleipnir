@@ -28,9 +28,11 @@ graph TD
         BA["<b>BoundAgent</b>"]
         BA -->|owns| AW["<b>AuditWriter</b><br/>Serialized step inserts"]
         BA -->|owns| SM["<b>RunStateMachine</b><br/>Status transitions"]
-        BA -->|calls| LLM["<b>LLMClient</b><br/><i>Anthropic / Google / OpenAI</i>"]
+        BA -->|calls| LLM["<b>LLMClient</b><br/><i>Anthropic / Google / OpenAI / openaicompat</i>"]
         BA -->|calls tools via| REG["<b>MCP Registry</b><br/>Resolves tools to MCP clients"]
-        REG -->|"JSON-RPC"| MCPS(["MCP servers"])
+        REG -->|"JSON-RPC over HTTP"| MCPS(["MCP servers"])
+        BA -->|"plugin tools via<br/>PluginToolDispatcher iface"| PDISP["<b>dispatch.Pool</b><br/>injected by RunLauncher"]
+        PDISP -->|"gRPC over UDS"| PSUB(["Plugin subprocesses"])
     end
 
     AW -->|publishes| BCAST

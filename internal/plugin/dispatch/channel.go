@@ -342,8 +342,9 @@ func (d *Dispatcher) Request(ctx context.Context, audienceID string, rc RouteCon
 		// entry covers it, otherwise return an error (defense-in-depth: the
 		// audience validator blocks this at save time when disable=true).
 		if inAppRequestAvailable {
-			// TODO(#209): wire RouteToInApp into the caller so it can await
-			// the feedback_requests substrate instead of plugin_pending_requests.
+			// The synthetic in-app entry is the only Request-capable target. The
+			// agent-side callers (approval_adapter / feedback_adapter) map the
+			// RouteToInApp outcome onto the existing in-app feedback channel.
 			return "", RouteToInApp, nil
 		}
 		return "", 0, ErrNoRequestCapableEntry

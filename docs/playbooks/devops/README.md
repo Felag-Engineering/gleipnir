@@ -350,35 +350,27 @@ Finally, for an end-to-end check, stop a real monitored service and let Uptime K
 
 ## Extensions
 
-### Restrict Proxmox operations to specific nodes or VMs
+### Pin a tool parameter to a fixed value
 
-Use parameter scoping to prevent the agent from touching resources outside the intended scope. For example, to restrict `proxmox.restart_vm` to a specific VM ID:
+Parameter scoping (ADR-017) restricts which parameters of a tool the agent is allowed to set. The `params` block is a map keyed by parameter name. At run start, the runtime narrows the tool's input schema down to the keys listed in `params` — every other parameter is stripped from the schema the agent sees, so the agent cannot set it. A call that tries to pass a stripped key is rejected before the MCP server is reached. This is structural enforcement, not prompt-based.
 
-```yaml
-- tool: proxmox.restart_vm
-  approval: required
-  timeout: 5m
-  on_timeout: reject
-  params:
-    - name: vmid
-      allowed: ["100", "101"]
-```
-
-The agent cannot pass any other `vmid` value even if it reasons its way there — the parameter constraint is enforced by the runtime before the MCP server is called, not by the prompt.
-
-### Restrict Caddy updates to specific routes
-
-If you want to prevent the agent from rewriting unrelated routes, scope `update_caddy_config` to a specific path prefix in the Caddy config tree:
+For example, to restrict `proxmox.execute_command` so the agent can only supply a `command` and never any other parameter:
 
 ```yaml
-- tool: caddy.update_caddy_config
+- tool: proxmox.execute_command
   approval: required
-  timeout: 30s
+  timeout: 2m
   on_timeout: reject
   params:
-    - name: path
-      pattern: "^/apps/http/servers/srv0/routes/.*"
+    command: ""
 ```
+
+A few caveats worth understanding:
+
+- Scoping controls the *set of keys* the agent may send. It does not enforce a fixed value, an allow-list of several values, or a regex pattern on the value — the agent still chooses the value for the keys it is allowed to set.
+- Gleipnir does not inject a value for a parameter you omit from the schema; it simply prevents the agent from passing that parameter at all.
+
+To genuinely constrain a tool to a *set* of resources or a value pattern, keep `approval: required` so the operator reviews the exact parameters before each call — the approval modal shows the full argument set the agent proposed.
 
 ### Scheduled DNS health check
 

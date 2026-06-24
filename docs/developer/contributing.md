@@ -19,7 +19,7 @@
 
 ## Package boundaries
 
-Package boundaries are intentional. `internal/mcp` must have no import dependencies on `internal/agent`. The poll trigger engine reuses the MCP client directly — a tight coupling here would require refactoring later.
+Package boundaries are intentional. `internal/mcp` must have no import dependencies on `internal/execution/agent`. The poll trigger engine reuses the MCP client directly — a tight coupling here would require refactoring later.
 
 See [`architecture.md`](architecture.md) for the full package layout.
 For plugin work, see [`plugin-system-spec.md`](plugin-system-spec.md) for the full design specification (process model, services, credentials, trust, observability).
@@ -32,7 +32,7 @@ Go files under `/plugins/` may only import:
 - Third-party dependencies
 - `github.com/felag-engineering/gleipnir/plugin-sdk/...`
 
-Importing anything else under `github.com/felag-engineering/gleipnir/` (e.g. `internal/db`, `internal/execution/agent`) is a boundary violation. This rule ensures that when v1.0 GA ships the plugin repo split (per the plugin system spec §14.7), moving `/plugins/` to its own repository is a `git mv` rather than a refactor.
+Importing anything else under `github.com/felag-engineering/gleipnir/` (e.g. `internal/db`, `internal/execution/agent`) is a boundary violation. This rule keeps `/plugins/` self-contained so a future repo split (per the plugin system spec §14.7) stays a `git mv` rather than a refactor. As of v1.1.0 the plugins remain in the monorepo; the split is deferred.
 
 **How to check locally:**
 

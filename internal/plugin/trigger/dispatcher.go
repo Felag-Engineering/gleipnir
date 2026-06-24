@@ -71,7 +71,8 @@ type DispatcherConfig struct {
 	Querier Querier
 
 	// Dedup short-circuits dispatch when an event has already been seen within
-	// the dedup window. Noop{} is the default; #215 will swap in a real store.
+	// the dedup window. Noop{} is the zero-value default used by tests;
+	// production wires the SQLite-backed dedup.NewDBStore (see pluginruntime.go).
 	Dedup dedup.Store
 
 	// Publisher emits observability events onto the SSE bus.

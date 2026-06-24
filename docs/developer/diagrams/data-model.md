@@ -5,7 +5,7 @@ erDiagram
     policies {
         text id PK "ULID"
         text name UK "unique"
-        text trigger_type "webhook | manual | scheduled | poll"
+        text trigger_type "webhook | manual | scheduled | poll | cron | subscribed"
         text yaml "full policy config"
         text paused_at "nullable"
     }
@@ -89,13 +89,13 @@ erDiagram
 
     plugins {
         text id PK "ULID"
-        text name
-        text version
-        text status "installed | pending_review | pending_key_approval"
+        text name UK "unique; TOFU identity"
+        text plugin_version "author SemVer"
+        text status "pending_review | active | removed"
         text manifest_snapshot "JSON"
-        text trusted_pubkey
-        text binary_path
-        text bundle_dir
+        text trusted_pubkey "Minisign pubkey (TOFU-pinned)"
+        text binary_path "nullable"
+        integer version "CAS counter (ADR-038)"
     }
 
     plugin_instances {
@@ -122,11 +122,16 @@ erDiagram
     }
 
     plugin_pending_requests {
-        text id PK "ULID"
+        text id PK "ULID; the request_id"
         text plugin_instance_id FK
-        text request_id
         text run_id FK
-        text feedback_request_id FK "nullable"
+        text audience_entry_id FK "nullable (SET NULL)"
+        text tool_name
+        text status "pending | resolved | timed_out"
+        text response "nullable"
+        text expires_at "nullable"
+        text resolved_at "nullable"
+        text created_at
     }
 
     plugin_oauth_nonces {
@@ -135,11 +140,19 @@ erDiagram
         text created_at
     }
 
-    audiences {
+    plugin_event_dedup {
+        text plugin_instance_id PK "FK; part of composite PK"
+        text event_kind PK "part of composite PK"
+        text event_id PK "part of composite PK"
+        integer created_at_ms "host-assigned; eviction key"
+    }
+
+    plugin_audiences {
         text id PK "ULID"
         text name UK "unique"
+        text created_by_user_id FK "nullable (SET NULL)"
         integer disable_in_app_fallback
-        integer version
+        integer version "CAS counter (ADR-038)"
         text created_at
         text updated_at
     }
@@ -148,10 +161,10 @@ erDiagram
         text id PK "ULID"
         text audience_id FK
         text plugin_instance_id FK
+        integer position "ordering; UNIQUE per audience"
         integer notify
         integer request
         text config_json
-        integer priority
     }
 
     policies ||--o{ runs : "triggers"
@@ -165,6 +178,9 @@ erDiagram
     plugin_instances ||--o{ plugin_audit_events : "audits"
     plugin_instances ||--o{ plugin_pending_requests : "pending requests"
     plugin_instances ||--o{ plugin_oauth_nonces : "OAuth nonces"
-    audiences ||--o{ audience_entries : "entries"
+    plugin_instances ||--o{ plugin_event_dedup : "dedup keys"
+    runs ||--o{ plugin_pending_requests : "may have"
+    plugin_audiences ||--o{ audience_entries : "entries"
     plugin_instances ||--o{ audience_entries : "routes to"
+    audience_entries ||--o{ plugin_pending_requests : "routed via"
 ```

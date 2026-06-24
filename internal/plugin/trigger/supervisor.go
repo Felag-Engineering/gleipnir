@@ -555,10 +555,11 @@ func (s *Supervisor) recvLoop(
 			}
 		}
 
-		// Handle is synchronous: this blocks until dispatch is complete, which
-		// provides back-pressure to the plugin and preserves ordering.
-		// TODO: consider a per-instance ring-buffer + worker goroutine if
-		// Launch latency causes the plugin to see excessive back-pressure.
+		// Handle is synchronous by design: blocking until dispatch completes
+		// provides back-pressure to the plugin and preserves per-stream ordering.
+		// If Launch latency ever makes that back-pressure excessive, the escape
+		// hatch is a per-instance ring-buffer + worker goroutine — at the cost of
+		// the ordering and back-pressure guarantees this synchronous path gives.
 		if s.dispatcher != nil {
 			if handleErr := s.dispatcher.Handle(ctx, evt); handleErr != nil {
 				if ctx.Err() != nil {

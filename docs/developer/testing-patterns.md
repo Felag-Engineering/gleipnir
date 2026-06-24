@@ -24,7 +24,9 @@ Insert helpers set up test state without going through the full application laye
 
 | Constructor | Behavior | When to use |
 |------------|----------|-------------|
-| `NewMockLLMClient(responses...)` | Returns pre-canned responses in order | Agent tests with scripted LLM behavior |
+| `NewFakeClient(responses...)` | Drives scripted responses through the **real** `ProviderAdapter` via `FakeWire` (ADR-022) | Agent/trigger tests that should exercise the adapter choreography (metrics, error wrapping), not bypass it |
+| `NewFakeClientOnly(responses...)` | Same as `NewFakeClient` but returns only the `LLMClient` | When you don't need a handle to the underlying `FakeWire` |
+| `NewMockLLMClient(responses...)` | Returns pre-canned responses in order (bypasses the adapter) | Agent tests with scripted LLM behavior |
 | `NewNoopLLMClient()` | Panics if `CreateMessage` is called | Tests that construct a BoundAgent but never trigger an API call |
 | `NewBlockingLLMClient()` | Blocks until context is cancelled | Cancellation and timeout testing |
 | `NewErrorLLMClient(err)` | Always returns the given error | Error path testing |
@@ -58,13 +60,15 @@ Use `srv.Requests()` after the test to verify request bodies. Use `MockErrorResp
 
 ### Event recording
 
-`RecordingPublisher` captures published events for assertion:
+`testutil.RecordingPublisher` captures published events for assertion. It exposes `EventsByType(eventType)` to filter to a specific event:
 
 ```go
 pub := &testutil.RecordingPublisher{}
 // ... pass pub to components that publish events ...
-events := pub.Events()
+events := pub.EventsByType("run.status_changed")
 ```
+
+The agent package has its own in-package `capturePublisher` (see `internal/execution/agent/state_test.go`) that adds a `waitForEvent(t, eventType, timeout)` helper — the canonical "signal-don't-poll" primitive for blocking on an asynchronous side effect (see [Signal, don't poll](#signal-dont-poll) below).
 
 ### Reusable policy YAML
 
@@ -107,7 +111,26 @@ Full agent loop tests follow this pattern:
 6. Close the AuditWriter (flushes buffered writes)
 7. Assert on: audit trail steps, final run status, published events
 
-See `internal/agent/agent_test.go` for examples.
+See `internal/execution/agent/agent_test.go` for examples.
+
+### Injecting time
+
+Anything whose behavior depends on `time.Now()` — rate limiters, timeouts, scheduled jobs, audit-coalescing windows — must route through an injectable package-level clock (convention: `var timeNow = func() time.Time { return time.Now() }`), and tests swap it via `t.Cleanup` rather than relying on wall-clock timing.
+
+Rules:
+
+- Production hot paths that tests assert against never call `time.Now()` directly — wrap in `timeNow()`.
+- Tests that mutate a shared package-level clock variable must **not** use `t.Parallel()`.
+- When `t.Parallel()` is required, use an external test package with a `SetTimeNowForTest(fn) (restore func())` export hook.
+- Advancing a fake clock also refills `rate.Limiter` tokens — drain the burst at each new timestamp before probing drop behavior.
+
+The canonical pattern lives in `internal/plugin/hostsvc/event_ratelimit.go` and `event_ratelimit_test.go`. Other live examples: `internal/llm/retry.go`, `internal/plugin/oauth/scanner.go`, `internal/plugin/process/rss_sampler.go`.
+
+### Signal, don't poll
+
+When a test waits for an asynchronous side effect (DB row inserted, status transition committed, audit step flushed), synchronize on an event the system already publishes — do not poll on a tight wall-clock deadline.
+
+Agent tests use `capturePublisher.waitForEvent(t, eventType, timeout)` to block on a specific event-bus message (e.g. `pub.waitForEvent(t, "feedback.created", 5*time.Second)` in `feedback_test.go`); the deadline becomes a generous CI-tolerance bound (seconds), not the actual assertion. If you find yourself writing `time.Sleep` inside a `for time.Now().Before(deadline)` loop, look for a publisher, channel, or callback that fires the moment the work is done. The few waits that genuinely cannot be turned into signals must use deadlines at least 5× the expected duration.
 
 ### Mock MCP servers
 
@@ -127,7 +150,7 @@ mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *htt
 
 ### State machine tests
 
-Test status transitions by injecting a `RecordingPublisher` and asserting on published `run.status_changed` events. See `internal/agent/state_test.go`.
+Test status transitions by injecting a publisher and asserting on published `run.status_changed` events. See `internal/execution/agent/state_test.go`.
 
 ### AuditWriter flush ordering
 

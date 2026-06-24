@@ -19,9 +19,9 @@ import (
 )
 
 // ConnFactory creates or returns a gRPC connection to the named plugin instance.
-// The pool calls this once per instance (lazy, cached). The real implementation
-// (returning a UDS-backed conn) is wired in the follow-up that owns subprocess
-// lifecycle; for now main.go supplies a stub that returns an error.
+// The pool calls this once per instance (lazy, cached). The production
+// implementation is a UDS-backed conn via the process.Manager, wired in
+// pluginruntime.go (managerConnFactory.Connect); tests supply a stub.
 type ConnFactory func(instanceName string) (*grpc.ClientConn, error)
 
 // Config holds all tunable parameters for a Pool.

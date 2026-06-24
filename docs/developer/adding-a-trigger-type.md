@@ -1,8 +1,8 @@
 # Adding a New Trigger Type
 
-Gleipnir has four trigger types: `webhook`, `manual`, `scheduled`, `poll`. They all converge on the same `RunLauncher.Launch()` path, but each has its own handler, validation rules, and (optionally) background processing.
+Gleipnir has six trigger types: `webhook`, `manual`, `scheduled`, `poll`, `cron`, and `subscribed` (the internal-only plugin-sourced type — see the section at the end). They all converge on the same `RunLauncher.LaunchWithConcurrency()` seam, but each has its own handler, validation rules, and (optionally) background processing.
 
-This guide walks through every file you need to touch. Use the `poll` trigger (the most recent addition) as your reference implementation.
+This guide walks through every file you need to touch. Use the `cron` trigger (a recent background-driven addition) or `poll` as your reference implementation.
 
 ## Checklist
 
@@ -14,9 +14,9 @@ Add a new `TriggerType` constant alongside the existing ones and update the `Val
 
 ### 2. Add trigger-specific config fields (if any)
 
-**File:** `internal/policy/model.go`
+**File:** `internal/model/model.go`
 
-The `TriggerConfig` struct holds type-specific fields like `FireAt` (scheduled), `Interval` (poll), and `WebhookSecret` (webhook). Add fields for your new type here.
+The `TriggerConfig` struct holds type-specific fields like `FireAt` (scheduled), `Interval` (poll), and `CronExpr` (cron). Add fields for your new type here.
 
 ### 3. Update the policy YAML schema docs
 
@@ -102,7 +102,7 @@ case run.OutcomeSkipped:
 
 - Instantiate your handler (passing `store` and `launcher`)
 - If HTTP-driven: add it to the `api.RouterConfig` struct
-- If background-driven: call `Start(ctx)` alongside the scheduler and poller, and ensure it respects context cancellation for graceful shutdown
+- If background-driven: call `Start(ctx)` alongside the scheduler, poller, and cron runner, and ensure it respects context cancellation for graceful shutdown (it must also drain within `GLEIPNIR_DRAIN_TIMEOUT`)
 
 ### 10. Register the route (if HTTP-driven)
 
@@ -128,10 +128,12 @@ case run.OutcomeSkipped:
 
 | Trigger type | Handler file | Background? | Notes |
 |-------------|-------------|-------------|-------|
-| `webhook` | `internal/trigger/webhook.go` | No | HMAC signature validation, rate limited |
+| `webhook` | `internal/trigger/webhook.go` | No | HMAC/bearer signature validation, rate limited |
 | `manual` | `internal/trigger/manual.go` | No | Simplest — good starting point |
-| `scheduled` | `internal/trigger/scheduled.go` | Yes | Loads fire_at times, arms timers |
-| `poll` | `internal/trigger/poll.go` | Yes | Cron expression, MCP tool check, hash dedup |
+| `scheduled` | `internal/trigger/scheduled.go` | Yes | Loads fire_at times, arms per-timestamp timers, auto-pauses when exhausted |
+| `poll` | `internal/trigger/poll.go` | Yes | Recurring interval, MCP tool check, JSONPath condition, hash dedup |
+| `cron` | `internal/trigger/cron.go` | Yes | 5-field POSIX cron expression, runs indefinitely |
+| `subscribed` | `internal/plugin/trigger/dispatcher.go` | Yes | Plugin-sourced events; dispatched from the hostsvc trigger sink, not `internal/trigger/` (see below) |
 
 ## Plugin-sourced (`subscribed`) triggers
 

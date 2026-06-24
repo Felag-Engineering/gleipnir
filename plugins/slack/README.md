@@ -1,12 +1,10 @@
 # slack
 
-**Status: All three services implemented (#233, #234, #235).** OAuth authcode integration documented in #236.
-
-Remaining issues:
-
-- [#237](https://github.com/felag-engineering/gleipnir/issues/237) — End-to-end test, packaging, signing
-
-Parent tracking issue: [#162](https://github.com/felag-engineering/gleipnir/issues/162)
+The kitchen-sink reference plugin: it exercises all three plugin service
+surfaces (tools, triggers, channels) plus the host-driven `oauth2_authcode`
+credential strategy. If you want to see how a full-featured Gleipnir plugin is
+put together, read this one alongside `plugins/ntfy` (the minimal channel-only
+reference).
 
 ## What this plugin declares
 
@@ -24,12 +22,18 @@ slack/
   tools.go           — typed tool params + handlers (#233)
   translator.go      — pure functions translating Socket Mode events to channel_message payloads (#234)
   scope.go           — SlackSubscriptionScope decode + matches helpers (#234)
+  sockethub.go       — Socket Mode connection lifecycle (xapp- token, reconnect)
+  hub_registry.go    — per-instance Socket Mode hub sharing across services
+  channel_blocks.go  — Block Kit message builders for Request buttons (#235)
+  channel_state.go   — in-flight Request correlation map (callback routing)
   manifest.go        — pluginManifest variable (source of truth for metadata + event kinds)
   manifest.yaml      — canonical YAML projection of manifest.go (generated)
   manifest_test.go   — TestManifestYAMLIsCanonical: round-trip + Go-source equality
-  service_test.go    — service-level behavior assertions (tool calls, trigger lifecycle)
+  service_test.go    — service-level behavior assertions (tool calls, trigger/channel lifecycle)
+  tools_test.go      — per-tool handler tests + rate-limit behavior (#233)
   translator_test.go — pure translator unit tests (#234)
   scope_test.go      — subscription-scope matching unit tests (#234)
+  channel_blocks_test.go / channel_state_test.go / hub_registry_test.go — channel/hub unit tests
   Makefile           — build / test / manifest / validate / clean targets
   .gitignore         — excludes the compiled binary and signing artifacts
   go.mod             — per-plugin module; resolved by the repo-root go.work
@@ -189,6 +193,10 @@ go test ./plugins/slack/...
 
 The broader `go test ./plugins/...` does not work, because each first-party plugin is its own module and the gleipnir root module owns nothing under `./plugins/`. CI iterates the directories explicitly — see the `Test plugins (workspace)` step in `.github/workflows/ci.yml`.
 
+A representative slice of the suite (the channel `Request` interactive-callback,
+hub-registry, and correlation-map tests are omitted here for brevity — run
+`go test -v ./...` for the full list):
+
 | Test | What it asserts |
 |------|-----------------|
 | `TestManifestYAMLIsCanonical` | `manifest.yaml` round-trips and matches `manifest.go` |
@@ -200,11 +208,11 @@ The broader `go test ./plugins/...` does not work, because each first-party plug
 | `TestDeriveEventIDIsDeterministic` | Same (channelID, ts) → same ULID across two calls |
 | `TestDeriveEventIDDiffersForDifferentInputs` | Different inputs → different ULIDs |
 | `TestParseSlackTS` | Valid ts parses correctly; malformed ts falls back to now |
-| `TestSlackSubscriptionScopeMatches` | Table-driven scope matching: by-id, by-name, mention-only, composed |
+| `TestSlackSubscriptionScopeMatches` | Table-driven scope matching: by channel ID (ID-only, per `scope.go`), mention-only, composed |
 | `TestDecodeSubscriptionScope` | Empty/`{}` → zero value; malformed → error |
-| `TestToolListToolsAdvertisesAll` | `ListTools` returns exactly 5 tools with valid JSON-Schema InputSchema |
+| `TestToolListToolsAdvertisesAll` | `ListTools` returns exactly the four tools with valid JSON-Schema InputSchema |
 | `TestToolCancelIsNoOp` | `Cancel` returns an empty response with no error |
-| `TestToolCalls` | Table-driven: happy path × 5 tools, error cases, auth failures, unknown tool |
+| `TestToolCalls` | Table-driven: happy path × 4 tools, error cases, auth failures, unknown tool |
 | `TestToolCallMetricOutcomeLabel` | Metric `outcome` label is `"ok"` on success and `"error"` on error |
 | `TestToolCallCtxCancel` | Cancelled context surfaces as `UNAVAILABLE` |
 | `TestMapErr` | Slack error-code strings map to the correct `ErrorCode` + health hint |
@@ -238,18 +246,20 @@ Then run `go test ./...` to confirm `TestManifestYAMLIsCanonical` still passes.
 
 2. **Generate signing keys** (not committed — keep the private key secret):
    ```sh
-   gleipnir-plugin keygen --out slack.key
+   gleipnir-plugin keygen --out-dir . --name slack --unencrypted
    # produces slack.key (private) and slack.pub (public)
    ```
 
-3. **Sign and package:**
+3. **Sign and package** (the `package` subcommand signs internally; a separate
+   `sign` step is not required):
    ```sh
-   gleipnir-plugin sign    --binary ./slack --manifest manifest.yaml --key slack.key
-   gleipnir-plugin package --binary ./slack --manifest manifest.yaml --sig slack.sig --out slack.tar.gz
+   gleipnir-plugin package --binary ./slack --manifest manifest.yaml \
+     --key slack.key --pubkey slack.pub --out-dir dist
+   # produces dist/slack-0.1.1.tar.gz
    ```
 
 4. **Install** via the Gleipnir admin UI at `/admin/plugins` → "Install plugin"
-   → upload `slack.tar.gz`.
+   → upload `dist/slack-0.1.1.tar.gz`.
 
 5. **Configure OAuth credentials** — follow the steps in §"Configure OAuth credentials" above.
 

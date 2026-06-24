@@ -56,5 +56,9 @@
     "workerDirectory": [
       "storybook-public"
     ]
+  },
+  "overrides": {
+    "undici": "^7.28.0",
+    "esbuild": "^0.28.1"
   }
 }

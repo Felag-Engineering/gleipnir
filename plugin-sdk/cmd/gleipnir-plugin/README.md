@@ -40,9 +40,23 @@ gleipnir-plugin new myplugin --kind combo --module github.com/myorg/myplugin
 - `trigger` — TriggerService with one EmitEvent example
 - `combo` — all three services
 
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--kind` | `tool` | Plugin kind: `tool`, `channel`, `trigger`, `combo` |
+| `--dir` | `./<name>` | Output directory |
+| `--module` | `example.com/<name>` | Go module path written to `go.mod` |
+| `--sdk-replace` | (none) | Local filesystem path to `plugin-sdk`; adds a `replace` directive to `go.mod` (local dev only) |
+
+Each scaffold writes `main.go`, `manifest.go`, `service.go`, `service_test.go`
+(kind-specific), plus `go.mod`, `Makefile`, `manifest.yaml`, `README.md`, and
+`.gitignore`.
+
 ### `gleipnir-plugin gen-manifest`
 
-Invoke `<binary> --emit-manifest` and write canonical YAML to `manifest.yaml`:
+Invoke `<binary> --emit-manifest` and write canonical YAML. `--out` writes to a
+file; when omitted, the YAML is written to stdout:
 
 ```bash
 go build -o myplugin .
@@ -51,6 +65,13 @@ gleipnir-plugin gen-manifest --binary ./myplugin --out manifest.yaml
 
 The canonical YAML has sorted keys and 2-space indent. Re-running for the same
 Go declarations produces byte-identical output (required for signing).
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--binary` | (required) | Path to the plugin binary |
+| `--out` | (stdout) | Output file path |
 
 ### `gleipnir-plugin validate`
 
@@ -104,6 +125,17 @@ gleipnir-plugin sign --binary ./myplugin --manifest manifest.yaml \
 The signed payload is `sha256(binary) || sha256(manifest)` per spec §5.2.
 The `.minisig` defaults to `<binary-basename>.minisig` in the current directory.
 
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--binary` | (required) | Path to the plugin binary |
+| `--manifest` | `manifest.yaml` | Path to manifest.yaml |
+| `--key` | `~/.config/gleipnir-plugin/keys/signing.key` | Secret key path |
+| `--key-stdin` | false | Read .key from stdin (CI) |
+| `--out` | `<binary-basename>.minisig` | Output `.minisig` path |
+| `--trusted-comment` | (timestamp + manifest name/version) | Minisign trusted comment |
+
 **Key resolution order:**
 1. `--key-stdin` — read .key content from stdin
 2. `GLEIPNIR_PLUGIN_SIGNING_KEY` env var — path or inline .key content
@@ -131,14 +163,16 @@ gleipnir-plugin package --binary ./myplugin --sbom sbom.cyclonedx.json
 ```
 <name>-<version>.tar.gz
   <name>-<version>/
-    <binary-basename>         (mode 0755)
+    <manifest.Name>           (mode 0755, the binary)
     manifest.yaml             (mode 0644)
     <manifest.Name>.minisig   (mode 0644)
     signing.pub               (mode 0644)
     sbom.cyclonedx.json       (mode 0644, optional)
 ```
 
-The `.minisig` filename derives from `manifest.Name`, not the binary basename.
+Both the binary and the `.minisig` filename derive from `manifest.Name`, not the
+source binary's basename — the host locates the binary at `<bundle>/<manifest.Name>`
+to hash and verify it.
 
 **Unsigned bundles:**
 
@@ -306,7 +340,7 @@ authors can rely on consistent behavior between local dev and production.
 - No interactive REPL / TUI mode (explicitly out of scope for #171).
 - Does NOT simulate signature verification, version mismatch, or a real
   LLM/SQLite.
-- `GLEIPNIR_PLUGINS_ENABLED` is unaffected — `gleipnir-plugin run` runs
+- Host configuration does not affect it — `gleipnir-plugin run` runs
   out-of-band, not through the host's plugin loader.
 
 See `docs/developer/plugin-system-spec.md §14.4` for the testing harness spec

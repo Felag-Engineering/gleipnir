@@ -239,6 +239,19 @@ capabilities:
       #   because the background scanner could not honor it on crash recovery.
       on_timeout: reject
 
+    # With parameter scoping (ADR-017):
+    - tool: server_name.tool_name
+      # params: map — optional
+      #   Key allowlist that narrows the tool's input schema BEFORE the agent
+      #   sees it (structural enforcement, not prompt-based). Only the parameter
+      #   names listed as keys survive in the schema the agent is given; every
+      #   other property is stripped, and required fields not listed are dropped.
+      #   The map VALUES are ignored — this restricts which parameters exist, not
+      #   what values they may take. For value-level control, use approval gating.
+      #   When omitted or empty, the full tool schema is exposed unchanged.
+      params:
+        allowed_param_name: {}
+
 
   # feedback: block — optional
   #   Enables the native feedback channel (gleipnir.ask_operator).

@@ -1,8 +1,8 @@
-# Plugin System — Design Specification
+# Plugin System — Specification
 
-**Status:** Draft for review — design tree closed 2026-05-02; not yet implemented.
-**Audience:** Engineers, reviewers, and agents evaluating the design before implementation.
-**Companion docs:** `architecture.md` (system overview), `ADR_Tracker.md` (existing ADRs the plugin system extends or supersedes).
+**Status:** Implemented — shipped in v1.1.0. Design tree closed 2026-05-02; this document is now the reference specification for the implemented system.
+**Audience:** Engineers and agents working on or extending the plugin subsystem. Plugin authors building against the SDK should start with the [Plugin Author Guide](plugin-author-guide.md).
+**Companion docs:** `plugin-author-guide.md` (build a plugin), `architecture.md` (system overview), `ADR_Tracker.md` (existing ADRs the plugin system extends or supersedes).
 
 ---
 
@@ -179,7 +179,7 @@ The admin UI list view follows `plugin → instances` today; v2 adds a third tie
 | TOFU violation | Block + "Accept new key" UI. |
 | Material manifest change on hot-reload | Block reload, pending admin approval. |
 | Verification system error (missing `.minisig`, I/O) | Fail closed, surface detailed error. |
-| Unsigned plugin | Block by default. Override: global env var `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true` (not per-plugin). When set: red banner across admin UI, high-severity audit events on every load, `signature_verification: disabled` in `/api/v1/health`. Even in permissive mode, signed plugins are still fully verified. |
+| Unsigned plugin | Block by default. Override: global env var `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true` (not per-plugin). When set: high-severity audit events on every load, a per-instance `unsigned_permissive` health chip on `/admin/plugins` (the originally-specced global banner was descoped to this per-instance indicator), and `signature_verification: disabled` in `/api/v1/health`. Even in permissive mode, signed plugins are still fully verified. |
 | Hot-reload failure on running plugin | Old generation drains in-flight requests; new generation never starts. Admin sees "serving in-flight, no new requests accepted" with View error / Revert / Remove pending update actions. |
 
 ### 5.6 Per-instance health states
@@ -481,7 +481,9 @@ On host SIGTERM: send SIGTERM to all plugin subprocesses, 10s grace, SIGKILL str
 
 ### 13.5 Auto-restart
 
-Auto-restart with exponential backoff capped at 5 minutes. Standard gRPC health protocol (`grpc.health.v1.Health`); ping every 30s; 3 missed → restart.
+**Process-level auto-restart is NOT implemented in v1.1.0.** A crashed subprocess transitions to the `crashed` health state (added to `blockedHealthStates` in `internal/plugin/process/manager.go`) and must be **manually restarted by an operator** from the admin UI. The originally-specified mechanism — exponential backoff capped at 5 minutes plus a `grpc.health.v1.Health` ping loop (30s ping, 3 missed → restart) — was deferred; no host-side health-ping client exists.
+
+The only backoff that ships is in the **trigger supervisor** (`internal/plugin/trigger/supervisor.go`), which reconnects a dropped `TriggerService.Start` *stream* (not the process) with bounded exponential backoff (1s base, doubling, capped at 60s, ±25% jitter) and marks the instance unhealthy after a configurable number of consecutive failures (default 5). That is stream-reconnect resilience, distinct from the process-level auto-restart described above.
 
 ### 13.6 gRPC deadlines
 
@@ -604,16 +606,14 @@ Each step is shippable independently:
 8. **Slack plugin.** Kitchen-sink validation of all three services + OAuth.
 9. Admin UI iterates throughout.
 
-### 15.2 Feature flag
+### 15.2 Feature flag (removed)
 
-Single global env var `GLEIPNIR_PLUGINS_ENABLED=false` default. Loader/manager doesn't start unless on. When off: `/admin/plugins` returns 404, audience editor hidden, plugin instance pickers empty.
+The plugin system rolled out behind a single global env var, `GLEIPNIR_PLUGINS_ENABLED`, which has since completed its lifecycle and **been removed** (issue #247). The flag was always a temporary rollout mechanism, not a permanent config knob:
+1. Shipped off-default in release N
+2. Flipped on-default in release N+1 after a stable cycle
+3. **Removed entirely in v1.1.0 (release N+2)** — the plugin system is now an unconditional part of the host. Setting `GLEIPNIR_PLUGINS_ENABLED` is ignored.
 
-**The flag is a temporary rollout mechanism, not a permanent config knob.** Lifecycle:
-1. Ships off-default in release N
-2. Flips on-default in release N+1 after a stable cycle
-3. **Flag removed entirely** in release N+2
-
-The step-2 in-app feedback refactor lands independently of the flag (behavior-neutral). The flag only gates external plugins, not the internal `inAppChannel`.
+The in-app feedback refactor landed independently of the flag (behavior-neutral) and was never gated by it — the flag only ever gated external plugins, not the internal `inAppChannel`.
 
 **Subprocess spawn on instance creation.** When an admin creates a plugin instance via the API, the handler immediately calls `StartByPluginID` to spawn the subprocess — no server restart required (same fire-and-forget pattern as the post-install hook).
 

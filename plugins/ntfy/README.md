@@ -25,6 +25,7 @@ ntfy/
   manifest.yaml      — canonical YAML projection of manifest.go (generated)
   manifest_test.go   — TestManifestYAMLIsCanonical: round-trip + Go-source equality
   service_test.go    — 5 test cases (happy path, topic override, errors, no auth)
+  integration_test.go — end-to-end test booting the binary against a fake ntfy server
   go.mod             — per-plugin module; resolved by the repo-root go.work
 ```
 
@@ -60,8 +61,10 @@ instance credentials screen.
 go build .
 ```
 
-The produced binary panics if executed directly because `serve.Serve()` is a
-Phase-3 stub (tracked in issue #170). Use the test suite instead.
+The binary is a go-plugin subprocess: executing it directly prints a "this is a
+plugin" notice rather than running, since it expects the host to launch it over
+the go-plugin handshake. Use the test suite below, or `gleipnir-plugin run` to
+drive it against a fake host.
 
 ## Test
 

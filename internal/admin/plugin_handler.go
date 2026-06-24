@@ -1074,7 +1074,8 @@ type installResponse struct {
 // Status map:
 //   - 201  — install accepted (may still be pending_review or pending_key_approval)
 //   - 400  — empty body, or tarball is malformed / manifest invalid
-//   - 409  — CAS conflict (concurrent update to same plugin)
+//   - 409  — CAS conflict, OR bundle verified but rejected (pinned-key mismatch,
+//     material manifest change, or downgrade); see audit log
 //   - 413  — body exceeds 100 MiB cap
 //   - 422  — bundle signature rejected; see audit log
 //   - 503  — plugin subsystem disabled (installer == nil)
@@ -1121,6 +1122,12 @@ func (h *PluginHandler) Install(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		msg := err.Error()
 		switch {
+		case strings.Contains(msg, "install rejected:"):
+			// Bundle verified but refused for a trust/policy reason (pinned-key
+			// mismatch, material manifest change, or downgrade). The audit event is
+			// already recorded; surface 409 so the caller knows it was NOT applied,
+			// instead of the previous misleading 201 with the unchanged row.
+			httputil.WriteError(w, http.StatusConflict, msg, "")
 		case strings.Contains(msg, "extract tarball"):
 			// Tarball-format failures: bad gzip header, file-count limit,
 			// disallowed symlinks, unsupported entry types, uncompressed size cap.

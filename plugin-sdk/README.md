@@ -3,27 +3,43 @@
 The plugin SDK provides the protobuf contracts, generated gRPC stubs, and
 developer tooling for building Gleipnir plugins.
 
+> **New to plugin development?** Start with the
+> [Plugin Author Guide](../docs/developer/plugin-author-guide.md) — it walks
+> through scaffolding, implementing a service, signing, packaging, and
+> installing a plugin end to end.
+
 ## Structure
 
 ```
 plugin-sdk/
   proto/          — .proto source files for all plugin services
   gen/            — generated Go stubs (committed; regenerate with `make proto`)
-  manifest/       — manifest builder types (Phase 3)
-  serve/          — plugin entry point: serve.Serve() (Phase 3)
-  testing/        — fake host for unit tests (issue #172)
-  examples/       — end-to-end examples (issue #173)
+  manifest/       — manifest builder types (code-first manifest authoring)
+  serve/          — plugin entry point: serve.Serve() + WithXHandler / WithXService options
+  tool/           — tool.Service ergonomic interface (plain-Go tool handlers)
+  channel/        — channel.Service ergonomic interface (Notify / Request handlers)
+  trigger/        — trigger.Service ergonomic interface (event emit callback)
+  credentials/    — typed accessors for the credential strategies
+  pluginerr/      — error codes + ErrorEnvelope helpers for plugin handlers
+  hostwire/       — go-plugin handshake config and gRPC wiring shared by serve/
+  signing/        — bundled Minisign sign/verify library (ADR-043)
+  testing/        — fake host for unit tests (NewFakeHost)
+  examples/       — end-to-end examples
   cmd/
-    gleipnir-plugin/  — developer CLI (issue #169 onward)
+    gleipnir-plugin/  — developer CLI (new, gen-manifest, validate, keygen, sign, package, run)
   internal/
     tools/        — pinned generator versions for `go mod tidy`
 ```
+
+The module path is `github.com/felag-engineering/gleipnir/plugin-sdk` and it
+requires Go 1.25 (`go 1.25.11` in `go.mod`).
 
 ## Proto services
 
 | Service | Package | Purpose |
 |---------|---------|---------|
 | `HandshakeService` | `gleipnir.plugin.handshake.v1` | Protocol negotiation — immortal, never bumps |
+| `BootstrapService` | `gleipnir.plugin.bootstrap.v1` | Per-instance bind step run after the handshake (additive, evolves independently) |
 | `ToolService` | `gleipnir.plugin.tool.v1` | Agent-callable tools (`ListTools`, `Call`) |
 | `ChannelService` | `gleipnir.plugin.channel.v1` | Notifications and request/response feedback |
 | `TriggerService` | `gleipnir.plugin.trigger.v1` | Long-lived event stream |

@@ -369,7 +369,15 @@ func (s *DBStore) SetStaticAPIKey(ctx context.Context, instanceID, headerName, s
 		if err != nil {
 			return fmt.Errorf("set static api key (attempt %d): %w", attempt+1, err)
 		}
-		if creds.Strategy != sdkmanifest.AuthStrategyStaticAPIKey {
+		if creds.Strategy == "" {
+			// First credential write for a freshly-created instance, whose stored
+			// blob has no strategy yet (instance creation seeds credentials_encrypted
+			// as NULL). Seed it here. The HTTP handler has already validated this
+			// operation against the manifest's declared strategy
+			// (requireOneOfStrategies), so seeding is safe. Mirrors SetOAuthClient /
+			// SeedOAuthToken, which non-OAuth strategies previously lacked (#572).
+			creds.Strategy = sdkmanifest.AuthStrategyStaticAPIKey
+		} else if creds.Strategy != sdkmanifest.AuthStrategyStaticAPIKey {
 			return ErrWrongStrategy
 		}
 		creds.StaticAPIKey = &StaticAPIKeyCreds{
@@ -413,7 +421,11 @@ func (s *DBStore) SetHeaderSetEntry(ctx context.Context, instanceID string, head
 		if err != nil {
 			return fmt.Errorf("set header set entry (attempt %d): %w", attempt+1, err)
 		}
-		if creds.Strategy != sdkmanifest.AuthStrategyHeaderSet {
+		if creds.Strategy == "" {
+			// Seed the strategy on first write for a fresh instance (#572). The
+			// handler already validated it against the manifest. See SetStaticAPIKey.
+			creds.Strategy = sdkmanifest.AuthStrategyHeaderSet
+		} else if creds.Strategy != sdkmanifest.AuthStrategyHeaderSet {
 			return ErrWrongStrategy
 		}
 		if creds.HeaderSet == nil {
@@ -507,7 +519,11 @@ func (s *DBStore) SetBasicAuth(ctx context.Context, instanceID, username, passwo
 		if err != nil {
 			return fmt.Errorf("set basic auth (attempt %d): %w", attempt+1, err)
 		}
-		if creds.Strategy != sdkmanifest.AuthStrategyBasicAuth {
+		if creds.Strategy == "" {
+			// Seed the strategy on first write for a fresh instance (#572). The
+			// handler already validated it against the manifest. See SetStaticAPIKey.
+			creds.Strategy = sdkmanifest.AuthStrategyBasicAuth
+		} else if creds.Strategy != sdkmanifest.AuthStrategyBasicAuth {
 			return ErrWrongStrategy
 		}
 		creds.BasicAuth = &BasicAuthCreds{Username: username, Password: password}

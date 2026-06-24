@@ -24,8 +24,9 @@ var eventDroppedCounter = promauto.With(metrics.Registry()).NewCounterVec(
 
 const (
 	// defaultEventsPerSec is the sustained token-bucket fill rate per instance.
-	// TODO(#222): read from plugin_instances.config_json once a stable
-	// instance-config schema exists (spec §4.3 "configurable on instance").
+	// TODO(#577): read from plugin_instances.config_json (the instance-config
+	// schema now exists, ADR-049) so this is configurable per spec §4.3
+	// "configurable on instance".
 	defaultEventsPerSec = 100.0
 
 	// defaultEventsBurst is the maximum instantaneous burst allowed per instance.

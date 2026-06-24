@@ -17,6 +17,8 @@ sqlc generate            # regenerate internal/db/ from internal/db/queries/*.sq
 docker compose up        # run full stack (Go binary with embedded frontend)
 ```
 
+The `Makefile` wraps the common targets: `make build` (`go build ./...`), `make test` (`go test -race ./...`), `make lint` (gofmt check + plugin import boundary + staticcheck), and `make proto` (regenerate gRPC stubs). `make help` lists them all.
+
 ## Frontend
 
 Run from `frontend/`:
@@ -43,6 +45,18 @@ npm run storybook        # Storybook on port 6006
 | `GLEIPNIR_APPROVAL_SCAN_INTERVAL` | `30s` | How often to check for timed-out approvals |
 | `GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT` | `30m` | Default timeout for feedback requests |
 | `GLEIPNIR_FEEDBACK_SCAN_INTERVAL` | `30s` | How often to check for timed-out feedback |
-| `GLEIPNIR_DEFAULT_PROVIDER` | `anthropic` | Default LLM provider |
+| `GLEIPNIR_PLUGIN_REQUEST_SCAN_INTERVAL` | `30s` | How often to check for timed-out plugin channel requests |
+| `GLEIPNIR_DRAIN_TIMEOUT` | `5m` | Graceful-shutdown drain timeout for in-flight runs and background loops |
+| `GLEIPNIR_PID_FILE` | `/var/run/gleipnir.pid` | Path the server writes its PID to on startup |
+| `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` | `false` | When `true`, the loader accepts plugins lacking a Minisign signature (see ADR-045 §6) |
+| `GLEIPNIR_PLUGINS_DIR` | `/plugins` | Directory watched for plugin tarballs (`.tar.gz`/`.tgz`) |
+| `GLEIPNIR_OAUTH_REFRESH_INTERVAL` | `5m` | How often the OAuth refresh scanner runs to refresh plugin OAuth2 tokens |
+| `GLEIPNIR_OAUTH_REFRESH_LEAD` | `15m` | Lead-time window before token expiry within which a refresh is triggered |
+| `GLEIPNIR_PLUGIN_DEDUP_SWEEP_INTERVAL` | `10m` | How often the dedup sweeper evicts `plugin_event_dedup` rows past the fixed 1-hour window |
+| `GLEIPNIR_LLM_RETRY_MAX_ATTEMPTS` | `4` | Total attempts (incl. the first) for a transient LLM API failure; `1` disables retry |
+| `GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF` | `1s` | Base wait for the manual retry loop (Google + openaicompat) |
+| `GLEIPNIR_LLM_RETRY_MAX_BACKOFF` | `30s` | Ceiling for any single wait in the manual retry loop |
 
 **Provider API keys** are not configured via environment variables. They are set through the admin UI at `/admin/models` and stored encrypted in the database. Env vars like `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` are intentionally ignored — a startup warning is logged if they are set.
+
+The system default LLM model is configured through the admin UI (`PUT /api/v1/admin/settings/default-model`), not an environment variable. There is no `GLEIPNIR_DEFAULT_PROVIDER`.

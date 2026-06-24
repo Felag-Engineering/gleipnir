@@ -17,5 +17,6 @@ For people writing Gleipnir code. If you're looking for how to *run* Gleipnir, s
 - [Testing patterns](testing-patterns.md) — test helpers in `testutil/`, mock LLM clients, agent integration tests.
 
 ### Reference
-- [Manual testing](manual-testing.md) — live integration test environment with real MCP servers.
-- [Scheduler dispatcher](dispatcher.md) — design reference for the centralized scheduling layer (ADR-036).
+- [Manual testing](manual-testing.md) — live integration test environment with real MCP servers and the Slack plugin.
+- [Plugin system spec](plugin-system-spec.md) — full design specification for the go-plugin extension system (process model, services, credentials, trust, observability).
+- [Scheduler dispatcher](dispatcher.md) — forward-looking design for a centralized scheduling layer (ADR-036). **Not yet implemented** — the scheduled/poll/cron triggers each still own their own loop today.

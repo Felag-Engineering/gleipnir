@@ -19,14 +19,18 @@ graph TD
 
     subgraph plugins["Plugin layer"]
         direction LR
-        PLUGIN["<b>plugin</b><br/>Loader, watcher,<br/>installer"]
+        PLUGIN["<b>plugin (loader)</b><br/>Loader, watcher,<br/>installer, verifier"]
         HOSTSVC["<b>hostsvc</b><br/>Host RPCs<br/>(8 Tier-1 + 2 Tier-2)"]
-        DISPATCH["<b>dispatch</b><br/>gRPC tool-call<br/>dispatcher"]
+        DISPATCH["<b>dispatch</b><br/>gRPC tool-call +<br/>channel dispatcher"]
         PROCESS["<b>process</b><br/>Subprocess lifecycle"]
         OAUTH["<b>oauth</b><br/>OAuth2 orchestration"]
         PTRIGGER["<b>plugin/trigger</b><br/>Supervisor + dispatcher"]
         PTOOLS["<b>plugin/tools</b><br/>Tool registrar"]
         PSTATE["<b>plugin/state</b><br/>Health state machine"]
+        GENERATION["<b>generation</b><br/>Refcount + drain"]
+        IDENTITY["<b>identity</b><br/>Instance-token registry"]
+        AUDIENCE["<b>audience</b><br/>Channel routing"]
+        DEDUP["<b>dedup</b><br/>Event dedup window"]
     end
 
     subgraph orchestration["Agent layer"]
@@ -72,15 +76,26 @@ graph TD
     AGENT --> LLM
     AGENT --> MCP
     AGENT --> POLICY
-    AGENT --> DISPATCH
 
     MCP -.->|"must never import"| AGENT
 
+    %% run owns the concrete plugin dispatcher and injects it into the agent
+    %% through agent.PluginToolDispatcher (an interface) — agent never imports dispatch.
+    RUN --> DISPATCH
+
     PLUGIN --> PROCESS
-    PLUGIN --> HOSTSVC
+    PLUGIN --> GENERATION
+    PLUGIN --> IDENTITY
+    PROCESS --> GENERATION
+    PROCESS --> PSTATE
     HOSTSVC --> DISPATCH
-    DISPATCH --> PROCESS
+    HOSTSVC --> GENERATION
+    HOSTSVC --> IDENTITY
+    DISPATCH --> AUDIENCE
+    PTRIGGER --> HOSTSVC
+    PTRIGGER --> DEDUP
+    PTRIGGER --> PROCESS
+    PTRIGGER --> RUN
     PTOOLS --> TOOLREG
     MCP --> TOOLREG
-    PTRIGGER --> RUN
 ```

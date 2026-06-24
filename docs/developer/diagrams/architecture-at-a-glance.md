@@ -74,13 +74,15 @@ graph TD
     MAIN --> MCPREG["<b>mcp.Registry</b><br/>MCP servers + tool catalog"]
 
     %% Plugin subsystem
-    MAIN --> PLUGMGR["<b>plugin.Manager</b><br/>loader, watcher, installer"]
-    PLUGMGR --> PROCMGR["<b>process.Manager</b><br/>subprocess lifecycle"]
-    PLUGMGR --> HOSTSVC2["<b>hostsvc.Server</b><br/>plugin→host RPCs"]
-    PLUGMGR --> TRIGSUP["<b>trigger.Supervisor</b><br/>per-instance trigger streams"]
-    PLUGMGR --> OAUTHSCAN["<b>oauth.RefreshScanner</b><br/>proactive token refresh"]
-    PROCMGR --> DISPPOOL["<b>dispatch.Pool</b><br/>per-instance gRPC dispatch"]
-    TRIGSUP -. calls .-> RL
+    MAIN --> PLUGMGR["<b>plugin loader + process.Manager</b><br/>watcher, installer, subprocess lifecycle"]
+    MAIN --> HOSTSVC2["<b>hostsvc.Server</b><br/>plugin→host RPCs"]
+    MAIN --> DISPPOOL["<b>dispatch.Pool</b><br/>per-instance gRPC dispatch"]
+    MAIN --> TRIGSUP["<b>trigger.Supervisor</b><br/>per-instance trigger streams"]
+    MAIN --> TRIGDISP["<b>trigger.Dispatcher</b><br/>binding eval · dedup · launch"]
+    MAIN --> OAUTHSCAN["<b>oauth.RefreshScanner</b><br/>proactive token refresh"]
+    MAIN --> DEDUPSWEEP["<b>dedup.Sweeper</b><br/>evicts stale dedup rows"]
+    PLUGMGR -. spawns .-> DISPPOOL
+    TRIGDISP -. calls .-> RL
 
     %% Run plumbing
     MAIN --> RM["<b>RunManager</b><br/>tracks live agent goroutines"]
