@@ -325,6 +325,10 @@ func (s *stubDedup) Seen(_ context.Context, _ dedup.Key) (bool, error) {
 	return true, nil
 }
 
+// Unsee is a no-op: stubDedup always reports hits, so there is never a claim to
+// roll back (#585).
+func (s *stubDedup) Unsee(_ context.Context, _ dedup.Key) error { return nil }
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 // TestSubstrate_HappyPath_FiresMatchingPolicyOnly wires the full trigger →

@@ -20,6 +20,7 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/infra/config"
 	"github.com/felag-engineering/gleipnir/internal/infra/crypto"
 	"github.com/felag-engineering/gleipnir/internal/infra/event"
+	"github.com/felag-engineering/gleipnir/internal/model"
 	pluginpkg "github.com/felag-engineering/gleipnir/internal/plugin"
 	"github.com/felag-engineering/gleipnir/internal/plugin/configvalidate"
 	"github.com/felag-engineering/gleipnir/internal/plugin/dedup"
@@ -48,6 +49,14 @@ type pluginRuntime struct {
 	// ChannelDispatcher routes channel Notify/Request RPCs. shutdown() closes its
 	// cached gRPC connections (channel-path analogue of Pool.Close).
 	ChannelDispatcher *dispatch.Dispatcher
+
+	// auditWriter is the long-lived AuditWriter that backs the channel
+	// dispatcher's WriteRunStep callback (#573). It records dispatcher-level
+	// error steps (feedback_dispatch_error, plugin_request_timeout) into the run
+	// reasoning trace so the audit trail stays complete (ADR-046). shutdown()
+	// closes it LAST, after ChannelDispatcher.Close(), so any final dispatch-error
+	// step is flushed before the write queue closes.
+	auditWriter *agent.AuditWriter
 
 	// DispatchAdapter satisfies agent.PluginToolDispatcher for RunLauncherConfig.
 	DispatchAdapter agent.PluginToolDispatcher
@@ -85,6 +94,11 @@ type pluginRuntime struct {
 	// CredentialsHandler handles plugin credential reads. nil when encryptionKey is absent.
 	CredentialsHandler *admin.PluginCredentialsHandler
 
+	// CredStore is the OAuth/credential store. Exposed so the plugin admin handler
+	// can seed the initial credential blob on instance create (#572). nil when
+	// encryptionKey is absent (no encrypted storage available).
+	CredStore *pluginoauth.DBStore
+
 	// OnPublicURLChanged is the hook run() assigns to adminHandler.OnPublicURLChanged
 	// so that a public_url change triggers a callback-URL rescan. nil when
 	// encryptionKey is absent (rescan requires encrypted storage).
@@ -109,6 +123,43 @@ func (rt *pluginRuntime) Manager() *process.Manager { return rt.loader.Manager()
 // Loader returns the underlying plugin Loader. run() reads Installer() and
 // Manager() from it via the Loader's own accessor methods.
 func (rt *pluginRuntime) Loader() *pluginpkg.Loader { return rt.loader }
+
+// newDispatchStepWriter adapts an AuditWriter into the dispatcher's narrow
+// WriteRunStep callback (#573). The dispatch package must not import
+// internal/execution/agent (package boundary), so the conversion lives here in
+// package main where agent is already imported.
+//
+// The dispatcher emits non-canonical step strings ("feedback_dispatch_error",
+// "plugin_request_timeout"). Those are NOT members of model.StepType's valid
+// set, and the run_steps.type column carries a CHECK constraint that rejects
+// them outright — so they cannot be written verbatim. We therefore record every
+// dispatcher error as the canonical model.StepTypeError step and fold the
+// original kind into the JSON payload under "kind", preserving full fidelity in
+// the run reasoning trace (ADR-046) without a schema migration. The dispatcher
+// already echoes the kind in payload["code"]; "kind" is the structural
+// guarantee that survives even if a future caller omits "code".
+//
+// Extracted (rather than inlined at the construction site) so the exact
+// production wiring is unit-testable from package main.
+func newDispatchStepWriter(w *agent.AuditWriter) func(ctx context.Context, runID, stepType string, payload map[string]interface{}) error {
+	return func(ctx context.Context, runID, stepType string, payload map[string]interface{}) error {
+		// Copy so we never mutate the dispatcher's caller-owned map.
+		content := make(map[string]interface{}, len(payload)+1)
+		for k, v := range payload {
+			content[k] = v
+		}
+		// "kind" is reserved for the dispatcher's original step type and always
+		// wins over a caller-supplied value of the same key — it is the canonical
+		// discriminator for an "error" step that originated in the dispatcher.
+		content["kind"] = stepType
+
+		return w.Write(ctx, agent.Step{
+			RunID:   runID,
+			Type:    model.StepTypeError,
+			Content: content,
+		})
+	}
+}
 
 // startPluginRuntime brings up the plugin subsystem and returns a populated
 // *pluginRuntime. On success the returned value is always non-nil; a nil return
@@ -159,12 +210,18 @@ func startPluginRuntime(
 	identityReg := identity.New()
 	genCtrl := generation.New()
 
+	// auditWriter backs the dispatcher's WriteRunStep callback (#573). It shares
+	// the run_steps write path with the agent runtime via the same serialised
+	// AuditWriter queue (ADR-003) and publishes run.step_added so the UI sees
+	// dispatcher-error steps in real time.
+	auditWriter := agent.NewAuditWriter(store.Queries(), agent.WithPublisher(broadcaster))
+
 	pluginDispatcher := dispatch.NewDispatcher(dispatch.DispatcherConfig{
 		Queries: store.Queries(),
 		Connect: connFactory.Connect,
-		// TODO(#573): Wire WriteRunStep here for audit trail completeness.
-		// Requires constructing an AuditWriter outside the agent package,
-		// which is deferred to a follow-up issue.
+		// Wire WriteRunStep so dispatcher-level error steps reach the run
+		// reasoning trace (ADR-046 audit completeness, #573).
+		WriteRunStep: newDispatchStepWriter(auditWriter),
 	})
 
 	approvalAdapter := runpkg.NewApprovalChannelAdapter(pluginDispatcher)
@@ -217,6 +274,7 @@ func startPluginRuntime(
 	rt := &pluginRuntime{
 		Pool:              pool,
 		ChannelDispatcher: pluginDispatcher,
+		auditWriter:       auditWriter,
 		DispatchAdapter:   dispatchAdapter,
 		ApprovalAdapter:   approvalAdapter,
 		FeedbackAdapter:   feedbackAdapter,
@@ -235,6 +293,7 @@ func startPluginRuntime(
 		enc := func(p string) (string, error) { return crypto.Encrypt(encryptionKey, p) }
 		dec := func(c string) (string, error) { return crypto.Decrypt(encryptionKey, c) }
 		oauthStore := pluginoauth.NewDBStore(store.Queries(), enc, dec, store.Queries(), time.Now)
+		rt.CredStore = oauthStore
 		oauthNonces := pluginoauth.NewDBNonceStore(store.Queries(), time.Now)
 		// Own the janitor goroutine under bgWG so shutdown() can join it rather
 		// than abandoning a mid-Prune DB write (#500). The janitor selects on
@@ -266,7 +325,7 @@ func startPluginRuntime(
 			oauthScanner.Run(ctx)
 		}()
 		rt.OAuthHandler = admin.NewPluginOAuthHandler(store.Queries(), oauthMgr, getPublicURL)
-		rt.CredentialsHandler = admin.NewPluginCredentialsHandler(store.Queries(), oauthStore)
+		rt.CredentialsHandler = admin.NewPluginCredentialsHandler(store.Queries(), oauthStore, broadcaster)
 
 		callbackRescanner := pluginoauth.NewCallbackRescanner(
 			store.Queries(), store.Queries(), getPublicURL, time.Now,
@@ -432,6 +491,15 @@ func (rt *pluginRuntime) shutdown() {
 	if rt.ChannelDispatcher != nil {
 		if err := rt.ChannelDispatcher.Close(); err != nil {
 			slog.Warn("plugin channel dispatcher close error", "err", err)
+		}
+	}
+
+	// Close the audit writer LAST so any dispatch-error step enqueued during the
+	// teardown above is flushed before the write queue closes (#573). Close()
+	// synchronously joins the writer's loop goroutine and is idempotent.
+	if rt.auditWriter != nil {
+		if err := rt.auditWriter.Close(); err != nil {
+			slog.Warn("plugin audit writer close error", "err", err)
 		}
 	}
 }

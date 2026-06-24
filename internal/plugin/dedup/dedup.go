@@ -38,9 +38,19 @@ type Key struct {
 // Callers treat errors as misses (fail-open) so a degraded store does not
 // silently drop events.
 //
+// Unsee rolls back a claim that a prior Seen call took (it returned
+// (false, nil) and committed the key). The dispatcher calls Unsee only when an
+// event was matched but its launch failed transiently for at least one policy,
+// so the plugin's at-least-once redelivery of the same event can be treated as
+// novel again rather than silently suppressed for the full dedup window (#585).
+// Unsee must be idempotent — rolling back an absent or already-evicted key is a
+// no-op, not an error. Errors from Unsee are advisory: the caller logs and
+// proceeds, since a stranded row simply ages out at the TTL.
+//
 // Implementations must be safe for concurrent use.
 type Store interface {
 	Seen(ctx context.Context, k Key) (bool, error)
+	Unsee(ctx context.Context, k Key) error
 }
 
 // Noop is a Store that never deduplicates: every Seen call returns (false, nil).
@@ -50,3 +60,6 @@ type Noop struct{}
 
 // Seen always returns (false, nil). With Noop, every event proceeds to dispatch.
 func (Noop) Seen(_ context.Context, _ Key) (bool, error) { return false, nil }
+
+// Unsee is a no-op for Noop: it never recorded anything to roll back.
+func (Noop) Unsee(_ context.Context, _ Key) error { return nil }

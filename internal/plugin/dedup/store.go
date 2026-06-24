@@ -47,6 +47,7 @@ var (
 type Querier interface {
 	RecordEventIfNovel(ctx context.Context, arg db.RecordEventIfNovelParams) (int64, error)
 	SweepEventDedup(ctx context.Context, floor int64) (int64, error)
+	DeleteEventDedup(ctx context.Context, arg db.DeleteEventDedupParams) error
 }
 
 // dbStore is a SQLite-backed Store implementation.
@@ -94,6 +95,21 @@ func (s *dbStore) Seen(ctx context.Context, k Key) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// Unsee deletes the dedup row for k, rolling back a claim taken by a prior Seen
+// that returned (false, nil). It is idempotent: a DELETE affecting zero rows is
+// not an error (the row may have already aged out at the TTL, or a concurrent
+// sweep may have evicted it). See the Store.Unsee contract (#585).
+func (s *dbStore) Unsee(ctx context.Context, k Key) error {
+	if err := s.q.DeleteEventDedup(ctx, db.DeleteEventDedupParams{
+		PluginInstanceID: k.InstanceID,
+		EventKind:        k.EventKind,
+		EventID:          k.EventID,
+	}); err != nil {
+		return fmt.Errorf("dedup unsee: %w", err)
+	}
+	return nil
 }
 
 // Sweeper runs a background loop that evicts dedup rows older than ttl by

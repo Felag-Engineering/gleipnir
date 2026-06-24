@@ -170,3 +170,66 @@ func (q *errQuerier) RecordEventIfNovel(_ context.Context, _ db.RecordEventIfNov
 func (q *errQuerier) SweepEventDedup(_ context.Context, _ int64) (int64, error) {
 	return 0, q.err
 }
+
+func (q *errQuerier) DeleteEventDedup(_ context.Context, _ db.DeleteEventDedupParams) error {
+	return q.err
+}
+
+// TestDBStore_UnseeMakesKeyNovelAgain verifies the #585 rollback: after Unsee,
+// a key recorded by a prior Seen is treated as novel again on the next Seen.
+// Clock mutation: do NOT t.Parallel().
+func TestDBStore_UnseeMakesKeyNovelAgain(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	insertPluginAndInstance(t, store, "plug-unsee", "inst-unsee")
+
+	fixedTime := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	s := dedup.NewDBStore(store.Queries())
+	s.SetClockForTest(func() time.Time { return fixedTime })
+
+	ctx := context.Background()
+	k := dedup.Key{InstanceID: "inst-unsee", EventKind: "message", EventID: "evt-unsee"}
+
+	if seen, err := s.Seen(ctx, k); err != nil || seen {
+		t.Fatalf("first Seen: seen=%v err=%v, want false,nil", seen, err)
+	}
+	// Second Seen confirms the slot is held.
+	if seen, err := s.Seen(ctx, k); err != nil || !seen {
+		t.Fatalf("second Seen: seen=%v err=%v, want true,nil", seen, err)
+	}
+	// Roll the claim back.
+	if err := s.Unsee(ctx, k); err != nil {
+		t.Fatalf("Unsee: unexpected error: %v", err)
+	}
+	// The key must now be novel again (the redelivery can fire).
+	if seen, err := s.Seen(ctx, k); err != nil || seen {
+		t.Fatalf("post-Unsee Seen: seen=%v err=%v, want false,nil (novel again)", seen, err)
+	}
+}
+
+// TestDBStore_UnseeAbsentKeyIsNoop verifies that Unsee on a key that was never
+// recorded is a no-op, not an error (idempotent).
+// Clock mutation: do NOT t.Parallel().
+func TestDBStore_UnseeAbsentKeyIsNoop(t *testing.T) {
+	store := testutil.NewTestStore(t)
+	insertPluginAndInstance(t, store, "plug-absent", "inst-absent")
+
+	s := dedup.NewDBStore(store.Queries())
+	ctx := context.Background()
+	k := dedup.Key{InstanceID: "inst-absent", EventKind: "message", EventID: "never-seen"}
+
+	if err := s.Unsee(ctx, k); err != nil {
+		t.Errorf("Unsee on absent key: got error %v, want nil", err)
+	}
+}
+
+// TestDBStore_UnseeWrapsStoreError verifies Unsee wraps the underlying DB error.
+func TestDBStore_UnseeWrapsStoreError(t *testing.T) {
+	t.Parallel()
+
+	fakeErr := errors.New("db down")
+	s := dedup.NewDBStore(&errQuerier{err: fakeErr})
+	err := s.Unsee(context.Background(), dedup.Key{InstanceID: "i", EventKind: "k", EventID: "e"})
+	if !errors.Is(err, fakeErr) {
+		t.Errorf("error = %v, want to wrap %v", err, fakeErr)
+	}
+}

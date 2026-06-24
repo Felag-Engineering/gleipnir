@@ -14,7 +14,26 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
+	"github.com/felag-engineering/gleipnir/internal/plugin/oauth"
 )
+
+// recordingCredSeeder is a test stub for CredentialSeeder. It records the last
+// SaveCredentials call and can be configured to return an error.
+type recordingCredSeeder struct {
+	called     bool
+	gotID      string
+	gotCreds   oauth.StoredCredentials
+	gotVersion int64
+	returnErr  error
+}
+
+func (s *recordingCredSeeder) SaveCredentials(_ context.Context, instanceID string, creds oauth.StoredCredentials, expectedVersion int64) error {
+	s.called = true
+	s.gotID = instanceID
+	s.gotCreds = creds
+	s.gotVersion = expectedVersion
+	return s.returnErr
+}
 
 // fakeInstaller is a test stub for PluginInstaller.
 type fakeInstaller struct {
@@ -452,6 +471,217 @@ func TestPluginHandler_CreateInstance(t *testing.T) {
 		pm.mu.Unlock()
 		if len(started) != 0 {
 			t.Errorf("startedByPlugin = %v, want empty (no spawn on validation failure)", started)
+		}
+	})
+}
+
+// TestPluginHandler_CreateInstance_SeedsCredentials verifies that the credential
+// blob is seeded from the manifest's declared strategy + endpoints at instance
+// creation (#572). OAuth strategies additionally carry the manifest endpoint
+// defaults; non-OAuth strategies record only the Strategy; a nil seeder (no
+// encryption key) leaves credentials untouched.
+func TestPluginHandler_CreateInstance_SeedsCredentials(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC) }
+	const pluginID = "plugin-seed"
+
+	const oauthManifest = `schema_version: "1.0"
+name: slack
+version: "0.1.0"
+services:
+  channel: "1.0.0"
+auth:
+  mode: instance_credentials
+  strategy: oauth2_authcode
+  oauth_defaults:
+    authorization_url: https://slack.com/oauth/v2/authorize
+    token_url: https://slack.com/api/oauth.v2.access
+    scopes:
+      - chat:write
+      - channels:read
+`
+
+	const noneManifest = `schema_version: "1.0"
+name: echo
+version: "0.1.0"
+services:
+  tool: "1.0.0"
+auth:
+  mode: instance_credentials
+  strategy: none
+`
+
+	const staticKeyManifest = `schema_version: "1.0"
+name: weather
+version: "0.1.0"
+services:
+  tool: "1.0.0"
+auth:
+  mode: instance_credentials
+  strategy: static_api_key
+`
+
+	// noAuthManifest has no auth block at all: Strategy is empty, so
+	// BuildSeedCredentials returns ok=false and seeding is skipped.
+	const noAuthManifest = `schema_version: "1.0"
+name: bare
+version: "0.1.0"
+services:
+  tool: "1.0.0"
+`
+
+	tests := []struct {
+		name             string
+		manifest         string
+		wantSeeded       bool
+		wantStrategy     string
+		wantAuthorizeURL string
+		wantTokenURL     string
+		wantScopes       []string
+	}{
+		{
+			name:             "oauth2_authcode: seeded with strategy + endpoints",
+			manifest:         oauthManifest,
+			wantSeeded:       true,
+			wantStrategy:     "oauth2_authcode",
+			wantAuthorizeURL: "https://slack.com/oauth/v2/authorize",
+			wantTokenURL:     "https://slack.com/api/oauth.v2.access",
+			wantScopes:       []string{"chat:write", "channels:read"},
+		},
+		{
+			name:         "none: seeded with strategy only",
+			manifest:     noneManifest,
+			wantSeeded:   true,
+			wantStrategy: "none",
+		},
+		{
+			name:         "static_api_key: seeded with strategy only",
+			manifest:     staticKeyManifest,
+			wantSeeded:   true,
+			wantStrategy: "static_api_key",
+		},
+		{
+			name:       "no auth block: not seeded (unknown strategy)",
+			manifest:   noAuthManifest,
+			wantSeeded: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := newFakePluginQuerier()
+			q.seedPlugin(db.Plugin{
+				ID:               pluginID,
+				Name:             "p",
+				PluginVersion:    "0.1.0",
+				Status:           "active",
+				ManifestSnapshot: tt.manifest,
+			})
+			seeder := &recordingCredSeeder{}
+			h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{credSeeder: seeder})
+
+			rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"inst-1"}`))
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+			}
+
+			if seeder.called != tt.wantSeeded {
+				t.Fatalf("seeder.called = %v, want %v", seeder.called, tt.wantSeeded)
+			}
+			if !tt.wantSeeded {
+				return
+			}
+
+			if seeder.gotVersion != 0 {
+				t.Errorf("expectedVersion = %d, want 0 (freshly inserted row)", seeder.gotVersion)
+			}
+			data := parseDataResponse(t, rec)
+			var resp createInstanceResponse
+			if err := json.Unmarshal(data, &resp); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+			if seeder.gotID != resp.ID {
+				t.Errorf("seeded instance ID = %q, want %q", seeder.gotID, resp.ID)
+			}
+			// A successful seed bumps the row from version 0 to 1; the response
+			// must report the post-seed version so a follow-up CAS write succeeds.
+			if resp.Version != 1 {
+				t.Errorf("response version = %d, want 1 after successful seed", resp.Version)
+			}
+			if seeder.gotCreds.Strategy != tt.wantStrategy {
+				t.Errorf("strategy = %q, want %q", seeder.gotCreds.Strategy, tt.wantStrategy)
+			}
+			if seeder.gotCreds.AuthorizationURL != tt.wantAuthorizeURL {
+				t.Errorf("authorization_url = %q, want %q", seeder.gotCreds.AuthorizationURL, tt.wantAuthorizeURL)
+			}
+			if seeder.gotCreds.TokenURL != tt.wantTokenURL {
+				t.Errorf("token_url = %q, want %q", seeder.gotCreds.TokenURL, tt.wantTokenURL)
+			}
+			if len(tt.wantScopes) > 0 {
+				if got := seeder.gotCreds.Scopes; len(got) != len(tt.wantScopes) {
+					t.Errorf("scopes = %v, want %v", got, tt.wantScopes)
+				} else {
+					for i := range tt.wantScopes {
+						if got[i] != tt.wantScopes[i] {
+							t.Errorf("scopes[%d] = %q, want %q", i, got[i], tt.wantScopes[i])
+						}
+					}
+				}
+			}
+		})
+	}
+
+	// Nil seeder (no encryption key) leaves the instance uncredentialed and the
+	// create still succeeds.
+	t.Run("nil seeder: create succeeds without seeding", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               pluginID,
+			Name:             "p",
+			PluginVersion:    "0.1.0",
+			Status:           "active",
+			ManifestSnapshot: oauthManifest,
+		})
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+		rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"inst-nil"}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+		}
+		// No seed happened, so the response carries the freshly-inserted version 0.
+		var resp createInstanceResponse
+		if err := json.Unmarshal(parseDataResponse(t, rec), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if resp.Version != 0 {
+			t.Errorf("response version = %d, want 0 (no seed)", resp.Version)
+		}
+	})
+
+	// A seed error is logged but does not fail the create (best-effort).
+	t.Run("seed error: create still returns 201", func(t *testing.T) {
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               pluginID,
+			Name:             "p",
+			PluginVersion:    "0.1.0",
+			Status:           "active",
+			ManifestSnapshot: oauthManifest,
+		})
+		seeder := &recordingCredSeeder{returnErr: errors.New("encrypt failed")}
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{credSeeder: seeder})
+		rec := serveCreateInstance(h, pluginID, []byte(`{"instance_name":"inst-err"}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201 despite seed error; body: %s", rec.Code, rec.Body.String())
+		}
+		if !seeder.called {
+			t.Error("seeder.called = false, want true")
+		}
+		// The seed failed, so no version bump: the response keeps version 0.
+		var resp createInstanceResponse
+		if err := json.Unmarshal(parseDataResponse(t, rec), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if resp.Version != 0 {
+			t.Errorf("response version = %d, want 0 (seed failed)", resp.Version)
 		}
 	})
 }

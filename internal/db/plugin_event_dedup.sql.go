@@ -9,6 +9,28 @@ import (
 	"context"
 )
 
+const deleteEventDedup = `-- name: DeleteEventDedup :exec
+DELETE FROM plugin_event_dedup
+WHERE plugin_instance_id = ?1
+  AND event_kind = ?2
+  AND event_id = ?3
+`
+
+type DeleteEventDedupParams struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	EventKind        string `json:"event_kind"`
+	EventID          string `json:"event_id"`
+}
+
+// Rolls back a dedup claim recorded by RecordEventIfNovel. Used when a matched
+// event failed to launch transiently, so the plugin's at-least-once redelivery
+// of the same event is treated as novel again (#585). Idempotent: a DELETE that
+// affects zero rows is not an error.
+func (q *Queries) DeleteEventDedup(ctx context.Context, arg DeleteEventDedupParams) error {
+	_, err := q.db.ExecContext(ctx, deleteEventDedup, arg.PluginInstanceID, arg.EventKind, arg.EventID)
+	return err
+}
+
 const recordEventIfNovel = `-- name: RecordEventIfNovel :execrows
 INSERT INTO plugin_event_dedup (plugin_instance_id, event_kind, event_id, created_at_ms)
 VALUES (?1, ?2, ?3, ?4)

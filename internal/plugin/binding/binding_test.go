@@ -1,6 +1,8 @@
 package binding_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -50,6 +52,31 @@ properties:
   active:
     type: boolean
 `
+
+// schemaNumeric has an integer field (channel_id) and a fractional number
+// field (ratio) for the precision tests (#586).
+const schemaNumeric = `
+type: object
+properties:
+  channel_id:
+    type: integer
+  ratio:
+    type: number
+`
+
+// decodeJSON unmarshals a JSON string into map[string]any with UseNumber, so
+// numeric values arrive as json.Number — mirroring the production dispatcher
+// decode path after the #586 fix.
+func decodeJSON(t *testing.T, src string) map[string]any {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader([]byte(src)))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		t.Fatalf("decodeJSON: %v", err)
+	}
+	return m
+}
 
 // schemaGlob has a field with format:glob (unsupported in v1).
 const schemaGlob = `
@@ -448,5 +475,194 @@ func TestEndToEnd_SDKToEvaluator(t *testing.T) {
 				t.Errorf("Evaluate = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCompileEvaluate_LargeIntPrecision is the regression suite for #586:
+// integer binding equality must not lose precision through float64 coercion.
+// The binding value comes from YAML (int / int64), and the payload value is
+// exercised across every concrete type the decode paths can produce
+// (json.Number, float64, int, int64, string).
+func TestCompileEvaluate_LargeIntPrecision(t *testing.T) {
+	schema := schemaYAML(t, schemaNumeric)
+
+	// Two distinct 64-bit IDs that are EQUAL as float64 (both round to the same
+	// value above 2^53) but UNEQUAL as integers. This is the exact failure mode
+	// from the issue.
+	const idA = int64(9007199254740993) // 2^53 + 1
+	const idB = int64(9007199254740992) // 2^53 (== idA-1; equal to idA in float64)
+
+	tests := []struct {
+		name        string
+		bindingVal  any
+		payloadVal  any
+		want        bool
+		description string
+	}{
+		{
+			name:       "json.Number large id equal",
+			bindingVal: idA,
+			payloadVal: json.Number("9007199254740993"),
+			want:       true,
+		},
+		{
+			name:       "json.Number large id unequal but float-equal",
+			bindingVal: idA,
+			payloadVal: json.Number("9007199254740992"),
+			want:       false, // would be true under the old float64 coercion bug
+		},
+		{
+			name:       "int64 large id unequal but float-equal",
+			bindingVal: idA,
+			payloadVal: idB,
+			want:       false,
+		},
+		{
+			// float64(idB) is integral and within int64 range, so it is treated
+			// as the exact integer idB and compared exactly — it does NOT match
+			// the idA binding. (Note: float64(idA) would equal float64(idB) at
+			// the bit level, so if the payload were already lossily decoded the
+			// distinction is gone before we see it. This case proves we don't
+			// re-introduce float coercion for an integral float64 input.)
+			name:       "integral float64 payload compared exactly as int",
+			bindingVal: idA,
+			payloadVal: float64(idB),
+			want:       false,
+		},
+		{
+			name:       "small int still matches (int payload)",
+			bindingVal: int64(42),
+			payloadVal: 42,
+			want:       true,
+		},
+		{
+			name:       "small int no match (int payload)",
+			bindingVal: int64(42),
+			payloadVal: 7,
+			want:       false,
+		},
+		{
+			name:       "small int matches float64 payload",
+			bindingVal: int64(42),
+			payloadVal: float64(42),
+			want:       true,
+		},
+		{
+			name:       "negative large id equal (json.Number)",
+			bindingVal: int64(-9007199254740993),
+			payloadVal: json.Number("-9007199254740993"),
+			want:       true,
+		},
+		{
+			name:       "negative large id unequal but float-equal",
+			bindingVal: int64(-9007199254740993),
+			payloadVal: json.Number("-9007199254740992"),
+			want:       false,
+		},
+		{
+			name:       "string-encoded id matches integer binding",
+			bindingVal: idA,
+			payloadVal: "9007199254740993",
+			want:       true,
+		},
+		{
+			name:       "string-encoded id no match",
+			bindingVal: idA,
+			payloadVal: "9007199254740992",
+			want:       false,
+		},
+		{
+			name:       "non-numeric string is no match (not an error)",
+			bindingVal: int64(42),
+			payloadVal: "not-a-number",
+			want:       false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cb, err := binding.Compile(map[string]any{"channel_id": tc.bindingVal}, schema)
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			got, err := cb.Evaluate(map[string]any{"channel_id": tc.payloadVal})
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("Evaluate(channel_id=%v vs %v) = %v, want %v", tc.bindingVal, tc.payloadVal, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCompileEvaluate_FractionalNumber verifies that genuinely fractional
+// fields are still compared as floats and are not broken by the integer
+// fast-path (#586).
+func TestCompileEvaluate_FractionalNumber(t *testing.T) {
+	schema := schemaYAML(t, schemaNumeric)
+
+	cb, err := binding.Compile(map[string]any{"ratio": 0.5}, schema)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		payload any
+		want    bool
+	}{
+		{"float64 equal", float64(0.5), true},
+		{"json.Number equal", json.Number("0.5"), true},
+		{"string equal", "0.5", true},
+		{"float64 unequal", float64(0.25), false},
+		{"integer payload unequal", 1, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := cb.Evaluate(map[string]any{"ratio": tc.payload})
+			if got != tc.want {
+				t.Errorf("Evaluate(ratio=0.5 vs %v) = %v, want %v", tc.payload, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCompileEvaluate_WholeNumberBindingFromYAML verifies that a binding value
+// declared as a fractional number with a whole-number value (e.g. ratio: 2)
+// still compares exactly against integer payloads.
+func TestCompileEvaluate_WholeNumberBindingFromYAML(t *testing.T) {
+	schema := schemaYAML(t, schemaNumeric)
+	cb, err := binding.Compile(map[string]any{"ratio": 2}, schema)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if match, _ := cb.Evaluate(map[string]any{"ratio": json.Number("2")}); !match {
+		t.Error("expected ratio=2 to match json.Number(\"2\")")
+	}
+	if match, _ := cb.Evaluate(map[string]any{"ratio": float64(2)}); !match {
+		t.Error("expected ratio=2 to match float64(2)")
+	}
+}
+
+// TestCompileEvaluate_FullDecodePath exercises the precision fix end-to-end
+// through the same json.Decoder(UseNumber) decode the production dispatcher
+// uses, confirming a 64-bit ID survives JSON decode without precision loss.
+func TestCompileEvaluate_FullDecodePath(t *testing.T) {
+	schema := schemaYAML(t, schemaNumeric)
+	cb, err := binding.Compile(map[string]any{"channel_id": int64(9007199254740993)}, schema)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	matchPayload := decodeJSON(t, `{"channel_id": 9007199254740993}`)
+	if match, _ := cb.Evaluate(matchPayload); !match {
+		t.Error("expected match for channel_id=9007199254740993 decoded via UseNumber")
+	}
+
+	// The float-equal neighbour must NOT match after the fix.
+	noMatchPayload := decodeJSON(t, `{"channel_id": 9007199254740992}`)
+	if match, _ := cb.Evaluate(noMatchPayload); match {
+		t.Error("expected NO match for the float-equal neighbour 9007199254740992 (precision regression)")
 	}
 }

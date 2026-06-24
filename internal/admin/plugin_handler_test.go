@@ -337,6 +337,7 @@ type testPluginHandlerConfig struct {
 	pluginsDir string
 	installer  PluginInstaller
 	rssAgg     RSSAggregator
+	credSeeder CredentialSeeder
 }
 
 // newTestPluginHandler builds InstanceLifecycle + InstanceConfig + PluginHandler
@@ -359,14 +360,15 @@ func newTestPluginHandler(q PluginQuerier, clock func() time.Time, cfg testPlugi
 		Clock:   clock,
 	})
 	return NewPluginHandler(PluginHandlerDeps{
-		Q:              q,
-		Clock:          clock,
-		Installer:      cfg.installer,
-		RSSAggregator:  cfg.rssAgg,
-		ProcessManager: cfg.procMgr,
-		PluginsDir:     cfg.pluginsDir,
-		Lifecycle:      lifecycle,
-		Config:         instanceConfig,
+		Q:                q,
+		Clock:            clock,
+		Installer:        cfg.installer,
+		RSSAggregator:    cfg.rssAgg,
+		ProcessManager:   cfg.procMgr,
+		PluginsDir:       cfg.pluginsDir,
+		Lifecycle:        lifecycle,
+		Config:           instanceConfig,
+		CredentialSeeder: cfg.credSeeder,
 	})
 }
 
