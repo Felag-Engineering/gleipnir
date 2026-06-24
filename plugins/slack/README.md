@@ -54,7 +54,182 @@ following binding fields (all optional; fields are ANDed together):
 | `user`        | equals         | Exact Slack user ID (e.g. `U012AB3CD`) |
 
 `text` and `text_regex` are independent siblings: most policies set one or the
-other. Full trigger-binding documentation is tracked in #605.
+other. See [§"Triggering runs from Slack messages"](#triggering-runs-from-slack-messages)
+for worked examples and routing behaviour.
+
+## Triggering runs from Slack messages
+
+### How a policy binds
+
+A policy fires on `channel_message` events by declaring a `subscribed` trigger
+in its YAML. The policy form editor (Admin → Policies → New Policy) is the real
+authoring surface for this — per ADR-019/ADR-048 the word "subscribed" is never
+shown in the UI, and the form produces this YAML as the stored/API payload:
+
+```yaml
+name: recipe-finder
+trigger:
+  type: subscribed
+  source: slack-prod          # the plugin INSTANCE NAME (not a ULID)
+  event_kind: channel_message
+  binding:                    # optional; all fields ANDed; omit to match every message
+    text_regex: "^(?i)recipe:"
+capabilities:
+  tools:
+    - tool: slack-prod.post_message
+agent:
+  task: |
+    The trigger payload is a Slack channel_message. Treat everything after
+    "Recipe:" as a recipe request and reply in-thread with suggestions.
+```
+
+`source` must be the plugin **instance name** (e.g. `slack-prod`), not the
+plugin ID. Binding fields are ANDed — a message must satisfy every field that is
+set. For the full list of binding fields and their match semantics, see the table
+in [§"Trigger binding (`channel_message`)"](#trigger-binding-channel_message).
+
+### Routing is fan-out (no single winner)
+
+The Gleipnir dispatcher evaluates **every** active subscribed policy against the
+incoming event. Any policy whose `source`, `event_kind`, and `binding` all match
+fires its own independent run. There is no "route to exactly one policy", no
+default/else policy, and no arbitration across policies.
+
+Two policies with overlapping bindings will both fire. Design bindings with
+mutually exclusive anchored `text_regex` prefixes so messages reach exactly the
+policy you intend:
+
+- `"^(?i)recipe:"` — fires on `Recipe: find dinner`; does **not** fire on `"got a great Recipe: idea"` (not anchored)
+- `"^(?i)deploy:"` — a distinct non-overlapping prefix
+
+Note: this no-arbitration statement is cross-policy. A single policy's own
+concurrency setting (`concurrency: skip` / `queue` / `parallel`) still governs
+how many runs that policy starts for its own repeated matches.
+
+### DM gotchas
+
+DMing the bot directly works — but is silently broken by several common
+configurations. Check all of the following when a DM produces no run:
+
+**Instance-level subscription scope (`channels` field)**
+
+The instance subscription scope (Admin → Plugins → your Slack instance →
+Subscription Scope) has a `channels` allow-list. When it is non-empty, only
+channels whose IDs appear in the list are processed. DM channel IDs start with
+`D…`, but the schema only accepts IDs matching `^C[A-Z0-9]+$`. This means a
+non-empty `channels` scope silently excludes all DMs regardless of policy
+bindings. **Leave `channels` empty for a DM bot** (empty = match all channels).
+
+Distinguish this instance-level scope — a coarse pre-filter that happens before
+any policy is evaluated — from per-policy binding fields, which are evaluated
+after the scope admits the event.
+
+**`mention_only` in binding or scope**
+
+Setting `mention_only: true` in a policy binding (or in the instance subscription
+scope) excludes DMs. A DM message is never a "mention" — `@Gleipnir` has no
+meaning inside a DM conversation. This flag only fires on `app_mention` events in
+public/private channels. Ensure both the instance scope **and** the policy binding
+have `mention_only` off (or omitted) for DM routing.
+
+**Slack-side prerequisites**
+
+These are external Slack settings, not Gleipnir config:
+
+1. **`message.im` bot event** — the Slack app must subscribe to the `message.im`
+   event so Slack delivers DMs to the bot at all. The one-click app manifest in
+   [§"Slack app manifest (one-click)"](#slack-app-manifest-one-click) already
+   includes this event.
+
+2. **App Home → Messages Tab → "Allow users to send Slash commands and messages"**
+   — this toggle must be enabled in your Slack app's settings (api.slack.com/apps
+   → your app → App Home → Show Tabs → Messages Tab). Without it, users cannot
+   send DMs to the bot even if `message.im` is subscribed. This is a Slack product
+   setting with no equivalent in Gleipnir's configuration.
+
+### Worked examples
+
+#### Example 1 — Keyword routing via anchored regex
+
+Fires when a message starts with `Recipe:` (case-insensitive).
+
+```yaml
+name: recipe-finder
+trigger:
+  type: subscribed
+  source: slack-prod          # your Slack plugin instance name
+  event_kind: channel_message
+  binding:
+    text_regex: "^(?i)recipe:"   # fires on "Recipe: ..."/"recipe: ..."; NOT "got a great Recipe: idea"
+capabilities:
+  tools:
+    - tool: slack-prod.post_message
+agent:
+  task: |
+    The trigger payload is a Slack channel_message. Treat everything after
+    "Recipe:" as a recipe request and reply in-thread with suggestions.
+```
+
+Matching Slack message: `Recipe: something with chickpeas`
+
+Because routing is fan-out, give any sibling policy a non-overlapping anchored
+prefix so messages reach exactly one policy.
+
+#### Example 2 — DM-only bot
+
+Fires on any direct message to the bot. `mention_only` is off (omitted).
+
+```yaml
+name: slack-dm-assistant
+trigger:
+  type: subscribed
+  source: slack-prod
+  event_kind: channel_message
+  binding:
+    channel_type: im        # DM-only; mention_only omitted (off)
+capabilities:
+  tools:
+    - tool: slack-prod.post_message
+agent:
+  task: |
+    The trigger payload is a direct message to the bot. Help the user and
+    reply in the same DM.
+```
+
+Matching Slack message: any DM, e.g. `what's on my calendar today?`
+
+Prerequisites:
+- Instance subscription scope `channels` **must be empty** (non-empty scope
+  blocks DMs — see §"DM gotchas").
+- `mention_only` must be off in both the instance scope and this binding.
+- Slack app must subscribe to `message.im` (already in the one-click manifest)
+  and the **App Home → Messages Tab → "Allow users to send Slash commands and
+  messages"** toggle must be enabled in your Slack app settings (external Slack
+  setting).
+
+#### Example 3 — Mention-in-channel
+
+Fires only when the bot is @-mentioned in a public or private channel. DMs are
+excluded by construction — a DM is never a mention.
+
+```yaml
+name: oncall-mention-handler
+trigger:
+  type: subscribed
+  source: slack-prod
+  event_kind: channel_message
+  binding:
+    mention_only: true      # only when bot is @-mentioned (channel events only — never DMs)
+capabilities:
+  tools:
+    - tool: slack-prod.post_message
+agent:
+  task: |
+    The trigger payload is a channel message that @-mentioned the bot.
+    Answer the mention in-thread.
+```
+
+Matching Slack message (public channel): `@Gleipnir summarize the last deploy?`
 
 ## Channel (per-audience) config schema
 
