@@ -197,25 +197,25 @@ type SlackChannelMessageBinding struct {
 	// Channel is a substring matched against the Slack channel name or ID.
 	// ContainsField is used here rather than GlobField: the host binding evaluator
 	// rejects format:glob (binding.go:230), but accepts format:contains.
-	Channel manifest.ContainsField `json:"channel,omitempty" jsonschema:"title=Channel,description=Substring matched against the Slack channel name or ID (e.g. #incidents)"`
+	Channel manifest.ContainsField `json:"channel,omitempty" jsonschema:"title=Channel,description=Case-sensitive substring matched against the channel name or ID (e.g. incidents matches #incidents or C012…). Matches anywhere — not anchored."`
 	// Text is a substring matched against the message text.
-	Text manifest.ContainsField `json:"text,omitempty" jsonschema:"title=Text contains,description=Substring matched against the message text"`
+	Text manifest.ContainsField `json:"text,omitempty" jsonschema:"title=Text contains,description=Case-sensitive substring; matches anywhere in the message body (not anchored to the start)."`
 	// TextRegex matches the message text against a Go RE2 regular expression.
 	// Anchored, case-insensitive command routing is the primary use:
 	// `^(?i)recipe:` fires only on messages that start with "Recipe:"/"recipe:".
 	// RE2, not PCRE — no lookbehind/backrefs. Evaluated with implicit AND
 	// alongside Text; most policies set one or the other, not both.
-	TextRegex manifest.RegexField `json:"text_regex,omitempty" jsonschema:"title=Text matches (regex),description=Go RE2 regular expression matched against the message text (e.g. ^(?i)recipe: for anchored\\, case-insensitive routing). RE2 syntax — no lookbehind or backreferences."`
+	TextRegex manifest.RegexField `json:"text_regex,omitempty" jsonschema:"title=Text matches (regex),description=Go RE2 regular expression matched against the message text. Case-sensitivity is controlled by the pattern (e.g. (?i) flag); use ^ to anchor to the start. RE2 syntax — no lookbehind or backreferences."`
 	// MentionOnly restricts the policy to events where the bot was mentioned.
-	MentionOnly bool `json:"mention_only,omitempty" jsonschema:"title=Mention-only,description=Only trigger when the bot is mentioned in the message"`
+	MentionOnly bool `json:"mention_only,omitempty" jsonschema:"title=Mention-only,description=Fire only when the bot is explicitly @-mentioned. Note: a DM is never a mention\\, so this excludes DMs."`
 	// User restricts the policy to messages from a specific Slack user ID.
-	User manifest.EqualsField `json:"user,omitempty" jsonschema:"title=User,description=Slack user ID to match (e.g. U012AB3CD). Leave empty to match all users."`
+	User manifest.EqualsField `json:"user,omitempty" jsonschema:"title=User,description=Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users."`
 	// ChannelType restricts the policy to a single Slack channel kind.
 	// EqualsField emits {type:string} with no format key, which the host binding
 	// evaluator maps to OpEquals (internal/plugin/binding/binding.go:238).
 	// The json key must be `channel_type` so the evaluator's payload[name]
 	// lookup aligns with SlackChannelMessagePayload.channel_type (line 241).
-	ChannelType manifest.EqualsField `json:"channel_type,omitempty" jsonschema:"title=Channel type,description=Match a Slack channel kind: channel (public)\\, group (private)\\, im (DM)\\, mpim (multi-party DM). Leave empty to match any."`
+	ChannelType manifest.EqualsField `json:"channel_type,omitempty" jsonschema:"title=Channel type,description=Exact match on the Slack channel kind: channel (public)\\, group (private)\\, im (DM)\\, mpim (multi-party DM). Leave empty to match any."`
 }
 
 // SlackChannelMessagePayload is the JSON payload emitted for each channel_message
