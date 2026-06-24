@@ -20,6 +20,18 @@ var ErrCallTimeout = pluginerr.ErrCallTimeout
 // rather than blocking indefinitely. Aliased from pluginerr (see above).
 var ErrQueueFull = pluginerr.ErrQueueFull
 
+// ErrRunCancelled is returned by Pool.Call when the call was aborted by a
+// concurrent CancelRun (spec §13.8) while the caller's parent context was still
+// healthy. CancelRun is the pool's own cancellation control surface: it cancels
+// each in-flight (or about-to-be-in-flight) call's per-call context directly,
+// independently of the caller's parent ctx (e.g. Pool.Close during shutdown
+// calls CancelRun without cancelling any agent ctx). Without a distinct sentinel,
+// a CancelRun-driven gRPC abort would surface as codes.Canceled with a healthy
+// parent ctx and be misclassified as a nil (success) error — a cancelled
+// side-effecting tool call would then look like it had completed. This sentinel
+// keeps the cancellation observable to callers via errors.Is.
+var ErrRunCancelled = errors.New("plugin: run cancelled")
+
 // ErrPreAckFailed is returned by Dispatcher.Request when the plugin does not
 // acknowledge the request within the pre-ack deadline, or returns acked: false,
 // or returns a non-nil error envelope.  Callers should map this to

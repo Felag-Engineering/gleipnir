@@ -343,6 +343,293 @@ func TestPool_CancelRun(t *testing.T) {
 	}
 }
 
+// TestPool_CancelRun_WhileQueuedDoesNotDial verifies that a call cancelled by
+// CancelRun while it is still blocked on the concurrency semaphore aborts
+// cleanly with ErrRunCancelled and NEVER dials/executes the plugin tool call.
+//
+// This is the #588 regression guard for the queued case: the call is registered
+// as in-flight BEFORE the semaphore acquire, so CancelRun can see it and cancel
+// its per-call context. Against the pre-fix code (register AFTER the semaphore)
+// the queued call is invisible to CancelRun and the queued select watches only
+// the parent ctx, so this test would block until the deadline.
+func TestPool_CancelRun_WhileQueuedDoesNotDial(t *testing.T) {
+	var mu sync.Mutex
+	arrivalCount := 0 // total calls that reached the server hook
+
+	// firstArrived signals when the first (slot-holding) call is in the hook.
+	firstArrived := make(chan struct{}, 1)
+	unblockFirst := make(chan struct{})
+
+	srv := &fakeToolServer{
+		callHook: func(ctx context.Context, _ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			// With maxConcurrent=1, only the first (slot-holding) call may ever reach
+			// the hook. A second arrival means the queued call escaped CancelRun and
+			// dialed the plugin — the #588 bug.
+			mu.Lock()
+			arrivalCount++
+			mu.Unlock()
+			firstArrived <- struct{}{}
+			select {
+			case <-unblockFirst:
+				return &toolv1.CallResponse{OutputJson: `"ok"`}, nil
+			case <-ctx.Done():
+				return nil, status.Error(codes.Canceled, ctx.Err().Error())
+			}
+		},
+	}
+
+	// Single concurrency slot so the second call is forced to queue.
+	var unblockOnce sync.Once
+	doUnblockFirst := func() { unblockOnce.Do(func() { close(unblockFirst) }) }
+
+	pool, cleanup := newTestPool(t, srv, func(cfg *dispatch.Config) {
+		cfg.DefaultMaxConcurrent = 1
+		cfg.DefaultMaxQueueDepth = 4
+		cfg.CallTimeout = 5 * time.Second
+	})
+	defer func() {
+		doUnblockFirst()
+		cleanup()
+	}()
+
+	// First call consumes the only semaphore slot and parks in the hook.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		pool.Call(context.Background(), "run-other", "pol-1", "inst", "tool", `{}`) //nolint:errcheck
+	}()
+	select {
+	case <-firstArrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first call did not reach server")
+	}
+
+	// Second call belongs to the run we will cancel; it blocks on the semaphore.
+	queuedErrCh := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _, qErr := pool.Call(context.Background(), "run-cancel", "pol-1", "inst", "tool", `{}`)
+		queuedErrCh <- qErr
+	}()
+
+	// Wait until the queued call is registered as in-flight for run-cancel. This
+	// is the signal we synchronize on instead of a fixed sleep: the fix registers
+	// before the semaphore acquire, so the call appears in InflightCountByInstance
+	// while still queued.
+	waitForCondition(t, 5*time.Second, func() bool {
+		return pool.InflightCountByInstance("inst") == 2
+	})
+
+	// Cancel the run while the second call is still queued (it never dialed).
+	pool.CancelRun("run-cancel")
+
+	// The queued call must return ErrRunCancelled.
+	var queuedErr error
+	select {
+	case queuedErr = <-queuedErrCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued call did not return after CancelRun")
+	}
+	if !errors.Is(queuedErr, dispatch.ErrRunCancelled) {
+		t.Errorf("queued call error = %v; want ErrRunCancelled", queuedErr)
+	}
+
+	// The queued call must never have dialed the plugin: only the first
+	// slot-holding call should have arrived at the server hook.
+	mu.Lock()
+	arrivals := arrivalCount
+	mu.Unlock()
+	if arrivals != 1 {
+		t.Errorf("server saw %d arrivals; want 1 — queued call executed the plugin gRPC tool after CancelRun (cancellation escaped, #588)", arrivals)
+	}
+
+	// Release the first call so all goroutines unwind.
+	doUnblockFirst()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("goroutines did not return")
+	}
+}
+
+// TestPool_CancelRun_InWindowAbortsInflightRPC verifies the exact #588 window:
+// a call that has acquired the semaphore and is executing the gRPC RPC is
+// cancelled by CancelRun even when the caller's parent context is still healthy
+// (mirroring Pool.Close, which calls CancelRun without cancelling any agent ctx).
+// The call must return ErrRunCancelled rather than appearing to succeed.
+func TestPool_CancelRun_InWindowAbortsInflightRPC(t *testing.T) {
+	arrived := make(chan struct{}, 1)
+
+	srv := &fakeToolServer{
+		callHook: func(ctx context.Context, _ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			arrived <- struct{}{}
+			// Honour gRPC context cancellation (driven by the per-call ctx that
+			// CancelRun cancels). If we instead returned a value, that would be the
+			// escape the bug allows.
+			<-ctx.Done()
+			return nil, status.Error(codes.Canceled, ctx.Err().Error())
+		},
+	}
+
+	pool, cleanup := newTestPool(t, srv, func(cfg *dispatch.Config) {
+		cfg.CallTimeout = 5 * time.Second
+		cfg.CancelTimeout = 500 * time.Millisecond
+	})
+	defer cleanup()
+
+	// Parent context stays healthy for the whole test — only CancelRun drives the
+	// cancellation, exactly as Pool.Close does during shutdown.
+	var callErr error
+	var isErr bool
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, isErr, callErr = pool.Call(context.Background(), "run-window", "pol-1", "inst", "tool", `{}`)
+	}()
+
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("call did not reach server")
+	}
+
+	pool.CancelRun("run-window")
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("call did not return after CancelRun")
+	}
+
+	if !errors.Is(callErr, dispatch.ErrRunCancelled) {
+		t.Errorf("call error = %v; want ErrRunCancelled (parent ctx healthy, CancelRun fired)", callErr)
+	}
+	if isErr {
+		t.Error("isError should be false for a cancelled call")
+	}
+}
+
+// TestPool_QueueSlotReleasedOnAdmission verifies that a running call does NOT
+// keep occupying a queue slot. The queue gate (capacity = max_queue_depth)
+// accounts for waiting callers only and must be released the moment a call is
+// admitted to a concurrency slot. With max_concurrent=1 and max_queue_depth=1,
+// a second call must be able to QUEUE (block on the semaphore) while the first
+// runs — if the running call still held its queue slot, the second would be
+// wrongly rejected with ErrQueueFull. This guards the #588 fix against a
+// regression where the queue slot was released only at call exit.
+func TestPool_QueueSlotReleasedOnAdmission(t *testing.T) {
+	arrived := make(chan struct{}, 1)
+	unblock := make(chan struct{})
+	var unblockOnce sync.Once
+	doUnblock := func() { unblockOnce.Do(func() { close(unblock) }) }
+
+	srv := &fakeToolServer{
+		callHook: func(ctx context.Context, _ *toolv1.CallRequest) (*toolv1.CallResponse, error) {
+			arrived <- struct{}{}
+			select {
+			case <-unblock:
+				return &toolv1.CallResponse{OutputJson: `"ok"`}, nil
+			case <-ctx.Done():
+				return nil, status.Error(codes.Canceled, ctx.Err().Error())
+			}
+		},
+	}
+
+	pool, cleanup := newTestPool(t, srv, func(cfg *dispatch.Config) {
+		cfg.DefaultMaxConcurrent = 1
+		cfg.DefaultMaxQueueDepth = 1
+		cfg.CallTimeout = 5 * time.Second
+	})
+	defer func() {
+		doUnblock()
+		cleanup()
+	}()
+
+	var wg sync.WaitGroup
+
+	// First call takes the only concurrency slot and parks in the hook. Once it is
+	// admitted it must have released its queue slot.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		pool.Call(context.Background(), "run-a", "pol-1", "inst", "tool", `{}`) //nolint:errcheck
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first call did not reach server")
+	}
+
+	// Second call must be able to claim the freed queue slot and block on the
+	// semaphore — NOT be rejected with ErrQueueFull. Against the regression
+	// (running call still holding its queue slot) the queue gate is full and this
+	// call returns ErrQueueFull immediately, so it never registers as in-flight.
+	secondErrCh := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _, err := pool.Call(context.Background(), "run-b", "pol-1", "inst", "tool", `{}`)
+		secondErrCh <- err
+	}()
+
+	// The second call registers as in-flight only after claiming a queue slot, so
+	// reaching count==2 proves it queued rather than being rejected.
+	waitForCondition(t, 5*time.Second, func() bool {
+		return pool.InflightCountByInstance("inst") == 2
+	})
+
+	// Sanity: it must not have already returned ErrQueueFull.
+	select {
+	case err := <-secondErrCh:
+		t.Fatalf("second call returned early with %v; want it queued on the semaphore", err)
+	default:
+	}
+
+	// Release the first call; the second is admitted and completes cleanly.
+	doUnblock()
+	select {
+	case err := <-secondErrCh:
+		if err != nil {
+			t.Errorf("second call error = %v; want nil (admitted after first released)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("second call did not complete after first released its slot")
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("goroutines did not return")
+	}
+}
+
+// waitForCondition polls cond until it returns true or the timeout elapses. It
+// is used only to synchronize on pool-internal state (InflightCountByInstance,
+// a guarded test flag) for which the pool publishes no event channel; the poll
+// budget is a generous CI-tolerance bound, not a timing assertion.
+func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !cond() {
+		t.Fatalf("condition not met within %s", timeout)
+	}
+}
+
 // TestPool_Semaphore verifies that max_concurrent_calls limits concurrency
 // and extra callers block until a slot is released.
 func TestPool_Semaphore(t *testing.T) {
