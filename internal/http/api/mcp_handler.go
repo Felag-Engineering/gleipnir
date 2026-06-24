@@ -470,11 +470,12 @@ func (h *MCPHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // Updates the server's name and url only. Auth headers are managed separately
 // via PUT/DELETE /api/v1/mcp/servers/:id/headers/:name (ADR-039).
 //
-// TODO #194 follow-up: server rename leaves stale arbiter reservations. A rename
-// changes the server's name (and therefore the dot-name prefix for all its
-// tools), but this handler does not refresh tools, so the arbiter still holds
-// reservations under the old name. A follow-up should release the old
-// reservations and re-reserve under the new name.
+// Rename refreshes the cross-source tool-namespace arbiter (#578). A server's
+// tool dot-names are prefixed with its name ("<name>.<tool>"), so renaming
+// changes every reservation's key. This handler re-reserves the server's
+// currently-known tools under the new name and releases the old-name slots, so
+// the arbiter never holds stale reservations and a later server cannot hit a
+// false conflict against an orphaned slot. The plugin-side analog is #574.
 func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
@@ -495,12 +496,92 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Load the current row first so we know the old name. We need it both to
+	// detect a rename and to release the old arbiter reservations afterwards.
+	existing, err := h.store.GetMCPServer(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get MCP server", err.Error())
+		return
+	}
+
+	renamed := h.arbiter != nil && body.Name != existing.Name
+
+	// When renaming, reject a name already used by a *different* server before
+	// touching the arbiter. Without this guard, two MCP servers sharing tool
+	// names would expose a corruption path: if the target name already owns the
+	// same dot-names in the arbiter, ReserveBulk treats them as idempotent and
+	// succeeds, but the DB's UNIQUE(name) constraint then rejects the write —
+	// and the DB-failure rollback (ReleaseAllFor below) would delete the *other*
+	// server's legitimate reservations. Catching the name clash here keeps the
+	// arbiter logic on the path where the new name is genuinely free.
+	if renamed {
+		servers, err := h.store.ListMCPServers(r.Context())
+		if err != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to list MCP servers", err.Error())
+			return
+		}
+		for _, s := range servers {
+			if s.ID != id && s.Name == body.Name {
+				httputil.WriteError(w, http.StatusConflict, "MCP server name already exists", "")
+				return
+			}
+		}
+	}
+
+	// On rename, re-reserve the server's tools under the new name *before*
+	// touching the DB. A conflict here means another source already owns one of
+	// the new dot-names; ReserveBulk rolls back its own partial claims, so the
+	// old reservations remain intact and we can fail cleanly with a 409 without
+	// any partial apply. The old-name slots are released only after the DB write
+	// succeeds, keeping the arbiter consistent with persisted state.
+	var newSrc, oldSrc toolregistry.Source
+	if renamed {
+		newSrc = toolregistry.Source{Kind: toolregistry.KindMCP, Name: body.Name}
+		oldSrc = toolregistry.Source{Kind: toolregistry.KindMCP, Name: existing.Name}
+
+		tools, err := h.store.ListMCPToolsByServer(r.Context(), id)
+		if err != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to list MCP tools for rename", err.Error())
+			return
+		}
+		if len(tools) > 0 {
+			entries := make([]toolregistry.Reservation, len(tools))
+			for i, t := range tools {
+				entries[i] = toolregistry.Reservation{
+					DotName: toolregistry.DotName(body.Name, t.Name),
+					Owner:   newSrc,
+				}
+			}
+			if err := h.arbiter.ReserveBulk(entries); err != nil {
+				var ce *toolregistry.ConflictError
+				if errors.As(err, &ce) {
+					httputil.WriteError(w, http.StatusConflict,
+						fmt.Sprintf("tool %q is already provided by %s", ce.DotName, ce.Existing.String()),
+						"")
+					return
+				}
+				httputil.WriteError(w, http.StatusInternalServerError, "failed to reserve tool namespace", err.Error())
+				return
+			}
+		}
+	}
+
 	updated, err := h.store.UpdateMCPServer(r.Context(), db.UpdateMCPServerParams{
 		Name: body.Name,
 		Url:  body.URL,
 		ID:   id,
 	})
 	if err != nil {
+		// The DB write failed, so the name did not change. Release the new-name
+		// reservations we optimistically claimed; the old-name slots are still
+		// held and remain correct.
+		if renamed {
+			h.arbiter.ReleaseAllFor(newSrc)
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			httputil.WriteError(w, http.StatusNotFound, "MCP server not found", "")
 			return
@@ -511,6 +592,12 @@ func (h *MCPHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update MCP server", err.Error())
 		return
+	}
+
+	// Rename committed: drop the stale old-name reservations now that the new
+	// name is the source of truth.
+	if renamed {
+		h.arbiter.ReleaseAllFor(oldSrc)
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, h.serverToResponse(updated))
