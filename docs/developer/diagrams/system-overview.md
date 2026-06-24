@@ -15,14 +15,16 @@ graph LR
         UI["React frontend<br/><i>embedded via go:embed</i>"]
         GO["Go binary<br/><i>chi router · sqlc · go:embed</i>"]
         SQLITE[("SQLite · WAL mode")]
+        PLUGINS["Plugin subprocesses<br/><i>go-plugin · gRPC over UDS</i>"]
 
         UI -->|"REST + SSE"| GO
         GO -->|reads/writes| SQLITE
+        GO <-->|"gRPC over UDS"| PLUGINS
     end
 
     subgraph external["External services"]
         direction TB
-        LLM_PROVIDERS["LLM providers<br/><i>Anthropic · Google · OpenAI</i>"]
+        LLM_PROVIDERS["LLM providers<br/><i>Anthropic · Google · OpenAI · OpenAI-compatible</i>"]
         MCP_SERVERS["MCP servers<br/><i>tool providers over HTTP</i>"]
     end
 

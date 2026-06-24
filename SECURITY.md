@@ -131,10 +131,10 @@ The operator chooses which provider to use and which tools a policy may invoke. 
 
 ### 4.6 Single Encryption Key
 
-All encrypted-at-rest secrets (provider API keys, webhook secrets) are protected by a single symmetric key, `GLEIPNIR_ENCRYPTION_KEY`. The consequences:
+All encrypted-at-rest secrets (provider API keys, OpenAI-compatible backend keys, webhook secrets, MCP server auth headers, and plugin credentials) are protected by a single symmetric key, `GLEIPNIR_ENCRYPTION_KEY`. The consequences:
 
 - **Loss is permanent.** There is no fallback decryption path. A lost key means every encrypted value in the DB becomes unrecoverable.
-- **No in-place rotation.** Rotating the key in v1 requires re-entering every provider API key and every webhook secret after setting the new key. Tooling for seamless rotation is tracked in an open issue.
+- **Rotation requires a maintenance window.** The key is rotated offline with `gleipnirctl rotate-key`, which re-encrypts every at-rest secret (provider API keys, OpenAI-compat keys, webhook secrets, MCP auth headers) under the new key in a single atomic transaction. The server must be stopped first — the command refuses to run while another process holds the DB write lock. See [`cmd/gleipnirctl/README.md`](cmd/gleipnirctl/README.md) for the full procedure and the `--dry-run` validation path.
 
 Back up the key immediately after generation. Store it in a password manager or secrets vault separate from the Gleipnir host.
 
@@ -164,11 +164,11 @@ Gleipnir delegates the following to the operator. These are not suggestions — 
 5. **Database backup.** Back up the SQLite file at `/data/gleipnir.db`. It contains every policy, run, audit step, and encrypted secret.
 6. **MCP server vetting.** Only register MCP servers you trust at the same level as the capabilities you plan to grant them. Run them in isolated containers with minimal host access.
 7. **Plugin vetting.** Only drop plugin binaries into `GLEIPNIR_PLUGINS_DIR` that you trust to run as the host process. Verify the publisher's pubkey out-of-band before the first (trust-on-first-use) install, and never set `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS=true` in production. See §4.7.
-7. **Data flow to LLM providers.** Evaluate what data your policies will expose to Anthropic / Google / OpenAI / your chosen OpenAI-compatible backend. Any data reachable by a granted tool can end up in the provider's context. See §4.5.
-8. **User account hygiene.** Use strong passwords. Revoke sessions (`DELETE /api/v1/auth/sessions/:id`) when a device is lost or a user leaves.
-9. **Policy review.** Policy authoring is an operator-level privilege. Operators are trusted to review the YAML they save, including any content pasted from third parties.
-10. **Secret rotation.** Rotate webhook secrets if you suspect exposure. Rotate provider API keys in the upstream console and re-enter them in `/admin/models`.
-11. **Audit monitoring.** Review the runs list and reasoning traces periodically. Gleipnir records everything an agent does; nothing reviews those records for you.
+8. **Data flow to LLM providers.** Evaluate what data your policies will expose to Anthropic / Google / OpenAI / your chosen OpenAI-compatible backend. Any data reachable by a granted tool can end up in the provider's context. See §4.5.
+9. **User account hygiene.** Use strong passwords. Revoke sessions (`DELETE /api/v1/auth/sessions/:id`) when a device is lost or a user leaves.
+10. **Policy review.** Policy authoring is an operator-level privilege. Operators are trusted to review the YAML they save, including any content pasted from third parties.
+11. **Secret rotation.** Rotate webhook secrets if you suspect exposure. Rotate provider API keys in the upstream console and re-enter them in `/admin/models`.
+12. **Audit monitoring.** Review the runs list and reasoning traces periodically. Gleipnir records everything an agent does; nothing reviews those records for you.
 
 ## 6. Reporting a Vulnerability
 

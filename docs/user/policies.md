@@ -32,6 +32,20 @@ Authentication modes:
 - `bearer` — the shared secret is sent as a `Bearer` token in the `Authorization` header.
 - `none` — no authentication. Only use this behind a network boundary you control.
 
+**Optional payload filtering.** Add a `checks` list to fire only on requests whose body matches. Each check evaluates a JSONPath expression directly against the incoming JSON body (no MCP tool is called — omit the `tool` field). Requests that do not satisfy the checks return `200 OK {"data":{"filtered":true}}` without launching a run.
+
+```yaml
+trigger:
+  type: webhook
+  auth: hmac
+  match: all   # all (AND) | any (OR), default all
+  checks:
+    - path: "$.heartbeat.status"
+      equals: 0
+```
+
+The same comparators as `poll` apply (`equals`, `not_equals`, `greater_than`, `less_than`, `contains`; exactly one per check).
+
 ### `scheduled`
 
 Fires once at each timestamp in `fire_at`. After all timestamps are consumed the policy is automatically paused.
@@ -66,6 +80,33 @@ trigger:
 Comparators: `equals`, `not_equals`, `greater_than`, `less_than`, `contains`. Exactly one comparator is required per check. `greater_than` and `less_than` require numeric values; `contains` requires strings. Types must match the JSONPath extraction result or the check will fail.
 
 The matching tool responses are included in the agent's first message so it has full context on what triggered it.
+
+### `cron`
+
+Runs on a recurring schedule defined by a standard 5-field POSIX cron expression (`minute hour day-of-month month day-of-week`). Cron policies run indefinitely until paused or deleted.
+
+```yaml
+trigger:
+  type: cron
+  cron_expr: "0 9 * * 1"   # every Monday at 09:00
+```
+
+If the server was down when a scheduled fire time passed, that fire is silently skipped — there is no catch-up.
+
+### `subscribed`
+
+Fires when an installed plugin's trigger event source emits a matching event. The policy binds to a `(source, event_kind)` pair declared by the plugin's manifest. The UI presents these as peer options alongside the built-in trigger types, labelled with the event kind's human-readable name (you never author the word "subscribed" directly). See [Plugins](plugins.md) for installing and configuring trigger plugins.
+
+```yaml
+trigger:
+  type: subscribed
+  source: my-plugin-instance   # a plugin instance name
+  event_kind: channel_message  # an event kind from the plugin's manifest
+  binding:                     # optional, typed filter fields from the manifest
+    filter: ".*"
+```
+
+Binding filters use typed form fields (regex, contains, equals) derived from the plugin manifest's `binding_schema` — not JSONPath. A missing payload field or type mismatch silently does not fire (it is not an error). The exact fields available depend on the plugin.
 
 ## Capabilities
 
@@ -148,7 +189,7 @@ agent:
     max_tool_calls_per_run: 50   # default: 50
 ```
 
-Both limits are hard caps. When either is exceeded the run fails immediately with an error step in the trace.
+Both limits are hard caps. When either is exceeded the run fails immediately with an error step in the trace. Set either to `0` to disable that cap (no per-run limit).
 
 ### Concurrency
 
@@ -182,3 +223,13 @@ Set `folder` to group policies in the UI. Policies with the same `folder` value 
 ```yaml
 folder: homelab
 ```
+
+## Audience
+
+When a plugin provides a notification channel (e.g. Slack), set `audience` to the name of an audience defined under **Admin → Audiences**. The audience is an ordered list of channel entries used for notification fan-out and operator-request routing. Omit it for policies that do not use the channel system.
+
+```yaml
+audience: ops-alerts
+```
+
+See [Plugins](plugins.md) for installing channel plugins and managing audiences.

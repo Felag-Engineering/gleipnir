@@ -30,9 +30,11 @@ minimal-tool/
 go build .
 ```
 
-The produced binary currently panics if executed directly because `serve.Serve()`
-is a Phase-3 stub. The implementation is tracked in issue #170. Use the test
-suite (below) to exercise `ToolService` in-process today.
+The binary is a go-plugin subprocess: executing it directly prints a "this is a
+plugin" notice rather than running, since it expects the host to launch it over
+the go-plugin handshake. Use the test suite (below) to exercise `ToolService`
+in-process, or `gleipnir-plugin run` (see the CLI README) to drive it against a
+fake host without the real Gleipnir server.
 
 ## Test
 
@@ -103,16 +105,11 @@ Delete `gen_manifest_local.go` before committing — the canonical `manifest.yam
 is the artifact that lands in the repo. Run `go test .` afterwards to confirm
 `TestManifestYAMLIsCanonical` still passes.
 
-### gen-manifest and validate (blocked on #170)
+### gen-manifest and validate
 
-`gleipnir-plugin gen-manifest` and `gleipnir-plugin validate` require the
-plugin binary to implement the `--emit-manifest` flag, which is wired up by
-`serve.EmitManifest`. That function is blocked on issue #170.
-
-Until #170 lands, run `go test .` to verify the YAML stays in sync
-(`TestManifestYAMLIsCanonical`).
-
-Once #170 lands, the full workflow becomes:
+`gleipnir-plugin gen-manifest` and `gleipnir-plugin validate` invoke the plugin
+binary with the `--emit-manifest` flag, which `serve.Serve()` detects before any
+flag parsing. The full workflow is:
 
 ```sh
 go build -o minimal-tool .
@@ -120,10 +117,16 @@ gleipnir-plugin gen-manifest --binary ./minimal-tool --out manifest.yaml
 gleipnir-plugin validate   --binary ./minimal-tool --manifest manifest.yaml
 ```
 
+You can also run `go test .` to verify the committed YAML stays in sync
+(`TestManifestYAMLIsCanonical`).
+
 ## Run
 
-Not yet runnable. `serve.Serve()` panics because the go-plugin transport is not
-implemented in this release. Tracked in issue #170.
+`serve.Serve()` wires up the full go-plugin gRPC transport, so the binary runs
+as a real plugin subprocess. To exercise it outside the Gleipnir host, use
+`gleipnir-plugin run ./minimal-tool --scenario <script.yaml>` (see the CLI
+README for the scenario schema). Installed into a host, the binary is launched
+automatically over the go-plugin handshake.
 
 ## Using outside the monorepo
 
@@ -141,7 +144,7 @@ If you copy this example outside the monorepo you have two options:
 1. Keep a `go.work` that points at a local checkout of `plugin-sdk`:
 
    ```
-   go 1.22
+   go 1.25
    use ./plugin-sdk
    use ./my-plugin
    ```

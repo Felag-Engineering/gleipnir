@@ -16,7 +16,7 @@ sequenceDiagram
     participant MCP as MCP server
     participant SSE as SSE Broadcaster
 
-    Op ->> T: Trigger event<br/>(webhook / manual / scheduled / poll)
+    Op ->> T: Trigger event<br/>(webhook / manual / scheduled / poll / cron / subscribed)
     T ->> DB: GetPolicy(policyID)
     T ->> T: Parse + validate policy YAML
     T ->> RL: Launch(ctx, policy, payload)
@@ -58,9 +58,9 @@ sequenceDiagram
             RM -->> BA: ApprovalDecision via channel
 
             alt Approved
+                BA ->> DB: UpdateRunStatus(running)
                 BA ->> MCP: CallTool(name, input)
                 MCP -->> BA: ToolResult
-                BA ->> DB: UpdateRunStatus(running)
             else Rejected or timeout
                 BA ->> DB: UpdateRunStatus(failed)
             end

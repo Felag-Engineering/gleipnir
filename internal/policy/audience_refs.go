@@ -1,10 +1,11 @@
 // Package policy — audience reference scanning.
 //
-// Agreed YAML key: `audience` at policy root (string, name of the referenced
-// audience). schemas/policy.yaml does NOT yet define this key; schema update
-// is owned by #208/#210. Until that key is written and the policy editor
-// emits it, ScanPolicyReferences and BulkScanPolicyReferenceCounts always
-// return empty results — no policies will reference an audience by name yet.
+// YAML key: `audience` at policy root (string, name of the referenced
+// audience), defined in schemas/policy.yaml and parsed into Policy.Audience.
+// ScanPolicyReferences and BulkScanPolicyReferenceCounts are wired into the
+// audience handler (internal/http/api/audience_handler.go) for the DELETE
+// save-guard (409 when policies still reference the audience by name) and the
+// reference-count listing.
 //
 // Performance note: both functions do an O(policy_count) full-table scan plus
 // one YAML unmarshal per policy. For v1 this is acceptable because audiences

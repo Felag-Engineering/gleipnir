@@ -115,6 +115,11 @@ All variables are read at startup. Changing a value requires restarting the stac
 | `GLEIPNIR_APPROVAL_SCAN_INTERVAL` | `30s` | How often to check for timed-out approval requests. |
 | `GLEIPNIR_DEFAULT_FEEDBACK_TIMEOUT` | `30m` | Default timeout for feedback requests when not set in the policy. |
 | `GLEIPNIR_FEEDBACK_SCAN_INTERVAL` | `30s` | How often to check for timed-out feedback requests. |
+| `GLEIPNIR_DRAIN_TIMEOUT` | `5m` | Graceful-shutdown drain timeout for in-flight runs and background loops. |
+| `GLEIPNIR_PID_FILE` | `/var/run/gleipnir.pid` | Path the server writes its PID to on startup. |
+| `GLEIPNIR_LLM_RETRY_MAX_ATTEMPTS` | `4` | Total attempts (including the first) for a transient LLM API failure (connection errors, HTTP 408/429 rate limits, transient 5xx). Set to `1` to disable retry. |
+| `GLEIPNIR_LLM_RETRY_INITIAL_BACKOFF` | `1s` | Base wait for the LLM retry backoff (Google + OpenAI-compatible providers; the Anthropic/OpenAI SDKs use their own schedule). |
+| `GLEIPNIR_LLM_RETRY_MAX_BACKOFF` | `30s` | Ceiling for any single LLM retry wait, including a provider-supplied `Retry-After`. |
 | `GLEIPNIR_PLUGINS_DIR` | `/plugins` | Directory watched for plugin tarballs (`.tar.gz`/`.tgz`) by the fsnotify watcher. |
 | `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` | `false` | When `true`, unsigned bundles load; every unsigned load emits a high-severity audit event; `GET /api/v1/health` reports `signature_verification: disabled`. Signed bundles are still fully verified. Dev-only — leave `false` in production. |
 | `GLEIPNIR_OAUTH_REFRESH_INTERVAL` | `5m` | How often the OAuth refresh scanner proactively refreshes plugin OAuth2 tokens approaching expiry. |

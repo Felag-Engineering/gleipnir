@@ -70,7 +70,7 @@ make build
 make gen-manifest   # generates manifest.yaml from the binary
 ```
 
-The scaffold generates `main.go`, `manifest.go`, `service.go`, `service_test.go`, `go.mod`, `Makefile`, `README.md`, and `.gitignore`.
+The scaffold generates `main.go`, `manifest.go`, `service.go`, `service_test.go`, `go.mod`, `Makefile`, `manifest.yaml`, `README.md`, and `.gitignore`. (`make gen-manifest` regenerates `manifest.yaml` from the binary; the scaffolded copy is a starting point.)
 
 **Working inside the monorepo.** All first-party plugins use `v0.0.0` as the SDK version — a workspace-only pseudo-version resolved by the repo-root `go.work`. If you are developing outside the monorepo, add a `replace` directive:
 

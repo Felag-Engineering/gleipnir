@@ -27,7 +27,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-008 | Two approval modes (agent-initiated + policy-gated)| 🟢 Decided    | v0.2   | Approval interceptor, feedback channel               |
 | ADR-009 | Feedback channel: policy-first, system fallback    | 🟢 Decided    | v0.2   | Policy schema, notification system                   |
 | ADR-010 | Project name: Gleipnir                             | 🟢 Decided    | —      | —                                                    |
-| ADR-011 | v1 approval path (UI vs Slack callbacks)           | 🟡 In Progress | v0.2   | Approval UX, inbound network model                   |
+| ADR-011 | v1 approval path (UI vs Slack callbacks)           | 🟢 Decided    | v0.2   | Approval UX, inbound network model — settled as in-app UI approvals (shipped); the approval lifecycle is governed by ADR-008 + ADR-029 |
 | ADR-012 | Run persistence and recovery behavior              | 🟢 Decided    | v0.1   | Run executor, storage layer, startup sequence        |
 | ADR-013 | System prompt default template                     | 🟢 Decided    | v0.1   | Agent runtime, policy schema, UI prompt editor       |
 | ADR-014 | Poll trigger MCP client architecture               | 🟢 Decided    | v0.3   | Trigger engine, MCP client, package structure        |
@@ -50,26 +50,31 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-033 | Premium OpenAI client split from compat client         | 🟢 Decided | v1.0 | internal/llm/openai, internal/llm/openaicompat, main.go |
 | ADR-034 | Webhook secrets stored in encrypted DB column (scoped ADR-002 deviation) | 🟢 Decided | v1.0 | policies table, internal/policy, trigger/webhook_handler, frontend WebhookConfig |
 | ADR-035 | DB-backed system settings for runtime configuration | 🟢 Decided | v1.0 | system_settings table, admin API, frontend /admin/system |
-| ADR-036 | Centralized scheduler dispatcher                    | 🟢 Decided | v1.0 | internal/dispatcher (new), internal/trigger/scheduled.go, internal/trigger/poll.go, main.go |
+| ADR-036 | Centralized scheduler dispatcher (NOT IMPLEMENTED — see body) | ⬜ Deferred | v1.0 | (proposed `internal/dispatcher`, never built); live code stays per-loop in internal/trigger/{scheduled,poll,cron}.go |
 | ADR-037 | Custom Prometheus registry in internal/infra/metrics (leaf package) | 🟢 Decided | v1.0 | internal/infra/metrics (new), all future instrumented packages |
 | ADR-038 | Atomic run-state transitions with optimistic locking   | 🟢 Decided | v1.0 | runs.version column, RunStateMachine.Transition (tx), runstate.ErrTransitionConflict |
 | ADR-039 | Per-server encrypted auth headers for authenticated MCP providers | 🟢 Decided | v1.0 | mcp_servers table, internal/mcp, internal/admin, gleipnirctl rotate-key |
 | ADR-040 | Arcade gateway pre-authorization (toolkit-level OAuth pre-warm) | 🟢 Decided | v1.0 | internal/arcade (new), internal/http/api/arcade_handler, frontend ServerDetailModal |
-| ADR-041 | Plugin system architecture (umbrella) | 🟢 Decided | v2.0 | internal/plugin (new), internal/execution/agent/feedback.go, plugin-sdk (new module), admin UI, ADR-004 (parallel to MCP) — cross-source tool uniqueness arbiter lives in `internal/toolregistry` per spec §3.3 / issue #194 |
-| ADR-042 | Plugin service & HostAPI versioning policy | 🟢 Decided | v1.0 (plugins) | docs/developer/plugin-system-spec.md §10, buf.yaml, .github/workflows/ci.yml |
-| ADR-043 | Plugin signing tooling — bundled Minisign in plugin-sdk/signing, fresh-written | 🟢 Decided | v2.0 (plugins) | plugin-sdk/signing (new), gleipnir-plugin keygen/sign/package subcommands, spec §5.2 §14.5 |
-| ADR-044 | Channel routing model — Notify/Request semantics, audience as shared resource | 🟢 Decided | v2.0 (plugins) | internal/plugin/channel (new), internal/execution/agent/feedback.go, admin audiences UI, ADR-031 (partial supersession) |
-| ADR-045 | Plugin signing & TOFU trust — Minisign tamper-evidence + first-install pubkey capture | 🟢 Decided | v2.0 (plugins) | internal/plugin (loader), plugin_instances.trusted_pubkey, GLEIPNIR_ALLOW_UNSIGNED_PLUGINS, spec §5 |
-| ADR-046 | Audit-table split — run_steps (LLM-visible) vs plugin_audit_events (operator-only) | 🟢 Decided | v2.0 (plugins) | plugin_audit_events table, WriteAuditStep RPC authorization, spec §12.3 |
-| ADR-047 | Plugin observability surface — metrics prefix, cardinality cap, Log RPC instead of stdout, OTEL deferred | 🟢 Decided | v2.0 (plugins) | internal/plugin/hostsvc/metrics.go, internal/plugin/hostsvc/handlers.go (Log/EmitMetric), internal/plugin/process/logpipe.go, internal/plugin/state/metrics.go, spec §12 |
-| ADR-048 | Subscribed trigger type — internal-only name, flat picker, no JSONPath for plugin bindings, single-trigger-per-policy v1 | 🟢 Decided | v2.0 (plugins) | internal/model (TriggerType), internal/policy (parser/validator), internal/trigger (new subscribed handler), policy editor trigger picker, spec §7 |
-| ADR-049 | Redact-on-read for plugin instance config secret fields (x-gleipnir-secret) | 🟢 Decided | plugins | internal/plugin/configvalidate, internal/admin/plugin_handler, plugin-sdk/manifest, plugins/slack |
-| ADR-050 | Ergonomic Service seam coexists with raw gRPC seam in plugin-sdk (amended #495: ergonomic trigger emit routes through canonical EmitEvent, not StartResponse) | 🟢 Decided | plugins | plugin-sdk/tool, plugin-sdk/channel, plugin-sdk/trigger, plugin-sdk/pluginerr (new packages); plugin-sdk/serve (New*Server constructors, WithXHandler options); plugins/ntfy (migrated); plugins/slack (stays raw) |
-| ADR-051 | Three plugin dispatchers are deliberately separate (tool-call pool, channel Notify/Request, trigger events) — do not merge into one routing module | 🟢 Decided | plugins | internal/plugin/dispatch (pool.go, channel.go), internal/plugin/trigger (dispatcher.go), internal/plugin/hostsvc (identity/generation interceptors) |
+| ADR-041 | Plugin system architecture (umbrella) | 🟢 Decided | v1.1 (plugins) | internal/plugin (new), internal/execution/agent/feedback.go, plugin-sdk (new module), admin UI, ADR-004 (parallel to MCP) — cross-source tool uniqueness arbiter lives in `internal/toolregistry` per spec §3.3 / issue #194 |
+| ADR-042 | Plugin service & HostAPI versioning policy | 🟢 Decided | v1.1 (plugins) | docs/developer/plugin-system-spec.md §10, buf.yaml, .github/workflows/ci.yml |
+| ADR-043 | Plugin signing tooling — bundled Minisign in plugin-sdk/signing, fresh-written | 🟢 Decided | v1.1 (plugins) | plugin-sdk/signing (new), gleipnir-plugin keygen/sign/package subcommands, spec §5.2 §14.5 |
+| ADR-044 | Channel routing model — Notify/Request semantics, audience as shared resource | 🟢 Decided | v1.1 (plugins) | internal/plugin/channel (new), internal/execution/agent/feedback.go, admin audiences UI, ADR-031 (partial supersession) |
+| ADR-045 | Plugin signing & TOFU trust — Minisign tamper-evidence + first-install pubkey capture | 🟢 Decided | v1.1 (plugins) | internal/plugin (loader), plugin_instances.trusted_pubkey, GLEIPNIR_ALLOW_UNSIGNED_PLUGINS, spec §5 |
+| ADR-046 | Audit-table split — run_steps (LLM-visible) vs plugin_audit_events (operator-only) | 🟢 Decided | v1.1 (plugins) | plugin_audit_events table, WriteAuditStep RPC authorization, spec §12.3 |
+| ADR-047 | Plugin observability surface — metrics prefix, cardinality cap, Log RPC instead of stdout, OTEL deferred | 🟢 Decided | v1.1 (plugins) | internal/plugin/hostsvc/metrics.go, internal/plugin/hostsvc/handlers.go (Log/EmitMetric), internal/plugin/process/logpipe.go, internal/plugin/state/metrics.go, spec §12 |
+| ADR-048 | Subscribed trigger type — internal-only name, flat picker, no JSONPath for plugin bindings, single-trigger-per-policy v1 | 🟢 Decided | v1.1 (plugins) | internal/model (TriggerType), internal/policy (parser/validator), internal/trigger (new subscribed handler), policy editor trigger picker, spec §7 |
+| ADR-049 | Redact-on-read for plugin instance config secret fields (x-gleipnir-secret) | 🟢 Decided | v1.1 (plugins) | internal/plugin/configvalidate, internal/admin/plugin_handler, plugin-sdk/manifest, plugins/slack |
+| ADR-050 | Ergonomic Service seam coexists with raw gRPC seam in plugin-sdk (amended #495: ergonomic trigger emit routes through canonical EmitEvent, not StartResponse) | 🟢 Decided | v1.1 (plugins) | plugin-sdk/tool, plugin-sdk/channel, plugin-sdk/trigger, plugin-sdk/pluginerr (new packages); plugin-sdk/serve (New*Server constructors, WithXHandler options); plugins/ntfy (migrated); plugins/slack (stays raw) |
+| ADR-051 | Three plugin dispatchers are deliberately separate (tool-call pool, channel Notify/Request, trigger events) — do not merge into one routing module | 🟢 Decided | v1.1 (plugins) | internal/plugin/dispatch (pool.go, channel.go), internal/plugin/trigger (dispatcher.go), internal/plugin/hostsvc (identity/generation interceptors) |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
-| #199    | call_id propagation through gRPC metadata (spec §8.5)  | 🟢 Decided | v2.0 (plugins) | plugin-sdk/serve/callcontext.go, internal/plugin/hostsvc (new package), no new ADR — implements existing spec §8.5 contract |
-| #224    | OAuth2 authcode + clientcred host-side orchestration (spec §9.1/§9.2) | 🟢 Decided | v2.0 (plugins) | internal/plugin/oauth (new package, x/oauth2 + clientcredentials), internal/admin/plugin_oauth_handler.go, plugin_instances.credentials_encrypted, HMAC state envelope with HKDF subkey off GLEIPNIR_ENCRYPTION_KEY; no new ADR — implements existing spec §9 contract. Encryption helpers reused from internal/admin via function injection to avoid an import cycle; planned to move to internal/infra/crypto when #141 lands. |
-| #226    | Non-OAuth credential strategies: static_api_key, header_set, basic_auth, none (spec §9.1) | 🟢 Decided | v2.0 (plugins) | internal/plugin/oauth.StoredCredentials widened to discriminated union; internal/admin/plugin_credentials_handler.go (write-only API, mirrors ADR-039/034); internal/infra/headervalidate (extracted from internal/mcp to avoid import cycle); plugin-sdk/credentials (typed Apply helper for plugins); no new ADR — implements settled spec §9.1 contract. |
+| #199    | call_id propagation through gRPC metadata (spec §8.5)  | 🟢 Decided | v1.1 (plugins) | plugin-sdk/serve/callcontext.go, internal/plugin/hostsvc (new package), no new ADR — implements existing spec §8.5 contract |
+| #224    | OAuth2 authcode + clientcred host-side orchestration (spec §9.1/§9.2) | 🟢 Decided | v1.1 (plugins) | internal/plugin/oauth (new package, x/oauth2 + clientcredentials), internal/admin/plugin_oauth_handler.go, plugin_instances.credentials_encrypted, HMAC state envelope with HKDF subkey off GLEIPNIR_ENCRYPTION_KEY; no new ADR — implements existing spec §9 contract. Encryption helpers reused from internal/admin via function injection to avoid an import cycle; planned to move to internal/infra/crypto when #141 lands. |
+| #226    | Non-OAuth credential strategies: static_api_key, header_set, basic_auth, none (spec §9.1) | 🟢 Decided | v1.1 (plugins) | internal/plugin/oauth.StoredCredentials widened to discriminated union; internal/admin/plugin_credentials_handler.go (write-only API, mirrors ADR-039/034); internal/infra/headervalidate (extracted from internal/mcp to avoid import cycle); plugin-sdk/credentials (typed Apply helper for plugins); no new ADR — implements settled spec §9.1 contract. |
+
+**Index notes.**
+- **ADR-025 and ADR-027 were never assigned** — the numbering intentionally skips them; there is no missing record.
+- **ADR-011, ADR-012, ADR-013, ADR-014, and ADR-043 are index-only** (no dedicated `## ADR-NNN` body below). ADR-011's approval lifecycle is documented under ADR-008 + ADR-029; ADR-043's signing tooling is documented inside the ADR-045 body.
+- **ADR-036 was deferred and never implemented** — see its body for the per-loop trigger architecture that shipped instead.
 
 ---
 
@@ -647,7 +652,7 @@ Unsigned plugins are blocked by default. Operators who need to run an unsigned l
 
 - Scope is global, not per-plugin. There is no per-plugin allowlist — that would create a slow drift toward "well, just this one more" until the trust model has rotted.
 - Every load of an unsigned plugin emits a high-severity `unsigned_plugin_loaded` event into `plugin_audit_events`.
-- The admin UI shows a red banner across `/admin/plugins` while permissive mode is active. The banner is non-dismissible.
+- The mode is operator-visible in the admin UI. **As shipped (v1.1.0):** rather than a global banner, each instance spawned from an unsigned bundle carries a yellow `unsigned_permissive` health chip on its row in `/admin/plugins` (see decision 7); the global `/admin/plugins` banner described in the original design was descoped in favor of the per-instance chip plus the `/api/v1/health` field below.
 - `/api/v1/health` reports `signature_verification: disabled` so health-checking infrastructure can detect the mode externally.
 - **Signed plugins are still fully verified** even in permissive mode. Permissive mode does not relax verification of bundles that *do* carry a signature; a tampered signed bundle is still hard-blocked. The toggle affects unsigned bundles only.
 
@@ -688,7 +693,7 @@ Two audit event types are emitted by the TOFU trust machinery (both at severity 
 - `internal/plugin` (host loader) gains a verification step on install and on every process start. It imports `plugin-sdk/signing` for the verification primitive.
 - `plugin_instances.trusted_pubkey` (TEXT) and a snapshotted manifest column are required by issue #185 — the trust model presumes per-instance state.
 - `plugin_audit_events` (issue #184, ADR-046) is a hard prerequisite: every trust-relevant action emits an event into that table. Fail-loud rather than fail-silent is only meaningful with a recorded trail.
-- `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` joins the documented env var list in the project-level CLAUDE.md table. The red banner and the `/api/v1/health` field are the two operator-visible signals that the toggle is on.
+- `GLEIPNIR_ALLOW_UNSIGNED_PLUGINS` joins the documented env var list in the project-level CLAUDE.md table. The per-instance `unsigned_permissive` health chip and the `/api/v1/health` field are the two operator-visible signals that the toggle is on.
 - The "block on material manifest change" rule means a signed plugin update that adds a new declared tool will not auto-load — it sits in `pending_manifest_approval` until an admin reviews it. This is intentional friction; operators who want a smooth path negotiate manifest stability with their plugin authors.
 - TOFU's first-install gap is acknowledged, not closed. The `plugins:install` permission gate and the optional pin-out-of-band toggle are the v1 mitigations.
 
@@ -1125,7 +1130,7 @@ In-memory state (`sm.current`, `sm.version`) is updated ONLY after `tx.Commit()`
 
 ## ADR-036: Centralized scheduler dispatcher
 
-**Status:** Decided
+**Status:** ⬜ Deferred — **NOT implemented.** The `internal/dispatcher` package described below was never built. As of v1.1.0 the live trigger subsystem deliberately retains the per-loop structure this ADR proposed to retire: `internal/trigger/scheduled.go` (Scheduler), `internal/trigger/poll.go` (Poller), and `internal/trigger/cron.go` (CronRunner) — see CLAUDE.md's `internal/trigger/` package note. The design below is preserved as a record of the proposal and the centralization may be revisited if scheduler sprawl becomes a real cost again, but no code matches it today, and `docs/developer/dispatcher.md` documents the same unbuilt design. Cron was added as a fourth per-loop trigger after this ADR was written and is not covered here.
 **Date:** 2026-04
 
 ### Context

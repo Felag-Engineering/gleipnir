@@ -1,6 +1,8 @@
 # Scheduler Dispatcher — Design
 
-This document describes the centralized scheduler dispatcher introduced by [ADR-036](ADR_Tracker.md#adr-036-centralized-scheduler-dispatcher). It is the design reference for anyone adding a new timed primitive, modifying the scheduled or poll triggers, or migrating to a multi-node HA implementation.
+> **Status (v1.1.0): design proposal, not yet implemented.** ADR-036 is *Decided* but the `internal/dispatcher/` package described below does **not** exist in the codebase. The scheduled, poll, and cron triggers each still own their own background-loop lifecycle today — `internal/trigger/scheduled.go` (`Scheduler`, arms a timer per `fire_at`), `internal/trigger/poll.go` (`Poller`, one goroutine + reconcile loop per active policy), and `internal/trigger/cron.go` (`CronRunner`, same shape). This document is the target design for the eventual consolidation; treat it as a forward-looking reference, not a description of current code. When implementing a new timed primitive **today**, follow the existing per-loop pattern in those three files (and see [adding-a-trigger-type.md](adding-a-trigger-type.md) for the background-driven handler checklist).
+
+This document describes the centralized scheduler dispatcher proposed in [ADR-036](ADR_Tracker.md#adr-036-centralized-scheduler-dispatcher). It is the design reference for anyone planning to consolidate the timed-trigger subsystems or migrate to a multi-node HA implementation.
 
 ## Purpose
 

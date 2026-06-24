@@ -5,6 +5,17 @@
 (`internal/plugin/trigger/dispatcher.go`, `Dispatcher.Handle`), not in the
 `EmitEvent` handler as the pre-implementation sketch below assumed. Retained as
 the design record — file/line references below are historical.
+
+**Names as shipped (read these, not the pre-implementation names in §7–§8 below):**
+- Package is `internal/plugin/dedup` (not `internal/plugin/eventdedup`).
+- The dedup primitive is the `Store` interface with one method `Seen(ctx, Key) (bool, error)`
+  — `dbStore` (constructed via `dedup.NewDBStore(querier)`) wraps the sqlc
+  `RecordEventIfNovel :execrows` query and maps 0-rows-affected to "already seen".
+  `Noop` (always returns `false`) backs tests that don't need dedup semantics.
+- The sweeper is `dedup.Sweeper` (`dedup.NewSweeper(querier, interval, ttl)`), whose
+  `Start(ctx)` ticker calls `SweepEventDedup`. Both `Store` and `Sweeper` take an
+  injected clock (`SetClockForTest`) for deterministic tests.
+- The migration shipped as `0039_add_plugin_event_dedup.go` (the §6 sketch guessed `0032`).
 **Companion ADRs:** ADR-003 (SQLite/WAL), ADR-013 (ULID IDs).
 **Spec sections:** §4.3 (event delivery semantics), §7 (trigger dispatch), §8.1 (`EmitEvent` RPC).
 

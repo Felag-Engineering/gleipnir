@@ -40,9 +40,23 @@ gleipnir-plugin new myplugin --kind combo --module github.com/myorg/myplugin
 - `trigger` — TriggerService with one EmitEvent example
 - `combo` — all three services
 
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--kind` | `tool` | Plugin kind: `tool`, `channel`, `trigger`, `combo` |
+| `--dir` | `./<name>` | Output directory |
+| `--module` | `example.com/<name>` | Go module path written to `go.mod` |
+| `--sdk-replace` | (none) | Local filesystem path to `plugin-sdk`; adds a `replace` directive to `go.mod` (local dev only) |
+
+Each scaffold writes `main.go`, `manifest.go`, `service.go`, `service_test.go`
+(kind-specific), plus `go.mod`, `Makefile`, `manifest.yaml`, `README.md`, and
+`.gitignore`.
+
 ### `gleipnir-plugin gen-manifest`
 
-Invoke `<binary> --emit-manifest` and write canonical YAML to `manifest.yaml`:
+Invoke `<binary> --emit-manifest` and write canonical YAML. `--out` writes to a
+file; when omitted, the YAML is written to stdout:
 
 ```bash
 go build -o myplugin .
@@ -51,6 +65,13 @@ gleipnir-plugin gen-manifest --binary ./myplugin --out manifest.yaml
 
 The canonical YAML has sorted keys and 2-space indent. Re-running for the same
 Go declarations produces byte-identical output (required for signing).
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--binary` | (required) | Path to the plugin binary |
+| `--out` | (stdout) | Output file path |
 
 ### `gleipnir-plugin validate`
 
@@ -103,6 +124,17 @@ gleipnir-plugin sign --binary ./myplugin --manifest manifest.yaml \
 
 The signed payload is `sha256(binary) || sha256(manifest)` per spec §5.2.
 The `.minisig` defaults to `<binary-basename>.minisig` in the current directory.
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--binary` | (required) | Path to the plugin binary |
+| `--manifest` | `manifest.yaml` | Path to manifest.yaml |
+| `--key` | `~/.config/gleipnir-plugin/keys/signing.key` | Secret key path |
+| `--key-stdin` | false | Read .key from stdin (CI) |
+| `--out` | `<binary-basename>.minisig` | Output `.minisig` path |
+| `--trusted-comment` | (timestamp + manifest name/version) | Minisign trusted comment |
 
 **Key resolution order:**
 1. `--key-stdin` — read .key content from stdin

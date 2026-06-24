@@ -1,8 +1,33 @@
 # Plugin generation lifecycle, drain, and shutdown
 
-**Status:** Design pass — must merge before #187 (fsnotify watcher), #189 (material-change detection), and the implementation issues filed off this doc.
+**Status:** Implemented — shipped in v1.1.0. Retained as the design record; the
+prose below is the original design pass and its interface sketches are historical.
 **Companion ADRs:** ADR-038 (atomic run-state transitions), ADR-041 (plugin system umbrella), ADR-044 (channel routing — `request_id` is instance-scoped, not generation-scoped), ADR-045 (signing & TOFU trust).
-**Spec sections:** §3.2 (plugin vs instance vs generation), §4.2 (Channel `Request` lifecycle across generations), §5.1 (hot-reload), §13.3 (generation stacking), §13.4 (shutdown).
+**Spec sections:** §3.2 (plugin vs instance, with generation as the third tier), §4.2 (Channel `Request` lifecycle across generations), §5.1 (hot-reload), §13.3 (generation stacking), §13.4 (shutdown).
+
+> **As shipped (read this before the design prose below).** Refcounting landed
+> as `internal/plugin/generation.Controller`, keyed by `(instance_id, generation uint64)`
+> rather than a per-`*plugin.Client` `Generation` value with the three-state machine the
+> §2 sketch describes. The public API is:
+> - `Controller.RegisterInstance(instanceID)` — idempotent; never resets the counter.
+> - `Controller.Acquire(ctx, instanceID) (wrappedCtx, release, gen, err)` — increments the
+>   current generation's refcount; new traffic blocks (caller-deadline-bounded) while a drain
+>   is in progress, then returns `codes.Unavailable`.
+> - `Controller.BeginDrain(ctx, instanceID, grace)` — bumps the generation, waits up to
+>   `grace` for the old generation's refcount to hit zero, then force-cancels stragglers via
+>   the wrapped `context.CancelFunc` (a `forceCancelGrace = 5s` tail mirrors the dispatcher's
+>   §13.8 force-disconnect; old host RPCs are ordinary unary handlers that respect ctx, so a
+>   cancel — not a `conn.Close` — is the right lever). A concurrent `BeginDrain` returns
+>   "drain already in progress".
+> - `Controller.UnregisterInstance(instanceID)` — wakes any blocked `Acquire` callers.
+>
+> The drain grace is the injected `grace` argument, **not** a fixed 60s timer; at shutdown it
+> is bounded by `GLEIPNIR_DRAIN_TIMEOUT` (the same budget that drains the trigger supervisor,
+> scanners, and run manager — see CLAUDE.md). Hot-reload drives a generation rotation through
+> `process.Manager.ReloadInstance` (`BeginDrain` → `stopWithoutUnregister` → `Start`); on any
+> post-`BeginDrain` failure it leaves the instance in a clean, recoverable state (issue #587).
+> The gate is enforced in the hostsvc interceptor chain via `UnaryGenerationRefcountInterceptor`
+> (ADR-051), which routes every plugin→host RPC through `Acquire`/`release`.
 
 This document is the design pass for issues #190 (generation reference counting + drain semantics) and #193 (wiring plugin subprocess shutdown into ADR-038 graceful-shutdown). They land together because hot-reload drain and host shutdown share the same primitives — at shutdown time, *every* live generation enters the same drain path that hot-reload uses for one.
 

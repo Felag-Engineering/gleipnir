@@ -7,7 +7,9 @@ Gleipnir uses SQLite (WAL mode, single connection) with a hybrid migration strat
 Migrations run automatically on every startup via `Store.Migrate()`. There are two kinds:
 
 1. **The initial SQL migration** (`internal/db/migrations/0001_initial.sql`) — creates all base tables in a single transaction. Runs only on a fresh database.
-2. **Go migrations** (`internal/db/migrations/0002_*.go` through `0023_*.go`) — incremental changes for post-launch schema evolution. Each implements the `Migration` interface and has a `ShouldSkip()` method for idempotency.
+2. **Incremental migrations** (`0009`–`0039`, a mix of `.go` and `.sql` files) — post-launch schema evolution. Each implements the `Migration` interface; most also implement the optional `ShouldSkipper` interface (`ShouldSkip()`) for idempotency.
+
+The `NNNN_` filename prefix is a hint only — `Version()` (via the `All()` slice in `registry.go`) is authoritative for apply order. Prefixes may carry a suffix (e.g. `0025b_`) to avoid filename collisions, and a migration's `Version()` need not match its filename number (e.g. `0013_add_thinking_step_type.go` returns `Version() 2`).
 
 The runner (`internal/db/migrations/runner.go`) handles ordering, foreign key toggling, and transactions. Migrations are registered in `internal/db/migrations/registry.go`.
 
@@ -112,10 +114,10 @@ No migration needed — you're adding an accessor, not changing the schema.
 
 SQLite doesn't support `ALTER TABLE ... ALTER CONSTRAINT`. You need to recreate the table:
 
-1. Implement `RequiresForeignKeysOff() bool` returning `true` on your migration (see the `ForeignKeyToggler` interface)
+1. Implement `RequiresForeignKeysOff() bool` returning `true` on your migration (see the `ForeignKeyToggler` interface) whenever the recreated table is referenced by foreign keys
 2. In `Up()`: create new table with updated constraints, copy data, drop old, rename new, recreate indexes
 
-See `internal/db/migrations/0013_add_thinking_step_type.go` for the pattern.
+See `internal/db/migrations/0021_add_poll_trigger_type.go` or `0026_add_cron_trigger_type.go` for the full recreate-with-FK-off pattern. (`0013_add_thinking_step_type.go` shows the table-recreate shape but omits `RequiresForeignKeysOff` because nothing references `run_steps` by FK at that point.)
 
 ## Key details
 

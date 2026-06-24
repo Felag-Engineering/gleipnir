@@ -39,6 +39,7 @@ Re-encrypts every at-rest secret in the Gleipnir database under a new `GLEIPNIR_
 | LLM provider API keys | `system_settings` rows matching `*_api_key` |
 | OpenAI-compatible backend API keys | `openai_compat_providers.api_key_encrypted` |
 | Per-policy webhook secrets | `policies.webhook_secret_encrypted` |
+| MCP server auth headers | `mcp_servers.auth_headers_encrypted` |
 
 User passwords and session tokens are **not** affected — they use a separate one-way hash and do not need rotation here.
 
@@ -68,7 +69,7 @@ printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
 Keys are piped via stdin so they never appear in process listings or shell history. On success you'll see:
 
 ```
-re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets
+re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets, 2 MCP auth header sets
 ```
 
 **4. Update `GLEIPNIR_ENCRYPTION_KEY`** in your `.env` to the new key.
@@ -90,7 +91,7 @@ printf '%s\n%s\n' "$OLD_KEY" "$NEW_KEY" | \
 
 Output on success:
 ```
-re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets (dry-run; no changes written)
+re-encrypted 3 provider keys, 1 openai-compat keys, 12 webhook secrets, 2 MCP auth header sets (dry-run; no changes written)
 ```
 
 ### Inline flags (less secure)

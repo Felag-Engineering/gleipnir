@@ -5,9 +5,11 @@ A live environment for manual QA against real external services. Not part of the
 ### Prerequisites
 
 - Docker and Docker Compose (already required for normal dev)
-- An Anthropic API key (already required)
+- An Anthropic API key (already required), configured via the admin UI at `/admin/models`
 - A Todoist account. The free tier is sufficient. **Recommendation: use a test or throwaway account** — the QA checklist below tests task deletion and close operations against real data.
-- A self-hosted [Mealie](https://docs.mealie.io) instance. Mealie is **not** included in the Gleipnir Docker Compose stack — it must be running separately and reachable from within your Docker network before you start.
+- A self-hosted [Mealie](https://docs.mealie.io) instance.
+
+> **Note:** The Todoist and Mealie MCP servers are **not** bundled in the Gleipnir Docker Compose stack (they were removed). The base `docker-compose.yml` ships only the `api` service; `docker-compose.dev.yml` adds the in-repo `mcp-test-server` for protocol-level smoke testing. To exercise the Todoist/Mealie flows below, run those MCP servers yourself (any HTTP MCP implementation) and make them reachable from the Gleipnir container's Docker network. The policies and QA checklist below are still the canonical end-to-end manual-test scenarios; adapt the server URLs to wherever you host them.
 
 ### Setup
 
@@ -25,34 +27,37 @@ Where to find each value:
 - **MEALIE_BASE_URL** — the base URL of your Mealie instance. **Must be reachable from inside Docker.** Use a LAN IP address (e.g. `http://192.168.1.50:9000`) or `host.docker.internal` on Mac/Windows. Do not use `localhost` — that resolves to the container itself, not your host machine.
 - **MEALIE_API_KEY** — Mealie UI → click your avatar → Profile → API Tokens → create a new token
 
-### Starting the integration stack
+### Starting the stack
+
+Bring up the dev stack (base + the in-repo MCP test server):
 
 ```bash
-docker compose --profile integrations up -d
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
-Without `--profile integrations`, only the core stack starts (`api`, `ui`, `mcp-test-server`). The Todoist and Mealie MCP containers will not start.
+This starts `api` (on `${GLEIPNIR_PORT:-3000}` → `8080`) and `mcp-test-server` (on `8090`). Then start your own Todoist and Mealie MCP servers separately and attach them to the same Docker network (or expose them on the host).
 
-Verify all services are running:
+Verify services are running:
 
 ```bash
 docker compose ps
-docker compose logs todoist-mcp
-docker compose logs mealie-mcp
+docker compose logs api
+docker compose logs mcp-test-server
 ```
 
 Common failure modes:
 
-- **Container exits immediately** — missing or empty env var. Check that `TODOIST_API_TOKEN`, `MEALIE_BASE_URL`, and `MEALIE_API_KEY` are all set in `.env`.
-- **Mealie tools fail at runtime** — wrong `MEALIE_BASE_URL` format. Make sure the URL includes the protocol (`http://` or `https://`) and has no trailing slash.
+- **MCP server unreachable from Gleipnir** — a container-name URL only resolves if the MCP server is on the same Docker network. Use a LAN IP or `host.docker.internal` (Mac/Windows) for servers running on the host. Do not use `localhost` — that resolves to the `api` container itself.
+- **Mealie tools fail at runtime** — wrong base URL format. Make sure the URL includes the protocol (`http://` or `https://`) and has no trailing slash.
 
 ### Registering MCP servers in Gleipnir
 
-1. Open [http://localhost:3000](http://localhost:3000)
+1. Open [http://localhost:3000](http://localhost:3000) (or `http://localhost:${GLEIPNIR_PORT}`)
 2. Go to **Settings → MCP Servers → Add Server**
-3. Register Todoist: name `todoist`, URL `http://todoist-mcp:8091/`
-4. Register Mealie: name `mealie`, URL `http://mealie-mcp:8092/mcp`
-5. Click **Discover** on each server after registering
+3. Register the MCP test server: name `test`, URL `http://mcp-test-server:8090/mcp`
+4. Register your Todoist MCP server: name `todoist`, URL pointing at wherever you host it
+5. Register your Mealie MCP server: name `mealie`, URL pointing at wherever you host it
+6. Click **Discover** on each server after registering
 
 ### Tagging capabilities
 
