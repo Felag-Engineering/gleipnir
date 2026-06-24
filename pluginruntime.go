@@ -94,6 +94,11 @@ type pluginRuntime struct {
 	// CredentialsHandler handles plugin credential reads. nil when encryptionKey is absent.
 	CredentialsHandler *admin.PluginCredentialsHandler
 
+	// CredStore is the OAuth/credential store. Exposed so the plugin admin handler
+	// can seed the initial credential blob on instance create (#572). nil when
+	// encryptionKey is absent (no encrypted storage available).
+	CredStore *pluginoauth.DBStore
+
 	// OnPublicURLChanged is the hook run() assigns to adminHandler.OnPublicURLChanged
 	// so that a public_url change triggers a callback-URL rescan. nil when
 	// encryptionKey is absent (rescan requires encrypted storage).
@@ -288,6 +293,7 @@ func startPluginRuntime(
 		enc := func(p string) (string, error) { return crypto.Encrypt(encryptionKey, p) }
 		dec := func(c string) (string, error) { return crypto.Decrypt(encryptionKey, c) }
 		oauthStore := pluginoauth.NewDBStore(store.Queries(), enc, dec, store.Queries(), time.Now)
+		rt.CredStore = oauthStore
 		oauthNonces := pluginoauth.NewDBNonceStore(store.Queries(), time.Now)
 		// Own the janitor goroutine under bgWG so shutdown() can join it rather
 		// than abandoning a mid-Prune DB write (#500). The janitor selects on

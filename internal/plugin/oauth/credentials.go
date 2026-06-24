@@ -246,10 +246,10 @@ func Resolve(authDecl sdkmanifest.AuthDecl, defaults *sdkmanifest.OAuthDefaultsD
 // Returns (StoredCredentials{Strategy: s}, true) for every supported strategy.
 // Returns (StoredCredentials{}, false) only for an unrecognised strategy string.
 //
-// TODO(plugin-instance-provision): Call this from the instance creation path
-// when CreatePluginInstance lands. For #224 the helper exists but has no live
-// call site; production wiring is deferred to the instance auto-provision
-// follow-up.
+// Wired into the instance-create path via admin.PluginHandler.CreateInstance →
+// seedInstanceCredentials (#572): the credential blob is seeded with the
+// manifest's declared strategy + endpoints at creation, before any token
+// exchange.
 func BuildSeedCredentials(authDecl sdkmanifest.AuthDecl, defaults *sdkmanifest.OAuthDefaultsDecl) (StoredCredentials, bool) {
 	switch authDecl.Strategy {
 	case sdkmanifest.AuthStrategyOAuth2Authcode, sdkmanifest.AuthStrategyOAuth2Clientcred:
