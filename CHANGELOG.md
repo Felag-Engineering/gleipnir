@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
-## [1.1.0] - 2026-06-22
+## [1.1.0] - 2026-06-24
 
 The plugin system. Gleipnir can now be extended with signed, out-of-process plugins that add tools, channels, and event triggers alongside MCP. This release also hardens the LLM provider layer, the shutdown path, and the authentication surface.
 
@@ -53,6 +53,7 @@ The plugin system. Gleipnir can now be extended with signed, out-of-process plug
 - **TOFU pubkey-pin bypass fixed.** A same-version binary backfill path could skip the trust-on-first-use pinned-key check; it now verifies against the pinned key on every load (ADR-045).
 - **Authenticated SSE + login rate-limiting.** The `/api/v1/events` SSE stream now requires authentication, and login attempts are rate-limited per IP.
 - **Plugin trust boundary.** Plugins run as out-of-process subprocesses gated by per-instance identity tokens and a generation-refcount drain; plugin-emitted audit callbacks are authenticated by request ownership and restricted to the `feedback_response` step type (ADR-046). Plugin credentials are encrypted at rest under `GLEIPNIR_ENCRYPTION_KEY`. See [SECURITY.md](SECURITY.md) for the plugin trust model.
+- **Dependency advisories cleared.** Bumped `slack-go/slack` (0.17.3 → 0.26.0) in the Slack reference plugin and pinned the frontend build/test toolchain (`undici`, `esbuild`, `ws`, `brace-expansion`) to patched versions, resolving all open Dependabot advisories. None were reachable in shipped code (the Slack plugin uses Socket Mode, not the affected request-signing path; the npm packages are dev/test-only and never enter the embedded static bundle).
 
 ## [1.0.0] - 2026-04-29
 
