@@ -1935,3 +1935,202 @@ func TestCreate_RollbackOnDBFailure(t *testing.T) {
 		}
 	}
 }
+
+// updateMCPServer issues PUT /servers/{id} with the given name/url and returns
+// the response. Caller closes the body.
+func updateMCPServer(t *testing.T, base, id, name, url string) *http.Response {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"name": name, "url": url})
+	req, err := http.NewRequest(http.MethodPut, base+"/servers/"+id, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build PUT request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /servers/%s: %v", id, err)
+	}
+	return resp
+}
+
+// TestUpdate_RenameRefreshesArbiter exercises the #578 fix: a rename releases
+// the arbiter reservations held under the old server name and re-reserves the
+// server's tools under the new name. A rename whose new name collides with an
+// existing reservation is rejected with 409 and leaves no partial state; a PUT
+// that does not change the name leaves the arbiter untouched.
+func TestUpdate_RenameRefreshesArbiter(t *testing.T) {
+	mcpSrc := func(name string) toolregistry.Source {
+		return toolregistry.Source{Kind: toolregistry.KindMCP, Name: name}
+	}
+
+	t.Run("rename releases old and re-reserves new", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		arbiter := toolregistry.New()
+		registry := mcp.NewRegistry(store.Queries(), mcp.WithToolNamespaceArbiter(arbiter))
+
+		serverID := insertTestMCPServer(t, store, "old-name", "http://localhost:9999")
+		insertTestMCPTool(t, store, serverID, "tool-a")
+		insertTestMCPTool(t, store, serverID, "tool-b")
+		// Seed the arbiter as discovery would have: old-name owns both tools.
+		if err := arbiter.ReserveBulk([]toolregistry.Reservation{
+			{DotName: toolregistry.DotName("old-name", "tool-a"), Owner: mcpSrc("old-name")},
+			{DotName: toolregistry.DotName("old-name", "tool-b"), Owner: mcpSrc("old-name")},
+		}); err != nil {
+			t.Fatalf("seed arbiter: %v", err)
+		}
+
+		srv := httptest.NewServer(newMCPRouterWithArbiter(store, registry, arbiter))
+		t.Cleanup(srv.Close)
+
+		resp := updateMCPServer(t, srv.URL, serverID, "new-name", "http://localhost:9999")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+
+		snap := arbiter.Snapshot()
+		// Old-name reservations must be gone.
+		for dotName, owner := range snap {
+			if owner == mcpSrc("old-name") {
+				t.Errorf("stale old-name reservation %q survives rename", dotName)
+			}
+		}
+		// New-name reservations must exist for both tools.
+		for _, tool := range []string{"tool-a", "tool-b"} {
+			dn := toolregistry.DotName("new-name", tool)
+			if owner, ok := snap[dn]; !ok || owner != mcpSrc("new-name") {
+				t.Errorf("missing new-name reservation %q (got %v, ok=%v)", dn, owner, ok)
+			}
+		}
+	})
+
+	t.Run("rename colliding with existing reservation is rejected without leaking state", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		arbiter := toolregistry.New()
+		registry := mcp.NewRegistry(store.Queries(), mcp.WithToolNamespaceArbiter(arbiter))
+
+		serverID := insertTestMCPServer(t, store, "old-name", "http://localhost:9999")
+		insertTestMCPTool(t, store, serverID, "tool-a")
+		if err := arbiter.Reserve(toolregistry.DotName("old-name", "tool-a"), mcpSrc("old-name")); err != nil {
+			t.Fatalf("seed arbiter: %v", err)
+		}
+		// A plugin already owns "taken.tool-a" — renaming our server to "taken"
+		// would collide on that dot-name.
+		if err := arbiter.Reserve(toolregistry.DotName("taken", "tool-a"),
+			toolregistry.Source{Kind: toolregistry.KindPlugin, Name: "taken"}); err != nil {
+			t.Fatalf("seed conflicting reservation: %v", err)
+		}
+
+		srv := httptest.NewServer(newMCPRouterWithArbiter(store, registry, arbiter))
+		t.Cleanup(srv.Close)
+
+		resp := updateMCPServer(t, srv.URL, serverID, "taken", "http://localhost:9999")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("status = %d, want 409", resp.StatusCode)
+		}
+
+		// DB name must NOT have changed (no partial apply).
+		row, err := store.GetMCPServer(context.Background(), serverID)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if row.Name != "old-name" {
+			t.Errorf("server name = %q after rejected rename, want old-name", row.Name)
+		}
+
+		// Arbiter: old-name reservation intact, no orphaned new-name slot.
+		snap := arbiter.Snapshot()
+		if owner, ok := snap[toolregistry.DotName("old-name", "tool-a")]; !ok || owner != mcpSrc("old-name") {
+			t.Errorf("old-name reservation lost after rejected rename (got %v, ok=%v)", owner, ok)
+		}
+		if owner, ok := snap[toolregistry.DotName("taken", "tool-a")]; !ok ||
+			owner != (toolregistry.Source{Kind: toolregistry.KindPlugin, Name: "taken"}) {
+			t.Errorf("pre-existing conflicting reservation mutated (got %v, ok=%v)", owner, ok)
+		}
+	})
+
+	t.Run("rename to a name held by another MCP server is rejected without corrupting its reservations", func(t *testing.T) {
+		// Regression for the corruption path where two MCP servers share tool
+		// names: renaming server B to server A's name must not delete A's
+		// arbiter slots, even though the dot-names would look idempotent to the
+		// arbiter. The DB-name pre-check rejects the rename before reservation.
+		store := testutil.NewTestStore(t)
+		arbiter := toolregistry.New()
+		registry := mcp.NewRegistry(store.Queries(), mcp.WithToolNamespaceArbiter(arbiter))
+
+		// Server A: name "taken", tool "tool-a" — owns "taken.tool-a".
+		serverA := insertTestMCPServer(t, store, "taken", "http://localhost:9999")
+		insertTestMCPTool(t, store, serverA, "tool-a")
+		if err := arbiter.Reserve(toolregistry.DotName("taken", "tool-a"), mcpSrc("taken")); err != nil {
+			t.Fatalf("seed server A reservation: %v", err)
+		}
+
+		// Server B: name "old", same tool "tool-a" — owns "old.tool-a".
+		serverB := insertTestMCPServer(t, store, "old", "http://localhost:8888")
+		insertTestMCPTool(t, store, serverB, "tool-a")
+		if err := arbiter.Reserve(toolregistry.DotName("old", "tool-a"), mcpSrc("old")); err != nil {
+			t.Fatalf("seed server B reservation: %v", err)
+		}
+
+		srv := httptest.NewServer(newMCPRouterWithArbiter(store, registry, arbiter))
+		t.Cleanup(srv.Close)
+
+		resp := updateMCPServer(t, srv.URL, serverB, "taken", "http://localhost:8888")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("status = %d, want 409", resp.StatusCode)
+		}
+
+		// Server A's reservation must survive untouched.
+		snap := arbiter.Snapshot()
+		if owner, ok := snap[toolregistry.DotName("taken", "tool-a")]; !ok || owner != mcpSrc("taken") {
+			t.Errorf("server A reservation corrupted by rejected rename (got %v, ok=%v)", owner, ok)
+		}
+		// Server B keeps its old-name reservation (rename did not commit).
+		if owner, ok := snap[toolregistry.DotName("old", "tool-a")]; !ok || owner != mcpSrc("old") {
+			t.Errorf("server B old-name reservation lost after rejected rename (got %v, ok=%v)", owner, ok)
+		}
+		// Server B's DB name must be unchanged.
+		row, err := store.GetMCPServer(context.Background(), serverB)
+		if err != nil {
+			t.Fatalf("GetMCPServer: %v", err)
+		}
+		if row.Name != "old" {
+			t.Errorf("server B name = %q after rejected rename, want old", row.Name)
+		}
+	})
+
+	t.Run("no-op when name is unchanged", func(t *testing.T) {
+		store := testutil.NewTestStore(t)
+		arbiter := toolregistry.New()
+		registry := mcp.NewRegistry(store.Queries(), mcp.WithToolNamespaceArbiter(arbiter))
+
+		serverID := insertTestMCPServer(t, store, "stable-name", "http://localhost:9999")
+		insertTestMCPTool(t, store, serverID, "tool-a")
+		if err := arbiter.Reserve(toolregistry.DotName("stable-name", "tool-a"), mcpSrc("stable-name")); err != nil {
+			t.Fatalf("seed arbiter: %v", err)
+		}
+		before := arbiter.Snapshot()
+
+		srv := httptest.NewServer(newMCPRouterWithArbiter(store, registry, arbiter))
+		t.Cleanup(srv.Close)
+
+		// Same name, different URL.
+		resp := updateMCPServer(t, srv.URL, serverID, "stable-name", "http://localhost:8888")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+
+		after := arbiter.Snapshot()
+		if len(after) != len(before) {
+			t.Fatalf("arbiter size changed on no-op rename: before=%d after=%d", len(before), len(after))
+		}
+		for dn, owner := range before {
+			if after[dn] != owner {
+				t.Errorf("arbiter reservation %q changed on no-op rename: %v -> %v", dn, owner, after[dn])
+			}
+		}
+	})
+}
