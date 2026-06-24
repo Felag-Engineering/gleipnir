@@ -69,9 +69,18 @@ type instanceState struct {
 
 // inflightCall records the instance backing a single in-flight Call so
 // CancelRun can route the Cancel RPC to the right connection.
+//
+// cancel cancels the call's per-call context. CancelRun invokes it so a cancel
+// reaches the call no matter where it currently sits: blocked on the concurrency
+// semaphore (the call aborts cleanly without ever dialing the plugin) or already
+// executing the gRPC RPC (the cancellation propagates to the in-flight RPC). It
+// is registered BEFORE the blocking semaphore acquire precisely so no call is
+// ever invisible to CancelRun (#588). context.CancelFunc is safe to call any
+// number of times and after the call has already returned (it then no-ops).
 type inflightCall struct {
 	instanceName string
 	policyID     string
+	cancel       context.CancelFunc
 }
 
 // callBinding is the index entry stored in the callID → binding reverse map.
@@ -184,14 +193,15 @@ func (p *Pool) getOrCreate(instanceName string) (*instanceState, error) {
 
 // registerInflight records (runID, callID) → instanceName in the inflight map
 // and in the callID reverse index. The caller must deregister via deregisterInflight
-// when the call completes.
-func (p *Pool) registerInflight(runID, policyID, callID, instanceName string) {
+// when the call completes. cancel is the call's per-call context cancel func,
+// stored so CancelRun can abort the call even before it has dialed the plugin.
+func (p *Pool) registerInflight(runID, policyID, callID, instanceName string, cancel context.CancelFunc) {
 	p.inflightMu.Lock()
 	defer p.inflightMu.Unlock()
 	if p.inflight[runID] == nil {
 		p.inflight[runID] = make(map[string]*inflightCall)
 	}
-	p.inflight[runID][callID] = &inflightCall{instanceName: instanceName, policyID: policyID}
+	p.inflight[runID][callID] = &inflightCall{instanceName: instanceName, policyID: policyID, cancel: cancel}
 	p.inflightByCallID[callID] = callBinding{runID: runID, policyID: policyID, instanceName: instanceName}
 }
 
@@ -261,9 +271,11 @@ func (p *Pool) snapshotInflightForRun(runID string) map[string]inflightCall {
 // Steps:
 //  1. Acquire/lazy-init the instance connection.
 //  2. Generate a call ID and attempt to claim a queue slot (non-blocking).
-//  3. Block on the concurrency semaphore (or parent ctx cancellation).
-//  4. Register the call in the inflight map; start the per-call timeout.
-//  5. Invoke the gRPC Call RPC.
+//  3. Derive the per-call cancellable context and register the call in the
+//     inflight map BEFORE blocking on the semaphore — so the call is visible to
+//     CancelRun from the moment it could do any work (#588).
+//  4. Block on the concurrency semaphore (or per-call ctx cancellation).
+//  5. Apply the per-call timeout and invoke the gRPC Call RPC.
 //  6. Classify the result and return to the caller.
 func (p *Pool) Call(ctx context.Context, runID, policyID, instanceName, toolName, inputJSON string) (output string, isError bool, err error) {
 	st, err := p.getOrCreate(instanceName)
@@ -283,30 +295,70 @@ func (p *Pool) Call(ctx context.Context, runID, policyID, instanceName, toolName
 		return "", false, ErrQueueFull
 	}
 
-	// Step 3: blocking semaphore acquire. Release the queue slot once we hold
-	// the semaphore (so another caller can enter the queue).
-	select {
-	case st.sem <- struct{}{}:
-		<-st.queueGate // admitted; free the queue slot
-	case <-ctx.Done():
-		<-st.queueGate
-		return "", false, ctx.Err()
-	}
+	// Step 3: derive a per-call cancellable context and register the call as
+	// in-flight BEFORE acquiring the semaphore. This closes the TOCTOU window
+	// (#588): registering only after the semaphore acquire left a gap in which a
+	// concurrent CancelRun could not see the call, so the call would run an
+	// uncancelled CallTimeout-bounded gRPC RPC even though the run was cancelled.
+	// Cancellation is a control guarantee (spec §13.8); CancelRun must see every
+	// call that could start work. We use WithCancel (not WithTimeout) here so the
+	// per-call deadline clock does not start ticking while the call is still
+	// queued on the semaphore — the timeout is layered on only once admitted.
+	callCtx, cancelCall := context.WithCancel(ctx)
+	p.registerInflight(runID, policyID, callID, instanceName, cancelCall)
 
-	// Always release the semaphore and deregister the inflight entry on exit.
+	// semAcquired tracks whether we actually consumed a semaphore slot, so the
+	// cleanup defer releases the semaphore only on the path that acquired it
+	// (releasing a slot we never held would corrupt the semaphore).
+	//
+	// The queue gate (capacity = max_queue_depth) accounts for *waiting* callers
+	// only: it is released the moment we are admitted to a concurrency slot, so a
+	// running call no longer occupies a queue slot. releaseQueueSlot is idempotent
+	// (guarded by queueReleased) so the defer is a safe no-op on the admitted path
+	// and the sole release on the not-yet-admitted exit paths (cancel-while-queued).
+	semAcquired := false
+	queueReleased := false
+	releaseQueueSlot := func() {
+		if !queueReleased {
+			<-st.queueGate
+			queueReleased = true
+		}
+	}
 	defer func() {
-		<-st.sem
-		p.deregisterInflight(runID, callID)
+		cancelCall()                        // release the per-call context
+		p.deregisterInflight(runID, callID) // make the call invisible to CancelRun
+		releaseQueueSlot()                  // release the queue slot if still held
+		if semAcquired {
+			<-st.sem // only release a slot we actually acquired
+		}
 	}()
 
-	// Step 4: register inflight and build the per-call context.
-	p.registerInflight(runID, policyID, callID, instanceName)
+	// Step 4: blocking semaphore acquire. A CancelRun that fires while we are
+	// queued cancels callCtx, so the call aborts cleanly without ever dialing the
+	// plugin. We wait on callCtx.Done() (which fires on both parent-ctx cancel and
+	// CancelRun) rather than only the raw parent ctx.
+	select {
+	case st.sem <- struct{}{}:
+		semAcquired = true
+		// Admitted to a concurrency slot — leave the waiting room immediately so
+		// another caller can queue. Holding the queue slot during execution would
+		// shrink the effective queue depth and trip ErrQueueFull early.
+		releaseQueueSlot()
+	case <-callCtx.Done():
+		// Parent-ctx cancellation reports the parent's error; a CancelRun while
+		// queued (parent still healthy) reports ErrRunCancelled.
+		if ctx.Err() != nil {
+			return "", false, ctx.Err()
+		}
+		return "", false, ErrRunCancelled
+	}
 
-	callCtx, cancelCall := context.WithTimeout(ctx, p.cfg.CallTimeout)
-	defer cancelCall()
-	callCtx = metadata.AppendToOutgoingContext(callCtx, sdkproto.CallIDMetadataKey, callID)
+	// Step 5: layer the per-call timeout on top of the (already cancellable)
+	// call context, now that we hold a concurrency slot.
+	timeoutCtx, cancelTimeout := context.WithTimeout(callCtx, p.cfg.CallTimeout)
+	defer cancelTimeout()
+	rpcCtx := metadata.AppendToOutgoingContext(timeoutCtx, sdkproto.CallIDMetadataKey, callID)
 
-	// Step 5: invoke gRPC.
 	req := &toolv1.CallRequest{
 		Context: &commonv1.RequestContext{
 			RunId:    runID,
@@ -317,16 +369,25 @@ func (p *Pool) Call(ctx context.Context, runID, policyID, instanceName, toolName
 		InputJson: inputJSON,
 	}
 
-	resp, rpcErr := st.client.Call(callCtx, req)
+	resp, rpcErr := st.client.Call(rpcCtx, req)
 	if rpcErr != nil {
-		// Distinguish per-call timeout from parent-run cancellation.
-		// parentCtx is the ctx argument (not callCtx), so we can tell
-		// whether the deadline came from us or from the run.
-		if status.Code(rpcErr) == codes.DeadlineExceeded && ctx.Err() == nil {
-			return "", false, ErrCallTimeout
-		}
-		if status.Code(rpcErr) == codes.Canceled {
+		// Classify the failure. ctx is the parent run context; callCtx additionally
+		// reflects a CancelRun. Order matters: check parent-cancel first, then a
+		// pool-driven CancelRun, then our own per-call timeout, then everything else.
+		if ctx.Err() != nil {
+			// Parent run context cancelled (or expired) — operator/run intent.
 			return "", false, ctx.Err()
+		}
+		if status.Code(rpcErr) == codes.Canceled && callCtx.Err() != nil {
+			// Parent is healthy but the per-call context was cancelled — this is a
+			// CancelRun (spec §13.8). Surface a distinct sentinel so the cancelled
+			// call is never mistaken for a successful one.
+			return "", false, ErrRunCancelled
+		}
+		if status.Code(rpcErr) == codes.DeadlineExceeded {
+			// Parent healthy, callCtx not externally cancelled → our own per-call
+			// deadline fired.
+			return "", false, ErrCallTimeout
 		}
 		return "", false, fmt.Errorf("plugin %q tool %q: %w", instanceName, toolName, rpcErr)
 	}
@@ -355,6 +416,16 @@ func (p *Pool) CancelRun(runID string) {
 	for callID, ic := range snap {
 		callID := callID
 		ic := ic
+
+		// Cancel the per-call context first. This immediately aborts a call that
+		// is still queued on the semaphore (it never dials the plugin) and signals
+		// gRPC to cancel a call already in flight — closing the #588 TOCTOU window
+		// where a call past the semaphore but not yet "really" started would
+		// otherwise run uncancelled for up to CallTimeout. Safe to call even if the
+		// call has already returned (CancelFunc no-ops then).
+		if ic.cancel != nil {
+			ic.cancel()
+		}
 
 		p.cancelWg.Add(1)
 		go func() {
