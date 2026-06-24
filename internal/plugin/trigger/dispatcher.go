@@ -141,11 +141,18 @@ func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
 func (d *Dispatcher) Handle(ctx context.Context, evt Event) error {
 	// 1. Dedup — fail-open: a store error is logged as Warn and dispatch
 	//    proceeds so a degraded store does not silently drop events.
-	seen, err := d.dedup.Seen(ctx, dedup.Key{
+	//
+	// The claim is atomic (INSERT ... ON CONFLICT DO NOTHING): the first of two
+	// concurrently-arriving copies of an event wins the row and dispatches; the
+	// second sees seen==true and short-circuits. This is what excludes the
+	// concurrent-duplicate double-fire across the two ingestion paths (the
+	// supervisor recvLoop and the EmitEvent host RPC) — keep the claim here.
+	key := dedup.Key{
 		InstanceID: evt.InstanceID,
 		EventKind:  evt.EventKind,
 		EventID:    evt.EventID,
-	})
+	}
+	seen, err := d.dedup.Seen(ctx, key)
 	if err != nil {
 		d.log.WarnContext(ctx, "dedup store error; proceeding with dispatch (fail-open)",
 			"instance_id", evt.InstanceID,
@@ -157,16 +164,61 @@ func (d *Dispatcher) Handle(ctx context.Context, evt Event) error {
 		return nil
 	}
 
-	// 2. Policy scan.
+	// claimed is true only when this call freshly committed the dedup row
+	// (Seen returned (false, nil)). On the fail-open path (err != nil) nothing
+	// was committed, so there is no claim to roll back.
+	claimed := err == nil
+
+	// At-least-once redelivery (#585): if we freshly claimed the dedup slot and
+	// any transient failure prevents this event from being dispatched to its
+	// matched policies, roll the claim back so the plugin's next redelivery of
+	// this event is treated as novel rather than silently suppressed for the
+	// full dedup window. "Transient failure" covers both a downstream launch
+	// error (per-policy) and a pre-loop infrastructure error (policy scan or
+	// instance fetch) — in every case nothing was launched, so suppressing the
+	// redelivery would convert at-least-once into at-most-once.
+	//
+	// The rollback runs in a defer with a detached context so it fires even when
+	// the policy loop returns early on ctx cancellation (mid-scan shutdown would
+	// otherwise strand a committed-but-unlaunched key). context.Background()
+	// mirrors RunLauncher's failure-path DB writes, which must not inherit a
+	// cancelled run context.
+	//
+	// Consequence for the multi-policy case: when one event matches N policies
+	// and any one launch fails transiently, the redelivery re-fires ALL matched
+	// policies, including ones that already launched. This is the accepted cost
+	// of at-least-once delivery — the launcher's per-policy concurrency check
+	// (skip/queue/replace) absorbs the re-fire; only a `parallel`-concurrency
+	// policy will produce a genuine duplicate run, which is exactly what that
+	// mode opts into. A possible duplicate is strictly better than the silent
+	// permanent drop of policies that never launched, which is the bug here.
+	var rollbackClaim bool
+	defer func() {
+		if !claimed || !rollbackClaim {
+			return
+		}
+		if uErr := d.dedup.Unsee(context.Background(), key); uErr != nil {
+			d.log.WarnContext(ctx, "dedup rollback failed; event may be suppressed until TTL",
+				"instance_id", evt.InstanceID,
+				"event_id", evt.EventID,
+				"err", uErr,
+			)
+		}
+	}()
+
+	// 2. Policy scan. A scan failure is transient and nothing was launched —
+	// roll the claim back so the redelivery can retry the whole pipeline.
 	policies, err := d.q.GetSubscribedActivePolicies(ctx)
 	if err != nil {
+		rollbackClaim = true
 		return err
 	}
 
 	// Resolve the instance once per event so dispatchOne can compare the
 	// human-readable instance name (trig.Source) without an extra DB round-trip
 	// per policy. Missing instance is a hard error: the event came from a valid
-	// token-authenticated subprocess, so the row must exist.
+	// token-authenticated subprocess, so the row must exist. As with the scan,
+	// nothing launched — roll the claim back so the redelivery can retry.
 	instance, err := d.q.GetPluginInstanceByID(ctx, evt.InstanceID)
 	if err != nil {
 		d.log.ErrorContext(ctx, "trigger dispatcher: failed to fetch instance; dropping event",
@@ -174,6 +226,7 @@ func (d *Dispatcher) Handle(ctx context.Context, evt Event) error {
 			"event_id", evt.EventID,
 			"err", err,
 		)
+		rollbackClaim = true
 		return err
 	}
 
@@ -182,18 +235,30 @@ func (d *Dispatcher) Handle(ctx context.Context, evt Event) error {
 	provider, modelName := d.systemDefault(ctx)
 
 	// 3–5. For each policy: match source, compile binding, evaluate, launch.
+	// The deferred rollback above consumes anyTransientFailure once the loop
+	// completes (or returns early on ctx cancellation).
 	for _, pol := range policies {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		d.dispatchOne(ctx, pol, evt, provider, modelName, instance)
+		if d.dispatchOne(ctx, pol, evt, provider, modelName, instance) {
+			rollbackClaim = true
+		}
 	}
 	return nil
 }
 
 // dispatchOne runs steps 3–5 for a single policy row. All errors are logged
 // and isolated; dispatchOne never returns an error to the recv loop.
-func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, provider, modelName string, instance db.PluginInstance) {
+//
+// It returns launchFailed=true only when this policy MATCHED the binding but its
+// launch returned a non-nil (transient) error — the signal the caller uses to
+// roll back the per-event dedup claim (#585). Every other path returns false:
+// a non-match (different instance/kind/binding), a non-launch skip (parse,
+// schema, or compile error), and a SUCCESSFUL launch of ANY outcome
+// (Launched/Queued/Skipped). A concurrency skip or successful enqueue is a
+// deliberate, successful consumption of the event and must keep the dedup slot.
+func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, provider, modelName string, instance db.PluginInstance) (launchFailed bool) {
 	// 3. Parse and match source + event kind.
 	//
 	// trig.Source stores the human-readable instance name
@@ -206,15 +271,15 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 			"event_id", evt.EventID,
 			"err", err,
 		)
-		return
+		return false
 	}
 
 	trig := parsed.Trigger
 	if trig.Source != instance.InstanceName {
-		return // policy watches a different instance
+		return false // policy watches a different instance
 	}
 	if trig.EventKind != evt.EventKind {
-		return // policy watches a different event kind
+		return false // policy watches a different event kind
 	}
 
 	// 4. Compile and evaluate binding.
@@ -227,7 +292,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 			"err", compErr,
 		)
 		d.publishNoMatch(evt, pol.ID)
-		return
+		return false
 	}
 
 	compiled, compErr := binding.Compile(trig.Binding, schema)
@@ -238,7 +303,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 			"err", compErr,
 		)
 		d.publishNoMatch(evt, pol.ID)
-		return
+		return false
 	}
 
 	var payload map[string]any
@@ -255,7 +320,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 	match, _ := compiled.Evaluate(payload)
 	if !match {
 		d.publishNoMatch(evt, pol.ID)
-		return
+		return false
 	}
 
 	d.publishMatch(evt, pol.ID)
@@ -287,7 +352,10 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 			d.log.ErrorContext(ctx, "trigger dispatcher: failed to launch run",
 				"policy_id", pol.ID, "run_id", res.RunID, "event_id", evt.EventID, "err", err)
 		}
-		return
+		// Every launch error here is transient (queue full, concurrency-check
+		// DB error, enqueue DB error, or a raw launch failure). Signal the
+		// caller to roll back the dedup claim so a redelivery can fire.
+		return true
 	}
 
 	switch res.Outcome {
@@ -300,6 +368,9 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 	case run.OutcomeLaunched:
 		// No info log on plain launch — avoids a log-volume regression.
 	}
+	// Skip/queue/launched are all successful consumption of the event — keep
+	// the dedup slot.
+	return false
 }
 
 // parsedPolicy returns a parsed policy, using a cache keyed on (id, updated_at).

@@ -69,9 +69,11 @@ func (q *fakeQuerier) ListPluginInstancesByPlugin(_ context.Context, _ string) (
 // so the very first Seen call returns true, mimicking a key already present in
 // the window (e.g. after a replay from a pre-populated store).
 type fakeDedupStore struct {
-	mu      sync.Mutex
-	seenSet map[dedup.Key]bool
-	calls   int
+	mu         sync.Mutex
+	seenSet    map[dedup.Key]bool
+	calls      int
+	unseeCalls []dedup.Key // keys passed to Unsee, in call order
+	unseeErr   error       // returned by Unsee when non-nil (tests the rollback-error log path)
 }
 
 func (s *fakeDedupStore) Seen(_ context.Context, k dedup.Key) (bool, error) {
@@ -84,6 +86,25 @@ func (s *fakeDedupStore) Seen(_ context.Context, k dedup.Key) (bool, error) {
 	already := s.seenSet[k]
 	s.seenSet[k] = true // record so subsequent calls return true
 	return already, nil
+}
+
+// Unsee mirrors the production rollback: it deletes the key so a later Seen for
+// the same key is treated as novel again, and records the call for assertions.
+func (s *fakeDedupStore) Unsee(_ context.Context, k dedup.Key) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unseeCalls = append(s.unseeCalls, k)
+	if s.unseeErr != nil {
+		return s.unseeErr
+	}
+	delete(s.seenSet, k)
+	return nil
+}
+
+func (s *fakeDedupStore) unseeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.unseeCalls)
 }
 
 func (s *fakeDedupStore) markSeen(k dedup.Key) {
@@ -115,20 +136,35 @@ func (p *fakePublisher) published() []string {
 	return out
 }
 
+// launchResult pairs an outcome with an error for a single LaunchWithConcurrency call.
+type launchResult struct {
+	res run.LaunchResult
+	err error
+}
+
 // fakeLauncher satisfies plugintrigger.RunLauncher and records LaunchWithConcurrency calls.
+// By default it returns the fixed (result, err) for every call. When byPolicy is
+// non-nil, the result is selected by LaunchParams.PolicyID instead, so a single
+// event matching multiple policies can be given mixed outcomes.
 type fakeLauncher struct {
-	mu     sync.Mutex
-	calls  []run.LaunchParams
-	result run.LaunchResult // outcome to return on success
-	err    error            // e.g. run.ErrConcurrencyQueueFull
+	mu       sync.Mutex
+	calls    []run.LaunchParams
+	result   run.LaunchResult        // outcome to return on success (default path)
+	err      error                   // e.g. run.ErrConcurrencyQueueFull (default path)
+	byPolicy map[string]launchResult // per-policy override keyed on PolicyID
 }
 
 var _ plugintrigger.RunLauncher = (*fakeLauncher)(nil)
 
 func (l *fakeLauncher) LaunchWithConcurrency(_ context.Context, p run.LaunchParams) (run.LaunchResult, error) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.calls = append(l.calls, p)
-	l.mu.Unlock()
+	if l.byPolicy != nil {
+		if lr, ok := l.byPolicy[p.PolicyID]; ok {
+			return lr.res, lr.err
+		}
+	}
 	return l.result, l.err
 }
 
@@ -186,7 +222,7 @@ func policyYAML(source, eventKind string, binding map[string]any) string {
 
 // newDispatcher wires a Dispatcher with the given querier, dedup store, and
 // launcher.
-func newDispatcher(q plugintrigger.Querier, d dedup.Store, launcher *fakeLauncher, pub event.Publisher) *plugintrigger.Dispatcher {
+func newDispatcher(q plugintrigger.Querier, d dedup.Store, launcher plugintrigger.RunLauncher, pub event.Publisher) *plugintrigger.Dispatcher {
 	return plugintrigger.NewDispatcher(plugintrigger.DispatcherConfig{
 		Launcher:  launcher,
 		Querier:   q,
@@ -744,6 +780,371 @@ func TestDispatcher_RestartReplay(t *testing.T) {
 	}
 	if launcher.callCount() != 1 {
 		t.Errorf("after replay: expected 1 launch total, got %d (duplicate run fired)", launcher.callCount())
+	}
+}
+
+// ── #585: dedup claim/rollback on transient launch failure ─────────────────────
+
+// TestDispatcher_TransientLaunchFailure_RollsBackAndRedelivers verifies the core
+// #585 fix: when a matched event's launch fails transiently, the dedup claim is
+// rolled back so the plugin's at-least-once redelivery of the same event fires.
+func TestDispatcher_TransientLaunchFailure_RollsBackAndRedelivers(t *testing.T) {
+	t.Parallel()
+
+	q := newBasicQuerier(t, "my-instance", "message")
+	dedupStore := &fakeDedupStore{}
+	// First delivery hits a transient queue-full error.
+	launcher := &fakeLauncher{err: run.ErrConcurrencyQueueFull}
+	pub := &fakePublisher{}
+	d := newDispatcher(q, dedupStore, launcher, pub)
+
+	evt := plugintrigger.Event{
+		InstanceID:  "inst-1",
+		PluginID:    "plug-1",
+		EventKind:   "message",
+		EventID:     "evt-585-1",
+		PayloadJSON: []byte(`{"text":"hello"}`),
+		ObservedAt:  time.Now(),
+	}
+
+	// First delivery: launch fails transiently → dedup claim must be rolled back.
+	if err := d.Handle(context.Background(), evt); err != nil {
+		t.Fatalf("Handle (first): %v", err)
+	}
+	if launcher.callCount() != 1 {
+		t.Fatalf("after first delivery: expected 1 launch attempt, got %d", launcher.callCount())
+	}
+	if dedupStore.unseeCount() != 1 {
+		t.Fatalf("expected 1 dedup rollback after transient failure, got %d", dedupStore.unseeCount())
+	}
+
+	// Redelivery: the rollback un-recorded the key, so it must be treated as
+	// novel and the launch must be attempted again (now succeeding).
+	launcher.err = nil
+	launcher.result = run.LaunchResult{Outcome: run.OutcomeLaunched}
+	if err := d.Handle(context.Background(), evt); err != nil {
+		t.Fatalf("Handle (redelivery): %v", err)
+	}
+	if launcher.callCount() != 2 {
+		t.Errorf("after redelivery: expected 2 launch attempts total, got %d (event was suppressed)", launcher.callCount())
+	}
+}
+
+// TestDispatcher_SuccessOutcomes_ConsumeDedupSlot verifies that every successful
+// LaunchWithConcurrency outcome (launched/queued/skipped) keeps the dedup slot:
+// the slot is NOT rolled back, and a redelivery is suppressed.
+func TestDispatcher_SuccessOutcomes_ConsumeDedupSlot(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		outcome run.LaunchOutcome
+	}{
+		{"launched", run.OutcomeLaunched},
+		{"queued", run.OutcomeQueued},
+		{"skipped", run.OutcomeSkipped},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			q := newBasicQuerier(t, "my-instance", "message")
+			dedupStore := &fakeDedupStore{}
+			launcher := &fakeLauncher{result: run.LaunchResult{Outcome: tc.outcome}}
+			pub := &fakePublisher{}
+			d := newDispatcher(q, dedupStore, launcher, pub)
+
+			evt := plugintrigger.Event{
+				InstanceID:  "inst-1",
+				PluginID:    "plug-1",
+				EventKind:   "message",
+				EventID:     "evt-585-success",
+				PayloadJSON: []byte(`{"text":"hello"}`),
+				ObservedAt:  time.Now(),
+			}
+
+			if err := d.Handle(context.Background(), evt); err != nil {
+				t.Fatalf("Handle (first): %v", err)
+			}
+			if dedupStore.unseeCount() != 0 {
+				t.Fatalf("outcome %v: expected NO rollback, got %d", tc.outcome, dedupStore.unseeCount())
+			}
+
+			// Redelivery must be suppressed — the slot was consumed.
+			if err := d.Handle(context.Background(), evt); err != nil {
+				t.Fatalf("Handle (redelivery): %v", err)
+			}
+			if launcher.callCount() != 1 {
+				t.Errorf("outcome %v: expected 1 launch total (slot kept), got %d", tc.outcome, launcher.callCount())
+			}
+		})
+	}
+}
+
+// TestDispatcher_NoMatch_KeepsDedupSlot verifies that an event observed but
+// matching no policy binding keeps the dedup slot — there was no launch failure,
+// so a redelivery would only re-evaluate to no-match. No rollback occurs.
+func TestDispatcher_NoMatch_KeepsDedupSlot(t *testing.T) {
+	t.Parallel()
+
+	schema := buildStringSchema("channel")
+	q := &fakeQuerier{
+		policies: []db.Policy{{
+			ID:        "pol-1",
+			Yaml:      policyYAML("my-instance", "message", map[string]any{"channel": "#incidents"}),
+			UpdatedAt: "t1",
+		}},
+		instances: map[string]db.PluginInstance{
+			"inst-1": {ID: "inst-1", PluginID: "plug-1", InstanceName: "my-instance"},
+		},
+		plugins: map[string]db.Plugin{
+			"plug-1": {ID: "plug-1", ManifestSnapshot: buildManifestYAML(t, "message", schema)},
+		},
+	}
+	dedupStore := &fakeDedupStore{}
+	launcher := &fakeLauncher{}
+	pub := &fakePublisher{}
+	d := newDispatcher(q, dedupStore, launcher, pub)
+
+	evt := plugintrigger.Event{
+		InstanceID:  "inst-1",
+		EventKind:   "message",
+		EventID:     "evt-585-nomatch",
+		PayloadJSON: []byte(`{"channel":"#general"}`),
+		ObservedAt:  time.Now(),
+	}
+	if err := d.Handle(context.Background(), evt); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if launcher.callCount() != 0 {
+		t.Errorf("expected 0 launches on no-match, got %d", launcher.callCount())
+	}
+	if dedupStore.unseeCount() != 0 {
+		t.Errorf("expected NO rollback on no-match, got %d", dedupStore.unseeCount())
+	}
+}
+
+// TestDispatcher_MultiPolicy_MixedOutcomes_RollsBack verifies the documented
+// multi-policy rule: when one event matches two policies and at least one launch
+// fails transiently, the per-event dedup slot is rolled back. On redelivery BOTH
+// policies are re-dispatched — the accepted at-least-once duplicate of the policy
+// that already launched.
+func TestDispatcher_MultiPolicy_MixedOutcomes_RollsBack(t *testing.T) {
+	t.Parallel()
+
+	// Two subscribed policies on the same instance+kind.
+	q := &fakeQuerier{
+		policies: []db.Policy{
+			{ID: "pol-ok", Yaml: policyYAML("my-instance", "message", nil), UpdatedAt: "t1"},
+			{ID: "pol-fail", Yaml: policyYAML("my-instance", "message", nil), UpdatedAt: "t1"},
+		},
+		instances: map[string]db.PluginInstance{
+			"inst-1": {ID: "inst-1", PluginID: "plug-1", InstanceName: "my-instance"},
+		},
+		plugins: map[string]db.Plugin{
+			"plug-1": {ID: "plug-1", ManifestSnapshot: buildManifestYAML(t, "message", nil)},
+		},
+	}
+	dedupStore := &fakeDedupStore{}
+	launcher := &fakeLauncher{
+		byPolicy: map[string]launchResult{
+			"pol-ok":   {res: run.LaunchResult{Outcome: run.OutcomeLaunched}},
+			"pol-fail": {err: run.ErrConcurrencyQueueFull},
+		},
+	}
+	pub := &fakePublisher{}
+	d := newDispatcher(q, dedupStore, launcher, pub)
+
+	evt := plugintrigger.Event{
+		InstanceID:  "inst-1",
+		PluginID:    "plug-1",
+		EventKind:   "message",
+		EventID:     "evt-585-multi",
+		PayloadJSON: []byte(`{"text":"hello"}`),
+		ObservedAt:  time.Now(),
+	}
+
+	if err := d.Handle(context.Background(), evt); err != nil {
+		t.Fatalf("Handle (first): %v", err)
+	}
+	if launcher.callCount() != 2 {
+		t.Fatalf("first delivery: expected 2 launch attempts (both policies), got %d", launcher.callCount())
+	}
+	if dedupStore.unseeCount() != 1 {
+		t.Fatalf("expected 1 dedup rollback when any policy fails transiently, got %d", dedupStore.unseeCount())
+	}
+
+	// Redelivery: both policies dispatched again (pol-ok re-fires; that
+	// duplicate is the accepted cost of at-least-once).
+	if err := d.Handle(context.Background(), evt); err != nil {
+		t.Fatalf("Handle (redelivery): %v", err)
+	}
+	if launcher.callCount() != 4 {
+		t.Errorf("redelivery: expected 4 launch attempts total (2 policies x 2 deliveries), got %d", launcher.callCount())
+	}
+}
+
+// TestDispatcher_ScanError_RollsBackClaim verifies that a transient policy-scan
+// DB error rolls back the dedup claim (nothing was launched), so the redelivery
+// is not stranded for the full TTL.
+func TestDispatcher_ScanError_RollsBackClaim(t *testing.T) {
+	t.Parallel()
+
+	q := &fakeQuerier{polErr: errors.New("scan boom")}
+	dedupStore := &fakeDedupStore{}
+	launcher := &fakeLauncher{}
+	pub := &fakePublisher{}
+	d := newDispatcher(q, dedupStore, launcher, pub)
+
+	evt := plugintrigger.Event{
+		InstanceID:  "inst-1",
+		PluginID:    "plug-1",
+		EventKind:   "message",
+		EventID:     "evt-585-scanerr",
+		PayloadJSON: []byte(`{"text":"hello"}`),
+		ObservedAt:  time.Now(),
+	}
+	if err := d.Handle(context.Background(), evt); err == nil {
+		t.Fatal("Handle: expected scan error, got nil")
+	}
+	if dedupStore.unseeCount() != 1 {
+		t.Errorf("expected 1 rollback after scan error, got %d", dedupStore.unseeCount())
+	}
+}
+
+// TestDispatcher_InstanceFetchError_RollsBackClaim verifies that a transient
+// instance-fetch DB error rolls back the dedup claim.
+func TestDispatcher_InstanceFetchError_RollsBackClaim(t *testing.T) {
+	t.Parallel()
+
+	// Policies scan succeeds, but the instance fetch errors.
+	q := &fakeQuerier{
+		policies: []db.Policy{{ID: "pol-1", Yaml: policyYAML("my-instance", "message", nil), UpdatedAt: "t1"}},
+		instErr:  errors.New("instance boom"),
+	}
+	dedupStore := &fakeDedupStore{}
+	launcher := &fakeLauncher{}
+	pub := &fakePublisher{}
+	d := newDispatcher(q, dedupStore, launcher, pub)
+
+	evt := plugintrigger.Event{
+		InstanceID:  "inst-1",
+		PluginID:    "plug-1",
+		EventKind:   "message",
+		EventID:     "evt-585-insterr",
+		PayloadJSON: []byte(`{"text":"hello"}`),
+		ObservedAt:  time.Now(),
+	}
+	if err := d.Handle(context.Background(), evt); err == nil {
+		t.Fatal("Handle: expected instance-fetch error, got nil")
+	}
+	if dedupStore.unseeCount() != 1 {
+		t.Errorf("expected 1 rollback after instance-fetch error, got %d", dedupStore.unseeCount())
+	}
+}
+
+// TestDispatcher_RollbackErrorIsLogged verifies that an error from Unsee does
+// not crash dispatch — Handle still returns nil (rollback errors are advisory;
+// the stranded row ages out at the TTL).
+func TestDispatcher_RollbackErrorIsLogged(t *testing.T) {
+	t.Parallel()
+
+	q := newBasicQuerier(t, "my-instance", "message")
+	dedupStore := &fakeDedupStore{unseeErr: errors.New("boom")}
+	launcher := &fakeLauncher{err: run.ErrConcurrencyQueueFull}
+	pub := &fakePublisher{}
+	d := newDispatcher(q, dedupStore, launcher, pub)
+
+	evt := plugintrigger.Event{
+		InstanceID:  "inst-1",
+		PluginID:    "plug-1",
+		EventKind:   "message",
+		EventID:     "evt-585-rberr",
+		PayloadJSON: []byte(`{"text":"hello"}`),
+		ObservedAt:  time.Now(),
+	}
+	if err := d.Handle(context.Background(), evt); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if dedupStore.unseeCount() != 1 {
+		t.Errorf("expected 1 rollback attempt, got %d", dedupStore.unseeCount())
+	}
+}
+
+// cancelLauncher fails the first policy transiently and cancels the supplied
+// context synchronously inside that launch call. This deterministically trips
+// the dispatcher loop's ctx.Err() guard before the second policy is dispatched —
+// no polling, no sleeps (CLAUDE.md: signal-don't-poll).
+type cancelLauncher struct {
+	mu     sync.Mutex
+	calls  []run.LaunchParams
+	cancel context.CancelFunc
+}
+
+var _ plugintrigger.RunLauncher = (*cancelLauncher)(nil)
+
+func (l *cancelLauncher) LaunchWithConcurrency(_ context.Context, p run.LaunchParams) (run.LaunchResult, error) {
+	l.mu.Lock()
+	l.calls = append(l.calls, p)
+	l.mu.Unlock()
+	// Cancel inside the first launch so the loop returns early before policy 2.
+	l.cancel()
+	return run.LaunchResult{}, run.ErrConcurrencyQueueFull
+}
+
+func (l *cancelLauncher) callCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.calls)
+}
+
+// TestDispatcher_CtxCancelledMidLoop_RollsBack verifies that a context
+// cancellation that returns Handle early still rolls back a claimed-but-failed
+// slot via the deferred rollback, rather than stranding it until TTL.
+func TestDispatcher_CtxCancelledMidLoop_RollsBack(t *testing.T) {
+	t.Parallel()
+
+	// Two policies: the first fails transiently AND cancels the context, so the
+	// loop's ctx.Err() guard returns Handle early before policy 2. The deferred
+	// rollback must still fire.
+	q := &fakeQuerier{
+		policies: []db.Policy{
+			{ID: "pol-fail", Yaml: policyYAML("my-instance", "message", nil), UpdatedAt: "t1"},
+			{ID: "pol-2", Yaml: policyYAML("my-instance", "message", nil), UpdatedAt: "t1"},
+		},
+		instances: map[string]db.PluginInstance{
+			"inst-1": {ID: "inst-1", PluginID: "plug-1", InstanceName: "my-instance"},
+		},
+		plugins: map[string]db.Plugin{
+			"plug-1": {ID: "plug-1", ManifestSnapshot: buildManifestYAML(t, "message", nil)},
+		},
+	}
+	dedupStore := &fakeDedupStore{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	launcher := &cancelLauncher{cancel: cancel}
+	pub := &fakePublisher{}
+	d := newDispatcher(q, dedupStore, launcher, pub)
+
+	evt := plugintrigger.Event{
+		InstanceID:  "inst-1",
+		PluginID:    "plug-1",
+		EventKind:   "message",
+		EventID:     "evt-585-cancel",
+		PayloadJSON: []byte(`{"text":"hello"}`),
+		ObservedAt:  time.Now(),
+	}
+	if err := d.Handle(ctx, evt); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Handle: unexpected error %v", err)
+	}
+	// Only the first policy launched before cancellation tripped the guard.
+	if launcher.callCount() != 1 {
+		t.Fatalf("expected exactly 1 launch before ctx cancellation, got %d", launcher.callCount())
+	}
+	// The defer must have rolled back the claim despite the early ctx return.
+	if dedupStore.unseeCount() != 1 {
+		t.Errorf("expected 1 rollback after ctx cancellation, got %d", dedupStore.unseeCount())
 	}
 }
 
