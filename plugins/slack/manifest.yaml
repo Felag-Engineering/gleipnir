@@ -72,6 +72,10 @@ event_kinds:
           format: contains
           title: Channel
           type: string
+        channel_type:
+          description: 'Match a Slack channel kind: channel (public), group (private), im (DM), mpim (multi-party DM). Leave empty to match any.'
+          title: Channel type
+          type: string
         mention_only:
           description: Only trigger when the bot is mentioned in the message
           title: Mention-only
@@ -140,7 +144,7 @@ event_kinds:
           title: Channel ID
           type: string
         channel_type:
-          description: 'Slack channel kind: channel (public), group (private), im (DM), mim (multi-DM)'
+          description: 'Slack channel kind: channel (public), group (private), im (DM), mpim (multi-party DM)'
           title: Channel type
           type: string
         event_ts:

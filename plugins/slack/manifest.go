@@ -210,6 +210,12 @@ type SlackChannelMessageBinding struct {
 	MentionOnly bool `json:"mention_only,omitempty" jsonschema:"title=Mention-only,description=Only trigger when the bot is mentioned in the message"`
 	// User restricts the policy to messages from a specific Slack user ID.
 	User manifest.EqualsField `json:"user,omitempty" jsonschema:"title=User,description=Slack user ID to match (e.g. U012AB3CD). Leave empty to match all users."`
+	// ChannelType restricts the policy to a single Slack channel kind.
+	// EqualsField emits {type:string} with no format key, which the host binding
+	// evaluator maps to OpEquals (internal/plugin/binding/binding.go:238).
+	// The json key must be `channel_type` so the evaluator's payload[name]
+	// lookup aligns with SlackChannelMessagePayload.channel_type (line 241).
+	ChannelType manifest.EqualsField `json:"channel_type,omitempty" jsonschema:"title=Channel type,description=Match a Slack channel kind: channel (public)\\, group (private)\\, im (DM)\\, mpim (multi-party DM). Leave empty to match any."`
 }
 
 // SlackChannelMessagePayload is the JSON payload emitted for each channel_message
@@ -237,8 +243,8 @@ type SlackChannelMessagePayload struct {
 	EventTs string `json:"event_ts" yaml:"event_ts" jsonschema:"title=Event timestamp,description=Timestamp of the event itself"`
 	// TeamID is the Slack workspace (team) ID (best-effort; may be empty for some event shapes).
 	TeamID string `json:"team_id,omitempty" yaml:"team_id,omitempty" jsonschema:"title=Team ID,description=Slack workspace ID (best-effort; may be empty for some event shapes)"`
-	// ChannelType indicates the channel kind (channel, group, im, mim).
-	ChannelType string `json:"channel_type" yaml:"channel_type" jsonschema:"title=Channel type,description=Slack channel kind: channel (public)\\, group (private)\\, im (DM)\\, mim (multi-DM)"`
+	// ChannelType indicates the channel kind (channel, group, im, mpim).
+	ChannelType string `json:"channel_type" yaml:"channel_type" jsonschema:"title=Channel type,description=Slack channel kind: channel (public)\\, group (private)\\, im (DM)\\, mpim (multi-party DM)"`
 	// Mentioned is true when the bot was mentioned in the message (app_mention event).
 	Mentioned bool `json:"mentioned" yaml:"mentioned" jsonschema:"title=Mentioned,description=True when the bot was explicitly mentioned in the message"`
 }
