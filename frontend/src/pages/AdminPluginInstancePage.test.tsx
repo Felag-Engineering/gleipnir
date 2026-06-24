@@ -1,4 +1,3 @@
-import React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -69,31 +68,24 @@ const INSTANCE_NO_SCHEMA: ApiPluginInstanceForAudience = {
   version: 0,
 }
 
-const INSTANCE_WITH_CONFIG_SCHEMA: ApiPluginInstanceForAudience = {
-  id: INSTANCE_ID,
-  plugin_id: PLUGIN_ID,
-  plugin_name: 'Slack',
-  instance_name: 'slack-prod',
-  state: 'healthy',
-  auth_strategy: 'oauth2_authcode',
-  implements_notify: true,
-  implements_request: true,
-  config_schema: {
-    type: 'object',
-    properties: {
-      app_level_token: {
-        type: 'string',
-        'x-gleipnir-secret': true,
-        description: 'Slack app-level token (xapp-...)',
-      },
-      workspace_name: {
-        type: 'string',
-        description: 'Display name for this workspace',
-      },
+// SLACK_CONFIG_SCHEMA is the instance-level config schema for the Slack-like
+// manifest. The Config-tab tests supply it via the detail mock
+// (mockInstanceDetailLoaded(..., SLACK_CONFIG_SCHEMA)) to match the fixed data
+// flow where ConfigTab reads config_schema from usePluginInstanceDetail rather
+// than from the listing endpoint's channel schema.
+const SLACK_CONFIG_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    app_level_token: {
+      type: 'string',
+      'x-gleipnir-secret': true,
+      description: 'Slack app-level token (xapp-...)',
+    },
+    workspace_name: {
+      type: 'string',
+      description: 'Display name for this workspace',
     },
   },
-  event_kinds: [],
-  version: 3,
 }
 
 const INSTANCE_OAUTH_REFRESH_FAILED: ApiPluginInstanceForAudience = {
@@ -154,7 +146,10 @@ function mockCurrentUser(roles: string[] = ['admin']) {
   } as unknown as ReturnType<typeof useCurrentUser>)
 }
 
-function mockInstanceDetailLoaded(configJson = '{}') {
+function mockInstanceDetailLoaded(
+  configJson = '{}',
+  configSchema: Record<string, unknown> | null = null,
+) {
   vi.mocked(usePluginInstanceDetail).mockReturnValue({
     data: {
       id: INSTANCE_ID,
@@ -166,7 +161,8 @@ function mockInstanceDetailLoaded(configJson = '{}') {
       updated_at: '2024-01-01T00:00:00Z',
       subscription_scope_json: '{}',
       config_json: configJson,
-    },
+      config_schema: configSchema,
+    } satisfies ApiPluginInstanceDetail,
     status: 'success',
   } as unknown as ReturnType<typeof usePluginInstanceDetail>)
 }
@@ -559,8 +555,16 @@ describe('AdminPluginInstancePage — Config tab', () => {
 
   beforeEach(() => {
     mockCurrentUser(['admin'])
-    mockInstancesLoaded([INSTANCE_WITH_CONFIG_SCHEMA])
-    mockInstanceDetailLoaded(JSON.stringify({ app_level_token: '***', workspace_name: 'Acme' }))
+    // The listing instance no longer needs to carry the schema — ConfigTab
+    // now derives config_schema from the DETAIL hook. Use a listing instance
+    // with config_schema: null to prove the tab is schema-independent of listing.
+    mockInstancesLoaded([INSTANCE_WITH_SCHEMA])
+    // Supply the Slack-like schema (instance-level) via the detail mock so tests
+    // exercise the fixed data flow (ConfigTab reads detail.config_schema).
+    mockInstanceDetailLoaded(
+      JSON.stringify({ app_level_token: '***', workspace_name: 'Acme' }),
+      SLACK_CONFIG_SCHEMA,
+    )
     mockMutationNoop()
   })
 
@@ -590,21 +594,35 @@ describe('AdminPluginInstancePage — Config tab', () => {
   })
 
   it('renders without crashing for an empty config_schema', () => {
-    mockInstancesLoaded([
-      { ...INSTANCE_WITH_CONFIG_SCHEMA, config_schema: {} },
-    ])
-    mockInstanceDetailLoaded('{}')
+    // Supply an empty schema via the detail mock — the listing schema is irrelevant.
+    mockInstanceDetailLoaded('{}', {})
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: 'Config' }))
     expect(screen.getByText(/no config fields declared/i)).toBeInTheDocument()
   })
 
   it('renders without crashing when config_schema is null', () => {
-    mockInstancesLoaded([INSTANCE_NO_SCHEMA])
-    mockInstanceDetailLoaded('{}')
+    // Supply null schema via the detail mock — the listing schema is irrelevant.
+    mockInstanceDetailLoaded('{}', null)
     renderPage()
-    // Config tab is the default active tab when no subscription_schema is present.
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
     expect(screen.getByText(/no config fields declared/i)).toBeInTheDocument()
+  })
+
+  it('renders schema fields even when the listing instance carries no config_schema', () => {
+    // Regression: before the fix, ConfigTab depended on the listing's config_schema
+    // (channel schema). Now it reads from the detail response, so a listing instance
+    // with config_schema: null must NOT prevent schema fields from rendering.
+    mockInstancesLoaded([INSTANCE_NO_SCHEMA])
+    mockInstanceDetailLoaded(
+      JSON.stringify({ app_level_token: '***' }),
+      SLACK_CONFIG_SCHEMA,
+    )
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Config' }))
+    // The instance-level secret field must appear even though the listing has null schema.
+    const secretInput = screen.getByLabelText(/app_level_token/i)
+    expect(secretInput).toHaveAttribute('type', 'password')
   })
 
   it('calls save mutation with correct params on Save config click', () => {
