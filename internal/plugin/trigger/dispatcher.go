@@ -8,6 +8,7 @@
 package trigger
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -243,7 +244,13 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, pol db.Policy, evt Event, 
 
 	var payload map[string]any
 	if len(evt.PayloadJSON) > 0 {
-		if err := json.Unmarshal(evt.PayloadJSON, &payload); err != nil {
+		// Decode with UseNumber so 64-bit integer IDs (Slack/Snowflake-style,
+		// above 2^53) survive as json.Number rather than being coerced to a
+		// lossy float64. The binding evaluator compares such fields exactly
+		// (#586).
+		dec := json.NewDecoder(bytes.NewReader(evt.PayloadJSON))
+		dec.UseNumber()
+		if err := dec.Decode(&payload); err != nil {
 			d.log.WarnContext(ctx, "trigger dispatcher: event payload is not valid JSON; treating as empty",
 				"policy_id", pol.ID,
 				"event_id", evt.EventID,
