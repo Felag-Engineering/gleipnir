@@ -64,6 +64,10 @@ type Querier interface {
 //	6 = manifest signature rejected
 //	7 = process crash
 //	8 = deliberately deactivated by admin (inactive) — deliberate total disable
+//
+// Note: inactive's rank (8) participates ONLY in the §8.1 self-mark no-op gate
+// inside SetHealthState, NOT in cross-instance aggregation. WorstHealth excludes
+// inactive explicitly so it never masks a sibling failure (#589).
 var severity = map[model.PluginHealthState]int{
 	model.PluginHealthStateHealthy:                 0,
 	model.PluginHealthStateUnsignedPermissive:      1,
@@ -270,14 +274,28 @@ func SetHealthState(ctx context.Context, q Querier, publisher event.Publisher, i
 	return nil
 }
 
-// WorstHealth returns the most severe PluginHealthState from the given slice.
-// If the slice is empty, it returns PluginHealthStateHealthy.
+// WorstHealth returns the most severe health state across the given instances.
+// The administrative inactive state is excluded from the comparison so it never
+// masks a sibling failure (e.g. crashed) in a multi-instance aggregate (#589).
+// Special cases:
+//   - empty slice → healthy (no instances is not a failure)
+//   - all entries inactive → inactive (honest aggregate; no health signal)
 func WorstHealth(states []model.PluginHealthState) model.PluginHealthState {
 	worst := model.PluginHealthStateHealthy
+	sawNonInactive := false
 	for _, s := range states {
+		if s == model.PluginHealthStateInactive {
+			continue
+		}
+		sawNonInactive = true
 		if Severity(s) > Severity(worst) {
 			worst = s
 		}
+	}
+	// If the slice was non-empty but every entry was inactive, report inactive
+	// rather than the healthy default — no health information is available.
+	if !sawNonInactive && len(states) > 0 {
+		return model.PluginHealthStateInactive
 	}
 	return worst
 }
