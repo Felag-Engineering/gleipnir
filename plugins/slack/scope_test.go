@@ -69,6 +69,41 @@ func TestDecodeSubscriptionScope(t *testing.T) {
 			},
 		},
 		{
+			name:  "slash_commands decoded correctly",
+			input: `{"slash_commands":true}`,
+			check: func(t *testing.T, s SlackSubscriptionScope) {
+				t.Helper()
+				if !s.SlashCommands {
+					t.Error("slash_commands: want true")
+				}
+			},
+		},
+		{
+			name:  "shortcuts decoded correctly",
+			input: `{"shortcuts":true}`,
+			check: func(t *testing.T, s SlackSubscriptionScope) {
+				t.Helper()
+				if !s.Shortcuts {
+					t.Error("shortcuts: want true")
+				}
+			},
+		},
+		{
+			// The slash_commands and shortcuts flags are stream-open enablers only
+			// and must not affect channel/DM delivery filtering. A scope with only
+			// these flags set should match all non-DM events (empty Channels +
+			// MentionOnly=false → matches everything) — the flags are not consulted
+			// in matches().
+			name:  "slash_commands=true does not affect matches() for channel events",
+			input: `{"slash_commands":true}`,
+			check: func(t *testing.T, s SlackSubscriptionScope) {
+				t.Helper()
+				if !s.matches("C01ANY", false, false) {
+					t.Error("matches: slash_commands=true scope should match all channel events (flags are stream-open only)")
+				}
+			},
+		},
+		{
 			name:    "malformed JSON returns error",
 			input:   `{not-valid`,
 			wantErr: true,

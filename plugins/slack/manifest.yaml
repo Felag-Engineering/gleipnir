@@ -279,6 +279,165 @@ event_kinds:
         - channel_type
         - mentioned
       type: object
+  - binding_schema:
+      additionalProperties: false
+      properties:
+        command:
+          description: Exact match on the slash command name (e.g. /gleipnir). Leave empty to match any command.
+          title: Command
+          type: string
+        text:
+          description: Case-sensitive substring matched anywhere in the command arguments.
+          format: contains
+          title: Text contains
+          type: string
+        text_regex:
+          description: Go RE2 regular expression matched against the command arguments. Use ^ to anchor to the start; (?i) for case-insensitive matching.
+          format: regex
+          title: Text matches (regex)
+          type: string
+      type: object
+    description: A workspace slash command was invoked
+    examples:
+      - name: Deploy slash command
+        payload:
+          channel_id: C012ABCDEF
+          channel_name: '#ops'
+          command: /gleipnir
+          response_url: https://hooks.slack.com/commands/T03TEAM001/...
+          team_id: T03TEAM001
+          text: deploy staging
+          trigger_id: trig-1.abc
+          user: U01USER001
+    kind: slash_command
+    payload_schema:
+      additionalProperties: false
+      properties:
+        channel_id:
+          description: Slack channel ID where the command was typed
+          title: Channel ID
+          type: string
+        channel_name:
+          description: Channel name where the command was typed
+          title: Channel name
+          type: string
+        command:
+          description: Slash command name (e.g. /gleipnir)
+          title: Command
+          type: string
+        response_url:
+          description: Webhook URL for posting a delayed response (valid for 30 minutes)
+          title: Response URL
+          type: string
+        team_id:
+          description: Slack workspace ID
+          title: Team ID
+          type: string
+        text:
+          description: Arguments provided after the slash command
+          title: Text
+          type: string
+        trigger_id:
+          description: Trigger ID for opening a modal (valid for ~3 seconds)
+          title: Trigger ID
+          type: string
+        user:
+          description: Slack user ID of the invoking user (e.g. U012AB3CD)
+          title: User
+          type: string
+      required:
+        - command
+        - text
+      type: object
+  - binding_schema:
+      additionalProperties: false
+      properties:
+        callback_id:
+          description: Exact match on the message shortcut callback_id registered in Slack (e.g. run_agent_on_message). Leave empty to match any shortcut.
+          title: Callback ID
+          type: string
+      type: object
+    description: A message shortcut was invoked on a message
+    examples:
+      - name: Run agent on incident message
+        payload:
+          callback_id: run_agent_on_message
+          channel_id: C09INCIDENT
+          team_id: T03TEAM001
+          text: the database is degraded
+          trigger_id: trig-2.def
+          ts: "1700001000.000200"
+          user: U01USER002
+    kind: message_shortcut
+    payload_schema:
+      additionalProperties: false
+      properties:
+        callback_id:
+          description: Shortcut callback_id as registered in Slack app settings
+          title: Callback ID
+          type: string
+        channel_id:
+          description: Slack channel ID containing the target message
+          title: Channel ID
+          type: string
+        team_id:
+          description: Slack workspace ID
+          title: Team ID
+          type: string
+        text:
+          description: Target message text
+          title: Text
+          type: string
+        trigger_id:
+          description: Trigger ID for opening a modal (valid for ~3 seconds)
+          title: Trigger ID
+          type: string
+        ts:
+          description: Target message Slack timestamp (uniquely identifies the message within a channel)
+          title: Timestamp
+          type: string
+        user:
+          description: Slack user ID of the user who invoked the shortcut
+          title: User
+          type: string
+      type: object
+  - binding_schema:
+      additionalProperties: false
+      properties:
+        callback_id:
+          description: Exact match on the global shortcut callback_id registered in Slack (e.g. start_agent). Leave empty to match any shortcut.
+          title: Callback ID
+          type: string
+      type: object
+    description: A global shortcut was invoked
+    examples:
+      - name: Start agent global shortcut
+        payload:
+          callback_id: start_agent
+          team_id: T03TEAM001
+          trigger_id: trig-3.ghi
+          user: U01USER003
+    kind: global_shortcut
+    payload_schema:
+      additionalProperties: false
+      properties:
+        callback_id:
+          description: Shortcut callback_id as registered in Slack app settings
+          title: Callback ID
+          type: string
+        team_id:
+          description: Slack workspace ID
+          title: Team ID
+          type: string
+        trigger_id:
+          description: Trigger ID for opening a modal (valid for ~3 seconds)
+          title: Trigger ID
+          type: string
+        user:
+          description: Slack user ID of the user who invoked the shortcut
+          title: User
+          type: string
+      type: object
 name: slack
 schema_version: v1
 services:
@@ -302,6 +461,14 @@ subscription_schema:
     mention_only:
       description: Only emit when bot is mentioned.
       title: Mention-only
+      type: boolean
+    shortcuts:
+      description: Open the trigger stream so message and global shortcut invocations are delivered. Required for message_shortcut / global_shortcut policies on instances that watch no channels.
+      title: Shortcuts
+      type: boolean
+    slash_commands:
+      description: Open the trigger stream so /slash-command invocations are delivered. Required for slash_command policies on instances that watch no channels. Slash commands are never channel-scoped.
+      title: Slash commands
       type: boolean
   type: object
 tools:
