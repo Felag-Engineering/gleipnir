@@ -38,12 +38,12 @@ type fakePluginQuerier struct {
 	audienceEntries map[string][]db.ListAudienceEntriesByInstanceRow
 	// casFailOn is the plugin ID that should return 0 rows for UpdatePluginTrustedPubkey
 	// or UpdatePluginManifest to simulate a CAS conflict.
-	casFailOn         string
-	updatePubkey      string // last value written by UpdatePluginTrustedPubkey
-	scopeCASFailOnID       string // instance ID that should return 0 rows for UpdatePluginInstanceSubscriptionScope
-	configCASFailOnID      string // instance ID that should return 0 rows for UpdatePluginInstanceConfig
-	rateLimitCASFailOnID   string // instance ID that should return 0 rows for UpdatePluginInstanceEventRateLimit
-	createInstanceErr error  // if non-nil, CreatePluginInstance returns this error
+	casFailOn            string
+	updatePubkey         string // last value written by UpdatePluginTrustedPubkey
+	scopeCASFailOnID     string // instance ID that should return 0 rows for UpdatePluginInstanceSubscriptionScope
+	configCASFailOnID    string // instance ID that should return 0 rows for UpdatePluginInstanceConfig
+	rateLimitCASFailOnID string // instance ID that should return 0 rows for UpdatePluginInstanceEventRateLimit
+	createInstanceErr    error  // if non-nil, CreatePluginInstance returns this error
 	// deletedInstanceIDs tracks which instance IDs were deleted.
 	deletedInstanceIDs []string
 	// deletedPluginIDs tracks which plugin IDs were deleted.
