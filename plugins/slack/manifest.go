@@ -193,6 +193,21 @@ type SlackSubscriptionScope struct {
 	// flag is the only way to route DM events. When true, direct_message events
 	// are emitted regardless of the Channels and MentionOnly settings.
 	DirectMessages bool `json:"direct_messages,omitempty" jsonschema:"title=Direct messages,description=Watch 1:1 DMs to the bot. Channel IDs are not required (DM channel IDs are D…)."`
+
+	// SlashCommands and Shortcuts exist SOLELY to make the scope JSON non-empty
+	// so the host trigger supervisor's isEmptyScope gate passes and the
+	// TriggerService.Start stream opens. The host supervisor treats "{}" as "not
+	// configured" and never opens the stream; these flags let an instance used
+	// ONLY for slash commands or shortcuts produce a non-empty scope JSON without
+	// requiring a channel entry.
+	//
+	// They do NOT gate plugin-side delivery. The slash/shortcut handlers in
+	// service.go intentionally bypass scope.matches — slash commands and shortcuts
+	// are explicit user intent from any surface. Any other non-empty scope (e.g.
+	// a single channel in Channels, or DirectMessages=true) also satisfies the
+	// host gate without setting these flags.
+	SlashCommands bool `json:"slash_commands,omitempty" jsonschema:"title=Slash commands,description=Open the trigger stream so /slash-command invocations are delivered. Required for slash_command policies on instances that watch no channels. Slash commands are never channel-scoped."`
+	Shortcuts     bool `json:"shortcuts,omitempty" jsonschema:"title=Shortcuts,description=Open the trigger stream so message and global shortcut invocations are delivered. Required for message_shortcut / global_shortcut policies on instances that watch no channels."`
 }
 
 // SlackChannelMessageBinding is the per-policy binding struct for the
@@ -233,6 +248,89 @@ type SlackDirectMessageBinding struct {
 	TextRegex manifest.RegexField `json:"text_regex,omitempty" jsonschema:"title=Text matches (regex),description=Go RE2 regular expression matched against the message text. Case-sensitivity is controlled by the pattern (e.g. (?i) flag); use ^ to anchor to the start. RE2 syntax — no lookbehind or backreferences."`
 	// User restricts the policy to DMs from a specific Slack user ID.
 	User manifest.EqualsField `json:"user,omitempty" jsonschema:"title=User,description=Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users."`
+}
+
+// SlackSlashCommandBinding is the per-policy binding struct for the slash_command
+// event kind. The json key MUST match the corresponding payload json key so the
+// host evaluator's payload[name] lookup aligns.
+type SlackSlashCommandBinding struct {
+	// Command matches the slash command name exactly, e.g. "/gleipnir".
+	// EqualsField → {type:string} no format → OpEquals (binding.go compileField).
+	Command manifest.EqualsField `json:"command,omitempty" jsonschema:"title=Command,description=Exact match on the slash command name (e.g. /gleipnir). Leave empty to match any command."`
+	// Text is a substring matched against the command arguments.
+	Text manifest.ContainsField `json:"text,omitempty" jsonschema:"title=Text contains,description=Case-sensitive substring matched anywhere in the command arguments."`
+	// TextRegex matches the command arguments against a Go RE2 regular expression.
+	TextRegex manifest.RegexField `json:"text_regex,omitempty" jsonschema:"title=Text matches (regex),description=Go RE2 regular expression matched against the command arguments. Use ^ to anchor to the start; (?i) for case-insensitive matching."`
+}
+
+// SlackMessageShortcutBinding is the per-policy binding struct for the
+// message_shortcut event kind.
+type SlackMessageShortcutBinding struct {
+	// CallbackID matches the shortcut callback_id exactly.
+	// EqualsField → {type:string} no format → OpEquals.
+	CallbackID manifest.EqualsField `json:"callback_id,omitempty" jsonschema:"title=Callback ID,description=Exact match on the message shortcut callback_id registered in Slack (e.g. run_agent_on_message). Leave empty to match any shortcut."`
+}
+
+// SlackGlobalShortcutBinding is the per-policy binding struct for the
+// global_shortcut event kind.
+type SlackGlobalShortcutBinding struct {
+	// CallbackID matches the global shortcut callback_id exactly.
+	CallbackID manifest.EqualsField `json:"callback_id,omitempty" jsonschema:"title=Callback ID,description=Exact match on the global shortcut callback_id registered in Slack (e.g. start_agent). Leave empty to match any shortcut."`
+}
+
+// SlackSlashCommandPayload is the JSON payload emitted for each slash_command event.
+// yaml tags mirror json tags so manifest examples use underscore-separated keys.
+type SlackSlashCommandPayload struct {
+	// Command is the slash command name, e.g. "/gleipnir".
+	Command string `json:"command" yaml:"command" jsonschema:"title=Command,description=Slash command name (e.g. /gleipnir)"`
+	// Text contains the arguments provided after the command.
+	Text string `json:"text" yaml:"text" jsonschema:"title=Text,description=Arguments provided after the slash command"`
+	// User is the Slack user ID of the invoking user.
+	User string `json:"user,omitempty" yaml:"user,omitempty" jsonschema:"title=User,description=Slack user ID of the invoking user (e.g. U012AB3CD)"`
+	// ChannelID is the Slack channel ID where the command was typed.
+	ChannelID string `json:"channel_id,omitempty" yaml:"channel_id,omitempty" jsonschema:"title=Channel ID,description=Slack channel ID where the command was typed"`
+	// ChannelName is the channel name where the command was typed.
+	ChannelName string `json:"channel_name,omitempty" yaml:"channel_name,omitempty" jsonschema:"title=Channel name,description=Channel name where the command was typed"`
+	// TriggerID is the trigger_id that can be used to open a modal (#624).
+	TriggerID string `json:"trigger_id,omitempty" yaml:"trigger_id,omitempty" jsonschema:"title=Trigger ID,description=Trigger ID for opening a modal (valid for ~3 seconds)"`
+	// ResponseURL can be used to post a reply after the immediate ack (#624).
+	ResponseURL string `json:"response_url,omitempty" yaml:"response_url,omitempty" jsonschema:"title=Response URL,description=Webhook URL for posting a delayed response (valid for 30 minutes)"`
+	// TeamID is the Slack workspace ID.
+	TeamID string `json:"team_id,omitempty" yaml:"team_id,omitempty" jsonschema:"title=Team ID,description=Slack workspace ID"`
+}
+
+// SlackMessageShortcutPayload is the JSON payload emitted for each message_shortcut event.
+// It carries the target message context and the invoking user.
+// yaml tags mirror json tags so manifest examples use underscore-separated keys.
+type SlackMessageShortcutPayload struct {
+	// Text is the target message text.
+	Text string `json:"text,omitempty" yaml:"text,omitempty" jsonschema:"title=Text,description=Target message text"`
+	// Ts is the target message Slack timestamp.
+	Ts string `json:"ts,omitempty" yaml:"ts,omitempty" jsonschema:"title=Timestamp,description=Target message Slack timestamp (uniquely identifies the message within a channel)"`
+	// ChannelID is the Slack channel ID containing the target message.
+	ChannelID string `json:"channel_id,omitempty" yaml:"channel_id,omitempty" jsonschema:"title=Channel ID,description=Slack channel ID containing the target message"`
+	// User is the Slack user ID of the invoking user.
+	User string `json:"user,omitempty" yaml:"user,omitempty" jsonschema:"title=User,description=Slack user ID of the user who invoked the shortcut"`
+	// TriggerID is the trigger_id for modal opening (#624).
+	TriggerID string `json:"trigger_id,omitempty" yaml:"trigger_id,omitempty" jsonschema:"title=Trigger ID,description=Trigger ID for opening a modal (valid for ~3 seconds)"`
+	// CallbackID is the shortcut callback_id registered in Slack.
+	CallbackID string `json:"callback_id,omitempty" yaml:"callback_id,omitempty" jsonschema:"title=Callback ID,description=Shortcut callback_id as registered in Slack app settings"`
+	// TeamID is the Slack workspace ID.
+	TeamID string `json:"team_id,omitempty" yaml:"team_id,omitempty" jsonschema:"title=Team ID,description=Slack workspace ID"`
+}
+
+// SlackGlobalShortcutPayload is the JSON payload emitted for each global_shortcut event.
+// Global shortcuts have no message or channel context.
+// yaml tags mirror json tags so manifest examples use underscore-separated keys.
+type SlackGlobalShortcutPayload struct {
+	// User is the Slack user ID of the invoking user.
+	User string `json:"user,omitempty" yaml:"user,omitempty" jsonschema:"title=User,description=Slack user ID of the user who invoked the shortcut"`
+	// TriggerID is the trigger_id for modal opening (#624).
+	TriggerID string `json:"trigger_id,omitempty" yaml:"trigger_id,omitempty" jsonschema:"title=Trigger ID,description=Trigger ID for opening a modal (valid for ~3 seconds)"`
+	// CallbackID is the shortcut callback_id registered in Slack.
+	CallbackID string `json:"callback_id,omitempty" yaml:"callback_id,omitempty" jsonschema:"title=Callback ID,description=Shortcut callback_id as registered in Slack app settings"`
+	// TeamID is the Slack workspace ID.
+	TeamID string `json:"team_id,omitempty" yaml:"team_id,omitempty" jsonschema:"title=Team ID,description=Slack workspace ID"`
 }
 
 // SlackChannelMessagePayload is the JSON payload emitted for each channel_message
@@ -379,6 +477,71 @@ func init() {
 				TeamID:      "T03TEAM001",
 				ChannelType: "im",
 				Mentioned:   false,
+			},
+		},
+	)
+
+	// slash_command is emitted when a Slack slash command is invoked. Requires
+	// Socket Mode delivery (no Request URL needed). Ack is handled at the hub
+	// within Slack's ~3s window; results post back via post_message or response_url.
+	// New event kinds are appended after direct_message for stable canonical YAML.
+	pluginManifest.MustAddEventKindWithExamples(
+		"slash_command",
+		"A workspace slash command was invoked",
+		SlackSlashCommandBinding{},
+		manifest.MustReflectSchema(SlackSlashCommandPayload{}),
+		manifest.Example{
+			Name: "Deploy slash command",
+			Payload: SlackSlashCommandPayload{
+				Command:     "/gleipnir",
+				Text:        "deploy staging",
+				User:        "U01USER001",
+				ChannelID:   "C012ABCDEF",
+				ChannelName: "#ops",
+				TriggerID:   "trig-1.abc",
+				ResponseURL: "https://hooks.slack.com/commands/T03TEAM001/...",
+				TeamID:      "T03TEAM001",
+			},
+		},
+	)
+
+	// message_shortcut is emitted when a Slack message shortcut is invoked on a
+	// specific message. The payload carries the target message context (text, ts,
+	// channel_id) plus the invoking user and trigger_id for modal follow-up (#624).
+	pluginManifest.MustAddEventKindWithExamples(
+		"message_shortcut",
+		"A message shortcut was invoked on a message",
+		SlackMessageShortcutBinding{},
+		manifest.MustReflectSchema(SlackMessageShortcutPayload{}),
+		manifest.Example{
+			Name: "Run agent on incident message",
+			Payload: SlackMessageShortcutPayload{
+				Text:       "the database is degraded",
+				Ts:         "1700001000.000200",
+				ChannelID:  "C09INCIDENT",
+				User:       "U01USER002",
+				TriggerID:  "trig-2.def",
+				CallbackID: "run_agent_on_message",
+				TeamID:     "T03TEAM001",
+			},
+		},
+	)
+
+	// global_shortcut is emitted when a Slack global shortcut is invoked from
+	// anywhere (no message or channel context). Useful for "start a new agent run"
+	// actions accessible from any Slack surface.
+	pluginManifest.MustAddEventKindWithExamples(
+		"global_shortcut",
+		"A global shortcut was invoked",
+		SlackGlobalShortcutBinding{},
+		manifest.MustReflectSchema(SlackGlobalShortcutPayload{}),
+		manifest.Example{
+			Name: "Start agent global shortcut",
+			Payload: SlackGlobalShortcutPayload{
+				User:       "U01USER003",
+				TriggerID:  "trig-3.ghi",
+				CallbackID: "start_agent",
+				TeamID:     "T03TEAM001",
 			},
 		},
 	)

@@ -495,6 +495,8 @@ func (s *TriggerService) Start(req *triggerv1.StartRequest, stream grpc.ServerSt
 	}
 
 	hub.RegisterEventsHandler(onEvent)
+	hub.RegisterSlashCommandHandler(s.onSlashCommand(hostCtx))
+	hub.RegisterTriggerInteractiveHandler(s.onShortcut(hostCtx))
 
 	// Block until the stream context is cancelled by the host (clean shutdown)
 	// or the hub's Run goroutine exits (auth failure, connection error).
@@ -553,6 +555,52 @@ func (s *TriggerService) handleNonEventsAPI(ctx context.Context, evt socketmode.
 		// will surface its own error which the post-Run classifier handles.
 		log.Printf("slack: socket mode invalid_auth event (HTTP 404 from connect)")
 		s.setTriggerHealth(ctx, healthAuthExpired)
+	}
+}
+
+// onSlashCommand returns a handler for slash command events registered on the hub.
+// The hub has already acked before this handler is called; do NOT ack here.
+// Slash commands bypass scope.matches — they are explicit user intent from any
+// surface and are not channel-scoped.
+func (s *TriggerService) onSlashCommand(ctx context.Context) func(slack.SlashCommand) {
+	return func(cmd slack.SlashCommand) {
+		eventID, payload, err := translateSlashCommand(cmd)
+		if err != nil {
+			log.Printf("slack: translateSlashCommand error: %v", err)
+			return
+		}
+		if _, err := s.host.EmitEvent(ctx, &hostv1.EmitEventRequest{
+			EventKind:   "slash_command",
+			EventId:     eventID,
+			PayloadJson: string(payload),
+		}); err != nil {
+			log.Printf("slack: EmitEvent (slash_command) failed: %v", err)
+		}
+	}
+}
+
+// onShortcut returns a handler for shortcut interactive events registered on the hub.
+// The hub has already acked and decoded the InteractionCallback; do NOT ack here.
+// Shortcuts bypass scope.matches — they are explicit user intent from any surface.
+// block_actions callbacks are dropped (translateShortcut returns emit=false) so the
+// ChannelService approval/feedback path is unaffected.
+func (s *TriggerService) onShortcut(ctx context.Context) func(slack.InteractionCallback) {
+	return func(cb slack.InteractionCallback) {
+		kind, eventID, payload, emit, err := translateShortcut(cb)
+		if err != nil {
+			log.Printf("slack: translateShortcut error: %v", err)
+			return
+		}
+		if !emit {
+			return
+		}
+		if _, err := s.host.EmitEvent(ctx, &hostv1.EmitEventRequest{
+			EventKind:   kind,
+			EventId:     eventID,
+			PayloadJson: string(payload),
+		}); err != nil {
+			log.Printf("slack: EmitEvent (%s) failed: %v", kind, err)
+		}
 	}
 }
 

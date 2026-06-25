@@ -27,6 +27,20 @@ type messageHandlerSlot struct {
 	fn func(socketmode.Event)
 }
 
+// slashCommandHandlerSlot wraps the slash command handler for atomic.Pointer storage.
+// The hub has already acked before dispatching; handler must NOT call Ack.
+type slashCommandHandlerSlot struct {
+	fn func(slack.SlashCommand)
+}
+
+// triggerInteractiveHandlerSlot wraps a handler that receives a pre-decoded
+// InteractionCallback for shortcut delivery. The socketmode.Event wrapper is
+// dropped (the hub has already acked and decoded the callback).
+// Handler must NOT call Ack.
+type triggerInteractiveHandlerSlot struct {
+	fn func(slack.InteractionCallback)
+}
+
 // socketHub multiplexes a single socketModeRunner between an EventsAPI handler
 // (used by TriggerService) and an interactive handler (used by ChannelService).
 // One hub per xapp-token; created and managed by hubRegistry.
@@ -37,11 +51,13 @@ type messageHandlerSlot struct {
 // (slot briefly nil). Interactive callbacks are unaffected — ChannelService
 // registers its interactive handler once at NewChannelService and never releases it.
 type socketHub struct {
-	runner             socketModeRunner
-	xappToken          string
-	eventsHandler      atomic.Pointer[eventsHandlerSlot]
-	interactiveHandler atomic.Pointer[interactiveHandlerSlot]
-	messageHandler     atomic.Pointer[messageHandlerSlot]
+	runner                   socketModeRunner
+	xappToken                string
+	eventsHandler            atomic.Pointer[eventsHandlerSlot]
+	interactiveHandler       atomic.Pointer[interactiveHandlerSlot]
+	messageHandler           atomic.Pointer[messageHandlerSlot]
+	slashCommandHandler      atomic.Pointer[slashCommandHandlerSlot]
+	triggerInteractiveHandler atomic.Pointer[triggerInteractiveHandlerSlot]
 
 	// done is closed (and doneErr written) when the hub's Run goroutine exits.
 	// Multiple goroutines may read from Done(); the channel is never sent to
@@ -95,6 +111,22 @@ func (h *socketHub) RegisterMessageHandler(fn func(socketmode.Event)) {
 	h.messageHandler.Store(&messageHandlerSlot{fn: fn})
 }
 
+// RegisterSlashCommandHandler registers the handler called for slash command events.
+// The hub acks the event before dispatching; the handler must NOT call Ack.
+// Replaces any previously registered handler atomically.
+func (h *socketHub) RegisterSlashCommandHandler(fn func(slack.SlashCommand)) {
+	h.slashCommandHandler.Store(&slashCommandHandlerSlot{fn: fn})
+}
+
+// RegisterTriggerInteractiveHandler registers a secondary handler for interactive
+// events (shortcuts) that runs after the existing interactiveHandler. The hub
+// acks before dispatching; the handler must NOT call Ack. Receives the same
+// pre-decoded InteractionCallback as the primary handler; both are isolated by
+// cb.Type (block_actions vs shortcut/message_action). Replaces atomically.
+func (h *socketHub) RegisterTriggerInteractiveHandler(fn func(slack.InteractionCallback)) {
+	h.triggerInteractiveHandler.Store(&triggerInteractiveHandlerSlot{fn: fn})
+}
+
 // Ack acknowledges a Slack Socket Mode request.
 func (h *socketHub) Ack(req socketmode.Request) {
 	h.runner.Ack(req)
@@ -105,9 +137,9 @@ func (h *socketHub) Ack(req socketmode.Request) {
 // (ADR-001; service.go:247). Blocks until ctx is cancelled or the runner exits.
 // When Run returns, h.done is closed and h.doneErr carries the error (may be nil).
 //
-// Interactive events are Acked by the hub before dispatching to the handler —
-// the handler must not call Ack. EventsAPI events are Acked by TriggerService's
-// onEvent (service.go:385-387) to avoid double-Ack.
+// Interactive events (block_actions and shortcuts) and slash commands are Acked
+// by the hub before dispatching to any handler — handlers must not call Ack.
+// EventsAPI events are Acked by TriggerService's onEvent to avoid double-Ack.
 func (h *socketHub) Run(ctx context.Context) error {
 	err := h.runner.Run(ctx, func(evt socketmode.Event) {
 		switch evt.Type {
@@ -120,6 +152,22 @@ func (h *socketHub) Run(ctx context.Context) error {
 			// must not call Ack.
 			if mslot := h.messageHandler.Load(); mslot != nil {
 				mslot.fn(evt)
+			}
+
+		case socketmode.EventTypeSlashCommand:
+			// SlashCommand is a VALUE type in evt.Data (not a pointer),
+			// per socket_mode_managed_conn.go:639-645.
+			cmd, ok := evt.Data.(slack.SlashCommand)
+			if !ok {
+				log.Printf("sockethub: slash command event has unexpected data type %T", evt.Data)
+				return
+			}
+			// Ack FIRST to satisfy Slack's ~3s budget before any handler processing.
+			if evt.Request != nil {
+				h.runner.Ack(*evt.Request)
+			}
+			if slot := h.slashCommandHandler.Load(); slot != nil {
+				slot.fn(cmd)
 			}
 
 		case socketmode.EventTypeInteractive:
@@ -135,8 +183,16 @@ func (h *socketHub) Run(ctx context.Context) error {
 			if evt.Request != nil {
 				h.runner.Ack(*evt.Request)
 			}
+			// Primary handler: ChannelService owns block_actions (approval/feedback).
 			if slot := h.interactiveHandler.Load(); slot != nil {
 				slot.fn(evt, cb)
+			}
+			// Secondary handler: TriggerService handles shortcut types.
+			// Both handlers receive the same cb and are isolated by cb.Type —
+			// interactiveHandler early-returns on non-block_actions, and
+			// translateShortcut returns emit=false on block_actions.
+			if tslot := h.triggerInteractiveHandler.Load(); tslot != nil {
+				tslot.fn(cb)
 			}
 
 		default:
