@@ -250,6 +250,17 @@ func (m *InstanceConfig) PutSubscriptionScope(ctx context.Context, pluginID, ins
 		}
 	}
 
+	// Decode the manifest's instance-level config_schema for the response. The
+	// schema is metadata and returned verbatim (ADR-049); decode error → nil, not
+	// a failure. Both response branches (re-fetch success and synthesised fallback)
+	// must carry the same field so the frontend always gets the schema from PUT too.
+	var configSchema interface{}
+	if manifest.ConfigSchema != nil {
+		if decodeErr := manifest.ConfigSchema.Decode(&configSchema); decodeErr != nil {
+			configSchema = nil
+		}
+	}
+
 	// Re-fetch to return the updated row. On failure synthesise the response
 	// from the pre-write snapshot + known deltas; secret fields must still be
 	// redacted in both paths (ADR-049).
@@ -277,6 +288,7 @@ func (m *InstanceConfig) PutSubscriptionScope(ctx context.Context, pluginID, ins
 			UpdatedAt:             synthetic.UpdatedAt,
 			SubscriptionScopeJson: synthetic.SubscriptionScopeJson,
 			ConfigJson:            redactedConfig,
+			ConfigSchema:          configSchema,
 		}}, nil
 	}
 
@@ -298,6 +310,7 @@ func (m *InstanceConfig) PutSubscriptionScope(ctx context.Context, pluginID, ins
 		UpdatedAt:             updated.UpdatedAt,
 		SubscriptionScopeJson: updated.SubscriptionScopeJson,
 		ConfigJson:            redactedConfig,
+		ConfigSchema:          configSchema,
 	}}, nil
 }
 
@@ -418,6 +431,16 @@ func (m *InstanceConfig) PutConfig(ctx context.Context, pluginID, instanceID str
 		}
 	}
 
+	// Decode the manifest's instance-level config_schema for the response. The
+	// schema is metadata and returned verbatim (ADR-049); decode error → nil, not
+	// a failure. Both response branches must carry the same field for shape consistency.
+	var configSchema interface{}
+	if manifest.ConfigSchema != nil {
+		if decodeErr := manifest.ConfigSchema.Decode(&configSchema); decodeErr != nil {
+			configSchema = nil
+		}
+	}
+
 	// Re-fetch to return the updated row.
 	updated, fetchErr := m.q.GetPluginInstanceByID(ctx, instanceID)
 	if fetchErr != nil {
@@ -433,6 +456,7 @@ func (m *InstanceConfig) PutConfig(ctx context.Context, pluginID, instanceID str
 			UpdatedAt:             nowStr,
 			SubscriptionScopeJson: inst.SubscriptionScopeJson,
 			ConfigJson:            redactedWrittenConfig,
+			ConfigSchema:          configSchema,
 		}}, nil
 	}
 
@@ -464,6 +488,7 @@ func (m *InstanceConfig) PutConfig(ctx context.Context, pluginID, instanceID str
 		UpdatedAt:             updated.UpdatedAt,
 		SubscriptionScopeJson: updated.SubscriptionScopeJson,
 		ConfigJson:            redactedFetchedConfig,
+		ConfigSchema:          configSchema,
 	}}, nil
 }
 
@@ -592,6 +617,16 @@ func (m *InstanceConfig) PutConfigProperty(ctx context.Context, pluginID, instan
 		}
 	}
 
+	// Decode the manifest's instance-level config_schema for the response. The
+	// schema is metadata and returned verbatim (ADR-049); decode error → nil, not
+	// a failure. Both response branches must carry the same field for shape consistency.
+	var configSchema interface{}
+	if manifest.ConfigSchema != nil {
+		if decodeErr := manifest.ConfigSchema.Decode(&configSchema); decodeErr != nil {
+			configSchema = nil
+		}
+	}
+
 	// Re-fetch to return the updated row.
 	updated, fetchErr := m.q.GetPluginInstanceByID(ctx, instanceID)
 	if fetchErr != nil {
@@ -607,6 +642,7 @@ func (m *InstanceConfig) PutConfigProperty(ctx context.Context, pluginID, instan
 			UpdatedAt:             nowStr,
 			SubscriptionScopeJson: inst.SubscriptionScopeJson,
 			ConfigJson:            redactedWrittenConfig,
+			ConfigSchema:          configSchema,
 		}}, nil
 	}
 
@@ -629,6 +665,7 @@ func (m *InstanceConfig) PutConfigProperty(ctx context.Context, pluginID, instan
 		UpdatedAt:             updated.UpdatedAt,
 		SubscriptionScopeJson: updated.SubscriptionScopeJson,
 		ConfigJson:            redactedFetchedConfig,
+		ConfigSchema:          configSchema,
 	}}, nil
 }
 

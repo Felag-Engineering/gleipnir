@@ -547,6 +547,10 @@ export interface ApiPluginInstanceForAudience {
 // Returned by GET /api/v1/admin/plugins/{id}/instances/{iid}.
 // config_json is a JSON-encoded map — the client parses it for display.
 // Secret fields in config_json are redacted to "***" (ADR-049).
+// config_schema is the manifest's instance-level JSON Schema (verbatim — schema
+// annotations like x-gleipnir-secret drive redaction of VALUES in config_json,
+// the schema itself is metadata and never redacted). null when the manifest
+// declares no config_schema.
 export interface ApiPluginInstanceDetail {
   id: string
   plugin_id: string
@@ -557,6 +561,7 @@ export interface ApiPluginInstanceDetail {
   updated_at: string
   subscription_scope_json: string
   config_json: string
+  config_schema: Record<string, unknown> | null
 }
 
 // ApiInstalledPlugin matches the installResponse struct returned by

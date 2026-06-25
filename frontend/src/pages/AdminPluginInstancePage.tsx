@@ -125,16 +125,23 @@ function SubscriptionsTab({
 interface ConfigTabProps {
   pluginId: string
   instanceId: string
-  configSchema: Record<string, unknown> | null
 }
 
-function ConfigTab({ pluginId, instanceId, configSchema }: ConfigTabProps) {
+function ConfigTab({ pluginId, instanceId }: ConfigTabProps) {
   const queryClient = useQueryClient()
 
-  // Fetch the per-instance detail to get the current (redacted) config values.
-  // The listing endpoint (usePluginInstancesForAudience) includes config_schema
-  // but omits config_json — we need GetInstance for actual values.
+  // Fetch the per-instance detail to get both the current (redacted) config values
+  // AND the instance-level config_schema. Previously the schema came from the
+  // listing endpoint (usePluginInstancesForAudience.config_schema), which only
+  // carries the CHANNEL config schema — wrong for instance-level fields like
+  // Slack's app_level_token. The detail endpoint now returns the correct
+  // instance-level schema verbatim (ADR-049; schema is metadata, not a secret).
   const { data: detail, status: detailStatus } = usePluginInstanceDetail(pluginId, instanceId)
+
+  // Derive the instance-level schema from the detail response rather than from
+  // the listing's channel schema (which the audience editor depends on — leave
+  // that unchanged at usePluginInstancesForAudience).
+  const configSchema = (detail?.config_schema ?? null) as Record<string, unknown> | null
 
   // Parse the config_json string from the backend into a plain object.
   const serverConfig: Record<string, unknown> = (() => {
@@ -462,7 +469,6 @@ export default function AdminPluginInstancePage() {
         <ConfigTab
           pluginId={pluginId!}
           instanceId={instanceId!}
-          configSchema={instance.config_schema}
         />
       )
     }
