@@ -20,6 +20,8 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/model"
 )
 
+const eventTypeFeedbackResponseLate = "feedback_response_late"
+
 // PaginatedRunsResponse is the JSON envelope returned by List.
 type PaginatedRunsResponse struct {
 	Runs  []RunSummary `json:"runs"`
@@ -642,8 +644,35 @@ func (h *RunsHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 				"request_id", pendingID,
 				"run_id", runID,
 				"body_len", len(req.Response))
-			// TODO(#579): also emit a feedback_response_late row into
-			// plugin_audit_events (ADR-046) in addition to this slog line.
+
+			// Best-effort: write an audit row per ADR-046. Never include the response body.
+			auditPayload, marshalErr := json.Marshal(map[string]string{
+				"request_id": pendingID,
+				"run_id":     runID,
+				"substrate":  "in_app",
+				"reason":     "late",
+			})
+			if marshalErr != nil {
+				slog.Warn("feedback_response_late: audit payload marshal failed",
+					"request_id", pendingID,
+					"run_id", runID,
+					"err", marshalErr)
+			} else {
+				if _, insertErr := h.store.InsertPluginAuditEvent(ctx, db.InsertPluginAuditEventParams{
+					PluginInstanceID: nil,
+					EventType:        eventTypeFeedbackResponseLate,
+					Severity:         "warning",
+					ActorUserID:      nil,
+					PayloadJson:      string(auditPayload),
+					CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+				}); insertErr != nil {
+					slog.Warn("feedback_response_late: audit event insert failed",
+						"request_id", pendingID,
+						"run_id", runID,
+						"err", insertErr)
+				}
+			}
+
 			httputil.WriteError(w, http.StatusGone, "feedback request expired or already answered", "")
 			return
 		default:

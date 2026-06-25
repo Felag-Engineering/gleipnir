@@ -1669,5 +1669,41 @@ func TestRunsHandler_SubmitFeedback_LateCallback(t *testing.T) {
 		t.Errorf("error = %q, want %q", body.Error, "feedback request expired or already answered")
 	}
 
+	// Verify that a feedback_response_late audit row was written.
+	ctx := req.Context()
+	auditRows, err := store.ListPluginAuditEventsByType(ctx, db.ListPluginAuditEventsByTypeParams{
+		EventType: "feedback_response_late",
+		Limit:     int64(10),
+		Offset:    int64(0),
+	})
+	if err != nil {
+		t.Fatalf("ListPluginAuditEventsByType: %v", err)
+	}
+	if len(auditRows) != 1 {
+		t.Fatalf("got %d feedback_response_late audit rows, want 1", len(auditRows))
+	}
+	row := auditRows[0]
+	if row.Severity != "warning" {
+		t.Errorf("audit row severity = %q, want %q", row.Severity, "warning")
+	}
+	if row.PluginInstanceID != nil {
+		t.Errorf("audit row plugin_instance_id = %v, want nil", row.PluginInstanceID)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(row.PayloadJson), &payload); err != nil {
+		t.Fatalf("unmarshal audit payload: %v", err)
+	}
+	if payload["request_id"] != "fr-late-cb-1" {
+		t.Errorf("payload request_id = %q, want %q", payload["request_id"], "fr-late-cb-1")
+	}
+	if payload["run_id"] != "r-late-cb" {
+		t.Errorf("payload run_id = %q, want %q", payload["run_id"], "r-late-cb")
+	}
+	const lateResponseBody = "late response"
+	if strings.Contains(row.PayloadJson, lateResponseBody) {
+		t.Errorf("audit payload must not contain response body, got: %s", row.PayloadJson)
+	}
+
 	manager.Deregister("r-late-cb")
 }
