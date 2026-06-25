@@ -247,7 +247,7 @@ export function AudienceEditor({
       )}
 
       {/* Routing preview */}
-      <RoutingPreview entries={displayEntries} disableInAppFallback={disableInAppFallback} />
+      <RoutingPreview entries={displayEntries} disableInAppFallback={disableInAppFallback} pluginInstances={pluginInstances} />
 
       {/* Name */}
       <section className={styles.section}>

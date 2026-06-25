@@ -140,6 +140,7 @@ describe('AudienceSection — rendering', () => {
       http.get('/api/v1/admin/audiences', () =>
         HttpResponse.json({ data: [] }),
       ),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
     )
     renderSection({ name: '' })
     expect(screen.getByText('Audience')).toBeInTheDocument()
@@ -150,6 +151,7 @@ describe('AudienceSection — rendering', () => {
       http.get('/api/v1/admin/audiences', () =>
         HttpResponse.json({ data: [] }),
       ),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
     )
     renderSection({ name: '' })
     const select = screen.getByRole('combobox', { name: /audience/i })
@@ -162,6 +164,7 @@ describe('AudienceSection — rendering', () => {
       http.get('/api/v1/admin/audiences', () =>
         HttpResponse.json({ data: AUDIENCE_LIST }),
       ),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
     )
     renderSection({ name: '' })
     await waitFor(() => {
@@ -175,6 +178,7 @@ describe('AudienceSection — rendering', () => {
       http.get('/api/v1/admin/audiences', () =>
         HttpResponse.json({ data: [] }),
       ),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
     )
     renderSection({ name: '' })
     await waitFor(() => {
@@ -189,6 +193,7 @@ describe('AudienceSection — selection callbacks', () => {
       http.get('/api/v1/admin/audiences', () =>
         HttpResponse.json({ data: AUDIENCE_LIST }),
       ),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
     )
     const onChange = vi.fn()
     renderSection({ name: '' }, onChange)
@@ -208,6 +213,7 @@ describe('AudienceSection — selection callbacks', () => {
       http.get('/api/v1/admin/audiences', () =>
         HttpResponse.json({ data: AUDIENCE_LIST }),
       ),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
     )
     const onChange = vi.fn()
     renderSection({ name: 'ops-team' }, onChange)
@@ -225,6 +231,7 @@ describe('AudienceSection — + New audience link', () => {
       http.get('/api/v1/admin/audiences', () =>
         HttpResponse.json({ data: [] }),
       ),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
     )
     const onNewAudienceClick = vi.fn()
     renderSection({ name: '' }, undefined, onNewAudienceClick)
@@ -239,6 +246,7 @@ describe('AudienceSection — preview area state machine', () => {
     server.use(
       // Never resolves — simulates loading state.
       http.get('/api/v1/admin/audiences', () => new Promise(() => {})),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
     )
     renderSection({ name: 'ops-team' })
     // The text appears immediately because the query starts loading.
@@ -252,6 +260,7 @@ describe('AudienceSection — preview area state machine', () => {
       http.get('/api/v1/admin/audiences', () =>
         HttpResponse.json({ data: AUDIENCE_LIST }),
       ),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
     )
     renderSection({ name: 'ghost-audience' })
     await waitFor(() => {
@@ -272,6 +281,7 @@ describe('AudienceSection — preview area state machine', () => {
         }
         return HttpResponse.json({ error: 'not found' }, { status: 404 })
       }),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
     )
     renderSection({ name: 'ops-team' })
     // RoutingPreview renders these labels
@@ -288,6 +298,7 @@ describe('AudienceSection — preview area state machine', () => {
       ),
       // Detail never resolves — simulates in-flight detail fetch.
       http.get('/api/v1/admin/audiences/:id', () => new Promise(() => {})),
+      http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
     )
     renderSection({ name: 'ops-team' })
     // After list loads, detail is still in flight — show placeholder, not warning.

@@ -1,25 +1,33 @@
 import { Bell, MessageSquare } from 'lucide-react'
-import type { ApiAudienceEntry } from '@/api/types'
+import type { ApiAudienceEntry, ApiPluginInstanceForAudience } from '@/api/types'
 import styles from './RoutingPreview.module.css'
 
 interface Props {
   entries: ApiAudienceEntry[]
   disableInAppFallback?: boolean
+  pluginInstances?: ApiPluginInstanceForAudience[]
 }
 
-function entryDisplayName(entry: ApiAudienceEntry): string {
+export function entryDisplayName(
+  entry: ApiAudienceEntry,
+  pluginInstances?: ApiPluginInstanceForAudience[],
+): string {
   if (entry.auto) return 'gleipnir.in-app (built-in fallback)'
-  return entry.plugin_instance_id || '(unset)'
+  if (!entry.plugin_instance_id) return '(unset)'
+  const match = pluginInstances?.find((p) => p.id === entry.plugin_instance_id)
+  if (match) return match.instance_name
+  return entry.plugin_instance_id
 }
 
-// instanceName is optional so callers without plugin instance data can still use this.
-export function RoutingPreview({ entries, disableInAppFallback }: Props) {
+export function RoutingPreview({ entries, disableInAppFallback, pluginInstances }: Props) {
+  const displayName = (e: ApiAudienceEntry) => entryDisplayName(e, pluginInstances)
+
   const notifyEntries = entries.filter((e) => e.notify)
   const requestEntry = entries.find((e) => e.request) ?? null
 
   // If in-app fallback is not disabled and not already in entries, treat it as implicitly appended.
   const hasAutoEntry = entries.some((e) => e.auto)
-  const notifyNames = notifyEntries.map((e) => entryDisplayName(e))
+  const notifyNames = notifyEntries.map((e) => displayName(e))
   const inAppLabel = 'gleipnir.in-app (built-in fallback)'
 
   // Append in-app to notify display when it would be auto-injected.
@@ -28,10 +36,10 @@ export function RoutingPreview({ entries, disableInAppFallback }: Props) {
       ? [...notifyNames, inAppLabel]
       : notifyNames.length > 0
         ? notifyNames
-        : notifyEntries.map((e) => entryDisplayName(e))
+        : notifyEntries.map((e) => displayName(e))
 
   const requestDisplay = requestEntry
-    ? entryDisplayName(requestEntry)
+    ? displayName(requestEntry)
     : !disableInAppFallback
       ? inAppLabel
       : null

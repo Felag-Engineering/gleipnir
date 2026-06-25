@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { useAudiences, useAudience } from '@/hooks/queries/admin'
+import { useAudiences, useAudience, usePluginInstancesForAudience } from '@/hooks/queries/admin'
 import { RoutingPreview } from '@/components/admin/AudienceEditor/RoutingPreview'
 import { FieldError } from '@/components/form/FieldError'
 import type { AudienceFormState, SectionIssues } from './types'
@@ -18,6 +18,7 @@ export function AudienceSection({ value, onChange, onNewAudienceClick, errors = 
   const navigate = useNavigate()
   const audiencesQuery = useAudiences()
   const audiences = audiencesQuery.data ?? []
+  const pluginInstancesQuery = usePluginInstancesForAudience()
 
   // Find the audience record matching the selected name to get its id.
   const matchedAudience = value.name !== ''
@@ -75,6 +76,7 @@ export function AudienceSection({ value, onChange, onNewAudienceClick, errors = 
         <RoutingPreview
           entries={detail.entries}
           disableInAppFallback={detail.disable_in_app_fallback}
+          pluginInstances={pluginInstancesQuery.data ?? []}
         />
       </div>
     )

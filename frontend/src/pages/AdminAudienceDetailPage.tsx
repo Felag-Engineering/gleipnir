@@ -5,13 +5,13 @@ import { PageHeader } from '@/components/PageHeader'
 import { QueryBoundary, SkeletonList } from '@/components/QueryBoundary'
 import { CollapsibleJSON } from '@/components/CollapsibleJSON/CollapsibleJSON'
 import { AudienceEditor } from '@/components/admin/AudienceEditor'
-import { RoutingPreview } from '@/components/admin/AudienceEditor'
+import { RoutingPreview, entryDisplayName } from '@/components/admin/AudienceEditor'
 import { useAudience, useAudienceReferences, usePluginInstancesForAudience } from '@/hooks/queries/admin'
 import { useUpdateAudience, useDeleteAudience } from '@/hooks/mutations/admin'
 import { useCurrentUser } from '@/hooks/queries/users'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import { formatDate, formatTimeAgo } from '@/utils/format'
-import type { ApiAudienceEntry, AudienceUpdateRequest } from '@/api/types'
+import type { ApiAudienceEntry, ApiPluginInstanceForAudience, AudienceUpdateRequest } from '@/api/types'
 import type { ApiError } from '@/api/fetch'
 import styles from './AdminAudienceDetailPage.module.css'
 
@@ -71,7 +71,7 @@ export default function AdminAudienceDetailPage() {
               />
             ) : (
               <>
-                <RoutingPreview entries={audienceQuery.data.entries} />
+                <RoutingPreview entries={audienceQuery.data.entries} pluginInstances={pluginInstancesQuery.data ?? []} />
 
                 <section className={styles.section}>
                   <h2 className={styles.sectionTitle}>Entries</h2>
@@ -81,7 +81,7 @@ export default function AdminAudienceDetailPage() {
                   </p>
                   <ol className={styles.entryList}>
                     {audienceQuery.data.entries.map((entry) => (
-                      <EntryCard key={`${entry.id}:${entry.position}`} entry={entry} />
+                      <EntryCard key={`${entry.id}:${entry.position}`} entry={entry} pluginInstances={pluginInstancesQuery.data ?? []} />
                     ))}
                   </ol>
                 </section>
@@ -130,17 +130,12 @@ export default function AdminAudienceDetailPage() {
   )
 }
 
-function EntryCard({ entry }: { entry: ApiAudienceEntry }) {
-  function entryDisplayName(e: ApiAudienceEntry): string {
-    if (e.auto) return 'gleipnir.in-app (built-in fallback)'
-    return e.plugin_instance_id || '(unset)'
-  }
-
+function EntryCard({ entry, pluginInstances }: { entry: ApiAudienceEntry; pluginInstances?: ApiPluginInstanceForAudience[] }) {
   return (
     <li className={`${styles.entryCard} ${entry.auto ? styles.entryCardAuto : ''}`}>
       <div className={styles.entryHeader}>
         <span className={styles.entryPosition}>{entry.position + 1}</span>
-        <span className={styles.entryName}>{entryDisplayName(entry)}</span>
+        <span className={styles.entryName}>{entryDisplayName(entry, pluginInstances)}</span>
         <div className={styles.entryFlags}>
           {entry.notify && (
             <span className={`${styles.flag} ${styles.flagNotify}`}>Notify</span>
