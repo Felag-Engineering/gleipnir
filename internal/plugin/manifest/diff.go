@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/felag-engineering/gleipnir/internal/plugin/schemautil"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
@@ -100,9 +101,19 @@ func CosmeticFields(changes []Change) []string {
 // "Newly required" means: a property name appears in new's "required" array
 // but did not appear in old's "required" array. Plugin-wide granularity (not
 // per-instance) per the v1 design decision.
-func ConfigSchemaNewlyRequiredFields(old, new *sdkmanifest.Manifest) []string {
-	oldRequired := requiredFieldSet(old.ConfigSchema)
-	newRequired := requiredFieldSet(new.ConfigSchema)
+//
+// A nil ConfigSchema or a schema with no "required" key is not an error (not
+// all plugins declare required config). A malformed "required" key (wrong type
+// or non-string element) returns an error; callers must fail closed.
+func ConfigSchemaNewlyRequiredFields(old, new *sdkmanifest.Manifest) ([]string, error) {
+	oldRequired, err := requiredFieldSet(old.ConfigSchema)
+	if err != nil {
+		return nil, fmt.Errorf("old config schema: %w", err)
+	}
+	newRequired, err := requiredFieldSet(new.ConfigSchema)
+	if err != nil {
+		return nil, fmt.Errorf("new config schema: %w", err)
+	}
 
 	var added []string
 	for field := range newRequired {
@@ -111,39 +122,44 @@ func ConfigSchemaNewlyRequiredFields(old, new *sdkmanifest.Manifest) []string {
 		}
 	}
 	sort.Strings(added)
-	return added
+	return added, nil
 }
 
 // requiredFieldSet extracts the set of names from a JSON Schema's "required"
-// array. Returns an empty map when the node is nil or has no "required" key.
-func requiredFieldSet(node *yaml.Node) map[string]bool {
+// array. Returns (nil, nil) when the node is nil or has no "required" key —
+// that is a legitimate schema with no required fields, not an error.
+// Returns an error when "required" exists but has the wrong type or contains a
+// non-string element; callers must treat that as a malformed schema and fail closed.
+func requiredFieldSet(node *yaml.Node) (map[string]bool, error) {
 	if node == nil {
-		return nil
+		return nil, nil
 	}
 	// Decode the node into a generic map to extract "required".
 	raw, err := yaml.Marshal(node)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("marshal config schema node: %w", err)
 	}
 	var schema map[string]any
 	if err := yaml.Unmarshal(raw, &schema); err != nil {
-		return nil
+		return nil, fmt.Errorf("unmarshal config schema: %w", err)
 	}
 	req, ok := schema["required"]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	slice, ok := req.([]any)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("config schema \"required\" must be an array, got %T", req)
 	}
 	set := make(map[string]bool, len(slice))
-	for _, v := range slice {
-		if s, ok := v.(string); ok {
-			set[s] = true
+	for i, v := range slice {
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("config schema \"required\"[%d] must be a string, got %T", i, v)
 		}
+		set[s] = true
 	}
-	return set
+	return set, nil
 }
 
 // diffServices emits material changes for each service version field.
@@ -188,7 +204,12 @@ func sortedJoin(ss []string) string {
 			out = append(out, s)
 		}
 	}
-	b, _ := json.Marshal(out)
+	b, err := json.Marshal(out)
+	if err != nil {
+		// json.Marshal([]string) is effectively infallible, but if it somehow
+		// fails return a deterministic comma-joined fallback over the same slice.
+		return strings.Join(out, ",")
+	}
 	return string(b)
 }
 

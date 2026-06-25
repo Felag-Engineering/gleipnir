@@ -1,6 +1,7 @@
 package manifest_test
 
 import (
+	"strings"
 	"testing"
 
 	pluginmanifest "github.com/felag-engineering/gleipnir/internal/plugin/manifest"
@@ -289,7 +290,10 @@ func TestDiff_ConfigSchemaNewlyRequiredFields_ReturnsAddedNames(t *testing.T) {
 	new := baseManifest()
 	new.ConfigSchema = schemaNew
 
-	added := pluginmanifest.ConfigSchemaNewlyRequiredFields(old, new)
+	added, err := pluginmanifest.ConfigSchemaNewlyRequiredFields(old, new)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(added) != 1 || added[0] != "b" {
 		t.Errorf("newly required fields = %v, want [b]", added)
 	}
@@ -302,9 +306,67 @@ func TestDiff_ConfigSchemaNewlyRequiredFields_NilOld(t *testing.T) {
 	new := baseManifest()
 	new.ConfigSchema = schemaNew
 
-	added := pluginmanifest.ConfigSchemaNewlyRequiredFields(old, new)
+	added, err := pluginmanifest.ConfigSchemaNewlyRequiredFields(old, new)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(added) != 1 || added[0] != "token" {
 		t.Errorf("newly required fields = %v, want [token]", added)
+	}
+}
+
+func TestDiff_ConfigSchemaNewlyRequiredFields_MalformedRequired(t *testing.T) {
+	cases := []struct {
+		name      string
+		oldYAML   string
+		newYAML   string
+		wantErrIn string // "old" or "new"
+	}{
+		{
+			name:      "new required is a scalar string",
+			oldYAML:   `{"type":"object"}`,
+			newYAML:   `{"type":"object","required":"api_key"}`,
+			wantErrIn: "new",
+		},
+		{
+			name:      "new required is a map",
+			oldYAML:   `{"type":"object"}`,
+			newYAML:   `{"type":"object","required":{"api_key":true}}`,
+			wantErrIn: "new",
+		},
+		{
+			name:      "new required array contains a non-string element",
+			oldYAML:   `{"type":"object"}`,
+			newYAML:   `{"type":"object","required":["api_key",42]}`,
+			wantErrIn: "new",
+		},
+		{
+			name:      "old required is a scalar string",
+			oldYAML:   `{"type":"object","required":"token"}`,
+			newYAML:   `{"type":"object","required":["token"]}`,
+			wantErrIn: "old",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			old := baseManifest()
+			old.ConfigSchema = parseNode(t, tc.oldYAML)
+
+			new := baseManifest()
+			new.ConfigSchema = parseNode(t, tc.newYAML)
+
+			_, err := pluginmanifest.ConfigSchemaNewlyRequiredFields(old, new)
+			if err == nil {
+				t.Fatal("expected error for malformed required, got nil")
+			}
+			if tc.wantErrIn != "" {
+				errStr := err.Error()
+				if !strings.Contains(errStr, tc.wantErrIn+" config schema") {
+					t.Errorf("error %q should mention %q config schema", errStr, tc.wantErrIn)
+				}
+			}
+		})
 	}
 }
 
