@@ -23,7 +23,7 @@ import (
 // It satisfies OAuthManager so it can be injected directly into
 // PluginOAuthHandler without constructing a real oauth.Manager.
 type fakeOAuthManager struct {
-	beginAuthcodeErr  error
+	beginAuthcodeErr   error
 	beginClientcredErr error
 }
 
