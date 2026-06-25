@@ -68,26 +68,30 @@ event_kinds:
       additionalProperties: false
       properties:
         channel:
-          description: 'Substring matched against the Slack channel name or ID (e.g. #incidents)'
+          description: 'Case-sensitive substring matched against the channel name or ID (e.g. incidents matches #incidents or C012…). Matches anywhere — not anchored.'
           format: contains
           title: Channel
           type: string
+        channel_type:
+          description: 'Exact match on the Slack channel kind: channel (public), group (private), im (DM), mpim (multi-party DM). Leave empty to match any.'
+          title: Channel type
+          type: string
         mention_only:
-          description: Only trigger when the bot is mentioned in the message
+          description: 'Fire only when the bot is explicitly @-mentioned. Note: a DM is never a mention, so this excludes DMs.'
           title: Mention-only
           type: boolean
         text:
-          description: Substring matched against the message text
+          description: Case-sensitive substring; matches anywhere in the message body (not anchored to the start).
           format: contains
           title: Text contains
           type: string
         text_regex:
-          description: 'Go RE2 regular expression matched against the message text (e.g. ^(?i)recipe: for anchored, case-insensitive routing). RE2 syntax — no lookbehind or backreferences.'
+          description: Go RE2 regular expression matched against the message text. Case-sensitivity is controlled by the pattern (e.g. (?i) flag); use ^ to anchor to the start. RE2 syntax — no lookbehind or backreferences.
           format: regex
           title: Text matches (regex)
           type: string
         user:
-          description: Slack user ID to match (e.g. U012AB3CD). Leave empty to match all users.
+          description: Exact match (case-sensitive) on the sender's Slack user ID (e.g. U012AB3CD). Leave empty to match all users.
           title: User
           type: string
       type: object
@@ -140,7 +144,7 @@ event_kinds:
           title: Channel ID
           type: string
         channel_type:
-          description: 'Slack channel kind: channel (public), group (private), im (DM), mim (multi-DM)'
+          description: 'Slack channel kind: channel (public), group (private), im (DM), mpim (multi-party DM)'
           title: Channel type
           type: string
         event_ts:

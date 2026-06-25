@@ -131,3 +131,99 @@ func TestChannelMessageTextRegexBinding(t *testing.T) {
 		}
 	}
 }
+
+// TestChannelMessageChannelTypeBinding asserts that:
+//  1. The reflected binding_schema declares channel_type as {type: string} with
+//     NO format key — the shape the host binding engine requires for OpEquals
+//     (internal/plugin/binding/binding.go:238). Contrast with text_regex which
+//     carries format:regex to select OpRegex.
+//  2. OpEquals semantics: binding value must exactly equal the payload value;
+//     an empty binding ("") matches any payload value (back-compat).
+//
+// The slack module cannot import internal/plugin/binding (separate module,
+// internal/ boundary), so we assert the schema shape directly and reproduce
+// OpEquals as plain string equality — the same logic the host evaluator uses
+// (binding.go:341-346).
+func TestChannelMessageChannelTypeBinding(t *testing.T) {
+	// --- Part 1: assert the reflected schema declares channel_type correctly ---
+
+	node := manifest.MustReflectSchema(SlackChannelMessageBinding{})
+
+	// findMappingValue walks a YAML mapping node looking for the given key and
+	// returns its value node. Returns nil when not found.
+	// Same helper pattern as TestChannelMessageTextRegexBinding above.
+	findMappingValue := func(mapping *yaml.Node, key string) *yaml.Node {
+		// Mapping content is interleaved [key, value, key, value, ...].
+		for i := 0; i+1 < len(mapping.Content); i += 2 {
+			if mapping.Content[i].Value == key {
+				return mapping.Content[i+1]
+			}
+		}
+		return nil
+	}
+
+	// Drill into: <root>.properties.channel_type
+	properties := findMappingValue(node, "properties")
+	if properties == nil {
+		t.Fatal("binding schema has no 'properties' key")
+	}
+	channelType := findMappingValue(properties, "channel_type")
+	if channelType == nil {
+		t.Fatal("binding schema has no 'channel_type' property; was manifest.go updated and manifest.yaml regenerated?")
+	}
+
+	typ := findMappingValue(channelType, "type")
+	if typ == nil || typ.Value != "string" {
+		t.Errorf("channel_type: want type=string, got %v", typ)
+	}
+	// No format key is the OpEquals discriminator. format:regex → OpRegex;
+	// format:contains → OpContains; absent format → OpEquals.
+	format := findMappingValue(channelType, "format")
+	if format != nil {
+		t.Errorf("channel_type: want no format key (OpEquals), got format=%q", format.Value)
+	}
+
+	// --- Part 2: prove OpEquals acceptance criteria ---
+	//
+	// OpEquals (binding.go:341-346): match iff bindingValue == "" (empty matches
+	// anything) or bindingValue == payload[fieldName]. Reproduced locally since
+	// the slack module cannot import the host engine.
+	opEquals := func(bindingValue, payloadValue string) bool {
+		return bindingValue == "" || bindingValue == payloadValue
+	}
+
+	tests := []struct {
+		binding string
+		payload string
+		want    bool
+	}{
+		// "im" binding fires only on DM events.
+		{binding: "im", payload: "im", want: true},
+		{binding: "im", payload: "channel", want: false},
+		{binding: "im", payload: "group", want: false},
+		{binding: "im", payload: "mpim", want: false},
+		// "channel" binding fires only on public channel events.
+		{binding: "channel", payload: "channel", want: true},
+		{binding: "channel", payload: "im", want: false},
+		// "group" binding fires only on private channel events.
+		{binding: "group", payload: "group", want: true},
+		{binding: "group", payload: "channel", want: false},
+		// "mpim" binding fires only on multi-party DM events.
+		// Note: Slack emits "mpim", not "mim" — slack-go ChannelTypeMPIM = "mpim".
+		{binding: "mpim", payload: "mpim", want: true},
+		{binding: "mpim", payload: "im", want: false},
+		// Empty binding matches all channel kinds (back-compat: no binding = no filter).
+		{binding: "", payload: "channel", want: true},
+		{binding: "", payload: "group", want: true},
+		{binding: "", payload: "im", want: true},
+		{binding: "", payload: "mpim", want: true},
+	}
+
+	for _, tc := range tests {
+		got := opEquals(tc.binding, tc.payload)
+		if got != tc.want {
+			t.Errorf("opEquals(binding=%q, payload=%q) = %v, want %v",
+				tc.binding, tc.payload, got, tc.want)
+		}
+	}
+}
