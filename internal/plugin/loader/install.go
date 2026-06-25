@@ -644,14 +644,22 @@ func (in *Installer) handleManifestMaterialChange(ctx context.Context, existing 
 	)
 
 	if err := in.recordAuditEvent(ctx, auditManifestMaterialChange, severityHigh, nowStr, map[string]any{
-		"plugin_id":                    existing.ID,
-		"name":                         existing.Name,
-		"old_version":                  existing.PluginVersion,
-		"new_version":                  m.Version,
-		"material_fields":              pluginmanifest.MaterialFields(changes),
-		"cosmetic_fields":              pluginmanifest.CosmeticFields(changes),
-		"candidate_manifest_b64":       base64.StdEncoding.EncodeToString(candidateBytes),
-		"newly_required_config_fields": pluginmanifest.ConfigSchemaNewlyRequiredFields(oldManifest, m),
+		"plugin_id":              existing.ID,
+		"name":                   existing.Name,
+		"old_version":            existing.PluginVersion,
+		"new_version":            m.Version,
+		"material_fields":        pluginmanifest.MaterialFields(changes),
+		"cosmetic_fields":        pluginmanifest.CosmeticFields(changes),
+		"candidate_manifest_b64": base64.StdEncoding.EncodeToString(candidateBytes),
+		"newly_required_config_fields": func() []string {
+			fields, err := pluginmanifest.ConfigSchemaNewlyRequiredFields(oldManifest, m)
+			if err != nil {
+				slog.WarnContext(ctx, "manifest material change: cannot determine newly-required config fields; schema malformed",
+					"plugin", existing.Name, "err", err)
+				return nil
+			}
+			return fields
+		}(),
 	}); err != nil {
 		return "", fmt.Errorf("record manifest_material_change audit for %q: %w", existing.Name, err)
 	}

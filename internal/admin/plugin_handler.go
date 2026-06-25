@@ -493,7 +493,15 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "corrupt manifest snapshot", parseErr.Error())
 		return
 	}
-	newlyRequired := pluginmanifest.ConfigSchemaNewlyRequiredFields(&oldManifest, &newManifest)
+	newlyRequired, schemaErr := pluginmanifest.ConfigSchemaNewlyRequiredFields(&oldManifest, &newManifest)
+	// If the new manifest's config_schema is malformed we cannot safely determine
+	// whether migration is needed — fail closed by forcing pending_config_migration
+	// rather than letting the instance silently land on healthy (fail-open).
+	forceMigration := schemaErr != nil
+	if forceMigration {
+		slog.WarnContext(ctx, "accept-manifest: config schema unparseable; forcing pending_config_migration",
+			"plugin_id", pluginID, "err", schemaErr)
+	}
 
 	nowStr := h.clock().UTC().Format(time.RFC3339Nano)
 
@@ -527,7 +535,7 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetState := model.PluginHealthStateHealthy
-	if len(newlyRequired) > 0 {
+	if forceMigration || len(newlyRequired) > 0 {
 		targetState = model.PluginHealthStatePendingConfigMigration
 	}
 	transitioned := h.unblockInstances(
@@ -545,12 +553,13 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeAuditEvent(ctx, auditManifestAccepted, "info", nowStr, map[string]any{
-		"plugin_id":                pluginID,
-		"name":                     plugin.Name,
-		"old_version":              pendingRow.OldVersion,
-		"new_version":              newManifest.Version,
-		"instances_unblocked":      unblocked,
-		"instances_pending_config": pendingConfig,
+		"plugin_id":                 pluginID,
+		"name":                      plugin.Name,
+		"old_version":               pendingRow.OldVersion,
+		"new_version":               newManifest.Version,
+		"instances_unblocked":       unblocked,
+		"instances_pending_config":  pendingConfig,
+		"config_schema_unparseable": forceMigration,
 	})
 
 	httputil.WriteJSON(w, http.StatusOK, acceptManifestResponse{

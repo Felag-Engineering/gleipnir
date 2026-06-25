@@ -1489,6 +1489,80 @@ func TestPluginHandler_AcceptManifest(t *testing.T) {
 			t.Errorf("second accept: status = %d, want 409 (row deleted after first accept)", rec2.Code)
 		}
 	})
+
+	// Verifies that a malformed config_schema "required" block (e.g. a scalar
+	// instead of an array) causes AcceptManifest to fail CLOSED: the instance
+	// moves to pending_config_migration rather than healthy, and the response is
+	// still HTTP 200 (not 500 — pending_config_migration is the correct gate state).
+	t.Run("malformed config schema fails closed to pending_config_migration", func(t *testing.T) {
+		// v2ManifestWithMalformedRequired uses "required" as a scalar string — a
+		// valid YAML value but not the array shape JSON Schema demands. This reaches
+		// requiredFieldSet at runtime because ConfigSchema is a raw *yaml.Node.
+		const v2ManifestWithMalformedRequired = "schema_version: v1\nname: test-plugin\nversion: 2.0.0\nservices:\n  tool: v2\nauth:\n  mode: instance_credentials\n  strategy: none\nconfig_schema:\n  type: object\n  properties:\n    api_key:\n      type: string\n  required: api_key\n"
+
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{
+			ID:               "plugin-malformed",
+			Name:             "test-plugin",
+			ManifestSnapshot: v1ManifestYAML,
+			PluginVersion:    "1.0.0",
+			Status:           "pending_review",
+			Version:          1,
+		})
+		q.seed(db.PluginInstance{
+			ID:          "inst-malformed",
+			PluginID:    "plugin-malformed",
+			HealthState: string(model.PluginHealthStatePendingManifestApproval),
+			Version:     0,
+		})
+		q.seedPendingManifest("plugin-malformed", []byte(v2ManifestWithMalformedRequired), "1.0.0", "2.0.0")
+
+		h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-malformed/accept-manifest", bytes.NewBufferString(`{}`))
+		req = withChiParams(req, map[string]string{"id": "plugin-malformed"})
+		rec := httptest.NewRecorder()
+		h.AcceptManifest(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (fail-closed means pending_config_migration, not 500); body: %s", rec.Code, rec.Body.String())
+		}
+
+		data := parseDataResponse(t, rec)
+		var resp acceptManifestResponse
+		if err := json.Unmarshal(data, &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if resp.InstancesPendingConfig != 1 {
+			t.Errorf("instances_pending_config = %d, want 1 (fail closed)", resp.InstancesPendingConfig)
+		}
+		if resp.InstancesUnblocked != 0 {
+			t.Errorf("instances_unblocked = %d, want 0", resp.InstancesUnblocked)
+		}
+
+		inst := q.instances["inst-malformed"]
+		if inst.HealthState != string(model.PluginHealthStatePendingConfigMigration) {
+			t.Errorf("inst-malformed health_state = %q, want pending_config_migration", inst.HealthState)
+		}
+
+		// Audit event must record config_schema_unparseable = true.
+		var found *db.PluginAuditEvent
+		for i := range q.auditEvents {
+			if q.auditEvents[i].EventType == auditManifestAccepted {
+				found = &q.auditEvents[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatal("expected a plugin_manifest_accepted audit event, got none")
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(found.PayloadJson), &payload); err != nil {
+			t.Fatalf("unmarshal audit payload: %v", err)
+		}
+		if payload["config_schema_unparseable"] != true {
+			t.Errorf("audit payload config_schema_unparseable = %v, want true", payload["config_schema_unparseable"])
+		}
+	})
 }
 
 // ── PutSubscriptionScope tests ────────────────────────────────────────────────
