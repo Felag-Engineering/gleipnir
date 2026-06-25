@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ChannelService_Notify_FullMethodName  = "/gleipnir.plugin.channel.v1.ChannelService/Notify"
-	ChannelService_Request_FullMethodName = "/gleipnir.plugin.channel.v1.ChannelService/Request"
+	ChannelService_Notify_FullMethodName            = "/gleipnir.plugin.channel.v1.ChannelService/Notify"
+	ChannelService_Request_FullMethodName           = "/gleipnir.plugin.channel.v1.ChannelService/Request"
+	ChannelService_RequestTerminated_FullMethodName = "/gleipnir.plugin.channel.v1.ChannelService/RequestTerminated"
 )
 
 // ChannelServiceClient is the client API for ChannelService service.
@@ -34,8 +35,9 @@ const (
 //
 // gRPC deadlines applied by the host (spec §13.6):
 //
-//	Notify:  10s
-//	Request: 5s (pre-ack only; post-ack resolution is async via WriteAuditStep)
+//	Notify:           10s
+//	Request:          5s (pre-ack only; post-ack resolution is async via WriteAuditStep)
+//	RequestTerminated: NotifyTimeout (10s) — best-effort, host swallows Unimplemented
 type ChannelServiceClient interface {
 	// Notify delivers a fire-and-forget notification.  Failure does not fail the
 	// run.
@@ -43,6 +45,14 @@ type ChannelServiceClient interface {
 	// Request opens a request/response feedback channel.  The plugin acks within
 	// 5s then later calls the host's WriteAuditStep when the human replies.
 	Request(ctx context.Context, in *RequestRequest, opts ...grpc.CallOption) (*RequestResponse, error)
+	// RequestTerminated notifies the plugin that a pending Request has reached a
+	// terminal state via a host-initiated path (e.g. timeout). The plugin should
+	// update the message UI to the terminal state and remove live action buttons.
+	// Non-implementing plugins return codes.Unimplemented, which the host treats
+	// as a best-effort no-op. Operator-driven resolutions (button click, thread
+	// reply) are NOT signalled via this RPC — the plugin's own handlers update the
+	// message in those cases.
+	RequestTerminated(ctx context.Context, in *RequestTerminatedRequest, opts ...grpc.CallOption) (*RequestTerminatedResponse, error)
 }
 
 type channelServiceClient struct {
@@ -73,6 +83,16 @@ func (c *channelServiceClient) Request(ctx context.Context, in *RequestRequest, 
 	return out, nil
 }
 
+func (c *channelServiceClient) RequestTerminated(ctx context.Context, in *RequestTerminatedRequest, opts ...grpc.CallOption) (*RequestTerminatedResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestTerminatedResponse)
+	err := c.cc.Invoke(ctx, ChannelService_RequestTerminated_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ChannelServiceServer is the server API for ChannelService service.
 // All implementations should embed UnimplementedChannelServiceServer
 // for forward compatibility.
@@ -84,8 +104,9 @@ func (c *channelServiceClient) Request(ctx context.Context, in *RequestRequest, 
 //
 // gRPC deadlines applied by the host (spec §13.6):
 //
-//	Notify:  10s
-//	Request: 5s (pre-ack only; post-ack resolution is async via WriteAuditStep)
+//	Notify:           10s
+//	Request:          5s (pre-ack only; post-ack resolution is async via WriteAuditStep)
+//	RequestTerminated: NotifyTimeout (10s) — best-effort, host swallows Unimplemented
 type ChannelServiceServer interface {
 	// Notify delivers a fire-and-forget notification.  Failure does not fail the
 	// run.
@@ -93,6 +114,14 @@ type ChannelServiceServer interface {
 	// Request opens a request/response feedback channel.  The plugin acks within
 	// 5s then later calls the host's WriteAuditStep when the human replies.
 	Request(context.Context, *RequestRequest) (*RequestResponse, error)
+	// RequestTerminated notifies the plugin that a pending Request has reached a
+	// terminal state via a host-initiated path (e.g. timeout). The plugin should
+	// update the message UI to the terminal state and remove live action buttons.
+	// Non-implementing plugins return codes.Unimplemented, which the host treats
+	// as a best-effort no-op. Operator-driven resolutions (button click, thread
+	// reply) are NOT signalled via this RPC — the plugin's own handlers update the
+	// message in those cases.
+	RequestTerminated(context.Context, *RequestTerminatedRequest) (*RequestTerminatedResponse, error)
 }
 
 // UnimplementedChannelServiceServer should be embedded to have
@@ -107,6 +136,9 @@ func (UnimplementedChannelServiceServer) Notify(context.Context, *NotifyRequest)
 }
 func (UnimplementedChannelServiceServer) Request(context.Context, *RequestRequest) (*RequestResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Request not implemented")
+}
+func (UnimplementedChannelServiceServer) RequestTerminated(context.Context, *RequestTerminatedRequest) (*RequestTerminatedResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestTerminated not implemented")
 }
 func (UnimplementedChannelServiceServer) testEmbeddedByValue() {}
 
@@ -164,6 +196,24 @@ func _ChannelService_Request_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ChannelService_RequestTerminated_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestTerminatedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChannelServiceServer).RequestTerminated(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChannelService_RequestTerminated_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChannelServiceServer).RequestTerminated(ctx, req.(*RequestTerminatedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ChannelService_ServiceDesc is the grpc.ServiceDesc for ChannelService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -178,6 +228,10 @@ var ChannelService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Request",
 			Handler:    _ChannelService_Request_Handler,
+		},
+		{
+			MethodName: "RequestTerminated",
+			Handler:    _ChannelService_RequestTerminated_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

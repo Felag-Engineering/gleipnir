@@ -117,13 +117,6 @@ func run(cfg config.Config) error {
 	)
 	feedbackScanner.Start(ctx)
 
-	pluginRequestScanner := timeout.NewPluginRequestScanner(
-		store,
-		cfg.PluginRequestScanInterval,
-		timeout.WithPublisher(broadcaster),
-	)
-	pluginRequestScanner.Start(ctx)
-
 	// Apply the LLM transient-failure retry policy BEFORE any provider client is
 	// constructed. The Anthropic/OpenAI SDKs retry internally — they read
 	// MaxAttempts (via SDKMaxRetries) at construction. Google + openaicompat have
@@ -513,7 +506,6 @@ func run(cfg config.Config) error {
 		scheduler.Wait()
 		approvalScanner.Wait()
 		feedbackScanner.Wait()
-		pluginRequestScanner.Wait()
 		runManager.Wait()
 		close(runsDrained)
 	}()

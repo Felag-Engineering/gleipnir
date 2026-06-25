@@ -33,7 +33,9 @@ import (
 	plugintools "github.com/felag-engineering/gleipnir/internal/plugin/tools"
 	plugintrigger "github.com/felag-engineering/gleipnir/internal/plugin/trigger"
 	"github.com/felag-engineering/gleipnir/internal/settings"
+	"github.com/felag-engineering/gleipnir/internal/timeout"
 	"github.com/felag-engineering/gleipnir/internal/toolregistry"
+	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 	"google.golang.org/grpc"
 )
 
@@ -107,6 +109,13 @@ type pluginRuntime struct {
 	// loader is the Loader constructed by startPluginRuntime. run() reads
 	// Manager() and Installer() from it.
 	loader *pluginpkg.Loader
+
+	// pluginRequestScanner watches for expired plugin_pending_requests rows and
+	// transitions them to timed_out. Constructed after pluginDispatcher (which
+	// it depends on via the OnTerminated hook) inside startPluginRuntime.
+	// shutdown() drains it after the background goroutines and before closing
+	// the channel dispatcher.
+	pluginRequestScanner *timeout.Scanner
 
 	// bgWG joins long-lived background goroutines (OAuth nonce janitor, OAuth
 	// refresh scanner, and dedup sweeper) so shutdown() can wait for them to
@@ -347,6 +356,42 @@ func startPluginRuntime(
 		sweeper.Start(ctx)
 	}()
 
+	// Build the plugin-request scanner here so it can reference pluginDispatcher
+	// via the OnTerminated hook. The scanner must live here rather than in main.go
+	// because pluginDispatcher is not yet constructed when main.go runs its setup
+	// (F4 resolution). The OnTerminated hook fires after the background scanner
+	// claims a timeout via CAS, resolves the instance name, and calls
+	// SendRequestTermination so the plugin can update its in-channel message.
+	onTerminated := func(scanCtx context.Context, item timeout.ExpiredItem) {
+		req, dbErr := store.Queries().GetPluginPendingRequest(scanCtx, item.ID)
+		if dbErr != nil {
+			slog.WarnContext(scanCtx, "plugin request scanner: could not load pending request for termination",
+				"request_id", item.ID,
+				"err", dbErr,
+			)
+			return
+		}
+		inst, instErr := store.Queries().GetPluginInstanceByID(scanCtx, req.PluginInstanceID)
+		if instErr != nil {
+			slog.WarnContext(scanCtx, "plugin request scanner: could not load plugin instance for termination",
+				"instance_id", req.PluginInstanceID,
+				"request_id", item.ID,
+				"err", instErr,
+			)
+			return
+		}
+		pluginDispatcher.SendRequestTermination(scanCtx, inst.InstanceName, item.ID,
+			channelv1.TerminalReason_TERMINAL_REASON_TIMED_OUT, "")
+	}
+
+	rt.pluginRequestScanner = timeout.NewPluginRequestScanner(
+		store,
+		cfg.PluginRequestScanInterval,
+		timeout.WithPublisher(broadcaster),
+		timeout.WithOnTerminated(onTerminated),
+	)
+	rt.pluginRequestScanner.Start(ctx)
+
 	return rt, nil
 }
 
@@ -483,6 +528,15 @@ func (rt *pluginRuntime) shutdown() {
 	// post-StopAll.
 	if err := rt.Pool.Close(); err != nil {
 		slog.Warn("plugin dispatch pool close error", "err", err)
+	}
+
+	// Drain the plugin-request scanner. The root ctx was cancelled before
+	// shutdown() runs, so the scanner's goroutine has already been signalled
+	// to exit; this Wait() confirms it has returned (mirrors the approval and
+	// feedback scanner Wait() calls in main.go). Nil-guard for the rare path
+	// where startPluginRuntime failed before the scanner was constructed.
+	if rt.pluginRequestScanner != nil {
+		rt.pluginRequestScanner.Wait()
 	}
 
 	// Close the channel dispatcher's cached gRPC connections. StopAll above may

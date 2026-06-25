@@ -724,6 +724,7 @@ func extractAppLevelToken(configJSON string) (string, error) {
 // by *slack.Client in production and by a fake in tests.
 type slackWebAPI interface {
 	PostMessageContext(ctx context.Context, channelID string, opts ...slack.MsgOption) (string, string, error)
+	UpdateMessageContext(ctx context.Context, channelID, timestamp string, opts ...slack.MsgOption) (string, string, string, error)
 }
 
 // ChannelService implements channelv1.ChannelServiceServer. It posts Slack
@@ -939,9 +940,18 @@ func (s *ChannelService) Notify(ctx context.Context, req *channelv1.NotifyReques
 
 	sc := s.webAPIFactory(creds.Token.AccessToken)
 
+	// Build Block Kit blocks. text already has the mention prepended by the
+	// original code; pass "" for mention to buildNotifyBlocks to avoid doubling it.
+	// MsgOptionText carries the same combined string as the plain-text fallback
+	// for clients and notifications that don't render blocks.
+	blocks := buildNotifyBlocks(text, "")
+
 	type postResult struct{ channel, ts string }
 	_, postErr := callWithRetry(ctx, func(ctx context.Context) (postResult, error) {
-		ch, ts, err := sc.PostMessageContext(ctx, cfg.Channel, slack.MsgOptionText(text, false))
+		ch, ts, err := sc.PostMessageContext(ctx, cfg.Channel,
+			slack.MsgOptionBlocks(blocks...),
+			slack.MsgOptionText(text, false),
+		)
 		return postResult{ch, ts}, err
 	})
 	if postErr != nil {
@@ -1027,6 +1037,7 @@ func (s *ChannelService) Request(ctx context.Context, req *channelv1.RequestRequ
 		s.correlations.put(req.GetRequestId(), correlation{
 			channel: res.channel,
 			ts:      res.ts,
+			prompt:  req.GetPrompt(),
 			runID:   runID,
 			addedAt: time.Now(),
 			mode:    "feedback",
@@ -1045,9 +1056,13 @@ func (s *ChannelService) Request(ctx context.Context, req *channelv1.RequestRequ
 	// Slack's RetryAfter exceeds remaining budget it returns RateLimitedError
 	// which mapErr converts to RATE_LIMITED — the host then writes
 	// feedback_dispatch_error (dispatch/channel.go:347-355).
+	promptText := req.GetPrompt()
 	res, postErr := callWithRetry(ctx, func(ctx context.Context) (postResult, error) {
-		blocks := buildRequestBlocks(req.GetRequestId(), req.GetPrompt(), buttons, cfg.Mention)
-		ch, ts, err := sc.PostMessageContext(ctx, cfg.Channel, slack.MsgOptionBlocks(blocks...))
+		blocks := buildRequestBlocks(req.GetRequestId(), promptText, buttons, cfg.Mention)
+		ch, ts, err := sc.PostMessageContext(ctx, cfg.Channel,
+			slack.MsgOptionBlocks(blocks...),
+			slack.MsgOptionText(promptText, false),
+		)
 		return postResult{ch, ts}, err
 	})
 	if postErr != nil {
@@ -1063,6 +1078,7 @@ func (s *ChannelService) Request(ctx context.Context, req *channelv1.RequestRequ
 	s.correlations.put(req.GetRequestId(), correlation{
 		channel: res.channel,
 		ts:      res.ts,
+		prompt:  promptText,
 		buttons: buttons,
 		runID:   runID,
 		addedAt: time.Now(),
@@ -1086,7 +1102,8 @@ func (s *ChannelService) handleInteractive(evt socketmode.Event, cb slack.Intera
 			continue
 		}
 
-		_, found := s.correlations.take(requestID)
+		// F3 fix: capture the correlation so we can update the original message.
+		corr, found := s.correlations.take(requestID)
 		if !found {
 			// Either the plugin restarted (correlation lost) or the request
 			// already expired via the host's feedback-timeout path.
@@ -1118,7 +1135,38 @@ func (s *ChannelService) handleInteractive(evt socketmode.Event, cb slack.Intera
 		}
 
 		if resp.GetOk() {
+			// Fast-ack the response URL for immediate UX feedback, then also
+			// update the original message via chat.update to drop the action
+			// buttons and show the resolved state.
 			s.postResponseURL(cb.ResponseURL, "Response recorded: "+optionID)
+
+			var reason channelv1.TerminalReason
+			switch optionID {
+			case "approve":
+				reason = channelv1.TerminalReason_TERMINAL_REASON_APPROVED
+			case "reject":
+				reason = channelv1.TerminalReason_TERMINAL_REASON_REJECTED
+			default:
+				reason = channelv1.TerminalReason_TERMINAL_REASON_ANSWERED
+			}
+			// A Slack interactive event carries exactly one block action, so
+			// returning here exits the loop cleanly — there is never a second
+			// action to process after a credentials failure.
+			sc, credErr := s.webClientFromCredentials(context.Background())
+			if credErr != nil {
+				log.Printf("slack: handleInteractive: credentials for update: %v", credErr)
+				return
+			}
+			blocks := buildResolvedBlocks(corr.prompt, reason, cb.User.ID)
+			emoji, label := terminalLabel(reason)
+			ft := fallbackText(emoji+" "+label+" by <@"+cb.User.ID+">", corr.prompt)
+			if _, _, _, updateErr := sc.UpdateMessageContext(context.Background(),
+				corr.channel, corr.ts,
+				slack.MsgOptionBlocks(blocks...),
+				slack.MsgOptionText(ft, false),
+			); updateErr != nil {
+				log.Printf("slack: handleInteractive: UpdateMessageContext: %v", updateErr)
+			}
 			return
 		}
 
@@ -1194,9 +1242,26 @@ func (s *ChannelService) handleThreadReply(evt socketmode.Event) {
 	})
 	if err != nil {
 		log.Printf("slack: handleThreadReply: WriteAuditStep: %v", err)
+		return
 	}
-	// No response_url to update — the feedback message is a plain text message,
-	// not a Block Kit message with buttons.
+
+	// Update the original feedback message to the resolved state so the operator
+	// sees "Answered" in the channel and buttons (if any) are removed.
+	sc, credErr := s.webClientFromCredentials(context.Background())
+	if credErr != nil {
+		log.Printf("slack: handleThreadReply: credentials for update: %v", credErr)
+		return
+	}
+	blocks := buildResolvedBlocks(corr.prompt, channelv1.TerminalReason_TERMINAL_REASON_ANSWERED, msg.User)
+	emoji, label := terminalLabel(channelv1.TerminalReason_TERMINAL_REASON_ANSWERED)
+	ft := fallbackText(emoji+" "+label+" by <@"+msg.User+">", corr.prompt)
+	if _, _, _, updateErr := sc.UpdateMessageContext(context.Background(),
+		corr.channel, corr.ts,
+		slack.MsgOptionBlocks(blocks...),
+		slack.MsgOptionText(ft, false),
+	); updateErr != nil {
+		log.Printf("slack: handleThreadReply: UpdateMessageContext: %v", updateErr)
+	}
 }
 
 // postResponseURL sends a POST to Slack's response_url with replace_original:true,
@@ -1248,6 +1313,69 @@ func (s *ChannelService) setChannelHealth(ctx context.Context, h healthHint) {
 		State:  hostv1.PluginHealthState_PLUGIN_HEALTH_STATE_UNHEALTHY,
 		Detail: detail,
 	})
+}
+
+// webClientFromCredentials fetches credentials and returns a slackWebAPI client
+// ready to call PostMessageContext / UpdateMessageContext. Per F2, this may be
+// called from context.Background() (instance-token auth is independent of call-id).
+// On any error the caller should log and return early without panicking or
+// blocking the hub goroutine.
+func (s *ChannelService) webClientFromCredentials(ctx context.Context) (slackWebAPI, error) {
+	credResp, err := s.host.GetCredentials(ctx, &hostv1.GetCredentialsRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("GetCredentials: %w", err)
+	}
+	raw := credResp.GetCredentialsJson()
+	if raw == "" || raw == "{}" {
+		return nil, fmt.Errorf("no Slack credentials configured")
+	}
+	var creds slackCreds
+	if err := json.Unmarshal([]byte(raw), &creds); err != nil {
+		return nil, fmt.Errorf("parse credentials: %w", err)
+	}
+	if creds.Token.AccessToken == "" {
+		return nil, fmt.Errorf("Slack access_token is empty")
+	}
+	return s.webAPIFactory(creds.Token.AccessToken), nil
+}
+
+// RequestTerminated is called by the host when a pending Request has reached a
+// terminal state via a host-initiated path (e.g. timeout). It updates the
+// original Slack message to the terminal visual state and removes action buttons.
+//
+// This method overrides the embedded UnimplementedChannelServiceServer stub so
+// Slack directly handles the RPC without going through the ergonomic adapter
+// (F1: Slack registers as a raw channelv1.ChannelServiceServer, not via serve.WithChannelHandler).
+//
+// Operator-driven resolutions (button click, thread reply) are handled by the
+// plugin's own handleInteractive / handleThreadReply callbacks which call take()
+// before UpdateMessageContext — the atomic delete in take() prevents a double-update.
+func (s *ChannelService) RequestTerminated(ctx context.Context, req *channelv1.RequestTerminatedRequest) (*channelv1.RequestTerminatedResponse, error) {
+	corr, found := s.correlations.take(req.GetRequestId())
+	if !found {
+		// Already resolved by an operator path, or the plugin restarted (correlation lost).
+		// Idempotent no-op: the message was already updated or we have no coordinates.
+		return &channelv1.RequestTerminatedResponse{Ok: true}, nil
+	}
+
+	sc, err := s.webClientFromCredentials(context.Background())
+	if err != nil {
+		log.Printf("slack: RequestTerminated: credentials: %v", err)
+		return &channelv1.RequestTerminatedResponse{Ok: true}, nil
+	}
+
+	blocks := buildResolvedBlocks(corr.prompt, req.GetReason(), req.GetResolver())
+	emoji, label := terminalLabel(req.GetReason())
+	ft := fallbackText(emoji+" "+label, corr.prompt)
+
+	_, _, _, updateErr := sc.UpdateMessageContext(context.Background(), corr.channel, corr.ts,
+		slack.MsgOptionBlocks(blocks...),
+		slack.MsgOptionText(ft, false),
+	)
+	if updateErr != nil {
+		log.Printf("slack: RequestTerminated: UpdateMessageContext: %v", updateErr)
+	}
+	return &channelv1.RequestTerminatedResponse{Ok: true}, nil
 }
 
 // channelErrorResponse constructs an ErrorEnvelope for ChannelService responses.

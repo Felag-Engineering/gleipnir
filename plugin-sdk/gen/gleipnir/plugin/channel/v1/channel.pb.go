@@ -75,6 +75,72 @@ func (ChannelCapability) EnumDescriptor() ([]byte, []int) {
 	return file_gleipnir_plugin_channel_v1_channel_proto_rawDescGZIP(), []int{0}
 }
 
+// TerminalReason describes why the host terminated a pending Request. Sent in
+// RequestTerminated so the plugin can update the Slack/ntfy message to the
+// correct terminal state.  Non-implementing plugins inherit the generated
+// Unimplemented stub, which returns codes.Unimplemented — the host treats this
+// as a no-op (ADR-042 additive, per spec §4.2).
+type TerminalReason int32
+
+const (
+	TerminalReason_TERMINAL_REASON_UNSPECIFIED TerminalReason = 0 // must be first per buf STANDARD lint
+	TerminalReason_TERMINAL_REASON_APPROVED    TerminalReason = 1
+	TerminalReason_TERMINAL_REASON_REJECTED    TerminalReason = 2
+	TerminalReason_TERMINAL_REASON_ANSWERED    TerminalReason = 3
+	TerminalReason_TERMINAL_REASON_TIMED_OUT   TerminalReason = 4
+	TerminalReason_TERMINAL_REASON_SUPERSEDED  TerminalReason = 5 // reserved; not yet wired
+	TerminalReason_TERMINAL_REASON_CANCELED    TerminalReason = 6 // reserved; not yet wired
+)
+
+// Enum value maps for TerminalReason.
+var (
+	TerminalReason_name = map[int32]string{
+		0: "TERMINAL_REASON_UNSPECIFIED",
+		1: "TERMINAL_REASON_APPROVED",
+		2: "TERMINAL_REASON_REJECTED",
+		3: "TERMINAL_REASON_ANSWERED",
+		4: "TERMINAL_REASON_TIMED_OUT",
+		5: "TERMINAL_REASON_SUPERSEDED",
+		6: "TERMINAL_REASON_CANCELED",
+	}
+	TerminalReason_value = map[string]int32{
+		"TERMINAL_REASON_UNSPECIFIED": 0,
+		"TERMINAL_REASON_APPROVED":    1,
+		"TERMINAL_REASON_REJECTED":    2,
+		"TERMINAL_REASON_ANSWERED":    3,
+		"TERMINAL_REASON_TIMED_OUT":   4,
+		"TERMINAL_REASON_SUPERSEDED":  5,
+		"TERMINAL_REASON_CANCELED":    6,
+	}
+)
+
+func (x TerminalReason) Enum() *TerminalReason {
+	p := new(TerminalReason)
+	*p = x
+	return p
+}
+
+func (x TerminalReason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TerminalReason) Descriptor() protoreflect.EnumDescriptor {
+	return file_gleipnir_plugin_channel_v1_channel_proto_enumTypes[1].Descriptor()
+}
+
+func (TerminalReason) Type() protoreflect.EnumType {
+	return &file_gleipnir_plugin_channel_v1_channel_proto_enumTypes[1]
+}
+
+func (x TerminalReason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TerminalReason.Descriptor instead.
+func (TerminalReason) EnumDescriptor() ([]byte, []int) {
+	return file_gleipnir_plugin_channel_v1_channel_proto_rawDescGZIP(), []int{1}
+}
+
 // NotifyRequest is sent by the host to deliver a fire-and-forget notification.
 // Fan-out: the host calls Notify in parallel on all audience entries with
 // notify: true.  Deadline: 10s per call (spec §13.6).
@@ -345,6 +411,140 @@ func (x *RequestResponse) GetError() *v1.ErrorEnvelope {
 	return nil
 }
 
+// RequestTerminatedRequest is sent by the host when a pending Request reaches
+// a terminal state via a host-initiated path (timeout). The plugin uses the
+// request_id to look up the in-flight Slack/ntfy message and update it to
+// the terminal visual state, removing any live action buttons.
+//
+// Operator-driven resolutions (button click, thread reply) are handled by the
+// plugin's own Socket Mode handlers — the host does NOT send this RPC for those
+// paths to avoid a double-update race.
+//
+// resolver is the user ID or name of the operator who resolved the request, or
+// empty for automated resolutions such as timeout.
+type RequestTerminatedRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Context       *v1.RequestContext     `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
+	RequestId     string                 `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Reason        TerminalReason         `protobuf:"varint,3,opt,name=reason,proto3,enum=gleipnir.plugin.channel.v1.TerminalReason" json:"reason,omitempty"`
+	Resolver      string                 `protobuf:"bytes,4,opt,name=resolver,proto3" json:"resolver,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestTerminatedRequest) Reset() {
+	*x = RequestTerminatedRequest{}
+	mi := &file_gleipnir_plugin_channel_v1_channel_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestTerminatedRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestTerminatedRequest) ProtoMessage() {}
+
+func (x *RequestTerminatedRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_gleipnir_plugin_channel_v1_channel_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestTerminatedRequest.ProtoReflect.Descriptor instead.
+func (*RequestTerminatedRequest) Descriptor() ([]byte, []int) {
+	return file_gleipnir_plugin_channel_v1_channel_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *RequestTerminatedRequest) GetContext() *v1.RequestContext {
+	if x != nil {
+		return x.Context
+	}
+	return nil
+}
+
+func (x *RequestTerminatedRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *RequestTerminatedRequest) GetReason() TerminalReason {
+	if x != nil {
+		return x.Reason
+	}
+	return TerminalReason_TERMINAL_REASON_UNSPECIFIED
+}
+
+func (x *RequestTerminatedRequest) GetResolver() string {
+	if x != nil {
+		return x.Resolver
+	}
+	return ""
+}
+
+// RequestTerminatedResponse is the plugin's ack for a RequestTerminated call.
+// Failures are best-effort; the host logs and swallows any error rather than
+// failing the run (which has already terminated at this point).
+type RequestTerminatedResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	Error         *v1.ErrorEnvelope      `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequestTerminatedResponse) Reset() {
+	*x = RequestTerminatedResponse{}
+	mi := &file_gleipnir_plugin_channel_v1_channel_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequestTerminatedResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequestTerminatedResponse) ProtoMessage() {}
+
+func (x *RequestTerminatedResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_gleipnir_plugin_channel_v1_channel_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequestTerminatedResponse.ProtoReflect.Descriptor instead.
+func (*RequestTerminatedResponse) Descriptor() ([]byte, []int) {
+	return file_gleipnir_plugin_channel_v1_channel_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *RequestTerminatedResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *RequestTerminatedResponse) GetError() *v1.ErrorEnvelope {
+	if x != nil {
+		return x.Error
+	}
+	return nil
+}
+
 var File_gleipnir_plugin_channel_v1_channel_proto protoreflect.FileDescriptor
 
 const file_gleipnir_plugin_channel_v1_channel_proto_rawDesc = "" +
@@ -367,14 +567,32 @@ const file_gleipnir_plugin_channel_v1_channel_proto_rawDesc = "" +
 	"\x13channel_config_json\x18\x04 \x01(\tR\x11channelConfigJsonJ\x04\bd\x10eR\auser_id\"g\n" +
 	"\x0fRequestResponse\x12\x14\n" +
 	"\x05acked\x18\x01 \x01(\bR\x05acked\x12>\n" +
+	"\x05error\x18\x02 \x01(\v2(.gleipnir.plugin.common.v1.ErrorEnvelopeR\x05error\"\xde\x01\n" +
+	"\x18RequestTerminatedRequest\x12C\n" +
+	"\acontext\x18\x01 \x01(\v2).gleipnir.plugin.common.v1.RequestContextR\acontext\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x02 \x01(\tR\trequestId\x12B\n" +
+	"\x06reason\x18\x03 \x01(\x0e2*.gleipnir.plugin.channel.v1.TerminalReasonR\x06reason\x12\x1a\n" +
+	"\bresolver\x18\x04 \x01(\tR\bresolver\"k\n" +
+	"\x19RequestTerminatedResponse\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\x12>\n" +
 	"\x05error\x18\x02 \x01(\v2(.gleipnir.plugin.common.v1.ErrorEnvelopeR\x05error*v\n" +
 	"\x11ChannelCapability\x12\"\n" +
 	"\x1eCHANNEL_CAPABILITY_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19CHANNEL_CAPABILITY_NOTIFY\x10\x01\x12\x1e\n" +
-	"\x1aCHANNEL_CAPABILITY_REQUEST\x10\x022\xd5\x01\n" +
+	"\x1aCHANNEL_CAPABILITY_REQUEST\x10\x02*\xe8\x01\n" +
+	"\x0eTerminalReason\x12\x1f\n" +
+	"\x1bTERMINAL_REASON_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18TERMINAL_REASON_APPROVED\x10\x01\x12\x1c\n" +
+	"\x18TERMINAL_REASON_REJECTED\x10\x02\x12\x1c\n" +
+	"\x18TERMINAL_REASON_ANSWERED\x10\x03\x12\x1d\n" +
+	"\x19TERMINAL_REASON_TIMED_OUT\x10\x04\x12\x1e\n" +
+	"\x1aTERMINAL_REASON_SUPERSEDED\x10\x05\x12\x1c\n" +
+	"\x18TERMINAL_REASON_CANCELED\x10\x062\xd8\x02\n" +
 	"\x0eChannelService\x12_\n" +
 	"\x06Notify\x12).gleipnir.plugin.channel.v1.NotifyRequest\x1a*.gleipnir.plugin.channel.v1.NotifyResponse\x12b\n" +
-	"\aRequest\x12*.gleipnir.plugin.channel.v1.RequestRequest\x1a+.gleipnir.plugin.channel.v1.RequestResponseB[ZYgithub.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1;channelv1b\x06proto3"
+	"\aRequest\x12*.gleipnir.plugin.channel.v1.RequestRequest\x1a+.gleipnir.plugin.channel.v1.RequestResponse\x12\x80\x01\n" +
+	"\x11RequestTerminated\x124.gleipnir.plugin.channel.v1.RequestTerminatedRequest\x1a5.gleipnir.plugin.channel.v1.RequestTerminatedResponseB[ZYgithub.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1;channelv1b\x06proto3"
 
 var (
 	file_gleipnir_plugin_channel_v1_channel_proto_rawDescOnce sync.Once
@@ -388,31 +606,39 @@ func file_gleipnir_plugin_channel_v1_channel_proto_rawDescGZIP() []byte {
 	return file_gleipnir_plugin_channel_v1_channel_proto_rawDescData
 }
 
-var file_gleipnir_plugin_channel_v1_channel_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_gleipnir_plugin_channel_v1_channel_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_gleipnir_plugin_channel_v1_channel_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_gleipnir_plugin_channel_v1_channel_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_gleipnir_plugin_channel_v1_channel_proto_goTypes = []any{
-	(ChannelCapability)(0),    // 0: gleipnir.plugin.channel.v1.ChannelCapability
-	(*NotifyRequest)(nil),     // 1: gleipnir.plugin.channel.v1.NotifyRequest
-	(*NotifyResponse)(nil),    // 2: gleipnir.plugin.channel.v1.NotifyResponse
-	(*RequestRequest)(nil),    // 3: gleipnir.plugin.channel.v1.RequestRequest
-	(*RequestResponse)(nil),   // 4: gleipnir.plugin.channel.v1.RequestResponse
-	(*v1.RequestContext)(nil), // 5: gleipnir.plugin.common.v1.RequestContext
-	(*v1.ErrorEnvelope)(nil),  // 6: gleipnir.plugin.common.v1.ErrorEnvelope
+	(ChannelCapability)(0),            // 0: gleipnir.plugin.channel.v1.ChannelCapability
+	(TerminalReason)(0),               // 1: gleipnir.plugin.channel.v1.TerminalReason
+	(*NotifyRequest)(nil),             // 2: gleipnir.plugin.channel.v1.NotifyRequest
+	(*NotifyResponse)(nil),            // 3: gleipnir.plugin.channel.v1.NotifyResponse
+	(*RequestRequest)(nil),            // 4: gleipnir.plugin.channel.v1.RequestRequest
+	(*RequestResponse)(nil),           // 5: gleipnir.plugin.channel.v1.RequestResponse
+	(*RequestTerminatedRequest)(nil),  // 6: gleipnir.plugin.channel.v1.RequestTerminatedRequest
+	(*RequestTerminatedResponse)(nil), // 7: gleipnir.plugin.channel.v1.RequestTerminatedResponse
+	(*v1.RequestContext)(nil),         // 8: gleipnir.plugin.common.v1.RequestContext
+	(*v1.ErrorEnvelope)(nil),          // 9: gleipnir.plugin.common.v1.ErrorEnvelope
 }
 var file_gleipnir_plugin_channel_v1_channel_proto_depIdxs = []int32{
-	5, // 0: gleipnir.plugin.channel.v1.NotifyRequest.context:type_name -> gleipnir.plugin.common.v1.RequestContext
-	6, // 1: gleipnir.plugin.channel.v1.NotifyResponse.error:type_name -> gleipnir.plugin.common.v1.ErrorEnvelope
-	5, // 2: gleipnir.plugin.channel.v1.RequestRequest.context:type_name -> gleipnir.plugin.common.v1.RequestContext
-	6, // 3: gleipnir.plugin.channel.v1.RequestResponse.error:type_name -> gleipnir.plugin.common.v1.ErrorEnvelope
-	1, // 4: gleipnir.plugin.channel.v1.ChannelService.Notify:input_type -> gleipnir.plugin.channel.v1.NotifyRequest
-	3, // 5: gleipnir.plugin.channel.v1.ChannelService.Request:input_type -> gleipnir.plugin.channel.v1.RequestRequest
-	2, // 6: gleipnir.plugin.channel.v1.ChannelService.Notify:output_type -> gleipnir.plugin.channel.v1.NotifyResponse
-	4, // 7: gleipnir.plugin.channel.v1.ChannelService.Request:output_type -> gleipnir.plugin.channel.v1.RequestResponse
-	6, // [6:8] is the sub-list for method output_type
-	4, // [4:6] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	8,  // 0: gleipnir.plugin.channel.v1.NotifyRequest.context:type_name -> gleipnir.plugin.common.v1.RequestContext
+	9,  // 1: gleipnir.plugin.channel.v1.NotifyResponse.error:type_name -> gleipnir.plugin.common.v1.ErrorEnvelope
+	8,  // 2: gleipnir.plugin.channel.v1.RequestRequest.context:type_name -> gleipnir.plugin.common.v1.RequestContext
+	9,  // 3: gleipnir.plugin.channel.v1.RequestResponse.error:type_name -> gleipnir.plugin.common.v1.ErrorEnvelope
+	8,  // 4: gleipnir.plugin.channel.v1.RequestTerminatedRequest.context:type_name -> gleipnir.plugin.common.v1.RequestContext
+	1,  // 5: gleipnir.plugin.channel.v1.RequestTerminatedRequest.reason:type_name -> gleipnir.plugin.channel.v1.TerminalReason
+	9,  // 6: gleipnir.plugin.channel.v1.RequestTerminatedResponse.error:type_name -> gleipnir.plugin.common.v1.ErrorEnvelope
+	2,  // 7: gleipnir.plugin.channel.v1.ChannelService.Notify:input_type -> gleipnir.plugin.channel.v1.NotifyRequest
+	4,  // 8: gleipnir.plugin.channel.v1.ChannelService.Request:input_type -> gleipnir.plugin.channel.v1.RequestRequest
+	6,  // 9: gleipnir.plugin.channel.v1.ChannelService.RequestTerminated:input_type -> gleipnir.plugin.channel.v1.RequestTerminatedRequest
+	3,  // 10: gleipnir.plugin.channel.v1.ChannelService.Notify:output_type -> gleipnir.plugin.channel.v1.NotifyResponse
+	5,  // 11: gleipnir.plugin.channel.v1.ChannelService.Request:output_type -> gleipnir.plugin.channel.v1.RequestResponse
+	7,  // 12: gleipnir.plugin.channel.v1.ChannelService.RequestTerminated:output_type -> gleipnir.plugin.channel.v1.RequestTerminatedResponse
+	10, // [10:13] is the sub-list for method output_type
+	7,  // [7:10] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_gleipnir_plugin_channel_v1_channel_proto_init() }
@@ -425,8 +651,8 @@ func file_gleipnir_plugin_channel_v1_channel_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gleipnir_plugin_channel_v1_channel_proto_rawDesc), len(file_gleipnir_plugin_channel_v1_channel_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   4,
+			NumEnums:      2,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

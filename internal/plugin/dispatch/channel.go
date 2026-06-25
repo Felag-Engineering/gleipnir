@@ -594,15 +594,16 @@ func (d *Dispatcher) Wait(ctx context.Context, requestID string, timeout time.Du
 			return "", fmt.Errorf("mark plugin request timed out: %w", transErr)
 		}
 
-		// CAS winner: write the timeout step to the run trace.
-		if d.cfg.WriteRunStep != nil {
-			req, dbErr := d.cfg.Queries.GetPluginPendingRequest(cleanupCtx, requestID)
-			if dbErr == nil {
-				// Use cleanupCtx, not the caller's run ctx: same reason it was
-				// created two lines up — the run ctx may already be cancelled
-				// (e.g. interrupted run) when the timer fires. Writing the
-				// timeout step with the cancelled ctx would silently fail and
-				// lose the very step this CAS winner exists to record (#499).
+		// CAS winner: write the timeout step to the run trace and notify the
+		// plugin so it can update its Slack/ntfy message to the terminal state.
+		req, dbErr := d.cfg.Queries.GetPluginPendingRequest(cleanupCtx, requestID)
+		if dbErr == nil {
+			// Use cleanupCtx, not the caller's run ctx: same reason it was
+			// created two lines up — the run ctx may already be cancelled
+			// (e.g. interrupted run) when the timer fires. Writing the
+			// timeout step with the cancelled ctx would silently fail and
+			// lose the very step this CAS winner exists to record (#499).
+			if d.cfg.WriteRunStep != nil {
 				if wErr := d.cfg.WriteRunStep(cleanupCtx, req.RunID, "plugin_request_timeout", map[string]interface{}{
 					"message":    fmt.Sprintf("plugin request timed out after %s", timeout),
 					"code":       "plugin_request_timeout",
@@ -616,9 +617,66 @@ func (d *Dispatcher) Wait(ctx context.Context, requestID string, timeout time.Du
 					)
 				}
 			}
+
+			// Best-effort: notify the plugin so it can update the in-channel
+			// message to "Expired". Resolve the instance name from the DB and
+			// fire. Any error is logged and swallowed by SendRequestTermination
+			// so it can never fail a run that is already terminating.
+			inst, instErr := d.cfg.Queries.GetPluginInstanceByID(cleanupCtx, req.PluginInstanceID)
+			if instErr == nil {
+				d.SendRequestTermination(cleanupCtx, inst.InstanceName, requestID,
+					channelv1.TerminalReason_TERMINAL_REASON_TIMED_OUT, "")
+			} else {
+				slog.Warn("dispatch: could not look up plugin instance for request termination",
+					"instance_id", req.PluginInstanceID,
+					"request_id", requestID,
+					"err", instErr,
+				)
+			}
 		}
 		return "", fmt.Errorf("plugin request timed out")
 	}
+}
+
+// SendRequestTermination calls the plugin's RequestTerminated RPC on a
+// best-effort basis. Any error — including codes.Unimplemented from plugins
+// that do not implement the method — is logged and swallowed. The method
+// never returns a non-nil error.
+//
+// This is intentionally fire-and-forget: the run is already in a terminal
+// state at the call site; a notification failure must not resurface as a
+// run error.
+func (d *Dispatcher) SendRequestTermination(ctx context.Context, instanceName, requestID string, reason channelv1.TerminalReason, resolver string) error {
+	client, err := d.channelClient(instanceName)
+	if err != nil {
+		slog.Warn("request termination: connect to plugin failed",
+			"instance", instanceName,
+			"request_id", requestID,
+			"err", err,
+		)
+		return nil
+	}
+
+	termCtx, cancel := context.WithTimeout(ctx, d.cfg.NotifyTimeout)
+	defer cancel()
+
+	_, rpcErr := client.RequestTerminated(termCtx, &channelv1.RequestTerminatedRequest{
+		Context: &commonv1.RequestContext{
+			CallId: requestID, // best-effort: no run context at this call site
+		},
+		RequestId: requestID,
+		Reason:    reason,
+		Resolver:  resolver,
+	})
+	if rpcErr != nil {
+		slog.Warn("request termination: RPC failed (best-effort, swallowed)",
+			"instance", instanceName,
+			"request_id", requestID,
+			"reason", reason,
+			"err", rpcErr,
+		)
+	}
+	return nil
 }
 
 // publishAuditEvent emits a generic audit event via the Publisher (if configured).

@@ -262,6 +262,82 @@ func TestScanner_OnTimeoutClaimed_InvokedOncePerClaim(t *testing.T) {
 	}
 }
 
+// TestScanner_OnTerminated_CASWinOnly verifies that the OnTerminated hook fires
+// exactly once per CAS-won claim (rows==1) and is NOT called when another
+// claimer already resolved the row (rows==0, the conflict path).
+//
+// Setup: two expired approvals are claimable (a1, a2). We pre-claim a1 by
+// running a first scanner pass; then we attach the OnTerminated hook and run a
+// second pass. The second pass can claim a2 (rows==1) but not a1 (already
+// status='timeout', so rows==0). The hook should therefore fire exactly once.
+//
+// A nil hook variant is verified by running a third pass after removing the
+// hook — must not panic.
+func TestScanner_OnTerminated_CASWinOnly(t *testing.T) {
+	s := testutil.NewTestStore(t)
+	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
+	testutil.InsertRun(t, s, "r1", "p1", model.RunStatusWaitingForApproval)
+	testutil.InsertRun(t, s, "r2", "p1", model.RunStatusWaitingForApproval)
+	insertApprovalRequest(t, s, "a1", "r1", "tool_a", pastTimestamp())
+	insertApprovalRequest(t, s, "a2", "r2", "tool_b", pastTimestamp())
+
+	// Pre-claim a1 so its row is already status='timeout' before the hook scan.
+	preCfg := approvalConfig(s)
+	preCfg.ClaimTimeout = func(ctx context.Context, id string, now string) (int64, error) {
+		if id != "a1" {
+			// Only pre-claim a1; let a2 remain pending for the hook scan.
+			return 0, nil
+		}
+		return s.Queries().UpdateApprovalRequestStatus(ctx, db.UpdateApprovalRequestStatusParams{
+			Status:    string(model.ApprovalStatusTimeout),
+			DecidedAt: &now,
+			Note:      nil,
+			ID:        id,
+		})
+	}
+	preScanner := timeout.NewScanner(s, time.Minute, preCfg)
+	if err := preScanner.Scan(context.Background()); err != nil {
+		t.Fatalf("pre-claim scan: %v", err)
+	}
+
+	var calls atomic.Int64
+	var lastItem timeout.ExpiredItem
+	cfg := approvalConfig(s)
+	terminated := timeout.WithOnTerminated(func(ctx context.Context, item timeout.ExpiredItem) {
+		if ctx == nil {
+			t.Error("OnTerminated received a nil context")
+		}
+		calls.Add(1)
+		lastItem = item
+	})
+
+	// Now run the real scan with the hook. a1 is already 'timeout' so its
+	// ClaimTimeout returns rows==0 (conflict) — hook must NOT fire for a1.
+	// a2 is still pending so rows==1 — hook MUST fire exactly once for a2.
+	scanner := timeout.NewScanner(s, time.Minute, cfg, terminated)
+	if err := scanner.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("OnTerminated invoked %d times, want 1 (only CAS-win a2)", got)
+	}
+	if lastItem.ID != "a2" {
+		t.Errorf("OnTerminated called with item.ID = %q, want a2", lastItem.ID)
+	}
+
+	// Nil hook: a third pass with no hook must not panic. Both are already claimed.
+	nilCfg := approvalConfig(s)
+	nilScanner := timeout.NewScanner(s, time.Minute, nilCfg)
+	if err := nilScanner.Scan(context.Background()); err != nil {
+		t.Fatalf("nil-hook scan: %v", err)
+	}
+	// Invocation count unchanged — nil hook is silent no-op.
+	if got := calls.Load(); got != 1 {
+		t.Errorf("OnTerminated count changed after nil-hook scan: got %d, want 1", got)
+	}
+}
+
 func TestScanner_MultipleExpiredAcrossRuns(t *testing.T) {
 	s := testutil.NewTestStore(t)
 	testutil.InsertPolicy(t, s, "p1", "policy-p1", "webhook", "{}")
