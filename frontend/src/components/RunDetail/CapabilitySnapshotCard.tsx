@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Settings, ChevronDown, ChevronUp, ChevronRight } from 'lucide-react'
 import type { CapabilitySnapshotContent, CapabilitySnapshotV2, GrantedToolEntry } from './types'
+import { isFeedbackEntry } from './types'
 import { formatProviderName } from '@/utils/format'
 import styles from './CapabilitySnapshotCard.module.css'
 
@@ -16,9 +17,11 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
   // Support both the legacy array shape (pre-ADR-023) and the V2 object shape.
   const isV2 = !Array.isArray(content) && content !== null && typeof content === 'object'
   const tools = isV2 ? (content as CapabilitySnapshotV2).tools : (content as GrantedToolEntry[])
+  const realTools = (tools ?? []).filter(t => !isFeedbackEntry(t))
+  const feedbackEnabled = (tools ?? []).some(isFeedbackEntry)
   const modelName = isV2 ? (content as CapabilitySnapshotV2).model : undefined
   const provider = isV2 ? (content as CapabilitySnapshotV2).provider : undefined
-  const count = tools?.length ?? 0
+  const count = realTools.length
 
   return (
     <div className={styles.card}>
@@ -36,6 +39,12 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
       </button>
       {expanded && (
         <div className={styles.tableWrapper}>
+          {feedbackEnabled && (
+            <div className={styles.feedbackRow}>
+              <span className={styles.feedbackChip}>Feedback</span>
+              <span className={styles.feedbackLabel}>gleipnir.ask_operator — human-in-the-loop channel</span>
+            </div>
+          )}
           <table className={styles.table}>
             <thead>
               <tr>
@@ -45,7 +54,7 @@ export function CapabilitySnapshotCard({ content, systemPrompt }: Props) {
               </tr>
             </thead>
             <tbody>
-              {tools.map((t, i) => (
+              {realTools.map((t, i) => (
                 <tr key={i}>
                   <td className={styles.mono}>{t.server_name}</td>
                   <td className={styles.mono}>{t.tool_name}</td>

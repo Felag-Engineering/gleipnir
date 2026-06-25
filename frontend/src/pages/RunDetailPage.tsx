@@ -19,6 +19,7 @@ import { ApprovalActions } from '@/components/RunDetail/ApprovalActions'
 import { CopyBlock } from '@/components/CopyBlock'
 import type { FilterKey } from '@/components/RunDetail'
 import type { CapabilitySnapshotV2, GrantedToolEntry } from '@/components/RunDetail/types'
+import { isFeedbackEntry } from '@/components/RunDetail/types'
 import { usePageTitle } from '@/hooks/usePageTitle'
 import NotFoundPage from '@/pages/NotFoundPage'
 import { ApiError } from '@/api/fetch'
@@ -48,11 +49,14 @@ export default function RunDetailPage() {
     const content = snapshotSteps[0].content
     const isV2 = !Array.isArray(content) && content !== null && typeof content === 'object'
     const tools = isV2 ? (content as CapabilitySnapshotV2).tools : (content as GrantedToolEntry[])
+    const realTools = (tools ?? []).filter(t => !isFeedbackEntry(t))
+    const feedbackEnabled = (tools ?? []).some(isFeedbackEntry)
     return {
       provider: isV2 ? (content as CapabilitySnapshotV2).provider : undefined,
       model: isV2 ? (content as CapabilitySnapshotV2).model : undefined,
-      toolCount: tools?.length ?? 0,
-      tools: tools ?? [],
+      toolCount: realTools.length,
+      tools: realTools,
+      feedbackEnabled,
     }
   }, [snapshotSteps])
 

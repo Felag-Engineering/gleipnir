@@ -120,3 +120,37 @@ export const WithNullSystemPrompt: Story = {
     systemPrompt: null,
   },
 }
+
+// Feedback-enabled variants — ask_operator excluded from tool count, shown as separate indicator.
+
+const WITH_FEEDBACK_LEGACY: CapabilitySnapshotContent = [
+  ...MIXED_TOOLS,
+  { server_name: 'gleipnir', tool_name: 'ask_operator', approval: 'none', timeout: 0, on_timeout: '' },
+]
+
+export const LegacyWithFeedback: Story = {
+  name: 'Legacy array — with feedback (ask_operator excluded from count)',
+  args: { content: WITH_FEEDBACK_LEGACY },
+}
+
+const WITH_FEEDBACK_V2: CapabilitySnapshotContent = {
+  provider: 'anthropic',
+  model: 'claude-sonnet-4-6',
+  tools: [
+    ...MIXED_TOOLS,
+    { server_name: 'gleipnir', tool_name: 'ask_operator', approval: 'none', timeout: 0, on_timeout: '' },
+  ],
+}
+
+export const V2WithFeedback: Story = {
+  name: 'V2 — with feedback (ask_operator excluded from count)',
+  args: { content: WITH_FEEDBACK_V2 },
+}
+
+export const V2WithFeedbackAndSystemPrompt: Story = {
+  name: 'V2 — with feedback + system prompt',
+  args: {
+    content: WITH_FEEDBACK_V2,
+    systemPrompt: SAMPLE_SYSTEM_PROMPT,
+  },
+}

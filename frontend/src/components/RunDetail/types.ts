@@ -50,6 +50,15 @@ export interface GrantedToolEntry {
   on_timeout: string
 }
 
+// The feedback channel is registered at runtime as gleipnir.ask_operator when
+// feedback.enabled: true. It is a capability, not a granted MCP/plugin tool,
+// so it must be excluded from the tool count and listed separately.
+export const FEEDBACK_SENTINEL = { server_name: 'gleipnir', tool_name: 'ask_operator' } as const
+
+export function isFeedbackEntry(t: GrantedToolEntry): boolean {
+  return t.server_name === 'gleipnir' && t.tool_name === 'ask_operator'
+}
+
 // CapabilitySnapshotV2 is the shape written by agent runs after ADR-023.
 // Older snapshots written before this change are plain GrantedToolEntry arrays.
 // provider is optional for backward compat: snapshots written before issue #352 have model but no provider.

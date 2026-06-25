@@ -25,6 +25,7 @@ interface Props {
     model?: string
     toolCount: number
     tools: Array<CapabilityTool>
+    feedbackEnabled?: boolean
   } | null
   showRetry?: boolean
   onRetry?: () => void
@@ -83,17 +84,22 @@ export function RunHeader({ run, toolCallCount, tokenTotal, duration, capability
 
       {capabilityParts.length > 0 && (
         <div>
-          <button
-            type="button"
-            className={styles.capabilityBar}
-            onClick={() => setCapExpanded(o => !o)}
-            aria-expanded={capExpanded}
-          >
-            {capabilityParts.join(' · ')}
-            <span className={styles.capabilityChevron}>
-              {capExpanded ? <ChevronUp size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
-            </span>
-          </button>
+          <div className={styles.capabilityRow}>
+            <button
+              type="button"
+              className={styles.capabilityBar}
+              onClick={() => setCapExpanded(o => !o)}
+              aria-expanded={capExpanded}
+            >
+              {capabilityParts.join(' · ')}
+              <span className={styles.capabilityChevron}>
+                {capExpanded ? <ChevronUp size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
+              </span>
+            </button>
+            {capabilitySnapshot?.feedbackEnabled && (
+              <span className={styles.feedbackChip}>Feedback</span>
+            )}
+          </div>
           {capExpanded && capabilitySnapshot && capabilitySnapshot.tools.length > 0 && (
             <div className={styles.capabilityTableWrapper}>
               <table className={styles.capabilityTable}>
