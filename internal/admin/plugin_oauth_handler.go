@@ -28,13 +28,23 @@ type OAuthPluginQuerier interface {
 	UpdatePluginInstanceHealth(ctx context.Context, arg db.UpdatePluginInstanceHealthParams) (int64, error)
 }
 
+// OAuthManager is the narrow interface of oauth.Manager consumed by PluginOAuthHandler.
+// Extracting it as an interface lets tests inject a fake that returns controlled
+// errors without constructing a full oauth.Manager.
+type OAuthManager interface {
+	BeginAuthcode(ctx context.Context, instanceID, returnURL string) (string, error)
+	BeginClientcred(ctx context.Context, instanceID string) error
+	HandleCallback(ctx context.Context, rawState, code string) (string, error)
+	DecodeStateForRedirect(rawState string) (oauth.StateEnvelope, error)
+}
+
 // PluginOAuthHandler handles the admin OAuth2 endpoints for plugin instances.
 // It owns two routes:
 //
 //	POST /api/v1/admin/plugins/{id}/instances/{iid}/oauth/begin
 //	GET  /api/v1/admin/plugins/oauth/callback  (unprotected)
 type PluginOAuthHandler struct {
-	mgr          *oauth.Manager
+	mgr          OAuthManager
 	q            OAuthPluginQuerier
 	getPublicURL func() string
 }
@@ -42,7 +52,7 @@ type PluginOAuthHandler struct {
 // NewPluginOAuthHandler constructs a PluginOAuthHandler. getPublicURL is called
 // at request time to validate return_url against the host's configured origin;
 // it mirrors the same closure passed to oauth.NewManager in main.go.
-func NewPluginOAuthHandler(q OAuthPluginQuerier, mgr *oauth.Manager, getPublicURL func() string) *PluginOAuthHandler {
+func NewPluginOAuthHandler(q OAuthPluginQuerier, mgr OAuthManager, getPublicURL func() string) *PluginOAuthHandler {
 	return &PluginOAuthHandler{mgr: mgr, q: q, getPublicURL: getPublicURL}
 }
 
@@ -130,7 +140,9 @@ func (h *PluginOAuthHandler) Begin(w http.ResponseWriter, r *http.Request) {
 				httputil.WriteError(w, http.StatusBadRequest, "oauth configuration invalid", err.Error())
 				return
 			}
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to begin OAuth flow", err.Error())
+			// Log the full error server-side (may contain provider details) but return
+			// a generic message to the client — mirrors HandleCallback's approach.
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to begin OAuth authorization", "")
 			return
 		}
 		httputil.WriteJSON(w, http.StatusOK, beginAuthcodeResponse{AuthorizeURL: authorizeURL})
@@ -142,7 +154,10 @@ func (h *PluginOAuthHandler) Begin(w http.ResponseWriter, r *http.Request) {
 				httputil.WriteError(w, http.StatusBadRequest, "oauth configuration invalid", err.Error())
 				return
 			}
-			httputil.WriteError(w, http.StatusInternalServerError, "client credentials exchange failed", err.Error())
+			// Log the full error server-side (may contain the provider's HTTP response
+			// body) but return a generic message to the client — mirrors HandleCallback's
+			// approach of keeping provider error bodies out of API responses.
+			httputil.WriteError(w, http.StatusInternalServerError, "client credentials exchange failed", "")
 			return
 		}
 		httputil.WriteJSON(w, http.StatusOK, beginClientcredResponse{Status: "ok"})

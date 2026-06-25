@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,36 @@ import (
 	"github.com/felag-engineering/gleipnir/internal/plugin/oauth"
 	sdkmanifest "github.com/felag-engineering/gleipnir/plugin-sdk/manifest"
 )
+
+// --- fake OAuthManager ---
+
+// fakeOAuthManager is a test double for OAuthManager that returns
+// caller-controlled errors from BeginAuthcode and BeginClientcred.
+// It satisfies OAuthManager so it can be injected directly into
+// PluginOAuthHandler without constructing a real oauth.Manager.
+type fakeOAuthManager struct {
+	beginAuthcodeErr   error
+	beginClientcredErr error
+}
+
+func (f *fakeOAuthManager) BeginAuthcode(_ context.Context, _, _ string) (string, error) {
+	if f.beginAuthcodeErr != nil {
+		return "", f.beginAuthcodeErr
+	}
+	return "https://provider.example.com/authorize?client_id=cid&state=xyz", nil
+}
+
+func (f *fakeOAuthManager) BeginClientcred(_ context.Context, _ string) error {
+	return f.beginClientcredErr
+}
+
+func (f *fakeOAuthManager) HandleCallback(_ context.Context, _, _ string) (string, error) {
+	return "", nil
+}
+
+func (f *fakeOAuthManager) DecodeStateForRedirect(_ string) (oauth.StateEnvelope, error) {
+	return oauth.StateEnvelope{}, nil
+}
 
 // --- fake OAuthPluginQuerier ---
 
@@ -409,5 +440,85 @@ func TestPluginOAuthHandler_Begin_RelativeReturnURL_Accepted(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200 for relative return_url, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// buildOAuthHandlerWithFakeMgr builds a PluginOAuthHandler that uses a
+// caller-supplied OAuthManager fake. The querier is pre-seeded with one
+// instance and one plugin for the given auth strategy.
+func buildOAuthHandlerWithFakeMgr(t *testing.T, strategy string, mgr OAuthManager) (*PluginOAuthHandler, *fakeOAuthPluginQuerier) {
+	t.Helper()
+	q := newFakeOAuthPluginQuerier()
+	q.instances["inst-1"] = db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		HealthState: "healthy",
+	}
+	q.plugins["plugin-1"] = db.Plugin{
+		ID:               "plugin-1",
+		ManifestSnapshot: buildTestManifest(t, strategy),
+	}
+	h := NewPluginOAuthHandler(q, mgr, func() string { return "https://gleipnir.example.com" })
+	return h, q
+}
+
+// TestPluginOAuthHandler_Begin_Authcode_500_HidesProviderBody asserts that when
+// BeginAuthcode returns an unexpected server error (one that may embed a provider
+// HTTP response body), the API response does NOT echo that body as the detail
+// field. A generic message must be returned instead.
+func TestPluginOAuthHandler_Begin_Authcode_500_HidesProviderBody(t *testing.T) {
+	const providerSentinel = "oauth2: cannot fetch token: 400 Bad Request\nResponse: {\"error\":\"invalid_client\",\"error_description\":\"secret mismatch\"}"
+
+	fakeMgr := &fakeOAuthManager{
+		beginAuthcodeErr: fmt.Errorf("oauth begin: record nonce: %s", providerSentinel),
+	}
+	h, _ := buildOAuthHandlerWithFakeMgr(t, sdkmanifest.AuthStrategyOAuth2Authcode, fakeMgr)
+
+	body, _ := json.Marshal(map[string]string{"return_url": "/admin/plugins/inst-1"})
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-1/instances/inst-1/oauth/begin", bytes.NewReader(body))
+	r = withChiParams(r, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+
+	h.Begin(w, r)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	respBody := w.Body.String()
+	if strings.Contains(respBody, providerSentinel) {
+		t.Errorf("response body must not echo provider error body, got: %s", respBody)
+	}
+	if !strings.Contains(respBody, "failed to begin OAuth authorization") {
+		t.Errorf("expected generic error message in response, got: %s", respBody)
+	}
+}
+
+// TestPluginOAuthHandler_Begin_Clientcred_500_HidesProviderBody asserts that
+// when BeginClientcred returns an error that contains the provider's HTTP
+// response body, the API response does NOT include that body in the detail.
+func TestPluginOAuthHandler_Begin_Clientcred_500_HidesProviderBody(t *testing.T) {
+	const providerSentinel = "oauth2: cannot fetch token: 401 Unauthorized\nResponse: {\"error\":\"invalid_client\",\"error_description\":\"bad credentials\"}"
+
+	fakeMgr := &fakeOAuthManager{
+		beginClientcredErr: fmt.Errorf("clientcred exchange: %s", providerSentinel),
+	}
+	h, _ := buildOAuthHandlerWithFakeMgr(t, sdkmanifest.AuthStrategyOAuth2Clientcred, fakeMgr)
+
+	body, _ := json.Marshal(map[string]string{})
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plugins/plugin-1/instances/inst-1/oauth/begin", bytes.NewReader(body))
+	r = withChiParams(r, map[string]string{"id": "plugin-1", "iid": "inst-1"})
+	w := httptest.NewRecorder()
+
+	h.Begin(w, r)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	respBody := w.Body.String()
+	if strings.Contains(respBody, providerSentinel) {
+		t.Errorf("response body must not echo provider error body, got: %s", respBody)
+	}
+	if !strings.Contains(respBody, "client credentials exchange failed") {
+		t.Errorf("expected generic error message in response, got: %s", respBody)
 	}
 }
