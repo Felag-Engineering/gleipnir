@@ -1876,6 +1876,96 @@ agent:
 	})
 }
 
+// TestPolicyListSubscribedTriggerFields verifies that the List handler populates
+// trigger_source and trigger_event_kind only for subscribed policies and omits
+// them (omitempty) for all other trigger types.
+func TestPolicyListSubscribedTriggerFields(t *testing.T) {
+	t.Run("subscribed policy includes trigger_source and trigger_event_kind", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		subscribedYAML := `
+name: slack-monitor
+trigger:
+  type: subscribed
+  source: slack-e2e
+  event_kind: channel_message
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+capabilities:
+  tools:
+    - tool: slack-e2e.send_message
+agent:
+  task: Handle Slack messages
+`
+		testutil.InsertPolicy(t, store, "pol-sub", "slack-monitor", "subscribed", subscribedYAML)
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/policies")
+		if err != nil {
+			t.Fatalf("GET /policies: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var envelope struct {
+			Data []struct {
+				ID               string `json:"id"`
+				TriggerType      string `json:"trigger_type"`
+				TriggerSource    string `json:"trigger_source"`
+				TriggerEventKind string `json:"trigger_event_kind"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data) != 1 {
+			t.Fatalf("got %d items, want 1", len(envelope.Data))
+		}
+		item := envelope.Data[0]
+		if item.TriggerType != "subscribed" {
+			t.Errorf("trigger_type = %q, want subscribed", item.TriggerType)
+		}
+		if item.TriggerSource != "slack-e2e" {
+			t.Errorf("trigger_source = %q, want slack-e2e", item.TriggerSource)
+		}
+		if item.TriggerEventKind != "channel_message" {
+			t.Errorf("trigger_event_kind = %q, want channel_message", item.TriggerEventKind)
+		}
+	})
+
+	t.Run("non-subscribed policy omits trigger_source and trigger_event_kind", func(t *testing.T) {
+		store := newPolicyHandlerStore(t)
+		testutil.InsertPolicy(t, store, "pol-wh", "my-webhook", "webhook", "trigger: webhook\n")
+
+		srv := httptest.NewServer(newPolicyRouter(store))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/policies")
+		if err != nil {
+			t.Fatalf("GET /policies: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var rawEnvelope struct {
+			Data []json.RawMessage `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&rawEnvelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(rawEnvelope.Data) != 1 {
+			t.Fatalf("got %d items, want 1", len(rawEnvelope.Data))
+		}
+		raw := string(rawEnvelope.Data[0])
+		if strings.Contains(raw, `"trigger_source"`) {
+			t.Errorf("webhook policy must not include trigger_source, got: %s", raw)
+		}
+		if strings.Contains(raw, `"trigger_event_kind"`) {
+			t.Errorf("webhook policy must not include trigger_event_kind, got: %s", raw)
+		}
+	})
+}
+
 func TestComputeNextFireAt(t *testing.T) {
 	const interval = "5m"
 	pollSummary := api.PolicyYAMLSummary{}

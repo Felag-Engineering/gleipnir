@@ -11,6 +11,8 @@ export interface ApiPolicyListItem {
   id: string
   name: string
   trigger_type: string
+  trigger_source?: string
+  trigger_event_kind?: string
   folder: string
   model: string
   tool_count: number

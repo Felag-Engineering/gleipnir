@@ -102,7 +102,7 @@ describe('PolicyCard', () => {
       </MemoryRouter>,
     )
     expect(screen.getByText('system-health-check')).toBeInTheDocument()
-    expect(screen.getByText('webhook')).toBeInTheDocument()
+    expect(screen.getByText('Webhook')).toBeInTheDocument()
     expect(screen.getByText('gemini-2.5-flash')).toBeInTheDocument()
     expect(screen.getByText('5 tools')).toBeInTheDocument()
   })
@@ -195,6 +195,36 @@ describe('PolicyCard', () => {
     )
     screen.getByRole('button', { name: /run system-health-check/i }).click()
     expect(onTrigger).toHaveBeenCalledWith('p1', 'system-health-check')
+  })
+
+  it('renders friendly label for subscribed trigger with source and event_kind', () => {
+    const subscribedPolicy: ApiPolicyListItem = {
+      ...POLICY,
+      trigger_type: 'subscribed',
+      trigger_source: 'slack-e2e',
+      trigger_event_kind: 'channel_message',
+    }
+    render(
+      <MemoryRouter>
+        <PolicyCard policy={subscribedPolicy} onTrigger={() => {}} />
+      </MemoryRouter>,
+    )
+    expect(screen.queryByText('subscribed')).toBeNull()
+    expect(screen.getByText('channel_message (slack-e2e)')).toBeInTheDocument()
+  })
+
+  it('renders "Plugin event" fallback for subscribed trigger with no source or event_kind', () => {
+    const subscribedPolicy: ApiPolicyListItem = {
+      ...POLICY,
+      trigger_type: 'subscribed',
+    }
+    render(
+      <MemoryRouter>
+        <PolicyCard policy={subscribedPolicy} onTrigger={() => {}} />
+      </MemoryRouter>,
+    )
+    expect(screen.queryByText('subscribed')).toBeNull()
+    expect(screen.getByText('Plugin event')).toBeInTheDocument()
   })
 })
 

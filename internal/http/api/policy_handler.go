@@ -66,20 +66,22 @@ type runSummary struct {
 }
 
 type policyListItem struct {
-	ID           string      `json:"id"`
-	Name         string      `json:"name"`
-	TriggerType  string      `json:"trigger_type"`
-	Folder       string      `json:"folder"`
-	Model        string      `json:"model"`
-	ToolCount    int         `json:"tool_count"`
-	ToolRefs     []string    `json:"tool_refs"`
-	AvgTokenCost int64       `json:"avg_token_cost"`
-	RunCount     int64       `json:"run_count"`
-	CreatedAt    string      `json:"created_at"`
-	UpdatedAt    string      `json:"updated_at"`
-	PausedAt     *string     `json:"paused_at"`
-	LatestRun    *runSummary `json:"latest_run"`
-	NextFireAt   *string     `json:"next_fire_at"`
+	ID               string      `json:"id"`
+	Name             string      `json:"name"`
+	TriggerType      string      `json:"trigger_type"`
+	TriggerSource    string      `json:"trigger_source,omitempty"`
+	TriggerEventKind string      `json:"trigger_event_kind,omitempty"`
+	Folder           string      `json:"folder"`
+	Model            string      `json:"model"`
+	ToolCount        int         `json:"tool_count"`
+	ToolRefs         []string    `json:"tool_refs"`
+	AvgTokenCost     int64       `json:"avg_token_cost"`
+	RunCount         int64       `json:"run_count"`
+	CreatedAt        string      `json:"created_at"`
+	UpdatedAt        string      `json:"updated_at"`
+	PausedAt         *string     `json:"paused_at"`
+	LatestRun        *runSummary `json:"latest_run"`
+	NextFireAt       *string     `json:"next_fire_at"`
 }
 
 type policyDetail struct {
@@ -132,6 +134,11 @@ func (h *PolicyHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 
 		item.NextFireAt = computeNextFireAt(row.TriggerType, summary, item.LatestRun, row.PausedAt)
+
+		if row.TriggerType == string(model.TriggerTypeSubscribed) {
+			item.TriggerSource = summary.Trigger.Source
+			item.TriggerEventKind = summary.Trigger.EventKind
+		}
 
 		items = append(items, item)
 	}
@@ -193,8 +200,10 @@ type policyYAMLSummary struct {
 		Tools []policyToolEntry `yaml:"tools"`
 	} `yaml:"capabilities"`
 	Trigger struct {
-		FireAt   []string `yaml:"fire_at"`  // scheduled only, RFC3339 timestamps
-		Interval string   `yaml:"interval"` // poll only, Go duration string e.g. "5m"
+		FireAt    []string `yaml:"fire_at"`    // scheduled only, RFC3339 timestamps
+		Interval  string   `yaml:"interval"`   // poll only, Go duration string e.g. "5m"
+		Source    string   `yaml:"source"`     // subscribed only
+		EventKind string   `yaml:"event_kind"` // subscribed only
 	} `yaml:"trigger"`
 }
 
