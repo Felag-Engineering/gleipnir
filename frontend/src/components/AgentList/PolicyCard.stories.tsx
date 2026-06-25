@@ -135,3 +135,32 @@ export const NoLatestRun: Story = {
     },
   },
 }
+
+export const Subscribed: Story = {
+  decorators: [
+    (Story) => (
+      <QueryClientProvider client={makeQueryClient('pol-sub')}>
+        <MemoryRouter>
+          <Story />
+        </MemoryRouter>
+      </QueryClientProvider>
+    ),
+  ],
+  args: {
+    policy: {
+      ...BASE_POLICY,
+      id: 'pol-sub',
+      name: 'Slack Channel Monitor',
+      trigger_type: 'subscribed',
+      trigger_source: 'slack-e2e',
+      trigger_event_kind: 'channel_message',
+      latest_run: {
+        id: 'run-sub',
+        status: 'complete',
+        started_at: new Date(Date.now() - 10 * 60_000).toISOString(),
+        token_cost: 850,
+      },
+      next_fire_at: null,
+    },
+  },
+}

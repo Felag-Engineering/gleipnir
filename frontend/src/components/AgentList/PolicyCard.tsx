@@ -7,6 +7,7 @@ import { isRunStatus } from '@/constants/status'
 import type { RunStatus } from '@/constants/status'
 import { formatTimeAgo, formatTimestamp } from '@/utils/format'
 import { PolicyCardExpanded } from './PolicyCardExpanded'
+import { triggerPillLabel } from './triggerLabel'
 import styles from './PolicyCard.module.css'
 
 // formatNextFire returns a relative "in Xm" / "in Xh" string for a future ISO
@@ -68,7 +69,7 @@ export function PolicyCard({ policy, onTrigger }: Props) {
         <div className={styles.leftZone}>
           <div className={`${styles.statusDot} ${statusDotClass(run?.status)}`} />
           <span className={styles.policyName}>{policy.name}</span>
-          <span className={styles.triggerPill}>{policy.trigger_type}</span>
+          <span className={styles.triggerPill}>{triggerPillLabel(policy)}</span>
           {isPaused && <span className={styles.pausedPill}>Paused</span>}
           {policy.model && <span className={styles.modelPill}>{policy.model}</span>}
           {policy.tool_count > 0 && (
