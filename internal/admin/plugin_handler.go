@@ -130,9 +130,8 @@ type PluginProcessManager interface {
 // ToolUnregistrar is the narrow interface for releasing tool-namespace
 // reservations when an instance is deleted. Implemented by *tools.Registrar;
 // kept as an interface here so the admin package does not import
-// internal/plugin/tools. The field is wired but SetToolUnregistrar is NOT
-// called in main.go for this PR — tools.Registrar is not yet in the live
-// process path (TODO at main.go). A nil unregistrar is a safe no-op.
+// internal/plugin/tools (the concrete type is supplied from package main).
+// A nil unregistrar is a safe no-op, which tests rely on to avoid the import.
 type ToolUnregistrar interface {
 	UnregisterInstance(ctx context.Context, instanceName string)
 }

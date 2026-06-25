@@ -386,6 +386,7 @@ func run(cfg config.Config) error {
 		Trigger:    pluginTrigger,
 		Inflight:   pluginInflight,
 		PluginsDir: pluginPluginsDir,
+		Unreg:      rt.ToolRegistrar,
 	})
 	pluginConfig := admin.NewInstanceConfig(admin.InstanceConfigDeps{
 		Q:         store.Queries(),

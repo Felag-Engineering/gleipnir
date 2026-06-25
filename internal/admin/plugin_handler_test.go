@@ -2314,6 +2314,17 @@ func (f *fakeProcessManager) StartByPluginID(_ context.Context, pluginID string)
 	return f.startErr
 }
 
+// fakeUnreg is a ToolUnregistrar stub that records instance names passed to
+// UnregisterInstance. Used by instance_lifecycle_test.go to assert the correct
+// name is forwarded (the regression guard for key-mismatch bugs).
+type fakeUnreg struct {
+	names []string
+}
+
+func (f *fakeUnreg) UnregisterInstance(_ context.Context, instanceName string) {
+	f.names = append(f.names, instanceName)
+}
+
 // serveDeleteInstance wires the DeleteInstance handler into a chi router.
 func serveDeleteInstance(h *PluginHandler, pluginID, instanceID string) *httptest.ResponseRecorder {
 	r := chi.NewRouter()

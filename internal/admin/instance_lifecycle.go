@@ -466,9 +466,9 @@ func (m *InstanceLifecycle) Delete(ctx context.Context, pluginID, instanceID str
 		return &lifecycleInternalError{PublicMsg: "internal error", Err: err}
 	}
 
-	// Best-effort tool-namespace release. Nil-safe: not yet wired in main.go
-	// (see ToolUnregistrar godoc and TODO at main.go). #194 follow-up will add
-	// the one-line wire-up.
+	// Best-effort tool-namespace release. Nil-safe: wired to rt.ToolRegistrar in
+	// main.go (#574). Tests leave Unreg nil to skip the call without importing
+	// internal/plugin/tools.
 	if m.unreg != nil {
 		m.unreg.UnregisterInstance(ctx, inst.InstanceName)
 	}
