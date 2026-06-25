@@ -96,7 +96,9 @@ func (ts *persistingTokenSource) Token() (*oauth2.Token, error) {
 	tok, err := ts.inner.Token()
 	if err != nil {
 		if markErr := ts.store.MarkRefreshFailed(ts.ctx, ts.instanceID, err); markErr != nil {
-			// Log but return the original error so the caller sees it.
+			// MarkRefreshFailed already records the failure (audit event + unhealthy
+			// state); its own error is intentionally dropped here so the original
+			// token error is returned verbatim; the caller (refresh scanner) logs it.
 			_ = markErr
 		}
 		return nil, fmt.Errorf("token source: %w", err)

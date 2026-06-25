@@ -232,12 +232,6 @@ func (s *DBStore) EmitRefreshed(ctx context.Context, instanceID string) {
 	s.emitAudit(ctx, auditOAuthRefreshed, "info", instanceID, nil)
 }
 
-// EmitRevoked writes a plugin_oauth_revoked audit event. Intended for future
-// revocation flows; not yet called from any production path in #224.
-func (s *DBStore) EmitRevoked(ctx context.Context, instanceID string) {
-	s.emitAudit(ctx, auditOAuthRevoked, "info", instanceID, nil)
-}
-
 // credentialsExpiresAt extracts the token expiry from StoredCredentials and
 // returns a pointer to an RFC3339Nano string for the DB column, or nil when the
 // token has no expiry (e.g. non-expiring static tokens).
@@ -247,6 +241,56 @@ func credentialsExpiresAt(creds StoredCredentials) *string {
 	}
 	s := creds.Token.Expiry.UTC().Format(time.RFC3339Nano)
 	return &s
+}
+
+// auditSpec carries the event type and extra payload fields for a single
+// credential mutation, returned by a casMutation closure to withCASRetry.
+type auditSpec struct {
+	eventType string
+	extra     map[string]any
+}
+
+// casMutation is a closure supplied to withCASRetry. It receives the current
+// StoredCredentials, applies a strategy gate and mutation, and returns the
+// updated credentials plus an auditSpec. Returning a non-nil error is
+// terminal — withCASRetry returns it verbatim (no wrapping) so sentinel
+// values like ErrWrongStrategy remain errors.Is-matchable.
+type casMutation func(creds StoredCredentials) (StoredCredentials, auditSpec, error)
+
+// withCASRetry runs the load→gate→mutate→save→audit CAS-retry loop for a
+// credential write operation. It holds the per-instance mutex for the whole
+// loop so writes are serialised against the OAuth refresh scanner.
+//
+// SaveToken is intentionally hand-written: its skip-if-fresher early return
+// (returns nil without saving) and no-audit-on-success path don't fit this
+// helper without changing its behaviour.
+func (s *DBStore) withCASRetry(ctx context.Context, instanceID, opName string, fn casMutation) error {
+	mu := s.locks.Get(instanceID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	const maxAttempts = 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		creds, ver, err := s.LoadCredentials(ctx, instanceID)
+		if err != nil {
+			return fmt.Errorf("%s (attempt %d): %w", opName, attempt+1, err)
+		}
+		mutated, spec, err := fn(creds)
+		if err != nil {
+			// Terminal — return bare so ErrWrongStrategy stays unwrapped.
+			return err
+		}
+		err = s.SaveCredentials(ctx, instanceID, mutated, ver)
+		if err == nil {
+			s.emitAudit(ctx, spec.eventType, "info", instanceID, spec.extra)
+			return nil
+		}
+		if !errors.Is(err, ErrCASConflict) {
+			return fmt.Errorf("%s: %w", opName, err)
+		}
+		// CAS conflict — reload and retry.
+	}
+	return fmt.Errorf("%s: failed after %d CAS conflicts", opName, maxAttempts)
 }
 
 // SeedOAuthToken seeds an OAuth access/refresh token directly into the stored
@@ -266,37 +310,22 @@ func credentialsExpiresAt(creds StoredCredentials) *string {
 // The per-instance mutex is held for the duration of the CAS loop so this
 // write is serialised against the OAuth refresh scanner.
 func (s *DBStore) SeedOAuthToken(ctx context.Context, instanceID, strategy string, tok *oauth2.Token) error {
-	mu := s.locks.Get(instanceID)
-	mu.Lock()
-	defer mu.Unlock()
-
-	const maxAttempts = 3
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		creds, ver, err := s.LoadCredentials(ctx, instanceID)
-		if err != nil {
-			return fmt.Errorf("seed oauth token (attempt %d): %w", attempt+1, err)
-		}
+	return s.withCASRetry(ctx, instanceID, "seed oauth token", func(creds StoredCredentials) (StoredCredentials, auditSpec, error) {
 		if creds.Strategy == "" {
 			// Fresh row — initialise strategy from the manifest.
 			creds.Strategy = strategy
 		} else if creds.Strategy != strategy {
-			return ErrWrongStrategy
+			return StoredCredentials{}, auditSpec{}, ErrWrongStrategy
 		}
 		creds.Token = tok
-		err = s.SaveCredentials(ctx, instanceID, creds, ver)
-		if err == nil {
-			s.emitAudit(ctx, auditCredentialSet, "info", instanceID, map[string]any{
-				"strategy": strategy,
+		return creds, auditSpec{
+			eventType: auditCredentialSet,
+			extra: map[string]any{
+				"strategy": strategy, // use the parameter per S3
 				"action":   "set_oauth_token",
-			})
-			return nil
-		}
-		if !errors.Is(err, ErrCASConflict) {
-			return fmt.Errorf("seed oauth token: %w", err)
-		}
-		// CAS conflict — reload and retry.
-	}
-	return fmt.Errorf("seed oauth token: failed after %d CAS conflicts", maxAttempts)
+			},
+		}, nil
+	})
 }
 
 // SetOAuthClient stores the OAuth2 client_id and client_secret for instanceID,
@@ -322,36 +351,22 @@ func (s *DBStore) SetOAuthClient(ctx context.Context, instanceID, strategy, clie
 		return fmt.Errorf("set oauth client: client_secret must not be empty")
 	}
 
-	mu := s.locks.Get(instanceID)
-	mu.Lock()
-	defer mu.Unlock()
-
-	const maxAttempts = 3
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		creds, ver, err := s.LoadCredentials(ctx, instanceID)
-		if err != nil {
-			return fmt.Errorf("set oauth client (attempt %d): %w", attempt+1, err)
-		}
+	return s.withCASRetry(ctx, instanceID, "set oauth client", func(creds StoredCredentials) (StoredCredentials, auditSpec, error) {
 		if creds.Strategy == "" {
 			creds.Strategy = strategy
 		} else if creds.Strategy != strategy {
-			return ErrWrongStrategy
+			return StoredCredentials{}, auditSpec{}, ErrWrongStrategy
 		}
 		creds.ClientID = clientID
 		creds.ClientSecret = clientSecret
-		err = s.SaveCredentials(ctx, instanceID, creds, ver)
-		if err == nil {
-			s.emitAudit(ctx, auditCredentialSet, "info", instanceID, map[string]any{
-				"strategy": strategy,
+		return creds, auditSpec{
+			eventType: auditCredentialSet,
+			extra: map[string]any{
+				"strategy": strategy, // use the parameter per S3
 				"action":   "set_oauth_client",
-			})
-			return nil
-		}
-		if !errors.Is(err, ErrCASConflict) {
-			return fmt.Errorf("set oauth client: %w", err)
-		}
-	}
-	return fmt.Errorf("set oauth client: failed after %d CAS conflicts", maxAttempts)
+			},
+		}, nil
+	})
 }
 
 // SetStaticAPIKey overwrites the static_api_key credentials for instanceID.
@@ -359,16 +374,7 @@ func (s *DBStore) SetOAuthClient(ctx context.Context, instanceID, strategy, clie
 // The per-instance mutex is held for the duration of the CAS loop so this
 // write is serialised against SaveToken (OAuth refresh scanner).
 func (s *DBStore) SetStaticAPIKey(ctx context.Context, instanceID, headerName, scheme, apiKey string) error {
-	mu := s.locks.Get(instanceID)
-	mu.Lock()
-	defer mu.Unlock()
-
-	const maxAttempts = 3
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		creds, ver, err := s.LoadCredentials(ctx, instanceID)
-		if err != nil {
-			return fmt.Errorf("set static api key (attempt %d): %w", attempt+1, err)
-		}
+	return s.withCASRetry(ctx, instanceID, "set static api key", func(creds StoredCredentials) (StoredCredentials, auditSpec, error) {
 		if creds.Strategy == "" {
 			// First credential write for a freshly-created instance, whose stored
 			// blob has no strategy yet (instance creation seeds credentials_encrypted
@@ -378,27 +384,22 @@ func (s *DBStore) SetStaticAPIKey(ctx context.Context, instanceID, headerName, s
 			// SeedOAuthToken, which non-OAuth strategies previously lacked (#572).
 			creds.Strategy = sdkmanifest.AuthStrategyStaticAPIKey
 		} else if creds.Strategy != sdkmanifest.AuthStrategyStaticAPIKey {
-			return ErrWrongStrategy
+			return StoredCredentials{}, auditSpec{}, ErrWrongStrategy
 		}
 		creds.StaticAPIKey = &StaticAPIKeyCreds{
 			HeaderName: headerName,
 			Scheme:     scheme,
 			APIKey:     apiKey,
 		}
-		err = s.SaveCredentials(ctx, instanceID, creds, ver)
-		if err == nil {
-			s.emitAudit(ctx, auditCredentialSet, "info", instanceID, map[string]any{
+		return creds, auditSpec{
+			eventType: auditCredentialSet,
+			extra: map[string]any{
 				"strategy": creds.Strategy,
 				"action":   "set_static_api_key",
 				"key":      headerName,
-			})
-			return nil
-		}
-		if !errors.Is(err, ErrCASConflict) {
-			return fmt.Errorf("set static api key: %w", err)
-		}
-	}
-	return fmt.Errorf("set static api key: failed after %d CAS conflicts", maxAttempts)
+			},
+		}, nil
+	})
 }
 
 // SetHeaderSetEntry adds or replaces a named header within the header_set
@@ -411,25 +412,17 @@ func (s *DBStore) SetHeaderSetEntry(ctx context.Context, instanceID string, head
 		return fmt.Errorf("set header set entry: %w", err)
 	}
 
-	mu := s.locks.Get(instanceID)
-	mu.Lock()
-	defer mu.Unlock()
-
-	const maxAttempts = 3
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		creds, ver, err := s.LoadCredentials(ctx, instanceID)
-		if err != nil {
-			return fmt.Errorf("set header set entry (attempt %d): %w", attempt+1, err)
+	return s.withCASRetry(ctx, instanceID, "set header set entry", func(creds StoredCredentials) (StoredCredentials, auditSpec, error) {
+		// nil-init before any access so a fresh instance doesn't panic (B1).
+		if creds.HeaderSet == nil {
+			creds.HeaderSet = &HeaderSetCreds{}
 		}
 		if creds.Strategy == "" {
 			// Seed the strategy on first write for a fresh instance (#572). The
 			// handler already validated it against the manifest. See SetStaticAPIKey.
 			creds.Strategy = sdkmanifest.AuthStrategyHeaderSet
 		} else if creds.Strategy != sdkmanifest.AuthStrategyHeaderSet {
-			return ErrWrongStrategy
-		}
-		if creds.HeaderSet == nil {
-			creds.HeaderSet = &HeaderSetCreds{}
+			return StoredCredentials{}, auditSpec{}, ErrWrongStrategy
 		}
 		// Replace existing entry by case-insensitive name, or append.
 		replaced := false
@@ -443,20 +436,15 @@ func (s *DBStore) SetHeaderSetEntry(ctx context.Context, instanceID string, head
 		if !replaced {
 			creds.HeaderSet.Headers = append(creds.HeaderSet.Headers, header)
 		}
-		err = s.SaveCredentials(ctx, instanceID, creds, ver)
-		if err == nil {
-			s.emitAudit(ctx, auditCredentialSet, "info", instanceID, map[string]any{
+		return creds, auditSpec{
+			eventType: auditCredentialSet,
+			extra: map[string]any{
 				"strategy": creds.Strategy,
 				"action":   "set_header",
 				"key":      header.Name,
-			})
-			return nil
-		}
-		if !errors.Is(err, ErrCASConflict) {
-			return fmt.Errorf("set header set entry: %w", err)
-		}
-	}
-	return fmt.Errorf("set header set entry: failed after %d CAS conflicts", maxAttempts)
+			},
+		}, nil
+	})
 }
 
 // DeleteHeaderSetEntry removes the named header from the header_set credentials.
@@ -465,19 +453,12 @@ func (s *DBStore) SetHeaderSetEntry(ctx context.Context, instanceID string, head
 // as an empty (non-nil) slice so the JSON shape is stable.
 // The per-instance mutex is held for the duration of the CAS loop.
 func (s *DBStore) DeleteHeaderSetEntry(ctx context.Context, instanceID, headerName string) error {
-	mu := s.locks.Get(instanceID)
-	mu.Lock()
-	defer mu.Unlock()
-
-	const maxAttempts = 3
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		creds, ver, err := s.LoadCredentials(ctx, instanceID)
-		if err != nil {
-			return fmt.Errorf("delete header set entry (attempt %d): %w", attempt+1, err)
-		}
+	return s.withCASRetry(ctx, instanceID, "delete header set entry", func(creds StoredCredentials) (StoredCredentials, auditSpec, error) {
+		// Strict reject — no seed-if-empty: the instance must already be header_set.
 		if creds.Strategy != sdkmanifest.AuthStrategyHeaderSet {
-			return ErrWrongStrategy
+			return StoredCredentials{}, auditSpec{}, ErrWrongStrategy
 		}
+		// nil-init before slice ops so a fresh instance doesn't panic (B1).
 		if creds.HeaderSet == nil {
 			creds.HeaderSet = &HeaderSetCreds{Headers: []NamedHeader{}}
 		}
@@ -490,86 +471,52 @@ func (s *DBStore) DeleteHeaderSetEntry(ctx context.Context, instanceID, headerNa
 			}
 		}
 		creds.HeaderSet.Headers = kept
-		err = s.SaveCredentials(ctx, instanceID, creds, ver)
-		if err == nil {
-			s.emitAudit(ctx, auditCredentialDeleted, "info", instanceID, map[string]any{
+		return creds, auditSpec{
+			eventType: auditCredentialDeleted,
+			extra: map[string]any{
 				"strategy": creds.Strategy,
 				"key":      headerName,
-			})
-			return nil
-		}
-		if !errors.Is(err, ErrCASConflict) {
-			return fmt.Errorf("delete header set entry: %w", err)
-		}
-	}
-	return fmt.Errorf("delete header set entry: failed after %d CAS conflicts", maxAttempts)
+			},
+		}, nil
+	})
 }
 
 // SetBasicAuth overwrites the basic_auth credentials for instanceID.
 // It rejects the call when the stored strategy is not AuthStrategyBasicAuth.
 // The per-instance mutex is held for the duration of the CAS loop.
 func (s *DBStore) SetBasicAuth(ctx context.Context, instanceID, username, password string) error {
-	mu := s.locks.Get(instanceID)
-	mu.Lock()
-	defer mu.Unlock()
-
-	const maxAttempts = 3
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		creds, ver, err := s.LoadCredentials(ctx, instanceID)
-		if err != nil {
-			return fmt.Errorf("set basic auth (attempt %d): %w", attempt+1, err)
-		}
+	return s.withCASRetry(ctx, instanceID, "set basic auth", func(creds StoredCredentials) (StoredCredentials, auditSpec, error) {
 		if creds.Strategy == "" {
 			// Seed the strategy on first write for a fresh instance (#572). The
 			// handler already validated it against the manifest. See SetStaticAPIKey.
 			creds.Strategy = sdkmanifest.AuthStrategyBasicAuth
 		} else if creds.Strategy != sdkmanifest.AuthStrategyBasicAuth {
-			return ErrWrongStrategy
+			return StoredCredentials{}, auditSpec{}, ErrWrongStrategy
 		}
 		creds.BasicAuth = &BasicAuthCreds{Username: username, Password: password}
-		err = s.SaveCredentials(ctx, instanceID, creds, ver)
-		if err == nil {
-			s.emitAudit(ctx, auditCredentialSet, "info", instanceID, map[string]any{
+		return creds, auditSpec{
+			eventType: auditCredentialSet,
+			extra: map[string]any{
 				"strategy": creds.Strategy,
 				"action":   "set_basic_auth",
-			})
-			return nil
-		}
-		if !errors.Is(err, ErrCASConflict) {
-			return fmt.Errorf("set basic auth: %w", err)
-		}
-	}
-	return fmt.Errorf("set basic auth: failed after %d CAS conflicts", maxAttempts)
+			},
+		}, nil
+	})
 }
 
 // ClearCredentials wipes the secret sub-blob for instanceID while preserving
 // the Strategy field. Emits a plugin_credentials_cleared audit event.
 // The per-instance mutex is held for the duration of the CAS loop.
 func (s *DBStore) ClearCredentials(ctx context.Context, instanceID string) error {
-	mu := s.locks.Get(instanceID)
-	mu.Lock()
-	defer mu.Unlock()
-
-	const maxAttempts = 3
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		creds, ver, err := s.LoadCredentials(ctx, instanceID)
-		if err != nil {
-			return fmt.Errorf("clear credentials (attempt %d): %w", attempt+1, err)
-		}
+	return s.withCASRetry(ctx, instanceID, "clear credentials", func(creds StoredCredentials) (StoredCredentials, auditSpec, error) {
 		strategy := creds.Strategy
-		cleared := StoredCredentials{Strategy: strategy}
-		err = s.SaveCredentials(ctx, instanceID, cleared, ver)
-		if err == nil {
-			s.emitAudit(ctx, auditCredentialCleared, "info", instanceID, map[string]any{
+		return StoredCredentials{Strategy: strategy}, auditSpec{
+			eventType: auditCredentialCleared,
+			extra: map[string]any{
 				"strategy": strategy,
-			})
-			return nil
-		}
-		if !errors.Is(err, ErrCASConflict) {
-			return fmt.Errorf("clear credentials: %w", err)
-		}
-	}
-	return fmt.Errorf("clear credentials: failed after %d CAS conflicts", maxAttempts)
+			},
+		}, nil
+	})
 }
 
 // emitAudit inserts a plugin audit event row. Failures are logged but not
