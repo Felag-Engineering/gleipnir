@@ -173,16 +173,17 @@ func TestPendingReauthorizeSeverity(t *testing.T) {
 }
 
 func TestInactiveSeverity(t *testing.T) {
-	// inactive must sit at rank 8, above crashed (7), because it is a deliberate
-	// and total disable — worse than any runtime failure from an availability standpoint.
+	// inactive must sit at rank 8, above crashed (7). This rank is load-bearing
+	// for the §8.1 self-mark no-op gate in SetHealthState; do not lower it.
 	got := Severity(model.PluginHealthStateInactive)
 	if got != 8 {
 		t.Errorf("Severity(inactive) = %d, want 8", got)
 	}
-	// inactive must dominate crashed in WorstHealth.
+	// WorstHealth excludes inactive from health aggregation (#589): crashed wins
+	// over inactive because inactive is administrative, not a health failure.
 	worst := WorstHealth([]model.PluginHealthState{model.PluginHealthStateCrashed, model.PluginHealthStateInactive})
-	if worst != model.PluginHealthStateInactive {
-		t.Errorf("WorstHealth([crashed, inactive]) = %q, want inactive", worst)
+	if worst != model.PluginHealthStateCrashed {
+		t.Errorf("WorstHealth([crashed, inactive]) = %q, want crashed (#589)", worst)
 	}
 }
 
@@ -435,13 +436,39 @@ func TestWorstHealth(t *testing.T) {
 			want: model.PluginHealthStateCrashed, // severity 7 > 6 > 5
 		},
 		{
-			name: "inactive dominates all other states",
+			// #589: inactive is excluded from health aggregation; crashed wins.
+			name: "inactive is excluded; crashed dominates",
 			states: []model.PluginHealthState{
 				model.PluginHealthStateCrashed,
 				model.PluginHealthStateInactive,
 				model.PluginHealthStateSignatureInvalid,
 			},
-			want: model.PluginHealthStateInactive, // severity 8 > 7 > 6
+			want: model.PluginHealthStateCrashed, // inactive excluded; severity 7 > 6
+		},
+		{
+			name:   "inactive with healthy returns healthy",
+			states: []model.PluginHealthState{model.PluginHealthStateInactive, model.PluginHealthStateHealthy},
+			want:   model.PluginHealthStateHealthy,
+		},
+		{
+			name:   "inactive with unhealthy returns unhealthy",
+			states: []model.PluginHealthState{model.PluginHealthStateInactive, model.PluginHealthStateUnhealthy},
+			want:   model.PluginHealthStateUnhealthy,
+		},
+		{
+			name:   "inactive with crashed returns crashed",
+			states: []model.PluginHealthState{model.PluginHealthStateInactive, model.PluginHealthStateCrashed},
+			want:   model.PluginHealthStateCrashed,
+		},
+		{
+			name:   "all inactive returns inactive",
+			states: []model.PluginHealthState{model.PluginHealthStateInactive, model.PluginHealthStateInactive},
+			want:   model.PluginHealthStateInactive,
+		},
+		{
+			name:   "single inactive returns inactive",
+			states: []model.PluginHealthState{model.PluginHealthStateInactive},
+			want:   model.PluginHealthStateInactive,
 		},
 	}
 
