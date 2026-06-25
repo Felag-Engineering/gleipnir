@@ -21,9 +21,40 @@ import (
 // additionalProperties: false is the library's default for struct reflections.
 
 type PostMessageParams struct {
-	Channel  string `json:"channel"   jsonschema:"required,title=Channel,description=Channel ID (C…) or name (#general)"`
-	Text     string `json:"text"      jsonschema:"required,title=Text,description=Plain-text message body. Block Kit not supported in v0.1."`
-	ThreadTS string `json:"thread_ts,omitempty" jsonschema:"title=Thread TS,description=Optional parent thread timestamp to reply in-thread"`
+	Channel  string          `json:"channel"            jsonschema:"required,title=Channel,description=Channel ID (C…) or name (#general)"`
+	Text     string          `json:"text,omitempty"     jsonschema:"title=Text,description=Message text. Used as the notification / fallback text when blocks are present\\, or as the message body when blocks are absent."`
+	Blocks   json.RawMessage `json:"blocks,omitempty"   jsonschema:"title=Blocks,description=JSON array of Slack Block Kit block objects\\, e.g. [{\\\"type\\\":\\\"section\\\",\\\"text\\\":{...}}]. Must be a JSON array\\, not an object. When set\\, takes precedence over plain text for rendering; text is used as the notification fallback."`
+	ThreadTS string          `json:"thread_ts,omitempty" jsonschema:"title=Thread TS,description=Optional parent thread timestamp to reply in-thread"`
+}
+
+type ReadThreadParams struct {
+	Channel string `json:"channel"           jsonschema:"required,title=Channel,description=Channel ID (C…) containing the thread"`
+	Ts      string `json:"ts"                jsonschema:"required,title=Thread TS,description=Parent message timestamp (ts) that identifies the thread"`
+	Limit   int    `json:"limit,omitempty"   jsonschema:"title=Limit,description=Max messages to return (1-200). Defaults to 200,minimum=1,maximum=200"`
+	Cursor  string `json:"cursor,omitempty"  jsonschema:"title=Cursor,description=Pagination cursor from a previous response"`
+}
+
+type ReadHistoryParams struct {
+	Channel string `json:"channel"          jsonschema:"required,title=Channel,description=Channel ID (C…) to read history from"`
+	Limit   int    `json:"limit,omitempty"  jsonschema:"title=Limit,description=Max messages to return (1-200). Defaults to 100,minimum=1,maximum=200"`
+	Oldest  string `json:"oldest,omitempty" jsonschema:"title=Oldest,description=Return messages after this Unix timestamp (exclusive)"`
+	Cursor  string `json:"cursor,omitempty" jsonschema:"title=Cursor,description=Pagination cursor from a previous response"`
+}
+
+type UpdateMessageParams struct {
+	Channel string          `json:"channel"          jsonschema:"required,title=Channel,description=Channel ID containing the message to update"`
+	Ts      string          `json:"ts"               jsonschema:"required,title=Message TS,description=Timestamp of the message to update"`
+	Text    string          `json:"text,omitempty"   jsonschema:"title=Text,description=Message text. Used as the notification / fallback text when blocks are present\\, or as the message body when blocks are absent."`
+	Blocks  json.RawMessage `json:"blocks,omitempty" jsonschema:"title=Blocks,description=JSON array of Slack Block Kit block objects\\, e.g. [{\\\"type\\\":\\\"section\\\",\\\"text\\\":{...}}]. Must be a JSON array\\, not an object. When set\\, takes precedence over plain text for rendering; text is used as the notification fallback."`
+}
+
+type DeleteMessageParams struct {
+	Channel string `json:"channel" jsonschema:"required,title=Channel,description=Channel ID containing the message to delete"`
+	Ts      string `json:"ts"      jsonschema:"required,title=Message TS,description=Timestamp of the message to delete"`
+}
+
+type LookupUserParams struct {
+	User string `json:"user" jsonschema:"required,title=User ID,description=Slack user ID (U… format) to look up"`
 }
 
 type ListChannelsParams struct {
@@ -142,10 +173,10 @@ func mapErr(err error) (commonv1.ErrorCode, healthHint) {
 // (fix the Slack app scope grants).
 func classifySlackErrCode(code string) (commonv1.ErrorCode, healthHint) {
 	switch code {
-	case "channel_not_found", "not_in_channel", "user_not_found", "message_not_found":
+	case "channel_not_found", "not_in_channel", "user_not_found", "message_not_found", "thread_not_found":
 		return commonv1.ErrorCode_ERROR_CODE_NOT_FOUND, healthNone
 
-	case "invalid_arguments", "msg_too_long", "message_text_required", "bad_query", "invalid_name":
+	case "invalid_arguments", "invalid_blocks", "no_text", "msg_too_long", "message_text_required", "bad_query", "invalid_name":
 		return commonv1.ErrorCode_ERROR_CODE_INVALID_ARG, healthNone
 
 	case "missing_scope":
@@ -229,13 +260,50 @@ func callWithRetry[T any](ctx context.Context, fn func(context.Context) (T, erro
 // raw inputJSON string from the Call request. It returns the output JSON
 // bytes and an error (which callers pass through mapErr).
 
+// msgOptionsFromTextAndBlocks builds the Slack MsgOption list from a text
+// string and an optional raw JSON array of Block Kit block objects.
+//
+// At least one of text or blocks must be non-empty. When blocks is provided it
+// must be a JSON array (not an object) — slack.Blocks.UnmarshalJSON decodes a
+// top-level []json.RawMessage and fails/decodes empty on an object wrapper.
+// Invalid shape is surfaced as INVALID_ARG before any Slack API call is made.
+//
+// text is always appended as MsgOptionText (the notification fallback) when
+// non-empty; this is Block Kit best practice — Slack uses it for push
+// notifications and clients that don't render blocks.
+func msgOptionsFromTextAndBlocks(text string, rawBlocks json.RawMessage) ([]slack.MsgOption, error) {
+	if len(rawBlocks) == 0 && text == "" {
+		return nil, slack.SlackErrorResponse{Err: "no_text"}
+	}
+
+	var opts []slack.MsgOption
+
+	if len(rawBlocks) > 0 {
+		var b slack.Blocks
+		if err := json.Unmarshal(rawBlocks, &b); err != nil {
+			// Bad/non-array JSON — surface as INVALID_ARG pre-flight.
+			return nil, slack.SlackErrorResponse{Err: "invalid_arguments"}
+		}
+		opts = append(opts, slack.MsgOptionBlocks(b.BlockSet...))
+	}
+
+	if text != "" {
+		opts = append(opts, slack.MsgOptionText(text, false))
+	}
+
+	return opts, nil
+}
+
 func handlePostMessage(ctx context.Context, sc *slack.Client, inputJSON string) ([]byte, error) {
 	var p PostMessageParams
 	if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
 		return nil, slack.SlackErrorResponse{Err: "invalid_arguments"}
 	}
 
-	opts := []slack.MsgOption{slack.MsgOptionText(p.Text, false)}
+	opts, err := msgOptionsFromTextAndBlocks(p.Text, p.Blocks)
+	if err != nil {
+		return nil, err
+	}
 	if p.ThreadTS != "" {
 		opts = append(opts, slack.MsgOptionTS(p.ThreadTS))
 	}
@@ -343,5 +411,178 @@ func handleSetTopic(ctx context.Context, sc *slack.Client, inputJSON string) ([]
 	return json.Marshal(map[string]any{
 		"ok":    true,
 		"topic": channel.Topic.Value,
+	})
+}
+
+// normalizeLimit resolves a tool's optional page-size param: 0 means "unset" and
+// falls back to def, and anything above max is clamped so a raw API caller can't
+// exceed what the tool's JSON schema advertises (the schema already caps LLM input).
+func normalizeLimit(requested, def, max int) int {
+	if requested <= 0 {
+		return def
+	}
+	if requested > max {
+		return max
+	}
+	return requested
+}
+
+func handleReadThread(ctx context.Context, sc *slack.Client, inputJSON string) ([]byte, error) {
+	var p ReadThreadParams
+	if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+		return nil, slack.SlackErrorResponse{Err: "invalid_arguments"}
+	}
+
+	limit := normalizeLimit(p.Limit, 200, 200)
+
+	type replyResult struct {
+		msgs       []slack.Message
+		hasMore    bool
+		nextCursor string
+	}
+	res, err := callWithRetry(ctx, func(ctx context.Context) (replyResult, error) {
+		msgs, hasMore, cursor, err := sc.GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
+			ChannelID: p.Channel,
+			Timestamp: p.Ts,
+			Limit:     limit,
+			Cursor:    p.Cursor,
+		})
+		return replyResult{msgs, hasMore, cursor}, err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	type msgItem struct {
+		Text     string `json:"text"`
+		User     string `json:"user"`
+		Ts       string `json:"ts"`
+		ThreadTs string `json:"thread_ts,omitempty"`
+	}
+	items := make([]msgItem, len(res.msgs))
+	for i, m := range res.msgs {
+		items[i] = msgItem{
+			Text:     m.Text,
+			User:     m.User,
+			Ts:       m.Timestamp,
+			ThreadTs: m.ThreadTimestamp,
+		}
+	}
+
+	return json.Marshal(map[string]any{
+		"messages":    items,
+		"next_cursor": res.nextCursor,
+		"has_more":    res.hasMore,
+	})
+}
+
+func handleReadHistory(ctx context.Context, sc *slack.Client, inputJSON string) ([]byte, error) {
+	var p ReadHistoryParams
+	if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+		return nil, slack.SlackErrorResponse{Err: "invalid_arguments"}
+	}
+
+	limit := normalizeLimit(p.Limit, 100, 200)
+
+	resp, err := callWithRetry(ctx, func(ctx context.Context) (*slack.GetConversationHistoryResponse, error) {
+		return sc.GetConversationHistoryContext(ctx, &slack.GetConversationHistoryParameters{
+			ChannelID: p.Channel,
+			Limit:     limit,
+			Oldest:    p.Oldest,
+			Cursor:    p.Cursor,
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	type msgItem struct {
+		Text     string `json:"text"`
+		User     string `json:"user"`
+		Ts       string `json:"ts"`
+		ThreadTs string `json:"thread_ts,omitempty"`
+	}
+	items := make([]msgItem, len(resp.Messages))
+	for i, m := range resp.Messages {
+		items[i] = msgItem{
+			Text:     m.Text,
+			User:     m.User,
+			Ts:       m.Timestamp,
+			ThreadTs: m.ThreadTimestamp,
+		}
+	}
+
+	return json.Marshal(map[string]any{
+		"messages":    items,
+		"next_cursor": resp.ResponseMetaData.NextCursor,
+		"has_more":    resp.HasMore,
+	})
+}
+
+func handleUpdateMessage(ctx context.Context, sc *slack.Client, inputJSON string) ([]byte, error) {
+	var p UpdateMessageParams
+	if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+		return nil, slack.SlackErrorResponse{Err: "invalid_arguments"}
+	}
+
+	opts, err := msgOptionsFromTextAndBlocks(p.Text, p.Blocks)
+	if err != nil {
+		return nil, err
+	}
+
+	type updateResult struct{ channel, ts, text string }
+	res, err := callWithRetry(ctx, func(ctx context.Context) (updateResult, error) {
+		ch, ts, text, err := sc.UpdateMessageContext(ctx, p.Channel, p.Ts, opts...)
+		return updateResult{ch, ts, text}, err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Always include the "text" key even when Slack echoes an empty string,
+	// so callers can rely on a stable shape.
+	return json.Marshal(map[string]string{
+		"channel": res.channel,
+		"ts":      res.ts,
+		"text":    res.text,
+	})
+}
+
+func handleDeleteMessage(ctx context.Context, sc *slack.Client, inputJSON string) ([]byte, error) {
+	var p DeleteMessageParams
+	if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+		return nil, slack.SlackErrorResponse{Err: "invalid_arguments"}
+	}
+
+	type deleteResult struct{ channel, ts string }
+	res, err := callWithRetry(ctx, func(ctx context.Context) (deleteResult, error) {
+		ch, ts, err := sc.DeleteMessageContext(ctx, p.Channel, p.Ts)
+		return deleteResult{ch, ts}, err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(map[string]string{"channel": res.channel, "ts": res.ts})
+}
+
+func handleLookupUser(ctx context.Context, sc *slack.Client, inputJSON string) ([]byte, error) {
+	var p LookupUserParams
+	if err := json.Unmarshal([]byte(inputJSON), &p); err != nil {
+		return nil, slack.SlackErrorResponse{Err: "invalid_arguments"}
+	}
+
+	u, err := callWithRetry(ctx, func(ctx context.Context) (*slack.User, error) {
+		return sc.GetUserInfoContext(ctx, p.User)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(map[string]string{
+		"id":        u.ID,
+		"name":      u.Name,
+		"real_name": u.RealName,
+		"tz":        u.TZ,
 	})
 }

@@ -29,8 +29,9 @@ import (
 	"github.com/felag-engineering/gleipnir/plugin-sdk/serve"
 )
 
-// ToolService implements toolv1.ToolServiceServer with four Slack Web API tools:
-// post_message, list_channels, react, and set_topic.
+// ToolService implements toolv1.ToolServiceServer with Slack Web API tools:
+// post_message, list_channels, react, set_topic, read_thread, read_history,
+// update_message, delete_message, and lookup_user.
 // It fetches credentials on every Call (no in-process caching, per spec §9.4).
 type ToolService struct {
 	toolv1.UnimplementedToolServiceServer
@@ -60,7 +61,7 @@ func NewToolService(host hostv1.HostServiceClient, httpClient *http.Client, apiU
 	return &ToolService{host: host, httpClient: httpClient, apiURL: apiURL}
 }
 
-// ListTools advertises the four Slack tools. InputSchema is a JSON string
+// ListTools advertises the Slack tools. InputSchema is a JSON string
 // because toolv1.ToolSchema.InputSchema is a string on the wire
 // (plugin-sdk/gen/.../tool.pb.go:39); reflectInputSchemaJSON produces it.
 func (s *ToolService) ListTools(_ context.Context, _ *toolv1.ListToolsRequest) (*toolv1.ListToolsResponse, error) {
@@ -68,7 +69,7 @@ func (s *ToolService) ListTools(_ context.Context, _ *toolv1.ListToolsRequest) (
 		Tools: []*toolv1.ToolSchema{
 			{
 				Name:        "post_message",
-				Description: "Post a plain-text message to a Slack channel or DM.",
+				Description: "Post a message to a Slack channel or DM. Supports optional Block Kit blocks alongside plain text.",
 				InputSchema: reflectInputSchemaJSON(PostMessageParams{}),
 			},
 			{
@@ -85,6 +86,31 @@ func (s *ToolService) ListTools(_ context.Context, _ *toolv1.ListToolsRequest) (
 				Name:        "set_topic",
 				Description: "Set the topic of a Slack channel.",
 				InputSchema: reflectInputSchemaJSON(SetTopicParams{}),
+			},
+			{
+				Name:        "read_thread",
+				Description: "Read messages in a Slack thread (conversations.replies). Returns messages in chronological order.",
+				InputSchema: reflectInputSchemaJSON(ReadThreadParams{}),
+			},
+			{
+				Name:        "read_history",
+				Description: "Read recent messages from a Slack channel (conversations.history). Requires a *:history scope for the channel type.",
+				InputSchema: reflectInputSchemaJSON(ReadHistoryParams{}),
+			},
+			{
+				Name:        "update_message",
+				Description: "Update (edit) a previously posted Slack message. Supports optional Block Kit blocks alongside plain text.",
+				InputSchema: reflectInputSchemaJSON(UpdateMessageParams{}),
+			},
+			{
+				Name:        "delete_message",
+				Description: "Delete a Slack message posted by the bot.",
+				InputSchema: reflectInputSchemaJSON(DeleteMessageParams{}),
+			},
+			{
+				Name:        "lookup_user",
+				Description: "Look up a Slack user by ID (U… format). Returns id, name, real_name, and tz.",
+				InputSchema: reflectInputSchemaJSON(LookupUserParams{}),
 			},
 		},
 	}, nil
@@ -142,7 +168,8 @@ func (s *ToolService) Call(ctx context.Context, req *toolv1.CallRequest) (*toolv
 	// auth.test, matching the minimal-tool dispatch pattern
 	// (plugin-sdk/examples/minimal-tool/service.go:62-69).
 	switch toolName {
-	case "post_message", "list_channels", "react", "set_topic":
+	case "post_message", "list_channels", "react", "set_topic",
+		"read_thread", "read_history", "update_message", "delete_message", "lookup_user":
 		// valid — continue
 	default:
 		return errorResponse(commonv1.ErrorCode_ERROR_CODE_INVALID_ARG,
@@ -209,6 +236,16 @@ func (s *ToolService) dispatch(ctx context.Context, sc *slack.Client, toolName, 
 		return handleReact(ctx, sc, inputJSON)
 	case "set_topic":
 		return handleSetTopic(ctx, sc, inputJSON)
+	case "read_thread":
+		return handleReadThread(ctx, sc, inputJSON)
+	case "read_history":
+		return handleReadHistory(ctx, sc, inputJSON)
+	case "update_message":
+		return handleUpdateMessage(ctx, sc, inputJSON)
+	case "delete_message":
+		return handleDeleteMessage(ctx, sc, inputJSON)
+	case "lookup_user":
+		return handleLookupUser(ctx, sc, inputJSON)
 	default:
 		return nil, fmt.Errorf("unknown tool: %q", toolName)
 	}
