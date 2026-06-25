@@ -10,6 +10,8 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/felag-engineering/gleipnir/internal/db"
 	"github.com/felag-engineering/gleipnir/internal/model"
@@ -25,8 +27,9 @@ import (
 // fakeChannelClient implements channelv1.ChannelServiceClient via hooks so
 // tests can inject arbitrary responses without standing up a real gRPC server.
 type fakeChannelClient struct {
-	notifyHook  func(ctx context.Context, req *channelv1.NotifyRequest) (*channelv1.NotifyResponse, error)
-	requestHook func(ctx context.Context, req *channelv1.RequestRequest) (*channelv1.RequestResponse, error)
+	notifyHook     func(ctx context.Context, req *channelv1.NotifyRequest) (*channelv1.NotifyResponse, error)
+	requestHook    func(ctx context.Context, req *channelv1.RequestRequest) (*channelv1.RequestResponse, error)
+	terminatedHook func(ctx context.Context, req *channelv1.RequestTerminatedRequest) (*channelv1.RequestTerminatedResponse, error)
 }
 
 func (f *fakeChannelClient) Notify(ctx context.Context, in *channelv1.NotifyRequest, _ ...grpc.CallOption) (*channelv1.NotifyResponse, error) {
@@ -41,6 +44,13 @@ func (f *fakeChannelClient) Request(ctx context.Context, in *channelv1.RequestRe
 		return f.requestHook(ctx, in)
 	}
 	return &channelv1.RequestResponse{Acked: true}, nil
+}
+
+func (f *fakeChannelClient) RequestTerminated(ctx context.Context, in *channelv1.RequestTerminatedRequest, _ ...grpc.CallOption) (*channelv1.RequestTerminatedResponse, error) {
+	if f.terminatedHook != nil {
+		return f.terminatedHook(ctx, in)
+	}
+	return &channelv1.RequestTerminatedResponse{Ok: true}, nil
 }
 
 // Ensure fakeChannelClient satisfies the interface.
@@ -1197,6 +1207,137 @@ func TestWait_TimerFires_WriteRunStepUsesDetachedCtx(t *testing.T) {
 	if !stepCtxStillLive.Load() {
 		t.Errorf("WriteRunStep was handed the caller's run ctx (#499 regression): " +
 			"cancelling the run ctx cancelled the step ctx. It must use the detached cleanup ctx.")
+	}
+}
+
+// ---- SendRequestTermination / Wait+terminatedHook tests ----
+
+// TestWait_TimerWins_SendsRequestTermination verifies that when the Wait timer
+// fires and this caller wins the CAS (rows==1), SendRequestTermination is
+// invoked on the plugin with reason TIMED_OUT.  We capture the received reason
+// via the terminatedHook on the fake client.
+func TestWait_TimerWins_SendsRequestTermination(t *testing.T) {
+	ds := newSetup(t)
+
+	pluginID := insertPlugin(t, ds.store, "p1", "plug")
+	instID := insertPluginInstance(t, ds.store, "i1", pluginID, "inst-term")
+	audID := insertAudience(t, ds.store, "aud1", "aud")
+	insertAudienceEntry(t, ds.store, "ae1", audID, instID, 0, false, true)
+
+	var receivedReason channelv1.TerminalReason
+	var terminatedCalled atomic.Bool
+	ds.clientMap["inst-term"] = &fakeChannelClient{
+		requestHook: func(_ context.Context, _ *channelv1.RequestRequest) (*channelv1.RequestResponse, error) {
+			return &channelv1.RequestResponse{Acked: true}, nil
+		},
+		terminatedHook: func(_ context.Context, req *channelv1.RequestTerminatedRequest) (*channelv1.RequestTerminatedResponse, error) {
+			terminatedCalled.Store(true)
+			receivedReason = req.GetReason()
+			return &channelv1.RequestTerminatedResponse{Ok: true}, nil
+		},
+	}
+
+	testutil.InsertPolicy(t, ds.store, "pol1", "policy-pol1", "webhook", "{}")
+	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
+
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+	reqID, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+
+	// Let the timer fire; nobody calls Resolve so we win the CAS.
+	_, waitErr := d.Wait(context.Background(), reqID, 30*time.Millisecond)
+	if waitErr == nil {
+		t.Fatal("Wait should return error (timeout)")
+	}
+
+	if !terminatedCalled.Load() {
+		t.Error("SendRequestTermination was not called after CAS-win timeout")
+	}
+	if receivedReason != channelv1.TerminalReason_TERMINAL_REASON_TIMED_OUT {
+		t.Errorf("reason = %v, want TERMINAL_REASON_TIMED_OUT", receivedReason)
+	}
+}
+
+// TestWait_ScannerWon_TerminatedHookNotCalled verifies that when the scanner
+// pre-claims the timeout (rows==0 for Wait's CAS attempt), SendRequestTermination
+// is NOT called by Wait — the scanner owns the notification in that race.
+func TestWait_ScannerWon_TerminatedHookNotCalled(t *testing.T) {
+	ds := newSetup(t)
+
+	pluginID := insertPlugin(t, ds.store, "p1", "plug")
+	instID := insertPluginInstance(t, ds.store, "i1", pluginID, "inst-term2")
+	audID := insertAudience(t, ds.store, "aud2", "aud2")
+	insertAudienceEntry(t, ds.store, "ae1", audID, instID, 0, false, true)
+
+	var terminatedCalled atomic.Bool
+	ds.clientMap["inst-term2"] = &fakeChannelClient{
+		requestHook: func(_ context.Context, _ *channelv1.RequestRequest) (*channelv1.RequestResponse, error) {
+			return &channelv1.RequestResponse{Acked: true}, nil
+		},
+		terminatedHook: func(_ context.Context, _ *channelv1.RequestTerminatedRequest) (*channelv1.RequestTerminatedResponse, error) {
+			terminatedCalled.Store(true)
+			return &channelv1.RequestTerminatedResponse{Ok: true}, nil
+		},
+	}
+
+	testutil.InsertPolicy(t, ds.store, "pol1", "policy-pol1", "webhook", "{}")
+	testutil.InsertRun(t, ds.store, "run1", "pol1", model.RunStatusRunning)
+
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+	reqID, _, err := d.Request(context.Background(), audID, dispatch.RouteContext{RunID: "run1", PolicyID: "pol1", ToolName: "ask"}, "prompt", nil)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+
+	// Scanner wins: pre-set the row to timed_out before Wait's timer fires.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := ds.store.DB().Exec(
+		`UPDATE plugin_pending_requests SET status='timed_out', resolved_at=? WHERE id=?`,
+		now, reqID,
+	); err != nil {
+		t.Fatalf("pre-set timed_out: %v", err)
+	}
+
+	_, waitErr := d.Wait(context.Background(), reqID, 30*time.Millisecond)
+	// ErrRequestAlreadyResolved — scanner won the race.
+	if !errors.Is(waitErr, dispatch.ErrRequestAlreadyResolved) {
+		t.Errorf("Wait error = %v, want ErrRequestAlreadyResolved", waitErr)
+	}
+
+	if terminatedCalled.Load() {
+		t.Error("SendRequestTermination was called despite scanner winning the CAS — hook must only fire on CAS-win")
+	}
+}
+
+// TestSendRequestTermination_UnimplementedSwallowed verifies that
+// codes.Unimplemented from the plugin's RequestTerminated RPC is silently
+// swallowed and SendRequestTermination returns nil (best-effort fire-and-forget).
+func TestSendRequestTermination_UnimplementedSwallowed(t *testing.T) {
+	ds := newSetup(t)
+
+	pluginID := insertPlugin(t, ds.store, "p1", "plug")
+	insertPluginInstance(t, ds.store, "i1", pluginID, "inst-unimpl")
+
+	ds.clientMap["inst-unimpl"] = &fakeChannelClient{
+		terminatedHook: func(_ context.Context, _ *channelv1.RequestTerminatedRequest) (*channelv1.RequestTerminatedResponse, error) {
+			return nil, status.Error(codes.Unimplemented, "method RequestTerminated not implemented")
+		},
+	}
+
+	d := ds.newDispatcher(200*time.Millisecond, 100*time.Millisecond)
+
+	// Must return nil — Unimplemented is swallowed per the best-effort contract.
+	err := d.SendRequestTermination(
+		context.Background(),
+		"inst-unimpl",
+		"req-x",
+		channelv1.TerminalReason_TERMINAL_REASON_TIMED_OUT,
+		"",
+	)
+	if err != nil {
+		t.Errorf("SendRequestTermination returned non-nil error for Unimplemented: %v", err)
 	}
 }
 

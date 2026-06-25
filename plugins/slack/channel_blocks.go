@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/slack-go/slack"
+
+	channelv1 "github.com/felag-engineering/gleipnir/plugin-sdk/gen/gleipnir/plugin/channel/v1"
 )
 
 // responseButton defines one response option shown to the operator in a
@@ -73,6 +75,84 @@ func buildRequestBlocks(requestID, prompt string, buttons []responseButton, ment
 	actionBlock := buildActionBlock(requestID, buttons)
 
 	return []slack.Block{headerBlock, actionBlock}
+}
+
+// terminalLabel returns the display label and emoji for a terminal reason.
+// Used by buildResolvedBlocks and RequestTerminated to produce consistent UI text.
+func terminalLabel(reason channelv1.TerminalReason) (emoji, label string) {
+	switch reason {
+	case channelv1.TerminalReason_TERMINAL_REASON_APPROVED:
+		return "✅", "Approved"
+	case channelv1.TerminalReason_TERMINAL_REASON_REJECTED:
+		return "⛔", "Rejected"
+	case channelv1.TerminalReason_TERMINAL_REASON_ANSWERED:
+		return "💬", "Answered"
+	case channelv1.TerminalReason_TERMINAL_REASON_TIMED_OUT:
+		return "⏰", "Expired"
+	case channelv1.TerminalReason_TERMINAL_REASON_SUPERSEDED:
+		return "🔄", "Superseded"
+	case channelv1.TerminalReason_TERMINAL_REASON_CANCELED:
+		return "🚫", "Canceled"
+	default:
+		return "ℹ️", "Resolved"
+	}
+}
+
+// buildNotifyBlocks constructs Block Kit blocks for a Notify message.
+// The block contains a header section with the text (and optional mention
+// prepended). Used by Notify to replace the previous plain-text-only post.
+//
+// mention carries a pre-formatted Slack mention string (e.g. "<@U12345>").
+// The Notify caller currently always passes "" because no per-audience mention
+// is wired yet; the parameter is reserved for a future audience-config field.
+func buildNotifyBlocks(text, mention string) []slack.Block {
+	body := text
+	if mention != "" {
+		body = mention + " " + text
+	}
+	return []slack.Block{
+		slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, body, false, false),
+			nil, nil,
+		),
+	}
+}
+
+// buildResolvedBlocks constructs Block Kit blocks for a resolved Request
+// message. The blocks show the original prompt as context and a summary
+// section with the outcome (emoji + label + optional resolver). The action
+// block is intentionally omitted so live buttons are removed.
+func buildResolvedBlocks(prompt string, reason channelv1.TerminalReason, resolver string) []slack.Block {
+	emoji, label := terminalLabel(reason)
+	summary := emoji + " *" + label + "*"
+	if resolver != "" {
+		summary += " by <@" + resolver + ">"
+	}
+
+	blocks := []slack.Block{
+		slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, summary, false, false),
+			nil, nil,
+		),
+	}
+	if prompt != "" {
+		blocks = append(blocks,
+			slack.NewContextBlock("",
+				slack.NewTextBlockObject(slack.MarkdownType, "_"+prompt+"_", false, false),
+			),
+		)
+	}
+	return blocks
+}
+
+// fallbackText builds a plain-text fallback string that accompanies Block Kit
+// messages. Slack uses this in notifications and clients that don't render
+// blocks. It mirrors the visual summary produced by buildResolvedBlocks.
+func fallbackText(summary, prompt string) string {
+	if prompt == "" {
+		return summary
+	}
+	return summary + "\n" + prompt
 }
 
 // buildActionBlock constructs a Slack ActionBlock containing one button per

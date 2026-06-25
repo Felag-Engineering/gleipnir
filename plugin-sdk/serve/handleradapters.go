@@ -119,6 +119,29 @@ func (a *channelHandlerAdapter) Request(ctx context.Context, req *channelv1.Requ
 	return &channelv1.RequestResponse{Acked: true}, nil
 }
 
+// RequestTerminated is an optional ergonomic adapter: if the wrapped service
+// implements channel.TerminationAware, the proto reason is translated and
+// forwarded. Otherwise this is a silent no-op — the host treats the caller's
+// codes.Unimplemented stub as a best-effort no-op already, so returning
+// {Ok:true} here for a non-implementing service is correct and avoids
+// surfacing a spurious Unimplemented error to the host.
+func (a *channelHandlerAdapter) RequestTerminated(ctx context.Context, req *channelv1.RequestTerminatedRequest) (*channelv1.RequestTerminatedResponse, error) {
+	aware, ok := a.svc.(channel.TerminationAware)
+	if !ok {
+		// Service does not implement TerminationAware — silent no-op.
+		return &channelv1.RequestTerminatedResponse{Ok: true}, nil
+	}
+	t := channel.Termination{
+		RequestID: req.GetRequestId(),
+		Reason:    channel.TerminalReason(req.GetReason()),
+		Resolver:  req.GetResolver(),
+	}
+	if err := aware.RequestTerminated(ctx, t); err != nil {
+		return &channelv1.RequestTerminatedResponse{Ok: false, Error: errorToEnvelope(err)}, nil
+	}
+	return &channelv1.RequestTerminatedResponse{Ok: true}, nil
+}
+
 // ── Trigger adapter ───────────────────────────────────────────────────────────
 
 // triggerHandlerAdapter bridges trigger.Service onto triggerv1.TriggerServiceServer.

@@ -14,6 +14,7 @@ import (
 type correlation struct {
 	channel string
 	ts      string
+	prompt  string
 	buttons []responseButton
 	runID   string
 	addedAt time.Time

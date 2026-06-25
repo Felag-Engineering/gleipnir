@@ -370,6 +370,75 @@ func TestChannelAdapter_Request_Success(t *testing.T) {
 	}
 }
 
+// ── channelHandlerAdapter.RequestTerminated tests ────────────────────────────
+
+// terminationAwareService embeds the base fakeChannelService and additionally
+// implements channel.TerminationAware so we can verify the adapter calls through.
+type terminationAwareService struct {
+	fakeChannelService
+	called      bool
+	receivedArg channel.Termination
+	returnErr   error
+}
+
+func (s *terminationAwareService) RequestTerminated(_ context.Context, t channel.Termination) error {
+	s.called = true
+	s.receivedArg = t
+	return s.returnErr
+}
+
+// TestChannelAdapter_RequestTerminated_CallsThrough verifies that when the
+// wrapped service implements channel.TerminationAware, the adapter translates
+// the proto fields and calls RequestTerminated on the service.
+func TestChannelAdapter_RequestTerminated_CallsThrough(t *testing.T) {
+	svc := &terminationAwareService{}
+	srv := NewChannelServer(svc)
+
+	resp, err := srv.RequestTerminated(context.Background(), &channelv1.RequestTerminatedRequest{
+		RequestId: "req-42",
+		Reason:    channelv1.TerminalReason_TERMINAL_REASON_TIMED_OUT,
+		Resolver:  "",
+	})
+	if err != nil {
+		t.Fatalf("RequestTerminated gRPC error: %v", err)
+	}
+	if !resp.GetOk() {
+		t.Error("expected Ok=true, got Ok=false")
+	}
+	if !svc.called {
+		t.Fatal("expected RequestTerminated to be called on the service, but it was not")
+	}
+	if svc.receivedArg.RequestID != "req-42" {
+		t.Errorf("RequestID: want %q, got %q", "req-42", svc.receivedArg.RequestID)
+	}
+	if svc.receivedArg.Reason != channel.TerminalReasonTimedOut {
+		t.Errorf("Reason: want TerminalReasonTimedOut (%d), got %d", channel.TerminalReasonTimedOut, svc.receivedArg.Reason)
+	}
+}
+
+// TestChannelAdapter_RequestTerminated_NoopForNonAware verifies that when the
+// wrapped service does NOT implement channel.TerminationAware, the adapter
+// returns {Ok:true} as a silent no-op WITHOUT calling the service.
+func TestChannelAdapter_RequestTerminated_NoopForNonAware(t *testing.T) {
+	// fakeChannelService does not implement TerminationAware.
+	svc := &fakeChannelService{}
+	srv := NewChannelServer(svc)
+
+	resp, err := srv.RequestTerminated(context.Background(), &channelv1.RequestTerminatedRequest{
+		RequestId: "req-99",
+		Reason:    channelv1.TerminalReason_TERMINAL_REASON_TIMED_OUT,
+	})
+	if err != nil {
+		t.Fatalf("RequestTerminated gRPC error: %v", err)
+	}
+	if !resp.GetOk() {
+		t.Errorf("expected Ok=true for no-op path, got Ok=false")
+	}
+	if resp.GetError() != nil {
+		t.Errorf("unexpected error envelope in no-op path: %v", resp.GetError().GetMessage())
+	}
+}
+
 // ── triggerHandlerAdapter tests ──────────────────────────────────────────────
 
 // TestTriggerAdapter_Start_EmitForwardedToEmitEvent verifies that events passed

@@ -73,6 +73,14 @@ type Config struct {
 	// genuinely timed out, independent of the run's eventual disposition. Nil
 	// is treated as a no-op.
 	OnTimeoutClaimed func(ctx context.Context)
+
+	// OnTerminated is an optional hook invoked once per successfully-claimed
+	// timeout (rows==1), after OnTimeoutClaimed. It is called inside the
+	// CAS-win branch so it fires exactly once per timeout, never on conflict.
+	// The plugin-request scanner uses this to notify the plugin so it can
+	// update the in-channel message to the terminal visual state. Nil is a
+	// no-op. Injected via WithOnTerminated.
+	OnTerminated func(ctx context.Context, item ExpiredItem)
 }
 
 // NewApprovalScanner creates a Scanner that checks for expired approval requests
@@ -224,6 +232,16 @@ func WithPublisher(p event.Publisher) ScannerOption {
 	}
 }
 
+// WithOnTerminated sets an optional hook that fires once per CAS-won timeout
+// claim (rows==1). It is invoked inside the resolveTimeout CAS-win branch,
+// after OnTimeoutClaimed. Use this to notify a plugin that a pending Request
+// has expired so it can update its in-channel message. Nil is a no-op.
+func WithOnTerminated(fn func(ctx context.Context, item ExpiredItem)) ScannerOption {
+	return func(s *Scanner) {
+		s.cfg.OnTerminated = fn
+	}
+}
+
 // NewScanner creates a Scanner that checks for expired requests on the given
 // interval using the domain-specific callbacks in cfg.
 func NewScanner(store *db.Store, interval time.Duration, cfg Config, opts ...ScannerOption) *Scanner {
@@ -327,6 +345,12 @@ func (s *Scanner) resolveTimeout(ctx context.Context, item ExpiredItem) error {
 	// the waiting status — the request itself genuinely timed out.
 	if s.cfg.OnTimeoutClaimed != nil {
 		s.cfg.OnTimeoutClaimed(ctx)
+	}
+
+	// OnTerminated is the plugin-notification hook: fires only on CAS-win
+	// (rows==1) so it is called exactly once per timeout, never on conflict.
+	if s.cfg.OnTerminated != nil {
+		s.cfg.OnTerminated(ctx, item)
 	}
 
 	// Check whether the run is still waiting. ScanOrphanedRuns may have already

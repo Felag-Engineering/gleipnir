@@ -2641,3 +2641,297 @@ func TestTriggerEmitsSlashCommandWithRestrictiveSubscriptionScope(t *testing.T) 
 		t.Errorf("event kind: want slash_command, got %q", ev.EventKind)
 	}
 }
+
+// ── Block Kit + UpdateMessageContext tests ────────────────────────────────────
+
+// captureWebAPI is a fake slackWebAPI that records PostMessageContext and
+// UpdateMessageContext calls so tests can assert on block/text content without
+// standing up a real HTTP server. It is safe for concurrent use from multiple
+// goroutines (all fields are accessed under mu).
+type captureWebAPI struct {
+	mu sync.Mutex
+
+	postChannel string
+	postCount   int
+
+	updateChannel string
+	updateTS      string
+	updateOpts    []slack.MsgOption
+	updateCount   int
+}
+
+func (c *captureWebAPI) PostMessageContext(_ context.Context, channelID string, _ ...slack.MsgOption) (string, string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.postChannel = channelID
+	c.postCount++
+	return channelID, "1700000000.000001", nil
+}
+
+func (c *captureWebAPI) UpdateMessageContext(_ context.Context, channelID, timestamp string, opts ...slack.MsgOption) (string, string, string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.updateChannel = channelID
+	c.updateTS = timestamp
+	c.updateOpts = append(c.updateOpts, opts...)
+	c.updateCount++
+	return channelID, timestamp, "", nil
+}
+
+// buildCaptureChannelService creates a *ChannelService for unit tests with an
+// injected captureWebAPI factory and a FakeHost returning the given cred/cfg
+// JSON. The caller is responsible for calling chanSvc.correlations.Stop().
+func buildCaptureChannelService(t *testing.T, capAPI *captureWebAPI, credJSONStr, cfgJSONStr string) (*ChannelService, *plugintest.FakeHost) {
+	t.Helper()
+
+	host := plugintest.NewFakeHost(
+		plugintest.WithCredentialsJSON(credJSONStr),
+		plugintest.WithInstanceConfigJSON(cfgJSONStr),
+	)
+
+	hostLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	hostSrv := grpc.NewServer()
+	host.Register(hostSrv)
+	go func() { _ = hostSrv.Serve(hostLis) }()
+	t.Cleanup(hostSrv.Stop)
+
+	hostConn, err := grpc.NewClient(hostLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial host: %v", err)
+	}
+	t.Cleanup(func() { hostConn.Close() })
+	hostClient := hostv1.NewHostServiceClient(hostConn)
+
+	registry := newHubRegistry(func(_ string) (socketModeRunner, error) {
+		return newChannelFakeRunner(), nil
+	})
+
+	svc := newChannelServiceForTest(
+		hostClient,
+		registry,
+		func(_ string) slackWebAPI { return capAPI },
+		http.DefaultClient,
+	)
+	return svc, host
+}
+
+// TestHandleInteractive_UpdatesOnResolution verifies that after a button click:
+//   - WriteAuditStep is called (feedback_response).
+//   - UpdateMessageContext is called with resolved blocks (no action block).
+func TestHandleInteractive_UpdatesOnResolution(t *testing.T) {
+	const (
+		channel   = "C01INTR"
+		ts        = "1700200000.000100"
+		requestID = "req-intr-update"
+		token     = "xoxb-intr"
+		prompt    = "Should we deploy?"
+	)
+
+	capAPI := &captureWebAPI{}
+	svc, host := buildCaptureChannelService(t, capAPI, credJSON(token), cfgWithToken("xapp-test-token"))
+	defer svc.correlations.Stop()
+
+	// Seed a correlation as if Request() had been called.
+	svc.correlations.put(requestID, correlation{
+		channel: channel,
+		ts:      ts,
+		prompt:  prompt,
+		buttons: defaultResponseButtons(),
+		runID:   "run-intr-1",
+		addedAt: time.Now(),
+	})
+
+	// Build and dispatch an interactive event (button click = "approve").
+	cb := slack.InteractionCallback{
+		Type:        slack.InteractionTypeBlockActions,
+		ResponseURL: "",
+		User:        slack.User{ID: "U01RESOLVER"},
+		ActionCallback: slack.ActionCallbacks{
+			BlockActions: []*slack.BlockAction{
+				{ActionID: actionIDFor(requestID, "approve"), Value: "approve"},
+			},
+		},
+	}
+	evt := socketmode.Event{Type: socketmode.EventTypeInteractive, Data: cb}
+	svc.handleInteractive(evt, cb)
+
+	// WriteAuditStep must have been called once.
+	if !pollUntil(t, 3*time.Second, func() bool { return len(host.AuditSteps()) > 0 }) {
+		t.Fatal("timed out waiting for WriteAuditStep")
+	}
+	steps := host.AuditSteps()
+	if len(steps) != 1 || steps[0].StepType != "feedback_response" {
+		t.Fatalf("expected 1 feedback_response step, got %+v", steps)
+	}
+
+	// UpdateMessageContext must have been called with resolved blocks.
+	// Block composition (no action block, emoji/label) is verified separately
+	// in TestBuildResolvedBlocks; here we assert the call was made correctly.
+	capAPI.mu.Lock()
+	updCount := capAPI.updateCount
+	updCh := capAPI.updateChannel
+	updTS := capAPI.updateTS
+	capAPI.mu.Unlock()
+
+	if updCount != 1 {
+		t.Fatalf("UpdateMessageContext call count: want 1, got %d", updCount)
+	}
+	if updCh != channel {
+		t.Errorf("UpdateMessageContext channelID: want %q, got %q", channel, updCh)
+	}
+	if updTS != ts {
+		t.Errorf("UpdateMessageContext ts: want %q, got %q", ts, updTS)
+	}
+}
+
+// TestHandleThreadReply_UpdatesOnResolution verifies that after a thread reply
+// in feedback mode, UpdateMessageContext is called with an "Answered" resolved
+// state and no action block.
+func TestHandleThreadReply_UpdatesOnResolution(t *testing.T) {
+	const (
+		channel      = "C01FBUPD"
+		msgTS        = "1700210000.000100"
+		replyTS      = "1700210000.000200"
+		requestID    = "req-fb-upd"
+		token        = "xoxb-fbupd"
+		prompt       = "Which strategy should I use?"
+		operatorUser = "U01FBOPERATOR"
+	)
+
+	capAPI := &captureWebAPI{}
+	svc, host := buildCaptureChannelService(t, capAPI, credJSON(token), cfgWithToken("xapp-test-token"))
+	defer svc.correlations.Stop()
+
+	// Seed a correlation in feedback mode as if Request() had been called.
+	svc.correlations.put(requestID, correlation{
+		channel: channel,
+		ts:      msgTS,
+		prompt:  prompt,
+		runID:   "run-fbupd-1",
+		addedAt: time.Now(),
+		mode:    "feedback",
+	})
+
+	// Dispatch a threaded reply event directly to handleThreadReply.
+	inner := &slackevents.MessageEvent{
+		Channel:         channel,
+		User:            operatorUser,
+		Text:            "Go with canary.",
+		TimeStamp:       replyTS,
+		ThreadTimeStamp: msgTS,
+	}
+	outerEvt := slackevents.EventsAPIEvent{
+		InnerEvent: slackevents.EventsAPIInnerEvent{Type: "message", Data: inner},
+	}
+	evt := socketmode.Event{Type: socketmode.EventTypeEventsAPI, Data: outerEvt}
+	svc.handleThreadReply(evt)
+
+	// WriteAuditStep must have been called once.
+	if !pollUntil(t, 3*time.Second, func() bool { return len(host.AuditSteps()) > 0 }) {
+		t.Fatal("timed out waiting for WriteAuditStep")
+	}
+
+	// UpdateMessageContext must have been called once. Block composition
+	// (no action block) is verified separately in TestBuildResolvedBlocks.
+	capAPI.mu.Lock()
+	updCount := capAPI.updateCount
+	capAPI.mu.Unlock()
+
+	if updCount != 1 {
+		t.Fatalf("UpdateMessageContext call count: want 1, got %d", updCount)
+	}
+	_ = host // AuditSteps already checked via pollUntil
+}
+
+// TestRequestTerminated_TimedOut verifies that RequestTerminated with
+// TIMED_OUT updates the message to "Expired" and no action block, using a
+// seeded correlation.
+func TestRequestTerminated_TimedOut(t *testing.T) {
+	const (
+		channel   = "C01TERMTO"
+		ts        = "1700220000.000100"
+		requestID = "req-term-to"
+		token     = "xoxb-termto"
+		prompt    = "Approve production deployment?"
+	)
+
+	capAPI := &captureWebAPI{}
+	svc, _ := buildCaptureChannelService(t, capAPI, credJSON(token), cfgWithToken("xapp-test-token"))
+	defer svc.correlations.Stop()
+
+	// Seed a correlation as if Request() had been called.
+	svc.correlations.put(requestID, correlation{
+		channel: channel,
+		ts:      ts,
+		prompt:  prompt,
+		runID:   "run-term-1",
+		addedAt: time.Now(),
+	})
+
+	resp, err := svc.RequestTerminated(context.Background(), &channelv1.RequestTerminatedRequest{
+		RequestId: requestID,
+		Reason:    channelv1.TerminalReason_TERMINAL_REASON_TIMED_OUT,
+		Resolver:  "",
+	})
+	if err != nil {
+		t.Fatalf("RequestTerminated gRPC error: %v", err)
+	}
+	if !resp.GetOk() {
+		t.Fatalf("RequestTerminated: want ok=true, got false: %v", resp.GetError())
+	}
+
+	// UpdateMessageContext must have been called once. Block composition
+	// (no action block, ⏰ Expired label) is verified in TestBuildResolvedBlocks.
+	capAPI.mu.Lock()
+	updCount := capAPI.updateCount
+	updCh := capAPI.updateChannel
+	updTS := capAPI.updateTS
+	capAPI.mu.Unlock()
+
+	if updCount != 1 {
+		t.Fatalf("UpdateMessageContext call count: want 1, got %d", updCount)
+	}
+	if updCh != channel {
+		t.Errorf("channelID: want %q, got %q", channel, updCh)
+	}
+	if updTS != ts {
+		t.Errorf("ts: want %q, got %q", ts, updTS)
+	}
+
+	// The correlation must have been consumed (idempotent take).
+	_, found := svc.correlations.take(requestID)
+	if found {
+		t.Error("correlation must be consumed by RequestTerminated (atomic take)")
+	}
+}
+
+// TestRequestTerminated_UnknownRequestID verifies that an unknown request_id
+// returns {ok:true} without calling UpdateMessageContext (idempotent no-op).
+func TestRequestTerminated_UnknownRequestID(t *testing.T) {
+	capAPI := &captureWebAPI{}
+	svc, _ := buildCaptureChannelService(t, capAPI, credJSON("xoxb-unknown"), cfgWithToken("xapp-test-token"))
+	defer svc.correlations.Stop()
+
+	resp, err := svc.RequestTerminated(context.Background(), &channelv1.RequestTerminatedRequest{
+		RequestId: "nonexistent-request-id",
+		Reason:    channelv1.TerminalReason_TERMINAL_REASON_TIMED_OUT,
+	})
+	if err != nil {
+		t.Fatalf("RequestTerminated gRPC error: %v", err)
+	}
+	if !resp.GetOk() {
+		t.Fatalf("unknown request_id: want ok=true, got false: %v", resp.GetError())
+	}
+
+	capAPI.mu.Lock()
+	updCount := capAPI.updateCount
+	capAPI.mu.Unlock()
+
+	if updCount != 0 {
+		t.Errorf("UpdateMessageContext must not be called for unknown request_id, got %d calls", updCount)
+	}
+}

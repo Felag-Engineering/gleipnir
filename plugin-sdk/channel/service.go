@@ -33,6 +33,48 @@ type FeedbackRequest struct {
 	ChannelConfig []byte
 }
 
+// TerminalReason describes why the host terminated a pending Request. It
+// mirrors the proto TerminalReason ordinals so the adapter can translate
+// without importing the generated package into author-facing code.
+type TerminalReason int
+
+const (
+	TerminalReasonUnspecified TerminalReason = 0
+	TerminalReasonApproved    TerminalReason = 1
+	TerminalReasonRejected    TerminalReason = 2
+	TerminalReasonAnswered    TerminalReason = 3
+	TerminalReasonTimedOut    TerminalReason = 4
+	TerminalReasonSuperseded  TerminalReason = 5 // reserved; not yet wired
+	TerminalReasonCanceled    TerminalReason = 6 // reserved; not yet wired
+)
+
+// Termination carries the details of a host-initiated Request termination.
+// Plugins that wish to update their UI on host-driven timeouts implement the
+// optional TerminationAware interface and receive this struct.
+type Termination struct {
+	// RequestID is the request_id originally issued by the host in FeedbackRequest.
+	RequestID string
+	// Reason describes the terminal state (e.g. TerminalReasonTimedOut).
+	Reason TerminalReason
+	// Resolver is the user ID or name who resolved the request, or empty for
+	// automated resolutions such as timeout.
+	Resolver string
+}
+
+// TerminationAware is an optional interface plugins can implement alongside
+// channel.Service. When the host calls RequestTerminated (e.g. on timeout),
+// the ergonomic adapter checks whether the wrapped service implements this
+// interface and, if so, calls RequestTerminated with the translated Termination.
+// Plugins that do not implement this interface receive a silent no-op — the
+// adapter returns {Ok:true} without calling the host RPC.
+//
+// This interface is NOT a method on Service so that existing plugins do not
+// need to implement it. Only plugins that want to update their UI on
+// host-initiated timeouts need to implement it.
+type TerminationAware interface {
+	RequestTerminated(ctx context.Context, t Termination) error
+}
+
 // Service is the ergonomic interface plugin authors implement to deliver
 // notifications and feedback requests. Authors deal in plain Go types and
 // []byte JSON without touching proto messages or ErrorEnvelope construction.
