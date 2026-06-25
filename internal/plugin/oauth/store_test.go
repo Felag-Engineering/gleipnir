@@ -519,6 +519,25 @@ func TestDBStore_DeleteHeaderSetEntry_IdempotentMissing(t *testing.T) {
 	}
 }
 
+func TestDBStore_DeleteHeaderSetEntry_WrongStrategy(t *testing.T) {
+	q := &fakeOAuthQuerier{
+		instance: db.PluginInstance{ID: "inst-1", HealthState: "healthy", Version: 0},
+	}
+	baseTime := time.Unix(1000000, 0)
+	store := NewDBStore(q, noopEncrypt, noopDecrypt, q, func() time.Time { return baseTime })
+
+	// Seed a static_api_key row — different strategy than header_set.
+	seed := StoredCredentials{Strategy: sdkmanifest.AuthStrategyStaticAPIKey}
+	if err := store.SaveCredentials(context.Background(), "inst-1", seed, 0); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err := store.DeleteHeaderSetEntry(context.Background(), "inst-1", "X-Some-Header")
+	if !errors.Is(err, ErrWrongStrategy) {
+		t.Errorf("expected ErrWrongStrategy, got %v", err)
+	}
+}
+
 // --- SetBasicAuth tests ---
 
 func TestDBStore_SetBasicAuth_RoundTrip(t *testing.T) {
