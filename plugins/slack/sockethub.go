@@ -51,12 +51,12 @@ type triggerInteractiveHandlerSlot struct {
 // (slot briefly nil). Interactive callbacks are unaffected — ChannelService
 // registers its interactive handler once at NewChannelService and never releases it.
 type socketHub struct {
-	runner                   socketModeRunner
-	xappToken                string
-	eventsHandler            atomic.Pointer[eventsHandlerSlot]
-	interactiveHandler       atomic.Pointer[interactiveHandlerSlot]
-	messageHandler           atomic.Pointer[messageHandlerSlot]
-	slashCommandHandler      atomic.Pointer[slashCommandHandlerSlot]
+	runner                    socketModeRunner
+	xappToken                 string
+	eventsHandler             atomic.Pointer[eventsHandlerSlot]
+	interactiveHandler        atomic.Pointer[interactiveHandlerSlot]
+	messageHandler            atomic.Pointer[messageHandlerSlot]
+	slashCommandHandler       atomic.Pointer[slashCommandHandlerSlot]
 	triggerInteractiveHandler atomic.Pointer[triggerInteractiveHandlerSlot]
 
 	// done is closed (and doneErr written) when the hub's Run goroutine exits.
