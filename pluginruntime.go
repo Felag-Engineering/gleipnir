@@ -503,3 +503,7 @@ func (rt *pluginRuntime) shutdown() {
 		}
 	}
 }
+
+// Compile-time assertion: *plugintools.Registrar must satisfy admin.ToolUnregistrar.
+// Guards against future signature drift between the interface and the concrete type.
+var _ admin.ToolUnregistrar = (*plugintools.Registrar)(nil)

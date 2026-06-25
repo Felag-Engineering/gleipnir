@@ -484,6 +484,27 @@ func TestInstanceLifecycle_Delete(t *testing.T) {
 			t.Error("instance should be deleted from store despite Stop failure")
 		}
 	})
+
+	t.Run("releases tool-namespace reservation with instance name on successful delete", func(t *testing.T) {
+		store := newPluginTestStore(t)
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-1", Name: "p", ManifestSnapshot: instanceConfigManifestNoSchema})
+		q.seed(db.PluginInstance{ID: "unreg-inst", PluginID: "plugin-1", InstanceName: "unreg-target", HealthState: "healthy"})
+		seedStorePlugin(t, store, "plugin-1", "p", nil)
+		seedStoreInstance(t, store, "unreg-inst", "plugin-1", "unreg-target")
+
+		unreg := &fakeUnreg{}
+		m := newTestLifecycle(q, store, withUnreg(unreg))
+		if err := m.Delete(ctx, "plugin-1", "unreg-inst"); err != nil {
+			t.Fatalf("Delete: unexpected error: %v", err)
+		}
+		// The unregistrar must be called with the instance NAME (not the ID).
+		// This is the regression guard against a key-mismatch: if the call were
+		// keyed by instance ID instead of name, the arbiter would silently no-op.
+		if len(unreg.names) != 1 || unreg.names[0] != "unreg-target" {
+			t.Errorf("UnregisterInstance called with %v, want [unreg-target]", unreg.names)
+		}
+	})
 }
 
 // ─── Uninstall ───────────────────────────────────────────────────────────────
@@ -641,6 +662,27 @@ func TestInstanceLifecycle_Uninstall(t *testing.T) {
 		}
 		if deleteInflight.Op != inflightOpDelete {
 			t.Errorf("Delete InflightError.Op = %v, want inflightOpDelete", deleteInflight.Op)
+		}
+	})
+
+	t.Run("releases tool-namespace reservations per instance name on uninstall", func(t *testing.T) {
+		// Uninstall requires all instances to be deleted first (InstancesRemainError
+		// guards non-empty lists). When it succeeds the instance list is empty and
+		// unreg is called zero times — correct behaviour. This test verifies: no
+		// panic when Unreg is wired, and zero calls when the plugin has no instances.
+		store := newPluginTestStore(t)
+		q := newFakePluginQuerier()
+		q.seedPlugin(db.Plugin{ID: "plugin-9", Name: "no-insts", ManifestSnapshot: instanceConfigManifestNoSchema})
+		seedStorePlugin(t, store, "plugin-9", "no-insts", nil)
+
+		unreg := &fakeUnreg{}
+		m := newTestLifecycle(q, store, withUnreg(unreg), withPluginsDir(t.TempDir()))
+		if err := m.Uninstall(ctx, "plugin-9"); err != nil {
+			t.Fatalf("Uninstall: unexpected error: %v", err)
+		}
+		// Instances are pre-deleted before Uninstall; unreg is called 0 times.
+		if len(unreg.names) != 0 {
+			t.Errorf("UnregisterInstance called with %v, want no calls (all instances pre-deleted)", unreg.names)
 		}
 	})
 }
