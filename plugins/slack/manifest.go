@@ -200,6 +200,12 @@ type SlackChannelMessageBinding struct {
 	Channel manifest.ContainsField `json:"channel,omitempty" jsonschema:"title=Channel,description=Substring matched against the Slack channel name or ID (e.g. #incidents)"`
 	// Text is a substring matched against the message text.
 	Text manifest.ContainsField `json:"text,omitempty" jsonschema:"title=Text contains,description=Substring matched against the message text"`
+	// TextRegex matches the message text against a Go RE2 regular expression.
+	// Anchored, case-insensitive command routing is the primary use:
+	// `^(?i)recipe:` fires only on messages that start with "Recipe:"/"recipe:".
+	// RE2, not PCRE — no lookbehind/backrefs. Evaluated with implicit AND
+	// alongside Text; most policies set one or the other, not both.
+	TextRegex manifest.RegexField `json:"text_regex,omitempty" jsonschema:"title=Text matches (regex),description=Go RE2 regular expression matched against the message text (e.g. ^(?i)recipe: for anchored\\, case-insensitive routing). RE2 syntax — no lookbehind or backreferences."`
 	// MentionOnly restricts the policy to events where the bot was mentioned.
 	MentionOnly bool `json:"mention_only,omitempty" jsonschema:"title=Mention-only,description=Only trigger when the bot is mentioned in the message"`
 	// User restricts the policy to messages from a specific Slack user ID.

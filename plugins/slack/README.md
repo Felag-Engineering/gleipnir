@@ -39,6 +39,22 @@ slack/
   go.mod             — per-plugin module; resolved by the repo-root go.work
 ```
 
+## Trigger binding (`channel_message`)
+
+Policies that use the `channel_message` trigger can filter events using the
+following binding fields (all optional; fields are ANDed together):
+
+| Field         | Match          | Notes |
+|---------------|----------------|-------|
+| `channel`     | contains       | Substring of the channel display name or ID (e.g. `incidents`) |
+| `text`        | contains       | Substring anywhere in the message text |
+| `text_regex`  | regex (RE2)    | Go RE2 expression matched against the message text. Use `^(?i)recipe:` for anchored, case-insensitive command routing — fires on `Recipe: find dinner` but NOT on `got a great Recipe: idea`. RE2 only: no lookbehind or backreferences. |
+| `mention_only`| flag           | Only fire when the bot is mentioned |
+| `user`        | equals         | Exact Slack user ID (e.g. `U012AB3CD`) |
+
+`text` and `text_regex` are independent siblings: most policies set one or the
+other. Full trigger-binding documentation is tracked in #605.
+
 ## Channel (per-audience) config schema
 
 | Field              | Required | Description |
