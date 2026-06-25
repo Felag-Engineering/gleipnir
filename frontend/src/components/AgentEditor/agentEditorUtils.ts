@@ -172,7 +172,9 @@ export function yamlToFormState(yaml: string): FormState | null {
           serverName: serverPart,
           name: toolPart,
           description: '',
-          role: 'tool' as const, // placeholder — CapabilitiesSection reconciles with registry
+          // Parse-time default: CapabilitiesSection reconciles plugin vs MCP at
+          // render by checking whether serverName matches a known plugin instance.
+          source: 'mcp' as const,
           approvalRequired,
           approvalTimeout,
         }]
@@ -296,7 +298,9 @@ export function formStateToYaml(state: FormState): string {
     triggerObj = { type: 'webhook', auth: trigger.auth }
   }
 
-  // Build capabilities — single tools array
+  // Build capabilities — single tools array.
+  // t.serverName carries the MCP server display name OR the plugin instance_name;
+  // both produce the correct `<source>.<tool>` dot-notation grant string.
   const tools = capabilities.tools.map(t => {
     const entry: Record<string, unknown> = { tool: `${t.serverName}.${t.name}` }
     if (t.approvalRequired) {

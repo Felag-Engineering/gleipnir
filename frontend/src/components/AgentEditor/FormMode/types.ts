@@ -1,11 +1,18 @@
 export interface AssignedTool {
   toolId: string;
   serverId: string;
+  // serverName carries the MCP server display name OR the plugin instance_name.
+  // formStateToYaml serializes as `${serverName}.${name}` so both sources
+  // emit the correct dot-notation grant with zero serializer changes.
   serverName: string;
   name: string;
   description: string;
   approvalRequired: boolean;
   approvalTimeout: string; // Go duration string (e.g. "30m"), empty string if unset
+  // source discriminates MCP tools from plugin tools at render time.
+  // 'mcp' is the default for back-compat; tools parsed from YAML get 'mcp'
+  // at parse time and are reconciled against the live plugin list at render.
+  source: 'mcp' | 'plugin';
 }
 
 export interface FeedbackFormState {

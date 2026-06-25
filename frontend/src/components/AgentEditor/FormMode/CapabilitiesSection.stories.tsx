@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import '@/tokens.css';
 import { queryKeys } from '@/hooks/queryKeys';
-import type { ApiMcpServer, ApiMcpTool } from '@/api/types';
+import type { ApiMcpServer, ApiMcpTool, ApiPluginInstanceForAudience } from '@/api/types';
 import { CapabilitiesSection } from './CapabilitiesSection';
 import type { CapabilitiesFormState, AssignedTool } from './types';
 import decoratorStyles from './CapabilitiesSection.stories.module.css';
@@ -87,6 +87,25 @@ const FIXTURE_TOOLS_SRV2: ApiMcpTool[] = [
   },
 ];
 
+// Slack plugin instance fixture for WithPluginTools story.
+const FIXTURE_SLACK_INSTANCE: ApiPluginInstanceForAudience = {
+  id: 'inst-slack-1',
+  plugin_id: 'plugin-slack',
+  instance_name: 'slack-e2e',
+  plugin_name: 'Slack',
+  state: 'healthy',
+  implements_notify: true,
+  implements_request: true,
+  config_schema: null,
+  version: 1,
+  services: ['tool', 'trigger', 'channel'],
+  tools: [
+    { name: 'send_message', description: 'Send a message to a Slack channel' },
+    { name: 'list_channels', description: 'List all accessible Slack channels' },
+    { name: 'list_users', description: 'List all users in the Slack workspace' },
+  ],
+};
+
 const FIXTURE_ASSIGNED_TOOLS: AssignedTool[] = [
   {
     toolId: 'tool-1',
@@ -94,6 +113,7 @@ const FIXTURE_ASSIGNED_TOOLS: AssignedTool[] = [
     serverName: 'Filesystem Tools',
     name: 'read_file',
     description: 'Read the contents of a file at the given path',
+    source: 'mcp',
     approvalRequired: false,
     approvalTimeout: '',
   },
@@ -103,6 +123,7 @@ const FIXTURE_ASSIGNED_TOOLS: AssignedTool[] = [
     serverName: 'Filesystem Tools',
     name: 'write_file',
     description: 'Write content to a file at the given path',
+    source: 'mcp',
     approvalRequired: true,
     approvalTimeout: '',
   },
@@ -112,16 +133,21 @@ const FIXTURE_ASSIGNED_TOOLS: AssignedTool[] = [
     serverName: 'GitHub Tools',
     name: 'create_issue',
     description: 'Create a new GitHub issue in a repository',
+    source: 'mcp',
     approvalRequired: false,
     approvalTimeout: '',
   },
 ];
 
+// makeQueryClient seeds MCP tool data AND an empty pluginInstances entry so the
+// usePluginInstancesForAudience hook doesn't background-fetch and clear cached state.
 function makeQueryClient(): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS);
   qc.setQueryData(queryKeys.servers.toolsAll('srv-1'), FIXTURE_TOOLS_SRV1);
   qc.setQueryData(queryKeys.servers.toolsAll('srv-2'), FIXTURE_TOOLS_SRV2);
+  // Seed empty pluginInstances to prevent background refetch from clearing state.
+  qc.setQueryData(queryKeys.admin.pluginInstances, []);
   return qc;
 }
 
@@ -169,6 +195,7 @@ export const WithApprovalTimeout: Story = {
           serverName: 'Filesystem Tools',
           name: 'write_file',
           description: 'Write content to a file at the given path',
+          source: 'mcp',
           approvalRequired: true,
           approvalTimeout: '30m',
         },
@@ -211,6 +238,8 @@ export const WithDisabledTool: Story = {
         },
       ]);
       qc.setQueryData(queryKeys.servers.toolsAll('srv-2'), FIXTURE_TOOLS_SRV2);
+      // Seed empty pluginInstances to prevent background refetch.
+      qc.setQueryData(queryKeys.admin.pluginInstances, []);
       return (
         <QueryClientProvider client={qc}>
           <div className={decoratorStyles.decorator}>
@@ -229,6 +258,7 @@ export const WithDisabledTool: Story = {
           serverName: 'Filesystem Tools',
           name: 'write_file',
           description: 'Write content to a file at the given path',
+          source: 'mcp',
           approvalRequired: false,
           approvalTimeout: '',
         },
@@ -238,8 +268,68 @@ export const WithDisabledTool: Story = {
           serverName: 'Filesystem Tools',
           name: 'read_file',
           description: 'Read the contents of a file at the given path',
+          source: 'mcp',
           approvalRequired: false,
           approvalTimeout: '',
+        },
+      ],
+      feedback: DEFAULT_FEEDBACK,
+    },
+    onChange: () => {},
+  },
+};
+
+// WithPluginTools shows a mix of MCP and plugin tools granted to a policy,
+// including a plugin tool pre-assigned from a Slack instance.
+export const WithPluginTools: Story = {
+  decorators: [
+    (Story) => {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS);
+      qc.setQueryData(queryKeys.servers.toolsAll('srv-1'), FIXTURE_TOOLS_SRV1);
+      qc.setQueryData(queryKeys.servers.toolsAll('srv-2'), FIXTURE_TOOLS_SRV2);
+      qc.setQueryData(queryKeys.admin.pluginInstances, [FIXTURE_SLACK_INSTANCE]);
+      return (
+        <QueryClientProvider client={qc}>
+          <div className={decoratorStyles.decorator}>
+            <Story />
+          </div>
+        </QueryClientProvider>
+      );
+    },
+  ],
+  args: {
+    value: {
+      tools: [
+        {
+          toolId: 'tool-1',
+          serverId: 'srv-1',
+          serverName: 'Filesystem Tools',
+          name: 'read_file',
+          description: 'Read the contents of a file at the given path',
+          source: 'mcp',
+          approvalRequired: false,
+          approvalTimeout: '',
+        },
+        {
+          toolId: 'slack-e2e.send_message',
+          serverId: 'inst-slack-1',
+          serverName: 'slack-e2e',
+          name: 'send_message',
+          description: 'Send a message to a Slack channel',
+          source: 'plugin',
+          approvalRequired: false,
+          approvalTimeout: '',
+        },
+        {
+          toolId: 'slack-e2e.list_channels',
+          serverId: 'inst-slack-1',
+          serverName: 'slack-e2e',
+          name: 'list_channels',
+          description: 'List all accessible Slack channels',
+          source: 'plugin',
+          approvalRequired: true,
+          approvalTimeout: '30m',
         },
       ],
       feedback: DEFAULT_FEEDBACK,

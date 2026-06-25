@@ -4,9 +4,10 @@ import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { queryKeys } from '@/hooks/queryKeys'
-import type { ApiMcpServer, ApiMcpTool } from '@/api/types'
+import type { ApiMcpServer, ApiMcpTool, ApiPluginInstanceForAudience } from '@/api/types'
 import { CapabilitiesSection } from './CapabilitiesSection'
 import type { CapabilitiesFormState, AssignedTool, FeedbackFormState } from './types'
+import { formStateToYaml } from '@/components/AgentEditor/agentEditorUtils'
 
 // --- Fixtures (mirrored from CapabilitiesSection.stories.tsx) ---
 
@@ -74,6 +75,9 @@ function makeQueryClient(): QueryClient {
   qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS)
   qc.setQueryData(queryKeys.servers.toolsAll('srv-1'), FIXTURE_TOOLS_SRV1)
   qc.setQueryData(queryKeys.servers.toolsAll('srv-2'), FIXTURE_TOOLS_SRV2)
+  // Always seed an empty pluginInstances entry so the usePluginInstancesForAudience
+  // hook doesn't fire a background fetch (which would clear cached state mid-assertion).
+  qc.setQueryData(queryKeys.admin.pluginInstances, [])
   return qc
 }
 
@@ -160,6 +164,7 @@ describe('CapabilitiesSection — tool picker remove', () => {
         serverName: 'Filesystem Tools',
         name: 'read_file',
         description: 'Read the contents of a file at the given path',
+        source: 'mcp',
         approvalRequired: false,
         approvalTimeout: '',
       },
@@ -195,6 +200,8 @@ describe('CapabilitiesSection — tool picker search filter', () => {
     qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS)
     qc.setQueryData(queryKeys.servers.toolsAll('srv-1'), FIXTURE_TOOLS_SRV1)
     qc.setQueryData(queryKeys.servers.toolsAll('srv-2'), FIXTURE_TOOLS_SRV2)
+    // Seed empty pluginInstances to prevent background refetch.
+    qc.setQueryData(queryKeys.admin.pluginInstances, [])
     return qc
   }
 
@@ -266,6 +273,7 @@ describe('CapabilitiesSection — feedback section', () => {
         serverName: 'Filesystem Tools',
         name: 'read_file',
         description: 'Read a file',
+        source: 'mcp',
         approvalRequired: false,
         approvalTimeout: '',
       },
@@ -355,6 +363,7 @@ describe('CapabilitiesSection — approval toggle', () => {
         serverName: 'Filesystem Tools',
         name: 'write_file',
         description: 'Write content to a file at the given path',
+        source: 'mcp',
         approvalRequired: false,
         approvalTimeout: '',
       },
@@ -386,6 +395,7 @@ describe('CapabilitiesSection — approval toggle', () => {
         serverName: 'Filesystem Tools',
         name: 'write_file',
         description: 'Write content to a file at the given path',
+        source: 'mcp',
         approvalRequired: true,
         approvalTimeout: '',
       },
@@ -416,6 +426,7 @@ describe('CapabilitiesSection — approval timeout input', () => {
         serverName: 'Filesystem Tools',
         name: 'write_file',
         description: 'Write content to a file at the given path',
+        source: 'mcp',
         approvalRequired: true,
         approvalTimeout: '',
       },
@@ -432,6 +443,7 @@ describe('CapabilitiesSection — approval timeout input', () => {
         serverName: 'Filesystem Tools',
         name: 'write_file',
         description: 'Write content to a file at the given path',
+        source: 'mcp',
         approvalRequired: false,
         approvalTimeout: '',
       },
@@ -450,6 +462,7 @@ describe('CapabilitiesSection — approval timeout input', () => {
         serverName: 'Filesystem Tools',
         name: 'write_file',
         description: 'Write content to a file at the given path',
+        source: 'mcp',
         approvalRequired: true,
         approvalTimeout: '',
       },
@@ -481,6 +494,7 @@ describe('CapabilitiesSection — approval timeout input', () => {
         serverName: 'Filesystem Tools',
         name: 'write_file',
         description: 'Write content to a file at the given path',
+        source: 'mcp',
         approvalRequired: true,
         approvalTimeout: '30m',
       },
@@ -522,6 +536,8 @@ describe('CapabilitiesSection — disabled tool warning', () => {
       DISABLED_TOOL,
     ])
     qc.setQueryData(queryKeys.servers.toolsAll('srv-2'), FIXTURE_TOOLS_SRV2)
+    // Seed empty pluginInstances to prevent background refetch.
+    qc.setQueryData(queryKeys.admin.pluginInstances, [])
     return qc
   }
 
@@ -533,6 +549,7 @@ describe('CapabilitiesSection — disabled tool warning', () => {
         serverName: 'Filesystem Tools',
         name: 'write_file',
         description: 'Write content to a file',
+        source: 'mcp',
         approvalRequired: false,
         approvalTimeout: '',
       },
@@ -565,6 +582,7 @@ describe('CapabilitiesSection — disabled tool warning', () => {
         serverName: 'Filesystem Tools',
         name: 'write_file',
         description: 'Write content to a file',
+        source: 'mcp',
         approvalRequired: false,
         approvalTimeout: '',
       },
@@ -589,6 +607,7 @@ describe('CapabilitiesSection — disabled tool warning', () => {
         serverName: 'Filesystem Tools',
         name: 'read_file',
         description: 'Read the contents of a file',
+        source: 'mcp',
         approvalRequired: false,
         approvalTimeout: '',
       },
@@ -608,5 +627,169 @@ describe('CapabilitiesSection — disabled tool warning', () => {
     // The disabled badge has a distinctive title attribute; the feedback label "Disabled" is separate.
     expect(screen.queryByTitle(/Tool is disabled/)).not.toBeInTheDocument()
     expect(document.querySelector('[data-disabled="true"]')).toBeNull()
+  })
+})
+
+// --- Plugin tool tests ---
+
+const FIXTURE_SLACK_INSTANCE: ApiPluginInstanceForAudience = {
+  id: 'inst-slack-1',
+  plugin_id: 'plugin-slack',
+  instance_name: 'slack-e2e',
+  state: 'healthy',
+  implements_notify: true,
+  implements_request: true,
+  config_schema: null,
+  version: 1,
+  tools: [
+    { name: 'send_message', description: 'Send a message to a Slack channel' },
+    { name: 'list_channels', description: 'List all accessible Slack channels' },
+  ],
+}
+
+function makePluginQueryClient(): QueryClient {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  })
+  qc.setQueryData(queryKeys.servers.all, FIXTURE_SERVERS)
+  qc.setQueryData(queryKeys.servers.toolsAll('srv-1'), FIXTURE_TOOLS_SRV1)
+  qc.setQueryData(queryKeys.servers.toolsAll('srv-2'), FIXTURE_TOOLS_SRV2)
+  qc.setQueryData(queryKeys.admin.pluginInstances, [FIXTURE_SLACK_INSTANCE])
+  return qc
+}
+
+describe('CapabilitiesSection — plugin tools', () => {
+  it('(a) picker lists the plugin tool with plugin:slack-e2e label and displayName slack-e2e.send_message', async () => {
+    render(
+      <QueryClientProvider client={makePluginQueryClient()}>
+        <ControlledCapabilitiesSection />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Add tool from registry' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('slack-e2e.send_message')).toBeInTheDocument()
+    })
+
+    // Source label for plugin tool should be present in the picker
+    expect(screen.getAllByText('plugin:slack-e2e').length).toBeGreaterThan(0)
+  })
+
+  it('(b) selecting a plugin tool stores AssignedTool with toolId === "slack-e2e.send_message" and source: "plugin"', async () => {
+    const onChange = vi.fn()
+    render(
+      <QueryClientProvider client={makePluginQueryClient()}>
+        <ControlledCapabilitiesSection onChange={onChange} />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Add tool from registry' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('slack-e2e.send_message')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByText('slack-e2e.send_message'))
+
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledTimes(1)
+    })
+
+    const lastCall = onChange.mock.calls[0][0] as CapabilitiesFormState
+    expect(lastCall.tools).toHaveLength(1)
+    const tool = lastCall.tools[0]
+    expect(tool.toolId).toBe('slack-e2e.send_message')
+    expect(tool.source).toBe('plugin')
+    expect(tool.serverName).toBe('slack-e2e')
+    expect(tool.name).toBe('send_message')
+  })
+
+  it('(c) loading a policy with an existing slack-e2e.send_message grant shows plugin source label', async () => {
+    const assignedTools: AssignedTool[] = [
+      {
+        toolId: 'slack-e2e.send_message',
+        serverId: 'slack-e2e',
+        serverName: 'slack-e2e',
+        name: 'send_message',
+        description: 'Send a message to a Slack channel',
+        source: 'mcp', // parse-time default; reconciled at render
+        approvalRequired: false,
+        approvalTimeout: '',
+      },
+    ]
+
+    render(
+      <QueryClientProvider client={makePluginQueryClient()}>
+        <ControlledCapabilitiesSection initialTools={assignedTools} />
+      </QueryClientProvider>,
+    )
+
+    // Wait for plugin instances to be resolved and source label to appear
+    await waitFor(() => {
+      expect(screen.getByText('slack-e2e.send_message')).toBeInTheDocument()
+    })
+
+    // The plugin source label should appear on the assigned row
+    expect(screen.getByText('plugin:slack-e2e')).toBeInTheDocument()
+  })
+
+  it('(d) round-trip: plugin-sourced AssignedTool emits tool: slack-e2e.send_message unchanged', () => {
+    const pluginTool: AssignedTool = {
+      toolId: 'slack-e2e.send_message',
+      serverId: 'inst-slack-1',
+      serverName: 'slack-e2e',
+      name: 'send_message',
+      description: 'Send a message to a Slack channel',
+      source: 'plugin',
+      approvalRequired: false,
+      approvalTimeout: '',
+    }
+    // Build a minimal FormState that includes the plugin tool
+    const state = {
+      identity: { name: 'p', description: '', folder: '' },
+      trigger: { type: 'manual' as const },
+      capabilities: {
+        tools: [pluginTool],
+        feedback: { enabled: false, timeout: '', onTimeout: 'fail' },
+      },
+      audience: { name: '' },
+      task: { task: 'do things' },
+      limits: { max_tokens_per_run: 20000, max_tool_calls_per_run: 50 },
+      concurrency: { concurrency: 'skip' as const, queueDepth: 0 },
+      model: { provider: 'anthropic', model: 'claude-3-5-haiku-latest' },
+    }
+    const yaml = formStateToYaml(state)
+    expect(yaml).toContain('tool: slack-e2e.send_message')
+  })
+
+  it('(e) stale grant gone-instance.foo renders unknown badge and is NOT dropped', async () => {
+    const assignedTools: AssignedTool[] = [
+      {
+        toolId: 'gone-instance.foo',
+        serverId: 'gone-instance',
+        serverName: 'gone-instance',
+        name: 'foo',
+        description: '',
+        source: 'mcp',
+        approvalRequired: false,
+        approvalTimeout: '',
+      },
+    ]
+
+    render(
+      <QueryClientProvider client={makePluginQueryClient()}>
+        <ControlledCapabilitiesSection initialTools={assignedTools} />
+      </QueryClientProvider>,
+    )
+
+    // Row is present (grant is not dropped)
+    await waitFor(() => {
+      expect(screen.getByText('gone-instance.foo')).toBeInTheDocument()
+    })
+
+    // Unknown source badge is shown
+    expect(screen.getByTitle(/Source server or plugin instance not found/)).toBeInTheDocument()
+    expect(screen.getByText('Unknown source')).toBeInTheDocument()
   })
 })
