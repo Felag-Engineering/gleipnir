@@ -66,6 +66,7 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 | ADR-049 | Redact-on-read for plugin instance config secret fields (x-gleipnir-secret) | 🟢 Decided | v1.1 (plugins) | internal/plugin/configvalidate, internal/admin/plugin_handler, plugin-sdk/manifest, plugins/slack |
 | ADR-050 | Ergonomic Service seam coexists with raw gRPC seam in plugin-sdk (amended #495: ergonomic trigger emit routes through canonical EmitEvent, not StartResponse) | 🟢 Decided | v1.1 (plugins) | plugin-sdk/tool, plugin-sdk/channel, plugin-sdk/trigger, plugin-sdk/pluginerr (new packages); plugin-sdk/serve (New*Server constructors, WithXHandler options); plugins/ntfy (migrated); plugins/slack (stays raw) |
 | ADR-051 | Three plugin dispatchers are deliberately separate (tool-call pool, channel Notify/Request, trigger events) — do not merge into one routing module | 🟢 Decided | v1.1 (plugins) | internal/plugin/dispatch (pool.go, channel.go), internal/plugin/trigger (dispatcher.go), internal/plugin/hostsvc (identity/generation interceptors) |
+| ADR-052 | Operator-selectable binding-match operator per trigger field — field advertises an allowed-operator SET, operator picks via policy-editor dropdown; flat binding = author default op, `{op, value}` = explicit override (back-compat) | 🟢 Decided | v1.x (post-1.1) | internal/plugin/binding, plugin-sdk/manifest, internal/policy, internal/plugin/configvalidate, internal/http/api/binding_test_handler, policy editor trigger form |
 | #611    | Remove claudecode agent runtime                        | 🟢 Decided | v1.0 | internal/agent/claudecode deleted; policies using provider: claude-code now fail validation |
 | #199    | call_id propagation through gRPC metadata (spec §8.5)  | 🟢 Decided | v1.1 (plugins) | plugin-sdk/serve/callcontext.go, internal/plugin/hostsvc (new package), no new ADR — implements existing spec §8.5 contract |
 | #224    | OAuth2 authcode + clientcred host-side orchestration (spec §9.1/§9.2) | 🟢 Decided | v1.1 (plugins) | internal/plugin/oauth (new package, x/oauth2 + clientcredentials), internal/admin/plugin_oauth_handler.go, plugin_instances.credentials_encrypted, HMAC state envelope with HKDF subkey off GLEIPNIR_ENCRYPTION_KEY; no new ADR — implements existing spec §9 contract. Encryption helpers reused from internal/admin via function injection to avoid an import cycle; planned to move to internal/infra/crypto when #141 lands. |
@@ -75,6 +76,119 @@ Running index of all Architecture Decision Records. Promote items from the Roadm
 - **ADR-025 and ADR-027 were never assigned** — the numbering intentionally skips them; there is no missing record.
 - **ADR-011, ADR-012, ADR-013, ADR-014, and ADR-043 are index-only** (no dedicated `## ADR-NNN` body below). ADR-011's approval lifecycle is documented under ADR-008 + ADR-029; ADR-043's signing tooling is documented inside the ADR-045 body.
 - **ADR-036 was deferred and never implemented** — see its body for the per-loop trigger architecture that shipped instead.
+
+---
+
+## ADR-052: Operator-selectable binding-match operator per trigger field
+
+**Status:** Decided
+**Date:** 2026-06
+
+### Context
+
+A plugin subscribed-trigger binding (spec §7, ADR-048) is a flat map of `field → value` pairs in the policy YAML, evaluated at runtime by `internal/plugin/binding` against every event payload the plugin emits. Today the *match operator* for each field is fixed by the plugin author: the host resolves it purely from the field's JSON Schema shape (`internal/plugin/binding/binding.go`, `compileField`):
+
+```
+field name "mention_only" + type boolean → OpMentionOnly
+type string, format:regex                → OpRegex
+type string, format:contains             → OpContains
+type string (no format)                  → OpEquals
+type boolean / number / integer          → OpEquals
+```
+
+The author chooses the operator by typing the manifest struct field as `manifest.RegexField`, `manifest.ContainsField`, or `manifest.EqualsField` (`plugin-sdk/manifest/filters.go`), each of which reflects to a `{type, format}` shape. The operator therefore lives in the manifest and cannot be changed by the operator who authors a policy — they may only fill in the *value*.
+
+This surfaced through Slack keyword routing: the `text` field is wired to case-sensitive `contains` and an operator cannot opt into `^(?i)recipe:` without a plugin change. The author-fixed sibling-field workaround shipped as #603 (a `text_regex` `RegexField` peer of `text`) and #604 (a `channel_type` `EqualsField`). Those are concrete consequences of the broader boundary question raised by #607: *which parts of trigger matching belong to the plugin author (fixed in the manifest) vs. the operator (configured per policy)?*
+
+### Decision
+
+**The binding-match operator becomes operator-selectable per field.** A field advertises a SET of allowed operators in its `binding_schema`; the policy editor renders a matcher dropdown (e.g. contains / regex / equals) and the operator picks one per policy. This is the chosen v1.x direction — not the author-fixed status quo, and not a hybrid.
+
+Author guidance and the broader author-fixed-vs-operator-configurable boundary (issue #607 AC) are recorded in the *Boundary guidance* section below.
+
+#### 1. Back-compatible dual wire format
+
+`model.TriggerConfig.Binding` stays `map[string]any`. A field value may take one of two shapes:
+
+- **Flat scalar — `field: value`** — means "match using this field's author-declared *default* operator". This is the existing form; every existing flat binding keeps working unchanged.
+- **Explicit object — `field: {op: <operator>, value: <value>}`** — the operator's per-policy override. `op` selects from the field's advertised allowed-operator set; `value` is the match value.
+
+The two are distinguishable at runtime without a schema migration: a binding value that is a `map[string]any` carrying an `op` key is the explicit form; any scalar (string/bool/number) is the flat form. Precedence: when the explicit `op` is present it wins; otherwise the field's default op (from the schema) is used. The `{op, value}` object lives entirely inside the `binding` map in the policy YAML — no new DB columns, consistent with ADR-002 (policy stored as a YAML blob).
+
+#### 2. Manifest representation: `MultiOpField`
+
+A plugin author declares an allowed-operator set with a new SDK typed field, `manifest.MultiOpField`, alongside the existing `RegexField`/`ContainsField`/`EqualsField`/`GlobField` in `plugin-sdk/manifest/filters.go`. Its `JSONSchema()` emits an `x-` extension carrying the allowed set and a default:
+
+```yaml
+text:
+  type: string
+  x-gleipnir-operators: [contains, regex, equals]
+  x-gleipnir-default-op: contains
+```
+
+The `x-gleipnir-` extension prefix is chosen for consistency with ADR-049's `x-gleipnir-secret` and the established SDK reflection pattern, rather than overloading JSON Schema `format` (which implies validation, whereas this is matcher metadata). The existing single-operator typed fields (`RegexField`, `ContainsField`, `EqualsField`) remain the way to declare a field with exactly one fixed operator; conceptually each is the degenerate `x-gleipnir-operators: [<that op>]` with that op as the default. The host resolves a field's *default op* from its `x-gleipnir-default-op` when present, else from the legacy `{type, format}` shape — so author-fixed fields and operator-selectable fields coexist in one schema.
+
+#### 3. Relationship to #603/#604 (sibling fields)
+
+The author-fixed sibling fields that just shipped — `text` (`ContainsField`), `text_regex` (`RegexField`), `channel_type` (`EqualsField`), `user` (`EqualsField`), and the reserved `mention_only` — **remain valid and keep working**. Each is a field whose *default op* is its current schema-shape operator. Operator-selectability is purely additive: it lets a single field advertise multiple operators (e.g. `text` offering `[contains, regex, equals]`) so an author no longer *needs* to add a `text_regex` peer to expose regex.
+
+The sibling-field pattern is therefore a v1 stepping stone, **kept for back-compat, not subsumed and not removed**. There is no forced migration: existing policies with flat `text:`, `text_regex:`, `channel_type:`, `user:`, and `mention_only:` bindings continue to validate and evaluate identically. New authors are guided toward a single `MultiOpField` instead of sibling fields. This deliberately avoids churning code that just landed.
+
+#### 4. mention_only stays a fixed-semantic reserved field
+
+`mention_only` is **not** operator-selectable. It remains the reserved boolean field whose `true` value maps to `OpMentionOnly` (checking the payload's `mentioned` field, per spec §7.2). It is a fixed-semantic flag, not a value-matched field, so the operator dropdown does not apply to it. This keeps the model with one clean, documented exception rather than trying to force a boolean flag through the operator-set machinery.
+
+### Boundary guidance (issue #607 AC)
+
+Four places can carry trigger-matching configuration. The intended division:
+
+| Layer | Owner | Granularity | What belongs here |
+|-------|-------|-------------|-------------------|
+| **Manifest schema shape** (`binding_schema` fields, allowed-operator set) | Plugin author | Structural | *Which* fields exist and *which operators* are permitted on each. Author-fixed structure. |
+| **Subscription scope** (`subscription_schema`, instance `subscription_scope_json`) | Admin (per instance) | Coarse | Instance-wide watch filter applied before per-policy matching (e.g. Slack channel IDs the instance subscribes to). One setting shared by all policies on that instance. |
+| **Per-policy binding** (`binding` map in policy YAML) | Operator (per policy) | Fine | The actual match values, and now the *chosen operator* per field. Per-policy. |
+| **Instance config** (`config_json`, ADR-049) | Admin (per instance) | Instance-wide | Credentials and operational tunables (e.g. rate limits, #577) that are not matching criteria. |
+
+Author guidance — when to expose a binding field vs subscription scope vs instance config:
+
+- **Binding field** — a per-policy matching criterion an operator should vary per policy (message text, sender). Expose an allowed-operator set when more than one match style is reasonable.
+- **Subscription scope** — a coarse instance-wide filter that bounds *what the plugin watches at all* and is shared by every policy (Slack channels the instance connects to). Prefer scope over binding when the filter reduces the plugin's external footprint, not just which events fire a run.
+- **Instance config** — credentials and operational knobs that are not matching criteria and that an admin (not a policy operator) should control.
+
+The principle: **the plugin author fixes the structure (fields and allowed operators); the operator picks values and operator per policy; the admin sets coarse instance scope and operational config.**
+
+### Consequences
+
+- **Binding engine** (`internal/plugin/binding`): `Compile` must parse the optional `{op, value}` object form, resolve `Op` from the explicit `op` when present (validating it against the field's advertised set) and otherwise from the field's default op. The leaf-package boundary (stdlib + yaml.v3 only) is preserved.
+- **SDK** (`plugin-sdk/manifest`): add `MultiOpField` and the `x-gleipnir-operators` / `x-gleipnir-default-op` reflection.
+- **Save-time validation** (`internal/plugin/configvalidate.ForTriggerBinding`, `internal/policy/subscribed_validator.go`): must accept the object form and reject an `op` not in the field's advertised set.
+- **Preview endpoint** (`internal/http/api/binding_test_handler.go`): already calls `binding.Compile`/`Evaluate`, so it inherits the new form once the engine changes; its request body shape (flat `binding` map) is unchanged because the object form is just a richer value.
+- **Policy editor**: the trigger form (ADR-019/048 authoring surface) must render a matcher dropdown per multi-op field and emit the `{op, value}` shape; single-op fields keep their current single input.
+- **Docs**: `docs/developer/plugin-system-spec.md §7` and the plugin author guide gain the operator-set field and the boundary guidance above.
+
+No DB migration is required: the change is confined to the YAML-blob binding payload (ADR-002) and the reflected manifest schema.
+
+### Follow-up issues
+
+This ADR records the decision; implementation is split into:
+
+1. Binding engine — parse the explicit `{op, value}` form; resolve `Op` from explicit `op` (else default op); validate `op` against the advertised set (`internal/plugin/binding`).
+2. SDK manifest — `manifest.MultiOpField` + `x-gleipnir-operators` / `x-gleipnir-default-op` reflection (`plugin-sdk/manifest/filters.go`).
+3. configvalidate / save-time validator — accept the object form, reject out-of-set operators (`internal/plugin/configvalidate`, `internal/policy/subscribed_validator.go`).
+4. test-binding preview — confirm the preview endpoint handles the object form end-to-end (`internal/http/api/binding_test_handler.go`).
+5. Policy-editor matcher dropdown UI (frontend trigger form).
+6. Docs — spec §7 + plugin author guide (boundary guidance, `MultiOpField`).
+
+Concrete examples / cross-links: #603 (`text_regex` sibling — becomes unnecessary once `text` is a `MultiOpField`) and #604 (`channel_type`) are the author-fixed precedents this ADR generalizes. Source design question: #607.
+
+### References
+
+- Issue #607 (design question + acceptance criteria), #603, #604, #577
+- `internal/plugin/binding/binding.go` (`compileField`, operator table)
+- `plugin-sdk/manifest/filters.go` (`RegexField`/`ContainsField`/`EqualsField`/`GlobField`)
+- `internal/plugin/configvalidate/configvalidate.go` (`ForTriggerBinding`), `internal/policy/subscribed_validator.go`
+- `internal/http/api/binding_test_handler.go`
+- ADR-002 (policy as YAML blob), ADR-019 (policy editor authoring surface), ADR-048 (subscribed trigger type), ADR-049 (`x-gleipnir-secret` extension precedent)
 
 ---
 
