@@ -38,11 +38,12 @@ type fakePluginQuerier struct {
 	audienceEntries map[string][]db.ListAudienceEntriesByInstanceRow
 	// casFailOn is the plugin ID that should return 0 rows for UpdatePluginTrustedPubkey
 	// or UpdatePluginManifest to simulate a CAS conflict.
-	casFailOn         string
-	updatePubkey      string // last value written by UpdatePluginTrustedPubkey
-	scopeCASFailOnID  string // instance ID that should return 0 rows for UpdatePluginInstanceSubscriptionScope
-	configCASFailOnID string // instance ID that should return 0 rows for UpdatePluginInstanceConfig
-	createInstanceErr error  // if non-nil, CreatePluginInstance returns this error
+	casFailOn            string
+	updatePubkey         string // last value written by UpdatePluginTrustedPubkey
+	scopeCASFailOnID     string // instance ID that should return 0 rows for UpdatePluginInstanceSubscriptionScope
+	configCASFailOnID    string // instance ID that should return 0 rows for UpdatePluginInstanceConfig
+	rateLimitCASFailOnID string // instance ID that should return 0 rows for UpdatePluginInstanceEventRateLimit
+	createInstanceErr    error  // if non-nil, CreatePluginInstance returns this error
 	// deletedInstanceIDs tracks which instance IDs were deleted.
 	deletedInstanceIDs []string
 	// deletedPluginIDs tracks which plugin IDs were deleted.
@@ -247,6 +248,22 @@ func (f *fakePluginQuerier) UpdatePluginInstanceConfig(_ context.Context, arg db
 		return 0, nil
 	}
 	inst.ConfigJson = arg.ConfigJson
+	inst.UpdatedAt = arg.UpdatedAt
+	inst.Version++
+	f.instances[arg.ID] = inst
+	return 1, nil
+}
+
+func (f *fakePluginQuerier) UpdatePluginInstanceEventRateLimit(_ context.Context, arg db.UpdatePluginInstanceEventRateLimitParams) (int64, error) {
+	if f.rateLimitCASFailOnID == arg.ID {
+		return 0, nil // simulate CAS conflict
+	}
+	inst, ok := f.instances[arg.ID]
+	if !ok || inst.Version != arg.ExpectedVersion {
+		return 0, nil
+	}
+	inst.HostEventRatePerSec = arg.HostEventRatePerSec
+	inst.HostEventBurst = arg.HostEventBurst
 	inst.UpdatedAt = arg.UpdatedAt
 	inst.Version++
 	f.instances[arg.ID] = inst
@@ -3585,5 +3602,185 @@ func TestGetPluginSBOM_FallbackContentType(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
 		t.Errorf("Content-Type = %q, want %q", ct, "text/plain; charset=utf-8")
+	}
+}
+
+// ---- PutEventRateLimit tests ------------------------------------------------
+
+// serveRateLimit is a test helper that fires PutEventRateLimit and returns the
+// recorder. Matching the helper pattern used by serveGetSBOM etc. above.
+func serveRateLimit(h *PluginHandler, pluginID, instanceID, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPut, "/", bytes.NewBufferString(body))
+	req = withChiParams(req, map[string]string{"id": pluginID, "iid": instanceID})
+	rec := httptest.NewRecorder()
+	h.PutEventRateLimit(rec, req)
+	return rec
+}
+
+// minimalManifest is a no-schema manifest so writeInstanceResponseWithRedaction
+// does not need a config_schema to build the instanceResponse.
+const minimalManifest = instanceConfigManifestNoSchema
+
+func seedRateLimitInstance(q *fakePluginQuerier) {
+	q.seedPlugin(db.Plugin{
+		ID:               "plugin-1",
+		Name:             "test-plugin",
+		ManifestSnapshot: minimalManifest,
+		Version:          0,
+	})
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-1",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     3,
+	})
+}
+
+func TestPluginHandler_PutEventRateLimit_HappyPath(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	seedRateLimitInstance(q)
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+
+	rec := serveRateLimit(h, "plugin-1", "inst-1",
+		`{"event_rate_per_sec":50,"event_burst":100,"expected_version":3}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	// Version should have been bumped.
+	inst := q.instances["inst-1"]
+	if inst.Version != 4 {
+		t.Errorf("version = %d, want 4 (bumped from 3)", inst.Version)
+	}
+	// Columns should be persisted.
+	if inst.HostEventRatePerSec == nil || *inst.HostEventRatePerSec != 50 {
+		t.Errorf("HostEventRatePerSec = %v, want 50", inst.HostEventRatePerSec)
+	}
+	if inst.HostEventBurst == nil || *inst.HostEventBurst != 100 {
+		t.Errorf("HostEventBurst = %v, want 100", inst.HostEventBurst)
+	}
+	// Response must be valid JSON with version + rate-limit fields.
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	data, ok := resp["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("response.data missing or wrong type: %v", resp)
+	}
+	if v, _ := data["version"].(float64); int(v) != 4 {
+		t.Errorf("response.data.version = %v, want 4", data["version"])
+	}
+	if v, _ := data["host_event_rate_per_sec"].(float64); v != 50 {
+		t.Errorf("response.data.host_event_rate_per_sec = %v, want 50", data["host_event_rate_per_sec"])
+	}
+	if v, _ := data["host_event_burst"].(float64); int(v) != 100 {
+		t.Errorf("response.data.host_event_burst = %v, want 100", data["host_event_burst"])
+	}
+}
+
+func TestPluginHandler_PutEventRateLimit_BothNilClearsToNull(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	seedRateLimitInstance(q)
+
+	// Pre-seed non-nil values.
+	rate := 75.0
+	burst := int64(150)
+	inst := q.instances["inst-1"]
+	inst.HostEventRatePerSec = &rate
+	inst.HostEventBurst = &burst
+	q.instances["inst-1"] = inst
+
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+	rec := serveRateLimit(h, "plugin-1", "inst-1", `{"expected_version":3}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	stored := q.instances["inst-1"]
+	if stored.HostEventRatePerSec != nil {
+		t.Errorf("HostEventRatePerSec = %v, want nil (cleared to NULL)", stored.HostEventRatePerSec)
+	}
+	if stored.HostEventBurst != nil {
+		t.Errorf("HostEventBurst = %v, want nil (cleared to NULL)", stored.HostEventBurst)
+	}
+}
+
+func TestPluginHandler_PutEventRateLimit_InvalidRate_400(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC) }
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"zero rate", `{"event_rate_per_sec":0,"expected_version":3}`},
+		{"negative rate", `{"event_rate_per_sec":-1,"expected_version":3}`},
+		{"above cap rate", `{"event_rate_per_sec":99999,"expected_version":3}`},
+		{"zero burst", `{"event_burst":0,"expected_version":3}`},
+		{"negative burst", `{"event_burst":-5,"expected_version":3}`},
+		{"above cap burst", `{"event_burst":200000,"expected_version":3}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := newFakePluginQuerier()
+			seedRateLimitInstance(q)
+			h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+			rec := serveRateLimit(h, "plugin-1", "inst-1", tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("%s: status = %d, want 400", tc.name, rec.Code)
+			}
+		})
+	}
+}
+
+func TestPluginHandler_PutEventRateLimit_MissingExpectedVersion_400(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+	rec := serveRateLimit(h, "plugin-1", "inst-1", `{"event_rate_per_sec":50}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for missing expected_version", rec.Code)
+	}
+}
+
+func TestPluginHandler_PutEventRateLimit_CASConflict_409(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	seedRateLimitInstance(q)
+	q.rateLimitCASFailOnID = "inst-1"
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+	rec := serveRateLimit(h, "plugin-1", "inst-1", `{"event_rate_per_sec":50,"expected_version":3}`)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409 for CAS conflict", rec.Code)
+	}
+}
+
+func TestPluginHandler_PutEventRateLimit_InstanceNotFound_404(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+	rec := serveRateLimit(h, "plugin-1", "inst-missing", `{"expected_version":0}`)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for missing instance", rec.Code)
+	}
+}
+
+func TestPluginHandler_PutEventRateLimit_CrossPluginInstance_404(t *testing.T) {
+	fixedClock := func() time.Time { return time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC) }
+	q := newFakePluginQuerier()
+	q.seed(db.PluginInstance{
+		ID:          "inst-1",
+		PluginID:    "plugin-other",
+		ConfigJson:  "{}",
+		HealthState: "healthy",
+		Version:     0,
+	})
+	h := newTestPluginHandler(q, fixedClock, testPluginHandlerConfig{})
+	// Requesting under plugin-1 but the instance belongs to plugin-other.
+	rec := serveRateLimit(h, "plugin-1", "inst-1", `{"expected_version":0}`)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for cross-plugin instance", rec.Code)
 	}
 }

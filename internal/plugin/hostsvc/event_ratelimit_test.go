@@ -1,6 +1,7 @@
 package hostsvc
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -15,6 +16,195 @@ func snapshotDropCounter(pluginID, instanceID string) float64 {
 	)
 }
 
+// ptr helpers for concise test table entries.
+func f64(v float64) *float64 { return &v }
+func i64(v int64) *int64     { return &v }
+
+// TestResolveRateLimit verifies the per-field independent fallback logic.
+func TestResolveRateLimit(t *testing.T) {
+	type want struct {
+		wantRate  float64
+		wantBurst int
+	}
+	tests := []struct {
+		name       string
+		ratePerSec *float64
+		burst      *int64
+		wantRate   float64
+		wantBurst  int
+	}{
+		// Custom honored
+		{
+			name:       "custom rate and burst honored",
+			ratePerSec: f64(50),
+			burst:      i64(100),
+			wantRate:   50,
+			wantBurst:  100,
+		},
+		{
+			name:       "rate at cap boundary honored",
+			ratePerSec: f64(maxEventsPerSec),
+			burst:      i64(1),
+			wantRate:   maxEventsPerSec,
+			wantBurst:  1,
+		},
+		{
+			name:       "burst at cap boundary honored",
+			ratePerSec: f64(1),
+			burst:      i64(maxEventsBurst),
+			wantRate:   1,
+			wantBurst:  maxEventsBurst,
+		},
+		// NULL → default for that field
+		{
+			name:       "nil rate falls back to default",
+			ratePerSec: nil,
+			burst:      i64(50),
+			wantRate:   defaultEventsPerSec,
+			wantBurst:  50,
+		},
+		{
+			name:       "nil burst falls back to default",
+			ratePerSec: f64(50),
+			burst:      nil,
+			wantRate:   50,
+			wantBurst:  defaultEventsBurst,
+		},
+		{
+			name:       "both nil → both defaults",
+			ratePerSec: nil,
+			burst:      nil,
+			wantRate:   defaultEventsPerSec,
+			wantBurst:  defaultEventsBurst,
+		},
+		// Zero / negative → default
+		{
+			name:       "zero rate → default",
+			ratePerSec: f64(0),
+			burst:      i64(50),
+			wantRate:   defaultEventsPerSec,
+			wantBurst:  50,
+		},
+		{
+			name:       "negative rate → default",
+			ratePerSec: f64(-1),
+			burst:      i64(50),
+			wantRate:   defaultEventsPerSec,
+			wantBurst:  50,
+		},
+		{
+			name:       "zero burst → default",
+			ratePerSec: f64(50),
+			burst:      i64(0),
+			wantRate:   50,
+			wantBurst:  defaultEventsBurst,
+		},
+		{
+			name:       "negative burst → default",
+			ratePerSec: f64(50),
+			burst:      i64(-5),
+			wantRate:   50,
+			wantBurst:  defaultEventsBurst,
+		},
+		// NaN / Inf → default
+		{
+			name:       "NaN rate → default",
+			ratePerSec: f64(math.NaN()),
+			burst:      i64(50),
+			wantRate:   defaultEventsPerSec,
+			wantBurst:  50,
+		},
+		{
+			name:       "positive Inf rate → default",
+			ratePerSec: f64(math.Inf(1)),
+			burst:      i64(50),
+			wantRate:   defaultEventsPerSec,
+			wantBurst:  50,
+		},
+		{
+			name:       "negative Inf rate → default",
+			ratePerSec: f64(math.Inf(-1)),
+			burst:      i64(50),
+			wantRate:   defaultEventsPerSec,
+			wantBurst:  50,
+		},
+		// Above cap → default
+		{
+			name:       "rate above cap → default",
+			ratePerSec: f64(maxEventsPerSec + 1),
+			burst:      i64(50),
+			wantRate:   defaultEventsPerSec,
+			wantBurst:  50,
+		},
+		{
+			name:       "burst above cap → default",
+			ratePerSec: f64(50),
+			burst:      i64(maxEventsBurst + 1),
+			wantRate:   50,
+			wantBurst:  defaultEventsBurst,
+		},
+		// Per-field independence: one bad field does not affect the other
+		{
+			name:       "bad rate, good burst — burst unchanged",
+			ratePerSec: f64(0),
+			burst:      i64(500),
+			wantRate:   defaultEventsPerSec,
+			wantBurst:  500,
+		},
+		{
+			name:       "good rate, bad burst — rate unchanged",
+			ratePerSec: f64(75.5),
+			burst:      i64(-10),
+			wantRate:   75.5,
+			wantBurst:  defaultEventsBurst,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotRate, gotBurst := resolveRateLimit(tc.ratePerSec, tc.burst)
+			if float64(gotRate) != tc.wantRate {
+				t.Errorf("rate = %v, want %v", float64(gotRate), tc.wantRate)
+			}
+			if gotBurst != tc.wantBurst {
+				t.Errorf("burst = %d, want %d", gotBurst, tc.wantBurst)
+			}
+		})
+	}
+}
+
+// TestEventRateLimiter_CustomRateAndBurst verifies that a custom rate/burst pair
+// is used when provided, using a frozen clock so token refill is deterministic.
+func TestEventRateLimiter_CustomRateAndBurst(t *testing.T) {
+	// Not parallel — mutates the package-level timeNow clock.
+	origTimeNow := timeNow
+	t.Cleanup(func() { timeNow = origTimeNow })
+	timeNow = func() time.Time { return time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC) }
+
+	rl := newEventRateLimiter()
+	const (
+		pluginID   = "plug-custom"
+		instanceID = "iid-custom"
+	)
+
+	customBurst := int64(10)
+	customRate := 5.0 // 5 events/sec
+
+	// The burst of 10 should all be allowed immediately.
+	for i := range 10 {
+		allowed, _ := rl.Allow(pluginID, instanceID, &customRate, &customBurst)
+		if !allowed {
+			t.Fatalf("call %d: expected allowed=true within custom burst of %d", i, customBurst)
+		}
+	}
+
+	// The 11th call should be dropped (clock is frozen, no refill).
+	allowed, _ := rl.Allow(pluginID, instanceID, &customRate, &customBurst)
+	if allowed {
+		t.Fatal("11th call: expected drop after custom burst exhausted, got allowed=true")
+	}
+}
+
 // TestEventRateLimiter_WithinBurstAllows verifies that defaultEventsBurst
 // sequential calls all return allowed=true.
 func TestEventRateLimiter_WithinBurstAllows(t *testing.T) {
@@ -27,7 +217,7 @@ func TestEventRateLimiter_WithinBurstAllows(t *testing.T) {
 	before := snapshotDropCounter(pluginID, instanceID)
 
 	for i := range defaultEventsBurst {
-		allowed, flush := rl.Allow(pluginID, instanceID)
+		allowed, flush := rl.Allow(pluginID, instanceID, nil, nil)
 		if !allowed {
 			t.Fatalf("call %d: expected allowed=true, got false (flush=%d)", i, flush)
 		}
@@ -65,7 +255,7 @@ func TestEventRateLimiter_AboveBurstDrops(t *testing.T) {
 
 	var drops int
 	for range total {
-		allowed, _ := rl.Allow(pluginID, instanceID)
+		allowed, _ := rl.Allow(pluginID, instanceID, nil, nil)
 		if !allowed {
 			drops++
 			eventDroppedCounter.WithLabelValues(pluginID, instanceID, "rate_limit").Inc()
@@ -91,12 +281,12 @@ func TestEventRateLimiter_PerInstanceIsolation(t *testing.T) {
 
 	// Exhaust instance A by sending well above the burst limit.
 	for range defaultEventsBurst + 100 {
-		rl.Allow(pluginID, "iid-iso-A")
+		rl.Allow(pluginID, "iid-iso-A", nil, nil)
 	}
 
 	// Instance B should still have its full burst available.
 	for i := range 100 {
-		allowed, _ := rl.Allow(pluginID, "iid-iso-B")
+		allowed, _ := rl.Allow(pluginID, "iid-iso-B", nil, nil)
 		if !allowed {
 			t.Fatalf("instance B call %d: expected allowed=true; instance A exhaustion should not bleed over", i)
 		}
@@ -127,11 +317,11 @@ func TestEventRateLimiter_AuditFlushCoalesces(t *testing.T) {
 
 	// Drain the full burst so the next Allow call must drop.
 	for range defaultEventsBurst {
-		rl.Allow(pluginID, instanceID)
+		rl.Allow(pluginID, instanceID, nil, nil)
 	}
 
 	t.Run("FirstDropFlushes", func(t *testing.T) {
-		allowed, flush := rl.Allow(pluginID, instanceID)
+		allowed, flush := rl.Allow(pluginID, instanceID, nil, nil)
 		if allowed {
 			t.Fatal("expected drop after burst exhausted, got allowed=true")
 		}
@@ -146,7 +336,7 @@ func TestEventRateLimiter_AuditFlushCoalesces(t *testing.T) {
 	// to test audit coalescing in isolation, we drain first then probe.
 	drainBurst := func() {
 		for range defaultEventsBurst {
-			rl.Allow(pluginID, instanceID)
+			rl.Allow(pluginID, instanceID, nil, nil)
 		}
 	}
 
@@ -156,7 +346,7 @@ func TestEventRateLimiter_AuditFlushCoalesces(t *testing.T) {
 	drainBurst()
 
 	t.Run("WithinWindowNoFlush", func(t *testing.T) {
-		allowed, flush := rl.Allow(pluginID, instanceID)
+		allowed, flush := rl.Allow(pluginID, instanceID, nil, nil)
 		if allowed {
 			t.Fatal("expected drop after drain, got allowed=true")
 		}
@@ -171,7 +361,7 @@ func TestEventRateLimiter_AuditFlushCoalesces(t *testing.T) {
 	drainBurst()
 
 	t.Run("AfterWindowFlushesAccumulated", func(t *testing.T) {
-		allowed, flush := rl.Allow(pluginID, instanceID)
+		allowed, flush := rl.Allow(pluginID, instanceID, nil, nil)
 		if allowed {
 			t.Fatal("expected drop after drain, got allowed=true")
 		}
@@ -183,7 +373,7 @@ func TestEventRateLimiter_AuditFlushCoalesces(t *testing.T) {
 	t.Run("SubsequentDropsSameWindowNoFlush", func(t *testing.T) {
 		// Bucket is already drained from the previous subtest's setup; the
 		// limiter has had no clock advance, so the next call still drops.
-		allowed, flush := rl.Allow(pluginID, instanceID)
+		allowed, flush := rl.Allow(pluginID, instanceID, nil, nil)
 		if allowed {
 			t.Fatal("expected drop in same window, got allowed=true")
 		}

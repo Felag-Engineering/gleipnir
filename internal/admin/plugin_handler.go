@@ -94,6 +94,8 @@ type PluginQuerier interface {
 	GetPluginInstanceByName(ctx context.Context, arg db.GetPluginInstanceByNameParams) (db.PluginInstance, error)
 	// Instance config write (used by PutInstanceConfig).
 	UpdatePluginInstanceConfig(ctx context.Context, arg db.UpdatePluginInstanceConfigParams) (int64, error)
+	// Host-owned event rate limit write (used by PutEventRateLimit).
+	UpdatePluginInstanceEventRateLimit(ctx context.Context, arg db.UpdatePluginInstanceEventRateLimitParams) (int64, error)
 	// Audience entries referencing an instance (used by DeleteInstance and Uninstall reference guards).
 	ListAudienceEntriesByInstance(ctx context.Context, pluginInstanceID string) ([]db.ListAudienceEntriesByInstanceRow, error)
 	// Pending request cleanup (RESTRICT FK; must clear before deleting the instance).
@@ -323,6 +325,10 @@ type instanceResponse struct {
 	// itself contains no secrets and is returned as-is (ADR-049). nil when the
 	// manifest declares no config_schema.
 	ConfigSchema interface{} `json:"config_schema"`
+	// HostEventRatePerSec and HostEventBurst are the host-owned rate-limit overrides
+	// for EmitEvent. nil means "use the plugin default" (no override set).
+	HostEventRatePerSec *float64 `json:"host_event_rate_per_sec"`
+	HostEventBurst      *int64   `json:"host_event_burst"`
 }
 
 // GetInstance handles GET /api/v1/admin/plugins/{id}/instances/{iid}.
@@ -733,6 +739,107 @@ func (h *PluginHandler) PutInstanceConfigProperty(w http.ResponseWriter, r *http
 	httputil.WriteJSON(w, http.StatusOK, result.Response)
 }
 
+// putEventRateLimitRequest is the JSON body for
+// PUT /api/v1/admin/plugins/{id}/instances/{iid}/event-rate-limit.
+type putEventRateLimitRequest struct {
+	EventRatePerSec *float64 `json:"event_rate_per_sec,omitempty"`
+	EventBurst      *int64   `json:"event_burst,omitempty"`
+	ExpectedVersion *int64   `json:"expected_version,omitempty"`
+}
+
+// PutEventRateLimit handles PUT /api/v1/admin/plugins/{id}/instances/{iid}/event-rate-limit.
+//
+// Sets the host-owned per-instance EmitEvent rate limit values. Both fields are
+// optional: omitting both (or sending null for both) clears the columns to NULL,
+// reverting to the host defaults of 100 events/sec and burst 200 (spec §4.3, #577).
+// Provided values must be > 0 and within the caps (rate ≤ 10000, burst ≤ 100000).
+//
+// This endpoint writes h.q DIRECTLY — it does not go through InstanceConfig because
+// these are host self-protection controls outside the plugin-author-controlled
+// config_json / manifest schema path (ADR-002 scoped deviation, same rationale as
+// credentials_encrypted).
+//
+// Returns the updated instanceResponse on success (consistent with sibling handlers).
+// CAS-guarded per ADR-038; 409 on concurrent modification.
+func (h *PluginHandler) PutEventRateLimit(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pluginID := chi.URLParam(r, "id")
+	instanceID := chi.URLParam(r, "iid")
+
+	var req putEventRateLimitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.ExpectedVersion == nil {
+		httputil.WriteError(w, http.StatusBadRequest, "expected_version is required", "")
+		return
+	}
+
+	// Validate provided values. NULL (absent) is always allowed and reverts to defaults.
+	if req.EventRatePerSec != nil {
+		if *req.EventRatePerSec <= 0 {
+			httputil.WriteError(w, http.StatusBadRequest, "event_rate_per_sec must be > 0", "")
+			return
+		}
+		if *req.EventRatePerSec > maxEventsPerSec {
+			httputil.WriteError(w, http.StatusBadRequest,
+				fmt.Sprintf("event_rate_per_sec must be ≤ %.0f", maxEventsPerSec), "")
+			return
+		}
+	}
+	if req.EventBurst != nil {
+		if *req.EventBurst <= 0 {
+			httputil.WriteError(w, http.StatusBadRequest, "event_burst must be > 0", "")
+			return
+		}
+		if *req.EventBurst > maxEventsBurst {
+			httputil.WriteError(w, http.StatusBadRequest,
+				fmt.Sprintf("event_burst must be ≤ %d", maxEventsBurst), "")
+			return
+		}
+	}
+
+	inst, ok := h.resolveInstance(ctx, w, pluginID, instanceID)
+	if !ok {
+		return
+	}
+
+	rows, err := h.q.UpdatePluginInstanceEventRateLimit(ctx, db.UpdatePluginInstanceEventRateLimitParams{
+		HostEventRatePerSec: req.EventRatePerSec,
+		HostEventBurst:      req.EventBurst,
+		UpdatedAt:           h.clock().UTC().Format(time.RFC3339),
+		ID:                  inst.ID,
+		ExpectedVersion:     *req.ExpectedVersion,
+	})
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update event rate limit", "")
+		return
+	}
+	if rows == 0 {
+		httputil.WriteError(w, http.StatusConflict, casConflictMsg, "")
+		return
+	}
+
+	// Re-fetch and return the full instanceResponse for consistency with sibling handlers.
+	updated, err := h.q.GetPluginInstanceByID(ctx, inst.ID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to re-fetch instance after update", "")
+		return
+	}
+	h.writeInstanceResponseWithRedaction(ctx, w, pluginID, updated)
+}
+
+// maxEventsPerSec and maxEventsBurst are the validation caps shared between the
+// PutEventRateLimit handler and the hostsvc rate limiter. They are defined in
+// internal/plugin/hostsvc/event_ratelimit.go; the constants below mirror them here
+// to avoid an import cycle (admin → hostsvc would be a new inter-package dep).
+// If the caps change, update both locations.
+const (
+	maxEventsPerSec = 10000.0
+	maxEventsBurst  = 100000
+)
+
 // unblockInstances transitions every instance of pluginID currently in fromState
 // to toState, returning the count of successful transitions. Listing failures
 // and per-instance state-machine failures are logged and skipped — the caller
@@ -1030,6 +1137,8 @@ func (h *PluginHandler) writeInstanceResponseWithRedactionForPlugin(
 		SubscriptionScopeJson: inst.SubscriptionScopeJson,
 		ConfigJson:            redactedConfig,
 		ConfigSchema:          configSchema,
+		HostEventRatePerSec:   inst.HostEventRatePerSec,
+		HostEventBurst:        inst.HostEventBurst,
 	})
 	return true
 }

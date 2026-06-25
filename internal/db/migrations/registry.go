@@ -33,5 +33,6 @@ func All() []Migration {
 		&AddInactiveHealthState{},
 		&AddPluginPendingManifests{},
 		&AddPluginEventDedup{},
+		&AddHostEventRateLimit{},
 	}
 }

@@ -74,6 +74,18 @@ SELECT * FROM plugin_instances WHERE health_state = :health_state ORDER BY plugi
 UPDATE plugin_instances SET config_json = :config_json, version = version + 1, updated_at = :updated_at
 WHERE id = :id AND version = :expected_version;
 
+-- UpdatePluginInstanceEventRateLimit writes the host-owned per-instance event
+-- rate limit values and bumps the CAS version. NULL values are allowed (they
+-- revert the instance to the host defaults of 100 events/sec, burst 200).
+-- ADR-038 CAS; host-owned control outside config_json (#577).
+-- name: UpdatePluginInstanceEventRateLimit :execrows
+UPDATE plugin_instances
+SET host_event_rate_per_sec = :host_event_rate_per_sec,
+    host_event_burst        = :host_event_burst,
+    version                 = version + 1,
+    updated_at              = :updated_at
+WHERE id = :id AND version = :expected_version;
+
 -- UpdatePluginInstanceSubscriptionScope writes a new subscription_scope_json
 -- and bumps the CAS version. Mirrors UpdatePluginInstanceConfig; ADR-038 CAS.
 -- name: UpdatePluginInstanceSubscriptionScope :execrows
