@@ -644,13 +644,13 @@ func (in *Installer) handleManifestMaterialChange(ctx context.Context, existing 
 	)
 
 	if err := in.recordAuditEvent(ctx, auditManifestMaterialChange, severityHigh, nowStr, map[string]any{
-		"plugin_id":                    existing.ID,
-		"name":                         existing.Name,
-		"old_version":                  existing.PluginVersion,
-		"new_version":                  m.Version,
-		"material_fields":              pluginmanifest.MaterialFields(changes),
-		"cosmetic_fields":              pluginmanifest.CosmeticFields(changes),
-		"candidate_manifest_b64":       base64.StdEncoding.EncodeToString(candidateBytes),
+		"plugin_id":              existing.ID,
+		"name":                   existing.Name,
+		"old_version":            existing.PluginVersion,
+		"new_version":            m.Version,
+		"material_fields":        pluginmanifest.MaterialFields(changes),
+		"cosmetic_fields":        pluginmanifest.CosmeticFields(changes),
+		"candidate_manifest_b64": base64.StdEncoding.EncodeToString(candidateBytes),
 		"newly_required_config_fields": func() []string {
 			fields, err := pluginmanifest.ConfigSchemaNewlyRequiredFields(oldManifest, m)
 			if err != nil {

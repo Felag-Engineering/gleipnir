@@ -554,13 +554,13 @@ func (h *PluginHandler) AcceptManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeAuditEvent(ctx, auditManifestAccepted, "info", nowStr, map[string]any{
-		"plugin_id":                  pluginID,
-		"name":                       plugin.Name,
-		"old_version":                pendingRow.OldVersion,
-		"new_version":                newManifest.Version,
-		"instances_unblocked":        unblocked,
-		"instances_pending_config":   pendingConfig,
-		"config_schema_unparseable":  forceMigration,
+		"plugin_id":                 pluginID,
+		"name":                      plugin.Name,
+		"old_version":               pendingRow.OldVersion,
+		"new_version":               newManifest.Version,
+		"instances_unblocked":       unblocked,
+		"instances_pending_config":  pendingConfig,
+		"config_schema_unparseable": forceMigration,
 	})
 
 	httputil.WriteJSON(w, http.StatusOK, acceptManifestResponse{
