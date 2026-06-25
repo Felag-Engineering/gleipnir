@@ -120,6 +120,7 @@ export const NoneSelected: Story = {
         http.get('/api/v1/admin/audiences', () =>
           HttpResponse.json({ data: [] }),
         ),
+        http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
       ],
     },
   },
@@ -137,6 +138,7 @@ export const WithAudiences: Story = {
         http.get('/api/v1/admin/audiences', () =>
           HttpResponse.json({ data: ALL_AUDIENCES }),
         ),
+        http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
       ],
     },
   },
@@ -160,6 +162,7 @@ export const Selected: Story = {
           }
           return HttpResponse.json({ error: 'not found' }, { status: 404 })
         }),
+        http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
       ],
     },
   },
@@ -177,6 +180,7 @@ export const SelectedMissing: Story = {
         http.get('/api/v1/admin/audiences', () =>
           HttpResponse.json({ data: ALL_AUDIENCES }),
         ),
+        http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
       ],
     },
   },
@@ -193,6 +197,7 @@ export const Loading: Story = {
       handlers: [
         // Never resolves — keeps the query in loading state.
         http.get('/api/v1/admin/audiences', () => new Promise(() => {})),
+        http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
       ],
     },
   },
@@ -226,6 +231,7 @@ export const Interactive: Story = {
           }
           return HttpResponse.json({ error: 'not found' }, { status: 404 })
         }),
+        http.get('/api/v1/admin/plugin-instances', () => HttpResponse.json({ data: [] })),
       ],
     },
   },
