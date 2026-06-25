@@ -2377,3 +2377,267 @@ func TestChannelService_Request_HandleInteractiveTakesCorrelation(t *testing.T) 
 		t.Error("correlation entry still present after handleInteractive ran; handleInteractive must call take()")
 	}
 }
+
+// ── Slash command and shortcut trigger tests ──────────────────────────────────
+
+// slashCommandSocketEvent builds a socketmode.Event of type EventTypeSlashCommand.
+// A Request with a non-empty EnvelopeID is required so AckCount assertions work.
+func slashCommandSocketEvent(command, text, userID, channelID, triggerID string) socketmode.Event {
+	cmd := slack.SlashCommand{
+		Command:   command,
+		Text:      text,
+		UserID:    userID,
+		ChannelID: channelID,
+		TriggerID: triggerID,
+		TeamID:    "T03TEAM001",
+	}
+	return socketmode.Event{
+		Type:    socketmode.EventTypeSlashCommand,
+		Data:    cmd,
+		Request: &socketmode.Request{EnvelopeID: "env-slash-" + triggerID},
+	}
+}
+
+// messageShortcutSocketEvent builds a socketmode.Event of type EventTypeInteractive
+// carrying a message_action InteractionCallback.
+func messageShortcutSocketEvent(callbackID, triggerID, channelID, userID string) socketmode.Event {
+	cb := slack.InteractionCallback{
+		Type:       slack.InteractionTypeMessageAction,
+		TriggerID:  triggerID,
+		CallbackID: callbackID,
+		User:       slack.User{ID: userID},
+		Team:       slack.Team{ID: "T03TEAM001"},
+		Channel: slack.Channel{
+			GroupConversation: slack.GroupConversation{
+				Conversation: slack.Conversation{ID: channelID},
+			},
+		},
+		Message: slack.Message{
+			Msg: slack.Msg{
+				Text:      "the target message text",
+				Timestamp: "1700001000.000200",
+			},
+		},
+	}
+	return socketmode.Event{
+		Type:    socketmode.EventTypeInteractive,
+		Data:    cb,
+		Request: &socketmode.Request{EnvelopeID: "env-shortcut-" + triggerID},
+	}
+}
+
+// buildTriggerTestHarness is a shared helper that wires a fake socket mode runner,
+// a FakeHost with EmitEvent capture, and a TriggerService into an in-process setup.
+// Returns the TriggerServiceClient, FakeHost, emitCh, and cleanup function.
+func buildTriggerTestHarness(t *testing.T, fake *fakeSocketModeRunner) (triggerv1.TriggerServiceClient, *plugintest.FakeHost, chan plugintest.Event, func()) {
+	t.Helper()
+
+	emitCh := make(chan plugintest.Event, 10)
+	host := plugintest.NewFakeHost(
+		plugintest.WithInstanceConfigJSON(`{"app_level_token":"xapp-test-token"}`),
+		plugintest.OnEmitEvent(func(ev plugintest.Event) {
+			select {
+			case emitCh <- ev:
+			default:
+			}
+		}),
+	)
+
+	hostLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for host: %v", err)
+	}
+	hostSrv := grpc.NewServer()
+	host.Register(hostSrv)
+	go func() { _ = hostSrv.Serve(hostLis) }()
+
+	hostConn, err := grpc.NewClient(hostLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial host: %v", err)
+	}
+	hostClient := hostv1.NewHostServiceClient(hostConn)
+
+	registry := newHubRegistry(func(_ string) (socketModeRunner, error) {
+		return fake, nil
+	})
+
+	triggerLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for trigger: %v", err)
+	}
+	triggerSrv := grpc.NewServer()
+	triggerv1.RegisterTriggerServiceServer(triggerSrv,
+		newTriggerServiceWithRegistry(hostClient, registry, nil, ""))
+	go func() { _ = triggerSrv.Serve(triggerLis) }()
+
+	triggerConn, err := grpc.NewClient(triggerLis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial trigger: %v", err)
+	}
+
+	cleanup := func() {
+		triggerConn.Close()
+		triggerSrv.Stop()
+		hostConn.Close()
+		hostSrv.Stop()
+	}
+	return triggerv1.NewTriggerServiceClient(triggerConn), host, emitCh, cleanup
+}
+
+// TestTriggerStartEmitsSlashCommandEvent asserts that a slash command socket event
+// causes Start to call host.EmitEvent with kind=slash_command and that Ack fires.
+func TestTriggerStartEmitsSlashCommandEvent(t *testing.T) {
+	fake := &fakeSocketModeRunner{
+		events: []socketmode.Event{
+			slashCommandSocketEvent("/gleipnir", "deploy staging", "U01USER001", "C012ABCDEF", "trig-slash-1.abc"),
+		},
+	}
+
+	triggerClient, host, emitCh, cleanup := buildTriggerTestHarness(t, fake)
+	defer cleanup()
+
+	svcs := &services{trigger: triggerClient}
+	// Scope with slash_commands=true to open the trigger stream.
+	cancel, done := startTriggerInBackground(t, svcs, `{"slash_commands":true}`)
+
+	var ev plugintest.Event
+	select {
+	case ev = <-emitCh:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for EmitEvent")
+	}
+	cancel()
+	<-done
+
+	_ = host // host is checked via emitCh above
+
+	if ev.EventKind != "slash_command" {
+		t.Errorf("event kind: want slash_command, got %q", ev.EventKind)
+	}
+	if ev.EventID == "" {
+		t.Error("event_id: want non-empty ULID string")
+	}
+
+	var p SlackSlashCommandPayload
+	if err := json.Unmarshal([]byte(ev.PayloadJSON), &p); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if p.Command != "/gleipnir" {
+		t.Errorf("command: want /gleipnir, got %q", p.Command)
+	}
+	if p.Text != "deploy staging" {
+		t.Errorf("text: want deploy staging, got %q", p.Text)
+	}
+
+	// The hub must have acked the slash command event.
+	if n := fake.AckCount(); n != 1 {
+		t.Errorf("Ack call count: want 1, got %d", n)
+	}
+}
+
+// TestTriggerStartEmitsMessageShortcutEvent asserts that a message shortcut
+// interactive event causes Start to emit a message_shortcut event and ack.
+func TestTriggerStartEmitsMessageShortcutEvent(t *testing.T) {
+	fake := &fakeSocketModeRunner{
+		events: []socketmode.Event{
+			messageShortcutSocketEvent("run_agent_on_message", "trig-shortcut-2.def", "C09INCIDENT", "U01USER002"),
+		},
+	}
+
+	triggerClient, host, emitCh, cleanup := buildTriggerTestHarness(t, fake)
+	defer cleanup()
+
+	svcs := &services{trigger: triggerClient}
+	cancel, done := startTriggerInBackground(t, svcs, `{"shortcuts":true}`)
+
+	var ev plugintest.Event
+	select {
+	case ev = <-emitCh:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for EmitEvent")
+	}
+	cancel()
+	<-done
+
+	_ = host
+
+	if ev.EventKind != "message_shortcut" {
+		t.Errorf("event kind: want message_shortcut, got %q", ev.EventKind)
+	}
+	if ev.EventID == "" {
+		t.Error("event_id: want non-empty ULID string")
+	}
+
+	var p SlackMessageShortcutPayload
+	if err := json.Unmarshal([]byte(ev.PayloadJSON), &p); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if p.CallbackID != "run_agent_on_message" {
+		t.Errorf("callback_id: want run_agent_on_message, got %q", p.CallbackID)
+	}
+	if p.ChannelID != "C09INCIDENT" {
+		t.Errorf("channel_id: want C09INCIDENT, got %q", p.ChannelID)
+	}
+
+	// The hub must have acked the interactive event.
+	if n := fake.AckCount(); n != 1 {
+		t.Errorf("Ack call count: want 1, got %d", n)
+	}
+}
+
+// TestTriggerEmitsSlashCommandWithRestrictiveSubscriptionScope verifies that the
+// TriggerService emits slash_command events regardless of the subscription scope's
+// channel/mention filters. The handler intentionally bypasses scope.matches —
+// slash commands are explicit user intent from any surface.
+//
+// Note on the host gate: the HOST trigger supervisor only opens the TriggerService.Start
+// stream when subscription_scope_json is non-empty (isEmptyScope, supervisor.go:429).
+// The new slash_commands/shortcuts scope flags exist to satisfy that host gate for
+// slash/shortcut-only instances. Here we use a restrictive but non-empty scope
+// (channels limited to an unrelated channel) — the plugin-side handler deliberately
+// bypasses scope.matches, so the event is still emitted. The host gate itself is
+// exercised by existing internal/plugin/trigger supervisor tests; no new host test
+// is added here.
+func TestTriggerEmitsSlashCommandWithRestrictiveSubscriptionScope(t *testing.T) {
+	fake := &fakeSocketModeRunner{
+		events: []socketmode.Event{
+			slashCommandSocketEvent("/gleipnir", "summarize", "U01USER001", "C012ABCDEF", "trig-scope-1.abc"),
+		},
+	}
+
+	triggerClient, host, emitCh, cleanup := buildTriggerTestHarness(t, fake)
+	defer cleanup()
+
+	svcs := &services{trigger: triggerClient}
+	// Restrictive scope: channels limited to an unrelated channel; the slash
+	// command's channel is excluded by this scope. Plugin-side handler must
+	// NOT consult scope.matches for slash commands.
+	cancel, done := startTriggerInBackground(t, svcs, `{"channels":["C99OTHERUNRELATED"]}`)
+
+	var ev plugintest.Event
+	select {
+	case ev = <-emitCh:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-done
+		// If we timeout here it means scope.matches was consulted and filtered
+		// the slash command — that would be a bug.
+		if len(host.Events()) == 0 {
+			t.Fatal("timed out: slash command was not emitted despite restrictive scope — " +
+				"plugin-side handler should bypass scope.matches for slash commands")
+		}
+		t.Fatal("timed out waiting for EmitEvent")
+	}
+	cancel()
+	<-done
+
+	if ev.EventKind != "slash_command" {
+		t.Errorf("event kind: want slash_command, got %q", ev.EventKind)
+	}
+}

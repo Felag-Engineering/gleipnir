@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 )
 
@@ -543,5 +544,205 @@ func TestTranslatePayloadChannelForMessage(t *testing.T) {
 	// Verify channel_id appears in the payload JSON.
 	if !strings.Contains(string(payload), `"CMYCHAN"`) {
 		t.Errorf("payload should contain channel ID CMYCHAN: %s", payload)
+	}
+}
+
+// TestTranslateSlashCommand verifies that translateSlashCommand maps all fields
+// correctly, including cmd.UserID (not cmd.User, which doesn't exist in slack-go).
+func TestTranslateSlashCommand(t *testing.T) {
+	cmd := slack.SlashCommand{
+		Command:     "/gleipnir",
+		Text:        "deploy staging",
+		UserID:      "U01USER001",
+		ChannelID:   "C012ABCDEF",
+		ChannelName: "#ops",
+		TriggerID:   "trig-1.abc",
+		ResponseURL: "https://hooks.slack.com/commands/T01/...",
+		TeamID:      "T03TEAM001",
+	}
+
+	eventID, payload, err := translateSlashCommand(cmd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if eventID == "" {
+		t.Error("eventID: want non-empty ULID string")
+	}
+
+	var p SlackSlashCommandPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if p.Command != "/gleipnir" {
+		t.Errorf("command: want /gleipnir, got %q", p.Command)
+	}
+	if p.Text != "deploy staging" {
+		t.Errorf("text: want %q, got %q", "deploy staging", p.Text)
+	}
+	// cmd.UserID maps to p.User — ensures we access UserID, not a non-existent User field.
+	if p.User != "U01USER001" {
+		t.Errorf("user: want U01USER001, got %q (check cmd.UserID access)", p.User)
+	}
+	if p.ChannelID != "C012ABCDEF" {
+		t.Errorf("channel_id: want C012ABCDEF, got %q", p.ChannelID)
+	}
+	if p.TriggerID != "trig-1.abc" {
+		t.Errorf("trigger_id: want trig-1.abc, got %q", p.TriggerID)
+	}
+	if p.ResponseURL != "https://hooks.slack.com/commands/T01/..." {
+		t.Errorf("response_url: want non-empty, got %q", p.ResponseURL)
+	}
+	if p.TeamID != "T03TEAM001" {
+		t.Errorf("team_id: want T03TEAM001, got %q", p.TeamID)
+	}
+}
+
+// TestTranslateSlashCommandDedup verifies that the same SlashCommand input
+// always produces the same eventID (dedup determinism).
+func TestTranslateSlashCommandDedup(t *testing.T) {
+	cmd := slack.SlashCommand{
+		Command:   "/gleipnir",
+		Text:      "deploy staging",
+		UserID:    "U01USER001",
+		ChannelID: "C012ABCDEF",
+		TriggerID: "trig-dedup-1.xyz",
+		TeamID:    "T03TEAM001",
+	}
+
+	id1, _, err1 := translateSlashCommand(cmd)
+	id2, _, err2 := translateSlashCommand(cmd)
+	if err1 != nil || err2 != nil {
+		t.Fatalf("unexpected errors: %v %v", err1, err2)
+	}
+	if id1 != id2 {
+		t.Errorf("eventID not deterministic: got %q then %q", id1, id2)
+	}
+}
+
+// TestTranslateShortcut_MessageAction verifies message_shortcut translation,
+// including the promoted fields: cb.Message.Timestamp (from embedded slack.Msg)
+// and cb.Channel.ID (from Channel→GroupConversation→Conversation.ID).
+func TestTranslateShortcut_MessageAction(t *testing.T) {
+	cb := slack.InteractionCallback{
+		Type:       slack.InteractionTypeMessageAction,
+		TriggerID:  "trig-2.def",
+		CallbackID: "run_agent_on_message",
+		User:       slack.User{ID: "U01USER002"},
+		Team:       slack.Team{ID: "T03TEAM001"},
+		Channel: slack.Channel{
+			GroupConversation: slack.GroupConversation{
+				Conversation: slack.Conversation{ID: "C09INCIDENT"},
+			},
+		},
+		Message: slack.Message{
+			Msg: slack.Msg{
+				Text:      "the database is degraded",
+				Timestamp: "1700001000.000200", // cb.Message.Timestamp — promoted from embedded slack.Msg
+			},
+		},
+	}
+
+	kind, eventID, payload, emit, err := translateShortcut(cb)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !emit {
+		t.Fatal("emit: want true for message_action")
+	}
+	if kind != "message_shortcut" {
+		t.Errorf("kind: want message_shortcut, got %q", kind)
+	}
+	if eventID == "" {
+		t.Error("eventID: want non-empty ULID string")
+	}
+
+	var p SlackMessageShortcutPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if p.Text != "the database is degraded" {
+		t.Errorf("text: want %q, got %q", "the database is degraded", p.Text)
+	}
+	// cb.Message.Timestamp is promoted from the embedded slack.Msg.
+	if p.Ts != "1700001000.000200" {
+		t.Errorf("ts: want 1700001000.000200, got %q (check cb.Message.Timestamp promoted field)", p.Ts)
+	}
+	// cb.Channel.ID is promoted via Channel→GroupConversation→Conversation.ID.
+	if p.ChannelID != "C09INCIDENT" {
+		t.Errorf("channel_id: want C09INCIDENT, got %q (check cb.Channel.ID promotion)", p.ChannelID)
+	}
+	// cb.User.ID — not cb.UserID.
+	if p.User != "U01USER002" {
+		t.Errorf("user: want U01USER002, got %q (check cb.User.ID)", p.User)
+	}
+	if p.TriggerID != "trig-2.def" {
+		t.Errorf("trigger_id: want trig-2.def, got %q", p.TriggerID)
+	}
+	if p.CallbackID != "run_agent_on_message" {
+		t.Errorf("callback_id: want run_agent_on_message, got %q", p.CallbackID)
+	}
+	// cb.Team.ID — not cb.TeamID.
+	if p.TeamID != "T03TEAM001" {
+		t.Errorf("team_id: want T03TEAM001, got %q (check cb.Team.ID)", p.TeamID)
+	}
+}
+
+// TestTranslateShortcut_Global verifies global_shortcut translation.
+// For global shortcuts, cb.Channel is zero-valued (no message context);
+// deriveEventID is called with an empty channelID.
+func TestTranslateShortcut_Global(t *testing.T) {
+	cb := slack.InteractionCallback{
+		Type:       slack.InteractionTypeShortcut,
+		TriggerID:  "trig-3.ghi",
+		CallbackID: "start_agent",
+		User:       slack.User{ID: "U01USER003"},
+		Team:       slack.Team{ID: "T03TEAM001"},
+		// Channel intentionally zero-valued — global shortcuts have no channel context.
+	}
+
+	kind, eventID, payload, emit, err := translateShortcut(cb)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !emit {
+		t.Fatal("emit: want true for global shortcut")
+	}
+	if kind != "global_shortcut" {
+		t.Errorf("kind: want global_shortcut, got %q", kind)
+	}
+	if eventID == "" {
+		t.Error("eventID: want non-empty ULID string")
+	}
+
+	var p SlackGlobalShortcutPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if p.User != "U01USER003" {
+		t.Errorf("user: want U01USER003, got %q", p.User)
+	}
+	if p.CallbackID != "start_agent" {
+		t.Errorf("callback_id: want start_agent, got %q", p.CallbackID)
+	}
+}
+
+// TestTranslateShortcut_BlockActionsNotEmitted verifies that block_actions
+// callbacks return emit=false, preserving the ChannelService approval/feedback path.
+func TestTranslateShortcut_BlockActionsNotEmitted(t *testing.T) {
+	cb := slack.InteractionCallback{
+		Type: slack.InteractionTypeBlockActions,
+		ActionCallback: slack.ActionCallbacks{
+			BlockActions: []*slack.BlockAction{
+				{ActionID: "approve-req-123-accept", Value: "accept"},
+			},
+		},
+	}
+
+	_, _, _, emit, err := translateShortcut(cb)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if emit {
+		t.Error("emit: want false for block_actions (ChannelService path must not be hijacked)")
 	}
 }

@@ -9,9 +9,12 @@ reference).
 ## What this plugin declares
 
 - **ToolService v1** — `post_message` (with Block Kit), `list_channels`, `react`, `set_topic`, `read_thread`, `read_history`, `update_message`, `delete_message`, `lookup_user` (implemented by #233, #626)
-- **TriggerService v1** — two event kinds via Slack Socket Mode (#234, #621):
+- **TriggerService v1** — five event kinds via Slack Socket Mode (#234, #621, #623):
   - `channel_message` — any human message in a watched channel; `mention_only: true` binding selects mentions. Note: subscription-scope channel filtering matches by **channel ID** only (e.g. `C012ABCDEF`); name-based filtering (e.g. `#incidents`) silently does not match because Socket Mode events carry only IDs. Resolving names is future work.
   - `direct_message` — a 1:1 DM sent directly to the bot. Enable via `direct_messages: true` in the instance subscription scope.
+  - `slash_command` — a workspace slash command (e.g. `/gleipnir deploy staging`). Enable via `slash_commands: true` in the instance subscription scope.
+  - `message_shortcut` — a message shortcut invoked on a specific message (carries message text, ts, channel). Enable via `shortcuts: true` in the instance subscription scope.
+  - `global_shortcut` — a global shortcut invoked from anywhere (no message context). Enable via `shortcuts: true` in the instance subscription scope.
 - **ChannelService v1** — `Notify` and `Request` via Slack DMs and posts (#235)
 - **Auth strategy** — `oauth2_authcode` with Slack's authorization and token endpoints
 
@@ -40,6 +43,30 @@ slack/
   .gitignore         — excludes the compiled binary and signing artifacts
   go.mod             — per-plugin module; resolved by the repo-root go.work
 ```
+
+## Subscription scope and the host trigger stream
+
+The Gleipnir host only opens the `TriggerService.Start` stream when the instance
+`subscription_scope_json` is non-empty (i.e. not `""` or `"{}"`). A fresh
+instance defaults to `"{}"`, so the stream never opens unless the operator
+configures a non-empty scope.
+
+For `channel_message` and `direct_message` this is natural — the `channels`
+list or `direct_messages: true` flag makes the JSON non-empty. For slash
+commands and shortcuts (which are not channel-scoped), use the explicit flags:
+
+| Scope flag          | When to set |
+|---------------------|-------------|
+| `slash_commands: true` | Instance is used **only** for slash commands and has no channel watch |
+| `shortcuts: true`   | Instance is used **only** for shortcuts and has no channel watch |
+
+An instance already watching channels (or with `direct_messages: true`) also
+receives slash and shortcut events without setting these flags — the host gate
+only checks that the JSON is non-empty.
+
+These flags are stream-open enablers only. Plugin-side delivery of slash/shortcut
+events bypasses the channel scope filter (`scope.matches`) — slash commands and
+shortcuts are explicit user intent from any surface.
 
 ## Trigger binding (`channel_message`)
 
@@ -71,6 +98,90 @@ Policies that use the `direct_message` trigger can filter events using:
 
 `channel`, `channel_type`, and `mention_only` are absent: they have no meaning
 in a 1:1 DM conversation.
+
+## Trigger binding (`slash_command`)
+
+Policies that use the `slash_command` trigger can filter events using:
+
+| Field        | Match       | Notes |
+|--------------|-------------|-------|
+| `command`    | equals      | Exact slash command name, e.g. `/gleipnir`. Leave empty to match any command. |
+| `text`       | contains    | Substring anywhere in the command arguments |
+| `text_regex` | regex (RE2) | Go RE2 expression matched against the command arguments |
+
+Example — route `/gleipnir deploy …` to a deployment policy:
+
+```yaml
+name: slack-deploy-command
+trigger:
+  type: subscribed
+  source: slack-prod        # your Slack plugin instance name
+  event_kind: slash_command
+  binding:
+    command: "/gleipnir"
+    text_regex: "^deploy "
+capabilities:
+  tools:
+    - tool: slack-prod.post_message
+agent:
+  task: |
+    The trigger payload is a slash command. The "text" field contains the
+    arguments after /gleipnir. Execute the requested deployment and reply
+    using post_message (response_url is in the payload for direct replies).
+```
+
+**Slack app config:** register the slash command in your Slack app settings
+(api.slack.com → your app → Slash Commands → Create New Command). Set the
+command name (e.g. `/gleipnir`); the Request URL can be left blank when Socket
+Mode is enabled — Slack delivers slash commands over the existing Socket Mode
+connection. No extra OAuth scopes are required.
+
+**Ack semantics:** the hub acks within Slack's ~3s window immediately before
+dispatching. The agent run executes asynchronously; use `post_message` or the
+`response_url` from the payload to post results back to the channel.
+
+## Trigger binding (`message_shortcut`)
+
+Policies that use the `message_shortcut` trigger can filter events using:
+
+| Field         | Match  | Notes |
+|---------------|--------|-------|
+| `callback_id` | equals | Shortcut callback_id as registered in Slack (e.g. `run_agent_on_message`). Leave empty to match any shortcut. |
+
+Example — route a "Run agent on this message" shortcut to a summarizer policy:
+
+```yaml
+name: slack-message-shortcut
+trigger:
+  type: subscribed
+  source: slack-prod
+  event_kind: message_shortcut
+  binding:
+    callback_id: "run_agent_on_message"
+capabilities:
+  tools:
+    - tool: slack-prod.post_message
+agent:
+  task: |
+    The trigger payload is a message shortcut. The "text" field contains the
+    target message text; "ts" and "channel_id" identify it. Summarize the
+    message and reply via post_message.
+```
+
+## Trigger binding (`global_shortcut`)
+
+Policies that use the `global_shortcut` trigger can filter events using:
+
+| Field         | Match  | Notes |
+|---------------|--------|-------|
+| `callback_id` | equals | Shortcut callback_id as registered in Slack. Leave empty to match any global shortcut. |
+
+**Slack app config (shortcuts):** register shortcuts in your Slack app settings
+(api.slack.com → your app → Interactivity & Shortcuts → Create New Shortcut).
+For message shortcuts, choose "On messages"; for global shortcuts, choose "Global".
+Set a unique callback_id (e.g. `run_agent_on_message`). Interactivity must be
+enabled. Both shortcut types are delivered over the existing Socket Mode
+connection — no Request URL is needed. No extra OAuth scopes are required.
 
 **Prerequisites** for `direct_message` events to arrive:
 
@@ -347,6 +458,12 @@ settings:
   socket_mode_enabled: true
   token_rotation_enabled: false
 ```
+
+After creating the app from this manifest, register slash commands and shortcuts
+separately in the Slack app settings (they cannot be declared in the app manifest
+YAML in the same step):
+- **Slash Commands** → Create New Command: set the command name (e.g. `/gleipnir`). The Request URL is not required for Socket Mode apps.
+- **Interactivity & Shortcuts** → Create New Shortcut: add a message shortcut and/or global shortcut with the callback_id values used in your policy bindings.
 
 ### App-level token (xapp-)
 

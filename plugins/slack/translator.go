@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 )
 
@@ -154,6 +155,83 @@ func translate(inner slackevents.EventsAPIInnerEvent, teamID, botUserID string) 
 	default:
 		// All other inner event types (reactions, channel events, etc.) are
 		// not subscribed to by this plugin version. Drop silently.
+		return "", "", nil, false, nil
+	}
+}
+
+// translateSlashCommand converts a Slack SlashCommand into a slash_command event
+// payload. Slash commands are always delivered with explicit user intent — no
+// drop/subtype filtering; this function always returns a payload.
+//
+// eventID is derived from (channelID, triggerID): TriggerID is unique per
+// invocation and serves as the dedup key; deriveEventID's second arg (normally
+// a Slack timestamp) is reused here with the TriggerID. The ULID time component
+// falls back to now() since TriggerID is not a "sec.frac" string — harmless,
+// as dedup is driven by SHA-256("channelID:triggerID"), not the time component.
+func translateSlashCommand(cmd slack.SlashCommand) (eventID string, payload []byte, err error) {
+	p := SlackSlashCommandPayload{
+		Command:     cmd.Command,
+		Text:        cmd.Text,
+		User:        cmd.UserID, // NOTE: UserID, not cmd.User (no such field)
+		ChannelID:   cmd.ChannelID,
+		ChannelName: cmd.ChannelName,
+		TriggerID:   cmd.TriggerID,
+		ResponseURL: cmd.ResponseURL,
+		TeamID:      cmd.TeamID,
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return "", nil, fmt.Errorf("translateSlashCommand: marshal payload: %w", err)
+	}
+	return deriveEventID(cmd.ChannelID, cmd.TriggerID), b, nil
+}
+
+// translateShortcut converts a Slack InteractionCallback into a message_shortcut
+// or global_shortcut event. Returns emit=false for block_actions and any other
+// interaction type so the ChannelService approval/feedback path is not hijacked.
+//
+// Field notes:
+//   - cb.Message.Timestamp: promoted from the embedded slack.Msg (json tag "ts").
+//   - cb.Channel.ID: promoted via Channel→GroupConversation→Conversation.ID.
+//   - cb.User.ID: cb.User is slack.User; use .ID, not cb.UserID (no such field).
+//   - cb.Team.ID: cb.Team is slack.Team; use .ID, not cb.TeamID (no such field).
+//   - For global shortcuts cb.Channel is zero-valued (no message context), so
+//     deriveEventID is called with an empty channelID.
+func translateShortcut(cb slack.InteractionCallback) (kind, eventID string, payload []byte, emit bool, err error) {
+	switch cb.Type {
+	case slack.InteractionTypeMessageAction:
+		p := SlackMessageShortcutPayload{
+			Text:       cb.Message.Text,
+			Ts:         cb.Message.Timestamp, // promoted from embedded slack.Msg (json "ts")
+			ChannelID:  cb.Channel.ID,        // promoted via Channel→GroupConversation→Conversation.ID
+			User:       cb.User.ID,           // cb.User is slack.User; NOT cb.UserID
+			TriggerID:  cb.TriggerID,
+			CallbackID: cb.CallbackID,
+			TeamID:     cb.Team.ID, // cb.Team is slack.Team; NOT cb.TeamID
+		}
+		b, err := json.Marshal(p)
+		if err != nil {
+			return "", "", nil, false, fmt.Errorf("translateShortcut message_action: marshal payload: %w", err)
+		}
+		return "message_shortcut", deriveEventID(cb.Channel.ID, cb.TriggerID), b, true, nil
+
+	case slack.InteractionTypeShortcut:
+		p := SlackGlobalShortcutPayload{
+			User:       cb.User.ID,
+			TriggerID:  cb.TriggerID,
+			CallbackID: cb.CallbackID,
+			TeamID:     cb.Team.ID,
+		}
+		b, err := json.Marshal(p)
+		if err != nil {
+			return "", "", nil, false, fmt.Errorf("translateShortcut global: marshal payload: %w", err)
+		}
+		// Global shortcuts have no channel context — use empty channelID.
+		return "global_shortcut", deriveEventID("", cb.TriggerID), b, true, nil
+
+	default:
+		// block_actions and any other type: emit=false so the ChannelService
+		// approval/feedback path falls through untouched.
 		return "", "", nil, false, nil
 	}
 }
