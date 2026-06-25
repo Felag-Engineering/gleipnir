@@ -1,6 +1,7 @@
 package hostsvc
 
 import (
+	"math"
 	"sync"
 	"time"
 
@@ -23,14 +24,21 @@ var eventDroppedCounter = promauto.With(metrics.Registry()).NewCounterVec(
 )
 
 const (
-	// defaultEventsPerSec is the sustained token-bucket fill rate per instance.
-	// TODO(#577): read from plugin_instances.config_json (the instance-config
-	// schema now exists, ADR-049) so this is configurable per spec §4.3
-	// "configurable on instance".
+	// defaultEventsPerSec is the sustained token-bucket fill rate per instance,
+	// used when host_event_rate_per_sec is NULL or out of range.
 	defaultEventsPerSec = 100.0
 
-	// defaultEventsBurst is the maximum instantaneous burst allowed per instance.
+	// defaultEventsBurst is the maximum instantaneous burst allowed per instance,
+	// used when host_event_burst is NULL or out of range.
 	defaultEventsBurst = 200
+
+	// maxEventsPerSec is the upper cap on the configurable sustained rate.
+	// Values above this are treated as out-of-range and fall back to the default.
+	maxEventsPerSec = 10000.0
+
+	// maxEventsBurst is the upper cap on the configurable burst.
+	// Values above this are treated as out-of-range and fall back to the default.
+	maxEventsBurst = 100000
 
 	// auditFlushInterval is the minimum time between "event_rate_limited" audit
 	// rows for the same instance. Coalescing prevents the audit log from being
@@ -62,8 +70,35 @@ func newEventRateLimiter() *eventRateLimiter {
 	}
 }
 
+// resolveRateLimit converts nullable per-instance DB values to a concrete
+// (rate.Limit, burst) pair. Each field is independently validated: NULL, ≤0,
+// NaN, Inf, or above the cap all fall back to that field's hardcoded default.
+// A bad value can never set the rate to 0 or unbounded.
+func resolveRateLimit(ratePerSec *float64, burst *int64) (rate.Limit, int) {
+	var r rate.Limit
+	if ratePerSec == nil || *ratePerSec <= 0 || math.IsNaN(*ratePerSec) || math.IsInf(*ratePerSec, 0) || *ratePerSec > maxEventsPerSec {
+		r = rate.Limit(defaultEventsPerSec)
+	} else {
+		r = rate.Limit(*ratePerSec)
+	}
+
+	var b int
+	if burst == nil || *burst <= 0 || *burst > maxEventsBurst {
+		b = defaultEventsBurst
+	} else {
+		b = int(*burst)
+	}
+
+	return r, b
+}
+
 // Allow checks whether the next event from (pluginID, instanceID) is within the
-// rate limit.
+// rate limit. ratePerSec and burst are the nullable per-instance host-owned values
+// read from plugin_instances; nil means "use default". Both are read at bucket
+// creation (first event from the instance) and held for the lifetime of the bucket.
+//
+// v1.1 limitation: an in-memory bucket is not updated when the DB values change.
+// The new limit takes effect on the next host restart or first emit after boot.
 //
 // It returns:
 //   - allowed=true when the event is within the limit.
@@ -76,14 +111,15 @@ func newEventRateLimiter() *eventRateLimiter {
 // The zero value of lastFlush means the very first drop always triggers a flush,
 // giving operators an immediate signal the first time a plugin misbehaves instead
 // of waiting up to 60 seconds.
-func (rl *eventRateLimiter) Allow(pluginID, instanceID string) (allowed bool, flushCount uint64) {
+func (rl *eventRateLimiter) Allow(pluginID, instanceID string, ratePerSec *float64, burst *int64) (allowed bool, flushCount uint64) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
 	b, ok := rl.buckets[instanceID]
 	if !ok {
+		lim, burstSize := resolveRateLimit(ratePerSec, burst)
 		b = &instanceBucket{
-			limiter:  rate.NewLimiter(rate.Limit(defaultEventsPerSec), defaultEventsBurst),
+			limiter:  rate.NewLimiter(lim, burstSize),
 			pluginID: pluginID,
 		}
 		rl.buckets[instanceID] = b

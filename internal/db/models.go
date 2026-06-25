@@ -117,20 +117,22 @@ type PluginEventDedup struct {
 }
 
 type PluginInstance struct {
-	ID                    string  `json:"id"`
-	PluginID              string  `json:"plugin_id"`
-	InstanceName          string  `json:"instance_name"`
-	ConfigJson            string  `json:"config_json"`
-	SubscriptionScopeJson string  `json:"subscription_scope_json"`
-	CredentialsEncrypted  *string `json:"credentials_encrypted"`
-	CredentialsExpiresAt  *string `json:"credentials_expires_at"`
-	HandshakeVersions     string  `json:"handshake_versions"`
-	HealthState           string  `json:"health_state"`
-	HealthDetail          *string `json:"health_detail"`
-	LastOauthCallbackUrl  *string `json:"last_oauth_callback_url"`
-	Version               int64   `json:"version"`
-	CreatedAt             string  `json:"created_at"`
-	UpdatedAt             string  `json:"updated_at"`
+	ID                    string   `json:"id"`
+	PluginID              string   `json:"plugin_id"`
+	InstanceName          string   `json:"instance_name"`
+	ConfigJson            string   `json:"config_json"`
+	SubscriptionScopeJson string   `json:"subscription_scope_json"`
+	CredentialsEncrypted  *string  `json:"credentials_encrypted"`
+	CredentialsExpiresAt  *string  `json:"credentials_expires_at"`
+	HandshakeVersions     string   `json:"handshake_versions"`
+	HealthState           string   `json:"health_state"`
+	HealthDetail          *string  `json:"health_detail"`
+	LastOauthCallbackUrl  *string  `json:"last_oauth_callback_url"`
+	HostEventRatePerSec   *float64 `json:"host_event_rate_per_sec"`
+	HostEventBurst        *int64   `json:"host_event_burst"`
+	Version               int64    `json:"version"`
+	CreatedAt             string   `json:"created_at"`
+	UpdatedAt             string   `json:"updated_at"`
 }
 
 type PluginOauthNonce struct {

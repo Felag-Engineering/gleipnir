@@ -185,7 +185,7 @@ func (s *Server) EmitEvent(ctx context.Context, req *hostv1.EmitEventRequest) (*
 	// Rate-limit gate: drop excess events before running any per-policy match
 	// scan so a runaway plugin cannot exhaust host resources. Returns Ok=false
 	// (not a gRPC error) so the plugin does not retry-storm (spec §4.3).
-	allowed, flushCount := s.eventLimiter.Allow(inst.PluginID, inst.ID)
+	allowed, flushCount := s.eventLimiter.Allow(inst.PluginID, inst.ID, inst.HostEventRatePerSec, inst.HostEventBurst)
 	if !allowed {
 		eventDroppedCounter.WithLabelValues(inst.PluginID, inst.ID, metrics.ReasonRateLimit).Inc()
 		if flushCount > 0 {

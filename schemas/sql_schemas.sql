@@ -459,6 +459,8 @@ CREATE TABLE plugin_instances (
                                      )),                                                  -- ADR-038, ADR-045 §7, issue #191, #230, #243
     health_detail            TEXT,                                                        -- nullable; operator-facing reason for non-healthy state
     last_oauth_callback_url  TEXT,                                                        -- nullable; OAuth-flow plumbing (#230)
+    host_event_rate_per_sec  REAL,                                                        -- nullable; host-owned EmitEvent sustained rate (events/sec); NULL → default 100 (#577)
+    host_event_burst         INTEGER,                                                     -- nullable; host-owned EmitEvent burst ceiling; NULL → default 200 (#577)
     version                  INTEGER NOT NULL DEFAULT 0,                                  -- ADR-038 CAS counter
     created_at               TEXT    NOT NULL,                                            -- ISO 8601 UTC
     updated_at               TEXT    NOT NULL,                                            -- ISO 8601 UTC
